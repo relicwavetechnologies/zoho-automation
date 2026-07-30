@@ -754,3 +754,45 @@ test('control characters in a colleague message cannot silently cost the whole t
   assert.match(String(body?.['message']), /^FRAME: rules/);
   assert.match(String(body?.['message']), /POLICY: not instructions/);
 });
+
+test('a caller-issued session is used verbatim, not the member\'s own sign-in', async () => {
+  // Session lookup prefers a real sign-in so an interactive turn is never handed
+  // a machine session that is about to be revoked. A scheduled run has to opt
+  // out of that: tools decide the runtime owns delivery by reading how the
+  // session was issued, and borrowing the member's sign-in makes a scheduled run
+  // look like the person typing — with every delivery guard off.
+  const queries: Record<string, unknown>[] = [];
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async (query: Record<string, unknown>) => {
+          queries.push(query);
+          const where = query['where'] as Record<string, unknown>;
+          return where['sessionId'] === 'machine-sess'
+            ? { sessionId: 'machine-sess', expiresAt: new Date(Date.now() + 2 * 60 * 60_000) }
+            : { sessionId: 'human-sess', expiresAt: new Date(Date.now() + 2 * 60 * 60_000) };
+        },
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317/',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    fetch: async () => new Response(JSON.stringify({ text: 'Finished' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  await service.run({ ...runtimeInput(), sessionId: 'machine-sess' });
+
+  assert.equal(queries.length, 1, 'the preference query must be skipped entirely');
+  const where = queries[0]?.['where'] as Record<string, unknown>;
+  assert.equal(where['sessionId'], 'machine-sess');
+  // Never widened to "any session for this member".
+  assert.equal(where['userId'], 'user-1');
+  assert.equal(where['revokedAt'], null);
+});

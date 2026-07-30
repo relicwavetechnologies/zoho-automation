@@ -19,9 +19,6 @@ function makePrisma() {
     channelIdentity: {
       findFirst: async () => ({ id: 'identity-1' }),
     },
-    desktopThread: {
-      findFirst: async ({ where }: any) => where.id === 'thread-1' ? { id: 'thread-1' } : null,
-    },
     scheduledWorkflow: {
       create: async ({ data }: any) => {
         created = data;
@@ -55,6 +52,7 @@ describe('scheduledWorkflows tool', () => {
       delivery: 'current_conversation',
     }).success, false);
 
+    // Omitting delivery is the shape to aim for: it no longer decides anything.
     assert.equal(tool.argsSchema.safeParse({
       operation: 'create',
       name: 'Daily inbox review',
@@ -63,8 +61,10 @@ describe('scheduledWorkflows tool', () => {
       timezone: 'Asia/Kolkata',
       hour: 10,
       timeMinute: 0,
-    }).success, false);
+    }).success, true);
 
+    // Still accepted, so a caller working from an older copy of the scheduling
+    // skill is not rejected for sending it.
     assert.equal(tool.argsSchema.safeParse({
       operation: 'create',
       name: 'Daily inbox review',
@@ -153,14 +153,11 @@ describe('scheduledWorkflows tool', () => {
       status: 'scheduled_active',
       scheduleEnabled: true,
       nextRunAt: new Date('2026-07-20T04:30:00.000Z'),
-      // Nothing records the conversation it was created in, so no later run can
-      // deliver back into it.
-      originChatId: null,
     });
   });
 
   it('no longer needs the originating conversation to be durable', async () => {
-    const { prisma, getCreated } = makePrisma();
+    const { prisma } = makePrisma();
     const tool = createScheduledWorkflowsTool({ prisma });
     const result = await tool.execute({
       operation: 'create',
@@ -179,7 +176,6 @@ describe('scheduledWorkflows tool', () => {
     // Delivery no longer depends on that conversation surviving, so a schedule
     // set up from a throwaway one is no longer rejected.
     assert.equal(result.ok, true);
-    assert.equal((getCreated() as any).originChatId, null);
   });
 
   it('creates creator Lark DM delivery without requiring a persisted desktop conversation', async () => {
@@ -206,7 +202,6 @@ describe('scheduledWorkflows tool', () => {
       deliveryChannel: 'lark',
       deliveryTarget: 'creator_dm',
     });
-    assert.equal((getCreated() as any).originChatId, null);
   });
 
   it('refuses creator Lark DM delivery when the authenticated creator has no Lark identity', async () => {

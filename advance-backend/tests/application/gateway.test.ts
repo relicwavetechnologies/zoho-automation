@@ -212,6 +212,41 @@ function makeMemoryRecallTool(
 }
 
 describe('ToolExecutor', () => {
+  it('marks a scheduled run so tools know the runtime owns its delivery', async () => {
+    // Pi runs in its container and calls back through the gateway, so this is
+    // the run context every tool actually sees — the one the scheduler builds
+    // never reaches them. Without this the messaging guards are inert and a
+    // scheduled result can be posted into a room by the model.
+    const registry = new ToolRegistry();
+    let seenDeliveryMode: unknown = 'unset';
+    registry.register(makeFakeTool({
+      execute: async (_args, ctx) => {
+        seenDeliveryMode = ctx.runContext.deliveryMode;
+        return ok({ result: 'done' });
+      },
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(),
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    await executor.invoke({
+      member: { ...member, authProvider: 'scheduled_workflow' },
+      toolId: 'fakeTool',
+      args: { query: 'scheduled' },
+    });
+    assert.equal(seenDeliveryMode, 'scheduled_runtime_delivery');
+
+    await executor.invoke({
+      member: { ...member, authProvider: 'lark' },
+      toolId: 'fakeTool',
+      args: { query: 'interactive' },
+    });
+    assert.equal(seenDeliveryMode, undefined);
+  });
+
   it('applies the universal result ceiling before returning a governed tool result', async () => {
     const registry = new ToolRegistry();
     registry.register(makeFakeTool({

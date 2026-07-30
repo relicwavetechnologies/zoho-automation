@@ -191,7 +191,6 @@ import { createScheduledWorkflowsTool } from './application/tools/families/sched
 import { createMailAutomationsTool } from './application/tools/families/mail-automations.tool';
 import { createSemrushTool } from './application/tools/families/semrush.tool';
 import { createOmsSiteDataTool } from './application/tools/families/oms-site-data.tool';
-import { ScheduledDesktopChannelAdapter } from './infrastructure/channels/desktop/scheduled-desktop.adapter';
 import { ScheduledLarkDmChannelAdapter } from './infrastructure/channels/lark/scheduled-lark-dm.adapter';
 import { LarkMessagingClient } from './infrastructure/channels/lark/clients/lark-messaging.client';
 import { ToolExecutor } from './application/gateway/tool-executor';
@@ -1927,7 +1926,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       piRuntime: larkPiRuntime,
       runTimeoutMs: env.PI_LARK_RUN_TIMEOUT_MS,
       channelAdapters: {
-        lark: larkAdapter,
         larkDm: new ScheduledLarkDmChannelAdapter({
           client: new LarkMessagingClient({
             appId: env.LARK_APP_ID,
@@ -1936,10 +1934,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
             logger: logger.child({ service: 'scheduled-lark-dm-client' }),
           }),
           logger: logger.child({ service: 'scheduled-lark-dm-channel' }),
-        }),
-        desktop: new ScheduledDesktopChannelAdapter({
-          prisma,
-          logger: logger.child({ service: 'scheduled-desktop-channel' }),
         }),
       },
       channelIdentityRepo,

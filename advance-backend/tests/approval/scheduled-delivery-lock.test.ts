@@ -1,15 +1,14 @@
 /**
  * Scheduled workflow delivery lock — integration-style chain tests.
  *
- * Verifies that when a scheduled workflow returns to its originating Lark chat:
- *   1. The prompt is rewritten to remove the delivery instruction
- *   2. RunContext carries deliveryMode: 'current_chat_only'
- *   3. larkMessaging refuses duplicate writes to the runtime-owned destination
- *   4. Lark reads remain available
- *   5. Non-locked workflows pass through normally
+ * A scheduled run executes as one person: their history, their permissions,
+ * their private chat recall. Its result is delivered by the runtime to that
+ * person's own Lark DM and must reach no one else. These tests chain the
+ * scheduler's prompt rewriting and run context with the messaging tool's
+ * enforcement, which is the gap unit tests on either side leave open.
  *
- * These chain the scheduler's prompt rewriting + runContext building with the
- * tool's enforcement logic — the gap between unit tests and live replay.
+ * What a run may still do is contact somebody the task explicitly names — that
+ * is the task doing its job, not the run delivering itself.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,7 +19,8 @@ import {
 import { createLarkMessagingTool } from '../../src/application/tools/families/lark-messaging.tool.ts';
 import { makeCtx } from '../tools/tool-test.helpers.ts';
 
-const LOCKED_CHAT = 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50';
+/** Where every scheduled result goes: the creator's own DM. */
+const CREATOR_DM = 'ou_4da3c8e6a6a2b9eb29a2aea24fd17e50';
 const OTHER_GROUP = 'oc_b9169aab0765f46b2fe9147068e3c79f';
 
 const fakeClient = {
@@ -42,10 +42,10 @@ const fakePeopleResolver = {
   }),
 };
 
-function lockedCtx() {
+function scheduledCtx() {
   return makeCtx('larkMessaging', ['read', 'send'], {
-    chatId: LOCKED_CHAT,
-    deliveryMode: 'current_chat_only',
+    chatId: CREATOR_DM,
+    deliveryMode: 'scheduled_runtime_delivery',
   });
 }
 
@@ -71,7 +71,7 @@ describe('Scheduled delivery lock: prompt rewriting', () => {
     '   Use zohoCrm with op=search_records',
   ].join('\n');
 
-  it('detects lark_current_chat delivery in prompt', () => {
+  it('detects a delivery destination left in an older workflow', () => {
     assert.equal(usesLockedCurrentChatDelivery(PROMPT_WITH_DELIVERY), true);
   });
 
@@ -79,108 +79,114 @@ describe('Scheduled delivery lock: prompt rewriting', () => {
     assert.equal(usesLockedCurrentChatDelivery(PROMPT_WITHOUT_DELIVERY), false);
   });
 
-  it('rewrites prompt: removes delivery line, adds runtime override', () => {
-    const rewritten = buildScheduledExecutionPrompt(PROMPT_WITH_DELIVERY, LOCKED_CHAT);
+  it('strips the destination an older workflow names and says who receives it', () => {
+    const rewritten = buildScheduledExecutionPrompt(PROMPT_WITH_DELIVERY);
 
+    // Left standing, the task text and the runtime override contradict each
+    // other, and the model may satisfy the task by posting to that chat itself.
     assert.doesNotMatch(rewritten, /Deliver to:\s+dest_1:lark_current_chat/);
-    assert.match(rewritten, /runtime_locked_current_chat/);
+    assert.match(rewritten, /runtime_creator_dm/);
     assert.match(rewritten, /RUNTIME DELIVERY OVERRIDE/);
-    assert.match(rewritten, new RegExp(LOCKED_CHAT));
-    assert.match(rewritten, /Do NOT use larkMessaging/);
+    assert.match(rewritten, /Ignore any delivery destination named in the task above/i);
+    assert.match(rewritten, /schedule creator's Lark DM/i);
   });
 
   it('adds runtime ownership to raw-intent scheduled prompts', () => {
-    const rewritten = buildScheduledExecutionPrompt(PROMPT_WITHOUT_DELIVERY, LOCKED_CHAT);
+    const rewritten = buildScheduledExecutionPrompt(PROMPT_WITHOUT_DELIVERY);
     assert.match(rewritten, /RUNTIME DELIVERY OVERRIDE/);
-    assert.match(rewritten, /Do NOT use larkMessaging/);
+    assert.match(rewritten, /schedule creator's Lark DM/i);
   });
 });
 
-// ─── Tool enforcement under delivery lock ────────────────────────────────────
+// ─── Tool enforcement under scheduled delivery ───────────────────────────────
 
 describe('Scheduled delivery lock: larkMessaging enforcement', () => {
   const tool = createLarkMessagingTool({ client: fakeClient, peopleResolver: fakePeopleResolver });
 
-  it('send: blocks explicit delivery to the locked chat', async () => {
-    const r = await tool.execute({ op: 'send', chatId: LOCKED_CHAT, text: 'Daily summary' }, lockedCtx());
+  it('send: blocks explicit delivery to the creator DM', async () => {
+    const r = await tool.execute({ op: 'send', chatId: CREATOR_DM, text: 'Daily summary' }, scheduledCtx());
     assert.equal(r.ok, false);
     assert.match((r as any).error.message, /runtime owns final delivery/i);
   });
 
-  it('send: blocks implicit delivery to the locked chat', async () => {
-    const r = await tool.execute({ op: 'send', text: 'Daily summary' }, lockedCtx());
+  it('send: blocks implicit delivery', async () => {
+    const r = await tool.execute({ op: 'send', text: 'Daily summary' }, scheduledCtx());
     assert.equal(r.ok, false);
     assert.match((r as any).error.message, /runtime owns final delivery/i);
   });
 
-  it('send: allows an explicit external action to a different chat', async () => {
-    const r = await tool.execute({ op: 'send', chatId: OTHER_GROUP, text: 'Rerouted' }, lockedCtx());
-    assert.equal(r.ok, true);
-    assert.equal((r as any).value.messageId, `msg-${OTHER_GROUP}`);
-  });
-
-  it('send_dm: allows an explicit external action to another recipient', async () => {
-    const r = await tool.execute({ op: 'send_dm', text: 'hey', recipientName: 'Anish' }, lockedCtx());
-    assert.equal(r.ok, true);
-    assert.equal((r as any).value.messageId, 'msg-dm');
-  });
-
-  it('reply: blocks a destination that cannot be verified as external', async () => {
-    const r = await tool.execute({ op: 'reply', messageId: 'msg-1', text: 'response' }, lockedCtx());
+  it('send: blocks delivery to any other chat as well', async () => {
+    // The run's own chat is now a DM, so a guard that only rejected the current
+    // chat would wave through every group id — the whole point of the rule.
+    const r = await tool.execute({ op: 'send', chatId: OTHER_GROUP, text: 'Rerouted' }, scheduledCtx());
     assert.equal(r.ok, false);
     assert.match((r as any).error.message, /runtime owns final delivery/i);
   });
 
-  it('mention: blocks manual scheduled delivery', async () => {
-    const r = await tool.execute({
-      op: 'mention',
-      text: 'Hey check this @Anish',
-      mentionNames: ['Anish'],
-    }, lockedCtx());
-    assert.equal(r.ok, false);
-    assert.match((r as any).error.message, /runtime owns final delivery/i);
-  });
-
-  it('mention: allows an explicit external action in a different chat', async () => {
+  it('mention: blocks posting into a group', async () => {
     const r = await tool.execute({
       op: 'mention',
       chatId: OTHER_GROUP,
       text: 'Hey @Anish',
       mentionNames: ['Anish'],
-    }, lockedCtx());
-    assert.equal(r.ok, true);
-    assert.equal((r as any).value.messageId, `msg-mention-${OTHER_GROUP}`);
+    }, scheduledCtx());
+    assert.equal(r.ok, false);
+    assert.match((r as any).error.message, /runtime owns final delivery/i);
   });
 
-  it('list_chats: still allowed under lock (read action)', async () => {
-    const r = await tool.execute({ op: 'list_chats' }, lockedCtx());
+  it('reply: blocks a destination that cannot be verified as external', async () => {
+    const r = await tool.execute({ op: 'reply', messageId: 'msg-1', text: 'response' }, scheduledCtx());
+    assert.equal(r.ok, false);
+    assert.match((r as any).error.message, /runtime owns final delivery/i);
+  });
+
+  it('send_dm: still allows an explicit external action to another person', async () => {
+    // A task that says "tell Anish when the report is ready" is doing the work
+    // it was written to do, and is not the run delivering its own result.
+    const r = await tool.execute({ op: 'send_dm', text: 'hey', recipientName: 'Anish' }, scheduledCtx());
+    assert.equal(r.ok, true);
+    assert.equal((r as any).value.messageId, 'msg-dm');
+  });
+
+  it('list_chats: still allowed (read action)', async () => {
+    const r = await tool.execute({ op: 'list_chats' }, scheduledCtx());
     assert.equal(r.ok, true);
   });
 
-  it('list: still allowed under lock (read action)', async () => {
-    const r = await tool.execute({ op: 'list', chatId: LOCKED_CHAT }, lockedCtx());
+  it('list: still allowed (read action)', async () => {
+    const r = await tool.execute({ op: 'list', chatId: CREATOR_DM }, scheduledCtx());
     assert.equal(r.ok, true);
   });
 });
 
-// ─── Normal (non-locked) behavior still works ────────────────────────────────
+// ─── Normal (non-scheduled) behavior still works ─────────────────────────────
 
 describe('Scheduled delivery lock: normal mode unaffected', () => {
   const tool = createLarkMessagingTool({ client: fakeClient, peopleResolver: fakePeopleResolver });
 
-  it('send to any chat works without lock', async () => {
+  it('send to any chat works outside a scheduled run', async () => {
     const r = await tool.execute({ op: 'send', chatId: OTHER_GROUP, text: 'hello' }, normalCtx());
     assert.equal(r.ok, true);
     assert.equal((r as any).value.messageId, `msg-${OTHER_GROUP}`);
   });
 
-  it('send_dm works without lock', async () => {
+  it('send_dm works outside a scheduled run', async () => {
     const r = await tool.execute({ op: 'send_dm', text: 'hey', recipientName: 'Anish' }, normalCtx());
     assert.equal(r.ok, true);
   });
 
-  it('reply works without lock', async () => {
+  it('reply works outside a scheduled run', async () => {
     const r = await tool.execute({ op: 'reply', messageId: 'msg-1', text: 'pong' }, normalCtx());
+    assert.equal(r.ok, true);
+  });
+
+  it('mention works outside a scheduled run', async () => {
+    const r = await tool.execute({
+      op: 'mention',
+      chatId: OTHER_GROUP,
+      text: 'Hey @Anish',
+      mentionNames: ['Anish'],
+    }, normalCtx());
     assert.equal(r.ok, true);
   });
 });
@@ -188,8 +194,9 @@ describe('Scheduled delivery lock: normal mode unaffected', () => {
 // ─── Full chain: scheduler → RunContext → tool guard ─────────────────────────
 
 describe('Scheduled delivery lock: full chain', () => {
-  it('scheduler detects delivery, builds locked RunContext, tool enforces it', async () => {
-    // Step 1: Scheduler detects lark_current_chat
+  it('an older group-bound workflow cannot reach that group once redirected', async () => {
+    // The exact population the redirect exists for: written when a schedule
+    // still posted into the room it was created in.
     const compiledPrompt = [
       'Workflow: Daily standup',
       '1. [execute] Check tasks',
@@ -199,26 +206,32 @@ describe('Scheduled delivery lock: full chain', () => {
 
     assert.equal(usesLockedCurrentChatDelivery(compiledPrompt), true);
 
-    // Step 2: Scheduler rewrites prompt
-    const executionPrompt = buildScheduledExecutionPrompt(compiledPrompt, LOCKED_CHAT);
-    assert.match(executionPrompt, /runtime_locked_current_chat/);
+    const executionPrompt = buildScheduledExecutionPrompt(compiledPrompt);
+    assert.match(executionPrompt, /runtime_creator_dm/);
+    assert.doesNotMatch(executionPrompt, /Deliver to:\s+dest_1:lark_current_chat/);
 
-    // Step 3: Scheduler would build RunContext with deliveryMode
-    const ctx = lockedCtx();
-    assert.equal(ctx.runContext.deliveryMode, 'current_chat_only');
-    assert.equal(ctx.runContext.chatId, LOCKED_CHAT);
+    const ctx = scheduledCtx();
+    assert.equal(ctx.runContext.deliveryMode, 'scheduled_runtime_delivery');
+    assert.equal(ctx.runContext.chatId, CREATOR_DM);
 
-    // Step 4: Tool enforces runtime-owned final delivery
     const tool = createLarkMessagingTool({ client: fakeClient, peopleResolver: fakePeopleResolver });
 
-    const sameChatResult = await tool.execute({ op: 'send', text: 'Summary here' }, ctx);
-    assert.equal(sameChatResult.ok, false);
+    // Neither the run's own destination nor the group it was written for.
+    assert.equal((await tool.execute({ op: 'send', text: 'Summary here' }, ctx)).ok, false);
+    assert.equal(
+      (await tool.execute({ op: 'send', chatId: OTHER_GROUP, text: 'Summary here' }, ctx)).ok,
+      false,
+    );
+    assert.equal(
+      (await tool.execute(
+        { op: 'mention', chatId: OTHER_GROUP, text: 'Standup @Anish', mentionNames: ['Anish'] },
+        ctx,
+      )).ok,
+      false,
+    );
 
-    const externalResult = await tool.execute({ op: 'send', chatId: OTHER_GROUP, text: 'Rerouted' }, ctx);
-    assert.equal(externalResult.ok, true);
-
-    const externalDm = await tool.execute({ op: 'send_dm', text: 'hi', recipientName: 'Anish' }, ctx);
-    assert.equal(externalDm.ok, true);
+    // The one thing that survives: contacting a named person on purpose.
+    assert.equal((await tool.execute({ op: 'send_dm', text: 'hi', recipientName: 'Anish' }, ctx)).ok, true);
   });
 
   it('normal non-scheduled workflow: no lock, no restrictions', async () => {

@@ -92,10 +92,10 @@ Every create requires:
 - **name**: short label, at most 120 characters.
 - **intent**: complete instructions that can run without this chat history. State the task, source/account, time window, filters, required skills/tools, output format, delivery expectation, external-action boundary, and what to do when data is missing or a tool fails.
 - **timezone**: exact IANA timezone such as **Asia/Kolkata**.
-- **delivery**: retained for compatibility and ignored. Every scheduled result is delivered by the runtime to the authenticated schedule creator's own Lark DM, whichever value you send. Send **creator_lark_dm**. Do not add a separate **larkMessaging** delivery step for the same final result.
+- **delivery**: omit it. It is accepted only for compatibility and changes nothing: every scheduled result is delivered by the runtime to the authenticated schedule creator's own Lark DM. Do not add a separate **larkMessaging** delivery step for the same final result.
+- **scheduleType** and only the timing fields for that type.
 
 Never tell the user a schedule will post into this chat, a group, or a channel, and never write an intent that names a delivery destination. A run executes with the creator's own history and permissions, so its result goes to the creator in Lark and nowhere else. Say that plainly when confirming the schedule. If the user asks for it in a group, tell them it will arrive in their Lark DM instead.
-- **scheduleType** and only the timing fields for that type.
 
 Do not guess a material task, time, timezone, recurrence, monitoring scope, recipient, external side effect, or failure behavior. Ask only for missing material details.
 
@@ -108,7 +108,6 @@ Do not guess a material task, time, timezone, recurrence, monitoring scope, reci
   "intent": "At run time, produce a concise reminder that the launch review begins in 30 minutes as the final answer; runtime delivery is handled separately. Do not contact anyone.",
   "scheduleType": "one_time",
   "timezone": "Asia/Kolkata",
-  "delivery": "creator_lark_dm",
   "runAt": "2026-07-20T09:30:00+05:30"
 }
 ~~~
@@ -122,7 +121,6 @@ Do not guess a material task, time, timezone, recurrence, monitoring scope, reci
   "intent": "Using the approved Gmail skill and account, inspect mail received since the previous run for urgent support incidents. Produce only new incidents as the final answer; runtime delivery is handled separately. Do not reply to or modify mail. If Gmail is unavailable, report the failure without retrying another account.",
   "scheduleType": "hourly",
   "timezone": "Asia/Kolkata",
-  "delivery": "creator_lark_dm",
   "intervalHours": 2,
   "minute": 15
 }
@@ -138,7 +136,6 @@ Do not guess a material task, time, timezone, recurrence, monitoring scope, reci
   "intent": "Using the approved Gmail skill and selected work account, summarize messages received in the last 24 hours, grouped by sender. Produce the completed summary as the final answer; runtime delivery is handled separately. Read only; do not reply, archive, label, or forward mail. If the account is unavailable, report the failure and do not use another account.",
   "scheduleType": "daily",
   "timezone": "Asia/Kolkata",
-  "delivery": "creator_lark_dm",
   "hour": 10,
   "timeMinute": 0
 }
@@ -153,7 +150,6 @@ Do not guess a material task, time, timezone, recurrence, monitoring scope, reci
   "intent": "Using the approved CRM reporting skill, summarize open pipeline changes since the previous run and produce the report as the final answer; runtime delivery is handled separately. Read only. If the CRM query fails, report the error and do not fabricate totals.",
   "scheduleType": "weekly",
   "timezone": "Asia/Kolkata",
-  "delivery": "creator_lark_dm",
   "daysOfWeek": ["MO"],
   "hour": 9,
   "timeMinute": 30
@@ -169,7 +165,6 @@ Do not guess a material task, time, timezone, recurrence, monitoring scope, reci
   "intent": "Using the approved finance reporting skill, prepare the previous calendar month's summary and produce it as the final answer; runtime delivery is handled separately. Read only. Call out missing data explicitly and do not estimate unavailable values.",
   "scheduleType": "monthly",
   "timezone": "Asia/Kolkata",
-  "delivery": "creator_lark_dm",
   "dayOfMonth": 1,
   "hour": 10,
   "timeMinute": 0

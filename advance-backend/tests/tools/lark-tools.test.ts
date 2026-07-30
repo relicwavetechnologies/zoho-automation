@@ -317,7 +317,7 @@ describe('larkMessaging tool', () => {
       };
       const lockedCtx = makeCtx('larkMessaging', ['read', 'send'], {
         chatId: 'oc_locked_dm_chat',
-        deliveryMode: 'current_chat_only',
+        deliveryMode: 'scheduled_runtime_delivery',
       });
       const tool = createLarkMessagingTool({ client });
       const r = await tool.execute({ op: 'send', text: 'hi' }, lockedCtx);
@@ -352,7 +352,7 @@ describe('larkMessaging tool', () => {
       assert.match((r as any).error.message, /runtime owns final delivery/i);
     });
 
-    it('send: preserves an explicit external action to a different chat', async () => {
+    it('send: allows an interactive run to message a different chat', async () => {
       let capturedChatId: string | null = null;
       const client = {
         ...fakeClient,
@@ -361,12 +361,13 @@ describe('larkMessaging tool', () => {
           return { messageId: 'msg-external' };
         },
       };
-      const lockedCtx = makeCtx('larkMessaging', ['read', 'send'], {
+      // Not a scheduled run: those are blocked from every chat. See
+      // tests/approval/scheduled-delivery-lock.test.ts.
+      const interactiveCtx = makeCtx('larkMessaging', ['read', 'send'], {
         chatId: 'oc_locked_dm_chat',
-        deliveryMode: 'current_chat_only',
       });
       const tool = createLarkMessagingTool({ client });
-      const r = await tool.execute({ op: 'send', chatId: 'oc_other_group', text: 'hi' }, lockedCtx);
+      const r = await tool.execute({ op: 'send', chatId: 'oc_other_group', text: 'hi' }, interactiveCtx);
       assert.equal(r.ok, true);
       assert.equal(capturedChatId, 'oc_other_group');
     });
@@ -377,10 +378,10 @@ describe('larkMessaging tool', () => {
       assert.equal(r.ok, true);
     });
 
-    it('reply: rejects delivery during a scheduled current-chat run', async () => {
+    it('reply: rejects delivery during a scheduled run', async () => {
       const lockedCtx = makeCtx('larkMessaging', ['send'], {
         chatId: 'oc_locked_dm_chat',
-        deliveryMode: 'current_chat_only',
+        deliveryMode: 'scheduled_runtime_delivery',
       });
       const tool = createLarkMessagingTool({ client: fakeClient });
 
@@ -436,7 +437,6 @@ describe('larkMessaging tool', () => {
     it('send_dm: rejects duplicate delivery to the current-chat requester', async () => {
       const lockedCtx = makeCtx('larkMessaging', ['read', 'send'], {
         chatId: 'oc_locked_dm_chat',
-        deliveryMode: 'current_chat_only',
         userExternalId: 'resolved:Abhishek',
       });
       const tool = createLarkMessagingTool({ client: fakeClient, peopleResolver });

@@ -21,6 +21,7 @@ import type {
   GatewayResponse,
 } from './gateway.types';
 import { gatewayFailure, gatewaySuccess } from './gateway.types';
+import { SCHEDULED_SESSION_AUTH_PROVIDER } from '../scheduling/scheduled-runtime-session';
 import { limitModelFacingResult } from './model-facing-result-limit';
 
 export interface ToolExecutorInput {
@@ -830,6 +831,13 @@ export class ToolExecutor {
         : {}),
       ...(departmentZohoReadScope ? { departmentZohoReadScope } : {}),
       requesterAiRole: member.aiRole,
+      // Pi runs inside its container and calls back through here, so this is the
+      // run context every tool actually sees — the one the scheduler builds never
+      // reaches them. Without this, a scheduled run's delivery guards are inert
+      // and the DM-only rule holds by prompt text alone.
+      ...(member.authProvider === SCHEDULED_SESSION_AUTH_PROVIDER
+        ? { deliveryMode: 'scheduled_runtime_delivery' as const }
+        : {}),
       ...(requestId ? { traceId: requestId, requestId } : {}),
       chatId: larkDelivery?.chatId ?? execution?.threadId ?? `gateway:${member.sessionId}`,
       ...(larkDelivery?.replyToMessageId

@@ -11,6 +11,8 @@
  *   res.locals.larkOpenId (string | null)
  *   res.locals.larkTenantKey (string | null)
  *   res.locals.sessionId  (string)
+ *   res.locals.authProvider (string — how the session was issued;
+ *                            "scheduled_workflow" marks a machine-issued run)
  *   res.locals.email      (string | null)
  *   res.locals.channel    ("desktop" | "lark", trusted from the signed token)
  */
@@ -144,6 +146,10 @@ export function createMemberAuthMiddleware(deps: MemberAuthMiddlewareDeps) {
       res.locals['larkOpenId'] = session.larkOpenId ?? null;
       res.locals['larkTenantKey'] = session.larkTenantKey ?? null;
       res.locals['sessionId']  = session.sessionId;
+      // How this session was issued. A scheduled run holds a machine-issued one,
+      // and tools that would deliver a reply themselves have to know that: the
+      // runtime owns delivery for those runs and sends it to the creator alone.
+      res.locals['authProvider'] = session.authProvider;
       res.locals['email']      = session.user?.email ?? null;
       res.locals['channel']    = hasRuntimeClaims ? 'lark' : 'desktop';
       res.locals['isPiRuntimeLease'] = hasRuntimeClaims;

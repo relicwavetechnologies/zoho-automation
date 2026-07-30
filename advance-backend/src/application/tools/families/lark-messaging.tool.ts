@@ -170,8 +170,7 @@ export const createLarkMessagingTool = (deps: {
         }
         case 'reply': {
           if (
-            ctx.runContext.deliveryMode === 'current_chat_only'
-            || ctx.runContext.deliveryMode === 'scheduled_runtime_delivery'
+            ctx.runContext.deliveryMode === 'scheduled_runtime_delivery'
             || (
               ctx.runContext.channel === 'lark'
               && args.messageId === ctx.runContext.replyToMessageId

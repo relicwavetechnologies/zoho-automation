@@ -53,9 +53,9 @@ type SessionDb = Pick<PrismaClient, 'memberSession'>;
 /**
  * Issues the session a scheduled run acts under.
  *
- * Channel is `lark` because that is what the Pi lease is scoped to; a
- * desktop-delivered workflow still executes in the member's Lark-bound
- * container, and only the delivery adapter differs.
+ * Channel is `lark` because that is what the Pi lease is scoped to, and
+ * because every scheduled result is delivered to the creator's own Lark DM —
+ * including one scheduled from the desktop.
  */
 export async function issueScheduledRuntimeSession(
   db: SessionDb,

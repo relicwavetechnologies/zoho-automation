@@ -198,6 +198,12 @@ export interface GatewayMemberContext {
   readonly larkOpenId: string | null;
   readonly larkTenantKey?: string | null;
   readonly sessionId: string;
+  /**
+   * How the session was issued. `scheduled_workflow` marks a machine-issued
+   * session for a scheduled run, whose result the runtime delivers to the
+   * creator's own DM — so nothing that run calls may deliver it anywhere else.
+   */
+  readonly authProvider?: string | null;
 }
 
 export function isGatewayOp(value: string): value is GatewayOp {

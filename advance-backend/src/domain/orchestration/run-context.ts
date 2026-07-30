@@ -65,12 +65,11 @@ export interface RunContext {
   readonly replyInThread?: boolean;
   /**
    * Marks headless scheduled execution so conversation history and background
-   * memory work are skipped. All Lark runs reserve delivery to their current
-   * conversation; current_chat_only locks scheduled work to its originating
-   * chat, while scheduled_runtime_delivery delegates the final response to a
-   * dedicated runtime adapter such as creator Lark DM.
+   * memory work are skipped, and delegates the final response to a dedicated
+   * runtime adapter — the creator's Lark DM, which is where every scheduled
+   * result goes. A run carrying this must not deliver anywhere itself.
    */
-  readonly deliveryMode?: 'current_chat_only' | 'scheduled_runtime_delivery';
+  readonly deliveryMode?: 'scheduled_runtime_delivery';
   /**
    * Backend-derived Lark request data used only to create a deferred OAuth
    * continuation. Tools must never accept these identity or reply fields from

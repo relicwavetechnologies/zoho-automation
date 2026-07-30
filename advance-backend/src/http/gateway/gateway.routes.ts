@@ -75,6 +75,7 @@ export function createGatewayRoutes(deps: GatewayRoutesDeps): Router {
       larkOpenId: (res.locals['larkOpenId'] as string | null | undefined) ?? null,
       larkTenantKey: (res.locals['larkTenantKey'] as string | null | undefined) ?? null,
       sessionId,
+      authProvider: (res.locals['authProvider'] as string | null | undefined) ?? null,
     };
 
     try {

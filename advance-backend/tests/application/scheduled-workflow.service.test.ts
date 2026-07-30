@@ -37,22 +37,19 @@ describe('scheduled workflow current-chat delivery helpers', () => {
       '   Deliver to: dest_1:lark_current_chat',
     ].join('\n');
 
-    const rewritten = buildScheduledExecutionPrompt(prompt, 'oc_dm_chat');
-    assert.match(rewritten, /runtime_locked_current_chat/);
+    const rewritten = buildScheduledExecutionPrompt(prompt);
+    assert.match(rewritten, /runtime_creator_dm/);
     assert.match(rewritten, /RUNTIME DELIVERY OVERRIDE/);
-    assert.match(rewritten, /oc_dm_chat/);
+    // The destination the task named is gone, and the override says so outright,
+    // so the model has nothing left telling it to post into that chat.
     assert.doesNotMatch(rewritten, /Deliver to:\s+dest_1:lark_current_chat/);
+    assert.match(rewritten, /Ignore any delivery destination named in the task above/i);
   });
 
   it('tells a run its answer is delivered to the creator, not to a chat', () => {
-    // The shape every schedule now takes. Called the way the service calls it,
-    // rather than through the defaults, which still describe the retired
-    // current-chat delivery.
+    // The shape every schedule now takes.
     const rewritten = buildScheduledExecutionPrompt(
       'Review new mail and return a concise summary.',
-      'ou_creator',
-      'lark',
-      'creator_dm',
     );
 
     assert.match(rewritten, /RUNTIME DELIVERY OVERRIDE/);
@@ -108,7 +105,6 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
       companyId: 'co-1',
       createdByUserId: 'user-1',
       departmentId: 'dept-1',
-      originChatId: 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50',
       compiledPrompt: [
         'Review new mail and return a concise summary.',
         '   Deliver to: dest_1:lark_current_chat',
@@ -119,7 +115,6 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
 
     let capturedInput: any = null;
     const sessions = sessionSpy();
-    const larkAdapter = recordingAdapter('lark');
     const larkDmAdapter = recordingAdapter('lark');
     const prisma = {
       scheduledWorkflow: { findUnique: async () => workflow, update: async () => ({}) },
@@ -135,7 +130,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
           return { text: 'Here are your latest emails.' };
         },
       } as any,
-      channelAdapters: { lark: larkAdapter, larkDm: larkDmAdapter, desktop: recordingAdapter('desktop') },
+      channelAdapters: { larkDm: larkDmAdapter },
       channelIdentityRepo: { resolveByUserId: async () => ok(identity) } as any,
       logger: noopLogger,
       clock: fakeClock as any,
@@ -167,9 +162,8 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     // One thread per workflow, so the workspace persists between runs.
     assert.equal(capturedInput.threadId, 'scheduled-workflow:wf-1');
 
-    // Pi returns the reply; the scheduler is what delivers it — through the DM
-    // adapter, never through the general chat adapter that would reach the room.
-    assert.equal(larkAdapter.delivered.length, 0);
+    // Pi returns the reply; the scheduler is what delivers it, and the DM
+    // adapter is now the only one it has.
     assert.equal(larkDmAdapter.delivered.length, 1);
     assert.equal(larkDmAdapter.delivered[0].reply.text, 'Here are your latest emails.');
   });
@@ -181,22 +175,25 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
       companyId: 'co-1',
       createdByUserId: 'user-1',
       departmentId: null,
-      originChatId: 'oc_chat',
       compiledPrompt: 'Do the thing.',
       outputConfigJson: { deliveryChannel: 'lark' },
       scheduleConfigJson: { type: 'daily', timezone: 'Asia/Kolkata', time: { hour: 9, minute: 0 } },
     };
     const sessions = sessionSpy();
+    const runUpdates: any[] = [];
     const prisma = {
       scheduledWorkflow: { findUnique: async () => workflow, update: async () => ({}) },
-      scheduledWorkflowRun: { upsert: async () => ({ id: 'run-s' }), update: async () => ({}) },
+      scheduledWorkflowRun: {
+        upsert: async () => ({ id: 'run-s' }),
+        update: async (args: any) => { runUpdates.push(args.data); return {}; },
+      },
       memberSession: sessions.memberSession,
     } as any;
 
     const svc = new ScheduledWorkflowService({
       prisma,
       piRuntime: { run: async () => ({ text: 'done' }) } as any,
-      channelAdapters: { lark: recordingAdapter('lark'), larkDm: recordingAdapter('lark'), desktop: recordingAdapter('desktop') },
+      channelAdapters: { larkDm: recordingAdapter('lark') },
       channelIdentityRepo: { resolveByUserId: async () => ok(identity) } as any,
       logger: noopLogger,
       clock: fakeClock as any,
@@ -212,6 +209,51 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     assert.equal(sessions.created[0].larkOpenId, 'ou_123');
     assert.equal(sessions.revoked.length, 1, 'the session must not outlive the run');
     assert.equal(sessions.revoked[0].sessionId, 'sess-1');
+    // Pin the success path itself. A mis-shaped dependency makes the run fail
+    // while the session assertions above still hold, which would leave this
+    // test green and asserting nothing about the work it was written for.
+    assert.equal(runUpdates.at(-1)?.status, 'succeeded');
+  });
+
+  it('runs under the session it minted, not whichever the member already has', async () => {
+    // Session lookup otherwise prefers a real sign-in, so a creator who used
+    // Lark this week would have their scheduled run act under their own session
+    // — and every tool guard that keys on a machine session would stay off.
+    const workflow = {
+      id: 'wf-session-bind',
+      name: 'Session binding',
+      companyId: 'co-1',
+      createdByUserId: 'user-1',
+      departmentId: null,
+      compiledPrompt: 'Do the thing.',
+      outputConfigJson: { deliveryChannel: 'lark' },
+      scheduleConfigJson: { type: 'daily', timezone: 'Asia/Kolkata', time: { hour: 9, minute: 0 } },
+    };
+    const sessions = sessionSpy();
+    let capturedInput: any = null;
+    const prisma = {
+      scheduledWorkflow: { findUnique: async () => workflow, update: async () => ({}) },
+      scheduledWorkflowRun: { upsert: async () => ({ id: 'run-b' }), update: async () => ({}) },
+      memberSession: sessions.memberSession,
+    } as any;
+
+    const svc = new ScheduledWorkflowService({
+      prisma,
+      piRuntime: {
+        run: async (input: any) => { capturedInput = input; return { text: 'done' }; },
+      } as any,
+      channelAdapters: { larkDm: recordingAdapter('lark') },
+      channelIdentityRepo: { resolveByUserId: async () => ok(identity) } as any,
+      logger: noopLogger,
+      clock: fakeClock as any,
+      pollIntervalMs: 1_000,
+      runTimeoutMs: 60_000,
+    });
+
+    await (svc as any).executeWorkflow('wf-session-bind', new Date('2026-05-15T16:45:00.000Z'));
+
+    assert.equal(capturedInput.sessionId, 'sess-1');
+    assert.equal(sessions.created[0].authProvider, 'scheduled_workflow');
   });
 
   it('revokes the session even when the run itself fails', async () => {
@@ -221,7 +263,6 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
       companyId: 'co-1',
       createdByUserId: 'user-1',
       departmentId: null,
-      originChatId: 'oc_chat',
       compiledPrompt: 'Do the thing.',
       outputConfigJson: { deliveryChannel: 'lark' },
       scheduleConfigJson: { type: 'daily', timezone: 'Asia/Kolkata', time: { hour: 9, minute: 0 } },
@@ -240,7 +281,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     const svc = new ScheduledWorkflowService({
       prisma,
       piRuntime: { run: async () => { throw new Error('container unreachable'); } } as any,
-      channelAdapters: { lark: recordingAdapter('lark'), larkDm: recordingAdapter('lark'), desktop: recordingAdapter('desktop') },
+      channelAdapters: { larkDm: recordingAdapter('lark') },
       channelIdentityRepo: { resolveByUserId: async () => ok(identity) } as any,
       logger: noopLogger,
       clock: fakeClock as any,
@@ -261,7 +302,6 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
       companyId: 'co-1',
       createdByUserId: 'user-1',
       departmentId: null,
-      originChatId: 'oc_chat',
       compiledPrompt: 'Do the thing.',
       outputConfigJson: { deliveryChannel: 'lark' },
       scheduleConfigJson: { type: 'daily', timezone: 'Asia/Kolkata', time: { hour: 9, minute: 0 } },
@@ -287,7 +327,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     const svc = new ScheduledWorkflowService({
       prisma,
       piRuntime: { run: async () => ({ text: 'the report' }) } as any,
-      channelAdapters: { lark: refusingAdapter, larkDm: refusingAdapter, desktop: refusingAdapter },
+      channelAdapters: { larkDm: refusingAdapter },
       channelIdentityRepo: { resolveByUserId: async () => ok(identity) } as any,
       logger: noopLogger,
       clock: fakeClock as any,
@@ -309,7 +349,6 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
       companyId: 'co-1',
       createdByUserId: 'user-1',
       departmentId: null,
-      originChatId: 'oc_chat',
       compiledPrompt: 'Do the thing.',
       outputConfigJson: { deliveryChannel: 'lark' },
       scheduleConfigJson: { type: 'daily', timezone: 'Asia/Kolkata', time: { hour: 9, minute: 0 } },
@@ -329,7 +368,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     const svc = new ScheduledWorkflowService({
       prisma,
       piRuntime: { run: async () => ({ text: '   ' }) } as any,
-      channelAdapters: { lark: adapter, larkDm: adapter, desktop: adapter },
+      channelAdapters: { larkDm: adapter },
       channelIdentityRepo: { resolveByUserId: async () => ok(identity) } as any,
       logger: noopLogger,
       clock: fakeClock as any,
@@ -350,7 +389,6 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
       companyId: 'co-1',
       createdByUserId: 'user-1',
       departmentId: null,
-      originChatId: 'oc_chat',
       compiledPrompt: 'Do the thing.',
       outputConfigJson: { deliveryChannel: 'lark' },
       scheduleConfigJson: { type: 'daily', timezone: 'Asia/Kolkata', time: { hour: 9, minute: 0 } },
@@ -366,7 +404,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     const svc = new ScheduledWorkflowService({
       prisma,
       piRuntime: { run: async () => { piCalled = true; return { text: '' }; } } as any,
-      channelAdapters: { lark: recordingAdapter('lark'), larkDm: recordingAdapter('lark'), desktop: recordingAdapter('desktop') },
+      channelAdapters: { larkDm: recordingAdapter('lark') },
       channelIdentityRepo: {
         // Resolvable member, but never connected Lark — so nothing to run as.
         resolveByUserId: async () => ok({ ...identity, larkOpenId: undefined, larkTenantKey: undefined }),
@@ -390,7 +428,6 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
       companyId: 'co-1',
       createdByUserId: 'user-1',
       departmentId: null,
-      originChatId: 'oc_chat',
       compiledPrompt: 'Do the thing.',
       outputConfigJson: { deliveryChannel: 'lark' },
       scheduleConfigJson: { type: 'daily', timezone: 'Asia/Kolkata', time: { hour: 9, minute: 0 } },
@@ -410,7 +447,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     const svc = new ScheduledWorkflowService({
       prisma,
       piRuntime: { run: async () => { throw busy; } } as any,
-      channelAdapters: { lark: recordingAdapter('lark'), larkDm: recordingAdapter('lark'), desktop: recordingAdapter('desktop') },
+      channelAdapters: { larkDm: recordingAdapter('lark') },
       channelIdentityRepo: { resolveByUserId: async () => ok(identity) } as any,
       logger: noopLogger,
       clock: fakeClock as any,
@@ -434,7 +471,6 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
       companyId: 'co-1',
       createdByUserId: 'user-1',
       departmentId: null,
-      originChatId: 'oc_chat',
       compiledPrompt: 'Do the thing.',
       outputConfigJson: { deliveryChannel: 'lark' },
       scheduleConfigJson: { type: 'hourly', timezone: 'Asia/Kolkata', intervalHours: 1, minute: 0 },
@@ -454,7 +490,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     const svc = new ScheduledWorkflowService({
       prisma,
       piRuntime: { run: async () => { throw busy; } } as any,
-      channelAdapters: { lark: recordingAdapter('lark'), larkDm: recordingAdapter('lark'), desktop: recordingAdapter('desktop') },
+      channelAdapters: { larkDm: recordingAdapter('lark') },
       channelIdentityRepo: { resolveByUserId: async () => ok(identity) } as any,
       logger: noopLogger,
       clock: fakeClock as any,
@@ -475,7 +511,6 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
       companyId: 'co-1',
       createdByUserId: 'user-1',
       departmentId: 'dept-finance',
-      originChatId: 'oc_chat',
       compiledPrompt: 'Do the thing.',
       outputConfigJson: { deliveryChannel: 'lark' },
       scheduleConfigJson: { type: 'daily', timezone: 'Asia/Kolkata', time: { hour: 9, minute: 0 } },
@@ -491,7 +526,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     const svc = new ScheduledWorkflowService({
       prisma,
       piRuntime: { run: async (input: any) => { capturedInput = input; return { text: 'done' }; } } as any,
-      channelAdapters: { lark: recordingAdapter('lark'), larkDm: recordingAdapter('lark'), desktop: recordingAdapter('desktop') },
+      channelAdapters: { larkDm: recordingAdapter('lark') },
       channelIdentityRepo: {
         // The member also belongs to another department, which is what the
         // container would otherwise pick.
@@ -515,14 +550,12 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
       companyId: 'co-1',
       createdByUserId: 'user-1',
       departmentId: 'dept-finance',
-      originChatId: 'desktop-thread-1',
       compiledPrompt: 'Review new invoices and summarize exceptions.',
       outputConfigJson: { deliveryChannel: 'desktop' },
       scheduleConfigJson: { type: 'daily', timezone: 'Asia/Kolkata', time: { hour: 9, minute: 0 } },
     };
     let capturedInput: any = null;
     const sessions = sessionSpy();
-    const desktopAdapter = recordingAdapter('desktop');
     const larkDmAdapter = recordingAdapter('lark');
     const prisma = {
       scheduledWorkflow: { findUnique: async () => workflow, update: async () => ({}) },
@@ -534,7 +567,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
       piRuntime: {
         run: async (input: any) => { capturedInput = input; return { text: 'Done' }; },
       } as any,
-      channelAdapters: { lark: recordingAdapter('lark'), larkDm: larkDmAdapter, desktop: desktopAdapter },
+      channelAdapters: { larkDm: larkDmAdapter },
       channelIdentityRepo: { resolveByUserId: async () => ok(identity) } as any,
       logger: noopLogger,
       clock: fakeClock as any,
@@ -552,7 +585,6 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     assert.equal(capturedInput.conversation.chatId, 'ou_123');
 
     assert.equal(capturedInput.runContext.tenantId, 'tenant-1');
-    assert.equal(desktopAdapter.delivered.length, 0);
     assert.equal(larkDmAdapter.delivered.length, 1);
   });
 
@@ -563,7 +595,6 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
       companyId: 'co-1',
       createdByUserId: 'user-1',
       departmentId: 'dept-finance',
-      originChatId: null,
       compiledPrompt: 'Review new invoices and produce a concise summary.',
       outputConfigJson: { deliveryChannel: 'lark', deliveryTarget: 'creator_dm' },
       scheduleConfigJson: { type: 'daily', timezone: 'Asia/Kolkata', time: { hour: 9, minute: 0 } },
@@ -581,7 +612,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
       piRuntime: {
         run: async (input: any) => { capturedInput = input; return { text: 'Done' }; },
       } as any,
-      channelAdapters: { lark: recordingAdapter('lark'), larkDm: larkDmAdapter, desktop: recordingAdapter('desktop') },
+      channelAdapters: { larkDm: larkDmAdapter },
       channelIdentityRepo: {
         resolveByUserId: async () => ok({ ...identity, larkOpenId: 'ou_creator' }),
       } as any,

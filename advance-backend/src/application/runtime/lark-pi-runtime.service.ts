@@ -65,6 +65,17 @@ export interface LarkPiRuntimeInput {
   readonly sharedContext?: GroupContextBlock;
   /** Defaults to `thread`, the durable session, when the caller says nothing. */
   readonly sessionScope?: PiSessionScope;
+  /**
+   * The session this run must act under, when the caller issued one for it.
+   *
+   * A scheduled run mints its own machine session, and the run has to carry
+   * that one specifically: tools decide whether the runtime owns delivery by
+   * looking at how the session was issued, and picking up the member's ordinary
+   * sign-in instead would make a scheduled run indistinguishable from the person
+   * typing. Session lookup otherwise prefers a real sign-in, so without this the
+   * machine row is passed over whenever the member has signed in recently.
+   */
+  readonly sessionId?: string;
   readonly abortSignal?: AbortSignal;
   readonly onProgress?: (event: LarkPiProgressEvent) => Promise<void> | void;
 }
@@ -230,11 +241,29 @@ export class LarkPiRuntimeService {
     this.log = deps.logger.child({ service: 'lark-pi-runtime' });
   }
 
-  private findActiveSession(runContext: LarkPiRuntimeInput['runContext']) {
+  private findActiveSession(
+    runContext: LarkPiRuntimeInput['runContext'],
+    sessionId?: string,
+  ) {
     if (!runContext.tenantId || !runContext.userExternalId) {
       return null;
     }
     const minimumSessionExpiry = new Date(Date.now() + 5 * 60_000);
+    // A caller that issued a session for this run gets that one, not whichever
+    // is newest. The preference below exists for interactive turns and would
+    // otherwise hand a scheduled run the member's own sign-in.
+    if (sessionId) {
+      return this.deps.prisma.memberSession.findFirst({
+        where: {
+          sessionId,
+          userId: String(runContext.userId),
+          companyId: String(runContext.companyId),
+          revokedAt: null,
+          expiresAt: { gt: minimumSessionExpiry },
+        },
+        select: { sessionId: true, expiresAt: true },
+      });
+    }
     // A scheduled run mints its own session and revokes it when the run ends.
     // That row is the newest for the member, so a plain "latest session" lookup
     // would hand it to an interactive turn arriving mid-run — which the
@@ -268,7 +297,7 @@ export class LarkPiRuntimeService {
   }
 
   async run(input: LarkPiRuntimeInput): Promise<{ text: string }> {
-    const session = await this.findActiveSession(input.runContext);
+    const session = await this.findActiveSession(input.runContext, input.sessionId);
     if (!session) {
       throw new LarkPiRuntimeError(
         'runtime_session_missing',

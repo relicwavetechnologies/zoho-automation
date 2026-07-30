@@ -16,7 +16,13 @@ export type ScheduleCreateInput = {
   readonly timeMinute?: number | undefined;
   readonly daysOfWeek?: readonly string[] | undefined;
   readonly dayOfMonth?: number | undefined;
-  readonly delivery: 'current_conversation' | 'creator_lark_dm';
+  /**
+   * Accepted and ignored. Every scheduled result goes to the creator's Lark DM.
+   * Kept optional so a caller working from an older copy of the scheduling skill
+   * — which is provisioned per company and is not refreshed automatically — is
+   * not rejected for still sending it.
+   */
+  readonly delivery?: 'current_conversation' | 'creator_lark_dm' | undefined;
 };
 
 export type ScheduledWorkflowSummary = {
@@ -27,8 +33,8 @@ export type ScheduledWorkflowSummary = {
   readonly timezone: string;
   readonly nextRunAt: string | null;
   readonly lastRunAt: string | null;
-  readonly deliveryChannel: 'lark' | 'desktop';
-  readonly deliveryTarget: 'origin_chat' | 'creator_dm';
+  readonly deliveryChannel: 'lark';
+  readonly deliveryTarget: 'creator_dm';
 };
 
 export class ScheduledWorkflowControlError extends Error {
@@ -124,7 +130,6 @@ export class ScheduledWorkflowControlService {
         status: 'scheduled_active',
         scheduleEnabled: true,
         nextRunAt,
-        originChatId: null,
       },
       select: scheduledWorkflowSummarySelect,
     });

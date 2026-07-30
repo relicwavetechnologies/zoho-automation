@@ -51,48 +51,15 @@ export function usesLockedCurrentChatDelivery(compiledPrompt: string): boolean {
   return CURRENT_CHAT_DELIVERY_LINE.test(compiledPrompt);
 }
 
-export function buildScheduledExecutionPrompt(
-  compiledPrompt: string,
-  lockedChatId: string,
-  deliveryChannel: 'lark' | 'desktop' = 'lark',
-  deliveryTarget: 'origin_chat' | 'creator_dm' = 'origin_chat',
-): string {
-  if (deliveryTarget === 'creator_dm') {
-    // A schedule written before results became DM-only still says "return this
-    // to the originating conversation" in its own task text. Left standing, the
-    // task and the override contradict each other and the model may try to
-    // satisfy the task by posting into that room itself.
-    const rewritten = usesLockedCurrentChatDelivery(compiledPrompt)
-      ? compiledPrompt.replace(
-          CURRENT_CHAT_DELIVERY_LINE,
-          '   Deliver to: runtime_creator_dm (system-delivered; do not send manually)',
-        )
-      : compiledPrompt;
-
-    return [
-      rewritten,
-      '',
-      'RUNTIME DELIVERY OVERRIDE:',
-      '- Return the completed result as your final reply. The runtime will deliver it to the authenticated schedule creator\'s Lark DM.',
-      '- Do not call larkMessaging merely to deliver the final result and do not search for the creator or a destination chat.',
-      '- Ignore any delivery destination named in the task above, including an originating conversation, group, or channel. This result goes to the schedule creator and nowhere else.',
-      '- External actions explicitly required by the scheduled task are still allowed subject to normal permissions and approvals.',
-    ].join('\n');
-  }
-  if (deliveryChannel === 'desktop') {
-    return [
-      compiledPrompt,
-      '',
-      'RUNTIME DELIVERY OVERRIDE:',
-      `- Return the completed result to the originating Divo desktop conversation (${lockedChatId}) as your final reply.`,
-      '- Do not use a messaging tool merely to deliver the final reply; the runtime persists it in that conversation.',
-      '- External actions explicitly required by the scheduled task are still allowed subject to normal permissions and approvals.',
-    ].join('\n');
-  }
+export function buildScheduledExecutionPrompt(compiledPrompt: string): string {
+  // A schedule written before results became DM-only still says "return this to
+  // the originating conversation" in its own task text. Left standing, the task
+  // and the override below contradict each other, and the model may try to
+  // satisfy the task by posting into that room itself.
   const rewritten = usesLockedCurrentChatDelivery(compiledPrompt)
     ? compiledPrompt.replace(
         CURRENT_CHAT_DELIVERY_LINE,
-        '   Deliver to: runtime_locked_current_chat (system-delivered; do not send manually)',
+        '   Deliver to: runtime_creator_dm (system-delivered; do not send manually)',
       )
     : compiledPrompt;
 
@@ -100,10 +67,10 @@ export function buildScheduledExecutionPrompt(
     rewritten,
     '',
     'RUNTIME DELIVERY OVERRIDE:',
-    `- The destination for lark_current_chat is already locked by the runtime to this exact current Lark conversation (${lockedChatId}).`,
-    '- Do NOT use larkMessaging to deliver or repost the final result to this current chat.',
-    '- Explicit messaging actions required by the scheduled task are still allowed for other recipients, subject to normal permissions and approvals.',
-    '- Produce the completed delivery content as your final reply only. The runtime will deliver that reply to the locked current chat.',
+    '- Return the completed result as your final reply. The runtime will deliver it to the authenticated schedule creator\'s Lark DM.',
+    '- Do not call larkMessaging merely to deliver the final result and do not search for the creator or a destination chat.',
+    '- Ignore any delivery destination named in the task above, including an originating conversation, group, or channel. This result goes to the schedule creator and nowhere else.',
+    '- External actions explicitly required by the scheduled task are still allowed subject to normal permissions and approvals.',
   ].join('\n');
 }
 
@@ -117,11 +84,8 @@ export interface ScheduledWorkflowServiceDeps {
   readonly piRuntime:           {
     run(input: LarkPiRuntimeInput): Promise<{ text: string }>;
   };
-  readonly channelAdapters:     Readonly<{
-    lark: ChannelAdapter;
-    larkDm: ChannelAdapter;
-    desktop: ChannelAdapter;
-  }>;
+  /** Only the creator's DM: a scheduled result is delivered nowhere else. */
+  readonly channelAdapters:     Readonly<{ larkDm: ChannelAdapter }>;
   readonly channelIdentityRepo: ChannelIdentityRepoPort;
   readonly logger:              Logger;
   readonly clock:               Clock;
@@ -268,19 +232,14 @@ export class ScheduledWorkflowService {
     }
 
     // A scheduled run always reports to the creator's own Lark DM. Schedules
-    // created before that rule still carry `origin_chat` and an `originChatId`,
-    // and are redirected here rather than left to deliver into a shared room:
-    // the run executes with one person's history and permissions, so only that
+    // created before that rule still carry `deliveryTarget: 'origin_chat'`, and
+    // are redirected here rather than left to deliver into a shared room: the
+    // run executes with one person's history and permissions, so only that
     // person should receive what it produces.
     const deliveryChannel = 'lark' as const;
     const targetChatId = identity.larkOpenId;
 
-    const executionPrompt = buildScheduledExecutionPrompt(
-      workflow.compiledPrompt,
-      targetChatId,
-      deliveryChannel,
-      'creator_dm',
-    );
+    const executionPrompt = buildScheduledExecutionPrompt(workflow.compiledPrompt);
     const channelAdapter = this.deps.channelAdapters.larkDm;
 
     const run = await this.deps.prisma.scheduledWorkflowRun.upsert({
@@ -361,6 +320,11 @@ export class ScheduledWorkflowService {
         runContext,
         conversation,
         threadId,
+        // Act under the session just minted for this run, not whichever the
+        // member happens to have. Tools read how the session was issued to know
+        // the runtime owns delivery here; borrowing a real sign-in would make
+        // this run look like the person typing, and its guards would not fire.
+        sessionId,
       });
 
       // Pi returns the reply; unlike the engine it does not deliver it, so the
