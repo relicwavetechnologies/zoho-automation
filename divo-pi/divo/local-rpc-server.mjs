@@ -2,10 +2,18 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+	MAX_RUNTIME_ATTACHMENTS,
+	MAX_RUNTIME_ATTACHMENT_BYTES,
+	MAX_RUNTIME_REQUEST_BYTES,
+	decodeAttachmentFileName,
 	prompt,
 	promptWithRuntimeLease,
 	reconcileOwnedContainers,
 	resolveRuntimeLease,
+	resolveStagedAttachments,
+	stageRuntimeFile,
+	validateAttachmentFileId,
+	validateAttachmentRequestId,
 	validateProfileName,
 	validateThread,
 } from "./local-rpc-controller.mjs";
@@ -15,6 +23,7 @@ const DEFAULT_PORT = 4317;
 const DEFAULT_MAX_ACTIVE_RUNS = 2;
 const MAX_BODY_BYTES = 64 * 1024;
 const RETRY_AFTER_SECONDS = 60;
+const UPLOAD_BUDGET_TTL_MS = 15 * 60_000;
 
 export const CAPACITY_MESSAGE =
 	"Divo is a little busy right now—everyone’s agents are hard at work. Your request hasn’t started, and your workspace is safe. Please try again in about a minute.";
@@ -92,12 +101,22 @@ export function createAdmissionController({
 			if (thread !== undefined) validateThread(thread);
 			return admit(profile, () => execute(profile, normalizedMessage, { thread, approve }));
 		},
-		async runRuntime({ backendUrl, runtimeLease, message, signal, onProgress }) {
+		async runRuntime({ backendUrl, runtimeLease, message, attachments, signal, onProgress }) {
 			const normalizedMessage = validateMessage(message);
+			// Descriptors are re-derived, not trusted: `resolveStagedAttachments`
+			// recomputes every path from validated parts and ignores whatever the
+			// caller claimed the path was.
+			let stagedAttachments;
+			try {
+				stagedAttachments = resolveStagedAttachments(attachments);
+			} catch (error) {
+				throw admissionError(400, "invalid_attachments", error.message);
+			}
 			const runtime = await resolveLease({ backendUrl, lease: runtimeLease });
 			return admit(runtime.profile, () =>
 				executeRuntime(runtime, normalizedMessage, {
 					signal,
+					...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
 					...(onProgress ? { onProgress } : {}),
 				}),
 			);
@@ -120,6 +139,134 @@ async function readJson(request) {
 	}
 }
 
+/**
+ * Per-request upload budget.
+ *
+ * The per-file cap alone lets four maximum-size files through, so the run
+ * total is tracked separately. Keyed by profile as well as request id: two
+ * users cannot collide, and a caller cannot spend someone else's budget by
+ * guessing their request id.
+ */
+export function createUploadBudget({ now = () => Date.now() } = {}) {
+	const spent = new Map();
+
+	const sweep = () => {
+		const cutoff = now();
+		for (const [key, entry] of spent) {
+			if (entry.expiresAt <= cutoff) spent.delete(key);
+		}
+	};
+
+	return {
+		reserve(profile, requestId, bytes) {
+			sweep();
+			const key = `${profile}:${requestId}`;
+			const entry = spent.get(key) ?? { bytes: 0, files: 0, expiresAt: 0 };
+			if (entry.files >= MAX_RUNTIME_ATTACHMENTS) {
+				throw admissionError(
+					413,
+					"too_many_attachments",
+					`At most ${MAX_RUNTIME_ATTACHMENTS} files can be sent in one request.`,
+				);
+			}
+			if (entry.bytes + bytes > MAX_RUNTIME_REQUEST_BYTES) {
+				throw admissionError(
+					413,
+					"request_too_large",
+					`These files exceed the ${Math.floor(MAX_RUNTIME_REQUEST_BYTES / (1024 * 1024))} MB total limit for one request.`,
+				);
+			}
+			return {
+				remainingBytes: MAX_RUNTIME_REQUEST_BYTES - entry.bytes,
+				commit: (actualBytes) => {
+					spent.set(key, {
+						bytes: entry.bytes + actualBytes,
+						files: entry.files + 1,
+						expiresAt: now() + UPLOAD_BUDGET_TTL_MS,
+					});
+				},
+			};
+		},
+	};
+}
+
+function bearerRuntimeLease(headers) {
+	const match = /^Bearer\s+(\S.*)$/i.exec(String(headers.authorization ?? "").trim());
+	if (!match) {
+		throw admissionError(
+			401,
+			"missing_runtime_lease",
+			"Authorization must carry a Bearer runtime lease",
+		);
+	}
+	return match[1].trim();
+}
+
+function declaredContentLength(headers) {
+	const raw = headers["content-length"];
+	if (raw === undefined) return undefined;
+	const value = Number(raw);
+	if (!Number.isSafeInteger(value) || value < 0) {
+		throw admissionError(400, "invalid_request", "content-length is invalid");
+	}
+	return value;
+}
+
+async function handleRuntimeFileUpload(request, response, { resolveLease, stageFile, budget }) {
+	const lease = bearerRuntimeLease(request.headers);
+	let requestId;
+	let fileId;
+	let fileName;
+	try {
+		requestId = validateAttachmentRequestId(request.headers["x-divo-request-id"]);
+		fileId = validateAttachmentFileId(request.headers["x-divo-file-id"]);
+		fileName = decodeAttachmentFileName(request.headers["x-divo-file-name"]);
+	} catch (error) {
+		throw admissionError(400, "invalid_attachment_metadata", error.message);
+	}
+	const kind = request.headers["x-divo-file-kind"] === "image" ? "image" : "file";
+
+	const declared = declaredContentLength(request.headers);
+	if (declared !== undefined && declared > MAX_RUNTIME_ATTACHMENT_BYTES) {
+		throw admissionError(
+			413,
+			"attachment_too_large",
+			`"${fileName}" is larger than the ${Math.floor(MAX_RUNTIME_ATTACHMENT_BYTES / (1024 * 1024))} MB limit.`,
+		);
+	}
+
+	// The lease is resolved before a single byte is written: the profile it
+	// yields is the only thing that decides which volume gets touched.
+	let runtime;
+	try {
+		runtime = await resolveLease({
+			backendUrl: request.headers["x-divo-backend-url"],
+			lease,
+		});
+	} catch (error) {
+		throw admissionError(401, "invalid_runtime_lease", error.message);
+	}
+	const reservation = budget.reserve(runtime.profile, requestId, declared ?? 0);
+
+	const controller = new AbortController();
+	request.once("aborted", () => controller.abort());
+
+	const attachment = await stageFile({
+		profile: runtime.profile,
+		requestId,
+		fileId,
+		fileName,
+		mimeType: request.headers["content-type"],
+		kind,
+		stream: request,
+		maxBytes: Math.min(MAX_RUNTIME_ATTACHMENT_BYTES, reservation.remainingBytes),
+		signal: controller.signal,
+	});
+	reservation.commit(attachment.bytes);
+
+	sendJson(response, 200, { attachment });
+}
+
 function sendJson(response, statusCode, value, headers = {}) {
 	response.writeHead(statusCode, {
 		"content-type": "application/json; charset=utf-8",
@@ -134,12 +281,16 @@ function sendNdjson(response, value) {
 }
 
 export function createControllerServer(options = {}) {
+	const resolveLease = options.resolveLease ?? resolveRuntimeLease;
 	const admission =
 		options.admission ??
 		createAdmissionController({
 			execute: options.execute,
+			resolveLease,
 			maxActiveRuns: options.maxActiveRuns,
 		});
+	const stageFile = options.stageFile ?? stageRuntimeFile;
+	const budget = options.uploadBudget ?? createUploadBudget();
 	const server = http.createServer(async (request, response) => {
 		if (request.method === "GET" && request.url === "/health") {
 			sendJson(response, 200, {
@@ -149,9 +300,10 @@ export function createControllerServer(options = {}) {
 			});
 			return;
 		}
+		const isFileUpload = request.method === "PUT" && request.url === "/v1/runtime-files";
 		const isManualRun = request.method === "POST" && request.url === "/v1/runs";
 		const isLarkRun = request.method === "POST" && request.url === "/v1/lark-runs";
-		if (!isManualRun && !isLarkRun) {
+		if (!isFileUpload && !isManualRun && !isLarkRun) {
 			sendJson(response, 404, {
 				error: { code: "not_found", message: "Route not found" },
 			});
@@ -159,6 +311,14 @@ export function createControllerServer(options = {}) {
 		}
 		let streaming = false;
 		try {
+			if (isFileUpload) {
+				await handleRuntimeFileUpload(request, response, {
+					resolveLease,
+					stageFile,
+					budget,
+				});
+				return;
+			}
 			const body = await readJson(request);
 			const controller = new AbortController();
 			request.once("aborted", () => controller.abort());

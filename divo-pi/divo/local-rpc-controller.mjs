@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -20,6 +21,20 @@ const RESOURCE_PREFIX = "divo-pi-local";
 const RPC_TIMEOUT_MS = 30_000;
 const KEYCHAIN_TIMEOUT_MS = 15_000;
 let tokenReadTail = Promise.resolve();
+
+/**
+ * Where inbound conversation files land inside the user's own Docker volume.
+ *
+ * Everything under here is derived by this controller from the signed runtime
+ * lease. The backend never names a path, a volume or a profile — it hands over
+ * bytes and metadata, and gets back a descriptor. That asymmetry is the whole
+ * isolation guarantee, so nothing below may accept a caller-supplied path.
+ */
+const INBOX_CONTAINER_ROOT = "/data/workspace/.divo/inbox";
+const WORKSPACE_UID_GID = "10001:10001";
+export const MAX_RUNTIME_ATTACHMENTS = 4;
+export const MAX_RUNTIME_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+export const MAX_RUNTIME_REQUEST_BYTES = 50 * 1024 * 1024;
 
 export function validateProfileName(value) {
 	const profile = value?.trim().toLowerCase();
@@ -55,6 +70,133 @@ export function runtimeIdentityNames(companyId, userId, runtimeThreadId) {
 		profile: `cloud-${digest(`${companyId}:${userId}`).slice(0, 20)}`,
 		thread: `lark-${digest(runtimeThreadId).slice(0, 24)}`,
 	};
+}
+
+export function validateAttachmentRequestId(value) {
+	if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]{7,63}$/.test(value)) {
+		throw new Error("Attachment request id is invalid");
+	}
+	return value;
+}
+
+export function validateAttachmentFileId(value) {
+	if (typeof value !== "string" || !/^file-[1-9][0-9]?$/.test(value)) {
+		throw new Error("Attachment file id is invalid");
+	}
+	return value;
+}
+
+/**
+ * Reduce a chat-supplied filename to something that can only ever name a file,
+ * never a place. Directory separators, traversal, control characters, shell
+ * metacharacters and leading dots are all removed rather than rejected: the
+ * user picked this name in Lark and should not get an error because their
+ * invoice had a quote in it.
+ */
+export function safeAttachmentFileName(value) {
+	const base = path
+		.basename(String(value ?? "").replace(/\\/g, "/"))
+		.normalize("NFC")
+		.replace(/[\u0000-\u001f\u007f]/g, "");
+	const cleaned = base
+		.replace(/[^A-Za-z0-9._ ()-]/g, "_")
+		.replace(/\s+/g, " ")
+		.replace(/^[.\s]+/, "")
+		.trim();
+	if (!cleaned) return "attachment";
+	if (cleaned.length <= 120) return cleaned;
+	const extension = path.extname(cleaned).slice(0, 16);
+	return `${cleaned.slice(0, 120 - extension.length)}${extension}`;
+}
+
+export function decodeAttachmentFileName(encoded) {
+	return safeAttachmentFileName(
+		Buffer.from(String(encoded ?? ""), "base64url").toString("utf8"),
+	);
+}
+
+/**
+ * Build the one path an attachment is allowed to occupy.
+ *
+ * Composed from validated parts, so traversal cannot be expressed — the
+ * containment check below is a second lock on a door that has no handle.
+ * `fileId` gets its own directory level because two files in one message are
+ * routinely called the same thing.
+ */
+export function stagedAttachmentPath(requestId, fileId, fileName) {
+	const target = path.posix.join(
+		INBOX_CONTAINER_ROOT,
+		validateAttachmentRequestId(requestId),
+		validateAttachmentFileId(fileId),
+		safeAttachmentFileName(fileName),
+	);
+	if (!target.startsWith(`${INBOX_CONTAINER_ROOT}/`) || target.split("/").includes("..")) {
+		throw new Error("Refusing an attachment path outside the workspace inbox");
+	}
+	return target;
+}
+
+/**
+ * Descriptors arrive back from the backend on the run request. Every field is
+ * re-validated and the path is *recomputed* rather than read, so a compromised
+ * or buggy backend cannot point a run at another user's file.
+ */
+export function resolveStagedAttachments(value) {
+	if (value === undefined || value === null) return [];
+	if (!Array.isArray(value)) throw new Error("attachments must be an array");
+	if (value.length > MAX_RUNTIME_ATTACHMENTS) {
+		throw new Error(`At most ${MAX_RUNTIME_ATTACHMENTS} attachments are allowed per run`);
+	}
+	return value.map((item) => {
+		if (!item || typeof item !== "object") throw new Error("attachment must be an object");
+		const name = safeAttachmentFileName(item.fileName);
+		return {
+			name,
+			kind: item.kind === "image" ? "image" : "file",
+			mimeType: normalizeMimeType(item.mimeType),
+			bytes: Number.isSafeInteger(item.bytes) && item.bytes >= 0 ? item.bytes : 0,
+			path: stagedAttachmentPath(item.requestId, item.fileId, name),
+		};
+	});
+}
+
+export function normalizeMimeType(value) {
+	// `content-type` legitimately carries parameters ("application/pdf;
+	// charset=utf-8"). Matching the whole header would drop those types to
+	// octet-stream and cost the agent the one hint it has about the file.
+	const essence = String(value ?? "").split(";")[0].trim().toLowerCase();
+	return /^[a-z0-9!#$&^_.+-]{1,127}\/[a-z0-9!#$&^_.+-]{1,127}$/.test(essence)
+		? essence
+		: "application/octet-stream";
+}
+
+/**
+ * The manifest is the only thing the model is told about an attachment: a
+ * path, not the bytes. Everything else — reading, OCR, conversion — happens
+ * through the agent's own tools against its own filesystem.
+ */
+export function attachmentManifestBlock(attachments) {
+	if (!attachments || attachments.length === 0) return "";
+	const manifest = attachments.map((attachment) => ({
+		path: attachment.path,
+		name: attachment.name,
+		kind: attachment.kind,
+		mimeType: attachment.mimeType,
+		bytes: attachment.bytes,
+	}));
+	return [
+		"[ATTACHED_FILES]",
+		JSON.stringify(manifest, null, 2),
+		"[/ATTACHED_FILES]",
+		"These files are already saved in your workspace at the paths above. Read and process them from there; never ask the sender to upload them again.",
+		"",
+		"",
+	].join("\n");
+}
+
+function shellQuote(value) {
+	if (/'/.test(value)) throw new Error("Refusing an unsafe attachment path");
+	return `'${value}'`;
 }
 
 export function buildContainerCreateArgs(
@@ -392,6 +534,40 @@ async function inspectOwnedContainer(profile) {
 	return container;
 }
 
+async function ensureVolume(profile, name) {
+	if (await dockerObjectExists("volume", name)) return name;
+	await docker([
+		"volume",
+		"create",
+		"--label",
+		`dev.divo.profile=${profile}`,
+		name,
+	]);
+	return name;
+}
+
+/**
+ * Create the workspace volume without touching the container or network.
+ *
+ * Attachments are staged *before* the run starts, so this is often the first
+ * thing that ever exists for a new user. Doing the full `ensureRuntime` here
+ * would pull an image and create a container for a request that may still be
+ * rejected.
+ */
+export async function ensureProfileVolume(profileName) {
+	const profile = validateProfileName(profileName);
+	// The staging writer runs from the Pi image. Checking here turns a raw
+	// `docker run` failure mid-upload into a clear refusal before any bytes move.
+	if (!(await dockerObjectExists("image", IMAGE))) {
+		throw stagingError(
+			"runtime_image_missing",
+			`Image ${IMAGE} is missing, so attachments cannot be staged.`,
+			503,
+		);
+	}
+	return ensureVolume(profile, resourcesFor(profile).volume);
+}
+
 async function ensureRuntime(profile) {
 	const resources = resourcesFor(profile);
 	if (!(await dockerObjectExists("image", IMAGE))) {
@@ -410,24 +586,8 @@ async function ensureRuntime(profile) {
 			resources.network,
 		]);
 	}
-	if (!(await dockerObjectExists("volume", resources.volume))) {
-		await docker([
-			"volume",
-			"create",
-			"--label",
-			`dev.divo.profile=${profile}`,
-			resources.volume,
-		]);
-	}
-	if (!(await dockerObjectExists("volume", resources.authVolume))) {
-		await docker([
-			"volume",
-			"create",
-			"--label",
-			`dev.divo.profile=${profile}`,
-			resources.authVolume,
-		]);
-	}
+	await ensureVolume(profile, resources.volume);
+	await ensureVolume(profile, resources.authVolume);
 	if (await dockerObjectExists("container", resources.container)) {
 		const container = await inspectOwnedContainer(profile);
 		if (runtimeContainerNeedsReplacement(container)) {
@@ -440,6 +600,167 @@ async function ensureRuntime(profile) {
 	}
 	await inspectOwnedContainer(profile);
 	return resources;
+}
+
+export function buildAttachmentStagingArgs(volume, script, image = IMAGE) {
+	return [
+		"run",
+		"--rm",
+		"--interactive",
+		// The writer only ever reads stdin. Giving it a network would give a
+		// malicious filename nothing to exploit, but it costs nothing to remove.
+		"--network",
+		"none",
+		"--user",
+		WORKSPACE_UID_GID,
+		"--read-only",
+		"--cap-drop",
+		"ALL",
+		"--security-opt",
+		"no-new-privileges:true",
+		"--mount",
+		`type=volume,src=${volume},dst=/data`,
+		"--entrypoint",
+		"/bin/sh",
+		image,
+		"-c",
+		script,
+	];
+}
+
+export function buildAttachmentStagingScript(containerPath) {
+	const partPath = `${containerPath}.part`;
+	return [
+		"set -e",
+		"umask 077",
+		`mkdir -p ${shellQuote(path.posix.dirname(containerPath))}`,
+		`rm -f ${shellQuote(partPath)}`,
+		// The rename is the commit. A stream that is cut short — by the byte cap,
+		// an abort, or a dead backend — leaves only the .part file behind, so a
+		// truncated document can never be presented to the agent as a whole one.
+		`cat > ${shellQuote(partPath)}`,
+		`mv ${shellQuote(partPath)} ${shellQuote(containerPath)}`,
+	].join("\n");
+}
+
+function stagingError(code, message, statusCode = 400) {
+	return Object.assign(new Error(message), { code, statusCode });
+}
+
+async function discardStagedPartial(volume, containerPath, spawnProcess) {
+	try {
+		await new Promise((resolve, reject) => {
+			const child = spawnProcess(
+				"docker",
+				buildAttachmentStagingArgs(
+					volume,
+					`rm -f ${shellQuote(`${containerPath}.part`)}`,
+				),
+				{ stdio: ["ignore", "ignore", "ignore"] },
+			);
+			child.once("error", reject);
+			child.once("exit", resolve);
+		});
+	} catch {
+		// Best effort. A leftover .part is inert — it is never named in a
+		// manifest — and failing cleanup must not mask the original error.
+	}
+}
+
+/**
+ * Stream one attachment into the user's own Docker volume.
+ *
+ * The caller supplies bytes and a name. Everything that decides *where* those
+ * bytes land — profile, volume, directory — is derived here from the runtime
+ * lease, so no caller can address another user's workspace.
+ */
+export async function stageRuntimeFile({
+	profile,
+	requestId,
+	fileId,
+	fileName,
+	mimeType,
+	kind = "file",
+	stream,
+	maxBytes = MAX_RUNTIME_ATTACHMENT_BYTES,
+	signal,
+	spawnProcess = spawn,
+	prepareVolume = ensureProfileVolume,
+}) {
+	const safeProfile = validateProfileName(profile);
+	const safeName = safeAttachmentFileName(fileName);
+	const containerPath = stagedAttachmentPath(requestId, fileId, safeName);
+	const volume = await prepareVolume(safeProfile);
+
+	const child = spawnProcess(
+		"docker",
+		buildAttachmentStagingArgs(volume, buildAttachmentStagingScript(containerPath)),
+		{ stdio: ["pipe", "ignore", "pipe"] },
+	);
+	// stdin dies with the container when we kill it mid-stream; the EPIPE that
+	// follows is expected and must not become an unhandled error event.
+	child.stdin.on("error", () => {});
+
+	let stderr = "";
+	child.stderr?.on("data", (chunk) => {
+		stderr += chunk;
+	});
+
+	const exited = new Promise((resolve, reject) => {
+		child.once("error", reject);
+		child.once("exit", (code, terminationSignal) => {
+			if (code === 0) resolve();
+			else {
+				reject(
+					new Error(
+						`Attachment staging failed: ${stderr.trim() || `exit ${terminationSignal ?? code}`}`,
+					),
+				);
+			}
+		});
+	});
+
+	let bytes = 0;
+	const pump = (async () => {
+		for await (const chunk of stream) {
+			const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+			bytes += buffer.length;
+			if (bytes > maxBytes) {
+				throw stagingError(
+					"attachment_too_large",
+					`"${safeName}" is larger than the ${Math.floor(maxBytes / (1024 * 1024))} MB limit.`,
+					413,
+				);
+			}
+			if (!child.stdin.write(buffer)) await once(child.stdin, "drain");
+		}
+		child.stdin.end();
+	})();
+
+	const abort = () => child.kill("SIGKILL");
+	signal?.addEventListener("abort", abort, { once: true });
+	pump.catch(() => {});
+	exited.catch(() => {});
+
+	try {
+		await Promise.all([pump, exited]);
+	} catch (error) {
+		child.kill("SIGKILL");
+		await discardStagedPartial(volume, containerPath, spawnProcess);
+		throw error;
+	} finally {
+		signal?.removeEventListener("abort", abort);
+	}
+
+	return {
+		requestId,
+		fileId,
+		fileName: safeName,
+		kind: kind === "image" ? "image" : "file",
+		mimeType: normalizeMimeType(mimeType),
+		bytes,
+		path: containerPath,
+	};
 }
 
 async function waitUntilRunning(container, timeoutMs = 10_000) {
@@ -757,6 +1078,7 @@ async function runPrompt({
 	companyId,
 	departmentId,
 	answerRequest,
+	attachments,
 	signal,
 	onProgress,
 }) {
@@ -802,7 +1124,10 @@ async function runPrompt({
 		);
 		emitRuntimeProgress(onProgress, { type: "ready" });
 		const completed = rpc.waitFor("agent_end");
-		await rpc.send({ type: "prompt", message }, 90_000);
+		await rpc.send(
+			{ type: "prompt", message: `${attachmentManifestBlock(attachments)}${message}` },
+			90_000,
+		);
 		await completed;
 		const result = await rpc.send({ type: "get_last_assistant_text" });
 		const stats = await docker([
@@ -882,6 +1207,7 @@ export async function promptWithRuntimeLease(runtime, message, options = {}) {
 		...runtime,
 		message,
 		answerRequest: createHeadlessExtensionResponder(),
+		attachments: options.attachments,
 		signal: options.signal,
 		onProgress: options.onProgress,
 	});

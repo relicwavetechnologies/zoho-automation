@@ -342,3 +342,236 @@ test('propagates caller interruption instead of converting it to a Pi failure', 
     (error) => error instanceof DOMException && error.name === 'AbortError',
   );
 });
+
+// ── Attachment staging ──────────────────────────────────────────────────────
+
+function textAttachment(name: string, body: string, mimeType = 'application/pdf') {
+  return {
+    kind: 'file' as const,
+    name,
+    mimeType,
+    openStream: async () => (async function* () {
+      yield new TextEncoder().encode(body);
+    })(),
+  };
+}
+
+function stagingService(
+  onCall: (url: string, init: RequestInit | undefined) => Response | Promise<Response>,
+) {
+  return new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    fetch: (async (url: string, init?: RequestInit) => onCall(String(url), init)) as any,
+  });
+}
+
+test('files are staged into the container before the run and carry the same lease', async () => {
+  const calls: Array<{ url: string; method: string; headers: Headers; body: unknown }> = [];
+  const service = stagingService(async (url, init) => {
+    calls.push({
+      url,
+      method: String(init?.method),
+      headers: new Headers(init?.headers),
+      body: init?.body,
+    });
+    if (url.endsWith('/v1/runtime-files')) {
+      return new Response(
+        JSON.stringify({ attachment: { requestId: 'r', fileId: 'file-1', fileName: 'bill.pdf' } }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    return new Response(JSON.stringify({ text: 'Done' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  await service.run({
+    ...runtimeInput(),
+    attachments: [textAttachment('EMIAC TI 0714.pdf', '%PDF-1.7')],
+  });
+
+  assert.equal(calls.length, 2);
+  // Order matters: a run must never start before its files exist in the volume.
+  assert.ok(calls[0]!.url.endsWith('/v1/runtime-files'));
+  assert.equal(calls[0]!.method, 'PUT');
+  assert.ok(calls[1]!.url.endsWith('/v1/lark-runs'));
+
+  const lease = String(JSON.parse(String(calls[1]!.body))['runtimeLease']);
+  assert.equal(calls[0]!.headers.get('authorization'), `Bearer ${lease}`);
+  assert.equal(calls[0]!.headers.get('content-type'), 'application/pdf');
+  assert.equal(calls[0]!.headers.get('x-divo-file-id'), 'file-1');
+  assert.equal(calls[0]!.headers.get('x-divo-file-kind'), 'file');
+  assert.equal(
+    Buffer.from(calls[0]!.headers.get('x-divo-file-name') ?? '', 'base64url').toString('utf8'),
+    'EMIAC TI 0714.pdf',
+  );
+});
+
+test('attachment bytes stream rather than riding in JSON or base64', async () => {
+  let uploadBody: unknown;
+  const service = stagingService(async (url, init) => {
+    if (url.endsWith('/v1/runtime-files')) {
+      uploadBody = init?.body;
+      return new Response(JSON.stringify({ attachment: { fileId: 'file-1' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ text: 'Done' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  await service.run({
+    ...runtimeInput(),
+    attachments: [textAttachment('bill.pdf', 'STREAMED-BYTES')],
+  });
+
+  assert.ok(uploadBody instanceof ReadableStream, 'body must be a stream, not a buffered string');
+  const received = await new Response(uploadBody as ReadableStream).text();
+  assert.equal(received, 'STREAMED-BYTES');
+});
+
+test('only the controller-issued descriptors reach the run request', async () => {
+  let runBody: Record<string, unknown> | undefined;
+  const service = stagingService(async (url, init) => {
+    if (url.endsWith('/v1/runtime-files')) {
+      return new Response(
+        JSON.stringify({
+          attachment: { requestId: 'r-1', fileId: 'file-1', fileName: 'bill.pdf', bytes: 8 },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    runBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ text: 'Done' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  await service.run({
+    ...runtimeInput(),
+    attachments: [textAttachment('local name.pdf', 'bytes')],
+  });
+
+  assert.deepEqual(runBody?.['attachments'], [
+    { requestId: 'r-1', fileId: 'file-1', fileName: 'bill.pdf', bytes: 8 },
+  ]);
+});
+
+test('a run with no attachments omits the field entirely', async () => {
+  let runBody: Record<string, unknown> | undefined;
+  const service = stagingService(async (_url, init) => {
+    runBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ text: 'Done' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  await service.run(runtimeInput());
+  assert.equal('attachments' in (runBody ?? {}), false);
+});
+
+test('more than four files is refused before anything is downloaded or uploaded', async () => {
+  let opened = 0;
+  let called = false;
+  const service = stagingService(async () => {
+    called = true;
+    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+  });
+
+  const attachment = () => ({
+    kind: 'file' as const,
+    name: 'x.pdf',
+    mimeType: 'application/pdf',
+    openStream: async () => {
+      opened += 1;
+      return (async function* () { yield new Uint8Array(); })();
+    },
+  });
+
+  await assert.rejects(
+    () => service.run({ ...runtimeInput(), attachments: [1, 2, 3, 4, 5].map(attachment) }),
+    (error: unknown) =>
+      error instanceof LarkPiRuntimeError && error.code === 'too_many_attachments',
+  );
+  assert.equal(opened, 0);
+  assert.equal(called, false);
+});
+
+test('a rejected upload names the file and never starts the run', async () => {
+  let runStarted = false;
+  const service = stagingService(async (url) => {
+    if (url.endsWith('/v1/runtime-files')) {
+      return new Response(
+        JSON.stringify({ error: { code: 'attachment_too_large', message: 'over 25 MB' } }),
+        { status: 413, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    runStarted = true;
+    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+  });
+
+  await assert.rejects(
+    () => service.run({
+      ...runtimeInput(),
+      attachments: [textAttachment('huge scan.pdf', 'x')],
+    }),
+    (error: unknown) =>
+      error instanceof LarkPiRuntimeError
+      && error.code === 'attachment_too_large'
+      && error.userMessage.includes('huge scan.pdf'),
+  );
+  assert.equal(runStarted, false);
+});
+
+test('every file in one message shares a request id and gets its own file id', async () => {
+  const uploads: Headers[] = [];
+  const service = stagingService(async (url, init) => {
+    if (url.endsWith('/v1/runtime-files')) {
+      uploads.push(new Headers(init?.headers));
+      return new Response(JSON.stringify({ attachment: { fileId: 'x' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ text: 'Done' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  await service.run({
+    ...runtimeInput(),
+    attachments: [textAttachment('a.pdf', 'a'), textAttachment('b.pdf', 'b')],
+  });
+
+  assert.equal(uploads.length, 2);
+  assert.equal(
+    uploads[0]!.get('x-divo-request-id'),
+    uploads[1]!.get('x-divo-request-id'),
+    'one message is one request, so its files share a budget',
+  );
+  assert.deepEqual(
+    uploads.map(headers => headers.get('x-divo-file-id')),
+    ['file-1', 'file-2'],
+  );
+});

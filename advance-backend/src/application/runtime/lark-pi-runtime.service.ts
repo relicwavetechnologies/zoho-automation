@@ -5,11 +5,35 @@ import type { IncomingMessage } from '../../domain/channel/incoming-message';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import { issuePiRuntimeLease } from './pi-runtime-lease';
 
+const MAX_RUNTIME_ATTACHMENTS = 4;
+
+function asyncIterableBody(source: AsyncIterable<Uint8Array>): ReadableStream<Uint8Array> {
+  const iterator = source[Symbol.asyncIterator]();
+  return new ReadableStream({
+    async pull(controller) {
+      const next = await iterator.next();
+      if (next.done) controller.close();
+      else controller.enqueue(next.value);
+    },
+    async cancel() {
+      await iterator.return?.();
+    },
+  });
+}
+
+export interface LarkPiRuntimeAttachment {
+  readonly kind: 'file' | 'image';
+  readonly name: string;
+  readonly mimeType: string;
+  readonly openStream: () => Promise<AsyncIterable<Uint8Array>>;
+}
+
 export interface LarkPiRuntimeInput {
   readonly incoming: IncomingMessage;
   readonly runContext: RunContext;
   readonly conversation: ConversationHandle;
   readonly threadId: string;
+  readonly attachments?: readonly LarkPiRuntimeAttachment[];
   readonly abortSignal?: AbortSignal;
   readonly onProgress?: (event: LarkPiProgressEvent) => Promise<void> | void;
 }
@@ -114,8 +138,21 @@ export class LarkPiRuntimeService {
     const signal = input.abortSignal
       ? AbortSignal.any([input.abortSignal, timeoutSignal])
       : timeoutSignal;
+    const attachments = input.attachments ?? [];
+    if (attachments.length > MAX_RUNTIME_ATTACHMENTS) {
+      throw new LarkPiRuntimeError(
+        'too_many_attachments',
+        `Please send at most ${MAX_RUNTIME_ATTACHMENTS} files in one request.`,
+      );
+    }
+
     let response: Response;
     try {
+      const stagedAttachments = await this.stageAttachments(
+        attachments,
+        runtimeLease,
+        signal,
+      );
       response = await (this.deps.fetch ?? globalThis.fetch)(
         `${this.deps.controllerUrl.replace(/\/+$/, '')}/v1/lark-runs`,
         {
@@ -128,6 +165,7 @@ export class LarkPiRuntimeService {
             backendUrl: this.deps.backendUrl,
             runtimeLease,
             message: input.incoming.text,
+            ...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
           }),
           signal,
         },
@@ -136,6 +174,11 @@ export class LarkPiRuntimeService {
       if (input.abortSignal?.aborted) {
         throw new DOMException('The Pi run was interrupted.', 'AbortError');
       }
+      // Staging already decided what the user should be told — that a file is
+      // too large, or could not be opened. Rewrapping it as
+      // `controller_unreachable` would replace a fixable instruction with a
+      // dead end.
+      if (error instanceof LarkPiRuntimeError) throw error;
       this.log.error('pi.controller.unreachable', {
         error: String(error),
         correlationId: input.incoming.traceId,
@@ -174,6 +217,58 @@ export class LarkPiRuntimeService {
       );
     }
     return { text: body.text.trim() };
+  }
+
+  private async stageAttachments(
+    attachments: readonly LarkPiRuntimeAttachment[],
+    runtimeLease: string,
+    signal: AbortSignal,
+  ): Promise<unknown[]> {
+    if (attachments.length === 0) return [];
+
+    const requestId = crypto.randomUUID();
+    const staged: unknown[] = [];
+    for (const [index, attachment] of attachments.entries()) {
+      const stream = await attachment.openStream();
+      const body = asyncIterableBody(stream);
+      const response = await (this.deps.fetch ?? globalThis.fetch)(
+        `${this.deps.controllerUrl.replace(/\/+$/, '')}/v1/runtime-files`,
+        {
+          method: 'PUT',
+          headers: {
+            authorization: `Bearer ${runtimeLease}`,
+            'content-type': attachment.mimeType || 'application/octet-stream',
+            'x-divo-backend-url': this.deps.backendUrl,
+            'x-divo-request-id': requestId,
+            'x-divo-file-id': `file-${index + 1}`,
+            'x-divo-file-kind': attachment.kind,
+            'x-divo-file-name': Buffer.from(attachment.name, 'utf8').toString('base64url'),
+          },
+          body,
+          signal,
+          duplex: 'half',
+        } as RequestInit & { duplex: 'half' },
+      );
+      const value = await response.json().catch(() => null) as {
+        attachment?: unknown;
+        error?: { code?: unknown; message?: unknown };
+      } | null;
+      if (!response.ok || !value?.attachment) {
+        const code = typeof value?.error?.code === 'string'
+          ? value.error.code
+          : `controller_http_${response.status}`;
+        const detail = typeof value?.error?.message === 'string'
+          ? value.error.message
+          : undefined;
+        throw new LarkPiRuntimeError(
+          code,
+          `Divo could not securely open "${attachment.name}" (${code}).`,
+          detail,
+        );
+      }
+      staged.push(value.attachment);
+    }
+    return staged;
   }
 
   private async readStream(
