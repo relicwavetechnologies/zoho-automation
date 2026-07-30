@@ -7,6 +7,7 @@ export function createGmailPubSubRoutes(deps: {
   verifier: Pick<GooglePubSubPushVerifier, 'verifyAuthorizationHeader'>;
   expectedSubscription: string;
   mailOpsRepo: Pick<MailOpsRepository, 'signalMailbox'>;
+  wakeMailOps(): void;
   logger: Logger;
 }): Router {
   const router = Router();
@@ -29,6 +30,7 @@ export function createGmailPubSubRoutes(deps: {
         messageId: envelope.messageId,
       });
       if (!signalled.ok) throw signalled.error;
+      if (signalled.value > 0) deps.wakeMailOps();
       log.info('gmail.pubsub.notification_admitted', {
         messageId: envelope.messageId,
         mailboxCount: signalled.value,

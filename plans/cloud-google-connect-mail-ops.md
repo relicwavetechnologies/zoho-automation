@@ -3,16 +3,19 @@
 > Source of truth for cloud-initiated Google OAuth, automatic Lark
 > continuation, and Gmail-first event automation.
 >
-> **Status:** Backend implementation, database reconciliation, and local
-> OAuth-to-Gmail continuation verification complete; Google Cloud Pub/Sub setup
-> and deployed mail-automation verification pending
+> **Status:** Backend implementation, database reconciliation, local
+> OAuth-to-Gmail continuation verification, and dev Pub/Sub configuration
+> complete; controlled post-deploy Gmail arrival/idempotency verification
+> remains pending
 >
-> **Current priority:** Configure Google Cloud Pub/Sub, then verify Gmail
-> arrival → deterministic delivery on the dev deployment
+> **Current priority:** Mail automation only. Verify the deployed Gmail
+> Pub/Sub → history sync → durable event → deterministic rule match → exact
+> destination delivery path, including duplicate/retry behavior and operational
+> visibility. Object storage and Mail Capsules are parked until this gate passes.
 >
 > **Owner:** Abhishek / Divo engineering
 >
-> **Last updated:** 2026-07-29
+> **Last updated:** 2026-07-31
 
 ---
 
@@ -684,9 +687,9 @@ These are intentionally not assumed by the architecture.
 
 - [x] V1 destinations are one email address, the current Lark chat, or one
   exact accessible Lark chat ID grounded through Lark discovery.
-- [x] V1 email forwarding sends a bounded plain-text representation with
-  original sender/recipient/date/subject headers. It does not retransmit
-  attachments or claim to be a full MIME forward.
+- [x] Email forwarding wraps the original Gmail MIME content inside a new
+  message sent by the connected mailbox, preserving HTML, inline CID images,
+  and attachments while replacing the outer delivery envelope.
 - [x] V1 deterministic match fields are sender, recipient, subject contains,
   body contains, and attachment presence.
 - [x] One rule has exactly one destination in V1.
@@ -695,6 +698,280 @@ These are intentionally not assumed by the architecture.
   (label/archive/mark read) or are delivery-only in V1.
 - [!] Define user-visible failure behavior when a connection is revoked after a
   rule is enabled.
+
+### 10.1 Spark-like mail sharing and object storage
+
+This section records the 2026-07-31 research decision. It does not claim that a
+Mail Capsule viewer, binary object store, or share-link attachment delivery has
+been implemented.
+
+> **Parked on 2026-07-31:** Do not implement or deploy object storage, a Mail
+> Capsule viewer, attachment archival, or a Spark-like sharing surface in the
+> active Mail Ops slice. Preserve the decisions below for later; current work
+> stops at making deterministic mail automation function and remain observable
+> end to end.
+
+#### Product direction
+
+The desired Spark-like experience is a separate **Mail Capsule** delivery mode:
+
+- one immutable snapshot of one arrived email in V1;
+- a useful Lark card or message with sender, subject, time, and a secure
+  **Open mail** action;
+- a Divo-authenticated viewer for the normalized message;
+- private attachments with explicit download authorization;
+- expiry, revocation, and view/download audit;
+- optional original `.eml` download when fidelity, export, or evidence
+  requirements justify retaining raw MIME.
+
+A thread snapshot may be added later as a new version whenever a thread
+changes. An already-shared artifact must not silently mutate.
+
+This is not the same action as a normal email forward:
+
+| Delivery mode | Intended contract |
+|---|---|
+| `email_forward` | Send a new email to one exact recipient |
+| `lark_native` | Deliver a bounded summary and, when implemented, governed files to one exact Lark destination |
+| `secure_share` / Mail Capsule | Create a revocable, authenticated browser view backed by a durable snapshot |
+
+The exact public tool/action name is not yet selected. Do not widen the current
+`forward` action implicitly; a secure share must be an explicit contract.
+
+#### Security decisions
+
+- Do not publish raw email HTML, MHTML, `.eml`, or attachments as public/static
+  websites.
+- Do not treat a long-lived object-store signed URL as Divo authorization. It
+  is a bearer capability and cannot enforce immediate revocation.
+- The browser route authenticates through Divo and rechecks current company,
+  user, rule/share, and destination policy on every view or download.
+- If the browser is redirected to object storage, issue the object URL only
+  after authorization and keep it very short-lived. Proxying the download
+  through Divo remains valid when immediate control is more important than
+  bandwidth.
+- Render message content inside a fixed Divo shell. Sanitize untrusted HTML,
+  apply a strict CSP/sandbox, block remote images by default, and never execute
+  scripts from email.
+- Serve risky or unknown attachments as downloads, not inline content, until
+  the file has passed the chosen type and malware policy.
+- Provider credentials, RBAC, retention decisions, revocation, audit, and
+  delivery state remain backend-owned. Pi never receives object-store
+  credentials.
+
+#### Current file-storage facts
+
+Divo currently has several unrelated storage paths. None is already a Mail
+Capsule store.
+
+| Current path | What it stores | Durability and boundary | Mail Capsule fit |
+|---|---|---|---|
+| Per-user Pi Docker volume | Lark files used by that user's agent, sessions, scripts, scratch work, and artifacts | Persists across container stop/restart on one Docker host; writable by that user's Pi; no object record, quota, backup contract, or successful-file cleanup | No. This is an isolated user workspace, not backend-controlled shared evidence |
+| Lark provider storage | Original Lark message resource addressed by message ID and file key | Depends on Lark retention, permissions, and provider availability | Provenance/source only; not Divo snapshot storage |
+| Gmail provider storage | Original Gmail message/parts addressed by provider IDs | Depends on the mailbox, OAuth connection, deletion, quota, and provider access | Fetch source from here; do not make a Divo share depend on it forever |
+| Cloudinary temp exports | Primarily short-lived generated exports with signed access and Redis cleanup tracking | Existing adapter buffers uploads and applies temporary export lifecycle assumptions | Do not reuse as the canonical confidential mail store without a separate review |
+| Google Drive exports | User-owned durable generated files | Access follows the user's Google connection and Drive policy | Good user destination, not an internal Mail Capsule authority |
+| PostgreSQL inline artifacts | Small base64 outbound artifacts plus Mail Ops JSON metadata/outbox state | Durable and transactional, but binary data bloats DB, WAL, replicas, backups, and restore time | Store manifests, policy, hashes, status, and audit only; not message/attachment bodies |
+| Manager Teach local files | Host-local `.data/manager-teach` uploads referenced by path | Requires an external persistent mount/backup contract to survive replacement | Existing persistence risk, not a pattern to copy |
+
+For a supported Lark attachment that reaches a Pi run, the current byte path is:
+
+```text
+Lark message resource
+  → backend creates a lazy read stream
+  → authenticated PUT /v1/runtime-files
+  → controller derives the user profile and Docker volume from the runtime lease
+  → /data/workspace/.divo/inbox/<request>/<file>/<safe-name>
+  → Pi receives only the local path in [ATTACHED_FILES]
+  → file/PDF/image skill parses it with terminal tools
+```
+
+The current limits are four attachments per run, 25 MiB per attachment, and
+50 MiB for the staging request. A successful file has no implemented retention
+or deletion path; only interrupted `.part` files are cleaned up.
+
+This path is useful for agent workspace continuity, but it cannot back a
+company share:
+
+- the backend intentionally does not choose or know another user's volume path;
+- the viewer and delivery worker do not mount user volumes;
+- the agent can modify or delete its own workspace files;
+- a host loss or volume loss breaks the artifact;
+- no DB identity ties a file to a mail event, share, retention policy, scan
+  state, checksum, viewer, or audit event;
+- retries can stage duplicate copies under new request IDs;
+- sharing it would cross the isolation boundary the per-user volume was
+  designed to enforce.
+
+#### Current attachment correctness gaps
+
+These are evidence-backed implementation gaps, not part of the Mail Capsule
+proposal:
+
+- A PDF/image sent with a question is streamed into the user volume and can be
+  parsed by Pi from the supplied absolute path.
+- A supported file-only DM currently returns before staging its bytes. The
+  conversation records its filename, but a later text-only question has no
+  attachment stream to place that earlier file in the workspace.
+- The quoted-document instruction currently says the earlier file was saved,
+  which is not true for every quiet/file-only path.
+- Successful inbox files have no quota, retention, deletion, or orphan
+  reconciliation policy.
+
+The file-first/follow-up behavior and storage lifecycle need their own focused
+fix. Adding object storage does not automatically repair them.
+
+#### Object-store boundary
+
+An object store becomes necessary only when Divo promises an artifact that must
+survive beyond one agent workspace: a browser share, attachment download,
+retryable full-fidelity delivery, immutable snapshot, revoke/audit, or `.eml`
+export.
+
+The settled architecture is **hybrid object storage plus ephemeral local
+processing**, not object storage mounted as the agent filesystem and not a
+persistent Pi volume used as the artifact authority:
+
+| Data class | Canonical location when this work resumes | Local treatment |
+|---|---|---|
+| Mail Capsule source and selected attachments | Private S3-compatible object storage | Materialize only for a bounded scan, render, or agent run |
+| Explicitly saved/generated user artifact | Private S3-compatible object storage | Temporary working copy or cache |
+| Ordinary chat PDF/image/file | At most a short-lived quarantine object when the unified ingestion pipeline requires retry/scan durability; not a permanent archive | Per-run scratch, deleted after the terminal run with a crash-recovery reaper |
+| OCR pages, rendered PDF pages, extracted images, conversion intermediates | Not durable by default | Per-run scratch only |
+| Agent session, checkpoints, dependency caches, and deliberate user workspace | Per-user persistent Pi volume | Retain according to the separate agent-workspace lifecycle |
+
+The recommended unified file flow, when resumed, is:
+
+```text
+Gmail/Lark source stream
+  → private quarantine object with bounded size and generated key
+  → magic/MIME validation and malware policy
+  → backend Attachment record becomes eligible for use
+  → backend-authorized materialization to /work/<runId>
+  → local qpdf/Poppler/LibreOffice/Tesseract/PyMuPDF processing
+  → durable result, if explicitly promised, uploaded to private object storage
+  → delete per-run scratch
+  → expire non-promoted transient input within the selected short window
+```
+
+S3-compatible storage stores bytes; it does not run PDF extraction, OCR,
+antivirus, or Office conversion. These tools require a normal local filesystem
+and subprocess environment. Do not put an S3 FUSE/mount inside Pi: object-store
+semantics are not full POSIX semantics, and doing so would also place storage
+capability inside the runtime instead of keeping it behind the backend
+authority.
+
+The default must also avoid silently creating a permanent company archive of
+every file a user asks Divo to inspect. Durable retention is justified for an
+explicit Mail Capsule, explicit save, or generated deliverable. A normal
+turn attachment is transient. The exact transient cap and durable 7/30/90-day
+product choices remain proposals to ratify with company retention and data
+controller requirements; they are not implemented defaults.
+
+When implemented, the minimum lifecycle and security rules are:
+
+- Pi receives an opaque attachment ID or an authorized local path, never
+  object-store credentials.
+- PostgreSQL controls authorization, availability, expiry, revocation, and
+  audit; bucket lifecycle is eventual byte cleanup, not access control.
+- Upload first to a no-user-read quarantine state and expose nothing until the
+  validation/scan state permits it.
+- Use random tenant-scoped keys, detected MIME, size/hash metadata, immutable
+  source identity, and idempotent provider-source keys.
+- Authorize every browser view/materialization and use only very short-lived
+  object redirects when Divo does not proxy the bytes.
+- Delete raw, rendered, OCR, thumbnail, sanitized HTML, versioned-object, and
+  cache derivatives together when the governing artifact expires.
+- Keep object events as duplicate/out-of-order wakeups; durable DB state and a
+  reconciler remain the source of truth.
+
+The intended boundary is:
+
+```text
+Gmail Pub/Sub/history event
+  → backend materializes one immutable message snapshot
+  → private object store: raw MIME and/or attachment bytes
+  → PostgreSQL: MailShare manifest, ownership, policy, hashes, MIME/size,
+                scan state, retention, revoke state, delivery and audit
+  → authenticated Divo viewer/download route
+  → Lark card or exact authorized recipient
+```
+
+Object storage is deliberately a dumb private byte store. PostgreSQL remains
+the authorization and lifecycle source of truth.
+
+Suggested key layout:
+
+```text
+companies/<companyId>/mail-shares/<shareId>/source.eml
+companies/<companyId>/mail-shares/<shareId>/attachments/<attachmentId>/<safe-name>
+```
+
+Keys are server-generated and never derived directly from a sender-supplied
+path.
+
+#### Provider/hosting decision
+
+- No S3-compatible Mail Capsule service is implemented or deployed today.
+- A managed private S3-compatible bucket is the lower-operations production
+  default when data residency and vendor policy permit it.
+- If development/staging must run on the existing VPS, Garage is the preferred
+  self-hosted S3-compatible candidate for a bounded spike. It must use a
+  dedicated persistent data path, private networking, encrypted/offsite
+  backups, disk alerts, and explicit lifecycle jobs.
+- Do not expose the Garage admin/API ports publicly merely to make files
+  shareable; Divo's authenticated route is the public boundary.
+- A single-node VPS is not high availability. Co-locating the app and object
+  data leaves one failure domain, so this is acceptable only with that risk
+  stated and backups proven.
+- SeaweedFS remains a viable alternative when its broader storage/operational
+  surface is justified. Ceph is too heavy for the current single-VPS scale.
+- Do not start a new deployment around an archived or source-only object-store
+  distribution without a fresh operational review.
+
+#### Alternatives considered
+
+1. **Keep delivery email-only:** MIME-preserving email forwarding provides
+   attachment fidelity without promising a secure browser view. No new object
+   store is needed for this action.
+2. **Lark-native delivery:** fetch a Gmail attachment during delivery, scan it,
+   upload it to Lark, and persist the Lark resource/message ID. This can avoid a
+   Divo browser artifact when Lark-only access/retention is acceptable, but it
+   is not a Spark-equivalent revocable Divo link.
+3. **Provider-backed live view:** re-fetch Gmail/Lark on every open. Rejected as
+   the share contract because connection revocation, source deletion, provider
+   quota/outage, and changing provider permissions would break snapshot
+   semantics.
+4. **Pi volume or shared host filesystem:** valid only for disposable local
+   processing/spikes. Rejected as the durable cross-user Mail Ops store.
+5. **PostgreSQL blobs:** rejected for routine MIME/attachment bytes; keep binary
+   payloads out of the core transactional database.
+6. **Static HTML hosting:** rejected because it turns confidential mail into a
+   hard-to-revoke bearer page and executes attacker-controlled content on a
+   valuable origin.
+
+#### Required spike and decisions before implementation
+
+- [ ] Keep this entire spike parked until the deterministic Mail Ops
+  end-to-end exit gate passes.
+- [ ] Choose the first product contract: Lark-native attachment delivery,
+  authenticated internal Divo share, or deliberately external/revocable share.
+- [ ] Decide whether V1 stores raw `.eml`, normalized content plus original
+  attachments, or both.
+- [ ] Define maximum message, attachment, and total-share sizes.
+- [ ] Define retention, deletion, legal/compliance ownership, backup retention,
+  and revoked-access UX.
+- [ ] Choose the object-store provider/region and document recovery objectives.
+- [ ] Define quarantine, MIME detection, malware scanning, CSP/sandbox, remote
+  image, link, and attachment-preview policy.
+- [ ] Spike a corpus containing nested MIME, inline CID images, PDF, Office
+  documents, large attachments, malformed mail, tracking pixels, and malicious
+  HTML.
+- [ ] Prove streaming upload/download, immutable content hashes, delivery
+  idempotency, unauthorized denial, immediate revoke, expiry, audit, lifecycle
+  deletion, and orphan reconciliation.
+- [ ] Prove backup restore before treating a single-VPS store as durable.
+- [ ] Repair and test Lark file-first/follow-up staging separately.
 
 ---
 
@@ -759,11 +1036,14 @@ the exact user-owned Google connection, required Gmail scopes, and destination
 provider access immediately before sending. Revoked work is terminally
 abandoned and is not retried or delivered.
 
-### 2026-07-29 — V1 deterministic delivery boundary
+### 2026-07-31 — Deterministic delivery and MIME-preserving forwarding
 
 V1 supports sender, recipient, subject-text, body-text, and attachment-presence
-matching with exactly one email or Lark-chat destination. Email forwarding is a
-bounded plain-text representation and does not retransmit attachments. Semantic
+matching with exactly one email or Lark-chat destination. Email forwarding
+retrieves the source with Gmail `format=raw` and embeds its content MIME entity
+inside a new multipart message sent by the connected mailbox. Source envelope
+and authentication headers are not reused. Transient Mail Ops delivery retries
+use a 5/10/20/40-second sequence across the five-attempt budget. Semantic
 summary/classification/extraction remains a separately governed future action;
 the current deterministic path never invokes an LLM.
 
@@ -772,3 +1052,45 @@ the current deterministic path never invokes an LLM.
 `mailAutomations` is available to every existing department role in each
 company for all five capability actions. Reconciliation inserts only missing
 permission rows and preserves existing explicit permission records.
+
+### 2026-07-31 — Mail Capsule is a separate, authenticated delivery contract
+
+A future Spark-like browser share is not an extension of MIME-preserving email
+`forward` behavior and is not public static HTML. It is an immutable,
+backend-owned artifact with per-view authorization, expiry/revocation, audit,
+safe rendering, and private attachments. It remains a separate action and
+storage contract.
+
+### 2026-07-31 — Pi volumes remain user workspaces, not Mail Ops storage
+
+Files staged into a per-user cloud-Pi Docker volume are local inputs for that
+user's agent. They are not a backend-addressable, cross-user, retained,
+revocable, or audited artifact store. A Mail Capsule therefore uses private
+object storage for bytes and PostgreSQL for policy/metadata when that product
+contract is implemented.
+
+### 2026-07-31 — No object-store deployment has been selected
+
+Managed S3-compatible storage is the default production direction. Garage on a
+dedicated persistent path of the existing VPS is the preferred
+development/staging self-hosted spike, subject to backup/restore, private
+networking, monitoring, and single-failure-domain acceptance. This is a
+recorded candidate, not a deployed service.
+
+### 2026-07-31 — Hybrid storage is the later file architecture
+
+When binary artifact work resumes, private S3-compatible storage is canonical
+for Mail Capsules and explicitly durable artifacts, while a bounded local
+filesystem remains the processing surface for PDF, image, Office, OCR, scan,
+and terminal tools. S3 is not mounted into Pi, Pi receives no object-store
+credentials, and a persistent Pi volume is not treated as backend artifact
+storage. Ordinary chat attachments are transient and must not become a
+permanent archive merely because Divo processed them.
+
+### 2026-07-31 — Object storage and Spark-like sharing are parked
+
+No object-store, Mail Capsule, HTML viewer, attachment archival, or Spark-like
+sharing implementation is part of the active slice. The workstream returns to
+one acceptance boundary: a deployed Gmail notification must produce one
+durable event, match the intended deterministic rule, and deliver once to the
+exact configured destination with observable, retry-safe state.

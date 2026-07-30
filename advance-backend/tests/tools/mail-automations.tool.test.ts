@@ -338,7 +338,10 @@ describe('mailAutomations tool', () => {
     assert.deepEqual(mailOps.toolIds, ['mailAutomations']);
     assert.match(mailOps.markdown, /do not invoke an LLM/i);
     assert.match(mailOps.markdown, /per-message approval/i);
-    assert.match(mailOps.markdown, /does not retransmit attachments/i);
+    assert.match(
+      mailOps.markdown,
+      /preserves the original Gmail MIME content.*attachments/i,
+    );
     assert.match(mailOps.markdown, /never convert a brand, display name, or loose word/i);
     assert.match(mailOps.markdown, /Ask whether subject narrowing is wanted/i);
   });

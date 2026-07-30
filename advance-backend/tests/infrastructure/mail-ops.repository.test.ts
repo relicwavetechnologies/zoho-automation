@@ -403,4 +403,29 @@ describe('MailOpsRepository', () => {
     assert.equal(update.data.status, 'abandoned');
     assert.equal(update.data.nextAttemptAt, null);
   });
+
+  it('retries transient delivery failures on the Mail Ops latency budget', async () => {
+    const updates: any[] = [];
+    const repo = new MailOpsRepository({
+      mailDelivery: {
+        updateMany: async (input: any) => {
+          updates.push(input);
+          return { count: 1 };
+        },
+      },
+    } as any);
+    const now = new Date('2026-07-31T05:00:00.000Z');
+
+    await repo.markDeliveryFailed('delivery-1', new Error('transient'), 1, now);
+    await repo.markDeliveryFailed('delivery-2', new Error('transient'), 3, now);
+
+    assert.equal(
+      updates[0].data.nextAttemptAt.getTime(),
+      now.getTime() + 5_000,
+    );
+    assert.equal(
+      updates[1].data.nextAttemptAt.getTime(),
+      now.getTime() + 20_000,
+    );
+  });
 });

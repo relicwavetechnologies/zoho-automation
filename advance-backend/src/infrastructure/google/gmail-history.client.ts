@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type {
   MailMessageMetadata,
   NewMailEvent,
@@ -72,6 +73,8 @@ export class GmailHistoryClient {
   async forward(input: {
     accessToken: string;
     destination: string;
+    mailboxEmail: string;
+    sourceMessageId: string;
     source: MailMessageMetadata;
     idempotencyKey: string;
   }): Promise<string> {
@@ -89,32 +92,26 @@ export class GmailHistoryClient {
     const subject = /^fwd:/i.test(input.source.subject)
       ? input.source.subject
       : `Fwd: ${input.source.subject || '(no subject)'}`;
-    const body = [
-      'Forwarded by Divo Mail Ops',
-      '',
-      `From: ${input.source.from}`,
-      `To: ${input.source.to}`,
-      ...(input.source.date ? [`Date: ${input.source.date}`] : []),
-      `Subject: ${input.source.subject}`,
-      '',
-      input.source.bodyText || input.source.snippet,
-    ].join('\r\n');
-    const raw = [
-      `To: ${sanitizeHeader(input.destination)}`,
-      `Subject: ${sanitizeHeader(subject)}`,
-      `Message-ID: ${messageId}`,
-      'MIME-Version: 1.0',
-      'Content-Type: text/plain; charset=UTF-8',
-      'Content-Transfer-Encoding: 8bit',
-      '',
-      body,
-    ].join('\r\n');
+    const source = await this.getJson<{ raw?: string }>(
+      `${GMAIL_API}/messages/${encodeURIComponent(input.sourceMessageId)}?format=raw`,
+      input.accessToken,
+    );
+    if (!source.raw) throw new Error('Gmail source message returned no raw MIME.');
+    const raw = buildForwardMime({
+      destination: input.destination,
+      mailboxEmail: input.mailboxEmail,
+      subject,
+      messageId,
+      source: input.source,
+      sourceRaw: Buffer.from(source.raw, 'base64url'),
+      idempotencyKey: input.idempotencyKey,
+    });
     const sent = await this.getJson<{ id?: string }>(
       `${GMAIL_API}/messages/send`,
       input.accessToken,
       {
         method: 'POST',
-        body: JSON.stringify({ raw: Buffer.from(raw).toString('base64url') }),
+        body: JSON.stringify({ raw: raw.toString('base64url') }),
       },
     );
     if (!sent.id) throw new Error('Gmail send returned no message ID.');
@@ -311,6 +308,101 @@ function stripHtml(html: string): string {
 
 function sanitizeHeader(value: string): string {
   return value.replace(/[\r\n]+/g, ' ').trim();
+}
+
+function buildForwardMime(input: {
+  destination: string;
+  mailboxEmail: string;
+  subject: string;
+  messageId: string;
+  source: MailMessageMetadata;
+  sourceRaw: Buffer;
+  idempotencyKey: string;
+}): Buffer {
+  const original = splitRawMessage(input.sourceRaw);
+  const contentHeaders = selectContentHeaders(original.headers);
+  const boundary = `=_divo_${createHash('sha256')
+    .update(input.idempotencyKey)
+    .digest('hex')
+    .slice(0, 32)}`;
+  const intro = [
+    'Forwarded by Divo Mail Ops',
+    '',
+    `From: ${sanitizeHeader(input.source.from)}`,
+    `To: ${sanitizeHeader(input.source.to)}`,
+    ...(input.source.date
+      ? [`Date: ${sanitizeHeader(input.source.date)}`]
+      : []),
+    `Subject: ${sanitizeHeader(input.source.subject)}`,
+  ].join('\r\n');
+  const prefix = [
+    `From: ${sanitizeHeader(input.mailboxEmail)}`,
+    `To: ${sanitizeHeader(input.destination)}`,
+    `Subject: ${sanitizeHeader(input.subject)}`,
+    `Message-ID: ${input.messageId}`,
+    `Date: ${new Date().toUTCString()}`,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    '',
+    `--${boundary}`,
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: 8bit',
+    '',
+    intro,
+    '',
+    `--${boundary}`,
+    ...contentHeaders,
+    '',
+    '',
+  ].join('\r\n');
+  const suffix = `\r\n--${boundary}--\r\n`;
+  return Buffer.concat([
+    Buffer.from(prefix, 'utf8'),
+    original.body,
+    Buffer.from(suffix, 'utf8'),
+  ]);
+}
+
+function splitRawMessage(raw: Buffer): {
+  headers: string;
+  body: Buffer;
+} {
+  const crlfBoundary = raw.indexOf(Buffer.from('\r\n\r\n'));
+  const lfBoundary = raw.indexOf(Buffer.from('\n\n'));
+  const useCrlf = crlfBoundary >= 0
+    && (lfBoundary < 0 || crlfBoundary <= lfBoundary);
+  const boundary = useCrlf ? crlfBoundary : lfBoundary;
+  const separatorLength = useCrlf ? 4 : 2;
+  if (boundary < 0) throw new Error('Gmail source message has invalid raw MIME.');
+  return {
+    headers: raw.subarray(0, boundary).toString('latin1'),
+    body: raw.subarray(boundary + separatorLength),
+  };
+}
+
+function selectContentHeaders(rawHeaders: string): string[] {
+  const blocks: string[] = [];
+  for (const line of rawHeaders.replace(/\r\n/g, '\n').split('\n')) {
+    if (/^[ \t]/.test(line) && blocks.length > 0) {
+      blocks[blocks.length - 1] += `\r\n${line}`;
+    } else {
+      blocks.push(line);
+    }
+  }
+  const allowed = new Set([
+    'content-type',
+    'content-transfer-encoding',
+    'content-language',
+  ]);
+  const selected = blocks.filter(block => {
+    const separator = block.indexOf(':');
+    return separator > 0
+      && allowed.has(block.slice(0, separator).trim().toLocaleLowerCase());
+  });
+  if (!selected.some(block => /^content-type:/i.test(block))) {
+    selected.unshift('Content-Type: text/plain; charset=UTF-8');
+  }
+  return selected;
 }
 
 function providerError(payload: unknown): string {

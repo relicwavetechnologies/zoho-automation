@@ -168,7 +168,7 @@ export function createMailAutomationsTool(deps: {
       'Use scheduledWorkflows for time-triggered inbox work such as a daily summary.',
       'create requires name, a deterministic match, and one destination. Match supports from, to, subjectContains, bodyContains, and hasAttachment; at least one is required. from must be one exact mailbox address or an exact @domain, never a brand or display-name substring.',
       'destination=email forwards matching mail to that exact grounded address.',
-      'V1 email forwarding sends bounded plain text and does not retransmit attachments or full MIME content.',
+      'Email forwarding preserves the original Gmail MIME content, including HTML, inline images, and attachments, inside a new message sent by the connected mailbox.',
       'destination=current_lark_chat delivers to the current Lark conversation; it is invalid outside Lark.',
       'destination=lark_chat requires an exact chatId returned by governed Lark chat discovery. Never invent it.',
       'connectionId is optional only when exactly one eligible user-owned Google account exists. If several exist, retry with one exact returned connectionId.',

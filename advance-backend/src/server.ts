@@ -371,6 +371,7 @@ export const createServer = (c: Container) => {
         }),
         expectedSubscription: gmailPubsubConfig.subscription,
         mailOpsRepo: c.mailOpsRepo,
+        wakeMailOps: () => c.mailOpsWorker.wake(),
         logger: c.logger,
       }),
     );

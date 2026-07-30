@@ -125,6 +125,82 @@ describe('Gmail Pub/Sub ingestion', () => {
     assert.match(recoveryListUrl, /q=in%3Ainbox\+newer_than%3A1d/);
   });
 
+  it('forwards the original MIME body with HTML, inline images, and attachments', async () => {
+    const originalRaw = Buffer.from([
+      'From: Anthropic <no-reply@mail.anthropic.com>',
+      'To: user@example.com',
+      'Subject: Claude login',
+      'DKIM-Signature: source-signature',
+      'MIME-Version: 1.0',
+      'Content-Type: multipart/mixed; boundary="source-mixed"',
+      '',
+      '--source-mixed',
+      'Content-Type: multipart/related; boundary="source-related"',
+      '',
+      '--source-related',
+      'Content-Type: text/html; charset=UTF-8',
+      'Content-Transfer-Encoding: quoted-printable',
+      '',
+      '<html><img src=3D"cid:logo">Sign in</html>',
+      '--source-related',
+      'Content-Type: image/png',
+      'Content-Transfer-Encoding: base64',
+      'Content-ID: <logo>',
+      '',
+      'aW1hZ2U=',
+      '--source-related--',
+      '--source-mixed',
+      'Content-Type: application/pdf',
+      'Content-Disposition: attachment; filename="invoice.pdf"',
+      'Content-Transfer-Encoding: base64',
+      '',
+      'cGRm',
+      '--source-mixed--',
+      '',
+    ].join('\r\n'));
+    let sentRaw: Buffer | undefined;
+    const client = new GmailHistoryClient(async (url, init) => {
+      const text = String(url);
+      if (text.includes('/messages?')) return json({ messages: [] });
+      if (text.endsWith('/messages/source-message?format=raw')) {
+        return json({ raw: originalRaw.toString('base64url') });
+      }
+      if (text.endsWith('/messages/send')) {
+        const body = JSON.parse(String(init?.body)) as { raw: string };
+        sentRaw = Buffer.from(body.raw, 'base64url');
+        return json({ id: 'sent-message' });
+      }
+      throw new Error(`Unexpected request: ${text}`);
+    });
+
+    const sentId = await client.forward({
+      accessToken: 'access',
+      destination: 'owner@example.com',
+      mailboxEmail: 'user@example.com',
+      sourceMessageId: 'source-message',
+      source: {
+        from: 'Anthropic <no-reply@mail.anthropic.com>',
+        to: 'user@example.com',
+        subject: 'Claude login',
+        snippet: 'Sign in',
+        bodyText: 'Sign in',
+        hasAttachment: true,
+      },
+      idempotencyKey: 'mail:idempotency',
+    });
+
+    assert.equal(sentId, 'sent-message');
+    assert.ok(sentRaw);
+    const rendered = sentRaw.toString('latin1');
+    const originalBody = originalRaw.subarray(originalRaw.indexOf('\r\n\r\n') + 4);
+    assert.match(rendered, /^From: user@example\.com\r\n/);
+    assert.match(rendered, /\r\nTo: owner@example\.com\r\n/);
+    assert.match(rendered, /\r\nSubject: Fwd: Claude login\r\n/);
+    assert.doesNotMatch(rendered, /DKIM-Signature: source-signature/);
+    assert.match(rendered, /Content-Type: multipart\/mixed; boundary="source-mixed"/);
+    assert.equal(sentRaw.includes(originalBody), true);
+  });
+
   it('verifies Google-signed push JWT claims before admitting the notification', async () => {
     const { privateKey, publicKey } = generateKeyPairSync('rsa', {
       modulusLength: 2048,
@@ -170,6 +246,7 @@ describe('Gmail Pub/Sub ingestion', () => {
 
     it('acks only after the mailbox signal is durably admitted', async () => {
       let signal: any;
+      const operations: string[] = [];
       const app = express();
       app.use(express.json());
       app.use(createGmailPubSubRoutes({
@@ -177,10 +254,12 @@ describe('Gmail Pub/Sub ingestion', () => {
         expectedSubscription: 'projects/test/subscriptions/gmail',
         mailOpsRepo: {
           signalMailbox: async input => {
+            operations.push('signal');
             signal = input;
             return { ok: true, value: 1 };
           },
         } as any,
+        wakeMailOps: () => operations.push('wake'),
         logger: noopLogger,
       }));
       server = app.listen(0);
@@ -211,6 +290,7 @@ describe('Gmail Pub/Sub ingestion', () => {
         historyId: '700',
         messageId: 'pubsub-1',
       });
+      assert.deepEqual(operations, ['signal', 'wake']);
     });
 
     it('normalizes a safe numeric Gmail history ID before admission', async () => {
@@ -226,6 +306,7 @@ describe('Gmail Pub/Sub ingestion', () => {
             return { ok: true, value: 1 };
           },
         } as any,
+        wakeMailOps: () => {},
         logger: noopLogger,
       }));
       const numericServer = app.listen(0);
@@ -284,6 +365,7 @@ describe('Gmail Pub/Sub ingestion', () => {
             throw new Error('Unsafe history IDs must not be admitted.');
           },
         } as any,
+        wakeMailOps: () => {},
         logger: logger as any,
       }));
       const invalidServer = app.listen(0);
@@ -337,6 +419,7 @@ describe('Gmail Pub/Sub ingestion', () => {
             error: new Error('database unavailable'),
           }),
         } as any,
+        wakeMailOps: () => {},
         logger: noopLogger,
       }));
       const failureServer = app.listen(0);

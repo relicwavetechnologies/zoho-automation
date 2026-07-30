@@ -83,7 +83,7 @@ Use this recipe only for rules triggered by future Gmail arrivals.
   and \`connectionId\` returned by list.
 - Pause/resume/archive: include the exact \`ruleId\` returned by create or list.
 
-At least one deterministic match field is required. V1 email forwarding sends a bounded plain-text representation and does not retransmit attachments or full MIME content. Matching, OTP extraction/forwarding, and delivery do not invoke an LLM and do not need per-message approval. Do not claim success until create returns an active rule ID. Do not use this tool for a daily summary or other timed work; load \`schedule-divo-work\` instead.
+At least one deterministic match field is required. Email forwarding preserves the original Gmail MIME content, including HTML, inline images, and attachments, inside a new message sent by the connected mailbox. Matching, OTP extraction/forwarding, and delivery do not invoke an LLM and do not need per-message approval. Do not claim success until create returns an active rule ID. Do not use this tool for a daily summary or other timed work; load \`schedule-divo-work\` instead.
 If \`mailAutomations\` returns \`mail_ops_configuration_required\`, stop and report the operator setup requirement. Never substitute Scheduler, a polling loop, or a native Gmail filter for an arrival-triggered Mail Ops rule.`,
   },
 ] as const satisfies readonly DivoProductivitySystemSkillDefinition[];

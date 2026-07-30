@@ -399,6 +399,8 @@ describe('MailOpsWorker', () => {
         forward: async (input: any) => {
           forwardCalls++;
           assert.equal(input.destination, 'owner@example.com');
+          assert.equal(input.mailboxEmail, 'user@example.com');
+          assert.equal(input.sourceMessageId, 'message-1');
           assert.equal(input.source.from, from);
           return 'gmail-message-1';
         },
@@ -419,5 +421,43 @@ describe('MailOpsWorker', () => {
       deliveryId: 'delivery-1',
       providerMessageId: 'gmail-message-1',
     });
+  });
+
+  it('reruns immediately when a wake arrives during an active pass', async () => {
+    let claims = 0;
+    let releaseFirstClaim: (() => void) | undefined;
+    const firstClaimStarted = new Promise<void>(resolve => {
+      releaseFirstClaim = resolve;
+    });
+    let allowFirstClaimToFinish: (() => void) | undefined;
+    const firstClaimBlocked = new Promise<void>(resolve => {
+      allowFirstClaimToFinish = resolve;
+    });
+    const worker = new MailOpsWorker({
+      repo: {
+        claimNextDueMailbox: async () => {
+          claims++;
+          if (claims === 1) {
+            releaseFirstClaim?.();
+            await firstClaimBlocked;
+          }
+          return { ok: true, value: null };
+        },
+        claimNextDueDelivery: async () => ({ ok: true, value: null }),
+      },
+      gmail: {},
+      resolveAccessToken: async () => 'unused',
+      authorizeRule: async () => true,
+      deliverLark: async () => 'unused',
+      logger,
+    } as any);
+
+    const running = worker.runOnce();
+    await firstClaimStarted;
+    worker.wake();
+    allowFirstClaimToFinish?.();
+    await running;
+
+    assert.equal(claims, 2);
   });
 });

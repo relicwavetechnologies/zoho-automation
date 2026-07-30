@@ -36,6 +36,7 @@ type MailRepo = Pick<
 export class MailOpsWorker {
   private timer?: NodeJS.Timeout;
   private running = false;
+  private rerunRequested = false;
   private readonly log: Logger;
 
   constructor(private readonly deps: {
@@ -75,6 +76,13 @@ export class MailOpsWorker {
     this.timer.unref?.();
   }
 
+  wake(): void {
+    this.rerunRequested = true;
+    void this.runOnce().catch(error => {
+      this.log.error('mail_ops.wake_failed', { error: errorText(error) });
+    });
+  }
+
   stop(): void {
     if (this.timer) clearInterval(this.timer);
   }
@@ -83,29 +91,32 @@ export class MailOpsWorker {
     if (this.running) return;
     this.running = true;
     try {
-      if (this.deps.pubsubTopicName) {
+      do {
+        this.rerunRequested = false;
+        if (this.deps.pubsubTopicName) {
+          for (let count = 0; count < MAILBOX_BATCH_SIZE; count++) {
+            const claimed = await this.deps.repo.claimNextWatchRenewal();
+            if (!claimed.ok) throw claimed.error;
+            if (!claimed.value) break;
+            await this.renewWatch(claimed.value);
+          }
+        }
         for (let count = 0; count < MAILBOX_BATCH_SIZE; count++) {
-          const claimed = await this.deps.repo.claimNextWatchRenewal();
+          const claimed = await this.deps.repo.claimNextDueMailbox(
+            new Date(),
+            Boolean(this.deps.pubsubTopicName),
+          );
           if (!claimed.ok) throw claimed.error;
           if (!claimed.value) break;
-          await this.renewWatch(claimed.value);
+          await this.syncMailbox(claimed.value);
         }
-      }
-      for (let count = 0; count < MAILBOX_BATCH_SIZE; count++) {
-        const claimed = await this.deps.repo.claimNextDueMailbox(
-          new Date(),
-          Boolean(this.deps.pubsubTopicName),
-        );
-        if (!claimed.ok) throw claimed.error;
-        if (!claimed.value) break;
-        await this.syncMailbox(claimed.value);
-      }
-      for (let count = 0; count < DELIVERY_BATCH_SIZE; count++) {
-        const claimed = await this.deps.repo.claimNextDueDelivery();
-        if (!claimed.ok) throw claimed.error;
-        if (!claimed.value) break;
-        await this.deliver(claimed.value);
-      }
+        for (let count = 0; count < DELIVERY_BATCH_SIZE; count++) {
+          const claimed = await this.deps.repo.claimNextDueDelivery();
+          if (!claimed.ok) throw claimed.error;
+          if (!claimed.value) break;
+          await this.deliver(claimed.value);
+        }
+      } while (this.rerunRequested);
     } finally {
       this.running = false;
     }
@@ -277,8 +288,15 @@ export class MailOpsWorker {
     attempts: number;
     payload: Record<string, unknown>;
   }): Promise<void> {
+    const startedAt = Date.now();
     try {
       const payload = readDeliveryPayload(input.payload);
+      this.log.info('mail_ops.delivery_attempt_started', {
+        deliveryId: input.deliveryId,
+        attempts: input.attempts,
+        action: payload.action.type,
+        destination: payload.destination.type,
+      });
       const authorized = await this.deps.authorizeRule({
         companyId: payload.companyId,
         userId: payload.userId,
@@ -312,6 +330,8 @@ export class MailOpsWorker {
         providerMessageId = await this.deps.gmail.forward({
           accessToken,
           destination: payload.destination.email,
+          mailboxEmail: payload.mailboxEmail,
+          sourceMessageId: payload.sourceMessageId,
           source: payload.message,
           idempotencyKey: payload.idempotencyKey,
         });
@@ -337,6 +357,7 @@ export class MailOpsWorker {
         action: payload.action.type,
         destination: payload.destination.type,
         providerMessageId,
+        durationMs: Date.now() - startedAt,
       });
     } catch (error) {
       const failed = await this.deps.repo.markDeliveryFailed(
@@ -349,6 +370,7 @@ export class MailOpsWorker {
         deliveryId: input.deliveryId,
         attempts: input.attempts,
         error: errorText(error),
+        durationMs: Date.now() - startedAt,
       });
     }
   }
