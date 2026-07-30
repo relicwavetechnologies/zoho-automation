@@ -132,6 +132,21 @@ describe('lark-card.builder buildStatusCard (work ledger)', () => {
     assert.equal((writing['header'] as { title: { content: string } }).title.content, 'Writing your answer…');
   });
 
+  it('renders a queued request clearly without offering a non-functional Stop button', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: {
+        phase: 'Queued',
+        state: 'queued',
+        liveLabel: 'Your request is queued. I’ll start it as soon as your previous request finishes.',
+      },
+    }));
+
+    assert.equal((card['header'] as { title: { content: string } }).title.content, 'Queued…');
+    assert.match(elementById(card, 'run_meta')!['content'] as string, /○ \*\*Queued\*\*/);
+    assert.match(JSON.stringify(card), /previous request finishes/);
+    assert.equal(elementById(card, 'stop_run'), undefined);
+  });
+
   it('marks a failed ledger row without claiming the run is over', () => {
     const card = parseCard(buildStatusCard({
       timeline: {

@@ -30,37 +30,34 @@ function incoming(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
 }
 
 describe('Lark routing keys', () => {
-  it('separates top-level group requests by their future thread roots', () => {
+  it('keeps one user on the same runtime lane across group threads', () => {
+    const first = buildLarkExecutionLaneKey({
+      companyId: 'company-1',
+      userId: 'user-1',
+    });
+    const second = buildLarkExecutionLaneKey({
+      companyId: 'company-1',
+      userId: 'user-1',
+    });
+    assert.equal(first, second);
+  });
+
+  it('separates different users in the same company', () => {
     const alice = buildLarkExecutionLaneKey({
       companyId: 'company-1',
-      incoming: incoming({ messageId: asMessageId('om_alice'), userExternalId: 'ou_alice' }),
+      userId: 'user-alice',
     });
     const bob = buildLarkExecutionLaneKey({
       companyId: 'company-1',
-      incoming: incoming({ messageId: asMessageId('om_bob'), userExternalId: 'ou_bob' }),
+      userId: 'user-bob',
     });
     assert.notEqual(alice, bob);
-  });
-
-  it('uses the root message as the threaded seed lane', () => {
-    const seed = buildLarkExecutionLaneKey({
-      companyId: 'company-1',
-      incoming: incoming({ messageId: asMessageId('om_root') }),
-    });
-    const reply = buildLarkExecutionLaneKey({
-      companyId: 'company-1',
-      incoming: incoming({
-        messageId: asMessageId('om_reply'),
-        rootMessageId: asMessageId('om_root'),
-        threadId: 'omt_1',
-      }),
-    });
-    assert.equal(seed, reply);
   });
 
   it('keeps inline group turns on the requester lane and out of threads', () => {
     const first = buildLarkRoutingKeys({
       companyId: 'company-1',
+      userId: 'user-alice',
       incoming: incoming({
         messageId: asMessageId('om_1'),
         userExternalId: 'ou_alice',
@@ -69,6 +66,7 @@ describe('Lark routing keys', () => {
     });
     const second = buildLarkRoutingKeys({
       companyId: 'company-1',
+      userId: 'user-alice',
       incoming: incoming({
         messageId: asMessageId('om_2'),
         userExternalId: 'ou_alice',
@@ -80,40 +78,40 @@ describe('Lark routing keys', () => {
     assert.equal(first.deliveryTarget.replyInThread, false);
   });
 
-  it('keeps different requesters in one thread on the same lane', () => {
+  it('keeps different users in one thread on separate lanes', () => {
     const alice = buildLarkExecutionLaneKey({
       companyId: 'company-1',
-      incoming: incoming({ userExternalId: 'ou_alice', threadId: 'omt_1' }),
+      userId: 'user-alice',
     });
     const bob = buildLarkExecutionLaneKey({
       companyId: 'company-1',
-      incoming: incoming({ userExternalId: 'ou_bob', threadId: 'omt_1' }),
+      userId: 'user-bob',
     });
-    assert.equal(alice, bob);
+    assert.notEqual(alice, bob);
   });
 
-  it('separates threads in the same room', () => {
+  it('keeps one user stable across rooms and threads', () => {
     const first = buildLarkExecutionLaneKey({
       companyId: 'company-1',
-      incoming: incoming({ threadId: 'omt_1' }),
+      userId: 'user-alice',
     });
     const second = buildLarkExecutionLaneKey({
       companyId: 'company-1',
-      incoming: incoming({ threadId: 'omt_2' }),
-    });
-    assert.notEqual(first, second);
-  });
-
-  it('uses one stable DM lane regardless of requester field changes', () => {
-    const first = buildLarkExecutionLaneKey({
-      companyId: 'company-1',
-      incoming: incoming({ chatType: 'p2p', userExternalId: 'ou_alice' }),
-    });
-    const second = buildLarkExecutionLaneKey({
-      companyId: 'company-1',
-      incoming: incoming({ chatType: 'p2p', userExternalId: 'ou_changed' }),
+      userId: 'user-alice',
     });
     assert.equal(first, second);
+  });
+
+  it('includes company identity in the runtime lane', () => {
+    const first = buildLarkExecutionLaneKey({
+      companyId: 'company-1',
+      userId: 'user-alice',
+    });
+    const second = buildLarkExecutionLaneKey({
+      companyId: 'company-2',
+      userId: 'user-alice',
+    });
+    assert.notEqual(first, second);
   });
 
   it('anchors delivery to the trigger and thread, never the direct parent', () => {
@@ -147,6 +145,7 @@ describe('Lark routing keys', () => {
   it('includes company and installation identity in the room key', () => {
     const keys = buildLarkRoutingKeys({
       companyId: 'company-1',
+      userId: 'user-alice',
       incoming: incoming(),
     });
     assert.equal(

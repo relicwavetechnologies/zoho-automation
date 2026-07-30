@@ -605,7 +605,7 @@ describe('Lark webhook admission', () => {
       ['receipt', 'queue', 'link', 'ack', 'execute', 'retain', 'engine', 'retain'],
     );
     assert.deepEqual(result.serializerKeys, [
-      '["lark","ingress-lane","tenant-1","app-1","oc_1","thread","om_root"]',
+      '["lark","runtime-user-lane","company-1","user-1"]',
     ]);
     assert.deepEqual(result.identityLookups, [{ openId: 'ou_sender', tenantKey: 'tenant-1' }]);
     assert.equal(result.engineInputs.length, 1);
@@ -650,8 +650,7 @@ describe('Lark webhook admission', () => {
       roomKey: '["lark","room","company-1","tenant-1","app-1","oc_1"]',
       // The reported lane must be the one the serializer actually ordered on,
       // otherwise lane telemetry cannot be used to diagnose ordering.
-      laneKey: '["lark","ingress-lane","tenant-1","app-1","oc_1","thread","om_root"]',
-      companyLaneKey: '["lark","lane","company-1","tenant-1","app-1","oc_1","thread","om_root"]',
+      laneKey: '["lark","runtime-user-lane","company-1","user-1"]',
       deliveryTargetKey: '["lark","delivery","company-1","tenant-1","app-1","oc_1","om_1","om_root"]',
       routingMode: 'active',
     });
@@ -2749,20 +2748,20 @@ describe('Lark group rapid-message batching', () => {
       currentMode: 'threaded' as const,
       laneKey: '["lark","ingress-receipt-lane","company-1","tenant-1","app-1","oc_1","requester","ou_sender"]',
       replyInThread: false,
-      runtimeLane: '["lark","ingress-lane","tenant-1","app-1","oc_1","requester","ou_sender"]',
+      runtimeLane: '["lark","runtime-user-lane","company-1","user-1"]',
     }, {
       admittedMode: 'threaded' as const,
       currentMode: 'inline' as const,
       laneKey: '["lark","ingress-receipt-lane","company-1","tenant-1","app-1","oc_1","thread","om_root"]',
       replyInThread: true,
-      runtimeLane: '["lark","ingress-lane","tenant-1","app-1","oc_1","thread","om_root"]',
+      runtimeLane: '["lark","runtime-user-lane","company-1","user-1"]',
     }, {
       admittedMode: 'threaded' as const,
       currentMode: 'inline' as const,
       // Before group modes existed, top-level turns used requester lanes.
       laneKey: '["lark","ingress-lane","tenant-1","app-1","oc_1","requester","ou_sender"]',
       replyInThread: true,
-      runtimeLane: '["lark","ingress-lane","tenant-1","app-1","oc_1","thread","om_root"]',
+      runtimeLane: '["lark","runtime-user-lane","company-1","user-1"]',
     }];
 
     for (const testCase of cases) {

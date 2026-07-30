@@ -47,6 +47,7 @@ export interface ChannelDeclaredPlan {
 }
 
 export type ChannelRunState =
+  | 'queued'
   | 'thinking'
   | 'planning'
   | 'working'
@@ -107,4 +108,3 @@ export interface FinalReply {
   readonly attachments?:    readonly { url: string; label?: string }[];
   readonly executionTrace?: string;
 }
-

@@ -4,6 +4,7 @@ import type { Request, Response } from 'express';
 import { ChatMessageSerializer } from '../../../src/application/channels/chat-message-serializer.ts';
 import { LarkIngressWorker } from '../../../src/application/lark-ingress/lark-ingress.worker.ts';
 import { LarkChannelAdapter } from '../../../src/infrastructure/channels/lark/lark.adapter.ts';
+import { BusyLaneNotices } from '../../../src/infrastructure/channels/lark/lark-busy-notice.ts';
 import {
   createLarkWebhookRoutes,
   processAcceptedLarkReceipt,
@@ -62,6 +63,10 @@ function createHarness(
     status: 'accepted' | 'processing' | 'completed' | 'failed';
   }>();
   const activeJobs = new Set<Promise<void>>();
+  const statusUpdates: Array<{
+    messageId: string;
+    state: string | undefined;
+  }> = [];
   const serializer = new ChatMessageSerializer();
   const adapter = new LarkChannelAdapter({
     env: {
@@ -74,11 +79,17 @@ function createHarness(
     botOpenId: 'ou_bot',
   });
   adapter.sendFinalReply = async () => ok({ messageId: 'om_reply' });
-  adapter.sendStatus = async () => ok({
-    channel: 'lark',
-    messageId: 'om_status',
-    correlationId: 'scenario-status',
-  } as any);
+  adapter.sendStatus = async (conversation, update) => {
+    statusUpdates.push({
+      messageId: String(conversation.replyToMessageId),
+      state: update.timeline?.state,
+    });
+    return ok({
+      channel: 'lark',
+      messageId: 'om_status',
+      correlationId: conversation.correlationId,
+    } as any);
+  };
   adapter.editStatus = async handle => ok(handle);
   const receiptRepo = {
     accept: async (input: {
@@ -157,6 +168,7 @@ function createHarness(
     } as any,
     cache: {} as any,
     serializer,
+    busyNotices: new BusyLaneNotices(),
   } as any;
   worker = new LarkIngressWorker({
     redisUrl: 'redis://unused',
@@ -171,6 +183,7 @@ function createHarness(
 
   return {
     serializer,
+    statusUpdates,
     async waitForIdle(): Promise<void> {
       await waitFor(() => activeJobs.size === 0 && serializer.activeChats === 0);
     },
@@ -262,12 +275,7 @@ describe('Lark webhook scenarios', () => {
     assert.ok(events.includes('end:message-1'));
   });
 
-  it('lets two top-level requests from one person run as the separate threads they are', async () => {
-    // A top-level group message is the root of the thread it starts, so two of
-    // them are two conversations, not two turns of one. Serialising them would
-    // make the second person's unrelated question wait behind the first's long
-    // run. What must stay ordered is a thread against its own seed, which
-    // `uses the root message as the threaded seed lane` covers.
+  it('queues one person across threads and reuses the queued status for progress', async () => {
     const events: string[] = [];
     let releaseFirst: (() => void) | undefined;
     const harness = createHarness(async messageId => {
@@ -291,21 +299,24 @@ describe('Lark webhook scenarios', () => {
       senderOpenId: 'sender-1',
     }));
 
-    await waitFor(() => events.includes('end:message-2'));
-    assert.ok(
-      !events.includes('end:message-1'),
-      'the second thread must not be blocked behind the first still running',
-    );
+    await waitFor(() =>
+      harness.statusUpdates.some(update =>
+        update.messageId === 'message-2' && update.state === 'queued'));
+    assert.deepEqual(events, ['start:message-1']);
 
     releaseFirst?.();
     await harness.waitForIdle();
-    assert.deepEqual(events.filter(e => e.startsWith('end:')).sort(), [
+    assert.deepEqual(events, [
+      'start:message-1',
       'end:message-1',
+      'start:message-2',
       'end:message-2',
     ]);
+    assert.ok(harness.statusUpdates.some(update =>
+      update.messageId === 'message-2' && update.state === 'thinking'));
   });
 
-  it('keeps different requesters in the same group thread FIFO', async () => {
+  it('lets different requesters in the same group thread run concurrently', async () => {
     const events: string[] = [];
     let releaseFirst: (() => void) | undefined;
     const harness = createHarness(async messageId => {
@@ -331,16 +342,20 @@ describe('Lark webhook scenarios', () => {
       threadId: 'thread-1',
     }));
 
-    await waitFor(() => events.includes('start:message-1'));
-    assert.deepEqual(events, ['start:message-1']);
+    await waitFor(() => events.includes('end:message-2'));
+    assert.deepEqual(events, [
+      'start:message-1',
+      'start:message-2',
+      'end:message-2',
+    ]);
 
     releaseFirst?.();
     await harness.waitForIdle();
     assert.deepEqual(events, [
       'start:message-1',
-      'end:message-1',
       'start:message-2',
       'end:message-2',
+      'end:message-1',
     ]);
   });
 });

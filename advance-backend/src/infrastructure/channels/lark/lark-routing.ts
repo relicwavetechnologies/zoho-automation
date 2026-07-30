@@ -20,6 +20,11 @@ type RoutingInput = {
   incoming: IncomingMessage;
 };
 
+type ExecutionLaneInput = {
+  companyId: string;
+  userId: string;
+};
+
 const key = (...parts: readonly string[]): string => JSON.stringify(parts);
 
 const channelParts = (incoming: IncomingMessage): readonly string[] => [
@@ -70,8 +75,8 @@ export const buildLarkDurableIngressLaneKey = (
     ...laneParts(incoming),
   );
 
-export const buildLarkExecutionLaneKey = (input: RoutingInput): string =>
-  key('lark', 'lane', ...installationParts(input), ...laneParts(input.incoming));
+export const buildLarkExecutionLaneKey = (input: ExecutionLaneInput): string =>
+  key('lark', 'runtime-user-lane', input.companyId, input.userId);
 
 export const buildLarkDeliveryTarget = (input: RoutingInput): {
   key: string;
@@ -100,7 +105,9 @@ export const buildLarkDeliveryTarget = (input: RoutingInput): {
   };
 };
 
-export const buildLarkRoutingKeys = (input: RoutingInput): LarkRoutingKeys => {
+export const buildLarkRoutingKeys = (
+  input: RoutingInput & { userId: string },
+): LarkRoutingKeys => {
   const delivery = buildLarkDeliveryTarget(input);
   return {
     roomKey: buildLarkRoomKey(input),

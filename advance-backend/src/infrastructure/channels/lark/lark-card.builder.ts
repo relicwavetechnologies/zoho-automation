@@ -120,6 +120,7 @@ const LEDGER_VISIBLE_ROWS = 5;
 const LEDGER_OUTCOME_MAX  = 72;
 
 const RUN_STATE_WORD: Record<ChannelRunState, string> = {
+  queued:   'Queued',
   thinking: 'Thinking',
   planning: 'Planning',
   working:  'Working',
@@ -224,7 +225,13 @@ function ledgerMarkdown(timeline: ChannelTimeline): string | undefined {
 /** Meta line: what the run is doing right now, plus the honest counter. */
 function statusMetaMarkdown(timeline: ChannelTimeline, now: number): string {
   const state  = timeline.state ?? 'working';
-  const marker = state === 'blocked' ? '✗' : state === 'done' ? '✓' : '●';
+  const marker = state === 'blocked'
+    ? '✗'
+    : state === 'done'
+      ? '✓'
+      : state === 'queued'
+        ? '○'
+        : '●';
   const word   = RUN_STATE_WORD[state];
   const counter = statusCounterText(timeline, now);
   return counter
@@ -882,7 +889,11 @@ export function buildStatusCard(input: StatusCardInput): string {
     }
   }
 
-  if (timeline?.state !== 'done' && timeline?.state !== 'blocked') {
+  if (
+    timeline?.state !== 'queued'
+    && timeline?.state !== 'done'
+    && timeline?.state !== 'blocked'
+  ) {
     elements.push({
       tag: 'button', element_id: 'stop_run',
       text: { tag: 'plain_text', content: 'Stop' },

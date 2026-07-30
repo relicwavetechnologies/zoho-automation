@@ -10,7 +10,10 @@ import {
   type LarkPiRuntimeAttachment,
   type LarkPiRuntimeService,
 } from '../../../application/runtime/lark-pi-runtime.service';
-import type { ChannelIdentityRepoPort } from '../../persistence/channel-identity.repository';
+import type {
+  ChannelIdentityRepoPort,
+  ResolvedUserIdentity,
+} from '../../persistence/channel-identity.repository';
 import type { ConversationRepoPort } from '../../persistence/conversation.repository';
 import type { Logger } from '../../../shared/logger';
 import type { TypedEnv } from '../../../config/env';
@@ -23,7 +26,7 @@ import type { LarkMemoryReviewService } from '../../../application/memory/lark-m
 import type { ChatMessageSerializer } from '../../../application/channels/chat-message-serializer';
 import type { LaneLeaseHolder } from '../../../application/channels/lane-lease.holder';
 import { fenceFinalReplies } from './lark-lane-fence';
-import { BusyLaneNotices, BUSY_NOTICE_TEXT } from './lark-busy-notice';
+import { BusyLaneNotices } from './lark-busy-notice';
 import {
   absorbLaneBurst,
   completeAbsorbedReceipts,
@@ -65,6 +68,7 @@ import type { LarkFileClient } from './clients/lark-file.client';
 import type { ElevenLabsTranscriptionClient } from '../../ai/transcription/elevenlabs-transcription.client';
 import {
   buildLarkDurableIngressLaneKey,
+  buildLarkExecutionLaneKey,
   buildLarkIngressLaneKey,
   buildLarkRoutingKeys,
 } from './lark-routing';
@@ -120,6 +124,9 @@ import type { LarkIngressQueue } from '../../../application/lark-ingress/lark-in
 type LarkPiRuntimePort =
   Pick<LarkPiRuntimeService, 'run'>
   & Partial<Pick<LarkPiRuntimeService, 'hasActiveSession'>>;
+
+const QUEUED_REQUEST_TEXT =
+  'Your request is queued. I’ll start it as soon as your previous request finishes.';
 
 export interface LarkWebhookDeps {
   adapter: LarkChannelAdapter;
@@ -624,7 +631,25 @@ export async function processAcceptedLarkReceipt(
     }
   }
 
-  const executionLaneKey = buildLarkIngressLaneKey(incoming);
+  let executionLaneKey = buildLarkIngressLaneKey(incoming);
+  let resolvedLaneIdentity: ResolvedUserIdentity | null | undefined;
+  if (incoming.tenantKey) {
+    const laneIdentity = await deps.channelIdentityRepo.resolveByLarkTenantIdentity(
+      incoming.userExternalId,
+      incoming.tenantKey,
+    );
+    if (!laneIdentity.ok) {
+      throw new Error(`Failed to resolve Lark runtime lane: ${laneIdentity.error.message}`);
+    }
+    resolvedLaneIdentity = laneIdentity.value;
+    if (resolvedLaneIdentity) {
+      executionLaneKey = buildLarkExecutionLaneKey({
+        companyId: resolvedLaneIdentity.companyId,
+        userId: resolvedLaneIdentity.userId,
+      });
+    }
+  }
+  const queueNoticeKey = String(incoming.traceId);
 
   if (isStopCommand(incoming.text)) {
     await handleStopBeforeLane(incoming, deps, requestLog);
@@ -635,25 +660,25 @@ export async function processAcceptedLarkReceipt(
   // previous turn is still running — asking after `runAndWait` has admitted
   // this task would always answer yes, and every message would look queued.
   if (deps.busyNotices && shouldStartLarkAgent(incoming)) {
-    const decision = deps.busyNotices.decide(executionLaneKey, {
+    const decision = deps.busyNotices.decide(queueNoticeKey, {
       laneBusy: deps.serializer.isActive(executionLaneKey),
       isCommand: (incoming.text ?? '').trim().startsWith('/'),
     });
     if (decision.notify) {
-      // Deliberately not `sendFinalReply`. That path reserves a delivery keyed
-      // on this run, and the notice would consume the reservation belonging to
-      // the answer that follows it — the user would get "I'll come back to
-      // this" and then nothing, because their real reply would be recorded as
-      // already delivered. A dropped notice is a cosmetic loss; a dropped
-      // answer is not.
-      const sent = await deps.adapter.sendToChatId(
-        String(incoming.chatId),
-        BUSY_NOTICE_TEXT,
-        String(incoming.messageId),
-        undefined,
-        incoming.chatType === 'group'
-          ? incoming.groupReplyMode !== 'inline'
-          : undefined,
+      // This status coordinator is keyed by the request correlation ID. When
+      // the lane opens, Pi progress reuses it and final delivery replaces this
+      // exact card with the answer.
+      const sent = await deps.adapter.sendStatus(
+        conversationForIncoming(incoming),
+        {
+          kind: 'status',
+          terminal: false,
+          timeline: {
+            phase: 'Queued',
+            state: 'queued',
+            liveLabel: QUEUED_REQUEST_TEXT,
+          },
+        },
       );
       if (!sent.ok) {
         requestLog.warn('webhook.busy_notice.failed', { error: sent.error.message });
@@ -721,6 +746,7 @@ export async function processAcceptedLarkReceipt(
           },
           requestLog,
           turnSignal,
+          resolvedLaneIdentity,
         );
         // Only now: a receipt completed before the answer exists is a message
         // silently dropped if this run then fails.
@@ -775,11 +801,10 @@ export async function processAcceptedLarkReceipt(
       throw new Error(`Lark execution lane is held by ${outcome.ownerId}`);
     }
   }).finally(() => {
-    // Only once this lane is genuinely idle. Clearing on every turn would
-    // re-announce for each message in one backlog, which is the noise the
-    // single-notice rule exists to avoid.
-    if (deps.busyNotices && !deps.serializer.isActive(executionLaneKey)) {
-      deps.busyNotices.clear(executionLaneKey);
+    // The notice key belongs to this request, so its eventual retry may create
+    // or update the same correlation-scoped status card again.
+    if (deps.busyNotices) {
+      deps.busyNotices.clear(queueNoticeKey);
     }
   });
 }
@@ -934,6 +959,18 @@ function runtimeThreadIdFor(incoming: IncomingMessage): string {
     userExternalId: incoming.userExternalId,
     ...(incoming.groupReplyMode ? { groupReplyMode: incoming.groupReplyMode } : {}),
   }));
+}
+
+function conversationForIncoming(incoming: IncomingMessage): ConversationHandle {
+  return {
+    channel: 'lark',
+    chatId: incoming.chatId,
+    replyToMessageId: incoming.messageId,
+    replyInThread:
+      incoming.chatType === 'group'
+      && incoming.groupReplyMode !== 'inline',
+    correlationId: asCorrelationId(incoming.traceId),
+  };
 }
 
 const DIVO_OWNED_THREAD_REF = 'divoOwnedThread';
@@ -1287,6 +1324,7 @@ async function processInBackground(
   },
   log: Logger,
   signal?: AbortSignal,
+  resolvedIdentity?: ResolvedUserIdentity | null,
 ): Promise<void> {
   const correlationId = asCorrelationId(incoming.traceId);
 
@@ -1299,11 +1337,18 @@ async function processInBackground(
     });
     return;
   }
-  const identityResult = await deps.channelIdentityRepo.resolveByLarkTenantIdentity(
-    incoming.userExternalId,
-    tenantKey,
-  );
-  let identity = identityResult.ok ? identityResult.value : null;
+  const identityResult = resolvedIdentity === undefined
+    ? await deps.channelIdentityRepo.resolveByLarkTenantIdentity(
+      incoming.userExternalId,
+      tenantKey,
+    )
+    : null;
+  let identity = resolvedIdentity === undefined
+    ? identityResult?.ok
+      ? identityResult.value
+      : null
+    : resolvedIdentity;
+  const identityResolutionOk = resolvedIdentity !== undefined || identityResult?.ok === true;
   let signInReason: string | undefined;
 
   if (identity?.activeDepartmentId && deps.prisma && deps.connectionRepo) {
@@ -1412,7 +1457,7 @@ async function processInBackground(
     }
   }
 
-  if (!identityResult.ok || !identity) {
+  if (!identityResolutionOk || !identity) {
     if (incoming.chatType === 'group') {
       if (ambientCompanyId) {
         await storeUnknownGroupIncomingSnapshot({
@@ -1595,6 +1640,7 @@ async function processInBackground(
 
   const routing = buildLarkRoutingKeys({
     companyId: String(identity.companyId),
+    userId: String(identity.userId),
     incoming,
   });
   log = log.child({
@@ -1602,13 +1648,7 @@ async function processInBackground(
     requesterUserId: identity.userId,
     departmentId: identity.activeDepartmentId ?? null,
     roomKey: routing.roomKey,
-    // The key the serializer actually ordered this turn on. It is derived
-    // without company identity so lane selection stays synchronous; recomputing
-    // it here is safe because the builder is pure over the same event.
-    laneKey: buildLarkIngressLaneKey(incoming),
-    // The company-scoped lane identity from the product contract. Wave 3's
-    // distributed leases adopt it; today it is recorded for comparison only.
-    companyLaneKey: routing.executionLaneKey,
+    laneKey: routing.executionLaneKey,
     deliveryTargetKey: routing.deliveryTargetKey,
     routingMode: 'active',
   });
@@ -1663,15 +1703,7 @@ async function processInBackground(
     ...(identity.email ? { requesterEmail: identity.email } : {}),
   };
 
-  const conversation: ConversationHandle = {
-    channel:            'lark',
-    chatId:             incoming.chatId,
-    replyToMessageId:   incoming.messageId,
-    replyInThread:
-      incoming.chatType === 'group'
-      && incoming.groupReplyMode !== 'inline',
-    correlationId,
-  };
+  const conversation = conversationForIncoming(incoming);
 
   const messageAttachments = parseLarkAttachments(rawEvent);
   const voiceAttachment = messageAttachments.find(
