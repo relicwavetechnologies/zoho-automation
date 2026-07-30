@@ -51,6 +51,51 @@ const PROVIDER_ENV_KEYS = [
  */
 const ABANDONED_RUN_SESSION_TTL_MS = 6 * 60 * 60_000;
 
+/**
+ * What only a direct message may use.
+ *
+ * Past-chat recall reads the durable sessions on this user's volume — their
+ * direct messages with Divo and their own scheduled runs. In a group the person
+ * asking has consented to that being read out; the others in the room have not,
+ * and they are the ones who see the answer. So the recall tools are withheld
+ * there outright rather than left to the model's judgement.
+ *
+ * The scope is what decides this, and it is a partial signal. Every run-scoped
+ * session is a group turn, so recall is correctly withheld from all of them. The
+ * converse does not hold: a scheduled workflow is thread-scoped and may still
+ * deliver into a group chat, and such a run is given recall today. Closing that
+ * needs the caller to say who will read the answer, which the runtime cannot
+ * work out for itself.
+ */
+const DIRECT_MESSAGE_ONLY_TOOLS = ["divo_search_chats", "divo_read_chat"];
+
+/** The extension registering those tools and the skill teaching them share a name. */
+const DIRECT_MESSAGE_ONLY_MODULES = ["divo-chat-history"];
+
+/**
+ * The manifest as this run may use it.
+ *
+ * Withheld at the three places that decide what Pi can call — the extension that
+ * registers the tools, the skill that teaches them, and the allowlist that
+ * admits them. That removes the capability, not the underlying files;
+ * `buildChildEnvironment` covers the signpost, and neither is a sandbox.
+ */
+export function scopedManifest(isRunScoped) {
+	if (!isRunScoped) return manifest;
+	return {
+		...manifest,
+		extensions: manifest.extensions.filter(
+			(name) => !DIRECT_MESSAGE_ONLY_MODULES.includes(name),
+		),
+		trustedSkills: manifest.trustedSkills.filter(
+			(name) => !DIRECT_MESSAGE_ONLY_MODULES.includes(name),
+		),
+		toolAllowlist: manifest.toolAllowlist.filter(
+			(name) => !DIRECT_MESSAGE_ONLY_TOOLS.includes(name),
+		),
+	};
+}
+
 function ensureDirectory(directory) {
 	fs.mkdirSync(directory, { recursive: true });
 }
@@ -100,6 +145,33 @@ export function sweepAbandonedRunSessions(
 	return removed;
 }
 
+/**
+ * Ready the volume for a group turn.
+ *
+ * Group turns kept a durable session in `threadDir` until run-scoped sessions
+ * shipped, and those transcripts are still on the volumes of everyone who used a
+ * group before that deploy — inside the corpus past-chat recall reads. A
+ * run-scoped turn never writes there, so removing it can only discard that
+ * residue, and each room clears its own the next time it runs.
+ *
+ * The blast radius is one directory. A direct message and a group thread can
+ * never hash to the same name, because their conversation keys differ, so this
+ * cannot reach a person's own history.
+ */
+export function prepareSessionDirectories({
+	isRunScoped,
+	runSessionsRoot,
+	runId,
+	threadDir,
+}) {
+	// The guard lives here rather than at the call site so that both outcomes are
+	// reachable from a test: this deletes a directory on the user's durable volume
+	// and nothing warns you when it deletes the wrong one.
+	if (!isRunScoped) return;
+	sweepAbandonedRunSessions(runSessionsRoot, runId);
+	removeDirectory(threadDir);
+}
+
 function ensureExtensionLink(agentDir, extensionName) {
 	const target = path.join(divoDir, "extensions", extensionName);
 	const link = path.join(agentDir, "extensions", extensionName);
@@ -132,8 +204,8 @@ export function buildChildEnvironment(baseEnvironment, values) {
 		...(values.departmentId ? { DIVO_DEPARTMENT_ID: values.departmentId } : {}),
 		DIVO_RUNTIME_CONTEXT_PATH: values.runtimeContextPath,
 		DIVO_RUN_CONTEXT_PATH: values.runContextPath,
-		DIVO_SKILL_DIRS: manifest.trustedSkills
-			.map((name) => path.join(divoDir, "skills", name))
+		DIVO_SKILL_DIRS: scopedManifest(values.isRunScoped)
+			.trustedSkills.map((name) => path.join(divoDir, "skills", name))
 			.join(path.delimiter),
 		DIVO_BUNDLED_SKILLS_DIR: path.join(divoDir, "skills"),
 		DIVO_WORKSPACE_DIR: values.workspace,
@@ -144,7 +216,13 @@ export function buildChildEnvironment(baseEnvironment, values) {
 		DIVO_SCRIPTS_DIR: values.scriptsDir,
 		DIVO_ARTIFACTS_DIR: values.artifactsDir,
 		DIVO_LOGS_DIR: values.logsDir,
-		DIVO_CHAT_HISTORY_DIR: values.dataDir,
+		// A group turn is not told where past sessions live. This removes the
+		// signpost, not the path: `read` and `bash` stay available, `HOME` still
+		// names the state root the transcripts sit under, and everything in the
+		// container runs as one uid. Containing this properly needs a process
+		// boundary — a second uid or a mount namespace hiding the durable session
+		// tree — which is not something the runtime can do to itself.
+		...(values.isRunScoped ? {} : { DIVO_CHAT_HISTORY_DIR: values.dataDir }),
 		DIVO_HOME: values.homeDir,
 		HOME: values.homeDir,
 		XDG_CACHE_HOME: path.join(values.homeDir, ".cache"),
@@ -203,11 +281,12 @@ export function resolveRuntimeThreadId(thread, runtimeThreadId = thread) {
 }
 
 export function buildPiArguments(values) {
-	const extensionArguments = manifest.extensions.flatMap((name) => [
+	const allowed = scopedManifest(values.isRunScoped);
+	const extensionArguments = allowed.extensions.flatMap((name) => [
 		"--extension",
 		path.join(divoDir, "extensions", name, "index.ts"),
 	]);
-	const skillArguments = manifest.trustedSkills.flatMap((name) => [
+	const skillArguments = allowed.trustedSkills.flatMap((name) => [
 		"--skill",
 		path.join(divoDir, "skills", name),
 	]);
@@ -237,7 +316,7 @@ export function buildPiArguments(values) {
 		"--no-prompt-templates",
 		"--no-context-files",
 		"--tools",
-		manifest.toolAllowlist.join(","),
+		allowed.toolAllowlist.join(","),
 		...extensionArguments,
 		...skillArguments,
 	];
@@ -287,7 +366,13 @@ export function startDivoPi({
 	// process exits: the conversation it needs was sent in with the request, so a
 	// private copy would only duplicate it once per turn — and a shared group
 	// transcript has no business on one participant's durable volume.
-	const { isRunScoped, runSessionsRoot, sessionDir, sessionPath } = resolveSessionPaths({
+	const {
+		isRunScoped,
+		runSessionsRoot,
+		sessionDir,
+		sessionPath,
+		threadDir,
+	} = resolveSessionPaths({
 		dataDir,
 		thread,
 		runId,
@@ -318,7 +403,7 @@ export function startDivoPi({
 	]) {
 		ensureDirectory(directory);
 	}
-	if (isRunScoped) sweepAbandonedRunSessions(runSessionsRoot, runId);
+	prepareSessionDirectories({ isRunScoped, runSessionsRoot, runId, threadDir });
 	for (const extensionName of manifest.extensions) {
 		ensureExtensionLink(agentDir, extensionName);
 	}
@@ -361,6 +446,7 @@ export function startDivoPi({
 		departmentId,
 		homeDir,
 		internalDir,
+		isRunScoped,
 		logsDir,
 		mode,
 		print,

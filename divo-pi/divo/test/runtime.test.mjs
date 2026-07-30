@@ -7,6 +7,7 @@ import {
 	buildChildEnvironment,
 	buildPiArguments,
 	resolveRuntimeThreadId,
+	prepareSessionDirectories,
 	resolveSessionPaths,
 	sweepAbandonedRunSessions,
 } from "../runtime.mjs";
@@ -165,5 +166,112 @@ describe("Abandoned run session sweep", () => {
 
 	it("is a no-op when no run sessions were ever written", () => {
 		assert.deepEqual(sweepAbandonedRunSessions("/nonexistent/divo/runs", "run-1"), []);
+	});
+});
+
+describe("Past-chat recall is a direct-message capability", () => {
+	const groupValues = { ...values, isRunScoped: true };
+
+	it("withholds the recall tools from a group turn on every route", () => {
+		const args = buildPiArguments(groupValues);
+		const environment = buildChildEnvironment({}, groupValues);
+
+		// The allowlist that admits the tools, the extension that registers them,
+		// and the skill that teaches them. Leaving any one of these in place would
+		// let a group turn reach a transcript the room never took part in.
+		assert.ok(!args.includes("divo_search_chats,divo_read_chat"));
+		const tools = args[args.indexOf("--tools") + 1].split(",");
+		assert.ok(!tools.includes("divo_search_chats"));
+		assert.ok(!tools.includes("divo_read_chat"));
+		assert.ok(!args.some((argument) => argument.includes("divo-chat-history")));
+		assert.ok(!environment.DIVO_SKILL_DIRS.includes("divo-chat-history"));
+	});
+
+	it("does not tell a group turn where past sessions live", () => {
+		// Defence in depth, not a boundary: `bash` is still allowed and `HOME` still
+		// names the state root, so this only removes the signpost. Asserted here so
+		// that stays deliberate rather than becoming a guarantee someone leans on.
+		const args = buildPiArguments(groupValues);
+		assert.equal(buildChildEnvironment({}, groupValues).DIVO_CHAT_HISTORY_DIR, undefined);
+		assert.ok(args[args.indexOf("--tools") + 1].split(",").includes("bash"));
+
+		assert.equal(buildChildEnvironment({}, values).DIVO_CHAT_HISTORY_DIR, "/tmp/divo-data");
+	});
+
+	it("leaves the rest of the runtime untouched for a group turn", () => {
+		const args = buildPiArguments(groupValues);
+		const tools = args[args.indexOf("--tools") + 1].split(",");
+		assert.ok(tools.includes("divo_gateway"));
+		assert.ok(args.some((argument) => argument.endsWith("/divo-gateway/index.ts")));
+	});
+
+	it("gives a direct message the recall tools, extension, and skill", () => {
+		const args = buildPiArguments(values);
+		const environment = buildChildEnvironment({}, values);
+
+		const tools = args[args.indexOf("--tools") + 1].split(",");
+		assert.ok(tools.includes("divo_search_chats"));
+		assert.ok(tools.includes("divo_read_chat"));
+		assert.ok(args.some((argument) => argument.endsWith("/divo-chat-history/index.ts")));
+		assert.ok(environment.DIVO_SKILL_DIRS.includes("divo-chat-history"));
+	});
+});
+
+describe("Group residue purge", () => {
+	const makeVolume = () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "divo-purge-"));
+		const threads = path.join(root, "data", "threads");
+		for (const name of ["lark-group", "lark-dm"]) {
+			fs.mkdirSync(path.join(threads, name), { recursive: true });
+			fs.writeFileSync(path.join(threads, name, "pi-session.jsonl"), "{}\n");
+		}
+		return { root, threads };
+	};
+
+	it("removes the group's own durable session and nothing else", () => {
+		const { root, threads } = makeVolume();
+		prepareSessionDirectories({
+			isRunScoped: true,
+			runSessionsRoot: path.join(root, "runs"),
+			runId: "run-1",
+			threadDir: path.join(threads, "lark-group"),
+		});
+
+		assert.equal(fs.existsSync(path.join(threads, "lark-group")), false);
+		// The blast radius is one directory: a group turn must never reach the
+		// history a direct message depends on.
+		assert.ok(fs.existsSync(path.join(threads, "lark-dm", "pi-session.jsonl")));
+		fs.rmSync(root, { recursive: true, force: true });
+	});
+
+	it("never deletes anything on a thread-scoped turn", () => {
+		// The guard on an irreversible recursive delete over the user's durable
+		// volume. Losing it would destroy a person's whole history on their next
+		// direct message.
+		const { root, threads } = makeVolume();
+		prepareSessionDirectories({
+			isRunScoped: false,
+			runSessionsRoot: path.join(root, "runs"),
+			runId: "run-1",
+			threadDir: path.join(threads, "lark-dm"),
+		});
+
+		assert.ok(fs.existsSync(path.join(threads, "lark-dm", "pi-session.jsonl")));
+		assert.ok(fs.existsSync(path.join(threads, "lark-group", "pi-session.jsonl")));
+		fs.rmSync(root, { recursive: true, force: true });
+	});
+
+	it("is a no-op when the room left nothing behind", () => {
+		const { root, threads } = makeVolume();
+		assert.doesNotThrow(() =>
+			prepareSessionDirectories({
+				isRunScoped: true,
+				runSessionsRoot: path.join(root, "runs"),
+				runId: "run-1",
+				threadDir: path.join(threads, "lark-never-used"),
+			}),
+		);
+		assert.ok(fs.existsSync(path.join(threads, "lark-dm")));
+		fs.rmSync(root, { recursive: true, force: true });
 	});
 });
