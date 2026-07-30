@@ -160,6 +160,10 @@ jobs:
              DIVO_ENV_FILE=.env.production.local \
              DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
              DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             docker compose --env-file .env.production.local run --rm --no-deps divo-backend pnpm prisma db execute --file prisma/migrations/20260731_drop_scheduled_workflow_origin_chat/migration.sql --schema prisma/schema.prisma && \
+             DIVO_ENV_FILE=.env.production.local \
+             DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
              docker compose --env-file .env.production.local run --rm --no-deps divo-backend pnpm prisma db push --skip-generate && \
              DIVO_ENV_FILE=.env.production.local \
              DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
