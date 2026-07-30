@@ -1062,10 +1062,11 @@ describe('Lark webhook admission', () => {
     const toolUpdate = adapter.__statusUpdates.find(
       (update: any) => update.timeline.ledger?.[0]?.status === 'running',
     );
+    // No outcome text: the row's marker carries running/done/failed, so a
+    // placeholder here would render as "● Google — In progress".
     assert.deepEqual(toolUpdate.timeline.ledger, [{
       label: 'Google',
       count: 1,
-      outcome: 'In progress',
       status: 'running',
     }]);
     assert.doesNotMatch(

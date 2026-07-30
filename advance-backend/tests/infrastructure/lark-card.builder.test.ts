@@ -49,9 +49,10 @@ function elementById(card: Record<string, unknown>, id: string): Record<string, 
   return bodyElements(card).find(e => e['element_id'] === id);
 }
 
-describe('lark-card.builder buildStatusCard (work ledger)', () => {
+describe('lark-card.builder buildStatusCard', () => {
   const workingTimeline = {
-    phase:       'Executing · 11 actions',
+    subject:     'Invoice for Acme Corp',
+    phase:       'Executing',
     state:       'working' as const,
     liveLabel:   'Attaching the PDF to the Lark task…',
     actionCount: 11,
@@ -62,148 +63,231 @@ describe('lark-card.builder buildStatusCard (work ledger)', () => {
     ],
   };
 
-  // The old header derived "Step N/M" from tool calls seen so far, which makes
-  // numerator and denominator the same number for the whole run.
-  it('counts actions up instead of inventing a denominator', () => {
-    const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
-    const meta = elementById(card, 'run_meta')!['content'] as string;
+  const headerTitle = (card: Record<string, unknown>): string | undefined =>
+    (card['header'] as { title?: { content: string } } | undefined)?.title?.content;
 
-    assert.match(meta, /11 actions · 1m 04s/);
-    assert.doesNotMatch(meta, /11\/11/);
-    assert.doesNotMatch(JSON.stringify(card), /Step \d+\/\d+/);
+  const chips = (card: Record<string, unknown>): string[] =>
+    ((card['header'] as { text_tag_list?: Array<{ text: { content: string } }> } | undefined)
+      ?.text_tag_list ?? []).map(tag => tag.text.content);
+
+  // The card this replaced said "Thinking…" in the header, "Understanding your
+  // request" in the body, and "● Thinking · 13s" below it: one fact, three lines.
+  it('states the run state exactly once, in the header chip', () => {
+    const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
+
+    assert.deepEqual(chips(card), ['Working']);
+    assert.equal(headerTitle(card), 'Invoice for Acme Corp');
+    for (const content of markdownContents(card)) {
+      assert.doesNotMatch(content, /\bWorking\b/);
+    }
   });
 
-  it('shows a fraction and a bar only when a checklist was declared', () => {
-    const withoutPlan = parseCard(buildStatusCard({ timeline: workingTimeline }));
-    assert.equal(elementById(withoutPlan, 'run_bar'), undefined);
+  // Lark prints the sender name and its Agent badge directly above the card.
+  it('never spends the header on the bot’s own name', () => {
+    const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
+    assert.doesNotMatch(JSON.stringify(card['header']), /Divo/);
+  });
 
-    const withPlan = parseCard(buildStatusCard({
+  it('renders one activity line per step, newest last', () => {
+    const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
+    const activity = (elementById(card, 'run_activity')!['content'] as string).split('\n');
+
+    assert.equal(activity.length, 2);
+    assert.match(activity[0]!, /^✓ \*\*Zoho\*\*.*×7.*Created INV-1043/);
+    assert.match(activity[1]!, /^● \*\*Lark\*\*.*Attaching the PDF/);
+  });
+
+  it('indents a step’s children under it instead of promoting them to peers', () => {
+    const card = parseCard(buildStatusCard({
       timeline: {
         ...workingTimeline,
-        declared: { done: 2, total: 5, current: 'Reconcile the payment', next: 'File the report' },
+        ledger: [{
+          label: 'Subagents', count: 1, status: 'running' as const,
+          children: [
+            { label: 'scout', count: 1, outcome: 'reading the export', status: 'running' as const },
+            { label: 'reviewer', count: 1, outcome: 'checking totals', status: 'done' as const },
+          ],
+        }],
       },
     }));
-    const meta = elementById(withPlan, 'run_meta')!['content'] as string;
-    assert.match(meta, /Step 3 of 5/);
-    assert.match(meta, /11 actions/, 'a stale checklist must not freeze the counter');
-    assert.match(elementById(withPlan, 'run_bar')!['content'] as string, /▰▰▱▱▱/);
+    const lines = (elementById(card, 'run_activity')!['content'] as string).split('\n');
+
+    assert.equal(lines.length, 3);
+    assert.match(lines[0]!, /^● \*\*Subagents\*\*/);
+    assert.match(lines[1]!, /^　└ ● \*\*scout\*\*/);
+    assert.match(lines[2]!, /^　└ ✓ \*\*reviewer\*\*/);
+  });
+
+  // A ✓ already says "done"; writing "Done" beside it is the padding this
+  // layout exists to remove, so a row with no real outcome carries no tail.
+  it('leaves a row bare when the step produced no outcome to report', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: { ...workingTimeline, ledger: [{ label: 'Web search', count: 1, status: 'done' as const }] },
+    }));
+    assert.equal(elementById(card, 'run_activity')!['content'], '✓ **Web search**');
+  });
+
+  it('counts older activity rows instead of dropping them silently', () => {
+    const rows = Array.from({ length: 8 }, (_, i) => ({
+      label: `Tool${i}`, count: 1, outcome: `Did ${i}`, status: 'done' as const,
+    }));
+    const activity = parseCard(buildStatusCard({ timeline: { ...workingTimeline, ledger: rows } }));
+    const content = elementById(activity, 'run_activity')!['content'] as string;
+
+    assert.match(content, /\+3 earlier steps/);
+    assert.match(content, /Tool7/);
+    assert.doesNotMatch(content, /Tool0\b/);
+  });
+
+  it('suppresses the agent’s live sentence while a step is running', () => {
+    const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
+    assert.equal(elementById(card, 'run_say'), undefined);
+  });
+
+  it('shows the agent’s live sentence when no step is running', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: {
+        ...workingTimeline,
+        ledger: [{ label: 'Zoho', count: 1, outcome: 'Created INV-1043', status: 'done' as const }],
+        liveLabel: 'Checking whether the payment already cleared',
+      },
+    }));
+    assert.match(elementById(card, 'run_say')!['content'] as string, /payment already cleared/);
+  });
+
+  it('drops a live sentence that only echoes the state chip', () => {
+    for (const liveLabel of ['Thinking…', 'Understanding your request…', 'Continuing…']) {
+      const card = parseCard(buildStatusCard({
+        timeline: { subject: 'Invoice', state: 'thinking' as const, liveLabel },
+      }));
+      assert.equal(elementById(card, 'run_say'), undefined, liveLabel);
+      assert.match(markdownContents(card).join('\n'), /Getting started/);
+    }
+  });
+
+  it('folds the plan behind its own progress, and names the current step on the fold', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: {
+        ...workingTimeline,
+        declared: {
+          done: 1, total: 3, current: 'Reconcile the payment',
+          items: [
+            { title: 'Pull the invoice', status: 'done' as const },
+            { title: 'Reconcile the payment', status: 'running' as const },
+            { title: 'File the report', status: 'pending' as const },
+          ],
+        },
+      },
+    }));
+    const panel = elementById(card, 'run_plan') as {
+      tag: string;
+      expanded: boolean;
+      header: { title: { content: string } };
+      elements: Array<{ content: string }>;
+    };
+
+    assert.equal(panel.tag, 'collapsible_panel');
+    assert.equal(panel.expanded, false, 'the plan is context, not the headline');
+    assert.match(panel.header.title.content, /\*\*Plan\*\*.*1 of 3 · Reconcile the payment/);
+    assert.match(panel.elements[0]!.content, /○ File the report/);
+  });
+
+  // A panel that opens onto nothing is a worse version of a plain line.
+  it('renders the plan as one line when its steps were never named', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: { ...workingTimeline, declared: { done: 1, total: 3 } },
+    }));
+    const plan = elementById(card, 'run_plan')!;
+    assert.equal(plan['tag'], 'markdown');
+    assert.match(plan['content'] as string, /1 of 3/);
+  });
+
+  it('keeps the counter and Stop on one footer row', () => {
+    const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
+    const footer = elementById(card, 'run_footer') as {
+      tag: string;
+      columns: Array<{ elements: Array<Record<string, unknown>> }>;
+    };
+
+    assert.equal(footer.tag, 'column_set');
+    assert.match(footer.columns[0]!.elements[0]!['content'] as string, /11 steps · 1m 04s/);
+    assert.equal(footer.columns[1]!.elements[0]!['element_id'], 'run_stop');
+  });
+
+  it('wires Stop as a 2.0 callback', () => {
+    const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
+    const stop = (elementById(card, 'run_footer')!['columns'] as Array<{
+      elements: Array<{ text: { content: string }; behaviors: Array<{ type: string; value: { action: string } }> }>;
+    }>)[1]!.elements[0]!;
+
+    assert.equal(stop.text.content, 'Stop');
+    assert.equal(stop.behaviors[0]!.type, 'callback');
+    assert.equal(stop.behaviors[0]!.value.action, 'interrupt_run');
+  });
+
+  it('offers no Stop button on a run that cannot be stopped', () => {
+    for (const state of ['queued', 'done', 'blocked'] as const) {
+      const card = parseCard(buildStatusCard({ timeline: { ...workingTimeline, state } }));
+      assert.doesNotMatch(JSON.stringify(card), /interrupt_run/, state);
+    }
+  });
+
+  it('marks a failed step without claiming the run is over', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: {
+        ...workingTimeline,
+        ledger: [{ label: 'Zoho', count: 1, outcome: '401 token expired', status: 'failed' as const }],
+      },
+    }));
+
+    assert.match(elementById(card, 'run_activity')!['content'] as string, /✗ \*\*Zoho\*\*.*401 token expired/);
+    assert.deepEqual(chips(card), ['Working']);
+    assert.match(JSON.stringify(card), /interrupt_run/, 'a failed step does not end the run');
   });
 
   it('never renders a progress chart', () => {
     const card = parseCard(buildStatusCard({ timeline: { ...workingTimeline, progressPct: 88 } }));
     assert.equal(bodyElements(card).some(e => e['tag'] === 'chart'), false);
-    assert.equal(findColumnSet(bodyElements(card)), undefined);
+    assert.doesNotMatch(JSON.stringify(card), /88/);
   });
 
-  it('never renders a trace panel', () => {
-    const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
-    assert.equal(bodyElements(card).some(e => e['tag'] === 'collapsible_panel'), false);
-    assert.doesNotMatch(JSON.stringify(card), /Trace/i);
-  });
-
-  it('renders one ledger line per tool family with its outcome', () => {
-    const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
-    const ledger = elementById(card, 'run_ledger')!['content'] as string;
-
-    assert.match(ledger, /✓ \*\*Zoho · 7 calls\*\*.*Created INV-1043/);
-    assert.match(ledger, /● \*\*Lark\*\*/);
-    assert.equal(ledger.split('\n').length, 2);
-  });
-
-  it('counts older ledger groups instead of dropping them silently', () => {
-    const rows = Array.from({ length: 8 }, (_, i) => ({
-      label: `Tool${i}`, count: 1, outcome: `Did ${i}`, status: 'done' as const,
-    }));
-    const card = parseCard(buildStatusCard({ timeline: { ...workingTimeline, ledger: rows } }));
-    const ledger = elementById(card, 'run_ledger')!['content'] as string;
-
-    assert.match(ledger, /\+ 3 earlier steps/);
-    assert.match(ledger, /Tool7/);
-    assert.doesNotMatch(ledger, /Tool0/);
-  });
-
-  it('carries the run state in the header title, not a constant', () => {
-    const working = parseCard(buildStatusCard({ timeline: workingTimeline }));
-    assert.equal((working['header'] as { title: { content: string } }).title.content, 'Working…');
-
-    const writing = parseCard(buildStatusCard({
-      timeline: { ...workingTimeline, state: 'writing' },
-    }));
-    assert.equal((writing['header'] as { title: { content: string } }).title.content, 'Writing your answer…');
-  });
-
-  it('renders a queued request clearly without offering a non-functional Stop button', () => {
-    const card = parseCard(buildStatusCard({
-      timeline: {
-        phase: 'Queued',
-        state: 'queued',
-        liveLabel: 'Your request is queued. I’ll start it as soon as your previous request finishes.',
-      },
-    }));
-
-    assert.equal((card['header'] as { title: { content: string } }).title.content, 'Queued…');
-    assert.match(elementById(card, 'run_meta')!['content'] as string, /○ \*\*Queued\*\*/);
-    assert.match(JSON.stringify(card), /previous request finishes/);
-    assert.equal(elementById(card, 'stop_run'), undefined);
-  });
-
-  it('marks a failed ledger row without claiming the run is over', () => {
+  it('ships only the icon token the collapsible panel is known to accept', () => {
     const card = parseCard(buildStatusCard({
       timeline: {
         ...workingTimeline,
-        ledger: [{ label: 'Zoho', count: 1, outcome: '401 token expired', status: 'failed' }],
+        declared: { done: 1, total: 2, items: [{ title: 'a', status: 'done' as const }] },
       },
     }));
-    assert.match(elementById(card, 'run_ledger')!['content'] as string, /✗ \*\*Zoho\*\*.*401 token expired/);
-    assert.ok(elementById(card, 'stop_run'), 'a failed step does not end the run');
-  });
-
-  it('wires Stop as a 2.0 callback and ships no unverified icon tokens', () => {
-    const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
-    const stop = elementById(card, 'stop_run') as {
-      text: { content: string };
-      behaviors: Array<{ type: string; value: { action: string } }>;
-    };
-    assert.equal(stop.text.content, 'Stop');
-    assert.equal(stop.behaviors[0]!.type, 'callback');
-    assert.equal(stop.behaviors[0]!.value.action, 'interrupt_run');
-    // An unrecognised standard_icon token makes Lark reject the whole card.
-    assert.doesNotMatch(JSON.stringify(card), /standard_icon/);
-  });
-
-  it('titles the card with the request when one is known', () => {
-    const card = parseCard(buildStatusCard({
-      timeline: { ...workingTimeline, subject: 'Invoice for Acme Corp' },
-    }));
-    assert.equal((card['header'] as { title: { content: string } }).title.content, 'Invoice for Acme Corp');
+    const tokens = [...JSON.stringify(card).matchAll(/"token":"([^"]+)"/g)].map(m => m[1]);
+    assert.deepEqual([...new Set(tokens)], ['down-small-ccm_outlined']);
   });
 
   // The Lark heartbeat re-renders the last snapshot, so a duration baked into
   // that snapshot would sit frozen through a four-minute tool call.
   it('recomputes elapsed time at render, not at snapshot time', () => {
     const startedAtMs = 1_000_000;
-    const early = parseCard(buildStatusCard({ timeline: { ...workingTimeline, startedAtMs } }));
-    assert.ok(typeof (elementById(early, 'run_meta')!['content']) === 'string');
-
     const counterOf = (card: Record<string, unknown>) =>
-      (elementById(card, 'run_meta')!['content'] as string).match(/(\d+m \d+s|\d+s)/)?.[0];
-    const first = counterOf(early);
-    // Same timeline object, later wall clock — the rendered counter must move.
+      ((card['body'] as { elements: Array<Record<string, unknown>> }).elements
+        .find(e => e['element_id'] === 'run_footer')!['columns'] as Array<{ elements: Array<{ content: string }> }>)
+        [0]!.elements[0]!.content.match(/(\d+m \d+s|\d+s)/)?.[0];
+
     const originalNow = Date.now;
-    (Date as { now: () => number }).now = () => startedAtMs + 240_000;
+    (Date as { now: () => number }).now = () => startedAtMs + 30_000;
     try {
+      const early = parseCard(buildStatusCard({ timeline: { ...workingTimeline, startedAtMs } }));
+      assert.equal(counterOf(early), '30s');
+      (Date as { now: () => number }).now = () => startedAtMs + 240_000;
       const later = parseCard(buildStatusCard({ timeline: { ...workingTimeline, startedAtMs } }));
-      assert.notEqual(counterOf(later), first);
       assert.equal(counterOf(later), '4m 00s');
     } finally {
       (Date as { now: () => number }).now = originalNow;
     }
   });
 
-  it('previews the run state in the notification summary', () => {
+  it('previews the run in the notification summary', () => {
     const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
     const config = card['config'] as { summary: { content: string } };
-    assert.match(config.summary.content, /Working… — 11 actions/);
+    assert.match(config.summary.content, /Invoice for Acme Corp — Working… · 11 steps/);
   });
 });
 
@@ -258,13 +342,12 @@ describe('lark-card.builder final reply planning', () => {
     const secondCard = parseCard(segments[1]!.payload);
     const thirdCard = parseCard(segments[2]!.payload);
 
-    const firstSubtitle = (firstCard['header'] as { subtitle?: { content: string } }).subtitle?.content;
-    const secondSubtitle = (secondCard['header'] as { subtitle?: { content: string } }).subtitle?.content;
-    const thirdSubtitle = (thirdCard['header'] as { subtitle?: { content: string } }).subtitle?.content;
+    const titleOf = (card: Record<string, unknown>) =>
+      (card['header'] as { title?: { content: string } } | undefined)?.title?.content;
 
-    assert.equal(firstSubtitle, 'Finance Update');
-    assert.equal(secondSubtitle, 'Finance Update');
-    assert.equal(thirdSubtitle, 'Finance Update');
+    assert.equal(titleOf(firstCard), 'Finance Update');
+    assert.equal(titleOf(secondCard), 'Finance Update');
+    assert.equal(titleOf(thirdCard), 'Finance Update');
   });
 
   it('keeps a heading attached to its following table when a new card starts', () => {
@@ -297,8 +380,47 @@ describe('lark-card.builder final reply planning', () => {
       executionTrace: '---\n**Trace**\n✓ Completed analysis',
     });
     const card = parseCard(payload);
-    const subtitle = (card['header'] as { subtitle?: { content: string } }).subtitle?.content;
-    assert.equal(subtitle, 'Done');
+    const header = card['header'] as { title?: { content: string } } | undefined;
+    assert.equal(header?.title?.content, 'Done');
     assert.ok(panelTitles(card).includes('Execution trace'));
+  });
+});
+
+describe('lark-card.builder final card header', () => {
+  // Lark already prints "Divo | Agent" above every bubble, so a header reading
+  // "Divo AI" with a "Divo" chip spent the widest line of the card saying the
+  // name a third time. A plain answer now goes out headerless.
+  it('omits the header entirely for a reply with no heading of its own', () => {
+    const card = parseCard(buildFinalCard({ markdown: 'Hi there! How can I help you today?' }));
+
+    assert.equal(card['header'], undefined);
+    assert.doesNotMatch(JSON.stringify(card), /Divo/);
+  });
+
+  it('promotes the reply’s own heading to the header title', () => {
+    const card = parseCard(buildFinalCard({ markdown: '# Finance Update\n\nAll reconciled.' }));
+    const header = card['header'] as { title: { content: string }; subtitle?: unknown };
+
+    assert.equal(header.title.content, 'Finance Update');
+    assert.equal(header.subtitle, undefined, 'the heading is the title, not a subtitle under a constant');
+  });
+
+  it('keeps a real department chip, which the client cannot show on its own', () => {
+    const card = parseCard(buildFinalCard({
+      markdown: 'Reconciled.',
+      branding: { departmentLabel: 'Finance', departmentColor: 'green' },
+    }));
+    const header = card['header'] as { text_tag_list: Array<{ text: { content: string }; color: string }> };
+
+    assert.equal(header.text_tag_list[0]!.text.content, 'Finance');
+    assert.equal(header.text_tag_list[0]!.color, 'green');
+  });
+
+  it('drops a department chip that only repeats the bot name', () => {
+    const card = parseCard(buildFinalCard({
+      markdown: 'Reconciled.',
+      branding: { departmentLabel: 'Divo' },
+    }));
+    assert.equal(card['header'], undefined);
   });
 });

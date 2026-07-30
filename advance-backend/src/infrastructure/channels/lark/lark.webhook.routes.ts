@@ -1082,7 +1082,17 @@ function piToolStatus(toolName: string, toolId?: string): {
   if (toolName === 'divo_gateway') {
     return { label: 'Divo', liveLabel: 'Using a company capability…' };
   }
-  return { label: 'Tool', liveLabel: 'Running a tool…' };
+  // Never a bare "Tool": the activity row exists to say what ran, and an
+  // anonymous row is a line of card height spent on nothing. Any unmapped tool
+  // is still readable once its identifier is written out as words.
+  const humanized = toolName
+    .replace(/^divo_/, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .trim()
+    .toLowerCase();
+  const label = humanized ? humanized.charAt(0).toUpperCase() + humanized.slice(1) : 'Tool';
+  return { label, liveLabel: `Running ${label.toLowerCase()}…` };
 }
 
 function divoFacingRuntimeMessage(message: string): string {
@@ -1199,18 +1209,15 @@ export async function runPiAndDeliver(input: {
       state = 'working';
       liveLabel = tool.liveLabel;
       actionCount += 1;
-      ledger.set(event.callId, {
-        label: tool.label,
-        count: 1,
-        outcome: 'In progress',
-        status: 'running',
-      });
+      // No outcome text: the row's marker already carries running/done/failed,
+      // and "In progress" beside a ● is the restatement the card is built to
+      // avoid. The field is for what a step produced, which is not known yet.
+      ledger.set(event.callId, { label: tool.label, count: 1, status: 'running' });
     } else if (event.type === 'tool_end') {
       const current = ledger.get(event.callId);
       if (current) {
         ledger.set(event.callId, {
           ...current,
-          outcome: event.isError ? 'Failed' : 'Done',
           status: event.isError ? 'failed' : 'done',
         });
       }
