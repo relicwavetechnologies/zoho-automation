@@ -1,12 +1,12 @@
 import 'dotenv/config';
 import { PrismaClient } from '../src/generated/prisma';
-import { provisionDivoDocumentIntelligenceForExistingCompanies } from '../src/application/skills/document-intelligence-system-skill';
+import { provisionFilesAndDocumentsForExistingCompanies } from '../src/application/skills/files-and-documents-system-skills';
 
 async function main() {
   const prisma = new PrismaClient();
   try {
-    const result = await provisionDivoDocumentIntelligenceForExistingCompanies(prisma);
-    console.log(JSON.stringify(result));
+    await provisionFilesAndDocumentsForExistingCompanies(prisma);
+    console.log('provisioned files-and-documents system skills');
   } finally {
     await prisma.$disconnect();
   }

@@ -2,6 +2,11 @@ import type { Prisma, PrismaClient } from '../../generated/prisma';
 import { CONNECTED_PROVIDER_SYSTEM_SKILLS } from './connected-provider-system-skills';
 import { DATA_EXPORT_SYSTEM_SKILL } from './data-export-system-skill';
 import {
+  CREATE_FILES_SKILL_SLUG,
+  FILES_AND_DOCUMENTS_SYSTEM_SKILLS,
+  READ_FILES_SKILL_SLUG,
+} from './files-and-documents-system-skills';
+import {
   provisionDivoProductivitySystemSkill,
   type DivoProductivitySystemSkillDefinition,
 } from './divo-productivity-system-skills';
@@ -69,12 +74,44 @@ Choose the exact approved specialist returned by this router.
 
 - Calculate, group, filter, reshape, or format data → \`data-processing\`.
 - Produce a CSV, Google Sheet, or governed complete-data artifact → \`secure-data-export\`.
+- Analyse a file already in the workspace, or one too large to hold in
+  context → \`${READ_FILES_SKILL_SLUG}\`.
 
 Never treat this router as permission to process or export data. Load the specialist first.`,
     toolIds: [],
     tags: ['data', 'router', 'processing', 'analysis', 'export'],
     aliases: ['data processing', 'calculate data', 'analyze rows', 'export data', 'csv export'],
     sortOrder: 5,
+  },
+  {
+    slug: 'files-router',
+    name: 'Files & Documents Router',
+    summary: 'Routes work on a file the user sent or wants produced to the exact specialist.',
+    markdown: `# Files & Documents Router
+
+Choose the exact approved specialist returned by this router.
+
+- Read, extract from, summarise, or answer questions about a file → \`${READ_FILES_SKILL_SLUG}\`.
+- Produce or edit a spreadsheet, document, or export → \`${CREATE_FILES_SKILL_SLUG}\`.
+
+A file sent in this conversation is already saved in the workspace and listed
+under [ATTACHED_FILES]. Loading this router is not permission to answer from a
+filename — load the specialist and open the file.
+
+Files living in Google Drive, Zoho, Airtable, or Lark are a connected-account
+job, not this one.`,
+    toolIds: [],
+    tags: ['files', 'router', 'documents', 'spreadsheets', 'attachments'],
+    aliases: [
+      'file',
+      'attachment',
+      'document',
+      'this pdf',
+      'this spreadsheet',
+      'read the attached file',
+      'make a spreadsheet',
+    ],
+    sortOrder: 6,
   },
   {
     slug: 'research-router',
@@ -87,13 +124,15 @@ Choose the exact approved specialist returned by this router.
 - Current public facts and external verification → \`web-search\`.
 - Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`.
 - Approved OMS publisher/site inventory → \`divo-oms-site-inventory\`.
-- Private company context, when available → \`context-research\`.
 
-Never substitute web results for official Semrush/OMS data or private company context.`,
+Never substitute web results for official Semrush or OMS data.
+
+Files the user sent are not researched here — they are already in the
+workspace. Route those to \`files-router\`.`,
     toolIds: [],
     tags: ['research', 'router', 'web', 'semrush', 'seo', 'oms', 'site-inventory'],
     aliases: ['research', 'web research', 'semrush', 'seo research', 'oms sites', 'site inventory'],
-    sortOrder: 6,
+    sortOrder: 7,
   },
   {
     slug: 'work-automation-router',
@@ -106,7 +145,7 @@ Calendar events belong to the relevant Google or Lark calendar specialist instea
     toolIds: [],
     tags: ['work', 'automation', 'router', 'schedule', 'recurring', 'reminder', 'monitoring'],
     aliases: ['schedule work', 'recurring work', 'reminder', 'monitoring', 'run every'],
-    sortOrder: 7,
+    sortOrder: 8,
   },
   {
     slug: 'memory-router',
@@ -119,7 +158,7 @@ Do not route transient task state, secrets, or unconfirmed assistant inference t
     toolIds: [],
     tags: ['personal', 'memory', 'router', 'save', 'remember', 'review'],
     aliases: ['remember this', 'save memory', 'share memory', 'personal memory'],
-    sortOrder: 8,
+    sortOrder: 9,
   },
   {
     slug: 'data-processing',
@@ -129,7 +168,8 @@ Do not route transient task state, secrets, or unconfirmed assistant inference t
 
 Use \`dataProcessor\` for exact transformations and calculations over data already present or a governed source.
 Preserve exact values, keep currencies separate, and require complete source pagination before calling a result complete.
-Use \`secure-data-export\` instead when the user explicitly requests a file, CSV, Google Sheet, or export artifact.`,
+Use \`secure-data-export\` instead when the user explicitly requests a file, CSV, Google Sheet, or export artifact.
+Use \`${READ_FILES_SKILL_SLUG}\` instead when the data is a file in the workspace, or when the row count is too large to hold in context — that path queries the file on disk rather than carrying rows through the model.`,
     toolIds: ['dataProcessor'],
     tags: ['data', 'processing', 'transform', 'analysis', 'csv'],
     aliases: ['process data', 'calculate rows', 'group records', 'transform dataset'],
@@ -143,7 +183,7 @@ Use \`secure-data-export\` instead when the user explicitly requests a file, CSV
 
 Use \`webSearch\` for current public information and external verification.
 Prefer primary or official sources, verify time-sensitive claims, and include relevant URLs.
-Do not use public web search as a substitute for private company knowledge or official Semrush/OMS data.`,
+Do not use public web search as a substitute for official Semrush or OMS data, or for a file the user has already sent.`,
     toolIds: ['webSearch'],
     tags: ['search', 'research', 'web', 'verification'],
     aliases: ['web search', 'internet research', 'current public information', 'verify online'],
@@ -189,13 +229,16 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
   },
   {
     routerSlug: 'data-router',
-    targetSlugs: ['data-processing', DATA_EXPORT_SYSTEM_SKILL.slug],
+    targetSlugs: ['data-processing', DATA_EXPORT_SYSTEM_SKILL.slug, READ_FILES_SKILL_SLUG],
+  },
+  {
+    routerSlug: 'files-router',
+    targetSlugs: FILES_AND_DOCUMENTS_SYSTEM_SKILLS.map(skill => skill.slug),
   },
   {
     routerSlug: 'research-router',
     targetSlugs: [
       'web-search',
-      'context-research',
       DIVO_SEMRUSH_SYSTEM_SKILL.slug,
       DIVO_OMS_SITE_DATA_SYSTEM_SKILL.slug,
     ],

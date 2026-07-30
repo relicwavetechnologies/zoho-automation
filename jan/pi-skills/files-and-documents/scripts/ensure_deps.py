@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
-"""Ensure image-analysis skill dependencies in a Divo-managed virtualenv.
+"""Ensure file/document skill dependencies in a Divo-managed virtualenv.
+
+Each tier gets its own virtualenv under DIVO_HOME, which lives on the user's
+persistent volume — so a tier is installed once per user and is already there
+on the next run. That is why the image stays small: nothing here is baked in.
+
+Install the smallest tier that can do the job. Tiers do not include each other.
 
 Examples:
     python3 ensure_deps.py light
-    python3 ensure_deps.py light --quiet -- scripts/image_ops.py inspect image.png --json
-    python3 ensure_deps.py light --python
+    python3 ensure_deps.py light --quiet -- scripts/extract_pymupdf.py report.pdf --markdown
+    python3 ensure_deps.py office --check-only
+    python3 ensure_deps.py dataset --python
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import subprocess
@@ -20,9 +28,27 @@ from pathlib import Path
 
 FEATURES = {
     "light": {
-        "description": "Image metadata and manipulation",
-        "packages": ("Pillow",),
-        "imports": ("PIL",),
+        "description": "PDF and text extraction",
+        "packages": ("pymupdf", "pymupdf4llm", "pdfplumber"),
+        "imports": ("pymupdf", "pymupdf4llm", "pdfplumber"),
+    },
+    "office": {
+        "description": "Word, PowerPoint, and Excel structure and authoring",
+        "packages": ("python-docx", "python-pptx", "openpyxl"),
+        "imports": ("docx", "pptx", "openpyxl"),
+    },
+    "image": {
+        "description": "Image inspection, conversion, and local OCR",
+        "packages": ("pillow", "pytesseract"),
+        "imports": ("PIL", "pytesseract"),
+    },
+    "dataset": {
+        "description": "Datasets too large to hold in memory or in context",
+        # DuckDB queries CSV/Parquet/JSON off disk without loading the file,
+        # which is what makes a million-row export answerable at all. Polars
+        # covers the reshaping DuckDB's SQL is awkward for.
+        "packages": ("duckdb", "polars", "pyarrow"),
+        "imports": ("duckdb", "polars", "pyarrow"),
     },
 }
 
@@ -38,24 +64,27 @@ def main() -> int:
     args = parser.parse_args(parser_args)
 
     skill_dir = Path(__file__).resolve().parent.parent
-    venv_dir = divo_home() / "venvs" / "skills" / "image-analysis" / args.feature
+    venv_dir = divo_home() / "venvs" / "skills" / "files-and-documents" / args.feature
     python = venv_python(venv_dir)
 
     if args.python:
         print(python)
         return 0
 
-    payload = ensure_feature(args.feature, venv_dir, python, check_only=args.check_only)
-    if args.json:
-        print(json.dumps(payload, indent=2))
-    elif not args.quiet:
-        print_human_status(payload)
+    status = ensure_feature(args.feature, venv_dir, python, check_only=args.check_only)
 
-    if not payload["ready"]:
+    if args.json:
+        print(json.dumps(status, indent=2))
+    elif not args.quiet:
+        print_human_status(status)
+
+    if not status["ready"]:
         return 1
+
     if command:
         sys.stdout.flush()
         return run_with_managed_python(python, skill_dir, command)
+
     return 0
 
 
@@ -87,15 +116,21 @@ def ensure_feature(feature: str, venv_dir: Path, python: Path, *, check_only: bo
     if not python.exists():
         if check_only:
             return status(feature, venv_dir, python, ready=False, missing=spec["imports"], created=False)
-        venv.EnvBuilder(with_pip=True, clear=False, symlinks=os.name != "nt").create(venv_dir)
+        create_venv(venv_dir)
         created = True
 
     missing = missing_imports(python, spec["imports"])
     if missing and not check_only:
-        install_packages(python, tuple(spec["packages"]))
+        packages = packages_for_missing(feature, missing)
+        install_packages(python, packages)
         missing = missing_imports(python, spec["imports"])
 
     return status(feature, venv_dir, python, ready=not missing, missing=missing, created=created)
+
+
+def create_venv(venv_dir: Path) -> None:
+    builder = venv.EnvBuilder(with_pip=True, clear=False, symlinks=os.name != "nt")
+    builder.create(venv_dir)
 
 
 def missing_imports(python: Path, imports: tuple[str, ...]) -> tuple[str, ...]:
@@ -119,8 +154,19 @@ def missing_imports(python: Path, imports: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(item for item in parsed if isinstance(item, str))
 
 
+def packages_for_missing(feature: str, missing: tuple[str, ...]) -> tuple[str, ...]:
+    spec = FEATURES[feature]
+    import_to_package = dict(zip(spec["imports"], spec["packages"]))
+    return tuple(import_to_package[name] for name in missing if name in import_to_package)
+
+
 def install_packages(python: Path, packages: tuple[str, ...]) -> None:
-    subprocess.run([str(python), "-m", "pip", "install", *packages], check=True)
+    if not packages:
+        return
+    subprocess.run(
+        [str(python), "-m", "pip", "install", *packages],
+        check=True,
+    )
 
 
 def status(
@@ -146,19 +192,21 @@ def status(
 
 def print_human_status(payload: dict) -> None:
     state = "ready" if payload["ready"] else "missing dependencies"
-    print(f"Divo image environment: {payload['feature']} is {state}")
+    print(f"Divo file environment: {payload['feature']} is {state}")
     print(f"python: {payload['python']}")
     if payload["missing"]:
         print("missing imports: " + ", ".join(payload["missing"]))
 
 
 def run_with_managed_python(python: Path, skill_dir: Path, command: list[str]) -> int:
+    if not command:
+        return 0
     program = Path(command[0])
     if not program.is_absolute():
         program = (skill_dir / program).resolve()
     child_env = os.environ.copy()
-    child_env["DIVO_IMAGE_PYTHON"] = str(python)
-    child_env["DIVO_IMAGE_SKILL_DIR"] = str(skill_dir)
+    child_env["DIVO_SKILL_PYTHON"] = str(python)
+    child_env["DIVO_SKILL_DIR"] = str(skill_dir)
     result = subprocess.run([str(python), str(program), *command[1:]], env=child_env)
     return result.returncode
 

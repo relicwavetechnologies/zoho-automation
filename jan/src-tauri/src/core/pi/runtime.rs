@@ -797,17 +797,23 @@ mod tests {
     }
 
     #[test]
-    fn trusted_skill_dirs_include_gateway_and_chat_history_only() {
+    fn trusted_skill_dirs_exclude_bundled_asset_directories() {
         let tmp =
             std::env::temp_dir().join(format!("jan-pi-trusted-skills-test-{}", std::process::id()));
         let skills_dir = tmp.join(BUNDLED_SKILLS_REL);
         let gateway_dir = skills_dir.join("divo-gateway");
         let chat_history_dir = skills_dir.join("divo-chat-history");
+        let assets_dir = skills_dir.join("files-and-documents");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&gateway_dir).unwrap();
         fs::write(gateway_dir.join("SKILL.md"), b"gateway").unwrap();
         fs::create_dir_all(&chat_history_dir).unwrap();
         fs::write(chat_history_dir.join("SKILL.md"), b"chat-history").unwrap();
+        // A bundled directory of helper scripts is reachable through
+        // DIVO_BUNDLED_SKILLS_DIR but must never become a discoverable skill:
+        // capabilities are DB rows the agent reaches router-first.
+        fs::create_dir_all(assets_dir.join("scripts")).unwrap();
+        fs::write(assets_dir.join("scripts/extract.py"), b"# helper").unwrap();
         fs::create_dir_all(skills_dir.join("untrusted-local-company-skill")).unwrap();
         fs::write(
             skills_dir.join("untrusted-local-company-skill/SKILL.md"),

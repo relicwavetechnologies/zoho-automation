@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Image inspection and manipulation helpers for Divo image-analysis.
+"""Image inspection, manipulation, and OCR helpers for Divo files-and-documents.
 
 Examples:
     python image_ops.py inspect image.png --json
+    python image_ops.py ocr receipt.jpg
     python image_ops.py convert input.jpg output.png --format PNG
     python image_ops.py resize input.png output.png --max-dimension 1600
     python image_ops.py crop input.png crop.png --box 100,200,900,700
@@ -191,6 +192,40 @@ def print_result(result: Any, *, as_json: bool) -> None:
             print(item)
 
 
+def ocr_image(path: Path, *, language: str = "eng") -> dict[str, Any]:
+    """Pull text out of an image with Tesseract.
+
+    Reports `text_found` separately from an empty string so a caller can tell
+    "this image has no text in it" from "OCR did not run" — answering from the
+    filename because OCR quietly returned nothing is the failure this avoids.
+    """
+    try:
+        import pytesseract
+    except ImportError as exc:  # pragma: no cover - surfaced to the agent
+        raise RuntimeError(
+            "pytesseract is not installed. Run: ensure_deps.py image"
+        ) from exc
+
+    with Image.open(path) as image:
+        image.load()
+        try:
+            text = pytesseract.image_to_string(image, lang=language)
+        except pytesseract.TesseractNotFoundError as exc:
+            raise RuntimeError(
+                "The tesseract binary is missing from this container. "
+                "Say OCR is unavailable rather than guessing at the image."
+            ) from exc
+
+    stripped = text.strip()
+    return {
+        "path": str(path),
+        "language": language,
+        "text_found": bool(stripped),
+        "characters": len(stripped),
+        "text": stripped,
+    }
+
+
 def existing_path(raw: str) -> Path:
     path = Path(raw).expanduser()
     if not path.exists() or not path.is_file():
@@ -231,6 +266,11 @@ def main() -> int:
     crop_p.add_argument("--quality", type=int, default=92)
     crop_p.add_argument("--json", action="store_true")
 
+    ocr_p = sub.add_parser("ocr", help="Extract text from an image with Tesseract.")
+    ocr_p.add_argument("image", type=existing_path)
+    ocr_p.add_argument("--language", default="eng", help="Tesseract language code.")
+    ocr_p.add_argument("--json", action="store_true")
+
     colors_p = sub.add_parser("colors", help="Extract approximate dominant colors.")
     colors_p.add_argument("image", type=existing_path)
     colors_p.add_argument("--count", type=int, default=8)
@@ -239,6 +279,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "inspect":
         print_result(inspect_image(args.image), as_json=args.json)
+    elif args.command == "ocr":
+        print_result(ocr_image(args.image, language=args.language), as_json=args.json)
     elif args.command == "convert":
         print_result(convert_image(args.input, args.output, fmt=args.fmt, quality=args.quality), as_json=args.json)
     elif args.command == "resize":

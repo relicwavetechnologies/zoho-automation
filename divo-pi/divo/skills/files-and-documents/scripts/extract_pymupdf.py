@@ -6,6 +6,7 @@ Usage:
     python extract_pymupdf.py document.pdf --markdown
     python extract_pymupdf.py document.pdf --pages 0-4
     python extract_pymupdf.py document.pdf --images output_dir/
+    python extract_pymupdf.py scan.pdf --render output_dir/
     python extract_pymupdf.py document.pdf --tables
     python extract_pymupdf.py document.pdf --metadata
 """
@@ -53,6 +54,32 @@ def extract_images(path, output_dir):
             count += 1
     print(f"Extracted {count} images to {output_dir}/")
 
+def render_pages(path, output_dir, pages=None, dpi=300):
+    """Rasterise whole pages to PNG — the scanned-PDF path.
+
+    Distinct from --images, which pulls out images *embedded* in a page. A
+    scanned document often has no embedded image to find (the scan is drawn
+    into the page), so extracting embedded images returns nothing and OCR
+    silently has no input. Rendering always produces a page to read.
+    """
+    import pymupdf
+    from pathlib import Path
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    doc = pymupdf.open(path)
+    page_range = range(len(doc)) if pages is None else pages
+    written = []
+    for i in page_range:
+        if i >= len(doc):
+            continue
+        pix = doc[i].get_pixmap(dpi=dpi)
+        out_path = f"{output_dir}/page-{i + 1}.png"
+        pix.save(out_path)
+        written.append(out_path)
+    print(f"Rendered {len(written)} page(s) at {dpi}dpi to {output_dir}/")
+    for out_path in written:
+        print(out_path)
+
+
 def show_metadata(path):
     import pymupdf
     doc = pymupdf.open(path)
@@ -88,6 +115,13 @@ if __name__ == "__main__":
         show_metadata(path)
     elif "--tables" in args:
         extract_tables(path)
+    elif "--render" in args:
+        idx = args.index("--render")
+        output_dir = args[idx + 1] if idx + 1 < len(args) else "./pages"
+        dpi = 300
+        if "--dpi" in args:
+            dpi = int(args[args.index("--dpi") + 1])
+        render_pages(path, output_dir, pages=pages, dpi=dpi)
     elif "--images" in args:
         idx = args.index("--images")
         output_dir = args[idx + 1] if idx + 1 < len(args) else "./images"
