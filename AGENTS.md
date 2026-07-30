@@ -17,14 +17,18 @@ This workspace contains several structured codebases:
 Divo should integrate with Pi through a backend-owned capability gateway:
 
 ```txt
-Jan/Desktop auths user with advance-backend
-  -> Desktop stores member session
-  -> Bundled Pi runs locally
-  -> Pi calls one Divo tool with op + payload
+Desktop: Jan auths with advance-backend -> bundled Pi runs locally
+Lark: webhook admission -> LarkPiRuntimeService -> private controller
+  -> isolated per-user Divo container -> Pi runtime
+Both: Pi calls one Divo tool with op + payload
   -> advance-backend authenticates, resolves user/departments, enforces RBAC/HITL, executes tool
 ```
 
 Do not move RBAC, SaaS credentials, OAuth ownership, or enterprise policy into Pi. Pi is the agent/runtime layer. `advance-backend` is the authority for identity, permissions, tools, approvals, auditing, and external integrations.
+
+Lark agent turns use the isolated cloud-Pi path only. Never route them through
+the Vercel AI SDK orchestration engine, and never hide a Pi failure by falling
+back to that engine. User-facing Lark copy says **Divo**, not Pi.
 
 ## Non-Negotiable Engineering Rules
 
@@ -122,4 +126,3 @@ Pause and ask before:
 - Modifying Pi core.
 - Exposing new backend routes to the desktop or agent.
 - Creating a second way to invoke company tools.
-

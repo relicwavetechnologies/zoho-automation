@@ -208,7 +208,7 @@ export function createControlsRoutes(deps: ControlsRoutesDeps): Router {
   }));
 
   const groupModeUpdate = groupAddress.extend({
-    mode: z.enum(['threaded', 'inline']),
+    mode: z.literal('threaded'),
   });
 
   router.put('/lark-group-mode', asyncRoute(async (req, res) => {

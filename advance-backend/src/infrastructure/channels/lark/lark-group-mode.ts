@@ -44,7 +44,7 @@ export const larkGroupModeControlKey = (address: LarkGroupAddress): string => {
 };
 
 export const parseLarkGroupMode = (value: unknown): GroupReplyMode =>
-  value === 'inline' ? 'inline' : DEFAULT_LARK_GROUP_MODE;
+  value === 'threaded' ? value : DEFAULT_LARK_GROUP_MODE;
 
 export async function loadLarkGroupMode(
   store: GroupModeStore,
@@ -84,7 +84,7 @@ export const withLarkGroupMode = (
   ? { ...incoming, groupReplyMode: mode }
   : incoming;
 
-export const buildLarkGroupSettingsCard = (mode: GroupReplyMode): string => {
+export const buildLarkGroupSettingsCard = (_mode: GroupReplyMode): string => {
   const card = {
     schema: '2.0',
     config: { width_mode: 'fill', update_multi: true, enable_forward: false },
@@ -98,49 +98,7 @@ export const buildLarkGroupSettingsCard = (mode: GroupReplyMode): string => {
       elements: [
         {
           tag: 'markdown',
-          content: mode === 'threaded'
-            ? '**Current mode: Threaded**\nDivo starts a separate thread for each new request.'
-            : '**Current mode: Inline**\nDivo replies in the main group conversation.',
-        },
-        {
-          tag: 'column_set',
-          horizontal_spacing: '8px',
-          columns: [
-            {
-              tag: 'column',
-              width: 'weighted',
-              weight: 1,
-              elements: [{
-                tag: 'button',
-                text: { tag: 'plain_text', content: 'Threaded' },
-                type: mode === 'threaded' ? 'primary' : 'default',
-                width: 'fill',
-                behaviors: [{
-                  type: 'callback',
-                  value: { action: 'set_group_mode', mode: 'threaded' },
-                }],
-              }],
-            },
-            {
-              tag: 'column',
-              width: 'weighted',
-              weight: 1,
-              elements: [{
-                tag: 'button',
-                text: { tag: 'plain_text', content: 'Inline' },
-                type: mode === 'inline' ? 'primary' : 'default',
-                width: 'fill',
-                behaviors: [{
-                  type: 'callback',
-                  value: { action: 'set_group_mode', mode: 'inline' },
-                }],
-              }],
-            },
-          ],
-        },
-        {
-          tag: 'markdown',
-          content: '<font color="grey">Only company admins can change this setting.</font>',
+          content: '**Threaded replies are always on**\nMention Divo once to start a thread. After that, everyone can continue inside it without mentioning Divo again.',
         },
       ],
     },

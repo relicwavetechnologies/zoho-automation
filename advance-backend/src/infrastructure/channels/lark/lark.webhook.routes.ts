@@ -102,7 +102,6 @@ import {
   buildLarkGroupSettingsCard,
   DEFAULT_LARK_GROUP_MODE,
   loadLarkGroupMode,
-  saveLarkGroupMode,
   withLarkGroupMode,
 } from './lark-group-mode';
 import { parseLarkFinalDeliveryEnvelope } from './lark-final-delivery';
@@ -287,53 +286,10 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
           const actionValue = (cardEvent as any)?.action?.value;
           const actionObj = typeof actionValue === 'string' ? (() => { try { return JSON.parse(actionValue); } catch { return null; } })() : actionValue;
           if (actionObj?.action === 'set_group_mode') {
-            const mode = actionObj.mode;
-            const chatId = (cardEvent as any)?.context?.open_chat_id
-              ?? (cardEvent as any)?.open_chat_id;
-            const appId = eventHeader?.['app_id'];
-            const isAdmin = actor.aiRole === 'COMPANY_ADMIN'
-              || actor.aiRole === 'SUPER_ADMIN';
-            if (!isAdmin) {
-              res.status(200).json({
-                toast: { type: 'warning', content: 'Only a company admin can change group settings.' },
-              });
-              return;
-            }
-            if (
-              !deps.prisma
-              || !actor.tenantKey
-              || typeof chatId !== 'string'
-              || typeof appId !== 'string'
-              || (mode !== 'threaded' && mode !== 'inline')
-            ) {
-              res.status(200).json({
-                toast: { type: 'error', content: 'Divo could not identify this group setting.' },
-              });
-              return;
-            }
-            await saveLarkGroupMode(
-              deps.prisma,
-              {
-                companyId: actor.companyId,
-                tenantKey: actor.tenantKey,
-                appId,
-                chatId,
-              },
-              mode,
-              actor.userId,
-            );
-            log.info('webhook.group_mode.updated', {
-              companyId: actor.companyId,
-              chatId,
-              mode,
-              actorUserId: actor.userId,
-            });
             res.status(200).json({
               toast: {
-                type: 'success',
-                content: mode === 'threaded'
-                  ? 'Divo will start a thread for each new request.'
-                  : 'Divo will reply inline in this group.',
+                type: 'info',
+                content: 'Divo always replies in threads inside groups.',
               },
             });
             return;
@@ -993,6 +949,83 @@ function runtimeThreadIdFor(incoming: IncomingMessage): string {
   }));
 }
 
+const DIVO_OWNED_THREAD_REF = 'divoOwnedThread';
+
+function isDivoOwnedThreadRef(value: unknown): boolean {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+    && (value as Record<string, unknown>)[DIVO_OWNED_THREAD_REF] === true;
+}
+
+async function readDivoOwnedThreadRefs(
+  prisma: PrismaClient | undefined,
+  companyId: string | null,
+  incoming: IncomingMessage,
+): Promise<Record<string, unknown> | null> {
+  if (
+    !prisma
+    || !companyId
+    || incoming.chatType !== 'group'
+    || !(incoming.rootMessageId || incoming.threadId)
+  ) return null;
+
+  const conversation = await prisma.runtimeConversation.findUnique({
+    where: {
+      companyId_channel_channelConversationKey: {
+        companyId,
+        channel: 'lark',
+        channelConversationKey: runtimeThreadIdFor(incoming),
+      },
+    },
+    select: { refsJson: true },
+  });
+  return typeof conversation?.refsJson === 'object'
+    && conversation.refsJson !== null
+    && !Array.isArray(conversation.refsJson)
+    ? conversation.refsJson as Record<string, unknown>
+    : null;
+}
+
+async function markDivoOwnedThread(
+  prisma: PrismaClient | undefined,
+  companyId: string | null,
+  incoming: IncomingMessage,
+  refs: Record<string, unknown> | null,
+  userId?: string,
+): Promise<void> {
+  if (!prisma || !companyId || incoming.chatType !== 'group') return;
+
+  const conversationKey = runtimeThreadIdFor(incoming);
+  const nextRefs = {
+    ...(refs ?? {}),
+    chatType: 'group',
+    larkOpenId: incoming.userExternalId,
+    [DIVO_OWNED_THREAD_REF]: true,
+  };
+  await prisma.runtimeConversation.upsert({
+    where: {
+      companyId_channel_channelConversationKey: {
+        companyId,
+        channel: 'lark',
+        channelConversationKey: conversationKey,
+      },
+    },
+    create: {
+      companyId,
+      channel: 'lark',
+      channelConversationKey: conversationKey,
+      rawChannelKey: String(incoming.chatId),
+      ...(userId ? { createdByUserId: userId } : {}),
+      refsJson: nextRefs,
+    },
+    update: {
+      updatedAt: new Date(),
+      refsJson: nextRefs,
+    },
+  });
+}
+
 function piToolStatus(toolName: string, toolId?: string): {
   label: string;
   liveLabel: string;
@@ -1017,6 +1050,14 @@ function piToolStatus(toolName: string, toolId?: string): {
     return { label: 'Divo', liveLabel: 'Using a company capability…' };
   }
   return { label: 'Tool', liveLabel: 'Running a tool…' };
+}
+
+function divoFacingRuntimeMessage(message: string): string {
+  return message
+    .replace(/All Pi slots are busy/gi, 'Divo is at full capacity')
+    .replace(/Your Pi agent/gi, 'Divo')
+    .replace(/\bPi agent\b/gi, 'Divo')
+    .replace(/\bpi\b/gi, 'Divo');
 }
 
 export async function runPiAndDeliver(input: {
@@ -1049,7 +1090,7 @@ export async function runPiAndDeliver(input: {
   let statusHandle: StatusHandle | null = null;
   let phase = 'Starting';
   let state: ChannelRunState = 'thinking';
-  let liveLabel = 'Preparing your secure workspace…';
+  let liveLabel = 'Waking up Divo…';
   let actionCount = 0;
 
   const publishStatus = async (): Promise<void> => {
@@ -1082,7 +1123,9 @@ export async function runPiAndDeliver(input: {
     if (event.type === 'starting') {
       phase = 'Starting';
       state = 'thinking';
-      liveLabel = event.label;
+      liveLabel = event.stage === 'workspace'
+        ? 'Preparing Divo’s workspace…'
+        : 'Waking up Divo…';
     } else if (event.type === 'ready' || event.type === 'thinking') {
       phase = 'Thinking';
       state = 'thinking';
@@ -1140,8 +1183,8 @@ export async function runPiAndDeliver(input: {
     } else {
       const code = error instanceof LarkPiRuntimeError ? error.code : 'run_failed';
       text = error instanceof LarkPiRuntimeError
-        ? error.userMessage
-        : 'Pi could not complete this request (run_failed). No fallback agent was run.';
+        ? divoFacingRuntimeMessage(error.userMessage)
+        : 'Divo could not complete this request (run_failed). No fallback agent was run.';
       log.error('webhook.pi.failed', {
         code,
         error: String(error),
@@ -1328,11 +1371,62 @@ async function processInBackground(
     }
   }
 
+  let ambientCompanyId: string | null = null;
+  if (!identity && incoming.chatType === 'group') {
+    const companyResult = await deps.channelIdentityRepo.resolveLarkTenantCompanyId(tenantKey);
+    ambientCompanyId = companyResult.ok ? companyResult.value : null;
+  }
+
+  const explicitlyAddressed = shouldStartLarkAgent(incoming);
+  const mayContinueThread =
+    isLarkHumanMessage(incoming)
+    && incoming.chatType === 'group'
+    && incoming.groupReplyMode !== 'inline'
+    && Boolean(incoming.rootMessageId || incoming.threadId);
+  const ownershipCompanyId = identity?.companyId ?? ambientCompanyId;
+  let threadRefs: Record<string, unknown> | null = null;
+  if (explicitlyAddressed || mayContinueThread) {
+    try {
+      threadRefs = await readDivoOwnedThreadRefs(
+        deps.prisma,
+        ownershipCompanyId,
+        incoming,
+      );
+    } catch (error) {
+      log.warn('webhook.thread_ownership.read_failed', {
+        companyId: ownershipCompanyId,
+        conversationKey: runtimeThreadIdFor(incoming),
+        error: String(error),
+        correlationId,
+      });
+      throw error;
+    }
+  }
+  const continuesDivoThread = mayContinueThread && isDivoOwnedThreadRef(threadRefs);
+  const shouldRespond = explicitlyAddressed || continuesDivoThread;
+
+  if (explicitlyAddressed && ownershipCompanyId) {
+    try {
+      await markDivoOwnedThread(
+        deps.prisma,
+        ownershipCompanyId,
+        incoming,
+        threadRefs,
+        identity?.userId,
+      );
+    } catch (error) {
+      log.warn('webhook.thread_ownership.write_failed', {
+        companyId: ownershipCompanyId,
+        conversationKey: runtimeThreadIdFor(incoming),
+        error: String(error),
+        correlationId,
+      });
+      throw error;
+    }
+  }
+
   if (!identityResult.ok || !identity) {
-    let ambientCompanyId: string | null = null;
     if (incoming.chatType === 'group') {
-      const companyResult = await deps.channelIdentityRepo.resolveLarkTenantCompanyId(tenantKey);
-      ambientCompanyId = companyResult.ok ? companyResult.value : null;
       if (ambientCompanyId) {
         await storeUnknownGroupIncomingSnapshot({
           incoming,
@@ -1343,7 +1437,7 @@ async function processInBackground(
       }
     }
 
-    if (isUntaggedGroupMessage(incoming)) {
+    if (!shouldRespond) {
       log.debug('webhook.group_message.not_mentioned.identity_missing', {
         chatId: incoming.chatId,
         messageId: incoming.messageId,
@@ -1449,6 +1543,8 @@ async function processInBackground(
   }
 
   if (
+    shouldRespond
+    &&
     deps.piRuntime.hasActiveSession
     && !await deps.piRuntime.hasActiveSession({
       companyId: asCompanyId(identity.companyId),
@@ -1530,20 +1626,21 @@ async function processInBackground(
     routingMode: 'active',
   });
   log.info('webhook.execution.correlated');
-  if (deps.prisma) {
+  if (deps.prisma && (incoming.chatType !== 'group' || shouldRespond)) {
     try {
+      const conversationKey = runtimeThreadIdFor(incoming);
       await deps.prisma.runtimeConversation.upsert({
         where: {
           companyId_channel_channelConversationKey: {
             companyId: identity.companyId,
             channel: 'lark',
-            channelConversationKey: String(incoming.chatId),
+            channelConversationKey: conversationKey,
           },
         },
         create: {
           companyId: identity.companyId,
           channel: 'lark',
-          channelConversationKey: String(incoming.chatId),
+          channelConversationKey: conversationKey,
           rawChannelKey: String(incoming.chatId),
           createdByUserId: identity.userId,
           ...(identity.email ? { createdByEmail: identity.email } : {}),
@@ -1638,13 +1735,7 @@ async function processInBackground(
     return;
   }
 
-  const explicitlyAddressed = shouldStartLarkAgent(incoming);
-  const mayContinueThread =
-    incoming.chatType === 'group'
-    && incoming.groupReplyMode !== 'inline'
-    && Boolean(incoming.rootMessageId || incoming.threadId)
-    && Boolean(incoming.replyToMessageId);
-  let parentRef = (explicitlyAddressed || mayContinueThread) && incoming.replyToMessageId
+  let parentRef = explicitlyAddressed && incoming.replyToMessageId
     ? await (deps.fetchParentMessage ?? fetchParentMessage)({
         parentMessageId: String(incoming.replyToMessageId),
         env: deps.env,
@@ -1656,10 +1747,6 @@ async function processInBackground(
         includeContent: explicitlyAddressed,
       })
     : null;
-  const continuesDivoThread = mayContinueThread
-    && parentRef?.status === 'available'
-    && deps.adapter.isBotOpenId(parentRef.senderExternalId);
-  const shouldRespond = explicitlyAddressed || continuesDivoThread;
   if (explicitlyAddressed && parentRef?.status === 'available' && parentRef.audioAttachment) {
     const transcript = await transcribeLarkVoiceNote({
       attachment: {
@@ -2248,21 +2335,14 @@ async function handleSlashCommand(args: {
     };
     const requested = text.slice(cmd.length).trim().toLowerCase();
     if (requested && requested !== 'status' && requested !== 'threaded' && requested !== 'inline') {
-      await reply('Usage: `/group-mode threaded`, `/group-mode inline`, or `/group-mode status`.');
+      await reply('Usage: `/group-mode status`. Divo always replies in threads inside groups.');
       return;
     }
 
-    let mode = await loadLarkGroupMode(deps.prisma, address);
-    if (requested === 'threaded' || requested === 'inline') {
-      mode = requested;
-      await saveLarkGroupMode(deps.prisma, address, mode, identity.userId);
-      log.info('webhook.group_mode.updated', {
-        companyId: identity.companyId,
-        chatId: incoming.chatId,
-        mode,
-        actorUserId: identity.userId,
-        correlationId,
-      });
+    const mode = await loadLarkGroupMode(deps.prisma, address);
+    if (requested === 'inline') {
+      await reply('Divo always replies in threads inside groups. Inline mode is no longer available.');
+      return;
     }
 
     if (cmd === '/group-settings' || !requested || requested === 'status') {
@@ -2282,11 +2362,7 @@ async function handleSlashCommand(args: {
       return;
     }
 
-    await reply(
-      mode === 'threaded'
-        ? 'Done. New requests will open their own Divo thread.'
-        : 'Done. Divo will reply inline in this group.',
-    );
+    await reply('Divo already uses threads for every group request.');
     return;
   }
 
@@ -2610,7 +2686,7 @@ async function handleSlashCommand(args: {
       '`/clear room` — Admin-only two-step reset for every thread in this group.\n' +
       '`/stop` — Stop the active run in this conversation.\n' +
       '`/group-settings` — Admin-only group reply settings.\n' +
-      '`/group-mode threaded|inline|status` — Configure or inspect group replies.\n' +
+      '`/group-mode status` — Confirm that group replies stay in threads.\n' +
       '`/remember <fact>` — Save a fact Divo will recall in future chats.\n' +
       '  _Example:_ `/remember Acme Corp uses net-30 payment terms`\n\n' +
       '**Account**\n' +

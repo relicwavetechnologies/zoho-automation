@@ -181,7 +181,11 @@ async function runWebhook(body: unknown, options: {
   companyControls?: Array<{ controlKey: string; value: string }>;
   /** Per-group reply mode loaded before the receipt enters the async lane. */
   groupReplyMode?: 'threaded' | 'inline';
-  /** Parent lookup result for quote context and direct-reply authorship. */
+  /** Durable canonical conversation keys already owned by Divo. */
+  ownedThreadKeys?: Set<string>;
+  ownershipReadFails?: boolean;
+  ownershipWriteFails?: boolean;
+  /** Parent lookup result for quote context. */
   parentMessage?: Awaited<ReturnType<NonNullable<LarkWebhookDeps['fetchParentMessage']>>>;
   /** Enable and observe group-mode writes. */
   groupModeStore?: boolean;
@@ -227,6 +231,25 @@ async function runWebhook(body: unknown, options: {
   const background: Promise<void>[] = [];
   const logEvents: Array<{ event: string; fields: Record<string, unknown> }> = [];
   const cacheWrites: Array<{ key: string; value: string; ttlSeconds: number }> = [];
+  const ownedThreadKeys = options.ownedThreadKeys ?? new Set<string>();
+  const runtimeConversation = {
+    findUnique: async (input: any) => {
+      if (options.ownershipReadFails) throw new Error('ownership read unavailable');
+      const key = input.where.companyId_channel_channelConversationKey.channelConversationKey;
+      return ownedThreadKeys.has(key)
+        ? { refsJson: { divoOwnedThread: true } }
+        : null;
+    },
+    upsert: async (input: any) => {
+      const key = input.where.companyId_channel_channelConversationKey.channelConversationKey;
+      const refs = input.create?.refsJson ?? input.update?.refsJson;
+      if (refs?.divoOwnedThread === true && options.ownershipWriteFails) {
+        throw new Error('ownership write unavailable');
+      }
+      if (refs?.divoOwnedThread === true) ownedThreadKeys.add(key);
+      return {};
+    },
+  };
   let status = 200;
   let responseBody: unknown;
   const createLogger = (bindings: Record<string, unknown> = {}): Logger => ({
@@ -371,7 +394,12 @@ async function runWebhook(body: unknown, options: {
         return 'job-1';
       },
     } as any,
-    ...(options.companyControls || options.groupReplyMode || options.groupModeStore
+    ...(options.companyControls
+      || options.groupReplyMode
+      || options.groupModeStore
+      || options.ownedThreadKeys
+      || options.ownershipReadFails
+      || options.ownershipWriteFails
       ? {
           prisma: {
             adminControlState: {
@@ -384,7 +412,7 @@ async function runWebhook(body: unknown, options: {
                 return {};
               },
             },
-            runtimeConversation: { upsert: async () => ({}) },
+            runtimeConversation,
           } as any,
         }
       : {}),
@@ -418,7 +446,7 @@ async function runWebhook(body: unknown, options: {
             larkTenantBinding: { findFirst: async () => ({ companyId: 'company-1' }) },
             channelIdentity: { upsert: async () => ({}) },
             adminControlState: { findMany: async () => options.companyControls ?? [] },
-            runtimeConversation: { upsert: async () => ({}) },
+            runtimeConversation,
           } as any,
           larkContactsClient: {
             getTenantKey: async () => 'tenant-1',
@@ -449,7 +477,7 @@ async function runWebhook(body: unknown, options: {
                       return { count: 1 };
                     },
                   },
-                  runtimeConversation: { upsert: async () => ({}) },
+                  runtimeConversation,
                 } as any,
               }
             : {}),
@@ -556,6 +584,7 @@ async function runWebhook(body: unknown, options: {
     acceptedCompanyIds,
     completedBatchReceipts,
     groupModeUpdates,
+    ownedThreadKeys,
     cacheWrites,
     processQueuedReceipt,
   };
@@ -563,7 +592,11 @@ async function runWebhook(body: unknown, options: {
 
 describe('Lark webhook admission', () => {
   it('durably accepts before ACKing and runs an exact-ID group mention', async () => {
-    const result = await runWebhook(makeEvent({ chatType: 'group', mentionsBot: true }));
+    const ownedThreadKeys = new Set<string>();
+    const result = await runWebhook(
+      makeEvent({ chatType: 'group', mentionsBot: true }),
+      { ownedThreadKeys },
+    );
     assert.equal(result.status, 200);
     assert.deepEqual(result.responseBody, { ok: true });
     // A mentioned turn is recorded in the room transcript on both sides of the
@@ -593,6 +626,7 @@ describe('Lark webhook admission', () => {
     assert.equal(engineInput.incoming.rootMessageId, 'om_root');
     assert.equal(engineInput.conversation.replyToMessageId, 'om_1');
     assert.equal(engineInput.conversation.replyInThread, true);
+    assert.deepEqual([...ownedThreadKeys], ['oc_1:thread:om_root']);
     const correlated = result.logEvents.find(entry => entry.event === 'webhook.execution.correlated');
     assert.deepEqual(correlated?.fields, {
       route: 'lark-webhook',
@@ -648,19 +682,12 @@ describe('Lark webhook admission', () => {
     assert.equal(result.engineInputs.length, 0);
   });
 
-  it('continues a Divo thread when a user replies directly without mentioning it again', async () => {
+  it('continues a Divo-owned thread without mentioning it again', async () => {
     const result = await runWebhook(makeEvent({
       chatType: 'group',
       text: 'compare the margins too',
     }), {
-      parentMessage: {
-        messageId: 'om_parent',
-        status: 'available',
-        messageType: 'text',
-        text: 'Here is the first comparison.',
-        senderExternalId: 'ou_bot',
-        imageUrls: [],
-      },
+      ownedThreadKeys: new Set(['oc_1:thread:om_root']),
     });
 
     assert.equal(result.engineInputs.length, 1);
@@ -672,11 +699,12 @@ describe('Lark webhook admission', () => {
     assert.equal(input.conversation.replyInThread, true);
   });
 
-  it('keeps an unmentioned reply to another person ambient inside a thread', async () => {
+  it('continues a Divo-owned thread when replying to another person', async () => {
     const result = await runWebhook(makeEvent({
       chatType: 'group',
       text: 'I agree with this',
     }), {
+      ownedThreadKeys: new Set(['oc_1:thread:om_root']),
       parentMessage: {
         messageId: 'om_parent',
         status: 'available',
@@ -687,9 +715,81 @@ describe('Lark webhook admission', () => {
       },
     });
 
+    assert.equal(result.engineInputs.length, 1);
+    assert.equal(result.retainedMessages.length, 2);
+  });
+
+  it('keeps an unmentioned reply in an unowned human thread ambient', async () => {
+    const result = await runWebhook(makeEvent({
+      chatType: 'group',
+      text: 'I agree with this',
+    }), {
+      ownedThreadKeys: new Set(),
+    });
+
     assert.equal(result.engineInputs.length, 0);
     assert.equal(result.retainedMessages.length, 1);
-    assert.equal(result.appendedTurns.length, 0);
+  });
+
+  it('retries instead of silently dropping a thread when ownership cannot be read', async () => {
+    let ran = false;
+    await assert.rejects(
+      runWebhook(makeEvent({
+        chatType: 'group',
+        text: 'continue the owned thread',
+      }), {
+        ownedThreadKeys: new Set(['oc_1:thread:om_root']),
+        ownershipReadFails: true,
+        engineRun: async () => {
+          ran = true;
+          return { text: 'must not run' };
+        },
+      }),
+      /ownership read unavailable/,
+    );
+    assert.equal(ran, false);
+  });
+
+  it('persists ownership before answering and succeeds on retry', async () => {
+    const ownedThreadKeys = new Set<string>();
+    let runs = 0;
+    const event = makeEvent({ chatType: 'group', mentionsBot: true });
+
+    await assert.rejects(
+      runWebhook(event, {
+        ownedThreadKeys,
+        ownershipWriteFails: true,
+        engineRun: async () => {
+          runs += 1;
+          return { text: 'must not run' };
+        },
+      }),
+      /ownership write unavailable/,
+    );
+    assert.equal(runs, 0);
+    assert.deepEqual([...ownedThreadKeys], []);
+
+    await runWebhook(event, {
+      ownedThreadKeys,
+      engineRun: async () => {
+        runs += 1;
+        return { text: 'started' };
+      },
+    });
+    const followUp = await runWebhook(makeEvent({
+      chatType: 'group',
+      text: 'continue without another mention',
+    }), {
+      ownedThreadKeys,
+      engineRun: async () => {
+        runs += 1;
+        return { text: 'continued' };
+      },
+    });
+
+    assert.deepEqual([...ownedThreadKeys], ['oc_1:thread:om_root']);
+    assert.equal(followUp.engineInputs.length, 1);
+    assert.equal(runs, 2);
   });
 
   it('does not put an unmentioned top-level room message into thread history', async () => {
@@ -760,23 +860,17 @@ describe('Lark webhook admission', () => {
     assert.equal(incoming.referenceContext, undefined);
   });
 
-  it('does not treat direct replies as agent turns when the group uses inline mode', async () => {
+  it('ignores a stored inline override and keeps an owned group threaded', async () => {
     const result = await runWebhook(makeEvent({
       chatType: 'group',
       text: 'continue',
     }), {
       groupReplyMode: 'inline',
-      parentMessage: {
-        messageId: 'om_parent',
-        status: 'available',
-        messageType: 'text',
-        text: 'Previous Divo reply',
-        senderExternalId: 'ou_bot',
-        imageUrls: [],
-      },
+      ownedThreadKeys: new Set(['oc_1:thread:om_root']),
     });
 
-    assert.equal(result.engineInputs.length, 0);
+    assert.equal(result.engineInputs.length, 1);
+    assert.equal((result.engineInputs[0] as any).conversation.replyInThread, true);
   });
 
   it('fails closed when a message event has no authenticated tenant key', async () => {
@@ -931,6 +1025,7 @@ describe('Lark webhook admission', () => {
     }), {
       engineRun: async (input: unknown) => {
         const onProgress = (input as any).onProgress;
+        await onProgress({ type: 'starting', stage: 'container', label: 'Starting Pi' });
         await onProgress({ type: 'ready' });
         await onProgress({
           type: 'tool_start',
@@ -956,7 +1051,13 @@ describe('Lark webhook admission', () => {
     assert.deepEqual(adapter.__finalReplies, ['Report complete']);
     assert.deepEqual(
       adapter.__statusUpdates.map((update: any) => update.timeline.state),
-      ['thinking', 'thinking', 'working', 'working', 'writing', 'writing'],
+      ['thinking', 'thinking', 'thinking', 'working', 'working', 'writing', 'writing'],
+    );
+    assert.equal(adapter.__statusUpdates[0].timeline.liveLabel, 'Waking up Divo…');
+    assert.equal(adapter.__statusUpdates[1].timeline.liveLabel, 'Waking up Divo…');
+    assert.doesNotMatch(
+      adapter.__statusUpdates.map((update: any) => update.timeline.liveLabel).join(' '),
+      /\bPi\b/,
     );
     const toolUpdate = adapter.__statusUpdates.find(
       (update: any) => update.timeline.ledger?.[0]?.status === 'running',
@@ -977,7 +1078,7 @@ describe('Lark webhook admission', () => {
     const finalReplies: string[] = [];
     const failure = new LarkPiRuntimeError(
       'capacity_full',
-      'All Pi slots are busy. Please retry.',
+      'PI is busy. Please retry.',
     );
     const adapter = {
       registerAbortController() {},
@@ -1032,7 +1133,7 @@ describe('Lark webhook admission', () => {
       }),
       error => error === failure,
     );
-    assert.deepEqual(finalReplies, ['All Pi slots are busy. Please retry.']);
+    assert.deepEqual(finalReplies, ['Divo is busy. Please retry.']);
   });
 
   it('delivers an explicit Pi failure and lets the next same-chat message run', async () => {
@@ -1194,7 +1295,7 @@ describe('Lark webhook card authorization', () => {
     });
   });
 
-  it('lets a company admin change the current group mode from the settings card', async () => {
+  it('treats old group-mode card actions as informational', async () => {
     const result = await runWebhook({
       header: {
         event_type: 'card.action.trigger',
@@ -1217,19 +1318,13 @@ describe('Lark webhook card authorization', () => {
       groupModeStore: true,
     });
 
-    assert.equal(result.groupModeUpdates.length, 1);
-    assert.deepEqual((result.groupModeUpdates[0] as any).create, {
-      controlKey: (result.groupModeUpdates[0] as any).create.controlKey,
-      companyId: 'company-1',
-      value: 'inline',
-      updatedBy: 'admin-1',
-    });
+    assert.equal(result.groupModeUpdates.length, 0);
     assert.deepEqual(result.responseBody, {
-      toast: { type: 'success', content: 'Divo will reply inline in this group.' },
+      toast: { type: 'info', content: 'Divo always replies in threads inside groups.' },
     });
   });
 
-  it('refuses a non-admin group-mode card action', async () => {
+  it('does not let a stale group-mode card action change settings', async () => {
     const result = await runWebhook({
       header: {
         event_type: 'card.action.trigger',
@@ -1246,7 +1341,7 @@ describe('Lark webhook card authorization', () => {
 
     assert.deepEqual(result.groupModeUpdates, []);
     assert.deepEqual(result.responseBody, {
-      toast: { type: 'warning', content: 'Only a company admin can change group settings.' },
+      toast: { type: 'info', content: 'Divo always replies in threads inside groups.' },
     });
   });
 });
@@ -1358,7 +1453,7 @@ function captureOutbound(adapter: any): void {
 }
 
 describe('Lark conversation commands', () => {
-  it('lets a company admin configure future group replies', async () => {
+  it('rejects the retired inline group mode', async () => {
     let adapter: any;
     const result = await runWebhook(makeEvent({
       chatType: 'group',
@@ -1375,12 +1470,12 @@ describe('Lark conversation commands', () => {
       setupAdapter: value => { adapter = value; captureOutbound(value); },
     });
 
-    assert.equal(result.groupModeUpdates.length, 1);
-    assert.equal((result.groupModeUpdates[0] as any).create.value, 'inline');
-    assert.match(adapter.__finalReplies[0], /reply inline/i);
+    assert.equal(result.groupModeUpdates.length, 0);
+    assert.match(adapter.__finalReplies[0], /always replies in threads/i);
+    assert.match(adapter.__finalReplies[0], /no longer available/i);
   });
 
-  it('shows admin group settings as an interactive card', async () => {
+  it('shows the permanent threaded group behavior', async () => {
     let adapter: any;
     await runWebhook(makeEvent({
       chatType: 'group',
@@ -1399,9 +1494,10 @@ describe('Lark conversation commands', () => {
 
     const envelope = JSON.parse(adapter.__sentCards[0]);
     const card = JSON.parse(envelope.card);
-    assert.match(JSON.stringify(card), /set_group_mode/);
-    assert.match(JSON.stringify(card), /Threaded/);
-    assert.match(JSON.stringify(card), /Inline/);
+    assert.doesNotMatch(JSON.stringify(card), /set_group_mode/);
+    assert.match(JSON.stringify(card), /Threaded replies are always on/);
+    assert.doesNotMatch(JSON.stringify(card), /Inline/);
+    assert.doesNotMatch(JSON.stringify(card), /admin.*change/i);
   });
 
   it('clears only the active thread', async () => {
@@ -1420,7 +1516,7 @@ describe('Lark conversation commands', () => {
     assert.match(adapter.__finalReplies[0], /This conversation is cleared/i);
   });
 
-  it('clears only the requester session in inline mode', async () => {
+  it('ignores a legacy inline override when clearing a group thread', async () => {
     const result = await runWebhook(makeEvent({
       chatType: 'group',
       mentionsBot: true,
@@ -1430,7 +1526,7 @@ describe('Lark conversation commands', () => {
       setupAdapter: captureOutbound,
     });
 
-    assert.deepEqual(result.clearedHistoryKeys, ['oc_1:user:ou_sender']);
+    assert.deepEqual(result.clearedHistoryKeys, ['oc_1:thread:om_root']);
     assert.deepEqual(result.clearedRoomChatIds, []);
   });
 
@@ -1628,6 +1724,52 @@ describe('Lark first contact', () => {
     }]);
   });
 
+  it('stays silent for an unmentioned group message when the cloud session expired', async () => {
+    let adapter: any;
+    const result = await runWebhook(makeEvent({
+      chatType: 'group',
+      rootId: null,
+      parentId: null,
+      text: 'ordinary room discussion',
+    }), {
+      oauthConfigured: true,
+      activePiSession: false,
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
+    });
+
+    assert.deepEqual(adapter.__sentCards, []);
+    assert.deepEqual(noticesSent(adapter), []);
+    assert.deepEqual(result.piSessionContexts, []);
+    assert.equal(result.engineInputs.length, 0);
+  });
+
+  it('offers sign-in to an unknown person continuing a Divo-owned thread', async () => {
+    let adapter: any;
+    await runWebhook(makeEvent({
+      chatType: 'group',
+      text: 'continue this for me too',
+    }), {
+      unknownUser: true,
+      oauthConfigured: true,
+      ownedThreadKeys: new Set(['oc_1:thread:om_root']),
+      pendingLogin: {
+        status: 'ready',
+        companyId: 'company-1',
+        userId: 'user-2',
+        larkOpenId: 'ou_sender',
+        displayName: 'Bob',
+        email: 'bob@example.com',
+      },
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
+    });
+
+    assert.equal(adapter.__sentCards.length, 1);
+    assert.deepEqual(adapter.__sentCardDeliveries, [{
+      replyToMessageId: 'om_1',
+      replyInThread: true,
+    }]);
+  });
+
   it('keeps the Connect card inside a default-threaded group', async () => {
     let adapter: any;
     await runWebhook(makeEvent({
@@ -1650,7 +1792,7 @@ describe('Lark first contact', () => {
     }]);
   });
 
-  it('keeps the Connect card inline when the group is inline', async () => {
+  it('keeps the Connect card threaded despite a legacy inline override', async () => {
     let adapter: any;
     await runWebhook(makeEvent({
       chatType: 'group',
@@ -1669,7 +1811,7 @@ describe('Lark first contact', () => {
 
     assert.deepEqual(adapter.__sentCardDeliveries, [{
       replyToMessageId: 'om_1',
-      replyInThread: false,
+      replyInThread: true,
     }]);
   });
 
@@ -2240,7 +2382,7 @@ describe('Lark document attachments', () => {
     );
   });
 
-  it('captures inline delivery on the background ingestion job', async () => {
+  it('keeps background ingestion delivery threaded despite a legacy inline override', async () => {
     const result = await withStubbedFetch(() => runWebhook(makeEvent({
       chatType: 'group',
       mentionsBot: true,
@@ -2250,7 +2392,7 @@ describe('Lark document attachments', () => {
       groupReplyMode: 'inline',
     }));
 
-    assert.equal(result.ingestionJobs[0]?.['replyInThread'], false);
+    assert.equal(result.ingestionJobs[0]?.['replyInThread'], true);
   });
 
   it('indexes silently when Divo was not addressed', async () => {
@@ -2717,8 +2859,8 @@ describe('Lark per-turn authority in a shared thread', () => {
   });
 });
 
-describe('Lark inline rapid-message batching', () => {
-  it('admits and absorbs same-user messages on the inline lane', async () => {
+describe('Lark group rapid-message batching', () => {
+  it('ignores a legacy inline override and absorbs messages on the thread lane', async () => {
     const second = makeEvent({
       chatType: 'group',
       mentionsBot: true,
@@ -2741,7 +2883,7 @@ describe('Lark inline rapid-message batching', () => {
     });
 
     assert.deepEqual(result.acceptedLaneKeys, [
-      '["lark","ingress-receipt-lane","company-1","tenant-1","app-1","oc_1","requester","ou_sender"]',
+      '["lark","ingress-receipt-lane","company-1","tenant-1","app-1","oc_1","thread","om_root"]',
     ]);
     assert.equal(result.engineInputs.length, 1);
     assert.match(String((result.engineInputs[0] as any).incoming.text), /compare the companies/);
