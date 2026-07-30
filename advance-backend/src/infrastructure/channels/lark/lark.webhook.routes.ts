@@ -1155,7 +1155,7 @@ export async function runPiAndDeliver(input: {
   let statusHandle: StatusHandle | null = null;
   let phase = 'Starting';
   let state: ChannelRunState = 'thinking';
-  let liveLabel = 'Waking up Divo…';
+  let liveLabel = 'Getting things ready…';
   let actionCount = 0;
 
   const publishStatus = async (): Promise<void> => {
@@ -1188,9 +1188,7 @@ export async function runPiAndDeliver(input: {
     if (event.type === 'starting') {
       phase = 'Starting';
       state = 'thinking';
-      liveLabel = event.stage === 'workspace'
-        ? 'Preparing Divo’s workspace…'
-        : 'Waking up Divo…';
+      liveLabel = divoFacingRuntimeMessage(event.label);
     } else if (event.type === 'ready' || event.type === 'thinking') {
       phase = 'Thinking';
       state = 'thinking';

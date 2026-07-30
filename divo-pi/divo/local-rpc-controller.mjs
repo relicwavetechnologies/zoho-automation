@@ -602,6 +602,7 @@ export async function ensureProfileVolume(profileName) {
 
 async function ensureRuntime(profile) {
 	const resources = resourcesFor(profile);
+	let wasRunning = false;
 	if (!(await dockerObjectExists("image", IMAGE))) {
 		throw new Error(
 			`Image ${IMAGE} is missing. Build it with: docker build -t ${IMAGE} .`,
@@ -625,13 +626,15 @@ async function ensureRuntime(profile) {
 		if (runtimeContainerNeedsReplacement(container)) {
 			if (container.State.Running) await docker(["stop", resources.container]);
 			await docker(["rm", resources.container]);
+		} else {
+			wasRunning = container.State.Running;
 		}
 	}
 	if (!(await dockerObjectExists("container", resources.container))) {
 		await docker(buildContainerCreateArgs(profile));
 	}
 	await inspectOwnedContainer(profile);
-	return resources;
+	return { resources, wasRunning };
 }
 
 export function buildAttachmentStagingArgs(volume, script, image = IMAGE) {
@@ -1266,7 +1269,7 @@ async function runPrompt({
 	emitRuntimeProgress(onProgress, {
 		type: "starting",
 		stage: "workspace",
-		label: "Preparing your secure workspace…",
+		label: "Checking your workspace…",
 	});
 	let abortStop;
 	let bootstrapAttempted = false;
@@ -1282,14 +1285,15 @@ async function runPrompt({
 	signal?.addEventListener("abort", abort, { once: true });
 	if (signal?.aborted) abort();
 	try {
-		resources = await ensureRuntime(profile);
+		const runtime = await ensureRuntime(profile);
+		resources = runtime.resources;
 		if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
 		bootstrapAttempted = true;
 		await writeBootstrap(resources.authVolume, bootstrap);
 		emitRuntimeProgress(onProgress, {
 			type: "starting",
 			stage: "container",
-			label: "Starting Divo…",
+			label: runtime.wasRunning ? "Resuming your work…" : "Waking up Divo…",
 		});
 		const startedAt = Date.now();
 		const container = await inspectOwnedContainer(profile);
@@ -1410,6 +1414,10 @@ export async function resolveRuntimeLease({ backendUrl, lease }) {
 		userId: session.userId,
 		companyId: session.companyId,
 		instanceId: session.runtime.instanceId,
+		// The department the backend launched this run for. Without it the
+		// container picks the member's first department, so a run scoped to one
+		// department would execute under another's tool grants.
+		departmentId: session.runtime.departmentId ?? undefined,
 	};
 }
 

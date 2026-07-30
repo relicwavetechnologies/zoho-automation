@@ -962,6 +962,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
                 channel: 'lark',
                 instanceId: res.locals['runtimeInstanceId'],
                 threadId: res.locals['runtimeThreadId'],
+                departmentId: res.locals['runtimeDepartmentId'] ?? null,
               }
             : null,
           email: user?.email,

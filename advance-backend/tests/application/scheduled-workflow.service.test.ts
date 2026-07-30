@@ -364,6 +364,131 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     assert.equal(sessions.created.length, 0, 'no session may be minted without an identity');
   });
 
+  it('retries soon when the container was busy, instead of forfeiting the slot', async () => {
+    const workflow = {
+      id: 'wf-busy',
+      name: 'Busy',
+      companyId: 'co-1',
+      createdByUserId: 'user-1',
+      departmentId: null,
+      originChatId: 'oc_chat',
+      compiledPrompt: 'Do the thing.',
+      outputConfigJson: { deliveryChannel: 'lark' },
+      scheduleConfigJson: { type: 'daily', timezone: 'Asia/Kolkata', time: { hour: 9, minute: 0 } },
+    };
+    const sessions = sessionSpy();
+    let workflowUpdate: any = null;
+    const prisma = {
+      scheduledWorkflow: {
+        findUnique: async () => workflow,
+        update: async (args: any) => { workflowUpdate = args.data; return {}; },
+      },
+      scheduledWorkflowRun: { upsert: async () => ({ id: 'run-b' }), update: async () => ({}) },
+      memberSession: sessions.memberSession,
+    } as any;
+
+    const busy = Object.assign(new Error('Your Pi agent is busy.'), { code: 'user_busy' });
+    const svc = new ScheduledWorkflowService({
+      prisma,
+      piRuntime: { run: async () => { throw busy; } } as any,
+      channelAdapters: { lark: recordingAdapter('lark'), larkDm: recordingAdapter('lark'), desktop: recordingAdapter('desktop') },
+      channelIdentityRepo: { resolveByUserId: async () => ok(identity) } as any,
+      logger: noopLogger,
+      clock: fakeClock as any,
+      pollIntervalMs: 1_000,
+      runTimeoutMs: 60_000,
+    });
+
+    await (svc as any).executeWorkflow('wf-busy', new Date('2026-05-15T16:45:00.000Z'));
+
+    // The member was simply using their container. Waiting until tomorrow would
+    // silently drop today's report.
+    const next = workflowUpdate.nextRunAt as Date;
+    const minutesOut = (next.getTime() - fakeClock.now().getTime()) / 60_000;
+    assert.ok(minutesOut > 0 && minutesOut <= 5, `expected a near-term retry, got ${minutesOut} minutes`);
+  });
+
+  it('does not delay a natural slot that already comes sooner than the busy retry', async () => {
+    const workflow = {
+      id: 'wf-busy-soon',
+      name: 'Busy but frequent',
+      companyId: 'co-1',
+      createdByUserId: 'user-1',
+      departmentId: null,
+      originChatId: 'oc_chat',
+      compiledPrompt: 'Do the thing.',
+      outputConfigJson: { deliveryChannel: 'lark' },
+      scheduleConfigJson: { type: 'hourly', timezone: 'Asia/Kolkata', intervalHours: 1, minute: 0 },
+    };
+    const sessions = sessionSpy();
+    let workflowUpdate: any = null;
+    const prisma = {
+      scheduledWorkflow: {
+        findUnique: async () => workflow,
+        update: async (args: any) => { workflowUpdate = args.data; return {}; },
+      },
+      scheduledWorkflowRun: { upsert: async () => ({ id: 'run-bs' }), update: async () => ({}) },
+      memberSession: sessions.memberSession,
+    } as any;
+
+    const busy = Object.assign(new Error('busy'), { code: 'capacity_full' });
+    const svc = new ScheduledWorkflowService({
+      prisma,
+      piRuntime: { run: async () => { throw busy; } } as any,
+      channelAdapters: { lark: recordingAdapter('lark'), larkDm: recordingAdapter('lark'), desktop: recordingAdapter('desktop') },
+      channelIdentityRepo: { resolveByUserId: async () => ok(identity) } as any,
+      logger: noopLogger,
+      clock: fakeClock as any,
+      pollIntervalMs: 1_000,
+      runTimeoutMs: 60_000,
+    });
+
+    await (svc as any).executeWorkflow('wf-busy-soon', new Date('2026-05-15T16:45:00.000Z'));
+
+    const retryCeiling = new Date(fakeClock.now().getTime() + 5 * 60_000);
+    assert.ok((workflowUpdate.nextRunAt as Date) <= retryCeiling);
+  });
+
+  it('carries the workflow department into the run so it does not default to the first one', async () => {
+    const workflow = {
+      id: 'wf-dept',
+      name: 'Finance only',
+      companyId: 'co-1',
+      createdByUserId: 'user-1',
+      departmentId: 'dept-finance',
+      originChatId: 'oc_chat',
+      compiledPrompt: 'Do the thing.',
+      outputConfigJson: { deliveryChannel: 'lark' },
+      scheduleConfigJson: { type: 'daily', timezone: 'Asia/Kolkata', time: { hour: 9, minute: 0 } },
+    };
+    const sessions = sessionSpy();
+    let capturedInput: any = null;
+    const prisma = {
+      scheduledWorkflow: { findUnique: async () => workflow, update: async () => ({}) },
+      scheduledWorkflowRun: { upsert: async () => ({ id: 'run-d' }), update: async () => ({}) },
+      memberSession: sessions.memberSession,
+    } as any;
+
+    const svc = new ScheduledWorkflowService({
+      prisma,
+      piRuntime: { run: async (input: any) => { capturedInput = input; return { text: 'done' }; } } as any,
+      channelAdapters: { lark: recordingAdapter('lark'), larkDm: recordingAdapter('lark'), desktop: recordingAdapter('desktop') },
+      channelIdentityRepo: {
+        // The member also belongs to another department, which is what the
+        // container would otherwise pick.
+        resolveByUserId: async () => ok({ ...identity, activeDepartmentId: 'dept-sales' }),
+      } as any,
+      logger: noopLogger,
+      clock: fakeClock as any,
+      pollIntervalMs: 1_000,
+      runTimeoutMs: 60_000,
+    });
+
+    await (svc as any).executeWorkflow('wf-dept', new Date('2026-05-15T16:45:00.000Z'));
+
+    assert.equal(capturedInput.runContext.departmentId, 'dept-finance');
+  });
+
   it('runs desktop schedules headlessly and delivers through the desktop adapter', async () => {
     const workflow = {
       id: 'wf-desktop',

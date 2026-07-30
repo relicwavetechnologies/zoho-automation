@@ -2,7 +2,6 @@ import { Navigate, Route, Routes } from "react-router-dom"
 import { Toaster } from "@/components/ui/sonner"
 import { AdminShell } from "@/components/admin/admin-shell"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
-import { AgentsPage } from "@/pages/AgentsPage"
 import { AiOpsPage } from "@/pages/AiOpsPage"
 import { CompanyAdminSignupPage } from "@/pages/CompanyAdminSignupPage"
 import { DepartmentsPage } from "@/pages/DepartmentsPage"
@@ -95,7 +94,6 @@ export function App() {
           <Route path="skills" element={<SkillsLabPage />} />
           <Route path="guardrails" element={<GuardrailsPage />} />
           <Route path="web-search" element={<WebSearchPage />} />
-          <Route path="agents" element={<Legacy><AgentsPage /></Legacy>} />
           <Route path="memories" element={<Legacy><MemoriesPage /></Legacy>} />
           <Route path="settings" element={<Legacy><SettingsPage /></Legacy>} />
           <Route path="rbac" element={<Navigate to="/settings" replace />} />

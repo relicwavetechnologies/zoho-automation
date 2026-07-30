@@ -253,6 +253,11 @@ export class LarkPiRuntimeService {
       role: String(input.runContext.companyRole),
       instanceId: this.deps.instanceId,
       threadId: input.threadId,
+      // Carried so the container acts in the department the run was launched
+      // for, instead of defaulting to the member's first one.
+      ...(input.runContext.departmentId
+        ? { departmentId: String(input.runContext.departmentId) }
+        : {}),
       ttlSeconds: Math.min(this.deps.leaseTtlSeconds, remainingSeconds),
     }, this.deps.memberJwtSecret);
 

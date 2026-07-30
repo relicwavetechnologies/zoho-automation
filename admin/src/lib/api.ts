@@ -122,21 +122,12 @@ export type RemoveMappingInput = {
 };
 
 export const agentsApi = {
-  list: <T = any>(token?: string) => api.get<T[]>("/api/agents", token),
-  get: <T = any>(id: string, token?: string) =>
-    api.get<T>(`/api/agents/${id}`, token),
-  create: <T = any>(body: CreateAgentInput, token?: string) =>
-    api.post<T>("/api/agents", body, token),
-  update: <T = any>(id: string, body: UpdateAgentInput, token?: string) =>
-    api.put<T>(`/api/agents/${id}`, body, token),
-  delete: (id: string, token?: string) =>
-    api.delete(`/api/agents/${id}`, {}, token),
-  toggle: (id: string, token?: string) =>
-    api.post(`/api/agents/${id}/toggle`, {}, token),
+  /**
+   * The governed tool catalogue. Named for its historical client, but it is not
+   * about agents — Skills Lab and the department editor are what read it.
+   */
   toolRegistry: <T = any>(token?: string) =>
-    api.get<T[]>("/api/agents/tools/registry", token),
-  modelCatalog: (token?: string) =>
-    api.get<ModelCatalogEntry[]>("/api/agents/models/catalog", token),
+    api.get<T[]>("/api/admin/tool-registry", token),
 };
 
 export const channelMappingsApi = {

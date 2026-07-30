@@ -41,6 +41,7 @@ interface MemberJwtPayload {
   channel?:  string;
   instanceId?: string;
   threadId?: string;
+  departmentId?: string;
   iat?:      number;
   jti?:      string;
 }
@@ -149,6 +150,7 @@ export function createMemberAuthMiddleware(deps: MemberAuthMiddlewareDeps) {
       if (payload.aud === PI_RUNTIME_AUDIENCE) {
         res.locals['runtimeInstanceId'] = payload.instanceId;
         res.locals['runtimeThreadId'] = payload.threadId;
+        res.locals['runtimeDepartmentId'] = payload.departmentId ?? null;
       }
       next();
     } catch (e) {

@@ -117,9 +117,6 @@ import type { PermissionService } from './application/permissions/permission.ser
 import { ChannelAdapterRegistry } from './application/channels/channel.adapter';
 import { ToolRegistry } from './application/tools/tool-registry';
 // Multi-agent layer
-import { AgentDefinitionRepository } from './infrastructure/persistence/agent-definition.repository';
-import { ChannelMappingRepository } from './infrastructure/persistence/channel-mapping.repository';
-import { AgentAdminService } from './application/agents/agent-admin.service';
 import { DepartmentAdminService } from './application/departments/department-admin.service';
 import { DesktopDepartmentManagementService } from './application/desktop/desktop-department-management.service';
 import { ChatMessageSerializer } from './application/channels/chat-message-serializer';
@@ -260,7 +257,6 @@ export interface Container {
   skillAccessEnforcement: SkillAccessRepository;
   skillRegistryAdminService: SkillRegistryAdminService;
   // Agent admin CRUD
-  agentAdminService:      AgentAdminService;
   departmentAdminService: DepartmentAdminService;
   desktopDepartmentManagementService: DesktopDepartmentManagementService;
   // Lark user OAuth
@@ -1529,18 +1525,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   // ── Engine primitives ──────────────────────────────────────────────────
 
-  // ── Multi-agent layer ──────────────────────────────────────────────────
-  const agentDefRepo       = new AgentDefinitionRepository(prisma);
-  const channelMappingRepo = new ChannelMappingRepository(prisma);
-  const agentAdminService  = new AgentAdminService({
-    agentDefRepo,
-    channelMappingRepo,
-    prisma,
-    logger: logger.child({ service: 'agent-admin' }),
-    // Agent definitions are read at prompt-build time now, so there is no
-    // resolver cache left to invalidate.
-    invalidateAgentCache: async () => {},
-  });
   const departmentAdminService = new DepartmentAdminService({
     prisma,
     logger: logger.child({ service: 'department-admin' }),
@@ -1871,7 +1855,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     skillAccessEnforcement,
     skillRegistryAdminService,
     // Agent admin CRUD
-    agentAdminService,
     departmentAdminService,
     desktopDepartmentManagementService,
     // Lark user OAuth

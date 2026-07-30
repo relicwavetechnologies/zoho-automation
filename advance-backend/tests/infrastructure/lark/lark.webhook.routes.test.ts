@@ -1023,7 +1023,8 @@ describe('Lark webhook admission', () => {
     }), {
       engineRun: async (input: unknown) => {
         const onProgress = (input as any).onProgress;
-        await onProgress({ type: 'starting', stage: 'container', label: 'Starting Pi' });
+        await onProgress({ type: 'starting', stage: 'workspace', label: 'Checking your workspace…' });
+        await onProgress({ type: 'starting', stage: 'container', label: 'Resuming your work…' });
         await onProgress({ type: 'ready' });
         await onProgress({
           type: 'tool_start',
@@ -1049,10 +1050,11 @@ describe('Lark webhook admission', () => {
     assert.deepEqual(adapter.__finalReplies, ['Report complete']);
     assert.deepEqual(
       adapter.__statusUpdates.map((update: any) => update.timeline.state),
-      ['thinking', 'thinking', 'thinking', 'working', 'working', 'writing', 'writing'],
+      ['thinking', 'thinking', 'thinking', 'thinking', 'working', 'working', 'writing', 'writing'],
     );
-    assert.equal(adapter.__statusUpdates[0].timeline.liveLabel, 'Waking up Divo…');
-    assert.equal(adapter.__statusUpdates[1].timeline.liveLabel, 'Waking up Divo…');
+    assert.equal(adapter.__statusUpdates[0].timeline.liveLabel, 'Getting things ready…');
+    assert.equal(adapter.__statusUpdates[1].timeline.liveLabel, 'Checking your workspace…');
+    assert.equal(adapter.__statusUpdates[2].timeline.liveLabel, 'Resuming your work…');
     assert.doesNotMatch(
       adapter.__statusUpdates.map((update: any) => update.timeline.liveLabel).join(' '),
       /\bPi\b/,

@@ -29,6 +29,23 @@ import {
  */
 const staleClaimMs = (runTimeoutMs: number): number => runTimeoutMs + 5 * 60_000;
 const MAX_DUE_PER_POLL = 5;
+
+/**
+ * How soon to retry a run the container was too busy to take.
+ *
+ * A scheduled run competes with the member's own interactive turns for their
+ * single container. Treating that collision as a failure consumed the slot and
+ * silently dropped the day's report; it is a "not now", not a "no".
+ */
+const BUSY_RETRY_MS = 5 * 60_000;
+
+/** Codes the runtime uses when the container is occupied rather than broken. */
+const BUSY_RUNTIME_CODES = new Set(['user_busy', 'capacity_full']);
+
+function isRuntimeBusy(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && BUSY_RUNTIME_CODES.has(code);
+}
 const CURRENT_CHAT_DELIVERY_LINE = /^\s*Deliver to:\s+.*lark_current_chat\s*$/m;
 
 export function usesLockedCurrentChatDelivery(compiledPrompt: string): boolean {
@@ -329,6 +346,7 @@ export class ScheduledWorkflowService {
     // long-lived daily workflow will eventually need a per-run session scope.
     const threadId = `scheduled-workflow:${workflowId}`;
     let sessionId: string | undefined;
+    let retryAfterBusyAt: Date | undefined;
 
     try {
       const session = await issueScheduledRuntimeSession(this.deps.prisma, {
@@ -377,6 +395,9 @@ export class ScheduledWorkflowService {
         },
       });
     } catch (e) {
+      if (isRuntimeBusy(e)) {
+        retryAfterBusyAt = new Date(this.deps.clock.now().getTime() + BUSY_RETRY_MS);
+      }
       await this.deps.prisma.scheduledWorkflowRun.update({
         where: { id: run.id },
         data: {
@@ -400,7 +421,13 @@ export class ScheduledWorkflowService {
 
     // Use current time as anchor — skip past all missed slots to the next future run.
     // Using scheduledFor would replay every missed day one by one.
-    const nextRunAt = getNextScheduledRunAt(configResult.data, new Date());
+    const naturalNextRunAt = getNextScheduledRunAt(configResult.data, new Date());
+    // A busy container should be retried before the next natural slot, but must
+    // never delay one that is already sooner.
+    const nextRunAt = retryAfterBusyAt
+      && (!naturalNextRunAt || retryAfterBusyAt < naturalNextRunAt)
+      ? retryAfterBusyAt
+      : naturalNextRunAt;
 
     const isOneTimeComplete = configResult.data.type === 'one_time' && !nextRunAt;
 

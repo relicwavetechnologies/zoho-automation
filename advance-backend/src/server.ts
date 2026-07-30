@@ -24,7 +24,6 @@ import { createMemberAuthMiddleware } from './http/middleware/member-auth.middle
 import { createDesktopToolsRoutes } from './http/desktop/desktop-tools.routes';
 import { createDesktopDepartmentRoutes } from './http/desktop/desktop-departments.routes';
 import { createDesktopApprovalRoutes } from './http/desktop/desktop-approvals.routes';
-import { createAgentsRoutes } from './http/agents/agents.routes';
 import { createDepartmentRoutes } from './http/admin/departments.routes';
 import { createSkillRegistryRoutes } from './http/admin/skill-registry.routes';
 import { createMemoryRoutes } from './http/admin/memory.routes';
@@ -33,6 +32,7 @@ import { createAuditRoutes } from './http/admin/audit.routes';
 import { createControlsRoutes } from './http/admin/controls.routes';
 import { createRbacRoutes } from './http/admin/rbac.routes';
 import { createAiModelsRoutes } from './http/admin/ai-models.routes';
+import { createToolRegistryRoutes } from './http/admin/tool-registry.routes';
 import { createWebSearchAdminRoutes } from './http/admin/web-search.routes';
 import { createRuntimeRoutes } from './http/admin/runtime.routes';
 import { createAnalyticsRoutes } from './http/admin/analytics.routes';
@@ -405,7 +405,7 @@ export const createServer = (c: Container) => {
       appSecret:           c.env.LARK_APP_SECRET,
       apiBase:             c.env.LARK_API_BASE_URL,
       prisma:              c.prisma,
-      memberSessionTtlMinutes: 480,
+      memberSessionTtlMinutes: 7 * 24 * 60,
       channelIdentityRepo: c.channelIdentityRepo,
       // Shares the webhook's deps so the replayed turn runs through exactly the
       // same lane, lease, and delivery path as any other message.
@@ -574,16 +574,6 @@ export const createServer = (c: Container) => {
     c.logger.info('llm-proxy.enabled', { baseUrl: c.env.DEEPSEEK_BASE_URL, canEncrypt: c.proxyKeyStore.canEncrypt() });
   }
 
-  // Agent definition + channel mapping CRUD (admin auth required)
-  app.use(
-    '/api',
-    adminAuth,
-    createAgentsRoutes({
-      agentAdminService: c.agentAdminService,
-      logger:            c.logger,
-    }),
-  );
-
   // Department admin CRUD
   app.use(
     '/api/admin/departments',
@@ -642,6 +632,9 @@ export const createServer = (c: Container) => {
 
   // AI model target configs
   app.use('/api/admin/ai-models', adminAuth, createAiModelsRoutes({ prisma: c.prisma, logger: c.logger }));
+
+  // Registered governed tools, read by Skills Lab and the department editor.
+  app.use('/api/admin/tool-registry', adminAuth, createToolRegistryRoutes({ prisma: c.prisma }));
 
   // Company-owned Serper connection metadata and Divo-observed usage.
   app.use('/api/admin/web-search', adminAuth, createWebSearchAdminRoutes({ prisma: c.prisma }));

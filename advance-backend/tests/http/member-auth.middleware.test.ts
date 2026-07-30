@@ -368,6 +368,9 @@ describe('member authentication uses the live company membership', () => {
       channel: 'lark',
       instanceId: 'pi-local-1',
       threadId: 'lark:chat-1',
+      // Present but null: this lease was issued without a department, and the
+      // container needs to see that rather than infer one.
+      departmentId: null,
     });
 
     const rejected = await callDesktopRoute(

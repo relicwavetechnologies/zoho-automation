@@ -21,7 +21,6 @@ export function getAdminQueryScope(token: string | null) {
 export const adminQueryKeys = {
   apiList: (scope: string, path: string | null, keySignature: string) =>
     ["admin", scope, "api-list", path ?? "disabled", keySignature] as const,
-  agents: (scope: string) => ["admin", scope, "agents"] as const,
   agentModelCatalog: (scope: string) =>
     ["admin", scope, "agent-model-catalog"] as const,
   aiProviderStatus: (scope: string) =>
