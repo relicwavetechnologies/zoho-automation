@@ -7,7 +7,7 @@ import {
 	fetchRuntimeContext,
 	selectDepartment,
 } from "./auth.mjs";
-import { startDivoPi } from "./runtime.mjs";
+import { resolveRuntimeThreadId, startDivoPi } from "./runtime.mjs";
 
 const DEFAULT_BOOTSTRAP_PATH = "/run/divo-auth/bootstrap.json";
 const DEFAULT_BOOTSTRAP_TIMEOUT_MS = 30_000;
@@ -25,6 +25,7 @@ export function validateBootstrap(value) {
 	if (!/^[A-Za-z0-9._-]+$/.test(value.thread)) {
 		throw new Error("Bootstrap thread is invalid");
 	}
+	resolveRuntimeThreadId(value.thread, value.runtimeThreadId);
 	// Absent means the durable per-thread session, which is what every caller
 	// asked for before shared group threads existed.
 	if (
@@ -61,6 +62,10 @@ export function piOptions({ bootstrap, department, runtimeContext }) {
 		...bootstrap,
 		departmentId: department?.id,
 		mode: "rpc",
+		runtimeThreadId: resolveRuntimeThreadId(
+			bootstrap.thread,
+			bootstrap.runtimeThreadId,
+		),
 		runtimeContext,
 		sessionScope: bootstrap.sessionScope ?? "thread",
 		stateRoot: "/data/state",

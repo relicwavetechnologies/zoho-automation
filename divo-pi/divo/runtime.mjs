@@ -191,6 +191,17 @@ export function resolveSessionPaths({
 	};
 }
 
+export function resolveRuntimeThreadId(thread, runtimeThreadId = thread) {
+	if (typeof runtimeThreadId !== "string" || !runtimeThreadId.trim()) {
+		throw new Error("Runtime thread ID is required");
+	}
+	const value = runtimeThreadId.trim();
+	if (value.length > 200) {
+		throw new Error("Runtime thread ID is too long");
+	}
+	return value;
+}
+
 export function buildPiArguments(values) {
 	const extensionArguments = manifest.extensions.flatMap((name) => [
 		"--extension",
@@ -244,6 +255,7 @@ export function startDivoPi({
 	stateRoot = defaultStateRoot,
 	workspace = path.join(stateRoot, "workspace"),
 	thread = "terminal-phase-0",
+	runtimeThreadId,
 	mode = "tui",
 	sessionScope = "thread",
 	print = false,
@@ -255,6 +267,7 @@ export function startDivoPi({
 	if (!/^[A-Za-z0-9._-]+$/.test(thread)) {
 		throw new Error("Thread must contain only letters, numbers, dot, underscore, or dash");
 	}
+	const executionThreadId = resolveRuntimeThreadId(thread, runtimeThreadId);
 	if (!["tui", "rpc"].includes(mode)) {
 		throw new Error('Mode must be either "tui" or "rpc"');
 	}
@@ -330,7 +343,7 @@ export function startDivoPi({
 		`${JSON.stringify(
 			{
 				version: 1,
-				threadId: thread,
+				threadId: executionThreadId,
 				runId,
 				...(departmentId ? { departmentId } : {}),
 			},

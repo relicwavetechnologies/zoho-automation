@@ -15,6 +15,7 @@ const bootstrap = {
 	token: "member-token",
 	profile: "abhishek",
 	thread: "same-thread",
+	runtimeThreadId: "oc_chat:thread:om_root",
 	userId: "user-a",
 	companyId: "company-1",
 };
@@ -45,6 +46,14 @@ test("container bootstrap rejects unsafe profile and thread values", () => {
 	assert.throws(
 		() => validateBootstrap({ ...bootstrap, thread: "../../other" }),
 		/thread is invalid/,
+	);
+	assert.throws(
+		() => validateBootstrap({ ...bootstrap, runtimeThreadId: "" }),
+		/Runtime thread ID is required/,
+	);
+	assert.throws(
+		() => validateBootstrap({ ...bootstrap, runtimeThreadId: "x".repeat(201) }),
+		/Runtime thread ID is too long/,
 	);
 });
 
@@ -108,6 +117,11 @@ test("the container forwards the session scope it was given to Pi", () => {
 	);
 	assert.equal(piOptions({ bootstrap }).sessionScope, "thread");
 	assert.equal(piOptions({ bootstrap }).stateRoot, "/data/state");
+	assert.equal(piOptions({ bootstrap }).thread, "same-thread");
+	assert.equal(
+		piOptions({ bootstrap }).runtimeThreadId,
+		"oc_chat:thread:om_root",
+	);
 	assert.equal(
 		piOptions({ bootstrap, department: { id: "dep-1" } }).departmentId,
 		"dep-1",

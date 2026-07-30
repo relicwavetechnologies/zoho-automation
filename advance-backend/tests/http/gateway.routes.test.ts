@@ -217,11 +217,11 @@ describe('createGatewayRoutes', () => {
       sessionId: 'sess-1',
       channel: 'lark',
       isPiRuntimeLease: true,
-      runtimeThreadId: 'thread-a',
+      runtimeThreadId: 'oc_chat:thread:om_root',
     };
 
     const mismatched = await callPost(router, {
-      body: { op: 'tools.list', execution: executionFor('thread-b') },
+      body: { op: 'tools.list', execution: executionFor('lark-filesystem-hash') },
       locals,
     });
     assert.equal(mismatched.status, 403);
@@ -229,7 +229,7 @@ describe('createGatewayRoutes', () => {
     assert.equal(dispatchCount, 0);
 
     const matching = await callPost(router, {
-      body: { op: 'tools.list', execution: executionFor('thread-a') },
+      body: { op: 'tools.list', execution: executionFor('oc_chat:thread:om_root') },
       locals,
     });
     assert.equal(matching.status, 200);

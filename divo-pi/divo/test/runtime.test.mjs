@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import {
 	buildChildEnvironment,
 	buildPiArguments,
+	resolveRuntimeThreadId,
 	resolveSessionPaths,
 	sweepAbandonedRunSessions,
 } from "../runtime.mjs";
@@ -35,6 +36,19 @@ const values = {
 };
 
 describe("Divo Pi runtime boundary", () => {
+	it("keeps signed gateway correlation separate from the filesystem thread", () => {
+		assert.equal(
+			resolveRuntimeThreadId("lark-safe-hash", "oc_chat:thread:om_root"),
+			"oc_chat:thread:om_root",
+		);
+		assert.equal(resolveRuntimeThreadId("lark-safe-hash"), "lark-safe-hash");
+		assert.throws(() => resolveRuntimeThreadId("lark-safe-hash", ""), /is required/);
+		assert.throws(
+			() => resolveRuntimeThreadId("lark-safe-hash", "x".repeat(201)),
+			/is too long/,
+		);
+	});
+
 	it("removes direct provider keys and injects only Divo authentication", () => {
 		const environment = buildChildEnvironment(
 			{

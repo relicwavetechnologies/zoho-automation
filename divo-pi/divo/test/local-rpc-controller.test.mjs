@@ -37,6 +37,8 @@ test("cloud runtime names are stable, isolated, and safe for Docker", () => {
 	assert.equal(first.profile, sameUserOtherThread.profile);
 	assert.notEqual(first.thread, sameUserOtherThread.thread);
 	assert.notEqual(first.profile, otherUser.profile);
+	assert.equal(first.runtimeThreadId, "lark:chat-1");
+	assert.notEqual(first.thread, first.runtimeThreadId);
 	assert.equal(validateProfileName(first.profile), first.profile);
 	assert.equal(validateThread(first.thread), first.thread);
 });

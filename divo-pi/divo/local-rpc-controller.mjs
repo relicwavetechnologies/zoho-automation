@@ -94,6 +94,7 @@ export function runtimeIdentityNames(companyId, userId, runtimeThreadId) {
 	return {
 		profile: `cloud-${digest(`${companyId}:${userId}`).slice(0, 20)}`,
 		thread: `lark-${digest(runtimeThreadId).slice(0, 24)}`,
+		runtimeThreadId,
 	};
 }
 
@@ -1247,6 +1248,7 @@ async function runPrompt({
 	userId,
 	companyId,
 	departmentId,
+	runtimeThreadId,
 	answerRequest,
 	attachments,
 	sessionScope,
@@ -1260,6 +1262,7 @@ async function runPrompt({
 		token,
 		profile,
 		thread,
+		...(runtimeThreadId ? { runtimeThreadId } : {}),
 		userId,
 		companyId,
 		departmentId,
