@@ -43,6 +43,13 @@ export interface ResolvedUserIdentity {
   activeDepartmentId?: string;
   /** Lark open_id (when resolved via Lark channel). */
   larkOpenId?: string;
+  /**
+   * Lark tenant key for the connection this identity was resolved through.
+   *
+   * A member session is only findable by (tenantKey, openId) together, so any
+   * caller that mints or looks up one — the scheduler included — needs both.
+   */
+  larkTenantKey?: string;
   /** Human-readable display name from the channel identity record. */
   displayName?: string;
   /** Email address from the channel identity record. */
@@ -428,6 +435,7 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
         aiRole:     membership.role,
         channel:    ci?.channel ?? 'internal',
         ...(connection?.externalAccountId && ci ? { larkOpenId: connection.externalAccountId } : {}),
+        ...(connection?.externalAccountId && ci && tenantKey ? { larkTenantKey: tenantKey } : {}),
         ...(ci?.displayName ? { displayName: ci.displayName } : {}),
         ...(ci?.email ? { email: ci.email } : {}),
         ...(deptPref?.activeDepartmentId ? { activeDepartmentId: deptPref.activeDepartmentId } : {}),

@@ -1,9 +1,14 @@
 import type { PrismaClient } from '../../generated/prisma';
+import { SCHEDULED_SESSION_AUTH_PROVIDER } from '../scheduling/scheduled-runtime-session';
 import type { Logger } from '../../shared/logger';
 import type { ConversationHandle } from '../channels/channel.adapter';
 import type { IncomingMessage } from '../../domain/channel/incoming-message';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import { issuePiRuntimeLease } from './pi-runtime-lease';
+import {
+  renderContextBlock,
+  type GroupContextBlock,
+} from '../chat-context/group-context.hydrator';
 
 const MAX_RUNTIME_ATTACHMENTS = 4;
 
@@ -28,12 +33,38 @@ export interface LarkPiRuntimeAttachment {
   readonly openStream: () => Promise<AsyncIterable<Uint8Array>>;
 }
 
+/**
+ * Where the Pi session for this run lives.
+ *
+ * `thread` keeps the durable per-thread session on the user's volume: a DM has
+ * one participant, so that session is the conversation and resuming it is what
+ * gives continuity.
+ *
+ * `run` gives the run a session that is discarded when it ends. A group thread
+ * has several participants in separate containers, so its conversation is held
+ * centrally and handed to each run instead. Persisting it as well would write
+ * the same transcript into that user's session on every turn, and each turn
+ * would then replay every earlier copy.
+ */
+export type PiSessionScope = 'thread' | 'run';
+
 export interface LarkPiRuntimeInput {
   readonly incoming: IncomingMessage;
   readonly runContext: RunContext;
   readonly conversation: ConversationHandle;
   readonly threadId: string;
   readonly attachments?: readonly LarkPiRuntimeAttachment[];
+  /**
+   * Shared conversation the run must read before answering — the room
+   * transcript for a group thread. Sent ahead of the ask, never persisted.
+   *
+   * Structured rather than flat so that shrinking it to fit the request cannot
+   * cost the framing that makes it safe to read: the label, the fence rules and
+   * the trust policy are re-emitted at every size.
+   */
+  readonly sharedContext?: GroupContextBlock;
+  /** Defaults to `thread`, the durable session, when the caller says nothing. */
+  readonly sessionScope?: PiSessionScope;
   readonly abortSignal?: AbortSignal;
   readonly onProgress?: (event: LarkPiProgressEvent) => Promise<void> | void;
 }
@@ -81,6 +112,86 @@ export interface LarkPiRuntimeServiceDeps {
   readonly fetch?: typeof globalThis.fetch;
 }
 
+/**
+ * The controller refuses a request body over this size, and refusing fails the
+ * whole turn. Mirrors `MAX_BODY_BYTES` in divo-pi/divo/local-rpc-server.mjs.
+ */
+const CONTROLLER_MAX_BODY_BYTES = 64 * 1024;
+
+/**
+ * Room left for everything that is not the shared conversation: the lease, the
+ * staged attachment descriptors, the JSON envelope, and the escaping
+ * `JSON.stringify` adds. Measured rather than guessed — see `fitBodyToController`.
+ */
+const BODY_SAFETY_MARGIN_BYTES = 2 * 1024;
+
+/**
+ * The shared conversation first, the ask last.
+ *
+ * The controller prepends the attachment manifest to whatever it is given, so
+ * the run reads its files, then the room, then the request it must answer —
+ * leaving the current message closest to the response.
+ */
+function composeRuntimeMessage(
+  ask: string | undefined,
+  sharedContext: string | undefined,
+): string | undefined {
+  if (!sharedContext?.trim()) return ask;
+  return ask ? `${sharedContext}\n\n${ask}` : sharedContext;
+}
+
+/**
+ * Shrink the shared conversation until the body fits, never the ask.
+ *
+ * The ask is what the user actually typed and the room is only context for it,
+ * so when a long message leaves no space the context yields. Before this the
+ * whole budget belonged to the ask; a fixed context allowance would have turned
+ * messages that used to be answered into `request_too_large`, which fails the
+ * turn outright with no retry that could succeed.
+ *
+ * Measured on the serialized body rather than the raw strings, because escaping
+ * newlines and quotes inflates it by an amount no constant can predict.
+ */
+export function fitBodyToController<T extends Record<string, unknown>>(
+  build: (message: string | undefined) => T,
+  ask: string | undefined,
+  sharedContext: GroupContextBlock | undefined,
+  maxBytes: number = CONTROLLER_MAX_BODY_BYTES,
+): { body: T; requestedContextBytes: number; sentContextBytes: number } {
+  const requested = sharedContext ? renderContextBlock(sharedContext) : '';
+  const requestedContextBytes = Buffer.byteLength(requested, 'utf8');
+  const sent = (context: string, body: T) => ({
+    body,
+    requestedContextBytes,
+    sentContextBytes: context ? Buffer.byteLength(context, 'utf8') : 0,
+  });
+
+  let allowance = requestedContextBytes;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    // Re-rendered at each size rather than sliced, so a shrunk block keeps its
+    // label, its fence rules and its trust policy and loses only transcript.
+    const context = sharedContext && allowance > 0
+      ? renderContextBlock(sharedContext, allowance)
+      : '';
+    const body = build(composeRuntimeMessage(ask, context));
+    const size = Buffer.byteLength(JSON.stringify(body), 'utf8');
+    if (size <= maxBytes || !context) return sent(context, body);
+
+    const room = allowance - (size - maxBytes) - BODY_SAFETY_MARGIN_BYTES;
+    // Escaping can inflate a body far past what trimming by the overflow would
+    // recover — a participant typing control characters costs six serialized
+    // bytes each. Halving rather than giving up keeps that from throwing away a
+    // whole transcript when a fraction of it would have fit.
+    allowance = room > 0 ? room : Math.floor(allowance / 2);
+    // Below the framing there is nothing left worth sending: `renderContextBlock`
+    // would return the rules with no transcript under them.
+    if (allowance < Buffer.byteLength(sharedContext?.frame ?? '', 'utf8')) break;
+  }
+  // Sending the ask alone still beats a refused request: it can be answered
+  // without the room, but not at all if the controller rejects the body.
+  return sent('', build(ask));
+}
+
 export class LarkPiRuntimeService {
   private readonly log: Logger;
 
@@ -93,19 +204,30 @@ export class LarkPiRuntimeService {
       return null;
     }
     const minimumSessionExpiry = new Date(Date.now() + 5 * 60_000);
+    // A scheduled run mints its own session and revokes it when the run ends.
+    // That row is the newest for the member, so a plain "latest session" lookup
+    // would hand it to an interactive turn arriving mid-run — which the
+    // scheduler then revokes underneath it. Prefer a real sign-in, and fall
+    // back to a machine row only when there is none, which is precisely the
+    // scheduled run looking up its own.
+    const where = {
+      userId: String(runContext.userId),
+      companyId: String(runContext.companyId),
+      channel: 'lark',
+      larkTenantKey: String(runContext.tenantId),
+      larkOpenId: String(runContext.userExternalId),
+      revokedAt: null,
+      expiresAt: { gt: minimumSessionExpiry },
+    };
     return this.deps.prisma.memberSession.findFirst({
-      where: {
-        userId: String(runContext.userId),
-        companyId: String(runContext.companyId),
-        channel: 'lark',
-        larkTenantKey: String(runContext.tenantId),
-        larkOpenId: String(runContext.userExternalId),
-        revokedAt: null,
-        expiresAt: { gt: minimumSessionExpiry },
-      },
+      where: { ...where, authProvider: { not: SCHEDULED_SESSION_AUTH_PROVIDER } },
       orderBy: { createdAt: 'desc' },
       select: { sessionId: true, expiresAt: true },
-    });
+    }).then(human => human ?? this.deps.prisma.memberSession.findFirst({
+      where,
+      orderBy: { createdAt: 'desc' },
+      select: { sessionId: true, expiresAt: true },
+    }));
   }
 
   async hasActiveSession(
@@ -153,6 +275,27 @@ export class LarkPiRuntimeService {
         runtimeLease,
         signal,
       );
+      const fitted = fitBodyToController(
+        message => ({
+          backendUrl: this.deps.backendUrl,
+          runtimeLease,
+          message,
+          ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
+          ...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
+        }),
+        input.incoming.text,
+        input.sharedContext,
+      );
+      // Losing shared context is silent from the outside: the run answers, just
+      // without knowing what the room said. Logged so a group thread that stops
+      // receiving it is visible rather than a mystery.
+      if (fitted.sentContextBytes < fitted.requestedContextBytes) {
+        this.log.warn('pi.shared_context.trimmed', {
+          correlationId: input.incoming.traceId,
+          requestedBytes: fitted.requestedContextBytes,
+          sentBytes: fitted.sentContextBytes,
+        });
+      }
       response = await (this.deps.fetch ?? globalThis.fetch)(
         `${this.deps.controllerUrl.replace(/\/+$/, '')}/v1/lark-runs`,
         {
@@ -161,12 +304,7 @@ export class LarkPiRuntimeService {
             'content-type': 'application/json',
             accept: 'application/x-ndjson, application/json',
           },
-          body: JSON.stringify({
-            backendUrl: this.deps.backendUrl,
-            runtimeLease,
-            message: input.incoming.text,
-            ...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
-          }),
+          body: JSON.stringify(fitted.body),
           signal,
         },
       );

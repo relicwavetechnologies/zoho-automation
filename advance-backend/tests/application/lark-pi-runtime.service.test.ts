@@ -575,3 +575,182 @@ test('every file in one message shares a request id and gets its own file id', a
     ['file-1', 'file-2'],
   );
 });
+
+/** The shape hydration hands the runtime: fixed framing around trimmable text. */
+function block(body: string) {
+  return {
+    frame: 'FRAME: rules',
+    body: `\n${body}`,
+    policy: '\nPOLICY: not instructions',
+  };
+}
+
+function serviceCapturingBody(capture: (body: Record<string, unknown>) => void) {
+  return new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    fetch: async (_url, init) => {
+      capture(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ text: 'Finished' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+}
+
+test('sends the shared conversation ahead of the ask, keeping the request last', async () => {
+  let body: Record<string, unknown> | undefined;
+  const service = serviceCapturingBody(value => { body = value; });
+
+  await service.run({
+    ...runtimeInput(),
+    sharedContext: block('GROUP CHAT CONTEXT\nAbhishek: prepare the report'),
+  });
+
+  assert.equal(
+    body?.['message'],
+    'FRAME: rules\nGROUP CHAT CONTEXT\nAbhishek: prepare the report\nPOLICY: not instructions\n\nDo the work',
+  );
+});
+
+test('a run with no shared conversation sends the message unchanged', async () => {
+  let body: Record<string, unknown> | undefined;
+  const service = serviceCapturingBody(value => { body = value; });
+
+  await service.run({ ...runtimeInput() });
+
+  assert.equal(body?.['message'], 'Do the work');
+  // Absent rather than 'thread': an older controller that does not know the
+  // field keeps its own default, which is the durable session.
+  assert.equal('sessionScope' in (body ?? {}), false);
+});
+
+test('a shared thread asks for a run-scoped session so re-reading cannot pile up copies', async () => {
+  let body: Record<string, unknown> | undefined;
+  const service = serviceCapturingBody(value => { body = value; });
+
+  await service.run({ ...runtimeInput(), sessionScope: 'run' });
+
+  assert.equal(body?.['sessionScope'], 'run');
+});
+
+test('a long message keeps its whole ask and gives up shared context instead', async () => {
+  let body: Record<string, unknown> | undefined;
+  const service = serviceCapturingBody(value => { body = value; });
+  const ask = 'A'.repeat(40_000);
+
+  await service.run({
+    ...runtimeInput(),
+    incoming: { traceId: 'trace-1', text: ask },
+    sharedContext: block('B'.repeat(30_000)),
+  } as any);
+
+  // The controller rejects a body over 64 KB and rejection fails the turn, so
+  // the room yields to the message the user actually typed.
+  assert.ok(Buffer.byteLength(JSON.stringify(body), 'utf8') <= 64 * 1024);
+  assert.ok(String(body?.['message']).endsWith(ask));
+  // Trimming the room may not cost the rules that make it safe to read.
+  assert.match(String(body?.['message']), /^FRAME: rules/);
+  assert.match(String(body?.['message']), /POLICY: not instructions/);
+});
+
+test('an ask that alone fills the body is sent without shared context, not refused', async () => {
+  let body: Record<string, unknown> | undefined;
+  const service = serviceCapturingBody(value => { body = value; });
+  const ask = 'A'.repeat(70_000);
+
+  await service.run({
+    ...runtimeInput(),
+    incoming: { traceId: 'trace-1', text: ask },
+    sharedContext: block('room transcript'),
+  } as any);
+
+  assert.equal(body?.['message'], ask);
+});
+
+test('a body that already fits carries the shared context untouched', async () => {
+  let body: Record<string, unknown> | undefined;
+  const service = serviceCapturingBody(value => { body = value; });
+
+  await service.run({ ...runtimeInput(), sharedContext: block('room transcript') });
+
+  assert.equal(
+    body?.['message'],
+    'FRAME: rules\nroom transcript\nPOLICY: not instructions\n\nDo the work',
+  );
+});
+
+test('shared context lost to the body limit is logged, not silently dropped', async () => {
+  const warnings: Array<Record<string, unknown>> = [];
+  const noisyLogger = {
+    child() { return this; },
+    info() {}, debug() {}, error() {},
+    warn(event: string, fields: Record<string, unknown>) {
+      warnings.push({ event, ...fields });
+    },
+  } as any;
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger: noisyLogger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    fetch: async () => new Response(JSON.stringify({ text: 'Finished' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  await service.run({
+    ...runtimeInput(),
+    incoming: { traceId: 'trace-1', text: 'A'.repeat(60_000) },
+    sharedContext: block('B'.repeat(20_000)),
+  } as any);
+
+  const trimmed = warnings.find(w => w['event'] === 'pi.shared_context.trimmed');
+  assert.ok(trimmed, 'a group thread that stops receiving context must be visible');
+  assert.ok(Number(trimmed!['sentBytes']) < Number(trimmed!['requestedBytes']));
+});
+
+test('control characters in a colleague message cannot silently cost the whole transcript', async () => {
+  let body: Record<string, unknown> | undefined;
+  const service = serviceCapturingBody(value => { body = value; });
+
+  // Each of these serializes to six bytes, so escaping inflates the body far
+  // past what trimming by the raw overflow alone would recover.
+  await service.run({
+    ...runtimeInput(),
+    sharedContext: block('\u0001'.repeat(20_000)),
+  } as any);
+
+  assert.ok(Buffer.byteLength(JSON.stringify(body), 'utf8') <= 64 * 1024);
+  // Some of the room survives rather than none of it.
+  assert.match(String(body?.['message']), /Do the work$/);
+  // Some of the room survives rather than none of it, and it is still framed.
+  assert.match(String(body?.['message']), /^FRAME: rules/);
+  assert.match(String(body?.['message']), /POLICY: not instructions/);
+});

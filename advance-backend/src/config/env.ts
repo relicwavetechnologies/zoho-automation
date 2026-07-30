@@ -47,13 +47,6 @@ const EnvSchema = z.object({
   LOG_SUCCESS_SAMPLE_RATE: positiveNum(0.25),
   LOG_INCLUDE_STACK:      booleanStr.default('true'),
 
-  // ── Orchestration model ───────────────────────────────────────────────────
-  // Switch the entire engine by changing these two vars. No code changes needed.
-  //   MODEL_PROVIDER=google  MODEL_ID=gemini-3.1-flash-lite
-  //   MODEL_PROVIDER=openai  MODEL_ID=gpt-4o
-  MODEL_PROVIDER: z.enum(['google', 'openai', 'deepseek']).default('google'),
-  MODEL_ID:       z.string().default('gemini-3.1-flash-lite'),
-
   /**
    * The single vision model. Screenshots, scans and Manager Teach frames all
    * use it, so a change here changes every place Divo reads an image — which
@@ -66,8 +59,6 @@ const EnvSchema = z.object({
   // ── OpenAI ────────────────────────────────────────────────────────────────
   OPENAI_API_KEY:        z.string().min(1),
   ELEVEN_LABS_API_KEY:   z.string().min(1).optional(),
-  GATEWAY_BASE_URL:      z.string().default(''),
-  GATEWAY_ADMIN_API_KEY: z.string().optional(),
   OPENAI_TEMPERATURE:    positiveNum(0.1),
 
   // ── DeepSeek ──────────────────────────────────────────────────────────────
@@ -245,6 +236,10 @@ const EnvSchema = z.object({
   REDIS_PERSONA_LEARNING_QUEUE_NAME: z.string().default('persona-learning'),
   PERSONA_LEARNING_WORKER_CONCURRENCY: positiveInt(1),
   PERSONA_LEARNING_MODEL_ID: z.string().default('deepseek-v4-flash'),
+  // Group-room transcript compaction. DeepSeek like every other model Divo
+  // runs, and a flash tier because this is high-volume background work whose
+  // output is a summary, not a user-facing answer.
+  GROUP_SUMMARY_MODEL_ID: z.string().default('deepseek-v4-flash'),
 
   // ── Explicit manager Teach ingestion ────────────────────────────────────
   REDIS_MANAGER_TEACH_QUEUE_NAME: z.string().default('manager-teach'),

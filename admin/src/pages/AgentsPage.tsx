@@ -73,7 +73,6 @@ export function AgentsPage() {
     tools,
     toolById,
     modelCatalog,
-    providerStatus,
     loading,
     error,
     stats,
@@ -187,7 +186,6 @@ export function AgentsPage() {
         agentById={agentById}
         toolById={toolById}
         modelCatalog={modelCatalog}
-        providerStatus={providerStatus}
         onClose={() => setSelectedAgentId(null)}
         onToggle={toggleAgent}
         onSave={updateAgent}

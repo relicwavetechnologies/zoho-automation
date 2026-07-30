@@ -35,6 +35,7 @@ import { ChannelIdentityRepository } from './infrastructure/persistence/channel-
 import { LarkChatContextRepository } from './infrastructure/persistence/lark-chat-context.repository';
 import { IngressReceiptRepository } from './infrastructure/persistence/ingress-receipt.repository';
 import { LarkChatContextService } from './application/chat-context/lark-chat-context.service';
+import { GroupContextHydrator } from './application/chat-context/group-context.hydrator';
 import { LarkChannelAdapter } from './infrastructure/channels/lark/lark.adapter';
 import { LarkPeopleResolver } from './infrastructure/channels/lark/lark-people.resolver';
 import { LarkTaskClient } from './infrastructure/channels/lark/clients/lark-task.client';
@@ -115,18 +116,13 @@ import { PermissionServiceImpl } from './application/permissions/permission.serv
 import type { PermissionService } from './application/permissions/permission.service';
 import { ChannelAdapterRegistry } from './application/channels/channel.adapter';
 import { ToolRegistry } from './application/tools/tool-registry';
-import { HistoryService } from './application/orchestration/engine/history';
-import { OrchestrationEngine } from './application/orchestration/engine/core';
-import { ConversationSummarizer } from './application/orchestration/engine/conversation-summarizer';
 // Multi-agent layer
 import { AgentDefinitionRepository } from './infrastructure/persistence/agent-definition.repository';
 import { ChannelMappingRepository } from './infrastructure/persistence/channel-mapping.repository';
 import { AgentAdminService } from './application/agents/agent-admin.service';
 import { DepartmentAdminService } from './application/departments/department-admin.service';
 import { DesktopDepartmentManagementService } from './application/desktop/desktop-department-management.service';
-import { AgentResolver } from './application/orchestration/agents/agent-resolver';
 import { ChatMessageSerializer } from './application/channels/chat-message-serializer';
-import { SupervisorAgent } from './application/orchestration/agents/supervisor';
 import { SupervisorTodoRepository } from './infrastructure/persistence/supervisor-todo.repository';
 
 // Document RAG
@@ -219,14 +215,8 @@ import { isApiKeyExhausted } from './application/governance/api-key-exhaustion.c
 import type { ApiKeyProvider } from './application/governance/api-key-exhaustion.classifier';
 
 // AI model
-import { createOpenAI } from '@ai-sdk/openai';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createDeepSeek } from '@ai-sdk/deepseek';
 import { wrapLanguageModel, type LanguageModel } from 'ai';
-import { withFallback } from './shared/model-fallback';
-import { withGeminiSignatures, createGeminiFetch } from './shared/gemini-thought-signatures';
-import { decryptToken, TokenCryptoError } from './infrastructure/shared/token.crypto';
-import { redModelSelection } from './shared/model-selection-log';
 
 type ZohoBooksOrganizationPayload = {
   organizations?: Array<{
@@ -238,16 +228,9 @@ type ZohoBooksOrganizationPayload = {
 
 const GATEWAY_PROVIDER_CACHE_TTL_MS = 5 * 60 * 1000;
 
-type GatewayProviderCacheEntry = {
-  readonly apiKey: string;
-  readonly gatewayBaseUrl: string;
-  readonly chatModel: (modelId: string) => LanguageModel;
-  readonly expiresAtMs: number;
-};
 
 export interface Container {
   env: TypedEnv;
-  engine: OrchestrationEngine;
   larkAdapter: LarkChannelAdapter;
   channelRegistry: ChannelAdapterRegistry;
   channelIdentityRepo: ChannelIdentityRepository;
@@ -261,8 +244,6 @@ export interface Container {
   memoryCache: CachePort;
   /** Resolved Redis URL for the BullMQ queue — exposed so workers can share the same URL. */
   queueRedisUrl: string;
-  /** LLM model for lightweight tasks (summaries, classification). */
-  model: import('ai').LanguageModel;
   /** Per-chat message serializer — one engine.run() at a time per chatId. */
   chatSerializer: ChatMessageSerializer;
   /** Scheduled workflow executor — polls for due tasks every N ms. */
@@ -338,9 +319,10 @@ export interface Container {
   // Persistent memory
   mem0Service: Mem0Service | null;
   larkMemoryReviewService: LarkMemoryReviewService;
-  invalidateGatewayProviderCache: (companyId: string) => void;
   // Group chat context
   chatContextService: LarkChatContextService;
+  /** Renders the shared room conversation for an isolated Pi run. */
+  groupContextHydrator: GroupContextHydrator;
   channelDeliveryRepo: ChannelDeliveryRepository;
   /** Cross-replica execution lane ownership. */
   laneLeaseHolder: LaneLeaseHolder;
@@ -350,6 +332,8 @@ export interface Container {
   larkContactsClient: LarkContactsClient;
   // Pi/Desktop capability gateway
   gatewayDispatcher: GatewayDispatcher;
+  /** Container runtime shared by the Lark webhook and the scheduled-workflow poller. */
+  larkPiRuntime: import('./application/runtime/lark-pi-runtime.service').LarkPiRuntimeService;
 }
 
 export async function buildContainer(env: TypedEnv): Promise<Container> {
@@ -433,180 +417,45 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ service: 'permissions' }),
   });
 
-  // ── AI model (DB config first, env fallback) ────────────────────────────
-  // Primary model follows AiModelTargetConfig(targetKey='default') when present,
-  // then falls back to MODEL_PROVIDER + MODEL_ID for backward compatibility.
-  // Falls back silently to configured fast model, or gpt-4o-mini (direct OpenAI) by default,
-  // on rate-limit / high-demand errors.
-  const defaultModelTarget = await prisma.aiModelTargetConfig.findUnique({
-    where: { targetKey: 'default' },
-  });
 
-  const createConfiguredModel = (provider: string, modelId: string) => {
-    if (provider === 'google') {
-      const apiKey = env.GOOGLE_GENERATIVE_AI_API_KEY ?? env.GEMINI_API_KEY;
-      if (!apiKey) throw new Error('AI provider google selected but neither GOOGLE_GENERATIVE_AI_API_KEY nor GEMINI_API_KEY is set');
-      // Layer 1: custom fetch fixes sig attribution in raw API responses
-      // before @ai-sdk/google parses them. Layer 2 (withGeminiSignatures)
-      // is defence-in-depth for the outgoing prompt direction.
-      const google = createGoogleGenerativeAI({ apiKey, fetch: createGeminiFetch() });
-      return withGeminiSignatures(google(modelId));
-    }
-    if (provider === 'openai') {
-      return openaiModel(modelId);
-    }
-    if (provider === 'deepseek') {
-      // The SDK resolves a missing key when a DeepSeek request is made. Keep
-      // startup independent from this optional provider (the proxy can also
-      // receive a company or platform key after the server is running).
-      const ds = createDeepSeek(env.DEEPSEEK_API_KEY ? { apiKey: env.DEEPSEEK_API_KEY } : {});
-      return ds(modelId);
-    }
-    throw new Error(`Unsupported AI model provider: ${provider}`);
-  };
+  // Every backend-side model is DeepSeek. The two jobs below are background
+  // work — group-room compaction and persona learning — and both run without a
+  // live invoker to borrow inference from. Keeping them on one provider means a
+  // room's stored summary cannot silently change voice between runs.
+  //
+  // The SDK resolves a missing key at request time, so startup stays
+  // independent of this: with no key the callers fall back to their
+  // deterministic paths rather than failing to boot.
+  const deepSeek = createDeepSeek(env.DEEPSEEK_API_KEY ? { apiKey: env.DEEPSEEK_API_KEY } : {});
+  const deepSeekModel = (modelId: string) => deepSeek(modelId);
 
-  const primaryProvider = defaultModelTarget?.provider ?? env.MODEL_PROVIDER;
-  const primaryModelId  = defaultModelTarget?.modelId ?? env.MODEL_ID;
-  const fastProvider    = defaultModelTarget?.fastProvider ?? 'openai';
-  const fastModelId     = defaultModelTarget?.fastModelId ?? 'gpt-4o-mini';
-  const needsOpenAi     = primaryProvider === 'openai' || fastProvider === 'openai';
-  const gatewayCompany  = needsOpenAi
-    ? await prisma.company.findFirst({
-      where:   { gatewayApiKey: { not: null } },
-      select:  { id: true, gatewayApiKey: true, gatewayUrl: true },
-      orderBy: { updatedAt: 'desc' },
-    })
-    : null;
-  const configuredGatewayBaseUrl = env.GATEWAY_BASE_URL.trim().replace(/\/+$/, '');
-  const gatewayBaseUrl = (configuredGatewayBaseUrl || gatewayCompany?.gatewayUrl || '').trim().replace(/\/+$/, '');
-  const gatewayOpenAi = (() => {
-    if (!gatewayCompany?.gatewayApiKey || !gatewayBaseUrl) return null;
-    try {
-      const apiKey = decryptToken(gatewayCompany.gatewayApiKey, env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '');
-      logger.info('ai.openai.gateway.enabled', { companyId: gatewayCompany.id, gatewayBaseUrl });
-      return createOpenAI({ apiKey, baseURL: `${gatewayBaseUrl}/v1` });
-    } catch (error) {
-      if (error instanceof TokenCryptoError) {
-        logger.warn('ai.openai.gateway.decrypt_failed', { companyId: gatewayCompany.id, error: error.message });
-        return null;
-      }
-      throw error;
-    }
-  })();
-  const directOpenAi    = createOpenAI({ apiKey: env.OPENAI_API_KEY });
-  const openaiModel     = (modelId: string) => gatewayOpenAi ? gatewayOpenAi.chat(modelId) : directOpenAi(modelId);
-  const directOpenAiModel = (modelId: string) => directOpenAi(modelId);
-  const gatewayProviderCache = new Map<string, GatewayProviderCacheEntry>();
-  const invalidateGatewayProviderCache = (companyId: string) => {
-    const deleted = gatewayProviderCache.delete(companyId);
-    logger.info('ai.openai.gateway.agent_model.cache_invalidated', { companyId, deleted });
-  };
-  const primaryModel    = createConfiguredModel(primaryProvider, primaryModelId);
-  const fallbackModel   = fastProvider === 'openai'
-    ? directOpenAiModel(fastModelId)
-    : createConfiguredModel(fastProvider, fastModelId);
-  const model = withFallback(primaryModel, fallbackModel);
+  // Backend-side inference is now background work only.
+  //
+  // Every turn a user sees runs in the Pi container, which owns its own model
+  // and its own session compaction. Two jobs still need a model here, and
+  // neither has a live invoker to borrow inference from: the ambient group-room
+  // rollover below (a room transcript condensed so later turns get the context
+  // without replaying it) and persona learning, which pins its own DeepSeek
+  // model further down.
+  //
+  // The `provider`/`modelId` columns on aiModelTargetConfig — the "primary"
+  // model — no longer select anything; they belonged to the deleted in-backend
+  // engine. Only the fast target is read.
+  // Pinned to DeepSeek, not the configurable target: Divo runs DeepSeek
+  // everywhere else, and letting a room's compaction silently switch provider
+  // would change what every later turn in that room is told it already knows.
+  const summarizationModel = deepSeekModel(env.GROUP_SUMMARY_MODEL_ID);
 
   const chatContextService = new LarkChatContextService({
     repo: larkChatContextRepo,
-    // Ambient group rollover has no invoker-bound inference context. Use the
-    // configured cheap/fast backend model and keep request RBAC in the live run.
-    model: fallbackModel,
+    // Request RBAC stays with the live run; this only condenses stored text.
+    model: summarizationModel,
     logger: logger.child({ service: 'chat-context' }),
   });
-  logger.warn('ai.model.selected', {
-    provider: primaryProvider,
-    modelId: primaryModelId,
-    source: 'company_default_startup',
-    selection: redModelSelection({
-      provider: primaryProvider,
-      modelId: primaryModelId,
-      source: 'company_default_startup',
-    }),
+  const groupContextHydrator = new GroupContextHydrator({
+    chatContext: chatContextService,
+    logger,
   });
-  logger.warn('ai.model.selected', {
-    provider: fastProvider,
-    modelId: fastModelId,
-    source: 'fallback_startup',
-    selection: redModelSelection({
-      provider: fastProvider,
-      modelId: fastModelId,
-      source: 'fallback_startup',
-    }),
-  });
-  const resolveModel = async (input: {
-    provider: string;
-    modelId: string;
-    companyId: string;
-    agentSlug?: string;
-  }): Promise<LanguageModel> => {
-    if (input.provider === 'google' || input.provider === 'deepseek') {
-      return createConfiguredModel(input.provider, input.modelId);
-    }
-    if (input.provider !== 'openai') {
-      throw new Error(`Unsupported AI model provider: ${input.provider}`);
-    }
-
-    const nowMs = Date.now();
-    const cached = gatewayProviderCache.get(input.companyId);
-    if (cached && cached.expiresAtMs > nowMs) {
-      logger.info('ai.openai.gateway.agent_model.cache_hit', {
-        companyId: input.companyId,
-        agentSlug: input.agentSlug,
-        gatewayBaseUrl: cached.gatewayBaseUrl,
-      });
-      return cached.chatModel(input.modelId);
-    }
-    if (cached) {
-      gatewayProviderCache.delete(input.companyId);
-    }
-
-    logger.info('ai.openai.gateway.agent_model.cache_miss', {
-      companyId: input.companyId,
-      agentSlug: input.agentSlug,
-    });
-
-    const company = await prisma.company.findUnique({
-      where:  { id: input.companyId },
-      select: { id: true, gatewayApiKey: true, gatewayUrl: true },
-    });
-    const companyGatewayBaseUrl = (configuredGatewayBaseUrl || company?.gatewayUrl || '').trim().replace(/\/+$/, '');
-    if (company?.gatewayApiKey && companyGatewayBaseUrl) {
-      try {
-        const apiKey = decryptToken(company.gatewayApiKey, env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '');
-        logger.info('ai.openai.gateway.agent_model.enabled', {
-          companyId: input.companyId,
-          agentSlug: input.agentSlug,
-          gatewayBaseUrl: companyGatewayBaseUrl,
-        });
-        const gatewayProvider = createOpenAI({ apiKey, baseURL: `${companyGatewayBaseUrl}/v1` });
-        gatewayProviderCache.set(input.companyId, {
-          apiKey,
-          gatewayBaseUrl: companyGatewayBaseUrl,
-          chatModel: (modelId: string) => watchModelExhaustion(
-            gatewayProvider.chat(modelId) as LanguageModel,
-            input.companyId,
-            'openai_gateway',
-          ),
-          expiresAtMs: nowMs + GATEWAY_PROVIDER_CACHE_TTL_MS,
-        });
-        return gatewayProviderCache.get(input.companyId)!.chatModel(input.modelId);
-      } catch (error) {
-        if (error instanceof TokenCryptoError) {
-          gatewayProviderCache.delete(input.companyId);
-          logger.warn('ai.openai.gateway.agent_model.decrypt_failed', {
-            companyId: input.companyId,
-            agentSlug: input.agentSlug,
-            error: error.message,
-          });
-        } else {
-          throw error;
-        }
-      }
-    }
-
-    return watchModelExhaustion(directOpenAi(input.modelId) as LanguageModel, input.companyId, 'openai');
-  };
 
   // Late-bound: concrete notifier is created after Lark/approval wiring.
   let apiKeyExhaustionNotifier: ApiKeyExhaustionNotifier | undefined;
@@ -617,54 +466,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       apiKeyExhaustionNotifier?.clear(companyId, provider) ?? Promise.resolve(),
   };
 
-  function watchModelExhaustion(
-    model: LanguageModel,
-    companyId: string,
-    provider: ApiKeyProvider,
-  ): LanguageModel {
-    return wrapLanguageModel({
-      model: model as Parameters<typeof wrapLanguageModel>[0]['model'],
-      middleware: {
-        specificationVersion: 'v3',
-        wrapGenerate: async ({ doGenerate }) => {
-          try {
-            const result = await doGenerate();
-            void apiKeyExhaustionFacade.clear(companyId, provider);
-            return result;
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (isApiKeyExhausted({ message })) {
-              void apiKeyExhaustionFacade.notifyIfExhausted({
-                companyId,
-                provider,
-                message,
-                source: 'resolveModel.generate',
-              });
-            }
-            throw error;
-          }
-        },
-        wrapStream: async ({ doStream }) => {
-          try {
-            const result = await doStream();
-            void apiKeyExhaustionFacade.clear(companyId, provider);
-            return result;
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (isApiKeyExhausted({ message })) {
-              void apiKeyExhaustionFacade.notifyIfExhausted({
-                companyId,
-                provider,
-                message,
-                source: 'resolveModel.stream',
-              });
-            }
-            throw error;
-          }
-        },
-      },
-    }) as LanguageModel;
-  }
 
   // ── Lark tool clients ──────────────────────────────────────────────────
   const larkClientDeps = {
@@ -1436,7 +1237,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     prisma,
     queue: personaLearningQueue,
     extractor: new DeepSeekPersonaLearningExtractor(
-      createConfiguredModel('deepseek', env.PERSONA_LEARNING_MODEL_ID),
+      deepSeekModel(env.PERSONA_LEARNING_MODEL_ID),
       env.PERSONA_LEARNING_MODEL_ID,
     ),
     logger,
@@ -1727,20 +1528,18 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   logger.info('tool.registry.built', { toolCount: toolRegistry.ids().length, tools: toolRegistry.ids() });
 
   // ── Engine primitives ──────────────────────────────────────────────────
-  const history = new HistoryService({ conversationRepo, logger: logger.child({ service: 'history' }) });
 
   // ── Multi-agent layer ──────────────────────────────────────────────────
   const agentDefRepo       = new AgentDefinitionRepository(prisma);
   const channelMappingRepo = new ChannelMappingRepository(prisma);
-  const agentResolver = new AgentResolver(agentDefRepo, cache, logger.child({ service: 'agent-resolver' }));
   const agentAdminService  = new AgentAdminService({
     agentDefRepo,
     channelMappingRepo,
     prisma,
     logger: logger.child({ service: 'agent-admin' }),
-    invalidateAgentCache: async (companyId: string) => {
-      await agentResolver.invalidate(companyId);
-    },
+    // Agent definitions are read at prompt-build time now, so there is no
+    // resolver cache left to invalidate.
+    invalidateAgentCache: async () => {},
   });
   const departmentAdminService = new DepartmentAdminService({
     prisma,
@@ -1783,27 +1582,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     clock: systemClock,
   });
 
-  const supervisor = new SupervisorAgent({
-    model,
-    defaultModel: { provider: primaryProvider, modelId: primaryModelId },
-    resolveModel,
-    agentResolver,
-    todoRepo,
-    prisma,
-    logger:        logger.child({ service: 'supervisor' }),
-    clock:         systemClock,
-    supervisorTimeoutMs: env.SUPERVISOR_TIMEOUT_MS,
-    toolRegistry,
-    skillCatalog,
-    skillAccessEnforcement,
-    workResolution,
-    workBootstrap,
-    toolExecutor: larkRuntimeToolExecutor,
-    permissions,
-    auditService,
-    ...(mem0Service ? { mem0: mem0Service } : {}),
-    ...((env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) ? { geminiApiKey: (env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) as string } : {}),
-  });
 
   // Per-chat serializer: ensures only one engine.run() runs per chatId at a time.
   // Timeout must exceed the worst-case supervisor run (660s for dynamic graph with
@@ -1818,26 +1596,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     },
   });
 
-  const conversationSummarizer = new ConversationSummarizer({
-    conversationRepo,
-    model,
-    cache,
-    logger: logger.child({ service: 'conversation-summarizer' }),
-  });
 
-  const engine = new OrchestrationEngine({
-    permissions,
-    toolRegistry,
-    supervisor,
-    history,
-    executionRepo,
-    ...(mem0Service ? { mem0: mem0Service } : {}),
-    chatContext: chatContextService,
-    conversationSummarizer,
-    larkInference: larkInferenceService,
-    logger: logger.child({ service: 'engine' }),
-    clock:  systemClock,
-  });
 
   // ── Channels ───────────────────────────────────────────────────────────
   const channelDeliveryRepo = new ChannelDeliveryRepository(prisma);
@@ -1852,6 +1611,17 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ component: 'lane-lease' }),
   });
   const busyLaneNotices = new BusyLaneNotices();
+  const larkPiRuntime = new (await import('./application/runtime/lark-pi-runtime.service')).LarkPiRuntimeService({
+    prisma,
+    logger,
+    memberJwtSecret: env.MEMBER_JWT_SECRET,
+    backendUrl: env.BACKEND_PUBLIC_URL,
+    controllerUrl: env.PI_LARK_CONTROLLER_URL,
+    instanceId: env.PI_LARK_RUNTIME_INSTANCE_ID,
+    leaseTtlSeconds: env.PI_RUNTIME_LEASE_TTL_SECONDS,
+    runTimeoutMs: env.PI_LARK_RUN_TIMEOUT_MS,
+  });
+
   const larkAdapter = new LarkChannelAdapter({
     env,
     logger: logger.child({ channel: 'lark' }),
@@ -2075,13 +1845,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     approvalGate,
     logger,
   );
-  supervisor.bindLarkMemoryReview(larkMemoryReviewService);
 
   logger.info('container.built', { channels: channelRegistry.keys() });
 
   return {
     env,
-    engine,
     larkAdapter,
     channelRegistry,
     channelIdentityRepo,
@@ -2158,11 +1926,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     // Knowledge Share
     mem0Service,
     larkMemoryReviewService,
-    invalidateGatewayProviderCache,
     // Message serialization
     chatSerializer,
     // Group chat context
     chatContextService,
+    groupContextHydrator,
     channelDeliveryRepo,
     laneLeaseHolder,
     busyLaneNotices,
@@ -2170,12 +1938,13 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     larkContactsClient,
     // Pi/Desktop capability gateway
     gatewayDispatcher,
-    // LLM model
-    model,
+    // Container runtime, shared by the Lark webhook and the scheduler.
+    larkPiRuntime,
     // Scheduled workflow executor
     scheduledWorkflowService: new (await import('./application/scheduling/scheduled-workflow.service')).ScheduledWorkflowService({
       prisma,
-      engine,
+      piRuntime: larkPiRuntime,
+      runTimeoutMs: env.PI_LARK_RUN_TIMEOUT_MS,
       channelAdapters: {
         lark: larkAdapter,
         larkDm: new ScheduledLarkDmChannelAdapter({

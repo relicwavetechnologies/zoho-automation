@@ -33,7 +33,6 @@ import { createAuditRoutes } from './http/admin/audit.routes';
 import { createControlsRoutes } from './http/admin/controls.routes';
 import { createRbacRoutes } from './http/admin/rbac.routes';
 import { createAiModelsRoutes } from './http/admin/ai-models.routes';
-import { createAiProvidersRoutes } from './http/admin/ai-providers.routes';
 import { createWebSearchAdminRoutes } from './http/admin/web-search.routes';
 import { createRuntimeRoutes } from './http/admin/runtime.routes';
 import { createAnalyticsRoutes } from './http/admin/analytics.routes';
@@ -43,11 +42,8 @@ import { createProxyPolicyRoutes } from './http/admin/proxy-policy.routes';
 import { createProxyRoutes } from './http/admin/proxy.routes';
 import { createLlmProxyRoutes } from './http/llm/llm-proxy.routes';
 import { createDesktopAuthRoutes } from './http/desktop/desktop-auth.routes';
-import { createDesktopThreadsRoutes } from './http/desktop/desktop-threads.routes';
 import { createTraceIngestRoutes } from './http/desktop/trace-ingest.routes';
 import { ExecutionRepository } from './infrastructure/persistence/execution.repository';
-import { createDesktopWsGateway } from './http/desktop/desktop-ws.gateway';
-import { createAirnoteRoutes } from './http/airnote/airnote.routes';
 import { createGatewayRoutes } from './http/gateway/gateway.routes';
 import { DataExportWorker } from './application/data-export/data-export.worker';
 import { LarkIngressWorker } from './application/lark-ingress/lark-ingress.worker';
@@ -58,7 +54,6 @@ import { ManagerTeachWorker } from './application/persona-learning/manager-teach
 import { createManagerTeachRoutes } from './http/desktop/manager-teach.routes';
 import { LarkFileClient } from './infrastructure/channels/lark/clients/lark-file.client';
 import { ElevenLabsTranscriptionClient } from './infrastructure/ai/transcription/elevenlabs-transcription.client';
-import { LarkPiRuntimeService } from './application/runtime/lark-pi-runtime.service';
 
 export const createServer = (c: Container) => {
   const app = express();
@@ -84,16 +79,9 @@ export const createServer = (c: Container) => {
   const voiceFileClient = voiceTranscriber
     ? new LarkFileClient(c.env, c.logger)
     : undefined;
-  const larkPiRuntime = new LarkPiRuntimeService({
-    prisma: c.prisma,
-    logger: c.logger,
-    memberJwtSecret: c.env.MEMBER_JWT_SECRET,
-    backendUrl: c.env.BACKEND_PUBLIC_URL,
-    controllerUrl: c.env.PI_LARK_CONTROLLER_URL,
-    instanceId: c.env.PI_LARK_RUNTIME_INSTANCE_ID,
-    leaseTtlSeconds: c.env.PI_RUNTIME_LEASE_TTL_SECONDS,
-    runTimeoutMs: c.env.PI_LARK_RUN_TIMEOUT_MS,
-  });
+  // Built in composition so the scheduled-workflow poller shares this exact
+  // instance; two runtimes would mean two lease issuers for one container.
+  const larkPiRuntime = c.larkPiRuntime;
 
   const larkWebhookDeps: LarkWebhookDeps = {
     adapter:               c.larkAdapter,
@@ -113,6 +101,7 @@ export const createServer = (c: Container) => {
     cache:                 c.memoryCache,
     serializer:            c.chatSerializer,
     chatContextService:    c.chatContextService,
+    groupContextHydrator:  c.groupContextHydrator,
     channelDeliveryRepo:   c.channelDeliveryRepo,
     laneLeaseHolder:       c.laneLeaseHolder,
     busyNotices:           c.busyLaneNotices,
@@ -146,6 +135,7 @@ export const createServer = (c: Container) => {
           adapter: input.channelAdapter,
           piRuntime: larkPiRuntime,
           channelDeliveryRepo: c.channelDeliveryRepo,
+          groupContextHydrator: c.groupContextHydrator,
         },
         log: c.logger,
         ...(input.abortSignal ? { signal: input.abortSignal } : {}),
@@ -537,16 +527,6 @@ export const createServer = (c: Container) => {
     }),
   );
 
-  // Desktop threads CRUD (member auth — applied inside router)
-  app.use(
-    '/api/desktop/threads',
-    createDesktopThreadsRoutes({
-      prisma:          c.prisma,
-      logger:          c.logger,
-      memberJwtSecret: c.env.MEMBER_JWT_SECRET,
-    }),
-  );
-
   // Explicit manager Teach recording ingestion. The router owns member auth
   // and enforces the live department MANAGER membership on every new session.
   app.use(
@@ -593,20 +573,6 @@ export const createServer = (c: Container) => {
     );
     c.logger.info('llm-proxy.enabled', { baseUrl: c.env.DEEPSEEK_BASE_URL, canEncrypt: c.proxyKeyStore.canEncrypt() });
   }
-
-  // AirNote channel (SSE chat + thread recovery)
-  app.use(
-    '/api/airnote',
-    createAirnoteRoutes({
-      prisma:              c.prisma,
-      logger:              c.logger,
-      engine:              c.engine,
-      chatSerializer:      c.chatSerializer,
-      larkOAuthService:    c.larkOAuthService,
-      channelIdentityRepo: c.channelIdentityRepo,
-      approvalGate:        c.approvalGate,
-    }),
-  );
 
   // Agent definition + channel mapping CRUD (admin auth required)
   app.use(
@@ -676,14 +642,6 @@ export const createServer = (c: Container) => {
 
   // AI model target configs
   app.use('/api/admin/ai-models', adminAuth, createAiModelsRoutes({ prisma: c.prisma, logger: c.logger }));
-
-  // AI provider connections
-  app.use('/api/admin/ai-providers', adminAuth, createAiProvidersRoutes({
-    prisma: c.prisma,
-    env: c.env,
-    logger: c.logger,
-    invalidateGatewayProviderCache: c.invalidateGatewayProviderCache,
-  }));
 
   // Company-owned Serper connection metadata and Divo-observed usage.
   app.use('/api/admin/web-search', adminAuth, createWebSearchAdminRoutes({ prisma: c.prisma }));

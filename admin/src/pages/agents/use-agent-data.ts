@@ -2,7 +2,7 @@ import { useMemo } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
-import { agentsApi, aiProvidersApi, type AiProviderStatus, type CreateAgentInput, type ModelCatalogEntry, type UpdateAgentInput } from "@/lib/api"
+import { agentsApi, type CreateAgentInput, type ModelCatalogEntry, type UpdateAgentInput } from "@/lib/api"
 import { adminQueryKeys, getAdminQueryScope } from "@/lib/query-client"
 import type { AgentDef, AgentModelProvider, AgentRole, ToolDef } from "./agent-platform-data"
 
@@ -103,7 +103,6 @@ export type AgentDataState = {
   tools: ToolDef[]
   toolById: Record<string, ToolDef>
   modelCatalog: ModelCatalogEntry[]
-  providerStatus: AiProviderStatus | null
   loading: boolean
   error: string | null
   stats: { total: number; heads: number; specialists: number; enabled: number }
@@ -139,25 +138,19 @@ export function useAgentData(): AgentDataState {
     enabled: Boolean(token),
     queryFn: async () => agentsApi.modelCatalog(token ?? undefined),
   })
-  const providerStatusQuery = useQuery({
-    queryKey: adminQueryKeys.aiProviderStatus(scope),
-    enabled: Boolean(token),
-    queryFn: async () => aiProvidersApi.status(token ?? undefined),
-  })
 
   const rawAgents = agentsQuery.data ?? []
   const rawTools = toolsQuery.data ?? []
   const modelCatalog = modelCatalogQuery.data ?? []
-  const providerStatus = providerStatusQuery.data ?? null
   const agents = rawAgents.map((a) => toAgentDef(a, rawAgents))
   const agentById = Object.fromEntries(agents.map((a) => [a.id, a])) as Record<string, AgentDef>
   const tools = rawTools.map(toToolDef)
   const toolById = Object.fromEntries(tools.map((t) => [t.id, t])) as Record<string, ToolDef>
-  const loading = agentsQuery.isPending || toolsQuery.isPending || modelCatalogQuery.isPending || providerStatusQuery.isPending
+  const loading = agentsQuery.isPending || toolsQuery.isPending || modelCatalogQuery.isPending
   const error = useMemo(() => {
-    const source = agentsQuery.error ?? toolsQuery.error ?? modelCatalogQuery.error ?? providerStatusQuery.error
+    const source = agentsQuery.error ?? toolsQuery.error ?? modelCatalogQuery.error
     return source instanceof Error ? source.message : null
-  }, [agentsQuery.error, toolsQuery.error, modelCatalogQuery.error, providerStatusQuery.error])
+  }, [agentsQuery.error, toolsQuery.error, modelCatalogQuery.error])
 
   const stats = {
     total: agents.length,
@@ -214,7 +207,6 @@ export function useAgentData(): AgentDataState {
     tools,
     toolById,
     modelCatalog,
-    providerStatus,
     loading,
     error,
     stats,

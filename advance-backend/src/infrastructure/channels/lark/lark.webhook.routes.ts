@@ -60,6 +60,10 @@ import {
   type LarkAudioAttachment,
 } from './lark-attachment.parser';
 import type { LarkChatContextService } from '../../../application/chat-context/lark-chat-context.service';
+import type {
+  GroupContextBlock,
+  GroupContextHydrator,
+} from '../../../application/chat-context/group-context.hydrator';
 import type { PrismaClient } from '../../../generated/prisma';
 import type { GroupChatAttachmentContext } from '../../../domain/conversation/group-context';
 import { fetchParentMessage, buildParentContextPrefix, type ParentMessageResult } from './lark-parent-message';
@@ -163,6 +167,11 @@ export interface LarkWebhookDeps {
    */
   batchingEnabled?: boolean;
   chatContextService?: LarkChatContextService;
+  /**
+   * Absent means a group run answers from the current message alone: every
+   * participant's container then holds a different understanding of one thread.
+   */
+  groupContextHydrator?: Pick<GroupContextHydrator, 'hydrate'>;
   /**
    * Absent means documents are excerpted inline for the turn but never
    * indexed — the turn still answers, later questions have nothing to retrieve.
@@ -1084,6 +1093,36 @@ function divoFacingRuntimeMessage(message: string): string {
     .replace(/\bpi\b/gi, 'Divo');
 }
 
+/**
+ * A group thread is one conversation held by several containers.
+ *
+ * Each participant runs their own isolated Pi, so none of them can remember the
+ * thread on the others' behalf: the shared transcript is read here, for this run
+ * only, and the run's own session is scoped to the run so re-reading it every
+ * turn cannot pile up copies inside one user's volume. A DM has a single
+ * participant, so its durable session is left exactly as it was.
+ */
+async function sharedConversationFor(input: {
+  incoming: IncomingMessage;
+  companyId: string;
+  hydrator?: Pick<GroupContextHydrator, 'hydrate'>;
+}): Promise<GroupContextBlock | undefined> {
+  if (input.incoming.chatType !== 'group' || !input.hydrator) return undefined;
+
+  // A bare mention carries the adjacent Lark messages it was resolved against.
+  // They go in through the hydrator rather than being appended afterwards, so
+  // they arrive inside the same framing and fence as the stored transcript —
+  // appended after the trust policy they would be the one region of the prompt
+  // that nothing governs.
+  const block = await input.hydrator.hydrate({
+    companyId: input.companyId,
+    chatId: String(input.incoming.chatId),
+    currentMessageId: String(input.incoming.messageId),
+    ...(input.incoming.referenceContext ? { adjacentContext: input.incoming.referenceContext } : {}),
+  });
+  return block ?? undefined;
+}
+
 export async function runPiAndDeliver(input: {
   incoming: IncomingMessage;
   runContext: Parameters<LarkPiRuntimeService['run']>[0]['runContext'];
@@ -1092,6 +1131,7 @@ export async function runPiAndDeliver(input: {
     adapter: LarkChannelAdapter;
     piRuntime: LarkPiRuntimePort;
     channelDeliveryRepo?: ChannelDeliveryRepoPort;
+    groupContextHydrator?: Pick<GroupContextHydrator, 'hydrate'>;
     onRetryableDelivery?: () => Promise<void>;
   };
   log: Logger;
@@ -1191,12 +1231,21 @@ export async function runPiAndDeliver(input: {
   let runtimeFailure: unknown;
   try {
     await publishStatus();
+    // Read after the status card is up: the shared read is the first thing the
+    // run does, and a slow room lookup should show as "starting", not silence.
+    const sharedContext = await sharedConversationFor({
+      incoming,
+      companyId: String(runContext.companyId),
+      ...(deps.groupContextHydrator ? { hydrator: deps.groupContextHydrator } : {}),
+    });
     const result = await deps.piRuntime.run({
       incoming,
       runContext,
       conversation,
       threadId: runtimeThreadIdFor(incoming),
       ...(attachments?.length ? { attachments } : {}),
+      ...(sharedContext ? { sharedContext } : {}),
+      ...(incoming.chatType === 'group' ? { sessionScope: 'run' as const } : {}),
       abortSignal: runtimeSignal,
       onProgress: reportProgress,
     });
@@ -1318,6 +1367,7 @@ async function processInBackground(
     channelDeliveryRepo?: ChannelDeliveryRepoPort;
     onRetryableDelivery?: () => Promise<void>;
     chatContextService?: LarkChatContextService;
+    groupContextHydrator?: Pick<GroupContextHydrator, 'hydrate'>;
     prisma?: PrismaClient;
     larkContactsClient?: Pick<LarkContactsClient, 'getTenantKey' | 'getUser'>;
     fetchParentMessage?: typeof fetchParentMessage;
@@ -2298,6 +2348,7 @@ async function handleSlashCommand(args: {
     connectionRepo?: IntegrationConnectionRepository;
     cache: CachePort;
     chatContextService?: LarkChatContextService;
+    groupContextHydrator?: Pick<GroupContextHydrator, 'hydrate'>;
     prisma?: PrismaClient;
   };
   log: Logger;

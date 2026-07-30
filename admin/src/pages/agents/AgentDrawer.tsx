@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { cn } from "@/lib/utils"
-import type { AiProviderStatus, ModelCatalogEntry, UpdateAgentInput } from "@/lib/api"
+import type { ModelCatalogEntry, UpdateAgentInput } from "@/lib/api"
 import type { AgentDef, AgentModelProvider, ToolDef } from "./agent-platform-data"
 
 type AgentDrawerProps = {
@@ -12,7 +12,6 @@ type AgentDrawerProps = {
   agentById: Record<string, AgentDef>
   toolById: Record<string, ToolDef>
   modelCatalog: ModelCatalogEntry[]
-  providerStatus: AiProviderStatus | null
   onClose: () => void
   onToggle: (id: string) => Promise<void>
   onSave: (id: string, data: UpdateAgentInput) => Promise<void>
@@ -46,7 +45,7 @@ const providerLabel: Record<AgentModelProvider, string> = {
   openai: "Codex",
 }
 
-export function AgentDrawer({ agent, agentById, toolById, modelCatalog, providerStatus, onClose, onToggle, onSave, onDelete }: AgentDrawerProps) {
+export function AgentDrawer({ agent, agentById, toolById, modelCatalog, onClose, onToggle, onSave, onDelete }: AgentDrawerProps) {
   const [width, setWidth] = useState<number>(() => {
     if (typeof window === "undefined") return DEFAULT_W
     const stored = Number(localStorage.getItem(STORAGE_KEY))
@@ -117,7 +116,6 @@ export function AgentDrawer({ agent, agentById, toolById, modelCatalog, provider
             agentById={agentById}
             toolById={toolById}
             modelCatalog={modelCatalog}
-            providerStatus={providerStatus}
             onToggle={onToggle}
             onSave={onSave}
             onDelete={onDelete}
@@ -133,7 +131,6 @@ function AgentDrawerContent({
   agentById,
   toolById,
   modelCatalog,
-  providerStatus,
   onToggle,
   onSave,
   onDelete,
@@ -142,7 +139,6 @@ function AgentDrawerContent({
   agentById: Record<string, AgentDef>
   toolById: Record<string, ToolDef>
   modelCatalog: ModelCatalogEntry[]
-  providerStatus: AiProviderStatus | null
   onToggle: (id: string) => Promise<void>
   onSave: (id: string, data: UpdateAgentInput) => Promise<void>
   onDelete: (id: string) => Promise<void>
@@ -170,11 +166,7 @@ function AgentDrawerContent({
   const roleLabel = isSupervisor ? "Root agent" : isDeptHead ? "Department head" : "Specialist sub-agent"
   const agentProvider = agent.provider ?? null
   const agentModelId = agent.modelId ?? null
-  const providerOptions = (["google", "openai"] as const).filter((p) => {
-    if (agentProvider === p) return true
-    if (p === "openai") return providerStatus?.providers.openai.connected === true
-    return providerStatus?.providers.google.connected !== false
-  })
+  const providerOptions = ["google", "openai"] as const
   const selectedProvider = provider === DEFAULT_MODEL_VALUE ? null : provider
   const modelOptions = selectedProvider
     ? modelCatalog.filter((entry) => entry.provider === selectedProvider)

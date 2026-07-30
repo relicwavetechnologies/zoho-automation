@@ -18,6 +18,7 @@
  */
 
 import { Router, type Request, type Response } from 'express';
+import { SCHEDULED_SESSION_AUTH_PROVIDER } from '../../application/scheduling/scheduled-runtime-session';
 import { randomBytes } from 'node:crypto';
 import { Client as LarkSdkClient, LoggerLevel } from '@larksuiteoapi/node-sdk';
 import type { LarkOAuthService } from '../../infrastructure/lark/lark-oauth.service';
@@ -333,6 +334,10 @@ export function createLarkAuthRoutes(deps: {
           larkTenantKey: state.tenantKey,
           larkOpenId: resolvedOpenId,
           revokedAt: null,
+          // A scheduled run's session is machine-issued and gets revoked when
+          // that run ends. Renewing it here would hand the signing-in member a
+          // session the scheduler is about to retire under them.
+          authProvider: { not: SCHEDULED_SESSION_AUTH_PROVIDER },
         },
         data: {
           role: identity.value.aiRole,

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from '../../generated/prisma';
-import type { OrchestrationEngine } from '../orchestration/engine/core';
+import type { LarkPiRuntimeInput } from '../runtime/lark-pi-runtime.service';
 import type { ChannelAdapter } from '../channels/channel.adapter';
 import type { ChannelIdentityRepoPort } from '../../infrastructure/persistence/channel-identity.repository';
 import type { Logger } from '../../shared/logger';
@@ -13,8 +13,21 @@ import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { scheduleConfigSchema } from './schedule-config';
 import { getNextScheduledRunAt } from './schedule-calculator';
 import { readDeliveryChannel, readDeliveryTarget } from './scheduled-workflow-control.service';
+import {
+  issueScheduledRuntimeSession,
+  revokeScheduledRuntimeSession,
+} from './scheduled-runtime-session';
 
-const STALE_CLAIM_MS = 10 * 60 * 1000;
+/**
+ * How long past its claim a workflow may be re-claimed.
+ *
+ * This must exceed the longest a run can legitimately take, or a second
+ * replica re-claims a run that is still in flight — `nextRunAt` is only
+ * advanced after the run, so the row still looks due. Derived from the run
+ * timeout rather than fixed, so raising the timeout cannot silently
+ * reintroduce double execution.
+ */
+const staleClaimMs = (runTimeoutMs: number): number => runTimeoutMs + 5 * 60_000;
 const MAX_DUE_PER_POLL = 5;
 const CURRENT_CHAT_DELIVERY_LINE = /^\s*Deliver to:\s+.*lark_current_chat\s*$/m;
 
@@ -68,7 +81,14 @@ export function buildScheduledExecutionPrompt(
 
 export interface ScheduledWorkflowServiceDeps {
   readonly prisma:              PrismaClient;
-  readonly engine:              OrchestrationEngine;
+  /**
+   * The container runtime. A scheduled run is an ordinary Pi run made under a
+   * backend-issued session, so it lands in the member's own workspace and sees
+   * the same skills their interactive turns do.
+   */
+  readonly piRuntime:           {
+    run(input: LarkPiRuntimeInput): Promise<{ text: string }>;
+  };
   readonly channelAdapters:     Readonly<{
     lark: ChannelAdapter;
     larkDm: ChannelAdapter;
@@ -78,6 +98,8 @@ export interface ScheduledWorkflowServiceDeps {
   readonly logger:              Logger;
   readonly clock:               Clock;
   readonly pollIntervalMs:      number;
+  /** Bounds both the run and the lifetime of the session issued for it. */
+  readonly runTimeoutMs:        number;
 }
 
 export class ScheduledWorkflowService {
@@ -113,7 +135,7 @@ export class ScheduledWorkflowService {
 
     try {
       const now = this.deps.clock.now();
-      const staleBefore = new Date(now.getTime() - STALE_CLAIM_MS);
+      const staleBefore = new Date(now.getTime() - staleClaimMs(this.deps.runTimeoutMs));
 
       const due = await this.deps.prisma.scheduledWorkflow.findMany({
         where: {
@@ -205,6 +227,18 @@ export class ScheduledWorkflowService {
     }
     const identity = identityResult.value;
 
+    // The container is entered as the member, and a member is only identifiable
+    // to it by tenant key and open id together. Without both there is nothing to
+    // run as, so fail the run plainly rather than half-building a context.
+    if (!identity.larkTenantKey || !identity.larkOpenId) {
+      await this.markFailed(
+        workflowId,
+        scheduledFor,
+        'Creator has no connected Lark identity to run the workflow as',
+      );
+      return;
+    }
+
     const deliveryChannel = readDeliveryChannel(workflow.outputConfigJson);
     const deliveryTarget = readDeliveryTarget(workflow.outputConfigJson);
     const targetChatId = deliveryTarget === 'creator_dm'
@@ -262,9 +296,10 @@ export class ScheduledWorkflowService {
       channel:        deliveryChannel,
       traceId:        `sched-${run.id}`,
       requestId:      `sched-${run.id}`,
-      userExternalId: deliveryChannel === 'lark'
-        ? identity.larkOpenId ?? workflow.createdByUserId
-        : workflow.createdByUserId,
+      // Always the Lark identity, even for desktop delivery: this is who the
+      // run executes as, which is separate from where the reply is sent.
+      tenantId:       identity.larkTenantKey,
+      userExternalId: identity.larkOpenId,
       chatId:         targetChatId,
       ...(deliveryTarget === 'creator_dm'
         ? { deliveryMode: 'scheduled_runtime_delivery' as const }
@@ -285,24 +320,60 @@ export class ScheduledWorkflowService {
       replyInThread:    false,
     };
 
+    // One thread per workflow, not per run.
+    //
+    // This does NOT control the workspace — that lives on the per-user volume
+    // and persists regardless. What it keys is the Pi session transcript, so
+    // each run replays the previous ones. For a compiled, self-contained
+    // scheduled prompt that history is not needed and grows without bound; a
+    // long-lived daily workflow will eventually need a per-run session scope.
+    const threadId = `scheduled-workflow:${workflowId}`;
+    let sessionId: string | undefined;
+
     try {
-      const result = await this.deps.engine.run({
+      const session = await issueScheduledRuntimeSession(this.deps.prisma, {
+        companyId:     workflow.companyId,
+        userId:        workflow.createdByUserId,
+        role:          identity.aiRole,
+        larkTenantKey: identity.larkTenantKey!,
+        larkOpenId:    identity.larkOpenId!,
+        runTimeoutMs:  this.deps.runTimeoutMs,
+      });
+      sessionId = session.sessionId;
+
+      const { text } = await this.deps.piRuntime.run({
         incoming,
         runContext,
         conversation,
-        channelAdapter,
+        threadId,
       });
 
-      const summary = result.ok
-        ? result.value.finalReply.text.slice(0, 2000)
-        : result.error.message.slice(0, 2000);
+      // Pi returns the reply; unlike the engine it does not deliver it, so the
+      // scheduler sends it through the adapter it already chose above.
+      //
+      // A scheduled run is only useful if it arrives. Channel adapters report
+      // failure by returning `err`, not by throwing, so an unread result here
+      // would record a green run for a report nobody received — every day,
+      // silently. The run is therefore no better than its delivery.
+      const reply = text.trim();
+      if (!reply) {
+        throw new Error('Run produced no reply to deliver');
+      }
+      const delivered = await channelAdapter.sendFinalReply(conversation, {
+        kind: 'final',
+        text: reply,
+        format: 'markdown',
+      });
+      if (!delivered.ok) {
+        throw new Error(`Delivery failed: ${delivered.error.message}`);
+      }
 
       await this.deps.prisma.scheduledWorkflowRun.update({
         where: { id: run.id },
         data: {
-          status: result.ok ? 'succeeded' : 'failed',
+          status: 'succeeded',
           finishedAt: new Date(),
-          ...(result.ok ? { resultSummary: summary } : { errorSummary: summary }),
+          resultSummary: reply.slice(0, 2000),
         },
       });
     } catch (e) {
@@ -314,6 +385,17 @@ export class ScheduledWorkflowService {
           errorSummary: (e instanceof Error ? e.message : String(e)).slice(0, 2000),
         },
       });
+    } finally {
+      // The run is already recorded either way, so a failed revoke must not
+      // change its outcome. The session expires on its own regardless.
+      if (sessionId) {
+        await revokeScheduledRuntimeSession(this.deps.prisma, sessionId).catch(error => {
+          this.log.warn('scheduler.session_revoke_failed', {
+            workflowId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
     }
 
     // Use current time as anchor — skip past all missed slots to the next future run.
