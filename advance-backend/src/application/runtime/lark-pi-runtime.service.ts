@@ -64,18 +64,34 @@ export class LarkPiRuntimeService {
     this.log = deps.logger.child({ service: 'lark-pi-runtime' });
   }
 
-  async run(input: LarkPiRuntimeInput): Promise<{ text: string }> {
+  private findActiveSession(runContext: LarkPiRuntimeInput['runContext']) {
+    if (!runContext.tenantId || !runContext.userExternalId) {
+      return null;
+    }
     const minimumSessionExpiry = new Date(Date.now() + 5 * 60_000);
-    const session = await this.deps.prisma.memberSession.findFirst({
+    return this.deps.prisma.memberSession.findFirst({
       where: {
-        userId: String(input.runContext.userId),
-        companyId: String(input.runContext.companyId),
+        userId: String(runContext.userId),
+        companyId: String(runContext.companyId),
+        channel: 'lark',
+        larkTenantKey: String(runContext.tenantId),
+        larkOpenId: String(runContext.userExternalId),
         revokedAt: null,
         expiresAt: { gt: minimumSessionExpiry },
       },
       orderBy: { createdAt: 'desc' },
       select: { sessionId: true, expiresAt: true },
     });
+  }
+
+  async hasActiveSession(
+    runContext: LarkPiRuntimeInput['runContext'],
+  ): Promise<boolean> {
+    return Boolean(await this.findActiveSession(runContext));
+  }
+
+  async run(input: LarkPiRuntimeInput): Promise<{ text: string }> {
+    const session = await this.findActiveSession(input.runContext);
     if (!session) {
       throw new LarkPiRuntimeError(
         'runtime_session_missing',

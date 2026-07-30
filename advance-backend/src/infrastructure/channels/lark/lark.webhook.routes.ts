@@ -121,9 +121,13 @@ import type {
 import type { LarkIngressQueue } from '../../../application/lark-ingress/lark-ingress.queue';
 import type { IngestionQueue } from '../../../application/ingestion/ingestion.queue';
 
+type LarkPiRuntimePort =
+  Pick<LarkPiRuntimeService, 'run'>
+  & Partial<Pick<LarkPiRuntimeService, 'hasActiveSession'>>;
+
 export interface LarkWebhookDeps {
   adapter: LarkChannelAdapter;
-  piRuntime: Pick<LarkPiRuntimeService, 'run'>;
+  piRuntime: LarkPiRuntimePort;
   channelIdentityRepo: ChannelIdentityRepoPort;
   conversationRepo: ConversationRepoPort;
   ingressReceiptRepo: IngressReceiptRepoPort;
@@ -1021,7 +1025,7 @@ export async function runPiAndDeliver(input: {
   conversation: ConversationHandle;
   deps: {
     adapter: LarkChannelAdapter;
-    piRuntime: Pick<LarkPiRuntimeService, 'run'>;
+    piRuntime: LarkPiRuntimePort;
     channelDeliveryRepo?: ChannelDeliveryRepoPort;
     onRetryableDelivery?: () => Promise<void>;
   };
@@ -1233,7 +1237,7 @@ async function processInBackground(
   rawEvent: Record<string, unknown>,
   deps: {
     adapter: LarkChannelAdapter;
-    piRuntime: Pick<LarkPiRuntimeService, 'run'>;
+    piRuntime: LarkPiRuntimePort;
     channelIdentityRepo: ChannelIdentityRepoPort;
     conversationRepo: ConversationRepoPort;
     logger: Logger;
@@ -1439,6 +1443,68 @@ async function processInBackground(
     log.warn('webhook.identity.not_found', {
       larkOpenId: incoming.userExternalId,
       bootstrapped,
+      correlationId,
+    });
+    return;
+  }
+
+  if (
+    deps.piRuntime.hasActiveSession
+    && !await deps.piRuntime.hasActiveSession({
+      companyId: asCompanyId(identity.companyId),
+      userId: asUserId(identity.userId),
+      companyRole: asCompanyRoleSlug(identity.aiRole),
+      channel: 'lark',
+      tenantId: tenantKey,
+      userExternalId: incoming.userExternalId,
+    })
+  ) {
+    const loginUrl = await createLarkLoginUrl({
+      companyId: identity.companyId,
+      userId: identity.userId,
+      larkOpenId: incoming.userExternalId,
+      tenantKey,
+      pendingEvent: rawEvent,
+      deps,
+    });
+    if (!loginUrl) {
+      await deps.adapter.sendToChatId(
+        String(incoming.chatId),
+        SIGN_IN_NOT_CONFIGURED,
+        String(incoming.messageId),
+        undefined,
+        incoming.chatType === 'group'
+          ? incoming.groupReplyMode !== 'inline'
+          : undefined,
+      );
+      return;
+    }
+
+    const name = identity.displayName ?? identity.email ?? 'there';
+    const reason = 'Your Divo cloud session expired. Connect again and I’ll continue this request automatically.';
+    const card = await deps.adapter.sendCardToChat(
+      String(incoming.chatId),
+      buildSignInCard({ name, url: loginUrl, reason }),
+      incoming.chatType === 'group' ? String(incoming.messageId) : undefined,
+      incoming.chatType === 'group'
+        ? incoming.groupReplyMode !== 'inline'
+        : undefined,
+    );
+    if (!card.ok) {
+      await deps.adapter.sendToChatId(
+        String(incoming.chatId),
+        signInFallbackText({ name, url: loginUrl, reason }),
+        String(incoming.messageId),
+        undefined,
+        incoming.chatType === 'group'
+          ? incoming.groupReplyMode !== 'inline'
+          : undefined,
+      );
+    }
+    log.info('webhook.pi_session.login_prompt.sent', {
+      userId: identity.userId,
+      companyId: identity.companyId,
+      rendered: card.ok ? 'card' : 'text',
       correlationId,
     });
     return;

@@ -37,6 +37,7 @@ function sessionFixture() {
     companyId: 'company-1',
     role: 'COMPANY_ADMIN',
     larkOpenId: 'ou_123',
+    larkTenantKey: 'tenant-1',
     expiresAt: new Date(Date.now() + 3_600_000),
     revokedAt: null,
     user: { email: 'member@example.com' },
@@ -126,7 +127,15 @@ async function callGateway(
     };
     const req = {
       headers: { authorization: `Bearer ${token}` },
-      body: { op: 'tools.list' },
+      body: {
+        op: 'tools.list',
+        execution: {
+          version: 1,
+          threadId: 'lark:chat-1',
+          runId: 'run-1',
+          actionId: 'action-1',
+        },
+      },
       query: {},
       params: {},
     } as unknown as Request;
@@ -239,6 +248,7 @@ describe('member authentication uses the live company membership', () => {
 
   it('accepts only a complete backend-signed Lark runtime lease', async () => {
     const dispatchedChannels: string[] = [];
+    const dispatchedTenantKeys: Array<string | null | undefined> = [];
     const prisma = {
       memberSession: { findUnique: async () => sessionFixture() },
       adminMembership: { findFirst: async () => ({ role: 'MEMBER' }) },
@@ -251,8 +261,12 @@ describe('member authentication uses the live company membership', () => {
     });
     const gateway = createGatewayRoutes({
       dispatcher: {
-        dispatch: async (_request: unknown, member: { channel?: string }) => {
+        dispatch: async (
+          _request: unknown,
+          member: { channel?: string; larkTenantKey?: string | null },
+        ) => {
           dispatchedChannels.push(member.channel ?? '');
+          dispatchedTenantKeys.push(member.larkTenantKey);
           return { ok: true, status: 'success', data: {} };
         },
       } as any,
@@ -269,6 +283,7 @@ describe('member authentication uses the live company membership', () => {
 
     assert.equal((await callGateway(memberAuth, gateway, lease)).status, 200);
     assert.deepEqual(dispatchedChannels, ['lark']);
+    assert.deepEqual(dispatchedTenantKeys, ['tenant-1']);
 
     const incompleteLease = buildJwt({
       sessionId: 'session-1',
@@ -280,6 +295,7 @@ describe('member authentication uses the live company membership', () => {
     assert.equal(rejected.status, 401);
     assert.equal(rejected.body.error, 'Invalid Pi runtime lease');
     assert.deepEqual(dispatchedChannels, ['lark']);
+    assert.deepEqual(dispatchedTenantKeys, ['tenant-1']);
   });
 
   it('rejects a complete runtime lease on member routes unless explicitly allowed', async () => {

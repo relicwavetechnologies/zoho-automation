@@ -67,13 +67,19 @@ function makeExecutableResumer(row: unknown, channelIdentityRepo: unknown) {
   });
 
   const completions: unknown[] = [];
+  const failures: unknown[] = [];
   const finalTexts: string[] = [];
   const finalConversations: unknown[] = [];
   let resumedChatId: string | undefined;
+  let resumedExecution: unknown;
+  const expectedExecution = (row as any)?.metadataJson?.execution;
   const service = new ApprovalResumerService({
     approvalRepo: {
       findById: async () => ok(row),
-      failApprovedExecution: async () => ok(true),
+      failApprovedExecution: async (_id: string, result: unknown) => {
+        failures.push(result);
+        return ok(true);
+      },
       persistResult: async () => ok(undefined),
     } as any,
     larkAdapter: {
@@ -87,8 +93,12 @@ function makeExecutableResumer(row: unknown, channelIdentityRepo: unknown) {
     } as any,
     channelIdentityRepo: channelIdentityRepo as any,
     approvalGate: {
-      check: async (input: { chatId: string }) => {
+      check: async (input: { chatId: string; execution?: unknown }) => {
         resumedChatId = input.chatId;
+        resumedExecution = input.execution;
+        if (expectedExecution && JSON.stringify(input.execution) !== JSON.stringify(expectedExecution)) {
+          return { kind: 'misconfigured', message: 'Execution context mismatch' };
+        }
         return { kind: 'allowed', executionGrant: { approvalId: 'approval-1' } };
       },
       completeExecution: async (_grant: unknown, result: unknown) => { completions.push(result); return true; },
@@ -110,16 +120,27 @@ function makeExecutableResumer(row: unknown, channelIdentityRepo: unknown) {
     service,
     executed,
     completions,
+    failures,
     finalTexts,
     finalConversations,
     getResumedChatId: () => resumedChatId,
+    getResumedExecution: () => resumedExecution,
   };
 }
 
 describe('ApprovalResumerService', () => {
   it('executes the stored approved tool call without re-entering the agent loop', async () => {
     let resolvedTenantKey: string | undefined;
-    const harness = makeExecutableResumer(approvedRow(), {
+    const execution = {
+      version: 1,
+      threadId: 'chat-1',
+      runId: 'run-1',
+      actionId: 'action-1',
+    };
+    const harness = makeExecutableResumer(approvedRow('approved', {
+      approvalOrigin: 'cloud_pi',
+      execution,
+    }), {
       resolveByLarkTenantIdentity: async (_openId: string, tenantKey: string) => {
         resolvedTenantKey = tenantKey;
         return ok({
@@ -138,6 +159,7 @@ describe('ApprovalResumerService', () => {
       'chat-1:approval:department:dept-1:manager:user-manager',
     );
     assert.equal(resolvedTenantKey, 'tenant-1');
+    assert.deepEqual(harness.getResumedExecution(), execution);
     assert.match(harness.finalTexts[0] ?? '', /Approved action completed/);
     assert.match(harness.finalTexts[0] ?? '', /documentUrl/);
   });
@@ -167,6 +189,23 @@ describe('ApprovalResumerService', () => {
       replyInThread: true,
       correlationId: 'approval-approval-1',
     });
+  });
+
+  it('does not execute a cloud Pi approval with missing execution provenance', async () => {
+    const harness = makeExecutableResumer(approvedRow('approved', {
+      approvalOrigin: 'cloud_pi',
+      execution: null,
+    }), {
+      resolveByLarkTenantIdentity: async () => {
+        assert.fail('Identity resolution must not run for malformed cloud approval provenance');
+      },
+    });
+
+    await harness.service.resume('approval-1', 'approved');
+
+    assert.deepEqual(harness.executed, []);
+    assert.equal(harness.failures.length, 1);
+    assert.match(harness.finalTexts[0] ?? '', /missing its verified Pi execution context/i);
   });
 
   it('resumes a desktop approval by authenticated user ID without requiring a Lark tenant', async () => {

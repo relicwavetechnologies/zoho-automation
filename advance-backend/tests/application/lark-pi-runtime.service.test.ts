@@ -25,6 +25,8 @@ function runtimeInput() {
       userId: 'user-1',
       companyRole: 'MEMBER',
       channel: 'lark',
+      tenantId: 'tenant-1',
+      userExternalId: 'ou-user-1',
     },
     conversation: {
       channel: 'lark',
@@ -37,13 +39,17 @@ function runtimeInput() {
 
 test('mints a scoped Lark lease and sends no caller-selected profile or approval', async () => {
   let controllerBody: Record<string, unknown> | undefined;
+  let sessionQuery: Record<string, unknown> | undefined;
   const service = new LarkPiRuntimeService({
     prisma: {
       memberSession: {
-        findFirst: async () => ({
-          sessionId: 'session-1',
-          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
-        }),
+        findFirst: async (query: Record<string, unknown>) => {
+          sessionQuery = query;
+          return {
+            sessionId: 'session-1',
+            expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+          };
+        },
       },
     } as any,
     logger,
@@ -69,6 +75,9 @@ test('mints a scoped Lark lease and sends no caller-selected profile or approval
   assert.equal(controllerBody?.['message'], 'Do the work');
   assert.equal('profile' in (controllerBody ?? {}), false);
   assert.equal('approve' in (controllerBody ?? {}), false);
+  assert.equal((sessionQuery?.['where'] as Record<string, unknown>)?.['channel'], 'lark');
+  assert.equal((sessionQuery?.['where'] as Record<string, unknown>)?.['larkTenantKey'], 'tenant-1');
+  assert.equal((sessionQuery?.['where'] as Record<string, unknown>)?.['larkOpenId'], 'ou-user-1');
 
   const token = String(controllerBody?.['runtimeLease']);
   const claims = JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString('utf8'));
@@ -78,6 +87,72 @@ test('mints a scoped Lark lease and sends no caller-selected profile or approval
   assert.equal(claims.companyId, 'company-1');
   assert.equal(claims.instanceId, 'pi-local-1');
   assert.equal(claims.threadId, 'lark:chat-1:user-1');
+});
+
+test('reports an inactive cloud session before contacting the controller', async () => {
+  let controllerCalled = false;
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => null,
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    fetch: async () => {
+      controllerCalled = true;
+      return new Response();
+    },
+  });
+
+  assert.equal(await service.hasActiveSession(runtimeInput().runContext), false);
+  await assert.rejects(
+    () => service.run(runtimeInput()),
+    (error: unknown) =>
+      error instanceof LarkPiRuntimeError
+      && error.code === 'runtime_session_missing',
+  );
+  assert.equal(controllerCalled, false);
+});
+
+test('does not accept another Lark workspace session for the same member', async () => {
+  let controllerCalled = false;
+  const otherWorkspaceSession = {
+    sessionId: 'session-other',
+    larkTenantKey: 'tenant-other',
+    larkOpenId: 'ou-other',
+    expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+  };
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async ({ where }: { where: Record<string, unknown> }) =>
+          where['larkTenantKey'] === otherWorkspaceSession.larkTenantKey
+          && where['larkOpenId'] === otherWorkspaceSession.larkOpenId
+            ? otherWorkspaceSession
+            : null,
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    fetch: async () => {
+      controllerCalled = true;
+      return new Response();
+    },
+  });
+
+  assert.equal(await service.hasActiveSession(runtimeInput().runContext), false);
+  assert.equal(controllerCalled, false);
 });
 
 test('streams sanitized controller progress before returning the final text', async () => {

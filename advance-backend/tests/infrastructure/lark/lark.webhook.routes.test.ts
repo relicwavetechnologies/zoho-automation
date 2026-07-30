@@ -143,6 +143,8 @@ async function runWebhook(body: unknown, options: {
   tenantCompanyLookupFails?: boolean;
   /** Whether Lark OAuth is configured on this deployment. */
   oauthConfigured?: boolean;
+  /** Whether the resolved member already has a live cloud-Pi session. */
+  activePiSession?: boolean;
   /** Active memberships after the saved Lark department context changed. */
   changedDepartmentMemberships?: string[];
   /** Number of user-owned Lark connections revoked by an auth command. */
@@ -214,6 +216,7 @@ async function runWebhook(body: unknown, options: {
   const acceptedLaneKeys: string[] = [];
   const acceptedCompanyIds: string[] = [];
   const engineInputs: unknown[] = [];
+  const piSessionContexts: unknown[] = [];
   const serializerKeys: string[] = [];
   const identityLookups: Array<{ openId: string; tenantKey: string }> = [];
   const invalidatedIdentities: string[] = [];
@@ -252,6 +255,14 @@ async function runWebhook(body: unknown, options: {
   const routeDeps = {
     adapter,
     piRuntime: {
+      ...(options.activePiSession !== undefined
+        ? {
+            hasActiveSession: async (context: unknown) => {
+              piSessionContexts.push(context);
+              return options.activePiSession!;
+            },
+          }
+        : {}),
       run: async (input: unknown) => {
         order.push('engine');
         engineInputs.push(input);
@@ -527,6 +538,7 @@ async function runWebhook(body: unknown, options: {
     responseBody,
     order,
     engineInputs,
+    piSessionContexts,
     serializerKeys,
     identityLookups,
     invalidatedIdentities,
@@ -1589,6 +1601,31 @@ describe('Lark first contact', () => {
     const button = card.body.elements.find((e: any) => e.tag === 'button');
     assert.equal(button.behaviors[0].type, 'open_url');
     assert.deepEqual(noticesSent(adapter), [], 'no duplicate plain-text prompt');
+  });
+
+  it('offers the Connect button before Pi when a known member cloud session expired', async () => {
+    let adapter: any;
+    const result = await runWebhook(firstTimer(), {
+      oauthConfigured: true,
+      activePiSession: false,
+      setupAdapter: a => { adapter = a; captureOutbound(a); },
+    });
+
+    assert.equal(adapter.__sentCards.length, 1);
+    const card = JSON.parse(JSON.parse(adapter.__sentCards[0]).card);
+    const button = card.body.elements.find((element: any) => element.tag === 'button');
+    assert.equal(button.behaviors[0].type, 'open_url');
+    assert.match(card.body.elements[0].content, /cloud session expired/i);
+    assert.ok(!result.order.includes('engine'), 'Pi must not start before session recovery');
+    assert.equal(result.cacheWrites.length, 1, 'the original request is retained for replay');
+    assert.deepEqual(result.piSessionContexts, [{
+      companyId: 'company-1',
+      userId: 'user-1',
+      companyRole: 'MEMBER',
+      channel: 'lark',
+      tenantId: 'tenant-1',
+      userExternalId: 'ou_sender',
+    }]);
   });
 
   it('keeps the Connect card inside a default-threaded group', async () => {

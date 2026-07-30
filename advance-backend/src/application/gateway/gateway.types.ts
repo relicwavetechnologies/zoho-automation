@@ -49,9 +49,10 @@ export const GATEWAY_STATUSES = [
 export type GatewayStatus = typeof GATEWAY_STATUSES[number];
 
 /**
- * Desktop-provided provenance for one Pi tool action. It is useful for
+ * Runtime-provided provenance for one Pi tool action. It is useful for
  * routing, idempotency, and audit records, but never grants identity or
  * permission: those continue to come exclusively from the member session.
+ * Backend-issued runtime leases additionally bind this context to one thread.
  */
 export const gatewayExecutionContextSchema = z.object({
   version: z.literal(1),
@@ -195,6 +196,7 @@ export interface GatewayMemberContext {
   readonly channel?: 'desktop' | 'lark';
   readonly email: string | null;
   readonly larkOpenId: string | null;
+  readonly larkTenantKey?: string | null;
   readonly sessionId: string;
 }
 

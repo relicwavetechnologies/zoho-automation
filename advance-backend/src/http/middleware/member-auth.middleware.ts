@@ -9,6 +9,7 @@
  *   res.locals.aiRole     (string — e.g. "MEMBER", "COMPANY_ADMIN")
  *   res.locals.isAdmin    (boolean)
  *   res.locals.larkOpenId (string | null)
+ *   res.locals.larkTenantKey (string | null)
  *   res.locals.sessionId  (string)
  *   res.locals.email      (string | null)
  *   res.locals.channel    ("desktop" | "lark", trusted from the signed token)
@@ -140,6 +141,7 @@ export function createMemberAuthMiddleware(deps: MemberAuthMiddlewareDeps) {
       res.locals['aiRole']     = membership.role;
       res.locals['isAdmin']    = membership.role === 'COMPANY_ADMIN' || membership.role === 'SUPER_ADMIN';
       res.locals['larkOpenId'] = session.larkOpenId ?? null;
+      res.locals['larkTenantKey'] = session.larkTenantKey ?? null;
       res.locals['sessionId']  = session.sessionId;
       res.locals['email']      = session.user?.email ?? null;
       res.locals['channel']    = hasRuntimeClaims ? 'lark' : 'desktop';

@@ -29,7 +29,7 @@ export interface ToolExecutorInput {
   readonly toolId: string;
   readonly args: Record<string, unknown>;
   readonly requestId?: string;
-  /** Non-authoritative desktop provenance for one isolated Pi action. */
+  /** Non-authoritative runtime provenance for one isolated Pi action. */
   readonly execution?: GatewayExecutionContext;
   /** Optional invariant used by prepared commits to prevent action reclassification. */
   readonly expectedAction?: ToolActionGroup;
@@ -58,6 +58,7 @@ export interface RuntimeToolExecutionInput {
   readonly args: Record<string, unknown>;
   readonly runContext: RunContext;
   readonly perm: PermissionResult;
+  readonly execution?: GatewayExecutionContext;
   readonly allowedToolIds?: ReadonlySet<string>;
   readonly approvalGate?: ApprovalGateService;
   readonly chatId?: string;
@@ -417,6 +418,7 @@ export class ToolExecutor {
         runContext,
         chatId: input.chatId,
         argsSummary: buildArgsSummary(tool.id, action, validatedArgs),
+        ...(input.execution ? { execution: input.execution } : {}),
       });
       if (decision.kind === 'pending') {
         return runtimeFailure(toolId, 'approval_required', decision.message, action, decision.approvalId);
@@ -812,6 +814,9 @@ export class ToolExecutor {
     requestId: string | undefined,
     execution: GatewayExecutionContext | undefined,
   ): RunContext {
+    const larkDelivery = member.channel === 'lark' && execution
+      ? larkDeliveryContextFromThreadId(execution.threadId)
+      : undefined;
     return {
       companyId: asCompanyId(member.companyId),
       userId: asUserId(member.userId),
@@ -820,13 +825,19 @@ export class ToolExecutor {
       channel: member.channel ?? 'desktop',
       ...(member.email ? { requesterEmail: member.email } : {}),
       ...(member.larkOpenId ? { userExternalId: member.larkOpenId } : {}),
+      ...(member.channel === 'lark' && member.larkTenantKey
+        ? { tenantId: member.larkTenantKey }
+        : {}),
       ...(departmentZohoReadScope ? { departmentZohoReadScope } : {}),
       requesterAiRole: member.aiRole,
       ...(requestId ? { traceId: requestId, requestId } : {}),
-      // Tool runtime context needs the real durable desktop thread so
-      // background work can return there. Approval idempotency continues to
-      // use the separate, run-scoped gatewayApprovalChatId above.
-      chatId: execution?.threadId ?? `gateway:${member.sessionId}`,
+      chatId: larkDelivery?.chatId ?? execution?.threadId ?? `gateway:${member.sessionId}`,
+      ...(larkDelivery?.replyToMessageId
+        ? { replyToMessageId: larkDelivery.replyToMessageId }
+        : {}),
+      ...(larkDelivery?.replyInThread !== undefined
+        ? { replyInThread: larkDelivery.replyInThread }
+        : {}),
     };
   }
 
@@ -985,6 +996,37 @@ function gatewayApprovalChatId(
     'run',
     execution.runId,
   ].join(':');
+}
+
+function larkDeliveryContextFromThreadId(threadId: string): {
+  chatId: string;
+  replyToMessageId?: string;
+  replyInThread?: boolean;
+} {
+  const threadMarker = ':thread:';
+  const threadIndex = threadId.indexOf(threadMarker);
+  if (threadIndex > 0) {
+    const chatId = threadId.slice(0, threadIndex);
+    const rootMessageId = threadId.slice(threadIndex + threadMarker.length);
+    if (rootMessageId) {
+      return {
+        chatId,
+        replyToMessageId: rootMessageId,
+        replyInThread: true,
+      };
+    }
+  }
+
+  const inlineMarker = ':user:';
+  const inlineIndex = threadId.indexOf(inlineMarker);
+  if (inlineIndex > 0) {
+    return {
+      chatId: threadId.slice(0, inlineIndex),
+      replyInThread: false,
+    };
+  }
+
+  return { chatId: threadId };
 }
 
 function isPublishingAuthorityCheck(toolId: string, args: unknown): boolean {

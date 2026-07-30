@@ -7,6 +7,7 @@ import {
   createLarkWebhookRoutes,
   processAcceptedLarkReceipt,
   replayLarkMessageAfterLogin,
+  runPiAndDeliver,
   type LarkWebhookDeps,
 } from './infrastructure/channels/lark/lark.webhook.routes';
 import { createAdminAuthRoutes } from './http/admin/admin-auth.routes';
@@ -143,10 +144,19 @@ export const createServer = (c: Container) => {
       intentRepo: c.connectionAuthorizationRepo,
       identityRepo: c.channelIdentityRepo,
       connectionRepo: c.integrationConnectionRepo,
-      engine: c.engine,
+      runPi: input => runPiAndDeliver({
+        ...input,
+        deps: {
+          adapter: input.channelAdapter,
+          piRuntime: larkPiRuntime,
+          channelDeliveryRepo: c.channelDeliveryRepo,
+        },
+        log: c.logger,
+        ...(input.abortSignal ? { signal: input.abortSignal } : {}),
+        rethrowRuntimeFailureAfterDelivery: true,
+      }),
       channelAdapter: c.larkAdapter,
       laneLeaseHolder: c.laneLeaseHolder,
-      approvalGate: c.approvalGate,
       logger: c.logger,
     });
   googleConnectionContinuationWorker.start();
@@ -422,6 +432,8 @@ export const createServer = (c: Container) => {
       appId:               c.env.LARK_APP_ID,
       appSecret:           c.env.LARK_APP_SECRET,
       apiBase:             c.env.LARK_API_BASE_URL,
+      prisma:              c.prisma,
+      memberSessionTtlMinutes: 480,
       channelIdentityRepo: c.channelIdentityRepo,
       // Shares the webhook's deps so the replayed turn runs through exactly the
       // same lane, lease, and delivery path as any other message.

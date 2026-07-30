@@ -25,6 +25,7 @@ import type { IntegrationConnectionRepository } from '../../infrastructure/persi
 import type { CachePort } from '../../shared/cache';
 import type { Logger } from '../../shared/logger';
 import type { ChannelIdentityRepository } from '../../infrastructure/persistence/channel-identity.repository';
+import type { PrismaClient } from '../../generated/prisma';
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -133,8 +134,12 @@ export function createLarkAuthRoutes(deps: {
   appId:                 string;
   appSecret:             string;
   apiBase:               string;
+  prisma:                PrismaClient;
+  memberSessionTtlMinutes: number;
   /** Optional: invalidate identity cache after OAuth link is saved. */
   channelIdentityRepo?:  ChannelIdentityRepository;
+  /** Test seam; production uses the installed Lark app. */
+  sendConfirmationDm?: typeof sendLarkDm;
 }): Router {
   const router = Router();
   const log    = deps.logger.child({ router: 'lark-auth' });
@@ -317,6 +322,43 @@ export function createLarkAuthRoutes(deps: {
         throw new Error(result.error.message);
       }
 
+      const memberSessionExpiresAt = new Date(
+        Date.now() + deps.memberSessionTtlMinutes * 60_000,
+      );
+      const renewed = await deps.prisma.memberSession.updateMany({
+        where: {
+          userId: state.userId,
+          companyId: state.companyId,
+          channel: 'lark',
+          larkTenantKey: state.tenantKey,
+          larkOpenId: resolvedOpenId,
+          revokedAt: null,
+        },
+        data: {
+          role: identity.value.aiRole,
+          authProvider: 'lark',
+          larkTenantKey: state.tenantKey,
+          larkOpenId: resolvedOpenId,
+          larkUserId: tokens.larkUserId ?? null,
+          expiresAt: memberSessionExpiresAt,
+        },
+      });
+      if (renewed.count === 0) {
+        await deps.prisma.memberSession.create({
+          data: {
+            userId: state.userId,
+            companyId: state.companyId,
+            role: identity.value.aiRole,
+            channel: 'lark',
+            authProvider: 'lark',
+            larkTenantKey: state.tenantKey,
+            larkOpenId: resolvedOpenId,
+            larkUserId: tokens.larkUserId ?? null,
+            expiresAt: memberSessionExpiresAt,
+          },
+        });
+      }
+
       const displayName = tokens.larkName ?? tokens.larkEmail ?? 'you';
       log.info('lark.auth.user_link.saved', {
         companyId:  state.companyId,
@@ -333,7 +375,7 @@ export function createLarkAuthRoutes(deps: {
       // Send DM confirmation (best-effort — don't fail the callback if this errors)
       const openIdForDm = resolvedOpenId;
       if (openIdForDm) {
-        void sendLarkDm(
+        void (deps.sendConfirmationDm ?? sendLarkDm)(
           deps.appId,
           deps.appSecret,
           openIdForDm,

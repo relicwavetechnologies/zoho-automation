@@ -431,6 +431,59 @@ describe('ToolExecutor', () => {
     assert.equal(executionChannel, 'lark');
   });
 
+  it('preserves the trusted Lark tenant and thread target for cloud Pi approval', async () => {
+    let approvalInput: any;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      actionGroups: new Set(['send']),
+      permissionCheck: () => ok('send'),
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['send'])),
+      approvalGate: {
+        check: async (input: unknown) => {
+          approvalInput = input;
+          return {
+            kind: 'pending',
+            approvalId: 'approval-cloud-pi',
+            message: 'Waiting for manager',
+          };
+        },
+        completeExecution: async () => true,
+        failExecution: async () => true,
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const result = await executor.invoke({
+      member: {
+        ...member,
+        channel: 'lark',
+        larkOpenId: 'ou-requester',
+        larkTenantKey: 'tenant-1',
+      },
+      toolId: 'fakeTool',
+      args: { query: 'send it' },
+      requestId: 'trace-1',
+      execution: {
+        version: 1,
+        threadId: 'oc_chat:thread:om_root',
+        runId: 'run-1',
+        actionId: 'call-1',
+      },
+    });
+
+    assert.equal(result.status, 'approval_required');
+    assert.equal(approvalInput.runContext.tenantId, 'tenant-1');
+    assert.equal(approvalInput.runContext.userExternalId, 'ou-requester');
+    assert.equal(approvalInput.runContext.chatId, 'oc_chat');
+    assert.equal(approvalInput.runContext.replyToMessageId, 'om_root');
+    assert.equal(approvalInput.runContext.replyInThread, true);
+    assert.match(approvalInput.chatId, /^gateway:company:co-test:requester:user-test:/);
+  });
+
   it('reports company and department skill-publishing authority for company admin in a department context', async () => {
     const registry = new ToolRegistry();
     const { prisma } = makeSkillPublishingPrisma();

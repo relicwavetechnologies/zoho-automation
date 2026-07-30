@@ -34,7 +34,7 @@ export interface ApprovalGateInput {
   chatId:         string;
   /** Human-readable summary of what the tool call would do (shown on approval card). */
   argsSummary:    string;
-  /** Optional, non-authoritative desktop execution provenance for audit/match checks. */
+  /** Optional, non-authoritative runtime execution provenance for audit/match checks. */
   execution?: {
     readonly version: 1;
     readonly threadId: string;
@@ -158,7 +158,9 @@ export class ApprovalGateService {
             ? String(runContext.tenantId)
             : null,
           departmentId,
-          approvalOrigin:         approvalOriginFromChatId(sourceChatId),
+          approvalOrigin:         runContext.channel === 'lark' && execution
+            ? 'cloud_pi'
+            : approvalOriginFromChatId(sourceChatId),
           statusMessageId:        statusMessageId ?? null,
           chatId: scopedChatId,
           sourceChatId,

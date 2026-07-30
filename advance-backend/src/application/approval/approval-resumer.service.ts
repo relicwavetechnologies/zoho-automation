@@ -6,6 +6,7 @@ import type { Logger } from '../../shared/logger';
 import type { ApprovalGateService } from './approval-gate.service';
 import type { PermissionService } from '../permissions/permission.service';
 import type { ToolExecutor, RuntimeToolExecutionOutcome } from '../gateway/tool-executor';
+import type { GatewayExecutionContext } from '../gateway/gateway.types';
 import type { ToolActionGroup } from '../../domain/permissions/tool-action-group';
 import {
   asChatId,
@@ -83,6 +84,8 @@ export class ApprovalResumerService {
     const replyInThread = typeof meta['replyInThread'] === 'boolean'
       ? meta['replyInThread']
       : undefined;
+    const approvalOrigin = asNonEmptyString(meta['approvalOrigin']);
+    const execution = asExecutionContext(meta['execution']);
     const approvalCompanyId = asNonEmptyString(approval.companyId);
 
     if (!chatId || !requesterId || !approvalCompanyId) {
@@ -114,6 +117,14 @@ export class ApprovalResumerService {
       const message = 'The approved action record is incomplete or no longer matches the requested action.';
       this.log.error('resumer.invalid_approved_payload', { approvalId, storedToolId: approval.toolId, payloadToolId: toolId });
       await this.persistFailure(approvalId, { status: 'invalid_payload', message });
+      await this.deliverFinal(conversation, message);
+      return;
+    }
+
+    if (approvalOrigin === 'cloud_pi' && !execution) {
+      const message = 'The approved cloud action is missing its verified Pi execution context, so it was not executed.';
+      this.log.error('resumer.invalid_cloud_pi_execution', { approvalId });
+      await this.persistFailure(approvalId, { status: 'invalid_execution_context', message });
       await this.deliverFinal(conversation, message);
       return;
     }
@@ -206,6 +217,7 @@ export class ApprovalResumerService {
       approvalGate: this.deps.approvalGate,
       chatId: storedChatId ?? chatId,
       expectedAction: approval.actionGroup as ToolActionGroup,
+      ...(execution ? { execution } : {}),
     });
     await this.finishApprovedAction(approvalId, conversation, outcome);
   }
@@ -274,6 +286,15 @@ function asArgs(value: unknown): Record<string, unknown> | null {
 
 function asNonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+}
+
+function asExecutionContext(value: unknown): GatewayExecutionContext | undefined {
+  const record = asRecord(value);
+  const threadId = asNonEmptyString(record['threadId']);
+  const runId = asNonEmptyString(record['runId']);
+  const actionId = asNonEmptyString(record['actionId']);
+  if (record['version'] !== 1 || !threadId || !runId || !actionId) return undefined;
+  return { version: 1, threadId, runId, actionId };
 }
 
 function renderResult(value: unknown): string {

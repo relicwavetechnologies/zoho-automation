@@ -506,7 +506,7 @@ describe('ApprovalGateService', () => {
     assert.equal(lark.sentCards[0].openId, owner.larkOpenId);
   });
 
-  it('sends approval card to manager for non-read action', async () => {
+  it('sends and tags a cloud Pi approval card for non-read action', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
     const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
@@ -520,8 +520,14 @@ describe('ApprovalGateService', () => {
         replyToMessageId: 'om_request',
         replyInThread: true,
       }),
-      chatId: CHAT_ID,
+      chatId: 'gateway:company:comp-1:requester:user-anish:thread:oc_test_chat:run:run-1',
       argsSummary: 'Send email to boss@company.com: Q2 Report',
+      execution: {
+        version: 1,
+        threadId: CHAT_ID,
+        runId: 'run-1',
+        actionId: 'call-1',
+      },
     });
 
     assert.equal(result.kind, 'pending');
@@ -533,6 +539,8 @@ describe('ApprovalGateService', () => {
     assert.equal(approval.toolId, String(TOOL_ID));
     assert.equal(approval.actionGroup, 'send');
     assert.equal(approval.status, 'pending');
+    assert.equal((approval.metadataJson as any).approvalOrigin, 'cloud_pi');
+    assert.equal((approval.metadataJson as any).sourceChatId, CHAT_ID);
     assert.equal((approval.metadataJson as any).replyToMessageId, 'om_request');
     assert.equal((approval.metadataJson as any).replyInThread, true);
 
@@ -1428,6 +1436,68 @@ describe('LarkApprovalCardHandler', () => {
     assert.equal(lark.updatedMessages.length, 0);
     await new Promise(r => setTimeout(r, 50));
     assert.equal(resumeCalled, false);
+  });
+
+  it('auto-resumes a cloud Pi approval while keeping its gateway scope internal', async () => {
+    const repo = makeApprovalRepo();
+    const lark = makeLarkAdapter();
+    let resumeDecision = '';
+    const resumer = {
+      resume: async (_id: string, decision: string) => {
+        resumeDecision = decision;
+      },
+    };
+    const created = await repo.create({
+      chatId: 'gateway:company:comp-1:requester:user-anish:thread:oc_test_chat:run:run-1',
+      companyId: String(COMPANY_ID),
+      toolId: String(TOOL_ID),
+      actionGroup: 'send',
+      kind: 'tool_action',
+      summary: 'Send governed email',
+      payloadJson: {},
+      metadataJson: makeManagerMetadata({
+        approvalOrigin: 'cloud_pi',
+        chatId: 'gateway:company:comp-1:requester:user-anish:thread:oc_test_chat:run:run-1',
+        sourceChatId: CHAT_ID,
+        requesterId: String(REQUESTER),
+        requesterLarkOpenId: REQUESTER_OID,
+        execution: {
+          version: 1,
+          threadId: CHAT_ID,
+          runId: 'run-1',
+          actionId: 'call-1',
+        },
+      }),
+      channel: 'lark',
+      requestedBy: String(REQUESTER),
+      idempotencyKey: 'idem-cloud-pi-approve',
+      expiresAt: new Date(Date.now() + 86400_000),
+    });
+    assert.ok(created.ok);
+    created.value.status = 'dispatching';
+
+    const handler = new LarkApprovalCardHandler(
+      repo as any,
+      resumer as any,
+      lark as any,
+      makeLogger(),
+    );
+    const result = await handler.handle({
+      action: {
+        value: {
+          kind: 'approval_decision',
+          approvalId: created.value.id,
+          decision: 'approved',
+        },
+        tag: 'button',
+      },
+      operator: { open_id: MANAGER_OID, name: 'Abhishek Verma' },
+    }, makeManagerActor());
+
+    assert.equal(result.handled, true);
+    assert.match((result.responseBody as any).toast.content, /will now be executed/i);
+    await new Promise(r => setTimeout(r, 50));
+    assert.equal(resumeDecision, 'approved');
   });
 
   it('resolves approval and returns toast on approve click', async () => {

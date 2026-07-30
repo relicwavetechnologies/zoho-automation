@@ -69,6 +69,15 @@ function makeDispatcher(result: GatewayResponse): GatewayDispatcher {
   } as unknown as GatewayDispatcher;
 }
 
+function executionFor(threadId: string) {
+  return {
+    version: 1 as const,
+    threadId,
+    runId: 'run-1',
+    actionId: 'action-1',
+  };
+}
+
 describe('createGatewayRoutes', () => {
   it('returns 401 when member locals are missing', async () => {
     const router = createGatewayRoutes({
@@ -165,6 +174,7 @@ describe('createGatewayRoutes', () => {
       sessionId: 'sess-1',
       channel: 'lark',
       isPiRuntimeLease: true,
+      runtimeThreadId: 'thread-1',
     };
 
     for (const op of [
@@ -173,7 +183,7 @@ describe('createGatewayRoutes', () => {
       'automation.plan.create',
     ]) {
       const { status, body } = await callPost(router, {
-        body: { op },
+        body: { op, execution: executionFor('thread-1') },
         locals,
       });
       assert.equal(status, 403);
@@ -182,10 +192,47 @@ describe('createGatewayRoutes', () => {
     assert.equal(dispatchCount, 0);
 
     const allowed = await callPost(router, {
-      body: { op: 'tools.list' },
+      body: { op: 'tools.list', execution: executionFor('thread-1') },
       locals,
     });
     assert.equal(allowed.status, 200);
+    assert.equal(dispatchCount, 1);
+  });
+
+  it('binds Pi runtime requests to the thread signed into the lease', async () => {
+    let dispatchCount = 0;
+    const router = createGatewayRoutes({
+      dispatcher: {
+        dispatch: async () => {
+          dispatchCount += 1;
+          return { ok: true, status: 'success', data: {} };
+        },
+      } as GatewayDispatcher,
+      logger: noopLogger,
+    });
+    const locals = {
+      companyId: 'co-1',
+      userId: 'user-1',
+      aiRole: 'MEMBER',
+      sessionId: 'sess-1',
+      channel: 'lark',
+      isPiRuntimeLease: true,
+      runtimeThreadId: 'thread-a',
+    };
+
+    const mismatched = await callPost(router, {
+      body: { op: 'tools.list', execution: executionFor('thread-b') },
+      locals,
+    });
+    assert.equal(mismatched.status, 403);
+    assert.equal(mismatched.body.status, 'permission_denied');
+    assert.equal(dispatchCount, 0);
+
+    const matching = await callPost(router, {
+      body: { op: 'tools.list', execution: executionFor('thread-a') },
+      locals,
+    });
+    assert.equal(matching.status, 200);
     assert.equal(dispatchCount, 1);
   });
 
