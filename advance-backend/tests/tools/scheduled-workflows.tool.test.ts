@@ -1,6 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createScheduledWorkflowsTool } from '../../src/application/tools/families/scheduled-workflows.tool.ts';
+import {
+  createScheduledWorkflowsTool,
+  scheduledWorkflowsArgsSchema,
+} from '../../src/application/tools/families/scheduled-workflows.tool.ts';
+import { SCHEDULE_DIVO_WORK_SKILL_MARKDOWN } from '../../src/application/skills/scheduled-work-system-skill.ts';
 import { asDepartmentId } from '../../src/shared/ids.ts';
 import { makeCtx } from './tool-test.helpers.ts';
 
@@ -73,7 +77,31 @@ describe('scheduledWorkflows tool', () => {
     }).success, true);
   });
 
-  it('creates a desktop schedule bound to the authenticated user, department, and durable thread', async () => {
+  it('never advertises delivery into the conversation the schedule was made from', async () => {
+    const { prisma } = makePrisma();
+    const tool = createScheduledWorkflowsTool({ prisma });
+    // Every piece of copy that reaches the model before it answers: the tool's
+    // own docs, the `delivery` field description, and the scheduling skill the
+    // gateway loads first — which is where the old promise actually lived.
+    const deliveryField = (scheduledWorkflowsArgsSchema as any).options?.[0]
+      ?.shape?.delivery?.description ?? '';
+    const modelFacing = [
+      tool.description,
+      ...tool.parameterDocs,
+      deliveryField,
+      SCHEDULE_DIVO_WORK_SKILL_MARKDOWN,
+    ].join('\n');
+    assert.notEqual(deliveryField, '', 'the delivery field description must be inspected');
+
+    // The model answers the user from this copy, before it ever sees what create
+    // returned. Copy promising the result will appear "here" makes Divo tell a
+    // room it will be posted there, and the room then silently gets nothing.
+    assert.doesNotMatch(modelFacing, /return results to the current conversation/i);
+    assert.doesNotMatch(modelFacing, /must return to this exact persisted conversation/i);
+    assert.match(modelFacing, /creator's own Lark DM/i);
+  });
+
+  it('sends results to the creator even when they asked for the current conversation', async () => {
     const { prisma, getCreated } = makePrisma();
     const tool = createScheduledWorkflowsTool({ prisma });
     const args = {
@@ -99,8 +127,11 @@ describe('scheduledWorkflows tool', () => {
     const result = await tool.execute(args, ctx);
 
     assert.equal(result.ok, true);
-    assert.equal((result as any).value.schedule.deliveryChannel, 'desktop');
-    assert.equal((result as any).value.schedule.deliveryTarget, 'origin_chat');
+    // The run executes with one person's history and permissions, so its output
+    // goes to that person — not back into whatever conversation it was set up
+    // from, which may be a room full of colleagues.
+    assert.equal((result as any).value.schedule.deliveryChannel, 'lark');
+    assert.equal((result as any).value.schedule.deliveryTarget, 'creator_dm');
     assert.match((result as any).value.nextRunLabel, /20 Jul 2026, 10:00 am/i);
     assert.deepEqual(getCreated(), {
       companyId: 'co-test',
@@ -118,16 +149,18 @@ describe('scheduledWorkflows tool', () => {
       timezone: 'Asia/Kolkata',
       workflowSpecJson: {},
       capabilitySummaryJson: {},
-      outputConfigJson: { deliveryChannel: 'desktop', deliveryTarget: 'origin_chat' },
+      outputConfigJson: { deliveryChannel: 'lark', deliveryTarget: 'creator_dm' },
       status: 'scheduled_active',
       scheduleEnabled: true,
       nextRunAt: new Date('2026-07-20T04:30:00.000Z'),
-      originChatId: 'thread-1',
+      // Nothing records the conversation it was created in, so no later run can
+      // deliver back into it.
+      originChatId: null,
     });
   });
 
-  it('refuses desktop scheduling when the originating conversation is not durable', async () => {
-    const { prisma } = makePrisma();
+  it('no longer needs the originating conversation to be durable', async () => {
+    const { prisma, getCreated } = makePrisma();
     const tool = createScheduledWorkflowsTool({ prisma });
     const result = await tool.execute({
       operation: 'create',
@@ -143,8 +176,10 @@ describe('scheduledWorkflows tool', () => {
       chatId: 'missing-thread',
     }));
 
-    assert.equal(result.ok, false);
-    assert.match((result as any).error.message, /conversation is not persisted/i);
+    // Delivery no longer depends on that conversation surviving, so a schedule
+    // set up from a throwaway one is no longer rejected.
+    assert.equal(result.ok, true);
+    assert.equal((getCreated() as any).originChatId, null);
   });
 
   it('creates creator Lark DM delivery without requiring a persisted desktop conversation', async () => {

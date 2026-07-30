@@ -243,6 +243,13 @@ export const createLarkMessagingTool = (deps: {
           if (!args.mentionOpenIds?.length && !args.mentionNames?.length) {
             return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'mentionOpenIds or mentionNames required for mention' }));
           }
+          // Blocked for the same reason as `send`. A scheduled run's chat id is
+          // the creator's own DM, so the guard below only stops it addressing
+          // itself — any other chat id would pass, and a schedule written before
+          // results became DM-only still carries intent text naming a room.
+          if (ctx.runContext.deliveryMode === 'scheduled_runtime_delivery') {
+            return err(runtimeDeliveryError());
+          }
           if (runtimeChatId && (!args.chatId || args.chatId === runtimeChatId)) {
             return err(runtimeDeliveryError());
           }

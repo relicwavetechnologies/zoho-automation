@@ -12,7 +12,6 @@ import { asCompanyId, asUserId, asChatId, asCorrelationId, asDepartmentId } from
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { scheduleConfigSchema } from './schedule-config';
 import { getNextScheduledRunAt } from './schedule-calculator';
-import { readDeliveryChannel, readDeliveryTarget } from './scheduled-workflow-control.service';
 import {
   issueScheduledRuntimeSession,
   revokeScheduledRuntimeSession,
@@ -59,12 +58,24 @@ export function buildScheduledExecutionPrompt(
   deliveryTarget: 'origin_chat' | 'creator_dm' = 'origin_chat',
 ): string {
   if (deliveryTarget === 'creator_dm') {
+    // A schedule written before results became DM-only still says "return this
+    // to the originating conversation" in its own task text. Left standing, the
+    // task and the override contradict each other and the model may try to
+    // satisfy the task by posting into that room itself.
+    const rewritten = usesLockedCurrentChatDelivery(compiledPrompt)
+      ? compiledPrompt.replace(
+          CURRENT_CHAT_DELIVERY_LINE,
+          '   Deliver to: runtime_creator_dm (system-delivered; do not send manually)',
+        )
+      : compiledPrompt;
+
     return [
-      compiledPrompt,
+      rewritten,
       '',
       'RUNTIME DELIVERY OVERRIDE:',
       '- Return the completed result as your final reply. The runtime will deliver it to the authenticated schedule creator\'s Lark DM.',
       '- Do not call larkMessaging merely to deliver the final result and do not search for the creator or a destination chat.',
+      '- Ignore any delivery destination named in the task above, including an originating conversation, group, or channel. This result goes to the schedule creator and nowhere else.',
       '- External actions explicitly required by the scheduled task are still allowed subject to normal permissions and approvals.',
     ].join('\n');
   }
@@ -256,29 +267,21 @@ export class ScheduledWorkflowService {
       return;
     }
 
-    const deliveryChannel = readDeliveryChannel(workflow.outputConfigJson);
-    const deliveryTarget = readDeliveryTarget(workflow.outputConfigJson);
-    const targetChatId = deliveryTarget === 'creator_dm'
-      ? identity.larkOpenId
-      : workflow.originChatId;
-    if (!targetChatId) {
-      const reason = deliveryTarget === 'creator_dm'
-        ? 'No delivery target (creator has no connected Lark identity)'
-        : 'No delivery target (missing originChatId)';
-      await this.markFailed(workflowId, scheduledFor, reason);
-      return;
-    }
+    // A scheduled run always reports to the creator's own Lark DM. Schedules
+    // created before that rule still carry `origin_chat` and an `originChatId`,
+    // and are redirected here rather than left to deliver into a shared room:
+    // the run executes with one person's history and permissions, so only that
+    // person should receive what it produces.
+    const deliveryChannel = 'lark' as const;
+    const targetChatId = identity.larkOpenId;
 
-    const currentChatDeliveryLocked = deliveryTarget === 'origin_chat';
     const executionPrompt = buildScheduledExecutionPrompt(
       workflow.compiledPrompt,
       targetChatId,
       deliveryChannel,
-      deliveryTarget,
+      'creator_dm',
     );
-    const channelAdapter = deliveryTarget === 'creator_dm'
-      ? this.deps.channelAdapters.larkDm
-      : this.deps.channelAdapters[deliveryChannel];
+    const channelAdapter = this.deps.channelAdapters.larkDm;
 
     const run = await this.deps.prisma.scheduledWorkflowRun.upsert({
       where: { workflowId_scheduledFor: { workflowId, scheduledFor } },
@@ -294,9 +297,7 @@ export class ScheduledWorkflowService {
       messageId: `scheduled-${run.id}` as any,
       chatId: syntheticChatId,
       chatType: 'p2p',
-      userExternalId: deliveryChannel === 'lark'
-        ? identity.larkOpenId ?? workflow.createdByUserId
-        : workflow.createdByUserId,
+      userExternalId: identity.larkOpenId,
       text: executionPrompt,
       attachments: [],
       timestamp: new Date().toISOString(),
@@ -313,16 +314,12 @@ export class ScheduledWorkflowService {
       channel:        deliveryChannel,
       traceId:        `sched-${run.id}`,
       requestId:      `sched-${run.id}`,
-      // Always the Lark identity, even for desktop delivery: this is who the
-      // run executes as, which is separate from where the reply is sent.
+      // Always the Lark identity: this is who the run executes as, which is
+      // separate from where the reply is sent.
       tenantId:       identity.larkTenantKey,
       userExternalId: identity.larkOpenId,
       chatId:         targetChatId,
-      ...(deliveryTarget === 'creator_dm'
-        ? { deliveryMode: 'scheduled_runtime_delivery' as const }
-        : currentChatDeliveryLocked
-          ? { deliveryMode: 'current_chat_only' as const }
-          : {}),
+      deliveryMode:   'scheduled_runtime_delivery' as const,
       ...(workflow.departmentId
         ? { departmentId: asDepartmentId(workflow.departmentId) }
         : identity.activeDepartmentId

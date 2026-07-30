@@ -497,6 +497,35 @@ describe('larkMessaging tool', () => {
       assert.match((r as any).error.message, /runtime owns final delivery/i);
     });
 
+    it('mention: refuses to post a scheduled result into any other chat', async () => {
+      let mentioned = false;
+      const client = {
+        ...fakeClient,
+        mentionMessage: async () => {
+          mentioned = true;
+          return { messageId: 'om-group' };
+        },
+      };
+      // A scheduled run's own chat id is the creator's DM, so the guard against
+      // addressing the current chat never fires for a group id. Without an
+      // explicit block, a schedule whose task text names a room can still post
+      // its result there — the thing DM-only delivery exists to prevent.
+      const scheduledCtx = makeCtx('larkMessaging', ['send'], {
+        chatId: 'ou_creator',
+        deliveryMode: 'scheduled_runtime_delivery',
+      });
+      const tool = createLarkMessagingTool({ client, peopleResolver });
+
+      const r = await tool.execute(
+        { op: 'mention', chatId: 'oc_standup_group', text: 'summary', mentionNames: ['Alice'] },
+        scheduledCtx,
+      );
+
+      assert.equal(r.ok, false);
+      assert.equal(mentioned, false);
+      assert.match((r as any).error.message, /runtime owns final delivery/i);
+    });
+
     it('send_dm: preserves an explicit external action to another recipient', async () => {
       let recipient: string | null = null;
       const client = {

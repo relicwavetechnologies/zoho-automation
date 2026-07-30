@@ -17,7 +17,7 @@ const createBaseFields = {
   intent: z.string().trim().min(1).max(10_000).describe('Complete self-contained instructions for what Divo should do on every run.'),
   timezone: z.string().trim().min(1).max(100).describe('IANA timezone.'),
   delivery: z.enum(['current_conversation', 'creator_lark_dm']).describe(
-    'Where the completed result is delivered. creator_lark_dm sends it to the authenticated schedule creator and does not require a persisted desktop conversation.',
+    'Retained for compatibility and ignored. Every scheduled result is delivered to the authenticated creator\'s own Lark DM, whichever value is sent.',
   ),
 } as const;
 
@@ -108,7 +108,7 @@ export const createScheduledWorkflowsTool = (deps: {
   argsSchema: scheduledWorkflowsArgsSchema,
   resultSchema: ResultSchema,
   description:
-    'Create and manage durable one-time or recurring Divo work. Delivery is explicit: return results to the current conversation or send them to the authenticated creator\'s Lark DM.',
+    'Create and manage durable one-time or recurring Divo work. Every result is delivered to the authenticated creator\'s own Lark DM.',
   parameterDocs: [
     'Gateway discovery: call work.resolve for the user request, then tools.list with { "toolId": "scheduledWorkflows" } before the first invocation.',
     'Gateway invocation: tools.invoke payload must be { "toolId": "scheduledWorkflows", "args": { ... } }. Keep operation and all schedule fields inside args.',
@@ -116,8 +116,8 @@ export const createScheduledWorkflowsTool = (deps: {
     '- create: activate a one-time, hourly, daily, weekly, or monthly schedule.',
     '- list: list the current user\'s schedules; includeInactive=true also returns paused and archived schedules.',
     '- pause/resume/cancel/run_now: manage an existing schedule using scheduleId returned by create or list.',
-    'create always requires name, intent, scheduleType, timezone, and delivery. Use delivery=current_conversation only when the result must return to this exact persisted conversation. Use delivery=creator_lark_dm when the authenticated creator wants the result in their own Lark DM; do not also tell the task to call larkMessaging merely to deliver the final result.',
-    'creator_lark_dm means the runtime delivers the final answer to the authenticated schedule creator. It does not accept or infer a recipient name, open ID, chat ID, or connection ID. Use an explicit messaging action inside intent only when the task must contact somebody other than the creator.',
+    'create always requires name, intent, scheduleType, timezone, and delivery. delivery is retained for compatibility and no longer changes anything: every scheduled result is delivered to the authenticated creator\'s own Lark DM. Do not tell the task to call larkMessaging merely to deliver the final result.',
+    'Never tell the user a schedule will post into the current chat, a group, or a channel. A scheduled run executes with the creator\'s own history and permissions, so its result goes to the creator in Lark and nowhere else. Say so plainly when confirming. Use an explicit messaging action inside intent only when the task must contact somebody other than the creator.',
     'For one_time provide runAt as timezone-aware ISO 8601. For hourly provide intervalHours and minute. For daily provide hour and timeMinute. For weekly also provide daysOfWeek. For monthly also provide dayOfMonth.',
     'Exact timing shapes: one_time={runAt}; hourly={intervalHours,minute}; daily={hour,timeMinute}; weekly={daysOfWeek,hour,timeMinute}; monthly={dayOfMonth,hour,timeMinute}. Do not mix timing fields between variants.',
     'Calendar boundary: use this tool for Divo work that runs later or repeatedly. Use a calendar tool for meetings, attendee invitations, free/busy checks, or reserving time.',

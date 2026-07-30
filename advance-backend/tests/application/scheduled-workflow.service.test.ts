@@ -44,14 +44,20 @@ describe('scheduled workflow current-chat delivery helpers', () => {
     assert.doesNotMatch(rewritten, /Deliver to:\s+dest_1:lark_current_chat/);
   });
 
-  it('adds runtime delivery ownership to new raw-intent schedules', () => {
+  it('tells a run its answer is delivered to the creator, not to a chat', () => {
+    // The shape every schedule now takes. Called the way the service calls it,
+    // rather than through the defaults, which still describe the retired
+    // current-chat delivery.
     const rewritten = buildScheduledExecutionPrompt(
       'Review new mail and return a concise summary.',
-      'oc_dm_chat',
+      'ou_creator',
+      'lark',
+      'creator_dm',
     );
 
     assert.match(rewritten, /RUNTIME DELIVERY OVERRIDE/);
-    assert.match(rewritten, /Do NOT use larkMessaging/i);
+    assert.match(rewritten, /schedule creator's Lark DM/i);
+    assert.match(rewritten, /do not search for the creator or a destination chat/i);
   });
 });
 
@@ -95,7 +101,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     } as any;
   }
 
-  it('locks the run context to the originating chat for scheduled current-chat delivery', async () => {
+  it('redirects a schedule created before the DM rule away from its origin chat', async () => {
     const workflow = {
       id: 'wf-1',
       name: 'Daily email summary',
@@ -103,7 +109,10 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
       createdByUserId: 'user-1',
       departmentId: 'dept-1',
       originChatId: 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50',
-      compiledPrompt: 'Review new mail and return a concise summary.',
+      compiledPrompt: [
+        'Review new mail and return a concise summary.',
+        '   Deliver to: dest_1:lark_current_chat',
+      ].join('\n'),
       outputConfigJson: { deliveryChannel: 'lark' },
       scheduleConfigJson: { type: 'daily', timezone: 'Asia/Kolkata', time: { hour: 9, minute: 0 } },
     };
@@ -111,6 +120,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     let capturedInput: any = null;
     const sessions = sessionSpy();
     const larkAdapter = recordingAdapter('lark');
+    const larkDmAdapter = recordingAdapter('lark');
     const prisma = {
       scheduledWorkflow: { findUnique: async () => workflow, update: async () => ({}) },
       scheduledWorkflowRun: { upsert: async () => ({ id: 'run-1' }), update: async () => ({}) },
@@ -125,7 +135,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
           return { text: 'Here are your latest emails.' };
         },
       } as any,
-      channelAdapters: { lark: larkAdapter, larkDm: recordingAdapter('lark'), desktop: recordingAdapter('desktop') },
+      channelAdapters: { lark: larkAdapter, larkDm: larkDmAdapter, desktop: recordingAdapter('desktop') },
       channelIdentityRepo: { resolveByUserId: async () => ok(identity) } as any,
       logger: noopLogger,
       clock: fakeClock as any,
@@ -136,12 +146,19 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     await (svc as any).executeWorkflow('wf-1', new Date('2026-05-15T16:45:00.000Z'));
 
     assert.ok(capturedInput, 'piRuntime.run should be called');
-    assert.equal(capturedInput.runContext.chatId, 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50');
-    assert.equal(capturedInput.runContext.deliveryMode, 'current_chat_only');
+    // This row still names the chat it was created in, which may be a group. The
+    // run reads one person's history and permissions, so it answers to that
+    // person instead of to whoever happens to be in that room.
+    assert.equal(capturedInput.runContext.chatId, 'ou_123');
+    assert.equal(capturedInput.conversation.chatId, 'ou_123');
+    assert.equal(capturedInput.runContext.deliveryMode, 'scheduled_runtime_delivery');
     assert.equal(capturedInput.runContext.departmentId, 'dept-1');
-    assert.equal(capturedInput.conversation.chatId, 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50');
     assert.match(capturedInput.incoming.text, /RUNTIME DELIVERY OVERRIDE/);
-    assert.match(capturedInput.incoming.text, /Do NOT use larkMessaging/i);
+    // The stored task still names the room it was written for. Left in place it
+    // contradicts the override, and the model may try to satisfy it by posting
+    // there itself rather than just answering.
+    assert.doesNotMatch(capturedInput.incoming.text, /Deliver to:\s+dest_1:lark_current_chat/);
+    assert.match(capturedInput.incoming.text, /Ignore any delivery destination named in the task above/i);
 
     // Pi identifies the member by tenant key and open id together.
     assert.equal(capturedInput.runContext.tenantId, 'tenant-1');
@@ -150,9 +167,11 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     // One thread per workflow, so the workspace persists between runs.
     assert.equal(capturedInput.threadId, 'scheduled-workflow:wf-1');
 
-    // Pi returns the reply; the scheduler is what delivers it.
-    assert.equal(larkAdapter.delivered.length, 1);
-    assert.equal(larkAdapter.delivered[0].reply.text, 'Here are your latest emails.');
+    // Pi returns the reply; the scheduler is what delivers it — through the DM
+    // adapter, never through the general chat adapter that would reach the room.
+    assert.equal(larkAdapter.delivered.length, 0);
+    assert.equal(larkDmAdapter.delivered.length, 1);
+    assert.equal(larkDmAdapter.delivered[0].reply.text, 'Here are your latest emails.');
   });
 
   it('issues a machine session for the run and revokes it afterwards', async () => {
@@ -489,7 +508,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     assert.equal(capturedInput.runContext.departmentId, 'dept-finance');
   });
 
-  it('runs desktop schedules headlessly and delivers through the desktop adapter', async () => {
+  it('delivers a desktop-created schedule to the creator Lark DM, not the desktop thread', async () => {
     const workflow = {
       id: 'wf-desktop',
       name: 'Daily review',
@@ -504,6 +523,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     let capturedInput: any = null;
     const sessions = sessionSpy();
     const desktopAdapter = recordingAdapter('desktop');
+    const larkDmAdapter = recordingAdapter('lark');
     const prisma = {
       scheduledWorkflow: { findUnique: async () => workflow, update: async () => ({}) },
       scheduledWorkflowRun: { upsert: async () => ({ id: 'run-desktop' }), update: async () => ({}) },
@@ -514,7 +534,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
       piRuntime: {
         run: async (input: any) => { capturedInput = input; return { text: 'Done' }; },
       } as any,
-      channelAdapters: { lark: recordingAdapter('lark'), larkDm: recordingAdapter('lark'), desktop: desktopAdapter },
+      channelAdapters: { lark: recordingAdapter('lark'), larkDm: larkDmAdapter, desktop: desktopAdapter },
       channelIdentityRepo: { resolveByUserId: async () => ok(identity) } as any,
       logger: noopLogger,
       clock: fakeClock as any,
@@ -524,15 +544,16 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
 
     await (svc as any).executeWorkflow('wf-desktop', new Date('2026-05-15T16:45:00.000Z'));
 
-    assert.equal(capturedInput.incoming.channel, 'desktop');
-    assert.equal(capturedInput.runContext.channel, 'desktop');
+    // Scheduling from the desktop is still allowed; the result arrives in Lark,
+    // because that is where Divo can reach the creator privately.
+    assert.equal(capturedInput.incoming.channel, 'lark');
+    assert.equal(capturedInput.runContext.channel, 'lark');
     assert.equal(capturedInput.runContext.departmentId, 'dept-finance');
-    assert.equal(capturedInput.conversation.chatId, 'desktop-thread-1');
-    assert.match(capturedInput.incoming.text, /originating Divo desktop conversation/);
+    assert.equal(capturedInput.conversation.chatId, 'ou_123');
 
-    // Delivery is desktop, but the run still executes as the Lark member.
     assert.equal(capturedInput.runContext.tenantId, 'tenant-1');
-    assert.equal(desktopAdapter.delivered.length, 1);
+    assert.equal(desktopAdapter.delivered.length, 0);
+    assert.equal(larkDmAdapter.delivered.length, 1);
   });
 
   it('delivers creator-DM schedules through the dedicated Lark open-id adapter', async () => {
