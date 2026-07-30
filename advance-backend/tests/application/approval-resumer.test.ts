@@ -47,6 +47,7 @@ function makeExecutableResumer(row: unknown, channelIdentityRepo: unknown) {
   const registry = new ToolRegistry();
   const executed: unknown[] = [];
   let resumedRunContext: any;
+  const dmDeliveries: any[] = [];
   registry.register({
     id: asToolId('larkDoc'),
     family: 'lark',
@@ -72,10 +73,17 @@ function makeExecutableResumer(row: unknown, channelIdentityRepo: unknown) {
   const failures: unknown[] = [];
   const finalTexts: string[] = [];
   const finalConversations: unknown[] = [];
+  const statusSends: unknown[] = [];
   let resumedChatId: string | undefined;
   let resumedExecution: unknown;
   const expectedExecution = (row as any)?.metadataJson?.execution;
   const service = new ApprovalResumerService({
+    scheduledDmAdapter: {
+      sendFinalReply: async (conversation: any, reply: any) => {
+        dmDeliveries.push({ chatId: String(conversation.chatId), text: reply.text });
+        return ok({ channel: 'lark', messageId: 'dm-1' });
+      },
+    } as any,
     approvalRepo: {
       findById: async () => ok(row),
       failApprovedExecution: async (_id: string, result: unknown) => {
@@ -86,7 +94,7 @@ function makeExecutableResumer(row: unknown, channelIdentityRepo: unknown) {
     } as any,
     larkAdapter: {
       restoreStatusCoordinator: () => {},
-      sendStatus: async () => ok({}),
+      sendStatus: async (conversation: unknown) => { statusSends.push(conversation); return ok({}); },
       sendFinalReply: async (conversation: unknown, reply: { text: string }) => {
         finalConversations.push(conversation);
         finalTexts.push(reply.text);
@@ -128,10 +136,61 @@ function makeExecutableResumer(row: unknown, channelIdentityRepo: unknown) {
     getResumedChatId: () => resumedChatId,
     getResumedExecution: () => resumedExecution,
     getResumedRunContext: () => resumedRunContext,
+    dmDeliveries,
+    statusSends,
   };
 }
 
 describe('ApprovalResumerService', () => {
+  it('reports a scheduled run\'s approved outcome to the creator, not its synthetic thread', async () => {
+    // A scheduled run's recorded conversation is `scheduled-workflow:<id>`,
+    // which is not a chat anyone can receive on. Delivering there fails
+    // silently, so the creator is never told the approved action ran.
+    const harness = makeExecutableResumer(approvedRow('approved', {
+      deliveryMode: 'scheduled_runtime_delivery',
+      sourceChatId: 'scheduled-workflow:wf-1',
+      statusMessageId: null,
+    }), {
+      resolveByLarkTenantIdentity: async () => ok({
+        userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER', channel: 'lark',
+        larkOpenId: 'ou-user-1', activeDepartmentId: 'dept-1',
+      }),
+    });
+
+    await harness.service.resume('approval-1', 'approved');
+
+    assert.equal(harness.dmDeliveries.length, 1);
+    assert.equal(harness.dmDeliveries[0].chatId, 'ou-user-1');
+    assert.match(harness.dmDeliveries[0].text, /Approved action completed/);
+    // Nothing addressed to the thread that cannot receive it — including the
+    // interim progress card, which has no live conversation waiting on it.
+    assert.equal(harness.finalTexts.length, 0);
+    assert.equal(harness.statusSends.length, 0);
+  });
+
+  it('tells the creator when a scheduled run\'s action was refused', async () => {
+    // The rejection and failure branches deliver through the same path. If only
+    // the success branch were routed, a declined scheduled action would go
+    // unreported to the one person waiting on it.
+    const harness = makeExecutableResumer(approvedRow('rejected', {
+      deliveryMode: 'scheduled_runtime_delivery',
+      sourceChatId: 'scheduled-workflow:wf-1',
+      statusMessageId: null,
+    }), {
+      resolveByLarkTenantIdentity: async () => ok({
+        userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER', channel: 'lark',
+        larkOpenId: 'ou-user-1', activeDepartmentId: 'dept-1',
+      }),
+    });
+
+    await harness.service.resume('approval-1', 'rejected');
+
+    assert.equal(harness.dmDeliveries.length, 1);
+    assert.equal(harness.dmDeliveries[0].chatId, 'ou-user-1');
+    assert.match(harness.dmDeliveries[0].text, /not approved/i);
+    assert.equal(harness.finalTexts.length, 0);
+  });
+
   it('replays a scheduled run\'s delivery rules into the approved execution', async () => {
     // Approval is checked before a tool runs, so a scheduled run reaches the
     // gate with its delivery guards untested. The context is rebuilt here from

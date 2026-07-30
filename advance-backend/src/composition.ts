@@ -1747,9 +1747,22 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     toolExecutor: gatewayToolExecutor,
     logger: logger.child({ service: 'automation-plan-executor' }),
   });
+  // Delivers to a Lark open_id rather than a chat. Shared by the scheduler,
+  // which has no chat to reply into, and the approval resumer, which inherits
+  // that same problem when the approved action came from a scheduled run.
+  const scheduledLarkDmAdapter = new ScheduledLarkDmChannelAdapter({
+    client: new LarkMessagingClient({
+      appId: env.LARK_APP_ID,
+      appSecret: env.LARK_APP_SECRET,
+      ...(env.LARK_API_BASE_URL ? { apiBaseUrl: env.LARK_API_BASE_URL } : {}),
+      logger: logger.child({ service: 'scheduled-lark-dm-client' }),
+    }),
+    logger: logger.child({ service: 'scheduled-lark-dm-channel' }),
+  });
   const approvalResumer  = new ApprovalResumerService({
     approvalRepo,
     larkAdapter,
+    scheduledDmAdapter: scheduledLarkDmAdapter,
     channelIdentityRepo,
     approvalGate,
     toolExecutor: gatewayToolExecutor,
@@ -1925,17 +1938,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       prisma,
       piRuntime: larkPiRuntime,
       runTimeoutMs: env.PI_LARK_RUN_TIMEOUT_MS,
-      channelAdapters: {
-        larkDm: new ScheduledLarkDmChannelAdapter({
-          client: new LarkMessagingClient({
-            appId: env.LARK_APP_ID,
-            appSecret: env.LARK_APP_SECRET,
-            ...(env.LARK_API_BASE_URL ? { apiBaseUrl: env.LARK_API_BASE_URL } : {}),
-            logger: logger.child({ service: 'scheduled-lark-dm-client' }),
-          }),
-          logger: logger.child({ service: 'scheduled-lark-dm-channel' }),
-        }),
-      },
+      channelAdapters: { larkDm: scheduledLarkDmAdapter },
       channelIdentityRepo,
       logger: logger.child({ service: 'scheduled-workflow' }),
       clock:  systemClock,

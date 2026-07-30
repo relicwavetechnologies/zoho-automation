@@ -19,6 +19,7 @@ import type { SkillCatalogService } from '../skills/skill-catalog.service';
 import type { SkillAccessEnforcementPort } from '../skills/skill-access.port';
 import { withWorkDiscoveryPermissions } from './work-resolution.service';
 import { buildArgsSummary } from './args-summary';
+import { SCHEDULED_SESSION_AUTH_PROVIDER } from '../scheduling/scheduled-runtime-session';
 import { z } from 'zod';
 import {
   approvalDeliveryFailedCheckpoint,
@@ -307,6 +308,12 @@ export class AutomationPlanService {
         departmentId,
         execution: input.execution ?? null,
         approvalOrigin: 'automation',
+        // Same reason as the single-tool approval path: this batch is approved
+        // before any of it runs, so the delivery restriction of the run that
+        // prepared it has to survive until someone accepts.
+        deliveryMode: input.member.authProvider === SCHEDULED_SESSION_AUTH_PROVIDER
+          ? 'scheduled_runtime_delivery'
+          : null,
         resolvedManagerOpenId: approver.larkOpenId,
         resolvedManagerUserId: approver.userId,
         resolvedManagerName: approver.displayName,

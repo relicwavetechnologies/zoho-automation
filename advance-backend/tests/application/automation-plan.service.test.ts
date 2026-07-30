@@ -206,6 +206,8 @@ describe('AutomationPlanService', () => {
     assert.equal(cards.length, 1);
     assert.equal(created[0].kind, 'automation_script_plan');
     assert.equal(created[0].metadataJson.approvalOrigin, 'automation');
+    // An ordinary interactive batch carries no delivery restriction.
+    assert.equal(created[0].metadataJson.deliveryMode, null);
     assert.equal(created[0].payloadJson.invocations[0].toolId, 'googleSheets');
     assert.equal(created[0].payloadJson.invocations[0].action, 'create');
     assert.deepEqual(created[0].payloadJson.approvalSignature, {
@@ -218,6 +220,25 @@ describe('AutomationPlanService', () => {
     assert.match(created[0].payloadJson.invocations[0].callSummary, /googleSheets/);
     assert.match(cards[0].card, /Approve exact batch/);
     assert.match(cards[0].card, /googleSheets/);
+  });
+
+  it('records a scheduled run\'s delivery restriction on the batch', async () => {
+    // A batch prepared by a scheduled run is approved before any of it executes,
+    // so the restriction has to survive to the resume — the session it ran under
+    // is revoked long before the manager decides.
+    const { service, created } = createHarness('create');
+
+    const response = await service.create({
+      member: { ...member, authProvider: 'scheduled_workflow' },
+      departmentId: 'department-1',
+      execution: { version: 1, threadId: 'thread-1', runId: 'run-1', actionId: 'action-1' },
+      title: 'Scheduled batch',
+      summary: 'Create a Google Sheet with today\u2019s qualified leads.',
+      invocations: [{ skillId: 'skill-1', toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } } }],
+    });
+
+    assert.equal(response.ok, true);
+    assert.equal(created[0].metadataJson.deliveryMode, 'scheduled_runtime_delivery');
   });
 
   it('reuses one atomic pending batch and sends no duplicate card', async () => {

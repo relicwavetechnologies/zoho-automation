@@ -132,6 +132,9 @@ export class AutomationPlanExecutor {
       );
 
       const execution = parseExecution(meta['execution']);
+      const deliveryMode = meta['deliveryMode'] === 'scheduled_runtime_delivery'
+        ? 'scheduled_runtime_delivery' as const
+        : undefined;
       const approvedByUserId = asString(meta['resolvedManagerUserId']);
       if (!approvedByUserId || plan.approvalSignature.approverUserId !== approvedByUserId) {
         await this.fail(claimedApproval.id, 'invalid_plan', 'The approved batch does not identify its approval authority.');
@@ -163,6 +166,7 @@ export class AutomationPlanExecutor {
         identity,
         departmentId,
         approvalId: claimedApproval.id,
+        ...(deliveryMode ? { deliveryMode } : {}),
         ...(execution ? { execution } : {}),
         ...(permissionResult.value.department?.zohoReadScope
           ? { departmentZohoReadScope: permissionResult.value.department.zohoReadScope }
@@ -316,6 +320,7 @@ export class AutomationPlanExecutor {
             identity,
             departmentId,
             approvalId: claimedApproval.id,
+            ...(deliveryMode ? { deliveryMode } : {}),
             ...(execution ? { execution } : {}),
             ...(currentPermissionResult.value.department?.zohoReadScope
               ? { departmentZohoReadScope: currentPermissionResult.value.department.zohoReadScope }
@@ -518,8 +523,11 @@ export class AutomationPlanExecutor {
     approvalId: string;
     execution?: GatewayExecutionContext;
     departmentZohoReadScope?: string | null;
+    deliveryMode?: RunContext['deliveryMode'];
   }): RunContext {
-    const { identity, departmentId, approvalId, execution, departmentZohoReadScope } = input;
+    const {
+      identity, departmentId, approvalId, execution, departmentZohoReadScope, deliveryMode,
+    } = input;
     return {
       companyId: asCompanyId(identity.companyId),
       userId: asUserId(identity.userId),
@@ -530,6 +538,7 @@ export class AutomationPlanExecutor {
       ...(identity.email ? { requesterEmail: identity.email } : {}),
       ...(identity.larkOpenId ? { userExternalId: identity.larkOpenId } : {}),
       ...(departmentZohoReadScope ? { departmentZohoReadScope } : {}),
+      ...(deliveryMode ? { deliveryMode } : {}),
       traceId: `automation-plan-${approvalId}`,
       requestId: `automation-plan-${approvalId}-preflight`,
       ...(execution?.threadId ? { chatId: execution.threadId } : {}),
