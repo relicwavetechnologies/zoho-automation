@@ -16,6 +16,7 @@ import {
 	validateAttachmentFileId,
 	validateAttachmentRequestId,
 	validateProfileName,
+	validateSessionScope,
 	validateThread,
 } from "./local-rpc-controller.mjs";
 
@@ -102,8 +103,22 @@ export function createAdmissionController({
 			if (thread !== undefined) validateThread(thread);
 			return admit(profile, () => execute(profile, normalizedMessage, { thread, approve }));
 		},
-		async runRuntime({ backendUrl, runtimeLease, message, attachments, signal, onProgress }) {
+		async runRuntime({
+			backendUrl,
+			runtimeLease,
+			message,
+			attachments,
+			sessionScope,
+			signal,
+			onProgress,
+		}) {
 			const normalizedMessage = validateMessage(message);
+			let normalizedSessionScope;
+			try {
+				normalizedSessionScope = validateSessionScope(sessionScope);
+			} catch (error) {
+				throw admissionError(400, "invalid_session_scope", error.message);
+			}
 			// Descriptors are re-derived, not trusted: `resolveStagedAttachments`
 			// recomputes every path from validated parts and ignores whatever the
 			// caller claimed the path was.
@@ -117,6 +132,7 @@ export function createAdmissionController({
 			return admit(runtime.profile, () =>
 				executeRuntime(runtime, normalizedMessage, {
 					signal,
+					sessionScope: normalizedSessionScope,
 					...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
 					...(onProgress ? { onProgress } : {}),
 				}),
@@ -126,15 +142,23 @@ export function createAdmissionController({
 }
 
 async function readJson(request) {
-	let body = "";
+	// Chunks are decoded once, joined. Decoding each chunk as it arrives splits
+	// any multibyte character that straddles a chunk boundary into replacement
+	// characters — which now matters, because a request carries a whole room
+	// transcript rather than one line, and every rendered line in it is marked
+	// with multibyte fence characters that must survive intact.
+	const chunks = [];
+	let size = 0;
 	for await (const chunk of request) {
-		body += chunk;
-		if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
+		const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+		size += buffer.length;
+		if (size > MAX_BODY_BYTES) {
 			throw admissionError(413, "request_too_large", "Request body is too large");
 		}
+		chunks.push(buffer);
 	}
 	try {
-		return JSON.parse(body);
+		return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 	} catch {
 		throw admissionError(400, "invalid_json", "Request body must be valid JSON");
 	}

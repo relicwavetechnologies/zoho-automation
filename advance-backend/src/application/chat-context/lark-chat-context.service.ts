@@ -608,22 +608,31 @@ export class LarkChatContextService {
     return ok({ value: updatedMessage, written: updateResult.value });
   }
 
+  /**
+   * The room as stored, read-only.
+   *
+   * Reads go through `repo.get`, not `getOrCreate`: that one upserts, so a read
+   * would create a row for every room Divo observed, and its empty update would
+   * refresh `updatedAt` on a row the optimistic-concurrency write path compares
+   * against.
+   */
   async loadContext(
     companyId: string,
     chatId: string,
   ): Promise<Result<GroupChatWindow, InfraError>> {
-    const ctxResult = await this.deps.repo.getOrCreate({ companyId, chatId });
+    const ctxResult = await this.deps.repo.get({ companyId, chatId });
     if (!ctxResult.ok) return err(ctxResult.error);
     const ctx = ctxResult.value;
+    if (!ctx) {
+      return ok({ summary: null, recentMessages: [], totalMessageCount: 0 });
+    }
 
     const recentMessages = Array.isArray(ctx.recentMessagesJson)
       ? (ctx.recentMessagesJson as GroupChatMessage[])
       : [];
 
-    const summary = ctx.summaryJson as GroupChatSummary | null;
-
     return ok({
-      summary,
+      summary: ctx.summaryJson as GroupChatSummary | null,
       recentMessages,
       totalMessageCount: ctx.sourceMessageCount,
     });

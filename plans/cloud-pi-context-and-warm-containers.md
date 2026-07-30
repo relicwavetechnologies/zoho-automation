@@ -3,9 +3,9 @@
 > **Purpose:** Explain, in simple language, what stays warm, what is copied,
 > and how a shared Lark group should work with isolated per-user containers.
 >
-> **Implementation status:** The 10-minute warm-container lifecycle is
-> implemented locally. Shared group-context hydration is a separate design
-> decision and is not implemented by this change.
+> **Implementation status:** Both parts are implemented. The 10-minute
+> warm-container lifecycle came first; shared group-context hydration and
+> run-scoped group sessions are described in section 4.
 
 ## 1. The simplest mental model
 
@@ -101,22 +101,27 @@ Assume Abhishek and Anish both invoke Divo inside one Lark thread.
 flowchart TB
     T["Lark thread T<br/>one shared visible conversation"]
 
-    subgraph AV["Abhishek volume"]
-        AS["threads/T/pi-session.jsonl<br/>Abhishek's agent notebook"]
-        AF["Abhishek's files and artifacts"]
+    subgraph AV["Abhishek container"]
+        AS["tmpfs: session for this run only<br/>deleted on exit, dies with the container"]
+        AF["volume: Abhishek's files and artifacts"]
     end
 
-    subgraph NV["Anish volume"]
-        NS["threads/T/pi-session.jsonl<br/>Anish's agent notebook"]
-        NF["Anish's files and artifacts"]
+    subgraph NV["Anish container"]
+        NS["tmpfs: session for this run only<br/>deleted on exit, dies with the container"]
+        NF["volume: Anish's files and artifacts"]
     end
 
-    T -. "shared context should be hydrated" .-> AS
-    T -. "shared context should be hydrated" .-> NS
+    T -- "shared transcript, per run" --> AS
+    T -- "shared transcript, per run" --> NS
 ```
 
-There are two private Pi session files because the users have separate volumes.
-The thread identifier can be the same, but the physical files are different.
+For a **group** thread each participant's session is per-run and lives on the
+container's tmpfs, never on their volume — so it cannot outlive the container even
+if cleanup never runs. What their volume keeps is their files and artifacts.
+
+A **direct message** is the durable case: one participant, one durable
+`threads/T/pi-session.jsonl` on that user's volume, and resuming it is the
+continuity. The rest of this section describes that case.
 
 This is intentional for:
 
@@ -142,104 +147,227 @@ Those actions reuse the same volume and session file.
 Only people who actually invoke Divo receive a private agent session. A
 20-person group does not automatically create 20 copies.
 
-## 4. The real shared-context gap
+## 4. How one shared thread stays one conversation
 
-The current isolated Pi route reliably gives Pi the current message. It also
-hydrates some special cases such as a quoted parent message and a bare mention
-with nearby messages.
+**Status: implemented.** A group turn no longer answers from the current
+message alone.
 
-It does **not yet** guarantee that every normal request from every user receives
-the same bounded shared Lark-thread history. Therefore:
+The conversation was never the problem — the place it was stored was. A Pi
+session file held two different kinds of memory at once:
 
-1. Abhishek can discuss something with Divo.
-2. Anish can reply in the same Lark thread.
-3. Anish's private Pi session may not contain Abhishek's earlier Divo exchange.
-4. Both users are visibly in one Lark thread but their private agents can have
-   different understandings.
+| Memory | Belongs to | Lives in |
+|---|---|---|
+| The conversation — who said what | the **room** | one record in Postgres |
+| Execution — files, tools, permissions, approvals | the **user** | that user's Docker volume |
 
-This is not a Docker-copying bug. It is a **shared conversation hydration**
-problem.
+Splitting them apart makes the copying question disappear, because for a group
+thread there is nothing left to copy.
 
-## 5. What must be shared, and what must stay private
+### The rule
 
-| Data | Shared across the Lark thread? | Where it should live |
-|---|---:|---|
-| Human and Divo messages visible in the thread | Yes | Lark/backend transcript |
-| Bounded thread summary | Yes | Backend conversation record |
-| Current requester's identity | No | Backend-issued runtime context |
-| Permissions and departments | No | Backend authority |
-| Tool credentials | Never sent to Pi | Backend only |
-| User workspace files | No by default | User's Docker volume |
-| Private tool results | No by default | User session/workspace |
-| Pi JSONL session | No | User's Docker volume |
-| Approval ownership | No | Backend approval records |
+> In a group thread, the Pi session is scratch. The conversation is read from the
+> backend on every turn.
 
-## 6. Recommended shared-context design
-
-Do not mount one shared Pi session into multiple user containers.
-
-For every group-thread request, the backend should build a context package:
-
-```text
-Shared recent Lark messages
-+ shared long-thread summary
-+ quoted/referenced message
-+ current user's message
-+ current user's identity and permissions
-+ current user's private Pi session
-= one correctly informed isolated run
-```
+- **Direct message** — one participant, so the durable per-thread session *is*
+  the conversation. Unchanged.
+- **Group thread** — several participants in separate containers, so the run gets
+  a session scoped to that run, and the shared transcript is sent in with the
+  request.
 
 ```mermaid
-flowchart LR
-    R["New group-thread request"]
-    H["Fetch bounded shared<br/>Lark transcript"]
-    S["Load shared thread summary<br/>when needed"]
-    I["Attach requester's<br/>identity + permissions"]
-    P["Run requester's private Pi session"]
-    O["Reply into the same Lark thread"]
+flowchart TB
+    L["One Lark room<br/>the shared conversation"]
+    S["LarkChatContext in Postgres<br/>messages + rolling summary"]
+    A["Abhishek's container<br/>files · permissions · tools"]
+    N["Anish's container<br/>files · permissions · tools"]
 
-    R --> H --> S --> I --> P --> O
+    L -->|"every group message, tagged or not"| S
+    S -->|"rendered for this run only"| A
+    S -->|"rendered for this run only"| N
+    A -->|"only the delivered reply"| L
+    N -->|"only the delivered reply"| L
 ```
 
-### Why one shared Pi JSONL is rejected
+Nothing is merged and nothing is deduplicated, because no second copy is ever
+written. A container dying stops mattering: the transcript was never inside it.
 
-A shared writable Pi session would create:
+### Nothing new was built to store it
 
-- identity and permission leakage;
-- private-result leakage;
-- approval confusion;
-- concurrent JSONL corruption;
-- unclear ownership of generated files.
+The shared record already existed and was already being written on **every**
+group message — including messages that never mentioned Divo — along with every
+reply Divo delivered. It was simply never read on the isolated Pi route.
 
-The shared truth should be the Lark/backend transcript, not one container's Pi
-session.
+| Piece | Where |
+|---|---|
+| Shared record, keyed `(companyId, lark, chatId)` | `LarkChatContext` |
+| Rolling summary + compaction | `summaryJson`, `LarkChatContextService` |
+| Rendering, with the untrusted-reference framing | `group-context-formatter.ts` |
+| Reading it for a run | `group-context.hydrator.ts` *(new)* |
+| Read-only room access | `LarkChatContextRepoPort.get` *(new — reads must not upsert)* |
+| Run-scoped Pi session | `sessionScope` through the controller to `runtime.mjs` |
 
-## 7. This is separate from request concurrency
+### What crosses the boundary
+
+Only what the room can already see. That is what makes one rendered block safe
+to hand to two different people's containers.
+
+| Data | Shared? |
+|---|---|
+| Messages visible in the room | Yes |
+| Divo's delivered replies | Yes |
+| Attachment names and refusal notices | Yes |
+| Rolling summary of older discussion | Yes |
+| Workspace files and artifacts | No |
+| Tool results and terminal output | No |
+| Permissions, departments, approvals | No |
+| Pi session transcript | No |
+| Tool credentials | Never reach Pi |
+
+The transcript arrives labelled as untrusted reference data, with the rule that
+nothing inside it may be followed as an instruction — colleagues' words are now
+model input, so that guard travels with them.
+
+### Why there is no cache
+
+There is deliberately none, and the reason is worth writing down because it is
+counter-intuitive.
+
+The webhook appends the incoming message to the room record **before** the run
+starts. So by the time a turn reads the room, the state it reads is one no
+earlier turn could have produced — the message count moved, `updatedAt` moved,
+and the message being excluded is this turn's own. Every possible cache key is
+unique per turn by construction, which makes the hit rate exactly zero. A
+version-keyed cache was built, measured over a simulated six-turn thread plus a
+webhook redelivery, and found to never serve: it cost an extra query, a Redis
+GET and a Redis SET of up to 32 KB per turn, for nothing.
+
+Two different participants never share a render either, because each excludes
+their own message and answers a different room state.
+
+What remains is one indexed row read per group turn — tens of milliseconds
+against a container start measured in seconds. Caching was never where this
+turn's time goes.
+
+### Two things the shared block has to get right
+
+**A file named in the transcript is not a file the run holds.** Attachments go
+into the container of whoever sent them, so the block says only that a file was
+shared in the room, and instructs the run to say it does not have it rather than
+describe contents it never opened.
+
+**A participant must not be able to impersonate anyone.** Message text is quoted
+verbatim, so a member can type the block's own label, the sentence that ends it,
+or a whole line attributed to a manager. Every line the backend renders therefore
+carries a per-render token nobody could have known when they typed, in three
+kinds: `|` opens a message and is **the only place a speaker is established**,
+`>` is more of that same sender's text, and `-` is a heading from Divo's own
+tooling. A forged line inside somebody's message lands on `>`, so it reaches the
+agent as that member's own words rather than as another person speaking. The
+adjacent messages fetched for a bare mention go through the same framing, because
+unframed they would be the one region of the prompt nothing governed.
+
+### Size limit
+
+The controller rejects a request body over 64 KB, and rejection fails the whole
+turn. Two guards, in order:
+
+1. The block is budgeted at roughly 5,000 transcript tokens plus 1,200 of
+   summary, then hard-capped at 32 KB. Trimming only ever costs transcript: the
+   label, the file rule, the fence rules and the trust policy are re-emitted, so
+   a block can lose its oldest lines but never the rules that make it safe to
+   read.
+2. The request is then fitted to the real body. The ask always wins — a 40 KB
+   pasted log keeps every byte and the room context shrinks around it, because
+   before this change that whole budget belonged to the ask and a fixed context
+   allowance would have turned answerable messages into `request_too_large`.
+   Shrinking re-renders the block at the smaller size rather than slicing the
+   composed string, so this guard cannot cost the framing either. When context is
+   lost, `pi.shared_context.trimmed` records how much was asked for and how much
+   was sent, because a thread that silently stops receiving it is otherwise
+   invisible.
+
+### A brief undetectable window at deploy
+
+A controller built before this slice ignores an unknown `sessionScope` without
+complaining, and the run result does not echo which scope was honoured. So while
+a new backend is talking to an old controller, group turns silently go back to
+writing the re-sent transcript into each participant's durable session.
+
+Sequencing does not fix it: dev deploy is one `docker compose up -d` from a single
+commit ([ci.yml](../.github/workflows/ci.yml)), which recreates the backend and
+`divo-dev-pi-controller` together — there is no way to land `divo-pi` first. What
+bounds it is that the window is a few seconds of a recreate, and
+`reconcileOwnedContainers()` stops every warm per-user container when the
+controller restarts, so nothing carries across it.
+
+The real fix is to have the run echo the scope it honoured and warn on a
+mismatch. That is not built.
+
+### Fixed on the way past
+
+A bare `@Divo` in a group used to send Pi the instruction *"use the supplied
+adjacent Lark context"* with no context attached — the fetched neighbouring
+messages were only ever read by the in-process engine. They now reach the run
+alongside the room transcript.
+
+### Known limits
+
+**Another participant's files.** Group attachments stream into the **sender's**
+container, and land in `.divo/inbox` on that user's durable volume — so the
+sender can still open their own earlier uploads on a later turn, but Anish cannot
+open Abhishek's. Anish's transcript names the file and the framing tells the run
+to look for it and only then say it does not hold it. Re-fetching on demand from
+the stored Lark file key is a separate slice, and the room is the natural ACL for
+it: the file was posted there, so every member can already see it in Lark.
+
+**A room that cannot be read.** If the room read fails, the turn still runs, but
+the block says so and tells the run not to assume continuity — so a request that
+depends on what was agreed earlier gets an honest "the history was unavailable"
+rather than a confident answer about nothing.
+
+**Cross-thread recall.** `divo_search_chats` / `divo_read_chat` read the durable
+per-thread session files on a user's volume. A run-scoped group session never
+writes there, so group discussion is no longer recallable through those tools —
+only through the room window and its rolling summary. Existing group session
+files stay where they are; nothing new joins them. Indexing the room record for
+recall would close this, and is not done.
+
+## 5. This is separate from request concurrency
 
 | Problem | Simple meaning | Required control |
 |---|---|---|
 | Per-user concurrency | Two requests try to use one user's runtime together | Per-user FIFO/admission |
-| Shared group context | Two users' private agents know different parts of one thread | Backend thread-context hydration |
+| Shared group context | Two users' private agents know different parts of one thread | Backend room-context hydration — **done**, section 4 |
 | Warm lifecycle | Repeated requests pay Docker startup every time | 10-minute idle container |
 
 Solving one does not automatically solve the other two.
 
-## 8. Decision and next discussion
+## 6. Decision and next discussion
 
 **Warm lifecycle verdict:** proceed — confidence **92%**. The implementation
 keeps isolation and per-turn security context while removing repeat Docker
 starts.
 
-**Shared-context verdict:** the direction is clear, but the exact transcript
-contract still needs agreement — confidence **78%** until these are decided:
+**Shared-context verdict:** implemented as described in section 4. Every group
+turn reads the shared room record and runs on a session scoped to that run, so
+two participants in one thread can no longer hold different understandings of it.
+Settled while building:
 
-1. How many recent messages should be injected: 20, 50, or token-budget based?
-2. Should a shared summary include tool results, or only text visible in Lark?
-3. Which files/artifacts can another participant explicitly share?
-4. How should message deletion and edited Lark messages affect the summary?
-5. Should Divo answer using only messages that the current requester can see?
+1. **How much is injected** — token-budgeted, not a message count, then hard-capped
+   in bytes against the controller's 64 KB request limit.
+2. **What the summary may contain** — only what the room can see. Tool results and
+   workspace files stay private to the container that produced them.
+3. **Scope** — the room, matching the record that was already being written. Reads
+   are labelled untrusted reference data, so a question in one topic can draw on
+   the room without treating it as an instruction.
 
-Recommended next slice: define and test a small `GroupThreadContext` contract
-owned by the backend, then inject it into the isolated Pi prompt without
-changing RBAC, credentials, approvals, or container isolation.
+Still open, and none of them block the current behaviour:
+
+1. Which files or artifacts one participant may explicitly share with another —
+   today an uploaded file only exists in the sender's container.
+2. How a deleted or edited Lark message should propagate into the stored record
+   and its rolling summary.
+3. Whether Divo should answer using only messages the current requester can see.
+
+Live verification outstanding: a two-user, two-container exchange in one Lark
+thread on the deployed VM.

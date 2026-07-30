@@ -303,3 +303,65 @@ test("disconnecting a Lark request aborts its admitted runtime", async (context)
 	}
 	assert.equal(admission.activeCount, 0);
 });
+
+test("a Lark run carries its session scope to the runtime, defaulting to the thread", async () => {
+	const scopes = [];
+	const admission = createAdmissionController({
+		resolveLease: async ({ backendUrl, lease }) => ({
+			profile: "cloud-derived",
+			thread: "lark-derived",
+			backendUrl,
+			token: lease,
+			userId: "user-1",
+			companyId: "company-1",
+			instanceId: "pi-local-1",
+		}),
+		executeRuntime: async (runtime, _message, options) => {
+			scopes.push(options.sessionScope);
+			return { profile: runtime.profile, thread: runtime.thread, text: "done" };
+		},
+	});
+
+	await admission.runRuntime({
+		backendUrl: "https://backend.example",
+		runtimeLease: "signed-lease",
+		message: "group turn",
+		sessionScope: "run",
+	});
+	await admission.runRuntime({
+		backendUrl: "https://backend.example",
+		runtimeLease: "signed-lease",
+		message: "direct message turn",
+	});
+
+	assert.deepEqual(scopes, ["run", "thread"]);
+});
+
+test("an unknown session scope is rejected before any container starts", async () => {
+	let started = false;
+	const admission = createAdmissionController({
+		resolveLease: async () => {
+			started = true;
+			return {};
+		},
+		executeRuntime: async () => {
+			started = true;
+			return { text: "done" };
+		},
+	});
+
+	await assert.rejects(
+		admission.runRuntime({
+			backendUrl: "https://backend.example",
+			runtimeLease: "signed-lease",
+			message: "group turn",
+			sessionScope: "everything",
+		}),
+		(error) => {
+			assert.equal(error.code, "invalid_session_scope");
+			assert.equal(error.statusCode, 400);
+			return true;
+		},
+	);
+	assert.equal(started, false);
+});

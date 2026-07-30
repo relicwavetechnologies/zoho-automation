@@ -157,7 +157,11 @@ describe('formatGroupContextForPrompt', () => {
     const result = formatGroupContextForPrompt(window);
 
     assert.ok(result.includes('Bob: Please check this image'));
-    assert.ok(result.includes('[internal attachment context: image "receipt.png"; image/png; status=workspace]'));
+    // The room can say the file was shared and whether Divo read it — never that
+    // the run holding this transcript has it, which is false for anyone but the
+    // sender.
+    assert.ok(result.includes('[internal attachment context: image "receipt.png"; image/png; shared in the room]'));
+    assert.ok(!result.includes('status=workspace'));
     assert.ok(result.includes('Attachment placement: this upload belongs to this exact transcript message'));
     // The transcript is a pointer, not a copy: no extracted text, and no
     // instruction to reach for a retrieval tool that no longer exists.
@@ -185,7 +189,7 @@ describe('formatGroupContextForPrompt', () => {
 
     const result = formatGroupContextForPrompt(window);
 
-    assert.ok(result.includes('status=unsupported'));
+    assert.ok(result.includes('not read by Divo'));
     assert.ok(result.includes('Divo cannot open video files yet, so this one was not read.'));
   });
 
@@ -209,7 +213,18 @@ describe('formatGroupContextForPrompt', () => {
     const result = formatGroupContextForPrompt(window);
 
     assert.ok(result.includes('nearest preceding message with [internal attachment context]'));
-    assert.ok(result.includes('saved in your workspace and listed under [ATTACHED_FILES]'));
+    // Only this request's own attachments are in the workspace. A file another
+    // participant sent went to their container, so promising it here would have
+    // the model answer about a file it never opened.
+    assert.ok(result.includes('Files listed under [ATTACHED_FILES] for the current request are in your workspace'));
+    // Check, then report — a file the sender posted earlier is still in their own
+    // `.divo/inbox` on the durable volume, so denying it outright would refuse a
+    // file the container holds.
+    assert.ok(result.includes('look in your workspace first'));
+    assert.ok(result.includes('.divo/inbox'));
+    assert.ok(result.includes('Only if it is not there'));
+    assert.ok(result.includes('never say you opened one you did not'));
+    assert.ok(!result.includes('Every file sent in this chat is saved in your workspace'));
     assert.ok(result.includes('Attachment placement: this upload belongs to this exact transcript message; nearby "this image" references usually point here.'));
   });
 

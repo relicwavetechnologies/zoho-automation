@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -41,8 +42,62 @@ const PROVIDER_ENV_KEYS = [
 	"XIAOMI_API_KEY",
 ];
 
+/**
+ * How long an abandoned run-scoped session directory is kept.
+ *
+ * A run-scoped session is deleted when its Pi process exits, but a container
+ * killed mid-run never reaches that. The backend caps a run far below this, so
+ * anything older than this cannot belong to a run that is still going.
+ */
+const ABANDONED_RUN_SESSION_TTL_MS = 6 * 60 * 60_000;
+
 function ensureDirectory(directory) {
 	fs.mkdirSync(directory, { recursive: true });
+}
+
+function removeDirectory(directory) {
+	try {
+		fs.rmSync(directory, { recursive: true, force: true });
+	} catch (error) {
+		// Reclaiming disk is best-effort. Failing the run over it would trade a
+		// delivered answer for a few kilobytes.
+		console.error(`[divo-pi] could not remove ${directory}: ${error.message}`);
+	}
+}
+
+/**
+ * Drop run-scoped sessions left behind by containers that were killed.
+ *
+ * Only siblings of this run are considered, and only ones old enough that no
+ * live run could own them — a sweep that raced a running Pi would delete the
+ * session it is writing to.
+ */
+export function sweepAbandonedRunSessions(
+	runsRoot,
+	currentRunId,
+	now = Date.now(),
+	ttlMs = ABANDONED_RUN_SESSION_TTL_MS,
+) {
+	let entries;
+	try {
+		entries = fs.readdirSync(runsRoot, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+
+	const removed = [];
+	for (const entry of entries) {
+		if (!entry.isDirectory() || entry.name === currentRunId) continue;
+		const directory = path.join(runsRoot, entry.name);
+		try {
+			if (now - fs.statSync(directory).mtimeMs < ttlMs) continue;
+		} catch {
+			continue;
+		}
+		removeDirectory(directory);
+		removed.push(entry.name);
+	}
+	return removed;
 }
 
 function ensureExtensionLink(agentDir, extensionName) {
@@ -102,6 +157,40 @@ export function buildChildEnvironment(baseEnvironment, values) {
 	};
 }
 
+/**
+ * Where this run's Pi session lives, given the scope it was started with.
+ *
+ * A thread-scoped session is the durable notebook for that thread, and belongs
+ * on the user's volume: a DM is one person's conversation and resuming it is the
+ * continuity.
+ *
+ * A run-scoped session is deliberately kept **off** that volume. The container
+ * mounts the volume read-write and is otherwise read-only apart from a tmpfs, so
+ * putting a shared group transcript on the tmpfs means it cannot reach the
+ * user's disk even if the container is killed before cleanup runs — the tmpfs
+ * dies with the container. Deleting it on exit stays as hygiene inside the warm
+ * window, but it is no longer what guarantees the transcript is not kept.
+ */
+export function resolveSessionPaths({
+	dataDir,
+	thread,
+	runId,
+	sessionScope = "thread",
+	ephemeralRoot = path.join(os.tmpdir(), "divo-sessions"),
+}) {
+	const threadDir = path.join(dataDir, "threads", thread);
+	const isRunScoped = sessionScope === "run";
+	const runSessionsRoot = path.join(ephemeralRoot, "threads", thread, "runs");
+	const sessionDir = isRunScoped ? path.join(runSessionsRoot, runId) : threadDir;
+	return {
+		isRunScoped,
+		runSessionsRoot,
+		sessionDir,
+		sessionPath: path.join(sessionDir, "pi-session.jsonl"),
+		threadDir,
+	};
+}
+
 export function buildPiArguments(values) {
 	const extensionArguments = manifest.extensions.flatMap((name) => [
 		"--extension",
@@ -156,6 +245,7 @@ export function startDivoPi({
 	workspace = path.join(stateRoot, "workspace"),
 	thread = "terminal-phase-0",
 	mode = "tui",
+	sessionScope = "thread",
 	print = false,
 	prompt,
 }) {
@@ -168,6 +258,9 @@ export function startDivoPi({
 	if (!["tui", "rpc"].includes(mode)) {
 		throw new Error('Mode must be either "tui" or "rpc"');
 	}
+	if (!["thread", "run"].includes(sessionScope)) {
+		throw new Error('Session scope must be either "thread" or "run"');
+	}
 	const tsx = path.join(repositoryRoot, "node_modules", ".bin", "tsx");
 	if (!fs.existsSync(tsx)) {
 		throw new Error("Divo Pi dependencies are missing. Run npm ci --ignore-scripts first.");
@@ -177,8 +270,16 @@ export function startDivoPi({
 	const agentDir = path.join(stateRoot, "agent");
 	const dataDir = path.join(stateRoot, "data");
 	const homeDir = path.join(stateRoot, "home");
-	const sessionDir = path.join(dataDir, "threads", thread);
-	const sessionPath = path.join(sessionDir, "pi-session.jsonl");
+	// A run-scoped session lives on the container's tmpfs and is removed when this
+	// process exits: the conversation it needs was sent in with the request, so a
+	// private copy would only duplicate it once per turn — and a shared group
+	// transcript has no business on one participant's durable volume.
+	const { isRunScoped, runSessionsRoot, sessionDir, sessionPath } = resolveSessionPaths({
+		dataDir,
+		thread,
+		runId,
+		sessionScope,
+	});
 	const internalDir = path.join(workspace, ".divo");
 	const runDir = path.join(internalDir, "threads", thread, "runs", runId);
 	const scratchDir = path.join(runDir, "tmp");
@@ -204,6 +305,7 @@ export function startDivoPi({
 	]) {
 		ensureDirectory(directory);
 	}
+	if (isRunScoped) sweepAbandonedRunSessions(runSessionsRoot, runId);
 	for (const extensionName of manifest.extensions) {
 		ensureExtensionLink(agentDir, extensionName);
 	}
@@ -273,6 +375,10 @@ export function startDivoPi({
 	});
 	child.once("exit", (code, signal) => {
 		if (signal) console.error(`[divo-pi] exited by signal ${signal}`);
+		// Removed on every outcome, not only success: a failed or interrupted run
+		// leaves a partial transcript that the next turn must not resume, since
+		// the authoritative conversation is sent in with the request.
+		if (isRunScoped) removeDirectory(sessionDir);
 		process.exitCode = code ?? 1;
 	});
 	return child;

@@ -23,6 +23,19 @@ export interface LarkChatContextRepoPort {
     chatType?: string;
   }): Promise<Result<LarkChatContextRow, InfraError>>;
 
+
+  /**
+   * The room as stored, or `null` when it has none. Creates nothing.
+   *
+   * Read paths must use this rather than `getOrCreate`: that one upserts, so
+   * reading through it would leave an empty row behind for every room Divo
+   * merely observed and refresh `updatedAt` on rooms nobody wrote to.
+   */
+  get(input: {
+    companyId: string;
+    chatId: string;
+  }): Promise<Result<LarkChatContextRow | null, InfraError>>;
+
   update(
     id: string,
     expectedUpdatedAt: Date,
@@ -79,6 +92,38 @@ export class LarkChatContextRepository implements LarkChatContextRepoPort {
       return err(wrapInfra('prisma', 'larkChatContext.getOrCreate', e));
     }
   }
+
+  async get(input: {
+    companyId: string;
+    chatId: string;
+  }): Promise<Result<LarkChatContextRow | null, InfraError>> {
+    try {
+      const row = await this.db.larkChatContext.findUnique({
+        where: {
+          companyId_channel_chatId: {
+            companyId: input.companyId,
+            channel: 'lark',
+            chatId: input.chatId,
+          },
+        },
+      });
+      if (!row) return ok(null);
+      return ok({
+        id: row.id,
+        companyId: row.companyId,
+        chatId: row.chatId,
+        chatType: row.chatType,
+        recentMessagesJson: row.recentMessagesJson,
+        summaryJson: row.summaryJson,
+        sourceMessageCount: row.sourceMessageCount,
+        lastMessageAt: row.lastMessageAt,
+        updatedAt: row.updatedAt,
+      });
+    } catch (e) {
+      return err(wrapInfra('prisma', 'larkChatContext.get', e));
+    }
+  }
+
 
   async update(
     id: string,

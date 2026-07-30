@@ -63,6 +63,16 @@ class FakeLarkChatContextRepo implements LarkChatContextRepoPort {
     return ok(this.row);
   }
 
+  async get(input: {
+    companyId: string;
+    chatId: string;
+  }): Promise<Result<LarkChatContextRow | null, InfraError>> {
+    if (this.row.companyId !== input.companyId || this.row.chatId !== input.chatId) {
+      return ok(null);
+    }
+    return ok(this.row);
+  }
+
   async update(
     id: string,
     expectedUpdatedAt: Date,

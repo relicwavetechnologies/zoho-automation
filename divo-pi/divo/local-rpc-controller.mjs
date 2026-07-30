@@ -54,6 +54,28 @@ export function validateThread(value) {
 	return value;
 }
 
+export const SESSION_SCOPES = ["thread", "run"];
+
+/**
+ * Which session a run reopens.
+ *
+ * `thread` is the durable session on the user's volume, and stays the default:
+ * a DM is one person's conversation, and resuming it is the continuity.
+ *
+ * `run` gives the run a session that is deleted when it ends. The backend asks
+ * for it when a thread is shared by several people, because each of them runs
+ * in their own container: that conversation is held centrally and sent into
+ * every run, so keeping a copy per user would append the same transcript to one
+ * volume on every turn and replay all of it on the next.
+ */
+export function validateSessionScope(value) {
+	if (value === undefined || value === null) return "thread";
+	if (!SESSION_SCOPES.includes(value)) {
+		throw new Error(`sessionScope must be one of: ${SESSION_SCOPES.join(", ")}`);
+	}
+	return value;
+}
+
 export function resourcesFor(profileName) {
 	const profile = validateProfileName(profileName);
 	return {
@@ -1224,6 +1246,7 @@ async function runPrompt({
 	departmentId,
 	answerRequest,
 	attachments,
+	sessionScope,
 	signal,
 	onProgress,
 }) {
@@ -1237,6 +1260,7 @@ async function runPrompt({
 		userId,
 		companyId,
 		departmentId,
+		sessionScope: validateSessionScope(sessionScope),
 	};
 	await idleContainers.activate(profile);
 	emitRuntimeProgress(onProgress, {
@@ -1395,6 +1419,7 @@ export async function promptWithRuntimeLease(runtime, message, options = {}) {
 		message,
 		answerRequest: createHeadlessExtensionResponder(),
 		attachments: options.attachments,
+		sessionScope: validateSessionScope(options.sessionScope),
 		signal: options.signal,
 		onProgress: options.onProgress,
 	});
