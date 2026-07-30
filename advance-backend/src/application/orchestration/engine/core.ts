@@ -38,7 +38,7 @@ import type {
   LarkInferenceService,
   LarkModelId,
 } from '../../proxy/lark-inference.service';
-import { formatGroupContextForPrompt, formatGroupContextMultimodal } from '../../chat-context/group-context-formatter';
+import { formatGroupContextForPrompt } from '../../chat-context/group-context-formatter';
 import type { GroupChatWindow } from '../../../domain/conversation/group-context';
 import {
   debugRunStart, debugPermissions, debugHistory,
@@ -443,10 +443,6 @@ export class OrchestrationEngine {
       .filter((value): value is string => Boolean(value))
       .join('\n\n') || undefined;
 
-    const multimodalCtx = groupContextWindow
-      ? formatGroupContextMultimodal(groupContextWindow)
-      : undefined;
-
     debugGroupContext(groupContext);
 
     const supervisorHistory = history;
@@ -499,7 +495,6 @@ export class OrchestrationEngine {
       ...(memoryContext ? { memoryContext } : {}),
       ...('summary' in supervisorHistory && supervisorHistory.summary ? { conversationSummary: supervisorHistory.summary } : {}),
       ...(groupContext ? { groupContext } : {}),
-      ...(multimodalCtx?.hasImages ? { groupContextParts: multimodalCtx.parts, groupContextSystemHeader: multimodalCtx.systemHeader } : {}),
       ...(inlineImageUrls.length > 0 ? { inlineImageUrls } : {}),
       chatId:         String(conversationKey),
       abortSignal:    abortController.signal,

@@ -26,6 +26,14 @@ export class LarkFileClient {
     return this.downloadResource(messageId, imageKey, 'image');
   }
 
+  async openFile(messageId: string, fileKey: string): Promise<AsyncIterable<Uint8Array>> {
+    return this.openResource(messageId, fileKey, 'file');
+  }
+
+  async openImage(messageId: string, imageKey: string): Promise<AsyncIterable<Uint8Array>> {
+    return this.openResource(messageId, imageKey, 'image');
+  }
+
   private async downloadResource(
     messageId: string,
     fileKey: string,
@@ -33,13 +41,9 @@ export class LarkFileClient {
     maxBytes?: number,
   ): Promise<Buffer> {
     try {
-      const response = await this.client.im.v1.messageResource.get({
-        path: { message_id: messageId, file_key: fileKey },
-        params: { type },
-      });
       const chunks: Buffer[] = [];
       let totalBytes = 0;
-      for await (const chunk of response.getReadableStream()) {
+      for await (const chunk of await this.openResource(messageId, fileKey, type)) {
         const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         totalBytes += bytes.length;
         if (maxBytes !== undefined && totalBytes > maxBytes) {
@@ -50,6 +54,23 @@ export class LarkFileClient {
       return Buffer.concat(chunks);
     } catch (error) {
       this.log.warn('lark.file.download.failed', { messageId, type, error: String(error) });
+      throw error;
+    }
+  }
+
+  private async openResource(
+    messageId: string,
+    fileKey: string,
+    type: 'file' | 'image',
+  ): Promise<AsyncIterable<Uint8Array>> {
+    try {
+      const response = await this.client.im.v1.messageResource.get({
+        path: { message_id: messageId, file_key: fileKey },
+        params: { type },
+      });
+      return response.getReadableStream();
+    } catch (error) {
+      this.log.warn('lark.file.open.failed', { messageId, type, error: String(error) });
       throw error;
     }
   }

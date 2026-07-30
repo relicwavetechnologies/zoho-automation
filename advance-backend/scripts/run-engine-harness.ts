@@ -1,23 +1,24 @@
 /**
- * run-engine-harness — drive the production orchestration engine end-to-end
- * with a configurable prompt, using REAL composition (Gemini + Lark + DB).
+ * run-engine-harness — drive the cloud Pi runtime end-to-end with a
+ * configurable prompt, real DB identity, Divo Gateway, and optional Lark
+ * delivery.
  *
- * This bypasses the webhook so we can iterate fast, but every other layer
- * (engine, supervisor, lark runner, lark API, status card) is the real one.
- * The bot will deliver the reply to the configured chat in Lark, exactly
- * like a real user message would.
+ * This bypasses webhook admission while preserving the production Pi runtime
+ * lease, local controller, backend capability gateway, and Lark status/final
+ * renderer.
+ * It never invokes the legacy Vercel AI SDK orchestration engine.
  *
  * Usage:
  *   pnpm tsx scripts/run-engine-harness.ts                     # Abhishek → Abhishek DM
  *   pnpm tsx scripts/run-engine-harness.ts "your prompt here"
- *   pnpm tsx scripts/run-engine-harness.ts --model pro "your prompt"
+ *   pnpm tsx scripts/run-engine-harness.ts --model flash "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --allow-impersonation --user "Anish Suman" "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --fresh-context --allow-impersonation --user "Shivam Bhateja" "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --group "your prompt" # seeds a real Lark thread
  *   pnpm tsx scripts/run-engine-harness.ts --group --thread-root om_x "follow-up prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --group --group-mode inline "your prompt"
- *   pnpm tsx scripts/run-engine-harness.ts --full-debug        # detailed latest-agent-run.log
- *   pnpm tsx scripts/run-engine-harness.ts --oauth-e2e "read my latest Gmail"
+ *   pnpm tsx scripts/run-engine-harness.ts --backend-url http://127.0.0.1:8000 "your prompt"
+ *   pnpm tsx scripts/run-engine-harness.ts --no-delivery "your prompt" # print locally
  *
  * `--user` selects a DB-linked Lark identity by exact email, exact display
  * name, or open_id. It changes the authenticated principal, never exposes or
@@ -32,28 +33,28 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildContainer } from '../src/composition';
 import { loadAndValidateEnv } from '../src/config/env';
-import {
-  LARK_MODEL_IDS,
-  type LarkModelId,
-} from '../src/application/proxy/lark-inference.service';
+import { LarkPiRuntimeService } from '../src/application/runtime/lark-pi-runtime.service';
 import type { PrismaClient } from '../src/generated/prisma';
 import { asMessageId, asChatId, asCorrelationId, asCompanyId, asUserId, asDepartmentId } from '../src/shared/ids';
 import { asCompanyRoleSlug } from '../src/domain/permissions/company-role';
 import type { IncomingMessage } from '../src/domain/channel/incoming-message';
 import type { RunContext } from '../src/domain/orchestration/run-context';
 import type { ConversationHandle } from '../src/application/channels/channel.adapter';
-import { DataExportWorker } from '../src/application/data-export/data-export.worker';
+import { conversationKeyForMessage } from '../src/domain/conversation/conversation-key';
+import { runPiAndDeliver } from '../src/infrastructure/channels/lark/lark.webhook.routes';
 
-const DEFAULT_PROMPT = 'Reply with exactly: Divo Flash harness is working. Do not call any tools.';
+const PI_MODEL_ID = 'deepseek-v4-flash';
+const DEFAULT_PROMPT = 'Reply with exactly: Divo Pi harness is working. Do not call any tools.';
 const DEFAULT_USER_SELECTOR = 'abhishek@emiactech.com';
 const P2P_CHAT_ID      = 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50';
 const GROUP_CHAT_ID    = 'oc_b9169aab0765f46b2fe9147068e3c79f';
 const TRACE_PATH       = join(tmpdir(), 'divo-harness-latest.jsonl');
 
-export type HarnessModel = keyof typeof LARK_MODEL_IDS;
+export type HarnessModel = 'flash' | 'pro';
 
 export interface EngineHarnessOptions {
   readonly userSelector: string;
+  readonly backendUrl: string;
   readonly chatId: string;
   readonly chatType: 'p2p' | 'group';
   readonly groupReplyMode: 'threaded' | 'inline';
@@ -66,6 +67,7 @@ export interface EngineHarnessOptions {
   readonly freshContext: boolean;
   readonly allowImpersonation: boolean;
   readonly oauthE2e: boolean;
+  readonly deliverToLark: boolean;
   readonly help: boolean;
 }
 
@@ -74,6 +76,8 @@ export function parseEngineHarnessArgs(
   env: NodeJS.ProcessEnv = process.env,
 ): EngineHarnessOptions {
   let userSelector = DEFAULT_USER_SELECTOR;
+  let backendUrl = env.HARNESS_PI_BACKEND_URL?.trim()
+    || `http://127.0.0.1:${env.PORT?.trim() || '8000'}`;
   let explicitChatId: string | undefined;
   let chatType: 'p2p' | 'group' = 'p2p';
   let groupReplyMode: 'threaded' | 'inline' = 'threaded';
@@ -85,6 +89,7 @@ export function parseEngineHarnessArgs(
   let freshContext = false;
   let allowImpersonation = false;
   let oauthE2e = false;
+  let deliverToLark = true;
   let help = false;
   const promptParts: string[] = [];
 
@@ -118,6 +123,10 @@ export function parseEngineHarnessArgs(
       oauthE2e = true;
       continue;
     }
+    if (value === '--no-delivery') {
+      deliverToLark = false;
+      continue;
+    }
     if (value === '--group') {
       chatType = 'group';
       continue;
@@ -132,6 +141,7 @@ export function parseEngineHarnessArgs(
     }
     if (
       value === '--user'
+      || value === '--backend-url'
       || value === '--chat-id'
       || value === '--chat-type'
       || value === '--group-mode'
@@ -141,6 +151,7 @@ export function parseEngineHarnessArgs(
       const optionValue = args[++index]?.trim();
       if (!optionValue) throw new Error(`${value} requires a value`);
       if (value === '--user') userSelector = optionValue;
+      if (value === '--backend-url') backendUrl = optionValue;
       if (value === '--chat-id') explicitChatId = optionValue;
       if (value === '--thread-root') threadRootMessageId = optionValue;
       if (value === '--model') {
@@ -185,6 +196,12 @@ export function parseEngineHarnessArgs(
   if (oauthE2e && chatType !== 'p2p') {
     throw new Error('--oauth-e2e currently requires a p2p Lark chat');
   }
+  if (!deliverToLark && oauthE2e) {
+    throw new Error('--no-delivery cannot be combined with --oauth-e2e');
+  }
+  if (!deliverToLark && chatType !== 'p2p') {
+    throw new Error('--no-delivery currently supports p2p harness runs only');
+  }
   const resolvedChatId = explicitChatId
     ?? (chatType === 'group'
       ? GROUP_CHAT_ID
@@ -197,9 +214,18 @@ export function parseEngineHarnessArgs(
   if (!allowedChatIds.has(resolvedChatId)) {
     throw new Error(`Chat ${resolvedChatId} is not in HARNESS_LARK_ALLOWED_CHAT_IDS`);
   }
+  try {
+    const parsedBackendUrl = new URL(backendUrl);
+    if (parsedBackendUrl.protocol !== 'http:' && parsedBackendUrl.protocol !== 'https:') {
+      throw new Error('unsupported protocol');
+    }
+  } catch {
+    throw new Error('--backend-url must be an absolute HTTP(S) URL');
+  }
 
   return {
     userSelector,
+    backendUrl: backendUrl.replace(/\/+$/, ''),
     chatId: resolvedChatId,
     chatType,
     groupReplyMode,
@@ -212,8 +238,26 @@ export function parseEngineHarnessArgs(
     freshContext,
     allowImpersonation,
     oauthE2e,
+    deliverToLark,
     help,
   };
+}
+
+export function assertPiHarnessOptions(options: EngineHarnessOptions): void {
+  if (options.model !== 'flash') {
+    throw new Error(
+      `--model ${options.model} is not available in cloud Pi yet; use --model flash (${PI_MODEL_ID})`,
+    );
+  }
+  if (options.debugSigs) {
+    throw new Error('--debug-sigs applies only to the retired Gemini harness path');
+  }
+  if (options.fullDebug) {
+    throw new Error('--full-debug applies only to the retired AI SDK harness path');
+  }
+  if (options.oauthE2e) {
+    throw new Error('--oauth-e2e is not supported by the direct cloud Pi harness');
+  }
 }
 
 type HarnessIdentityStore = {
@@ -453,7 +497,7 @@ async function printPersistedTrace(input: {
   db: Pick<PrismaClient, 'executionRun'>;
   requestId: string;
   traceId: string;
-  requestedModelId: LarkModelId;
+  requestedModelId: string;
 }): Promise<void> {
   let run: HarnessTrace | null = null;
   for (let attempt = 0; attempt < 8; attempt++) {
@@ -542,47 +586,22 @@ async function printPersistedTrace(input: {
   console.log(`grep: rg -n 'model_call|tool_call|specialist|run_complete|run_failed' ${TRACE_PATH}`);
 }
 
-// Optional: install global hook so we can trace what hits Gemini.
-function installGeminiSignatureTrace() {
-  const realFetch = global.fetch;
-  global.fetch = (async (...fa: Parameters<typeof fetch>) => {
-    const url = String(fa[0]);
-    if (url.includes('generativelanguage.googleapis.com')) {
-      const init = fa[1] as RequestInit | undefined;
-      const body = init?.body ? String(init.body) : '';
-      try {
-        const parsed = JSON.parse(body);
-        const contents = parsed.contents ?? [];
-        console.log(`\n[FETCH→Gemini] ${url.split('?')[0]}  contents=${contents.length}`);
-        contents.forEach((c: any, i: number) => {
-          (c.parts ?? []).forEach((p: any, j: number) => {
-            const what = p.functionCall ? `fn(${p.functionCall.name})` : p.functionResponse ? `fnResp(${p.functionResponse.name})` : p.text != null ? `text(${String(p.text).slice(0,30)})` : Object.keys(p).join(',');
-            const sig  = p.thoughtSignature ? `SIG(${String(p.thoughtSignature).slice(0,8)}…,${String(p.thoughtSignature).length}b)` : 'NO-SIG';
-            console.log(`  ${c.role} content[${i}].part[${j}]: ${what}  ${sig}`);
-          });
-        });
-      } catch { /* not json or non-trivial body */ }
-    }
-    return realFetch(...fa);
-  }) as typeof fetch;
-}
-
 async function main() {
   const options = parseEngineHarnessArgs(process.argv.slice(2));
   if (options.help) {
-    console.log('Usage: pnpm tsx scripts/run-engine-harness.ts [--model flash|pro] [--fresh-context] [--oauth-e2e] [--allow-impersonation --user <email|name|open_id>] [--chat-id <allowed-id>] [--chat-type p2p|group] [--group] [--group-mode threaded|inline] [--thread-root <message-id>] [--no-trace] [--full-debug] [prompt]');
+    console.log('Usage: pnpm tsx scripts/run-engine-harness.ts [--model flash] [--backend-url <local-backend-url>] [--fresh-context] [--no-delivery] [--allow-impersonation --user <email|name|open_id>] [--chat-id <allowed-id>] [--chat-type p2p|group] [--group] [--group-mode threaded|inline] [--thread-root <message-id>] [--no-trace] [prompt]');
     return;
   }
-  if (options.debugSigs) installGeminiSignatureTrace();
-  if (options.fullDebug) process.env.DEBUG_AGENT_RUN = 'true';
-  const requestedModelId = LARK_MODEL_IDS[options.model];
+  assertPiHarnessOptions(options);
+  const requestedModelId = PI_MODEL_ID;
 
   console.log('\n=== run-engine-harness ===');
+  console.log('runtime: cloud Pi (legacy AI SDK disabled)');
   console.log(`mode:   ${options.chatType}`);
   if (options.chatType === 'group') console.log(`group reply mode: ${options.groupReplyMode}`);
-  console.log(`model:  ${options.model} (${requestedModelId})`);
+  console.log(`model:  ${requestedModelId}`);
   console.log(`user selector: ${options.userSelector}`);
-  console.log(`delivery chatId: ${options.chatId}`);
+  console.log(`delivery: ${options.deliverToLark ? `Lark chat ${options.chatId}` : 'local only'}`);
   console.log(`fresh context: ${options.freshContext}`);
   console.log(`oauth e2e: ${options.oauthE2e}`);
   console.log(`prompt: ${JSON.stringify(options.prompt)}`);
@@ -593,18 +612,17 @@ async function main() {
     ? { ...process.env, MEM0_ENABLED: 'false' }
     : process.env);
   const container = await buildContainer(env);
-  const { engine, larkAdapter, channelIdentityRepo, prisma, approvalGate } = container;
-  const dataExportWorker = new DataExportWorker({
-    redisUrl: container.queueRedisUrl,
-    sources: container.dataExportSources,
-    sink: container.googleWorkspaceExportSink,
-    identityRepo: container.channelIdentityRepo,
-    permissions: container.permissions,
-    resolveGoogleAuth: container.resolveGoogleExportAuth,
-    larkAdapter: container.larkAdapter,
+  const { larkAdapter, channelIdentityRepo, prisma } = container;
+  const piRuntime = new LarkPiRuntimeService({
+    prisma,
     logger: container.logger,
+    memberJwtSecret: env.MEMBER_JWT_SECRET,
+    backendUrl: options.backendUrl,
+    controllerUrl: env.PI_LARK_CONTROLLER_URL,
+    instanceId: env.PI_LARK_RUNTIME_INSTANCE_ID,
+    leaseTtlSeconds: env.PI_RUNTIME_LEASE_TTL_SECONDS,
+    runTimeoutMs: env.PI_LARK_RUN_TIMEOUT_MS,
   });
-  dataExportWorker.start();
 
   // ── 1. Resolve identity (mirrors webhook) ─────────────────────────────────
   const userOpenId = await resolveHarnessOpenId(prisma, options.userSelector);
@@ -616,26 +634,6 @@ async function main() {
   const identity = identityResult.value;
   console.log(`identity: ${identity.displayName ?? identity.email ?? userOpenId} (${userOpenId})`);
   console.log(`principal: companyId=${identity.companyId} userId=${identity.userId} role=${identity.aiRole} dept=${identity.activeDepartmentId ?? '∅'}\n`);
-
-  const oauthBinding = options.oauthE2e
-    ? await prisma.larkTenantBinding.findFirst({
-        where: { companyId: identity.companyId, isActive: true },
-        select: { larkTenantKey: true },
-      })
-    : null;
-  if (options.oauthE2e && !oauthBinding) {
-    throw new Error('No active Lark tenant binding exists for the OAuth E2E target.');
-  }
-  const oauthSeed = options.oauthE2e
-    ? await larkAdapter.sendToChatId(
-        options.chatId,
-        buildHarnessTextMessage(`🧪 Google OAuth E2E\n${options.prompt}`),
-      )
-    : null;
-  if (oauthSeed && !oauthSeed.ok) throw oauthSeed.error;
-  if (oauthSeed?.ok) {
-    console.log(`seeded OAuth E2E request message: ${oauthSeed.value}`);
-  }
 
   // ── 2. Build IncomingMessage + RunContext exactly like the webhook ────────
   let threadRootMessageId = options.threadRootMessageId;
@@ -656,9 +654,7 @@ async function main() {
   }
 
   const now = new Date();
-  const messageId = oauthSeed?.ok
-    ? oauthSeed.value
-    : seededThread
+  const messageId = seededThread
     ? threadRootMessageId!
     : `om_harness_${randomUUID()}`;
   const traceId   = asCorrelationId(`${messageId}-${now.getTime()}`);
@@ -700,19 +696,6 @@ async function main() {
     userExternalId: userOpenId,
     chatId:         options.chatId,
     ...(identity.activeDepartmentId ? { departmentId: asDepartmentId(identity.activeDepartmentId) } : {}),
-    ...(options.oauthE2e && oauthBinding
-      ? {
-          connectionAuthorization: {
-            larkOpenId: userOpenId,
-            larkTenantKey: oauthBinding.larkTenantKey,
-            chatId: options.chatId,
-            chatType: options.chatType,
-            originalMessageId: messageId,
-            replyInThread: false,
-            originalRequest: options.prompt,
-          },
-        }
-      : {}),
   };
 
   const conversation: ConversationHandle = {
@@ -723,7 +706,7 @@ async function main() {
       : {}),
     ...(options.chatType === 'group'
       ? { replyInThread: options.groupReplyMode === 'threaded' }
-      : {}),
+    : {}),
     correlationId:    traceId,
   };
 
@@ -767,38 +750,51 @@ async function main() {
     console.log('Stored harness message in group context.\n');
   }
 
-  // ── 4. Run the engine — this delivers a real card to Lark ─────────────────
-  console.log('engine.run starting…\n');
+  // ── 4. Run cloud Pi through the same lease/controller boundary as Lark ────
+  const runtimeThreadId = String(conversationKeyForMessage({
+    chatId: String(incoming.chatId),
+    chatType: incoming.chatType,
+    messageId: String(incoming.messageId),
+    ...(incoming.threadId ? { threadId: String(incoming.threadId) } : {}),
+    ...(incoming.rootMessageId ? { rootMessageId: String(incoming.rootMessageId) } : {}),
+    userExternalId: incoming.userExternalId,
+    ...(incoming.groupReplyMode ? { groupReplyMode: incoming.groupReplyMode } : {}),
+  }));
+  console.log(`Pi controller: ${env.PI_LARK_CONTROLLER_URL}`);
+  console.log(`Pi backend:    ${options.backendUrl}`);
+  console.log(`Pi thread:     ${runtimeThreadId}`);
+  console.log('piRuntime.run starting…\n');
   const start = Date.now();
-  const result = await engine.run({
-    incoming,
-    runContext,
-    conversation,
-    channelAdapter: larkAdapter,
-    approvalGate,
-    larkModelId: requestedModelId,
-  });
+  const resultText = options.deliverToLark
+    ? await runPiAndDeliver({
+        incoming,
+        runContext,
+        conversation,
+        deps: {
+          adapter: larkAdapter,
+          piRuntime,
+        },
+        log: container.logger,
+        rethrowRuntimeFailureAfterDelivery: true,
+      })
+    : (await piRuntime.run({
+        incoming,
+        runContext,
+        conversation,
+        threadId: runtimeThreadId,
+      })).text;
+  if (!resultText) throw new Error('Cloud Pi completed without a delivered response');
   const elapsedMs = Date.now() - start;
 
-  console.log(`\n=== engine.run done in ${elapsedMs}ms ===`);
-  if (!result.ok) {
-    console.error('FAILED:', result.error.message);
-    console.error(result.error);
-    if (options.trace) {
-      await printPersistedTrace({
-        db: prisma,
-        requestId: messageId,
-        traceId: String(traceId),
-        requestedModelId,
-      });
-    }
-    await dataExportWorker.stop();
-    await prisma.$disconnect();
-    process.exit(1);
+  console.log(`\n=== piRuntime.run done in ${elapsedMs}ms ===`);
+  console.log(`reply length: ${resultText.length}`);
+  console.log(`reply text  : ${resultText.slice(0, 200)}${resultText.length > 200 ? '…' : ''}`);
+
+  if (options.deliverToLark) {
+    console.log('delivered to Lark through the production status/final card flow');
+  } else {
+    console.log('delivery skipped (--no-delivery)');
   }
-  console.log(`tools called: [${result.value.toolsCalled.join(', ')}]`);
-  console.log(`reply length: ${result.value.finalReply.text.length}`);
-  console.log(`reply text  : ${result.value.finalReply.text.slice(0, 200)}${result.value.finalReply.text.length > 200 ? '…' : ''}`);
 
   if (options.trace) {
     await printPersistedTrace({
@@ -808,30 +804,24 @@ async function main() {
       requestedModelId,
     });
   }
-  if (options.oauthE2e) {
-    console.log('\nComplete the Connect Google card in Lark; this harness is now monitoring durable backend state.');
-    const continuation = await waitForGoogleOAuthContinuation(prisma, {
+
+  if (options.chatType === 'group' && container.chatContextService) {
+    await container.chatContextService.appendMessage({
       companyId: identity.companyId,
-      userId: identity.userId,
-      originalMessageId: messageId,
+      chatId: contextChatId,
+      chatType: 'group',
+      messageId: String(options.deliverToLark
+        ? `om_harness_reply_${traceId}`
+        : `om_harness_local_${traceId}`),
+      senderOpenId: 'divo',
+      senderName: 'Divo',
+      role: 'assistant',
+      content: resultText,
+      createdAt: new Date().toISOString(),
+      botMentioned: false,
     });
-    console.log(
-      `fresh continuation completed: intent=${continuation.intentId} requestId=${continuation.continuationRunId}`,
-    );
-    if (options.trace) {
-      await printPersistedTrace({
-        db: prisma,
-        requestId: continuation.continuationRunId,
-        traceId: continuation.continuationRunId,
-        requestedModelId: LARK_MODEL_IDS.flash,
-      });
-    }
   }
-  if (options.fullDebug) {
-    console.log(`full debug log: ${join(process.cwd(), 'latest-agent-run.log')}`);
-  }
-  await waitForDataExports(container.dataExportQueue.getQueue());
-  await dataExportWorker.stop();
+
   await prisma.$disconnect();
   process.exit(0);
 }

@@ -4,7 +4,7 @@ import {
   MEMORY_PUBLISHING_REGISTERED_TOOL,
   provisionShareMemoryForExistingCompanies,
 } from '../../src/application/skills/share-memory-provisioning.ts';
-import { LarkMemoryReviewService } from '../../src/application/knowledge-share/share-resolver.service.ts';
+import { LarkMemoryReviewService } from '../../src/application/memory/lark-memory-review.service.ts';
 import { buildArgsSummary } from '../../src/application/orchestration/tools/ai-sdk-adapter.ts';
 import { asCompanyId, asUserId } from '../../src/shared/ids.ts';
 import { asCompanyRoleSlug } from '../../src/domain/permissions/company-role.ts';

@@ -57,7 +57,6 @@ import type { RunStatusAggregator } from '../run-status.aggregator';
 import { runLarkAgent } from '../agent-runners/lark.runner';
 import { runGoogleAgent } from '../agent-runners/google.runner';
 import { runZohoAgent } from '../agent-runners/zoho.runner';
-import { runContextAgent } from '../agent-runners/context.runner';
 import { createManageTodosTool } from '../tools/orchestration/manage-todos.tool';
 import { createScheduleTaskTool } from '../tools/orchestration/schedule-task.tool';
 import { createListScheduledTasksTool } from '../tools/orchestration/list-scheduled-tasks.tool';
@@ -69,7 +68,6 @@ import { buildDynamicSupervisorGraph, type DynamicSupervisorGraph } from '../gra
 import type { Mem0Service } from '../../memory/mem0.service';
 import { buildToolFinishedPayload, isErrorOutput } from '../agent-runners/tool-trace';
 import { debugSupervisorEntry, debugGraphInvoke, debugGraphOutput } from '../../../shared/debug-run-log';
-import type { GroupContextContentPart } from '../../../domain/conversation/group-context';
 import {
   formatGroupContextReference,
   GROUP_CONTEXT_TRUST_POLICY,
@@ -86,7 +84,7 @@ import { createResolveGovernedWorkTool } from '../tools/orchestration/resolve-go
 import type { AuditService } from '../../observability/audit.service';
 import { SCHEDULE_DIVO_WORK_SKILL_SLUG } from '../../skills/scheduled-work-system-skill';
 import { SHARE_MEMORY_SKILL_SLUG } from '../../skills/share-memory-system-skill';
-import type { LarkMemoryReviewToolFactory } from '../../knowledge-share/share-resolver.service';
+import type { LarkMemoryReviewToolFactory } from '../../memory/lark-memory-review.service';
 import { FinalAnswerAccumulator } from './final-answer';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -145,7 +143,6 @@ export interface SupervisorInput {
   memoryContext?: string;
   conversationSummary?: string;
   groupContext?:  string;
-  groupContextParts?: readonly GroupContextContentPart[];
   groupContextSystemHeader?: string;
   /** P2P inline image URLs for multimodal embedding (Cloudinary or base64). */
   inlineImageUrls?: readonly string[];
@@ -172,7 +169,6 @@ interface DynamicGraphRunInput {
   readonly memoryContext?: string;
   readonly conversationSummary?: string;
   readonly groupContext?: string;
-  readonly groupContextParts?: readonly GroupContextContentPart[];
   readonly groupContextSystemHeader?: string;
   readonly inlineImageUrls?: readonly string[];
   readonly mem0?: Mem0Service;
@@ -242,7 +238,7 @@ export class SupervisorAgent {
     const {
       userMessage, history, channelType, channelId,
       perm, runContext, statusChannel, aggregator, permittedTools, tracer,
-      approvalGate, memoryContext, conversationSummary, groupContext, groupContextParts, groupContextSystemHeader, inlineImageUrls, chatId,
+      approvalGate, memoryContext, conversationSummary, groupContext, groupContextSystemHeader, inlineImageUrls, chatId,
     } = input;
     const { agentResolver, todoRepo, prisma, logger, clock } = this.deps;
     const model = input.model ?? this.deps.model;
@@ -279,7 +275,6 @@ export class SupervisorAgent {
         ...(approvalGate ? { approvalGate } : {}),
         ...(memoryContext ? { memoryContext } : {}),
         ...(groupContext ? { groupContext } : {}),
-        ...(groupContextParts ? { groupContextParts } : {}),
         ...(groupContextSystemHeader ? { groupContextSystemHeader } : {}),
         ...(inlineImageUrls?.length ? { inlineImageUrls } : {}),
         ...(this.deps.mem0 ? { mem0: this.deps.mem0 } : {}),
@@ -470,16 +465,6 @@ export class SupervisorAgent {
           const { task } = input as { task: string };
           log.info('supervisor.dispatch.zoho', { task: task.slice(0, 100) });
           return runZohoAgent({ task }, agentCtx);
-        },
-      }),
-
-      contextAgent: dynamicTool({
-        description: 'Search internal knowledge (past conversations, files, Lark contacts) or live web facts.',
-        inputSchema: taskSchema as never,
-        execute: async (input: unknown): Promise<string> => {
-          const { task } = input as { task: string };
-          log.info('supervisor.dispatch.context', { task: task.slice(0, 100) });
-          return runContextAgent({ task }, agentCtx);
         },
       }),
     } as unknown as ToolSet;
@@ -1082,7 +1067,6 @@ export class SupervisorAgent {
       memoryContext,
       ...(input.conversationSummary ? { conversationSummary: input.conversationSummary } : {}),
       ...(input.groupContext ? { groupContext: input.groupContext } : {}),
-      ...(input.groupContextParts?.length ? { groupContextParts: input.groupContextParts } : {}),
       ...(input.inlineImageUrls?.length ? { inlineImageUrls: input.inlineImageUrls } : {}),
       ...(input.approvalGate ? { approvalGate: input.approvalGate } : {}),
     } as any);

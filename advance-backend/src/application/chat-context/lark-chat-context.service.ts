@@ -19,7 +19,6 @@ function estimateTokens(text: string): number {
 
 function attachmentKey(att: GroupChatAttachmentContext): string {
   return att.larkFileKey
-    ?? att.fileAssetId
     ?? `${att.kind}:${att.fileName}:${att.mimeType}`;
 }
 
@@ -39,12 +38,6 @@ function mergeAttachmentContext(
     ...(existing.larkMessageId || incoming.larkMessageId
       ? { larkMessageId: incoming.larkMessageId ?? existing.larkMessageId }
       : {}),
-    ...(existing.fileAssetId || incoming.fileAssetId
-      ? { fileAssetId: incoming.fileAssetId ?? existing.fileAssetId }
-      : {}),
-    ...(existing.cloudinaryUrl || incoming.cloudinaryUrl
-      ? { cloudinaryUrl: incoming.cloudinaryUrl ?? existing.cloudinaryUrl }
-      : {}),
     ...(existing.ingestionStatus || incoming.ingestionStatus
       ? { ingestionStatus: incoming.ingestionStatus ?? existing.ingestionStatus }
       : {}),
@@ -53,18 +46,6 @@ function mergeAttachmentContext(
       : {}),
     ...(existing.isInlineComplete !== undefined || incoming.isInlineComplete !== undefined
       ? { isInlineComplete: incoming.isInlineComplete ?? existing.isInlineComplete }
-      : {}),
-    ...(existing.rawTextPreview || incoming.rawTextPreview
-      ? { rawTextPreview: incoming.rawTextPreview ?? existing.rawTextPreview }
-      : {}),
-    ...(existing.retrievalHint || incoming.retrievalHint
-      ? { retrievalHint: incoming.retrievalHint ?? existing.retrievalHint }
-      : {}),
-    ...(existing.indexedChunkCount !== undefined || incoming.indexedChunkCount !== undefined
-      ? { indexedChunkCount: incoming.indexedChunkCount ?? existing.indexedChunkCount }
-      : {}),
-    ...(existing.documentClass || incoming.documentClass
-      ? { documentClass: incoming.documentClass ?? existing.documentClass }
       : {}),
     ...(existing.error || incoming.error
       ? { error: incoming.error ?? existing.error }
@@ -112,9 +93,7 @@ function estimateMessageTokens(msg: GroupChatMessage): number {
     att.fileName,
     att.mimeType,
     att.ingestionStatus,
-    att.fileAssetId,
     att.inlineContext,
-    att.retrievalHint,
   ].filter(Boolean).join('\n')).join('\n');
 
   return estimateTokens([msg.content, attachmentText].filter(Boolean).join('\n'));
@@ -149,9 +128,6 @@ function extractUrlsAndFiles(
   const fileLikes = content.match(/\b[\w.-]+\.(?:pdf|docx?|xlsx?|csv|pptx?|txt|png|jpe?g)\b/gi) ?? [];
   const structured = (attachments ?? []).flatMap(att => [
     att.fileName,
-    ...(att.fileAssetId ? [`fileAssetId:${att.fileAssetId}`] : []),
-    ...(att.cloudinaryUrl ? [att.cloudinaryUrl] : []),
-    ...(att.retrievalHint ? [att.retrievalHint] : []),
   ]);
   return [...urls, ...fileLikes, ...(attachedFiles ?? []), ...structured].map(item => item.slice(0, 220));
 }
@@ -318,9 +294,7 @@ function summarizeMessageForMemory(msg: GroupChatMessage): string {
   const attachmentNotes = (msg.attachments ?? []).map(att => {
     const parts = [`${att.kind}: ${att.fileName}`];
     if (att.ingestionStatus) parts.push(`status=${att.ingestionStatus}`);
-    if (att.fileAssetId) parts.push(`fileAssetId=${att.fileAssetId}`);
-    if (att.inlineContext) parts.push(`inlineContext=${att.inlineContext.slice(0, 900)}`);
-    if (att.retrievalHint) parts.push(`retrievalHint=${att.retrievalHint}`);
+    if (att.inlineContext) parts.push(`note=${att.inlineContext.slice(0, 900)}`);
     return parts.join(' | ');
   });
 

@@ -54,11 +54,13 @@ const EnvSchema = z.object({
   MODEL_PROVIDER: z.enum(['google', 'openai', 'deepseek']).default('google'),
   MODEL_ID:       z.string().default('gemini-3.1-flash-lite'),
 
-  /** Image OCR + caption during file ingestion (defaults to GA flash-lite). */
-  IMAGE_OCR_PROVIDER: z.enum(['gemini', 'openrouter']).default('gemini'),
-  GEMINI_VISION_MODEL: z.string().default('gemini-3.1-flash-lite'),
+  /**
+   * The single vision model. Screenshots, scans and Manager Teach frames all
+   * use it, so a change here changes every place Divo reads an image — which
+   * is the point: there is no second, quieter, weaker path to drift into.
+   */
+  VISION_OCR_MODEL: z.string().default('qwen/qwen3-vl-32b-instruct'),
   OPENROUTER_API_KEY: z.string().optional(),
-  OPENROUTER_VISION_MODEL: z.string().default('meta-llama/llama-4-scout'),
   OPENROUTER_PROVIDER_ORDER: z.string().default('Groq'),
 
   // ── OpenAI ────────────────────────────────────────────────────────────────
@@ -151,7 +153,6 @@ const EnvSchema = z.object({
   // With it off, Divo answers from the inline excerpt alone and says so when
   // the excerpt does not cover the whole file, rather than promising a
   // retrieval that will never be possible.
-  LARK_DOCUMENT_INDEXING: z.enum(['on', 'off']).default('off'),
 
   // ── Qdrant vector store ───────────────────────────────────────────────────
   QDRANT_URL:                  z.string().default('http://127.0.0.1:6333'),
@@ -272,7 +273,6 @@ const EnvSchema = z.object({
   MANAGER_TEACH_SCENE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.12),
   MANAGER_TEACH_MEDIA_TIMEOUT_SECONDS: positiveInt(1_800),
   MANAGER_TEACH_OCR_CONCURRENCY: positiveInt(2),
-  MANAGER_TEACH_OCR_MODEL: z.string().default('qwen/qwen3-vl-32b-instruct'),
   MANAGER_TEACH_TRANSCRIPTION_MODEL: z.string().default('gpt-4o-mini-transcribe'),
   MANAGER_TEACH_TRANSCRIPTION_CHUNK_SECONDS: positiveInt(300),
   MANAGER_TEACH_PERSONA_MODEL: z.string().default('deepseek-v4-pro'),

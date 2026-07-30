@@ -8,19 +8,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum VectorVisibility {
-  personal
-  shared
-  public
-}
-
-enum IngestionStatus {
-  pending
-  processing
-  done
-  failed
-}
-
 enum ScheduledWorkflowStatus {
   draft
   published
@@ -279,8 +266,6 @@ model Company {
   booksModulePermissions          BooksModulePermission[]
   zohoRoleAccessPolicies          ZohoRoleAccessPolicy[]
   aiRoleDefinitions               AiRoleDefinition[]
-  vectorDocuments                 VectorDocument[]
-  vectorShareRequests             VectorShareRequest[]
   memberSessions                  MemberSession[]
   desktopHandoffs                 DesktopAuthHandoff[]
   desktopWorkspaces               DesktopWorkspace[]
@@ -295,7 +280,6 @@ model Company {
   capabilityGovernance            CompanyCapabilityGovernance[]
   serperConnections               CompanySerperConnection[]
   omsConnections                  CompanyOmsConnection[]
-  fileAssets                      FileAsset[]
   outboundArtifacts               OutboundArtifact[]
   userMemoryItems                 UserMemoryItem[]
   userMemoryProfiles              UserMemoryProfile[]
@@ -536,7 +520,6 @@ model ZohoConnection {
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
   syncJobs              ZohoSyncJob[]
-  vectorDocs            VectorDocument[]
 
   @@unique([companyId, environment])
 }
@@ -750,63 +733,6 @@ model ZohoSyncJobEvent {
   @@index([jobId, createdAt])
 }
 
-model VectorDocument {
-  id                     String           @id @default(uuid())
-  companyId              String
-  company                Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  connectionId           String?
-  connection             ZohoConnection?  @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-  fileAssetId            String?
-  fileAsset              FileAsset?       @relation(fields: [fileAssetId], references: [id], onDelete: Cascade)
-  sourceType             String
-  sourceId               String
-  chunkIndex             Int
-  documentKey            String?
-  contentHash            String
-  visibility             VectorVisibility @default(shared)
-  ownerUserId            String?
-  conversationKey        String?
-  chunkText              String?
-  payload                Json
-  embedding              Float[]          @default([])
-  embeddingSchemaVersion String?
-  retrievalProfile       String?
-  sourceUpdatedAt        DateTime?
-  createdAt              DateTime         @default(now())
-  updatedAt              DateTime         @updatedAt
-
-  @@unique([companyId, sourceType, sourceId, chunkIndex])
-  @@index([companyId, sourceType])
-  @@index([companyId, visibility, ownerUserId])
-  @@index([companyId, conversationKey])
-  @@index([fileAssetId])
-  @@index([documentKey])
-}
-
-model FileAsset {
-  id                     String             @id @default(uuid())
-  companyId              String
-  company                Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  uploaderUserId         String
-  uploaderChannel        String // "lark" | "desktop"
-  fileName               String
-  mimeType               String
-  sizeBytes              Int
-  cloudinaryPublicId     String
-  cloudinaryUrl          String
-  cloudinaryResourceType String             @default("raw")
-  ingestionStatus        IngestionStatus    @default(pending)
-  ingestionError         String?
-  createdAt              DateTime           @default(now())
-  updatedAt              DateTime           @updatedAt
-  accessPolicies         FileAccessPolicy[]
-  vectorDocs             VectorDocument[]
-  outboundArtifacts      OutboundArtifact[]
-
-  @@index([companyId, uploaderUserId])
-  @@index([companyId, ingestionStatus])
-}
-
 model OutboundArtifact {
   id               String     @id @default(uuid())
   companyId        String
@@ -817,8 +743,6 @@ model OutboundArtifact {
   sourceRecordType String?
   sourceRecordId   String?
   sourceMetadata   Json?
-  fileAssetId      String?
-  fileAsset        FileAsset? @relation(fields: [fileAssetId], references: [id], onDelete: SetNull)
   fileName         String
   mimeType         String
   sizeBytes        Int
@@ -830,42 +754,6 @@ model OutboundArtifact {
   @@index([companyId, createdAt])
   @@index([companyId, sourceSystem, sourceKind])
   @@index([companyId, sourceRecordType, sourceRecordId])
-  @@index([fileAssetId])
-}
-
-model FileAccessPolicy {
-  id          String    @id @default(uuid())
-  fileAssetId String
-  fileAsset   FileAsset @relation(fields: [fileAssetId], references: [id], onDelete: Cascade)
-  companyId   String
-  aiRole      String
-  canRead     Boolean   @default(true)
-  grantedBy   String
-  createdAt   DateTime  @default(now())
-
-  @@unique([fileAssetId, aiRole])
-  @@index([companyId, aiRole])
-}
-
-model VectorShareRequest {
-  id                         String    @id @default(uuid())
-  companyId                  String
-  company                    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  requesterUserId            String
-  requesterChannelIdentityId String?
-  conversationKey            String
-  status                     String
-  reason                     String?
-  decisionNote               String?
-  reviewedBy                 String?
-  reviewedAt                 DateTime?
-  expiresAt                  DateTime?
-  promotedVectorCount        Int       @default(0)
-  createdAt                  DateTime  @default(now())
-  updatedAt                  DateTime  @updatedAt
-
-  @@index([companyId, status, createdAt])
-  @@index([companyId, requesterUserId, conversationKey])
 }
 
 /// One outbound delivery attempt-set for a single piece of a run's answer.

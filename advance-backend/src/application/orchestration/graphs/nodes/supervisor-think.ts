@@ -104,9 +104,6 @@ export async function supervisorThink(
       : undefined;
 
     // ── Build messages ────────────────────────────────────────────────────
-    const hasMultimodalContext = state.groupContextParts.length > 0
-      && state.groupContextParts.some(p => p.type === 'image');
-
     const hasInlineImages = state.inlineImageUrls.length > 0;
 
     const messages: ModelMessage[] = state.conversationHistory.map(m => ({
@@ -114,17 +111,8 @@ export async function supervisorThink(
       content: m.content,
     }));
 
-    if (hasMultimodalContext) {
-      const contentParts: UserContent = state.groupContextParts.map(p =>
-        p.type === 'text'
-          ? { type: 'text' as const, text: p.text }
-          : { type: 'image' as const, image: new URL(p.url) },
-      );
-      messages.push({ role: 'user' as const, content: contentParts });
-    }
-
     // P2P inline images — embed directly in the user message so the LLM sees them natively
-    if (hasInlineImages && !hasMultimodalContext) {
+    if (hasInlineImages) {
       const imageParts: UserContent = [
         { type: 'text' as const, text: state.userMessage },
         ...state.inlineImageUrls.map(url => ({
@@ -192,9 +180,7 @@ export async function supervisorThink(
       `Current date/time: ${getISTDateTime(deps.clock.now())}`,
       rootAgent.systemPrompt,
     ].join('\n\n');
-    if (hasMultimodalContext) {
-      systemPrompt += '\n\nGROUP CHAT CONTEXT is provided in the preceding user message with interleaved images. Resolve "this image/file" to the nearest preceding attachment in that transcript.';
-    } else if (state.groupContext) {
+    if (state.groupContext) {
       systemPrompt += `\n\n${state.groupContext}`;
     }
     if (state.conversationSummary) {

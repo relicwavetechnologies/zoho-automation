@@ -8,7 +8,7 @@ import type {
   ManagerTeachTranscript,
   ManagerTeachTranscriber,
 } from './manager-teach-media.types';
-import type { ImageOcrResult } from '../ingestion/text-extraction/image-ocr.extractor';
+import type { VisionOcrResult as ImageOcrResult } from '../../infrastructure/ai/vision/openrouter-vision';
 
 export interface ManagerTeachMediaProcessorDeps {
   readonly extractor: ManagerTeachMediaExtractor;

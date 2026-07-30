@@ -1,21 +1,16 @@
 /**
- * Unit tests for SkillRepository and SkillsService.
+ * Unit tests for SkillRepository.
  *
  * SkillRepository: wraps Prisma, returns Result<T, InfraError>
  *   - search(): filters by companyId + status + dept scope + text query
  *   - findById(): lookup by id or slug, returns null when not found
  *   - both wrap DB errors in InfraError (never throws)
- *
- * SkillsService: adapts SkillRepoPort → SkillPort
- *   - maps SkillRow to SkillRecord (only surfaces public fields)
- *   - swallows repo errors and returns safe empty / null
  */
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { SkillRepository, searchTerms } from '../../src/infrastructure/persistence/skill.repository.ts';
-import { SkillsService }   from '../../src/application/context-search/skills.service.ts';
 import type { SkillRepoPort, SkillRow } from '../../src/infrastructure/persistence/skill.repository.ts';
 import { ok, err } from '../../src/shared/result.ts';
 import type { InfraError } from '../../src/shared/errors.ts';
@@ -227,118 +222,6 @@ describe('SkillRepository', () => {
           { scope: 'department', departmentId: 'dept-1' },
         ],
       });
-    });
-  });
-});
-
-// ─── SkillsService ────────────────────────────────────────────────────────────
-
-describe('SkillsService', () => {
-  const row = fakeRow();
-
-  describe('search()', () => {
-    it('maps SkillRow[] to SkillRecord[]', async () => {
-      const repo: SkillRepoPort = {
-        list:     async () => ok([]),
-        search:   async () => ok([row]),
-        findById: async () => ok(null),
-        listRouteTargets: async () => ok([]),
-        registryRevision: async () => ok(1),
-      };
-      const svc = new SkillsService({ repo, logger: noopLogger });
-      const results = await svc.search({ companyId: 'co-1', query: 'pto', limit: 5 });
-      assert.equal(results.length, 1);
-      assert.equal(results[0]!.id, 'skill-1');
-      assert.equal(results[0]!.slug, 'pto-policy');
-      assert.equal(results[0]!.name, 'PTO Policy');
-      assert.equal(results[0]!.summary, 'How PTO works');
-    });
-
-    it('excludes internal fields (status, tags, scope, companyId)', async () => {
-      const repo: SkillRepoPort = {
-        list:     async () => ok([]),
-        search:   async () => ok([row]),
-        findById: async () => ok(null),
-        listRouteTargets: async () => ok([]),
-        registryRevision: async () => ok(1),
-      };
-      const svc = new SkillsService({ repo, logger: noopLogger });
-      const results = await svc.search({ companyId: 'co-1', query: 'pto', limit: 5 });
-      const r = results[0] as any;
-      assert.equal('status' in r, false);
-      assert.equal('tags' in r, false);
-      assert.equal('companyId' in r, false);
-    });
-
-    it('returns empty array when repo returns empty', async () => {
-      const repo: SkillRepoPort = {
-        list:     async () => ok([]),
-        search:   async () => ok([]),
-        findById: async () => ok(null),
-        listRouteTargets: async () => ok([]),
-        registryRevision: async () => ok(1),
-      };
-      const svc = new SkillsService({ repo, logger: noopLogger });
-      const results = await svc.search({ companyId: 'co-1', query: 'nothing', limit: 5 });
-      assert.equal(results.length, 0);
-    });
-
-    it('returns empty array when repo returns InfraError', async () => {
-      const infraErr: InfraError = { kind: 'infra', layer: 'prisma', op: 'skill.search', message: 'db down', cause: null };
-      const repo: SkillRepoPort = {
-        list:     async () => ok([]),
-        search:   async () => err(infraErr),
-        findById: async () => ok(null),
-        listRouteTargets: async () => ok([]),
-        registryRevision: async () => ok(1),
-      };
-      const svc = new SkillsService({ repo, logger: noopLogger });
-      const results = await svc.search({ companyId: 'co-1', query: 'pto', limit: 5 });
-      assert.equal(results.length, 0);
-    });
-  });
-
-  describe('readById()', () => {
-    it('maps SkillRow to SkillRecord', async () => {
-      const repo: SkillRepoPort = {
-        list:     async () => ok([]),
-        search:   async () => ok([]),
-        findById: async () => ok(row),
-        listRouteTargets: async () => ok([]),
-        registryRevision: async () => ok(1),
-      };
-      const svc = new SkillsService({ repo, logger: noopLogger });
-      const result = await svc.readById({ companyId: 'co-1', skillId: 'skill-1' });
-      assert.ok(result !== null);
-      assert.equal(result!.id, 'skill-1');
-      assert.equal(result!.markdown, '# PTO Policy\n\nYou get 20 days.');
-    });
-
-    it('returns null when repo returns null', async () => {
-      const repo: SkillRepoPort = {
-        list:     async () => ok([]),
-        search:   async () => ok([]),
-        findById: async () => ok(null),
-        listRouteTargets: async () => ok([]),
-        registryRevision: async () => ok(1),
-      };
-      const svc = new SkillsService({ repo, logger: noopLogger });
-      const result = await svc.readById({ companyId: 'co-1', skillId: 'missing' });
-      assert.equal(result, null);
-    });
-
-    it('returns null when repo returns InfraError', async () => {
-      const infraErr: InfraError = { kind: 'infra', layer: 'prisma', op: 'skill.findById', message: 'db down', cause: null };
-      const repo: SkillRepoPort = {
-        list:     async () => ok([]),
-        search:   async () => ok([]),
-        findById: async () => err(infraErr),
-        listRouteTargets: async () => ok([]),
-        registryRevision: async () => ok(1),
-      };
-      const svc = new SkillsService({ repo, logger: noopLogger });
-      const result = await svc.readById({ companyId: 'co-1', skillId: 'x' });
-      assert.equal(result, null);
     });
   });
 });

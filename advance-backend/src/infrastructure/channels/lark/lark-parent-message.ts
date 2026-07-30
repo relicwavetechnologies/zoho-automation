@@ -110,7 +110,7 @@ export async function fetchParentMessage(input: {
       // will speculate from.
       const fileName = (content['file_name'] as string) ?? 'attachment';
       text = isSupportedLarkMedia({ type: 'file', fileName })
-        ? quotedDocumentNotice(fileName, env.LARK_DOCUMENT_INDEXING === 'on')
+        ? quotedDocumentNotice(fileName)
         : unsupportedDocumentNotice(fileName);
     } else if (msgType === 'media') {
       text = '[Media/Video]';

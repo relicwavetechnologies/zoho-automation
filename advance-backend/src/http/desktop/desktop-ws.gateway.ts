@@ -6,7 +6,7 @@ import { Prisma, type PrismaClient } from '../../generated/prisma';
 import type { OrchestrationEngine } from '../../application/orchestration/engine/core';
 import type { ChatMessageSerializer } from '../../application/orchestration/chat-message-serializer';
 import type { ApprovalGateService } from '../../application/approval/approval-gate.service';
-import { DesktopChannelAdapter, type DesktopAttachedFile, type DesktopChatStartPayload } from '../../infrastructure/channels/desktop/desktop.adapter';
+import { DesktopChannelAdapter, type DesktopChatStartPayload } from '../../infrastructure/channels/desktop/desktop.adapter';
 import type { ConversationHandle } from '../../application/channels/channel.adapter';
 import { asChatId, asCompanyId, asCorrelationId, asDepartmentId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
@@ -64,21 +64,6 @@ function readString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
-function readAttachedFiles(value: unknown): readonly DesktopAttachedFile[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const files: DesktopAttachedFile[] = [];
-  for (const item of value) {
-    if (!isRecord(item)) continue;
-    const fileAssetId = readString(item['fileAssetId']);
-    const cloudinaryUrl = readString(item['cloudinaryUrl']);
-    const mimeType = readString(item['mimeType']);
-    const fileName = readString(item['fileName']);
-    if (!fileAssetId || !cloudinaryUrl || !mimeType || !fileName) continue;
-    files.push({ fileAssetId, cloudinaryUrl, mimeType, fileName });
-  }
-  return files.length > 0 ? files : undefined;
-}
-
 function readWorkspace(value: unknown): { readonly name: string; readonly path: string } | null {
   if (value === null || value === undefined) return null;
   if (!isRecord(value)) return null;
@@ -108,14 +93,12 @@ function parseChatStartMessage(msg: Record<string, unknown>): DesktopChatStartPa
   if (!requestId || !threadId || message === undefined) return null;
   const modeValue = readString(msg['mode']);
   const mode = modeValue === 'fast' || modeValue === 'high' ? modeValue : undefined;
-  const attachedFiles = readAttachedFiles(msg['attachedFiles']);
   const workflowInvocation = readWorkflowInvocation(msg['workflowInvocation']);
   return {
     type: 'chat.start',
     requestId,
     threadId,
     message,
-    ...(attachedFiles ? { attachedFiles } : {}),
     ...(mode ? { mode } : {}),
     workspace: readWorkspace(msg['workspace']),
     ...(workflowInvocation ? { workflowInvocation } : {}),
@@ -354,14 +337,12 @@ export async function processDesktopChatStart(input: {
     });
 
     const now = new Date();
-    const userContent = message.message.trim() || buildAttachmentOnlyUserText(message.attachedFiles ?? []);
-    const userMetadata = buildUserMessageMetadata(message.attachedFiles ?? []);
+    const userContent = message.message.trim();
     await deps.prisma.desktopMessage.create({
       data: {
         threadId: thread.id,
         role: 'user',
         content: userContent,
-        ...(userMetadata ? { metadata: userMetadata } : {}),
       },
     });
 
@@ -553,23 +534,6 @@ function normalizeWorkspacePath(path: string | undefined): string | null {
 
 function workspaceNameFromPath(path: string): string {
   return path.split('/').filter(Boolean).pop() ?? path;
-}
-
-function buildUserMessageMetadata(files: readonly DesktopAttachedFile[]): Prisma.InputJsonObject | undefined {
-  if (files.length === 0) return undefined;
-  return {
-    attachedFiles: files.map(file => ({
-      fileAssetId: file.fileAssetId,
-      cloudinaryUrl: file.cloudinaryUrl,
-      mimeType: file.mimeType,
-      fileName: file.fileName,
-    })),
-  };
-}
-
-function buildAttachmentOnlyUserText(files: readonly DesktopAttachedFile[]): string {
-  if (files.length === 0) return '';
-  return `Attached ${files.length === 1 ? 'file' : 'files'}: ${files.map(file => file.fileName).join(', ')}`;
 }
 
 function shouldSetInitialTitle(title: string | null, userContent: string): boolean {

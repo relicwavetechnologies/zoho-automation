@@ -47,9 +47,7 @@ import { LarkDocClient } from './infrastructure/channels/lark/clients/lark-doc.c
 import { LarkBaseClient } from './infrastructure/channels/lark/clients/lark-base.client';
 import { LarkApprovalClient } from './infrastructure/channels/lark/clients/lark-approval.client';
 import { createEmbeddingService } from './infrastructure/ai/embedding/embedding.service';
-import { QdrantAdapter } from './infrastructure/ai/vector/qdrant.adapter';
 import { SerperClient } from './infrastructure/ai/search/serper.client';
-import { ContextSearchBroker } from './application/context-search/context-search.broker';
 import { LarkOAuthService } from './infrastructure/lark/lark-oauth.service';
 import { GoogleOAuthService } from './infrastructure/google/google-oauth.service';
 import { GoogleWorkspaceMcpClient } from './infrastructure/google/google-workspace-mcp.client';
@@ -94,7 +92,6 @@ import { ZohoTokenService } from './infrastructure/zoho/zoho-token.service';
 import { ZohoCrmClient } from './infrastructure/zoho/zoho-crm.client';
 import { ZohoBooksClient } from './infrastructure/zoho/zoho-books.client';
 import { ZohoBooksPaginatedClient } from './infrastructure/zoho/zoho-books-paginated.client';
-import { ZohoBooksSearchAdapter } from './infrastructure/zoho/zoho-books-search.adapter';
 import { ZohoCrmPaginatedClient } from './infrastructure/zoho/zoho-crm-paginated.client';
 import { CloudinaryAdapter } from './infrastructure/cloudinary/cloudinary.adapter';
 import { ZohoFinanceOps } from './application/zoho/zoho-finance-ops';
@@ -111,7 +108,6 @@ import { LlmProxyService } from './application/proxy/llm-proxy.service';
 import { LarkInferenceService } from './application/proxy/lark-inference.service';
 import { SkillRepository } from './infrastructure/persistence/skill.repository';
 import { SkillAccessRepository } from './infrastructure/persistence/skill-access.repository';
-import { SkillsService } from './application/context-search/skills.service';
 import { SkillCatalogService } from './application/skills/skill-catalog.service';
 import { SkillRegistryAdminService } from './application/skills/skill-registry-admin.service';
 
@@ -137,11 +133,6 @@ import { SupervisorAgent } from './application/orchestration/agents/supervisor';
 import { SupervisorTodoRepository } from './infrastructure/persistence/supervisor-todo.repository';
 
 // Document RAG
-import { FileAssetRepository } from './infrastructure/persistence/file-asset.repository';
-import { VectorDocumentRepository } from './infrastructure/persistence/vector-document.repository';
-import { FileAccessPolicyRepository } from './infrastructure/persistence/file-access-policy.repository';
-import { IngestionService } from './application/ingestion/ingestion.service';
-import { IngestionQueue } from './application/ingestion/ingestion.queue';
 import { DataExportQueue } from './application/data-export/data-export.queue';
 import { DataExportSourceRegistry } from './application/data-export/data-export.types';
 import {
@@ -177,17 +168,10 @@ import { ManagerTeachPersonaProcessor } from './application/persona-learning/man
 import { PeepshowManagerTeachExtractor } from './infrastructure/media/peepshow-manager-teach.extractor';
 import { OpenRouterManagerTeachFrameOcr } from './infrastructure/ai/ocr/openrouter-manager-teach.ocr';
 import { OpenAiManagerTeachTranscriber } from './infrastructure/ai/transcription/openai-manager-teach.transcriber';
-import { LlmRerankerService } from './application/retrieval/llm-reranker.service';
-import { DocumentRagBroker } from './application/retrieval/document-rag.broker';
-import { DocumentRagTool } from './application/orchestration/tools/families/document-rag.tool';
 
 // Knowledge Share
-import { KnowledgeShareService } from './application/knowledge-share/knowledge-share.service';
-import {
-  LarkMemoryReviewService,
-  ShareResolverService,
-} from './application/knowledge-share/share-resolver.service';
 import { Mem0Service } from './application/memory/mem0.service';
+import { LarkMemoryReviewService } from './application/memory/lark-memory-review.service';
 
 // Tools
 import { createLarkTaskTool } from './application/orchestration/tools/families/lark-task.tool';
@@ -208,7 +192,6 @@ import { createAitableTools } from './application/orchestration/tools/families/a
 import { hasAirtableScopeGroups } from './application/airtable/airtable-mcp-manifest';
 import { createZohoCrmTool } from './application/orchestration/tools/families/zoho-crm.tool';
 import { createZohoBooksTool } from './application/orchestration/tools/families/zoho-books.tool';
-import { createContextSearchTool } from './application/orchestration/tools/families/context-search.tool';
 import { createWebSearchTool } from './application/orchestration/tools/families/web-search.tool';
 import { createSkillPublishingTool } from './application/orchestration/tools/families/skill-publishing.tool';
 import { createMemoryPublishingTool } from './application/orchestration/tools/families/memory-publishing.tool';
@@ -338,9 +321,6 @@ export interface Container {
   approvalCardHandler: LarkApprovalCardHandler;
   approvalResumer: ApprovalResumerService;
   approvalInbox: ApprovalInboxService;
-  // Document RAG
-  ingestionService: IngestionService;
-  ingestionQueue: IngestionQueue;
   dataExportQueue: DataExportQueue;
   dataExportSources: DataExportSourceRegistry;
   googleWorkspaceExportSink: GoogleWorkspaceExportSink;
@@ -360,13 +340,9 @@ export interface Container {
   managerTeachService: ManagerTeachService;
   managerTeachUploadDir: string;
   cloudinaryAdapter: CloudinaryAdapter;
-  fileAssetRepo: FileAssetRepository;
-  fileAccessPolicyRepo: FileAccessPolicyRepository;
-  // Knowledge Share
-  knowledgeShareService: KnowledgeShareService;
-  shareResolverService: ShareResolverService;
   // Persistent memory
   mem0Service: Mem0Service | null;
+  larkMemoryReviewService: LarkMemoryReviewService;
   invalidateGatewayProviderCache: (companyId: string) => void;
   // Group chat context
   chatContextService: LarkChatContextService;
@@ -713,11 +689,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   // ── AI / search infrastructure ────────────────────────────────────────────
   const embeddingService    = createEmbeddingService(env, logger.child({ service: 'embedding' }));
-  const qdrantAdapter       = new QdrantAdapter({
-    env,
-    primaryVectorDimension: embeddingService.dimension,
-    logger: logger.child({ service: 'qdrant' }),
-  });
   const serperClient        = new SerperClient({
     apiKey:    env.SERPER_API_KEY ?? '',
     timeoutMs: env.SERPER_TIMEOUT_MS,
@@ -1459,23 +1430,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger.child({ service: 'cloudinary' }),
   );
 
-  // ── Document RAG repositories ─────────────────────────────────────────────
-  const fileAssetRepo       = new FileAssetRepository(prisma);
-  const vectorDocRepo       = new VectorDocumentRepository(prisma);
-  const fileAccessPolicyRepo = new FileAccessPolicyRepository(prisma);
-
-  const ingestionService = new IngestionService(
-    env,
-    cloudinaryAdapter,
-    embeddingService,
-    qdrantAdapter,
-    fileAssetRepo,
-    vectorDocRepo,
-    fileAccessPolicyRepo,
-    logger,
-  );
-
-  const ingestionQueue = new IngestionQueue(queueRedisUrl, env.REDIS_INGESTION_QUEUE_NAME);
   const dataExportQueue = new DataExportQueue(queueRedisUrl);
   const larkIngressQueue = new LarkIngressQueue(queueRedisUrl);
   const googleConnectionContinuationQueue =
@@ -1507,7 +1461,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     }),
     ocr: new OpenRouterManagerTeachFrameOcr({
       apiKey: env.OPENROUTER_API_KEY ?? '',
-      model: env.MANAGER_TEACH_OCR_MODEL,
+      model: env.VISION_OCR_MODEL,
     }),
     transcriber: new OpenAiManagerTeachTranscriber({
       apiKey: env.OPENAI_API_KEY,
@@ -1537,22 +1491,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     rawRetentionHours: env.MANAGER_TEACH_RAW_RETENTION_HOURS,
     uploadDir: managerTeachUploadDir,
   });
-
-  const llmReranker = new LlmRerankerService(
-    env.GROQ_API_KEY,
-    logger.child({ service: 'reranker' }),
-    env.RAG_GRADE_THRESHOLD,
-  );
-
-  const documentRagBroker = new DocumentRagBroker(
-    env,
-    qdrantAdapter,
-    embeddingService,
-    llmReranker,
-    fileAssetRepo,
-    vectorDocRepo,
-    logger,
-  );
 
   // ── Zoho Books paginated client + finance ops ────────────────────────────
   const zohoPaginatedBooksClient = new ZohoBooksPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
@@ -1584,15 +1522,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
   );
 
-  // ── Zoho Books search adapter (context search broker port) ───────────────
-  const zohoBooksSearchAdapter = new ZohoBooksSearchAdapter(zohoPaginatedBooksClient);
-
   // ── Skills ────────────────────────────────────────────────────────────────
   const skillRepo    = new SkillRepository(prisma);
-  const skillsService = new SkillsService({
-    repo:   skillRepo,
-    logger: logger.child({ service: 'skills' }),
-  });
   const skillCatalog = new SkillCatalogService({
     repo: skillRepo,
     logger,
@@ -1601,22 +1532,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const skillRegistryAdminService = new SkillRegistryAdminService({
     prisma,
     logger: logger.child({ service: 'skill-registry-admin' }),
-  });
-
-  // ── Context search broker ─────────────────────────────────────────────────
-  const contextSearchBroker = new ContextSearchBroker({
-    vectorStore:    qdrantAdapter,
-    embedding:      embeddingService,
-    larkContacts:   channelIdentityRepo,
-    zohoBooks:      zohoBooksSearchAdapter,
-    skills:         skillsService,
-    logger:         logger.child({ service: 'context-search' }),
-    fileAssetRepo,
-    vectorDocRepo,
-    ...(env.GROQ_API_KEY ? { groqApiKey: env.GROQ_API_KEY } : {}),
-    ...((env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY)
-      ? { geminiApiKey: (env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) as string }
-      : {}),
   });
 
   // Adapter: company-owned Serper pool → gateway web-search tool.
@@ -1794,12 +1709,10 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     exportQueue:     dataExportQueue,
     inlineThreshold: env.ZOHO_BOOKS_CSV_INLINE_THRESHOLD,
   }));
-  toolRegistry.register(createContextSearchTool({ broker: contextSearchBroker }));
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
   toolRegistry.register(createSkillPublishingTool({ prisma }));
   toolRegistry.register(createMemoryPublishingTool({ mem0: mem0Service }));
   toolRegistry.register(createMemoryRecallTool({ mem0: mem0Service, departmentRepo: deptRepo }));
-  toolRegistry.register(new DocumentRagTool(documentRagBroker));
   toolRegistry.register(createDataProcessorTool({ sources: dataExportSources }));
   toolRegistry.register(createDataExportTool({ queue: dataExportQueue }));
   toolRegistry.register(createSemrushTool({
@@ -2065,7 +1978,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   companySerperService.bindExhaustionNotifier(apiKeyExhaustionNotifier);
   companyOmsSiteDataService.bindExhaustionNotifier(apiKeyExhaustionNotifier);
   embeddingService.bindExhaustionNotifier(apiKeyExhaustionNotifier);
-  llmReranker.bindExhaustionNotifier(apiKeyExhaustionNotifier);
   const disableManagerSelfBypass = env.NODE_ENV !== 'production' && env.DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS;
   if (disableManagerSelfBypass) {
     logger.warn('approval.gate.manager_self_bypass_disabled_for_test');
@@ -2168,17 +2080,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ service: 'gateway-dispatcher' }),
   });
 
-  // ── Knowledge Share ────────────────────────────────────────────────────
-  const knowledgeShareService = new KnowledgeShareService(
-    prisma,
-    fileAssetRepo,
-    fileAccessPolicyRepo,
-    vectorDocRepo,
-    qdrantAdapter,
-    larkAdapter,
-    memoryCache,
-    logger,
-  );
   const larkMemoryReviewService = new LarkMemoryReviewService(
     memoryCache,
     larkAdapter,
@@ -2186,13 +2087,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     permissions,
     approvalGate,
     logger,
-  );
-  const shareResolverService = new ShareResolverService(
-    knowledgeShareService,
-    memoryCache,
-    larkAdapter,
-    logger.child({ service: 'share-resolver' }),
-    larkMemoryReviewService,
   );
   supervisor.bindLarkMemoryReview(larkMemoryReviewService);
 
@@ -2260,8 +2154,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     approvalResumer,
     approvalInbox,
     // Document RAG
-    ingestionService,
-    ingestionQueue,
     dataExportQueue,
     dataExportSources,
     googleWorkspaceExportSink,
@@ -2277,12 +2169,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     managerTeachService,
     managerTeachUploadDir,
     cloudinaryAdapter,
-    fileAssetRepo,
-    fileAccessPolicyRepo,
     // Knowledge Share
-    knowledgeShareService,
-    shareResolverService,
     mem0Service,
+    larkMemoryReviewService,
     invalidateGatewayProviderCache,
     // Message serialization
     chatSerializer,

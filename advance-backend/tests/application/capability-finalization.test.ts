@@ -21,6 +21,7 @@ import {
   toolIdsForFamily,
 } from '../../src/domain/tools/tool-id';
 import {
+  assertPiHarnessOptions,
   buildHarnessTextMessage,
   parseEngineHarnessArgs,
   resolveHarnessOpenId,
@@ -278,12 +279,15 @@ describe('capability catalogue reconciliation', () => {
 describe('Lark engine harness controls', () => {
   it('defaults to Abhishek and accepts an explicit principal and destination', () => {
     const defaults = parseEngineHarnessArgs([], {});
+    assert.doesNotThrow(() => assertPiHarnessOptions(defaults));
     assert.equal(defaults.userSelector, 'abhishek@emiactech.com');
+    assert.equal(defaults.backendUrl, 'http://127.0.0.1:8000');
     assert.equal(defaults.chatId, 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50');
     assert.equal(defaults.model, 'flash');
     assert.equal(defaults.trace, true);
     assert.equal(defaults.freshContext, false);
     assert.equal(defaults.oauthE2e, false);
+    assert.equal(defaults.deliverToLark, true);
     assert.equal(defaults.groupReplyMode, 'threaded');
     assert.equal(defaults.threadRootMessageId, undefined);
     assert.deepEqual(
@@ -291,6 +295,7 @@ describe('Lark engine harness controls', () => {
         '--model', 'pro',
         '--allow-impersonation',
         '--user', 'Anish Suman',
+        '--backend-url', 'http://127.0.0.1:9000/',
         '--chat-id', 'oc_custom',
         '--chat-type', 'group',
         '--group-mode', 'inline',
@@ -299,6 +304,7 @@ describe('Lark engine harness controls', () => {
       ], { HARNESS_LARK_ALLOWED_CHAT_IDS: 'oc_custom' }),
       {
         userSelector: 'Anish Suman',
+        backendUrl: 'http://127.0.0.1:9000',
         chatId: 'oc_custom',
         chatType: 'group',
         groupReplyMode: 'inline',
@@ -310,8 +316,28 @@ describe('Lark engine harness controls', () => {
         freshContext: true,
         allowImpersonation: true,
         oauthE2e: false,
+        deliverToLark: true,
         help: false,
       },
+    );
+  });
+
+  it('rejects legacy engine-only options before starting cloud Pi', () => {
+    assert.throws(
+      () => assertPiHarnessOptions(parseEngineHarnessArgs(['--model', 'pro'], {})),
+      /not available in cloud Pi/,
+    );
+    assert.throws(
+      () => assertPiHarnessOptions(parseEngineHarnessArgs(['--debug-sigs'], {})),
+      /retired Gemini harness/,
+    );
+    assert.throws(
+      () => assertPiHarnessOptions(parseEngineHarnessArgs(['--full-debug'], {})),
+      /retired AI SDK harness/,
+    );
+    assert.throws(
+      () => assertPiHarnessOptions(parseEngineHarnessArgs(['--oauth-e2e'], {})),
+      /not supported by the direct cloud Pi harness/,
     );
   });
 
@@ -327,6 +353,10 @@ describe('Lark engine harness controls', () => {
     assert.throws(
       () => parseEngineHarnessArgs(['--model', 'ultra'], {}),
       /flash or pro/,
+    );
+    assert.throws(
+      () => parseEngineHarnessArgs(['--backend-url', 'not-a-url'], {}),
+      /absolute HTTP\(S\) URL/,
     );
     assert.throws(
       () => parseEngineHarnessArgs(['--group-mode', 'sideways'], {}),
@@ -351,6 +381,18 @@ describe('Lark engine harness controls', () => {
     assert.equal(
       parseEngineHarnessArgs(['--oauth-e2e'], {}).oauthE2e,
       true,
+    );
+    assert.equal(
+      parseEngineHarnessArgs(['--no-delivery'], {}).deliverToLark,
+      false,
+    );
+    assert.throws(
+      () => parseEngineHarnessArgs(['--no-delivery', '--oauth-e2e'], {}),
+      /cannot be combined/,
+    );
+    assert.throws(
+      () => parseEngineHarnessArgs(['--no-delivery', '--group'], {}),
+      /supports p2p/,
     );
     assert.throws(
       () => parseEngineHarnessArgs(['--chat-id', 'oc_untrusted'], {}),

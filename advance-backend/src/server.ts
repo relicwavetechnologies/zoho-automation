@@ -24,7 +24,6 @@ import { createMemberAuthMiddleware } from './http/middleware/member-auth.middle
 import { createDesktopToolsRoutes } from './http/desktop/desktop-tools.routes';
 import { createDesktopDepartmentRoutes } from './http/desktop/desktop-departments.routes';
 import { createDesktopApprovalRoutes } from './http/desktop/desktop-approvals.routes';
-import { createFilesRouter } from './http/files/files.routes';
 import { createAgentsRoutes } from './http/agents/agents.routes';
 import { createDepartmentRoutes } from './http/admin/departments.routes';
 import { createSkillRegistryRoutes } from './http/admin/skill-registry.routes';
@@ -50,7 +49,6 @@ import { ExecutionRepository } from './infrastructure/persistence/execution.repo
 import { createDesktopWsGateway } from './http/desktop/desktop-ws.gateway';
 import { createAirnoteRoutes } from './http/airnote/airnote.routes';
 import { createGatewayRoutes } from './http/gateway/gateway.routes';
-import { IngestionWorker } from './application/ingestion/ingestion.worker';
 import { DataExportWorker } from './application/data-export/data-export.worker';
 import { LarkIngressWorker } from './application/lark-ingress/lark-ingress.worker';
 import { GoogleConnectionContinuationWorker } from './application/connections/google-connection-continuation';
@@ -108,15 +106,13 @@ export const createServer = (c: Container) => {
     env:                   c.env,
     approvalGate:          c.approvalGate,
     approvalCardHandler:   c.approvalCardHandler,
-    knowledgeShareService: c.knowledgeShareService,
-    shareResolverService:  c.shareResolverService,
+    memoryReviewService:   c.larkMemoryReviewService,
     ...(c.mem0Service ? { mem0: c.mem0Service } : {}),
     larkOAuthService:      c.larkOAuthService,
     connectionRepo:        c.integrationConnectionRepo,
     cache:                 c.memoryCache,
     serializer:            c.chatSerializer,
     chatContextService:    c.chatContextService,
-    ingestionQueue:        c.ingestionQueue,
     channelDeliveryRepo:   c.channelDeliveryRepo,
     laneLeaseHolder:       c.laneLeaseHolder,
     busyNotices:           c.busyLaneNotices,
@@ -177,20 +173,6 @@ export const createServer = (c: Container) => {
   );
   googleExchangeRecoveryTimer.unref?.();
   c.mailOpsWorker.start();
-
-  // Boot BullMQ ingestion worker (queue lives in container, shared with webhook routes)
-  const ingestionWorker = new IngestionWorker({
-    redisUrl:         c.queueRedisUrl,   // isolated BullMQ connection → REDIS_QUEUE_URL
-    queueName:        c.env.REDIS_INGESTION_QUEUE_NAME,
-    ingestionService: c.ingestionService,
-    larkAdapter:      c.larkAdapter,
-    env:              c.env,
-    logger:           c.logger,
-    chatContext:      c.chatContextService,
-    concurrency:      c.env.INGESTION_WORKER_CONCURRENCY,
-    summaryModel:     c.model,
-  });
-  ingestionWorker.start();
 
   const dataExportWorker = new DataExportWorker({
     redisUrl: c.queueRedisUrl,
@@ -484,20 +466,6 @@ export const createServer = (c: Container) => {
     createGatewayRoutes({
       dispatcher: c.gatewayDispatcher,
       logger:     c.logger,
-    }),
-  );
-
-  app.use(
-    '/api/files',
-    memberAuth,
-    createFilesRouter({
-      ingestionService:      c.ingestionService,
-      ingestionQueue:        c.ingestionQueue,
-      fileAssetRepo:         c.fileAssetRepo,
-      fileAccessPolicyRepo:  c.fileAccessPolicyRepo,
-      knowledgeShareService: c.knowledgeShareService,
-      logger:                c.logger,
-      maxFileSizeMb:         c.env.DOC_UPLOAD_MAX_MB,
     }),
   );
 
