@@ -59,12 +59,25 @@ export function parseMailRule(input: {
       ? { hasAttachment: parsedMatch.hasAttachment }
       : {}),
   };
+  return { match, ...parseMailRuleDelivery(input) };
+}
+
+export function parseMailRuleDelivery(input: {
+  action: Record<string, unknown>;
+  destination: Record<string, unknown>;
+}): {
+  action: MailRuleAction;
+  destination: MailRuleDestination;
+} {
   const action = ActionSchema.parse(input.action);
   const destination = DestinationSchema.parse(input.destination);
   if (action.type === 'forward' && destination.type !== 'email') {
     throw new Error('Forward rules require an email destination.');
   }
-  return { match, action, destination };
+  if (action.type === 'deliver' && destination.type !== 'lark_chat') {
+    throw new Error('Delivery rules require a Lark chat destination.');
+  }
+  return { action, destination };
 }
 
 export function mailRuleMatches(

@@ -17,6 +17,7 @@ import { createWebSearchTool } from '../../src/application/tools/families/web-se
 import { createSkillPublishingTool } from '../../src/application/tools/families/skill-publishing.tool.ts';
 import { createMemoryPublishingTool } from '../../src/application/tools/families/memory-publishing.tool.ts';
 import { createMemoryRecallTool } from '../../src/application/tools/families/memory-recall.tool.ts';
+import { createMailAutomationsTool } from '../../src/application/tools/families/mail-automations.tool.ts';
 import type { CatalogSkill, SkillCatalogService } from '../../src/application/skills/skill-catalog.service.ts';
 import { ok, err } from '../../src/shared/result.ts';
 import { PermissionError, ToolError } from '../../src/shared/errors.ts';
@@ -2531,6 +2532,147 @@ describe('GatewayDispatcher', () => {
     }, member);
     assert.equal(committed.ok, true);
     assert.equal(executions, 1);
+  });
+
+  it('executes user-owned Mail Ops mutations directly for Lark only', async () => {
+    let replacements = 0;
+    const registry = new ToolRegistry();
+    registry.register(createMailAutomationsTool({
+      pubsubReady: true,
+      repo: {
+        replaceRule: async () => {
+          replacements++;
+          return { ok: true, value: true };
+        },
+      } as any,
+      resolveConnection: async () => ({
+        status: 'resolved',
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        mailboxEmail: 'user@example.com',
+      }),
+    }));
+    const permissions = makePermissionService(
+      makeAllowedPerm('mailAutomations', ['update', 'execute']),
+    );
+    const mailOpsSkill = {
+      ...allowedSkill,
+      id: 'mail-ops',
+      slug: 'mail-ops',
+      toolIds: ['mailAutomations'],
+    };
+    const skillCatalog = makeSkillCatalog([mailOpsSkill]);
+    const toolExecutor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog,
+      toolExecutor,
+      localApprovalIntents: makeLocalApprovals(
+        toolExecutor,
+        undefined,
+        undefined,
+        { permissions, skillCatalog },
+      ),
+      logger: noopLogger,
+    });
+    const request = {
+      op: 'tools.invoke',
+      payload: {
+        skillId: 'mail-ops',
+        toolId: 'mailAutomations',
+        args: {
+          operation: 'update',
+          ruleId: '22222222-2222-4222-8222-222222222222',
+          connectionId: '11111111-1111-4111-8111-111111111111',
+          name: 'Forward Claude secure links',
+          match: {
+            from: '@mail.anthropic.com',
+            subjectContains: 'Your secure link to Claude.ai',
+          },
+          destination: {
+            type: 'email',
+            email: 'owner@example.com',
+          },
+        },
+      },
+    };
+
+    const lark = await dispatcher.dispatch(
+      request,
+      { ...member, channel: 'lark' },
+    );
+    assert.equal(lark.ok, true);
+    assert.equal(replacements, 1);
+
+    const desktop = await dispatcher.dispatch(
+      request,
+      { ...member, channel: 'desktop' },
+    );
+    assert.equal(desktop.status, 'local_approval_required');
+    assert.equal(replacements, 1);
+  });
+
+  it('keeps unknown future Mail Ops mutations approval-gated in Lark', async () => {
+    let executions = 0;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      id: asToolId('mailAutomations'),
+      actionGroups: new Set(['update']),
+      permissionCheck: () => ok('update'),
+      execute: async () => {
+        executions++;
+        return ok({ result: 'updated' });
+      },
+    }));
+    const permissions = makePermissionService(
+      makeAllowedPerm('mailAutomations', ['update']),
+    );
+    const mailOpsSkill = {
+      ...allowedSkill,
+      id: 'mail-ops',
+      slug: 'mail-ops',
+      toolIds: ['mailAutomations'],
+    };
+    const skillCatalog = makeSkillCatalog([mailOpsSkill]);
+    const toolExecutor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog,
+      toolExecutor,
+      localApprovalIntents: makeLocalApprovals(
+        toolExecutor,
+        undefined,
+        undefined,
+        { permissions, skillCatalog },
+      ),
+      logger: noopLogger,
+    });
+    const response = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      payload: {
+        skillId: 'mail-ops',
+        toolId: 'mailAutomations',
+        args: {
+          query: 'future',
+          operation: 'future_mutation',
+        },
+      },
+    },
+      { ...member, channel: 'lark' },
+    );
+    assert.equal(response.status, 'local_approval_required');
+    assert.equal(executions, 0);
   });
 
   it('exposes and invokes webSearch through the backend gateway when RBAC allows it', async () => {

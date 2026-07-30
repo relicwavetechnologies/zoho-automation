@@ -56,6 +56,7 @@ describe('mailAutomations tool', () => {
     assert.equal(result.ok, true);
     assert.equal(result.ok && result.value.rule?.status, 'active');
     assert.equal(result.ok && result.value.rule?.ruleId, 'rule-1');
+    assert.equal(result.ok && result.value.rule?.valid, true);
     assert.deepEqual(createInput.match, {
       from: 'alerts@example.com',
       subjectContains: 'OTP',
@@ -66,6 +67,47 @@ describe('mailAutomations tool', () => {
       chatId: 'oc_current',
     });
     assert.match(createInput.dedupeKey, /^mail-rule:/);
+  });
+
+  it('reports legacy invalid rules instead of presenting them as healthy', async () => {
+    const tool = createMailAutomationsTool({
+      pubsubReady: true,
+      repo: {
+        listRulesForUser: async () => ({
+          ok: true,
+          value: [{
+            ruleId: 'rule-1',
+            name: 'Forward Anthropic emails',
+            status: 'active',
+            mailboxEmail: 'user@example.com',
+            connectionId,
+            match: { from: 'anthropic' },
+            action: { type: 'forward' },
+            destination: {
+              type: 'email',
+              email: 'owner@example.com',
+            },
+            createdAt: new Date('2026-07-29T05:00:00.000Z'),
+          }],
+        }),
+      } as any,
+      resolveConnection: async () => ({
+        status: 'unavailable',
+        reason: 'unused',
+      }),
+    });
+
+    const result = await tool.execute(
+      { operation: 'list' },
+      makeCtx('mailAutomations', ['read']),
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && result.value.rules?.[0]?.valid, false);
+    assert.match(
+      result.ok ? result.value.rules?.[0]?.invalidReason ?? '' : '',
+      /exact email address or an @domain/,
+    );
   });
 
   it('requires an exact sender address or domain and ignores display-name spoofing', () => {

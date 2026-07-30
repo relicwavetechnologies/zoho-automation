@@ -69,6 +69,8 @@ const ruleSummarySchema = z.object({
   action: z.record(z.unknown()),
   destination: z.record(z.unknown()),
   createdAt: z.string(),
+  valid: z.boolean(),
+  invalidReason: z.string().optional(),
 });
 
 const resultSchema = z.object({
@@ -222,10 +224,14 @@ export function createMailAutomationsTool(deps: {
           return ok({
             success: true,
             operation: 'list',
-            rules: listed.value.map(rule => ({
-              ...rule,
-              createdAt: rule.createdAt.toISOString(),
-            })),
+            rules: listed.value.map(rule => {
+              const validity = storedRuleValidity(rule);
+              return {
+                ...rule,
+                createdAt: rule.createdAt.toISOString(),
+                ...validity,
+              };
+            }),
           });
         }
 
@@ -384,6 +390,7 @@ export function createMailAutomationsTool(deps: {
             action: { ...parsed.action },
             destination: { ...parsed.destination },
             createdAt: new Date().toISOString(),
+            valid: true,
           },
           message: 'Mail automation is active.',
         });
@@ -425,4 +432,28 @@ function resolveDestination(
     );
   }
   return { type: 'lark_chat', chatId: ctx.runContext.chatId };
+}
+
+function storedRuleValidity(input: {
+  match: Record<string, unknown>;
+  action: Record<string, unknown>;
+  destination: Record<string, unknown>;
+}): { valid: true } | { valid: false; invalidReason: string } {
+  try {
+    parseMailRule(input);
+    return { valid: true };
+  } catch (error) {
+    const reason = error instanceof z.ZodError
+      ? error.errors.map(issue => issue.message).join('; ')
+      : error instanceof Error
+        ? error.message
+        : String(error);
+    return {
+      valid: false,
+      invalidReason: `Update this rule before it can match new mail: ${reason}`.slice(
+        0,
+        500,
+      ),
+    };
+  }
 }

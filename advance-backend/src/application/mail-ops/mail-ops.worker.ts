@@ -7,7 +7,11 @@ import {
   type MailMessageMetadata,
   type PendingMailDeliveryPayload,
 } from './mail-ops.types';
-import { mailRuleMatches, parseMailRule } from './mail-rule.matcher';
+import {
+  mailRuleMatches,
+  parseMailRule,
+  parseMailRuleDelivery,
+} from './mail-rule.matcher';
 
 const MAILBOX_BATCH_SIZE = 20;
 const DELIVERY_BATCH_SIZE = 50;
@@ -328,6 +332,12 @@ export class MailOpsWorker {
         providerMessageId,
       );
       if (!delivered.ok) throw delivered.error;
+      this.log.info('mail_ops.delivery_delivered', {
+        deliveryId: input.deliveryId,
+        action: payload.action.type,
+        destination: payload.destination.type,
+        providerMessageId,
+      });
     } catch (error) {
       const failed = await this.deps.repo.markDeliveryFailed(
         input.deliveryId,
@@ -393,16 +403,15 @@ function readDeliveryPayload(
   if (!action || typeof action !== 'object' || !destination || typeof destination !== 'object') {
     throw new Error('Invalid mail delivery action or destination.');
   }
-  const parsedRule = parseMailRule({
-    match: { from: parsedMessage.from || '*' },
+  const parsedDelivery = parseMailRuleDelivery({
     action: action as Record<string, unknown>,
     destination: destination as Record<string, unknown>,
   });
   return {
     ...(value as unknown as Omit<PendingMailDeliveryPayload, 'message' | 'action' | 'destination'>),
     message: parsedMessage,
-    action: parsedRule.action,
-    destination: parsedRule.destination,
+    action: parsedDelivery.action,
+    destination: parsedDelivery.destination,
   };
 }
 

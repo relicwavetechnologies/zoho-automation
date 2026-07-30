@@ -69,6 +69,14 @@ import {
   type WorkBootstrap,
 } from './work-bootstrap.service';
 
+const LARK_DIRECT_MAIL_AUTOMATION_OPERATIONS = new Set([
+  'create',
+  'update',
+  'pause',
+  'resume',
+  'archive',
+]);
+
 /**
  * Per-skill RBAC. Skill discovery is deny-by-default: a member sees/uses only
  * skills explicitly granted to them (as a user, or via a department, role, or
@@ -741,6 +749,13 @@ export class GatewayDispatcher {
     this.deps.logger.info('gateway.tools.invoke', {
       skillId: parsed.data.skillId,
       toolId: parsed.data.toolId,
+      operation: typeof parsed.data.args['operation'] === 'string'
+        ? parsed.data.args['operation']
+        : null,
+      ruleId: parsed.data.toolId === 'mailAutomations'
+        && typeof parsed.data.args['ruleId'] === 'string'
+        ? parsed.data.args['ruleId']
+        : null,
       userId: member.userId,
       companyId: member.companyId,
       departmentId: departmentId ?? null,
@@ -755,13 +770,34 @@ export class GatewayDispatcher {
     };
     const prepared = await this.deps.toolExecutor.prepare(input);
     if (!prepared.ok || !prepared.data) {
-      this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, prepared, execution);
+      this.recordToolInvocationAudit(
+        member,
+        departmentId,
+        parsed.data.toolId,
+        parsed.data.args,
+        prepared,
+        execution,
+      );
       return prepared;
     }
-    if (prepared.data.action !== 'read') {
+    const operation = parsed.data.args['operation'];
+    const isDirectLarkMailAutomationMutation = member.channel === 'lark'
+      && parsed.data.toolId === 'mailAutomations'
+      && typeof operation === 'string'
+      && LARK_DIRECT_MAIL_AUTOMATION_OPERATIONS.has(operation);
+    const needsLocalApproval = prepared.data.action !== 'read'
+      && !isDirectLarkMailAutomationMutation;
+    if (needsLocalApproval) {
       if (!this.deps.localApprovalIntents) {
         const response = gatewayFailure('tool_error', 'Local approval intents are not configured');
-        this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, response, execution);
+        this.recordToolInvocationAudit(
+          member,
+          departmentId,
+          parsed.data.toolId,
+          parsed.data.args,
+          response,
+          execution,
+        );
         return response;
       }
       const intent = await this.deps.localApprovalIntents.createIntentForPreparedInvocation(
@@ -769,16 +805,40 @@ export class GatewayDispatcher {
         prepared.data,
       );
       if (!intent.ok || !intent.data) {
-        this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, intent, execution);
+        this.recordToolInvocationAudit(
+          member,
+          departmentId,
+          parsed.data.toolId,
+          parsed.data.args,
+          intent,
+          execution,
+        );
         return intent;
       }
       const response = gatewayLocalApprovalRequired(intent.data);
-      this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, response, execution);
+      this.recordToolInvocationAudit(
+        member,
+        departmentId,
+        parsed.data.toolId,
+        parsed.data.args,
+        response,
+        execution,
+      );
       return response;
     }
 
-    const response = await this.deps.toolExecutor.invoke({ ...input, expectedAction: 'read' });
-    this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, response, execution);
+    const response = await this.deps.toolExecutor.invoke({
+      ...input,
+      expectedAction: prepared.data.action,
+    });
+    this.recordToolInvocationAudit(
+      member,
+      departmentId,
+      parsed.data.toolId,
+      parsed.data.args,
+      response,
+      execution,
+    );
     return response;
   }
 
@@ -1040,6 +1100,7 @@ export class GatewayDispatcher {
     member: GatewayMemberContext,
     departmentId: string | undefined,
     toolId: string,
+    args: Record<string, unknown>,
     response: GatewayResponse,
     execution: GatewayExecutionContext | undefined,
   ): void {
@@ -1051,6 +1112,12 @@ export class GatewayDispatcher {
       metadata: {
         departmentId: departmentId ?? null,
         toolId,
+        operation: typeof args['operation'] === 'string'
+          ? args['operation']
+          : null,
+        ruleId: toolId === 'mailAutomations' && typeof args['ruleId'] === 'string'
+          ? args['ruleId']
+          : null,
         gatewayStatus: response.status,
         execution: execution
           ? {
