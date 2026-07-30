@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import {
+import divoTodosExtension, {
+	DIVO_TODOS_TOOL_NAME,
 	MAX_TODO_ITEMS,
 	buildTodosDetails,
 	normalizeTodoItems,
 	summarizeTodos,
 } from "./index.ts";
+
+function registeredTool() {
+	let registered;
+	divoTodosExtension({ registerTool: (tool) => { registered = tool; } });
+	return registered;
+}
 
 test("an omitted status means the step has not started", () => {
 	assert.deepEqual(normalizeTodoItems([{ title: "Pull the deals" }]), [
@@ -71,4 +78,18 @@ test("the model reads back the list it just declared", () => {
 	assert.match(summary, /1\/2/);
 	assert.match(summary, /\[x\] Pull the deals/);
 	assert.match(summary, /\[~\] Draft the summary/);
+});
+
+// "todo" already means two durable things here: a Lark task the user owns, and
+// a checkbox block inside a document. This one vanishes with the run, so a
+// model that reaches for it on either of those requests leaves nothing behind
+// while appearing to have succeeded.
+test("the tool says plainly that it is not a real task or a document checklist", () => {
+	const tool = registeredTool();
+	assert.equal(tool.name, DIVO_TODOS_TOOL_NAME);
+
+	const text = `${tool.description}\n${tool.promptGuidelines.join("\n")}`;
+	assert.match(text, /not a Lark task/i);
+	assert.match(text, /document/i);
+	assert.match(text, /ask/i);
 });
