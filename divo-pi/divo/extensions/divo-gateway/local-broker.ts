@@ -2,6 +2,7 @@ import type {
 	ExtensionAPI,
 	ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
+import { authorizeToolInvocation, type LoadedSkillLookup } from "./skill-authorization.ts";
 import { randomBytes } from "node:crypto";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
@@ -64,12 +65,21 @@ export interface LocalBrokerExecutionDependencies {
 	resolveConfig: typeof resolveDivoGatewayConfig;
 	readCorrelation: typeof readDivoRunCorrelation;
 	executeGateway: typeof executeGatewayRequest;
+	/**
+	 * Which skill registered a tool in this run. Supplied by the extension that
+	 * owns the registry, so the broker enforces the same gate as the tool path
+	 * instead of trusting whatever a script sends.
+	 */
+	lookupLoadedSkill: LoadedSkillLookup;
 }
 
-const DEFAULT_EXECUTION_DEPENDENCIES: LocalBrokerExecutionDependencies = {
+export const DEFAULT_EXECUTION_DEPENDENCIES: LocalBrokerExecutionDependencies = {
 	resolveConfig: resolveDivoGatewayConfig,
 	readCorrelation: readDivoRunCorrelation,
 	executeGateway: executeGatewayRequest,
+	// No registry wired means nothing was ever loaded, so every invocation is
+	// refused. Failing closed is the only safe default for an authorization gate.
+	lookupLoadedSkill: () => undefined,
 };
 
 function asRecord(value: unknown): JsonRecord | undefined {
@@ -142,12 +152,30 @@ export async function executeLocalBrokerRequest(
 		active.nextBrokerCall += 1;
 		const actionId = `${active.toolCallId}:broker:${active.nextBrokerCall}`;
 		const label = brokerLabel(input);
+		// Same gate the divo_gateway tool applies. A script reaching the backend
+		// through this socket has no more authority than the model calling the
+		// tool directly, and the skillId is taken from what was actually loaded.
+		const payload = asRecord(input.request.payload);
+		const authorization = authorizeToolInvocation({
+			op: input.request.op,
+			toolId: payload?.["toolId"],
+			runId: correlation.runId,
+			lookup: dependencies.lookupLoadedSkill,
+			scheduling: payload?.["toolId"] === "scheduledWorkflows",
+		});
+		if (authorization && !authorization.ok) {
+			throw new Error(authorization.message);
+		}
+		const authorizedPayload = authorization?.ok
+			? { ...(payload ?? {}), skillId: authorization.skillId }
+			: input.request.payload;
+
 		const request: GatewayRequestBody = {
 			op: input.request.op,
 			...(input.request.departmentId || correlation.departmentId
 				? { departmentId: input.request.departmentId ?? correlation.departmentId }
 				: {}),
-			...(Object.hasOwn(input.request, "payload") ? { payload: input.request.payload } : {}),
+			...(Object.hasOwn(input.request, "payload") ? { payload: authorizedPayload } : {}),
 			execution: {
 				version: 1,
 				threadId: correlation.threadId,

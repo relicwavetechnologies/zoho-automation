@@ -61,10 +61,17 @@ describe('desktop capability bootstrap', () => {
       { toolId: 'zohoBooks', actions: ['read'] },
       { toolId: 'webSearch', actions: ['read'] },
     ]);
-    assert.ok(bootstrap.routingHints.some(hint => hint.includes('build_overdue_report')));
+    // A hint must route the model through the skill that declares the tool. The
+    // gateway refuses a tools.invoke whose skill was not loaded in the same run,
+    // so a hint saying "invoke directly" would send it into a guaranteed refusal.
     assert.ok(bootstrap.routingHints.some(hint =>
-      hint.includes('invoke webSearch directly')
-      && hint.includes('do not resolve or search for a research skill first')));
+      hint.includes('build_overdue_report')
+      && hint.includes('load finance-core-id with divo_skill_view')));
+    assert.ok(!bootstrap.routingHints.some(hint => hint.includes('invoke webSearch directly')));
+
+    // webSearch is permitted here but no visible skill declares it, so it cannot
+    // be loaded and must not be advertised as a route.
+    assert.ok(!bootstrap.routingHints.some(hint => hint.includes('webSearch')));
     assert.ok(!bootstrap.routingHints.some(hint => hint.includes('zohoCrm')));
     assert.deepEqual(bootstrap.zohoConnection, { accessibleCount: 0 });
     assert.deepEqual(bootstrap.families.find(family => family.familyId === 'zoho'), {
@@ -153,8 +160,35 @@ describe('desktop capability bootstrap', () => {
       },
     );
     assert.deepEqual(bootstrap.preferredSkills, []);
-    assert.equal(bootstrap.routingHints.length, 1);
-    assert.match(bootstrap.routingHints[0] ?? '', /invoke webSearch directly/);
+    // webSearch is permitted for this department but no visible skill declares
+    // it, so there is no skill to load and therefore no way to invoke it. The
+    // catalogue stays silent rather than routing the model into a refusal.
+    assert.deepEqual(bootstrap.routingHints, []);
+  });
+
+  it('routes a permitted tool through the skill that declares it', () => {
+    const bootstrap = buildDesktopCapabilityBootstrap({
+      departmentName: 'Engineering',
+      departmentSlug: 'engineering',
+      companyRole: 'MEMBER',
+      permission: permission([['webSearch', ['read']]]),
+      visibleSkills: [{
+        id: 'web-research-id',
+        slug: 'web-research',
+        name: 'Web Research',
+        description: 'Look things up on the public web.',
+        instructions: 'Hidden full recipe.',
+        toolIds: ['webSearch'],
+        aliases: [], tags: [], revision: 1,
+      }],
+      zohoConnections: [],
+    });
+
+    const hint = bootstrap.routingHints.find(entry => entry.includes('webSearch'));
+    assert.ok(hint, 'a declared tool should be routed');
+    // The load step is the whole point: the gateway refuses the invoke otherwise.
+    assert.match(hint, /load web-research-id with divo_skill_view, then invoke webSearch/);
+    assert.doesNotMatch(hint, /directly/);
   });
 
   it('advertises the governed local workflow as the direct route for record-set work', () => {

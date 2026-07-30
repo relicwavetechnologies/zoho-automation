@@ -195,22 +195,45 @@ export function buildDesktopCapabilityBootstrap(input: {
     });
   }
 
+  /**
+   * The skill that declares a tool, which is what makes the tool invocable.
+   *
+   * A routing hint must say which skill to load, never "invoke X directly":
+   * the gateway refuses any tools.invoke whose tool was not registered by a
+   * divo_skill_view load in the same run, so a hint that skips loading sends
+   * the model into a guaranteed refusal.
+   */
+  const skillForTool = (toolId: string) =>
+    input.visibleSkills.find(skill => skill.toolIds.includes(toolId));
+
+  /** Prefixes the mechanics with the load step, or omits them if no skill declares the tool. */
+  const viaSkill = (toolId: string, route: string, mechanics: string): string | null => {
+    const skill = skillForTool(toolId);
+    if (!skill) return null;
+    return `${route} -> load ${skill.id} with divo_skill_view, then ${mechanics}`;
+  };
+
   const routingHints: string[] = [];
   if (booksActions.has('read')) {
     routingHints.push(
-      'Unpaid or overdue invoices -> invoke zohoBooks with op build_overdue_report or list_invoices.',
-      'Recent customer payments -> invoke zohoBooks with op list_payments.',
-      'Bills, expenses, or bank transactions -> invoke zohoBooks with op list_bills, list_expenses, list_bank_transactions, or search_transactions.',
-      'Tax summary -> invoke zohoBooks with op get_tax_summary.',
+      ...[
+        viaSkill('zohoBooks', 'Unpaid or overdue invoices', 'invoke zohoBooks with op build_overdue_report or list_invoices.'),
+        viaSkill('zohoBooks', 'Recent customer payments', 'invoke zohoBooks with op list_payments.'),
+        viaSkill('zohoBooks', 'Bills, expenses, or bank transactions', 'invoke zohoBooks with op list_bills, list_expenses, list_bank_transactions, or search_transactions.'),
+        viaSkill('zohoBooks', 'Tax summary', 'invoke zohoBooks with op get_tax_summary.'),
+      ].filter((hint): hint is string => hint !== null),
     );
   }
   if (preferredToolIds.has('zohoCrm')) {
     routingHints.push('Customer, contact, account, deal, or relationship context -> use zohoCrm read operations.');
   }
   if (availableToolIds.has('webSearch')) {
-    routingHints.push(
-      'Ordinary current external facts, pricing, comparisons, laws, market information, or verification -> invoke webSearch directly with args { query, limit }; do not resolve or search for a research skill first. Use an exact indexed deep-research skill only when the request is explicitly thorough/deep or the persona already links it.',
+    const webHint = viaSkill(
+      'webSearch',
+      'Ordinary current external facts, pricing, comparisons, laws, market information, or verification',
+      'invoke webSearch with args { query, limit }. Reserve an exact indexed deep-research skill for requests that are explicitly thorough or deep, or that the persona already links.',
     );
+    if (webHint) routingHints.push(webHint);
   }
   if (localWorkflowSkill) {
     routingHints.push(

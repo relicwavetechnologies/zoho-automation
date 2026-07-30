@@ -24,7 +24,8 @@ import {
 	resolveDivoGatewayConfig,
 } from "./gateway-client.ts";
 import { executeGatewayRequest } from "./gateway-execution.ts";
-import { registerLocalDivoBroker } from "./local-broker.ts";
+import { registerLocalDivoBroker, DEFAULT_EXECUTION_DEPENDENCIES as DEFAULT_LOCAL_BROKER_DEPENDENCIES } from "./local-broker.ts";
+import { authorizeToolInvocation } from "./skill-authorization.ts";
 import {
 	formatSkillResolveResult,
 	resolveDivoSkills,
@@ -293,7 +294,10 @@ Stay in this same conversation after the first write. When the manager corrects 
 export default function divoGatewayExtension(pi: ExtensionAPI) {
 	const loadedSkillByTool = new Map<string, { runId: string; skillId: string }>();
 	registerApprovalGate(pi);
-	registerLocalDivoBroker(pi);
+	registerLocalDivoBroker(pi, {
+		...DEFAULT_LOCAL_BROKER_DEPENDENCIES,
+		lookupLoadedSkill: (toolId) => loadedSkillByTool.get(toolId),
+	});
 	registerMemoryReviewTool(pi);
 	registerTeachClarificationTool(pi);
 	registerDivoSkillView(pi, {
@@ -384,29 +388,26 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				payload?: Record<string, unknown>;
 			};
 			const correlation = await readDivoRunCorrelation();
-			if (request.op === "tools.invoke") {
-				const toolId = typeof request.payload?.toolId === "string"
-					? request.payload.toolId
-					: undefined;
-				const loaded = toolId ? loadedSkillByTool.get(toolId) : undefined;
-				if (!toolId || !loaded || loaded.runId !== correlation.runId) {
-					const scheduling = isScheduledWorkflowInvocation(request);
-					return {
-						content: [{
-							type: "text",
-							text: scheduling
-								? "Scheduling recipe required. Load the exact Schedule Divo Work skillId from the injected catalogue with divo_skill_view, then retry."
-								: "Exact company skill required. Load the relevant DB skill with divo_skill_view, then retry this tool call.",
-						}],
-						details: {
-							configured: true,
-							status: "skill_required",
-							ok: false,
-						},
-						isError: true,
-					};
-				}
-				request.payload = { ...request.payload, skillId: loaded.skillId };
+			const authorization = authorizeToolInvocation({
+				op: request.op,
+				toolId: request.payload?.toolId,
+				runId: correlation.runId,
+				lookup: (toolId) => loadedSkillByTool.get(toolId),
+				scheduling: isScheduledWorkflowInvocation(request),
+			});
+			if (authorization && !authorization.ok) {
+				return {
+					content: [{ type: "text", text: authorization.message }],
+					details: {
+						configured: true,
+						status: "skill_required",
+						ok: false,
+					},
+					isError: true,
+				};
+			}
+			if (authorization?.ok) {
+				request.payload = { ...request.payload, skillId: authorization.skillId };
 			}
 			const resolved = resolveDivoGatewayConfig();
 			if ("error" in resolved) {

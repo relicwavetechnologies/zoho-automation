@@ -109,6 +109,13 @@ Use \`subprocess\` with \`divo-local\`. It exposes no member token or SaaS
 credential. For generated or substantial arguments, write an adjacent JSON
 file and pass \`--args-file\`.
 
+Load the skill that owns a tool with \`divo_skill_view\` **before** the script
+calls it. A scripted call carries the same authorization as one you make
+directly: the tool has to have been loaded in this run, and \`divo-local\`
+refuses it otherwise. You never pass a skill on the command line — the runtime
+attaches the one that was actually loaded, which is what makes the call
+governed rather than self-asserted.
+
 ~~~python
 import json
 import subprocess

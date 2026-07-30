@@ -32,7 +32,11 @@ describe("Divo normal-session routing policy", () => {
 
 	it("keeps the bundled router skill aligned with catalogue-first routing", () => {
 		assert.match(ROUTER_SKILL, /using no skill is correct/i);
-		assert.match(ROUTER_SKILL, /immediately invoke `tools\.invoke`/i);
+		// The gateway refuses a tools.invoke whose skill was not loaded in the same
+		// run, so the router must send the model through divo_skill_view first.
+		// It previously said "immediately invoke", which was a guaranteed refusal.
+		assert.match(ROUTER_SKILL, /load the exact web-search skill .* with `divo_skill_view`, then invoke `tools\.invoke`/i);
+		assert.doesNotMatch(ROUTER_SKILL, /immediately invoke `tools\.invoke`/i);
 		assert.match(ROUTER_SKILL, /without fuzzy skill discovery/i);
 		assert.doesNotMatch(ROUTER_SKILL, /before planning every meaningful company task/i);
 		assert.doesNotMatch(ROUTER_SKILL, /For every meaningful .*call `divo_skill_resolve`/i);
