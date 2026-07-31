@@ -7,6 +7,7 @@ import {
 } from "../local-rpc-server.mjs";
 import {
 	collectRunAssistantText,
+	promptWithTransientRetries,
 	projectRuntimeProgress,
 } from "../local-rpc-controller.mjs";
 
@@ -50,6 +51,181 @@ test("final delivery returns only assistant text and handles a normal terminal a
 			{ role: "assistant", content: [{ type: "text", text: "  Final answer  " }] },
 		]),
 		"Final answer",
+	);
+});
+
+test("a successful retry does not deliver narration from the failed attempt", () => {
+	assert.equal(
+		collectRunAssistantText([
+			{ role: "assistant", content: [{ type: "text", text: "Let me inspect that." }] },
+			{ role: "assistant", stopReason: "error", errorMessage: "502: Upstream unreachable", content: [] },
+			{ role: "user", content: [{ type: "text", text: "Continue after the provider failure." }] },
+			{
+				role: "assistant",
+				stopReason: "stop",
+				content: [{ type: "text", text: "Final verified answer" }],
+			},
+		]),
+		"Final verified answer",
+	);
+});
+
+test("transient model failures retry the continuation three times", async () => {
+	const completions = [
+		...Array.from({ length: 3 }, () => ({
+			type: "agent_end",
+			messages: [{
+				role: "assistant",
+				stopReason: "error",
+				errorMessage: '502: {"message":"Upstream unreachable","type":"upstream"}',
+				content: [],
+			}],
+		})),
+		{
+			type: "agent_end",
+			messages: [{
+				role: "assistant",
+				stopReason: "stop",
+				usage: { input: 10, output: 5 },
+				content: [{ type: "text", text: "Recovered answer" }],
+			}],
+		},
+	];
+	const sent = [];
+	const retries = [];
+	const rpc = {
+		waitFor: () => Promise.resolve(completions.shift()),
+		send: async (command) => {
+			if (command.type === "get_state") return { isStreaming: false, isCompacting: false };
+			sent.push(command);
+		},
+	};
+
+	const completion = await promptWithTransientRetries({
+		rpc,
+		message: "Original request",
+		retryDelayMs: 0,
+		onRetry: (retry) => retries.push(retry),
+	});
+
+	assert.equal(collectRunAssistantText(completion.messages), "Recovered answer");
+	assert.equal(sent.length, 4);
+	assert.equal(sent[0].message, "Original request");
+	assert.match(sent[1].message, /Do not repeat completed tool calls or side effects/);
+	assert.deepEqual(retries.map((retry) => retry.attempt), [1, 2, 3]);
+});
+
+test("a transient retry waits until the Pi runtime is idle", async () => {
+	const completions = [
+		{
+			messages: [{
+				role: "assistant",
+				stopReason: "error",
+				errorMessage: "502: Upstream unreachable",
+				content: [],
+			}],
+		},
+		{
+			messages: [{
+				role: "assistant",
+				stopReason: "stop",
+				usage: { input: 10, output: 5 },
+				content: [{ type: "text", text: "Recovered answer" }],
+			}],
+		},
+	];
+	const prompts = [];
+	let stateChecks = 0;
+	const rpc = {
+		waitFor: () => Promise.resolve(completions.shift()),
+		send: async (command) => {
+			if (command.type === "get_state") {
+				stateChecks += 1;
+				return { isStreaming: stateChecks < 3, isCompacting: false };
+			}
+			prompts.push(command.message);
+		},
+	};
+
+	await promptWithTransientRetries({
+		rpc,
+		message: "Original request",
+		retryDelayMs: 0,
+	});
+
+	assert.equal(stateChecks, 3);
+	assert.equal(prompts.length, 2);
+});
+
+test("a transient failure after a completed gateway action is not retried", async () => {
+	const rpc = {
+		waitFor: () => Promise.resolve({
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "Create the record" }] },
+				{
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{
+						type: "toolCall",
+						id: "call-1",
+						name: "divo_gateway",
+						arguments: { op: "tools.invoke" },
+					}],
+				},
+				{
+					role: "toolResult",
+					toolCallId: "call-1",
+					toolName: "divo_gateway",
+					isError: false,
+					content: [{ type: "text", text: "Created" }],
+				},
+				{
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "502: Upstream unreachable",
+					content: [],
+				},
+			],
+		}),
+		send: async () => undefined,
+	};
+
+	await assert.rejects(
+		promptWithTransientRetries({
+			rpc,
+			message: "Original request",
+			retryDelayMs: 0,
+		}),
+		/failed after a company action completed/,
+	);
+});
+
+test("exhausted transient retries fail instead of delivering earlier narration", async () => {
+	const completion = {
+		type: "agent_end",
+		messages: [{
+			role: "assistant",
+			stopReason: "error",
+			errorMessage: "502: Upstream unreachable",
+			content: [],
+		}],
+	};
+	const rpc = {
+		waitFor: () => Promise.resolve(completion),
+		send: async () => undefined,
+	};
+
+	await assert.rejects(
+		promptWithTransientRetries({
+			rpc,
+			message: "Original request",
+			maxRetries: 1,
+			retryDelayMs: 0,
+		}),
+		(error) =>
+			error.code === "model_continuation_failed"
+			&& error.statusCode === 502
+			&& /Upstream unreachable/.test(error.message),
 	);
 });
 
@@ -387,6 +563,57 @@ test("Lark runs stream progress and one final result as NDJSON", async (context)
 		},
 		{ type: "result", text: "Finished" },
 	]);
+});
+
+test("a failed model continuation streams an error and never a narration result", async (context) => {
+	const admission = createAdmissionController({
+		resolveLease: async ({ backendUrl, lease }) => ({
+			profile: "cloud-derived",
+			thread: "lark-derived",
+			backendUrl,
+			token: lease,
+			userId: "user-1",
+			companyId: "company-1",
+			instanceId: "pi-local-1",
+		}),
+		executeRuntime: async () => {
+			const error = new Error("Assistant error: 502: Upstream unreachable");
+			error.code = "model_continuation_failed";
+			error.statusCode = 502;
+			throw error;
+		},
+	});
+	const { server } = createControllerServer({ admission });
+	await new Promise((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", resolve);
+	});
+	context.after(() => server.close());
+	const { port } = server.address();
+	const response = await fetch(`http://127.0.0.1:${port}/v1/lark-runs`, {
+		method: "POST",
+		headers: {
+			"content-type": "application/json",
+			accept: "application/x-ndjson",
+		},
+		body: JSON.stringify({
+			backendUrl: "https://backend.example",
+			runtimeLease: "signed-lease",
+			message: "work",
+		}),
+	});
+	const events = (await response.text())
+		.trim()
+		.split("\n")
+		.map((line) => JSON.parse(line));
+
+	assert.deepEqual(events, [{
+		type: "error",
+		error: {
+			code: "model_continuation_failed",
+			message: "Assistant error: 502: Upstream unreachable",
+		},
+	}]);
 });
 
 test("disconnecting a Lark request aborts its admitted runtime", async (context) => {

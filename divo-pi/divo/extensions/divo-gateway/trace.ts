@@ -14,8 +14,14 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	classifyDivoRunTerminal,
+	isTransientDivoRunFailure,
+} from "../../run-terminal.mjs";
 import { resolveDivoGatewayConfig } from "./gateway-client.ts";
 import { readDivoRunCorrelation } from "./run-correlation.ts";
+
+export { classifyDivoRunTerminal };
 
 const TRACE_PATH = "/api/desktop/trace";
 const POST_TIMEOUT_MS = 15_000;
@@ -49,6 +55,7 @@ interface RunState {
 	proxyOwnsUsage: boolean;
 	recoveryAttempted: boolean;
 	pendingRecoveryFailure?: DivoRunTerminal;
+	pendingRecoveryKind?: "oversize" | "transient";
 	seq: number;
 	buffer: TraceEvent[];
 	learningTools: Array<{ toolName: string; isError: boolean }>;
@@ -90,51 +97,6 @@ function safeStringify(value: unknown): string {
 export interface DivoRunTerminal {
 	status: "ok" | "error";
 	summary?: string;
-}
-
-/**
- * Pi emits agent_end for both successful and failed loops. A run is complete
- * only when its final generated message is a real assistant completion with a
- * successful stop reason and any explicitly reported usage is non-zero.
- */
-export function classifyDivoRunTerminal(messages: readonly unknown[]): DivoRunTerminal {
-	const last = asRecord(messages.at(-1));
-	if (!last || last.role !== "assistant") {
-		const role = typeof last?.role === "string" ? last.role : "no message";
-		return {
-			status: "error",
-			summary: `Run ended before the assistant continuation completed (terminal ${role}).`,
-		};
-	}
-
-	const stopReason = typeof last.stopReason === "string" ? last.stopReason : undefined;
-	if (stopReason !== "stop") {
-		const errorMessage = typeof last.errorMessage === "string"
-			? last.errorMessage.trim().slice(0, 1_500)
-			: "";
-		return {
-			status: "error",
-			summary: errorMessage
-				? `Assistant ${stopReason ?? "unknown"}: ${errorMessage}`
-				: `Assistant ended with non-success stop reason ${stopReason ?? "unknown"}.`,
-		};
-	}
-
-	const usage = asRecord(last.usage);
-	const input = usage?.input;
-	const output = usage?.output;
-	if (typeof input === "number" && typeof output === "number") {
-		const cacheRead = typeof usage?.cacheRead === "number" ? usage.cacheRead : 0;
-		const cacheWrite = typeof usage?.cacheWrite === "number" ? usage.cacheWrite : 0;
-		if (input + output + cacheRead + cacheWrite === 0) {
-			return {
-				status: "error",
-				summary: "Assistant model call completed with zero tokens; no model continuation was produced.",
-			};
-		}
-	}
-
-	return { status: "ok" };
 }
 
 /** Pi recognizes this normalized Divo 413 as context overflow and retries it after compaction. */
@@ -241,17 +203,20 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 				run?.pendingRecoveryFailure
 				&& (!correlation || run.runId === correlation.runId)
 			) {
-				// Pi's compact-and-retry path starts a second low-level agent loop.
+				// A recovery continuation starts a second low-level agent loop.
 				// Keep the same trace/run sequence and suppress a duplicate run_start.
 				run.pendingRecoveryFailure = undefined;
-				run.recoveryAttempted = true;
+				if (run.pendingRecoveryKind === "oversize") run.recoveryAttempted = true;
+				run.pendingRecoveryKind = undefined;
 				pendingArgs.clear();
 				return;
 			}
 			if (!correlation) return;
 			if (run?.pendingRecoveryFailure) {
 				failPendingRecovery(
-					"Oversized-request recovery ended before a same-run assistant continuation started.",
+					run.pendingRecoveryKind === "oversize"
+						? "Oversized-request recovery ended before a same-run assistant continuation started."
+						: "Transient model recovery ended before a same-run assistant continuation started.",
 				);
 			}
 			startRun(correlation);
@@ -344,13 +309,18 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 			const terminal = classifyDivoRunTerminal(event.messages);
 			if (
 				terminal.status === "error"
-				&& isRecoverableDivoRequestTooLarge(event.messages)
-				&& !ensureRun().recoveryAttempted
+				&& (
+					(isRecoverableDivoRequestTooLarge(event.messages) && !ensureRun().recoveryAttempted)
+					|| isTransientDivoRunFailure(event.messages)
+				)
 			) {
-				// Pi decides whether to compact and retry only after this extension
-				// event returns. Defer the terminal event until the retry succeeds,
-				// exhausts recovery, or another lifecycle boundary proves no retry ran.
+				// Pi handles oversized context and the controller handles transient
+				// provider failures after this event returns. Keep either recovery
+				// inside this trace until it succeeds or the session closes.
 				ensureRun().pendingRecoveryFailure = terminal;
+				ensureRun().pendingRecoveryKind = isRecoverableDivoRequestTooLarge(event.messages)
+					? "oversize"
+					: "transient";
 				pendingArgs.clear();
 				flush();
 				return;
@@ -366,7 +336,9 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", () => {
 		guard(() => {
 			failPendingRecovery(
-				"Oversized-request recovery ended without an assistant continuation before the session closed.",
+				run?.pendingRecoveryKind === "oversize"
+					? "Oversized-request recovery ended without an assistant continuation before the session closed."
+					: "Transient model recovery ended without an assistant continuation before the session closed.",
 			);
 		});
 	});

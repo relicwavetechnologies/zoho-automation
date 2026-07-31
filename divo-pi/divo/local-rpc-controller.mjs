@@ -12,6 +12,10 @@ import {
 	normalizeBackendUrl,
 	signInWithLark,
 } from "./auth.mjs";
+import {
+	classifyDivoRunTerminal,
+	isTransientDivoRunFailure,
+} from "./run-terminal.mjs";
 
 const execFileAsync = promisify(execFile);
 const IMAGE = process.env.DIVO_PI_IMAGE ?? "divo-pi-local:phase0";
@@ -20,6 +24,10 @@ const PROFILE_ROOT = path.join(os.homedir(), ".divo-pi", "profiles");
 const RESOURCE_PREFIX = "divo-pi-local";
 const RPC_TIMEOUT_MS = 30_000;
 const KEYCHAIN_TIMEOUT_MS = 15_000;
+const MAX_TRANSIENT_MODEL_RETRIES = 3;
+const MODEL_RETRY_IDLE_TIMEOUT_MS = 5_000;
+const MODEL_RETRY_PROMPT =
+	"The previous model continuation failed because the provider was temporarily unavailable. Continue this same request from the work already present in the session. Do not repeat completed tool calls or side effects. Finish the remaining work and return only the final user-facing answer.";
 export const RUNTIME_IDLE_TIMEOUT_MS = 10 * 60_000;
 export const RUNTIME_STOP_RETRY_MS = 30_000;
 const RUNTIME_CONTAINER_MODE = "exec-v1";
@@ -986,7 +994,8 @@ export function projectRuntimeProgress(event) {
 export function collectRunAssistantText(messages) {
 	if (!Array.isArray(messages)) return "";
 	const chunks = [];
-	for (const message of messages) {
+	const lastUserIndex = messages.findLastIndex((message) => message?.role === "user");
+	for (const message of messages.slice(lastUserIndex + 1)) {
 		if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
 		for (const content of message.content) {
 			if (content?.type !== "text" || typeof content.text !== "string") continue;
@@ -995,6 +1004,93 @@ export function collectRunAssistantText(messages) {
 		}
 	}
 	return chunks.join("\n\n");
+}
+
+function terminalRunError(terminal) {
+	const error = new Error(terminal.summary ?? "The model continuation did not complete.");
+	error.code = "model_continuation_failed";
+	error.statusCode = 502;
+	return error;
+}
+
+function completedGatewayAction(messages) {
+	if (!Array.isArray(messages)) return false;
+	const lastUserIndex = messages.findLastIndex((message) => message?.role === "user");
+	const currentRun = messages.slice(lastUserIndex + 1);
+	const actionIds = new Set();
+	for (const message of currentRun) {
+		if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+		for (const content of message.content) {
+			if (
+				content?.type === "toolCall"
+				&& content.name === "divo_gateway"
+				&& (content.arguments?.op === "tools.invoke" || content.arguments?.op === "teach.learning.apply")
+				&& typeof content.id === "string"
+			) {
+				actionIds.add(content.id);
+			}
+		}
+	}
+	return currentRun.some(
+		(message) =>
+			message?.role === "toolResult"
+			&& actionIds.has(message.toolCallId)
+			&& message.isError !== true,
+	);
+}
+
+async function waitForRpcIdle(rpc, {
+	timeoutMs = MODEL_RETRY_IDLE_TIMEOUT_MS,
+	pollMs = 25,
+	sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() <= deadline) {
+		const state = await rpc.send(
+			{ type: "get_state" },
+			Math.min(timeoutMs, RPC_TIMEOUT_MS),
+		);
+		if (state?.isStreaming !== true && state?.isCompacting !== true) return;
+		await sleep(pollMs);
+	}
+	throw terminalRunError({
+		summary: "The model runtime did not become idle after a transient provider failure.",
+	});
+}
+
+export async function promptWithTransientRetries({
+	rpc,
+	message,
+	maxRetries = MAX_TRANSIENT_MODEL_RETRIES,
+	retryDelayMs = 1_000,
+	waitForIdle = waitForRpcIdle,
+	onRetry,
+}) {
+	for (let retry = 0; ; retry += 1) {
+		const completed = rpc.waitFor("agent_end");
+		await rpc.send(
+			{ type: "prompt", message: retry === 0 ? message : MODEL_RETRY_PROMPT },
+			90_000,
+		);
+		const completion = await completed;
+		const terminal = classifyDivoRunTerminal(completion?.messages);
+		if (terminal.status === "ok") return completion;
+		if (!isTransientDivoRunFailure(completion?.messages) || retry >= maxRetries) {
+			throw terminalRunError(terminal);
+		}
+		if (completedGatewayAction(completion?.messages)) {
+			throw terminalRunError({
+				summary:
+					"The model provider failed after a company action completed. Divo stopped instead of retrying and risking a duplicate action.",
+			});
+		}
+		const attempt = retry + 1;
+		onRetry?.({ attempt, maxRetries, summary: terminal.summary });
+		if (retryDelayMs > 0) {
+			await new Promise((resolve) => setTimeout(resolve, retryDelayMs * 2 ** retry));
+		}
+		await waitForIdle(rpc);
+	}
 }
 
 function emitRuntimeProgress(onProgress, event) {
@@ -1421,12 +1517,16 @@ async function runPrompt({
 			`Ready ${profile}/${thread} in ${Date.now() - startedAt}ms (session ${state.sessionId})`,
 		);
 		emitRuntimeProgress(onProgress, { type: "ready" });
-		const completed = rpc.waitFor("agent_end");
-		await rpc.send(
-			{ type: "prompt", message: `${attachmentManifestBlock(attachments)}${message}` },
-			90_000,
-		);
-		const completion = await completed;
+		const completion = await promptWithTransientRetries({
+			rpc,
+			message: `${attachmentManifestBlock(attachments)}${message}`,
+			onRetry: ({ attempt, maxRetries, summary }) => {
+				console.error(
+					`Transient model failure; retrying continuation ${attempt}/${maxRetries}: ${summary}`,
+				);
+				emitRuntimeProgress(onProgress, { type: "thinking" });
+			},
+		});
 		const stats = await docker([
 			"stats",
 			"--no-stream",
@@ -1436,6 +1536,11 @@ async function runPrompt({
 		]);
 		console.error(`Runtime stats: ${stats.stdout.trim()}`);
 		const text = collectRunAssistantText(completion?.messages);
+		if (!text) {
+			throw terminalRunError({
+				summary: "The model continuation completed without a final answer.",
+			});
+		}
 		console.log(text);
 		child.stdin.end();
 		const outcome = await exited;
