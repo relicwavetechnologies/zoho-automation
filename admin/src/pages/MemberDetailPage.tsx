@@ -6,8 +6,8 @@ import { StatusPill, Spark } from "@/cursor/components"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { useRuns } from "@/cursor/use-ai-ops"
 import { compact, usd, useCompanyScope, useDirectory, useMemberSpend } from "@/cursor/use-spend"
-import { PROXY_MODELS, useProxyPolicy, useSaveProxyPolicy } from "@/cursor/use-proxy-policy"
-import { useProxyAudit } from "@/cursor/use-proxy"
+import { activeModel, useProxyPolicy, useSaveProxyPolicy } from "@/cursor/use-proxy-policy"
+import { useProxyAudit, useProxyModels } from "@/cursor/use-proxy"
 import { companyMembersApi, type CompanyMemberRole } from "@/lib/api"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
@@ -33,6 +33,9 @@ export function MemberDetailPage() {
   const [budget, setBudget] = useState("")
   const [rate, setRate] = useState("")
   const [models, setModels] = useState<string[]>(["deepseek-v4-flash"])
+  // The catalogue comes from the backend so the panel can never offer a model
+  // the proxy would refuse, or order them differently from the run.
+  const catalogue = useProxyModels(token).data
   const [manageOpen, setManageOpen] = useState(false)
   const [roleDraft, setRoleDraft] = useState<CompanyMemberRole>("MEMBER")
   const [savingRole, setSavingRole] = useState(false)
@@ -150,7 +153,7 @@ export function MemberDetailPage() {
           <div>
             <div style={{ fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--cur-muted)", marginBottom: "6px" }}>Model access</div>
             <div style={{ display: "flex", gap: "7px" }}>
-              {PROXY_MODELS.map((m) => {
+              {(catalogue ?? []).map((m) => {
                 const on = models.includes(m.id)
                 return (
                   <button key={m.id} className="btn" type="button" onClick={() => toggleModel(m.id)}
@@ -159,6 +162,16 @@ export function MemberDetailPage() {
                   </button>
                 )
               })}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--cur-muted)", marginBottom: "6px" }}>Runs on</div>
+            {/* Granting several models does not run several. The best granted one
+                answers, so the panel says which rather than leaving it to be
+                inferred from the row of toggles above. */}
+            <div className="mono" style={{ fontSize: "13px", paddingBottom: "8px" }}>
+              {activeModel(catalogue, models)?.label ?? "—"}
+              {activeModel(catalogue, models)?.vision ? <span className="muted" style={{ marginLeft: 6, fontSize: "12px" }}>sees images</span> : null}
             </div>
           </div>
           <div>

@@ -21,7 +21,7 @@ export function OverviewPage() {
   const daily = useCompanyDaily(token, 14, companyId)
   const members = useSpendMembers(token, 30, companyId)
   const runs = useRuns(token, { limit: 4 })
-  const proxyStatus = useProxyStatus(token, companyId)
+  const proxyStatus = useProxyStatus(token, "deepseek", companyId)
   const proxyMetrics = useProxyMetrics(token, companyId)
   const webSearch = useWebSearchConnections(token)
 

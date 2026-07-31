@@ -4,8 +4,7 @@ import { ChevronRight, Download } from "lucide-react"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { compact, usd, useCompanyScope, useDirectory, useSpendMembers } from "@/cursor/use-spend"
 import { useProxyPolicies } from "@/cursor/use-proxy-policy"
-
-const MODEL_LABEL: Record<string, string> = { "deepseek-v4-flash": "Flash", "deepseek-v4-pro": "Pro" }
+import { useProxyModels } from "@/cursor/use-proxy"
 
 export function MembersPage() {
   const navigate = useNavigate()
@@ -14,8 +13,10 @@ export function MembersPage() {
   const dir = useDirectory(token, companyId)
   const spend = useSpendMembers(token, 30, companyId)
   const policies = useProxyPolicies(token, companyId)
+  const catalogue = useProxyModels(token).data
 
   const rows = useMemo(() => {
+    const labelById = new Map((catalogue ?? []).map((m) => [m.id, m.label]))
     const spendMap = new Map((spend.data?.members ?? []).map((m) => [m.userId, m]))
     const policyMap = new Map((policies.data ?? []).map((p) => [p.userId, p]))
     return (dir.data ?? []).map((d) => {
@@ -33,10 +34,10 @@ export function MembersPage() {
         today: usd(s?.spendToday ?? 0),
         m30: usd(s?.spend30d ?? 0),
         blocked: pol?.blocked ?? false,
-        models: models.map((m) => MODEL_LABEL[m] ?? m),
+        models: models.map((m) => labelById.get(m) ?? m),
       }
     })
-  }, [dir.data, spend.data, policies.data])
+  }, [dir.data, spend.data, policies.data, catalogue])
 
   const totals = spend.data?.totals
   const loading = dir.isLoading
