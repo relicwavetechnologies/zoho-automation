@@ -80,6 +80,15 @@ test("the model reads back the list it just declared", () => {
 	assert.match(summary, /\[~\] Draft the summary/);
 });
 
+test("a completed checklist requires the full result in the terminal message", () => {
+	const summary = summarizeTodos(
+		buildTodosDetails([{ title: "Pull the deals", status: "done" }]),
+	);
+
+	assert.match(summary, /complete user-facing result/i);
+	assert.match(summary, /not delivered as the terminal answer/i);
+});
+
 // "todo" already means two durable things here: a Lark task the user owns, and
 // a checkbox block inside a document. This one vanishes with the run, so a
 // model that reaches for it on either of those requests leaves nothing behind
@@ -92,4 +101,5 @@ test("the tool says plainly that it is not a real task or a document checklist",
 	assert.match(text, /not a Lark task/i);
 	assert.match(text, /document/i);
 	assert.match(text, /ask/i);
+	assert.match(text, /separate final message/i);
 });

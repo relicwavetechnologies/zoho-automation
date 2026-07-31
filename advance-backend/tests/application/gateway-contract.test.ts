@@ -58,7 +58,7 @@ describe('public gateway request contract', () => {
     }).success, false);
   });
 
-  it('requires an exact skill binding with toolId and args inside tools.invoke payload', () => {
+  it('accepts optional skill provenance with toolId and args inside tools.invoke payload', () => {
     assert.equal(toolsInvokePayloadSchema.safeParse({
       skillId: 'google-gmail',
       toolId: 'googleGmail',
@@ -81,10 +81,10 @@ describe('public gateway request contract', () => {
     assert.equal(toolsInvokePayloadSchema.safeParse({
       toolId: 'googleGmail',
       args: {},
-    }).success, false);
+    }).success, true);
   });
 
-  it('requires exact skill bindings for every automation-plan invocation', () => {
+  it('accepts optional skill provenance for automation-plan invocations', () => {
     const plan = {
       title: 'Create reporting sheet',
       summary: 'Create the approved reporting output.',
@@ -98,7 +98,7 @@ describe('public gateway request contract', () => {
     assert.equal(automationPlanCreatePayloadSchema.safeParse({
       ...plan,
       invocations: [{ toolId: 'googleSheets', args: {} }],
-    }).success, false);
+    }).success, true);
   });
 
   it('requires one exact supported connection provider and rejects unknown search controls', () => {

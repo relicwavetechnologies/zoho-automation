@@ -5,7 +5,10 @@ import {
 	createAdmissionController,
 	createControllerServer,
 } from "../local-rpc-server.mjs";
-import { projectRuntimeProgress } from "../local-rpc-controller.mjs";
+import {
+	collectRunAssistantText,
+	projectRuntimeProgress,
+} from "../local-rpc-controller.mjs";
 
 function deferred() {
 	let resolve;
@@ -14,6 +17,41 @@ function deferred() {
 	});
 	return { promise, resolve };
 }
+
+test("final delivery preserves every assistant text block from the completed run", () => {
+	assert.equal(
+		collectRunAssistantText([
+			{
+				role: "assistant",
+				content: [
+					{ type: "text", text: "Complete report" },
+					{ type: "toolCall", name: "divo_todos", arguments: {} },
+				],
+			},
+			{
+				role: "toolResult",
+				content: [{ type: "text", text: "Checklist complete" }],
+			},
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "The report above is complete." }],
+			},
+		]),
+		"Complete report\n\nThe report above is complete.",
+	);
+});
+
+test("final delivery returns only assistant text and handles a normal terminal answer", () => {
+	assert.equal(
+		collectRunAssistantText([
+			{ role: "user", content: [{ type: "text", text: "Historical prompt" }] },
+			{ role: "toolResult", content: [{ type: "text", text: "Private tool output" }] },
+			{ role: "assistant", content: [{ type: "thinking", thinking: "Private reasoning" }] },
+			{ role: "assistant", content: [{ type: "text", text: "  Final answer  " }] },
+		]),
+		"Final answer",
+	);
+});
 
 test("subagent children ride the details the extension already streams", () => {
 	const update = projectRuntimeProgress({

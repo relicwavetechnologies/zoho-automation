@@ -57,7 +57,7 @@ describe("Divo local broker protocol", () => {
 		}), /not exposed/);
 	});
 
-	it("sends the loaded skill with a scripted tool call, so the backend can authorize it", async () => {
+	it("sends the loaded skill with a scripted tool call as advisory provenance", async () => {
 		const gatewayRequests: GatewayRequestBody[] = [];
 		await executeLocalBrokerRequest({
 			version: 1,
@@ -72,43 +72,41 @@ describe("Divo local broker protocol", () => {
 			},
 		});
 
-		// Without this the backend rejects every scripted call: skillId is required.
 		assert.equal((gatewayRequests[0]?.payload as { skillId?: string })?.skillId, "gmail-read");
 	});
 
-	it("refuses a scripted tool call whose skill was never loaded in this run", async () => {
-		let reached = false;
-		await assert.rejects(
-			executeLocalBrokerRequest({
-				version: 1,
-				request: { op: "tools.invoke", payload: { toolId: "googleGmail", args: {} } },
-			}, activeCalls(), {
-				resolveConfig: () => config,
-				readCorrelation: async () => correlation,
-				lookupLoadedSkill: () => undefined,
-				executeGateway: async () => {
-					reached = true;
-					return { body: { ok: true, status: "ok", data: {} }, httpStatus: 200 };
-				},
-			}),
-			/Exact company skill required/,
-		);
-		assert.equal(reached, false, "an unauthorized call must not reach the backend");
+	it("allows a scripted tool call when no matching skill was loaded", async () => {
+		const gatewayRequests: GatewayRequestBody[] = [];
+		await executeLocalBrokerRequest({
+			version: 1,
+			request: { op: "tools.invoke", payload: { toolId: "googleGmail", args: {} } },
+		}, activeCalls(), {
+			resolveConfig: () => config,
+			readCorrelation: async () => correlation,
+			lookupLoadedSkill: () => undefined,
+			executeGateway: async (_resolved, request) => {
+				gatewayRequests.push(request);
+				return { body: { ok: true, status: "ok", data: {} }, httpStatus: 200 };
+			},
+		});
+		assert.equal((gatewayRequests[0]?.payload as { skillId?: string })?.skillId, undefined);
 	});
 
-	it("refuses a tool whose skill was loaded in an earlier run", async () => {
-		await assert.rejects(
-			executeLocalBrokerRequest({
-				version: 1,
-				request: { op: "tools.invoke", payload: { toolId: "googleGmail", args: {} } },
-			}, activeCalls(), {
-				resolveConfig: () => config,
-				readCorrelation: async () => correlation,
-				lookupLoadedSkill: () => ({ runId: "run-0", skillId: "gmail-read" }),
-				executeGateway: async () => ({ body: { ok: true, status: "ok", data: {} }, httpStatus: 200 }),
-			}),
-			/Exact company skill required/,
-		);
+	it("does not attach stale skill provenance from an earlier run", async () => {
+		const gatewayRequests: GatewayRequestBody[] = [];
+		await executeLocalBrokerRequest({
+			version: 1,
+			request: { op: "tools.invoke", payload: { toolId: "googleGmail", args: {} } },
+		}, activeCalls(), {
+			resolveConfig: () => config,
+			readCorrelation: async () => correlation,
+			lookupLoadedSkill: () => ({ runId: "run-0", skillId: "gmail-read" }),
+			executeGateway: async (_resolved, request) => {
+				gatewayRequests.push(request);
+				return { body: { ok: true, status: "ok", data: {} }, httpStatus: 200 };
+			},
+		});
+		assert.equal((gatewayRequests[0]?.payload as { skillId?: string })?.skillId, undefined);
 	});
 
 	it("rejects calls that are not owned by one active approved Bash execution", async () => {

@@ -174,21 +174,23 @@ export class AutomationPlanExecutor {
       });
       const currentInvocationSignatures: AutomationApprovalSignature[] = [];
       for (const invocation of plan.invocations) {
-        const authorized = await this.deps.skillCatalog.authorizesTool({
-          companyId: identity.companyId,
-          departmentId,
-          permission: withWorkDiscoveryPermissions(permissionResult.value),
-          grantedSkillIds,
-          skillId: invocation.skillId,
-          toolId: invocation.toolId,
-        });
-        if (!authorized) {
-          await this.fail(
-            claimedApproval.id,
-            'permission_denied',
-            `Skill "${invocation.skillId}" no longer authorizes tool "${invocation.toolId}".`,
-          );
-          return;
+        if (invocation.skillId) {
+          const matches = await this.deps.skillCatalog.authorizesTool({
+            companyId: identity.companyId,
+            departmentId,
+            permission: withWorkDiscoveryPermissions(permissionResult.value),
+            grantedSkillIds,
+            skillId: invocation.skillId,
+            toolId: invocation.toolId,
+          });
+          if (!matches) {
+            this.deps.logger.warn('automation_plan.skill_advisory_mismatch', {
+              planId: claimedApproval.id,
+              skillId: invocation.skillId,
+              toolId: invocation.toolId,
+              stage: 'pre_execution',
+            });
+          }
         }
         const approvalRequirement = await this.deps.approvalGate.inspect({
           toolId: invocation.toolId,
@@ -280,26 +282,27 @@ export class AutomationPlanExecutor {
           );
           return;
         }
-        const currentGrantedSkillIds = await this.deps.skillAccessEnforcement.listGrantedSkillIds(
-          identity.companyId,
-          requesterId,
-        );
-        const skillAuthorized = await this.deps.skillCatalog.authorizesTool({
-          companyId: identity.companyId,
-          departmentId,
-          permission: withWorkDiscoveryPermissions(currentPermissionResult.value),
-          grantedSkillIds: currentGrantedSkillIds,
-          skillId: invocation.skillId,
-          toolId: invocation.toolId,
-        });
-        if (!skillAuthorized) {
-          await this.fail(
-            claimedApproval.id,
-            'permission_denied',
-            `Skill "${invocation.skillId}" no longer authorizes tool "${invocation.toolId}".`,
-            { title: plan.title, completedCalls: index, totalCalls, results },
+        if (invocation.skillId) {
+          const currentGrantedSkillIds = await this.deps.skillAccessEnforcement.listGrantedSkillIds(
+            identity.companyId,
+            requesterId,
           );
-          return;
+          const matches = await this.deps.skillCatalog.authorizesTool({
+            companyId: identity.companyId,
+            departmentId,
+            permission: withWorkDiscoveryPermissions(currentPermissionResult.value),
+            grantedSkillIds: currentGrantedSkillIds,
+            skillId: invocation.skillId,
+            toolId: invocation.toolId,
+          });
+          if (!matches) {
+            this.deps.logger.warn('automation_plan.skill_advisory_mismatch', {
+              planId: claimedApproval.id,
+              skillId: invocation.skillId,
+              toolId: invocation.toolId,
+              stage: 'per_call',
+            });
+          }
         }
         const currentBatchApproval = await this.resolveCurrentBatchSignature(
           plan.approvalSignature,

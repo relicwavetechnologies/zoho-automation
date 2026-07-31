@@ -983,6 +983,20 @@ export function projectRuntimeProgress(event) {
 	return undefined;
 }
 
+export function collectRunAssistantText(messages) {
+	if (!Array.isArray(messages)) return "";
+	const chunks = [];
+	for (const message of messages) {
+		if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+		for (const content of message.content) {
+			if (content?.type !== "text" || typeof content.text !== "string") continue;
+			const text = content.text.trim();
+			if (text) chunks.push(text);
+		}
+	}
+	return chunks.join("\n\n");
+}
+
 function emitRuntimeProgress(onProgress, event) {
 	if (!onProgress) return;
 	try {
@@ -1412,8 +1426,7 @@ async function runPrompt({
 			{ type: "prompt", message: `${attachmentManifestBlock(attachments)}${message}` },
 			90_000,
 		);
-		await completed;
-		const result = await rpc.send({ type: "get_last_assistant_text" });
+		const completion = await completed;
 		const stats = await docker([
 			"stats",
 			"--no-stream",
@@ -1422,7 +1435,7 @@ async function runPrompt({
 			resources.container,
 		]);
 		console.error(`Runtime stats: ${stats.stdout.trim()}`);
-		const text = result?.text ?? "";
+		const text = collectRunAssistantText(completion?.messages);
 		console.log(text);
 		child.stdin.end();
 		const outcome = await exited;

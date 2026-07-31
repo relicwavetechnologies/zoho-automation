@@ -246,6 +246,66 @@ describe('member authentication uses the live company membership', () => {
     assert.deepEqual(dispatchedRoles, ['COMPANY_ADMIN', 'MEMBER']);
   });
 
+  it('retries transient authentication-store failures before dispatching', async () => {
+    let sessionAttempts = 0;
+    const prisma = {
+      memberSession: {
+        findUnique: async () => {
+          sessionAttempts += 1;
+          if (sessionAttempts < 3) throw new Error('transient database error');
+          return sessionFixture();
+        },
+      },
+      adminMembership: { findFirst: async () => ({ role: 'MEMBER' }) },
+    };
+    const memberAuth = createMemberAuthMiddleware({
+      prisma: prisma as any,
+      jwtSecret: TEST_SECRET,
+      logger: noopLogger,
+    });
+    const gateway = createGatewayRoutes({
+      dispatcher: {
+        dispatch: async () => ({ ok: true, status: 'success', data: {} }),
+      } as any,
+      logger: noopLogger,
+    });
+
+    const result = await callGateway(memberAuth, gateway, token);
+
+    assert.equal(result.status, 200);
+    assert.equal(sessionAttempts, 3);
+  });
+
+  it('returns a clear temporary-unavailable error after three authentication retries', async () => {
+    let sessionAttempts = 0;
+    const prisma = {
+      memberSession: {
+        findUnique: async () => {
+          sessionAttempts += 1;
+          throw new Error('database unavailable');
+        },
+      },
+      adminMembership: { findFirst: async () => ({ role: 'MEMBER' }) },
+    };
+    const memberAuth = createMemberAuthMiddleware({
+      prisma: prisma as any,
+      jwtSecret: TEST_SECRET,
+      logger: noopLogger,
+    });
+    const gateway = createGatewayRoutes({
+      dispatcher: {
+        dispatch: async () => assert.fail('Unavailable authentication must not dispatch'),
+      } as any,
+      logger: noopLogger,
+    });
+
+    const result = await callGateway(memberAuth, gateway, token);
+
+    assert.equal(result.status, 503);
+    assert.equal(result.body.error, 'Authentication service temporarily unavailable. Please retry.');
+    assert.equal(sessionAttempts, 4);
+  });
+
   it('accepts only a complete backend-signed Lark runtime lease', async () => {
     const dispatchedChannels: string[] = [];
     const dispatchedTenantKeys: Array<string | null | undefined> = [];

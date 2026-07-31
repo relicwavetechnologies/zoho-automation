@@ -25,6 +25,7 @@ import {
   buildHarnessTextMessage,
   parseEngineHarnessArgs,
   resolveHarnessOpenId,
+  resolveHarnessTenantKey,
   waitForDataExports,
   waitForGoogleOAuthContinuation,
 } from '../../scripts/run-engine-harness';
@@ -434,6 +435,20 @@ describe('Lark engine harness controls', () => {
         ],
       } }, 'Same Name'),
       /ambiguous/,
+    );
+  });
+
+  it('binds a harness identity to exactly one Lark tenant', async () => {
+    const tenantKey = await resolveHarnessTenantKey({ channelIdentity: {
+      findMany: async () => [{ externalTenantId: 'tenant-1' }],
+    } }, 'company-1', 'ou_user');
+    assert.equal(tenantKey, 'tenant-1');
+
+    await assert.rejects(
+      resolveHarnessTenantKey({ channelIdentity: {
+        findMany: async () => [],
+      } }, 'company-1', 'ou_user'),
+      /Expected one Lark tenant/,
     );
   });
 

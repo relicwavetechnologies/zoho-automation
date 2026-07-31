@@ -78,7 +78,7 @@ export const toolInvocationPayloadSchema = z.object({
 }).strict();
 
 export const toolsInvokePayloadSchema = toolInvocationPayloadSchema.extend({
-  skillId: z.string().min(1),
+  skillId: z.string().min(1).optional(),
 });
 
 export type ToolsInvokePayload = z.infer<typeof toolsInvokePayloadSchema>;

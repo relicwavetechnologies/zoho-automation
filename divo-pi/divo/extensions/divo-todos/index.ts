@@ -112,7 +112,10 @@ export function summarizeTodos(details: DivoTodosDetails): string {
 		skipped: "[-]",
 	};
 	const list = details.items.map((item) => `${marker[item.status]} ${item.title}`).join("\n");
-	return `Checklist shown to the user (${details.done}/${details.total}):\n${list}`;
+	const completionInstruction = details.done === details.total
+		? "\nChecklist complete. Now send the complete user-facing result in a separate final message; text beside this tool call is not delivered as the terminal answer."
+		: "";
+	return `Checklist shown to the user (${details.done}/${details.total}):\n${list}${completionInstruction}`;
 }
 
 export default function divoTodosExtension(pi: ExtensionAPI) {
@@ -130,6 +133,7 @@ export default function divoTodosExtension(pi: ExtensionAPI) {
 			"Use it for multi-step requests only. A single lookup, a short answer, or one tool call needs no checklist and looks worse with one.",
 			"Send the entire list every time, including steps already done. There is no add or complete call; the newest list replaces the previous one.",
 			"Mark exactly one step running. Move it forward as work progresses rather than marking everything done at the end, which shows the user nothing while it matters.",
+			"Complete the checklist before writing the final answer. Never combine user-visible result text with a divo_todos call; after the tool returns, send the complete result in a separate final message.",
 			"Write steps as outcomes the user would recognise (\"Pull last week's closed deals\"), not as tool names or internal operations.",
 			"Keep it to the real shape of the work — a handful of steps. A checklist longer than the answer is noise.",
 			"Calling this tool does not do the work and does not authorize anything. Marking a step done does not make it done.",

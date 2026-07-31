@@ -1311,7 +1311,7 @@ describe('LocalApprovalIntentService', () => {
     assert.equal(executed.length, 1);
   });
 
-  it('fails a prepared write closed when its exact skill binding is revoked before commit', async () => {
+  it('treats a revoked skill binding as advisory while rechecking backend permission', async () => {
     let authorized = true;
     let executions = 0;
     const registry = new ToolRegistry();
@@ -1349,8 +1349,8 @@ describe('LocalApprovalIntentService', () => {
       intentId: (prepared.data as any).intentId,
     });
 
-    assert.equal(committed.status, 'permission_denied');
-    assert.equal(executions, 0);
+    assert.equal(committed.status, 'success');
+    assert.equal(executions, 1);
   });
 
   it('returns deterministic Google Workspace and Zoho presentation payloads for the UI registry', async () => {
@@ -2517,7 +2517,7 @@ describe('GatewayDispatcher', () => {
     const dispatcher = makeDispatcher();
     const result = await dispatcher.dispatch({
       op: 'tools.invoke',
-      payload: { skillId: 'allowed-skill', toolId: 'fakeTool', args: { query: 'gateway' } },
+      payload: { toolId: 'fakeTool', args: { query: 'gateway' } },
     }, member);
 
     assert.equal(result.ok, true);

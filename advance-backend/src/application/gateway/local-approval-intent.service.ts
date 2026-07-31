@@ -40,7 +40,7 @@ interface StoredApprovalIntent {
   readonly sessionId: string;
   readonly departmentId: string | null;
   readonly execution?: GatewayExecutionContext;
-  readonly skillId: string;
+  readonly skillId?: string;
   readonly toolId: string;
   readonly action: ToolActionGroup;
   readonly args: Record<string, unknown>;
@@ -203,7 +203,7 @@ export class LocalApprovalIntentService {
   async prepare(input: {
     readonly member: GatewayMemberContext;
     readonly departmentId?: string;
-    readonly skillId: string;
+    readonly skillId?: string;
     readonly toolId: string;
     readonly args: Record<string, unknown>;
     readonly execution?: GatewayExecutionContext;
@@ -224,7 +224,7 @@ export class LocalApprovalIntentService {
     input: {
       readonly member: GatewayMemberContext;
       readonly departmentId?: string;
-      readonly skillId: string;
+      readonly skillId?: string;
       readonly toolId: string;
       readonly args: Record<string, unknown>;
       readonly execution?: GatewayExecutionContext;
@@ -261,7 +261,7 @@ export class LocalApprovalIntentService {
       sessionId: input.member.sessionId,
       departmentId: input.departmentId ?? null,
       ...(input.execution ? { execution: input.execution } : {}),
-      skillId: input.skillId,
+      ...(input.skillId ? { skillId: input.skillId } : {}),
       toolId,
       action,
       args: storedArgs,
@@ -347,24 +347,30 @@ export class LocalApprovalIntentService {
         : {}),
       channel: 'desktop',
     });
-    const grantedSkillIds = await this.deps.skillAccessEnforcement.listGrantedSkillIds(
-      input.member.companyId,
-      input.member.userId,
-    );
-    const authorized = permission.ok && await this.deps.skillCatalog.authorizesTool({
-      companyId: input.member.companyId,
-      ...(claimed.intent.departmentId ? { departmentId: claimed.intent.departmentId } : {}),
-      permission: withWorkDiscoveryPermissions(permission.value),
-      grantedSkillIds,
-      skillId: claimed.intent.skillId,
-      toolId: claimed.intent.toolId,
-    });
-    if (!authorized) {
+    if (!permission.ok) {
       this.deps.repository.consume(input.intentId, claimed.claimToken, this.deps.clock.nowMs());
-      return gatewayFailure(
-        'permission_denied',
-        `Skill "${claimed.intent.skillId}" no longer authorizes tool "${claimed.intent.toolId}". Prepare the action again.`,
+      return gatewayFailure('permission_denied', permission.error.message);
+    }
+    if (claimed.intent.skillId) {
+      const grantedSkillIds = await this.deps.skillAccessEnforcement.listGrantedSkillIds(
+        input.member.companyId,
+        input.member.userId,
       );
+      const matches = await this.deps.skillCatalog.authorizesTool({
+        companyId: input.member.companyId,
+        ...(claimed.intent.departmentId ? { departmentId: claimed.intent.departmentId } : {}),
+        permission: withWorkDiscoveryPermissions(permission.value),
+        grantedSkillIds,
+        skillId: claimed.intent.skillId,
+        toolId: claimed.intent.toolId,
+      });
+      if (!matches) {
+        this.deps.logger.warn('gateway.local_approval.skill_advisory_mismatch', {
+          intentId: claimed.intent.id,
+          skillId: claimed.intent.skillId,
+          toolId: claimed.intent.toolId,
+        });
+      }
     }
 
     const result = await this.deps.toolExecutor.invoke({

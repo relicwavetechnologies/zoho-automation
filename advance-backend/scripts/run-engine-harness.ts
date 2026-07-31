@@ -270,6 +270,12 @@ type HarnessIdentityStore = {
   };
 };
 
+type HarnessTenantStore = {
+  channelIdentity: {
+    findMany(input: unknown): Promise<Array<{ externalTenantId: string }>>;
+  };
+};
+
 export async function resolveHarnessOpenId(
   db: HarnessIdentityStore,
   selector: string,
@@ -298,6 +304,23 @@ export async function resolveHarnessOpenId(
     throw new Error(`Lark identity ${JSON.stringify(normalized)} is ambiguous; pass its exact open_id`);
   }
   return matches[0]!.larkOpenId!;
+}
+
+export async function resolveHarnessTenantKey(
+  db: HarnessTenantStore,
+  companyId: string,
+  larkOpenId: string,
+): Promise<string> {
+  const matches = await db.channelIdentity.findMany({
+    where: { companyId, channel: 'lark', larkOpenId },
+    select: { externalTenantId: true },
+    distinct: ['externalTenantId'],
+    take: 2,
+  });
+  if (matches.length !== 1) {
+    throw new Error(`Expected one Lark tenant for openId=${larkOpenId}; found ${matches.length}`);
+  }
+  return matches[0]!.externalTenantId;
 }
 
 export function buildHarnessTextMessage(text: string): string {
@@ -632,8 +655,9 @@ async function main() {
     process.exit(1);
   }
   const identity = identityResult.value;
+  const tenantKey = await resolveHarnessTenantKey(prisma, identity.companyId, userOpenId);
   console.log(`identity: ${identity.displayName ?? identity.email ?? userOpenId} (${userOpenId})`);
-  console.log(`principal: companyId=${identity.companyId} userId=${identity.userId} role=${identity.aiRole} dept=${identity.activeDepartmentId ?? '∅'}\n`);
+  console.log(`principal: companyId=${identity.companyId} userId=${identity.userId} role=${identity.aiRole} dept=${identity.activeDepartmentId ?? '∅'} tenant=${tenantKey}\n`);
 
   // ── 2. Build IncomingMessage + RunContext exactly like the webhook ────────
   let threadRootMessageId = options.threadRootMessageId;
@@ -691,6 +715,7 @@ async function main() {
     userId:         asUserId(identity.userId),
     companyRole:    asCompanyRoleSlug(identity.aiRole),
     channel:        'lark',
+    tenantId:       tenantKey,
     traceId:        String(traceId),
     requestId:      messageId,
     userExternalId: userOpenId,

@@ -163,7 +163,7 @@ function createHarness(
 }
 
 describe('AutomationPlanService', () => {
-  it('rejects a mutation that is not bound to its exact visible DB skill', async () => {
+  it('treats a stale skill binding as advisory while preserving mutation approval', async () => {
     const { service, created } = createHarness(
       'create',
       undefined,
@@ -186,8 +186,8 @@ describe('AutomationPlanService', () => {
       }],
     });
 
-    assert.equal(response.status, 'permission_denied');
-    assert.equal(created.length, 0);
+    assert.equal(response.status, 'success');
+    assert.equal(created.length, 1);
   });
 
   it('stores only exact preflighted mutations and sends a manager card', async () => {
@@ -720,7 +720,7 @@ function createFixedApprovalResolver(userId: string) {
 }
 
 describe('AutomationPlanExecutor', () => {
-  it('fails closed before deferred execution when the stored skill binding is revoked', async () => {
+  it('continues deferred execution when only advisory skill provenance is revoked', async () => {
     const plan = createSignedPlan({ kind: 'allowed' }, 'manager-1');
     const { executor, calls, failures } = createExecutorScenario(
       plan,
@@ -734,8 +734,8 @@ describe('AutomationPlanExecutor', () => {
 
     await executor.resume(plan, 'approved');
 
-    assert.equal(calls.length, 0);
-    assert.equal(failures[0]?.status, 'permission_denied');
+    assert.equal(calls.length, 1);
+    assert.equal(failures.length, 0);
   });
 
   it('fails closed when identity resolution returns a different requester or company', async () => {
