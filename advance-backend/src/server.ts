@@ -55,6 +55,19 @@ import { createManagerTeachRoutes } from './http/desktop/manager-teach.routes';
 import { LarkFileClient } from './infrastructure/channels/lark/clients/lark-file.client';
 import { ElevenLabsTranscriptionClient } from './infrastructure/ai/transcription/elevenlabs-transcription.client';
 
+/** Where the model proxy is mounted. Named because the body parser exempts it. */
+const LLM_PROXY_MOUNT_PATH = '/api/llm';
+
+/**
+ * How large a model request may be.
+ *
+ * Sized above what Pi can put in one: its `read` tool inlines an image up to
+ * 4.5MB of base64, and a turn can carry more than one alongside the
+ * conversation. Every other route keeps the 2mb limit — a request this size is
+ * only ever a picture on its way to a model that can see.
+ */
+const LLM_PROXY_BODY_LIMIT = '24mb';
+
 export const createServer = (c: Container) => {
   const app = express();
   const gmailPubsubConfig = getGmailPubSubConfig(c.env);
@@ -263,15 +276,20 @@ export const createServer = (c: Container) => {
 
   // Capture the raw JSON body string on every request before parsing.
   // The webhook handler needs it to verify the HMAC-SHA256 signature.
-  app.use(
-    express.json({
-      limit: '2mb',
-      verify: (req, _res, buf) => {
-        // Attach raw body for HMAC verification; use unknown-cast to avoid module augmentation.
-        (req as unknown as Record<string, unknown>)['rawBody'] = buf.toString('utf8');
-      },
-    }),
-  );
+  const parseJsonBody = express.json({
+    limit: '2mb',
+    verify: (req, _res, buf) => {
+      // Attach raw body for HMAC verification; use unknown-cast to avoid module augmentation.
+      (req as unknown as Record<string, unknown>)['rawBody'] = buf.toString('utf8');
+    },
+  });
+  // The model proxy is exempt because a vision request carries the picture.
+  // 2mb is right for every other route and far too small for this one: Pi inlines
+  // an image up to 4.5MB of base64 (`DEFAULT_MAX_BYTES` in its image resizer),
+  // and a 413 raised here never reaches the proxy — the run just fails with
+  // advice about truncating tool results, which cannot help an image.
+  app.use((req, res, next) =>
+    req.path.startsWith(LLM_PROXY_MOUNT_PATH) ? next() : parseJsonBody(req, res, next));
   app.use(express.urlencoded({ extended: true }));
 
   // ── Request correlation middleware ──────────────────────────────────────
@@ -562,17 +580,22 @@ export const createServer = (c: Container) => {
   // PI holds no key — it authenticates with its member token.
   if (c.env.LLM_PROXY_ENABLED) {
     app.use(
-      '/api/llm',
+      LLM_PROXY_MOUNT_PATH,
+      express.json({ limit: LLM_PROXY_BODY_LIMIT }),
       piRuntimeMemberAuth,
       createLlmProxyRoutes({
         logger:  c.logger,
         store:   c.proxyKeyStore,
         service: c.llmProxyService,
-        baseUrl: c.env.DEEPSEEK_BASE_URL,
+        baseUrls: { deepseek: c.env.DEEPSEEK_BASE_URL, openai: c.env.OPENAI_BASE_URL },
         apiKeyExhaustion: c.apiKeyExhaustionNotifier,
       }),
     );
-    c.logger.info('llm-proxy.enabled', { baseUrl: c.env.DEEPSEEK_BASE_URL, canEncrypt: c.proxyKeyStore.canEncrypt() });
+    c.logger.info('llm-proxy.enabled', {
+      deepseek: c.env.DEEPSEEK_BASE_URL,
+      openai: c.env.OPENAI_BASE_URL,
+      canEncrypt: c.proxyKeyStore.canEncrypt(),
+    });
   }
 
   // Department admin CRUD
@@ -656,7 +679,8 @@ export const createServer = (c: Container) => {
 
   // Proxy control plane (Guardrails) — key store + status.
   app.use('/api/admin/proxy', adminAuth, createProxyRoutes({
-    prisma: c.prisma, store: c.proxyKeyStore, logger: c.logger, enabled: c.env.LLM_PROXY_ENABLED, upstream: c.env.DEEPSEEK_BASE_URL,
+    prisma: c.prisma, store: c.proxyKeyStore, logger: c.logger, enabled: c.env.LLM_PROXY_ENABLED,
+    upstreams: { deepseek: c.env.DEEPSEEK_BASE_URL, openai: c.env.OPENAI_BASE_URL },
   }));
 
   // 404

@@ -71,6 +71,14 @@ const EnvSchema = z.object({
   // a kill switch. PI is repointed at /api/llm/v1 via the divo-llm extension.
   LLM_PROXY_ENABLED:  z.string().default('true').transform((v) => v === 'true' || v === '1'),
   DEEPSEEK_BASE_URL:  z.string().default('https://api.deepseek.com'),
+  // Luna is served from OpenAI's own OpenAI-compatible endpoint, so the proxy
+  // routes to it by the model's provider and forwards an OpenAI key instead.
+  OPENAI_BASE_URL:    z.string().default('https://api.openai.com'),
+  // There is deliberately no OpenAI env fallback for the proxy. The key an admin
+  // saves in Guardrails is the only one Luna runs on, so a company that has not
+  // added one gets a 503 naming that, rather than quietly spending on the
+  // platform's OPENAI_API_KEY — which is required, shared with memory and
+  // transcription, and would make every company read as already configured.
   // Legacy trace-ingest kill switch for older desktop builds that cannot declare
   // per-batch usage ownership. Current builds merge their local timeline into the
   // proxy-correlated run and let the proxy own only authoritative token usage.

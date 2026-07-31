@@ -9,24 +9,36 @@ const silent: Logger = {
   child: () => silent,
 };
 
+interface Forwarded {
+  body: Record<string, unknown>;
+  url: string;
+  authorization: string;
+}
+
 /**
- * Run one chat-completions request and return the body that reached DeepSeek.
+ * Run one chat-completions request and return what reached the provider.
  *
  * The upstream call is stubbed at `fetch` — this route forwards with `fetch`
- * directly rather than through the AI SDK, so the request body is observable.
+ * directly rather than through the AI SDK, so the request is observable. The URL
+ * and the Authorization header matter as much as the body now that the proxy
+ * serves more than one provider: sending the right model to the wrong host, or
+ * with the other provider's key, is a 401 the user reads as Divo being broken.
  */
-async function forwardedBody(
+async function forward(
   clientModel: unknown,
   options: {
     locals?: Record<string, unknown>;
     calls?: Array<{ method: string; input: Record<string, unknown> }>;
+    keyByProvider?: Record<string, string>;
   } = {},
-): Promise<Record<string, unknown>> {
+): Promise<Forwarded> {
   const originalFetch = globalThis.fetch;
-  let captured: Record<string, unknown> = {};
+  const captured: Forwarded = { body: {}, url: '', authorization: '' };
 
-  globalThis.fetch = (async (_url: unknown, init: any) => {
-    captured = JSON.parse(String(init?.body ?? '{}'));
+  globalThis.fetch = (async (url: unknown, init: any) => {
+    captured.body = JSON.parse(String(init?.body ?? '{}'));
+    captured.url = String(url);
+    captured.authorization = String(init?.headers?.Authorization ?? '');
     return new Response(JSON.stringify({
       id: 'chatcmpl-1',
       model: 'deepseek-v4-pro',
@@ -39,7 +51,10 @@ async function forwardedBody(
     const router = createLlmProxyRoutes({
       logger: silent,
       store: {
-        resolve: async () => ({ key: 'sk-test', source: 'platform' }),
+        resolve: async (provider: string) => ({
+          key: options.keyByProvider?.[provider] ?? 'sk-test',
+          source: 'platform',
+        }),
         touch: async () => {},
       } as any,
       service: {
@@ -56,7 +71,10 @@ async function forwardedBody(
           options.calls?.push({ method: 'recordAudit', input });
         },
       } as any,
-      baseUrl: 'https://api.deepseek.example',
+      baseUrls: {
+        deepseek: 'https://api.deepseek.example',
+        openai: 'https://api.openai.example',
+      },
     });
 
     const handler = (router as any).stack.find(
@@ -98,28 +116,49 @@ describe('LLM proxy model forwarding', () => {
     // and pricing — so it must be canonicalised for the upstream call too.
     // Forwarding the raw name authorises one model and then calls another, and
     // DeepSeek has since retired the alias and rejects it outright.
-    const body = await forwardedBody('deepseek-reasoner');
+    const { body } = await forward('deepseek-reasoner');
 
     assert.equal(body['model'], 'deepseek-v4-pro');
   });
 
   it('leaves an already-canonical model unchanged', async () => {
-    const body = await forwardedBody('deepseek-v4-flash');
+    const { body } = await forward('deepseek-v4-flash');
 
     assert.equal(body['model'], 'deepseek-v4-flash');
   });
 
   it('substitutes a default when the client names no model at all', async () => {
-    const body = await forwardedBody(undefined);
+    const { body } = await forward(undefined);
 
     // Never forwards `undefined`: DeepSeek rejects a request with no model, and
     // the gate has already priced this call as the default.
     assert.equal(body['model'], 'deepseek-v4-flash');
   });
 
+  it('sends a DeepSeek model to DeepSeek with the DeepSeek key', async () => {
+    const { url, authorization } = await forward('deepseek-v4-flash', {
+      keyByProvider: { deepseek: 'sk-deepseek', openai: 'sk-openai' },
+    });
+
+    assert.equal(url, 'https://api.deepseek.example/v1/chat/completions');
+    assert.equal(authorization, 'Bearer sk-deepseek');
+  });
+
+  it('sends Luna to OpenAI with the OpenAI key', async () => {
+    // The model decides the upstream and the credential. Both keys are stored
+    // against the same company, so nothing but `providerOf` separates them.
+    const { url, authorization, body } = await forward('gpt-5.6-luna', {
+      keyByProvider: { deepseek: 'sk-deepseek', openai: 'sk-openai' },
+    });
+
+    assert.equal(url, 'https://api.openai.example/v1/chat/completions');
+    assert.equal(authorization, 'Bearer sk-openai');
+    assert.equal(body['model'], 'gpt-5.6-luna');
+  });
+
   it('attributes a runtime lease request to Lark through run, usage, and audit', async () => {
     const calls: Array<{ method: string; input: Record<string, unknown> }> = [];
-    await forwardedBody('deepseek-v4-flash', {
+    await forward('deepseek-v4-flash', {
       locals: {
         companyId: 'co-1',
         userId: 'user-1',

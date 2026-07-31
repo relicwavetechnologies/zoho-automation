@@ -1,13 +1,19 @@
 /**
- * LLM proxy route — desktop/PI → backend → DeepSeek (OpenAI-compatible).
+ * LLM proxy route — desktop/PI → backend → the model's provider.
  *
  *   POST /api/llm/v1/chat/completions   (member auth)
  *
  * The backend gates the request (block / budget / rate / model), forwards it to
- * DeepSeek with the real key, streams the SSE response straight back to PI, and
- * on completion records DeepSeek's AUTHORITATIVE token usage against the run.
- * PI holds no key — it authenticates with its member token. Enabled only when
- * LLM_PROXY_ENABLED=true; otherwise this router isn't mounted.
+ * whichever provider serves the requested model with that provider's real key,
+ * streams the SSE response straight back to PI, and on completion records the
+ * provider's AUTHORITATIVE token usage against the run. PI holds no key — it
+ * authenticates with its member token. Enabled only when LLM_PROXY_ENABLED=true;
+ * otherwise this router isn't mounted.
+ *
+ * Every provider here speaks the OpenAI chat-completions shape, so the request
+ * body, the SSE framing and the `usage` object are the same on all of them. The
+ * only thing that varies by provider is where the request goes and which key
+ * signs it — which is exactly what `providerOf` decides.
  */
 
 import { Router } from 'express';
@@ -15,18 +21,25 @@ import type { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import type { Logger } from '../../shared/logger';
 import { LlmProxyService, type DeepSeekUsage } from '../../application/proxy/llm-proxy.service';
-import { canonicalModel } from '../../application/observability/pricing';
+import { canonicalModel, providerOf, type ModelProvider } from '../../application/observability/pricing';
 import type { ProxyKeyStore } from '../../application/proxy/proxy-key.store';
 import type { ApiKeyExhaustionNotifierPort } from '../../application/governance/api-key-exhaustion.notifier';
 import { isApiKeyExhausted } from '../../application/governance/api-key-exhaustion.classifier';
 
 export interface LlmProxyRoutesDeps {
   logger:  Logger;
-  store:   ProxyKeyStore;   // resolves the DeepSeek key server-side (never leaves the backend)
+  store:   ProxyKeyStore;   // resolves the provider key server-side (never leaves the backend)
   service: LlmProxyService; // shared with Lark so policy/rate accounting has one authority
-  baseUrl: string;          // e.g. https://api.deepseek.com
+  /** Upstream origin per provider, e.g. { deepseek: 'https://api.deepseek.com' }. */
+  baseUrls: Record<ModelProvider, string>;
   apiKeyExhaustion?: ApiKeyExhaustionNotifierPort;
 }
+
+/** How the provider is named to an admin in a 503. */
+const PROVIDER_LABEL: Record<ModelProvider, string> = {
+  deepseek: 'DeepSeek',
+  openai: 'OpenAI',
+};
 interface ChatBody {
   model?: string;
   messages?: unknown[];
@@ -93,8 +106,9 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     const auxiliaryAuditTarget = threadTitleRequest
       ? { agentTarget: THREAD_TITLE_AGENT_TARGET }
       : {};
-    // Canonicalize to one of our two priced models so the allow-list + pricing are exact.
+    // Canonicalize to one of our priced models so the allow-list + pricing are exact.
     const model = canonicalModel(typeof body.model === 'string' ? body.model : undefined);
+    const provider = providerOf(model);
     const messages = Array.isArray(body.messages) ? body.messages : [];
     if (threadTitleRequest) {
       log.info('proxy.thread_title.accepted', {
@@ -110,16 +124,16 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
       log.info('proxy.denied', { userId, model, reason: gate.reason });
       const httpStatus = gate.status ?? 403;
       res.status(httpStatus).json({ error: { message: gate.reason ?? 'Denied', type: 'guardrails' } });
-      void svc.recordAudit({ companyId, userId, model, channel, decision: 'denied', reason: gate.reason ?? 'guardrails', httpStatus, latencyMs: Date.now() - startedAt, ...auxiliaryAuditTarget });
+      void svc.recordAudit({ companyId, userId, model, provider, channel, decision: 'denied', reason: gate.reason ?? 'guardrails', httpStatus, latencyMs: Date.now() - startedAt, ...auxiliaryAuditTarget });
       return;
     }
 
     // ── Resolve the upstream key (company → platform → env) ───────────────────
-    const resolved = await deps.store.resolve(companyId);
+    const resolved = await deps.store.resolve(provider, companyId);
     if (!resolved) {
-      log.warn('proxy.no_key', { companyId });
-      res.status(503).json({ error: { message: 'The AI proxy has no DeepSeek key configured. Add one in Guardrails.', type: 'not_configured' } });
-      void svc.recordAudit({ companyId, userId, model, channel, decision: 'denied', reason: 'not_configured', httpStatus: 503, latencyMs: Date.now() - startedAt, ...auxiliaryAuditTarget });
+      log.warn('proxy.no_key', { companyId, provider });
+      res.status(503).json({ error: { message: `The AI proxy has no ${PROVIDER_LABEL[provider]} key configured. Add one in Guardrails.`, type: 'not_configured' } });
+      void svc.recordAudit({ companyId, userId, model, provider, channel, decision: 'denied', reason: 'not_configured', httpStatus: 503, latencyMs: Date.now() - startedAt, ...auxiliaryAuditTarget });
       return;
     }
 
@@ -142,7 +156,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
       }
     }
 
-    // ── Forward to DeepSeek ───────────────────────────────────────────────────
+    // ── Forward to the provider ───────────────────────────────────────────────
     // Forward the canonical name, not the client's. The allow-list, the budget
     // check, and the pricing all ran against `model`; forwarding `body.model`
     // would authorise one model and then call another. It is also the only
@@ -170,29 +184,30 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
 
     let upstream: globalThis.Response;
     try {
-      upstream = await fetch(`${deps.baseUrl}/v1/chat/completions`, {
+      upstream = await fetch(`${deps.baseUrls[provider]}/v1/chat/completions`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${resolved.key}` },
         body:    JSON.stringify(forwardBody),
         signal:  controller.signal,
       });
     } catch (e) {
-      log.error('proxy.upstream.unreachable', { error: String(e) });
+      log.error('proxy.upstream.unreachable', { provider, error: String(e) });
       res.status(502).json({ error: { message: 'Upstream unreachable', type: 'upstream' } });
-      void svc.recordAudit({ companyId, userId, executionId, model, channel, decision: 'denied', reason: 'upstream', httpStatus: 502, latencyMs: Date.now() - startedAt, keySource: resolved.source, ...auxiliaryAuditTarget });
+      void svc.recordAudit({ companyId, userId, executionId, model, provider, channel, decision: 'denied', reason: 'upstream', httpStatus: 502, latencyMs: Date.now() - startedAt, keySource: resolved.source, ...auxiliaryAuditTarget });
       return;
     }
     if (upstream.ok) {
-      void deps.store.touch(resolved.source, companyId);
-      void deps.apiKeyExhaustion?.clear(companyId, 'deepseek');
+      void deps.store.touch(provider, resolved.source, companyId);
+      void deps.apiKeyExhaustion?.clear(companyId, provider);
     } else {
-      void maybeNotifyDeepSeekExhaustion(deps, companyId, upstream.status, () => upstream.clone().text());
+      void maybeNotifyUpstreamExhaustion(deps, companyId, provider, upstream.status, () => upstream.clone().text());
     }
 
     const audit = (ok: boolean, usage: DeepSeekUsage | null, responseModel?: string | null, reason?: string) =>
       void svc.recordAudit({
         companyId, userId, executionId,
         channel,
+        provider,
         model: canonicalModel(responseModel ?? model),
         decision: ok ? 'allowed' : 'denied',
         reason: ok ? undefined : (reason ?? `upstream_${upstream.status}`),
@@ -205,14 +220,14 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
 
     const recordUsage = async (usage: DeepSeekUsage | null, responseModel?: string | null) => {
       if (!usage) return;
-      // Prefer the model DeepSeek actually served (aliases resolved), else the request's.
+      // Prefer the model the provider actually served (aliases resolved), else the request's.
       const served = canonicalModel(responseModel ?? model);
       if (threadTitleRequest) {
         await svc.recordAuxiliaryUsage({
           companyId,
           userId,
           model: served,
-          provider: 'deepseek',
+          provider: providerOf(served),
           usage,
           agentTarget: THREAD_TITLE_AGENT_TARGET,
           channel,
@@ -227,7 +242,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
           companyId,
           userId,
           model: served,
-          provider: 'deepseek',
+          provider: providerOf(served),
           usage,
           channel,
           ...(runtimeThreadId ? { threadId: runtimeThreadId } : {}),
@@ -306,9 +321,10 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
   return router;
 }
 
-async function maybeNotifyDeepSeekExhaustion(
+async function maybeNotifyUpstreamExhaustion(
   deps: LlmProxyRoutesDeps,
   companyId: string,
+  provider: ModelProvider,
   httpStatus: number,
   readBody: () => Promise<string>,
 ): Promise<void> {
@@ -330,10 +346,10 @@ async function maybeNotifyDeepSeekExhaustion(
   if (!isApiKeyExhausted({ httpStatus, code, message })) return;
   await deps.apiKeyExhaustion.notifyIfExhausted({
     companyId,
-    provider: 'deepseek',
+    provider,
     httpStatus,
     code,
-    message: message.slice(0, 500) || `DeepSeek upstream HTTP ${httpStatus}`,
+    message: message.slice(0, 500) || `${PROVIDER_LABEL[provider]} upstream HTTP ${httpStatus}`,
     source: 'llm-proxy.chat.completions',
   });
 }
