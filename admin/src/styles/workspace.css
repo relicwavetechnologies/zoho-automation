@@ -1,0 +1,521 @@
+/*
+  Divo Workspace — the role-aware member/manager/admin web UI.
+
+  Built ON TOP of cursor.css, not beside it. Everything here is scoped under
+  `.cur` so it inherits the `--cur-*` tokens and dark mode for free, and every
+  primitive that already exists there (.btn .badge .card .section .metric
+  table .avatar .kv .stub) is reused rather than re-declared.
+
+  Discipline this file holds to — the previous mock broke all four:
+    radii      8px (controls) · 12px (cards) · 999px (pills). Nothing else.
+    type       11 / 12 / 13 / 14 / 15 / 20 / 30. No in-between nudging.
+    weight     400 everywhere; 500 for structural headings; 600 ONLY for
+               uppercase micro-labels. Headings are never bold.
+    depth      hairlines. Raised = inset ring. Real shadow only for things
+               that float above the page (drawer, palette, toast).
+  Orange is scarce: brand mark, one primary CTA per view, cost, focus ring.
+*/
+
+.cur {
+  /* cursor.css never defined a warning token — pages fall back inline. Define it once. */
+  --ws-warning: #b7791f;
+  /* Scrim must NOT derive from --cur-ink: ink inverts in dark and would tint the overlay light. */
+  --ws-scrim: rgba(0, 0, 0, 0.34);
+  --ws-float: 0 16px 40px -12px rgba(0, 0, 0, 0.24), 0 0 0 1px var(--cur-hairline);
+}
+.dark .cur {
+  --ws-warning: #d9a441;
+  --ws-scrim: rgba(0, 0, 0, 0.62);
+  --ws-float: 0 16px 40px -8px rgba(0, 0, 0, 0.7), 0 0 0 1px var(--cur-hairline-strong);
+}
+
+/* ── Scope switcher ───────────────────────────────────────
+   The one structural idea in this shell. A manager is two people — an
+   individual and a lead — so scope is explicit rather than implied by
+   ambiguous nav labels ("Connections": mine, or theirs?). Members never see
+   the control; they only ever have one scope. */
+.cur .ws-scope { position: relative; margin: 0 2px 4px; }
+.cur .ws-scope-btn {
+  width: 100%; display: flex; align-items: center; gap: 9px; height: 46px; padding: 0 9px;
+  border-radius: var(--cur-r-cta); border: 1px solid transparent; background: transparent;
+  cursor: pointer; text-align: left; color: var(--cur-ink);
+}
+.cur .ws-scope-btn:hover { background: var(--cur-surface-strong); }
+.cur .ws-scope-btn.open { background: var(--cur-surface); border-color: var(--cur-hairline); }
+.cur .ws-scope-btn[data-static="true"] { cursor: default; }
+.cur .ws-scope-btn[data-static="true"]:hover { background: transparent; }
+.cur .ws-scope-ic {
+  width: 28px; height: 28px; border-radius: var(--cur-r-cta); flex-shrink: 0;
+  display: grid; place-items: center;
+  background: var(--cur-surface-strong); color: var(--cur-body);
+}
+.cur .ws-scope-btn.open .ws-scope-ic,
+.cur .ws-scope-ic[data-tone="ink"] { background: var(--cur-ink); color: var(--cur-canvas); }
+.cur .ws-scope-txt { flex: 1; min-width: 0; }
+.cur .ws-scope-txt b { display: block; font-size: 13px; font-weight: 500; letter-spacing: -0.01em; }
+.cur .ws-scope-txt span {
+  display: block; font-size: 11px; color: var(--cur-muted); margin-top: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cur .ws-scope-menu {
+  position: absolute; top: calc(100% + 5px); left: 0; right: 0; z-index: 40;
+  background: var(--cur-surface); border: 1px solid var(--cur-hairline);
+  border-radius: var(--cur-r-card); padding: 5px; box-shadow: var(--ws-float);
+}
+.cur .ws-scope-opt {
+  width: 100%; display: flex; align-items: center; gap: 9px; padding: 8px 9px;
+  border: 0; background: none; border-radius: var(--cur-r-cta); cursor: pointer;
+  text-align: left; color: var(--cur-ink);
+}
+.cur .ws-scope-opt:hover { background: var(--cur-canvas-soft); }
+.cur .ws-scope-opt .ck { margin-left: auto; color: var(--cur-primary); }
+.cur .ws-scope-group {
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--cur-muted-soft); padding: 9px 10px 4px;
+}
+
+/* ── Sidebar additions ───────────────────────────────── */
+.cur .ws-nav { display: flex; flex-direction: column; gap: 1px; overflow-y: auto; flex: 1; margin: 0 -2px; padding: 0 2px; }
+.cur .ws-nav-count {
+  margin-left: auto; min-width: 19px; height: 19px; padding: 0 6px; border-radius: 999px;
+  display: grid; place-items: center; font-size: 11px; font-weight: 600;
+  background: color-mix(in srgb, var(--cur-primary) 14%, transparent); color: var(--cur-primary);
+}
+.cur .nav-item.active .ws-nav-count { background: var(--cur-primary); color: var(--cur-on-primary); }
+.cur .ws-acct {
+  width: 100%; display: flex; align-items: center; gap: 9px; padding: 6px 8px; border: 0;
+  background: none; border-radius: var(--cur-r-cta); cursor: pointer; text-align: left; color: var(--cur-ink);
+}
+.cur .ws-acct:hover { background: var(--cur-surface-strong); }
+.cur .ws-acct-txt { flex: 1; min-width: 0; }
+.cur .ws-acct-txt b { display: block; font-size: 13px; font-weight: 500; }
+.cur .ws-acct-txt span { display: block; font-size: 11px; color: var(--cur-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Topbar additions ────────────────────────────────── */
+.cur .ws-crumb { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--cur-muted); flex: 1; min-width: 0; }
+.cur .ws-crumb button { border: 0; background: none; padding: 0; font-size: 13px; color: var(--cur-body); cursor: pointer; }
+.cur .ws-crumb button:hover { color: var(--cur-primary); }
+.cur .ws-crumb b { color: var(--cur-ink); font-weight: 500; }
+.cur .ws-kbd {
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 11px;
+  padding: 2px 5px; border-radius: 999px; border: 1px solid var(--cur-hairline-strong);
+  color: var(--cur-muted); background: var(--cur-canvas);
+}
+.cur .ws-dot-alert {
+  position: absolute; top: 7px; right: 7px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--cur-primary); box-shadow: 0 0 0 2px var(--cur-surface);
+}
+
+/* ── Page header ─────────────────────────────────────── */
+.cur .ws-ph { margin-bottom: 24px; display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }
+.cur .ws-ph h1 { font-size: 30px; letter-spacing: -0.025em; font-weight: 400; line-height: 1.12; }
+.cur .ws-ph p { font-size: 13px; color: var(--cur-body); margin-top: 8px; max-width: 620px; line-height: 1.55; }
+.cur .ws-ph-act { display: flex; gap: 8px; flex-shrink: 0; }
+
+/* ── Panel ───────────────────────────────────────────── */
+.cur .ws-panel { background: var(--cur-surface); border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card); }
+.cur .ws-panel > header { padding: 15px 18px; border-bottom: 1px solid var(--cur-hairline); display: flex; align-items: center; gap: 12px; }
+.cur .ws-panel > header .ws-panel-t { flex: 1; min-width: 0; }
+.cur .ws-panel > header h2 { font-size: 14px; font-weight: 500; letter-spacing: -0.01em; }
+.cur .ws-panel > header p { font-size: 12px; color: var(--cur-muted); margin-top: 3px; }
+.cur .ws-panel-body { padding: 18px; }
+.cur .ws-panel-foot {
+  padding: 11px 18px; border-top: 1px solid var(--cur-hairline); background: var(--cur-canvas-soft);
+  font-size: 12px; color: var(--cur-muted); display: flex; align-items: center; gap: 10px;
+  border-radius: 0 0 var(--cur-r-card) var(--cur-r-card);
+}
+.cur .ws-stack { display: flex; flex-direction: column; gap: 16px; }
+.cur .ws-cols { display: grid; gap: 16px; grid-template-columns: 1.55fr 1fr; align-items: start; }
+.cur .ws-cols-even { display: grid; gap: 16px; grid-template-columns: 1fr 1fr; align-items: start; }
+@media (max-width: 1080px) { .cur .ws-cols, .cur .ws-cols-even { grid-template-columns: 1fr; } }
+
+/* ── Rows ────────────────────────────────────────────── */
+.cur .ws-rows { display: flex; flex-direction: column; }
+.cur .ws-row { display: flex; align-items: center; gap: 13px; padding: 14px 18px; border-top: 1px solid var(--cur-hairline-soft); }
+.cur .ws-rows > .ws-row:first-child { border-top: 0; }
+.cur .ws-row.click { cursor: pointer; }
+.cur .ws-row.click:hover { background: var(--cur-canvas-soft); }
+.cur .ws-row-main { flex: 1; min-width: 0; }
+.cur .ws-row-main b { font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
+.cur .ws-row-main p { font-size: 12px; color: var(--cur-muted); margin-top: 3px; line-height: 1.45; }
+.cur .ws-row-act { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.cur .ws-ic {
+  width: 32px; height: 32px; border-radius: var(--cur-r-cta); flex-shrink: 0; display: grid; place-items: center;
+  background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline); color: var(--cur-body);
+}
+.cur .ws-ic[data-tone="ok"] { color: var(--cur-success); }
+.cur .ws-ic[data-tone="warn"] { color: var(--ws-warning); }
+.cur .ws-ic[data-tone="err"] { color: var(--cur-error); }
+
+/* ── Attention list — replaces the KPI carousel ───────
+   The old mock opened every screen with four equal-weight counts. This opens
+   with the far smaller set of things that actually want a human. */
+.cur .ws-attn { display: flex; flex-direction: column; }
+.cur .ws-attn-item { display: flex; gap: 13px; padding: 15px 18px; border-top: 1px solid var(--cur-hairline-soft); align-items: flex-start; }
+.cur .ws-attn-item:first-child { border-top: 0; }
+.cur .ws-attn-bar { width: 2px; align-self: stretch; border-radius: 999px; background: var(--cur-hairline-strong); flex-shrink: 0; }
+.cur .ws-attn-item[data-tone="act"] .ws-attn-bar { background: var(--cur-primary); }
+.cur .ws-attn-item[data-tone="warn"] .ws-attn-bar { background: var(--ws-warning); }
+.cur .ws-attn-main { flex: 1; min-width: 0; }
+.cur .ws-attn-main b { font-size: 13px; font-weight: 500; }
+.cur .ws-attn-main p { font-size: 12px; color: var(--cur-muted); margin-top: 4px; line-height: 1.5; }
+.cur .ws-attn-meta { font-size: 11px; color: var(--cur-muted-soft); margin-top: 7px; display: flex; gap: 12px; flex-wrap: wrap; }
+
+/* ── The permission sentence ──────────────────────────
+   Managers do not think in grants; they think in sentences about people.
+   This renders the resolved permission set as prose before offering a matrix. */
+.cur .ws-sentence {
+  font-size: 15px; line-height: 1.65; color: var(--cur-body); letter-spacing: -0.005em;
+}
+.cur .ws-sentence b { color: var(--cur-ink); font-weight: 500; }
+.cur .ws-sentence .neg { color: var(--cur-muted); }
+.cur .ws-sentence-note { font-size: 12px; color: var(--cur-muted); margin-top: 12px; line-height: 1.5; }
+
+/* Provenance — the backend already returns WHY a permission resolved.
+   Surfacing it is the difference between a matrix and an explanation. */
+.cur .ws-prov {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none;
+  background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline); color: var(--cur-muted);
+}
+.cur .ws-prov[data-src="department_user_override"] { color: var(--cur-primary); border-color: color-mix(in srgb, var(--cur-primary) 34%, transparent); background: color-mix(in srgb, var(--cur-primary) 9%, transparent); }
+.cur .ws-prov[data-src="derived"] { font-style: italic; }
+
+/* ── Change preview — never apply a permission edit blind ── */
+.cur .ws-diff { border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card); overflow: hidden; background: var(--cur-canvas-soft); }
+.cur .ws-diff-h { padding: 13px 16px; border-bottom: 1px solid var(--cur-hairline); font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
+.cur .ws-diff-l { display: flex; flex-direction: column; }
+.cur .ws-diff-i { display: flex; align-items: center; gap: 10px; padding: 10px 16px; font-size: 13px; border-top: 1px solid var(--cur-hairline-soft); }
+.cur .ws-diff-l > .ws-diff-i:first-child { border-top: 0; }
+.cur .ws-diff-i .sg { width: 15px; text-align: center; font-weight: 600; font-size: 13px; flex-shrink: 0; }
+.cur .ws-diff-i[data-k="add"] .sg { color: var(--cur-success); }
+.cur .ws-diff-i[data-k="remove"] .sg { color: var(--cur-error); }
+.cur .ws-diff-i[data-k="blocked"] .sg { color: var(--ws-warning); }
+.cur .ws-diff-i small { color: var(--cur-muted); font-size: 12px; }
+.cur .ws-diff-f { padding: 12px 16px; border-top: 1px solid var(--cur-hairline); display: flex; gap: 8px; justify-content: flex-end; background: var(--cur-surface); }
+
+/* ── Ceiling notice — a department grant clamped by company policy ── */
+.cur .ws-ceiling {
+  display: flex; gap: 10px; padding: 12px 14px; border-radius: var(--cur-r-cta);
+  background: color-mix(in srgb, var(--ws-warning) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ws-warning) 28%, transparent);
+  font-size: 12px; color: var(--cur-body); line-height: 1.5;
+}
+.cur .ws-ceiling svg { color: var(--ws-warning); flex-shrink: 0; margin-top: 1px; }
+.cur .ws-ceiling b { color: var(--cur-ink); font-weight: 500; }
+
+/* ── Consent / scope disclosure ───────────────────────
+   A member connecting Google is not configuring a setting, they are granting
+   access to their own mail. This reads as a consent surface, not a form. */
+.cur .ws-consent { display: flex; flex-direction: column; }
+.cur .ws-consent-i { display: flex; gap: 11px; padding: 12px 0; border-top: 1px solid var(--cur-hairline-soft); }
+.cur .ws-consent-i:first-child { border-top: 0; padding-top: 0; }
+.cur .ws-consent-i svg { color: var(--cur-muted); flex-shrink: 0; margin-top: 2px; }
+.cur .ws-consent-i b { font-size: 13px; font-weight: 500; display: block; }
+.cur .ws-consent-i p { font-size: 12px; color: var(--cur-muted); margin-top: 3px; line-height: 1.45; }
+.cur .ws-private {
+  display: flex; gap: 9px; align-items: flex-start; padding: 12px 14px; border-radius: var(--cur-r-cta);
+  background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline); font-size: 12px;
+  color: var(--cur-body); line-height: 1.5;
+}
+.cur .ws-private svg { color: var(--cur-success); flex-shrink: 0; margin-top: 1px; }
+
+/* ── Matrix ──────────────────────────────────────────── */
+.cur .ws-matrix { width: 100%; border-collapse: collapse; }
+.cur .ws-matrix th {
+  text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--cur-muted); padding: 10px 8px; white-space: nowrap;
+}
+.cur .ws-matrix th.act { text-align: center; width: 62px; }
+.cur .ws-matrix td { padding: 9px 8px; border-top: 1px solid var(--cur-hairline-soft); font-size: 13px; }
+.cur .ws-matrix td.act { text-align: center; }
+.cur .ws-matrix tbody tr:hover { background: var(--cur-canvas-soft); }
+.cur .ws-cell {
+  width: 26px; height: 26px; border-radius: var(--cur-r-cta); border: 1px solid var(--cur-hairline-strong);
+  background: var(--cur-surface); cursor: pointer; display: inline-grid; place-items: center;
+  color: var(--cur-muted-soft); padding: 0;
+}
+.cur .ws-cell:hover { border-color: var(--cur-muted-soft); }
+.cur .ws-cell[data-on="true"] { background: var(--cur-ink); border-color: var(--cur-ink); color: var(--cur-canvas); }
+.cur .ws-cell[data-on="true"][data-src="department_user_override"] { background: var(--cur-primary); border-color: var(--cur-primary); color: var(--cur-on-primary); }
+.cur .ws-cell[data-locked="true"] { cursor: not-allowed; opacity: 0.45; background: var(--cur-canvas-soft); }
+.cur .ws-cell-na { color: var(--cur-muted-soft); font-size: 13px; }
+
+/* ── Usage bar ───────────────────────────────────────── */
+.cur .ws-bar { height: 6px; border-radius: 999px; background: var(--cur-surface-strong); overflow: hidden; }
+.cur .ws-bar i { display: block; height: 100%; border-radius: 999px; background: var(--cur-ink); }
+.cur .ws-bar i[data-tone="brand"] { background: var(--cur-primary); }
+.cur .ws-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--cur-muted); }
+
+/* ── Segmented control ───────────────────────────────── */
+.cur .ws-seg { display: inline-flex; padding: 3px; border-radius: var(--cur-r-cta); background: var(--cur-surface-strong); gap: 2px; }
+.cur .ws-seg button {
+  height: 28px; padding: 0 11px; border: 0; background: none; border-radius: 999px;
+  font-size: 12px; color: var(--cur-body); cursor: pointer;
+}
+.cur .ws-seg button.on { background: var(--cur-surface); color: var(--cur-ink); font-weight: 500; box-shadow: inset 0 0 0 1px var(--cur-hairline); }
+
+/* ── Switch ──────────────────────────────────────────── */
+.cur .ws-switch {
+  width: 34px; height: 20px; border-radius: 999px; border: 1px solid var(--cur-hairline-strong);
+  background: var(--cur-surface-strong); position: relative; cursor: pointer; padding: 0; flex-shrink: 0;
+  transition: background .14s ease, border-color .14s ease;
+}
+.cur .ws-switch i {
+  position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--cur-surface); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); transition: transform .14s ease;
+}
+.cur .ws-switch[data-on="true"] { background: var(--cur-primary); border-color: var(--cur-primary); }
+.cur .ws-switch[data-on="true"] i { transform: translateX(14px); }
+
+/* ── Data-honesty note ────────────────────────────────
+   Every panel that is NOT running on a real endpoint says so, so the mock
+   cannot quietly imply more is built than is. */
+.cur .ws-note {
+  display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 500; letter-spacing: 0; white-space: nowrap;
+  border: 1px dashed var(--cur-hairline-strong); color: var(--cur-muted); background: var(--cur-canvas-soft);
+}
+.cur .ws-note[data-kind="new"] { color: var(--ws-warning); border-color: color-mix(in srgb, var(--ws-warning) 40%, transparent); }
+
+/* ── Skeletons ────────────────────────────────────────
+   Shape-matched, so nothing reflows when the real content lands. Pulse is
+   slow (1.6s) — a fast shimmer reads as anxiety in a tool people live in. */
+@keyframes ws-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+.cur .ws-skel { background: var(--cur-hairline-soft); border-radius: var(--cur-r-cta); animation: ws-pulse 1.6s ease-in-out infinite; }
+.dark .cur .ws-skel { background: var(--cur-surface-strong); }
+.cur .ws-skel.line { height: 11px; border-radius: 999px; }
+.cur .ws-skel.circle { border-radius: 50%; }
+.cur .ws-skel-row { display: flex; align-items: center; gap: 13px; padding: 14px 18px; border-top: 1px solid var(--cur-hairline-soft); }
+.cur .ws-skel-row:first-child { border-top: 0; }
+@keyframes ws-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.cur .ws-in { animation: ws-in .22s ease both; }
+
+/* ── Drawer ──────────────────────────────────────────── */
+.cur .ws-scrim { position: fixed; inset: 0; background: var(--ws-scrim); z-index: 60; animation: ws-fade .16s ease; }
+@keyframes ws-fade { from { opacity: 0; } to { opacity: 1; } }
+.cur .ws-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(620px, 94vw); z-index: 61;
+  background: var(--cur-surface); border-left: 1px solid var(--cur-hairline);
+  display: flex; flex-direction: column; box-shadow: var(--ws-float); animation: ws-slide .2s ease;
+}
+@keyframes ws-slide { from { transform: translateX(14px); opacity: 0; } to { transform: none; opacity: 1; } }
+.cur .ws-drawer-h { padding: 18px 20px; border-bottom: 1px solid var(--cur-hairline); display: flex; align-items: flex-start; gap: 12px; }
+.cur .ws-drawer-h h2 { font-size: 20px; font-weight: 400; letter-spacing: -0.02em; }
+.cur .ws-drawer-h p { font-size: 12px; color: var(--cur-muted); margin-top: 5px; }
+.cur .ws-drawer-b { flex: 1; overflow-y: auto; padding: 20px; }
+.cur .ws-drawer-f { padding: 14px 20px; border-top: 1px solid var(--cur-hairline); display: flex; gap: 8px; justify-content: flex-end; }
+
+/* ── Command palette ─────────────────────────────────── */
+.cur .ws-pal-wrap { position: fixed; inset: 0; z-index: 70; display: flex; justify-content: center; padding-top: 14vh; }
+.cur .ws-pal {
+  width: min(560px, 92vw); max-height: 60vh; background: var(--cur-surface); border: 1px solid var(--cur-hairline);
+  border-radius: var(--cur-r-card); box-shadow: var(--ws-float); display: flex; flex-direction: column;
+  overflow: hidden; animation: ws-in .16s ease both; z-index: 71;
+}
+.cur .ws-pal-in { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--cur-hairline); }
+.cur .ws-pal-in input { flex: 1; border: 0; background: none; outline: none; font-size: 14px; color: var(--cur-ink); font-family: inherit; }
+.cur .ws-pal-in input::placeholder { color: var(--cur-muted-soft); }
+.cur .ws-pal-l { overflow-y: auto; padding: 5px; }
+.cur .ws-pal-i {
+  width: 100%; display: flex; align-items: center; gap: 11px; padding: 9px 11px; border: 0; background: none;
+  border-radius: var(--cur-r-cta); cursor: pointer; text-align: left; font-size: 13px; color: var(--cur-ink);
+}
+.cur .ws-pal-i.on { background: var(--cur-canvas-soft); }
+.cur .ws-pal-i .sc { margin-left: auto; font-size: 11px; color: var(--cur-muted-soft); }
+.cur .ws-pal-empty { padding: 30px; text-align: center; font-size: 13px; color: var(--cur-muted); }
+
+/* ── Toast — inverted chip, correct in both themes ───── */
+.cur .ws-toast {
+  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 80;
+  display: flex; align-items: center; gap: 9px; padding: 11px 16px; border-radius: 999px;
+  background: var(--cur-ink); color: var(--cur-canvas); font-size: 13px;
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.45); animation: ws-in .18s ease both;
+}
+.cur .ws-toast svg { color: var(--cur-canvas); }
+
+/* ── Empty state ─────────────────────────────────────── */
+.cur .ws-empty { padding: 52px 24px; text-align: center; }
+.cur .ws-empty .ic {
+  width: 38px; height: 38px; border-radius: 50%; background: var(--cur-canvas-soft);
+  border: 1px solid var(--cur-hairline); display: grid; place-items: center; margin: 0 auto 13px; color: var(--cur-muted);
+}
+.cur .ws-empty b { font-size: 14px; font-weight: 500; display: block; }
+.cur .ws-empty p { font-size: 12px; color: var(--cur-muted); margin-top: 5px; line-height: 1.5; max-width: 330px; margin-left: auto; margin-right: auto; }
+
+/* ── Misc ────────────────────────────────────────────── */
+.cur .ws-tag {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline); color: var(--cur-body);
+}
+.cur .ws-num { font-size: 30px; letter-spacing: -0.03em; font-weight: 400; }
+.cur .ws-num-sm { font-size: 20px; letter-spacing: -0.02em; font-weight: 400; }
+.cur .ws-lbl { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--cur-muted); }
+.cur .ws-sub { font-size: 12px; color: var(--cur-muted); }
+.cur .ws-people { display: flex; }
+.cur .ws-people .avatar { width: 24px; height: 24px; font-size: 10px; margin-left: -6px; box-shadow: 0 0 0 2px var(--cur-surface); }
+.cur .ws-people .avatar:first-child { margin-left: 0; }
+.cur .ws-spark { height: 46px; display: flex; align-items: flex-end; gap: 3px; }
+.cur .ws-spark i { flex: 1; border-radius: 2px 2px 0 0; background: var(--cur-surface-strong); min-height: 2px; }
+.cur .ws-spark i[data-hot="true"] { background: color-mix(in srgb, var(--cur-primary) 60%, transparent); }
+
+/* ── Lark → browser connect flow ──────────────────────
+   Spec for the moment a member is blocked in Lark chat, taps Connect, and
+   lands back in the dashboard. Rendered as two panes because the flow spans
+   two apps and the handoff between them is the whole design problem. */
+.cur .ws-flow { display: grid; grid-template-columns: 1fr auto 1.25fr; gap: 20px; align-items: center; }
+@media (max-width: 1080px) { .cur .ws-flow { grid-template-columns: 1fr; } .cur .ws-flow-arrow { display: none; } }
+.cur .ws-flow-arrow { color: var(--cur-muted-soft); }
+.cur .ws-stage-lbl {
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--cur-muted-soft); margin-bottom: 10px; display: flex; align-items: center; gap: 8px;
+}
+.cur .ws-stage-lbl i {
+  width: 18px; height: 18px; border-radius: 50%; background: var(--cur-surface-strong); color: var(--cur-body);
+  display: inline-grid; place-items: center; font-size: 10px; font-style: normal; font-weight: 600;
+}
+
+/* Lark chat — deliberately NOT Cursor-styled. This pane is a different app;
+   making it match would misrepresent where the user actually is. */
+.cur .ws-lark {
+  background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline);
+  border-radius: var(--cur-r-card); padding: 16px; display: flex; flex-direction: column; gap: 12px;
+}
+.cur .ws-lark-msg { display: flex; gap: 10px; }
+.cur .ws-lark-av {
+  width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0; display: grid; place-items: center;
+  background: var(--cur-primary); color: var(--cur-on-primary); font-size: 11px; font-weight: 600;
+}
+.cur .ws-lark-av[data-who="user"] { background: var(--cur-surface-strong); color: var(--cur-ink); border-radius: 50%; }
+.cur .ws-lark-body { flex: 1; min-width: 0; }
+.cur .ws-lark-name { font-size: 12px; font-weight: 500; margin-bottom: 5px; }
+.cur .ws-lark-bubble {
+  background: var(--cur-surface); border: 1px solid var(--cur-hairline); border-radius: 10px;
+  padding: 12px 14px; font-size: 13px; line-height: 1.5; color: var(--cur-ink);
+}
+.cur .ws-lark-card { padding: 0; overflow: hidden; }
+.cur .ws-lark-card-h { padding: 11px 14px; border-bottom: 1px solid var(--cur-hairline); font-size: 12px; font-weight: 500; display: flex; align-items: center; gap: 7px; }
+.cur .ws-lark-card-b { padding: 13px 14px; font-size: 13px; line-height: 1.55; color: var(--cur-body); }
+.cur .ws-lark-card-f { padding: 0 14px 13px; }
+.cur .ws-lark-btn {
+  width: 100%; height: 34px; border-radius: 6px; border: 0; cursor: pointer;
+  background: var(--cur-primary); color: var(--cur-on-primary); font-size: 13px; font-weight: 500;
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px; font-family: inherit;
+}
+
+/* The landing page. Standalone by necessity — the tab Lark opens has no
+   dashboard session, so this must render with no shell and no nav. */
+.cur .ws-land {
+  border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card); background: var(--cur-surface);
+  padding: 30px; text-align: center;
+}
+.cur .ws-land-ic {
+  width: 46px; height: 46px; border-radius: 50%; margin: 0 auto 18px; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--cur-success) 13%, transparent); color: var(--cur-success);
+}
+.cur .ws-land-ic[data-tone="err"] { background: color-mix(in srgb, var(--cur-error) 13%, transparent); color: var(--cur-error); }
+.cur .ws-land-ic[data-tone="warn"] { background: color-mix(in srgb, var(--ws-warning) 14%, transparent); color: var(--ws-warning); }
+.cur .ws-land h2 { font-size: 20px; font-weight: 400; letter-spacing: -0.02em; }
+.cur .ws-land > p { font-size: 13px; color: var(--cur-body); margin-top: 9px; line-height: 1.55; max-width: 420px; margin-left: auto; margin-right: auto; }
+.cur .ws-land-resume {
+  margin-top: 22px; padding: 14px 16px; border-radius: var(--cur-r-cta); text-align: left;
+  background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline);
+}
+.cur .ws-land-quote {
+  font-size: 13px; color: var(--cur-ink); margin-top: 7px; padding-left: 11px;
+  border-left: 2px solid var(--cur-primary); line-height: 1.5;
+}
+.cur .ws-land-acts { display: flex; gap: 8px; justify-content: center; margin-top: 22px; flex-wrap: wrap; }
+
+/* ── Artifacts ────────────────────────────────────────
+   Things Divo makes during a chat — a deck, a plan, a research brief. Today
+   they die inside the container workspace. These styles are the surface that
+   gives them somewhere to live. */
+.cur .ws-art-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: 14px; }
+.cur .ws-art-card {
+  border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card); background: var(--cur-surface);
+  overflow: hidden; cursor: pointer; text-align: left; padding: 0; color: var(--cur-ink); display: block; width: 100%;
+}
+.cur .ws-art-card:hover { border-color: var(--cur-muted-soft); }
+.cur .ws-art-thumb {
+  height: 116px; background: var(--cur-canvas-soft); border-bottom: 1px solid var(--cur-hairline);
+  display: grid; place-items: center; color: var(--cur-muted-soft); position: relative; overflow: hidden;
+}
+.cur .ws-art-thumb[data-kind="deck"] { background: linear-gradient(135deg, var(--cur-canvas-soft), var(--cur-surface-strong)); }
+.cur .ws-art-live {
+  position: absolute; top: 9px; right: 9px; display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 500;
+  background: var(--cur-primary); color: var(--cur-on-primary);
+}
+.cur .ws-art-meta { padding: 12px 14px; }
+.cur .ws-art-meta b { display: block; font-size: 13px; font-weight: 500; letter-spacing: -0.005em; }
+.cur .ws-art-meta p { font-size: 11px; color: var(--cur-muted); margin-top: 4px; }
+
+/* Pulsing dot — "Divo is editing this right now". The whole point of the
+   file-write event: the open render updates without a refresh. */
+@keyframes ws-live { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(0.82); } }
+.cur .ws-live-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: ws-live 1.1s ease-in-out infinite; }
+
+/* Viewer */
+.cur .ws-view { display: grid; grid-template-columns: 1fr 296px; gap: 16px; align-items: start; }
+@media (max-width: 1180px) { .cur .ws-view { grid-template-columns: 1fr; } }
+.cur .ws-canvas {
+  border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card);
+  background: var(--cur-surface); overflow: hidden;
+}
+.cur .ws-canvas-bar {
+  height: 40px; display: flex; align-items: center; gap: 9px; padding: 0 14px;
+  border-bottom: 1px solid var(--cur-hairline); background: var(--cur-canvas-soft); font-size: 12px; color: var(--cur-muted);
+}
+.cur .ws-canvas-body { padding: 22px; }
+
+/* Sandboxed HTML frame. Agent-written HTML cannot run on the dashboard
+   origin — it renders in a sandboxed iframe, and the chrome says so. */
+.cur .ws-sandbox { border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-cta); overflow: hidden; background: #fff; }
+.cur .ws-slide {
+  aspect-ratio: 16 / 9; padding: 34px 38px; display: flex; flex-direction: column; justify-content: center;
+  background: #faf9f6; color: #211f1a; font-family: Inter, system-ui, sans-serif;
+}
+.cur .ws-slide h3 { font-size: 26px; font-weight: 400; letter-spacing: -0.025em; line-height: 1.15; }
+.cur .ws-slide p { font-size: 13px; color: #5f5c54; margin-top: 12px; line-height: 1.55; max-width: 60ch; }
+.cur .ws-slide ul { margin-top: 16px; display: flex; flex-direction: column; gap: 9px; }
+.cur .ws-slide li { font-size: 13px; color: #3d3a34; display: flex; gap: 9px; align-items: flex-start; }
+.cur .ws-slide li::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: #f54e00; margin-top: 6px; flex-shrink: 0; }
+.cur .ws-slide .eyebrow-s { font-size: 10px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: #f54e00; margin-bottom: 14px; }
+.cur .ws-slide-nav { display: flex; align-items: center; gap: 8px; justify-content: center; padding: 12px; border-top: 1px solid var(--cur-hairline); }
+.cur .ws-slide-pip { width: 22px; height: 3px; border-radius: 999px; background: var(--cur-hairline-strong); border: 0; padding: 0; cursor: pointer; }
+.cur .ws-slide-pip[data-on="true"] { background: var(--cur-primary); }
+
+/* Todo artifact */
+.cur .ws-todo { display: flex; flex-direction: column; }
+.cur .ws-todo-grp { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--cur-muted-soft); margin: 18px 0 8px; }
+.cur .ws-todo-grp:first-child { margin-top: 0; }
+.cur .ws-todo-i { display: flex; align-items: flex-start; gap: 11px; padding: 9px 0; border-top: 1px solid var(--cur-hairline-soft); }
+.cur .ws-todo-box {
+  width: 17px; height: 17px; border-radius: 5px; border: 1px solid var(--cur-hairline-strong); flex-shrink: 0;
+  margin-top: 1px; display: grid; place-items: center; background: var(--cur-surface); cursor: pointer; padding: 0; color: transparent;
+}
+.cur .ws-todo-box[data-done="true"] { background: var(--cur-ink); border-color: var(--cur-ink); color: var(--cur-canvas); }
+.cur .ws-todo-i b { font-size: 13px; font-weight: 400; }
+.cur .ws-todo-i[data-done="true"] b { color: var(--cur-muted); text-decoration: line-through; }
+.cur .ws-todo-i p { font-size: 12px; color: var(--cur-muted); margin-top: 3px; }
+
+/* Sources */
+.cur .ws-src { display: flex; gap: 11px; padding: 12px 0; border-top: 1px solid var(--cur-hairline-soft); }
+.cur .ws-src:first-child { border-top: 0; }
+.cur .ws-src-fav {
+  width: 26px; height: 26px; border-radius: 6px; flex-shrink: 0; display: grid; place-items: center;
+  background: var(--cur-surface-strong); color: var(--cur-body); font-size: 11px; font-weight: 600;
+}
+.cur .ws-src b { font-size: 13px; font-weight: 500; display: block; }
+.cur .ws-src p { font-size: 12px; color: var(--cur-muted); margin-top: 3px; line-height: 1.45; }
+.cur .ws-src .host { font-size: 11px; color: var(--cur-muted-soft); margin-top: 5px; display: block; }
+
+/* Version rail */
+.cur .ws-ver { display: flex; gap: 11px; padding: 10px 0; }
+.cur .ws-ver-line { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; }
+.cur .ws-ver-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cur-hairline-strong); margin-top: 5px; }
+.cur .ws-ver-dot[data-now="true"] { background: var(--cur-primary); }
+.cur .ws-ver-rail { flex: 1; width: 1px; background: var(--cur-hairline); margin-top: 4px; }
+.cur .ws-ver b { font-size: 12px; font-weight: 500; display: block; }
+.cur .ws-ver p { font-size: 11px; color: var(--cur-muted); margin-top: 2px; }

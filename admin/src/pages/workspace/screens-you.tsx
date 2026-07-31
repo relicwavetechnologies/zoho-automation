@@ -1,0 +1,917 @@
+/**
+ * "You" scope — what an individual employee sees, whatever their role.
+ *
+ * The organising idea: this is a trust and self-service surface, not an admin
+ * console shrunk down. An employee comes here because something is blocked,
+ * because they want to know what Divo can see, or to take access back.
+ */
+import { useMemo, useState } from 'react'
+import {
+  Activity, ArrowUpRight, Ban, BookOpen, Brain, Check, CircleAlert, Clock, ExternalLink,
+  Eye, Gauge, Link2, Lock, MessageSquare, Plus, ShieldCheck, Sparkles, Trash2, TriangleAlert, X,
+} from 'lucide-react'
+import {
+  AWAITING_ME, CONNECTORS, MEMORIES, MY_CONNECTIONS, MY_RUNS, MY_USAGE, PEOPLE, REQUESTED_BY_ME,
+  SKILLS, TOOLS, personById, resolveGrants, toolById,
+  type Connection, type Memory, type Persona, type Provider,
+} from './fixtures'
+import {
+  Bar, ChangePreview, DataNote, Drawer, Empty, Fade, Matrix, PageHeader, Panel, Provenance,
+  ProviderMark, Seg, Skel, SkelRows, Spark, Switch, compact, listPhrase, money,
+  permissionSentence, providerName, useStaged,
+} from './ui'
+
+type ScreenProps = { persona: Persona; replay: number; toast: (m: string) => void; go: (screen: string) => void }
+
+/* ══ Home ══════════════════════════════════════════════
+   Deliberately NOT four KPI tiles. The first thing on the page is the small
+   set of items that actually want a human; the numbers come after, once,
+   with a comparison rather than a bare count. */
+export function YouHome({ persona, replay, toast, go }: ScreenProps) {
+  const [r1, r2, r3] = useStaged([260, 520, 800], replay)
+  const viewer = persona === 'member' ? 'Ananya' : persona === 'manager' ? 'Arjun' : 'Dev'
+  const brokenSkill = SKILLS.find((s) => s.blockedBy)
+  const attention = [
+    ...AWAITING_ME.map((a) => ({
+      tone: 'act' as const,
+      title: a.summary,
+      body: a.detail,
+      meta: [`${a.requestedBy} · ${a.requestedAt}`, `Expires ${a.expiresIn}`],
+      cta: 'Review',
+      onClick: () => go('approvals'),
+    })),
+    ...(brokenSkill
+      ? [{
+          tone: 'warn' as const,
+          title: `"${brokenSkill.name}" cannot run for you`,
+          body: `It needs ${toolById(brokenSkill.blockedBy!)?.name}, which your role does not grant. Divo hides skills you cannot complete rather than failing halfway.`,
+          meta: ['Shared by ' + brokenSkill.owner],
+          cta: 'See why',
+          onClick: () => go('access'),
+        }]
+      : []),
+    ...(REQUESTED_BY_ME.some((a) => a.expiresIn === 'expired')
+      ? [{
+          tone: 'warn' as const,
+          title: 'One of your requests expired unanswered',
+          body: 'Clearing 42 duplicate export files was never approved, so Divo stopped and did nothing.',
+          meta: ['2 hours ago'],
+          cta: 'Ask again',
+          onClick: () => toast('Request re-sent to Arjun Shah'),
+        }]
+      : []),
+  ]
+
+  return (
+    <>
+      <PageHeader
+        title={`Welcome back, ${viewer}`}
+        description="Everything Divo can do for you, what it can see, and what it has spent — in one place."
+      />
+      <div className="ws-stack">
+        <Panel
+          title="Needs you"
+          description={attention.length ? `${attention.length} item${attention.length > 1 ? 's' : ''} waiting` : undefined}
+        >
+          {!r1 ? <SkelRows n={2} icon={false} /> : attention.length === 0 ? (
+            <Empty icon={Check} title="Nothing is waiting" body="Approvals and blocked work will show up here." />
+          ) : (
+            <Fade>
+              <div className="ws-attn">
+                {attention.map((a, i) => (
+                  <div className="ws-attn-item" data-tone={a.tone} key={i}>
+                    <span className="ws-attn-bar" />
+                    <div className="ws-attn-main">
+                      <b>{a.title}</b>
+                      <p>{a.body}</p>
+                      <div className="ws-attn-meta">{a.meta.map((m) => <span key={m}>{m}</span>)}</div>
+                    </div>
+                    <button type="button" className="btn" onClick={a.onClick}>{a.cta}</button>
+                  </div>
+                ))}
+              </div>
+            </Fade>
+          )}
+        </Panel>
+
+        <div className="ws-cols">
+          <Panel
+            title="Your last 30 days"
+            source="myUsage"
+            aside={<button type="button" className="btn" onClick={() => go('usage')}>Details</button>}
+          >
+            <div className="ws-panel-body">
+              {!r2 ? (
+                <>
+                  <div style={{ display: 'flex', gap: 40 }}>
+                    <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
+                    <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
+                  </div>
+                  <div style={{ height: 20 }} />
+                  <Skel w="100%" h={46} />
+                </>
+              ) : (
+                <Fade>
+                  <div style={{ display: 'flex', gap: 44, flexWrap: 'wrap' }}>
+                    <div>
+                      <div className="ws-lbl">Tasks run</div>
+                      <div className="ws-num" style={{ marginTop: 8 }}>{MY_USAGE.runs30d}</div>
+                      <div className="ws-sub" style={{ marginTop: 5, display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <ArrowUpRight size={13} style={{ color: 'var(--cur-success)' }} />
+                        {Math.round(((MY_USAGE.runs30d - MY_USAGE.runsPrev) / MY_USAGE.runsPrev) * 100)}% vs last month
+                      </div>
+                    </div>
+                    <div>
+                      <div className="ws-lbl">Cost</div>
+                      <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(MY_USAGE.spend30d)}</div>
+                      <div className="ws-sub" style={{ marginTop: 5 }}>{money(MY_USAGE.spendToday)} today</div>
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 22 }}><Spark data={MY_USAGE.daily} /></div>
+                </Fade>
+              )}
+            </div>
+          </Panel>
+
+          <Panel title="Connected" aside={<button type="button" className="btn" onClick={() => go('connections')}>Manage</button>}>
+            {!r2 ? <SkelRows n={3} /> : (
+              <Fade>
+                <div className="ws-rows">
+                  {MY_CONNECTIONS.map((c) => (
+                    <div className="ws-row" key={c.id}>
+                      <ProviderMark provider={c.provider} />
+                      <div className="ws-row-main">
+                        <b>{providerName(c.provider)}</b>
+                        <p>{c.ownerType === 'company' ? 'Shared by your company' : c.account}</p>
+                      </div>
+                      <span className="badge b-ok"><span className="dot" />On</span>
+                    </div>
+                  ))}
+                  <div className="ws-row">
+                    <span className="ws-ic"><Plus size={14} /></span>
+                    <div className="ws-row-main">
+                      <b className="muted" style={{ fontWeight: 400 }}>3 more you can connect</b>
+                    </div>
+                  </div>
+                </div>
+              </Fade>
+            )}
+          </Panel>
+        </div>
+
+        <Panel title="Recent activity" source="myRuns" aside={<button type="button" className="btn" onClick={() => go('usage')}>All activity</button>}>
+          {!r3 ? <SkelRows n={4} icon={false} /> : (
+            <Fade><RunList runs={MY_RUNS.slice(0, 4)} /></Fade>
+          )}
+        </Panel>
+      </div>
+    </>
+  )
+}
+
+function RunList({ runs }: { runs: typeof MY_RUNS }) {
+  return (
+    <div className="ws-rows">
+      {runs.map((r) => (
+        <div className="ws-row" key={r.id}>
+          <div className="ws-row-main">
+            <b>
+              {r.summary}
+              {r.status === 'running' && r.channel === 'lark' ? (
+                <span className="ws-note" title="Lark runs are never closed by the backend — status and duration are unreliable for this channel.">
+                  status unknown
+                </span>
+              ) : null}
+            </b>
+            <p>
+              {r.when} · {r.channel === 'lark' ? 'Lark' : 'Desktop'}
+              {r.duration ? ` · ${r.duration}` : ''} · {r.tools.map((t) => toolById(t)?.name).filter(Boolean).join(', ')}
+            </p>
+          </div>
+          <div className="ws-row-act">
+            <span className="ws-sub">{money(r.costUsd)}</span>
+            {r.status === 'failed' ? <span className="badge b-err"><span className="dot" />Failed</span> : null}
+            {r.status === 'completed' ? <span className="badge b-ok"><span className="dot" />Done</span> : null}
+            {r.status === 'running' ? <span className="badge b-run"><span className="dot" />Running</span> : null}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/* ══ Connections ═══════════════════════════════════════
+   A consent surface, not a settings page. Three questions, answered in this
+   order: what will Divo see, who else can use it, how do I take it back. */
+export function YouConnections({ replay, toast, go }: ScreenProps) {
+  const [r1] = useStaged([320], replay)
+  const [open, setOpen] = useState<Provider | null>(null)
+  const connected = new Map(MY_CONNECTIONS.map((c) => [c.provider, c]))
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Your account"
+        title="Connected apps"
+        description="Divo only ever acts through accounts you connect. Nothing here is shared with your company unless you share it."
+      />
+      <div className="ws-stack">
+        <div className="ws-private">
+          <ShieldCheck size={15} />
+          <div>
+            <b style={{ fontWeight: 500 }}>Your credentials never leave the backend.</b>{' '}
+            Your admin can see that a connection exists and how it is used — never the tokens, and never your mail or files.
+          </div>
+        </div>
+
+        <Panel title="Your connections" source="connections">
+          {!r1 ? <SkelRows n={4} /> : (
+            <Fade>
+              <div className="ws-rows">
+                {CONNECTORS.map((def) => {
+                  const conn = connected.get(def.provider)
+                  const state = conn ? 'connected' : def.memberCanConnect ? 'available' : 'admin'
+                  return (
+                    <div className="ws-row click" key={def.provider} onClick={() => setOpen(def.provider)}>
+                      <ProviderMark provider={def.provider} />
+                      <div className="ws-row-main">
+                        <b>
+                          {def.name}
+                          {conn?.ownerType === 'company' ? <span className="ws-tag">Company</span> : null}
+                        </b>
+                        <p>{conn ? `${conn.account} · last used ${conn.lastUsed}` : def.blurb}</p>
+                      </div>
+                      <div className="ws-row-act">
+                        {state === 'connected' ? <span className="badge b-ok"><span className="dot" />Connected</span> : null}
+                        {state === 'available' ? (
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={(e) => { e.stopPropagation(); toast(`Opening ${def.name} sign-in…`) }}
+                          >
+                            Connect
+                          </button>
+                        ) : null}
+                        {state === 'admin' ? <span className="ws-tag"><Lock size={11} />Admin connects this</span> : null}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </Fade>
+          )}
+        </Panel>
+
+        <Panel title="Health">
+          <div className="ws-panel-body">
+            <div className="ws-ceiling">
+              <TriangleAlert size={14} />
+              <div>
+                <b>Divo cannot currently tell you when a connection has gone stale.</b>{' '}
+                Token expiry is stored but never checked, so a dead connection keeps showing as healthy until a task fails.
+                A "Reconnect" state needs that check adding first.
+              </div>
+            </div>
+          </div>
+          <div className="ws-panel-foot"><DataNote source="reconnect" /> Designed, not yet buildable</div>
+        </Panel>
+
+        <Panel>
+          <div className="ws-rows">
+            <div className="ws-row click" onClick={() => go('connect-flow')}>
+              <span className="ws-ic"><MessageSquare size={14} /></span>
+              <div className="ws-row-main">
+                <b>Connecting from a Lark chat</b>
+                <p>
+                  What a member sees when Divo asks for an account mid-conversation, and where they land once
+                  Google hands them back.
+                </p>
+              </div>
+              <button type="button" className="btn">See the flow</button>
+            </div>
+          </div>
+        </Panel>
+      </div>
+
+      {open ? <ConnectionDrawer provider={open} connection={connected.get(open)} onClose={() => setOpen(null)} toast={toast} /> : null}
+    </>
+  )
+}
+
+function ConnectionDrawer({ provider, connection, onClose, toast }: {
+  provider: Provider; connection?: Connection; onClose: () => void; toast: (m: string) => void
+}) {
+  const def = CONNECTORS.find((c) => c.provider === provider)!
+  const [confirming, setConfirming] = useState(false)
+  return (
+    <Drawer
+      title={def.name}
+      subtitle={connection ? `${connection.account} · connected ${connection.connectedAt}` : def.blurb}
+      onClose={onClose}
+      footer={
+        connection ? (
+          confirming ? (
+            <>
+              <button type="button" className="btn" onClick={() => setConfirming(false)}>Keep it</button>
+              <button
+                type="button"
+                className="btn"
+                style={{ color: 'var(--cur-error)', borderColor: 'var(--cur-error)' }}
+                onClick={() => { toast(`${def.name} disconnected`); onClose() }}
+              >
+                Yes, disconnect
+              </button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="btn" onClick={() => setConfirming(true)}>Disconnect</button>
+              <button type="button" className="btn primary" onClick={() => { toast('Sharing updated'); onClose() }}>Done</button>
+            </>
+          )
+        ) : def.memberCanConnect ? (
+          <button type="button" className="btn primary" onClick={() => { toast(`Opening ${def.name} sign-in…`); onClose() }}>
+            Connect {def.name}
+          </button>
+        ) : (
+          <button type="button" className="btn" onClick={onClose}>Close</button>
+        )
+      }
+    >
+      {confirming ? (
+        <div className="ws-ceiling" style={{ marginBottom: 18 }}>
+          <TriangleAlert size={14} />
+          <div>
+            Disconnecting removes Divo's access immediately and{' '}
+            <b>revokes the {connection?.sharedWith.length ?? 0} share{(connection?.sharedWith.length ?? 0) === 1 ? '' : 's'} you granted</b>.
+            Anything running against it will stop.
+          </div>
+        </div>
+      ) : null}
+
+      <div className="ws-lbl">What Divo will be able to do</div>
+      <div className="ws-consent" style={{ marginTop: 12 }}>
+        {def.consent.map((c) => (
+          <div className="ws-consent-i" key={c.title}>
+            <Eye size={14} />
+            <div><b>{c.title}</b><p>{c.detail}</p></div>
+          </div>
+        ))}
+      </div>
+      {def.allOrNothing ? (
+        <div className="ws-ceiling" style={{ marginTop: 14 }}>
+          <TriangleAlert size={14} />
+          <div>{def.allOrNothing}</div>
+        </div>
+      ) : null}
+
+      {connection ? (
+        <>
+          <div className="ws-lbl" style={{ marginTop: 26 }}>Who else can use it</div>
+          {connection.sharedWith.length === 0 ? (
+            <div className="ws-private" style={{ marginTop: 12 }}>
+              <ShieldCheck size={15} />
+              <div>Only you. Nobody else in your company can act through this connection.</div>
+            </div>
+          ) : (
+            <div className="ws-rows" style={{ marginTop: 8 }}>
+              {connection.sharedWith.map((s) => (
+                <div className="ws-row" style={{ paddingLeft: 0, paddingRight: 0 }} key={s.label}>
+                  <div className="ws-row-main">
+                    <b>{s.label}</b>
+                    <p>{s.detail} · {s.access.replace('_', ' ')}</p>
+                  </div>
+                  <button type="button" className="btn" onClick={() => toast('Share removed')}>Remove</button>
+                </div>
+              ))}
+            </div>
+          )}
+          <button type="button" className="btn" style={{ marginTop: 12 }} onClick={() => toast('Pick who to share with')}>
+            <Plus size={14} />Share with someone
+          </button>
+
+          <div className="ws-lbl" style={{ marginTop: 26 }}>Details</div>
+          <div style={{ marginTop: 6 }}>
+            <div className="kv"><span className="k">Connected</span><span className="v">{connection.connectedAt}</span></div>
+            <div className="kv"><span className="k">Last used</span><span className="v">{connection.lastUsed}</span></div>
+            <div className="kv"><span className="k">Owned by</span><span className="v">{connection.ownerType === 'company' ? connection.ownerName + ' (company)' : 'You'}</span></div>
+            <div className="kv"><span className="k">Sign-in method</span><span className="v">{def.auth}</span></div>
+          </div>
+        </>
+      ) : !def.memberCanConnect ? (
+        <div className="ws-ceiling" style={{ marginTop: 22 }}>
+          <Lock size={14} />
+          <div>
+            <b>{def.name} is connected once for the whole company.</b>{' '}
+            Ask a company admin to set it up, then request access to it from the Access page.
+          </div>
+        </div>
+      ) : null}
+    </Drawer>
+  )
+}
+
+/* ══ Access ════════════════════════════════════════════
+   The member's read-only view of their own permissions — with the one thing
+   every RBAC UI omits: why. And a request path, because "I can't do X" is
+   the reason most people open this page at all. */
+export function YouAccess({ replay, toast }: ScreenProps) {
+  const [r1, r2] = useStaged([280, 560], replay)
+  const me = personById('u_ananya')!
+  const grants = resolveGrants(me)
+  const { can, cannot } = permissionSentence(me)
+  const [requesting, setRequesting] = useState<string | null>(null)
+
+  const blockedSkills = SKILLS.filter((s) => s.blockedBy)
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Your workspace"
+        title="What Divo can do for you"
+        description="Your access comes from your role in Finance. Where something is missing, you can ask for it."
+      />
+      <div className="ws-stack">
+        <Panel source="permissions">
+          <div className="ws-panel-body">
+            {!r1 ? (
+              <>
+                <Skel w="92%" h={15} /><div style={{ height: 12 }} />
+                <Skel w="78%" h={15} /><div style={{ height: 12 }} />
+                <Skel w="46%" h={15} />
+              </>
+            ) : (
+              <Fade>
+                <p className="ws-sentence">
+                  Divo can <b>{listPhrase(can, 6)}</b> on your behalf.
+                </p>
+                {cannot.length ? (
+                  <p className="ws-sentence" style={{ marginTop: 12 }}>
+                    <span className="neg">It cannot {listPhrase(cannot, 4)}.</span>
+                  </p>
+                ) : null}
+                <p className="ws-sentence-note">
+                  Almost all of this comes from the <b>Member</b> role in Finance, so it changes if your role does.
+                  Sending mail as you was granted to you personally by Arjun Shah.
+                </p>
+              </Fade>
+            )}
+          </div>
+        </Panel>
+
+        {blockedSkills.length ? (
+          <Panel title="Blocked for you" description="Shared skills you cannot run yet">
+            {!r2 ? <SkelRows n={2} icon={false} /> : (
+              <Fade>
+                <div className="ws-rows">
+                  {blockedSkills.map((s) => {
+                    const tool = toolById(s.blockedBy!)
+                    return (
+                      <div className="ws-row" key={s.id}>
+                        <span className="ws-ic" data-tone="warn"><Ban size={14} /></span>
+                        <div className="ws-row-main">
+                          <b>{s.name}</b>
+                          <p>Needs <b style={{ fontWeight: 500 }}>{tool?.name}</b>, which your role does not grant. Shared by {s.owner}.</p>
+                        </div>
+                        <button type="button" className="btn" onClick={() => setRequesting(s.blockedBy!)}>Request access</button>
+                      </div>
+                    )
+                  })}
+                </div>
+              </Fade>
+            )}
+            <div className="ws-panel-foot">
+              <DataNote source="accessRequest" />
+              No access-request model exists yet — approvals today are per-task, not standing grants
+            </div>
+          </Panel>
+        ) : null}
+
+        <Panel
+          title="Full detail"
+          description="Every tool and action, and where each one came from"
+          source="permissions"
+        >
+          <div className="ws-panel-body">
+            {!r2 ? <SkelRows n={5} icon={false} /> : (
+              <Fade><Matrix grants={grants} readOnly tools={TOOLS.filter((t) => !t.adminOnly)} /></Fade>
+            )}
+          </div>
+          <div className="ws-panel-foot">
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+              <span className="ws-cell" data-on="true" style={{ width: 16, height: 16, pointerEvents: 'none' }} /> Allowed
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+              <span className="ws-cell" data-on="true" data-src="department_user_override" style={{ width: 16, height: 16, pointerEvents: 'none' }} /> Given to you personally
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+              <span className="ws-cell" data-locked="true" style={{ width: 16, height: 16, pointerEvents: 'none' }} /> Company policy blocks it
+            </span>
+          </div>
+        </Panel>
+      </div>
+
+      {requesting ? (
+        <Drawer
+          title={`Request ${toolById(requesting)?.name}`}
+          subtitle="Goes to Arjun Shah, who leads Finance"
+          onClose={() => setRequesting(null)}
+          footer={
+            <>
+              <button type="button" className="btn" onClick={() => setRequesting(null)}>Cancel</button>
+              <button type="button" className="btn primary" onClick={() => { toast('Request sent to Arjun Shah'); setRequesting(null) }}>
+                Send request
+              </button>
+            </>
+          }
+        >
+          <div className="ws-lbl">Why do you need it?</div>
+          <textarea
+            className="input"
+            style={{ width: '100%', height: 96, padding: 11, marginTop: 10, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.5 }}
+            defaultValue="I need to run the Vendor onboarding pack skill, which files the CRM record after collecting documents."
+          />
+          <div className="ws-ceiling" style={{ marginTop: 16 }}>
+            <TriangleAlert size={14} />
+            <div>
+              <b>This flow is designed, not built.</b> The backend has no access-request table —
+              its approvals are tied to a single live task and expire. Making this real is net-new work.
+            </div>
+          </div>
+        </Drawer>
+      ) : null}
+    </>
+  )
+}
+
+/* ══ Approvals ═════════════════════════════════════════ */
+export function YouApprovals({ replay, toast }: ScreenProps) {
+  const [r1] = useStaged([240], replay)
+  const [tab, setTab] = useState<'awaiting' | 'mine'>('awaiting')
+  const list = tab === 'awaiting' ? AWAITING_ME : REQUESTED_BY_ME
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Decisions"
+        title="Approvals"
+        description="Divo pauses before anything that leaves your company or changes a record, and waits for a person."
+      />
+      <div className="filters">
+        <Seg
+          value={tab}
+          onChange={setTab}
+          options={[
+            { value: 'awaiting', label: `Waiting on you (${AWAITING_ME.length})` },
+            { value: 'mine', label: `Your requests (${REQUESTED_BY_ME.length})` },
+          ]}
+        />
+      </div>
+      <Panel source="approvals">
+        {!r1 ? <SkelRows n={2} icon={false} /> : list.length === 0 ? (
+          <Empty icon={Check} title="Nothing here" body="Approvals appear when Divo needs a person to say yes." />
+        ) : (
+          <Fade>
+            <div className="ws-attn">
+              {list.map((a) => {
+                const tool = toolById(a.toolId)
+                const expired = a.expiresIn === 'expired'
+                return (
+                  <div className="ws-attn-item" data-tone={expired ? 'warn' : 'act'} key={a.id}>
+                    <span className="ws-attn-bar" />
+                    <div className="ws-attn-main">
+                      <b>{a.summary}</b>
+                      <p>{a.detail}</p>
+                      <div className="ws-attn-meta">
+                        <span>{tool?.name} · {a.action}</span>
+                        <span>{a.requestedBy} · {a.requestedAt}</span>
+                        <span style={expired ? { color: 'var(--cur-error)' } : undefined}>
+                          <Clock size={11} style={{ marginRight: 4 }} />{expired ? 'Expired' : `Expires ${a.expiresIn}`}
+                        </span>
+                      </div>
+                    </div>
+                    {tab === 'awaiting' ? (
+                      <div className="ws-row-act">
+                        <button type="button" className="btn" onClick={() => toast('Rejected')}><X size={14} />No</button>
+                        <button type="button" className="btn primary" onClick={() => toast('Approved — Divo is continuing')}>
+                          <Check size={14} />Approve
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="badge b-err"><span className="dot" />Expired</span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </Fade>
+        )}
+      </Panel>
+    </>
+  )
+}
+
+/* ══ Skills ════════════════════════════════════════════ */
+export function YouSkills({ replay, toast }: ScreenProps) {
+  const [r1] = useStaged([300], replay)
+  const [scope, setScope] = useState<'all' | 'Private' | 'Finance' | 'Company'>('all')
+  const list = useMemo(() => SKILLS.filter((s) => scope === 'all' || s.scope === scope), [scope])
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Your workspace"
+        title="Skills"
+        description="Saved ways of working that Divo can repeat. Yours stay private until you share them."
+        actions={<button type="button" className="btn primary" onClick={() => toast('Teach opens in the desktop app')}><Plus size={14} />Teach a skill</button>}
+      />
+      <div className="filters">
+        <Seg
+          value={scope}
+          onChange={setScope}
+          options={[
+            { value: 'all', label: 'All' },
+            { value: 'Private', label: 'Private' },
+            { value: 'Finance', label: 'Finance' },
+            { value: 'Company', label: 'Company' },
+          ]}
+        />
+      </div>
+      <Panel source="skills">
+        {!r1 ? <SkelRows n={4} /> : (
+          <Fade>
+            <div className="ws-rows">
+              {list.map((s) => (
+                <div className="ws-row" key={s.id}>
+                  <span className="ws-ic" data-tone={s.blockedBy ? 'warn' : undefined}>
+                    {s.blockedBy ? <Ban size={14} /> : <Sparkles size={14} />}
+                  </span>
+                  <div className="ws-row-main">
+                    <b>
+                      {s.name}
+                      <span className="ws-tag">{s.scope}</span>
+                    </b>
+                    <p>
+                      {s.blurb} {s.blockedBy ? <span style={{ color: 'var(--ws-warning)' }}>· Needs {toolById(s.blockedBy)?.name}</span> : null}
+                    </p>
+                  </div>
+                  <div className="ws-row-act">
+                    <span className="ws-sub">{s.runs30d} runs</span>
+                    <span className="ws-sub">{s.updated}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Fade>
+        )}
+      </Panel>
+    </>
+  )
+}
+
+/* ══ Usage ═════════════════════════════════════════════ */
+export function YouUsage({ replay }: ScreenProps) {
+  const [r1, r2] = useStaged([300, 620], replay)
+  const budgetPct = (MY_USAGE.spend30d / MY_USAGE.budgetUsd) * 100
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Your workspace"
+        title="Usage"
+        description="What Divo has done for you and what it cost. Cost is priced from real token counts, not estimated."
+      />
+      <div className="ws-stack">
+        <div className="ws-cols">
+          <Panel title="Last 30 days" source="myUsage">
+            <div className="ws-panel-body">
+              {!r1 ? (<><Skel w={140} h={30} /><div style={{ height: 22 }} /><Skel w="100%" h={46} /></>) : (
+                <Fade>
+                  <div style={{ display: 'flex', gap: 44, flexWrap: 'wrap' }}>
+                    <div>
+                      <div className="ws-lbl">Cost</div>
+                      <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(MY_USAGE.spend30d)}</div>
+                    </div>
+                    <div>
+                      <div className="ws-lbl">Tasks</div>
+                      <div className="ws-num" style={{ marginTop: 8 }}>{MY_USAGE.runs30d}</div>
+                    </div>
+                    <div>
+                      <div className="ws-lbl">Tokens</div>
+                      <div className="ws-num" style={{ marginTop: 8 }}>{compact(MY_USAGE.tokensIn + MY_USAGE.tokensOut)}</div>
+                      <div className="ws-sub" style={{ marginTop: 5 }}>{MY_USAGE.cacheSavingsPct}% served from cache</div>
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 24 }}><Spark data={MY_USAGE.daily} /></div>
+                  <div className="ws-sub" style={{ marginTop: 8 }}>Daily cost, last 30 days</div>
+                </Fade>
+              )}
+            </div>
+          </Panel>
+
+          <Panel title="Your budget">
+            <div className="ws-panel-body">
+              {!r1 ? <Skel w="100%" h={54} /> : (
+                <Fade>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                    <span className="ws-num-sm">{money(MY_USAGE.spend30d)}</span>
+                    <span className="ws-sub">of {money(MY_USAGE.budgetUsd)}</span>
+                  </div>
+                  <div style={{ marginTop: 12 }}><Bar pct={budgetPct} tone="brand" /></div>
+                  <p className="ws-sub" style={{ marginTop: 12, lineHeight: 1.5 }}>
+                    This is a real limit. If you reach it, Divo stops until your admin raises it.
+                  </p>
+                  <div className="ws-ceiling" style={{ marginTop: 14 }}>
+                    <TriangleAlert size={14} />
+                    <div>
+                      There is a second "token limit" elsewhere in the admin that is displayed but{' '}
+                      <b>never enforced by anything</b>. Only the dollar budget above actually stops work.
+                    </div>
+                  </div>
+                </Fade>
+              )}
+            </div>
+          </Panel>
+        </div>
+
+        <Panel title="By model" source="myUsage">
+          <div className="ws-panel-body">
+            {!r2 ? <SkelRows n={2} icon={false} /> : (
+              <Fade>
+                {MY_USAGE.byModel.map((m) => (
+                  <div key={m.model} style={{ marginBottom: 16 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                      <span style={{ fontSize: 13, fontWeight: 500 }}>{m.label}</span>
+                      <span className="ws-sub">{m.calls} calls · {money(m.costUsd)}</span>
+                    </div>
+                    <Bar pct={(m.costUsd / MY_USAGE.spend30d) * 100} tone={m.model.includes('pro') ? 'brand' : undefined} />
+                  </div>
+                ))}
+              </Fade>
+            )}
+          </div>
+        </Panel>
+
+        <Panel title="All activity" source="myRuns">
+          {!r2 ? <SkelRows n={5} icon={false} /> : <Fade><RunList runs={MY_RUNS} /></Fade>}
+          <div className="ws-panel-foot">
+            <CircleAlert size={13} />
+            Step-by-step detail is kept for 7 days. Cost history is kept indefinitely.
+          </div>
+        </Panel>
+      </div>
+    </>
+  )
+}
+
+/* ══ Memory ════════════════════════════════════════════ */
+export function YouMemory({ replay, toast }: ScreenProps) {
+  const [r1] = useStaged([320], replay)
+  const [scope, setScope] = useState<'all' | Memory['scope']>('all')
+  const [forgotten, setForgotten] = useState<string[]>([])
+  const list = MEMORIES.filter((m) => (scope === 'all' || m.scope === scope) && !forgotten.includes(m.id))
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Your workspace"
+        title="What Divo remembers"
+        description="Things Divo has learned about how you work. You can forget any of them, and it stops using them immediately."
+      />
+      <div className="filters">
+        <Seg
+          value={scope}
+          onChange={setScope}
+          options={[
+            { value: 'all', label: 'All' },
+            { value: 'personal', label: 'Just you' },
+            { value: 'department', label: 'Finance' },
+            { value: 'company', label: 'Company' },
+          ]}
+        />
+      </div>
+      <Panel source="memory">
+        {!r1 ? <SkelRows n={4} /> : list.length === 0 ? (
+          <Empty icon={Brain} title="Nothing remembered here" body="Divo learns from what you correct and confirm." />
+        ) : (
+          <Fade>
+            <div className="ws-rows">
+              {list.map((m) => (
+                <div className="ws-row" key={m.id}>
+                  <span className="ws-ic"><Brain size={14} /></span>
+                  <div className="ws-row-main">
+                    <b style={{ fontWeight: 400 }}>{m.text}</b>
+                    <p>
+                      {m.scope === 'personal' ? 'Only you' : m.scope === 'department' ? 'Everyone in Finance' : 'Everyone at Acme'}
+                      {' · '}learned {m.learned} · used {m.usedCount} times
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={m.scope !== 'personal'}
+                    title={m.scope !== 'personal' ? 'Shared memories can only be removed by whoever shared them' : undefined}
+                    onClick={() => { setForgotten((f) => [...f, m.id]); toast('Forgotten') }}
+                  >
+                    <Trash2 size={14} />Forget
+                  </button>
+                </div>
+              ))}
+            </div>
+          </Fade>
+        )}
+        <div className="ws-panel-foot">
+          <DataNote source="memory" />
+          Memory endpoints are admin-only today — a member cannot list or delete their own
+        </div>
+      </Panel>
+    </>
+  )
+}
+
+/* ══ Settings ══════════════════════════════════════════ */
+export function YouSettings({ persona, replay, toast }: ScreenProps) {
+  const [r1] = useStaged([260], replay)
+  const [model, setModel] = useState<'flash' | 'pro'>('flash')
+  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system')
+  const [notify, setNotify] = useState(true)
+  const me = persona === 'member' ? personById('u_ananya')! : personById('u_arjun')!
+
+  return (
+    <>
+      <PageHeader eyebrow="Your account" title="Settings" description="Your profile, the model Divo uses for you, and how this app looks." />
+      <div className="ws-cols">
+        <div className="ws-stack">
+          <Panel title="Profile" source="profile">
+            <div className="ws-panel-body">
+              {!r1 ? <Skel w="100%" h={120} /> : (
+                <Fade>
+                  <div className="profile" style={{ marginBottom: 18 }}>
+                    <div className="pic">{me.initials}</div>
+                    <div>
+                      <h1 style={{ fontSize: 20 }}>{me.name}</h1>
+                      <div className="sub">{me.email}</div>
+                    </div>
+                  </div>
+                  <div className="kv"><span className="k">Role</span><span className="v">{me.deptRoleName} · Finance</span></div>
+                  <div className="kv"><span className="k">Company</span><span className="v">Acme Technologies</span></div>
+                  <div className="kv"><span className="k">Joined</span><span className="v">{me.joined}</span></div>
+                  <div className="kv"><span className="k">Signed in via</span><span className="v">Lark</span></div>
+                </Fade>
+              )}
+            </div>
+            <div className="ws-panel-foot">
+              <CircleAlert size={13} />
+              Web sign-in does not exist yet — sessions come from Lark or a desktop handoff
+            </div>
+          </Panel>
+
+          <Panel title="Model" description="Which model Divo uses when it works for you" source="profile">
+            <div className="ws-panel-body">
+              <div className="ws-rows">
+                {[
+                  { id: 'flash' as const, name: 'Flash', hint: 'Fast — everyday tasks' },
+                  { id: 'pro' as const, name: 'Pro', hint: 'Deeper reasoning — slower and dearer' },
+                ].map((m) => (
+                  <div
+                    className="ws-row click"
+                    style={{ paddingLeft: 0, paddingRight: 0 }}
+                    key={m.id}
+                    onClick={() => { setModel(m.id); toast(`Switched to ${m.name}`) }}
+                  >
+                    <span className="ws-ic" data-tone={model === m.id ? 'ok' : undefined}>
+                      {model === m.id ? <Check size={14} /> : null}
+                    </span>
+                    <div className="ws-row-main"><b>{m.name}</b><p>{m.hint}</p></div>
+                  </div>
+                ))}
+              </div>
+              <p className="ws-sub" style={{ marginTop: 14, lineHeight: 1.5 }}>
+                Your admin decides which models you may pick. If only one is allowed, this section is hidden entirely.
+              </p>
+            </div>
+          </Panel>
+        </div>
+
+        <Panel title="Appearance">
+          <div className="ws-panel-body">
+            <div className="ws-lbl">Theme</div>
+            <div style={{ marginTop: 10 }}>
+              <Seg
+                value={theme}
+                onChange={(v) => { setTheme(v); toast(`Theme: ${v}`) }}
+                options={[{ value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }, { value: 'system', label: 'System' }]}
+              />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 22 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>Notify me when work needs me</div>
+                <div className="ws-sub" style={{ marginTop: 3 }}>Approvals and blocked tasks</div>
+              </div>
+              <Switch on={notify} onToggle={() => setNotify((v) => !v)} label="Notifications" />
+            </div>
+          </div>
+        </Panel>
+      </div>
+    </>
+  )
+}
