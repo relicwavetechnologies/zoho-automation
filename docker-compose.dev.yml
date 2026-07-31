@@ -40,8 +40,6 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3001
-      LARK_APP_ID: ${LARK_APP_ID_DEV_ENV:?LARK_APP_ID_DEV_ENV is required}
-      LARK_APP_SECRET: ${LARK_APP_SECRET_DEV_ENV:?LARK_APP_SECRET_DEV_ENV is required}
       APP_BASE_URL: ${DIVO_DEV_PUBLIC_URL:?DIVO_DEV_PUBLIC_URL is required}
       BACKEND_PUBLIC_URL: ${DIVO_DEV_PUBLIC_URL:?DIVO_DEV_PUBLIC_URL is required}
       REDIS_URL: redis://divo-dev-redis-cache:6379/0
