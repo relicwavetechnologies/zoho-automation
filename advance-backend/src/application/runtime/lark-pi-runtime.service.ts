@@ -120,7 +120,7 @@ export type LarkPiProgressEvent =
       readonly stage: 'workspace' | 'container';
       readonly label: string;
     }
-  | { readonly type: 'ready' | 'thinking' | 'writing' }
+  | { readonly type: 'ready' | 'thinking' | 'working' | 'writing' }
   /** A whole sentence the model finished saying between its tool calls. */
   | { readonly type: 'say'; readonly index: number; readonly text: string }
   | {
@@ -691,7 +691,7 @@ function parseProgressEvent(value: unknown): LarkPiProgressEvent | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const event = value as Record<string, unknown>;
   const type = event['type'];
-  if (type === 'ready' || type === 'thinking' || type === 'writing') return { type };
+  if (type === 'ready' || type === 'thinking' || type === 'working' || type === 'writing') return { type };
   if (type === 'starting') {
     const stage = event['stage'];
     const label = safeProgressString(event['label']);

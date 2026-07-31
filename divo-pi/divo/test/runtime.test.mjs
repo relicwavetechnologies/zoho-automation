@@ -82,6 +82,12 @@ describe("Divo Pi runtime boundary", () => {
 		assert.ok(args.includes("/tmp/sessions/pi-session.jsonl"));
 		assert.ok(args.some((argument) => argument.endsWith("/divo-llm/index.ts")));
 		assert.ok(args.some((argument) => argument.endsWith("/divo-gateway/index.ts")));
+		assert.ok(!args.some((argument) => argument.endsWith("/divo-artifact/index.ts")));
+		const toolAllowlist = args[args.indexOf("--tools") + 1];
+		assert.ok(!toolAllowlist.split(",").includes("divo_artifact"));
+		const systemPrompt = args[args.indexOf("--append-system-prompt") + 1];
+		assert.match(systemPrompt, /complete user-facing result in chat/i);
+		assert.doesNotMatch(systemPrompt, /DIVO_ARTIFACTS_DIR|divo_artifact/i);
 	});
 });
 

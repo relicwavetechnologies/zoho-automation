@@ -204,6 +204,7 @@ test('streams sanitized controller progress before returning the final text', as
         },
       }),
       JSON.stringify({ type: 'heartbeat' }),
+      JSON.stringify({ type: 'progress', progress: { type: 'working' } }),
       JSON.stringify({ type: 'progress', progress: { type: 'writing' } }),
       JSON.stringify({ type: 'result', text: 'Finished' }),
       '',
@@ -237,6 +238,7 @@ test('streams sanitized controller progress before returning the final text', as
       toolName: 'divo_gateway',
       isError: false,
     },
+    { type: 'working' },
     { type: 'writing' },
   ]);
 });

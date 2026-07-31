@@ -25,6 +25,16 @@ describe('canonical family routing metadata', () => {
     assert.equal(packageJson.scripts?.prestart, 'pnpm capabilities:reconcile');
   });
 
+  it('refreshes file-delivery instructions during startup reconciliation', () => {
+    const reconciler = readFileSync(
+      new URL('../../scripts/reconcile-capabilities.ts', import.meta.url),
+      'utf8',
+    );
+
+    assert.match(reconciler, /provisionFilesAndDocumentsForExistingCompanies\(prisma\)/);
+    assert.match(reconciler, /provisionDivoLocalPythonForExistingCompanies\(prisma\)/);
+  });
+
   it('recognizes every configured provider alias without provider-specific branches', () => {
     for (const family of TOOL_FAMILY_IDS) {
       for (const alias of TOOL_FAMILY_DEFINITIONS[family].routingAliases) {

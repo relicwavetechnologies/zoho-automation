@@ -1228,6 +1228,15 @@ function emitRuntimeProgress(onProgress, event) {
 	}
 }
 
+export function runtimeStartupProgress(wasRunning) {
+	return wasRunning
+		? [{ type: "working" }]
+		: [
+			{ type: "starting", stage: "workspace", label: "Checking your workspace…" },
+			{ type: "starting", stage: "container", label: "Waking up Divo…" },
+		];
+}
+
 export class JsonlRpc {
 	constructor(child, answerRequest, onProgress) {
 		this.child = child;
@@ -1594,11 +1603,6 @@ async function runPrompt({
 		...(selectedModel ?? {}),
 	};
 	await idleContainers.activate(profile);
-	emitRuntimeProgress(onProgress, {
-		type: "starting",
-		stage: "workspace",
-		label: "Checking your workspace…",
-	});
 	let abortStop;
 	let bootstrapAttempted = false;
 	let child;
@@ -1615,14 +1619,12 @@ async function runPrompt({
 	try {
 		const runtime = await ensureRuntime(profile);
 		resources = runtime.resources;
+		for (const progress of runtimeStartupProgress(runtime.wasRunning)) {
+			emitRuntimeProgress(onProgress, progress);
+		}
 		if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
 		bootstrapAttempted = true;
 		await writeBootstrap(resources.authVolume, bootstrap);
-		emitRuntimeProgress(onProgress, {
-			type: "starting",
-			stage: "container",
-			label: runtime.wasRunning ? "Resuming your work…" : "Waking up Divo…",
-		});
 		const startedAt = Date.now();
 		const container = await inspectOwnedContainer(profile);
 		if (!container.State.Running) await docker(["start", resources.container]);

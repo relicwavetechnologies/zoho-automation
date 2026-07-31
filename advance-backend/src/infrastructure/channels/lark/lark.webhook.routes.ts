@@ -1406,6 +1406,10 @@ export async function runPiAndDeliver(input: {
       phase = 'Starting';
       state = 'thinking';
       liveLabel = divoFacingRuntimeMessage(event.label);
+    } else if (event.type === 'working') {
+      phase = 'Working';
+      state = 'working';
+      liveLabel = 'Working…';
     } else if (event.type === 'ready' || event.type === 'thinking') {
       phase = 'Thinking';
       state = 'thinking';

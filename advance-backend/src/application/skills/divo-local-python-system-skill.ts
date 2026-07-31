@@ -85,8 +85,10 @@ including when an older conversation or cached recipe mentions it.
    says it is missing. Never mutate data to discover a response shape.
 2. Use the \`write\` tool once to create
    \`<DIVO_RUN_DIR>/<descriptive-workflow>.py\`. Put non-secret input, output,
-   and \`checkpoint.json\` beside it. Anything the user should receive goes to
-   \`DIVO_ARTIFACTS_DIR\` instead; \`DIVO_RUN_DIR\` is not delivered.
+   and \`checkpoint.json\` beside it. In Lark, return the complete user-facing
+   result in chat and never claim a local path was delivered; use a governed
+   connected destination when the user needs a file. In Jan desktop, finished
+   files may go to \`DIVO_ARTIFACTS_DIR\`. \`DIVO_RUN_DIR\` is never delivered.
 3. Use Bash to run the file with
    \`python3 <absolute-DIVO_RUN_DIR>/<descriptive-workflow>.py\`.
 4. When Python or a provider contract fails, inspect the structured response,

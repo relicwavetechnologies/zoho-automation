@@ -91,13 +91,11 @@ describe("Divo normal-session routing policy", () => {
 		assert.doesNotMatch(JSON.stringify(DIVO_GATEWAY_PARAMS), /google\.plan/);
 	});
 
-	it("mentions durable deliverables once without stacking an artifacts mega-block or restating web-search policy", () => {
-		assert.match(
-			DIVO_COMPANY_PERSONA_PROMPT,
-			/durable multi-section deliverable/i,
-		);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /artifact surface/i);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /ordinary short answers stay in chat/i);
+	it("keeps Lark outcomes in chat while local artifact delivery is disabled", () => {
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /complete user-facing outcome in Lark chat/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Do not create a local artifact/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /inaccessible workspace path/i);
+		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /artifact surface/i);
 		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /<divo_artifacts>/i);
 		// Decision detail lives on the tool; persona must not restate the full when-to-use list.
 		assert.doesNotMatch(

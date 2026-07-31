@@ -13,7 +13,6 @@
     "divo-gateway",
     "divo-memory",
     "divo-subagents",
-    "divo-artifact",
     "divo-chat-history",
     "divo-todos"
   ],
@@ -33,7 +32,6 @@
     "divo_teach_clarify",
     "memory",
     "divo_subagents",
-    "divo_artifact",
     "divo_todos",
     "divo_search_chats",
     "divo_read_chat"

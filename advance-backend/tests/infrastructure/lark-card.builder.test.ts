@@ -167,6 +167,15 @@ describe('lark-card.builder buildStatusCard', () => {
     assert.match(elementById(card, 'run_say')!['content'] as string, /payment already cleared/);
   });
 
+  it('does not apply the compact activity-row limit to narration', () => {
+    const queued = 'Your request is queued. I’ll start it as soon as your previous request finishes.';
+    const card = parseCard(buildStatusCard({
+      timeline: { state: 'queued' as const, liveLabel: queued },
+    }));
+
+    assert.match(elementById(card, 'run_say')!['content'] as string, new RegExp(queued));
+  });
+
   it('drops a live sentence that only echoes the state chip', () => {
     for (const liveLabel of ['Thinking…', 'Understanding your request…', 'Continuing…']) {
       const card = parseCard(buildStatusCard({

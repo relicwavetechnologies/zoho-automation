@@ -423,7 +423,7 @@ function narrationMarkdown(timeline: ChannelTimeline): string | undefined {
 
   const headline = active.replace(/…+$/u, '').trim() || active;
   if (PHASE_ECHO.has(normalizeLive(headline))) return undefined;
-  return `<font color='grey'>${truncateOutcome(headline)}</font>`;
+  return `<font color='grey'>${sanitizeRunText(headline, MAX_ELEMENT_LEN)}</font>`;
 }
 
 function collapsiblePanel(

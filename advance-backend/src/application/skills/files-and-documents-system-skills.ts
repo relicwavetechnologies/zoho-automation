@@ -119,8 +119,10 @@ the file on disk from a script. Do not read it here to "have a look".
 
 ## Output and honesty
 
-- Anything the user should receive goes in \`DIVO_ARTIFACTS_DIR\`; scratch work
-  goes in \`DIVO_RUN_DIR\`.
+- In Lark, return the complete user-facing result in chat. Local artifact
+  delivery is disabled there, so never claim a path in \`DIVO_ARTIFACTS_DIR\`
+  was delivered. In Jan desktop, finished files may still go in
+  \`DIVO_ARTIFACTS_DIR\`; scratch work goes in \`DIVO_RUN_DIR\`.
 - Say whether text was parsed or OCR'd. OCR is wrong in ways parsed text is not,
   and the reader cannot tell which they are looking at.
 - For a long document, extract a few pages and check the quality before
@@ -192,8 +194,11 @@ workbook that drops someone's notes column is a worse outcome than a refusal.
 
 ## Where output goes
 
-Put the finished file in \`DIVO_ARTIFACTS_DIR\` so it is delivered. Scratch work
-goes in \`DIVO_RUN_DIR\` and is not.
+In Lark, local file delivery is unavailable. Use a governed connected
+destination such as Drive or Sheets when that satisfies the request; otherwise
+say that a downloadable local file cannot currently be delivered. Do not create
+a file merely to return a \`DIVO_ARTIFACTS_DIR\` path. In Jan desktop, put the
+finished file in \`DIVO_ARTIFACTS_DIR\`. Scratch work goes in \`DIVO_RUN_DIR\`.
 
 If the user wants the result in Google Sheets or Drive rather than as a file,
 that is a governed export — use the connected-account path, not a local file.`,

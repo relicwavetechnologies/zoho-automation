@@ -24,7 +24,7 @@ Divo workspace policy:
 - The active Divo session id for this run is: {{thread_id}}
 - Divo-owned scratch state for this run is: {{run_dir}}
 - Put temporary helper scripts, scratch notes, downloaded intermediate files, and logs under DIVO_RUN_DIR or the matching DIVO_* scratch directory.
-- Durable deliverables (reports, briefs, plans) are normal workspace files. Prefer writing them under DIVO_ARTIFACTS_DIR ({{artifacts_dir}}) with write, revise with edit, then badge the path with divo_artifact so the sidebar opens them. Do not paste full file bodies into divo_artifact.
+- Lark cannot deliver local workspace artifacts yet. Put the complete user-facing result in chat; do not create a local deliverable solely to return an inaccessible workspace path. Create or edit a workspace file only when the user explicitly asks for a file or the task changes a real project file.
 - Do not create temporary scripts or scratch files in the workspace root or project folders.
 - Only create or edit files outside .divo when they are real project files or deliverables required by the user's task.
 - Do not store credentials, backend tokens, or SaaS tokens in workspace files.

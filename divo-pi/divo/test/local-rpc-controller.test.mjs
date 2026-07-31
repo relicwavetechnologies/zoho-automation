@@ -14,10 +14,19 @@ import {
 	resourcesFor,
 	runtimeIdentityNames,
 	runtimeContainerNeedsReplacement,
+	runtimeStartupProgress,
 	validateProfileName,
 	validateRuntimeModel,
 	validateThread,
 } from "../local-rpc-controller.mjs";
+
+test("startup progress names cold work only and keeps warm runs generic", () => {
+	assert.deepEqual(runtimeStartupProgress(true), [{ type: "working" }]);
+	assert.deepEqual(runtimeStartupProgress(false), [
+		{ type: "starting", stage: "workspace", label: "Checking your workspace…" },
+		{ type: "starting", stage: "container", label: "Waking up Divo…" },
+	]);
+});
 
 test("two profiles receive distinct Docker resources", () => {
 	const abhishek = resourcesFor("abhishek");
