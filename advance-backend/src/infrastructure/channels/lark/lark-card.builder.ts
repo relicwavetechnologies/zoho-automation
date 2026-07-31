@@ -441,8 +441,19 @@ function tableElement(parsed: ParsedMarkdownTable, elementId: string): Record<st
   };
 }
 
+/**
+ * Lark's card markdown renders no `#` headings, so they are rewritten as bold.
+ *
+ * The capture is lazy and the trailing run is matched outside it because two
+ * trailing spaces is markdown's hard line break — correct output from a model,
+ * and greedily capturing it produced `**Title  **`, which CommonMark refuses to
+ * close and Lark therefore printed with its asterisks showing.
+ *
+ * Depth goes to six, matching `stripDecorators` and `ensureTableSeparation`;
+ * stopping at three left `#### Heading` on the card as literal hashes.
+ */
 function softenHeadings(md: string): string {
-  return md.replace(/^#{1,3}\s+(.+)$/gm, '**$1**');
+  return md.replace(/^#{1,6}[ \t]+(.+?)[ \t]*$/gm, '**$1**');
 }
 
 function ensureTableSeparation(text: string): string {

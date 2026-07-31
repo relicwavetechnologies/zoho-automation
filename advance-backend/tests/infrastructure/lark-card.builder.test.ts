@@ -291,6 +291,25 @@ describe('lark-card.builder buildStatusCard', () => {
   });
 });
 
+describe('lark-card.builder heading softening', () => {
+  // Two trailing spaces is markdown's hard line break, so a model writing
+  // correct markdown produced `**Title  **` — a bold run CommonMark will not
+  // close. The card printed the asterisks to the user.
+  it('bolds a heading that ends in trailing whitespace', () => {
+    const card = parseCard(buildFinalCard({
+      markdown: '## CFO Receivables Review  \n\nZoho Books shows 153 invoices.',
+    }));
+
+    assert.equal(markdownContents(card)[0], '**CFO Receivables Review**');
+  });
+
+  it('softens headings deeper than three, which used to reach the card as hashes', () => {
+    const card = parseCard(buildFinalCard({ markdown: '#### Ageing buckets\n\nDetail.' }));
+
+    assert.equal(markdownContents(card)[0], '**Ageing buckets**');
+  });
+});
+
 describe('lark-card.builder final card actions', () => {
   // Card 2.0 dropped the `action` container and ignores 1.0's `value` on a
   // button — a final card built the old way rendered buttons that did nothing.
