@@ -1,4 +1,4 @@
-import type { ToolRegistry } from '../orchestration/tools/tool-registry';
+import type { ToolRegistry } from '../tools/tool-registry';
 import type { PermissionService } from '../permissions/permission.service';
 import type { PermissionResult } from '../permissions/permission.types';
 import type { SkillCatalogService } from '../skills/skill-catalog.service';
@@ -68,6 +68,14 @@ import {
   serializeToolArgsSchema,
   type WorkBootstrap,
 } from './work-bootstrap.service';
+
+const LARK_DIRECT_MAIL_AUTOMATION_OPERATIONS = new Set([
+  'create',
+  'update',
+  'pause',
+  'resume',
+  'archive',
+]);
 
 /**
  * Per-skill RBAC. Skill discovery is deny-by-default: a member sees/uses only
@@ -723,24 +731,24 @@ export class GatewayDispatcher {
 
     const permission = await this.resolvePerm(member, departmentId);
     if (!permission) return this.permissionDenied('Permission resolution failed');
-    const grantedSkillIds = await this.grantedSkillIds(member);
-    const authorized = await this.deps.skillCatalog.authorizesTool({
-      companyId: member.companyId,
-      ...(departmentId ? { departmentId } : {}),
-      permission: withGatewayDiscoveryPermissions(permission),
-      ...(grantedSkillIds ? { grantedSkillIds } : {}),
-      skillId: parsed.data.skillId,
-      toolId: parsed.data.toolId,
-    });
-    if (!authorized) {
-      return this.permissionDenied(
-        `Skill "${parsed.data.skillId}" does not authorize tool "${parsed.data.toolId}"`,
-      );
-    }
+    await this.recordAdvisorySkillMismatch(
+      member,
+      departmentId,
+      permission,
+      parsed.data.skillId,
+      parsed.data.toolId,
+    );
 
     this.deps.logger.info('gateway.tools.invoke', {
-      skillId: parsed.data.skillId,
+      skillId: parsed.data.skillId ?? null,
       toolId: parsed.data.toolId,
+      operation: typeof parsed.data.args['operation'] === 'string'
+        ? parsed.data.args['operation']
+        : null,
+      ruleId: parsed.data.toolId === 'mailAutomations'
+        && typeof parsed.data.args['ruleId'] === 'string'
+        ? parsed.data.args['ruleId']
+        : null,
       userId: member.userId,
       companyId: member.companyId,
       departmentId: departmentId ?? null,
@@ -755,30 +763,75 @@ export class GatewayDispatcher {
     };
     const prepared = await this.deps.toolExecutor.prepare(input);
     if (!prepared.ok || !prepared.data) {
-      this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, prepared, execution);
+      this.recordToolInvocationAudit(
+        member,
+        departmentId,
+        parsed.data.toolId,
+        parsed.data.args,
+        prepared,
+        execution,
+      );
       return prepared;
     }
-    if (prepared.data.action !== 'read') {
+    const operation = parsed.data.args['operation'];
+    const isDirectLarkMailAutomationMutation = member.channel === 'lark'
+      && parsed.data.toolId === 'mailAutomations'
+      && typeof operation === 'string'
+      && LARK_DIRECT_MAIL_AUTOMATION_OPERATIONS.has(operation);
+    const needsLocalApproval = prepared.data.action !== 'read'
+      && !isDirectLarkMailAutomationMutation;
+    if (needsLocalApproval) {
       if (!this.deps.localApprovalIntents) {
         const response = gatewayFailure('tool_error', 'Local approval intents are not configured');
-        this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, response, execution);
+        this.recordToolInvocationAudit(
+          member,
+          departmentId,
+          parsed.data.toolId,
+          parsed.data.args,
+          response,
+          execution,
+        );
         return response;
       }
       const intent = await this.deps.localApprovalIntents.createIntentForPreparedInvocation(
-        { ...input, skillId: parsed.data.skillId },
+        { ...input, ...(parsed.data.skillId ? { skillId: parsed.data.skillId } : {}) },
         prepared.data,
       );
       if (!intent.ok || !intent.data) {
-        this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, intent, execution);
+        this.recordToolInvocationAudit(
+          member,
+          departmentId,
+          parsed.data.toolId,
+          parsed.data.args,
+          intent,
+          execution,
+        );
         return intent;
       }
       const response = gatewayLocalApprovalRequired(intent.data);
-      this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, response, execution);
+      this.recordToolInvocationAudit(
+        member,
+        departmentId,
+        parsed.data.toolId,
+        parsed.data.args,
+        response,
+        execution,
+      );
       return response;
     }
 
-    const response = await this.deps.toolExecutor.invoke({ ...input, expectedAction: 'read' });
-    this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, response, execution);
+    const response = await this.deps.toolExecutor.invoke({
+      ...input,
+      expectedAction: prepared.data.action,
+    });
+    this.recordToolInvocationAudit(
+      member,
+      departmentId,
+      parsed.data.toolId,
+      parsed.data.args,
+      response,
+      execution,
+    );
     return response;
   }
 
@@ -833,25 +886,18 @@ export class GatewayDispatcher {
     }
     const permission = await this.resolvePerm(member, departmentId);
     if (!permission) return this.permissionDenied('Permission resolution failed');
-    const grantedSkillIds = await this.grantedSkillIds(member);
-    const authorized = await this.deps.skillCatalog.authorizesTool({
-      companyId: member.companyId,
-      ...(departmentId ? { departmentId } : {}),
-      permission: withGatewayDiscoveryPermissions(permission),
-      ...(grantedSkillIds ? { grantedSkillIds } : {}),
-      skillId: parsed.data.skillId,
-      toolId: parsed.data.toolId,
-    });
-    if (!authorized) {
-      return this.permissionDenied(
-        `Skill "${parsed.data.skillId}" does not authorize tool "${parsed.data.toolId}"`,
-      );
-    }
+    await this.recordAdvisorySkillMismatch(
+      member,
+      departmentId,
+      permission,
+      parsed.data.skillId,
+      parsed.data.toolId,
+    );
 
     return this.deps.localApprovalIntents.prepare({
       member,
       ...(departmentId ? { departmentId } : {}),
-      skillId: parsed.data.skillId,
+      ...(parsed.data.skillId ? { skillId: parsed.data.skillId } : {}),
       toolId: parsed.data.toolId,
       args: parsed.data.args,
       ...(execution ? { execution } : {}),
@@ -897,30 +943,40 @@ export class GatewayDispatcher {
     if (!this.deps.automationPlanService) {
       return gatewayFailure('tool_error', 'Automation plan approvals are not configured.');
     }
-    const permission = await this.resolvePerm(member, departmentId);
-    if (!permission) return this.permissionDenied('Permission resolution failed');
-    const grantedSkillIds = await this.grantedSkillIds(member);
-    for (const invocation of parsed.data.invocations) {
-      const authorized = await this.deps.skillCatalog.authorizesTool({
-        companyId: member.companyId,
-        ...(departmentId ? { departmentId } : {}),
-        permission: withGatewayDiscoveryPermissions(permission),
-        ...(grantedSkillIds ? { grantedSkillIds } : {}),
-        skillId: invocation.skillId,
-        toolId: invocation.toolId,
-      });
-      if (!authorized) {
-        return this.permissionDenied(
-          `Skill "${invocation.skillId}" does not authorize tool "${invocation.toolId}"`,
-        );
-      }
-    }
     return this.deps.automationPlanService.create({
       member,
       ...(departmentId ? { departmentId } : {}),
       ...(execution ? { execution } : {}),
       ...parsed.data,
     });
+  }
+
+  private async recordAdvisorySkillMismatch(
+    member: GatewayMemberContext,
+    departmentId: string | undefined,
+    permission: PermissionResult,
+    skillId: string | undefined,
+    toolId: string,
+  ): Promise<void> {
+    if (!skillId) return;
+    const grantedSkillIds = await this.grantedSkillIds(member);
+    const matches = await this.deps.skillCatalog.authorizesTool({
+      companyId: member.companyId,
+      ...(departmentId ? { departmentId } : {}),
+      permission: withGatewayDiscoveryPermissions(permission),
+      ...(grantedSkillIds ? { grantedSkillIds } : {}),
+      skillId,
+      toolId,
+    });
+    if (!matches) {
+      this.deps.logger.warn('gateway.skill.advisory_mismatch', {
+        companyId: member.companyId,
+        userId: member.userId,
+        departmentId: departmentId ?? null,
+        skillId,
+        toolId,
+      });
+    }
   }
 
   private async handleAutomationPlanStatus(
@@ -1040,6 +1096,7 @@ export class GatewayDispatcher {
     member: GatewayMemberContext,
     departmentId: string | undefined,
     toolId: string,
+    args: Record<string, unknown>,
     response: GatewayResponse,
     execution: GatewayExecutionContext | undefined,
   ): void {
@@ -1051,6 +1108,12 @@ export class GatewayDispatcher {
       metadata: {
         departmentId: departmentId ?? null,
         toolId,
+        operation: typeof args['operation'] === 'string'
+          ? args['operation']
+          : null,
+        ruleId: toolId === 'mailAutomations' && typeof args['ruleId'] === 'string'
+          ? args['ruleId']
+          : null,
         gatewayStatus: response.status,
         execution: execution
           ? {

@@ -64,6 +64,14 @@ function makeRouter(overrides: Record<string, unknown> = {}) {
     appId: 'cli_test',
     appSecret: 'secret',
     apiBase: 'https://open.larksuite.com',
+    prisma: {
+      memberSession: {
+        updateMany: async () => ({ count: 1 }),
+        create: async () => ({}),
+      },
+    } as any,
+    memberSessionTtlMinutes: 480,
+    sendConfirmationDm: async () => {},
     channelIdentityRepo: {
       prepareLarkLogin: async (larkOpenId: string) => ok({
         status: 'ready',
@@ -220,5 +228,71 @@ describe('Lark OAuth account binding', () => {
     assert.equal(response.status, 400);
     assert.equal(exchangeCalled, false);
     assert.equal(upsertCalled, false);
+  });
+
+  it('issues a Lark member session before replaying the pending request', async () => {
+    const state = {
+      companyId: 'company-1', userId: 'user-1', larkOpenId: 'ou_expected',
+      tenantKey: 'tenant-1', nonce: 'nonce-1',
+    };
+    const order: string[] = [];
+    let createdSession: Record<string, unknown> | undefined;
+    let renewalWhere: Record<string, unknown> | undefined;
+    const router = makeRouter({
+      larkOAuthService: {
+        isConfigured: () => true,
+        exchangeCode: async () => ({
+          accessToken: 'token', refreshToken: 'refresh', tokenType: 'Bearer', expiresIn: 3600,
+          refreshTokenExpiresIn: 7200, larkOpenId: 'ou_expected', larkUserId: 'user-lark',
+          larkName: 'Expected User', larkEmail: 'expected@example.com', larkEnName: null,
+          tenantKey: 'tenant-1', scope: 'offline_access', avatarUrl: null,
+        }),
+      } as any,
+      connectionRepo: {
+        upsertLarkConnection: async () => {
+          order.push('connection');
+          return ok({ id: 'connection-1' });
+        },
+      } as any,
+      cache: {
+        get: async () => ok({
+          companyId: state.companyId,
+          userId: state.userId,
+          larkOpenId: state.larkOpenId,
+          tenantKey: state.tenantKey,
+          pendingEvent: { event: { message: { message_id: 'om_pending' } } },
+        }),
+        set: async () => ok(undefined), setNx: async () => ok(true),
+        del: async () => ok(undefined), scanDel: async () => ok(0),
+      } as any,
+      prisma: {
+        memberSession: {
+          updateMany: async ({ where }: { where: Record<string, unknown> }) => {
+            order.push('renew');
+            renewalWhere = where;
+            return { count: 0 };
+          },
+          create: async ({ data }: { data: Record<string, unknown> }) => {
+            order.push('create');
+            createdSession = data;
+            return {};
+          },
+        },
+      } as any,
+      onLinked: async () => { order.push('replay'); },
+    });
+
+    const response = await callRoute(router, 'GET', '/callback', {
+      query: { code: 'code-1', state: encodeLarkOAuthState(state) },
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(order, ['connection', 'renew', 'create', 'replay']);
+    assert.equal(createdSession?.['channel'], 'lark');
+    assert.equal(createdSession?.['authProvider'], 'lark');
+    assert.equal(createdSession?.['larkOpenId'], 'ou_expected');
+    assert.equal(createdSession?.['larkTenantKey'], 'tenant-1');
+    assert.equal(renewalWhere?.['larkOpenId'], 'ou_expected');
+    assert.equal(renewalWhere?.['larkTenantKey'], 'tenant-1');
   });
 });

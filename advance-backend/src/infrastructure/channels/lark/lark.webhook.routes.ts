@@ -6,9 +6,14 @@ import {
 } from './lark.adapter';
 import {
   LarkPiRuntimeError,
+  type LarkPiProgressEvent,
+  type LarkPiRuntimeAttachment,
   type LarkPiRuntimeService,
 } from '../../../application/runtime/lark-pi-runtime.service';
-import type { ChannelIdentityRepoPort } from '../../persistence/channel-identity.repository';
+import type {
+  ChannelIdentityRepoPort,
+  ResolvedUserIdentity,
+} from '../../persistence/channel-identity.repository';
 import type { ConversationRepoPort } from '../../persistence/conversation.repository';
 import type { Logger } from '../../../shared/logger';
 import type { TypedEnv } from '../../../config/env';
@@ -17,12 +22,11 @@ import type {
   LarkApprovalCardHandler,
   LarkAuthenticatedCardActor,
 } from './lark-approval-card.handler';
-import type { ShareResolverService } from '../../../application/knowledge-share/share-resolver.service';
-import type { KnowledgeShareService } from '../../../application/knowledge-share/knowledge-share.service';
-import type { ChatMessageSerializer } from '../../../application/orchestration/chat-message-serializer';
-import type { LaneLeaseHolder } from '../../../application/orchestration/lane-lease.holder';
+import type { LarkMemoryReviewService } from '../../../application/memory/lark-memory-review.service';
+import type { ChatMessageSerializer } from '../../../application/channels/chat-message-serializer';
+import type { LaneLeaseHolder } from '../../../application/channels/lane-lease.holder';
 import { fenceFinalReplies } from './lark-lane-fence';
-import { BusyLaneNotices, BUSY_NOTICE_TEXT } from './lark-busy-notice';
+import { BusyLaneNotices } from './lark-busy-notice';
 import {
   absorbLaneBurst,
   completeAbsorbedReceipts,
@@ -41,7 +45,10 @@ import {
   asUserId,
 } from '../../../shared/ids';
 import { asCompanyRoleSlug } from '../../../domain/permissions/company-role';
-import type { ConversationHandle } from '../../../application/channels/channel.adapter';
+import type {
+  ConversationHandle,
+  StatusHandle,
+} from '../../../application/channels/channel.adapter';
 import type { IncomingMessage } from '../../../domain/channel/incoming-message';
 import {
   verifyLarkWebhookRequest,
@@ -52,8 +59,11 @@ import {
   type LarkAttachment,
   type LarkAudioAttachment,
 } from './lark-attachment.parser';
-import type { InlineContextResult } from './lark-inline-context';
 import type { LarkChatContextService } from '../../../application/chat-context/lark-chat-context.service';
+import type {
+  GroupContextBlock,
+  GroupContextHydrator,
+} from '../../../application/chat-context/group-context.hydrator';
 import type { PrismaClient } from '../../../generated/prisma';
 import type { GroupChatAttachmentContext } from '../../../domain/conversation/group-context';
 import { fetchParentMessage, buildParentContextPrefix, type ParentMessageResult } from './lark-parent-message';
@@ -62,6 +72,7 @@ import type { LarkFileClient } from './clients/lark-file.client';
 import type { ElevenLabsTranscriptionClient } from '../../ai/transcription/elevenlabs-transcription.client';
 import {
   buildLarkDurableIngressLaneKey,
+  buildLarkExecutionLaneKey,
   buildLarkIngressLaneKey,
   buildLarkRoutingKeys,
 } from './lark-routing';
@@ -69,7 +80,13 @@ import type {
   ChannelDeliveryRepoPort,
   ResumableDelivery,
 } from '../../persistence/channel-delivery.repository';
-import type { FinalReply } from '../../../domain/channel/outbound';
+import type {
+  ChannelDeclaredPlan,
+  ChannelLedgerRow,
+  ChannelPlanStepStatus,
+  ChannelRunState,
+  FinalReply,
+} from '../../../domain/channel/outbound';
 import {
   isUntaggedGroupMessage,
   mayPrepareAttachment,
@@ -85,7 +102,6 @@ import {
   isAwaitingItsQuestion,
   unreadableImageNotice,
   unsupportedDocumentNotice,
-  withoutTransientBytes,
   MAX_INLINE_IMAGE_BYTES,
 } from './lark-media-support';
 import { conversationKeyForMessage } from '../../../domain/conversation/conversation-key';
@@ -94,7 +110,6 @@ import {
   buildLarkGroupSettingsCard,
   DEFAULT_LARK_GROUP_MODE,
   loadLarkGroupMode,
-  saveLarkGroupMode,
   withLarkGroupMode,
 } from './lark-group-mode';
 import { parseLarkFinalDeliveryEnvelope } from './lark-final-delivery';
@@ -111,11 +126,17 @@ import type {
   IngressReceiptRepoPort,
 } from '../../persistence/ingress-receipt.repository';
 import type { LarkIngressQueue } from '../../../application/lark-ingress/lark-ingress.queue';
-import type { IngestionQueue } from '../../../application/ingestion/ingestion.queue';
+
+type LarkPiRuntimePort =
+  Pick<LarkPiRuntimeService, 'run'>
+  & Partial<Pick<LarkPiRuntimeService, 'hasActiveSession'>>;
+
+const QUEUED_REQUEST_TEXT =
+  'Your request is queued. I’ll start it as soon as your previous request finishes.';
 
 export interface LarkWebhookDeps {
   adapter: LarkChannelAdapter;
-  piRuntime: Pick<LarkPiRuntimeService, 'run'>;
+  piRuntime: LarkPiRuntimePort;
   channelIdentityRepo: ChannelIdentityRepoPort;
   conversationRepo: ConversationRepoPort;
   ingressReceiptRepo: IngressReceiptRepoPort;
@@ -124,8 +145,7 @@ export interface LarkWebhookDeps {
   env: TypedEnv;
   approvalGate?: ApprovalGateService;
   approvalCardHandler?: LarkApprovalCardHandler;
-  knowledgeShareService?: KnowledgeShareService;
-  shareResolverService?: ShareResolverService;
+  memoryReviewService?: LarkMemoryReviewService;
   mem0?: Mem0Service;
   larkOAuthService?: LarkOAuthService;
   connectionRepo?: IntegrationConnectionRepository;
@@ -150,10 +170,14 @@ export interface LarkWebhookDeps {
   batchingEnabled?: boolean;
   chatContextService?: LarkChatContextService;
   /**
+   * Absent means a group run answers from the current message alone: every
+   * participant's container then holds a different understanding of one thread.
+   */
+  groupContextHydrator?: Pick<GroupContextHydrator, 'hydrate'>;
+  /**
    * Absent means documents are excerpted inline for the turn but never
    * indexed — the turn still answers, later questions have nothing to retrieve.
    */
-  ingestionQueue?: Pick<IngestionQueue, 'enqueue'>;
   prisma?: PrismaClient;
   /** Optional: absent means a retried run re-runs the agent, as before Wave 5. */
   channelDeliveryRepo?: ChannelDeliveryRepoPort;
@@ -258,15 +282,8 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
 
           // Requester-owned memory review decisions are resolved before the
           // generic approval handler so they cannot be mistaken for manager HITL.
-          if (deps.shareResolverService?.isMemoryReviewAction(cardEvent)) {
-            const result = await deps.shareResolverService.handleMemoryReview(cardEvent, actor);
-            res.status(200).json(result.responseBody);
-            return;
-          }
-
-          // Check file share actions next
-          if (deps.shareResolverService?.isShareAction(cardEvent)) {
-            const result = await deps.shareResolverService.handle(cardEvent, actor);
+          if (deps.memoryReviewService?.isMemoryReviewAction(cardEvent)) {
+            const result = await deps.memoryReviewService.handle(cardEvent, actor);
             res.status(200).json(result.responseBody);
             return;
           }
@@ -275,53 +292,10 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
           const actionValue = (cardEvent as any)?.action?.value;
           const actionObj = typeof actionValue === 'string' ? (() => { try { return JSON.parse(actionValue); } catch { return null; } })() : actionValue;
           if (actionObj?.action === 'set_group_mode') {
-            const mode = actionObj.mode;
-            const chatId = (cardEvent as any)?.context?.open_chat_id
-              ?? (cardEvent as any)?.open_chat_id;
-            const appId = eventHeader?.['app_id'];
-            const isAdmin = actor.aiRole === 'COMPANY_ADMIN'
-              || actor.aiRole === 'SUPER_ADMIN';
-            if (!isAdmin) {
-              res.status(200).json({
-                toast: { type: 'warning', content: 'Only a company admin can change group settings.' },
-              });
-              return;
-            }
-            if (
-              !deps.prisma
-              || !actor.tenantKey
-              || typeof chatId !== 'string'
-              || typeof appId !== 'string'
-              || (mode !== 'threaded' && mode !== 'inline')
-            ) {
-              res.status(200).json({
-                toast: { type: 'error', content: 'Divo could not identify this group setting.' },
-              });
-              return;
-            }
-            await saveLarkGroupMode(
-              deps.prisma,
-              {
-                companyId: actor.companyId,
-                tenantKey: actor.tenantKey,
-                appId,
-                chatId,
-              },
-              mode,
-              actor.userId,
-            );
-            log.info('webhook.group_mode.updated', {
-              companyId: actor.companyId,
-              chatId,
-              mode,
-              actorUserId: actor.userId,
-            });
             res.status(200).json({
               toast: {
-                type: 'success',
-                content: mode === 'threaded'
-                  ? 'Divo will start a thread for each new request.'
-                  : 'Divo will reply inline in this group.',
+                type: 'info',
+                content: 'Divo always replies in threads inside groups.',
               },
             });
             return;
@@ -570,7 +544,7 @@ export async function replayLarkMessageAfterLogin(
     const run = (adapter: LarkChannelAdapter, turnSignal: AbortSignal) =>
       processInBackground(
         incoming, rawEvent, { ...deps, adapter }, log,
-        deps.knowledgeShareService, turnSignal,
+        turnSignal,
       );
 
     if (!deps.laneLeaseHolder) {
@@ -668,7 +642,25 @@ export async function processAcceptedLarkReceipt(
     }
   }
 
-  const executionLaneKey = buildLarkIngressLaneKey(incoming);
+  let executionLaneKey = buildLarkIngressLaneKey(incoming);
+  let resolvedLaneIdentity: ResolvedUserIdentity | null | undefined;
+  if (incoming.tenantKey) {
+    const laneIdentity = await deps.channelIdentityRepo.resolveByLarkTenantIdentity(
+      incoming.userExternalId,
+      incoming.tenantKey,
+    );
+    if (!laneIdentity.ok) {
+      throw new Error(`Failed to resolve Lark runtime lane: ${laneIdentity.error.message}`);
+    }
+    resolvedLaneIdentity = laneIdentity.value;
+    if (resolvedLaneIdentity) {
+      executionLaneKey = buildLarkExecutionLaneKey({
+        companyId: resolvedLaneIdentity.companyId,
+        userId: resolvedLaneIdentity.userId,
+      });
+    }
+  }
+  const queueNoticeKey = String(incoming.traceId);
 
   if (isStopCommand(incoming.text)) {
     await handleStopBeforeLane(incoming, deps, requestLog);
@@ -679,25 +671,25 @@ export async function processAcceptedLarkReceipt(
   // previous turn is still running — asking after `runAndWait` has admitted
   // this task would always answer yes, and every message would look queued.
   if (deps.busyNotices && shouldStartLarkAgent(incoming)) {
-    const decision = deps.busyNotices.decide(executionLaneKey, {
+    const decision = deps.busyNotices.decide(queueNoticeKey, {
       laneBusy: deps.serializer.isActive(executionLaneKey),
       isCommand: (incoming.text ?? '').trim().startsWith('/'),
     });
     if (decision.notify) {
-      // Deliberately not `sendFinalReply`. That path reserves a delivery keyed
-      // on this run, and the notice would consume the reservation belonging to
-      // the answer that follows it — the user would get "I'll come back to
-      // this" and then nothing, because their real reply would be recorded as
-      // already delivered. A dropped notice is a cosmetic loss; a dropped
-      // answer is not.
-      const sent = await deps.adapter.sendToChatId(
-        String(incoming.chatId),
-        BUSY_NOTICE_TEXT,
-        String(incoming.messageId),
-        undefined,
-        incoming.chatType === 'group'
-          ? incoming.groupReplyMode !== 'inline'
-          : undefined,
+      // This status coordinator is keyed by the request correlation ID. When
+      // the lane opens, Pi progress reuses it and final delivery replaces this
+      // exact card with the answer.
+      const sent = await deps.adapter.sendStatus(
+        conversationForIncoming(incoming),
+        {
+          kind: 'status',
+          terminal: false,
+          timeline: {
+            phase: 'Queued',
+            state: 'queued',
+            liveLabel: QUEUED_REQUEST_TEXT,
+          },
+        },
       );
       if (!sent.ok) {
         requestLog.warn('webhook.busy_notice.failed', { error: sent.error.message });
@@ -764,8 +756,8 @@ export async function processAcceptedLarkReceipt(
             },
           },
           requestLog,
-          deps.knowledgeShareService,
           turnSignal,
+          resolvedLaneIdentity,
         );
         // Only now: a receipt completed before the answer exists is a message
         // silently dropped if this run then fails.
@@ -820,11 +812,10 @@ export async function processAcceptedLarkReceipt(
       throw new Error(`Lark execution lane is held by ${outcome.ownerId}`);
     }
   }).finally(() => {
-    // Only once this lane is genuinely idle. Clearing on every turn would
-    // re-announce for each message in one backlog, which is the noise the
-    // single-notice rule exists to avoid.
-    if (deps.busyNotices && !deps.serializer.isActive(executionLaneKey)) {
-      deps.busyNotices.clear(executionLaneKey);
+    // The notice key belongs to this request, so its eventual retry may create
+    // or update the same correlation-scoped status card again.
+    if (deps.busyNotices) {
+      deps.busyNotices.clear(queueNoticeKey);
     }
   });
 }
@@ -981,20 +972,186 @@ function runtimeThreadIdFor(incoming: IncomingMessage): string {
   }));
 }
 
-async function runPiAndDeliver(input: {
+function conversationForIncoming(incoming: IncomingMessage): ConversationHandle {
+  return {
+    channel: 'lark',
+    chatId: incoming.chatId,
+    replyToMessageId: incoming.messageId,
+    replyInThread:
+      incoming.chatType === 'group'
+      && incoming.groupReplyMode !== 'inline',
+    correlationId: asCorrelationId(incoming.traceId),
+  };
+}
+
+const DIVO_OWNED_THREAD_REF = 'divoOwnedThread';
+
+function isDivoOwnedThreadRef(value: unknown): boolean {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+    && (value as Record<string, unknown>)[DIVO_OWNED_THREAD_REF] === true;
+}
+
+async function readDivoOwnedThreadRefs(
+  prisma: PrismaClient | undefined,
+  companyId: string | null,
+  incoming: IncomingMessage,
+): Promise<Record<string, unknown> | null> {
+  if (
+    !prisma
+    || !companyId
+    || incoming.chatType !== 'group'
+    || !(incoming.rootMessageId || incoming.threadId)
+  ) return null;
+
+  const conversation = await prisma.runtimeConversation.findUnique({
+    where: {
+      companyId_channel_channelConversationKey: {
+        companyId,
+        channel: 'lark',
+        channelConversationKey: runtimeThreadIdFor(incoming),
+      },
+    },
+    select: { refsJson: true },
+  });
+  return typeof conversation?.refsJson === 'object'
+    && conversation.refsJson !== null
+    && !Array.isArray(conversation.refsJson)
+    ? conversation.refsJson as Record<string, unknown>
+    : null;
+}
+
+async function markDivoOwnedThread(
+  prisma: PrismaClient | undefined,
+  companyId: string | null,
+  incoming: IncomingMessage,
+  refs: Record<string, unknown> | null,
+  userId?: string,
+): Promise<void> {
+  if (!prisma || !companyId || incoming.chatType !== 'group') return;
+
+  const conversationKey = runtimeThreadIdFor(incoming);
+  const nextRefs = {
+    ...(refs ?? {}),
+    chatType: 'group',
+    larkOpenId: incoming.userExternalId,
+    [DIVO_OWNED_THREAD_REF]: true,
+  };
+  await prisma.runtimeConversation.upsert({
+    where: {
+      companyId_channel_channelConversationKey: {
+        companyId,
+        channel: 'lark',
+        channelConversationKey: conversationKey,
+      },
+    },
+    create: {
+      companyId,
+      channel: 'lark',
+      channelConversationKey: conversationKey,
+      rawChannelKey: String(incoming.chatId),
+      ...(userId ? { createdByUserId: userId } : {}),
+      refsJson: nextRefs,
+    },
+    update: {
+      updatedAt: new Date(),
+      refsJson: nextRefs,
+    },
+  });
+}
+
+function piToolStatus(toolName: string, toolId?: string): {
+  label: string;
+  liveLabel: string;
+} {
+  const id = toolId ?? toolName;
+  if (/^lark/i.test(id)) return { label: 'Lark', liveLabel: 'Working in Lark…' };
+  if (/^google/i.test(id)) return { label: 'Google', liveLabel: 'Working in Google…' };
+  if (/^zoho/i.test(id)) return { label: 'Zoho', liveLabel: 'Working in Zoho…' };
+  if (/^airtable/i.test(id)) return { label: 'Airtable', liveLabel: 'Working in Airtable…' };
+  if (id === 'webSearch') return { label: 'Web', liveLabel: 'Searching the web…' };
+  if (toolName === 'bash') return { label: 'Terminal', liveLabel: 'Running a terminal command…' };
+  if (toolName === 'read') return { label: 'Files', liveLabel: 'Reading files…' };
+  if (toolName === 'write') return { label: 'Files', liveLabel: 'Writing files…' };
+  if (toolName === 'edit') return { label: 'Files', liveLabel: 'Editing files…' };
+  if (toolName === 'divo_subagents') {
+    return { label: 'Subagents', liveLabel: 'Running a subagent…' };
+  }
+  if (toolName === 'divo_artifact') {
+    return { label: 'Artifact', liveLabel: 'Preparing an artifact…' };
+  }
+  if (toolName === 'divo_gateway') {
+    return { label: 'Divo', liveLabel: 'Using a company capability…' };
+  }
+  // Never a bare "Tool": the activity row exists to say what ran, and an
+  // anonymous row is a line of card height spent on nothing. Any unmapped tool
+  // is still readable once its identifier is written out as words.
+  const humanized = toolName
+    .replace(/^divo_/, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .trim()
+    .toLowerCase();
+  const label = humanized ? humanized.charAt(0).toUpperCase() + humanized.slice(1) : 'Tool';
+  return { label, liveLabel: `Running ${label.toLowerCase()}…` };
+}
+
+function divoFacingRuntimeMessage(message: string): string {
+  return message
+    .replace(/All Pi slots are busy/gi, 'Divo is at full capacity')
+    .replace(/Your Pi agent/gi, 'Divo')
+    .replace(/\bPi agent\b/gi, 'Divo')
+    .replace(/\bpi\b/gi, 'Divo');
+}
+
+/**
+ * A group thread is one conversation held by several containers.
+ *
+ * Each participant runs their own isolated Pi, so none of them can remember the
+ * thread on the others' behalf: the shared transcript is read here, for this run
+ * only, and the run's own session is scoped to the run so re-reading it every
+ * turn cannot pile up copies inside one user's volume. A DM has a single
+ * participant, so its durable session is left exactly as it was.
+ */
+async function sharedConversationFor(input: {
+  incoming: IncomingMessage;
+  companyId: string;
+  hydrator?: Pick<GroupContextHydrator, 'hydrate'>;
+}): Promise<GroupContextBlock | undefined> {
+  if (input.incoming.chatType !== 'group' || !input.hydrator) return undefined;
+
+  // A bare mention carries the adjacent Lark messages it was resolved against.
+  // They go in through the hydrator rather than being appended afterwards, so
+  // they arrive inside the same framing and fence as the stored transcript —
+  // appended after the trust policy they would be the one region of the prompt
+  // that nothing governs.
+  const block = await input.hydrator.hydrate({
+    companyId: input.companyId,
+    chatId: String(input.incoming.chatId),
+    currentMessageId: String(input.incoming.messageId),
+    ...(input.incoming.referenceContext ? { adjacentContext: input.incoming.referenceContext } : {}),
+  });
+  return block ?? undefined;
+}
+
+export async function runPiAndDeliver(input: {
   incoming: IncomingMessage;
   runContext: Parameters<LarkPiRuntimeService['run']>[0]['runContext'];
   conversation: ConversationHandle;
   deps: {
     adapter: LarkChannelAdapter;
-    piRuntime: Pick<LarkPiRuntimeService, 'run'>;
+    piRuntime: LarkPiRuntimePort;
     channelDeliveryRepo?: ChannelDeliveryRepoPort;
+    groupContextHydrator?: Pick<GroupContextHydrator, 'hydrate'>;
     onRetryableDelivery?: () => Promise<void>;
   };
   log: Logger;
+  attachments?: readonly LarkPiRuntimeAttachment[];
   signal?: AbortSignal;
+  rethrowRuntimeFailureAfterDelivery?: boolean;
 }): Promise<string | null> {
-  const { incoming, runContext, conversation, deps, log, signal } = input;
+  const { incoming, runContext, conversation, deps, log, attachments, signal } = input;
   const controller = new AbortController();
   const runtimeSignal = signal
     ? AbortSignal.any([signal, controller.signal])
@@ -1005,38 +1162,180 @@ async function runPiAndDeliver(input: {
     companyId: String(runContext.companyId),
     conversationKey: runtimeThreadIdFor(incoming),
   });
+  const startedAtMs = Date.now();
+  const ledger = new Map<string, ChannelLedgerRow>();
+  let statusHandle: StatusHandle | null = null;
+  let phase = 'Starting';
+  let state: ChannelRunState = 'thinking';
+  let liveLabel = 'Getting things ready…';
+  let actionCount = 0;
+  let declared: ChannelDeclaredPlan | undefined;
+
+  /**
+   * A tool that reported work underneath itself: subagents become children of
+   * the row that spawned them, and a declared checklist becomes the run's plan.
+   *
+   * The checklist is the run's, not the call's, so it outlives the tool call
+   * that declared it — otherwise the plan would vanish the moment the tool
+   * returned, which is exactly when the user starts wanting it.
+   */
+  const applyProgressDetail = (
+    callId: string,
+    detail: {
+      readonly children?: readonly { label: string; status: ChannelPlanStepStatus; detail?: string }[];
+      readonly todos?: readonly { title: string; status: ChannelPlanStepStatus }[];
+    },
+  ): void => {
+    if (detail.children?.length) {
+      const current = ledger.get(callId);
+      if (current) {
+        ledger.set(callId, {
+          ...current,
+          children: detail.children.map(child => ({
+            label: child.label,
+            count: 1,
+            status: child.status,
+            ...(child.detail ? { outcome: child.detail } : {}),
+          })),
+        });
+      }
+    }
+    if (detail.todos?.length) {
+      const items = detail.todos.map(todo => ({ title: todo.title, status: todo.status }));
+      const settled = items.filter(i => i.status === 'done' || i.status === 'skipped').length;
+      const current = items.find(i => i.status === 'running')?.title;
+      const next = items.find(i => i.status === 'pending')?.title;
+      declared = {
+        done: settled,
+        total: items.length,
+        ...(current ? { current } : next ? { next } : {}),
+        items,
+      };
+    }
+  };
+
+  const publishStatus = async (): Promise<void> => {
+    const update = {
+      kind: 'status' as const,
+      terminal: false,
+      timeline: {
+        phase,
+        state,
+        liveLabel,
+        actionCount,
+        startedAtMs,
+        ...(ledger.size > 0 ? { ledger: [...ledger.values()] } : {}),
+        ...(declared ? { declared } : {}),
+      },
+    };
+    const result = statusHandle
+      ? await deps.adapter.editStatus(statusHandle, update)
+      : await deps.adapter.sendStatus(conversation, update);
+    if (result.ok) {
+      statusHandle = result.value;
+    } else {
+      log.warn('webhook.pi.status_failed', {
+        error: result.error.message,
+        correlationId,
+      });
+    }
+  };
+
+  const reportProgress = async (event: LarkPiProgressEvent): Promise<void> => {
+    if (event.type === 'starting') {
+      phase = 'Starting';
+      state = 'thinking';
+      liveLabel = divoFacingRuntimeMessage(event.label);
+    } else if (event.type === 'ready' || event.type === 'thinking') {
+      phase = 'Thinking';
+      state = 'thinking';
+      liveLabel = 'Understanding your request…';
+    } else if (event.type === 'tool_start') {
+      const tool = piToolStatus(event.toolName, event.toolId);
+      phase = 'Working';
+      state = 'working';
+      liveLabel = tool.liveLabel;
+      actionCount += 1;
+      // No outcome text: the row's marker already carries running/done/failed,
+      // and "In progress" beside a ● is the restatement the card is built to
+      // avoid. The field is for what a step produced, which is not known yet.
+      ledger.set(event.callId, { label: tool.label, count: 1, status: 'running' });
+    } else if (event.type === 'tool_progress') {
+      applyProgressDetail(event.callId, event);
+      phase = 'Working';
+      state = 'working';
+    } else if (event.type === 'tool_end') {
+      applyProgressDetail(event.callId, event);
+      const current = ledger.get(event.callId);
+      if (current) {
+        ledger.set(event.callId, {
+          ...current,
+          status: event.isError ? 'failed' : 'done',
+        });
+      }
+      phase = 'Working';
+      state = 'working';
+      liveLabel = event.isError ? 'A step failed; checking what can continue…' : 'Continuing…';
+    } else {
+      phase = 'Writing';
+      state = 'writing';
+      liveLabel = 'Preparing your response…';
+    }
+    await publishStatus();
+  };
+
   let text: string;
+  let runtimeFailure: unknown;
   try {
+    await publishStatus();
+    // Read after the status card is up: the shared read is the first thing the
+    // run does, and a slow room lookup should show as "starting", not silence.
+    const sharedContext = await sharedConversationFor({
+      incoming,
+      companyId: String(runContext.companyId),
+      ...(deps.groupContextHydrator ? { hydrator: deps.groupContextHydrator } : {}),
+    });
     const result = await deps.piRuntime.run({
       incoming,
       runContext,
       conversation,
       threadId: runtimeThreadIdFor(incoming),
+      ...(attachments?.length ? { attachments } : {}),
+      ...(sharedContext ? { sharedContext } : {}),
+      ...(incoming.chatType === 'group' ? { sessionScope: 'run' as const } : {}),
       abortSignal: runtimeSignal,
+      onProgress: reportProgress,
     });
     text = result.text;
   } catch (error) {
+    runtimeFailure = error;
     if (runtimeSignal.aborted) {
       log.info('webhook.pi.interrupted', { correlationId });
-      return null;
+      text = 'Stopped. I did not continue this request.';
+    } else {
+      const code = error instanceof LarkPiRuntimeError ? error.code : 'run_failed';
+      text = error instanceof LarkPiRuntimeError
+        ? divoFacingRuntimeMessage(error.userMessage)
+        : 'Divo could not complete this request (run_failed). No fallback agent was run.';
+      log.error('webhook.pi.failed', {
+        code,
+        error: String(error),
+        correlationId: incoming.traceId,
+      });
     }
-    const code = error instanceof LarkPiRuntimeError ? error.code : 'run_failed';
-    text = error instanceof LarkPiRuntimeError
-      ? error.userMessage
-      : 'Pi could not complete this request (run_failed). No fallback agent was run.';
-    log.error('webhook.pi.failed', {
-      code,
-      error: String(error),
-      correlationId: incoming.traceId,
-    });
   } finally {
     deps.adapter.cleanupAbortController(correlationId);
   }
 
+  phase = 'Writing';
+  state = 'writing';
+  liveLabel = 'Preparing your response…';
+  await publishStatus();
+
   const delivered = await deps.adapter.sendFinalReply(conversation, {
     kind: 'final',
     text,
-    format: 'text',
+    format: 'markdown',
   });
   if (!delivered.ok) {
     log.error('webhook.pi.delivery_failed', {
@@ -1045,6 +1344,9 @@ async function runPiAndDeliver(input: {
     });
     await rethrowIfDeliveryNeedsRetry(delivered.error, incoming, deps, log);
     return null;
+  }
+  if (input.rethrowRuntimeFailureAfterDelivery && runtimeFailure) {
+    throw runtimeFailure;
   }
   return text;
 }
@@ -1110,7 +1412,7 @@ async function processInBackground(
   rawEvent: Record<string, unknown>,
   deps: {
     adapter: LarkChannelAdapter;
-    piRuntime: Pick<LarkPiRuntimeService, 'run'>;
+    piRuntime: LarkPiRuntimePort;
     channelIdentityRepo: ChannelIdentityRepoPort;
     conversationRepo: ConversationRepoPort;
     logger: Logger;
@@ -1122,14 +1424,14 @@ async function processInBackground(
     channelDeliveryRepo?: ChannelDeliveryRepoPort;
     onRetryableDelivery?: () => Promise<void>;
     chatContextService?: LarkChatContextService;
-    ingestionQueue?: Pick<IngestionQueue, 'enqueue'>;
+    groupContextHydrator?: Pick<GroupContextHydrator, 'hydrate'>;
     prisma?: PrismaClient;
     larkContactsClient?: Pick<LarkContactsClient, 'getTenantKey' | 'getUser'>;
     fetchParentMessage?: typeof fetchParentMessage;
   },
   log: Logger,
-  knowledgeShareService?: KnowledgeShareService,
   signal?: AbortSignal,
+  resolvedIdentity?: ResolvedUserIdentity | null,
 ): Promise<void> {
   const correlationId = asCorrelationId(incoming.traceId);
 
@@ -1142,11 +1444,18 @@ async function processInBackground(
     });
     return;
   }
-  const identityResult = await deps.channelIdentityRepo.resolveByLarkTenantIdentity(
-    incoming.userExternalId,
-    tenantKey,
-  );
-  let identity = identityResult.ok ? identityResult.value : null;
+  const identityResult = resolvedIdentity === undefined
+    ? await deps.channelIdentityRepo.resolveByLarkTenantIdentity(
+      incoming.userExternalId,
+      tenantKey,
+    )
+    : null;
+  let identity = resolvedIdentity === undefined
+    ? identityResult?.ok
+      ? identityResult.value
+      : null
+    : resolvedIdentity;
+  const identityResolutionOk = resolvedIdentity !== undefined || identityResult?.ok === true;
   let signInReason: string | undefined;
 
   if (identity?.activeDepartmentId && deps.prisma && deps.connectionRepo) {
@@ -1201,11 +1510,62 @@ async function processInBackground(
     }
   }
 
-  if (!identityResult.ok || !identity) {
-    let ambientCompanyId: string | null = null;
+  let ambientCompanyId: string | null = null;
+  if (!identity && incoming.chatType === 'group') {
+    const companyResult = await deps.channelIdentityRepo.resolveLarkTenantCompanyId(tenantKey);
+    ambientCompanyId = companyResult.ok ? companyResult.value : null;
+  }
+
+  const explicitlyAddressed = shouldStartLarkAgent(incoming);
+  const mayContinueThread =
+    isLarkHumanMessage(incoming)
+    && incoming.chatType === 'group'
+    && incoming.groupReplyMode !== 'inline'
+    && Boolean(incoming.rootMessageId || incoming.threadId);
+  const ownershipCompanyId = identity?.companyId ?? ambientCompanyId;
+  let threadRefs: Record<string, unknown> | null = null;
+  if (explicitlyAddressed || mayContinueThread) {
+    try {
+      threadRefs = await readDivoOwnedThreadRefs(
+        deps.prisma,
+        ownershipCompanyId,
+        incoming,
+      );
+    } catch (error) {
+      log.warn('webhook.thread_ownership.read_failed', {
+        companyId: ownershipCompanyId,
+        conversationKey: runtimeThreadIdFor(incoming),
+        error: String(error),
+        correlationId,
+      });
+      throw error;
+    }
+  }
+  const continuesDivoThread = mayContinueThread && isDivoOwnedThreadRef(threadRefs);
+  const shouldRespond = explicitlyAddressed || continuesDivoThread;
+
+  if (explicitlyAddressed && ownershipCompanyId) {
+    try {
+      await markDivoOwnedThread(
+        deps.prisma,
+        ownershipCompanyId,
+        incoming,
+        threadRefs,
+        identity?.userId,
+      );
+    } catch (error) {
+      log.warn('webhook.thread_ownership.write_failed', {
+        companyId: ownershipCompanyId,
+        conversationKey: runtimeThreadIdFor(incoming),
+        error: String(error),
+        correlationId,
+      });
+      throw error;
+    }
+  }
+
+  if (!identityResolutionOk || !identity) {
     if (incoming.chatType === 'group') {
-      const companyResult = await deps.channelIdentityRepo.resolveLarkTenantCompanyId(tenantKey);
-      ambientCompanyId = companyResult.ok ? companyResult.value : null;
       if (ambientCompanyId) {
         await storeUnknownGroupIncomingSnapshot({
           incoming,
@@ -1216,7 +1576,7 @@ async function processInBackground(
       }
     }
 
-    if (isUntaggedGroupMessage(incoming)) {
+    if (!shouldRespond) {
       log.debug('webhook.group_message.not_mentioned.identity_missing', {
         chatId: incoming.chatId,
         messageId: incoming.messageId,
@@ -1321,8 +1681,73 @@ async function processInBackground(
     return;
   }
 
+  if (
+    shouldRespond
+    &&
+    deps.piRuntime.hasActiveSession
+    && !await deps.piRuntime.hasActiveSession({
+      companyId: asCompanyId(identity.companyId),
+      userId: asUserId(identity.userId),
+      companyRole: asCompanyRoleSlug(identity.aiRole),
+      channel: 'lark',
+      tenantId: tenantKey,
+      userExternalId: incoming.userExternalId,
+    })
+  ) {
+    const loginUrl = await createLarkLoginUrl({
+      companyId: identity.companyId,
+      userId: identity.userId,
+      larkOpenId: incoming.userExternalId,
+      tenantKey,
+      pendingEvent: rawEvent,
+      deps,
+    });
+    if (!loginUrl) {
+      await deps.adapter.sendToChatId(
+        String(incoming.chatId),
+        SIGN_IN_NOT_CONFIGURED,
+        String(incoming.messageId),
+        undefined,
+        incoming.chatType === 'group'
+          ? incoming.groupReplyMode !== 'inline'
+          : undefined,
+      );
+      return;
+    }
+
+    const name = identity.displayName ?? identity.email ?? 'there';
+    const reason = 'Your Divo cloud session expired. Connect again and I’ll continue this request automatically.';
+    const card = await deps.adapter.sendCardToChat(
+      String(incoming.chatId),
+      buildSignInCard({ name, url: loginUrl, reason }),
+      incoming.chatType === 'group' ? String(incoming.messageId) : undefined,
+      incoming.chatType === 'group'
+        ? incoming.groupReplyMode !== 'inline'
+        : undefined,
+    );
+    if (!card.ok) {
+      await deps.adapter.sendToChatId(
+        String(incoming.chatId),
+        signInFallbackText({ name, url: loginUrl, reason }),
+        String(incoming.messageId),
+        undefined,
+        incoming.chatType === 'group'
+          ? incoming.groupReplyMode !== 'inline'
+          : undefined,
+      );
+    }
+    log.info('webhook.pi_session.login_prompt.sent', {
+      userId: identity.userId,
+      companyId: identity.companyId,
+      rendered: card.ok ? 'card' : 'text',
+      correlationId,
+    });
+    return;
+  }
+
   const routing = buildLarkRoutingKeys({
     companyId: String(identity.companyId),
+    userId: String(identity.userId),
     incoming,
   });
   log = log.child({
@@ -1330,31 +1755,26 @@ async function processInBackground(
     requesterUserId: identity.userId,
     departmentId: identity.activeDepartmentId ?? null,
     roomKey: routing.roomKey,
-    // The key the serializer actually ordered this turn on. It is derived
-    // without company identity so lane selection stays synchronous; recomputing
-    // it here is safe because the builder is pure over the same event.
-    laneKey: buildLarkIngressLaneKey(incoming),
-    // The company-scoped lane identity from the product contract. Wave 3's
-    // distributed leases adopt it; today it is recorded for comparison only.
-    companyLaneKey: routing.executionLaneKey,
+    laneKey: routing.executionLaneKey,
     deliveryTargetKey: routing.deliveryTargetKey,
     routingMode: 'active',
   });
   log.info('webhook.execution.correlated');
-  if (deps.prisma) {
+  if (deps.prisma && (incoming.chatType !== 'group' || shouldRespond)) {
     try {
+      const conversationKey = runtimeThreadIdFor(incoming);
       await deps.prisma.runtimeConversation.upsert({
         where: {
           companyId_channel_channelConversationKey: {
             companyId: identity.companyId,
             channel: 'lark',
-            channelConversationKey: String(incoming.chatId),
+            channelConversationKey: conversationKey,
           },
         },
         create: {
           companyId: identity.companyId,
           channel: 'lark',
-          channelConversationKey: String(incoming.chatId),
+          channelConversationKey: conversationKey,
           rawChannelKey: String(incoming.chatId),
           createdByUserId: identity.userId,
           ...(identity.email ? { createdByEmail: identity.email } : {}),
@@ -1390,15 +1810,7 @@ async function processInBackground(
     ...(identity.email ? { requesterEmail: identity.email } : {}),
   };
 
-  const conversation: ConversationHandle = {
-    channel:            'lark',
-    chatId:             incoming.chatId,
-    replyToMessageId:   incoming.messageId,
-    replyInThread:
-      incoming.chatType === 'group'
-      && incoming.groupReplyMode !== 'inline',
-    correlationId,
-  };
+  const conversation = conversationForIncoming(incoming);
 
   const messageAttachments = parseLarkAttachments(rawEvent);
   const voiceAttachment = messageAttachments.find(
@@ -1449,13 +1861,7 @@ async function processInBackground(
     return;
   }
 
-  const explicitlyAddressed = shouldStartLarkAgent(incoming);
-  const mayContinueThread =
-    incoming.chatType === 'group'
-    && incoming.groupReplyMode !== 'inline'
-    && Boolean(incoming.rootMessageId || incoming.threadId)
-    && Boolean(incoming.replyToMessageId);
-  let parentRef = (explicitlyAddressed || mayContinueThread) && incoming.replyToMessageId
+  let parentRef = explicitlyAddressed && incoming.replyToMessageId
     ? await (deps.fetchParentMessage ?? fetchParentMessage)({
         parentMessageId: String(incoming.replyToMessageId),
         env: deps.env,
@@ -1467,10 +1873,6 @@ async function processInBackground(
         includeContent: explicitlyAddressed,
       })
     : null;
-  const continuesDivoThread = mayContinueThread
-    && parentRef?.status === 'available'
-    && deps.adapter.isBotOpenId(parentRef.senderExternalId);
-  const shouldRespond = explicitlyAddressed || continuesDivoThread;
   if (explicitlyAddressed && parentRef?.status === 'available' && parentRef.audioAttachment) {
     const transcript = await transcribeLarkVoiceNote({
       attachment: {
@@ -1514,11 +1916,7 @@ async function processInBackground(
         incoming,
         identity,
         attachments,
-        deps,
         log,
-        shouldReact: shouldRespond,
-        untagged,
-        policy: effectivePolicy,
       })
     : [];
 
@@ -1541,11 +1939,6 @@ async function processInBackground(
       log,
     });
 
-    // Divo was not addressed, so it indexes without saying anything.
-    await enqueuePreparedDocuments({
-      prepared: preparedAttachments, incoming, identity, deps, log, announce: false,
-    });
-
     return;
   }
 
@@ -1558,11 +1951,6 @@ async function processInBackground(
       log,
     });
 
-    await enqueuePreparedDocuments({
-      prepared: preparedAttachments, incoming, identity, deps, log,
-      announce: shouldRespond,
-    });
-
     // An attachment with no question attached to it yet. Record what it shows
     // so the next message can ask about it, and say nothing — see
     // `isAwaitingItsQuestion`.
@@ -1572,9 +1960,10 @@ async function processInBackground(
       supportedAttachmentCount: attachments.filter(isSupportedLarkMedia).length,
       unsupportedAttachmentCount: attachments.filter(a => !isSupportedLarkMedia(a)).length,
     })) {
+      // Only the filenames, plus any refusal notice. The bytes are not read
+      // here — the next message is what sends them into the workspace.
       const seen = preparedAttachments
-        .map(item => item.inlineContext?.context)
-        .filter((part): part is string => !!part)
+        .map(item => item.context.inlineContext ?? `[Attached: ${item.context.fileName}]`)
         .join('\n\n');
       if (seen) {
         await deps.conversationRepo.appendTurn(
@@ -1597,6 +1986,13 @@ async function processInBackground(
           error: String(e),
         }));
       }
+      // Divo is about to say nothing at all, so this reaction is the only
+      // signal the file arrived. Without it the user is left watching an
+      // upload that looks ignored, and sends it again.
+      try {
+        await deps.adapter.reactToIncoming(incoming.messageId, '📥');
+      } catch { /* acknowledgement is best-effort */ }
+
       log.info('webhook.attachment.awaiting_question', {
         chatId: incoming.chatId,
         messageId: incoming.messageId,
@@ -1606,34 +2002,17 @@ async function processInBackground(
       return;
     }
 
-    // Inline image bytes for multimodal embedding, valid for this turn only.
-    const imageUrls = preparedAttachments
-      .filter(p => p.attachment.type === 'image')
-      .map(p => p.context.base64DataUrl)
-      .filter((url): url is string => !!url);
-
-    // Merge parent message image URLs (quote-reply with images)
-    const allImageUrls = [...imageUrls, ...(parentRef?.imageUrls ?? [])];
-
-    // OCR/text context for non-image files (PDFs, docs, etc.)
     const userText     = incoming.text?.trim() ?? '';
     const parentPrefix = parentRef ? buildParentContextPrefix(parentRef) : '';
     const textWithParent = parentPrefix
       ? (userText ? `${parentPrefix}\n\n${userText}` : parentPrefix)
       : userText;
-    // Image OCR is injected into the live request for both direct and group
-    // messages.
-    //
-    // Passing pixels through `imageUrls` assumes the model can see them. The
-    // Lark supervisor runs on DeepSeek, which is text-only, so on that path the
-    // image parts are dropped and Divo answers "I don't see any image" about a
-    // picture it successfully downloaded and read. The OCR text is the only
-    // form it can actually receive.
-    //
-    // The current room snapshot is removed from historical context before the
-    // supervisor runs, so this is not duplicated in a group request.
+
+    // The only thing an attachment contributes to the prompt is a refusal.
+    // Supported files reach the agent as real paths in its workspace, so
+    // describing them here would just be a worse copy of what it can open.
     const contextBlock = preparedAttachments
-      .map(item => item.inlineContext?.context)
+      .map(item => item.context.inlineContext)
       .filter((part): part is string => !!part)
       .join('\n\n');
 
@@ -1648,8 +2027,19 @@ async function processInBackground(
     const enrichedIncoming = appendLarkMentionContext({
       ...incoming,
       text: syntheticText,
-      ...(allImageUrls.length > 0 ? { imageUrls: allImageUrls } : {}),
     });
+    const { LarkFileClient: RuntimeFileClient } = await import('./clients/lark-file.client');
+    const runtimeFileClient = new RuntimeFileClient(deps.env, log);
+    const runtimeAttachments: LarkPiRuntimeAttachment[] = attachments
+      .filter(isSupportedLarkMedia)
+      .map(attachment => ({
+        kind: attachment.type,
+        name: attachment.fileName,
+        mimeType: attachment.mimeType,
+        openStream: () => attachment.type === 'image'
+          ? runtimeFileClient.openImage(attachment.messageId, attachment.key)
+          : runtimeFileClient.openFile(attachment.messageId, attachment.key),
+      }));
 
     const replyText = await runPiAndDeliver({
       incoming: withLarkSenderName(enrichedIncoming, identity),
@@ -1657,6 +2047,7 @@ async function processInBackground(
       conversation,
       deps,
       log,
+      ...(runtimeAttachments.length > 0 ? { attachments: runtimeAttachments } : {}),
       ...(signal ? { signal } : {}),
     });
 
@@ -1676,7 +2067,6 @@ async function processInBackground(
       deps,
       log,
       correlationId,
-      ...(knowledgeShareService ? { knowledgeShareService } : {}),
     });
     return;
   }
@@ -2015,13 +2405,13 @@ async function handleSlashCommand(args: {
     connectionRepo?: IntegrationConnectionRepository;
     cache: CachePort;
     chatContextService?: LarkChatContextService;
+    groupContextHydrator?: Pick<GroupContextHydrator, 'hydrate'>;
     prisma?: PrismaClient;
   };
   log: Logger;
   correlationId: ReturnType<typeof asCorrelationId>;
-  knowledgeShareService?: KnowledgeShareService;
 }): Promise<void> {
-  const { text, incoming, conversation, identity, deps, log, correlationId, knowledgeShareService } = args;
+  const { text, incoming, conversation, identity, deps, log, correlationId } = args;
   const cmd = text.split(/\s+/)[0]!.toLowerCase();
 
   const reply = async (replyText: string) => {
@@ -2059,21 +2449,14 @@ async function handleSlashCommand(args: {
     };
     const requested = text.slice(cmd.length).trim().toLowerCase();
     if (requested && requested !== 'status' && requested !== 'threaded' && requested !== 'inline') {
-      await reply('Usage: `/group-mode threaded`, `/group-mode inline`, or `/group-mode status`.');
+      await reply('Usage: `/group-mode status`. Divo always replies in threads inside groups.');
       return;
     }
 
-    let mode = await loadLarkGroupMode(deps.prisma, address);
-    if (requested === 'threaded' || requested === 'inline') {
-      mode = requested;
-      await saveLarkGroupMode(deps.prisma, address, mode, identity.userId);
-      log.info('webhook.group_mode.updated', {
-        companyId: identity.companyId,
-        chatId: incoming.chatId,
-        mode,
-        actorUserId: identity.userId,
-        correlationId,
-      });
+    const mode = await loadLarkGroupMode(deps.prisma, address);
+    if (requested === 'inline') {
+      await reply('Divo always replies in threads inside groups. Inline mode is no longer available.');
+      return;
     }
 
     if (cmd === '/group-settings' || !requested || requested === 'status') {
@@ -2093,11 +2476,7 @@ async function handleSlashCommand(args: {
       return;
     }
 
-    await reply(
-      mode === 'threaded'
-        ? 'Done. New requests will open their own Divo thread.'
-        : 'Done. Divo will reply inline in this group.',
-    );
+    await reply('Divo already uses threads for every group request.');
     return;
   }
 
@@ -2203,34 +2582,6 @@ async function handleSlashCommand(args: {
     } catch (error) {
       log.warn('webhook.command.remember.failed', { error: String(error), correlationId });
       await reply('Could not store that memory. Please try again.');
-    }
-    return;
-  }
-
-  if (cmd === '/share') {
-    if (!knowledgeShareService) {
-      await reply('File sharing is not configured on this server.');
-      return;
-    }
-    // Optionally accept a file asset ID: /share <fileAssetId>
-    const parts = text.split(/\s+/);
-    const fileAssetId = parts[1] ? parts[1] : undefined;
-
-    const senderOpenId = incoming.userExternalId;  // Lark open_id
-    const senderName   = (incoming as unknown as Record<string, unknown>)['senderName'] as string | undefined ?? 'User';
-
-    try {
-      const result = await knowledgeShareService.requestShare({
-        companyId:       identity.companyId,
-        requesterUserId: identity.userId,
-        requesterOpenId: senderOpenId,
-        requesterName:   senderName,
-        ...(fileAssetId ? { fileAssetId } : {}),
-      });
-      await reply(result.message);
-    } catch (e) {
-      log.error('webhook.command.share.failed', { error: String(e), correlationId });
-      await reply('Something went wrong. Please try again.');
     }
     return;
   }
@@ -2421,7 +2772,7 @@ async function handleSlashCommand(args: {
       '`/clear room` — Admin-only two-step reset for every thread in this group.\n' +
       '`/stop` — Stop the active run in this conversation.\n' +
       '`/group-settings` — Admin-only group reply settings.\n' +
-      '`/group-mode threaded|inline|status` — Configure or inspect group replies.\n' +
+      '`/group-mode status` — Confirm that group replies stay in threads.\n' +
       '`/remember <fact>` — Save a fact Divo will recall in future chats.\n' +
       '  _Example:_ `/remember Acme Corp uses net-30 payment terms`\n\n' +
       '**Account**\n' +
@@ -2585,72 +2936,37 @@ const withLarkSenderName = (
 type PreparedAttachmentContext = {
   attachment: LarkAttachment;
   context: GroupChatAttachmentContext;
-  inlineContext?: InlineContextResult;
-  /** A document awaiting its background indexing job. */
-  needsIngestion?: boolean;
 };
 
-function hasUsefulInlineAttachmentContext(item: PreparedAttachmentContext): boolean {
-  const rawText = item.inlineContext?.rawText.trim() ?? '';
-  if (rawText) return true;
-
-  const context = item.inlineContext?.context.trim() ?? '';
-  if (!context) return false;
-  if (context.includes('could not download')) return false;
-  if (context.includes('no text content extracted')) return false;
-  return !/^\[(?:File|Image):\s*"?[^"\]]+"?\]$/i.test(context);
-}
-
+/**
+ * Describe each attachment for the transcript. Nothing is downloaded here.
+ *
+ * The bytes travel exactly once, streamed straight into the sender's own
+ * container workspace, and the agent reads them from there. Extracting an
+ * excerpt in the backend as well would mean downloading the same file twice to
+ * produce a capped, lossy second copy of something the agent can already open
+ * in full — and it would have to guess what mattered before the question was
+ * even asked.
+ */
 async function prepareLarkAttachmentContexts(input: {
   incoming: IncomingMessage;
   identity: LarkResolvedIdentity;
   attachments: readonly LarkAttachment[];
-  deps: {
-    adapter: LarkChannelAdapter;
-    env: TypedEnv;
-    logger: Logger;
-    ingestionQueue?: Pick<IngestionQueue, 'enqueue'>;
-  };
   log: Logger;
-  shouldReact: boolean;
-  untagged: boolean;
-  policy: UntaggedGroupPolicy;
 }): Promise<PreparedAttachmentContext[]> {
-  const { incoming, identity, attachments, deps, log } = input;
-  if (attachments.length === 0) return [];
+  const { attachments, log } = input;
 
-  const allowed = attachments.filter(att => mayPrepareAttachment({
-    kind: att.type, untagged: input.untagged, policy: input.policy,
-  }));
-  if (allowed.length === 0) return [];
-
-  // Acknowledge only what Divo will actually look at. A 📥 on a file it is
-  // about to refuse reads as "received, working on it" and then contradicts
-  // itself.
-  if (input.shouldReact && allowed.some(isSupportedLarkMedia)) {
-    try {
-      await deps.adapter.reactToIncoming(incoming.messageId, '📥');
-    } catch { /* non-fatal */ }
-  }
-
-  const { LarkFileClient } = await import('./clients/lark-file.client');
-  const { extractAttachmentInlineContext } = await import('./lark-inline-context');
-  const fileClient = new LarkFileClient(deps.env, log);
-  const prepared: PreparedAttachmentContext[] = [];
-
-  for (const att of allowed) {
-    // A format with no extractor is refused before anything happens to it: no
-    // download, no upload, no indexing. The refusal is the whole handling, and
-    // it travels as prompt context so Divo says it in its own voice rather
-    // than as a canned card bolted onto an otherwise confident answer.
+  return attachments.map((att) => {
+    // A format with no handler is refused before anything happens to it. The
+    // refusal travels as prompt context so Divo says it in its own voice
+    // rather than as a card bolted onto an otherwise confident answer.
     if (!isSupportedLarkMedia(att)) {
       log.info('webhook.attachment.unsupported', {
         fileName: att.fileName,
         mimeType: att.mimeType,
         kind: att.type,
       });
-      const notice = unsupportedDocumentNotice(att.fileName);
-      prepared.push({
+      return {
         attachment: att,
         context: {
           kind: att.type,
@@ -2658,208 +2974,27 @@ async function prepareLarkAttachmentContexts(input: {
           mimeType: att.mimeType,
           larkFileKey: att.key,
           larkMessageId: att.messageId,
-          ingestionStatus: 'unsupported',
-          inlineContext: notice,
+          ingestionStatus: 'unsupported' as const,
+          inlineContext: unsupportedDocumentNotice(att.fileName),
           isInlineComplete: false,
         },
-        inlineContext: { context: notice, isComplete: false, rawText: '' },
-      });
-      continue;
+      };
     }
 
-    const isImage = att.type === 'image';
-    let buffer: Buffer | undefined;
-    let inlineContext: InlineContextResult | undefined;
-    let error: string | undefined;
-
-    try {
-      // Lark serves images and files from different resource endpoints; asking
-      // for a PDF on the image route returns an error, not the bytes.
-      const downloaded = isImage
-        ? await fileClient.downloadImage(att.messageId, att.key)
-        : await fileClient.downloadFile(att.messageId, att.key);
-      if (downloaded && downloaded.length > 0) {
-        buffer = downloaded;
-      } else {
-        log.warn('webhook.attachment.download.empty', { fileName: att.fileName });
-      }
-    } catch (e) {
-      error = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
-      log.warn('webhook.attachment.download.failed', { fileName: att.fileName, error });
-    }
-
-    if (buffer) {
-      inlineContext = await extractAttachmentInlineContext(att, buffer, deps.env, log);
-    }
-
-    // Image pixels ride along with this turn and are then dropped. Nothing is
-    // uploaded to a CDN and nothing is queued for indexing, so there is no
-    // stored copy of the image and no derived chunks to retrieve later — the
-    // OCR text below is all that outlives the request.
-    let base64DataUrl: string | undefined;
-    if (isImage && buffer && buffer.length <= MAX_INLINE_IMAGE_BYTES) {
-      base64DataUrl = `data:${att.mimeType};base64,${buffer.toString('base64')}`;
-    } else if (isImage && buffer) {
-      // OCR still ran, so the text is available even though the model cannot
-      // look at the image itself.
-      log.warn('webhook.attachment.image_too_large_for_inline', {
-        fileName: att.fileName, bytes: buffer.length, maxBytes: MAX_INLINE_IMAGE_BYTES,
-      });
-    }
-
-    // Documents outlive the turn. The inline excerpt answers most questions
-    // immediately, but it is capped, so the full text is queued for indexing
-    // and the worker writes the resulting fileAssetId back onto this same
-    // transcript message — that annotation is what later questions retrieve
-    // through.
-    //
-    // Queued whether or not the inline download worked. The two are separate
-    // attempts at the same bytes: this one is best-effort for the current
-    // turn, the worker's has three tries with backoff. Skipping the durable
-    // path because the opportunistic one failed would turn a blip into a
-    // document that is never indexed at all.
-    //
-    // The job is not queued here. The worker updates the transcript message
-    // this upload belongs to, and that row is written only after every
-    // attachment has been prepared — so queuing inside this loop lets a fast
-    // job finish before its row exists, land in the "message not found" branch,
-    // and leave the transcript reading `processing` forever. The caller fires
-    // these once the snapshot is stored.
-    //
-    // `processing` is a promise that more is coming. It is only honest while
-    // indexing is switched on; with it off the excerpt above is all there will
-    // ever be, and saying otherwise makes Divo offer detail it cannot fetch.
-    const indexingEnabled = deps.env.LARK_DOCUMENT_INDEXING === 'on';
-    const ingestionStatus: GroupChatAttachmentContext['ingestionStatus'] =
-      !isImage && indexingEnabled ? 'processing' : 'inline_only';
-
-    // An attachment that could not be downloaded or read still has to reach
-    // the model as *something*. Handing it nothing produces "I don't see any
-    // image", which contradicts the file the user is looking at.
-    const effectiveContext: InlineContextResult = inlineContext ?? {
-      context: unreadableImageNotice(att.fileName, error),
-      isComplete: false,
-      rawText: '',
-    };
-
-    const context: GroupChatAttachmentContext = {
-      kind: att.type,
-      fileName: att.fileName,
-      mimeType: att.mimeType,
-      larkFileKey: att.key,
-      larkMessageId: att.messageId,
-      ingestionStatus,
-      ...(base64DataUrl ? { base64DataUrl } : {}),
-      inlineContext: effectiveContext.context,
-      isInlineComplete: effectiveContext.isComplete,
-      ...(effectiveContext.rawText ? { rawTextPreview: effectiveContext.rawText.slice(0, 2000) } : {}),
-      ...(error ? { error } : {}),
-    };
-
-    prepared.push({
+    return {
       attachment: att,
-      context,
-      inlineContext: effectiveContext,
-      needsIngestion: !isImage && indexingEnabled,
-    });
-  }
-
-  return prepared;
+      context: {
+        kind: att.type,
+        fileName: att.fileName,
+        mimeType: att.mimeType,
+        larkFileKey: att.key,
+        larkMessageId: att.messageId,
+        ingestionStatus: 'workspace' as const,
+      },
+    };
+  });
 }
 
-/**
- * Queue every prepared document for indexing.
- *
- * Deliberately called after the transcript snapshot is written, so the message
- * the worker writes `fileAssetId` back onto already exists. Reversing the two
- * is a race that costs nothing visible at the time and leaves the transcript
- * permanently claiming the document is still indexing.
- */
-async function enqueuePreparedDocuments(input: {
-  prepared: readonly PreparedAttachmentContext[];
-  incoming: IncomingMessage;
-  identity: LarkResolvedIdentity;
-  deps: { ingestionQueue?: Pick<IngestionQueue, 'enqueue'>; env: TypedEnv };
-  log: Logger;
-  announce: boolean;
-}): Promise<void> {
-  for (const item of input.prepared) {
-    if (!item.needsIngestion) continue;
-    await enqueueLarkDocumentIngestion({
-      att: item.attachment,
-      incoming: input.incoming,
-      identity: input.identity,
-      deps: input.deps,
-      log: input.log,
-      // The worker quote-replies an "indexed" card when it finishes. In a room
-      // where Divo was not addressed that card is Divo speaking uninvited, so
-      // the file is still indexed — silently.
-      announce: input.announce,
-    });
-  }
-}
-
-/**
- * Queue a Lark document for background indexing.
- *
- * The bytes are not carried on the job. The worker re-downloads them from
- * Lark, which keeps a multi-megabyte base64 blob out of Redis and off the
- * retry path — a job that fails twice would otherwise hold three copies.
- *
- * `larkChatId` is the access scope: it travels onto every chunk's payload and
- * is the only thing that lets a colleague in the same room retrieve this file.
- * Without it the document is reachable by its uploader alone.
- *
- * Failing to enqueue is not fatal. The inline excerpt is already in hand, so
- * the turn still answers; what is lost is retrieval beyond the excerpt.
- */
-async function enqueueLarkDocumentIngestion(input: {
-  att: LarkAttachment;
-  incoming: IncomingMessage;
-  identity: LarkResolvedIdentity;
-  deps: { ingestionQueue?: Pick<IngestionQueue, 'enqueue'>; env: TypedEnv };
-  log: Logger;
-  announce: boolean;
-}): Promise<boolean> {
-  const { att, incoming, identity, deps, log } = input;
-  if (!deps.ingestionQueue) return false;
-  // Checked here as well as at the call site: this is the last point before a
-  // job exists, and a second reader of this code should not have to trace the
-  // caller to know whether the switch is respected.
-  if (deps.env.LARK_DOCUMENT_INDEXING !== 'on') return false;
-
-  try {
-    await deps.ingestionQueue.enqueue({
-      jobType: 'lark_file',
-      companyId: identity.companyId,
-      uploaderUserId: identity.userId,
-      uploaderChannel: 'lark',
-      fileName: att.fileName,
-      mimeType: att.mimeType,
-      larkFileKey: att.key,
-      larkMessageId: att.messageId,
-      chatId: String(incoming.chatId),
-      // The worker treats replyToMessageId as "post the result here". Omitting
-      // it is what makes indexing silent.
-      ...(input.announce ? { replyToMessageId: String(incoming.messageId) } : {}),
-      ...(incoming.chatType === 'group'
-        ? { replyInThread: incoming.groupReplyMode !== 'inline' }
-        : {}),
-      groupContextMessageId: String(incoming.messageId),
-      larkChatId: String(incoming.chatId),
-      visibility: 'personal',
-    });
-    log.info('webhook.attachment.ingestion_queued', {
-      fileName: att.fileName, chatId: incoming.chatId,
-    });
-    return true;
-  } catch (e) {
-    log.warn('webhook.attachment.ingestion_enqueue_failed', {
-      fileName: att.fileName, error: String(e),
-    });
-    return false;
-  }
-}
 
 /**
  * Resolve the untagged-group policy for one company, per turn.
@@ -2931,7 +3066,7 @@ async function storeGroupIncomingSnapshot(input: {
   if (incoming.chatType !== 'group' || !deps.chatContextService) return;
 
   // The room transcript keeps what the image *said*, never the image itself.
-  const attachmentContexts = input.attachmentContexts.map(withoutTransientBytes);
+  const attachmentContexts = input.attachmentContexts;
 
   const content = incoming.text?.trim()
     || attachmentContexts.map(att => `[${att.kind}: ${att.fileName}]`).join(' ');

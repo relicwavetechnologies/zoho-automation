@@ -7,7 +7,7 @@ import {
 	fetchRuntimeContext,
 	selectDepartment,
 } from "./auth.mjs";
-import { startDivoPi } from "./runtime.mjs";
+import { resolveRuntimeThreadId, startDivoPi } from "./runtime.mjs";
 
 const DEFAULT_BOOTSTRAP_PATH = "/run/divo-auth/bootstrap.json";
 const DEFAULT_BOOTSTRAP_TIMEOUT_MS = 30_000;
@@ -25,6 +25,16 @@ export function validateBootstrap(value) {
 	if (!/^[A-Za-z0-9._-]+$/.test(value.thread)) {
 		throw new Error("Bootstrap thread is invalid");
 	}
+	resolveRuntimeThreadId(value.thread, value.runtimeThreadId);
+	// Absent means the durable per-thread session, which is what every caller
+	// asked for before shared group threads existed.
+	if (
+		value.sessionScope !== undefined
+		&& value.sessionScope !== "thread"
+		&& value.sessionScope !== "run"
+	) {
+		throw new Error("Bootstrap sessionScope is invalid");
+	}
 	return value;
 }
 
@@ -37,6 +47,30 @@ export function assertPinnedIdentity(session, bootstrap) {
 			`Authenticated identity does not match pinned profile "${bootstrap.profile}"`,
 		);
 	}
+}
+
+/**
+ * What the container hands Pi, derived from what the controller sent.
+ *
+ * Pure and exported so the forwarding itself is covered: `sessionScope` is the
+ * one property keeping a shared group transcript off the user's durable volume,
+ * and losing it here would be silent — every run would still succeed, and every
+ * group turn would write that transcript to disk.
+ */
+export function piOptions({ bootstrap, department, runtimeContext }) {
+	return {
+		...bootstrap,
+		departmentId: department?.id,
+		mode: "rpc",
+		runtimeThreadId: resolveRuntimeThreadId(
+			bootstrap.thread,
+			bootstrap.runtimeThreadId,
+		),
+		runtimeContext,
+		sessionScope: bootstrap.sessionScope ?? "thread",
+		stateRoot: "/data/state",
+		workspace: "/data/workspace",
+	};
 }
 
 async function readBootstrap(
@@ -68,14 +102,7 @@ export async function runContainer() {
 		department,
 		departments: session.departments,
 	});
-	const child = startDivoPi({
-		...bootstrap,
-		departmentId: department?.id,
-		mode: "rpc",
-		runtimeContext,
-		stateRoot: "/data/state",
-		workspace: "/data/workspace",
-	});
+	const child = startDivoPi(piOptions({ bootstrap, department, runtimeContext }));
 	for (const signal of ["SIGINT", "SIGTERM"]) {
 		process.once(signal, () => child.kill(signal));
 	}

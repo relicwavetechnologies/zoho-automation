@@ -315,7 +315,10 @@ export class SkillCatalogService {
   ): boolean {
     if (!this.isLanguageSafe(row)) return false;
     const granted = grantedSkillIds ? grantedSkillIds.has(row.id) : true;
-    const executable = row.toolIds.length === 0 || row.toolIds.some((toolId) =>
+    // `every` matches the gateway's view gate. Listing a skill the dispatcher
+    // will refuse to open advertises a dead end to the agent. An empty tool
+    // list passes, which is what makes an instruction-only recipe visible.
+    const executable = row.toolIds.every((toolId) =>
       permission.allowedToolIds.has(asToolId(toolId))
     );
     return granted && executable;

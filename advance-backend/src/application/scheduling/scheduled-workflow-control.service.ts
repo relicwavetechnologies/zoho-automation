@@ -16,7 +16,13 @@ export type ScheduleCreateInput = {
   readonly timeMinute?: number | undefined;
   readonly daysOfWeek?: readonly string[] | undefined;
   readonly dayOfMonth?: number | undefined;
-  readonly delivery: 'current_conversation' | 'creator_lark_dm';
+  /**
+   * Accepted and ignored. Every scheduled result goes to the creator's Lark DM.
+   * Kept optional so a caller working from an older copy of the scheduling skill
+   * — which is provisioned per company and is not refreshed automatically — is
+   * not rejected for still sending it.
+   */
+  readonly delivery?: 'current_conversation' | 'creator_lark_dm' | undefined;
 };
 
 export type ScheduledWorkflowSummary = {
@@ -27,8 +33,8 @@ export type ScheduledWorkflowSummary = {
   readonly timezone: string;
   readonly nextRunAt: string | null;
   readonly lastRunAt: string | null;
-  readonly deliveryChannel: 'lark' | 'desktop';
-  readonly deliveryTarget: 'origin_chat' | 'creator_dm';
+  readonly deliveryChannel: 'lark';
+  readonly deliveryTarget: 'creator_dm';
 };
 
 export class ScheduledWorkflowControlError extends Error {
@@ -56,7 +62,6 @@ export class ScheduledWorkflowControlService {
     schedule: ScheduledWorkflowSummary;
     nextRunLabel: string;
   }> {
-    const originChatId = String(runContext.chatId ?? '').trim();
     if (runContext.channel !== 'desktop' && runContext.channel !== 'lark') {
       throw new ScheduledWorkflowControlError(
         'unavailable',
@@ -64,32 +69,13 @@ export class ScheduledWorkflowControlService {
       );
     }
 
-    const returnsToOrigin = input.delivery === 'current_conversation';
-    if (returnsToOrigin && !originChatId) {
-      throw new ScheduledWorkflowControlError(
-        'bad_args',
-        'A persistent conversation is required for current-conversation delivery.',
-      );
-    }
-
-    if (returnsToOrigin && runContext.channel === 'desktop') {
-      const thread = await this.prisma.desktopThread.findFirst({
-        where: {
-          id: originChatId,
-          companyId: String(runContext.companyId),
-          userId: String(runContext.userId),
-        },
-        select: { id: true },
-      });
-      if (!thread) {
-        throw new ScheduledWorkflowControlError(
-          'bad_args',
-          'The current desktop conversation is not persisted, so it cannot receive scheduled results.',
-        );
-      }
-    }
-
-    if (!returnsToOrigin) {
+    // Every schedule reports back to the person who created it, in their own
+    // Lark DM, whatever conversation they set it up from. A run delivering into
+    // a shared room would answer with whatever that one creator's private
+    // history and permissions allow, in front of people who never asked for it —
+    // `input.delivery` is therefore accepted and ignored, and the returned
+    // summary tells the caller where results will actually arrive.
+    {
       const larkConnection = await this.prisma.integrationConnection.findFirst({
         where: {
           ownerUserId: String(runContext.userId),
@@ -140,13 +126,10 @@ export class ScheduledWorkflowControlService {
         timezone: input.timezone,
         workflowSpecJson: {},
         capabilitySummaryJson: {},
-        outputConfigJson: returnsToOrigin
-          ? { deliveryChannel: runContext.channel, deliveryTarget: 'origin_chat' }
-          : { deliveryChannel: 'lark', deliveryTarget: 'creator_dm' },
+        outputConfigJson: { deliveryChannel: 'lark', deliveryTarget: 'creator_dm' },
         status: 'scheduled_active',
         scheduleEnabled: true,
         nextRunAt,
-        originChatId: returnsToOrigin ? originChatId : null,
       },
       select: scheduledWorkflowSummarySelect,
     });
@@ -319,7 +302,6 @@ const scheduledWorkflowSummarySelect = {
   timezone: true,
   nextRunAt: true,
   lastRunAt: true,
-  outputConfigJson: true,
 } as const;
 
 function toSummary(row: {
@@ -330,7 +312,6 @@ function toSummary(row: {
   timezone: string;
   nextRunAt: Date | null;
   lastRunAt: Date | null;
-  outputConfigJson: unknown;
 }): ScheduledWorkflowSummary {
   return {
     id: row.id,
@@ -340,23 +321,11 @@ function toSummary(row: {
     timezone: row.timezone,
     nextRunAt: row.nextRunAt?.toISOString() ?? null,
     lastRunAt: row.lastRunAt?.toISOString() ?? null,
-    deliveryChannel: readDeliveryChannel(row.outputConfigJson),
-    deliveryTarget: readDeliveryTarget(row.outputConfigJson),
+    // Stated rather than read back from the row. Schedules created before this
+    // rule still carry `origin_chat`, and often a desktop channel, but the
+    // runtime now delivers every one of them to the creator's Lark DM. Echoing
+    // the stored config would describe a delivery that can no longer happen.
+    deliveryChannel: 'lark',
+    deliveryTarget: 'creator_dm',
   };
-}
-
-export function readDeliveryChannel(value: unknown): 'lark' | 'desktop' {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const channel = (value as { deliveryChannel?: unknown }).deliveryChannel;
-    if (channel === 'desktop') return 'desktop';
-  }
-  return 'lark';
-}
-
-export function readDeliveryTarget(value: unknown): 'origin_chat' | 'creator_dm' {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    const target = (value as { deliveryTarget?: unknown }).deliveryTarget;
-    if (target === 'creator_dm') return 'creator_dm';
-  }
-  return 'origin_chat';
 }

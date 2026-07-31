@@ -7,7 +7,7 @@ import {
   MEMORY_RECALL_MAX_FACTS,
   MEMORY_RECALL_MAX_QUERY_CHARS,
   MEMORY_RECALL_MAX_TOTAL_CHARS,
-} from '../../src/application/orchestration/tools/families/memory-recall.tool.ts';
+} from '../../src/application/tools/families/memory-recall.tool.ts';
 import { makeAllowedPerm, makeCtx } from './tool-test.helpers.ts';
 
 const activeMemberships = [{ departmentId: 'dept-finance', departmentName: 'Finance' }];

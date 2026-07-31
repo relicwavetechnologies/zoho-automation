@@ -1,5 +1,5 @@
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import type { ToolRegistry } from '../orchestration/tools/tool-registry';
+import type { ToolRegistry } from '../tools/tool-registry';
 import type { PermissionResult } from '../permissions/permission.types';
 import { asToolId } from '../../shared/ids';
 import type {

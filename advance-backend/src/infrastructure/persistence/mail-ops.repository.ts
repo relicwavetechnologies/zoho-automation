@@ -787,7 +787,7 @@ export class MailOpsRepository {
     now = new Date(),
   ): Promise<Result<boolean, InfraError>> {
     const abandoned = attempts >= 5;
-    const backoffMs = Math.min(60 * 60_000, 30_000 * 2 ** Math.max(0, attempts - 1));
+    const backoffMs = 5_000 * 2 ** Math.max(0, attempts - 1);
     try {
       const updated = await this.db.mailDelivery.updateMany({
         where: { id: deliveryId, status: 'sending', attempts },

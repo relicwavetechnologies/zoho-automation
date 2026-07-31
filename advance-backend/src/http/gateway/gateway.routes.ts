@@ -41,6 +41,18 @@ export function createGatewayRoutes(deps: GatewayRoutesDeps): Router {
       res.status(400).json(gatewayFailure('bad_request', issues));
       return;
     }
+    if (res.locals['isPiRuntimeLease'] === true) {
+      const runtimeThreadId = res.locals['runtimeThreadId'] as string | undefined;
+      if (!runtimeThreadId || parsed.data.execution?.threadId !== runtimeThreadId) {
+        res.status(403).json(
+          gatewayFailure(
+            'permission_denied',
+            'Pi runtime execution does not match its signed thread.',
+          ),
+        );
+        return;
+      }
+    }
     if (
       res.locals['isPiRuntimeLease'] === true
       && PI_RUNTIME_BLOCKED_OPS.has(parsed.data.op)
@@ -61,7 +73,9 @@ export function createGatewayRoutes(deps: GatewayRoutesDeps): Router {
       channel,
       email: (res.locals['email'] as string | null | undefined) ?? null,
       larkOpenId: (res.locals['larkOpenId'] as string | null | undefined) ?? null,
+      larkTenantKey: (res.locals['larkTenantKey'] as string | null | undefined) ?? null,
       sessionId,
+      authProvider: (res.locals['authProvider'] as string | null | undefined) ?? null,
     };
 
     try {

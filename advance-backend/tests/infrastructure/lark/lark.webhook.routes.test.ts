@@ -5,11 +5,13 @@ import {
   createLarkWebhookRoutes,
   processAcceptedLarkReceipt,
   replayLarkMessageAfterLogin,
+  runPiAndDeliver,
   type LarkWebhookDeps,
 } from '../../../src/infrastructure/channels/lark/lark.webhook.routes.ts';
+import { LarkPiRuntimeError } from '../../../src/application/runtime/lark-pi-runtime.service.ts';
 import { LarkChannelAdapter } from '../../../src/infrastructure/channels/lark/lark.adapter.ts';
 import { BusyLaneNotices } from '../../../src/infrastructure/channels/lark/lark-busy-notice.ts';
-import { ChatMessageSerializer } from '../../../src/application/orchestration/chat-message-serializer.ts';
+import { ChatMessageSerializer } from '../../../src/application/channels/chat-message-serializer.ts';
 import { ElevenLabsTranscriptionClient } from '../../../src/infrastructure/ai/transcription/elevenlabs-transcription.client.ts';
 import { err, ok } from '../../../src/shared/result.ts';
 import { ChannelError } from '../../../src/shared/errors.ts';
@@ -141,6 +143,8 @@ async function runWebhook(body: unknown, options: {
   tenantCompanyLookupFails?: boolean;
   /** Whether Lark OAuth is configured on this deployment. */
   oauthConfigured?: boolean;
+  /** Whether the resolved member already has a live cloud-Pi session. */
+  activePiSession?: boolean;
   /** Active memberships after the saved Lark department context changed. */
   changedDepartmentMemberships?: string[];
   /** Number of user-owned Lark connections revoked by an auth command. */
@@ -151,9 +155,8 @@ async function runWebhook(body: unknown, options: {
   /** Observe the transcript write / ingestion enqueue ordering. */
   onRetain?: () => void;
   onEnqueue?: () => void;
-  shareResolverService?: {
+  memoryReviewService?: {
     isMemoryReviewAction(cardEvent: unknown): boolean;
-    isShareAction(cardEvent: unknown): boolean;
     handle(cardEvent: unknown, actor: unknown): Promise<{ responseBody: Record<string, unknown> }>;
   };
   acceptReceipt?: () => Promise<{
@@ -177,7 +180,11 @@ async function runWebhook(body: unknown, options: {
   companyControls?: Array<{ controlKey: string; value: string }>;
   /** Per-group reply mode loaded before the receipt enters the async lane. */
   groupReplyMode?: 'threaded' | 'inline';
-  /** Parent lookup result for quote context and direct-reply authorship. */
+  /** Durable canonical conversation keys already owned by Divo. */
+  ownedThreadKeys?: Set<string>;
+  ownershipReadFails?: boolean;
+  ownershipWriteFails?: boolean;
+  /** Parent lookup result for quote context. */
   parentMessage?: Awaited<ReturnType<NonNullable<LarkWebhookDeps['fetchParentMessage']>>>;
   /** Enable and observe group-mode writes. */
   groupModeStore?: boolean;
@@ -212,6 +219,7 @@ async function runWebhook(body: unknown, options: {
   const acceptedLaneKeys: string[] = [];
   const acceptedCompanyIds: string[] = [];
   const engineInputs: unknown[] = [];
+  const piSessionContexts: unknown[] = [];
   const serializerKeys: string[] = [];
   const identityLookups: Array<{ openId: string; tenantKey: string }> = [];
   const invalidatedIdentities: string[] = [];
@@ -222,6 +230,25 @@ async function runWebhook(body: unknown, options: {
   const background: Promise<void>[] = [];
   const logEvents: Array<{ event: string; fields: Record<string, unknown> }> = [];
   const cacheWrites: Array<{ key: string; value: string; ttlSeconds: number }> = [];
+  const ownedThreadKeys = options.ownedThreadKeys ?? new Set<string>();
+  const runtimeConversation = {
+    findUnique: async (input: any) => {
+      if (options.ownershipReadFails) throw new Error('ownership read unavailable');
+      const key = input.where.companyId_channel_channelConversationKey.channelConversationKey;
+      return ownedThreadKeys.has(key)
+        ? { refsJson: { divoOwnedThread: true } }
+        : null;
+    },
+    upsert: async (input: any) => {
+      const key = input.where.companyId_channel_channelConversationKey.channelConversationKey;
+      const refs = input.create?.refsJson ?? input.update?.refsJson;
+      if (refs?.divoOwnedThread === true && options.ownershipWriteFails) {
+        throw new Error('ownership write unavailable');
+      }
+      if (refs?.divoOwnedThread === true) ownedThreadKeys.add(key);
+      return {};
+    },
+  };
   let status = 200;
   let responseBody: unknown;
   const createLogger = (bindings: Record<string, unknown> = {}): Logger => ({
@@ -250,6 +277,14 @@ async function runWebhook(body: unknown, options: {
   const routeDeps = {
     adapter,
     piRuntime: {
+      ...(options.activePiSession !== undefined
+        ? {
+            hasActiveSession: async (context: unknown) => {
+              piSessionContexts.push(context);
+              return options.activePiSession!;
+            },
+          }
+        : {}),
       run: async (input: unknown) => {
         order.push('engine');
         engineInputs.push(input);
@@ -358,7 +393,12 @@ async function runWebhook(body: unknown, options: {
         return 'job-1';
       },
     } as any,
-    ...(options.companyControls || options.groupReplyMode || options.groupModeStore
+    ...(options.companyControls
+      || options.groupReplyMode
+      || options.groupModeStore
+      || options.ownedThreadKeys
+      || options.ownershipReadFails
+      || options.ownershipWriteFails
       ? {
           prisma: {
             adminControlState: {
@@ -371,7 +411,7 @@ async function runWebhook(body: unknown, options: {
                 return {};
               },
             },
-            runtimeConversation: { upsert: async () => ({}) },
+            runtimeConversation,
           } as any,
         }
       : {}),
@@ -405,7 +445,7 @@ async function runWebhook(body: unknown, options: {
             larkTenantBinding: { findFirst: async () => ({ companyId: 'company-1' }) },
             channelIdentity: { upsert: async () => ({}) },
             adminControlState: { findMany: async () => options.companyControls ?? [] },
-            runtimeConversation: { upsert: async () => ({}) },
+            runtimeConversation,
           } as any,
           larkContactsClient: {
             getTenantKey: async () => 'tenant-1',
@@ -436,7 +476,7 @@ async function runWebhook(body: unknown, options: {
                       return { count: 1 };
                     },
                   },
-                  runtimeConversation: { upsert: async () => ({}) },
+                  runtimeConversation,
                 } as any,
               }
             : {}),
@@ -469,8 +509,8 @@ async function runWebhook(body: unknown, options: {
         await task(new AbortController().signal);
       },
     } as any,
-    ...(options.shareResolverService
-      ? { shareResolverService: options.shareResolverService as any }
+    ...(options.memoryReviewService
+      ? { memoryReviewService: options.memoryReviewService as any }
       : {}),
   } as any;
   const router = createLarkWebhookRoutes(routeDeps);
@@ -525,6 +565,7 @@ async function runWebhook(body: unknown, options: {
     responseBody,
     order,
     engineInputs,
+    piSessionContexts,
     serializerKeys,
     identityLookups,
     invalidatedIdentities,
@@ -542,6 +583,7 @@ async function runWebhook(body: unknown, options: {
     acceptedCompanyIds,
     completedBatchReceipts,
     groupModeUpdates,
+    ownedThreadKeys,
     cacheWrites,
     processQueuedReceipt,
   };
@@ -549,7 +591,11 @@ async function runWebhook(body: unknown, options: {
 
 describe('Lark webhook admission', () => {
   it('durably accepts before ACKing and runs an exact-ID group mention', async () => {
-    const result = await runWebhook(makeEvent({ chatType: 'group', mentionsBot: true }));
+    const ownedThreadKeys = new Set<string>();
+    const result = await runWebhook(
+      makeEvent({ chatType: 'group', mentionsBot: true }),
+      { ownedThreadKeys },
+    );
     assert.equal(result.status, 200);
     assert.deepEqual(result.responseBody, { ok: true });
     // A mentioned turn is recorded in the room transcript on both sides of the
@@ -559,7 +605,7 @@ describe('Lark webhook admission', () => {
       ['receipt', 'queue', 'link', 'ack', 'execute', 'retain', 'engine', 'retain'],
     );
     assert.deepEqual(result.serializerKeys, [
-      '["lark","ingress-lane","tenant-1","app-1","oc_1","thread","om_root"]',
+      '["lark","runtime-user-lane","company-1","user-1"]',
     ]);
     assert.deepEqual(result.identityLookups, [{ openId: 'ou_sender', tenantKey: 'tenant-1' }]);
     assert.equal(result.engineInputs.length, 1);
@@ -579,6 +625,7 @@ describe('Lark webhook admission', () => {
     assert.equal(engineInput.incoming.rootMessageId, 'om_root');
     assert.equal(engineInput.conversation.replyToMessageId, 'om_1');
     assert.equal(engineInput.conversation.replyInThread, true);
+    assert.deepEqual([...ownedThreadKeys], ['oc_1:thread:om_root']);
     const correlated = result.logEvents.find(entry => entry.event === 'webhook.execution.correlated');
     assert.deepEqual(correlated?.fields, {
       route: 'lark-webhook',
@@ -603,8 +650,7 @@ describe('Lark webhook admission', () => {
       roomKey: '["lark","room","company-1","tenant-1","app-1","oc_1"]',
       // The reported lane must be the one the serializer actually ordered on,
       // otherwise lane telemetry cannot be used to diagnose ordering.
-      laneKey: '["lark","ingress-lane","tenant-1","app-1","oc_1","thread","om_root"]',
-      companyLaneKey: '["lark","lane","company-1","tenant-1","app-1","oc_1","thread","om_root"]',
+      laneKey: '["lark","runtime-user-lane","company-1","user-1"]',
       deliveryTargetKey: '["lark","delivery","company-1","tenant-1","app-1","oc_1","om_1","om_root"]',
       routingMode: 'active',
     });
@@ -634,19 +680,12 @@ describe('Lark webhook admission', () => {
     assert.equal(result.engineInputs.length, 0);
   });
 
-  it('continues a Divo thread when a user replies directly without mentioning it again', async () => {
+  it('continues a Divo-owned thread without mentioning it again', async () => {
     const result = await runWebhook(makeEvent({
       chatType: 'group',
       text: 'compare the margins too',
     }), {
-      parentMessage: {
-        messageId: 'om_parent',
-        status: 'available',
-        messageType: 'text',
-        text: 'Here is the first comparison.',
-        senderExternalId: 'ou_bot',
-        imageUrls: [],
-      },
+      ownedThreadKeys: new Set(['oc_1:thread:om_root']),
     });
 
     assert.equal(result.engineInputs.length, 1);
@@ -658,11 +697,12 @@ describe('Lark webhook admission', () => {
     assert.equal(input.conversation.replyInThread, true);
   });
 
-  it('keeps an unmentioned reply to another person ambient inside a thread', async () => {
+  it('continues a Divo-owned thread when replying to another person', async () => {
     const result = await runWebhook(makeEvent({
       chatType: 'group',
       text: 'I agree with this',
     }), {
+      ownedThreadKeys: new Set(['oc_1:thread:om_root']),
       parentMessage: {
         messageId: 'om_parent',
         status: 'available',
@@ -673,9 +713,81 @@ describe('Lark webhook admission', () => {
       },
     });
 
+    assert.equal(result.engineInputs.length, 1);
+    assert.equal(result.retainedMessages.length, 2);
+  });
+
+  it('keeps an unmentioned reply in an unowned human thread ambient', async () => {
+    const result = await runWebhook(makeEvent({
+      chatType: 'group',
+      text: 'I agree with this',
+    }), {
+      ownedThreadKeys: new Set(),
+    });
+
     assert.equal(result.engineInputs.length, 0);
     assert.equal(result.retainedMessages.length, 1);
-    assert.equal(result.appendedTurns.length, 0);
+  });
+
+  it('retries instead of silently dropping a thread when ownership cannot be read', async () => {
+    let ran = false;
+    await assert.rejects(
+      runWebhook(makeEvent({
+        chatType: 'group',
+        text: 'continue the owned thread',
+      }), {
+        ownedThreadKeys: new Set(['oc_1:thread:om_root']),
+        ownershipReadFails: true,
+        engineRun: async () => {
+          ran = true;
+          return { text: 'must not run' };
+        },
+      }),
+      /ownership read unavailable/,
+    );
+    assert.equal(ran, false);
+  });
+
+  it('persists ownership before answering and succeeds on retry', async () => {
+    const ownedThreadKeys = new Set<string>();
+    let runs = 0;
+    const event = makeEvent({ chatType: 'group', mentionsBot: true });
+
+    await assert.rejects(
+      runWebhook(event, {
+        ownedThreadKeys,
+        ownershipWriteFails: true,
+        engineRun: async () => {
+          runs += 1;
+          return { text: 'must not run' };
+        },
+      }),
+      /ownership write unavailable/,
+    );
+    assert.equal(runs, 0);
+    assert.deepEqual([...ownedThreadKeys], []);
+
+    await runWebhook(event, {
+      ownedThreadKeys,
+      engineRun: async () => {
+        runs += 1;
+        return { text: 'started' };
+      },
+    });
+    const followUp = await runWebhook(makeEvent({
+      chatType: 'group',
+      text: 'continue without another mention',
+    }), {
+      ownedThreadKeys,
+      engineRun: async () => {
+        runs += 1;
+        return { text: 'continued' };
+      },
+    });
+
+    assert.deepEqual([...ownedThreadKeys], ['oc_1:thread:om_root']);
+    assert.equal(followUp.engineInputs.length, 1);
+    assert.equal(runs, 2);
   });
 
   it('does not put an unmentioned top-level room message into thread history', async () => {
@@ -746,23 +858,17 @@ describe('Lark webhook admission', () => {
     assert.equal(incoming.referenceContext, undefined);
   });
 
-  it('does not treat direct replies as agent turns when the group uses inline mode', async () => {
+  it('ignores a stored inline override and keeps an owned group threaded', async () => {
     const result = await runWebhook(makeEvent({
       chatType: 'group',
       text: 'continue',
     }), {
       groupReplyMode: 'inline',
-      parentMessage: {
-        messageId: 'om_parent',
-        status: 'available',
-        messageType: 'text',
-        text: 'Previous Divo reply',
-        senderExternalId: 'ou_bot',
-        imageUrls: [],
-      },
+      ownedThreadKeys: new Set(['oc_1:thread:om_root']),
     });
 
-    assert.equal(result.engineInputs.length, 0);
+    assert.equal(result.engineInputs.length, 1);
+    assert.equal((result.engineInputs[0] as any).conversation.replyInThread, true);
   });
 
   it('fails closed when a message event has no authenticated tenant key', async () => {
@@ -908,6 +1014,201 @@ describe('Lark webhook admission', () => {
     assert.equal(result.engineInputs.length, 0);
   });
 
+  it('streams cloud Pi progress through the status card before final delivery', async () => {
+    const result = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      rootId: null,
+      parentId: null,
+      text: 'token=must-not-render Create a report from Drive',
+    }), {
+      engineRun: async (input: unknown) => {
+        const onProgress = (input as any).onProgress;
+        await onProgress({ type: 'starting', stage: 'workspace', label: 'Checking your workspace…' });
+        await onProgress({ type: 'starting', stage: 'container', label: 'Resuming your work…' });
+        await onProgress({ type: 'ready' });
+        await onProgress({
+          type: 'tool_start',
+          callId: 'call-1',
+          toolName: 'divo_gateway',
+          toolId: 'googleDrive',
+        });
+        await onProgress({
+          type: 'tool_end',
+          callId: 'call-1',
+          toolName: 'divo_gateway',
+          isError: false,
+        });
+        await onProgress({ type: 'writing' });
+        return { text: 'Report complete' };
+      },
+    });
+
+    const adapter = result.routeDeps.adapter as any;
+    assert.ok(adapter.__statusUpdates.length >= 5);
+    assert.equal(adapter.__outboundOrder[0], 'status');
+    assert.equal(adapter.__outboundOrder.at(-1), 'final');
+    assert.deepEqual(adapter.__finalReplies, ['Report complete']);
+    assert.deepEqual(
+      adapter.__statusUpdates.map((update: any) => update.timeline.state),
+      ['thinking', 'thinking', 'thinking', 'thinking', 'working', 'working', 'writing', 'writing'],
+    );
+    assert.equal(adapter.__statusUpdates[0].timeline.liveLabel, 'Getting things ready…');
+    assert.equal(adapter.__statusUpdates[1].timeline.liveLabel, 'Checking your workspace…');
+    assert.equal(adapter.__statusUpdates[2].timeline.liveLabel, 'Resuming your work…');
+    assert.doesNotMatch(
+      adapter.__statusUpdates.map((update: any) => update.timeline.liveLabel).join(' '),
+      /\bPi\b/,
+    );
+    const toolUpdate = adapter.__statusUpdates.find(
+      (update: any) => update.timeline.ledger?.[0]?.status === 'running',
+    );
+    // No outcome text: the row's marker carries running/done/failed, so a
+    // placeholder here would render as "● Google — In progress".
+    assert.deepEqual(toolUpdate.timeline.ledger, [{
+      label: 'Google',
+      count: 1,
+      status: 'running',
+    }]);
+    assert.doesNotMatch(
+      JSON.stringify(adapter.__statusUpdates),
+      /token|secret|must-not-render|args|result/i,
+    );
+  });
+
+  it('nests subagents under the step that spawned them, and keeps the checklist after it', async () => {
+    const result = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      rootId: null,
+      parentId: null,
+      text: 'Build the Monday report',
+    }), {
+      engineRun: async (input: unknown) => {
+        const onProgress = (input as any).onProgress;
+        await onProgress({ type: 'tool_start', callId: 'call-todo', toolName: 'divo_todos' });
+        await onProgress({
+          type: 'tool_end',
+          callId: 'call-todo',
+          toolName: 'divo_todos',
+          isError: false,
+          todos: [
+            { title: 'Pull the deals', status: 'done' },
+            { title: 'Draft the summary', status: 'running' },
+            { title: 'Post it', status: 'pending' },
+          ],
+        });
+        await onProgress({ type: 'tool_start', callId: 'call-sub', toolName: 'divo_subagents' });
+        await onProgress({
+          type: 'tool_progress',
+          callId: 'call-sub',
+          toolName: 'divo_subagents',
+          children: [
+            { label: 'scout', status: 'running', detail: 'reading the export' },
+            { label: 'reviewer', status: 'done', detail: 'checked totals' },
+          ],
+        });
+        return { text: 'Report complete' };
+      },
+    });
+
+    const adapter = result.routeDeps.adapter as any;
+    const last = adapter.__statusUpdates.at(-1).timeline;
+
+    const subagentRow = last.ledger.find((row: any) => row.label === 'Subagents');
+    assert.deepEqual(subagentRow.children, [
+      { label: 'scout', count: 1, status: 'running', outcome: 'reading the export' },
+      { label: 'reviewer', count: 1, status: 'done', outcome: 'checked totals' },
+    ]);
+
+    // The checklist belongs to the run, not to the call that declared it, so it
+    // must outlive that tool call — which ended two events ago.
+    assert.equal(last.declared.done, 1);
+    assert.equal(last.declared.total, 3);
+    assert.equal(last.declared.current, 'Draft the summary');
+    assert.equal(last.declared.items.length, 3);
+  });
+
+  it('names an unmapped tool instead of collapsing it to "Tool"', async () => {
+    const result = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      rootId: null,
+      parentId: null,
+      text: 'Check something',
+    }), {
+      engineRun: async (input: unknown) => {
+        await (input as any).onProgress({
+          type: 'tool_start', callId: 'call-x', toolName: 'divo_skill_view',
+        });
+        return { text: 'done' };
+      },
+    });
+
+    const adapter = result.routeDeps.adapter as any;
+    const row = adapter.__statusUpdates.at(-1).timeline.ledger[0];
+    assert.equal(row.label, 'Skill view');
+  });
+
+  it('delivers a harness-visible Pi failure before rethrowing it', async () => {
+    const finalReplies: string[] = [];
+    const failure = new LarkPiRuntimeError(
+      'capacity_full',
+      'PI is busy. Please retry.',
+    );
+    const adapter = {
+      registerAbortController() {},
+      cleanupAbortController() {},
+      sendStatus: async (conversation: any) => ok({
+        channel: 'lark',
+        messageId: 'om_status',
+        correlationId: conversation.correlationId,
+      }),
+      editStatus: async (handle: any) => ok(handle),
+      sendFinalReply: async (_conversation: unknown, reply: { text: string }) => {
+        finalReplies.push(reply.text);
+        return ok({ channel: 'lark', messageId: 'om_status' });
+      },
+    };
+
+    await assert.rejects(
+      runPiAndDeliver({
+        incoming: {
+          channel: 'lark',
+          messageId: 'om_1',
+          chatId: 'oc_1',
+          chatType: 'p2p',
+          userExternalId: 'ou_sender',
+          text: 'Do the work',
+          attachments: [],
+          timestamp: new Date().toISOString(),
+          traceId: 'trace-1',
+          mentions: [],
+          mentionsSelf: true,
+          raw: {},
+        } as any,
+        runContext: {
+          companyId: 'company-1',
+          userId: 'user-1',
+          companyRole: 'MEMBER',
+          channel: 'lark',
+        } as any,
+        conversation: {
+          channel: 'lark',
+          chatId: 'oc_1',
+          correlationId: 'trace-1',
+        } as any,
+        deps: {
+          adapter: adapter as any,
+          piRuntime: {
+            run: async () => { throw failure; },
+          },
+        },
+        log: noopLogger,
+        rethrowRuntimeFailureAfterDelivery: true,
+      }),
+      error => error === failure,
+    );
+    assert.deepEqual(finalReplies, ['Divo is busy. Please retry.']);
+  });
+
   it('delivers an explicit Pi failure and lets the next same-chat message run', async () => {
     const serializer = new ChatMessageSerializer({ timeoutMs: 1_000 });
     const unhandled: unknown[] = [];
@@ -968,7 +1269,7 @@ describe('Lark webhook admission', () => {
 });
 
 describe('Lark webhook card authorization', () => {
-  it('passes the authenticated tenant-scoped actor to share resolution', async () => {
+  it('passes the authenticated tenant-scoped actor to memory review', async () => {
     let receivedActor: any;
     const result = await runWebhook({
       header: {
@@ -978,7 +1279,7 @@ describe('Lark webhook card authorization', () => {
       },
       event: {
         operator: { open_id: 'ou_admin', name: 'Admin' },
-        action: { value: { action: 'share_approve', shareId: 'share-1' } },
+        action: { value: { action: 'memory_review_approve', memoryId: 'mem-1' } },
       },
     }, {
       identity: {
@@ -987,9 +1288,8 @@ describe('Lark webhook card authorization', () => {
         aiRole: 'COMPANY_ADMIN',
         channel: 'lark',
       },
-      shareResolverService: {
-        isMemoryReviewAction: () => false,
-        isShareAction: () => true,
+      memoryReviewService: {
+        isMemoryReviewAction: () => true,
         handle: async (_event, actor) => {
           receivedActor = actor;
           return { responseBody: { ok: true } };
@@ -1067,7 +1367,7 @@ describe('Lark webhook card authorization', () => {
     });
   });
 
-  it('lets a company admin change the current group mode from the settings card', async () => {
+  it('treats old group-mode card actions as informational', async () => {
     const result = await runWebhook({
       header: {
         event_type: 'card.action.trigger',
@@ -1090,19 +1390,13 @@ describe('Lark webhook card authorization', () => {
       groupModeStore: true,
     });
 
-    assert.equal(result.groupModeUpdates.length, 1);
-    assert.deepEqual((result.groupModeUpdates[0] as any).create, {
-      controlKey: (result.groupModeUpdates[0] as any).create.controlKey,
-      companyId: 'company-1',
-      value: 'inline',
-      updatedBy: 'admin-1',
-    });
+    assert.equal(result.groupModeUpdates.length, 0);
     assert.deepEqual(result.responseBody, {
-      toast: { type: 'success', content: 'Divo will reply inline in this group.' },
+      toast: { type: 'info', content: 'Divo always replies in threads inside groups.' },
     });
   });
 
-  it('refuses a non-admin group-mode card action', async () => {
+  it('does not let a stale group-mode card action change settings', async () => {
     const result = await runWebhook({
       header: {
         event_type: 'card.action.trigger',
@@ -1119,7 +1413,7 @@ describe('Lark webhook card authorization', () => {
 
     assert.deepEqual(result.groupModeUpdates, []);
     assert.deepEqual(result.responseBody, {
-      toast: { type: 'warning', content: 'Only a company admin can change group settings.' },
+      toast: { type: 'info', content: 'Divo always replies in threads inside groups.' },
     });
   });
 });
@@ -1186,6 +1480,22 @@ function captureOutbound(adapter: any): void {
   adapter.__sentCards = [];
   adapter.__sentCardDeliveries = [];
   adapter.__finalReplies = [];
+  adapter.__statusUpdates = [];
+  adapter.__outboundOrder = [];
+  adapter.sendStatus = async (_conversation: unknown, update: unknown) => {
+    adapter.__statusUpdates.push(update);
+    adapter.__outboundOrder.push('status');
+    return ok({
+      channel: 'lark',
+      messageId: 'om_status',
+      correlationId: 'om_1-1700000000000',
+    });
+  };
+  adapter.editStatus = async (handle: unknown, update: unknown) => {
+    adapter.__statusUpdates.push(update);
+    adapter.__outboundOrder.push('status');
+    return ok(handle);
+  };
   adapter.sendToChatId = async (
     _chatId: string,
     text: string,
@@ -1209,12 +1519,13 @@ function captureOutbound(adapter: any): void {
   };
   adapter.sendFinalReply = async (_conversation: unknown, reply: { text: string }) => {
     adapter.__finalReplies.push(reply.text);
+    adapter.__outboundOrder.push('final');
     return ok({ messageId: 'om_reply' });
   };
 }
 
 describe('Lark conversation commands', () => {
-  it('lets a company admin configure future group replies', async () => {
+  it('rejects the retired inline group mode', async () => {
     let adapter: any;
     const result = await runWebhook(makeEvent({
       chatType: 'group',
@@ -1231,12 +1542,12 @@ describe('Lark conversation commands', () => {
       setupAdapter: value => { adapter = value; captureOutbound(value); },
     });
 
-    assert.equal(result.groupModeUpdates.length, 1);
-    assert.equal((result.groupModeUpdates[0] as any).create.value, 'inline');
-    assert.match(adapter.__finalReplies[0], /reply inline/i);
+    assert.equal(result.groupModeUpdates.length, 0);
+    assert.match(adapter.__finalReplies[0], /always replies in threads/i);
+    assert.match(adapter.__finalReplies[0], /no longer available/i);
   });
 
-  it('shows admin group settings as an interactive card', async () => {
+  it('shows the permanent threaded group behavior', async () => {
     let adapter: any;
     await runWebhook(makeEvent({
       chatType: 'group',
@@ -1255,9 +1566,10 @@ describe('Lark conversation commands', () => {
 
     const envelope = JSON.parse(adapter.__sentCards[0]);
     const card = JSON.parse(envelope.card);
-    assert.match(JSON.stringify(card), /set_group_mode/);
-    assert.match(JSON.stringify(card), /Threaded/);
-    assert.match(JSON.stringify(card), /Inline/);
+    assert.doesNotMatch(JSON.stringify(card), /set_group_mode/);
+    assert.match(JSON.stringify(card), /Threaded replies are always on/);
+    assert.doesNotMatch(JSON.stringify(card), /Inline/);
+    assert.doesNotMatch(JSON.stringify(card), /admin.*change/i);
   });
 
   it('clears only the active thread', async () => {
@@ -1276,7 +1588,7 @@ describe('Lark conversation commands', () => {
     assert.match(adapter.__finalReplies[0], /This conversation is cleared/i);
   });
 
-  it('clears only the requester session in inline mode', async () => {
+  it('ignores a legacy inline override when clearing a group thread', async () => {
     const result = await runWebhook(makeEvent({
       chatType: 'group',
       mentionsBot: true,
@@ -1286,7 +1598,7 @@ describe('Lark conversation commands', () => {
       setupAdapter: captureOutbound,
     });
 
-    assert.deepEqual(result.clearedHistoryKeys, ['oc_1:user:ou_sender']);
+    assert.deepEqual(result.clearedHistoryKeys, ['oc_1:thread:om_root']);
     assert.deepEqual(result.clearedRoomChatIds, []);
   });
 
@@ -1459,6 +1771,77 @@ describe('Lark first contact', () => {
     assert.deepEqual(noticesSent(adapter), [], 'no duplicate plain-text prompt');
   });
 
+  it('offers the Connect button before Pi when a known member cloud session expired', async () => {
+    let adapter: any;
+    const result = await runWebhook(firstTimer(), {
+      oauthConfigured: true,
+      activePiSession: false,
+      setupAdapter: a => { adapter = a; captureOutbound(a); },
+    });
+
+    assert.equal(adapter.__sentCards.length, 1);
+    const card = JSON.parse(JSON.parse(adapter.__sentCards[0]).card);
+    const button = card.body.elements.find((element: any) => element.tag === 'button');
+    assert.equal(button.behaviors[0].type, 'open_url');
+    assert.match(card.body.elements[0].content, /cloud session expired/i);
+    assert.ok(!result.order.includes('engine'), 'Pi must not start before session recovery');
+    assert.equal(result.cacheWrites.length, 1, 'the original request is retained for replay');
+    assert.deepEqual(result.piSessionContexts, [{
+      companyId: 'company-1',
+      userId: 'user-1',
+      companyRole: 'MEMBER',
+      channel: 'lark',
+      tenantId: 'tenant-1',
+      userExternalId: 'ou_sender',
+    }]);
+  });
+
+  it('stays silent for an unmentioned group message when the cloud session expired', async () => {
+    let adapter: any;
+    const result = await runWebhook(makeEvent({
+      chatType: 'group',
+      rootId: null,
+      parentId: null,
+      text: 'ordinary room discussion',
+    }), {
+      oauthConfigured: true,
+      activePiSession: false,
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
+    });
+
+    assert.deepEqual(adapter.__sentCards, []);
+    assert.deepEqual(noticesSent(adapter), []);
+    assert.deepEqual(result.piSessionContexts, []);
+    assert.equal(result.engineInputs.length, 0);
+  });
+
+  it('offers sign-in to an unknown person continuing a Divo-owned thread', async () => {
+    let adapter: any;
+    await runWebhook(makeEvent({
+      chatType: 'group',
+      text: 'continue this for me too',
+    }), {
+      unknownUser: true,
+      oauthConfigured: true,
+      ownedThreadKeys: new Set(['oc_1:thread:om_root']),
+      pendingLogin: {
+        status: 'ready',
+        companyId: 'company-1',
+        userId: 'user-2',
+        larkOpenId: 'ou_sender',
+        displayName: 'Bob',
+        email: 'bob@example.com',
+      },
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
+    });
+
+    assert.equal(adapter.__sentCards.length, 1);
+    assert.deepEqual(adapter.__sentCardDeliveries, [{
+      replyToMessageId: 'om_1',
+      replyInThread: true,
+    }]);
+  });
+
   it('keeps the Connect card inside a default-threaded group', async () => {
     let adapter: any;
     await runWebhook(makeEvent({
@@ -1481,7 +1864,7 @@ describe('Lark first contact', () => {
     }]);
   });
 
-  it('keeps the Connect card inline when the group is inline', async () => {
+  it('keeps the Connect card threaded despite a legacy inline override', async () => {
     let adapter: any;
     await runWebhook(makeEvent({
       chatType: 'group',
@@ -1500,7 +1883,7 @@ describe('Lark first contact', () => {
 
     assert.deepEqual(adapter.__sentCardDeliveries, [{
       replyToMessageId: 'om_1',
-      replyInThread: false,
+      replyInThread: true,
     }]);
   });
 
@@ -1953,7 +2336,10 @@ describe('Lark voice notes', () => {
 });
 
 describe('Lark document attachments', () => {
-  it('fetches a readable document out of Lark instead of refusing it', async () => {
+  it('does not pull a readable document out of Lark at all', async () => {
+    // The bytes travel once, from Lark into the sender's container workspace,
+    // and the webhook is not on that path. A download here would be a second
+    // copy the backend has no use for.
     const result = await withStubbedFetch(() => runWebhook(makeEvent({
       chatType: 'group',
       mentionsBot: true,
@@ -1968,13 +2354,10 @@ describe('Lark document attachments', () => {
       },
     }));
 
-    assert.deepEqual(
-      attemptedDownloads(result.logEvents), ['budget.xlsx'],
-      'the document is pulled for the inline excerpt',
-    );
+    assert.deepEqual(attemptedDownloads(result.logEvents), [], 'nothing is fetched here');
     assert.ok(
       !result.logEvents.some(entry => entry.event === 'webhook.attachment.unsupported'),
-      'and is not recorded as a refusal',
+      'and the document is not recorded as a refusal',
     );
     assert.equal(result.status, 200);
     assert.ok(result.order.includes('engine'), 'Divo answers the message');
@@ -1985,25 +2368,52 @@ describe('Lark document attachments', () => {
     );
   });
 
+  it('records the document as bound for the workspace, with the key needed to stage it', async () => {
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      file: { key: 'file_v3_spec', name: 'spec.docx' },
+    })));
+
+    const attachments = attachmentsOf(result.retainedMessages[0]);
+    assert.equal(attachments.length, 1);
+    assert.equal(attachments[0]?.['ingestionStatus'], 'workspace');
+    assert.equal(attachments[0]?.['fileName'], 'spec.docx');
+    // Without the file key the run has no way to fetch the bytes it is
+    // supposed to stage, and the path in [ATTACHED_FILES] would point at
+    // nothing.
+    assert.equal(attachments[0]?.['larkFileKey'], 'file_v3_spec');
+  });
+
+  it('keeps no trace of the document contents in the transcript', async () => {
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      file: { key: 'file_v3_q3', name: 'Q3-revenue.pdf' },
+    })));
+
+    const attachment = attachmentsOf(result.retainedMessages[0])[0]!;
+    // A readable file gets no `inlineContext` at all — that field now carries
+    // only the reason a file was refused.
+    assert.equal(attachment['inlineContext'], undefined);
+    assert.equal(attachment['error'], undefined);
+  });
+
   it('waits for the question when a DM carries only a document', async () => {
     // The upload-then-ask pattern, which is how people send a PDF they want
-    // read. This only became reachable for documents once they were supported:
-    // an unreadable format still gets its refusal immediately, because no
-    // follow-up question would change the answer.
+    // read. An unreadable format still gets its refusal immediately, because
+    // no follow-up question would change the answer.
     const result = await withStubbedFetch(() => runWebhook(makeEvent({
       chatType: 'p2p',
       file: { key: 'file_v3_budget', name: 'budget.xlsx' },
       text: '',
-    }), { documentIndexing: 'on' }));
+    })));
 
     assert.ok(!result.order.includes('engine'), 'no agent run');
     assert.ok(
       result.logEvents.some(e => e.event === 'webhook.attachment.awaiting_question'),
       'and the wait is recorded',
     );
-    // Silence is only acceptable if the document is still on its way into the
-    // index — otherwise the follow-up question has nothing to retrieve.
-    assert.equal(result.ingestionJobs.length, 1);
     assert.doesNotMatch(
       String(result.appendedTurns[0]?.['content'] ?? ''),
       /\[Lark sender:/,
@@ -2011,172 +2421,33 @@ describe('Lark document attachments', () => {
     );
   });
 
-  it('queues the document for indexing even when the inline download fails', async () => {
-    // The two downloads are separate attempts at the same bytes: this turn's
-    // is best-effort, the worker's has three tries with backoff. Every
-    // download fails in this harness, which is exactly the case that must
-    // still reach the queue — otherwise a blip means a document nobody can
-    // ever retrieve.
-    const result = await withStubbedFetch(() => runWebhook(makeEvent({
-      chatType: 'group',
-      mentionsBot: true,
-      file: { key: 'file_v3_q3', name: 'Q3-revenue.pdf' },
-    }), { documentIndexing: 'on' }));
-
-    assert.equal(result.ingestionJobs.length, 1);
-    const job = result.ingestionJobs[0]!;
-    assert.equal(job['jobType'], 'lark_file');
-    assert.equal(job['fileName'], 'Q3-revenue.pdf');
-    assert.equal(job['larkFileKey'], 'file_v3_q3');
-    assert.equal(job['uploaderChannel'], 'lark');
-  });
-
-  it('records the transcript message before queuing the job that updates it', async () => {
-    // The worker writes fileAssetId back onto the transcript row for this
-    // upload. Queue first and a fast job can finish before that row exists,
-    // land in the "message not found" branch, and leave the attachment
-    // reading `processing` forever with nothing to correct it.
-    const order: string[] = [];
-    const result = await withStubbedFetch(() => runWebhook(makeEvent({
-      chatType: 'group',
-      mentionsBot: true,
-      file: { key: 'file_v3_order', name: 'ordering.pdf' },
-    }), {
-      documentIndexing: 'on',
-      onRetain: () => order.push('retain'),
-      onEnqueue: () => order.push('enqueue'),
-    }));
-
-    assert.equal(result.ingestionJobs.length, 1, 'the job was queued');
-    assert.equal(order[0], 'retain', 'the transcript row exists first');
-    assert.equal(order[1], 'enqueue');
-  });
-
-  it('scopes the document to the chat it was posted in', async () => {
-    // This is the whole access model: a file dropped in a room is readable by
-    // that room and by nobody else. Losing larkChatId would silently narrow
-    // the file to its uploader, and every colleague's question would come back
-    // empty with no error to explain why.
-    const result = await withStubbedFetch(() => runWebhook(makeEvent({
-      chatType: 'group',
-      mentionsBot: true,
-      file: { key: 'file_v3_spec', name: 'spec.docx' },
-    }), { documentIndexing: 'on' }));
-
-    const job = result.ingestionJobs[0]!;
-    assert.equal(job['larkChatId'], 'oc_1');
-    assert.equal(
-      job['visibility'], 'personal',
-      'company-wide sharing is not implied by posting in one room',
-    );
-  });
-
-  it('captures inline delivery on the background ingestion job', async () => {
-    const result = await withStubbedFetch(() => runWebhook(makeEvent({
-      chatType: 'group',
-      mentionsBot: true,
-      file: { key: 'file_v3_inline', name: 'inline.pdf' },
-    }), {
-      documentIndexing: 'on',
-      groupReplyMode: 'inline',
-    }));
-
-    assert.equal(result.ingestionJobs[0]?.['replyInThread'], false);
-  });
-
-  it('indexes silently when Divo was not addressed', async () => {
-    // The worker quote-replies an "indexed" card wherever replyToMessageId
-    // points. In a room where Divo was never spoken to, that card is Divo
-    // interrupting — so the file is indexed with nowhere to announce it.
-    const result = await withStubbedFetch(() => runWebhook(makeEvent({
-      chatType: 'group',
-      mentionsBot: false,
-      file: { key: 'file_v3_quiet', name: 'notes.pdf' },
-    }), { documentIndexing: 'on' }));
-
-    assert.equal(result.ingestionJobs.length, 1, 'the document is still indexed');
-    const job = result.ingestionJobs[0]!;
-    assert.equal(job['replyToMessageId'], undefined, 'nothing to announce into');
-    assert.ok(job['groupContextMessageId'], 'but the transcript is still annotated');
-  });
-
-  it('records the document as processing so the model knows more is coming', async () => {
-    const result = await withStubbedFetch(() => runWebhook(makeEvent({
-      chatType: 'group',
-      mentionsBot: true,
-      file: { key: 'file_v3_spec', name: 'spec.docx' },
-    }), { documentIndexing: 'on' }));
-
-    const attachments = attachmentsOf(result.retainedMessages[0]);
-    assert.equal(attachments.length, 1);
-    // 'unsupported' would tell the model to give up; 'inline_only' would tell
-    // it the excerpt is all there will ever be. Neither is true once the file
-    // is queued.
-    assert.equal(attachments[0]?.['ingestionStatus'], 'processing');
-  });
-
-  // ── Indexing off (the shipped default) ───────────────────────────────────
-  // Reading a document for the turn that asked about it is self-contained and
-  // must keep working with the background pipeline switched off.
-
-  it('still reads the document for this turn when indexing is off', async () => {
-    const result = await withStubbedFetch(() => runWebhook(makeEvent({
-      chatType: 'group',
-      mentionsBot: true,
-      file: { key: 'file_v3_inline', name: 'statement.pdf' },
-    })));
-
-    assert.deepEqual(
-      attemptedDownloads(result.logEvents), ['statement.pdf'],
-      'the document is still pulled out of Lark',
-    );
-    assert.deepEqual(result.ingestionJobs, [], 'but nothing is queued for indexing');
-    assert.ok(result.order.includes('engine'), 'and Divo still answers');
-  });
-
-  it('does not claim a document is still processing when nothing will process it', async () => {
-    // `processing` tells the model more detail is coming. With indexing off
-    // the inline excerpt is all there will ever be, so the status has to say
-    // so — otherwise Divo offers to look up sections that do not exist.
-    const result = await withStubbedFetch(() => runWebhook(makeEvent({
-      chatType: 'group',
-      mentionsBot: true,
-      file: { key: 'file_v3_inline', name: 'statement.pdf' },
-    })));
-
-    const attachments = attachmentsOf(result.retainedMessages[0]);
-    assert.equal(attachments.length, 1);
-    assert.equal(attachments[0]?.['ingestionStatus'], 'inline_only');
-  });
-
-  it('still refuses a format it has no reader for, without downloading it', async () => {
+  it('refuses a format no skill can open, without downloading it', async () => {
     const result = await withStubbedFetch(() => runWebhook(makeEvent({
       chatType: 'p2p',
-      file: { key: 'file_v3_zip', name: 'bundle.zip' },
+      file: { key: 'file_v3_clip', name: 'standup.mp4' },
     })));
 
-    // The refusal has to happen before the download, not after it. Fetching a
-    // file we then decline to read is the worst of both: the bytes left Lark
-    // and the user got nothing for it.
-    assert.deepEqual(attemptedDownloads(result.logEvents), [], 'the archive never left Lark');
+    // The refusal has to happen before any fetch. Moving bytes we then decline
+    // to use is the worst of both: they left Lark and the user got nothing.
+    assert.deepEqual(attemptedDownloads(result.logEvents), [], 'the video never left Lark');
     assert.ok(
       result.logEvents.some(entry => entry.event === 'webhook.attachment.unsupported'),
       'and the refusal is recorded',
     );
-    assert.deepEqual(result.ingestionJobs, [], 'and nothing is queued for indexing');
 
     const incoming = (result.engineInputs[0] as Record<string, any>)?.['incoming'];
     const text = String(incoming?.text ?? '');
-    assert.match(text, /NOT READ/, 'the refusal reaches the prompt');
-    assert.match(text, /bundle\.zip/);
+    assert.match(text, /NOT SAVED/, 'the refusal reaches the prompt');
+    assert.match(text, /standup\.mp4/);
     assert.match(text, /Do not guess or infer/i);
   });
 
-  it('acknowledges a readable document with a received reaction', async () => {
+  it('acknowledges a document it is going to sit on quietly', async () => {
     const reactions: string[] = [];
     await withStubbedFetch(() => runWebhook(makeEvent({
       chatType: 'p2p',
       file: { key: 'file_v3_only', name: 'notes.txt' },
+      text: '',
     }), {
       setupAdapter: adapter => {
         (adapter as any).reactToIncoming = async (_id: string, emoji: string) => {
@@ -2185,15 +2456,17 @@ describe('Lark document attachments', () => {
       },
     }));
 
-    // A 📥 means "received, working on it", which is now true for documents.
+    // Divo is deliberately silent until the question arrives, so a 📥 is the
+    // only thing telling the user the upload was not ignored.
     assert.deepEqual(reactions, ['\u{1F4E5}']);
   });
 
-  it('does not acknowledge a document it cannot read', async () => {
+  it('does not acknowledge a document it is going to refuse', async () => {
     const reactions: string[] = [];
     await withStubbedFetch(() => runWebhook(makeEvent({
       chatType: 'p2p',
-      file: { key: 'file_v3_zip', name: 'bundle.zip' },
+      file: { key: 'file_v3_clip', name: 'standup.mp4' },
+      text: '',
     }), {
       setupAdapter: adapter => {
         (adapter as any).reactToIncoming = async (_id: string, emoji: string) => {
@@ -2202,7 +2475,8 @@ describe('Lark document attachments', () => {
       },
     }));
 
-    // A 📥 here says "working on it" and is then contradicted by the refusal.
+    // A 📥 here says "received, working on it" and is then contradicted by the
+    // refusal that follows.
     assert.deepEqual(reactions, []);
   });
 });
@@ -2227,25 +2501,12 @@ describe('Lark image attachments', () => {
     // conversation history is the only place the follow-up can read it back
     // from, and it is what makes "check this img" answerable a moment later.
     assert.equal(result.appendedTurns.length, 1, 'the image is kept for the next turn');
-    assert.match(String(result.appendedTurns[0]?.['content'] ?? ''), /Image:/);
+    // Only the filename — the bytes are not read here. The follow-up question
+    // is what sends the image into the workspace.
+    assert.match(String(result.appendedTurns[0]?.['content'] ?? ''), /\[Attached: /);
   });
 
-  it('tells the model it could not open an image rather than denying one exists', async () => {
-    const result = await withStubbedFetch(() => runWebhook(makeEvent({
-      chatType: 'p2p',
-      image: { key: 'img_v3_broken' },
-    })));
-
-    // The user is looking at the picture they just sent. "I don't see any
-    // image" is both wrong and useless; "I could not open it, resend it" is
-    // actionable. The download always fails here, so this is that path.
-    const recorded = String(result.appendedTurns[0]?.['content'] ?? '');
-    assert.match(recorded, /could not be read/);
-    assert.match(recorded, /Do not tell them no image was attached/);
-  });
-
-
-  it('keeps the OCR text in the transcript but not the image bytes', async () => {
+  it('routes an image to the workspace like any other file', async () => {
     const result = await withStubbedFetch(() => runWebhook(makeEvent({
       chatType: 'group',
       mentionsBot: true,
@@ -2254,26 +2515,13 @@ describe('Lark image attachments', () => {
 
     const attachments = attachmentsOf(result.retainedMessages[0]);
     assert.equal(attachments.length, 1);
-    // The whole point of dropping the CDN upload is that no copy of the image
-    // survives the turn. Persisting the data URL would reintroduce one.
+    assert.equal(attachments[0]?.['ingestionStatus'], 'workspace');
+    // No copy of the image survives the webhook — not as bytes, not as OCR
+    // text. The agent opens it from the workspace when it needs to.
     assert.equal(attachments[0]?.['base64DataUrl'], undefined);
     assert.equal(attachments[0]?.['cloudinaryUrl'], undefined);
-    assert.equal(attachments[0]?.['ingestionStatus'], 'inline_only');
-  });
-
-  it('records a download failure on the attachment instead of dropping it', async () => {
-    const result = await withStubbedFetch(() => runWebhook(makeEvent({
-      chatType: 'group',
-      mentionsBot: true,
-      image: { key: 'img_v3_broken' },
-    })));
-
-    const attachments = attachmentsOf(result.retainedMessages[0]);
-    assert.equal(attachments.length, 1, 'the attachment is still reported');
-    // Distinguishes "we tried and could not" from "we declined to try", which
-    // is the difference between a retry being worth suggesting and not.
-    assert.ok(attachments[0]?.['error'], 'the failure is recorded');
-    assert.notEqual(attachments[0]?.['ingestionStatus'], 'unsupported');
+    assert.equal(attachments[0]?.['inlineContext'], undefined);
+    assert.deepEqual(attemptedDownloads(result.logEvents), []);
   });
 });
 
@@ -2388,9 +2636,9 @@ describe('Lark untagged group policy', () => {
 
     const attachments = attachmentsOf(result.retainedMessages[0]);
     assert.equal(attachments.length, 1, 'opt-in reaches attachment preparation');
-    // `inline_only` is the status preparation produces; a skipped attachment
+    // `workspace` is the status preparation produces; a skipped attachment
     // would never have been given one.
-    assert.equal(attachments[0]?.['ingestionStatus'], 'inline_only');
+    assert.equal(attachments[0]?.['ingestionStatus'], 'workspace');
     assert.ok(!result.order.includes('engine'), 'opting in does not make Divo reply');
   });
 
@@ -2405,7 +2653,7 @@ describe('Lark untagged group policy', () => {
     // invitation, so the default 'ignore' setting must not gate this.
     const attachments = attachmentsOf(result.retainedMessages[0]);
     assert.equal(attachments.length, 1, 'an addressed image is prepared');
-    assert.equal(attachments[0]?.['ingestionStatus'], 'inline_only');
+    assert.equal(attachments[0]?.['ingestionStatus'], 'workspace');
     assert.ok(result.order.includes('engine'), 'and the turn still runs');
   });
 
@@ -2429,17 +2677,6 @@ describe('Lark untagged group policy', () => {
   // carry an @mention — it is *structurally* untagged. Gating documents on
   // the mention would mean Divo could never read one posted in a group, which
   // is the entire feature.
-
-  it('indexes a document posted without mentioning Divo', async () => {
-    const result = await withStubbedFetch(() => runWebhook(makeEvent({
-      chatType: 'group',
-      file: { key: 'file_v3_untagged', name: 'notes.pdf' },
-    }), { documentIndexing: 'on' }));
-
-    assert.equal(result.ingestionJobs.length, 1, 'the document is queued');
-    assert.equal(result.ingestionJobs[0]?.['larkChatId'], 'oc_1');
-    assert.ok(!result.order.includes('engine'), 'but Divo does not butt in');
-  });
 
   it('records the untagged document in the transcript so a later question finds it', async () => {
     // The upload-then-ask flow lives or dies here. A file message carries no
@@ -2548,8 +2785,8 @@ describe('Lark per-turn authority in a shared thread', () => {
   });
 });
 
-describe('Lark inline rapid-message batching', () => {
-  it('admits and absorbs same-user messages on the inline lane', async () => {
+describe('Lark group rapid-message batching', () => {
+  it('ignores a legacy inline override and absorbs messages on the thread lane', async () => {
     const second = makeEvent({
       chatType: 'group',
       mentionsBot: true,
@@ -2572,7 +2809,7 @@ describe('Lark inline rapid-message batching', () => {
     });
 
     assert.deepEqual(result.acceptedLaneKeys, [
-      '["lark","ingress-receipt-lane","company-1","tenant-1","app-1","oc_1","requester","ou_sender"]',
+      '["lark","ingress-receipt-lane","company-1","tenant-1","app-1","oc_1","thread","om_root"]',
     ]);
     assert.equal(result.engineInputs.length, 1);
     assert.match(String((result.engineInputs[0] as any).incoming.text), /compare the companies/);
@@ -2586,20 +2823,20 @@ describe('Lark inline rapid-message batching', () => {
       currentMode: 'threaded' as const,
       laneKey: '["lark","ingress-receipt-lane","company-1","tenant-1","app-1","oc_1","requester","ou_sender"]',
       replyInThread: false,
-      runtimeLane: '["lark","ingress-lane","tenant-1","app-1","oc_1","requester","ou_sender"]',
+      runtimeLane: '["lark","runtime-user-lane","company-1","user-1"]',
     }, {
       admittedMode: 'threaded' as const,
       currentMode: 'inline' as const,
       laneKey: '["lark","ingress-receipt-lane","company-1","tenant-1","app-1","oc_1","thread","om_root"]',
       replyInThread: true,
-      runtimeLane: '["lark","ingress-lane","tenant-1","app-1","oc_1","thread","om_root"]',
+      runtimeLane: '["lark","runtime-user-lane","company-1","user-1"]',
     }, {
       admittedMode: 'threaded' as const,
       currentMode: 'inline' as const,
       // Before group modes existed, top-level turns used requester lanes.
       laneKey: '["lark","ingress-lane","tenant-1","app-1","oc_1","requester","ou_sender"]',
       replyInThread: true,
-      runtimeLane: '["lark","ingress-lane","tenant-1","app-1","oc_1","thread","om_root"]',
+      runtimeLane: '["lark","runtime-user-lane","company-1","user-1"]',
     }];
 
     for (const testCase of cases) {
@@ -2646,7 +2883,7 @@ describe('Lark untagged policy per company', () => {
 
     const attachments = attachmentsOf(result.retainedMessages[0]);
     assert.equal(attachments.length, 1, 'the company that asked gets processing');
-    assert.equal(attachments[0]?.['ingestionStatus'], 'inline_only');
+    assert.equal(attachments[0]?.['ingestionStatus'], 'workspace');
   });
 
   it("honours a company's opt-out even when the deployment enables processing", async () => {

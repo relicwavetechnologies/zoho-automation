@@ -9,7 +9,10 @@
  *   res.locals.aiRole     (string — e.g. "MEMBER", "COMPANY_ADMIN")
  *   res.locals.isAdmin    (boolean)
  *   res.locals.larkOpenId (string | null)
+ *   res.locals.larkTenantKey (string | null)
  *   res.locals.sessionId  (string)
+ *   res.locals.authProvider (string — how the session was issued;
+ *                            "scheduled_workflow" marks a machine-issued run)
  *   res.locals.email      (string | null)
  *   res.locals.channel    ("desktop" | "lark", trusted from the signed token)
  */
@@ -40,9 +43,12 @@ interface MemberJwtPayload {
   channel?:  string;
   instanceId?: string;
   threadId?: string;
+  departmentId?: string;
   iat?:      number;
   jti?:      string;
 }
+
+const AUTH_DB_RETRY_DELAYS_MS = [50, 150, 300] as const;
 
 function verifyHs256Jwt(token: string, secret: string): MemberJwtPayload | null {
   const parts = token.split('.');
@@ -99,54 +105,83 @@ export function createMemberAuthMiddleware(deps: MemberAuthMiddlewareDeps) {
       return;
     }
 
+    let auth;
+    for (let attempt = 0; attempt <= AUTH_DB_RETRY_DELAYS_MS.length; attempt += 1) {
+      try {
+        const session = await deps.prisma.memberSession.findUnique({
+          where: { sessionId: payload.sessionId },
+          include: { user: { select: { email: true } } },
+        });
+
+        if (!session || session.revokedAt || new Date() > session.expiresAt) {
+          res.status(401).json({ error: 'Session expired or revoked' });
+          return;
+        }
+        if (
+          session.userId !== payload.userId
+          || session.companyId !== payload.companyId
+        ) {
+          res.status(401).json({ error: 'Session identity mismatch' });
+          return;
+        }
+
+        // MemberSession.role and the JWT role are issuance-time metadata only.
+        // Resolve the live membership on every request so a role downgrade or
+        // membership removal takes effect before any desktop or gateway handler.
+        const membership = await deps.prisma.adminMembership.findFirst({
+          where: {
+            userId:    session.userId,
+            companyId: session.companyId,
+            isActive:  true,
+          },
+          orderBy: { updatedAt: 'desc' },
+          select: { role: true },
+        });
+
+        if (!membership) {
+          res.status(401).json({ error: 'Company membership is no longer active' });
+          return;
+        }
+        auth = { session, membership };
+        break;
+      } catch (error) {
+        if (attempt === AUTH_DB_RETRY_DELAYS_MS.length) {
+          deps.logger.error('member-auth.middleware.unavailable', {
+            attempts: attempt + 1,
+            error: String(error),
+          });
+          res.status(503).json({ error: 'Authentication service temporarily unavailable. Please retry.' });
+          return;
+        }
+        deps.logger.warn('member-auth.middleware.retry', {
+          attempt: attempt + 1,
+          error: String(error),
+        });
+        await new Promise((resolve) => setTimeout(resolve, AUTH_DB_RETRY_DELAYS_MS[attempt]));
+      }
+    }
+
     try {
-      const session = await deps.prisma.memberSession.findUnique({
-        where: { sessionId: payload.sessionId },
-        include: { user: { select: { email: true } } },
-      });
-
-      if (!session || session.revokedAt || new Date() > session.expiresAt) {
-        res.status(401).json({ error: 'Session expired or revoked' });
-        return;
-      }
-      if (
-        session.userId !== payload.userId
-        || session.companyId !== payload.companyId
-      ) {
-        res.status(401).json({ error: 'Session identity mismatch' });
-        return;
-      }
-
-      // MemberSession.role and the JWT role are issuance-time metadata only.
-      // Resolve the live membership on every request so a role downgrade or
-      // membership removal takes effect before any desktop or gateway handler.
-      const membership = await deps.prisma.adminMembership.findFirst({
-        where: {
-          userId:    session.userId,
-          companyId: session.companyId,
-          isActive:  true,
-        },
-        orderBy: { updatedAt: 'desc' },
-        select: { role: true },
-      });
-
-      if (!membership) {
-        res.status(401).json({ error: 'Company membership is no longer active' });
-        return;
-      }
-
+      if (!auth) return;
+      const { session, membership } = auth;
       res.locals['companyId']  = session.companyId;
       res.locals['userId']     = session.userId;
       res.locals['aiRole']     = membership.role;
       res.locals['isAdmin']    = membership.role === 'COMPANY_ADMIN' || membership.role === 'SUPER_ADMIN';
       res.locals['larkOpenId'] = session.larkOpenId ?? null;
+      res.locals['larkTenantKey'] = session.larkTenantKey ?? null;
       res.locals['sessionId']  = session.sessionId;
+      // How this session was issued. A scheduled run holds a machine-issued one,
+      // and tools that would deliver a reply themselves have to know that: the
+      // runtime owns delivery for those runs and sends it to the creator alone.
+      res.locals['authProvider'] = session.authProvider;
       res.locals['email']      = session.user?.email ?? null;
       res.locals['channel']    = hasRuntimeClaims ? 'lark' : 'desktop';
       res.locals['isPiRuntimeLease'] = hasRuntimeClaims;
       if (payload.aud === PI_RUNTIME_AUDIENCE) {
         res.locals['runtimeInstanceId'] = payload.instanceId;
         res.locals['runtimeThreadId'] = payload.threadId;
+        res.locals['runtimeDepartmentId'] = payload.departmentId ?? null;
       }
       next();
     } catch (e) {

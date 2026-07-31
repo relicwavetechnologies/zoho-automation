@@ -13,13 +13,13 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeAllowedPerm, makeDeniedPerm, makeCtx } from './tool-test.helpers.ts';
 
-import { createLarkTaskTool }     from '../../src/application/orchestration/tools/families/lark-task.tool.ts';
-import { createLarkMessagingTool } from '../../src/application/orchestration/tools/families/lark-messaging.tool.ts';
-import { createLarkCalendarTool }  from '../../src/application/orchestration/tools/families/lark-calendar.tool.ts';
-import { createLarkDocTool }       from '../../src/application/orchestration/tools/families/lark-doc.tool.ts';
-import { createLarkBaseTool }      from '../../src/application/orchestration/tools/families/lark-base.tool.ts';
-import { createLarkApprovalTool }  from '../../src/application/orchestration/tools/families/lark-approval.tool.ts';
-import { createLarkMeetingTool }   from '../../src/application/orchestration/tools/families/lark-meeting.tool.ts';
+import { createLarkTaskTool }     from '../../src/application/tools/families/lark-task.tool.ts';
+import { createLarkMessagingTool } from '../../src/application/tools/families/lark-messaging.tool.ts';
+import { createLarkCalendarTool }  from '../../src/application/tools/families/lark-calendar.tool.ts';
+import { createLarkDocTool }       from '../../src/application/tools/families/lark-doc.tool.ts';
+import { createLarkBaseTool }      from '../../src/application/tools/families/lark-base.tool.ts';
+import { createLarkApprovalTool }  from '../../src/application/tools/families/lark-approval.tool.ts';
+import { createLarkMeetingTool }   from '../../src/application/tools/families/lark-meeting.tool.ts';
 
 describe('backend-hosted Lark connection selection', () => {
   it('lets every managed Lark family omit connectionId while retaining UUID validation', () => {
@@ -317,7 +317,7 @@ describe('larkMessaging tool', () => {
       };
       const lockedCtx = makeCtx('larkMessaging', ['read', 'send'], {
         chatId: 'oc_locked_dm_chat',
-        deliveryMode: 'current_chat_only',
+        deliveryMode: 'scheduled_runtime_delivery',
       });
       const tool = createLarkMessagingTool({ client });
       const r = await tool.execute({ op: 'send', text: 'hi' }, lockedCtx);
@@ -352,7 +352,7 @@ describe('larkMessaging tool', () => {
       assert.match((r as any).error.message, /runtime owns final delivery/i);
     });
 
-    it('send: preserves an explicit external action to a different chat', async () => {
+    it('send: allows an interactive run to message a different chat', async () => {
       let capturedChatId: string | null = null;
       const client = {
         ...fakeClient,
@@ -361,12 +361,13 @@ describe('larkMessaging tool', () => {
           return { messageId: 'msg-external' };
         },
       };
-      const lockedCtx = makeCtx('larkMessaging', ['read', 'send'], {
+      // Not a scheduled run: those are blocked from every chat. See
+      // tests/approval/scheduled-delivery-lock.test.ts.
+      const interactiveCtx = makeCtx('larkMessaging', ['read', 'send'], {
         chatId: 'oc_locked_dm_chat',
-        deliveryMode: 'current_chat_only',
       });
       const tool = createLarkMessagingTool({ client });
-      const r = await tool.execute({ op: 'send', chatId: 'oc_other_group', text: 'hi' }, lockedCtx);
+      const r = await tool.execute({ op: 'send', chatId: 'oc_other_group', text: 'hi' }, interactiveCtx);
       assert.equal(r.ok, true);
       assert.equal(capturedChatId, 'oc_other_group');
     });
@@ -377,10 +378,10 @@ describe('larkMessaging tool', () => {
       assert.equal(r.ok, true);
     });
 
-    it('reply: rejects delivery during a scheduled current-chat run', async () => {
+    it('reply: rejects delivery during a scheduled run', async () => {
       const lockedCtx = makeCtx('larkMessaging', ['send'], {
         chatId: 'oc_locked_dm_chat',
-        deliveryMode: 'current_chat_only',
+        deliveryMode: 'scheduled_runtime_delivery',
       });
       const tool = createLarkMessagingTool({ client: fakeClient });
 
@@ -436,7 +437,6 @@ describe('larkMessaging tool', () => {
     it('send_dm: rejects duplicate delivery to the current-chat requester', async () => {
       const lockedCtx = makeCtx('larkMessaging', ['read', 'send'], {
         chatId: 'oc_locked_dm_chat',
-        deliveryMode: 'current_chat_only',
         userExternalId: 'resolved:Abhishek',
       });
       const tool = createLarkMessagingTool({ client: fakeClient, peopleResolver });
@@ -494,6 +494,35 @@ describe('larkMessaging tool', () => {
 
       assert.equal(r.ok, false);
       assert.equal(called, false);
+      assert.match((r as any).error.message, /runtime owns final delivery/i);
+    });
+
+    it('mention: refuses to post a scheduled result into any other chat', async () => {
+      let mentioned = false;
+      const client = {
+        ...fakeClient,
+        mentionMessage: async () => {
+          mentioned = true;
+          return { messageId: 'om-group' };
+        },
+      };
+      // A scheduled run's own chat id is the creator's DM, so the guard against
+      // addressing the current chat never fires for a group id. Without an
+      // explicit block, a schedule whose task text names a room can still post
+      // its result there — the thing DM-only delivery exists to prevent.
+      const scheduledCtx = makeCtx('larkMessaging', ['send'], {
+        chatId: 'ou_creator',
+        deliveryMode: 'scheduled_runtime_delivery',
+      });
+      const tool = createLarkMessagingTool({ client, peopleResolver });
+
+      const r = await tool.execute(
+        { op: 'mention', chatId: 'oc_standup_group', text: 'summary', mentionNames: ['Alice'] },
+        scheduledCtx,
+      );
+
+      assert.equal(r.ok, false);
+      assert.equal(mentioned, false);
       assert.match((r as any).error.message, /runtime owns final delivery/i);
     });
 

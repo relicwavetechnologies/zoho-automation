@@ -47,26 +47,18 @@ const EnvSchema = z.object({
   LOG_SUCCESS_SAMPLE_RATE: positiveNum(0.25),
   LOG_INCLUDE_STACK:      booleanStr.default('true'),
 
-  // ── Orchestration model ───────────────────────────────────────────────────
-  // Switch the entire engine by changing these two vars. No code changes needed.
-  //   MODEL_PROVIDER=google  MODEL_ID=gemini-3.1-flash-lite
-  //   MODEL_PROVIDER=openai  MODEL_ID=gpt-4o
-  MODEL_PROVIDER: z.enum(['google', 'openai', 'deepseek']).default('google'),
-  MODEL_ID:       z.string().default('gemini-3.1-flash-lite'),
-
-  /** Image OCR + caption during file ingestion (defaults to GA flash-lite). */
-  IMAGE_OCR_PROVIDER: z.enum(['gemini', 'openrouter']).default('gemini'),
-  GEMINI_VISION_MODEL: z.string().default('gemini-3.1-flash-lite'),
+  /**
+   * The single vision model. Screenshots, scans and Manager Teach frames all
+   * use it, so a change here changes every place Divo reads an image — which
+   * is the point: there is no second, quieter, weaker path to drift into.
+   */
+  VISION_OCR_MODEL: z.string().default('qwen/qwen3-vl-32b-instruct'),
   OPENROUTER_API_KEY: z.string().optional(),
-  OPENROUTER_VISION_MODEL: z.string().default('meta-llama/llama-4-scout'),
   OPENROUTER_PROVIDER_ORDER: z.string().default('Groq'),
 
   // ── OpenAI ────────────────────────────────────────────────────────────────
   OPENAI_API_KEY:        z.string().min(1),
   ELEVEN_LABS_API_KEY:   z.string().min(1).optional(),
-  GATEWAY_BASE_URL:      z.string().default(''),
-  GATEWAY_ADMIN_API_KEY: z.string().optional(),
-  OPENAI_ROUTER_MODEL:   z.string().default('gpt-4o-mini'),
   OPENAI_TEMPERATURE:    positiveNum(0.1),
 
   // ── DeepSeek ──────────────────────────────────────────────────────────────
@@ -95,23 +87,9 @@ const EnvSchema = z.object({
   PI_RUNTIME_LEASE_TTL_SECONDS: positiveInt(3_600),
   PI_LARK_RUN_TIMEOUT_MS: positiveInt(1_800_000),
 
-  // ── Groq (intent classification + reranking) ──────────────────────────────
-  GROQ_API_KEY:      z.string().optional(),
-  GROQ_ROUTER_MODEL: z.string().default('llama-3.1-8b-instant'),
-
   // ── Gemini ────────────────────────────────────────────────────────────────
   GEMINI_API_KEY:                   z.string().optional(),
   GOOGLE_GENERATIVE_AI_API_KEY:     z.string().optional(),
-  GEMINI_EMBEDDING_MODEL:           z.string().default('gemini-embedding-001'),
-  GEMINI_MULTIMODAL_EMBEDDING_MODEL: z.string().default('gemini-embedding-2-preview'),
-
-  // ── Embeddings ────────────────────────────────────────────────────────────
-  EMBEDDING_PROVIDER:    z.enum(['openai', 'gemini', 'fallback']).default('gemini'),
-  OPENAI_EMBEDDING_MODEL: z.enum([
-    'text-embedding-3-small',
-    'text-embedding-3-large',
-    'text-embedding-ada-002',
-  ]).default('text-embedding-3-small'),
 
   // ── Lark ──────────────────────────────────────────────────────────────────
   LARK_API_BASE_URL:   z.string().default('https://open.larksuite.com'),
@@ -151,7 +129,6 @@ const EnvSchema = z.object({
   // With it off, Divo answers from the inline excerpt alone and says so when
   // the excerpt does not cover the whole file, rather than promising a
   // retrieval that will never be possible.
-  LARK_DOCUMENT_INDEXING: z.enum(['on', 'off']).default('off'),
 
   // ── Qdrant vector store ───────────────────────────────────────────────────
   QDRANT_URL:                  z.string().default('http://127.0.0.1:6333'),
@@ -259,6 +236,10 @@ const EnvSchema = z.object({
   REDIS_PERSONA_LEARNING_QUEUE_NAME: z.string().default('persona-learning'),
   PERSONA_LEARNING_WORKER_CONCURRENCY: positiveInt(1),
   PERSONA_LEARNING_MODEL_ID: z.string().default('deepseek-v4-flash'),
+  // Group-room transcript compaction. DeepSeek like every other model Divo
+  // runs, and a flash tier because this is high-volume background work whose
+  // output is a summary, not a user-facing answer.
+  GROUP_SUMMARY_MODEL_ID: z.string().default('deepseek-v4-flash'),
 
   // ── Explicit manager Teach ingestion ────────────────────────────────────
   REDIS_MANAGER_TEACH_QUEUE_NAME: z.string().default('manager-teach'),
@@ -272,7 +253,6 @@ const EnvSchema = z.object({
   MANAGER_TEACH_SCENE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.12),
   MANAGER_TEACH_MEDIA_TIMEOUT_SECONDS: positiveInt(1_800),
   MANAGER_TEACH_OCR_CONCURRENCY: positiveInt(2),
-  MANAGER_TEACH_OCR_MODEL: z.string().default('qwen/qwen3-vl-32b-instruct'),
   MANAGER_TEACH_TRANSCRIPTION_MODEL: z.string().default('gpt-4o-mini-transcribe'),
   MANAGER_TEACH_TRANSCRIPTION_CHUNK_SECONDS: positiveInt(300),
   MANAGER_TEACH_PERSONA_MODEL: z.string().default('deepseek-v4-pro'),
@@ -302,15 +282,6 @@ const EnvSchema = z.object({
   // Non-production only. Forces manager-owned actions through the approval card
   // path so the Lark approval loop can be smoke-tested with one user.
   DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: booleanStr.default('false'),
-
-  // ── LangSmith tracing (optional) ──────────────────────────────────────────
-  LANGSMITH_TRACING:  booleanStr.default('false'),
-  LANGSMITH_API_KEY:  z.string().optional(),
-  LANGSMITH_PROJECT:  z.string().optional(),
-  LANGSMITH_ENDPOINT: z.string().default('https://api.smith.langchain.com'),
-
-  // ── Dynamic agent graph cutover ───────────────────────────────────────────
-  DYNAMIC_GRAPH_ENABLED: booleanStr.default('false'),
 
   // Set to 0 to disable supervisor timeout (useful for local dev with slow models).
   // Active timeouts are clamped so an older 5-minute deployment value cannot

@@ -6,6 +6,7 @@ import type { Logger } from '../../shared/logger';
 import type { ApprovalGateService } from './approval-gate.service';
 import type { PermissionService } from '../permissions/permission.service';
 import type { ToolExecutor, RuntimeToolExecutionOutcome } from '../gateway/tool-executor';
+import type { GatewayExecutionContext } from '../gateway/gateway.types';
 import type { ToolActionGroup } from '../../domain/permissions/tool-action-group';
 import {
   asChatId,
@@ -19,9 +20,28 @@ import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { isAutomationPlanApproval } from '../gateway/automation-plan.service';
 import type { AutomationPlanExecutor } from '../gateway/automation-plan.executor';
 
+/** An outcome and the adapter that can actually reach its destination. */
+interface FinalDelivery {
+  readonly adapter: Pick<LarkChannelAdapter, 'sendFinalReply'>;
+  readonly conversation: ConversationHandle;
+}
+
 export interface ApprovalResumerDeps {
   approvalRepo:        RuntimeApprovalRepository;
   larkAdapter:         LarkChannelAdapter;
+  /**
+   * Delivery for an approval that came from a scheduled run.
+   *
+   * Such a run has no chat: its recorded conversation is the synthetic
+   * `scheduled-workflow:<id>` thread, which Lark cannot receive a message on.
+   * This adapter reads the conversation id as the creator's open_id, so the
+   * outcome reaches the one person entitled to it instead of failing silently.
+   *
+   * Required rather than optional: omitting it would silently restore that
+   * failure for exactly the runs this exists to protect, and the only trace
+   * would be a generic delivery error.
+   */
+  scheduledDmAdapter:  Pick<LarkChannelAdapter, 'sendFinalReply'>;
   channelIdentityRepo: ChannelIdentityRepoPort;
   approvalGate:        ApprovalGateService;
   toolExecutor:        ToolExecutor;
@@ -83,6 +103,11 @@ export class ApprovalResumerService {
     const replyInThread = typeof meta['replyInThread'] === 'boolean'
       ? meta['replyInThread']
       : undefined;
+    const deliveryMode = meta['deliveryMode'] === 'scheduled_runtime_delivery'
+      ? 'scheduled_runtime_delivery' as const
+      : undefined;
+    const approvalOrigin = asNonEmptyString(meta['approvalOrigin']);
+    const execution = asExecutionContext(meta['execution']);
     const approvalCompanyId = asNonEmptyString(approval.companyId);
 
     if (!chatId || !requesterId || !approvalCompanyId) {
@@ -102,8 +127,21 @@ export class ApprovalResumerService {
       this.deps.larkAdapter.restoreStatusCoordinator(String(correlationId), statusMessageId, chatId);
     }
 
+    // Where the outcome goes. A scheduled run has no chat to report into — its
+    // recorded conversation is the synthetic `scheduled-workflow:<id>` thread —
+    // so the result is addressed to the creator instead, through the one adapter
+    // that reads a conversation id as an open_id.
+    const scheduledToCreator = deliveryMode === 'scheduled_runtime_delivery'
+      && Boolean(requesterLarkOpenId);
+    const delivery: FinalDelivery = scheduledToCreator
+      ? {
+          adapter: this.deps.scheduledDmAdapter,
+          conversation: { ...conversation, chatId: asChatId(requesterLarkOpenId!) },
+        }
+      : { adapter: this.deps.larkAdapter, conversation };
+
     if (decision === 'rejected') {
-      await this.deliverFinal(conversation, 'The requested action was not approved by the manager, so nothing was changed.');
+      await this.deliverFinal(delivery, 'The requested action was not approved by the manager, so nothing was changed.');
       await this.deps.approvalRepo.persistResult(approvalId, { decision: 'rejected' });
       return;
     }
@@ -114,7 +152,15 @@ export class ApprovalResumerService {
       const message = 'The approved action record is incomplete or no longer matches the requested action.';
       this.log.error('resumer.invalid_approved_payload', { approvalId, storedToolId: approval.toolId, payloadToolId: toolId });
       await this.persistFailure(approvalId, { status: 'invalid_payload', message });
-      await this.deliverFinal(conversation, message);
+      await this.deliverFinal(delivery, message);
+      return;
+    }
+
+    if (approvalOrigin === 'cloud_pi' && !execution) {
+      const message = 'The approved cloud action is missing its verified Pi execution context, so it was not executed.';
+      this.log.error('resumer.invalid_cloud_pi_execution', { approvalId });
+      await this.persistFailure(approvalId, { status: 'invalid_execution_context', message });
+      await this.deliverFinal(delivery, message);
       return;
     }
 
@@ -122,7 +168,7 @@ export class ApprovalResumerService {
       const message = 'I could not verify the Lark workspace for this approved action, so it was not executed.';
       this.log.warn('resumer.tenant_missing', { approvalId, requesterId, requesterLarkOpenId });
       await this.persistFailure(approvalId, { status: 'tenant_missing', message });
-      await this.deliverFinal(conversation, message);
+      await this.deliverFinal(delivery, message);
       return;
     }
 
@@ -133,7 +179,7 @@ export class ApprovalResumerService {
       const message = 'I could not verify the requester for this approved action, so it was not executed.';
       this.log.warn('resumer.identity_not_found', { approvalId, requesterId, requesterLarkOpenId });
       await this.persistFailure(approvalId, { status: 'identity_not_found', message });
-      await this.deliverFinal(conversation, message);
+      await this.deliverFinal(delivery, message);
       return;
     }
     const identity = identityResult.value;
@@ -147,7 +193,7 @@ export class ApprovalResumerService {
         identityUserId: identity.userId,
       });
       await this.persistFailure(approvalId, { status: 'identity_scope_mismatch', message });
-      await this.deliverFinal(conversation, message);
+      await this.deliverFinal(delivery, message);
       return;
     }
 
@@ -162,7 +208,7 @@ export class ApprovalResumerService {
       const message = `The approved action can no longer be run: ${permissionResult.error.message}`;
       this.log.warn('resumer.permission_denied', { approvalId, reason: permissionResult.error.message });
       await this.persistFailure(approvalId, { status: 'permission_denied', message });
-      await this.deliverFinal(conversation, message);
+      await this.deliverFinal(delivery, message);
       return;
     }
 
@@ -180,23 +226,31 @@ export class ApprovalResumerService {
         ? { userExternalId: requesterLarkOpenId ?? identity.larkOpenId }
         : {}),
       ...(identity.email ? { requesterEmail: identity.email } : {}),
+      // Replayed from the request, not re-derived: the session that ran the
+      // scheduled work is revoked by the time an approval comes back.
+      ...(deliveryMode ? { deliveryMode } : {}),
       ...(identity.activeDepartmentId ? { departmentId: asDepartmentId(identity.activeDepartmentId) } : {}),
       ...(permissionResult.value.department?.zohoReadScope
         ? { departmentZohoReadScope: permissionResult.value.department.zohoReadScope }
         : {}),
     };
 
-    await this.deps.larkAdapter.sendStatus(conversation, {
-      kind: 'status',
-      terminal: false,
-      timeline: {
-        phase: 'Completing approved action',
-        progressPct: 75,
-        completedSteps: 1,
-        totalSteps: 2,
-        liveLabel: 'Executing the exact approved action…',
-      },
-    });
+    // Skipped for a scheduled run: this card would be addressed to the synthetic
+    // thread the run carries, which is not a chat anyone can receive on, and
+    // there is no live conversation waiting on progress either way.
+    if (!scheduledToCreator) {
+      await this.deps.larkAdapter.sendStatus(conversation, {
+        kind: 'status',
+        terminal: false,
+        timeline: {
+          phase: 'Completing approved action',
+          progressPct: 75,
+          completedSteps: 1,
+          totalSteps: 2,
+          liveLabel: 'Executing the exact approved action…',
+        },
+      });
+    }
 
     const outcome = await this.deps.toolExecutor.executeForRuntime({
       toolId,
@@ -206,18 +260,19 @@ export class ApprovalResumerService {
       approvalGate: this.deps.approvalGate,
       chatId: storedChatId ?? chatId,
       expectedAction: approval.actionGroup as ToolActionGroup,
+      ...(execution ? { execution } : {}),
     });
-    await this.finishApprovedAction(approvalId, conversation, outcome);
+    await this.finishApprovedAction(approvalId, delivery, outcome);
   }
 
   private async finishApprovedAction(
     approvalId: string,
-    conversation: ConversationHandle,
+    delivery: FinalDelivery,
     outcome: RuntimeToolExecutionOutcome,
   ): Promise<void> {
     if (outcome.status === 'success') {
       const text = ['Approved action completed.', renderResult(outcome.result)].filter(Boolean).join('\n\n');
-      await this.deliverFinal(conversation, text);
+      await this.deliverFinal(delivery, text);
       return;
     }
 
@@ -232,14 +287,14 @@ export class ApprovalResumerService {
       status: outcome.status,
       message,
     });
-    await this.deliverFinal(conversation, `The approved action could not be completed: ${message}`);
+    await this.deliverFinal(delivery, `The approved action could not be completed: ${message}`);
   }
 
   private async deliverFinal(
-    conversation: ConversationHandle,
+    delivery: FinalDelivery,
     text: string,
   ): Promise<void> {
-    const delivered = await this.deps.larkAdapter.sendFinalReply(conversation, {
+    const delivered = await delivery.adapter.sendFinalReply(delivery.conversation, {
       kind: 'final',
       text,
       format: 'markdown',
@@ -274,6 +329,15 @@ function asArgs(value: unknown): Record<string, unknown> | null {
 
 function asNonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+}
+
+function asExecutionContext(value: unknown): GatewayExecutionContext | undefined {
+  const record = asRecord(value);
+  const threadId = asNonEmptyString(record['threadId']);
+  const runId = asNonEmptyString(record['runId']);
+  const actionId = asNonEmptyString(record['actionId']);
+  if (record['version'] !== 1 || !threadId || !runId || !actionId) return undefined;
+  return { version: 1, threadId, runId, actionId };
 }
 
 function renderResult(value: unknown): string {

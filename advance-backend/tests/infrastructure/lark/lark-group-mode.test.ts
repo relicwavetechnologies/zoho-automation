@@ -15,8 +15,8 @@ const address = {
 };
 
 describe('Lark group mode', () => {
-  it('defaults missing and invalid values to threaded', async () => {
-    for (const value of [null, 'surprise']) {
+  it('defaults missing, legacy inline, and invalid values to threaded', async () => {
+    for (const value of [null, 'inline', 'surprise']) {
       const store = {
         adminControlState: {
           findUnique: async () => value === null ? null : { value },
@@ -43,7 +43,7 @@ describe('Lark group mode', () => {
       },
     };
 
-    await saveLarkGroupMode(store, address, 'inline', 'user-admin');
+    await saveLarkGroupMode(store, address, 'threaded', 'user-admin');
 
     assert.deepEqual(write, {
       where: {
@@ -55,10 +55,10 @@ describe('Lark group mode', () => {
       create: {
         controlKey: larkGroupModeControlKey(address),
         companyId: 'company-1',
-        value: 'inline',
+        value: 'threaded',
         updatedBy: 'user-admin',
       },
-      update: { value: 'inline', updatedBy: 'user-admin' },
+      update: { value: 'threaded', updatedBy: 'user-admin' },
     });
   });
 });

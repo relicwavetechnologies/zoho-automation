@@ -76,8 +76,8 @@ describe('governed local-workflow instruction contract', () => {
   });
 
   it('routes exact whole-account finance aggregates through complete governed sources', () => {
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /Exact whole-account or potentially large aggregate -> use dataProcessor source mode/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /Exact whole-account or potentially large aggregate -> use the scripted workflow/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /Number\(_balance_inr\) > 0/);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /complete=true before describing a source-backed result as exact/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /reconcile it: every source page accounted for/);
   });
 });

@@ -1,4 +1,4 @@
-export type ApprovalOrigin = 'gateway' | 'lark';
+export type ApprovalOrigin = 'gateway' | 'lark' | 'cloud_pi';
 
 export const GATEWAY_APPROVAL_CHAT_PREFIX = 'gateway:';
 
@@ -8,6 +8,7 @@ export function approvalOriginFromChatId(chatId: string): ApprovalOrigin {
 
 export function isGatewayApprovalMetadata(metadata: unknown): boolean {
   if (!isRecord(metadata)) return false;
+  if (metadata['approvalOrigin'] === 'cloud_pi') return false;
   if (metadata['approvalOrigin'] === 'gateway') return true;
   const chatId = metadata['chatId'];
   return typeof chatId === 'string' && chatId.startsWith(GATEWAY_APPROVAL_CHAT_PREFIX);

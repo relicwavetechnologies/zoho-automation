@@ -1,9 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Request, Response } from 'express';
-import { ChatMessageSerializer } from '../../../src/application/orchestration/chat-message-serializer.ts';
+import { ChatMessageSerializer } from '../../../src/application/channels/chat-message-serializer.ts';
 import { LarkIngressWorker } from '../../../src/application/lark-ingress/lark-ingress.worker.ts';
 import { LarkChannelAdapter } from '../../../src/infrastructure/channels/lark/lark.adapter.ts';
+import { BusyLaneNotices } from '../../../src/infrastructure/channels/lark/lark-busy-notice.ts';
 import {
   createLarkWebhookRoutes,
   processAcceptedLarkReceipt,
@@ -62,6 +63,10 @@ function createHarness(
     status: 'accepted' | 'processing' | 'completed' | 'failed';
   }>();
   const activeJobs = new Set<Promise<void>>();
+  const statusUpdates: Array<{
+    messageId: string;
+    state: string | undefined;
+  }> = [];
   const serializer = new ChatMessageSerializer();
   const adapter = new LarkChannelAdapter({
     env: {
@@ -74,6 +79,18 @@ function createHarness(
     botOpenId: 'ou_bot',
   });
   adapter.sendFinalReply = async () => ok({ messageId: 'om_reply' });
+  adapter.sendStatus = async (conversation, update) => {
+    statusUpdates.push({
+      messageId: String(conversation.replyToMessageId),
+      state: update.timeline?.state,
+    });
+    return ok({
+      channel: 'lark',
+      messageId: 'om_status',
+      correlationId: conversation.correlationId,
+    } as any);
+  };
+  adapter.editStatus = async handle => ok(handle);
   const receiptRepo = {
     accept: async (input: {
       tenantKey: string;
@@ -151,6 +168,7 @@ function createHarness(
     } as any,
     cache: {} as any,
     serializer,
+    busyNotices: new BusyLaneNotices(),
   } as any;
   worker = new LarkIngressWorker({
     redisUrl: 'redis://unused',
@@ -165,6 +183,7 @@ function createHarness(
 
   return {
     serializer,
+    statusUpdates,
     async waitForIdle(): Promise<void> {
       await waitFor(() => activeJobs.size === 0 && serializer.activeChats === 0);
     },
@@ -256,7 +275,7 @@ describe('Lark webhook scenarios', () => {
     assert.ok(events.includes('end:message-1'));
   });
 
-  it('keeps top-level requests from the same group requester FIFO', async () => {
+  it('queues one person across threads and reuses the queued status for progress', async () => {
     const events: string[] = [];
     let releaseFirst: (() => void) | undefined;
     const harness = createHarness(async messageId => {
@@ -280,7 +299,9 @@ describe('Lark webhook scenarios', () => {
       senderOpenId: 'sender-1',
     }));
 
-    await waitFor(() => events.includes('start:message-1'));
+    await waitFor(() =>
+      harness.statusUpdates.some(update =>
+        update.messageId === 'message-2' && update.state === 'queued'));
     assert.deepEqual(events, ['start:message-1']);
 
     releaseFirst?.();
@@ -291,9 +312,11 @@ describe('Lark webhook scenarios', () => {
       'start:message-2',
       'end:message-2',
     ]);
+    assert.ok(harness.statusUpdates.some(update =>
+      update.messageId === 'message-2' && update.state === 'thinking'));
   });
 
-  it('keeps different requesters in the same group thread FIFO', async () => {
+  it('lets different requesters in the same group thread run concurrently', async () => {
     const events: string[] = [];
     let releaseFirst: (() => void) | undefined;
     const harness = createHarness(async messageId => {
@@ -319,16 +342,20 @@ describe('Lark webhook scenarios', () => {
       threadId: 'thread-1',
     }));
 
-    await waitFor(() => events.includes('start:message-1'));
-    assert.deepEqual(events, ['start:message-1']);
+    await waitFor(() => events.includes('end:message-2'));
+    assert.deepEqual(events, [
+      'start:message-1',
+      'start:message-2',
+      'end:message-2',
+    ]);
 
     releaseFirst?.();
     await harness.waitForIdle();
     assert.deepEqual(events, [
       'start:message-1',
-      'end:message-1',
       'start:message-2',
       'end:message-2',
+      'end:message-1',
     ]);
   });
 });

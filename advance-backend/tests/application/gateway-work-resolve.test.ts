@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { z } from 'zod';
 import { GatewayDispatcher } from '../../src/application/gateway/gateway-dispatcher.ts';
 import { ToolExecutor } from '../../src/application/gateway/tool-executor.ts';
-import { ToolRegistry } from '../../src/application/orchestration/tools/tool-registry.ts';
+import { ToolRegistry } from '../../src/application/tools/tool-registry.ts';
 import type { CatalogSkill } from '../../src/application/skills/skill-catalog.service.ts';
 import { makeAllowedPerm, noopLogger } from '../tools/tool-test.helpers.ts';
 import { asToolId } from '../../src/shared/ids.ts';

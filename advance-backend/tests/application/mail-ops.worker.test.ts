@@ -28,7 +28,7 @@ const event = {
   historyId: '101',
   occurredAt: new Date('2026-07-29T05:00:00.000Z'),
   metadata: {
-    from: 'alerts@example.com',
+    from: 'Alerts <alerts@example.com>',
     to: 'user@example.com',
     subject: 'Login OTP',
     snippet: 'Your OTP is 123456',
@@ -334,5 +334,130 @@ describe('MailOpsWorker', () => {
       attempts: 2,
       reason: 'Mail automation execute access or Google connection was revoked.',
     });
+  });
+
+  it('forwards a real display-name sender without revalidating it as a rule', async () => {
+    let deliveryClaimed = false;
+    let delivered: { deliveryId: string; providerMessageId: string }
+      | undefined;
+    let failed = false;
+    let forwardCalls = 0;
+    const from = 'Anthropic <no-reply-6TP4qN7hl3K2lWz3v9wSIQ@mail.anthropic.com>';
+    const worker = new MailOpsWorker({
+      repo: {
+        claimNextWatchRenewal: async () => ({ ok: true, value: null }),
+        claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        claimNextDueDelivery: async () => {
+          if (deliveryClaimed) return { ok: true, value: null };
+          deliveryClaimed = true;
+          return {
+            ok: true,
+            value: {
+              deliveryId: 'delivery-1',
+              attempts: 1,
+              payload: {
+                companyId: 'company-1',
+                userId: 'user-1',
+                subscriptionId: 'mailbox-1',
+                connectionId: 'connection-1',
+                mailboxEmail: 'user@example.com',
+                ruleId: 'rule-1',
+                eventId: 'event-1',
+                sourceMessageId: 'message-1',
+                idempotencyKey: 'mail:idempotency',
+                action: { type: 'forward' },
+                destination: {
+                  type: 'email',
+                  email: 'owner@example.com',
+                },
+                message: {
+                  from,
+                  to: 'user@example.com',
+                  subject: 'Your secure link to Claude.ai is here',
+                  snippet: 'Use this secure link.',
+                  bodyText: 'Use this secure link.',
+                  hasAttachment: false,
+                },
+              },
+            },
+          };
+        },
+        markDeliveryDelivered: async (
+          deliveryId: string,
+          providerMessageId: string,
+        ) => {
+          delivered = { deliveryId, providerMessageId };
+          return { ok: true, value: true };
+        },
+        markDeliveryFailed: async () => {
+          failed = true;
+          return { ok: true, value: true };
+        },
+        markDeliveryAbandoned: async () => ({ ok: true, value: true }),
+      },
+      gmail: {
+        forward: async (input: any) => {
+          forwardCalls++;
+          assert.equal(input.destination, 'owner@example.com');
+          assert.equal(input.mailboxEmail, 'user@example.com');
+          assert.equal(input.sourceMessageId, 'message-1');
+          assert.equal(input.source.from, from);
+          return 'gmail-message-1';
+        },
+      },
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => true,
+      deliverLark: async () => {
+        throw new Error('Lark delivery should not run.');
+      },
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(forwardCalls, 1);
+    assert.equal(failed, false);
+    assert.deepEqual(delivered, {
+      deliveryId: 'delivery-1',
+      providerMessageId: 'gmail-message-1',
+    });
+  });
+
+  it('reruns immediately when a wake arrives during an active pass', async () => {
+    let claims = 0;
+    let releaseFirstClaim: (() => void) | undefined;
+    const firstClaimStarted = new Promise<void>(resolve => {
+      releaseFirstClaim = resolve;
+    });
+    let allowFirstClaimToFinish: (() => void) | undefined;
+    const firstClaimBlocked = new Promise<void>(resolve => {
+      allowFirstClaimToFinish = resolve;
+    });
+    const worker = new MailOpsWorker({
+      repo: {
+        claimNextDueMailbox: async () => {
+          claims++;
+          if (claims === 1) {
+            releaseFirstClaim?.();
+            await firstClaimBlocked;
+          }
+          return { ok: true, value: null };
+        },
+        claimNextDueDelivery: async () => ({ ok: true, value: null }),
+      },
+      gmail: {},
+      resolveAccessToken: async () => 'unused',
+      authorizeRule: async () => true,
+      deliverLark: async () => 'unused',
+      logger,
+    } as any);
+
+    const running = worker.runOnce();
+    await firstClaimStarted;
+    worker.wake();
+    allowFirstClaimToFinish?.();
+    await running;
+
+    assert.equal(claims, 2);
   });
 });

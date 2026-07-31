@@ -5,7 +5,7 @@ import {
 import type {
   AirtableMcpPort,
   ResolveAirtableMcpConnection,
-} from '../orchestration/tools/families/airtable-mcp.tool';
+} from '../tools/families/airtable-mcp.tool';
 import type {
   ZohoBooksPaginatedClient,
   ZohoBooksModule,

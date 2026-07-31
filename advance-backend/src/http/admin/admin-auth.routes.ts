@@ -11,13 +11,13 @@ import { provisionShareMemorySystemSkill } from '../../application/skills/share-
 import { provisionLarkSystemSkills } from '../../application/skills/lark-system-skills';
 import { provisionGoogleWorkspaceSystemSkills } from '../../application/skills/google-workspace-system-skills';
 import { provisionScheduleDivoWorkSystemSkill } from '../../application/skills/scheduled-work-system-skill';
-import { provisionDivoDocumentIntelligenceSystemSkill } from '../../application/skills/document-intelligence-system-skill';
 import { provisionDivoPresentationsSystemSkill } from '../../application/skills/divo-presentations-system-skill';
 import { provisionDivoOmsSiteDataSystemSkill } from '../../application/skills/oms-site-data-system-skill';
 import { provisionDivoLocalPythonSystemSkill } from '../../application/skills/divo-local-python-system-skill';
 import { provisionDivoSemrushSystemSkill } from '../../application/skills/semrush-system-skill';
 import { provisionConnectedProviderSystemSkills } from '../../application/skills/connected-provider-system-skills';
 import { provisionDataExportSystemSkill } from '../../application/skills/data-export-system-skill';
+import { provisionFilesAndDocumentsSystemSkills } from '../../application/skills/files-and-documents-system-skills';
 import { provisionMailOpsSystemSkills } from '../../application/skills/mail-ops-system-skills';
 import { provisionSystemSkillRoutes } from '../../application/skills/system-skill-routes';
 
@@ -411,8 +411,8 @@ export const createAdminAuthRoutes = (deps: AdminAuthRouteDeps): Router => {
         await provisionGoogleWorkspaceSystemSkills(tx, company.id);
         await provisionConnectedProviderSystemSkills(tx, company.id);
         await provisionDataExportSystemSkill(tx, company.id);
+        await provisionFilesAndDocumentsSystemSkills(tx, company.id);
         await provisionScheduleDivoWorkSystemSkill(tx, company.id);
-        await provisionDivoDocumentIntelligenceSystemSkill(tx, company.id);
         await provisionDivoPresentationsSystemSkill(tx, company.id);
         await provisionDivoOmsSiteDataSystemSkill(tx, company.id);
         await provisionDivoSemrushSystemSkill(tx, company.id);

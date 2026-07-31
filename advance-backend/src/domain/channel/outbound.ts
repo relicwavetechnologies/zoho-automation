@@ -26,12 +26,24 @@ export interface ChannelPlanStep {
   readonly toolFamily?: ChannelToolFamily;
 }
 
-/** One row of the grouped run ledger: consecutive calls to the same tool family. */
+/**
+ * One row of the run's activity list: a tool call, or a group of consecutive
+ * calls to the same tool.
+ *
+ * `outcome` carries what the step produced ("4 results", "Created INV-1043") and
+ * nothing else. It must never restate the status — the row's marker already
+ * shows running/done/failed, and writing "Done" beside a ✓ is the duplication
+ * that made the old card feel padded.
+ *
+ * `children` is one level deep, for work a step farms out: a subagent's tasks
+ * sit under the `divo_subagents` row rather than becoming peers of it.
+ */
 export interface ChannelLedgerRow {
-  readonly label:   string;
-  readonly count:   number;
-  readonly outcome: string;
-  readonly status:  ChannelPlanStepStatus;
+  readonly label:     string;
+  readonly count:     number;
+  readonly outcome?:  string;
+  readonly status:    ChannelPlanStepStatus;
+  readonly children?: ReadonlyArray<ChannelLedgerRow>;
 }
 
 /**
@@ -44,9 +56,18 @@ export interface ChannelDeclaredPlan {
   readonly total:    number;
   readonly current?: string;
   readonly next?:    string;
+  /**
+   * The checklist itself, when the producer names its steps. Rendered folded —
+   * a plan is context for the current step, not the headline.
+   */
+  readonly items?:   ReadonlyArray<{
+    readonly title:  string;
+    readonly status: ChannelPlanStepStatus;
+  }>;
 }
 
 export type ChannelRunState =
+  | 'queued'
   | 'thinking'
   | 'planning'
   | 'working'
@@ -107,5 +128,3 @@ export interface FinalReply {
   readonly attachments?:    readonly { url: string; label?: string }[];
   readonly executionTrace?: string;
 }
-
-export type OutboundEvent = StatusUpdate | FinalReply;

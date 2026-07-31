@@ -3,7 +3,6 @@ import { randomBytes } from 'node:crypto';
 import type { Result } from '../../shared/result';
 import { ok, err } from '../../shared/result';
 import { wrapInfra, type InfraError } from '../../shared/errors';
-import type { LarkContactRecord } from '../../application/context-search/context-search.ports';
 import type { CachePort } from '../../shared/cache';
 
 const LARK_IDENTITY_TTL = 900; // 15 min — identity almost never changes; invalidated on OAuth success
@@ -13,6 +12,17 @@ const LARK_IDENTITY_TTL = 900; // 15 min — identity almost never changes; inva
 const identityCacheKey = (larkOpenId: string, tenantKey?: string) => tenantKey
   ? `lark:id:v3:${tenantKey}:${larkOpenId}`
   : `lark:id:v2:${larkOpenId}`;
+
+/** A row from the Lark directory, as returned by contact search. */
+export interface LarkContactRecord {
+  readonly larkOpenId?: string;
+  readonly larkUserId?: string;
+  readonly externalUserId?: string;
+  readonly displayName?: string;
+  readonly email?: string;
+  readonly updatedAt?: Date;
+  readonly createdAt?: Date;
+}
 
 export interface ChannelIdentityRow {
   id: string;
@@ -33,6 +43,13 @@ export interface ResolvedUserIdentity {
   activeDepartmentId?: string;
   /** Lark open_id (when resolved via Lark channel). */
   larkOpenId?: string;
+  /**
+   * Lark tenant key for the connection this identity was resolved through.
+   *
+   * A member session is only findable by (tenantKey, openId) together, so any
+   * caller that mints or looks up one — the scheduler included — needs both.
+   */
+  larkTenantKey?: string;
   /** Human-readable display name from the channel identity record. */
   displayName?: string;
   /** Email address from the channel identity record. */
@@ -418,6 +435,7 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
         aiRole:     membership.role,
         channel:    ci?.channel ?? 'internal',
         ...(connection?.externalAccountId && ci ? { larkOpenId: connection.externalAccountId } : {}),
+        ...(connection?.externalAccountId && ci && tenantKey ? { larkTenantKey: tenantKey } : {}),
         ...(ci?.displayName ? { displayName: ci.displayName } : {}),
         ...(ci?.email ? { email: ci.email } : {}),
         ...(deptPref?.activeDepartmentId ? { activeDepartmentId: deptPref.activeDepartmentId } : {}),

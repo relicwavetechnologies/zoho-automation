@@ -2,7 +2,10 @@ import type { Logger } from '../../../shared/logger';
 import type { RuntimeApprovalRepository } from '../../persistence/runtime-approval.repository';
 import type { ApprovalResumerService } from '../../../application/approval/approval-resumer.service';
 import type { LarkChannelAdapter } from './lark.adapter';
-import { buildApprovalResolutionCard } from '../../../application/approval/approval-card-builder';
+import {
+  buildApprovalResolutionCard,
+  buildApprovalResolutionCardData,
+} from '../../../application/approval/approval-card-builder';
 import { isGatewayApprovalMetadata } from '../../../application/approval/approval-origin';
 import type { AuditService } from '../../../application/observability/audit.service';
 
@@ -236,11 +239,38 @@ export class LarkApprovalCardHandler {
       ?? event.user_name
       ?? actor.openId;
 
-    // Update the approval card to show the decision (remove buttons)
-    const updatedCard = buildApprovalResolutionCard(decision as 'approved' | 'rejected', resolvedByName, resolvedAt);
+    // Feishu requires the callback response within 3 seconds. Return the
+    // resolved raw card immediately so the clicked card loses its buttons.
+    const resolvedDecision = decision as 'approved' | 'rejected';
+    const updatedCard = buildApprovalResolutionCard(
+      resolvedDecision,
+      resolvedByName,
+      resolvedAt,
+    );
+    const callbackCard = buildApprovalResolutionCardData(
+      resolvedDecision,
+      resolvedByName,
+      resolvedAt,
+    );
+
+    // Keep a non-blocking PATCH as recovery for clients that fail to apply the
+    // callback card. It must not delay the callback response.
     if (approval.decisionMessageId) {
-      await this.larkAdapter.updateMessageById(approval.decisionMessageId, updatedCard)
-        .catch(e => this.log.warn('approval_card.update_failed', { error: String(e) }));
+      setImmediate(() => {
+        void this.larkAdapter.updateMessageById(approval.decisionMessageId!, updatedCard)
+          .then(result => {
+            if (!result.ok) {
+              this.log.warn('approval_card.update_failed', {
+                approvalId,
+                error: result.error.message,
+              });
+            }
+          })
+          .catch(e => this.log.warn('approval_card.update_failed', {
+            approvalId,
+            error: String(e),
+          }));
+      });
     }
 
     const isGatewayApproval = isGatewayApprovalMetadata(approval.metadataJson);
@@ -265,7 +295,13 @@ export class LarkApprovalCardHandler {
 
     return {
       handled: true,
-      responseBody: { toast: { type: 'success', content: toastContent } },
+      responseBody: {
+        toast: { type: 'success', content: toastContent },
+        card: {
+          type: 'raw',
+          data: callbackCard,
+        },
+      },
     };
   }
 }

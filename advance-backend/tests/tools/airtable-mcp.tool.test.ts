@@ -10,7 +10,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeAllowedPerm, makeCtx, makeDeniedPerm } from './tool-test.helpers.ts';
-import { createAirtableMcpTools } from '../../src/application/orchestration/tools/families/airtable-mcp.tool.ts';
+import { createAirtableMcpTools } from '../../src/application/tools/families/airtable-mcp.tool.ts';
 import {
   AIRTABLE_PRODUCTS,
   airtableOperationFor,
@@ -22,7 +22,6 @@ import {
   compactAirtableMcpResult,
   unwrapAirtableMcpResult,
 } from '../../src/infrastructure/airtable/airtable-mcp.client.ts';
-import { createDataProcessorTool } from '../../src/application/orchestration/tools/families/data-processor.tool.ts';
 
 const unavailableTools = () => createAirtableMcpTools({
   getConnection: async () => ({ status: 'unavailable' as const }),
@@ -342,7 +341,7 @@ describe('airtable execute', () => {
     );
 
     assert.equal(result.ok, false);
-    assert.match(!result.ok ? result.error.message : '', /dataProcessor.*dataExport.*explicitly requested/i);
+    assert.match(!result.ok ? result.error.message : '', /scripted workflow.*dataExport only when the member explicitly requested/i);
     assert.equal(resolved, false);
   });
 
@@ -444,12 +443,6 @@ describe('airtable tool family shape', () => {
 });
 
 describe('Airtable MCP model-facing results', () => {
-  it('documents the canonical flattened Airtable row shape for source calculations', () => {
-    const docs = createDataProcessorTool().parameterDocs;
-    assert.match(docs, /flattened objects keyed by field name/i);
-    assert.match(docs, /row\["Status"\]/);
-  });
-
   it('unwraps a single JSON text result', () => {
     assert.deepEqual(
       unwrapAirtableMcpResult({

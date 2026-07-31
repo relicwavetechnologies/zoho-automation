@@ -18,7 +18,8 @@ import type { ToolExecutor, PreflightedToolInvocation } from './tool-executor';
 import type { SkillCatalogService } from '../skills/skill-catalog.service';
 import type { SkillAccessEnforcementPort } from '../skills/skill-access.port';
 import { withWorkDiscoveryPermissions } from './work-resolution.service';
-import { buildArgsSummary } from '../orchestration/tools/ai-sdk-adapter';
+import { buildArgsSummary } from './args-summary';
+import { SCHEDULED_SESSION_AUTH_PROVIDER } from '../scheduling/scheduled-runtime-session';
 import { z } from 'zod';
 import {
   approvalDeliveryFailedCheckpoint,
@@ -70,7 +71,7 @@ export type AutomationApprovalSignature = z.infer<typeof automationApprovalSigna
 export type AutomationRequiredApprovalSignature = z.infer<typeof automationRequiredApprovalSignatureSchema>;
 
 export const automationPlanStoredInvocationSchema = z.object({
-  skillId: z.string().min(1),
+  skillId: z.string().min(1).optional(),
   toolId: z.string().min(1),
   action: z.enum(['create', 'update', 'delete', 'send', 'execute']),
   args: z.record(z.unknown()),
@@ -126,7 +127,7 @@ export class AutomationPlanService {
     execution?: GatewayExecutionContext;
     title: string;
     summary: string;
-    invocations: ReadonlyArray<{ skillId: string; toolId: string; args: Record<string, unknown> }>;
+    invocations: ReadonlyArray<{ skillId?: string | undefined; toolId: string; args: Record<string, unknown> }>;
   }): Promise<GatewayResponse> {
     const departmentId = input.departmentId;
     if (!departmentId) {
@@ -155,22 +156,24 @@ export class AutomationPlanService {
     // responsive, but bounded so one agent turn cannot overwhelm a connector
     // or its rate limit with an unbounded Promise.all burst.
     const preflighted = await mapWithConcurrency(input.invocations, PREFLIGHT_CONCURRENCY, async (invocation) => {
-      const authorized = await this.deps.skillCatalog.authorizesTool({
-        companyId: input.member.companyId,
-        departmentId,
-        permission: withWorkDiscoveryPermissions(permResult.value),
-        grantedSkillIds,
-        skillId: invocation.skillId,
-        toolId: invocation.toolId,
-      });
-      if (!authorized) {
-        return {
-          invocation,
-          response: gatewayFailure(
-            'permission_denied',
-            `Skill "${invocation.skillId}" does not authorize tool "${invocation.toolId}".`,
-          ),
-        };
+      if (invocation.skillId) {
+        const matches = await this.deps.skillCatalog.authorizesTool({
+          companyId: input.member.companyId,
+          departmentId,
+          permission: withWorkDiscoveryPermissions(permResult.value),
+          grantedSkillIds,
+          skillId: invocation.skillId,
+          toolId: invocation.toolId,
+        });
+        if (!matches) {
+          this.deps.logger.warn('automation_plan.skill_advisory_mismatch', {
+            companyId: input.member.companyId,
+            userId: input.member.userId,
+            departmentId,
+            skillId: invocation.skillId,
+            toolId: invocation.toolId,
+          });
+        }
       }
       const response = await this.deps.toolExecutor.preflight({
         member: input.member,
@@ -267,7 +270,9 @@ export class AutomationPlanService {
       summary: input.summary,
       approvalSignature: batchApprovalSignature,
       invocations: calls.map((call, index) => ({
-        skillId: input.invocations[index]!.skillId,
+        ...(input.invocations[index]!.skillId
+          ? { skillId: input.invocations[index]!.skillId }
+          : {}),
         toolId: call.toolId,
         action: call.action as z.infer<typeof automationPlanStoredInvocationSchema>['action'],
         args: call.args,
@@ -307,6 +312,12 @@ export class AutomationPlanService {
         departmentId,
         execution: input.execution ?? null,
         approvalOrigin: 'automation',
+        // Same reason as the single-tool approval path: this batch is approved
+        // before any of it runs, so the delivery restriction of the run that
+        // prepared it has to survive until someone accepts.
+        deliveryMode: input.member.authProvider === SCHEDULED_SESSION_AUTH_PROVIDER
+          ? 'scheduled_runtime_delivery'
+          : null,
         resolvedManagerOpenId: approver.larkOpenId,
         resolvedManagerUserId: approver.userId,
         resolvedManagerName: approver.displayName,

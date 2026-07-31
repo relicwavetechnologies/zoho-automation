@@ -4,7 +4,7 @@ import {
   createMemoryPublishingTool,
   MEMORY_PUBLISHING_MAX_FACT_CHARS,
   MEMORY_PUBLISHING_MAX_FACTS,
-} from '../../src/application/orchestration/tools/families/memory-publishing.tool.ts';
+} from '../../src/application/tools/families/memory-publishing.tool.ts';
 import type { PermissionResult } from '../../src/application/permissions/permission.types.ts';
 import { asCompanyRoleSlug } from '../../src/domain/permissions/company-role.ts';
 import { asDepartmentId, asToolId } from '../../src/shared/ids.ts';

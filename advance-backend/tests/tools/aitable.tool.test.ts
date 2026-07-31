@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createAitableTools, type AitableConnectionResolution } from '../../src/application/orchestration/tools/families/aitable.tool.ts';
+import { createAitableTools, type AitableConnectionResolution } from '../../src/application/tools/families/aitable.tool.ts';
 import { AitableError, AitablePartialWriteError } from '../../src/infrastructure/aitable/aitable.client.ts';
 import { asToolId } from '../../src/shared/ids.ts';
 import { aitableOperationNames } from '../../src/application/aitable/aitable-manifest.ts';

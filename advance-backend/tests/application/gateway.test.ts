@@ -11,12 +11,13 @@ import {
   InMemoryApprovalIntentRepository,
   LocalApprovalIntentService,
 } from '../../src/application/gateway/local-approval-intent.service.ts';
-import { ToolRegistry } from '../../src/application/orchestration/tools/tool-registry.ts';
-import type { Tool } from '../../src/application/orchestration/tools/tool.contract.ts';
-import { createWebSearchTool } from '../../src/application/orchestration/tools/families/web-search.tool.ts';
-import { createSkillPublishingTool } from '../../src/application/orchestration/tools/families/skill-publishing.tool.ts';
-import { createMemoryPublishingTool } from '../../src/application/orchestration/tools/families/memory-publishing.tool.ts';
-import { createMemoryRecallTool } from '../../src/application/orchestration/tools/families/memory-recall.tool.ts';
+import { ToolRegistry } from '../../src/application/tools/tool-registry.ts';
+import type { Tool } from '../../src/application/tools/tool.contract.ts';
+import { createWebSearchTool } from '../../src/application/tools/families/web-search.tool.ts';
+import { createSkillPublishingTool } from '../../src/application/tools/families/skill-publishing.tool.ts';
+import { createMemoryPublishingTool } from '../../src/application/tools/families/memory-publishing.tool.ts';
+import { createMemoryRecallTool } from '../../src/application/tools/families/memory-recall.tool.ts';
+import { createMailAutomationsTool } from '../../src/application/tools/families/mail-automations.tool.ts';
 import type { CatalogSkill, SkillCatalogService } from '../../src/application/skills/skill-catalog.service.ts';
 import { ok, err } from '../../src/shared/result.ts';
 import { PermissionError, ToolError } from '../../src/shared/errors.ts';
@@ -211,6 +212,41 @@ function makeMemoryRecallTool(
 }
 
 describe('ToolExecutor', () => {
+  it('marks a scheduled run so tools know the runtime owns its delivery', async () => {
+    // Pi runs in its container and calls back through the gateway, so this is
+    // the run context every tool actually sees — the one the scheduler builds
+    // never reaches them. Without this the messaging guards are inert and a
+    // scheduled result can be posted into a room by the model.
+    const registry = new ToolRegistry();
+    let seenDeliveryMode: unknown = 'unset';
+    registry.register(makeFakeTool({
+      execute: async (_args, ctx) => {
+        seenDeliveryMode = ctx.runContext.deliveryMode;
+        return ok({ result: 'done' });
+      },
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(),
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    await executor.invoke({
+      member: { ...member, authProvider: 'scheduled_workflow' },
+      toolId: 'fakeTool',
+      args: { query: 'scheduled' },
+    });
+    assert.equal(seenDeliveryMode, 'scheduled_runtime_delivery');
+
+    await executor.invoke({
+      member: { ...member, authProvider: 'lark' },
+      toolId: 'fakeTool',
+      args: { query: 'interactive' },
+    });
+    assert.equal(seenDeliveryMode, undefined);
+  });
+
   it('applies the universal result ceiling before returning a governed tool result', async () => {
     const registry = new ToolRegistry();
     registry.register(makeFakeTool({
@@ -429,6 +465,59 @@ describe('ToolExecutor', () => {
     assert.equal(result.ok, true);
     assert.deepEqual(queries.map(query => query.channel), ['lark']);
     assert.equal(executionChannel, 'lark');
+  });
+
+  it('preserves the trusted Lark tenant and thread target for cloud Pi approval', async () => {
+    let approvalInput: any;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      actionGroups: new Set(['send']),
+      permissionCheck: () => ok('send'),
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['send'])),
+      approvalGate: {
+        check: async (input: unknown) => {
+          approvalInput = input;
+          return {
+            kind: 'pending',
+            approvalId: 'approval-cloud-pi',
+            message: 'Waiting for manager',
+          };
+        },
+        completeExecution: async () => true,
+        failExecution: async () => true,
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const result = await executor.invoke({
+      member: {
+        ...member,
+        channel: 'lark',
+        larkOpenId: 'ou-requester',
+        larkTenantKey: 'tenant-1',
+      },
+      toolId: 'fakeTool',
+      args: { query: 'send it' },
+      requestId: 'trace-1',
+      execution: {
+        version: 1,
+        threadId: 'oc_chat:thread:om_root',
+        runId: 'run-1',
+        actionId: 'call-1',
+      },
+    });
+
+    assert.equal(result.status, 'approval_required');
+    assert.equal(approvalInput.runContext.tenantId, 'tenant-1');
+    assert.equal(approvalInput.runContext.userExternalId, 'ou-requester');
+    assert.equal(approvalInput.runContext.chatId, 'oc_chat');
+    assert.equal(approvalInput.runContext.replyToMessageId, 'om_root');
+    assert.equal(approvalInput.runContext.replyInThread, true);
+    assert.match(approvalInput.chatId, /^gateway:company:co-test:requester:user-test:/);
   });
 
   it('reports company and department skill-publishing authority for company admin in a department context', async () => {
@@ -1222,7 +1311,7 @@ describe('LocalApprovalIntentService', () => {
     assert.equal(executed.length, 1);
   });
 
-  it('fails a prepared write closed when its exact skill binding is revoked before commit', async () => {
+  it('treats a revoked skill binding as advisory while rechecking backend permission', async () => {
     let authorized = true;
     let executions = 0;
     const registry = new ToolRegistry();
@@ -1260,8 +1349,8 @@ describe('LocalApprovalIntentService', () => {
       intentId: (prepared.data as any).intentId,
     });
 
-    assert.equal(committed.status, 'permission_denied');
-    assert.equal(executions, 0);
+    assert.equal(committed.status, 'success');
+    assert.equal(executions, 1);
   });
 
   it('returns deterministic Google Workspace and Zoho presentation payloads for the UI registry', async () => {
@@ -2428,7 +2517,7 @@ describe('GatewayDispatcher', () => {
     const dispatcher = makeDispatcher();
     const result = await dispatcher.dispatch({
       op: 'tools.invoke',
-      payload: { skillId: 'allowed-skill', toolId: 'fakeTool', args: { query: 'gateway' } },
+      payload: { toolId: 'fakeTool', args: { query: 'gateway' } },
     }, member);
 
     assert.equal(result.ok, true);
@@ -2478,6 +2567,147 @@ describe('GatewayDispatcher', () => {
     }, member);
     assert.equal(committed.ok, true);
     assert.equal(executions, 1);
+  });
+
+  it('executes user-owned Mail Ops mutations directly for Lark only', async () => {
+    let replacements = 0;
+    const registry = new ToolRegistry();
+    registry.register(createMailAutomationsTool({
+      pubsubReady: true,
+      repo: {
+        replaceRule: async () => {
+          replacements++;
+          return { ok: true, value: true };
+        },
+      } as any,
+      resolveConnection: async () => ({
+        status: 'resolved',
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        mailboxEmail: 'user@example.com',
+      }),
+    }));
+    const permissions = makePermissionService(
+      makeAllowedPerm('mailAutomations', ['update', 'execute']),
+    );
+    const mailOpsSkill = {
+      ...allowedSkill,
+      id: 'mail-ops',
+      slug: 'mail-ops',
+      toolIds: ['mailAutomations'],
+    };
+    const skillCatalog = makeSkillCatalog([mailOpsSkill]);
+    const toolExecutor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog,
+      toolExecutor,
+      localApprovalIntents: makeLocalApprovals(
+        toolExecutor,
+        undefined,
+        undefined,
+        { permissions, skillCatalog },
+      ),
+      logger: noopLogger,
+    });
+    const request = {
+      op: 'tools.invoke',
+      payload: {
+        skillId: 'mail-ops',
+        toolId: 'mailAutomations',
+        args: {
+          operation: 'update',
+          ruleId: '22222222-2222-4222-8222-222222222222',
+          connectionId: '11111111-1111-4111-8111-111111111111',
+          name: 'Forward Claude secure links',
+          match: {
+            from: '@mail.anthropic.com',
+            subjectContains: 'Your secure link to Claude.ai',
+          },
+          destination: {
+            type: 'email',
+            email: 'owner@example.com',
+          },
+        },
+      },
+    };
+
+    const lark = await dispatcher.dispatch(
+      request,
+      { ...member, channel: 'lark' },
+    );
+    assert.equal(lark.ok, true);
+    assert.equal(replacements, 1);
+
+    const desktop = await dispatcher.dispatch(
+      request,
+      { ...member, channel: 'desktop' },
+    );
+    assert.equal(desktop.status, 'local_approval_required');
+    assert.equal(replacements, 1);
+  });
+
+  it('keeps unknown future Mail Ops mutations approval-gated in Lark', async () => {
+    let executions = 0;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      id: asToolId('mailAutomations'),
+      actionGroups: new Set(['update']),
+      permissionCheck: () => ok('update'),
+      execute: async () => {
+        executions++;
+        return ok({ result: 'updated' });
+      },
+    }));
+    const permissions = makePermissionService(
+      makeAllowedPerm('mailAutomations', ['update']),
+    );
+    const mailOpsSkill = {
+      ...allowedSkill,
+      id: 'mail-ops',
+      slug: 'mail-ops',
+      toolIds: ['mailAutomations'],
+    };
+    const skillCatalog = makeSkillCatalog([mailOpsSkill]);
+    const toolExecutor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog,
+      toolExecutor,
+      localApprovalIntents: makeLocalApprovals(
+        toolExecutor,
+        undefined,
+        undefined,
+        { permissions, skillCatalog },
+      ),
+      logger: noopLogger,
+    });
+    const response = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      payload: {
+        skillId: 'mail-ops',
+        toolId: 'mailAutomations',
+        args: {
+          query: 'future',
+          operation: 'future_mutation',
+        },
+      },
+    },
+      { ...member, channel: 'lark' },
+    );
+    assert.equal(response.status, 'local_approval_required');
+    assert.equal(executions, 0);
   });
 
   it('exposes and invokes webSearch through the backend gateway when RBAC allows it', async () => {

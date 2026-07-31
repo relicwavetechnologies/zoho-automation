@@ -3,7 +3,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type {
   AirtableMcpPort,
   AirtableMcpToolDescription,
-} from '../../application/orchestration/tools/families/airtable-mcp.tool';
+} from '../../application/tools/families/airtable-mcp.tool';
 import type { AirtableMcpSchemaCatalog } from './airtable-mcp-schema.catalog';
 
 export const AIRTABLE_MCP_DEFAULT_URL = 'https://mcp.airtable.com/mcp';

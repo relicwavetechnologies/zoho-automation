@@ -49,9 +49,10 @@ export const GATEWAY_STATUSES = [
 export type GatewayStatus = typeof GATEWAY_STATUSES[number];
 
 /**
- * Desktop-provided provenance for one Pi tool action. It is useful for
+ * Runtime-provided provenance for one Pi tool action. It is useful for
  * routing, idempotency, and audit records, but never grants identity or
  * permission: those continue to come exclusively from the member session.
+ * Backend-issued runtime leases additionally bind this context to one thread.
  */
 export const gatewayExecutionContextSchema = z.object({
   version: z.literal(1),
@@ -77,7 +78,7 @@ export const toolInvocationPayloadSchema = z.object({
 }).strict();
 
 export const toolsInvokePayloadSchema = toolInvocationPayloadSchema.extend({
-  skillId: z.string().min(1),
+  skillId: z.string().min(1).optional(),
 });
 
 export type ToolsInvokePayload = z.infer<typeof toolsInvokePayloadSchema>;
@@ -195,7 +196,14 @@ export interface GatewayMemberContext {
   readonly channel?: 'desktop' | 'lark';
   readonly email: string | null;
   readonly larkOpenId: string | null;
+  readonly larkTenantKey?: string | null;
   readonly sessionId: string;
+  /**
+   * How the session was issued. `scheduled_workflow` marks a machine-issued
+   * session for a scheduled run, whose result the runtime delivers to the
+   * creator's own DM — so nothing that run calls may deliver it anywhere else.
+   */
+  readonly authProvider?: string | null;
 }
 
 export function isGatewayOp(value: string): value is GatewayOp {

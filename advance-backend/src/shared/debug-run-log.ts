@@ -355,9 +355,7 @@ export function debugReplyDecision(data: {
 
 /** Log supervisor.run() entry — which execution path is taken. */
 export function debugSupervisorEntry(data: {
-  path: 'governed_lark' | 'dynamic_graph' | 'legacy';
-  dynamicGraphEnabled: boolean;
-  hasAgentCatalogCache: boolean;
+  path: 'governed_lark';
   hasMem0: boolean;
   hasApprovalGate: boolean;
   hasMemoryContext: boolean;
@@ -368,57 +366,12 @@ export function debugSupervisorEntry(data: {
   append([
     separator(`SUPERVISOR ENTRY — ${ts()}`),
     `Path:                ${data.path}`,
-    `Dynamic graph on:    ${data.dynamicGraphEnabled}`,
-    `Agent catalog cache: ${data.hasAgentCatalogCache}`,
     `Mem0:                ${data.hasMem0}`,
     `Approval gate:       ${data.hasApprovalGate}`,
     `Memory context:      ${data.hasMemoryContext}`,
     `Group context:       ${data.hasGroupContext}`,
     `History turns:       ${data.historyTurnCount}`,
     `Permitted tools:     ${data.permittedToolCount}`,
-  ].join('\n'));
-}
-
-/** Log the graph.invoke input — what goes into the LangGraph */
-export function debugGraphInvoke(data: {
-  userMessage: string;
-  conversationHistory: Array<{ role: string; content: string }>;
-  companyId: string;
-  memoryContext: string;
-  groupContext: string;
-  chatId: string | null;
-  permittedToolCount: number;
-}): void {
-  append([
-    subSeparator(`GRAPH INVOKE INPUT — ${ts()}`),
-    `User message:     ${data.userMessage.slice(0, 200)}`,
-    `Company ID:       ${data.companyId}`,
-    `Chat ID:          ${data.chatId ?? 'null'}`,
-    `Memory context:   ${data.memoryContext ? data.memoryContext.length + ' chars' : '(empty)'}`,
-    `Group context:    ${data.groupContext ? data.groupContext.length + ' chars' : '(empty)'}`,
-    `History turns:    ${data.conversationHistory.length}`,
-    `Permitted tools:  ${data.permittedToolCount}`,
-    '',
-    ...data.conversationHistory.map((m, i) =>
-      `  History[${i}] [${m.role}]: ${m.content.slice(0, 150)}${m.content.length > 150 ? '...' : ''}`
-    ),
-  ].join('\n'));
-}
-
-/** Log the graph output — what the LangGraph returned */
-export function debugGraphOutput(data: {
-  status: string;
-  supervisorResult: string | null;
-  toolCallsMade: string[];
-  error: string | null;
-}): void {
-  append([
-    subSeparator(`GRAPH OUTPUT — ${ts()}`),
-    `Status:           ${data.status}`,
-    `Tool calls made:  [${data.toolCallsMade.join(', ')}]`,
-    `Error:            ${data.error ?? 'none'}`,
-    `Result length:    ${data.supervisorResult?.length ?? 0}`,
-    `Result preview:   ${(data.supervisorResult ?? '(null)').slice(0, 300)}`,
   ].join('\n'));
 }
 

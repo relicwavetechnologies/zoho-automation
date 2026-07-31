@@ -2,7 +2,6 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   formatGroupContextForPrompt,
-  formatGroupContextMultimodal,
   selectRecentMessagesForTranscript,
 } from '../../src/application/chat-context/group-context-formatter.ts';
 import type { GroupChatWindow, GroupChatSummary, GroupChatMessage } from '../../src/domain/conversation/group-context.ts';
@@ -137,7 +136,7 @@ describe('formatGroupContextForPrompt', () => {
     assert.ok(result.includes('[files: Q3-report.xlsx]'));
   });
 
-  it('renders structured attachment context inside the original message', () => {
+  it('names a workspace attachment without reproducing any of its contents', () => {
     const window: GroupChatWindow = {
       summary: null,
       recentMessages: [
@@ -147,11 +146,8 @@ describe('formatGroupContextForPrompt', () => {
             kind: 'image',
             fileName: 'receipt.png',
             mimeType: 'image/png',
-            inlineContext: '[Image: "receipt.png"\nOCR text:\nTotal $42]',
-            isInlineComplete: true,
-            ingestionStatus: 'indexed',
-            fileAssetId: 'file_123',
-            retrievalHint: 'Use contextSearch or documentRag with fileAssetId="file_123".',
+            larkFileKey: 'file_v3_receipt',
+            ingestionStatus: 'workspace',
           }],
         }),
       ],
@@ -161,14 +157,43 @@ describe('formatGroupContextForPrompt', () => {
     const result = formatGroupContextForPrompt(window);
 
     assert.ok(result.includes('Bob: Please check this image'));
-    assert.ok(result.includes('[internal attachment context: image "receipt.png"; image/png; status=indexed; fileAssetId=file_123]'));
+    // The room can say the file was shared and whether Divo read it — never that
+    // the run holding this transcript has it, which is false for anyone but the
+    // sender.
+    assert.ok(result.includes('[internal attachment context: image "receipt.png"; image/png; shared in the room]'));
+    assert.ok(!result.includes('status=workspace'));
     assert.ok(result.includes('Attachment placement: this upload belongs to this exact transcript message'));
-    assert.ok(result.includes('OCR text:'));
-    assert.ok(result.includes('Total $42'));
-    assert.ok(result.includes('Use contextSearch or documentRag with fileAssetId="file_123"'));
+    // The transcript is a pointer, not a copy: no extracted text, and no
+    // instruction to reach for a retrieval tool that no longer exists.
+    assert.ok(!result.includes('OCR text:'));
+    assert.ok(!/contextSearch|documentRag|fileAssetId/.test(result));
   });
 
-  it('instructs the model to bind this-image references to nearest inline attachment', () => {
+  it('states why an unsupported attachment was refused instead of guessing at it', () => {
+    const window: GroupChatWindow = {
+      summary: null,
+      recentMessages: [
+        msg('Bob', 'here you go', {
+          id: 'om_unsupported',
+          attachments: [{
+            kind: 'file',
+            fileName: 'clip.mp4',
+            mimeType: 'video/mp4',
+            ingestionStatus: 'unsupported',
+            inlineContext: 'Divo cannot open video files yet, so this one was not read.',
+          }],
+        }),
+      ],
+      totalMessageCount: 1,
+    };
+
+    const result = formatGroupContextForPrompt(window);
+
+    assert.ok(result.includes('not read by Divo'));
+    assert.ok(result.includes('Divo cannot open video files yet, so this one was not read.'));
+  });
+
+  it('tells the model where a sent file actually lives', () => {
     const window: GroupChatWindow = {
       summary: null,
       recentMessages: [
@@ -178,9 +203,7 @@ describe('formatGroupContextForPrompt', () => {
             kind: 'image',
             fileName: 'screenshot.jpg',
             mimeType: 'image/jpeg',
-            inlineContext: '[Image: "screenshot.jpg"\nDescription: A settings permission screen]',
-            isInlineComplete: true,
-            ingestionStatus: 'inline_only',
+            ingestionStatus: 'workspace',
           }],
         }),
       ],
@@ -190,10 +213,19 @@ describe('formatGroupContextForPrompt', () => {
     const result = formatGroupContextForPrompt(window);
 
     assert.ok(result.includes('nearest preceding message with [internal attachment context]'));
-    assert.ok(result.includes('Inline attachment context is already in hand. Answer from it first'));
+    // Only this request's own attachments are in the workspace. A file another
+    // participant sent went to their container, so promising it here would have
+    // the model answer about a file it never opened.
+    assert.ok(result.includes('Files listed under [ATTACHED_FILES] for the current request are in your workspace'));
+    // Check, then report — a file the sender posted earlier is still in their own
+    // `.divo/inbox` on the durable volume, so denying it outright would refuse a
+    // file the container holds.
+    assert.ok(result.includes('look in your workspace first'));
+    assert.ok(result.includes('.divo/inbox'));
+    assert.ok(result.includes('Only if it is not there'));
+    assert.ok(result.includes('never say you opened one you did not'));
+    assert.ok(!result.includes('Every file sent in this chat is saved in your workspace'));
     assert.ok(result.includes('Attachment placement: this upload belongs to this exact transcript message; nearby "this image" references usually point here.'));
-    assert.ok(result.includes('Description: A settings permission screen'));
-    assert.ok(!result.includes('summarize this image'));
   });
 
   it('handles empty recent messages gracefully', () => {
@@ -264,218 +296,5 @@ describe('formatGroupContextForPrompt', () => {
 
     assert.ok(result.includes('[truncated]'));
     assert.ok(result.length < 90_000);
-  });
-});
-
-describe('formatGroupContextMultimodal', () => {
-  it('returns image parts at exact message positions when cloudinaryUrl present', () => {
-    const window: GroupChatWindow = {
-      summary: null,
-      recentMessages: [
-        msg('Alice', 'Here is the chart', {
-          id: 'om_200',
-          attachments: [{
-            kind: 'image',
-            fileName: 'chart.png',
-            mimeType: 'image/png',
-            cloudinaryUrl: 'https://res.cloudinary.com/demo/chart.png',
-            inlineContext: '[Image: "chart.png"\nOCR text:\nQ1: $2.4M]',
-            isInlineComplete: true,
-            ingestionStatus: 'indexed',
-          }],
-        }),
-        msg('Bob', 'Looks good'),
-      ],
-      totalMessageCount: 2,
-    };
-
-    const result = formatGroupContextMultimodal(window);
-
-    assert.ok(result.hasImages);
-    assert.ok(result.systemHeader.includes('GROUP CHAT CONTEXT'));
-
-    const imagePartsCount = result.parts.filter(p => p.type === 'image').length;
-    assert.equal(imagePartsCount, 1);
-
-    const imagePart = result.parts.find(p => p.type === 'image');
-    assert.ok(imagePart);
-    assert.equal(imagePart.type, 'image');
-    if (imagePart.type === 'image') {
-      assert.equal(imagePart.url, 'https://res.cloudinary.com/demo/chart.png');
-    }
-
-    // Image should appear after the message text and before Bob's message
-    const partTypes = result.parts.map(p => p.type);
-    const imgIdx = partTypes.indexOf('image');
-    assert.ok(imgIdx > 0, 'image should not be first');
-
-    const lastPart = result.parts.at(-1);
-    assert.ok(lastPart?.type === 'text' && lastPart.text.includes('Looks good'));
-    assert.ok(!result.parts.some(part => part.type === 'text' && part.text.startsWith('▶')));
-  });
-
-  it('falls back to text-only when no cloudinaryUrl present', () => {
-    const window: GroupChatWindow = {
-      summary: null,
-      recentMessages: [
-        msg('Alice', 'Check this', {
-          id: 'om_201',
-          attachments: [{
-            kind: 'image',
-            fileName: 'screenshot.png',
-            mimeType: 'image/png',
-            inlineContext: '[Image: "screenshot.png"\nDescription: A dialog]',
-            isInlineComplete: true,
-            ingestionStatus: 'inline_only',
-          }],
-        }),
-      ],
-      totalMessageCount: 1,
-    };
-
-    const result = formatGroupContextMultimodal(window);
-
-    assert.equal(result.hasImages, false);
-    const imagePartsCount = result.parts.filter(p => p.type === 'image').length;
-    assert.equal(imagePartsCount, 0);
-
-    // Should still have the inline context as text
-    const textContent = result.parts.filter(p => p.type === 'text').map(p => (p as { type: 'text'; text: string }).text).join('\n');
-    assert.ok(textContent.includes('screenshot.png'));
-  });
-
-  it('limits inline images to MAX_INLINE_IMAGES, prioritizing newest', () => {
-    const makeImageMsg = (name: string, idx: number): GroupChatMessage => msg(name, `image ${idx}`, {
-      id: `om_${300 + idx}`,
-      createdAt: new Date(Date.now() + idx * 1000).toISOString(),
-      attachments: [{
-        kind: 'image',
-        fileName: `img_${idx}.png`,
-        mimeType: 'image/png',
-        cloudinaryUrl: `https://res.cloudinary.com/demo/img_${idx}.png`,
-        inlineContext: `[Image: "img_${idx}.png"\nOCR: content ${idx}]`,
-        isInlineComplete: true,
-        ingestionStatus: 'indexed',
-      }],
-    });
-
-    // Create 12 image messages (more than MAX_INLINE_IMAGES=8)
-    const recentMessages = Array.from({ length: 12 }, (_, i) => makeImageMsg('User', i));
-
-    const window: GroupChatWindow = {
-      summary: null,
-      recentMessages,
-      totalMessageCount: 12,
-    };
-
-    const result = formatGroupContextMultimodal(window);
-
-    const imagePartsCount = result.parts.filter(p => p.type === 'image').length;
-    assert.ok(imagePartsCount <= 8, `Expected at most 8 images, got ${imagePartsCount}`);
-    assert.ok(result.hasImages);
-
-    // Verify that the newest images are the ones included
-    const imageUrls = result.parts
-      .filter(p => p.type === 'image')
-      .map(p => (p as { type: 'image'; url: string }).url);
-    // Newest images should be included (higher indices)
-    if (imageUrls.length > 0) {
-      assert.ok(imageUrls.some(u => u.includes('img_11')), 'newest image should be included');
-    }
-  });
-
-  it('includes OCR supplement alongside image parts', () => {
-    const window: GroupChatWindow = {
-      summary: null,
-      recentMessages: [
-        msg('Alice', 'receipt', {
-          id: 'om_400',
-          attachments: [{
-            kind: 'image',
-            fileName: 'receipt.png',
-            mimeType: 'image/png',
-            cloudinaryUrl: 'https://res.cloudinary.com/demo/receipt.png',
-            inlineContext: '[Image: "receipt.png"\nOCR text:\nTotal: $42.00]',
-            isInlineComplete: true,
-            ingestionStatus: 'indexed',
-          }],
-        }),
-      ],
-      totalMessageCount: 1,
-    };
-
-    const result = formatGroupContextMultimodal(window);
-
-    // Find OCR supplement part following the image
-    const imageParts = result.parts.map((p, i) => ({ ...p, idx: i })).filter(p => p.type === 'image');
-    assert.equal(imageParts.length, 1);
-
-    const nextPart = result.parts[imageParts[0]!.idx + 1];
-    assert.ok(nextPart?.type === 'text');
-    if (nextPart.type === 'text') {
-      assert.ok(nextPart.text.includes('OCR supplement'));
-      assert.ok(nextPart.text.includes('Total: $42.00'));
-    }
-  });
-
-  it('includes rolling summary when present', () => {
-    const summary: GroupChatSummary = {
-      summary: 'Team discussed Q3 budget',
-      activeEntities: [],
-      completedActions: [],
-      constraints: [],
-      userGoals: [],
-      sourceMessageCount: 10,
-      updatedAt: new Date().toISOString(),
-    };
-
-    const window: GroupChatWindow = {
-      summary,
-      recentMessages: [msg('Alice', 'Hello')],
-      totalMessageCount: 11,
-    };
-
-    const result = formatGroupContextMultimodal(window);
-
-    const textContent = result.parts.filter(p => p.type === 'text').map(p => (p as { type: 'text'; text: string }).text).join('\n');
-    assert.ok(textContent.includes('ROLLING SUMMARY'));
-    assert.ok(textContent.includes('Q3 budget'));
-  });
-
-  it('interleaves text and images in chronological order', () => {
-    const window: GroupChatWindow = {
-      summary: null,
-      recentMessages: [
-        msg('Alice', 'First message', { createdAt: '2026-05-14T09:00:00Z' }),
-        msg('Bob', 'Image message', {
-          id: 'om_500',
-          createdAt: '2026-05-14T09:01:00Z',
-          attachments: [{
-            kind: 'image',
-            fileName: 'photo.jpg',
-            mimeType: 'image/jpeg',
-            cloudinaryUrl: 'https://res.cloudinary.com/demo/photo.jpg',
-            inlineContext: '[Image: "photo.jpg"\nOCR: text here]',
-            isInlineComplete: true,
-            ingestionStatus: 'indexed',
-          }],
-        }),
-        msg('Alice', 'Third message', { createdAt: '2026-05-14T09:02:00Z' }),
-      ],
-      totalMessageCount: 3,
-    };
-
-    const result = formatGroupContextMultimodal(window);
-
-    const types = result.parts.map(p => p.type);
-    // Should be: text(RECENT), text(Alice msg1), text(Bob msg2), text(label), image, text(OCR), text(Alice msg3)
-    const imageIdx = types.indexOf('image');
-    assert.ok(imageIdx > 2, 'image should come after initial text parts');
-
-    // Text after image should exist (Alice's third message)
-    const textAfterImage = result.parts.slice(imageIdx + 1).filter(p => p.type === 'text');
-    assert.ok(textAfterImage.length > 0);
-    const hasThirdMsg = textAfterImage.some(p => p.type === 'text' && p.text.includes('Third message'));
-    assert.ok(hasThirdMsg, 'Third message should appear after image');
   });
 });

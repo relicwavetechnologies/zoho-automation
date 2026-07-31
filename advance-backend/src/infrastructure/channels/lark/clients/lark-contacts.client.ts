@@ -1,7 +1,7 @@
 import type {
   LarkContactsClientPort,
   LarkDirectoryPerson,
-} from '../../../../application/orchestration/tools/families/lark-contacts.tool';
+} from '../../../../application/tools/families/lark-contacts.tool';
 import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 
 const DIRECTORY_BATCH_SIZE = 50;

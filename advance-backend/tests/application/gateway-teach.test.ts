@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { GatewayDispatcher } from '../../src/application/gateway/gateway-dispatcher';
 import { ToolExecutor } from '../../src/application/gateway/tool-executor';
-import { ToolRegistry } from '../../src/application/orchestration/tools/tool-registry';
+import { ToolRegistry } from '../../src/application/tools/tool-registry';
 import { makeAllowedPerm, noopLogger } from '../tools/tool-test.helpers';
 
 const member = {

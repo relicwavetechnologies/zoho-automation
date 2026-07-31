@@ -110,69 +110,15 @@ export type ModelCatalogEntry = {
   supportsThinking?: boolean;
 };
 
-export type SetMappingInput = {
-  channelType: "lark" | "desktop";
-  channelIdentifier: string;
-  agentDefinitionId: string;
-};
-
-export type RemoveMappingInput = {
-  channelType: string;
-  channelIdentifier: string;
-};
-
 export const agentsApi = {
-  list: <T = any>(token?: string) => api.get<T[]>("/api/agents", token),
-  get: <T = any>(id: string, token?: string) =>
-    api.get<T>(`/api/agents/${id}`, token),
-  create: <T = any>(body: CreateAgentInput, token?: string) =>
-    api.post<T>("/api/agents", body, token),
-  update: <T = any>(id: string, body: UpdateAgentInput, token?: string) =>
-    api.put<T>(`/api/agents/${id}`, body, token),
-  delete: (id: string, token?: string) =>
-    api.delete(`/api/agents/${id}`, {}, token),
-  toggle: (id: string, token?: string) =>
-    api.post(`/api/agents/${id}/toggle`, {}, token),
+  /**
+   * The governed tool catalogue. Named for its historical client, but it is not
+   * about agents — Skills Lab and the department editor are what read it.
+   */
   toolRegistry: <T = any>(token?: string) =>
-    api.get<T[]>("/api/agents/tools/registry", token),
-  modelCatalog: (token?: string) =>
-    api.get<ModelCatalogEntry[]>("/api/agents/models/catalog", token),
+    api.get<T[]>("/api/admin/tool-registry", token),
 };
 
-export const channelMappingsApi = {
-  list: <T = any>(token?: string) =>
-    api.get<T[]>("/api/channel-mappings", token),
-  set: (body: SetMappingInput, token?: string) =>
-    api.post("/api/channel-mappings", body, token),
-  remove: (body: RemoveMappingInput, token?: string) =>
-    api.delete("/api/channel-mappings", body, token),
-};
-
-export type AiProviderStatus = {
-  companyId: string;
-  providers: {
-    openai: {
-      connected: boolean;
-      status: string;
-      gatewayUrl: string | null;
-      dedicatedAccountId: string | null;
-      planType?: string | null;
-      primaryWindowPct?: number | null;
-      secondaryWindowPct?: number | null;
-      creditsBalance?: number | null;
-      lastUsedAt?: string | null;
-    };
-    google: {
-      connected: boolean;
-      status: string;
-    };
-  };
-  settings: {
-    defaultAiProvider: "openai" | "google" | string;
-    defaultAiModel: string;
-  };
-  updatedAt: string;
-};
 
 export type ConnectOpenAiInput = {
   tier?: "free" | "pro";
@@ -237,82 +183,6 @@ export type UpdateAiModelTargetInput = {
   xtremeThinkingLevel?: string | null;
 };
 
-export const aiProvidersApi = {
-  status: (token?: string) =>
-    api.get<AiProviderStatus>("/api/admin/ai-providers/status", token),
-  connectOpenAI: (body: ConnectOpenAiInput = {}, token?: string) =>
-    api.post<OpenAiConnectStart>(
-      "/api/admin/ai-providers/openai/connect",
-      body,
-      token,
-    ),
-  completeOpenAI: (body: CompleteOpenAiInput, token?: string) =>
-    api.post<OpenAiConnectComplete>(
-      "/api/admin/ai-providers/openai/complete",
-      body,
-      token,
-    ),
-  disconnectOpenAI: (token?: string) =>
-    api.delete<{ connected: boolean; updatedAt: string }>(
-      "/api/admin/ai-providers/openai/disconnect",
-      {},
-      token,
-    ),
-  testOpenAI: (token?: string) =>
-    api.post<OpenAiTestResult>(
-      "/api/admin/ai-providers/openai/test",
-      {},
-      token,
-    ),
-  updateSettings: (
-    body: { defaultAiProvider: "openai" | "google"; defaultAiModel: string },
-    token?: string,
-  ) => api.put("/api/admin/ai-providers/settings", body, token),
-};
-
-export const aiModelsApi = {
-  list: (token?: string) => api.get<AiModelTarget[]>("/api/admin/ai-models", token),
-  update: (targetKey: string, body: UpdateAiModelTargetInput, token?: string) =>
-    api.put<AiModelTarget>(
-      `/api/admin/ai-models/${encodeURIComponent(targetKey)}`,
-      body,
-      token,
-    ),
-};
-
-export function useProviderStatus(token?: string, refreshMs = 0) {
-  const [data, setData] = useState<AiProviderStatus | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-
-  const refresh = useCallback(async () => {
-    if (!token) {
-      setLoading(false);
-      return;
-    }
-    try {
-      setError(null);
-      const next = await aiProvidersApi.status(token);
-      setData(next);
-    } catch (e) {
-      setError(e instanceof Error ? e : new Error(String(e)));
-    } finally {
-      setLoading(false);
-    }
-  }, [token]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  useEffect(() => {
-    if (!refreshMs || !token) return;
-    const id = window.setInterval(() => void refresh(), refreshMs);
-    return () => window.clearInterval(id);
-  }, [refresh, refreshMs, token]);
-
-  return { data, loading, error, refresh };
-}
 
 export type DepartmentSummary = {
   id: string;

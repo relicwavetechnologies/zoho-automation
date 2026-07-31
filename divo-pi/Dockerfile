@@ -1,5 +1,9 @@
 FROM node:22.22.0-bookworm-slim
 
+# Python packages install on demand into per-user venvs on the volume (see the
+# files-and-documents skill), so only OS-level binaries belong here — the ones
+# pip cannot provide. Deliberately absent: Marker and PyTorch, which would add
+# several GB to every user's image for a document path pymupdf already covers.
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
 		build-essential \
@@ -7,6 +11,10 @@ RUN apt-get update \
 		curl \
 		dumb-init \
 		fd-find \
+		ffmpeg \
+		file \
+		fonts-dejavu-core \
+		fonts-liberation \
 		git \
 		jq \
 		libreoffice \
@@ -14,7 +22,12 @@ RUN apt-get update \
 		python3 \
 		python3-pip \
 		python3-venv \
+		qpdf \
 		ripgrep \
+		tesseract-ocr \
+		tesseract-ocr-eng \
+		unzip \
+		zip \
 	&& ln -s /usr/bin/fdfind /usr/local/bin/fd \
 	&& rm -rf /var/lib/apt/lists/*
 

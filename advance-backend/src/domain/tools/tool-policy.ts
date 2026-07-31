@@ -27,9 +27,6 @@ export function getDesktopToolPolicy(toolId: string): DesktopToolPolicy | null {
   };
 }
 
-export function isConfigurableDesktopTool(toolId: string): boolean {
-  return getDesktopToolPolicy(toolId)?.kind === 'configurable';
-}
 
 /** Fixed Local/System tools have no persistent company or department policy rows. */
 export function isFixedToolPolicy(toolId: string): boolean {

@@ -4,7 +4,7 @@ import type { DeptToolPermissionRepoPort } from '../../infrastructure/persistenc
 import type { DeptUserOverrideRepoPort } from '../../infrastructure/persistence/department-user-override.repository';
 import type { AuditService } from '../observability/audit.service';
 import { CANONICAL_TOOL_IDS, TOOL_SUPPORTED_ACTIONS, type CanonicalToolId } from '../../domain/tools/tool-id';
-import type { ToolRegistry } from '../orchestration/tools/tool-registry';
+import type { ToolRegistry } from '../tools/tool-registry';
 import { isFixedToolPolicy } from '../../domain/tools/tool-policy';
 
 export type PermissionWriteResult = { ok: true } | { ok: false; reason: 'invalid' | 'failed' };

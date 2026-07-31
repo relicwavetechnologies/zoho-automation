@@ -370,8 +370,8 @@ describe('Google connection continuation', () => {
     assert.equal(retried, true);
   });
 
-  it('starts one fresh Flash run from the stored request and current identity', async () => {
-    let engineInput: any;
+  it('starts one fresh Pi run from the stored request and current identity', async () => {
+    let piInput: any;
     let finishInput: any;
     const worker = new GoogleConnectionContinuationWorker({
       redisUrl: 'redis://unused',
@@ -419,38 +419,85 @@ describe('Google connection continuation', () => {
           }],
         }),
       } as any,
-      engine: {
-        run: async (input: any) => {
-          engineInput = input;
-          return {
-            ok: true,
-            value: {
-              finalReply: { kind: 'final', text: 'done', format: 'text' },
-              toolsCalled: ['mailAutomations'],
-            },
-          };
+      runPi: async (input: any) => {
+        piInput = input;
+        return 'done';
+      },
+      channelAdapter: {
+        key: 'lark',
+      } as any,
+      logger: noopLogger,
+    });
+
+    await worker.process({ id: 'job-1', data: { intentId: 'intent-1' } });
+
+    assert.equal(piInput.incoming.text, TARGET.originalRequest);
+    assert.equal(piInput.incoming.messageId, 'oauth-continuation-intent-1');
+    assert.equal(piInput.incoming.raw.resumeReason, 'google_connected');
+    assert.equal(piInput.incoming.raw.connectionId, 'connection-1');
+    assert.equal(piInput.runContext.departmentId, 'department-current');
+    assert.equal(piInput.runContext.requestId, TARGET.continuationIdempotencyKey);
+    assert.deepEqual(piInput.runContext.continuationToolIds, ['mailAutomations']);
+    assert.equal(piInput.conversation.chatId, 'oc_chat');
+    assert.equal(piInput.conversation.replyToMessageId, 'om_original');
+    assert.equal(piInput.conversation.replyInThread, true);
+    assert.equal(piInput.channelAdapter.key, 'lark');
+    assert.deepEqual(finishInput, [
+      'intent-1',
+      { runId: TARGET.continuationIdempotencyKey },
+    ]);
+  });
+
+  it('records a visible Pi delivery failure without reporting completion', async () => {
+    let finishInput: any;
+    const worker = new GoogleConnectionContinuationWorker({
+      redisUrl: 'redis://unused',
+      queue: { enqueue: async () => '' },
+      intentRepo: {
+        findPendingContinuation: async () => ({
+          ok: true,
+          value: { ...TARGET, connectionId: 'connection-1' },
+        }),
+        claimContinuation: async () => ({
+          ok: true,
+          value: { ...TARGET, connectionId: 'connection-1' },
+        }),
+        finishContinuation: async (...args: any[]) => {
+          finishInput = args;
+          return { ok: true, value: undefined };
         },
       } as any,
+      identityRepo: {
+        resolveByLarkTenantIdentity: async () => ({
+          ok: true,
+          value: {
+            companyId: 'company-1',
+            userId: 'user-1',
+            aiRole: 'MEMBER',
+            channel: 'lark',
+          },
+        }),
+      } as any,
+      connectionRepo: {
+        listAccessibleGoogleConnections: async () => ({
+          ok: true,
+          value: [{
+            connectionId: 'connection-1',
+            ownerType: 'user',
+            ownerUserId: 'user-1',
+          }],
+        }),
+      } as any,
+      runPi: async () => null,
       channelAdapter: { key: 'lark' } as any,
       logger: noopLogger,
     });
 
     await worker.process({ id: 'job-1', data: { intentId: 'intent-1' } });
 
-    assert.equal(engineInput.incoming.text, TARGET.originalRequest);
-    assert.equal(engineInput.incoming.messageId, 'oauth-continuation-intent-1');
-    assert.equal(engineInput.incoming.raw.resumeReason, 'google_connected');
-    assert.equal(engineInput.incoming.raw.connectionId, 'connection-1');
-    assert.equal(engineInput.runContext.departmentId, 'department-current');
-    assert.equal(engineInput.runContext.requestId, TARGET.continuationIdempotencyKey);
-    assert.deepEqual(engineInput.runContext.continuationToolIds, ['mailAutomations']);
-    assert.equal(engineInput.conversation.chatId, 'oc_chat');
-    assert.equal(engineInput.conversation.replyToMessageId, 'om_original');
-    assert.equal(engineInput.conversation.replyInThread, true);
-    assert.equal(engineInput.larkModelId, 'deepseek-v4-flash');
     assert.deepEqual(finishInput, [
       'intent-1',
-      { runId: TARGET.continuationIdempotencyKey },
+      { failureCode: 'continuation_delivery_failed' },
     ]);
   });
 
@@ -470,7 +517,10 @@ describe('Google connection continuation', () => {
       } as any,
       identityRepo: {} as any,
       connectionRepo: {} as any,
-      engine: { run: async () => { runs += 1; } } as any,
+      runPi: async () => {
+        runs += 1;
+        return 'done';
+      },
       channelAdapter: { key: 'lark' } as any,
       logger: noopLogger,
     });
@@ -498,7 +548,7 @@ describe('Google connection continuation', () => {
       } as any,
       identityRepo: {} as any,
       connectionRepo: {} as any,
-      engine: {} as any,
+      runPi: async () => 'done',
       channelAdapter: { key: 'lark' } as any,
       laneLeaseHolder: {
         withLane: async () => ({

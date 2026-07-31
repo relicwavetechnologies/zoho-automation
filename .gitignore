@@ -4,6 +4,7 @@ ottomator-agents/
 .DS_Store
 **/.DS_Store
 **/node_modules/
+.pnpm-store/
 *.tsbuildinfo
 **/*.tsbuildinfo
 pi-bridge/
@@ -35,6 +36,7 @@ jan/release-output/
 # Local runtime, downloaded evidence, and planning artifacts.
 .commandcode/
 advance-backend/.data/
+advance-backend/latest-agent-run.log
 lark-im-resources/
 lark-search-message-auth.png
 plan-divo-*.html

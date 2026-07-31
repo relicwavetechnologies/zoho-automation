@@ -1,9 +1,6 @@
 import { Queue, Worker, type Job } from 'bullmq';
 import type { ConversationHandle } from '../channels/channel.adapter';
-import type { ApprovalGateService } from '../approval/approval-gate.service';
-import type { OrchestrationEngine } from '../orchestration/engine/core';
-import type { LaneLeaseHolder } from '../orchestration/lane-lease.holder';
-import { LARK_MODEL_IDS } from '../proxy/lark-inference.service';
+import type { LaneLeaseHolder } from '../channels/lane-lease.holder';
 import type { IncomingMessage } from '../../domain/channel/incoming-message';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
@@ -96,6 +93,14 @@ type GoogleConnectionRepo = Pick<
   'listAccessibleGoogleConnections'
 >;
 
+export interface GoogleConnectionContinuationRunInput {
+  incoming: IncomingMessage;
+  runContext: RunContext;
+  conversation: ConversationHandle;
+  channelAdapter: LarkChannelAdapter;
+  abortSignal?: AbortSignal;
+}
+
 export interface GoogleConnectionContinuationWorkerDeps {
   redisUrl: string;
   queueName?: string;
@@ -103,11 +108,10 @@ export interface GoogleConnectionContinuationWorkerDeps {
   intentRepo: IntentRepo;
   identityRepo: ChannelIdentityRepoPort;
   connectionRepo: GoogleConnectionRepo;
-  engine: OrchestrationEngine;
+  runPi: (input: GoogleConnectionContinuationRunInput) => Promise<string | null>;
   channelAdapter: LarkChannelAdapter;
   laneLeaseHolder?: LaneLeaseHolder;
   logger: Logger;
-  approvalGate?: ApprovalGateService;
   reconcileIntervalMs?: number;
 }
 
@@ -200,21 +204,18 @@ export class GoogleConnectionContinuationWorker {
     try {
       const identity = await this.resolveCurrentIdentity(intent);
       const connection = await this.resolveCurrentConnection(intent);
-      const input = buildContinuationEngineInput(intent, identity, channelAdapter);
-      const result = await this.deps.engine.run({
+      const input = buildContinuationInput(intent, identity, channelAdapter);
+      const result = await this.deps.runPi({
         ...input,
-        larkModelId: LARK_MODEL_IDS.flash,
         ...(abortSignal ? { abortSignal } : {}),
-        ...(this.deps.approvalGate ? { approvalGate: this.deps.approvalGate } : {}),
       });
-      if (!result.ok) {
+      if (result === null) {
         await this.finish(intent, {
-          failureCode: 'continuation_engine_failed',
+          failureCode: 'continuation_delivery_failed',
         });
-        this.log.error('google.continuation.engine_failed', {
+        this.log.error('google.continuation.delivery_failed', {
           intentId: intent.intentId,
           connectionId: connection.connectionId,
-          error: result.error.message,
         });
         return;
       }
@@ -283,7 +284,7 @@ export class GoogleConnectionContinuationWorker {
   }
 }
 
-function buildContinuationEngineInput(
+function buildContinuationInput(
   intent: ConnectionContinuationClaim,
   identity: {
     aiRole: string;

@@ -354,6 +354,12 @@ jobs:
              DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
              DIVO_DEV_PI_IMAGE='${PI_IMAGE}' \
              DIVO_DEV_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' \
+             docker compose --env-file .env.development.local run --rm --no-deps divo-dev-backend pnpm prisma db execute --file prisma/migrations/20260731_drop_scheduled_workflow_origin_chat/migration.sql --schema prisma/schema.prisma && \
+             DIVO_DEV_ENV_FILE=.env.development.local \
+             DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             DIVO_DEV_PI_IMAGE='${PI_IMAGE}' \
+             DIVO_DEV_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' \
              docker compose --env-file .env.development.local run --rm --no-deps divo-dev-backend pnpm prisma db push --skip-generate && \
              DIVO_DEV_ENV_FILE=.env.development.local \
              DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
@@ -367,12 +373,6 @@ jobs:
              DIVO_DEV_PI_IMAGE='${PI_IMAGE}' \
              DIVO_DEV_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' \
              docker compose --env-file .env.development.local run --rm --no-deps divo-dev-backend pnpm provision:google-workspace-skills && \
-             DIVO_DEV_ENV_FILE=.env.development.local \
-             DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
-             DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
-             DIVO_DEV_PI_IMAGE='${PI_IMAGE}' \
-             DIVO_DEV_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' \
-             docker compose --env-file .env.development.local run --rm --no-deps divo-dev-backend pnpm seed:dynamic-agents && \
              DIVO_DEV_ENV_FILE=.env.development.local \
              DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
              DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \

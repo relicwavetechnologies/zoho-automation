@@ -62,8 +62,9 @@ A phase is complete only when all of the following are true:
 | 1 | One containerized Pi runtime starts, stops, and resumes a session | `[ ]` Not started |
 | 2 | Per-user volumes preserve workspace and sessions across replacement | `[ ]` Not started |
 | 3 | Cloud Pi authenticates through the existing Divo Gateway | `[ ]` Not started |
-| 4 | Authenticated Lark turns route only to Pi and fail visibly | `[~]` Code complete; live Lark proof pending |
-| 5 | Bounded per-user container pool works safely | `[ ]` Not started |
+| 4 | Authenticated Lark turns route only to Pi and fail visibly | `[~]` Status/final delivery proven; forced-failure and group proof pending |
+| 4A | Mature cloud-agent behavior is reproduced Pi-natively and the AI SDK agent is retired | `[~]` Behavior inventory complete; implementation pending |
+| 5 | Bounded per-user container pool works safely | `[~]` 10-minute warm lifecycle implemented; FIFO and bounded warm-pool policy pending |
 | 6 | Docker host is provisioned, hardened, backed up, and observable | `[ ]` Not started |
 | 7 | Crash recovery, checkpoints, retries, and idempotency are proven | `[ ]` Not started |
 | 8 | Load, latency, memory, and security gates pass | `[ ]` Not started |
@@ -226,7 +227,8 @@ The V1 is successful when:
 - The same Lark conversation never has two active Pi writers.
 - Permission removal takes effect on the next gateway call.
 - An ambiguous delivery retry does not rerun completed agent work.
-- The feature flag can return a pilot user to the existing runtime immediately.
+- New Pi turns can be drained or disabled without ever routing them through the
+  retired AI SDK agent.
 
 ### 2.3 Company rollout success
 
@@ -359,6 +361,99 @@ Tauri-independent lifecycle into a shared Rust core or accepting a deliberately
 temporary duplicate. A full copy of `manager.rs` is rejected because its
 desktop dependencies would create fragile cloud-only branches and two
 diverging lifecycle implementations.
+
+### 3.7 Legacy behavior extraction and deletion ledger
+
+The old cloud agent is a behavioral reference only. We will reuse backend
+authority and channel infrastructure, reproduce the useful behavior through
+isolated Pi, then remove the AI SDK agent code. No new Pi path may call
+`engine.run()` directly or indirectly.
+
+| Behavior to preserve | Existing source of truth | Pi-native owner | Current gap / deletion gate |
+|---|---|---|---|
+| Signed Lark ingress, tenant binding, durable ACK | Lark webhook, security, ingress receipt and BullMQ worker | Existing backend Lark ingress | Reuse unchanged; never move webhook verification into Pi |
+| DM/group/thread identity and ordering | Conversation keys, message serializer, distributed lane lease and fence | Existing backend routing plus Pi thread mapping | Prove separate group threads and per-turn sender authority |
+| Sign-in and original-message replay | First-touch card, Lark OAuth nonce and pending-event replay | Backend issues/renews a Lark `MemberSession`, then starts Pi | Current callback stores a Lark connection but does not create the session Pi requires |
+| Provider connection cards | Google authorization intent, callback, queue and original-request snapshot | Backend card/intent plus fresh Pi continuation | Replace the continuation worker's `engine.run()` call before deleting the old engine |
+| Manager approval | Approval gate, immutable args, idempotency, manager card, secure callback | Backend authority plus a `cloud_pi` continuation state | Gateway approvals currently end Pi and tell the requester to retry |
+| Status, interrupt and final delivery | Status coordinator, card builder, delivery reservation and recovery | Backend renders typed Pi events | Add waiting-for-login/OAuth/approval, artifact and terminal event types |
+| Tool governance | Gateway, permissions, connection policy, approval, rate limits, audit and `ToolExecutor` | Existing backend authority | Reuse; Pi never receives SaaS credentials or becomes policy authority |
+| Conversation and quoted-message context | Lark transcript, parent-message hydration and group-context policy | Backend shapes the Pi input manifest | Prove quoted text/images/audio and bare mentions through Pi |
+| Inbound files and media | Lark attachment parser/downloader, OCR, document extraction and voice transcription | Backend stages bounded inputs; Pi receives local paths plus extracted context | Current Pi request is text-only and loses original files/image pixels |
+| Outbound artifacts | Pi workspace `artifacts/` and `divo_artifact` badge | Pi emits artifact manifests; backend uploads/delivers to Lark | Current Lark run delivers final text only |
+| Busy/capacity/error behavior | Lane notices, controller admission and visible failure rules | Existing backend/controller | Preserve friendly retryable responses with zero AI SDK fallback |
+| Scheduled/background continuations | Scheduled workflow and Google continuation workers | Isolated Pi jobs using the same durable run contract | Still call the legacy engine; migrate or explicitly retire before global deletion |
+
+There are two separate deletion gates:
+
+1. **Lark legacy-agent gate:** remove the Google OAuth continuation's
+   `engine.run()` dependency and every Lark-specific AI SDK runner/wiring after
+   the Lark Pi parity matrix passes.
+2. **Repository-wide engine gate:** `OrchestrationEngine` still has non-Lark
+   callers in scheduled workflows, desktop WebSocket, Airnote, and diagnostic
+   scripts. Migrate those callers to isolated Pi or explicitly retire those
+   products before deleting the engine, supervisor, AI SDK adapter, and their
+   tests. Do not remove shared tool contracts, Gateway execution, RBAC,
+   approvals, OAuth repositories, queues, or Lark delivery with them.
+
+### 3.8 Media, OCR, document and artifact parity
+
+Media is part of Phase 4A acceptance, not a deferred polish item.
+
+Existing behavior to preserve:
+
+- Lark `file`, `image`, `audio`, and rich-post embedded-image parsing.
+- Image download, OCR/caption text, the 4 MiB temporary pixel budget, and the
+  rule that transient image bytes are not persisted in room transcripts.
+- PDF, DOC/DOCX, XLS/XLSX, CSV/TSV, HTML, TXT, Markdown and JSON extraction.
+- The current 12-second extraction timeout and bounded 2,000/6,000-character
+  excerpt behavior.
+- P2P voice-note transcription with the current duration, byte and transcript
+  caps; quoted voice-note handling; intentional group-voice restrictions.
+- Quoted parent text/images/audio, attachment-without-question waiting,
+  unsupported-format honesty, and untagged-group privacy policy.
+- Optional chat-scoped document indexing without implying that every file was
+  fully read or retained.
+
+Required Pi-native contract:
+
+1. Backend downloads Lark media under current identity/policy and creates a
+   versioned attachment manifest containing an opaque content ID, sanitized
+   filename, verified MIME, byte size, hash, provenance and expiry.
+2. Controller stages authorized files under the exact user's run directory;
+   no raw bytes, provider keys, filesystem paths or download URLs are placed in
+   the runtime JWT.
+3. Pi receives `[ATTACHED_FILES]` entries with container-local read-only paths
+   plus the backend's OCR/transcript/excerpt. Text remains the fast path while
+   local bytes permit full PDF work, deterministic image operations and
+   artifact generation.
+4. Every download enforces per-file and per-run aggregate limits while
+   streaming, before buffering, OCR or container staging. Filenames cannot
+   escape the run directory; hashes and sizes are checked after staging.
+5. Light document/image dependencies and their Pi skills are versioned in the
+   base image. Heavy OCR (`marker-pdf`, Torch/models) uses a separately admitted
+   image/service and never installs multi-gigabyte dependencies during an
+   ordinary turn.
+6. Pi output files are reported as typed artifact events. Backend validates
+   ownership, path jail, MIME and size, then uploads/sends them to the original
+   Lark conversation with exactly-once delivery.
+7. Video remains explicitly unsupported for ordinary Lark turns until a
+   bounded frame/audio extraction product decision is approved. Divo must say
+   that honestly rather than pretending the video was inspected.
+
+Current gaps confirmed on 2026-07-30:
+
+- `LarkPiRuntimeService` sends only `{ runtimeLease, backendUrl, message }`; it
+  does not send attachment manifests, original bytes or `imageUrls`.
+- The current Docker image contains Python, LibreOffice and Poppler, but the
+  manifest loads only the Gateway and chat-history skills; the OCR/document
+  and image-analysis skills are not active Pi runtime skills.
+- Light Python OCR/document packages are installable into the persistent user
+  environment but are not yet a pinned, verified image layer.
+- Lark document/image downloads do not consistently apply a byte ceiling at
+  the streaming boundary; the 4 MiB image rule is applied after download.
+- `divo_artifact` identifies a local Markdown artifact for desktop-style UI but
+  has no cloud Lark upload/delivery protocol.
 
 ---
 
@@ -1046,8 +1141,10 @@ cloud architecture into testable assumptions before adding production code.
   settled.
 - [ ] Inspect `MemberSession` issuance and decide whether V1 needs a schema
   change.
-- [ ] Confirm how Lark attachments will be excluded or handled during the
-  pilot.
+- [x] Decide that Lark attachment/media parity is required before legacy-agent
+  deletion. Use bounded backend ingestion plus a Pi-local attachment manifest;
+  preserve current OCR/document/voice behavior and add outbound artifact
+  delivery.
 - [ ] Name the 5–10 pilot users.
 
 ### Initial sizing assumption
@@ -1396,7 +1493,7 @@ Post-delete verification:
 
 ## Phase 1 — Prove one containerized headless Pi runtime
 
-> **Status:** `[ ]` Not started
+> **Status:** `[~]` In progress — safe 10-minute warm lifecycle implemented
 >
 > **Estimated effort:** 2–4 engineering days
 >
@@ -1714,11 +1811,11 @@ _Record commands and results here when run._
 
 ## Phase 4 — Route authenticated Lark text turns only to cloud Pi
 
-> **Status:** `[~]` Code complete; live Lark proof pending
+> **Status:** `[~]` Live Lark CRUD/terminal proof complete; broader parity pending
 >
 > **Estimated effort:** 1–2 engineering days
 >
-> **Primary blocker:** Normalizing Pi events into the current Lark output flow.
+> **Primary blocker:** Forced-failure visibility and separate group-thread proof.
 
 ### Objective
 
@@ -1747,6 +1844,10 @@ trusted identity and channel context are established.
       run, token usage, and proxy audit.
 - [x] Add a fail-closed policy for an unavailable Pi host.
 - [x] Ensure the AI SDK runtime receives zero calls for Pi failures.
+- [x] Stream sanitized Pi lifecycle/tool progress through the existing Lark
+      status coordinator and card builder.
+- [x] Keep one status card updated in place, then replace it with the final
+      answer or a visible stopped/error result.
 
 ### Required failure rule
 
@@ -1767,7 +1868,9 @@ governed mutation may already have executed.
 ### Live verification
 
 - [x] Lark DM to Pi returns a response.
-- [ ] Follow-up continues the same Pi session.
+- [x] Follow-up continues the same Pi session.
+- [x] A live long-running turn visibly advances through status phases and
+      replaces the same card with its final answer.
 - [ ] A separate group thread gets a separate Pi session.
 - [ ] A forced Pi failure is visible in Lark and the diagnostic trace.
 
@@ -1785,6 +1888,22 @@ governed mutation may already have executed.
 - `npm run divo:test` passed `22/22` standalone Pi/controller tests, including
   controller disconnect-to-runtime cancellation.
 - Node syntax checks and scoped `git diff --check` passed.
+- The controller now streams only normalized lifecycle/tool identifiers over
+  NDJSON; raw tool arguments, results, answer deltas, and credentials are not
+  forwarded to Lark.
+- The existing Lark status coordinator remains the sole renderer: it
+  throttles/deduplicates edits, emits heartbeats for long quiet periods, and
+  replaces the status card with the final reply.
+- The focused controller, runtime-service, and Lark webhook suites pass,
+  including streamed progress sanitization, event order, capacity errors, and
+  final-card delivery.
+- The local cloud-Pi harness completed a real `45.576 s` DM run with workspace
+  write/read, Python terminal execution, and a read-only Lark Gateway call.
+  Lark created status message
+  `om_x100b6992d2fdd8a0e2ca3d6e1a430a1`, repeatedly edited that same card
+  through progress and heartbeat updates, and finalized it in place with
+  `STATUS CARD LIVE PASS`. The controller returned to `activeRuns: 0` and the
+  user container stopped normally.
 - A fresh GPT-5.6 Terra cold review found one P1: Linux `/proc` can expose the
   launch-time runtime lease after the environment is scrubbed.
 - The P1 is fixed at the backend boundary. Runtime leases are now denied by
@@ -1820,6 +1939,209 @@ governed mutation may already have executed.
   linked to that execution, both record `channel: lark` and `agentTarget: pi`,
   and report `13,294` cache-miss input tokens, `4,352` cache-hit tokens, and
   `22` output tokens.
+- A second real Divo-profile Lark turn proved durable workspace and session
+  reuse plus local file CRUD and terminal execution. Pi recreated three files,
+  ran `find` and `sha256sum`, and returned an all-pass report to the same DM.
+  The run completed in `38.321 s`, including `1.122 s` final delivery; observed
+  runtime usage was about `256 MiB` and one CPU core. The runtime then stopped
+  normally with exit `143`.
+- **Open safety finding:** When the requested test directory already existed,
+  Pi chose `rm -rf /data/workspace/cloud-e2e` before recreating it even though
+  the prompt did not authorize deletion. Only disposable test data was
+  affected, but production acceptance now requires a destructive-filesystem
+  approval/deny policy rather than relying on model judgment.
+
+---
+
+## Phase 4A — Reproduce mature behavior Pi-natively and retire the AI SDK agent
+
+> **Status:** `[~]` Behavior inventory complete; sign-in recovery slice proven
+>
+> **Estimated effort:** Implement as small vertical slices; re-estimate after
+> the durable-run schema and attachment transport spikes.
+>
+> **Primary blocker:** A durable Pi run/continuation contract does not yet
+> exist. Adding persisted run state may require a schema migration and must be
+> explicitly approved before implementation.
+
+### Objective
+
+Use the established cloud agent only as a behavioral specification. Implement
+sign-in, provider OAuth, approvals, media, status and recovery through isolated
+Pi containers. Once every removal gate passes, delete the legacy AI SDK agent
+without leaving a hidden fallback or second orchestration authority.
+
+### Slice 4A.1 — Sign-in and cloud session recovery
+
+- [ ] Extract shared member-session issuance instead of keeping it inside the
+  desktop auth route.
+- [x] Issue or renew a `channel: lark` member session after the existing Lark
+  OAuth callback verifies exact account, tenant, company and user.
+- [x] Convert `runtime_session_missing` into the existing Connect card with
+  plain-link fallback, retaining the original event for replay.
+- [x] Replay the original request through the existing best-effort callback
+  replay; durable replay remains part of Slice 4A.2.
+- [x] Prove expired, revoked and near-expiry sessions never reach the
+  controller before recovery.
+
+### Slice 4A.2 — Versioned durable Pi run contract
+
+- [ ] Define backend-owned run states:
+  `queued → running → waiting_for_auth|waiting_for_oauth|waiting_for_approval
+  → resuming → completed|failed|cancelled`.
+- [ ] Persist immutable request identity, Lark delivery target, Pi thread,
+  container profile, idempotency key, terminal result and monotonically
+  sequenced events.
+- [ ] Version the backend/controller stream with `runId`, sequence number and
+  typed progress, action-required, artifact, terminal and diagnostic events.
+- [ ] Make cancellation durable and run-scoped; reconcile it after backend or
+  controller restart before removing the current in-memory compatibility path.
+- [ ] Preserve existing final-delivery reservation/recovery so a Lark send
+  retry never reruns Pi or governed tools.
+
+### Slice 4A.3 — Google/provider OAuth through Pi
+
+- [ ] Populate the trusted connection-authorization target from backend Lark
+  context; Pi/model arguments cannot supply or change it.
+- [ ] Send the existing Connect Google card when a required user connection is
+  absent.
+- [x] On callback, enqueue a fresh continuation for the exact Pi thread and
+  original request under current identity/RBAC.
+- [x] Replace `GoogleConnectionContinuationWorker`'s `engine.run()` call with
+  the Pi run coordinator.
+- [ ] Prove callback retry, duplicate callback, expired intent, changed user,
+  changed tenant and missing scopes cannot duplicate or misroute work.
+
+### Slice 4A.4 — Approval cards and continuation
+
+- [x] Add an explicit `cloud_pi` approval origin without changing desktop
+  gateway retry semantics.
+- [ ] When Gateway returns `approval_required`, transition the durable run to
+  `waiting_for_approval`, keep the requester status card alive and do not
+  publish Pi's waiting text as a terminal answer.
+- [x] Deliver the existing Approve/Reject card to the exact resolved approver;
+  persist message ID and immutable validated invocation.
+- [x] On approve, re-resolve requester/approver identity, membership, RBAC,
+  connection policy and exact args before execution.
+- [~] Complete the exact backend-owned mutation once and deliver its result to
+  the immutable Lark target; same-Pi synthesis still requires Slice 4A.2.
+- [x] On reject, expiry, unauthorized click or duplicate click, settle once
+  without starting a second Pi run or executing the tool.
+
+### Slice 4A.5 — Media, OCR and artifacts
+
+- [ ] Add streaming byte limits before Lark image/document buffering.
+- [ ] Introduce the authorized attachment manifest and controller staging
+  contract from section 3.8.
+- [ ] Activate and verify the light OCR/document and image-analysis Pi skills
+  in the immutable runtime manifest.
+- [ ] Pin and smoke-test light PDF, Office and image dependencies in the image.
+- [ ] Preserve current image OCR/caption, document extraction, voice
+  transcription, quoted-media and privacy behavior.
+- [ ] Pass container-local attachment paths and extracted context to Pi.
+- [ ] Add typed Pi artifact events and exactly-once file/image delivery back to
+  the original Lark DM/thread.
+- [ ] Keep ordinary Lark video unsupported until a bounded video decision is
+  made; test the visible refusal.
+
+### Slice 4A.6 — Legacy removal
+
+- [ ] Run the parity matrix against Pi only: text, group/thread context,
+  sign-in, Google OAuth, approval/reject, attachments/OCR/voice, files,
+  artifacts, status/interrupt, busy/capacity, restart and delivery retry.
+- [ ] Verify normal Lark ingress and every Lark continuation make zero
+  `engine.run()` calls.
+- [ ] Remove Lark AI SDK runner/wiring, Google AI SDK continuation, runtime
+  selector/fallback flags, stale comments and legacy-specific tests.
+- [ ] Inventory remaining engine callers: scheduled workflows, desktop
+  WebSocket, Airnote and scripts.
+- [ ] Migrate each remaining product to isolated Pi or obtain an explicit
+  product decision to retire it.
+- [ ] Only then delete `OrchestrationEngine`, supervisor/agent runners,
+  `ai-sdk-adapter`, unused dependencies and their tests.
+- [ ] Run a cold code review after the removal diff and before deployment.
+
+### Phase 4A acceptance gate
+
+- [ ] Login, provider OAuth and approval all resume through isolated Pi with no
+  user retyping and no AI SDK execution.
+- [ ] One request has one durable run identity and at most one terminal Lark
+  delivery across webhook, backend and controller restarts.
+- [ ] Pi receives authorized local attachments and can return a verified Lark
+  artifact without exposing another user's files.
+- [ ] Current media limits, privacy behavior and honest unsupported-format
+  responses remain covered.
+- [ ] Repository search and runtime telemetry prove the retired agent has no
+  production caller.
+- [ ] Legacy code is removed only after shared backend authorities are proven
+  to be runtime-agnostic and retained.
+
+### Validation evidence
+
+Behavioral inventory completed on 2026-07-30 by direct code/test inspection.
+
+Slice 4A.1 now recovers a missing/expired Lark Pi member session before the
+controller starts: the webhook renders the existing Connect card, retains the
+raw request for replay, and the exact-account Lark callback issues or renews a
+tenant/account-scoped `channel: lark` session before best-effort replay. No
+schema was changed.
+
+Validation on 2026-07-30:
+
+- Focused Lark Pi runtime/auth/webhook tests: `113/113` passed.
+- Full backend suite: `2512` passed, `0` failed, `4` skipped.
+- Backend TypeScript: `pnpm typecheck` passed.
+- Scoped whitespace/error check: `git diff --check` passed.
+
+The requested cold-review checkpoint found and closed a multi-tenant session
+binding defect: active cloud sessions and OAuth renewal are now scoped to the
+exact Lark tenant plus Open ID, and the webhook supplies that complete context
+to the fail-closed preflight. The same reviewer verified the corrected callers
+and tests with a final `ship` verdict.
+
+- Combined Google continuation, Pi runtime, Lark auth and webhook tests after
+  the cold-review fixes: `128/128` passed.
+- Focused first-contact/session-preflight tests: `11/11` passed.
+- Backend TypeScript and scoped `git diff --check` passed after the fixes.
+
+The first functional cloud-Pi approval slice is also complete. Authenticated
+Lark tenant provenance now survives member auth and Gateway dispatch. The
+backend derives the immutable Lark DM/thread target from the signed Pi thread,
+marks the request `cloud_pi`, and routes an authorized card decision through
+the existing backend resumer. Approve re-resolves identity/RBAC and executes
+the exact stored invocation once; reject executes nothing. Desktop Gateway
+approvals retain their existing requester-retry behavior.
+
+- Pi runtime leases now reject any Gateway request whose execution thread does
+  not match the thread signed into the lease.
+- The approval resumer now restores the stored Pi execution context before
+  claiming the approved action; malformed cloud-Pi approvals fail closed.
+- Focused member-auth, Gateway, approval-card and resumer tests: `134/134`
+  passed.
+- Full backend suite after the security fixes: `2518` passed, `0` failed,
+  `4` skipped.
+- Backend TypeScript after approval wiring: `pnpm typecheck` passed.
+- Scoped `git diff --check` passed.
+- The same independent cold reviewer rechecked both blockers, reran the
+  signed-thread route regression (`7/7` passed), found no actionable P0–P2
+  issues and returned `ship`.
+- Remaining gap: the initial Pi process still ends after reporting approval
+  pending. The backend securely completes and delivers the approved action,
+  but same-Pi post-approval synthesis awaits the durable run contract.
+
+The Google OAuth continuation worker no longer imports or calls the AI SDK
+orchestration engine. After revalidating the stored identity, tenant,
+connection and lane lease, it invokes isolated Pi through the same status and
+final-delivery path as ordinary Lark requests. A failed final delivery is
+recorded as a continuation failure instead of being reported as completed.
+
+- Focused Google connection/continuation tests: `14/14` passed.
+- Combined sign-in, runtime and continuation tests: `25/25` passed.
+- Full backend suite after Pi continuation wiring: `2513` passed, `0` failed,
+  `4` skipped.
+- Backend TypeScript after Pi continuation wiring: `pnpm typecheck` passed.
+- Repository search across production Lark paths found no `engine.run`,
+  `OrchestrationEngine` or legacy Lark model selector reference.
 
 ---
 
@@ -1829,7 +2151,8 @@ governed mutation may already have executed.
 >
 > **Estimated effort:** 2–3 engineering days
 >
-> **Primary blocker:** Proven lifecycle signal for safe idle reclamation.
+> **Primary blocker:** FIFO admission and a bounded warm-container policy for
+> larger rollouts.
 
 ### Objective
 
@@ -1842,7 +2165,7 @@ without collision, starvation, or unbounded memory growth.
 Running-container capacity: 8
 Per-user mutating concurrency: 1
 Maximum queued turns: bounded and observable
-Idle TTL: 20 minutes
+Idle TTL: 10 minutes
 Admission: FIFO plus existing per-conversation serialization and per-user lock
 Reclamation: oldest safely idle container first
 ```
@@ -1850,16 +2173,17 @@ Reclamation: oldest safely idle container first
 ### Tasks
 
 - [ ] Implement per-user container state.
-- [ ] Implement a controller-owned per-user execution lock.
-- [ ] Implement host-wide running-container admission.
+- [x] Implement a controller-owned per-user execution lock.
+- [x] Implement host-wide active-run admission.
 - [ ] Implement FIFO admission.
-- [ ] Reuse an already running container for the same user.
-- [ ] Start a stopped container only below capacity.
-- [ ] Reclaim only a proven-idle container.
+- [x] Reuse an already running container for the same user.
+- [x] Stop a successfully idle container after 10 minutes.
+- [x] Stop failed and aborted runtimes immediately.
+- [ ] Bound the number of warm, non-executing containers.
 - [ ] Never stop an active or approval-pending container.
 - [ ] Queue when all containers are non-reclaimable.
 - [ ] Propagate cancellation while queued.
-- [ ] Propagate cancellation while running.
+- [x] Propagate cancellation while running.
 - [ ] Apply container and Pi startup timeouts.
 - [ ] Apply per-turn timeout.
 - [ ] Add graceful Pi/container shutdown.
@@ -1867,9 +2191,9 @@ Reclamation: oldest safely idle container first
 - [ ] Clean run-specific scratch data.
 - [ ] Revoke/rotate user token at safe lifecycle boundaries.
 - [ ] Reconcile running/stopped containers after controller restart.
-- [ ] Recreate containers when the pinned image or hardening template changes.
-- [ ] Preserve the user volume during every recreate operation.
-- [ ] Implement container-pool drain for deployments.
+- [x] Recreate containers when the pinned image or hardening template changes.
+- [x] Preserve the user volume during every recreate operation.
+- [x] Drain warm containers when the controller shuts down.
 - [ ] Implement health and readiness state.
 - [ ] Expose pool metrics without exposing prompts or tokens.
 - [ ] Make capacity configurable within tested limits.
@@ -2598,7 +2922,7 @@ Recovery options are:
 | O-004 | Cloud runtime-lease issuance | Reuse live member identity/membership checks but issue a short-lived, audience- and instance-bound runtime credential | Backend | 3 | `[!]` |
 | O-005 | Initial running-container cap | Start at 8 and adjust only from load evidence | Runtime | 0 | `[~]` |
 | O-006 | Idle TTL | Start at 20 minutes | Product/runtime | 8 | `[~]` |
-| O-007 | Lark attachments in pilot | Exclude initially unless existing hydration can be passed safely | Product | 0 | `[!]` |
+| O-007 | Lark attachments in pilot | Required before legacy-agent deletion: bounded backend ingestion, Pi-local manifest, current OCR/document/voice parity and outbound artifacts | Product/runtime | 4A | `[~]` |
 | O-008 | Multi-host storage | Prefer shared managed POSIX storage if benchmarks pass | Engineering | 10 | `[ ]` |
 | O-009 | Automatic fallback after Pi failure | Never rerun ambiguously executed work automatically | Backend | 4 | `[~]` |
 | O-010 | Docker daemon mode | Start with rootful Docker on a dedicated host, local socket only; test `userns-remap` during Phase 6 before pilot sign-off | Security/runtime | 6 | `[!]` |
@@ -2713,15 +3037,18 @@ Recovery options are:
   disappear on recreation, so persistent user install roots belong in the
   volume.
 
-### D-011 — Heavy OCR and browser tooling are optional runtime capabilities
+### D-011 — Light media tooling is baseline; heavy OCR and browser tooling are separately admitted
 
 - **Date:** 2026-07-29
-- **Status:** Decided for V1 baseline
-- **Decision:** Do not bake multi-gigabyte OCR/model stacks or Chromium into the
-  first per-user image. Add a separate image flavor or bounded service when a
-  measured pilot workflow requires it.
-- **Reason:** They materially increase image pull, disk, memory, and cold-start
-  cost for every user.
+- **Status:** Updated and decided for Phase 4A
+- **Decision:** Bake and activate pinned light PDF, Office, image and media
+  dependencies/skills in the per-user image because Lark attachment parity is
+  required. Do not bake multi-gigabyte `marker-pdf`/Torch/model stacks or
+  Chromium into the ordinary image; admit those through a separate image
+  flavor or bounded service.
+- **Reason:** Ordinary PDF/Office/image work is day-one product behavior.
+  Heavy OCR and browsers materially increase image pull, disk, memory and
+  cold-start cost for every user.
 
 ### D-012 — Terminal parity precedes Docker and Lark wiring
 
@@ -3035,11 +3362,11 @@ Recovery options are:
   - auto-confirm only Bash/edit/write operations inside the requester's
     isolated container workspace; never auto-confirm a backend-created Divo
     company mutation intent.
-- **Deliberately deferred UX:** Rich status cards, token streaming, detailed
-  tool timelines, artifact cards, and Pi-authored progress narration are not
-  required for this first proof. Pi should eventually own semantic progress
-  events, while the backend remains the owner of Lark message/card rendering,
-  credentials, delivery reservation, idempotency, and retries.
+- **Status UX boundary:** Pi now owns normalized lifecycle/tool progress
+  events, while the backend remains the sole owner of Lark message/card
+  rendering, credentials, delivery reservation, idempotency, and retries.
+  Token streaming, raw tool payloads/results, detailed timelines, and
+  Pi-authored free-form progress narration remain deliberately excluded.
 - **Failure contract:** Controller, authentication, Gateway, model, tool, or Pi
   failures are recorded and returned explicitly. They never invoke the current
   AI SDK agent. Queue recovery may retry before Pi admission; after admission,
@@ -3157,6 +3484,55 @@ Recovery options are:
   named workspace/auth volumes remained and controller capacity returned to
   `0/2`. No AI SDK fallback ran.
 
+### D-021 — Extract behavior, implement in Pi, then delete the AI SDK agent
+
+- **Date:** 2026-07-30
+- **Status:** Decided; behavior inventory complete
+- **Decision:** Treat the existing Vercel AI SDK agent only as a behavioral and
+  test reference. Reproduce its mature sign-in, OAuth, approval, routing,
+  status, recovery and media behavior through isolated Pi containers. Delete
+  the legacy agent only after the Pi parity gate passes.
+- **Strict runtime rule:** Normal turns, OAuth continuations, approval
+  continuations and retries must not call `engine.run()` or select an AI SDK
+  agent. Backend-owned queues, identity, permissions, OAuth, approval,
+  `ToolExecutor`, cards, delivery and audit remain because they are authorities
+  and infrastructure, not an agent runtime.
+- **Media rule:** Images, documents, OCR, voice, quoted media and outbound Pi
+  artifacts are included in the parity gate. Text-only acceptance is
+  insufficient for legacy deletion.
+- **Deletion rule:** Delete Lark-specific legacy code after Lark parity. Delete
+  the repository-wide engine only after its scheduled workflow, desktop
+  WebSocket, Airnote and script callers are migrated to Pi or explicitly
+  retired.
+- **Reason:** Deleting first would erase tested behavior and leave missing
+  recovery semantics. Keeping the old runtime callable after parity would
+  preserve a hidden fallback and two competing agent architectures.
+- **Confidence:** `94%`; normal Lark ingress is already Pi-only, direct code
+  inspection identified the remaining live AI SDK callers, and every retained
+  backend authority has a focused test surface.
+
+### D-022 — Keep the container warm, restart Pi per turn
+
+- **Date:** 2026-07-30
+- **Status:** Implemented locally; deployment proof pending
+- **Decision:** After a successful turn, keep the user's hardened Docker
+  container running for ten minutes. Run a fresh Pi RPC process for every
+  request inside that container and reopen the correct durable thread session.
+- **Reason:** Reusing the container removes repeat Docker startup. Reusing the
+  exact Pi process would also reuse its original runtime lease, run ID, run
+  directory, thread binding and status callbacks.
+- **Failure rule:** Failed or aborted runs stop the container immediately. A
+  controller shutdown drains all containers it kept warm.
+- **Template rule:** Existing one-shot containers are recreated once with the
+  new exec-based runtime template; their named user volumes remain intact.
+- **Shared-context boundary:** Per-user Pi sessions remain private. Shared Lark
+  group history must be hydrated by the backend rather than by mounting one
+  writable JSONL session into multiple containers. See
+  `plans/cloud-pi-context-and-warm-containers.md`.
+- **Confidence:** `92%`; focused controller, server and container-entry tests
+  pass `24/24`, and the full Divo runtime suite passes `60/60`. A two-turn live
+  Docker/Lark proof remains required.
+
 ---
 
 ## 15. Deferred backlog
@@ -3231,7 +3607,15 @@ Do these in order:
 15. `[x]` Deploy and verify the current Pi runtime/controller through the
     existing development CI pipeline, move Lark from ngrok to the permanent
     development webhook, and complete one real cloud prompt.
-16. `[ ]` Run Phase 8 gates before expanding beyond the two-user development
+16. `[~]` Execute Phase 4A in vertical slices: Lark member-session recovery is
+    proven; next are durable typed Pi runs, Google OAuth continuation, approval
+    continuation, inbound media/OCR, and outbound Lark artifacts.
+17. `[ ]` Run the Pi-only parity matrix and remove Lark-specific AI SDK
+    continuation/wiring only after it passes.
+18. `[ ]` Inventory and migrate or explicitly retire every remaining
+    `OrchestrationEngine` caller before deleting the repository-wide legacy
+    agent implementation.
+19. `[ ]` Run Phase 8 gates before expanding beyond the two-user development
     pilot.
 
 ---
@@ -3240,6 +3624,50 @@ Do these in order:
 
 ### 2026-07-30
 
+- Implemented D-022: successful user containers now remain running for a
+  resettable 10-minute idle window, while every request starts a fresh Pi RPC
+  process with its own lease, run ID and thread binding. Failures/aborts stop
+  immediately, controller shutdown drains warm containers, and old one-shot
+  templates are replaced without deleting user volumes. Cold-review cleanup
+  and retry findings are fixed; focused lifecycle tests pass `24/24` and the
+  full Divo runtime suite passes `60/60`.
+- Added the simple visual explainer
+  `plans/cloud-pi-context-and-warm-containers.md`, separating warm lifecycle,
+  per-user concurrency and shared Lark group-context hydration.
+- Added Phase 4A and D-021: extract mature behavior from the legacy cloud
+  agent, implement it through isolated Pi, then delete the AI SDK agent after
+  parity rather than deleting first or retaining it as fallback.
+- Completed the first Pi-native Lark sign-in recovery slice: expired/missing
+  cloud sessions now receive the existing Connect card before any container
+  starts, the verified OAuth callback issues/renews a Lark-scoped member
+  session, and the original durable request replays afterward. Focused tests
+  pass `113/113`, the full backend suite passes `2512/2512` executed tests
+  with `4` skipped, and backend typecheck passes.
+- Removed the last Lark Google OAuth continuation call to the AI SDK engine.
+  The durable callback now revalidates current authority and resumes the
+  stored request through isolated Pi with normal status/final delivery and no
+  fallback. Its focused suite passes `14/14`; the full backend suite passes
+  `2513` executed tests with `4` skipped.
+- Ran the requested 50% cold-review checkpoint. It found an exact-tenant
+  session isolation blocker and a missing webhook caller field; both were
+  fixed with regression coverage. The same reviewer rechecked the corrected
+  diff and returned `ship`.
+- Made cloud-Pi approval buttons functional without changing desktop approval
+  behavior: trusted tenant and Lark thread provenance now reach the approval
+  record, cloud-Pi card decisions auto-run the existing exact-action backend
+  resumer, the signed runtime lease binds every Gateway request to its Lark
+  thread, and focused approval/security tests pass `134/134`.
+- Recorded the complete parity ledger for sign-in, provider OAuth, approvals,
+  durable queues/locks, group/thread context, status, cancellation, delivery
+  recovery, capacity and tool governance.
+- Made media a legacy-removal gate: preserve current image OCR/caption,
+  document extraction, voice transcription, quoted-media and privacy behavior;
+  add bounded Pi-local attachment manifests and exactly-once outbound Lark
+  artifacts.
+- Recorded current media gaps: the controller request is text-only, original
+  files/pixels never reach Pi, light OCR/image skills are not active in the
+  runtime manifest, download limits are applied too late on some paths, and
+  `divo_artifact` has no Lark file-delivery protocol.
 - Completed the five-prompt real Lark acceptance matrix for Abhishek: file
   CRUD, terminal, public download, PDF processing, idle restart persistence,
   Gateway inventory, governed read-only integrations, tool contract lookup,
@@ -3274,6 +3702,28 @@ Do these in order:
   authenticated ingress, permission resolution, isolated container creation,
   Divo-proxied DeepSeek generation, final Lark delivery, normal idle stop, and
   durable named volumes all passed in `35.399 s` with no fallback or OOM.
+- Added sanitized controller-to-backend progress streaming and connected it to
+  the existing Lark status coordinator/card builder. One card now advances
+  through startup, thinking, tool work, and writing, then becomes the final
+  answer; raw arguments, results, answer deltas, and credentials are excluded.
+- Removed prompt-derived status titles after cold review found that enriched
+  attachment/OCR context could otherwise be echoed into the live card. Status
+  cards now render only fixed phases and sanitized tool-family labels.
+- Updated the local cloud-Pi harness to invoke the same production
+  status/final-card flow when Lark delivery is enabled; `--no-delivery` remains
+  a direct local-only runtime test.
+- Kept harness results truthful: a Pi failure is rendered visibly in Lark
+  through the production error-card path and is then rethrown so the harness
+  exits non-zero instead of reporting a false live-test success.
+- Proved the production status/final card flow in Abhishek's real Lark DM with
+  a `45.576 s` multi-tool run. One card ID survived all edits and finalization,
+  the result reported every requested operation as passing, controller
+  admission returned to zero, and the isolated user container stopped.
+- Live-reviewed three Card 2.0 status UX prototypes: Calm Pulse, compact
+  Mission Control, and Agent Journal. All three visual directions were
+  rejected, so their prototype-only script was deliberately not retained.
+  Production keeps the existing compact status renderer until a replacement
+  design is approved.
 
 ### 2026-07-29
 

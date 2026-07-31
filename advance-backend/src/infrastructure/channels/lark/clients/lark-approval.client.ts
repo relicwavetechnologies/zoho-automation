@@ -1,4 +1,4 @@
-import type { LarkApprovalClientPort } from '../../../../application/orchestration/tools/families/lark-approval.tool';
+import type { LarkApprovalClientPort } from '../../../../application/tools/families/lark-approval.tool';
 import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 
 type ApprovalRecord = Record<string, unknown>;

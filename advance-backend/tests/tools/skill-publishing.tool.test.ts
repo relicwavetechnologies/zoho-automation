@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createSkillPublishingTool } from '../../src/application/orchestration/tools/families/skill-publishing.tool.ts';
+import { createSkillPublishingTool } from '../../src/application/tools/families/skill-publishing.tool.ts';
 import { SKILL_SUMMARY_MAX_CHARS } from '../../src/application/skills/skill-limits.ts';
 import { asCompanyRoleSlug } from '../../src/domain/permissions/company-role.ts';
 import { asDepartmentId } from '../../src/shared/ids.ts';

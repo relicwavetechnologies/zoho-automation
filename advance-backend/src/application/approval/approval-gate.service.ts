@@ -34,7 +34,7 @@ export interface ApprovalGateInput {
   chatId:         string;
   /** Human-readable summary of what the tool call would do (shown on approval card). */
   argsSummary:    string;
-  /** Optional, non-authoritative desktop execution provenance for audit/match checks. */
+  /** Optional, non-authoritative runtime execution provenance for audit/match checks. */
   execution?: {
     readonly version: 1;
     readonly threadId: string;
@@ -158,12 +158,20 @@ export class ApprovalGateService {
             ? String(runContext.tenantId)
             : null,
           departmentId,
-          approvalOrigin:         approvalOriginFromChatId(sourceChatId),
+          approvalOrigin:         runContext.channel === 'lark' && execution
+            ? 'cloud_pi'
+            : approvalOriginFromChatId(sourceChatId),
           statusMessageId:        statusMessageId ?? null,
           chatId: scopedChatId,
           sourceChatId,
           replyToMessageId:       runContext.replyToMessageId ?? null,
           replyInThread:          runContext.replyInThread ?? null,
+          // Carried so the approved action executes under the same delivery
+          // rules as the run that asked for it. Approval is checked before a
+          // tool runs, so a scheduled run reaches this point with its guards
+          // untested; rebuilding the context later without this would let the
+          // approved call deliver where the run itself may not.
+          deliveryMode:           runContext.deliveryMode ?? null,
           resolvedManagerOpenId:  manager.larkOpenId,
           resolvedManagerUserId:  manager.userId,
           resolvedManagerName:    manager.displayName,

@@ -1,4 +1,4 @@
-import type { ImageOcrResult } from '../ingestion/text-extraction/image-ocr.extractor';
+import type { VisionOcrResult as ImageOcrResult } from '../../infrastructure/ai/vision/openrouter-vision';
 
 export interface ManagerTeachExtractedFrame {
   readonly path: string;

@@ -402,7 +402,7 @@ describe('Lark group mode controls', () => {
     assert.equal((body as any).data.mode, 'threaded');
   });
 
-  it('persists a company-scoped inline override and audits it', async () => {
+  it('persists the company-scoped threaded invariant and audits it', async () => {
     const { prisma, upserts } = makeGroupModePrisma();
     const audits: any[] = [];
     const router = createControlsRoutes({
@@ -417,12 +417,12 @@ describe('Lark group mode controls', () => {
         tenantKey: 'tenant-1',
         appId: 'app-1',
         chatId: 'oc-1',
-        mode: 'inline',
+        mode: 'threaded',
       },
     });
 
     assert.equal(status, 200);
-    assert.equal((body as any).data.mode, 'inline');
+    assert.equal((body as any).data.mode, 'threaded');
     assert.equal(upserts.length, 1);
     assert.equal(upserts[0].create.companyId, 'co-1');
     assert.equal(upserts[0].create.updatedBy, 'u-1');
@@ -434,11 +434,11 @@ describe('Lark group mode controls', () => {
     const router = createControlsRoutes({ prisma, logger: noopLogger, env: FAKE_ENV });
 
     const invalid = await callRoute(router, 'PUT', '/lark-group-mode', {
-      body: { tenantKey: 'tenant-1', chatId: 'oc-1', mode: 'sometimes' },
+      body: { tenantKey: 'tenant-1', chatId: 'oc-1', mode: 'inline' },
     });
     const forbidden = await callRoute(router, 'PUT', '/lark-group-mode', {
       query: { companyId: 'co-other' },
-      body: { tenantKey: 'tenant-1', chatId: 'oc-1', mode: 'inline' },
+      body: { tenantKey: 'tenant-1', chatId: 'oc-1', mode: 'threaded' },
     });
 
     assert.equal(invalid.status, 400);

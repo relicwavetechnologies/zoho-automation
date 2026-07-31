@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	assertPinnedIdentity,
+	piOptions,
 	validateBootstrap,
 } from "../container-entry.mjs";
 import {
@@ -14,6 +15,7 @@ const bootstrap = {
 	token: "member-token",
 	profile: "abhishek",
 	thread: "same-thread",
+	runtimeThreadId: "oc_chat:thread:om_root",
 	userId: "user-a",
 	companyId: "company-1",
 };
@@ -44,6 +46,14 @@ test("container bootstrap rejects unsafe profile and thread values", () => {
 	assert.throws(
 		() => validateBootstrap({ ...bootstrap, thread: "../../other" }),
 		/thread is invalid/,
+	);
+	assert.throws(
+		() => validateBootstrap({ ...bootstrap, runtimeThreadId: "" }),
+		/Runtime thread ID is required/,
+	);
+	assert.throws(
+		() => validateBootstrap({ ...bootstrap, runtimeThreadId: "x".repeat(201) }),
+		/Runtime thread ID is too long/,
 	);
 });
 
@@ -84,4 +94,36 @@ test("RPC mode and durable user install paths are passed to Pi", () => {
 	assert.equal(environment.PIP_BREAK_SYSTEM_PACKAGES, "1");
 	assert.match(environment.npm_config_prefix, /^\/data\/state\/home/);
 	assert.equal(environment.OPENAI_API_KEY, undefined);
+});
+
+test("container bootstrap accepts only known session scopes", () => {
+	// Absent is the durable per-thread session every caller used before shared
+	// group threads existed, so an older controller keeps working unchanged.
+	assert.equal(validateBootstrap(bootstrap).sessionScope, undefined);
+	assert.doesNotThrow(() => validateBootstrap({ ...bootstrap, sessionScope: "thread" }));
+	assert.doesNotThrow(() => validateBootstrap({ ...bootstrap, sessionScope: "run" }));
+	assert.throws(
+		() => validateBootstrap({ ...bootstrap, sessionScope: "forever" }),
+		/sessionScope is invalid/,
+	);
+});
+
+test("the container forwards the session scope it was given to Pi", () => {
+	// The one property that keeps a shared group transcript off the user's durable
+	// volume. Losing it would be silent: every run would still succeed.
+	assert.equal(
+		piOptions({ bootstrap: { ...bootstrap, sessionScope: "run" } }).sessionScope,
+		"run",
+	);
+	assert.equal(piOptions({ bootstrap }).sessionScope, "thread");
+	assert.equal(piOptions({ bootstrap }).stateRoot, "/data/state");
+	assert.equal(piOptions({ bootstrap }).thread, "same-thread");
+	assert.equal(
+		piOptions({ bootstrap }).runtimeThreadId,
+		"oc_chat:thread:om_root",
+	);
+	assert.equal(
+		piOptions({ bootstrap, department: { id: "dep-1" } }).departmentId,
+		"dep-1",
+	);
 });

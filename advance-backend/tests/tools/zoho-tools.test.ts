@@ -6,8 +6,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeAllowedPerm, makeDeniedPerm, makeCtx } from './tool-test.helpers.ts';
 
-import { createZohoCrmTool }   from '../../src/application/orchestration/tools/families/zoho-crm.tool.ts';
-import { createZohoBooksTool } from '../../src/application/orchestration/tools/families/zoho-books.tool.ts';
+import { createZohoCrmTool }   from '../../src/application/tools/families/zoho-crm.tool.ts';
+import { createZohoBooksTool } from '../../src/application/tools/families/zoho-books.tool.ts';
 import type { ZohoFinanceOps } from '../../src/application/zoho/zoho-finance-ops.ts';
 import type { ZohoCrmOps } from '../../src/application/zoho/zoho-crm-ops.ts';
 import type { ZohoBooksPaginatedClient } from '../../src/infrastructure/zoho/zoho-books-paginated.client.ts';

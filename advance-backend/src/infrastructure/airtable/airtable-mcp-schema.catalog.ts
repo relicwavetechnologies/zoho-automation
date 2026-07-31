@@ -1,5 +1,5 @@
 import { AIRTABLE_PRODUCTS } from '../../application/airtable/airtable-mcp-manifest';
-import type { AirtableMcpToolDescription } from '../../application/orchestration/tools/families/airtable-mcp.tool';
+import type { AirtableMcpToolDescription } from '../../application/tools/families/airtable-mcp.tool';
 
 const APPROVED_NATIVE_TOOLS = new Set<string>(
   AIRTABLE_PRODUCTS.flatMap(product => product.operations.map(operation => operation.nativeTool)),

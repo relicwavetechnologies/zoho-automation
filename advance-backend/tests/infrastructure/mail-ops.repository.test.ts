@@ -62,6 +62,62 @@ describe('MailOpsRepository', () => {
     assert.equal(ruleUpsert.update.status, 'active');
   });
 
+  it('replaces an owned rule and reactivates its mailbox atomically', async () => {
+    let findInput: any;
+    let ruleUpdate: any;
+    let subscriptionUpdate: any;
+    const tx = {
+      mailAutomationRule: {
+        findFirst: async (input: any) => {
+          findInput = input;
+          return { id: 'rule-1', subscriptionId: 'mailbox-1' };
+        },
+        update: async (input: any) => {
+          ruleUpdate = input;
+        },
+      },
+      mailboxSubscription: {
+        update: async (input: any) => {
+          subscriptionUpdate = input;
+        },
+      },
+    };
+    const repo = new MailOpsRepository({
+      $transaction: async (fn: any) => fn(tx),
+    } as any);
+
+    const result = await repo.replaceRule({
+      companyId: 'company-1',
+      userId: 'user-1',
+      ruleId: 'rule-1',
+      connectionId: 'connection-1',
+      name: 'Forward Claude secure links',
+      match: {
+        from: '@mail.anthropic.com',
+        subjectContains: 'Your secure link to Claude.ai',
+      },
+      action: { type: 'forward' },
+      destination: { type: 'email', email: 'owner@example.com' },
+      dedupeKey: 'mail-rule:updated',
+    });
+
+    assert.deepEqual(result, { ok: true, value: true });
+    assert.deepEqual(findInput.where, {
+      id: 'rule-1',
+      companyId: 'company-1',
+      createdByUserId: 'user-1',
+      status: { not: 'archived' },
+      subscription: { connectionId: 'connection-1' },
+    });
+    assert.deepEqual(ruleUpdate.data.matchJson, {
+      from: '@mail.anthropic.com',
+      subjectContains: 'Your secure link to Claude.ai',
+    });
+    assert.deepEqual(ruleUpdate.data.version, { increment: 1 });
+    assert.equal(subscriptionUpdate.where.id, 'mailbox-1');
+    assert.equal(subscriptionUpdate.data.status, 'active');
+  });
+
   it('does not reactivate an archived rule', async () => {
     let updates = 0;
     const tx = {
@@ -346,5 +402,30 @@ describe('MailOpsRepository', () => {
     });
     assert.equal(update.data.status, 'abandoned');
     assert.equal(update.data.nextAttemptAt, null);
+  });
+
+  it('retries transient delivery failures on the Mail Ops latency budget', async () => {
+    const updates: any[] = [];
+    const repo = new MailOpsRepository({
+      mailDelivery: {
+        updateMany: async (input: any) => {
+          updates.push(input);
+          return { count: 1 };
+        },
+      },
+    } as any);
+    const now = new Date('2026-07-31T05:00:00.000Z');
+
+    await repo.markDeliveryFailed('delivery-1', new Error('transient'), 1, now);
+    await repo.markDeliveryFailed('delivery-2', new Error('transient'), 3, now);
+
+    assert.equal(
+      updates[0].data.nextAttemptAt.getTime(),
+      now.getTime() + 5_000,
+    );
+    assert.equal(
+      updates[1].data.nextAttemptAt.getTime(),
+      now.getTime() + 20_000,
+    );
   });
 });

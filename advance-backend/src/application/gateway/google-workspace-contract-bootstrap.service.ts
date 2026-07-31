@@ -2,7 +2,7 @@ import {
   GOOGLE_WORKSPACE_PRODUCTS,
   type GoogleWorkspaceProductDefinition,
 } from '../google/google-workspace-mcp-manifest';
-import type { ResolveGoogleWorkspaceMcpConnection } from '../orchestration/tools/families/google-workspace-mcp.tool';
+import type { ResolveGoogleWorkspaceMcpConnection } from '../tools/families/google-workspace-mcp.tool';
 import type {
   WorkContractBootstrapPort,
   WorkContractBootstrapResult,

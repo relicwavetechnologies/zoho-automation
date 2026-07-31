@@ -3,7 +3,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type {
   GoogleWorkspaceMcpPort,
   GoogleWorkspaceMcpToolDescription,
-} from '../../application/orchestration/tools/families/google-workspace-mcp.tool';
+} from '../../application/tools/families/google-workspace-mcp.tool';
 import { GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT } from '../../application/google/google-workspace-mcp-manifest';
 import { GoogleWorkspaceMcpSchemaCatalog } from './google-workspace-mcp-schema.catalog';
 

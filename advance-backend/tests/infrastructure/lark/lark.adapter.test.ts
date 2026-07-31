@@ -1035,8 +1035,8 @@ describe('LarkChannelAdapter.sendFinalReply', () => {
     assert.equal(updateCalls.length, 0);
 
     const card = parseCardPayload(finalizedPayload);
-    const subtitle = (card['header'] as { subtitle?: { content: string } }).subtitle?.content;
-    assert.equal(subtitle, 'Done');
+    const title = (card['header'] as { title?: { content: string } } | undefined)?.title?.content;
+    assert.equal(title, 'Done');
   });
 
   it('splits a table-heavy reply and sends continuation cards after updating the original status card', async () => {
@@ -1078,10 +1078,10 @@ describe('LarkChannelAdapter.sendFinalReply', () => {
 
     const firstCard = parseCardPayload(finalizedPayload);
     const secondCard = parseCardPayload(sendCalls[0]![1] as string);
-    const firstSubtitle = (firstCard['header'] as { subtitle?: { content: string } }).subtitle?.content ?? '';
-    const secondSubtitle = (secondCard['header'] as { subtitle?: { content: string } }).subtitle?.content ?? '';
-    assert.equal(firstSubtitle, 'Finance Update');
-    assert.equal(secondSubtitle, 'Finance Update');
+    const titleOf = (card: Record<string, unknown>) =>
+      (card['header'] as { title?: { content: string } } | undefined)?.title?.content ?? '';
+    assert.equal(titleOf(firstCard), 'Finance Update');
+    assert.equal(titleOf(secondCard), 'Finance Update');
   });
 
   it('updates the old status card to a redirect when finalize fails but sending a new card succeeds', async () => {

@@ -12,6 +12,12 @@ export interface PiRuntimeLeaseClaims {
   readonly role?: string;
   readonly instanceId: string;
   readonly threadId: string;
+  /**
+   * The department this run acts in. A member can belong to several, and the
+   * container otherwise falls back to whichever is listed first — which would
+   * silently run a Finance workflow under Sales' tool grants.
+   */
+  readonly departmentId?: string;
   readonly iat: number;
   readonly exp: number;
   readonly jti: string;
@@ -24,6 +30,7 @@ export interface IssuePiRuntimeLeaseInput {
   readonly role?: string;
   readonly instanceId: string;
   readonly threadId: string;
+  readonly departmentId?: string;
   readonly ttlSeconds?: number;
   readonly now?: Date;
 }
@@ -42,6 +49,7 @@ export function issuePiRuntimeLease(
     ...(input.role ? { role: input.role } : {}),
     instanceId: input.instanceId,
     threadId: input.threadId,
+    ...(input.departmentId ? { departmentId: input.departmentId } : {}),
     iat: issuedAt,
     exp: issuedAt + (input.ttlSeconds ?? 300),
     jti: randomUUID(),

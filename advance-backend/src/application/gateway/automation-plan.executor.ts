@@ -132,6 +132,9 @@ export class AutomationPlanExecutor {
       );
 
       const execution = parseExecution(meta['execution']);
+      const deliveryMode = meta['deliveryMode'] === 'scheduled_runtime_delivery'
+        ? 'scheduled_runtime_delivery' as const
+        : undefined;
       const approvedByUserId = asString(meta['resolvedManagerUserId']);
       if (!approvedByUserId || plan.approvalSignature.approverUserId !== approvedByUserId) {
         await this.fail(claimedApproval.id, 'invalid_plan', 'The approved batch does not identify its approval authority.');
@@ -163,6 +166,7 @@ export class AutomationPlanExecutor {
         identity,
         departmentId,
         approvalId: claimedApproval.id,
+        ...(deliveryMode ? { deliveryMode } : {}),
         ...(execution ? { execution } : {}),
         ...(permissionResult.value.department?.zohoReadScope
           ? { departmentZohoReadScope: permissionResult.value.department.zohoReadScope }
@@ -170,21 +174,23 @@ export class AutomationPlanExecutor {
       });
       const currentInvocationSignatures: AutomationApprovalSignature[] = [];
       for (const invocation of plan.invocations) {
-        const authorized = await this.deps.skillCatalog.authorizesTool({
-          companyId: identity.companyId,
-          departmentId,
-          permission: withWorkDiscoveryPermissions(permissionResult.value),
-          grantedSkillIds,
-          skillId: invocation.skillId,
-          toolId: invocation.toolId,
-        });
-        if (!authorized) {
-          await this.fail(
-            claimedApproval.id,
-            'permission_denied',
-            `Skill "${invocation.skillId}" no longer authorizes tool "${invocation.toolId}".`,
-          );
-          return;
+        if (invocation.skillId) {
+          const matches = await this.deps.skillCatalog.authorizesTool({
+            companyId: identity.companyId,
+            departmentId,
+            permission: withWorkDiscoveryPermissions(permissionResult.value),
+            grantedSkillIds,
+            skillId: invocation.skillId,
+            toolId: invocation.toolId,
+          });
+          if (!matches) {
+            this.deps.logger.warn('automation_plan.skill_advisory_mismatch', {
+              planId: claimedApproval.id,
+              skillId: invocation.skillId,
+              toolId: invocation.toolId,
+              stage: 'pre_execution',
+            });
+          }
         }
         const approvalRequirement = await this.deps.approvalGate.inspect({
           toolId: invocation.toolId,
@@ -276,26 +282,27 @@ export class AutomationPlanExecutor {
           );
           return;
         }
-        const currentGrantedSkillIds = await this.deps.skillAccessEnforcement.listGrantedSkillIds(
-          identity.companyId,
-          requesterId,
-        );
-        const skillAuthorized = await this.deps.skillCatalog.authorizesTool({
-          companyId: identity.companyId,
-          departmentId,
-          permission: withWorkDiscoveryPermissions(currentPermissionResult.value),
-          grantedSkillIds: currentGrantedSkillIds,
-          skillId: invocation.skillId,
-          toolId: invocation.toolId,
-        });
-        if (!skillAuthorized) {
-          await this.fail(
-            claimedApproval.id,
-            'permission_denied',
-            `Skill "${invocation.skillId}" no longer authorizes tool "${invocation.toolId}".`,
-            { title: plan.title, completedCalls: index, totalCalls, results },
+        if (invocation.skillId) {
+          const currentGrantedSkillIds = await this.deps.skillAccessEnforcement.listGrantedSkillIds(
+            identity.companyId,
+            requesterId,
           );
-          return;
+          const matches = await this.deps.skillCatalog.authorizesTool({
+            companyId: identity.companyId,
+            departmentId,
+            permission: withWorkDiscoveryPermissions(currentPermissionResult.value),
+            grantedSkillIds: currentGrantedSkillIds,
+            skillId: invocation.skillId,
+            toolId: invocation.toolId,
+          });
+          if (!matches) {
+            this.deps.logger.warn('automation_plan.skill_advisory_mismatch', {
+              planId: claimedApproval.id,
+              skillId: invocation.skillId,
+              toolId: invocation.toolId,
+              stage: 'per_call',
+            });
+          }
         }
         const currentBatchApproval = await this.resolveCurrentBatchSignature(
           plan.approvalSignature,
@@ -316,6 +323,7 @@ export class AutomationPlanExecutor {
             identity,
             departmentId,
             approvalId: claimedApproval.id,
+            ...(deliveryMode ? { deliveryMode } : {}),
             ...(execution ? { execution } : {}),
             ...(currentPermissionResult.value.department?.zohoReadScope
               ? { departmentZohoReadScope: currentPermissionResult.value.department.zohoReadScope }
@@ -518,8 +526,11 @@ export class AutomationPlanExecutor {
     approvalId: string;
     execution?: GatewayExecutionContext;
     departmentZohoReadScope?: string | null;
+    deliveryMode?: RunContext['deliveryMode'];
   }): RunContext {
-    const { identity, departmentId, approvalId, execution, departmentZohoReadScope } = input;
+    const {
+      identity, departmentId, approvalId, execution, departmentZohoReadScope, deliveryMode,
+    } = input;
     return {
       companyId: asCompanyId(identity.companyId),
       userId: asUserId(identity.userId),
@@ -530,6 +541,7 @@ export class AutomationPlanExecutor {
       ...(identity.email ? { requesterEmail: identity.email } : {}),
       ...(identity.larkOpenId ? { userExternalId: identity.larkOpenId } : {}),
       ...(departmentZohoReadScope ? { departmentZohoReadScope } : {}),
+      ...(deliveryMode ? { deliveryMode } : {}),
       traceId: `automation-plan-${approvalId}`,
       requestId: `automation-plan-${approvalId}-preflight`,
       ...(execution?.threadId ? { chatId: execution.threadId } : {}),

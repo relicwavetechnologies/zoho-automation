@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -19,7 +20,24 @@ const PROFILE_ROOT = path.join(os.homedir(), ".divo-pi", "profiles");
 const RESOURCE_PREFIX = "divo-pi-local";
 const RPC_TIMEOUT_MS = 30_000;
 const KEYCHAIN_TIMEOUT_MS = 15_000;
+export const RUNTIME_IDLE_TIMEOUT_MS = 10 * 60_000;
+export const RUNTIME_STOP_RETRY_MS = 30_000;
+const RUNTIME_CONTAINER_MODE = "exec-v1";
 let tokenReadTail = Promise.resolve();
+
+/**
+ * Where inbound conversation files land inside the user's own Docker volume.
+ *
+ * Everything under here is derived by this controller from the signed runtime
+ * lease. The backend never names a path, a volume or a profile — it hands over
+ * bytes and metadata, and gets back a descriptor. That asymmetry is the whole
+ * isolation guarantee, so nothing below may accept a caller-supplied path.
+ */
+const INBOX_CONTAINER_ROOT = "/data/workspace/.divo/inbox";
+const WORKSPACE_UID_GID = "10001:10001";
+export const MAX_RUNTIME_ATTACHMENTS = 4;
+export const MAX_RUNTIME_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+export const MAX_RUNTIME_REQUEST_BYTES = 50 * 1024 * 1024;
 
 export function validateProfileName(value) {
 	const profile = value?.trim().toLowerCase();
@@ -32,6 +50,28 @@ export function validateProfileName(value) {
 export function validateThread(value) {
 	if (!value || !/^[A-Za-z0-9._-]+$/.test(value)) {
 		throw new Error("Thread must contain only letters, numbers, dot, underscore, or dash");
+	}
+	return value;
+}
+
+export const SESSION_SCOPES = ["thread", "run"];
+
+/**
+ * Which session a run reopens.
+ *
+ * `thread` is the durable session on the user's volume, and stays the default:
+ * a DM is one person's conversation, and resuming it is the continuity.
+ *
+ * `run` gives the run a session that is deleted when it ends. The backend asks
+ * for it when a thread is shared by several people, because each of them runs
+ * in their own container: that conversation is held centrally and sent into
+ * every run, so keeping a copy per user would append the same transcript to one
+ * volume on every turn and replay all of it on the next.
+ */
+export function validateSessionScope(value) {
+	if (value === undefined || value === null) return "thread";
+	if (!SESSION_SCOPES.includes(value)) {
+		throw new Error(`sessionScope must be one of: ${SESSION_SCOPES.join(", ")}`);
 	}
 	return value;
 }
@@ -54,7 +94,135 @@ export function runtimeIdentityNames(companyId, userId, runtimeThreadId) {
 	return {
 		profile: `cloud-${digest(`${companyId}:${userId}`).slice(0, 20)}`,
 		thread: `lark-${digest(runtimeThreadId).slice(0, 24)}`,
+		runtimeThreadId,
 	};
+}
+
+export function validateAttachmentRequestId(value) {
+	if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]{7,63}$/.test(value)) {
+		throw new Error("Attachment request id is invalid");
+	}
+	return value;
+}
+
+export function validateAttachmentFileId(value) {
+	if (typeof value !== "string" || !/^file-[1-9][0-9]?$/.test(value)) {
+		throw new Error("Attachment file id is invalid");
+	}
+	return value;
+}
+
+/**
+ * Reduce a chat-supplied filename to something that can only ever name a file,
+ * never a place. Directory separators, traversal, control characters, shell
+ * metacharacters and leading dots are all removed rather than rejected: the
+ * user picked this name in Lark and should not get an error because their
+ * invoice had a quote in it.
+ */
+export function safeAttachmentFileName(value) {
+	const base = path
+		.basename(String(value ?? "").replace(/\\/g, "/"))
+		.normalize("NFC")
+		.replace(/[\u0000-\u001f\u007f]/g, "");
+	const cleaned = base
+		.replace(/[^A-Za-z0-9._ ()-]/g, "_")
+		.replace(/\s+/g, " ")
+		.replace(/^[.\s]+/, "")
+		.trim();
+	if (!cleaned) return "attachment";
+	if (cleaned.length <= 120) return cleaned;
+	const extension = path.extname(cleaned).slice(0, 16);
+	return `${cleaned.slice(0, 120 - extension.length)}${extension}`;
+}
+
+export function decodeAttachmentFileName(encoded) {
+	return safeAttachmentFileName(
+		Buffer.from(String(encoded ?? ""), "base64url").toString("utf8"),
+	);
+}
+
+/**
+ * Build the one path an attachment is allowed to occupy.
+ *
+ * Composed from validated parts, so traversal cannot be expressed — the
+ * containment check below is a second lock on a door that has no handle.
+ * `fileId` gets its own directory level because two files in one message are
+ * routinely called the same thing.
+ */
+export function stagedAttachmentPath(requestId, fileId, fileName) {
+	const target = path.posix.join(
+		INBOX_CONTAINER_ROOT,
+		validateAttachmentRequestId(requestId),
+		validateAttachmentFileId(fileId),
+		safeAttachmentFileName(fileName),
+	);
+	if (!target.startsWith(`${INBOX_CONTAINER_ROOT}/`) || target.split("/").includes("..")) {
+		throw new Error("Refusing an attachment path outside the workspace inbox");
+	}
+	return target;
+}
+
+/**
+ * Descriptors arrive back from the backend on the run request. Every field is
+ * re-validated and the path is *recomputed* rather than read, so a compromised
+ * or buggy backend cannot point a run at another user's file.
+ */
+export function resolveStagedAttachments(value) {
+	if (value === undefined || value === null) return [];
+	if (!Array.isArray(value)) throw new Error("attachments must be an array");
+	if (value.length > MAX_RUNTIME_ATTACHMENTS) {
+		throw new Error(`At most ${MAX_RUNTIME_ATTACHMENTS} attachments are allowed per run`);
+	}
+	return value.map((item) => {
+		if (!item || typeof item !== "object") throw new Error("attachment must be an object");
+		const name = safeAttachmentFileName(item.fileName);
+		return {
+			name,
+			kind: item.kind === "image" ? "image" : "file",
+			mimeType: normalizeMimeType(item.mimeType),
+			bytes: Number.isSafeInteger(item.bytes) && item.bytes >= 0 ? item.bytes : 0,
+			path: stagedAttachmentPath(item.requestId, item.fileId, name),
+		};
+	});
+}
+
+export function normalizeMimeType(value) {
+	// `content-type` legitimately carries parameters ("application/pdf;
+	// charset=utf-8"). Matching the whole header would drop those types to
+	// octet-stream and cost the agent the one hint it has about the file.
+	const essence = String(value ?? "").split(";")[0].trim().toLowerCase();
+	return /^[a-z0-9!#$&^_.+-]{1,127}\/[a-z0-9!#$&^_.+-]{1,127}$/.test(essence)
+		? essence
+		: "application/octet-stream";
+}
+
+/**
+ * The manifest is the only thing the model is told about an attachment: a
+ * path, not the bytes. Everything else — reading, OCR, conversion — happens
+ * through the agent's own tools against its own filesystem.
+ */
+export function attachmentManifestBlock(attachments) {
+	if (!attachments || attachments.length === 0) return "";
+	const manifest = attachments.map((attachment) => ({
+		path: attachment.path,
+		name: attachment.name,
+		kind: attachment.kind,
+		mimeType: attachment.mimeType,
+		bytes: attachment.bytes,
+	}));
+	return [
+		"[ATTACHED_FILES]",
+		JSON.stringify(manifest, null, 2),
+		"[/ATTACHED_FILES]",
+		"These files are already saved in your workspace at the paths above. Read and process them from there; never ask the sender to upload them again.",
+		"",
+		"",
+	].join("\n");
+}
+
+function shellQuote(value) {
+	if (/'/.test(value)) throw new Error("Refusing an unsafe attachment path");
+	return `'${value}'`;
 }
 
 export function buildContainerCreateArgs(
@@ -73,6 +241,8 @@ export function buildContainerCreateArgs(
 		`dev.divo.profile=${profile}`,
 		"--label",
 		`dev.divo.volume=${resources.volume}`,
+		"--label",
+		`dev.divo.runtime-mode=${RUNTIME_CONTAINER_MODE}`,
 		"--network",
 		resources.network,
 		...(addHostGateway
@@ -98,6 +268,8 @@ export function buildContainerCreateArgs(
 		"--stop-timeout",
 		"15",
 		image,
+		"sleep",
+		"infinity",
 	];
 }
 
@@ -110,7 +282,10 @@ export function backendUrlForContainer(value) {
 }
 
 export function runtimeContainerNeedsReplacement(container, image = IMAGE) {
-	return container?.Config?.Image !== image;
+	return (
+		container?.Config?.Image !== image ||
+		container?.Config?.Labels?.["dev.divo.runtime-mode"] !== RUNTIME_CONTAINER_MODE
+	);
 }
 
 export function assertPinnedProfile(metadata, session) {
@@ -392,8 +567,43 @@ async function inspectOwnedContainer(profile) {
 	return container;
 }
 
+async function ensureVolume(profile, name) {
+	if (await dockerObjectExists("volume", name)) return name;
+	await docker([
+		"volume",
+		"create",
+		"--label",
+		`dev.divo.profile=${profile}`,
+		name,
+	]);
+	return name;
+}
+
+/**
+ * Create the workspace volume without touching the container or network.
+ *
+ * Attachments are staged *before* the run starts, so this is often the first
+ * thing that ever exists for a new user. Doing the full `ensureRuntime` here
+ * would pull an image and create a container for a request that may still be
+ * rejected.
+ */
+export async function ensureProfileVolume(profileName) {
+	const profile = validateProfileName(profileName);
+	// The staging writer runs from the Pi image. Checking here turns a raw
+	// `docker run` failure mid-upload into a clear refusal before any bytes move.
+	if (!(await dockerObjectExists("image", IMAGE))) {
+		throw stagingError(
+			"runtime_image_missing",
+			`Image ${IMAGE} is missing, so attachments cannot be staged.`,
+			503,
+		);
+	}
+	return ensureVolume(profile, resourcesFor(profile).volume);
+}
+
 async function ensureRuntime(profile) {
 	const resources = resourcesFor(profile);
+	let wasRunning = false;
 	if (!(await dockerObjectExists("image", IMAGE))) {
 		throw new Error(
 			`Image ${IMAGE} is missing. Build it with: docker build -t ${IMAGE} .`,
@@ -410,36 +620,183 @@ async function ensureRuntime(profile) {
 			resources.network,
 		]);
 	}
-	if (!(await dockerObjectExists("volume", resources.volume))) {
-		await docker([
-			"volume",
-			"create",
-			"--label",
-			`dev.divo.profile=${profile}`,
-			resources.volume,
-		]);
-	}
-	if (!(await dockerObjectExists("volume", resources.authVolume))) {
-		await docker([
-			"volume",
-			"create",
-			"--label",
-			`dev.divo.profile=${profile}`,
-			resources.authVolume,
-		]);
-	}
+	await ensureVolume(profile, resources.volume);
+	await ensureVolume(profile, resources.authVolume);
 	if (await dockerObjectExists("container", resources.container)) {
 		const container = await inspectOwnedContainer(profile);
 		if (runtimeContainerNeedsReplacement(container)) {
 			if (container.State.Running) await docker(["stop", resources.container]);
 			await docker(["rm", resources.container]);
+		} else {
+			wasRunning = container.State.Running;
 		}
 	}
 	if (!(await dockerObjectExists("container", resources.container))) {
 		await docker(buildContainerCreateArgs(profile));
 	}
 	await inspectOwnedContainer(profile);
-	return resources;
+	return { resources, wasRunning };
+}
+
+export function buildAttachmentStagingArgs(volume, script, image = IMAGE) {
+	return [
+		"run",
+		"--rm",
+		"--interactive",
+		// The writer only ever reads stdin. Giving it a network would give a
+		// malicious filename nothing to exploit, but it costs nothing to remove.
+		"--network",
+		"none",
+		"--user",
+		WORKSPACE_UID_GID,
+		"--read-only",
+		"--cap-drop",
+		"ALL",
+		"--security-opt",
+		"no-new-privileges:true",
+		"--mount",
+		`type=volume,src=${volume},dst=/data`,
+		"--entrypoint",
+		"/bin/sh",
+		image,
+		"-c",
+		script,
+	];
+}
+
+export function buildAttachmentStagingScript(containerPath) {
+	const partPath = `${containerPath}.part`;
+	return [
+		"set -e",
+		"umask 077",
+		`mkdir -p ${shellQuote(path.posix.dirname(containerPath))}`,
+		`rm -f ${shellQuote(partPath)}`,
+		// The rename is the commit. A stream that is cut short — by the byte cap,
+		// an abort, or a dead backend — leaves only the .part file behind, so a
+		// truncated document can never be presented to the agent as a whole one.
+		`cat > ${shellQuote(partPath)}`,
+		`mv ${shellQuote(partPath)} ${shellQuote(containerPath)}`,
+	].join("\n");
+}
+
+function stagingError(code, message, statusCode = 400) {
+	return Object.assign(new Error(message), { code, statusCode });
+}
+
+async function discardStagedPartial(volume, containerPath, spawnProcess) {
+	try {
+		await new Promise((resolve, reject) => {
+			const child = spawnProcess(
+				"docker",
+				buildAttachmentStagingArgs(
+					volume,
+					`rm -f ${shellQuote(`${containerPath}.part`)}`,
+				),
+				{ stdio: ["ignore", "ignore", "ignore"] },
+			);
+			child.once("error", reject);
+			child.once("exit", resolve);
+		});
+	} catch {
+		// Best effort. A leftover .part is inert — it is never named in a
+		// manifest — and failing cleanup must not mask the original error.
+	}
+}
+
+/**
+ * Stream one attachment into the user's own Docker volume.
+ *
+ * The caller supplies bytes and a name. Everything that decides *where* those
+ * bytes land — profile, volume, directory — is derived here from the runtime
+ * lease, so no caller can address another user's workspace.
+ */
+export async function stageRuntimeFile({
+	profile,
+	requestId,
+	fileId,
+	fileName,
+	mimeType,
+	kind = "file",
+	stream,
+	maxBytes = MAX_RUNTIME_ATTACHMENT_BYTES,
+	signal,
+	spawnProcess = spawn,
+	prepareVolume = ensureProfileVolume,
+}) {
+	const safeProfile = validateProfileName(profile);
+	const safeName = safeAttachmentFileName(fileName);
+	const containerPath = stagedAttachmentPath(requestId, fileId, safeName);
+	const volume = await prepareVolume(safeProfile);
+
+	const child = spawnProcess(
+		"docker",
+		buildAttachmentStagingArgs(volume, buildAttachmentStagingScript(containerPath)),
+		{ stdio: ["pipe", "ignore", "pipe"] },
+	);
+	// stdin dies with the container when we kill it mid-stream; the EPIPE that
+	// follows is expected and must not become an unhandled error event.
+	child.stdin.on("error", () => {});
+
+	let stderr = "";
+	child.stderr?.on("data", (chunk) => {
+		stderr += chunk;
+	});
+
+	const exited = new Promise((resolve, reject) => {
+		child.once("error", reject);
+		child.once("exit", (code, terminationSignal) => {
+			if (code === 0) resolve();
+			else {
+				reject(
+					new Error(
+						`Attachment staging failed: ${stderr.trim() || `exit ${terminationSignal ?? code}`}`,
+					),
+				);
+			}
+		});
+	});
+
+	let bytes = 0;
+	const pump = (async () => {
+		for await (const chunk of stream) {
+			const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+			bytes += buffer.length;
+			if (bytes > maxBytes) {
+				throw stagingError(
+					"attachment_too_large",
+					`"${safeName}" is larger than the ${Math.floor(maxBytes / (1024 * 1024))} MB limit.`,
+					413,
+				);
+			}
+			if (!child.stdin.write(buffer)) await once(child.stdin, "drain");
+		}
+		child.stdin.end();
+	})();
+
+	const abort = () => child.kill("SIGKILL");
+	signal?.addEventListener("abort", abort, { once: true });
+	pump.catch(() => {});
+	exited.catch(() => {});
+
+	try {
+		await Promise.all([pump, exited]);
+	} catch (error) {
+		child.kill("SIGKILL");
+		await discardStagedPartial(volume, containerPath, spawnProcess);
+		throw error;
+	} finally {
+		signal?.removeEventListener("abort", abort);
+	}
+
+	return {
+		requestId,
+		fileId,
+		fileName: safeName,
+		kind: kind === "image" ? "image" : "file",
+		mimeType: normalizeMimeType(mimeType),
+		bytes,
+		path: containerPath,
+	};
 }
 
 async function waitUntilRunning(container, timeoutMs = 10_000) {
@@ -501,10 +858,163 @@ async function clearBootstrap(volume) {
 	await runVolumeCommand(volume, "rm -f /run/divo-auth/bootstrap.json");
 }
 
+function progressToolId(toolName, args) {
+	const direct = args?.toolId;
+	const nested = args?.payload?.toolId;
+	const value = typeof direct === "string" ? direct : typeof nested === "string" ? nested : undefined;
+	if (!value || !/^[A-Za-z0-9._-]{1,80}$/.test(value)) return undefined;
+	return toolName === "divo_gateway" || toolName === "call_tool" ? value : undefined;
+}
+
+const PROGRESS_LABEL_MAX = 80;
+const PROGRESS_CHILDREN_MAX = 8;
+const PROGRESS_TODOS_MAX = 12;
+
+function progressLabel(value) {
+	if (typeof value !== "string") return undefined;
+	const flat = value.replace(/\s+/g, " ").trim();
+	if (!flat) return undefined;
+	return flat.length > PROGRESS_LABEL_MAX ? `${flat.slice(0, PROGRESS_LABEL_MAX - 1)}…` : flat;
+}
+
+/** Pi child states, in the vocabulary the status card renders. */
+const CHILD_STATE_STATUS = {
+	queued: "pending",
+	running: "running",
+	completed: "done",
+	failed: "failed",
+	cancelled: "skipped",
+};
+
+/**
+ * Subagent children, from the details `divo_subagents` already streams.
+ *
+ * Only the role, the task and the state cross this boundary. A child's output,
+ * usage and event log are the run's internals, and the status card is shown in
+ * a chat window — anything forwarded here is something a bystander may read.
+ */
+function progressChildren(details) {
+	const children = details?.children;
+	if (!Array.isArray(children) || children.length === 0) return undefined;
+	const rows = children.slice(0, PROGRESS_CHILDREN_MAX).flatMap((child) => {
+		const label = progressLabel(child?.role);
+		if (!label) return [];
+		const status = CHILD_STATE_STATUS[child?.state] ?? "running";
+		const detail = progressLabel(child?.task);
+		return [{ label, status, ...(detail ? { detail } : {}) }];
+	});
+	return rows.length > 0 ? rows : undefined;
+}
+
+/** The checklist `divo_todos` declared, if this tool call was that one. */
+function progressTodos(details) {
+	const items = details?.items;
+	if (!Array.isArray(items) || items.length === 0) return undefined;
+	const rows = items.slice(0, PROGRESS_TODOS_MAX).flatMap((item) => {
+		const title = progressLabel(item?.title);
+		if (!title) return [];
+		const status = typeof item?.status === "string" ? item.status : "pending";
+		return [{ title, status }];
+	});
+	return rows.length > 0 ? rows : undefined;
+}
+
+/**
+ * What a tool's own details say about the work underneath it.
+ *
+ * Both extensions that have something to show already stream it as tool
+ * details, so neither needs a transport of its own — the shape of the details
+ * decides which it is.
+ */
+function progressDetail(details) {
+	if (!details || typeof details !== "object") return undefined;
+	const children = progressChildren(details);
+	if (children) return { children };
+	const todos = progressTodos(details);
+	if (todos) return { todos };
+	return undefined;
+}
+
+export function projectRuntimeProgress(event) {
+	if (!event || typeof event !== "object") return undefined;
+	if (event.type === "agent_start" || event.type === "turn_start") {
+		return { type: "thinking" };
+	}
+	if (event.type === "tool_execution_start") {
+		const toolName = typeof event.toolName === "string" ? event.toolName : "tool";
+		const toolId = progressToolId(toolName, event.args);
+		return {
+			type: "tool_start",
+			callId: String(event.toolCallId ?? ""),
+			toolName,
+			...(toolId ? { toolId } : {}),
+		};
+	}
+	if (event.type === "tool_execution_update") {
+		// Most tools stream partial stdout, which the card has no use for. Only a
+		// call that describes structured work underneath itself is worth a redraw.
+		const detail = progressDetail(event.partialResult?.details);
+		if (!detail) return undefined;
+		return {
+			type: "tool_progress",
+			callId: String(event.toolCallId ?? ""),
+			toolName: typeof event.toolName === "string" ? event.toolName : "tool",
+			...detail,
+		};
+	}
+	if (event.type === "tool_execution_end") {
+		// The final details settle every child at once: a run that ended between
+		// the last update and here would otherwise leave children stuck running
+		// under a parent already marked done.
+		return {
+			type: "tool_end",
+			callId: String(event.toolCallId ?? ""),
+			toolName: typeof event.toolName === "string" ? event.toolName : "tool",
+			isError: event.isError === true,
+			...(progressDetail(event.result?.details) ?? {}),
+		};
+	}
+	if (
+		event.type === "message_update"
+		&& event.assistantMessageEvent?.type === "text_delta"
+	) {
+		return { type: "writing" };
+	}
+	return undefined;
+}
+
+export function collectRunAssistantText(messages) {
+	if (!Array.isArray(messages)) return "";
+	const chunks = [];
+	for (const message of messages) {
+		if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+		for (const content of message.content) {
+			if (content?.type !== "text" || typeof content.text !== "string") continue;
+			const text = content.text.trim();
+			if (text) chunks.push(text);
+		}
+	}
+	return chunks.join("\n\n");
+}
+
+function emitRuntimeProgress(onProgress, event) {
+	if (!onProgress) return;
+	try {
+		const result = onProgress(event);
+		if (result && typeof result.catch === "function") {
+			void result.catch(() => {});
+		}
+	} catch {
+		// Status delivery must never interrupt the agent run.
+	}
+}
+
 export class JsonlRpc {
-	constructor(child, answerRequest) {
+	constructor(child, answerRequest, onProgress) {
 		this.child = child;
 		this.answerRequest = answerRequest;
+		this.onProgress = onProgress;
+		this.writingStarted = false;
 		this.nextId = 0;
 		this.pending = new Map();
 		this.waiters = new Map();
@@ -514,9 +1024,9 @@ export class JsonlRpc {
 			const error = new Error(
 				`Docker attach exited ${signal ? `with ${signal}` : `with code ${code}`}`,
 			);
-			for (const pending of this.pending.values()) pending.reject(error);
-			this.pending.clear();
+			this.rejectAll(error);
 		});
+		child.once("error", (error) => this.rejectAll(error));
 	}
 
 	handleLine(line) {
@@ -537,7 +1047,12 @@ export class JsonlRpc {
 		}
 		const waiters = this.waiters.get(value.type) ?? [];
 		this.waiters.delete(value.type);
-		for (const waiter of waiters) waiter(value);
+		for (const waiter of waiters) waiter.resolve(value);
+		const progress = projectRuntimeProgress(value);
+		if (progress && !(progress.type === "writing" && this.writingStarted)) {
+			if (progress.type === "writing") this.writingStarted = true;
+			emitRuntimeProgress(this.onProgress, progress);
+		}
 		if (value.type === "extension_ui_request") {
 			void this.answerRequest(value, (response) => this.write(response));
 		}
@@ -549,6 +1064,10 @@ export class JsonlRpc {
 			pending.reject(error);
 		}
 		this.pending.clear();
+		for (const waiters of this.waiters.values()) {
+			for (const waiter of waiters) waiter.reject(error);
+		}
+		this.waiters.clear();
 	}
 
 	write(value) {
@@ -568,9 +1087,9 @@ export class JsonlRpc {
 	}
 
 	waitFor(type) {
-		return new Promise((resolve) => {
+		return new Promise((resolve, reject) => {
 			const waiters = this.waiters.get(type) ?? [];
-			waiters.push(resolve);
+			waiters.push({ resolve, reject });
 			this.waiters.set(type, waiters);
 		});
 	}
@@ -668,6 +1187,137 @@ async function stopOwnedContainer(profile) {
 	if (container.State.Running) await docker(["stop", resources.container]);
 }
 
+export function createIdleContainerScheduler({
+	stop,
+	idleTimeoutMs = RUNTIME_IDLE_TIMEOUT_MS,
+	retryDelayMs = RUNTIME_STOP_RETRY_MS,
+	setTimer = setTimeout,
+	clearTimer = clearTimeout,
+	onError = (error) => console.error(`[Pi] Failed to stop idle container: ${error.message}`),
+}) {
+	const timers = new Map();
+	const stopping = new Map();
+	const trackedProfiles = new Set();
+	let shuttingDown = false;
+
+	const schedule = (profile, delay) => {
+		if (shuttingDown) return;
+		const previous = timers.get(profile);
+		if (previous) clearTimer(previous);
+		const timer = setTimer(() => stopAfterIdle(profile), delay);
+		timer.unref?.();
+		timers.set(profile, timer);
+		trackedProfiles.add(profile);
+	};
+
+	const stopAfterIdle = (profile) => {
+		timers.delete(profile);
+		const work = Promise.resolve().then(() => stop(profile));
+		stopping.set(profile, work);
+		void work.then(
+			() => {
+				if (stopping.get(profile) === work) stopping.delete(profile);
+				trackedProfiles.delete(profile);
+			},
+			(error) => {
+				if (stopping.get(profile) === work) stopping.delete(profile);
+				onError(error);
+				schedule(profile, retryDelayMs);
+			},
+		);
+	};
+
+	const cancel = async (profile) => {
+		while (true) {
+			const timer = timers.get(profile);
+			if (timer) {
+				clearTimer(timer);
+				timers.delete(profile);
+			}
+			const work = stopping.get(profile);
+			if (!work) break;
+			await work.catch(() => {});
+		}
+		trackedProfiles.delete(profile);
+	};
+
+	return {
+		async activate(profile) {
+			await cancel(profile);
+		},
+		keepWarm(profile) {
+			schedule(profile, idleTimeoutMs);
+		},
+		async stopNow(profile) {
+			await cancel(profile);
+			try {
+				await stop(profile);
+			} catch (error) {
+				onError(error);
+				schedule(profile, retryDelayMs);
+				throw error;
+			}
+		},
+		async shutdown() {
+			shuttingDown = true;
+			const profiles = [...trackedProfiles];
+			for (const timer of timers.values()) clearTimer(timer);
+			timers.clear();
+			await Promise.allSettled(stopping.values());
+			await Promise.all(profiles.map(profile => stop(profile)));
+			trackedProfiles.clear();
+		},
+	};
+}
+
+const idleContainers = createIdleContainerScheduler({ stop: stopOwnedContainer });
+
+export async function shutdownWarmContainers() {
+	await idleContainers.shutdown();
+}
+
+export async function finalizeRuntimeLifecycle({
+	profile,
+	resources,
+	bootstrapAttempted,
+	completedSuccessfully,
+	runError,
+	abortStop,
+}, {
+	clearBootstrapFn = clearBootstrap,
+	scheduler = idleContainers,
+	onCleanupError = (error) => console.error(
+		`[Pi] ${error.message}: ${error.errors.map(String).join("; ")}`,
+	),
+} = {}) {
+	const cleanupErrors = [];
+	if (bootstrapAttempted) {
+		try {
+			await clearBootstrapFn(resources.authVolume);
+		} catch (error) {
+			cleanupErrors.push(error);
+		}
+	}
+	const abortError = await abortStop;
+	if (abortError) cleanupErrors.push(abortError);
+	if (completedSuccessfully && cleanupErrors.length === 0) {
+		scheduler.keepWarm(profile);
+	} else {
+		try {
+			await scheduler.stopNow(profile);
+		} catch (error) {
+			cleanupErrors.push(error);
+		}
+	}
+	if (cleanupErrors.length === 0) return;
+	const cleanupError = new AggregateError(
+		cleanupErrors,
+		`Divo runtime cleanup failed for profile "${profile}"`,
+	);
+	if (runError) onCleanupError(cleanupError);
+	else throw cleanupError;
+}
+
 export async function reconcileOwnedContainers() {
 	const result = await docker([
 		"ps",
@@ -697,43 +1347,86 @@ async function runPrompt({
 	userId,
 	companyId,
 	departmentId,
+	runtimeThreadId,
 	answerRequest,
+	attachments,
+	sessionScope,
 	signal,
+	onProgress,
 }) {
 	if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
-	const resources = await ensureRuntime(profile);
+	let resources = resourcesFor(profile);
 	const bootstrap = {
 		backendUrl: backendUrlForContainer(backendUrl),
 		token,
 		profile,
 		thread,
+		...(runtimeThreadId ? { runtimeThreadId } : {}),
 		userId,
 		companyId,
 		departmentId,
+		sessionScope: validateSessionScope(sessionScope),
 	};
-	await writeBootstrap(resources.authVolume, bootstrap);
-	const startedAt = Date.now();
-	const child = spawn("docker", ["start", "--attach", "--interactive", resources.container], {
-		stdio: ["pipe", "pipe", "pipe"],
+	await idleContainers.activate(profile);
+	emitRuntimeProgress(onProgress, {
+		type: "starting",
+		stage: "workspace",
+		label: "Checking your workspace…",
 	});
-	child.stderr.pipe(process.stderr);
+	let abortStop;
+	let bootstrapAttempted = false;
+	let child;
+	let completedSuccessfully = false;
+	let runError;
 	const abort = () => {
-		void stopOwnedContainer(profile).catch((error) => {
-			console.error(`[Pi] Failed to stop interrupted container: ${error.message}`);
-		});
+		abortStop = stopOwnedContainer(profile).then(
+			() => undefined,
+			(error) => error,
+		);
 	};
 	signal?.addEventListener("abort", abort, { once: true });
+	if (signal?.aborted) abort();
 	try {
+		const runtime = await ensureRuntime(profile);
+		resources = runtime.resources;
+		if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
+		bootstrapAttempted = true;
+		await writeBootstrap(resources.authVolume, bootstrap);
+		emitRuntimeProgress(onProgress, {
+			type: "starting",
+			stage: "container",
+			label: runtime.wasRunning ? "Resuming your work…" : "Waking up Divo…",
+		});
+		const startedAt = Date.now();
+		const container = await inspectOwnedContainer(profile);
+		if (!container.State.Running) await docker(["start", resources.container]);
 		await waitUntilRunning(resources.container);
-		const rpc = new JsonlRpc(child, answerRequest);
+		child = spawn("docker", [
+			"exec",
+			"--interactive",
+			resources.container,
+			"node",
+			"divo/container-entry.mjs",
+		], {
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+		child.stderr.pipe(process.stderr);
+		const exited = new Promise((resolve) => {
+			child.once("error", (error) => resolve({ error }));
+			child.once("exit", (code, terminationSignal) => resolve({ code, terminationSignal }));
+		});
+		const rpc = new JsonlRpc(child, answerRequest, onProgress);
 		const state = await rpc.send({ type: "get_state" }, 90_000);
 		console.error(
 			`Ready ${profile}/${thread} in ${Date.now() - startedAt}ms (session ${state.sessionId})`,
 		);
+		emitRuntimeProgress(onProgress, { type: "ready" });
 		const completed = rpc.waitFor("agent_end");
-		await rpc.send({ type: "prompt", message }, 90_000);
-		await completed;
-		const result = await rpc.send({ type: "get_last_assistant_text" });
+		await rpc.send(
+			{ type: "prompt", message: `${attachmentManifestBlock(attachments)}${message}` },
+			90_000,
+		);
+		const completion = await completed;
 		const stats = await docker([
 			"stats",
 			"--no-stream",
@@ -742,13 +1435,32 @@ async function runPrompt({
 			resources.container,
 		]);
 		console.error(`Runtime stats: ${stats.stdout.trim()}`);
-		const text = result?.text ?? "";
+		const text = collectRunAssistantText(completion?.messages);
 		console.log(text);
+		child.stdin.end();
+		const outcome = await exited;
+		if (outcome.error) throw outcome.error;
+		if (outcome.code !== 0) {
+			throw new Error(
+				`Divo runtime exited ${outcome.terminationSignal ? `with ${outcome.terminationSignal}` : `with code ${outcome.code}`}`,
+			);
+		}
+		completedSuccessfully = true;
 		return { profile, thread, text };
+	} catch (error) {
+		runError = error;
+		throw error;
 	} finally {
 		signal?.removeEventListener("abort", abort);
-		await clearBootstrap(resources.authVolume);
-		await stopOwnedContainer(profile);
+		if (child && !child.stdin.destroyed) child.stdin.end();
+		await finalizeRuntimeLifecycle({
+			profile,
+			resources,
+			bootstrapAttempted,
+			completedSuccessfully,
+			runError,
+			abortStop,
+		});
 	}
 }
 
@@ -803,6 +1515,10 @@ export async function resolveRuntimeLease({ backendUrl, lease }) {
 		userId: session.userId,
 		companyId: session.companyId,
 		instanceId: session.runtime.instanceId,
+		// The department the backend launched this run for. Without it the
+		// container picks the member's first department, so a run scoped to one
+		// department would execute under another's tool grants.
+		departmentId: session.runtime.departmentId ?? undefined,
 	};
 }
 
@@ -811,7 +1527,10 @@ export async function promptWithRuntimeLease(runtime, message, options = {}) {
 		...runtime,
 		message,
 		answerRequest: createHeadlessExtensionResponder(),
+		attachments: options.attachments,
+		sessionScope: validateSessionScope(options.sessionScope),
 		signal: options.signal,
+		onProgress: options.onProgress,
 	});
 }
 
@@ -867,7 +1586,7 @@ export async function main(argv = process.argv.slice(2)) {
 		return prompt(profile, rest.join(" "), options);
 	}
 	if (command === "status") return status(profile);
-	if (command === "stop") return stopOwnedContainer(validateProfileName(profile));
+	if (command === "stop") return idleContainers.stopNow(validateProfileName(profile));
 	throw new Error(
 		[
 			"Usage:",

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   ChatMessageSerializer,
   DEFAULT_MAX_CONCURRENT,
-} from '../../../src/application/orchestration/chat-message-serializer.ts';
+} from '../../../src/application/channels/chat-message-serializer.ts';
 
 async function waitFor(predicate: () => boolean, timeoutMs = 200): Promise<void> {
   const deadline = Date.now() + timeoutMs;

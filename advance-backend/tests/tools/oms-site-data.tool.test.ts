@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createOmsSiteDataTool } from '../../src/application/orchestration/tools/families/oms-site-data.tool.ts';
+import { createOmsSiteDataTool } from '../../src/application/tools/families/oms-site-data.tool.ts';
 import { OmsSiteDataServiceError } from '../../src/application/oms/oms-site-data.types.ts';
 import { makeAllowedPerm, makeCtx, makeDeniedPerm } from './tool-test.helpers.ts';
 

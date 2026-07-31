@@ -9,7 +9,7 @@ import { ZohoTokenService } from '../src/infrastructure/zoho/zoho-token.service.
 import { ZohoConnectionRepository } from '../src/infrastructure/zoho/zoho-connection.repository.js';
 import { ZohoBooksPaginatedClient } from '../src/infrastructure/zoho/zoho-books-paginated.client.js';
 import { ZohoFinanceOps } from '../src/application/zoho/zoho-finance-ops.js';
-import { createZohoBooksTool } from '../src/application/orchestration/tools/families/zoho-books.tool.js';
+import { createZohoBooksTool } from '../src/application/tools/families/zoho-books.tool.js';
 import { RedisCache } from '../src/infrastructure/cache/redis-cache.js';
 import { loadAndValidateEnv } from '../src/config/env.js';
 import Redis from 'ioredis';

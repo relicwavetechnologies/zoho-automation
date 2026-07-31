@@ -13,7 +13,7 @@ import type { DeptUserOverrideRepoPort } from '../../infrastructure/persistence/
 import type { IntegrationConnectionRepository } from '../../infrastructure/persistence/integration-connection.repository';
 import type { AuditService } from '../../application/observability/audit.service';
 import { createMemberAuthMiddleware } from '../middleware/member-auth.middleware';
-import type { ToolRegistry } from '../../application/orchestration/tools/tool-registry';
+import type { ToolRegistry } from '../../application/tools/tool-registry';
 import type { CompanySerperConnectionRepository } from '../../infrastructure/persistence/company-serper-connection.repository';
 import type { CompanySerperService } from '../../application/web-search/company-serper.service';
 import type { CompanyOmsConnectionRepository } from '../../infrastructure/persistence/company-oms-connection.repository';

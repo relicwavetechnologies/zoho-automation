@@ -1,7 +1,6 @@
 import { NavLink } from "react-router-dom"
 import {
   Activity,
-  Bot,
   Building2,
   Diamond,
   LayoutDashboard,
@@ -34,7 +33,6 @@ const NAV: { label: string; items: { to: string; icon: LucideIcon; label: string
       { to: "/skills", icon: Library, label: "Skills Lab" },
       { to: "/guardrails", icon: Shield, label: "Guardrails" },
       { to: "/web-search", icon: Search, label: "Web Search" },
-      { to: "/agents", icon: Bot, label: "Agents" },
     ],
   },
   {

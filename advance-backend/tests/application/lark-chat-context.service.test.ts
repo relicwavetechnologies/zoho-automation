@@ -63,6 +63,16 @@ class FakeLarkChatContextRepo implements LarkChatContextRepoPort {
     return ok(this.row);
   }
 
+  async get(input: {
+    companyId: string;
+    chatId: string;
+  }): Promise<Result<LarkChatContextRow | null, InfraError>> {
+    if (this.row.companyId !== input.companyId || this.row.chatId !== input.chatId) {
+      return ok(null);
+    }
+    return ok(this.row);
+  }
+
   async update(
     id: string,
     expectedUpdatedAt: Date,
@@ -179,9 +189,8 @@ describe('LarkChatContextService attachment snapshots', () => {
         mimeType: 'application/pdf',
         larkFileKey: 'file_key_1',
         larkMessageId: 'om_1',
-        inlineContext: '[Document excerpt from "invoice.pdf":\nInvoice total $100]',
-        isInlineComplete: false,
-        ingestionStatus: 'processing',
+        ingestionStatus: 'unsupported',
+        inlineContext: 'Divo could not open this file, so it was not read.',
       }],
     });
 
@@ -199,10 +208,7 @@ describe('LarkChatContextService attachment snapshots', () => {
         mimeType: 'application/pdf',
         larkFileKey: 'file_key_1',
         larkMessageId: 'om_1',
-        fileAssetId: 'file_asset_1',
-        ingestionStatus: 'indexed',
-        indexedChunkCount: 4,
-        retrievalHint: 'Use contextSearch or documentRag with fileAssetId="file_asset_1".',
+        ingestionStatus: 'workspace',
       }],
     });
 
@@ -211,9 +217,10 @@ describe('LarkChatContextService attachment snapshots', () => {
     assert.equal(messages.length, 1);
     assert.equal(repo.row.sourceMessageCount, 1);
     assert.equal(messages[0]!.id, 'om_1');
-    assert.equal(messages[0]!.attachments?.[0]?.inlineContext?.includes('Invoice total $100'), true);
-    assert.equal(messages[0]!.attachments?.[0]?.fileAssetId, 'file_asset_1');
-    assert.equal(messages[0]!.attachments?.[0]?.ingestionStatus, 'indexed');
+    // A later status wins over the earlier one — the same upload is not
+    // duplicated, and it stops being reported as refused once it lands.
+    assert.equal(messages[0]!.attachments?.length, 1);
+    assert.equal(messages[0]!.attachments?.[0]?.ingestionStatus, 'workspace');
   });
 });
 
@@ -353,15 +360,14 @@ describe('LarkChatContextService rolling summary', () => {
         kind: 'file',
         fileName: 'invoice.pdf',
         mimeType: 'application/pdf',
-        fileAssetId: 'asset_invoice',
-        ingestionStatus: 'indexed',
-        retrievalHint: 'Use documentRag with fileAssetId="asset_invoice".',
+        ingestionStatus: 'workspace',
       }],
     });
 
     assert.equal(updated.ok, true);
+    // The message itself has rolled out of the transcript, so the filename is
+    // the only trace left of it — without that, the file becomes unfindable.
     const resources = (repo.row.summaryJson as GroupChatSummary).mentionedResources ?? [];
-    assert.ok(resources.includes('fileAssetId:asset_invoice'));
-    assert.ok(resources.includes('Use documentRag with fileAssetId="asset_invoice".'));
+    assert.ok(resources.includes('invoice.pdf'));
   });
 });

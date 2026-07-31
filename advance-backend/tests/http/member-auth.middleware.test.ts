@@ -37,6 +37,7 @@ function sessionFixture() {
     companyId: 'company-1',
     role: 'COMPANY_ADMIN',
     larkOpenId: 'ou_123',
+    larkTenantKey: 'tenant-1',
     expiresAt: new Date(Date.now() + 3_600_000),
     revokedAt: null,
     user: { email: 'member@example.com' },
@@ -126,7 +127,15 @@ async function callGateway(
     };
     const req = {
       headers: { authorization: `Bearer ${token}` },
-      body: { op: 'tools.list' },
+      body: {
+        op: 'tools.list',
+        execution: {
+          version: 1,
+          threadId: 'lark:chat-1',
+          runId: 'run-1',
+          actionId: 'action-1',
+        },
+      },
       query: {},
       params: {},
     } as unknown as Request;
@@ -237,8 +246,69 @@ describe('member authentication uses the live company membership', () => {
     assert.deepEqual(dispatchedRoles, ['COMPANY_ADMIN', 'MEMBER']);
   });
 
+  it('retries transient authentication-store failures before dispatching', async () => {
+    let sessionAttempts = 0;
+    const prisma = {
+      memberSession: {
+        findUnique: async () => {
+          sessionAttempts += 1;
+          if (sessionAttempts < 3) throw new Error('transient database error');
+          return sessionFixture();
+        },
+      },
+      adminMembership: { findFirst: async () => ({ role: 'MEMBER' }) },
+    };
+    const memberAuth = createMemberAuthMiddleware({
+      prisma: prisma as any,
+      jwtSecret: TEST_SECRET,
+      logger: noopLogger,
+    });
+    const gateway = createGatewayRoutes({
+      dispatcher: {
+        dispatch: async () => ({ ok: true, status: 'success', data: {} }),
+      } as any,
+      logger: noopLogger,
+    });
+
+    const result = await callGateway(memberAuth, gateway, token);
+
+    assert.equal(result.status, 200);
+    assert.equal(sessionAttempts, 3);
+  });
+
+  it('returns a clear temporary-unavailable error after three authentication retries', async () => {
+    let sessionAttempts = 0;
+    const prisma = {
+      memberSession: {
+        findUnique: async () => {
+          sessionAttempts += 1;
+          throw new Error('database unavailable');
+        },
+      },
+      adminMembership: { findFirst: async () => ({ role: 'MEMBER' }) },
+    };
+    const memberAuth = createMemberAuthMiddleware({
+      prisma: prisma as any,
+      jwtSecret: TEST_SECRET,
+      logger: noopLogger,
+    });
+    const gateway = createGatewayRoutes({
+      dispatcher: {
+        dispatch: async () => assert.fail('Unavailable authentication must not dispatch'),
+      } as any,
+      logger: noopLogger,
+    });
+
+    const result = await callGateway(memberAuth, gateway, token);
+
+    assert.equal(result.status, 503);
+    assert.equal(result.body.error, 'Authentication service temporarily unavailable. Please retry.');
+    assert.equal(sessionAttempts, 4);
+  });
+
   it('accepts only a complete backend-signed Lark runtime lease', async () => {
     const dispatchedChannels: string[] = [];
+    const dispatchedTenantKeys: Array<string | null | undefined> = [];
     const prisma = {
       memberSession: { findUnique: async () => sessionFixture() },
       adminMembership: { findFirst: async () => ({ role: 'MEMBER' }) },
@@ -251,8 +321,12 @@ describe('member authentication uses the live company membership', () => {
     });
     const gateway = createGatewayRoutes({
       dispatcher: {
-        dispatch: async (_request: unknown, member: { channel?: string }) => {
+        dispatch: async (
+          _request: unknown,
+          member: { channel?: string; larkTenantKey?: string | null },
+        ) => {
           dispatchedChannels.push(member.channel ?? '');
+          dispatchedTenantKeys.push(member.larkTenantKey);
           return { ok: true, status: 'success', data: {} };
         },
       } as any,
@@ -269,6 +343,7 @@ describe('member authentication uses the live company membership', () => {
 
     assert.equal((await callGateway(memberAuth, gateway, lease)).status, 200);
     assert.deepEqual(dispatchedChannels, ['lark']);
+    assert.deepEqual(dispatchedTenantKeys, ['tenant-1']);
 
     const incompleteLease = buildJwt({
       sessionId: 'session-1',
@@ -280,6 +355,7 @@ describe('member authentication uses the live company membership', () => {
     assert.equal(rejected.status, 401);
     assert.equal(rejected.body.error, 'Invalid Pi runtime lease');
     assert.deepEqual(dispatchedChannels, ['lark']);
+    assert.deepEqual(dispatchedTenantKeys, ['tenant-1']);
   });
 
   it('rejects a complete runtime lease on member routes unless explicitly allowed', async () => {
@@ -352,6 +428,9 @@ describe('member authentication uses the live company membership', () => {
       channel: 'lark',
       instanceId: 'pi-local-1',
       threadId: 'lark:chat-1',
+      // Present but null: this lease was issued without a department, and the
+      // container needs to see that rather than infer one.
+      departmentId: null,
     });
 
     const rejected = await callDesktopRoute(

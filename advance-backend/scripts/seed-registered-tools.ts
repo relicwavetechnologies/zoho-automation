@@ -108,7 +108,6 @@ export const REGISTERED_TOOL_SEEDS: readonly RegisteredToolSeed[] = [
   },
   { toolId: 'zohoCrm', name: 'Zoho CRM', description: 'Read and write Zoho CRM records, pipeline and lead reports.', category: 'crm', domain: 'zoho' },
   { toolId: 'zohoBooks', name: 'Zoho Books', description: 'Read and write invoices, bills and expenses; financial reports.', category: 'finance', domain: 'zoho' },
-  { toolId: 'contextSearch', name: 'Context Search', description: 'RAG search over ingested company documents.', category: 'knowledge', domain: 'context' },
   { toolId: 'webSearch', name: 'Web Search', description: 'Search the web for current information.', category: 'knowledge', domain: 'context' },
   { toolId: 'skillPublishing', name: 'Skill Publishing', description: 'Check sharing authority and publish explicitly shared skills to company or department scope.', category: 'knowledge', domain: 'skills', hitlRequired: true },
   MEMORY_PUBLISHING_REGISTERED_TOOL,
@@ -124,8 +123,6 @@ export const REGISTERED_TOOL_SEEDS: readonly RegisteredToolSeed[] = [
       'Returns facts only; no vector IDs, scores, metadata, or embeddings',
     ],
   },
-  { toolId: 'documentRag', name: 'Document RAG', description: 'Ingest and retrieve uploaded documents.', category: 'knowledge', domain: 'rag' },
-  { toolId: 'dataProcessor', name: 'Data Processor', description: 'Transform and process datasets in a sandbox.', category: 'data', domain: 'data' },
   {
     toolId: 'dataExport',
     name: 'Secure Data Export',

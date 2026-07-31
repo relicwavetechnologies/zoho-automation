@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createSemrushTool } from '../../src/application/orchestration/tools/families/semrush.tool.ts';
+import { createSemrushTool } from '../../src/application/tools/families/semrush.tool.ts';
 import { SemrushServiceError } from '../../src/application/semrush/semrush.types.ts';
 import { makeAllowedPerm, makeCtx, makeDeniedPerm } from './tool-test.helpers.ts';
 

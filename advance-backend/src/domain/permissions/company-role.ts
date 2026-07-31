@@ -10,9 +10,6 @@ export type CompanyRoleSlug = string & { readonly __companyRole: true };
 export const asCompanyRoleSlug = (s: string): CompanyRoleSlug =>
   s.trim().toUpperCase() as CompanyRoleSlug;
 
-export const CompanyRoleSlugSchema = z
-  .string()
-  .transform(s => asCompanyRoleSlug(s));
 
 export const isBuiltIn = (slug: CompanyRoleSlug): boolean =>
   (BUILT_IN_COMPANY_ROLES as readonly string[]).includes(slug);

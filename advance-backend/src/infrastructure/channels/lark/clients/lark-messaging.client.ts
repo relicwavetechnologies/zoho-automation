@@ -1,7 +1,7 @@
 import type {
   LarkMessageRendering,
   LarkMessagingClientPort,
-} from '../../../../application/orchestration/tools/families/lark-messaging.tool';
+} from '../../../../application/tools/families/lark-messaging.tool';
 import type { Client } from '@larksuiteoapi/node-sdk';
 import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 import type { Logger } from '../../../../shared/logger';

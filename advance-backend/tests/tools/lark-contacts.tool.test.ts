@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createLarkContactsTool } from '../../src/application/orchestration/tools/families/lark-contacts.tool.ts';
+import { createLarkContactsTool } from '../../src/application/tools/families/lark-contacts.tool.ts';
 import { makeCtx } from './tool-test.helpers.ts';
 
 const ctx = makeCtx('larkContacts', ['read'], { userExternalId: 'ou_requester' });

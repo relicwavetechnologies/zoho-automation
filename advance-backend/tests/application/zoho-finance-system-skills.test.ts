@@ -35,6 +35,7 @@ describe('Zoho Finance system skill provisioning', () => {
       skill => skill.slug === 'zoho-books-read-analysis',
     );
     assert.ok(specialist);
+    assert.deepEqual(specialist.toolIds, ['zohoBooks']);
     assert.match(specialist.markdown, /exact normalized invoice_number match/i);
     assert.match(specialist.markdown, /sorted by invoice date newest-first/i);
     assert.match(specialist.markdown, /_currency is UNKNOWN/i);

@@ -1,10 +1,22 @@
+/**
+ * `media.image_ocr` — the desktop image path.
+ *
+ * This deliberately coexists with the container's `image_ops.py ocr`, and the
+ * two are not duplicates of each other: desktop sends image *bytes* over the
+ * gateway and has no workspace to write them to, while a Lark attachment is
+ * already staged as a *file* under `.divo/inbox` and is read in the container
+ * by the file-work skill. Same job, two different starting points.
+ *
+ * Do not collapse them without first giving desktop a workspace.
+ */
+
 import { z } from 'zod';
 import type { TypedEnv } from '../../config/env';
 import type { Logger } from '../../shared/logger';
 import {
-  extractImageTextWithProvider,
-  type ImageOcrResult,
-} from '../ingestion/text-extraction/image-ocr.extractor';
+  extractImageTextWithVision,
+  type VisionOcrResult as ImageOcrResult,
+} from '../../infrastructure/ai/vision/openrouter-vision';
 import type { ApiKeyExhaustionNotifierPort } from '../governance/api-key-exhaustion.notifier';
 import type { ApiKeyProvider } from '../governance/api-key-exhaustion.classifier';
 
@@ -61,7 +73,7 @@ export class MediaOcrService {
     try {
       const extracted = await this.extractWithConfiguredProvider(imageBuffer, payload.mimeType);
       if (opts?.companyId) {
-        const provider: ApiKeyProvider = this.env.IMAGE_OCR_PROVIDER === 'openrouter' ? 'openrouter' : 'gemini';
+        const provider: ApiKeyProvider = 'openrouter';
         void this.exhaustionNotifier?.clear(opts.companyId, provider);
       }
       return {
@@ -84,7 +96,7 @@ export class MediaOcrService {
       };
     } catch (error) {
       if (opts?.companyId) {
-        const provider: ApiKeyProvider = this.env.IMAGE_OCR_PROVIDER === 'openrouter' ? 'openrouter' : 'gemini';
+        const provider: ApiKeyProvider = 'openrouter';
         const message = error instanceof Error ? error.message : String(error);
         void this.exhaustionNotifier?.notifyIfExhausted({
           companyId: opts.companyId,
@@ -102,17 +114,13 @@ export class MediaOcrService {
     imageBuffer: Buffer,
     mimeType: string,
   ): Promise<ImageOcrResult> {
-    const provider = this.env.IMAGE_OCR_PROVIDER;
-    this.log.info('media_ocr.extract.start', { provider, mimeType, sizeBytes: imageBuffer.length });
+    const model = this.env.VISION_OCR_MODEL;
+    this.log.info('media_ocr.extract.start', { model, mimeType, sizeBytes: imageBuffer.length });
 
-    return extractImageTextWithProvider(imageBuffer, mimeType, {
-      provider,
-      geminiApiKey: this.env.GEMINI_API_KEY ?? this.env.GOOGLE_GENERATIVE_AI_API_KEY,
-      openrouterApiKey: this.env.OPENROUTER_API_KEY,
-      visionModel: provider === 'openrouter'
-        ? this.env.OPENROUTER_VISION_MODEL
-        : this.env.GEMINI_VISION_MODEL,
-      openrouterProviderOrder: this.env.OPENROUTER_PROVIDER_ORDER,
+    return extractImageTextWithVision(imageBuffer, mimeType, {
+      apiKey: this.env.OPENROUTER_API_KEY ?? '',
+      model,
+      providerOrder: this.env.OPENROUTER_PROVIDER_ORDER,
     });
   }
 }

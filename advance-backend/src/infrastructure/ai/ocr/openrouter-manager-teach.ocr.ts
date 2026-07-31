@@ -1,19 +1,17 @@
 import { readFile } from 'node:fs/promises';
 import type { ManagerTeachFrameOcr } from '../../../application/persona-learning/manager-teach-media.types';
 import {
-  extractImageTextWithProvider,
-  type ImageOcrResult,
-} from '../../../application/ingestion/text-extraction/image-ocr.extractor';
+  extractImageTextWithVision,
+  type VisionOcrResult,
+} from '../vision/openrouter-vision';
 
 export class OpenRouterManagerTeachFrameOcr implements ManagerTeachFrameOcr {
   constructor(private readonly options: { apiKey: string; model: string }) {}
 
-  async extract(framePath: string): Promise<ImageOcrResult> {
-    const bytes = await readFile(framePath);
-    return extractImageTextWithProvider(bytes, 'image/jpeg', {
-      provider: 'openrouter',
-      openrouterApiKey: this.options.apiKey,
-      visionModel: this.options.model,
+  async extract(framePath: string): Promise<VisionOcrResult> {
+    return extractImageTextWithVision(await readFile(framePath), 'image/jpeg', {
+      apiKey: this.options.apiKey,
+      model: this.options.model,
     });
   }
 }
