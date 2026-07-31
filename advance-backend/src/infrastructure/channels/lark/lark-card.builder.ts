@@ -916,7 +916,6 @@ export function planFinalCards(
 export interface StatusCardInput {
   branding?: ChannelBranding;
   timeline?: ChannelTimeline;
-  actions?:  Array<{ label: string; value: string }>;
 }
 
 /**
@@ -924,15 +923,18 @@ export interface StatusCardInput {
  *
  * Body, top to bottom: what the agent is saying (only when no step is running),
  * the activity list with its subagent children, the folded plan, then a footer
- * rule carrying the counter and — on the same row, so it costs no height — the
- * Stop button.
+ * rule carrying the counter.
+ *
+ * The card carries no controls. Stopping a run is `/q` in the conversation —
+ * one way to say it, in the same place every other instruction to Divo is
+ * typed, and it works whether or not this particular bubble is still on screen.
  *
  * There is no progress ring and no state line. The ring's percentage came from
  * a denominator the run cannot know, and the state already sits in the header
  * chip; both were confident-looking restatements of something said elsewhere.
  */
 export function buildStatusCard(input: StatusCardInput): string {
-  const { branding, timeline, actions } = input;
+  const { branding, timeline } = input;
   const now = Date.now();
   const elements: unknown[] = [];
 
@@ -964,52 +966,28 @@ export function buildStatusCard(input: StatusCardInput): string {
     }
   }
 
-  const stoppable = timeline?.state !== 'queued'
-    && timeline?.state !== 'done'
-    && timeline?.state !== 'blocked';
+  // The footer is one line of text now, so it needs no column set to hold a
+  // button beside it. A running card also says how to stop it — the command is
+  // useless to someone who has never been told it exists, and this is the only
+  // moment they are looking for it.
   const counter = timeline ? statusCounterText(timeline, now) : '';
-  const footerButtons = [
-    ...(actions ?? []).map((a, i) => ({
-      tag:        'button',
-      element_id: `run_act_${i + 1}`,
-      text:       { tag: 'plain_text', content: a.label },
-      type:       'text',
-      size:       'small',
-      behaviors:  [{ type: 'callback', value: { action: a.value } }],
-    })),
-    ...(stoppable ? [{
-      tag:        'button',
-      element_id: 'run_stop',
-      text:       { tag: 'plain_text', content: 'Stop' },
-      type:       'text',
-      size:       'small',
-      behaviors:  [{ type: 'callback', value: { action: 'interrupt_run' } }],
-    }] : []),
-  ];
+  // Queued is deliberately excluded: nothing has registered an abort yet, so
+  // `/q` would answer "there is no active run" to someone the card had just
+  // told to send it.
+  const RUNNING: readonly ChannelRunState[] = ['thinking', 'planning', 'working', 'writing'];
+  const stoppable = timeline?.state !== undefined && RUNNING.includes(timeline.state);
+  const footer = [counter, ...(stoppable ? ['send `/q` to stop'] : [])]
+    .filter(Boolean)
+    .join('  ·  ');
 
-  if (counter || footerButtons.length > 0) {
+  if (footer) {
     elements.push(hrElement('8px 0 0 0'));
     elements.push({
-      tag:                'column_set',
-      element_id:         'run_footer',
-      horizontal_spacing: '8px',
-      margin:             '2px 0 0 0',
-      columns: [
-        {
-          tag: 'column', width: 'weighted', weight: 1, vertical_align: 'center',
-          elements: [{
-            tag:        'markdown',
-            element_id: 'run_count',
-            content:    `<font color='grey'>${counter || ' '}</font>`,
-            text_size:  'notation',
-          }],
-        },
-        ...footerButtons.map((button, index) => ({
-          tag: 'column', width: 'auto', vertical_align: 'center',
-          elements: [button],
-          element_id: `run_fcol_${index + 1}`,
-        })),
-      ],
+      tag:        'markdown',
+      element_id: 'run_count',
+      content:    `<font color='grey'>${footer}</font>`,
+      text_size:  'notation',
+      margin:     '2px 0 0 0',
     });
   }
 

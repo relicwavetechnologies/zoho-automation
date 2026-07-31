@@ -288,7 +288,6 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
             return;
           }
 
-          // Handle interrupt button clicks on status cards
           const actionValue = (cardEvent as any)?.action?.value;
           const actionObj = typeof actionValue === 'string' ? (() => { try { return JSON.parse(actionValue); } catch { return null; } })() : actionValue;
           if (actionObj?.action === 'set_group_mode') {
@@ -300,32 +299,6 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
             });
             return;
           }
-          if (actionObj?.action === 'interrupt_run') {
-            const messageId = (cardEvent as any)?.open_message_id
-              ?? (cardEvent as any)?.context?.open_message_id
-              ?? (cardEvent as any)?.message_id;
-            if (messageId) {
-              const corrId = deps.adapter.findCorrelationByStatusMessage(messageId);
-              if (corrId) {
-                const result = deps.adapter.interruptRun(corrId, actor);
-                log.info('webhook.interrupt', { correlationId: corrId, result, actorUserId: actor.userId });
-                const content = result === 'aborted'
-                  ? 'Interrupt requested.'
-                  : result === 'forbidden'
-                    ? 'You are not authorized to interrupt this run.'
-                    : 'This run is no longer active.';
-                res.status(200).json({
-                  toast: { type: result === 'aborted' ? 'success' : 'warning', content },
-                });
-                return;
-              }
-            }
-            res.status(200).json({
-              toast: { type: 'warning', content: 'This run is no longer active.' },
-            });
-            return;
-          }
-
           if (deps.approvalCardHandler) {
             const result = await deps.approvalCardHandler.handle(cardEvent, actor);
             res.status(200).json(result.responseBody ?? { ok: true });
@@ -2369,8 +2342,21 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
   return values.find(value => typeof value === 'string' && value.trim().length > 0) as string | undefined;
 }
 
+/**
+ * Stopping a run is a command, not a button.
+ *
+ * `/q` is the one Divo advertises — it is two keystrokes in the box the user is
+ * already typing in, and it reaches a run whose status card has long since
+ * scrolled away. `/stop` is kept only because it is what people already know;
+ * both spellings enter the same handler, so there is one implementation.
+ *
+ * This is checked before the execution lane on purpose: a stop that queued
+ * behind the turn it is trying to stop would arrive after that turn finished.
+ */
+const STOP_COMMANDS: ReadonlySet<string> = new Set(['/q', '/stop']);
+
 const isStopCommand = (text: string | undefined): boolean =>
-  (text ?? '').trim().toLowerCase() === '/stop';
+  STOP_COMMANDS.has((text ?? '').trim().toLowerCase());
 
 async function handleStopBeforeLane(
   incoming: IncomingMessage,
@@ -2812,7 +2798,7 @@ async function handleSlashCommand(args: {
       '**Conversation**\n' +
       '`/clear` — Reset this DM, thread, or inline session.\n' +
       '`/clear room` — Admin-only two-step reset for every thread in this group.\n' +
-      '`/stop` — Stop the active run in this conversation.\n' +
+      '`/q` — Stop the active run in this conversation.\n' +
       '`/group-settings` — Admin-only group reply settings.\n' +
       '`/group-mode status` — Confirm that group replies stay in threads.\n' +
       '`/remember <fact>` — Save a fact Divo will recall in future chats.\n' +

@@ -202,33 +202,31 @@ describe('lark-card.builder buildStatusCard', () => {
     assert.match(plan['content'] as string, /1 of 3/);
   });
 
-  it('keeps the counter and Stop on one footer row', () => {
-    const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
-    const footer = elementById(card, 'run_footer') as {
-      tag: string;
-      columns: Array<{ elements: Array<Record<string, unknown>> }>;
-    };
+  it('puts the counter and how to stop on one footer line', () => {
+    const footer = elementById(parseCard(buildStatusCard({ timeline: workingTimeline })), 'run_count')!;
 
-    assert.equal(footer.tag, 'column_set');
-    assert.match(footer.columns[0]!.elements[0]!['content'] as string, /11 steps · 1m 04s/);
-    assert.equal(footer.columns[1]!.elements[0]!['element_id'], 'run_stop');
+    assert.equal(footer['tag'], 'markdown');
+    assert.match(footer['content'] as string, /11 steps · 1m 04s/);
+    assert.match(footer['content'] as string, /`\/q` to stop/);
   });
 
-  it('wires Stop as a 2.0 callback', () => {
+  // The card is a message, not a control panel: a callback button is the one
+  // affordance that stops working the moment the bubble scrolls away, and it
+  // was a second way to say something `/q` already says.
+  it('carries no buttons at all', () => {
     const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
-    const stop = (elementById(card, 'run_footer')!['columns'] as Array<{
-      elements: Array<{ text: { content: string }; behaviors: Array<{ type: string; value: { action: string } }> }>;
-    }>)[1]!.elements[0]!;
 
-    assert.equal(stop.text.content, 'Stop');
-    assert.equal(stop.behaviors[0]!.type, 'callback');
-    assert.equal(stop.behaviors[0]!.value.action, 'interrupt_run');
+    assert.doesNotMatch(JSON.stringify(card), /"tag":"button"/);
+    assert.doesNotMatch(JSON.stringify(card), /callback/);
   });
 
-  it('offers no Stop button on a run that cannot be stopped', () => {
+  // Naming `/q` on a run nobody can stop sends the user to a command that
+  // answers "there is no active run" — queued included, since nothing has
+  // registered an abort until the lane opens.
+  it('names the stop command only while a run can actually be stopped', () => {
     for (const state of ['queued', 'done', 'blocked'] as const) {
       const card = parseCard(buildStatusCard({ timeline: { ...workingTimeline, state } }));
-      assert.doesNotMatch(JSON.stringify(card), /interrupt_run/, state);
+      assert.doesNotMatch(JSON.stringify(card), /to stop/, state);
     }
   });
 
@@ -242,7 +240,11 @@ describe('lark-card.builder buildStatusCard', () => {
 
     assert.match(elementById(card, 'run_activity')!['content'] as string, /✗ \*\*Zoho\*\*.*401 token expired/);
     assert.deepEqual(chips(card), ['Working']);
-    assert.match(JSON.stringify(card), /interrupt_run/, 'a failed step does not end the run');
+    assert.match(
+      elementById(card, 'run_count')!['content'] as string,
+      /to stop/,
+      'a failed step does not end the run',
+    );
   });
 
   it('never renders a progress chart', () => {
@@ -267,9 +269,7 @@ describe('lark-card.builder buildStatusCard', () => {
   it('recomputes elapsed time at render, not at snapshot time', () => {
     const startedAtMs = 1_000_000;
     const counterOf = (card: Record<string, unknown>) =>
-      ((card['body'] as { elements: Array<Record<string, unknown>> }).elements
-        .find(e => e['element_id'] === 'run_footer')!['columns'] as Array<{ elements: Array<{ content: string }> }>)
-        [0]!.elements[0]!.content.match(/(\d+m \d+s|\d+s)/)?.[0];
+      (elementById(card, 'run_count')!['content'] as string).match(/(\d+m \d+s|\d+s)/)?.[0];
 
     const originalNow = Date.now;
     (Date as { now: () => number }).now = () => startedAtMs + 30_000;

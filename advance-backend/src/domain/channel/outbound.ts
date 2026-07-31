@@ -115,7 +115,6 @@ export interface StatusUpdate {
   readonly text?:     string;
   readonly branding?: ChannelBranding;
   readonly timeline?: ChannelTimeline;
-  readonly actions?:  readonly InteractiveAction[];
   readonly terminal:  boolean;
 }
 

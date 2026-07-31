@@ -602,47 +602,41 @@ describe('LarkChannelAdapter.parseIncoming', () => {
   });
 });
 
+// `/q` is the only way to stop a run, so `interruptConversation` is the only
+// entry point these rules are reachable through — the correlation-id variant is
+// internal and no longer has a caller of its own.
 describe('LarkChannelAdapter run interruption', () => {
-  it('allows the run owner to interrupt their active run', () => {
+  const CONVERSATION = 'oc_1:thread:om_1';
+  const registered = (owner: { userId: string; companyId: string }) => {
     const adapter = makeAdapter();
     const controller = new AbortController();
     adapter.registerAbortController('corr-1', controller, {
-      userId: 'user-1',
-      companyId: 'company-1',
-      conversationKey: 'oc_1:thread:om_1',
+      ...owner,
+      conversationKey: CONVERSATION,
     });
+    return { adapter, controller };
+  };
 
-    const result = adapter.interruptRun('corr-1', {
-      userId: 'user-1',
-      companyId: 'company-1',
-      aiRole: 'MEMBER',
-    });
+  it('allows the run owner to interrupt their active run', () => {
+    const { adapter, controller } = registered({ userId: 'user-1', companyId: 'company-1' });
+    const actor = { userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER' };
 
-    assert.equal(result, 'aborted');
+    assert.equal(adapter.interruptConversation(CONVERSATION, actor), 'aborted');
     assert.equal(controller.signal.aborted, true);
-    assert.equal(adapter.interruptRun('corr-1', {
-      userId: 'user-1',
-      companyId: 'company-1',
-      aiRole: 'MEMBER',
-    }), 'not_found');
+    // A second `/q` must not report success against a run already released.
+    assert.equal(adapter.interruptConversation(CONVERSATION, actor), 'not_found');
   });
 
   it('rejects another member without consuming the active run', () => {
-    const adapter = makeAdapter();
-    const controller = new AbortController();
-    adapter.registerAbortController('corr-1', controller, {
-      userId: 'owner-1',
-      companyId: 'company-1',
-      conversationKey: 'oc_1:thread:om_1',
-    });
+    const { adapter, controller } = registered({ userId: 'owner-1', companyId: 'company-1' });
 
-    assert.equal(adapter.interruptRun('corr-1', {
+    assert.equal(adapter.interruptConversation(CONVERSATION, {
       userId: 'member-2',
       companyId: 'company-1',
       aiRole: 'MEMBER',
     }), 'forbidden');
     assert.equal(controller.signal.aborted, false);
-    assert.equal(adapter.interruptRun('corr-1', {
+    assert.equal(adapter.interruptConversation(CONVERSATION, {
       userId: 'admin-1',
       companyId: 'company-1',
       aiRole: 'COMPANY_ADMIN',
@@ -650,15 +644,9 @@ describe('LarkChannelAdapter run interruption', () => {
   });
 
   it('rejects an admin from another company', () => {
-    const adapter = makeAdapter();
-    const controller = new AbortController();
-    adapter.registerAbortController('corr-1', controller, {
-      userId: 'owner-1',
-      companyId: 'company-1',
-      conversationKey: 'oc_1:thread:om_1',
-    });
+    const { adapter, controller } = registered({ userId: 'owner-1', companyId: 'company-1' });
 
-    assert.equal(adapter.interruptRun('corr-1', {
+    assert.equal(adapter.interruptConversation(CONVERSATION, {
       userId: 'admin-2',
       companyId: 'company-2',
       aiRole: 'SUPER_ADMIN',

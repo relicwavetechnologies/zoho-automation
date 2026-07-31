@@ -1309,64 +1309,6 @@ describe('Lark webhook card authorization', () => {
     });
   });
 
-  it('passes the authenticated actor to interrupt authorization and returns its result', async () => {
-    let actor: any;
-    const result = await runWebhook({
-      header: {
-        event_type: 'card.action.trigger',
-        token: 'verify',
-        tenant_key: 'tenant-1',
-      },
-      event: {
-        operator: { open_id: 'ou_member' },
-        context: { open_message_id: 'om_status' },
-        action: { value: { action: 'interrupt_run' } },
-      },
-    }, {
-      setupAdapter: adapter => {
-        (adapter as any).findCorrelationByStatusMessage = () => 'corr-1';
-        (adapter as any).interruptRun = (_correlationId: string, value: unknown) => {
-          actor = value;
-          return 'forbidden';
-        };
-      },
-    });
-
-    assert.deepEqual(actor, {
-      tenantKey: 'tenant-1',
-      openId: 'ou_member',
-      userId: 'user-1',
-      companyId: 'company-1',
-      aiRole: 'MEMBER',
-    });
-    assert.deepEqual(result.responseBody, {
-      toast: { type: 'warning', content: 'You are not authorized to interrupt this run.' },
-    });
-  });
-
-  it('reports an interrupt request without claiming the run already stopped', async () => {
-    const result = await runWebhook({
-      header: {
-        event_type: 'card.action.trigger',
-        token: 'verify',
-        tenant_key: 'tenant-1',
-      },
-      event: {
-        operator: { open_id: 'ou_member' },
-        context: { open_message_id: 'om_status' },
-        action: { value: { action: 'interrupt_run' } },
-      },
-    }, {
-      setupAdapter: adapter => {
-        (adapter as any).findCorrelationByStatusMessage = () => 'corr-1';
-        (adapter as any).interruptRun = () => 'aborted';
-      },
-    });
-
-    assert.deepEqual(result.responseBody, {
-      toast: { type: 'success', content: 'Interrupt requested.' },
-    });
-  });
 
   it('treats old group-mode card actions as informational', async () => {
     const result = await runWebhook({
@@ -1655,41 +1597,47 @@ describe('Lark conversation commands', () => {
     assert.match(adapter.__finalReplies[0], /inside the thread/i);
   });
 
-  it('handles /stop before entering the busy conversation lane', async () => {
-    let adapter: any;
-    let interrupted: unknown;
-    const result = await runWebhook(makeEvent({
-      chatType: 'group',
-      mentionsBot: true,
-      text: '/stop',
-      rootId: 'om_thread_root',
-    }), {
-      setupAdapter: value => {
-        adapter = value;
-        captureOutbound(value);
-        value.interruptConversation = (key: string, actor: unknown) => {
-          interrupted = { key, actor };
-          return 'aborted';
-        };
-      },
-    });
+  // Both spellings enter the same handler; `/q` is the one the card and /help
+  // advertise, `/stop` is kept for the people who already learned it.
+  for (const command of ['/q', '/stop']) {
+    it(`handles ${command} before entering the busy conversation lane`, async () => {
+      let adapter: any;
+      let interrupted: unknown;
+      const result = await runWebhook(makeEvent({
+        chatType: 'group',
+        mentionsBot: true,
+        text: command,
+        rootId: 'om_thread_root',
+      }), {
+        setupAdapter: value => {
+          adapter = value;
+          captureOutbound(value);
+          value.interruptConversation = (key: string, actor: unknown) => {
+            interrupted = { key, actor };
+            return 'aborted';
+          };
+        },
+      });
 
-    assert.deepEqual(interrupted, {
-      key: 'oc_1:thread:om_thread_root',
-      actor: {
-        userId: 'user-1',
-        companyId: 'company-1',
-        aiRole: 'MEMBER',
-      },
+      assert.deepEqual(interrupted, {
+        key: 'oc_1:thread:om_thread_root',
+        actor: {
+          userId: 'user-1',
+          companyId: 'company-1',
+          aiRole: 'MEMBER',
+        },
+      });
+      // The whole point of intercepting here: a stop that queued behind the run
+      // it is stopping would arrive after that run had already finished.
+      assert.deepEqual(result.serializerKeys, []);
+      assert.equal(result.engineInputs.length, 0);
+      assert.match(noticesSent(adapter)[0], /Stop requested/i);
+      assert.deepEqual(adapter.__sentTextDeliveries, [{
+        replyToMessageId: 'om_1',
+        replyInThread: true,
+      }]);
     });
-    assert.deepEqual(result.serializerKeys, []);
-    assert.equal(result.engineInputs.length, 0);
-    assert.match(noticesSent(adapter)[0], /Stop requested/i);
-    assert.deepEqual(adapter.__sentTextDeliveries, [{
-      replyToMessageId: 'om_1',
-      replyInThread: true,
-    }]);
-  });
+  }
 });
 
 describe('Lark first contact', () => {
