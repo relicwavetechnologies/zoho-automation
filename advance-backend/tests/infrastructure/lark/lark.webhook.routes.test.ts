@@ -5,6 +5,7 @@ import {
   createLarkWebhookRoutes,
   processAcceptedLarkReceipt,
   replayLarkMessageAfterLogin,
+  quotedImageAttachments,
   runPiAndDeliver,
   type LarkWebhookDeps,
 } from '../../../src/infrastructure/channels/lark/lark.webhook.routes.ts';
@@ -3161,4 +3162,33 @@ describe('Lark delivery resume', () => {
     // Failing closed here would strand the message: no resume and no run.
     assert.ok(result.order.includes('engine'));
   });
+});
+
+// A quoted picture used to be downloaded, base64-encoded onto the incoming
+// message, and then dropped: nothing downstream read `imageUrls`. Divo answered
+// quote-replies about an image from the surrounding text alone.
+it('a quoted image becomes a file the run can open', async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const attachments = quotedImageAttachments(
+    [`data:image/png;base64,${png.toString('base64')}`],
+    noopLogger,
+  );
+
+  assert.equal(attachments.length, 1);
+  assert.equal(attachments[0]!.kind, 'image');
+  assert.equal(attachments[0]!.mimeType, 'image/png');
+  assert.match(attachments[0]!.name, /\.png$/);
+
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of await attachments[0]!.openStream()) chunks.push(chunk);
+  assert.deepEqual(Buffer.concat(chunks), png);
+});
+
+// A half-written file in the inbox reads to the agent as a picture it ought to
+// be able to open, so a URL that will not decode is dropped instead of staged.
+it('an undecodable quoted image is dropped rather than staged empty', () => {
+  assert.deepEqual(
+    quotedImageAttachments(['https://example.com/not-a-data-url', 'data:image/png;base64,'], noopLogger),
+    [],
+  );
 });

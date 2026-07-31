@@ -1135,6 +1135,42 @@ async function sharedConversationFor(input: {
   return block ?? undefined;
 }
 
+/**
+ * Turn the quoted message's images into attachments the run can open.
+ *
+ * The parent hydrator has already downloaded and size-capped these, so the
+ * bytes are in hand as data URLs and the only work left is decoding them. A URL
+ * that will not decode is dropped rather than staged: a truncated file in the
+ * inbox reads to the agent as a picture it should be able to open.
+ */
+export function quotedImageAttachments(
+  imageUrls: readonly string[] | undefined,
+  log: Logger,
+): LarkPiRuntimeAttachment[] {
+  const attachments: LarkPiRuntimeAttachment[] = [];
+  for (const [index, url] of (imageUrls ?? []).entries()) {
+    const match = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(url);
+    if (!match) {
+      log.warn('webhook.quoted_image.unreadable', { index });
+      continue;
+    }
+    const mimeType = match[1]!.toLowerCase();
+    const bytes = Buffer.from(match[2]!, 'base64');
+    if (bytes.length === 0) {
+      log.warn('webhook.quoted_image.empty', { index, mimeType });
+      continue;
+    }
+    const extension = mimeType.split('/')[1]?.replace('jpeg', 'jpg') ?? 'png';
+    attachments.push({
+      kind: 'image',
+      name: `quoted_image_${index + 1}.${extension}`,
+      mimeType,
+      openStream: async () => (async function* () { yield new Uint8Array(bytes); })(),
+    });
+  }
+  return attachments;
+}
+
 export async function runPiAndDeliver(input: {
   incoming: IncomingMessage;
   runContext: Parameters<LarkPiRuntimeService['run']>[0]['runContext'];
@@ -2170,12 +2206,18 @@ async function processInBackground(
   });
 
   // ── Normal message → isolated Pi runtime ──────────────────────────────────
+  // A quoted picture is staged into the workspace exactly like an attached one.
+  // It used to be downloaded, encoded, and then dropped: nothing downstream ever
+  // read `imageUrls`, so quote-replying an image asked Divo about something it
+  // could not see, and it answered from the surrounding text.
+  const quotedImages = quotedImageAttachments(parentRef?.imageUrls, log);
   const replyText = await runPiAndDeliver({
     incoming: withLarkSenderName(effectiveIncoming, identity),
     runContext,
     conversation,
     deps,
     log,
+    ...(quotedImages.length > 0 ? { attachments: quotedImages } : {}),
     ...(signal ? { signal } : {}),
   });
 

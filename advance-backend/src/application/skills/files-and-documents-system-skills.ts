@@ -70,12 +70,12 @@ python3 ${SCRIPTS}/ensure_deps.py light --quiet -- ${SCRIPTS}/extract_pymupdf.py
 python3 ${SCRIPTS}/ensure_deps.py light --quiet -- ${SCRIPTS}/extract_pymupdf.py doc.pdf --pages 0-4
 \`\`\`
 
-Empty output means a scanned PDF with no text layer. Render the pages, then OCR
-them:
+Empty output means a scanned PDF with no text layer. Render the pages, then read
+each rendered page the way the image policy in your workspace instructions says
+to read a picture:
 
 \`\`\`bash
 python3 ${SCRIPTS}/ensure_deps.py light --quiet -- ${SCRIPTS}/extract_pymupdf.py scan.pdf --render "$DIVO_RUN_DIR/pages"
-python3 ${SCRIPTS}/ensure_deps.py image --quiet -- ${SCRIPTS}/image_ops.py ocr "$DIVO_RUN_DIR/pages/page-1.png"
 \`\`\`
 
 Use \`--render\`, not \`--images\`. \`--images\` pulls out pictures *embedded* in
@@ -93,17 +93,23 @@ Read workbooks with \`openpyxl\`.
 
 ## Images
 
-Tier \`image\`, then \`image_ops.py\`: \`ocr\` for text, \`inspect\` for
-dimensions and format, \`convert\` / \`resize\` / \`crop\` to reshape.
+To find out what a picture shows, follow the image policy in your workspace
+instructions. It names the one correct method for the model this run is on —
+looking at the file directly, or asking the gateway to describe it — because
+only one of the two works on any given model.
+
+This skill covers reshaping an image, not understanding it. Tier \`image\`, then
+\`image_ops.py\`: \`inspect\` for dimensions and format, \`convert\` / \`resize\` /
+\`crop\` to change the file.
 
 \`\`\`bash
-python3 ${SCRIPTS}/ensure_deps.py image --quiet -- ${SCRIPTS}/image_ops.py ocr receipt.jpg
+python3 ${SCRIPTS}/ensure_deps.py image --quiet -- ${SCRIPTS}/image_ops.py inspect receipt.jpg
 \`\`\`
 
-For a screenshot where the layout carries the meaning — a dashboard, a chart, a
-UI bug — Tesseract returns disconnected words and misses the point. Describe
-what is structurally visible and ask for the underlying data rather than
-guessing at the picture.
+Do not reach for Tesseract. It finds loose words and nothing else: it cannot
+read a chart, a dashboard, a UI screenshot, a diagram, or handwriting, and on a
+picture with no text in it returns an empty string that is easy to mistake for
+"this image is blank".
 
 ## A file too large to open
 
