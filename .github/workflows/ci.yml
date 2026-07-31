@@ -4,10 +4,18 @@ on:
   pull_request:
     branches:
       - main
+      - dev
   push:
     branches:
       - main
+      - dev
   workflow_dispatch:
+    inputs:
+      deploy_development:
+        description: Deploy the current dev commit after CI passes
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -21,6 +29,16 @@ env:
   NODE_VERSION: 22
 
 jobs:
+  main-pr-source:
+    name: main-pr-source
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require dev as the source branch
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: test "${HEAD_REF}" = dev
+
   advance-backend:
     name: advance-backend
     runs-on: ubuntu-latest
@@ -49,6 +67,7 @@ jobs:
       CLOUDINARY_API_KEY: test-cloudinary-key
       CLOUDINARY_API_SECRET: test-cloudinary-secret
       ZOHO_TOKEN_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
+      DATA_EXPORT_UNISOLATED_TEST_MODE: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -110,12 +129,36 @@ jobs:
       - name: Build
         run: pnpm build
 
+  divo-pi:
+    name: divo-pi
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: divo-pi
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: divo-pi/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Test Divo runtime and controller
+        run: npm run divo:test
+
   docker-build:
     name: docker-build
     runs-on: ubuntu-latest
     needs:
       - advance-backend
       - admin
+      - divo-pi
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -126,5 +169,275 @@ jobs:
       - name: Build admin image
         run: docker build --build-arg VITE_API_BASE_URL=http://127.0.0.1:3001 -t divo-admin:ci ./admin
 
+      - name: Build Pi runtime and controller images
+        run: |
+          docker build -t divo-pi:ci ./divo-pi
+          docker build -f divo-pi/Dockerfile.controller -t divo-pi-controller:ci ./divo-pi
+          docker run --rm --entrypoint node divo-pi-controller:ci \
+            --input-type=module --eval "await import('./divo/local-rpc-server.mjs')"
+
       - name: Validate Compose config
         run: DIVO_ENV_FILE=/dev/null docker compose --env-file .env.production.example config >/dev/null
+
+      - name: Validate development Compose config
+        run: |
+          DIVO_DEV_ENV_FILE=/dev/null \
+          DIVO_DEV_BACKEND_IMAGE=divo-backend:ci \
+          DIVO_DEV_ADMIN_IMAGE=divo-admin:ci \
+          DIVO_DEV_PI_IMAGE=divo-pi:ci \
+          DIVO_DEV_PI_CONTROLLER_IMAGE=divo-pi-controller:ci \
+          DIVO_DEV_POSTGRES_PASSWORD=ci-placeholder \
+          DIVO_DEV_PUBLIC_URL=https://app-dev.103.172.92.187.sslip.io \
+          LARK_APP_ID_DEV_ENV=ci-placeholder \
+          LARK_APP_SECRET_DEV_ENV=ci-placeholder \
+          docker compose -f docker-compose.dev.yml config >/dev/null
+
+  publish-development-images:
+    name: publish-development-images
+    runs-on: ubuntu-latest
+    needs:
+      - docker-build
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.deploy_development == true
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-tag: ${{ steps.meta.outputs.image-tag }}
+      backend-image: ${{ steps.meta.outputs.backend-image }}
+      admin-image: ${{ steps.meta.outputs.admin-image }}
+      pi-image: ${{ steps.meta.outputs.pi-image }}
+      pi-controller-image: ${{ steps.meta.outputs.pi-controller-image }}
+    steps:
+      - name: Resolve image metadata
+        id: meta
+        run: |
+          IMAGE_TAG="dev-${GITHUB_SHA}"
+          BACKEND_IMAGE="ghcr.io/relicwavetechnologies/zoho-automation/backend:${IMAGE_TAG}"
+          ADMIN_IMAGE="ghcr.io/relicwavetechnologies/zoho-automation/admin:${IMAGE_TAG}"
+          PI_IMAGE="ghcr.io/relicwavetechnologies/zoho-automation/pi:${IMAGE_TAG}"
+          PI_CONTROLLER_IMAGE="ghcr.io/relicwavetechnologies/zoho-automation/pi-controller:${IMAGE_TAG}"
+
+          echo "image-tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "backend-image=${BACKEND_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "admin-image=${ADMIN_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "pi-image=${PI_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "pi-controller-image=${PI_CONTROLLER_IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push backend image
+        run: |
+          docker build \
+            --label com.divo.environment=development \
+            -t "${{ steps.meta.outputs.backend-image }}" \
+            -t ghcr.io/relicwavetechnologies/zoho-automation/backend:dev-latest \
+            ./advance-backend
+
+          docker push "${{ steps.meta.outputs.backend-image }}"
+          docker push ghcr.io/relicwavetechnologies/zoho-automation/backend:dev-latest
+
+      - name: Build and push admin image
+        run: |
+          docker build \
+            --label com.divo.environment=development \
+            --build-arg VITE_API_BASE_URL="" \
+            -t "${{ steps.meta.outputs.admin-image }}" \
+            -t ghcr.io/relicwavetechnologies/zoho-automation/admin:dev-latest \
+            ./admin
+
+          docker push "${{ steps.meta.outputs.admin-image }}"
+          docker push ghcr.io/relicwavetechnologies/zoho-automation/admin:dev-latest
+
+      - name: Build and push Pi images
+        run: |
+          docker build \
+            --label com.divo.environment=development \
+            -t "${{ steps.meta.outputs.pi-image }}" \
+            -t ghcr.io/relicwavetechnologies/zoho-automation/pi:dev-latest \
+            ./divo-pi
+
+          docker build \
+            --label com.divo.environment=development \
+            -f divo-pi/Dockerfile.controller \
+            -t "${{ steps.meta.outputs.pi-controller-image }}" \
+            -t ghcr.io/relicwavetechnologies/zoho-automation/pi-controller:dev-latest \
+            ./divo-pi
+
+          docker push "${{ steps.meta.outputs.pi-image }}"
+          docker push ghcr.io/relicwavetechnologies/zoho-automation/pi:dev-latest
+          docker push "${{ steps.meta.outputs.pi-controller-image }}"
+          docker push ghcr.io/relicwavetechnologies/zoho-automation/pi-controller:dev-latest
+
+  deploy-development:
+    name: deploy-development
+    runs-on: ubuntu-latest
+    needs:
+      - publish-development-images
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.deploy_development == true
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DEPLOY_DIR: /opt/divo-dev
+      DIVO_DEV_DOMAIN: app-dev.103.172.92.187.sslip.io
+      DIVO_DEV_HOST: 103.172.92.187
+      DIVO_DEV_USER: deploy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate deployment secrets
+        env:
+          DIVO_DEV_SSH_KEY: ${{ secrets.DIVO_DEV_SSH_KEY }}
+        run: |
+          test -n "${DIVO_DEV_SSH_KEY}"
+
+      - name: Configure SSH
+        env:
+          DIVO_DEV_SSH_KEY: ${{ secrets.DIVO_DEV_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${DIVO_DEV_SSH_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' '103.172.92.187 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICer9x9ARy2oBqzIGOALmDDLZPwpIfEmbXuutFu53Nuy' >> ~/.ssh/known_hosts
+
+      - name: Verify development environment is provisioned
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
+            "test -r '${DEPLOY_DIR}/.env.development.local' && command -v docker >/dev/null && docker compose version >/dev/null"
+
+      - name: Authorize development tunnel keys
+        run: |
+          scp -i ~/.ssh/id_ed25519 \
+            infra/development/developer-authorized-keys \
+            "${DIVO_DEV_USER}@${DIVO_DEV_HOST}:/tmp/divo-development-authorized-keys"
+          ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          touch ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          while IFS= read -r key; do
+            [[ -z "${key}" ]] && continue
+            grep -qxF "${key}" ~/.ssh/authorized_keys || printf '%s\n' "${key}" >> ~/.ssh/authorized_keys
+          done < /tmp/divo-development-authorized-keys
+          rm -f /tmp/divo-development-authorized-keys
+          REMOTE
+
+      - name: Upload development configuration
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
+            "install -d -m 700 '${DEPLOY_DIR}'"
+          scp -i ~/.ssh/id_ed25519 \
+            docker-compose.dev.yml \
+            "${DIVO_DEV_USER}@${DIVO_DEV_HOST}:${DEPLOY_DIR}/docker-compose.yml"
+
+      - name: Pull images, migrate, and restart
+        env:
+          BACKEND_IMAGE: ${{ needs.publish-development-images.outputs.backend-image }}
+          ADMIN_IMAGE: ${{ needs.publish-development-images.outputs.admin-image }}
+          PI_IMAGE: ${{ needs.publish-development-images.outputs.pi-image }}
+          PI_CONTROLLER_IMAGE: ${{ needs.publish-development-images.outputs.pi-controller-image }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "${GHCR_TOKEN}" | ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
+            "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
+
+          ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
+            "cd '${DEPLOY_DIR}' && \
+             DIVO_DEV_ENV_FILE=.env.development.local \
+             DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             DIVO_DEV_PI_IMAGE='${PI_IMAGE}' \
+             DIVO_DEV_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' \
+             docker compose --env-file .env.development.local pull && \
+             docker pull '${PI_IMAGE}' && \
+             DIVO_DEV_ENV_FILE=.env.development.local \
+             DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             DIVO_DEV_PI_IMAGE='${PI_IMAGE}' \
+             DIVO_DEV_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' \
+             docker compose --env-file .env.development.local up -d --wait divo-dev-postgres divo-dev-redis-queue divo-dev-redis-cache divo-dev-redis-memory && \
+             DIVO_DEV_ENV_FILE=.env.development.local \
+             DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             DIVO_DEV_PI_IMAGE='${PI_IMAGE}' \
+             DIVO_DEV_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' \
+             docker compose --env-file .env.development.local run --rm --no-deps divo-dev-backend pnpm prisma db execute --file prisma/migrations/20260731_drop_scheduled_workflow_origin_chat/migration.sql --schema prisma/schema.prisma && \
+             DIVO_DEV_ENV_FILE=.env.development.local \
+             DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             DIVO_DEV_PI_IMAGE='${PI_IMAGE}' \
+             DIVO_DEV_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' \
+             docker compose --env-file .env.development.local run --rm --no-deps divo-dev-backend pnpm prisma db push --skip-generate && \
+             DIVO_DEV_ENV_FILE=.env.development.local \
+             DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             DIVO_DEV_PI_IMAGE='${PI_IMAGE}' \
+             DIVO_DEV_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' \
+             docker compose --env-file .env.development.local run --rm --no-deps divo-dev-backend pnpm tsx scripts/seed-registered-tools.ts && \
+             DIVO_DEV_ENV_FILE=.env.development.local \
+             DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             DIVO_DEV_PI_IMAGE='${PI_IMAGE}' \
+             DIVO_DEV_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' \
+             docker compose --env-file .env.development.local run --rm --no-deps divo-dev-backend pnpm provision:google-workspace-skills && \
+             DIVO_DEV_ENV_FILE=.env.development.local \
+             DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             DIVO_DEV_PI_IMAGE='${PI_IMAGE}' \
+             DIVO_DEV_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' \
+             docker compose --env-file .env.development.local up -d --no-build --remove-orphans"
+
+      - name: Smoke test the local stack and HTTPS route
+        env:
+          BACKEND_IMAGE: ${{ needs.publish-development-images.outputs.backend-image }}
+          ADMIN_IMAGE: ${{ needs.publish-development-images.outputs.admin-image }}
+          PI_IMAGE: ${{ needs.publish-development-images.outputs.pi-image }}
+          PI_CONTROLLER_IMAGE: ${{ needs.publish-development-images.outputs.pi-controller-image }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
+            "DIVO_DEV_DOMAIN='${DIVO_DEV_DOMAIN}' DEPLOY_DIR='${DEPLOY_DIR}' DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' DIVO_DEV_PI_IMAGE='${PI_IMAGE}' DIVO_DEV_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS --max-time 10 http://127.0.0.1:13001/health >/dev/null \
+              && curl -fsS --max-time 10 http://127.0.0.1:18081/ >/dev/null \
+              && curl -fsS --max-time 15 --resolve "${DIVO_DEV_DOMAIN}:443:127.0.0.1" "https://${DIVO_DEV_DOMAIN}/" >/dev/null \
+              && cd "${DEPLOY_DIR}" \
+              && DIVO_DEV_BACKEND_IMAGE="${DIVO_DEV_BACKEND_IMAGE}" \
+                 DIVO_DEV_ADMIN_IMAGE="${DIVO_DEV_ADMIN_IMAGE}" \
+                 DIVO_DEV_PI_IMAGE="${DIVO_DEV_PI_IMAGE}" \
+                 DIVO_DEV_PI_CONTROLLER_IMAGE="${DIVO_DEV_PI_CONTROLLER_IMAGE}" \
+                 docker compose --env-file .env.development.local exec -T divo-dev-backend \
+                 node -e "fetch('http://divo-dev-pi-controller:4317/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
+              cd "${DEPLOY_DIR}"
+              DIVO_DEV_BACKEND_IMAGE="${DIVO_DEV_BACKEND_IMAGE}" \
+              DIVO_DEV_ADMIN_IMAGE="${DIVO_DEV_ADMIN_IMAGE}" \
+              DIVO_DEV_PI_IMAGE="${DIVO_DEV_PI_IMAGE}" \
+              DIVO_DEV_PI_CONTROLLER_IMAGE="${DIVO_DEV_PI_CONTROLLER_IMAGE}" \
+                docker compose --env-file .env.development.local ps
+              exit 0
+            fi
+
+            sleep 5
+          done
+
+          cd "${DEPLOY_DIR}"
+          DIVO_DEV_BACKEND_IMAGE="${DIVO_DEV_BACKEND_IMAGE}" \
+          DIVO_DEV_ADMIN_IMAGE="${DIVO_DEV_ADMIN_IMAGE}" \
+          DIVO_DEV_PI_IMAGE="${DIVO_DEV_PI_IMAGE}" \
+          DIVO_DEV_PI_CONTROLLER_IMAGE="${DIVO_DEV_PI_CONTROLLER_IMAGE}" \
+            docker compose --env-file .env.development.local ps
+          DIVO_DEV_BACKEND_IMAGE="${DIVO_DEV_BACKEND_IMAGE}" \
+          DIVO_DEV_ADMIN_IMAGE="${DIVO_DEV_ADMIN_IMAGE}" \
+          DIVO_DEV_PI_IMAGE="${DIVO_DEV_PI_IMAGE}" \
+          DIVO_DEV_PI_CONTROLLER_IMAGE="${DIVO_DEV_PI_CONTROLLER_IMAGE}" \
+            docker compose --env-file .env.development.local logs --tail=160 divo-dev-backend divo-dev-admin google-workspace-mcp divo-dev-pi-controller
+          exit 1
+          REMOTE

@@ -13,6 +13,7 @@ export interface DeptUserOverrideRow {
 
 export interface DeptUserOverrideRepoPort {
   getForUser(departmentId: string, userId: string): Promise<Result<DeptUserOverrideRow[], InfraError>>;
+  upsert(departmentId: string, userId: string, toolId: string, actionGroup: string, allowed: boolean, updatedBy: string): Promise<Result<DeptUserOverrideRow, InfraError>>;
 }
 
 export class DeptUserOverrideRepository implements DeptUserOverrideRepoPort {
@@ -35,6 +36,26 @@ export class DeptUserOverrideRepository implements DeptUserOverrideRepoPort {
       })));
     } catch (e) {
       return err(wrapInfra('prisma', 'getDeptUserOverrides', e));
+    }
+  }
+
+  async upsert(
+    departmentId: string,
+    userId: string,
+    toolId: string,
+    actionGroup: string,
+    allowed: boolean,
+    updatedBy: string,
+  ): Promise<Result<DeptUserOverrideRow, InfraError>> {
+    try {
+      const row = await this.db.departmentUserToolOverride.upsert({
+        where: { departmentId_userId_toolId_actionGroup: { departmentId, userId, toolId, actionGroup } },
+        create: { departmentId, userId, toolId, actionGroup, allowed, updatedBy },
+        update: { allowed, updatedBy },
+      });
+      return ok({ departmentId: row.departmentId, userId: row.userId, toolId: row.toolId, actionGroup: row.actionGroup, allowed: row.allowed });
+    } catch (e) {
+      return err(wrapInfra('prisma', 'upsertDeptUserToolOverride', e));
     }
   }
 }

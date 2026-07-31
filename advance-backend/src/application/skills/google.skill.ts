@@ -1,48 +1,55 @@
-import type { Skill } from './skill.types';
+import {
+  GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT,
+  GOOGLE_WORKSPACE_MCP_SOURCE,
+  GOOGLE_WORKSPACE_PRODUCTS,
+} from '../google/google-workspace-mcp-manifest';
 
-export const googleSkill: Skill = {
-  id: 'google',
-  name: 'Google Workspace',
-  description: 'Gmail (send/search/draft), Google Drive, Google Calendar',
-  toolIds: ['googleGmail', 'googleDrive', 'googleCalendar'],
-  instructions: `GMAIL — TOOL SELECTION:
-- "check inbox", "latest emails" → list inbox (NEVER search)
-- "search emails from X", "find email about Y" → search
-- "send email to X" → send (requires human approval)
-- "draft email to X" → draft_create
-- "reply to this email" → reply with messageId
-- "reply all" → reply_all with messageId
-- "forward this email to X" → forward with messageId and to
-- "archive/mark read/star/trash" → matching mailbox operation; never permanently delete
+const operationIndex = GOOGLE_WORKSPACE_PRODUCTS
+  .map((product) => `- ${product.name} -> ${product.toolId}: ${product.tools.join(', ')}`)
+  .join('\n');
+/**
+ * Server-runner guidance is not a selectable skill. Agent-visible routing and
+ * specialist recipes come from the governed DB catalogue.
+ */
+export const googleRunnerInstructions = `GOOGLE WORKSPACE EXECUTION METHOD:
+- Google Workspace executes only through Divo's governed product tools backed by the private server-side Workspace MCP. Never use a local Google CLI, direct Google API request, Bash/curl request, browser automation, or local OAuth token.
+- Reuse an exact connected/shared Google account already present in the server-runner context. Call connections.list once only when that context has no suitable account, then include its UUID as connectionId when invoking the selected product tool. This lets Divo enforce RBAC, connection policy, and rate limits; never pick a model default.
+- A text reply is an exact choice only when it uniquely identifies one returned option by number or account email. Never rotate through accounts after an error.
+- If no eligible connection is available, tell the member to connect or share a Google Workspace account with the required access/scopes.
+- Never use an email address or label as connectionId. Reuse the same connectionId for describe and call.
+- Invoke the product tool with args={"op":"describe"|"call","nativeTool":"...","input":{},"connectionId":"<required for call>"}.
+- ${GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance}
+- Reuse an exact operation schema already present in the current server-runner context. Before an unfamiliar operation whose schema is absent, call op="describe" once for its nativeTool with the selected connectionId and follow the returned input schema exactly. Once the schema is known in the current run, call op="call" directly.
+- The gateway owns RBAC, approvals, sharing, token refresh, and audit. A pending or denied action is not completed.
+- A result advisory with level="required" is part of the operation contract. Satisfy it before reporting success; otherwise report partial completion and the exact missing evidence.
 
-EMAIL COMPOSITION:
-- Always provide a clear subject unless user explicitly says to leave it blank.
-- Only send to real email addresses provided by user or resolved by contact lookup. If only a name is given, stop and say the email must be resolved first.
-- NEVER invent email addresses from names. Never use placeholder domains (example.com, test.com).
-- Always use bodyText. Divo renders it with the T1 HTML email template (multipart plain + HTML). Do NOT use bodyHtml unless explicitly required.
-- Structure long research/report emails with ALL CAPS section headings (e.g. PRICING, ENGINE SPECS) and bullet lines (- item). Optional templateId: divo-finance-v1 for finance, divo-report-v1 for research summaries.
-- Write well-structured plain text: real paragraph breaks, not a wall of text.
-- Include all URLs on their own lines. Finance values must appear in bodyText, not just subject.
-- Greet by name when known. Sign off: "Best regards,\\n[Sender Name]" unless user specifies otherwise.
-- CC/BCC only when user explicitly provides them. Never mention BCC in confirmation text.
+PINNED MCP CONTRACT:
+- Source: ${GOOGLE_WORKSPACE_MCP_SOURCE.repository}
+- Version: ${GOOGLE_WORKSPACE_MCP_SOURCE.version}
+- Divo exposes only the reviewed operations below. The MCP server's own OAuth tool is intentionally unavailable.
 
-APPROVAL DISCIPLINE:
-- Never claim "Email sent" or "Draft created" without invoking the matching Gmail tool first.
-- If user gave a clear send instruction with resolved recipient and grounded body, just send (routes through approval). Don't ask for extra confirmation.
-- If user asks to review first, use draft_create instead.
+PRODUCT ROUTING AND APPROVED OPERATIONS:
+${operationIndex}
 
-DRIVE:
-- Search/list when user asks about documents, spreadsheets, or files.
-- Return file name, link, last-modified date — max 10 items.
+COMMON WORKFLOWS:
+- Gmail: search_gmail_messages -> get_gmail_message_content -> send_gmail_message for a grounded reply. Use draft_gmail_message when review was requested.
+- Drive: search_drive_files or list_drive_items -> get_drive_file_content. Use get_drive_file_download_url only when an actual download is needed.
+- Calendar: get_events for schedules; manage_event for create/update/delete; query_freebusy before scheduling when availability matters.
+- Docs: create_doc -> modify_doc_text/insert_doc_elements -> get_doc_as_markdown to verify. Return the canonical document URL from tool output.
+- Sheets: get_spreadsheet_info -> read_sheet_values -> modify_sheet_values -> read_sheet_values to verify. Use the read result's structured values/counts rather than parsing prose, and use create_spreadsheet for a new workbook.
+- Slides: create_presentation -> batch_update_presentation -> get_presentation/get_page to verify. Preserve the returned presentation ID and URL.
+- Forms: create_form -> batch_update_form -> get_form. Read responses only when requested and allowed.
+- Tasks and Contacts: list/search first when identity or target IDs are ambiguous, then use the relevant manage operation.
+- Chat: list_spaces before reading or sending when the destination is not already resolved.
+- Apps Script: inspect the project before updates. run_script_function is execution and may require approval.
 
-CALENDAR:
-- Create events with clear title and ISO 8601 start/end in IST (+05:30).
-- Default duration: 30 min. Add attendees only when explicitly named.
+EMAIL SAFETY:
+- Never invent recipient addresses. Send only to real addresses given by the member or grounded by contact lookup.
+- Use a clear subject and structured body. Use base64 attachment content or HTTPS sources; sidecar-local paths and file:// URLs are forbidden.
+- Never claim sent/drafted until the tool succeeds. Preserve approval status exactly.
 
-ERROR HANDLING:
-- Missing recipient → "Cannot send: recipient email address not provided."
-- Gmail not connected → tell user to connect Google Workspace in settings.
-- Tool fail → retry once, then return exact reason.
-
-NEVER: expose tool names/raw IDs, use filler phrases, claim action without tool success.`,
-};
+GENERAL SAFETY:
+- Never guess message IDs, file IDs, event IDs, spreadsheet IDs, presentation IDs, form IDs, task IDs, contact IDs, space IDs, or script IDs.
+- For mutation, use the smallest exact operation and verify important document/sheet/slide changes with a read.
+- Retry only once when the returned error identifies a correctable argument. Otherwise report the exact useful reason.
+- Never expose access tokens, refresh tokens, MCP endpoint details, or raw internal authorization data.`;

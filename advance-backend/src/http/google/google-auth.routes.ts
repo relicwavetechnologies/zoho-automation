@@ -18,8 +18,7 @@
 import { Router, type Request, type Response } from 'express';
 import { randomBytes } from 'node:crypto';
 import type { GoogleOAuthService } from '../../infrastructure/google/google-oauth.service';
-import type { GoogleUserAuthLinkRepository } from '../../infrastructure/google/google-user-auth-link.repository';
-import type { CompanyGoogleAuthLinkRepository } from '../../infrastructure/google/company-google-auth-link.repository';
+import type { IntegrationConnectionRepository } from '../../infrastructure/persistence/integration-connection.repository';
 import type { CachePort } from '../../shared/cache';
 import type { Logger } from '../../shared/logger';
 
@@ -66,8 +65,7 @@ function decodeState(raw: string): OAuthState | null {
 
 export function createGoogleAuthRoutes(deps: {
   googleOAuthService:   GoogleOAuthService;
-  googleUserLinkRepo:   GoogleUserAuthLinkRepository;
-  companyGoogleAuthRepo: CompanyGoogleAuthLinkRepository;
+  connectionRepo:       IntegrationConnectionRepository;
   cache:                CachePort;
   logger:               Logger;
   frontendBaseUrl:      string;
@@ -149,40 +147,31 @@ export function createGoogleAuthRoutes(deps: {
         ? new Date(Date.now() + tokens.expiresIn * 1000)
         : undefined;
 
-      if (state.linkType === 'company') {
-        // Company-level Workspace link
-        const result = await deps.companyGoogleAuthRepo.upsert({
-          companyId:    state.companyId,
-          googleUserId: userInfo.sub,
-          accessToken:  tokens.accessToken,
-          ...(userInfo.email        ? { googleEmail:          userInfo.email }         : {}),
-          ...(userInfo.name         ? { googleName:           userInfo.name }          : {}),
-          ...(tokens.refreshToken   ? { refreshToken:         tokens.refreshToken }    : {}),
-          ...(tokens.tokenType      ? { tokenType:            tokens.tokenType }       : {}),
-          ...(expiresAt             ? { accessTokenExpiresAt: expiresAt }              : {}),
-        });
-        if (!result.ok) {
-          throw new Error(result.error.message);
-        }
-        log.info('google.auth.company_link.saved', { companyId: state.companyId, googleEmail: userInfo.email });
-      } else {
-        // Per-user link
-        const result = await deps.googleUserLinkRepo.upsert({
-          companyId:    state.companyId,
-          userId:       state.userId,
-          googleUserId: userInfo.sub,
-          accessToken:  tokens.accessToken,
-          ...(userInfo.email        ? { googleEmail:          userInfo.email }         : {}),
-          ...(userInfo.name         ? { googleName:           userInfo.name }          : {}),
-          ...(tokens.refreshToken   ? { refreshToken:         tokens.refreshToken }    : {}),
-          ...(tokens.tokenType      ? { tokenType:            tokens.tokenType }       : {}),
-          ...(expiresAt             ? { accessTokenExpiresAt: expiresAt }              : {}),
-        });
-        if (!result.ok) {
-          throw new Error(result.error.message);
-        }
-        log.info('google.auth.user_link.saved', { companyId: state.companyId, userId: state.userId, googleEmail: userInfo.email });
+      const result = await deps.connectionRepo.upsertGoogleConnection({
+        companyId:    state.companyId,
+        ownerType:    state.linkType === 'company' ? 'company' : 'user',
+        createdBy:    state.userId,
+        googleUserId: userInfo.sub,
+        accessToken:  tokens.accessToken,
+        initialAccess: 'admin',
+        ...(state.linkType === 'user' ? { ownerUserId: state.userId } : {}),
+        ...(tokens.scope        ? { scope:                tokens.scope }        : {}),
+        ...(userInfo.email        ? { googleEmail:          userInfo.email }         : {}),
+        ...(userInfo.name         ? { googleName:           userInfo.name }          : {}),
+        ...(tokens.refreshToken   ? { refreshToken:         tokens.refreshToken }    : {}),
+        ...(tokens.tokenType      ? { tokenType:            tokens.tokenType }       : {}),
+        ...(expiresAt             ? { accessTokenExpiresAt: expiresAt }              : {}),
+      });
+      if (!result.ok) {
+        throw new Error(result.error.message);
       }
+      log.info('google.auth.connection.saved', {
+        companyId:    state.companyId,
+        userId:       state.userId,
+        linkType:     state.linkType,
+        connectionId: result.value.id,
+        googleEmail:  userInfo.email,
+      });
 
       const successUrl = state.returnTo ?? `${deps.frontendBaseUrl}/settings/integrations?status=connected&provider=google`;
       res.redirect(successUrl);

@@ -100,7 +100,7 @@ export function PermissionsTab({
         <div>
           <p className="text-[13px] font-semibold">Role permissions</p>
           <p className="text-[11px] text-muted-foreground">
-            Toggle the action groups each role can use per tool. Unchecked means denied by default.
+            Only checked action groups are allowed for this department role. Unchecked means not allowed.
           </p>
         </div>
 

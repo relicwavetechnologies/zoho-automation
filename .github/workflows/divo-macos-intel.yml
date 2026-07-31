@@ -1,0 +1,95 @@
+name: Divo macOS Intel DMG
+
+on:
+  # Manual only. DMG builds are produced locally, so a push to dev (or any
+  # branch) must not trigger a macOS DMG build in CI. Run on demand from the
+  # Actions tab or `gh workflow run divo-macos-intel.yml` if ever needed.
+  workflow_dispatch:
+
+concurrency:
+  group: divo-macos-intel-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-intel-dmg:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: jan
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+
+      - name: Configure Yarn
+        run: |
+          corepack enable
+          corepack prepare yarn@4.5.3 --activate
+          yarn config set -H enableImmutableInstalls false
+
+      - name: Install dependencies
+        run: yarn install
+
+      - name: Install Intel Rust target
+        run: rustup target add x86_64-apple-darwin
+
+      - name: Build Intel application and DMG
+        run: |
+          if [[ -z "${APPLE_CERTIFICATE:-}" || -z "${APPLE_CERTIFICATE_PASSWORD:-}" ]]; then
+            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD
+          fi
+
+          if [[ -n "${NOTARIZE_P8_BASE64:-}" && -n "${APPLE_API_ISSUER:-}" && -n "${APPLE_API_KEY:-}" ]]; then
+            base64 -d <<< "$NOTARIZE_P8_BASE64" > /tmp/notary-key.p8
+            export APPLE_API_KEY_PATH=/tmp/notary-key.p8
+          else
+            unset APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_PATH
+          fi
+
+          yarn build:macos:x86_64
+        env:
+          NODE_OPTIONS: --max-old-space-size=4196
+          APP_PATH: .
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          POSTHOG_KEY: ${{ secrets.POSTHOG_KEY }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          APPLE_CERTIFICATE: ${{ secrets.CODE_SIGN_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CODE_SIGN_P12_PASSWORD }}
+          APPLE_API_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARIZE_P8_BASE64: ${{ secrets.NOTARIZE_P8_BASE64 }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          JAN_SIGNING_KEY: ${{ secrets.JAN_SIGNING_KEY }}
+
+      - name: Verify every native component supports Intel
+        shell: bash
+        run: |
+          APP_BUNDLE=$(find src-tauri/target/x86_64-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' -type d -print -quit)
+          scripts/verify-macos-architecture.sh "$APP_BUNDLE" x86_64
+
+      - name: Upload Intel DMG
+        id: upload-dmg
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: divo-macos-x86_64-${{ github.sha }}
+          path: jan/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Publish artifact link in the run summary
+        run: |
+          {
+            echo '## Intel macOS build'
+            echo
+            echo '- Architecture: `x86_64`'
+            echo '- DMG artifact: ${{ steps.upload-dmg.outputs.artifact-url }}'
+            echo '- Commit: `${{ github.sha }}`'
+          } >> "$GITHUB_STEP_SUMMARY"

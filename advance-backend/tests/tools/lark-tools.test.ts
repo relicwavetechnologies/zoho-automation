@@ -13,12 +13,35 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeAllowedPerm, makeDeniedPerm, makeCtx } from './tool-test.helpers.ts';
 
-import { createLarkTaskTool }     from '../../src/application/orchestration/tools/families/lark-task.tool.ts';
-import { createLarkMessagingTool } from '../../src/application/orchestration/tools/families/lark-messaging.tool.ts';
-import { createLarkCalendarTool }  from '../../src/application/orchestration/tools/families/lark-calendar.tool.ts';
-import { createLarkDocTool }       from '../../src/application/orchestration/tools/families/lark-doc.tool.ts';
-import { createLarkBaseTool }      from '../../src/application/orchestration/tools/families/lark-base.tool.ts';
-import { createLarkApprovalTool }  from '../../src/application/orchestration/tools/families/lark-approval.tool.ts';
+import { createLarkTaskTool }     from '../../src/application/tools/families/lark-task.tool.ts';
+import { createLarkMessagingTool } from '../../src/application/tools/families/lark-messaging.tool.ts';
+import { createLarkCalendarTool }  from '../../src/application/tools/families/lark-calendar.tool.ts';
+import { createLarkDocTool }       from '../../src/application/tools/families/lark-doc.tool.ts';
+import { createLarkBaseTool }      from '../../src/application/tools/families/lark-base.tool.ts';
+import { createLarkApprovalTool }  from '../../src/application/tools/families/lark-approval.tool.ts';
+import { createLarkMeetingTool }   from '../../src/application/tools/families/lark-meeting.tool.ts';
+
+describe('backend-hosted Lark connection selection', () => {
+  it('lets every managed Lark family omit connectionId while retaining UUID validation', () => {
+    const toolsAndArgs = [
+      [createLarkTaskTool({ client: {} } as any), { op: 'list' }],
+      [createLarkMessagingTool({ client: {} } as any), { op: 'list_chats' }],
+      [createLarkCalendarTool({ client: {} } as any), { op: 'list' }],
+      [createLarkDocTool({ client: {} } as any), { op: 'get' }],
+      [createLarkBaseTool({ client: {} } as any), { op: 'list_records' }],
+      [createLarkMeetingTool({ client: {} } as any), { op: 'search' }],
+    ] as const;
+
+    for (const [tool, args] of toolsAndArgs) {
+      assert.equal(tool.argsSchema.safeParse(args).success, true, `${tool.id} should allow backend selection`);
+      assert.equal(
+        tool.argsSchema.safeParse({ ...args, connectionId: 'not-a-uuid' }).success,
+        false,
+        `${tool.id} should still validate explicit IDs`,
+      );
+    }
+  });
+});
 
 // ─── lark-task ────────────────────────────────────────────────────────────────
 
@@ -121,6 +144,73 @@ describe('larkTask tool', () => {
       assert.equal(r.ok, true);
     });
 
+    it('uses the selected managed connection instead of the base client', async () => {
+      let resolvedConnectionId: string | undefined;
+      let baseClientCalled = false;
+      const tool = createLarkTaskTool({
+        client: { ...fakeClient, listTasks: async () => { baseClientCalled = true; return []; } },
+        userTokenResolver: {
+          resolve: async (input) => {
+            resolvedConnectionId = input.connectionId;
+            assert.equal(input.minimumAccess, 'read_only');
+            return 'managed-user-token';
+          },
+        },
+        createUserClient: (token) => {
+          assert.equal(token, 'managed-user-token');
+          return { ...fakeClient, listTasks: async () => [task] };
+        },
+      });
+      const r = await tool.execute({ op: 'list', connectionId: '11111111-1111-4111-8111-111111111111' }, ctx);
+      assert.equal(r.ok, true);
+      assert.equal(resolvedConnectionId, '11111111-1111-4111-8111-111111111111');
+      assert.equal(baseClientCalled, false);
+    });
+
+    it('does not fall back to the base client when managed Lark access is unavailable', async () => {
+      let baseClientCalled = false;
+      const tool = createLarkTaskTool({
+        client: { ...fakeClient, listTasks: async () => { baseClientCalled = true; return []; } },
+        userTokenResolver: { resolve: async () => null },
+        createUserClient: () => fakeClient,
+      });
+      const r = await tool.execute({ op: 'list' }, ctx);
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'unrecoverable');
+      assert.equal(baseClientCalled, false);
+    });
+
+    it('returns structured connection choices rather than guessing between shared Lark accounts', async () => {
+      const tool = createLarkTaskTool({
+        client: fakeClient,
+        userTokenResolver: {
+          resolve: async () => ({
+            status: 'choose_connection' as const,
+            connections: [
+              { connectionId: '11111111-1111-4111-8111-111111111111', label: 'Finance', access: 'read_only' as const },
+              { connectionId: '22222222-2222-4222-8222-222222222222', label: 'Personal', access: 'admin' as const },
+            ],
+          }),
+        },
+        createUserClient: () => fakeClient,
+      });
+
+      const result = await tool.execute({ op: 'list' }, ctx);
+
+      assert.equal(result.ok, true);
+      assert.deepEqual((result as any).value, {
+        success: false,
+        message: 'Choose a Lark connection before continuing.',
+        data: {
+          code: 'lark_connection_selection_required',
+          connections: [
+            { connectionId: '11111111-1111-4111-8111-111111111111', label: 'Finance', access: 'read_only' },
+            { connectionId: '22222222-2222-4222-8222-222222222222', label: 'Personal', access: 'admin' },
+          ],
+        },
+      });
+    });
+
     it('infra throws → upstream_failure, never throws', async () => {
       const throwing = { ...fakeClient, createTask: async () => { throw new Error('API down'); } };
       const tool = createLarkTaskTool({ client: throwing });
@@ -138,7 +228,6 @@ describe('larkMessaging tool', () => {
     sendMessage:  async (_chatId: string, _text: string) => ({ messageId: 'msg-1' }),
     replyMessage: async (_msgId: string, _text: string) => ({ messageId: 'msg-2' }),
     listMessages: async () => [{ messageId: 'msg-1', text: 'hi', senderId: 'u1', timestamp: 'ts' }],
-    getMessage:   async () => ({ messageId: 'msg-1', text: 'hi', senderId: 'u1', timestamp: 'ts' }),
   };
 
   describe('permissionCheck', () => {
@@ -165,12 +254,49 @@ describe('larkMessaging tool', () => {
 
   describe('execute', () => {
     const ctx = makeCtx('larkMessaging', ['read', 'send']);
+    const peopleResolver = {
+      resolve: async (_companyId: string, queries: string[]) => ({
+        resolved: queries.map(query => ({ openId: `resolved:${query}`, displayName: query })),
+        ambiguous: [],
+        notFound: [],
+      }),
+    };
 
     it('send: ok with messageId', async () => {
       const tool = createLarkMessagingTool({ client: fakeClient });
       const r = await tool.execute({ op: 'send', chatId: 'chat-1', text: 'hello' }, ctx);
       assert.equal(r.ok, true);
       assert.equal((r as any).value.messageId, 'msg-1');
+    });
+
+    it('authorizes against the selected connection but sends through the Divo app client as a Card 2.0 message', async () => {
+      const sent: Array<{ chatId: string; rendering?: string }> = [];
+      let userClientSendCalls = 0;
+      const appClient = {
+        ...fakeClient,
+        sendMessage: async (chatId: string, _text: string, options?: { rendering?: string }) => {
+          sent.push({ chatId, rendering: options?.rendering });
+          return { messageId: 'bot-msg-1' };
+        },
+      };
+      const selectedUserClient = {
+        ...fakeClient,
+        sendMessage: async () => {
+          userClientSendCalls += 1;
+          return { messageId: 'user-msg-1' };
+        },
+      };
+      const tool = createLarkMessagingTool({
+        client: appClient,
+        userTokenResolver: { resolve: async () => 'managed-user-token' },
+        createUserClient: () => selectedUserClient,
+      });
+
+      const r = await tool.execute({ op: 'send', chatId: 'chat-1', text: '**Release update**' }, ctx);
+      assert.equal(r.ok, true);
+      assert.equal((r as any).value.messageId, 'bot-msg-1');
+      assert.deepEqual(sent, [{ chatId: 'chat-1', rendering: 'card' }]);
+      assert.equal(userClientSendCalls, 0);
     });
 
     it('send: bad_args when chatId missing', async () => {
@@ -180,7 +306,7 @@ describe('larkMessaging tool', () => {
       assert.equal((r as any).error.payload.reason, 'bad_args');
     });
 
-    it('send: defaults to locked current chat for scheduled delivery runs', async () => {
+    it('send: rejects manual delivery during scheduled runtime delivery', async () => {
       let capturedChatId: string | null = null;
       const client = {
         ...fakeClient,
@@ -191,25 +317,59 @@ describe('larkMessaging tool', () => {
       };
       const lockedCtx = makeCtx('larkMessaging', ['read', 'send'], {
         chatId: 'oc_locked_dm_chat',
-        deliveryMode: 'current_chat_only',
+        deliveryMode: 'scheduled_runtime_delivery',
       });
       const tool = createLarkMessagingTool({ client });
       const r = await tool.execute({ op: 'send', text: 'hi' }, lockedCtx);
-      assert.equal(r.ok, true);
-      assert.equal(capturedChatId, 'oc_locked_dm_chat');
-      assert.equal((r as any).value.messageId, 'msg-locked');
+      assert.equal(r.ok, false);
+      assert.equal(capturedChatId, null);
+      assert.match((r as any).error.message, /runtime owns final delivery/i);
     });
 
-    it('send: rejects explicit different chat when scheduled delivery is locked', async () => {
-      const lockedCtx = makeCtx('larkMessaging', ['read', 'send'], {
-        chatId: 'oc_locked_dm_chat',
-        deliveryMode: 'current_chat_only',
+    it('send: rejects duplicate delivery to the current interactive Lark chat', async () => {
+      let called = false;
+      const interactiveCtx = makeCtx('larkMessaging', ['send'], {
+        chatId: 'oc_current_chat',
+        replyToMessageId: 'om_current_turn',
       });
-      const tool = createLarkMessagingTool({ client: fakeClient });
-      const r = await tool.execute({ op: 'send', chatId: 'oc_other_group', text: 'hi' }, lockedCtx);
+      const tool = createLarkMessagingTool({
+        client: {
+          ...fakeClient,
+          sendMessage: async () => {
+            called = true;
+            return { messageId: 'msg-duplicate' };
+          },
+        },
+      });
+
+      const r = await tool.execute(
+        { op: 'send', chatId: 'oc_current_chat', text: 'Badhiya bhai!' },
+        interactiveCtx,
+      );
+
       assert.equal(r.ok, false);
-      assert.equal((r as any).error.payload.reason, 'bad_args');
-      assert.match((r as any).error.message, /locked to the current chat/i);
+      assert.equal(called, false);
+      assert.match((r as any).error.message, /runtime owns final delivery/i);
+    });
+
+    it('send: allows an interactive run to message a different chat', async () => {
+      let capturedChatId: string | null = null;
+      const client = {
+        ...fakeClient,
+        sendMessage: async (chatId: string) => {
+          capturedChatId = chatId;
+          return { messageId: 'msg-external' };
+        },
+      };
+      // Not a scheduled run: those are blocked from every chat. See
+      // tests/approval/scheduled-delivery-lock.test.ts.
+      const interactiveCtx = makeCtx('larkMessaging', ['read', 'send'], {
+        chatId: 'oc_locked_dm_chat',
+      });
+      const tool = createLarkMessagingTool({ client });
+      const r = await tool.execute({ op: 'send', chatId: 'oc_other_group', text: 'hi' }, interactiveCtx);
+      assert.equal(r.ok, true);
+      assert.equal(capturedChatId, 'oc_other_group');
     });
 
     it('reply: ok with messageId', async () => {
@@ -218,16 +378,280 @@ describe('larkMessaging tool', () => {
       assert.equal(r.ok, true);
     });
 
-    it('send_dm: rejects when scheduled delivery is locked to current chat', async () => {
-      const lockedCtx = makeCtx('larkMessaging', ['read', 'send'], {
+    it('reply: rejects delivery during a scheduled run', async () => {
+      const lockedCtx = makeCtx('larkMessaging', ['send'], {
         chatId: 'oc_locked_dm_chat',
-        deliveryMode: 'current_chat_only',
+        deliveryMode: 'scheduled_runtime_delivery',
       });
       const tool = createLarkMessagingTool({ client: fakeClient });
+
+      const r = await tool.execute({ op: 'reply', messageId: 'msg-1', text: 'summary' }, lockedCtx);
+
+      assert.equal(r.ok, false);
+      assert.match((r as any).error.message, /runtime owns final delivery/i);
+    });
+
+    it('reply: rejects duplicate delivery to the current interactive Lark turn', async () => {
+      const interactiveCtx = makeCtx('larkMessaging', ['send'], {
+        chatId: 'oc_current_chat',
+        replyToMessageId: 'om_current_turn',
+      });
+      const tool = createLarkMessagingTool({ client: fakeClient });
+
+      const r = await tool.execute(
+        { op: 'reply', messageId: 'om_current_turn', text: 'Badhiya bhai!' },
+        interactiveCtx,
+      );
+
+      assert.equal(r.ok, false);
+      assert.match((r as any).error.message, /runtime owns final delivery/i);
+    });
+
+    it('send and reply: reject chat-addressed creator-DM delivery', async () => {
+      let calls = 0;
+      const client = {
+        ...fakeClient,
+        sendMessage: async () => {
+          calls += 1;
+          return { messageId: 'msg-duplicate' };
+        },
+        replyMessage: async () => {
+          calls += 1;
+          return { messageId: 'reply-duplicate' };
+        },
+      };
+      const scheduledCtx = makeCtx('larkMessaging', ['send'], {
+        chatId: 'ou_creator',
+        deliveryMode: 'scheduled_runtime_delivery',
+      });
+      const tool = createLarkMessagingTool({ client });
+
+      const send = await tool.execute({ op: 'send', chatId: 'oc_creator_dm', text: 'summary' }, scheduledCtx);
+      const reply = await tool.execute({ op: 'reply', messageId: 'msg-1', text: 'summary' }, scheduledCtx);
+
+      assert.equal(send.ok, false);
+      assert.equal(reply.ok, false);
+      assert.equal(calls, 0);
+    });
+
+    it('send_dm: rejects duplicate delivery to the current-chat requester', async () => {
+      const lockedCtx = makeCtx('larkMessaging', ['read', 'send'], {
+        chatId: 'oc_locked_dm_chat',
+        userExternalId: 'resolved:Abhishek',
+      });
+      const tool = createLarkMessagingTool({ client: fakeClient, peopleResolver });
       const r = await tool.execute({ op: 'send_dm', text: 'hello', recipientName: 'Abhishek' }, lockedCtx);
       assert.equal(r.ok, false);
       assert.equal((r as any).error.payload.reason, 'bad_args');
-      assert.match((r as any).error.message, /locked to the current chat/i);
+      assert.match((r as any).error.message, /runtime owns final delivery/i);
+    });
+
+    it('send_dm: rejects duplicate delivery to the current interactive requester', async () => {
+      let called = false;
+      const interactiveCtx = makeCtx('larkMessaging', ['read', 'send'], {
+        chatId: 'oc_current_chat',
+        replyToMessageId: 'om_current_turn',
+        userExternalId: 'resolved:Abhishek',
+      });
+      const tool = createLarkMessagingTool({
+        client: {
+          ...fakeClient,
+          sendDm: async () => {
+            called = true;
+            return { messageId: 'dm-duplicate' };
+          },
+        },
+        peopleResolver,
+      });
+
+      const r = await tool.execute({
+        op: 'send_dm',
+        text: 'Badhiya bhai! Aap sunao.',
+        recipientName: 'Abhishek',
+      }, interactiveCtx);
+
+      assert.equal(r.ok, false);
+      assert.equal(called, false);
+      assert.match((r as any).error.message, /runtime owns final delivery/i);
+    });
+
+    it('send_dm: rejects duplicate delivery to a creator-DM runtime target', async () => {
+      let called = false;
+      const client = {
+        ...fakeClient,
+        sendDm: async () => {
+          called = true;
+          return { messageId: 'dm-duplicate' };
+        },
+      };
+      const scheduledCtx = makeCtx('larkMessaging', ['send'], {
+        chatId: 'resolved:Creator',
+        deliveryMode: 'scheduled_runtime_delivery',
+      });
+      const tool = createLarkMessagingTool({ client, peopleResolver });
+
+      const r = await tool.execute({ op: 'send_dm', text: 'summary', recipientName: 'Creator' }, scheduledCtx);
+
+      assert.equal(r.ok, false);
+      assert.equal(called, false);
+      assert.match((r as any).error.message, /runtime owns final delivery/i);
+    });
+
+    it('mention: refuses to post a scheduled result into any other chat', async () => {
+      let mentioned = false;
+      const client = {
+        ...fakeClient,
+        mentionMessage: async () => {
+          mentioned = true;
+          return { messageId: 'om-group' };
+        },
+      };
+      // A scheduled run's own chat id is the creator's DM, so the guard against
+      // addressing the current chat never fires for a group id. Without an
+      // explicit block, a schedule whose task text names a room can still post
+      // its result there — the thing DM-only delivery exists to prevent.
+      const scheduledCtx = makeCtx('larkMessaging', ['send'], {
+        chatId: 'ou_creator',
+        deliveryMode: 'scheduled_runtime_delivery',
+      });
+      const tool = createLarkMessagingTool({ client, peopleResolver });
+
+      const r = await tool.execute(
+        { op: 'mention', chatId: 'oc_standup_group', text: 'summary', mentionNames: ['Alice'] },
+        scheduledCtx,
+      );
+
+      assert.equal(r.ok, false);
+      assert.equal(mentioned, false);
+      assert.match((r as any).error.message, /runtime owns final delivery/i);
+    });
+
+    it('send_dm: preserves an explicit external action to another recipient', async () => {
+      let recipient: string | null = null;
+      const client = {
+        ...fakeClient,
+        sendDm: async (openId: string) => {
+          recipient = openId;
+          return { messageId: 'dm-external' };
+        },
+      };
+      const scheduledCtx = makeCtx('larkMessaging', ['send'], {
+        chatId: 'resolved:Creator',
+        deliveryMode: 'scheduled_runtime_delivery',
+      });
+      const tool = createLarkMessagingTool({ client, peopleResolver });
+
+      const r = await tool.execute({ op: 'send_dm', text: 'alert', recipientName: 'Alice' }, scheduledCtx);
+
+      assert.equal(r.ok, true);
+      assert.equal(recipient, 'resolved:Alice');
+    });
+
+    it('send_dm: uses an exact recipient ID explicitly mentioned in this turn', async () => {
+      let recipient: string | null = null;
+      const client = {
+        ...fakeClient,
+        sendDm: async (openId: string) => {
+          recipient = openId;
+          return { messageId: 'dm-1' };
+        },
+      };
+      const exactCtx = makeCtx('larkMessaging', ['send'], {
+        mentionedLarkOpenIds: ['ou_alice'],
+      });
+      const tool = createLarkMessagingTool({ client, peopleResolver });
+      const r = await tool.execute({
+        op: 'send_dm',
+        text: 'hello',
+        recipientOpenId: 'ou_alice',
+      }, exactCtx);
+      assert.equal(r.ok, true);
+      assert.equal(recipient, 'ou_alice');
+    });
+
+    it('send_dm: rejects an exact recipient ID not mentioned in this turn', async () => {
+      let called = false;
+      const client = {
+        ...fakeClient,
+        sendDm: async () => {
+          called = true;
+          return { messageId: 'dm-1' };
+        },
+      };
+      const exactCtx = makeCtx('larkMessaging', ['send'], {
+        mentionedLarkOpenIds: ['ou_alice'],
+      });
+      const tool = createLarkMessagingTool({ client, peopleResolver });
+      const r = await tool.execute({
+        op: 'send_dm',
+        text: 'hello',
+        recipientOpenId: 'ou_mallory',
+      }, exactCtx);
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'bad_args');
+      assert.equal(called, false);
+    });
+
+    it('send_dm: does not accept chatId as an arbitrary recipient openId', async () => {
+      let called = false;
+      const client = {
+        ...fakeClient,
+        sendDm: async () => {
+          called = true;
+          return { messageId: 'dm-1' };
+        },
+      };
+      const tool = createLarkMessagingTool({ client, peopleResolver });
+      const r = await tool.execute({
+        op: 'send_dm',
+        text: 'hello',
+        chatId: 'ou_mallory',
+      }, ctx);
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'bad_args');
+      assert.equal(called, false);
+    });
+
+    it('mention: uses and deduplicates exact IDs explicitly mentioned in this turn', async () => {
+      let recipients: string[] = [];
+      const client = {
+        ...fakeClient,
+        mentionMessage: async (_chatId: string, _text: string, openIds: string[]) => {
+          recipients = openIds;
+          return { messageId: 'mention-1' };
+        },
+      };
+      const exactCtx = makeCtx('larkMessaging', ['send'], {
+        mentionedLarkOpenIds: ['ou_alice', 'ou_bob'],
+      });
+      const tool = createLarkMessagingTool({ client, peopleResolver });
+      const r = await tool.execute({
+        op: 'mention',
+        chatId: 'oc_group',
+        text: 'hello',
+        mentionOpenIds: ['ou_alice', 'ou_bob', 'ou_alice'],
+      }, exactCtx);
+      assert.equal(r.ok, true);
+      assert.deepEqual(recipients, ['ou_alice', 'ou_bob']);
+    });
+
+    it('send_dm: retains fuzzy name resolution when no structured ID exists', async () => {
+      let recipient: string | null = null;
+      const client = {
+        ...fakeClient,
+        sendDm: async (openId: string) => {
+          recipient = openId;
+          return { messageId: 'dm-1' };
+        },
+      };
+      const tool = createLarkMessagingTool({ client, peopleResolver });
+      const r = await tool.execute({
+        op: 'send_dm',
+        text: 'hello',
+        recipientName: 'Alice',
+      }, ctx);
+      assert.equal(r.ok, true);
+      assert.equal(recipient, 'resolved:Alice');
     });
 
     it('list: ok with data array', async () => {
@@ -237,10 +661,9 @@ describe('larkMessaging tool', () => {
       assert.ok(Array.isArray((r as any).value.data));
     });
 
-    it('get: bad_args when messageId missing', async () => {
+    it('rejects the removed arbitrary message lookup operation', () => {
       const tool = createLarkMessagingTool({ client: fakeClient });
-      const r = await tool.execute({ op: 'get' }, ctx);
-      assert.equal(r.ok, false);
+      assert.equal(tool.argsSchema.safeParse({ op: 'get', messageId: 'om_123' }).success, false);
     });
 
     it('infra throws → upstream_failure', async () => {
@@ -325,11 +748,36 @@ describe('larkCalendar tool', () => {
 // ─── lark-doc ─────────────────────────────────────────────────────────────────
 
 describe('larkDoc tool', () => {
+  const appendedBatches: unknown[] = [];
+  const insertedTables: unknown[] = [];
+  const updatedStyles: unknown[] = [];
+  const driveCalls: unknown[] = [];
   const fakeClient = {
     getDoc:       async () => ({ title: 'Doc', content: '...' }),
-    createDoc:    async () => ({ docToken: 'doc-abc' }),
+    createDoc:    async () => ({ docToken: 'doc-abc', url: 'https://example.larksuite.com/docx/doc-abc' }),
     appendBlock:  async () => {},
+    appendBlocks: async (_docToken: string, blocks: unknown[]) => { appendedBatches.push(blocks); },
     listBlocks:   async () => [{ type: 'text', content: 'hello' }],
+    updateBlock:  async () => {},
+    updateBlockStyle: async (_docToken: string, _blockId: string, style: unknown) => { updatedStyles.push(style); },
+    deleteBlock:  async () => {},
+    insertTable:  async (_docToken: string, params: unknown) => { insertedTables.push(params); },
+    shareDoc:     async () => ({}),
+    getDriveMetadata: async (fileToken: string, fileType: string) => ({ fileToken, fileType }),
+    listDriveFiles: async (params: unknown) => ({ params }),
+    createDriveFolder: async (name: string, folderToken?: string) => {
+      driveCalls.push({ op: 'create_folder', name, folderToken });
+      return { token: 'folder-new' };
+    },
+    copyDriveFile: async (fileToken: string, params: unknown) => {
+      driveCalls.push({ op: 'copy_file', fileToken, params });
+      return { token: 'file-copy' };
+    },
+    moveDriveFile: async (fileToken: string, params: unknown) => {
+      driveCalls.push({ op: 'move_file', fileToken, params });
+      return { taskId: 'move-1' };
+    },
+    checkDriveTask: async (taskId: string) => ({ taskId, status: 'success' }),
   };
 
   describe('permissionCheck', () => {
@@ -349,6 +797,26 @@ describe('larkDoc tool', () => {
       const tool = createLarkDocTool({ client: fakeClient });
       const r = tool.permissionCheck({ op: 'append_block' }, makeAllowedPerm('larkDoc', ['update']));
       assert.equal((r as any).value, 'update');
+    });
+
+    it('maps Drive reads, copies, and moves to the matching action groups', () => {
+      const tool = createLarkDocTool({ client: fakeClient });
+      assert.equal(
+        (tool.permissionCheck({ op: 'list_files' }, makeAllowedPerm('larkDoc', ['read'])) as any).value,
+        'read',
+      );
+      assert.equal(
+        (tool.permissionCheck({ op: 'check_drive_task' }, makeAllowedPerm('larkDoc', ['read'])) as any).value,
+        'read',
+      );
+      assert.equal(
+        (tool.permissionCheck({ op: 'copy_file' }, makeAllowedPerm('larkDoc', ['create'])) as any).value,
+        'create',
+      );
+      assert.equal(
+        (tool.permissionCheck({ op: 'move_file' }, makeAllowedPerm('larkDoc', ['update'])) as any).value,
+        'update',
+      );
     });
 
     it('denies when not allowed', () => {
@@ -373,11 +841,29 @@ describe('larkDoc tool', () => {
       assert.equal(r.ok, false);
     });
 
-    it('create: ok with docToken', async () => {
+    it('create: returns the canonical Lark URL with the doc token', async () => {
       const tool = createLarkDocTool({ client: fakeClient });
       const r = await tool.execute({ op: 'create', title: 'New Doc' }, ctx);
       assert.equal(r.ok, true);
       assert.equal((r as any).value.docToken, 'doc-abc');
+      assert.equal((r as any).value.url, 'https://example.larksuite.com/docx/doc-abc');
+      assert.deepEqual((r as any).value.data, {
+        title: 'New Doc',
+        docToken: 'doc-abc',
+        url: 'https://example.larksuite.com/docx/doc-abc',
+      });
+    });
+
+    it('create: remains successful when canonical URL lookup is unavailable', async () => {
+      const tool = createLarkDocTool({
+        client: { ...fakeClient, createDoc: async () => ({ docToken: 'doc-abc' }) },
+      });
+      const r = await tool.execute({ op: 'create', title: 'New Doc' }, ctx);
+
+      assert.equal(r.ok, true);
+      assert.equal((r as any).value.docToken, 'doc-abc');
+      assert.equal((r as any).value.url, undefined);
+      assert.match((r as any).value.message, /Doc created/);
     });
 
     it('create: bad_args when title missing', async () => {
@@ -390,6 +876,149 @@ describe('larkDoc tool', () => {
       const tool = createLarkDocTool({ client: fakeClient });
       const r = await tool.execute({ op: 'append_block', content: 'hello' }, ctx);
       assert.equal(r.ok, false);
+    });
+
+    it('append_blocks: appends a structured block batch', async () => {
+      appendedBatches.length = 0;
+      const tool = createLarkDocTool({ client: fakeClient });
+      const blocks = [
+        { content: 'Overview', blockType: 'heading1' as const },
+        { content: 'First point', blockType: 'ordered' as const, textStyle: { bold: true } },
+        { content: 'Follow up', blockType: 'todo' as const, blockStyle: { done: false } },
+        { blockType: 'divider' as const },
+      ];
+      const r = await tool.execute({ op: 'append_blocks', docToken: 'doc-abc', blocks }, ctx);
+      const invalidDivider = await tool.execute({
+        op: 'append_blocks',
+        docToken: 'doc-abc',
+        blocks: [{ blockType: 'divider', content: 'not visible' }],
+      }, ctx);
+
+      assert.equal(r.ok, true);
+      assert.deepEqual(appendedBatches, [blocks]);
+      assert.equal(invalidDivider.ok, false);
+    });
+
+    it('update_block_style requires and forwards at least one style field', async () => {
+      updatedStyles.length = 0;
+      const tool = createLarkDocTool({ client: fakeClient });
+      const valid = await tool.execute({
+        op: 'update_block_style',
+        docToken: 'doc-abc',
+        blockId: 'block-1',
+        blockStyle: { done: true },
+      }, ctx);
+      const invalid = await tool.execute({
+        op: 'update_block_style',
+        docToken: 'doc-abc',
+        blockId: 'block-1',
+        blockStyle: {},
+      }, ctx);
+
+      assert.equal(valid.ok, true);
+      assert.deepEqual(updatedStyles, [{ done: true }]);
+      assert.equal(invalid.ok, false);
+    });
+
+    it('insert_table: passes body data and rejects rows outside declared dimensions', async () => {
+      insertedTables.length = 0;
+      const tool = createLarkDocTool({ client: fakeClient });
+      const valid = await tool.execute({
+        op: 'insert_table',
+        docToken: 'doc-abc',
+        rows: 2,
+        cols: 2,
+        headers: ['Owner', 'Status'],
+        data: [['Abhishek', 'Open']],
+      }, ctx);
+      const invalid = await tool.execute({
+        op: 'insert_table',
+        docToken: 'doc-abc',
+        rows: 2,
+        cols: 2,
+        headers: ['Owner', 'Status'],
+        data: [['A', 'Open'], ['B', 'Done']],
+      }, ctx);
+
+      assert.equal(valid.ok, true);
+      assert.deepEqual(insertedTables, [{
+        rows: 2,
+        cols: 2,
+        headers: ['Owner', 'Status'],
+        data: [['Abhishek', 'Open']],
+      }]);
+      assert.equal(invalid.ok, false);
+    });
+
+    it('Drive organization operations validate and forward provider parameters', async () => {
+      driveCalls.length = 0;
+      const tool = createLarkDocTool({ client: fakeClient });
+      assert.equal(
+        tool.argsSchema.safeParse({ op: 'create_folder', name: 'é'.repeat(129) }).success,
+        false,
+      );
+
+      const metadata = await tool.execute({
+        op: 'get_metadata',
+        fileToken: 'doc-1',
+        fileType: 'docx',
+      }, ctx);
+      const listing = await tool.execute({
+        op: 'list_files',
+        folderToken: 'folder-1',
+        pageSize: 50,
+        orderBy: 'CreatedTime',
+        direction: 'ASC',
+      }, ctx);
+      const folder = await tool.execute({
+        op: 'create_folder',
+        name: 'Launch',
+        folderToken: 'folder-1',
+      }, ctx);
+      const copy = await tool.execute({
+        op: 'copy_file',
+        fileToken: 'doc-1',
+        fileType: 'docx',
+        name: 'Launch copy',
+        folderToken: 'folder-2',
+      }, ctx);
+      const move = await tool.execute({
+        op: 'move_file',
+        fileToken: 'doc-1',
+        fileType: 'docx',
+        folderToken: 'folder-3',
+      }, ctx);
+      const moveStatus = await tool.execute({
+        op: 'check_drive_task',
+        taskId: 'move-1',
+      }, ctx);
+      const invalidCopy = await tool.execute({
+        op: 'copy_file',
+        fileToken: 'folder-1',
+        fileType: 'folder',
+        name: 'Folder copy',
+      }, ctx);
+
+      assert.equal(metadata.ok, true);
+      assert.equal(listing.ok, true);
+      assert.equal(folder.ok, true);
+      assert.equal(copy.ok, true);
+      assert.equal(move.ok, true);
+      assert.equal(moveStatus.ok, true);
+      assert.equal(invalidCopy.ok, false);
+      assert.deepEqual(driveCalls, [
+        { op: 'create_folder', name: 'Launch', folderToken: 'folder-1' },
+        {
+          op: 'copy_file',
+          fileToken: 'doc-1',
+          params: { fileType: 'docx', name: 'Launch copy', folderToken: 'folder-2' },
+        },
+        {
+          op: 'move_file',
+          fileToken: 'doc-1',
+          params: { fileType: 'docx', folderToken: 'folder-3' },
+        },
+      ]);
     });
 
     it('infra throws → upstream_failure', async () => {

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PR #55 Review — Lark table batch population</title>
+  <style>
+    :root{--canvas:#f7f7f4;--card:#fff;--ink:#26251e;--body:#5a5852;--muted:#807d72;--line:#e6e5e0;--orange:#f54e00;--success:#1f8a65;--warning:#b9750a;--danger:#cf2d56;--mono:"SFMono-Regular",Consolas,monospace}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--canvas);color:var(--ink);font:15px/1.55 system-ui,-apple-system,sans-serif}.wrap{max-width:1080px;margin:auto;padding:48px 24px 80px}
+    h1,h2,h3{font-weight:400;letter-spacing:-.02em}h1{font-size:38px;margin:8px 0 12px}h2{font-size:25px;margin:48px 0 16px}.eyebrow{font:12px var(--mono);color:var(--orange);text-transform:uppercase}.meta,.muted{color:var(--muted)}
+    nav{display:flex;gap:8px;flex-wrap:wrap;margin:24px 0}nav a,.chip{border:1px solid var(--line);border-radius:8px;padding:7px 11px;background:var(--card);color:var(--ink);text-decoration:none;font-size:13px}
+    .summary,.finding,.diff{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px;margin:12px 0}.score{display:flex;align-items:center;gap:18px}.gauge{width:76px;height:76px;border-radius:50%;display:grid;place-items:center;border:8px solid #dce9df;color:var(--success);font:22px var(--mono)}
+    .finding{border-left:4px solid var(--success)}.finding.warning{border-left-color:var(--warning)}.badge{font:11px var(--mono);text-transform:uppercase;color:var(--success)}.warning .badge{color:var(--warning)}.file{font:12px var(--mono);color:var(--muted)}
+    details{margin-top:10px}summary{cursor:pointer;color:var(--body)}pre{overflow:auto;background:#fafaf7;border:1px solid var(--line);border-radius:8px;padding:14px;font:12px/1.55 var(--mono);white-space:pre}.add{color:#176a4c}.del{color:#a72347}.filters{position:sticky;top:0;padding:8px 0;background:var(--canvas);z-index:2}.chip{cursor:pointer}.chip.active{background:var(--orange);border-color:var(--orange);color:white}
+    .recommendations li{margin:8px 0}button{border:0;border-radius:8px;background:var(--orange);color:white;padding:10px 14px;cursor:pointer}@media(max-width:700px){.wrap{padding:28px 14px}h1{font-size:30px}.score{align-items:flex-start}.diff{padding:12px}}
+  </style>
+</head>
+<body>
+<main class="wrap">
+  <div class="eyebrow">Code review · 27 July 2026</div>
+  <h1>PR #55 — batch populate Lark document tables</h1>
+  <p class="meta">Author: Abhishek Verma · Base: dev · Head: fix/lark-batch-populate-document-tables · 2 files · +66 / −37</p>
+  <nav><a href="#summary">Summary</a><a href="#findings">Findings</a><a href="#diffs">Diffs</a><a href="#recommendations">Recommendations</a></nav>
+
+  <section id="summary" class="summary">
+    <div class="score"><div class="gauge">16</div><div><h2 style="margin:0">Low risk · merge</h2><p>The change fixes the observed partial/duplicate table failure by resolving each generated cell’s existing text block and updating all populated cells in one batch. The public tool contract and permission path are unchanged, CI is green, and the exact Lark SDK request sequence is tested.</p></div></div>
+  </section>
+
+  <section id="findings">
+    <h2>Findings</h2>
+    <div class="filters"><button class="chip active" data-filter="all">All (3)</button> <button class="chip" data-filter="warning">Warning (1)</button> <button class="chip" data-filter="positive">Positive (2)</button></div>
+    <article class="finding warning" data-kind="warning">
+      <div class="badge">Warning · non-blocking</div>
+      <h3>Large descendant sets are not paginated</h3>
+      <div class="file">advance-backend/src/infrastructure/channels/lark/clients/lark-doc.client.ts:218</div>
+      <p>The lookup requests one 500-item page. A table near the tool’s 50×20 schema maximum can exceed that once cell and text descendants are counted. Normal report tables, including the observed 7×3 case, stay well below the boundary.</p>
+      <details><summary>How to fix</summary><p>Follow the existing <code>listBlocks</code> pagination pattern and collect pages while Lark returns <code>has_more</code>. Handle batch-update operation limits in the same focused follow-up.</p></details>
+    </article>
+    <article class="finding" data-kind="positive">
+      <div class="badge">Positive</div>
+      <h3>Eliminates the partial-write retry trap</h3>
+      <div class="file">advance-backend/src/infrastructure/channels/lark/clients/lark-doc.client.ts:230</div>
+      <p>One batch update replaces one write per table cell, directly reducing rate-limit exposure and the duplicate-table behavior caused by retrying after partial population.</p>
+      <details><summary>What to keep</summary><p>Keep mutation ownership inside the existing Lark client and preserve the unchanged application tool contract.</p></details>
+    </article>
+    <article class="finding" data-kind="positive">
+      <div class="badge">Positive</div>
+      <h3>Request contract is regression-tested</h3>
+      <div class="file">advance-backend/tests/infrastructure/lark-family-sdk.client.test.ts:251</div>
+      <p>The test asserts table creation, descendant resolution, cell-to-text mapping, and the final batch payload in order. No credential, RBAC, or input-validation surface changed.</p>
+      <details><summary>What to keep</summary><p>Retain the exact transport-level assertion; it catches silent drift in Lark’s nested block shape.</p></details>
+    </article>
+  </section>
+
+  <section id="diffs">
+    <h2>Annotated diffs</h2>
+    <article class="diff"><h3>lark-doc.client.ts</h3><pre><span class="del">- POST each populated cell as a new child block</span>
+<span class="add">+ GET table children with descendants</span>
+<span class="add">+ map cell block IDs to their existing text block IDs</span>
+<span class="add">+ PATCH /blocks/batch_update once with all text updates</span></pre></article>
+    <article class="diff"><h3>lark-family-sdk.client.test.ts</h3><pre><span class="del">- expect four independent POST cell writes</span>
+<span class="add">+ return table descendant cell/text relationships</span>
+<span class="add">+ expect one GET followed by one batch PATCH</span></pre></article>
+  </section>
+
+  <section id="recommendations" class="recommendations">
+    <h2>Recommendations</h2>
+    <ol><li>Merge PR #55 into <code>dev</code>.</li><li>Let the normal dev push pipeline deploy and smoke-test it.</li><li>Track descendant pagination for very large tables as a separate bounded follow-up.</li></ol>
+    <button onclick="navigator.clipboard.writeText('Merge PR #55. Then add paginated descendant lookup for very large Lark tables as a separate follow-up.')">Copy recommendations</button>
+  </section>
+</main>
+<script>
+document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-filter]').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.querySelectorAll('[data-kind]').forEach(x=>x.hidden=b.dataset.filter!=='all'&&x.dataset.kind!==b.dataset.filter)})
+</script>
+</body>
+</html>

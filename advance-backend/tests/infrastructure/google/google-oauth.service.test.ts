@@ -12,6 +12,7 @@ import 'dotenv/config';
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { GoogleOAuthService } from '../../../src/infrastructure/google/google-oauth.service';
+import { GOOGLE_SCOPE, GOOGLE_WORKSPACE_OAUTH_SCOPES } from '../../../src/domain/google/google-workspace-scope';
 import type { CachePort } from '../../../src/shared/cache';
 import { ok } from '../../../src/shared/result';
 
@@ -97,6 +98,17 @@ describe('GoogleOAuthService', () => {
       assert(url.includes('response_type=code'));
     });
 
+    it('requests the reviewed complete Workspace scope set from Divo OAuth', () => {
+      const url = new URL(svc.getAuthorizeUrl({ state: 'scope-test' }));
+      const scopes = new Set((url.searchParams.get('scope') ?? '').split(' '));
+      assert.deepEqual(scopes, new Set(GOOGLE_WORKSPACE_OAUTH_SCOPES));
+      assert(scopes.has(GOOGLE_SCOPE.sheetsFull));
+      assert(scopes.has(GOOGLE_SCOPE.docsFull));
+      assert(scopes.has(GOOGLE_SCOPE.slidesFull));
+      assert(scopes.has(GOOGLE_SCOPE.formsResponsesReadonly));
+      assert(scopes.has(GOOGLE_SCOPE.scriptProjects));
+    });
+
     it('uses provided redirectUri', () => {
       const url = svc.getAuthorizeUrl({ state: 'x', redirectUri: 'https://custom.example.com/cb' });
       assert(url.includes('redirect_uri=https'));
@@ -175,6 +187,35 @@ describe('GoogleOAuthService', () => {
       try {
         globalThis.fetch = mockFetch([{ status: 401, body: { error: 'invalid_client' } }]);
         await assert.rejects(() => svc.getValidAccessToken(opts), /invalid_client|token refresh/i);
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+    });
+
+    it('aborts an in-flight token refresh', async () => {
+      const controller = new AbortController();
+      const origFetch = globalThis.fetch;
+      let fetchSignal: AbortSignal | null | undefined;
+      try {
+        globalThis.fetch = async (_url, init) => {
+          fetchSignal = init?.signal;
+          return new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              'abort',
+              () => reject(init.signal?.reason),
+              { once: true },
+            );
+          });
+        };
+        const pending = svc.getValidAccessToken({
+          ...opts,
+          abortSignal: controller.signal,
+        });
+        await new Promise(resolve => setImmediate(resolve));
+        controller.abort(new Error('token refresh cancelled'));
+
+        await assert.rejects(pending, /token refresh cancelled/);
+        assert.equal(fetchSignal, controller.signal);
       } finally {
         globalThis.fetch = origFetch;
       }

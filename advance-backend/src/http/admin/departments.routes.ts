@@ -20,16 +20,20 @@
  *   POST   /:id/skills/:skillId/archive           — archive skill
  *   PUT    /:id/role-permissions/:roleId/:toolId/:actionGroup — update role permission
  *   PUT    /:id/user-overrides/:userId/:toolId/:actionGroup   — update user override
+ *   POST   /backfill-permissions                              — seed empty role matrices
  */
 
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { DepartmentAdminService } from '../../application/departments/department-admin.service';
+import { SKILL_SUMMARY_MAX_CHARS } from '../../application/skills/skill-limits';
+import type { AuditService } from '../../application/observability/audit.service';
 import type { Logger } from '../../shared/logger';
 
 export interface DepartmentRoutesDeps {
   deptAdminService: DepartmentAdminService;
+  auditService?:       Pick<AuditService, 'record'>;
   logger:           Logger;
 }
 
@@ -103,8 +107,7 @@ const updateDeptSchema = z.object({
 
 const updateConfigSchema = z.object({
   systemPrompt:    z.string().max(20000),
-  skillsMarkdown:  z.string().max(40000),
-  zohoRateLimit:   z.unknown().optional(),
+  desktopPersonaPrompt: z.string().max(6000).optional(),
   managerApproval: z.unknown().optional(),
   isActive:        z.boolean().optional(),
 });
@@ -131,18 +134,22 @@ const upsertMembershipSchema = z.object({
 const upsertSkillSchema = z.object({
   name:     z.string().min(1).max(120),
   slug:     z.string().min(1).max(120).optional(),
-  summary:  z.string().max(300).optional(),
+  summary:  z.string().max(SKILL_SUMMARY_MAX_CHARS).optional(),
   markdown: z.string().min(1).max(40000),
+  toolIds:  z.array(z.string().min(1).max(120)).max(50).optional(),
   tags:     z.array(z.string().min(1).max(60)).max(20).optional(),
   status:   z.enum(['active', 'archived']).optional(),
+  folderId: z.string().uuid().nullish(),
 });
 
 const updateSkillSchema = z.object({
   name:     z.string().min(1).max(120).optional(),
-  summary:  z.string().max(300).optional(),
+  summary:  z.string().max(SKILL_SUMMARY_MAX_CHARS).optional(),
   markdown: z.string().max(40000).optional(),
+  toolIds:  z.array(z.string().min(1).max(120)).max(50).optional(),
   tags:     z.array(z.string().min(1).max(60)).max(20).optional(),
   status:   z.enum(['active', 'archived']).optional(),
+  folderId: z.string().uuid().nullish(),
 });
 
 const allowedSchema = z.object({ allowed: z.boolean() });
@@ -186,6 +193,21 @@ export function createDepartmentRoutes(deps: DepartmentRoutesDeps): Router {
     const result    = await svc.searchCandidates(id, companyId, query);
     if (!result.ok) { resolveServiceError(res, result.error); return; }
     success(res, result.value, 'Department candidates loaded');
+  }));
+
+  // ── Backfill empty role permission matrices ───────────────────────────────
+  // Seeds MEMBER-template grants for roles that currently have zero rows.
+  // Optional body.departmentId limits the backfill to one department.
+  router.post('/backfill-permissions', asyncRoute(async (req, res) => {
+    const payload = z.object({
+      companyId:     z.string().min(1).optional(),
+      departmentId:  z.string().min(1).optional(),
+    }).parse(req.body ?? {});
+    const companyId = resolveCompanyId(res, payload.companyId);
+    const userId    = resolveUserId(res);
+    const result    = await svc.backfillEmptyRolePermissions(companyId, userId, payload.departmentId);
+    if (!result.ok) { resolveServiceError(res, result.error); return; }
+    success(res, result.value, 'Department permissions backfilled');
   }));
 
   // ── Create department ─────────────────────────────────────────────────────
@@ -302,8 +324,16 @@ export function createDepartmentRoutes(deps: DepartmentRoutesDeps): Router {
   router.post('/:id/skills/:skillId/archive', asyncRoute(async (req, res) => {
     const { id, skillId } = req.params as { id: string; skillId: string };
     const companyId       = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
-    const result          = await svc.archiveSkill(id, companyId, skillId);
+    const userId          = resolveUserId(res);
+    const result          = await svc.archiveSkill(id, companyId, skillId, userId);
     if (!result.ok) { resolveServiceError(res, result.error); return; }
+    deps.auditService?.record({
+      actorId: userId,
+      companyId,
+      action: 'skill.archive',
+      outcome: 'success',
+      metadata: { departmentId: id, skillId },
+    });
     success(res, result.value, 'Department skill archived');
   }));
 

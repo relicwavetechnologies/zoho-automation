@@ -9,7 +9,7 @@ import { ZohoTokenService } from '../src/infrastructure/zoho/zoho-token.service.
 import { ZohoConnectionRepository } from '../src/infrastructure/zoho/zoho-connection.repository.js';
 import { ZohoBooksPaginatedClient } from '../src/infrastructure/zoho/zoho-books-paginated.client.js';
 import { ZohoFinanceOps } from '../src/application/zoho/zoho-finance-ops.js';
-import { createZohoBooksTool } from '../src/application/orchestration/tools/families/zoho-books.tool.js';
+import { createZohoBooksTool } from '../src/application/tools/families/zoho-books.tool.js';
 import { RedisCache } from '../src/infrastructure/cache/redis-cache.js';
 import { loadAndValidateEnv } from '../src/config/env.js';
 import Redis from 'ioredis';
@@ -17,8 +17,6 @@ import Redis from 'ioredis';
 const env    = loadAndValidateEnv(process.env);
 const prisma = new PrismaClient();
 const log: any = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {}, child: () => log };
-
-const cloudinary: any = { isAvailable: false, uploadCsvBuffer: async () => null };
 
 async function main() {
   const company = await prisma.company.findFirst();
@@ -33,11 +31,11 @@ async function main() {
   const connRepo     = new ZohoConnectionRepository(prisma, env);
   const tokenService = new ZohoTokenService(connRepo, cache, env, log);
   const booksClient  = new ZohoBooksPaginatedClient(tokenService, env.ZOHO_API_BASE_URL);
-  const financeOps   = new ZohoFinanceOps(booksClient, cloudinary, log);
+  const financeOps   = new ZohoFinanceOps(booksClient, log);
 
   const tool = createZohoBooksTool({
     getClient:   async () => null,
-    booksClient, financeOps, cloudinary,
+    booksClient, financeOps,
   });
 
   const ctx: any = {

@@ -59,11 +59,13 @@ export function createRuntimeRoutes(deps: RuntimeRoutesDeps): Router {
 
   router.get('/tasks', asyncRoute(async (req, res) => {
     const companyId    = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
-    const isSuperAdmin = Boolean(res.locals['isSuperAdmin']);
     const rawLimit     = typeof req.query.limit === 'string' ? Number(req.query.limit) : 30;
     const limit        = Number.isFinite(rawLimit) ? Math.min(rawLimit, 200) : 30;
+    const channel      = typeof req.query.channel === 'string' && ['desktop', 'lark', 'web'].includes(req.query.channel)
+      ? req.query.channel
+      : undefined;
 
-    const runs = await deps.executionQueryService.listRuns({ companyId, isSuperAdmin, limit });
+    const runs = await deps.executionQueryService.listRuns({ companyId, limit, ...(channel ? { channel } : {}) });
     success(res, runs, 'Runtime tasks loaded');
   }));
 

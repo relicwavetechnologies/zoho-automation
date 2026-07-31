@@ -2,21 +2,34 @@ import type { PrismaClient } from '../../generated/prisma';
 import type { ResolvedManager } from './approval.types';
 
 /**
- * Resolves the approval manager for a given department.
+ * Resolves the human who has to say yes.
  *
- * Priority:
- *   1. The user in the dept with role slug 'MANAGER', with a LarkUserAuthLink.
- *   2. A company-level admin (ChannelIdentity.aiRole contains 'ADMIN') with a larkOpenId.
- *   3. null → caller must fail-closed.
+ * A Lark account used to be part of the definition of an approver: every lookup
+ * here ended with "…and a connected Lark connection with an externalAccountId",
+ * and returned null otherwise. That made Lark the authority rather than a way to
+ * reach one — a department whose manager works in the desktop app had no
+ * approver at all, so the gate answered `misconfigured` and every gated action
+ * failed outright.
+ *
+ * Authority now comes from the org chart. `larkOpenId` is a delivery address:
+ * present when the person can be reached by card, null when they cannot, and
+ * never a reason to say there is nobody to ask.
  */
 export class ApprovalResolverService {
   constructor(private readonly prisma: PrismaClient) {}
 
+  /**
+   * Priority:
+   *   1. The active MANAGER of the department.
+   *   2. An active company admin.
+   *   3. A Lark admin identity, for companies whose admins exist only as a
+   *      channel identity.
+   *   4. null → there is genuinely nobody, and the caller must fail closed.
+   */
   async resolveManager(
     departmentId: string,
     companyId:    string,
   ): Promise<ResolvedManager | null> {
-    // 1. Find MANAGER-role membership in dept
     const deptManager = await this.prisma.departmentMembership.findFirst({
       where: {
         departmentId,
@@ -27,28 +40,22 @@ export class ApprovalResolverService {
         },
       },
       orderBy: { updatedAt: 'desc' },
-      select: { userId: true },
+      select: { userId: true, user: { select: { name: true, email: true } } },
     });
 
     if (deptManager) {
-      const authLink = await this.prisma.larkUserAuthLink.findFirst({
-        where: { userId: deptManager.userId },
-        select: { larkOpenId: true },
-      });
-      if (authLink?.larkOpenId) {
-        const user = await this.prisma.user.findUnique({
-          where:  { id: deptManager.userId },
-          select: { name: true },
-        });
-        return {
-          userId:      deptManager.userId,
-          larkOpenId:  authLink.larkOpenId,
-          displayName: user?.name ?? deptManager.userId,
-        };
-      }
+      return {
+        userId:      deptManager.userId,
+        larkOpenId:  await this.larkAddressFor(companyId, deptManager.userId),
+        displayName: deptManager.user?.name ?? deptManager.user?.email ?? deptManager.userId,
+      };
     }
 
-    // 2. Fallback: any user in the company with an admin aiRole and a Lark open_id
+    const admin = await this.resolveCompanyAdmin(companyId);
+    if (admin) return admin;
+
+    // Companies migrated from the Lark-only era can have an admin who exists as
+    // a channel identity without an AdminMembership row.
     const adminIdentity = await this.prisma.channelIdentity.findFirst({
       where: {
         companyId,
@@ -61,19 +68,87 @@ export class ApprovalResolverService {
     });
 
     if (adminIdentity?.larkOpenId) {
-      const authLink = await this.prisma.larkUserAuthLink.findFirst({
-        where:  { larkOpenId: adminIdentity.larkOpenId },
-        select: { userId: true },
+      const connection = await this.prisma.integrationConnection.findFirst({
+        where: {
+          companyId,
+          provider: 'lark',
+          externalAccountId: adminIdentity.larkOpenId,
+          ownerUserId: { not: null },
+          status: 'connected',
+          revokedAt: null,
+        },
+        select: { ownerUserId: true },
       });
-      if (authLink) {
+      if (connection?.ownerUserId) {
         return {
-          userId:      authLink.userId,
+          userId:      connection.ownerUserId,
           larkOpenId:  adminIdentity.larkOpenId,
-          displayName: adminIdentity.displayName ?? authLink.userId,
+          displayName: adminIdentity.displayName ?? connection.ownerUserId,
         };
       }
     }
 
     return null;
+  }
+
+  /** Resolve the human owner of one governed connection. */
+  async resolveConnectionOwner(connectionId: string, companyId: string): Promise<ResolvedManager | null> {
+    const connection = await this.prisma.integrationConnection.findFirst({
+      where: { id: connectionId, companyId, status: 'connected', revokedAt: null, ownerUserId: { not: null } },
+      select: { ownerUserId: true, ownerUser: { select: { name: true, email: true } } },
+    });
+    if (!connection?.ownerUserId) return null;
+    return {
+      userId:      connection.ownerUserId,
+      larkOpenId:  await this.larkAddressFor(companyId, connection.ownerUserId),
+      displayName: connection.ownerUser?.name ?? connection.ownerUser?.email ?? connection.ownerUserId,
+    };
+  }
+
+  /** Resolve one active company admin. */
+  async resolveCompanyAdmin(companyId: string): Promise<ResolvedManager | null> {
+    const admins = await this.prisma.adminMembership.findMany({
+      where: { companyId, isActive: true, role: { in: ['COMPANY_ADMIN', 'SUPER_ADMIN'] } },
+      select: { userId: true, user: { select: { name: true, email: true } } },
+      orderBy: { updatedAt: 'desc' },
+    });
+    if (!admins.length) return null;
+
+    // Prefer an admin Divo can actually reach by card, so a company that does
+    // use Lark keeps the delivery it had before this became optional.
+    for (const admin of admins) {
+      const larkOpenId = await this.larkAddressFor(companyId, admin.userId);
+      if (larkOpenId) {
+        return {
+          userId: admin.userId,
+          larkOpenId,
+          displayName: admin.user?.name ?? admin.user?.email ?? admin.userId,
+        };
+      }
+    }
+
+    const fallback = admins[0]!;
+    return {
+      userId:      fallback.userId,
+      larkOpenId:  null,
+      displayName: fallback.user?.name ?? fallback.user?.email ?? fallback.userId,
+    };
+  }
+
+  /** The person's Lark card address, or null when there is no way to card them. */
+  private async larkAddressFor(companyId: string, userId: string): Promise<string | null> {
+    const connection = await this.prisma.integrationConnection.findFirst({
+      where: {
+        companyId,
+        provider: 'lark',
+        ownerUserId: userId,
+        status: 'connected',
+        revokedAt: null,
+        externalAccountId: { not: null },
+      },
+      select: { externalAccountId: true },
+      orderBy: { updatedAt: 'desc' },
+    });
+    return connection?.externalAccountId ?? null;
   }
 }

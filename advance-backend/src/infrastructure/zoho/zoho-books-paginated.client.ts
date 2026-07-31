@@ -18,6 +18,7 @@
  */
 
 import type { ZohoTokenService } from './zoho-token.service';
+import type { IntegrationGrantAccess } from '../persistence/integration-connection.repository';
 
 // ─── Module types ─────────────────────────────────────────────────────────────
 
@@ -49,6 +50,13 @@ export interface ZohoBooksListResult {
   readonly items:          Array<Record<string, unknown>>;
   readonly hasMore:        boolean;
   readonly page:           number;
+}
+
+interface ZohoConnectionAuth {
+  readonly userId?: string;
+  readonly connectionId?: string;
+  readonly minimumAccess?: IntegrationGrantAccess;
+  readonly signal?: AbortSignal;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -127,13 +135,26 @@ export class ZohoBooksPaginatedClient {
     companyId: string,
     path:      string,
     init:      RequestInit = {},
+    auth:      ZohoConnectionAuth = {},
   ): Promise<T> {
-    const token = await this.tokenService.getValidToken(companyId);
+    const connectionAuth = auth.connectionId && auth.userId
+      ? await this.tokenService.getValidConnectionAuth({
+        companyId,
+        userId: auth.userId,
+        connectionId: auth.connectionId,
+        minimumAccess: auth.minimumAccess ?? 'read_only',
+      })
+      : null;
+    const token = connectionAuth?.accessToken ?? await this.tokenService.getValidToken(companyId);
+    const booksBase = connectionAuth
+      ? `${connectionAuth.apiBaseUrl}/books/v3`
+      : this.booksBase;
     const sep   = path.includes('?') ? '&' : '?';
-    const url   = `${this.booksBase}${path}${sep}`;
+    const url   = `${booksBase}${path}${sep}`;
 
     const res = await fetch(url, {
       ...init,
+      ...(auth.signal ? { signal: auth.signal } : {}),
       headers: {
         'Authorization': `Zoho-oauthtoken ${token}`,
         'Content-Type':  'application/json',
@@ -155,11 +176,13 @@ export class ZohoBooksPaginatedClient {
    * Fetch all Zoho Books organizations accessible for this company's OAuth token.
    * Returns at least one item if the connection is valid.
    */
-  async listOrganizations(companyId: string): Promise<ZohoBooksOrganization[]> {
+  async listOrganizations(companyId: string, auth: ZohoConnectionAuth = {}): Promise<ZohoBooksOrganization[]> {
     try {
       const data = await this.request<Record<string, unknown>>(
         companyId,
         '/organizations',
+        {},
+        auth,
       );
       return asArrayOfRecords(data['organizations']).map(org => {
         const name      = asString(org['name']);
@@ -178,9 +201,9 @@ export class ZohoBooksPaginatedClient {
   /**
    * Resolve organization ID — uses provided one or fetches the default from API.
    */
-  async resolveOrganizationId(companyId: string, preferred?: string): Promise<string> {
+  async resolveOrganizationId(companyId: string, preferred?: string, auth: ZohoConnectionAuth = {}): Promise<string> {
     if (preferred) return preferred;
-    const orgs = await this.listOrganizations(companyId);
+    const orgs = await this.listOrganizations(companyId, auth);
     return orgs.find(org => org.isDefault === true)?.organizationId ?? orgs[0]?.organizationId ?? companyId;
   }
 
@@ -190,11 +213,13 @@ export class ZohoBooksPaginatedClient {
    */
   async getEndpoint(input: {
     companyId:       string;
+    userId?:         string;
+    connectionId?:   string;
     path:            string;
     organizationId?: string;
     params?:         Record<string, unknown>;
   }): Promise<Record<string, unknown>> {
-    const orgId = await this.resolveOrganizationId(input.companyId, input.organizationId);
+    const orgId = await this.resolveOrganizationId(input.companyId, input.organizationId, input);
     const path = input.path.startsWith('/') ? input.path : `/${input.path}`;
     const params = new URLSearchParams({ organization_id: orgId });
 
@@ -208,6 +233,8 @@ export class ZohoBooksPaginatedClient {
     return this.request<Record<string, unknown>>(
       input.companyId,
       `${path}?${params}`,
+      {},
+      input,
     );
   }
 
@@ -225,6 +252,8 @@ export class ZohoBooksPaginatedClient {
    */
   async listRecords(input: {
     companyId:      string;
+    userId?:        string;
+    connectionId?:  string;
     moduleName:     ZohoBooksModule;
     organizationId?: string;
     filters?:       Record<string, unknown>;
@@ -232,8 +261,9 @@ export class ZohoBooksPaginatedClient {
     page?:          number;         // if set, fetch only this page
     perPage?:       number;         // 1-200, default 25
     maxPages?:      number;         // override 20-page cap
+    signal?:        AbortSignal;
   }): Promise<ZohoBooksListResult> {
-    const orgId   = await this.resolveOrganizationId(input.companyId, input.organizationId);
+    const orgId   = await this.resolveOrganizationId(input.companyId, input.organizationId, input);
     const perPage = Math.max(1, Math.min(200, input.perPage ?? 25));
     const maxPg   = input.maxPages ?? 20;
     const query   = input.query?.trim();
@@ -253,6 +283,7 @@ export class ZohoBooksPaginatedClient {
             undefined,
             1,
             perPage,
+            input,
           );
           if (pg.items.length > 0) return { organizationId: orgId, items: pg.items, hasMore: pg.hasMore, page: 1 };
         }
@@ -264,6 +295,7 @@ export class ZohoBooksPaginatedClient {
       const pg = await this.fetchPage(
         input.companyId, input.moduleName, orgId,
         input.filters, query, input.page, perPage,
+        input,
       );
       return { organizationId: orgId, items: pg.items, hasMore: pg.hasMore, page: input.page };
     }
@@ -276,6 +308,7 @@ export class ZohoBooksPaginatedClient {
       const pg = await this.fetchPage(
         input.companyId, input.moduleName, orgId,
         input.filters, query, page, perPage,
+        input,
       );
       collected.push(...pg.items);
       const deduped = dedupeRecords(collected);
@@ -305,6 +338,8 @@ export class ZohoBooksPaginatedClient {
    */
   async listAllRecords(input: {
     companyId:       string;
+    userId?:         string;
+    connectionId?:   string;
     moduleName:      ZohoBooksModule;
     organizationId?: string;
     filters?:        Record<string, unknown>;
@@ -338,7 +373,7 @@ export class ZohoBooksPaginatedClient {
       return { organizationId: orgId, items: all, truncated };
     }
 
-    const orgId   = await this.resolveOrganizationId(input.companyId, input.organizationId);
+    const orgId   = await this.resolveOrganizationId(input.companyId, input.organizationId, input);
     const maxPg   = input.maxPages ?? 20;
     const query   = input.query?.trim();
     const all:    Array<Record<string, unknown>> = [];
@@ -349,6 +384,7 @@ export class ZohoBooksPaginatedClient {
       const pg = await this.fetchPage(
         input.companyId, input.moduleName, orgId,
         input.filters, query, page, 200,
+        input,
       );
 
       for (const item of pg.items) {
@@ -370,15 +406,19 @@ export class ZohoBooksPaginatedClient {
    */
   async getRecord(input: {
     companyId:      string;
+    userId?:        string;
+    connectionId?:  string;
     moduleName:     ZohoBooksModule;
     recordId:       string;
     organizationId?: string;
   }): Promise<Record<string, unknown> | null> {
-    const orgId = await this.resolveOrganizationId(input.companyId, input.organizationId);
+    const orgId = await this.resolveOrganizationId(input.companyId, input.organizationId, input);
     try {
       const data = await this.request<Record<string, unknown>>(
         input.companyId,
         `/${input.moduleName}/${encodeURIComponent(input.recordId)}?organization_id=${orgId}`,
+        {},
+        input,
       );
       // Zoho wraps in the singular module name, e.g. { invoice: {...} }
       const singular = input.moduleName.replace(/s$/, '');
@@ -399,6 +439,7 @@ export class ZohoBooksPaginatedClient {
     query:          string | undefined,
     page:           number,
     perPage:        number,
+    auth:           ZohoConnectionAuth = {},
   ): Promise<{ items: Array<Record<string, unknown>>; hasMore: boolean; raw: Record<string, unknown> }> {
     const params = new URLSearchParams({
       organization_id: organizationId,
@@ -416,6 +457,8 @@ export class ZohoBooksPaginatedClient {
     const raw = await this.request<Record<string, unknown>>(
       companyId,
       `/${moduleName}?${params}`,
+      {},
+      auth,
     );
 
     // Zoho wraps records in the plural module key, e.g. { invoices: [...] }

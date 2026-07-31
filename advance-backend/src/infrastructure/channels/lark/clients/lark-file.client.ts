@@ -1,68 +1,77 @@
-/**
- * Lark message-resource download client.
- *
- * Downloads files and images that were sent inside chat messages using the
- * message-resource endpoint (requires message_id):
- *   GET /open-apis/im/v1/messages/{message_id}/resources/{file_key}?type=image|file
- *
- * The standalone image endpoint (im/v1/images/{key}) is for images uploaded
- * via the Lark image-upload API, NOT for message attachments — using it for
- * message images returns error 234001 "Invalid request param".
- */
+/** Lark message-resource downloads through the official Node SDK. */
+import { Client as LarkSdkClient, Domain, LoggerLevel } from '@larksuiteoapi/node-sdk';
 import type { TypedEnv } from '../../../../config/env';
 import type { Logger } from '../../../../shared/logger';
 
 export class LarkFileClient {
-  private readonly appId:     string;
-  private readonly appSecret: string;
-  private readonly baseUrl:   string;
-  private readonly log:       Logger;
-  private tenantToken?:       string;
-  private tokenExpiresAt = 0;
+  private readonly client: LarkSdkClient;
+  private readonly log: Logger;
 
   constructor(env: TypedEnv, logger: Logger) {
-    this.appId     = env.LARK_APP_ID;
-    this.appSecret = env.LARK_APP_SECRET;
-    this.baseUrl   = env.LARK_API_BASE_URL;
-    this.log       = logger.child({ larkClient: 'file' });
+    this.log = logger.child({ larkClient: 'file' });
+    this.client = new LarkSdkClient({
+      appId: env.LARK_APP_ID,
+      appSecret: env.LARK_APP_SECRET,
+      domain: env.LARK_API_BASE_URL?.replace(/\/$/, '') || Domain.Lark,
+      loggerLevel: LoggerLevel.warn,
+      source: 'divo',
+    });
   }
 
-  async downloadFile(messageId: string, fileKey: string): Promise<Buffer> {
-    return this.downloadResource(messageId, fileKey, 'file');
+  async downloadFile(messageId: string, fileKey: string, maxBytes?: number): Promise<Buffer> {
+    return this.downloadResource(messageId, fileKey, 'file', maxBytes);
   }
 
   async downloadImage(messageId: string, imageKey: string): Promise<Buffer> {
     return this.downloadResource(messageId, imageKey, 'image');
   }
 
-  private async downloadResource(messageId: string, key: string, type: 'file' | 'image'): Promise<Buffer> {
-    const token = await this.getTenantToken();
-    const url   = `${this.baseUrl}/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/resources/${encodeURIComponent(key)}?type=${type}`;
-    const res   = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal:  AbortSignal.timeout(30_000),
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new Error(`LarkFileClient.downloadResource failed: ${res.status} type=${type} url=${url} body=${body}`);
-    }
-    return Buffer.from(await res.arrayBuffer());
+  async openFile(messageId: string, fileKey: string): Promise<AsyncIterable<Uint8Array>> {
+    return this.openResource(messageId, fileKey, 'file');
   }
 
-  private async getTenantToken(): Promise<string> {
-    if (this.tenantToken && Date.now() < this.tokenExpiresAt) {
-      return this.tenantToken;
+  async openImage(messageId: string, imageKey: string): Promise<AsyncIterable<Uint8Array>> {
+    return this.openResource(messageId, imageKey, 'image');
+  }
+
+  private async downloadResource(
+    messageId: string,
+    fileKey: string,
+    type: 'file' | 'image',
+    maxBytes?: number,
+  ): Promise<Buffer> {
+    try {
+      const chunks: Buffer[] = [];
+      let totalBytes = 0;
+      for await (const chunk of await this.openResource(messageId, fileKey, type)) {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        totalBytes += bytes.length;
+        if (maxBytes !== undefined && totalBytes > maxBytes) {
+          throw new Error(`Lark resource exceeds the ${maxBytes}-byte download limit`);
+        }
+        chunks.push(bytes);
+      }
+      return Buffer.concat(chunks);
+    } catch (error) {
+      this.log.warn('lark.file.download.failed', { messageId, type, error: String(error) });
+      throw error;
     }
-    const res = await fetch(`${this.baseUrl}/open-apis/auth/v3/tenant_access_token/internal`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ app_id: this.appId, app_secret: this.appSecret }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    const data = await res.json() as Record<string, unknown>;
-    this.tenantToken = data['tenant_access_token'] as string;
-    this.tokenExpiresAt = Date.now() + ((data['expire'] as number ?? 7200) - 60) * 1000;
-    this.log.debug('lark.file.token_refreshed');
-    return this.tenantToken;
+  }
+
+  private async openResource(
+    messageId: string,
+    fileKey: string,
+    type: 'file' | 'image',
+  ): Promise<AsyncIterable<Uint8Array>> {
+    try {
+      const response = await this.client.im.v1.messageResource.get({
+        path: { message_id: messageId, file_key: fileKey },
+        params: { type },
+      });
+      return response.getReadableStream();
+    } catch (error) {
+      this.log.warn('lark.file.open.failed', { messageId, type, error: String(error) });
+      throw error;
+    }
   }
 }

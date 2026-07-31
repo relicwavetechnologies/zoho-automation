@@ -4,6 +4,7 @@
  * All routes require admin auth. Mounted at /api/admin/company.
  *
  *   GET  /members               — list admin members
+ *   PUT  /members/:userId/role  — update a company member role
  *   GET  /directory             — company directory (members + Lark identities)
  *   GET  /invites               — list pending invites
  *   POST /invites               — create invite
@@ -18,6 +19,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
+import { Prisma } from '../../generated/prisma';
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import type { CachePort } from '../../shared/cache';
@@ -25,6 +27,15 @@ import type { TypedEnv } from '../../config/env';
 import type { LarkOAuthService } from '../../infrastructure/lark/lark-oauth.service';
 import type { ZohoTokenService } from '../../infrastructure/zoho/zoho-token.service';
 import type { ZohoConnectionRepository } from '../../infrastructure/zoho/zoho-connection.repository';
+import {
+  COMPANY_CAPABILITIES,
+  companyCapabilityPolicySchema,
+  connectionGovernancePolicySchema,
+  defaultCompanyCapabilityPolicy,
+  defaultConnectionGovernancePolicy,
+  parseCompanyCapabilityPolicy,
+  parseConnectionGovernancePolicy,
+} from '../../application/governance/connection-governance.policy';
 import {
   LARK_OAUTH_NONCE_TTL_SECONDS,
   encodeLarkOAuthState,
@@ -83,11 +94,123 @@ function resolveCompanyId(res: Response, providedId?: string): string {
 
 // ── Schemas ───────────────────────────────────────────────────────────────────
 
+// Select only governance-safe connection data. In particular, this must never
+// grow to include encrypted OAuth fields or provider token metadata.
+const connectionGovernanceSelect = {
+  id: true,
+  provider: true,
+  ownerType: true,
+  ownerUserId: true,
+  createdBy: true,
+  label: true,
+  accountEmail: true,
+  accountName: true,
+  status: true,
+  scopes: true,
+  connectedAt: true,
+  lastUsedAt: true,
+  createdAt: true,
+  updatedAt: true,
+  ownerUser: { select: { id: true, name: true, email: true } },
+  grants: {
+    where: { revokedAt: null },
+    select: {
+      id: true,
+      granteeType: true,
+      granteeId: true,
+      access: true,
+      grantedAt: true,
+      grantedByUser: { select: { id: true, name: true, email: true } },
+    },
+    orderBy: { grantedAt: 'asc' as const },
+  },
+  governance: {
+    select: {
+      managerPolicyJson: true,
+      managerConfiguredBy: true,
+      managerConfiguredAt: true,
+      adminOverrideJson: true,
+      adminOverriddenBy: true,
+      adminOverriddenAt: true,
+      version: true,
+    },
+  },
+} as const;
+
+function presentConnectionGovernance(connection: any) {
+  const governance = connection.governance;
+  const managerPolicy = governance?.managerPolicyJson
+    ? parseConnectionGovernancePolicy(governance.managerPolicyJson)
+    : null;
+  const adminOverride = governance?.adminOverrideJson
+    ? parseConnectionGovernancePolicy(governance.adminOverrideJson)
+    : defaultConnectionGovernancePolicy();
+  return {
+    id: connection.id,
+    provider: connection.provider,
+    ownerType: connection.ownerType,
+    ownerUserId: connection.ownerUserId,
+    createdBy: connection.createdBy,
+    label: connection.label,
+    accountEmail: connection.accountEmail,
+    accountName: connection.accountName,
+    status: connection.status,
+    scopes: connection.scopes,
+    connectedAt: connection.connectedAt.toISOString(),
+    lastUsedAt: connection.lastUsedAt?.toISOString() ?? null,
+    createdAt: connection.createdAt.toISOString(),
+    updatedAt: connection.updatedAt.toISOString(),
+    owner: connection.ownerUser
+      ? { id: connection.ownerUser.id, name: connection.ownerUser.name, email: connection.ownerUser.email }
+      : null,
+    grants: connection.grants.map((grant: any) => ({
+      id: grant.id,
+      granteeType: grant.granteeType,
+      granteeId: grant.granteeId,
+      access: grant.access,
+      grantedAt: grant.grantedAt.toISOString(),
+      grantedBy: grant.grantedByUser
+        ? { id: grant.grantedByUser.id, name: grant.grantedByUser.name, email: grant.grantedByUser.email }
+        : null,
+    })),
+    governance: {
+      managerPolicy,
+      managerConfiguredBy: governance?.managerConfiguredBy ?? null,
+      managerConfiguredAt: governance?.managerConfiguredAt?.toISOString() ?? null,
+      adminOverride,
+      adminOverriddenBy: governance?.adminOverriddenBy ?? null,
+      adminOverriddenAt: governance?.adminOverriddenAt?.toISOString() ?? null,
+      source: governance?.adminOverrideJson ? 'company_admin_override' : governance?.managerPolicyJson ? 'manager_policy' : 'platform_default',
+      version: governance?.version ?? 0,
+    },
+  };
+}
+
 const createInviteSchema = z.object({
   email:     z.string().email().max(200),
   roleId:    z.string().min(1).max(50),
   companyId: z.string().uuid().optional(),
 });
+
+// Company membership is deliberately simpler than platform administration.
+// A company admin can assign only these tenant-scoped roles; SUPER_ADMIN is a
+// platform operator role and must never be granted from a company workspace.
+const updateMemberRoleSchema = z.object({
+  role: z.enum(['MEMBER', 'COMPANY_ADMIN']),
+  companyId: z.string().uuid().optional(),
+});
+
+const connectionGovernanceUpdateSchema = z.object({
+  companyId: z.string().uuid().optional(),
+  adminOverride: connectionGovernancePolicySchema,
+});
+
+const capabilityGovernanceUpdateSchema = z.object({
+  companyId: z.string().uuid().optional(),
+  policy: companyCapabilityPolicySchema,
+});
+
+const companyCapabilityIds = new Set(COMPANY_CAPABILITIES.map(capability => capability.id));
 
 const ZOHO_SCOPE_LEVELS = ['read_only', 'read_write', 'full'] as const;
 type ZohoScopeLevel = typeof ZOHO_SCOPE_LEVELS[number];
@@ -201,6 +324,150 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
   const router = Router();
   const { prisma } = deps;
 
+  // ── Connection governance ────────────────────────────────────────────────
+  // These endpoints intentionally return connection metadata and policy only.
+  // OAuth credentials and provider token metadata never leave the backend.
+  router.get('/members/:userId/connections', asyncRoute(async (req, res) => {
+    const companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
+    const userId = String(req.params.userId ?? '');
+    const membership = await prisma.adminMembership.findFirst({
+      where: { companyId, userId, isActive: true },
+      select: { id: true },
+    });
+    if (!membership) throw routeError(404, 'Member not found in this company');
+
+    const connections = await prisma.integrationConnection.findMany({
+      where: {
+        companyId,
+        revokedAt: null,
+        OR: [
+          { ownerUserId: userId },
+          { createdBy: userId },
+          { grants: { some: { granteeType: 'user', granteeId: userId, revokedAt: null } } },
+        ],
+      },
+      select: connectionGovernanceSelect,
+      orderBy: [{ updatedAt: 'desc' }, { connectedAt: 'desc' }],
+    });
+
+    success(res, connections.map(presentConnectionGovernance), 'Connection governance loaded');
+  }));
+
+  router.get('/members/:userId/connections/:connectionId', asyncRoute(async (req, res) => {
+    const companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
+    const userId = String(req.params.userId ?? '');
+    const connectionId = String(req.params.connectionId ?? '');
+    const connection = await prisma.integrationConnection.findFirst({
+      where: {
+        id: connectionId,
+        companyId,
+        revokedAt: null,
+        OR: [
+          { ownerUserId: userId },
+          { createdBy: userId },
+          { grants: { some: { granteeType: 'user', granteeId: userId, revokedAt: null } } },
+        ],
+      },
+      select: connectionGovernanceSelect,
+    });
+    if (!connection) throw routeError(404, 'Connection not found for this member');
+    success(res, presentConnectionGovernance(connection), 'Connection governance loaded');
+  }));
+
+  router.put('/connections/:connectionId/governance', asyncRoute(async (req, res) => {
+    const payload = connectionGovernanceUpdateSchema.parse(req.body ?? {});
+    const companyId = resolveCompanyId(res, payload.companyId);
+    const connectionId = String(req.params.connectionId ?? '');
+    const actorId = res.locals['userId'] as string | null | undefined;
+    const connection = await prisma.integrationConnection.findFirst({
+      where: { id: connectionId, companyId, revokedAt: null },
+      select: { id: true },
+    });
+    if (!connection) throw routeError(404, 'Connection not found');
+
+    const governance = await prisma.integrationConnectionGovernance.upsert({
+      where: { connectionId },
+      create: {
+        companyId,
+        connectionId,
+        adminOverrideJson: payload.adminOverride as Prisma.InputJsonValue,
+        adminOverriddenBy: actorId ?? null,
+        adminOverriddenAt: new Date(),
+      },
+      update: {
+        adminOverrideJson: payload.adminOverride as Prisma.InputJsonValue,
+        adminOverriddenBy: actorId ?? null,
+        adminOverriddenAt: new Date(),
+        version: { increment: 1 },
+      },
+      select: { adminOverrideJson: true, adminOverriddenAt: true, adminOverriddenBy: true, version: true },
+    });
+    deps.logger.info('company.connection_governance.updated', { companyId, connectionId, actorId: actorId ?? 'platform', version: governance.version });
+    success(res, {
+      adminOverride: parseConnectionGovernancePolicy(governance.adminOverrideJson),
+      adminOverriddenAt: governance.adminOverriddenAt?.toISOString() ?? null,
+      adminOverriddenBy: governance.adminOverriddenBy ?? null,
+      version: governance.version,
+    }, 'Connection governance updated');
+  }));
+
+  // ── Company capability governance ────────────────────────────────────────
+  router.get('/capability-governance', asyncRoute(async (req, res) => {
+    const companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
+    const rows = await prisma.companyCapabilityGovernance.findMany({
+      where: { companyId },
+      select: { capabilityId: true, policyJson: true, configuredAt: true, configuredBy: true, version: true },
+    });
+    const rowByCapability = new Map(rows.map(row => [row.capabilityId, row]));
+    const capabilities = COMPANY_CAPABILITIES.map(capability => {
+      const row = rowByCapability.get(capability.id);
+      return {
+        ...capability,
+        policy: row ? parseCompanyCapabilityPolicy(row.policyJson) : defaultCompanyCapabilityPolicy(),
+        source: row ? 'company_admin' : 'platform_default',
+        configuredAt: row?.configuredAt.toISOString() ?? null,
+        configuredBy: row?.configuredBy ?? null,
+        version: row?.version ?? 0,
+      };
+    });
+    success(res, capabilities, 'Company capability governance loaded');
+  }));
+
+  router.put('/capability-governance/:capabilityId', asyncRoute(async (req, res) => {
+    const payload = capabilityGovernanceUpdateSchema.parse(req.body ?? {});
+    const companyId = resolveCompanyId(res, payload.companyId);
+    const capabilityId = String(req.params.capabilityId ?? '');
+    if (!companyCapabilityIds.has(capabilityId as typeof COMPANY_CAPABILITIES[number]['id'])) {
+      throw routeError(404, 'Unknown company capability');
+    }
+    const actorId = res.locals['userId'] as string | null | undefined;
+    const row = await prisma.companyCapabilityGovernance.upsert({
+      where: { companyId_capabilityId: { companyId, capabilityId } },
+      create: {
+        companyId,
+        capabilityId,
+        policyJson: payload.policy as Prisma.InputJsonValue,
+        configuredBy: actorId ?? null,
+        configuredAt: new Date(),
+      },
+      update: {
+        policyJson: payload.policy as Prisma.InputJsonValue,
+        configuredBy: actorId ?? null,
+        configuredAt: new Date(),
+        version: { increment: 1 },
+      },
+      select: { policyJson: true, configuredAt: true, configuredBy: true, version: true },
+    });
+    deps.logger.info('company.capability_governance.updated', { companyId, capabilityId, actorId: actorId ?? 'platform', version: row.version });
+    success(res, {
+      capabilityId,
+      policy: parseCompanyCapabilityPolicy(row.policyJson),
+      configuredAt: row.configuredAt.toISOString(),
+      configuredBy: row.configuredBy,
+      version: row.version,
+    }, 'Company capability governance updated');
+  }));
+
   // ── List members ──────────────────────────────────────────────────────────
   router.get('/members', asyncRoute(async (req, res) => {
     const companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
@@ -227,6 +494,87 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
     success(res, members, 'Members loaded');
   }));
 
+  // ── Update company member role ──────────────────────────────────────────
+  // Keep one active membership authoritative per user/company. Older versions
+  // allowed a MEMBER and COMPANY_ADMIN row to remain active at once, which made
+  // role reads dependent on query ordering.
+  router.put('/members/:userId/role', asyncRoute(async (req, res) => {
+    const payload = updateMemberRoleSchema.parse(req.body ?? {});
+    const companyId = resolveCompanyId(res, payload.companyId);
+    const actorId = res.locals['userId'] as string | null | undefined;
+    const isSuperAdmin = Boolean(res.locals['isSuperAdmin']);
+    if (!actorId && !isSuperAdmin) throw routeError(403, 'An authenticated company admin is required');
+
+    let result: { userId: string; companyId: string | null; role: string };
+    try {
+      result = await prisma.$transaction(async (tx) => {
+        if (!isSuperAdmin) {
+          const actorMembership = await tx.adminMembership.findFirst({
+            where: { userId: actorId!, companyId, role: 'COMPANY_ADMIN', isActive: true },
+            select: { id: true },
+            orderBy: { updatedAt: 'desc' },
+          });
+          if (!actorMembership) throw routeError(403, 'Only an active company admin can update member roles');
+        }
+
+        const memberships = await tx.adminMembership.findMany({
+          where: { userId: req.params.userId!, companyId, isActive: true },
+          select: { id: true, role: true },
+          orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+        });
+        const primary = memberships[0];
+        if (!primary) throw routeError(404, 'Member not found in this company');
+
+        const targetIsCompanyAdmin = memberships.some(membership => membership.role === 'COMPANY_ADMIN');
+        if (targetIsCompanyAdmin && payload.role === 'MEMBER') {
+          const companyAdminCount = await tx.adminMembership.count({
+            where: { companyId, role: 'COMPANY_ADMIN', isActive: true },
+          });
+          if (companyAdminCount <= 1) {
+            throw routeError(409, 'At least one active company admin is required');
+          }
+        }
+
+        // Deactivate every prior active record before reactivating the newest
+        // record as the sole source of truth for this user and company.
+        await tx.adminMembership.updateMany({
+          where: { userId: req.params.userId!, companyId, isActive: true },
+          data: { isActive: false },
+        });
+        const membership = await tx.adminMembership.update({
+          where: { id: primary.id },
+          data: { role: payload.role, isActive: true },
+          select: { userId: true, companyId: true, role: true },
+        });
+
+        // AdminSession carries an issuance-time role. Revoke the target's
+        // existing dashboard sessions so a demoted admin cannot retain access.
+        await tx.adminSession.updateMany({
+          where: { userId: membership.userId, companyId, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+
+        return membership;
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    } catch (error) {
+      // Serializable isolation prevents two concurrent demotions from removing
+      // every company admin. Surface contention as a safe retry rather than a
+      // generic internal failure.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') {
+        throw routeError(409, 'Member roles changed concurrently. Refresh and try again.');
+      }
+      throw error;
+    }
+
+    deps.logger.info('company.member_role.updated', {
+      companyId,
+      actorId: actorId ?? 'platform',
+      userId: result.userId,
+      role: result.role,
+    });
+    success(res, result, 'Member role updated');
+  }));
+
   // ── Company directory ─────────────────────────────────────────────────────
   router.get('/directory', asyncRoute(async (req, res) => {
     const companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
@@ -242,7 +590,11 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
               name:      true,
               email:     true,
               createdAt: true,
-              googleAuthLinks:       { select: { id: true, revokedAt: true }, take: 1 },
+              ownedIntegrationConnections: {
+                where:  { companyId, provider: 'google_workspace', revokedAt: null },
+                select: { id: true },
+                take:   1,
+              },
               departmentMemberships: {
                 where:   { status: 'active', department: { companyId, status: 'active' } },
                 select:  { department: { select: { name: true } }, role: { select: { slug: true } } },
@@ -277,7 +629,7 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
           email:                  m.user.email,
           companyRole:            m.role,
           larkLinked:             Boolean(lark),
-          googleConnected:        m.user.googleAuthLinks.some(l => l.revokedAt === null),
+          googleConnected:        m.user.ownedIntegrationConnections.length > 0,
           larkOpenId:             lark?.larkOpenId ?? null,
           larkDisplayName:        lark?.displayName ?? null,
           larkSourceRoles:        lark?.sourceRoles ?? [],
@@ -350,9 +702,9 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
         where:  { companyId, isActive: true },
         select: { larkTenantKey: true, isActive: true, createdAt: true },
       }),
-      prisma.companyGoogleAuthLink.findFirst({
-        where:   { companyId, revokedAt: null },
-        select:  { googleEmail: true, linkedAt: true },
+      prisma.integrationConnection.findFirst({
+        where:   { companyId, provider: 'google_workspace', ownerType: 'company', revokedAt: null },
+        select:  { accountEmail: true, connectedAt: true },
         orderBy: { updatedAt: 'desc' },
       }),
     ]);
@@ -386,8 +738,8 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
         provider:    'google',
         connected:   Boolean(googleLink),
         status:      googleLink ? 'connected' : 'disconnected',
-        connectedAt: googleLink?.linkedAt.toISOString() ?? null,
-        details:     googleLink ? { email: googleLink.googleEmail } : null,
+        connectedAt: googleLink?.connectedAt.toISOString() ?? null,
+        details:     googleLink ? { email: googleLink.accountEmail } : null,
       },
     ];
 
@@ -448,30 +800,26 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       throw routeError(503, 'Lark OAuth is not configured');
     }
 
-    const [user, existingLink, binding] = await Promise.all([
+    const [user, bindings] = await Promise.all([
       prisma.user.findUnique({
         where:  { id: userId },
         select: { email: true },
       }),
-      prisma.larkUserAuthLink.findUnique({
-        where:  { userId_companyId: { userId, companyId } },
-        select: { larkOpenId: true },
-      }),
-      prisma.larkTenantBinding.findFirst({
+      prisma.larkTenantBinding.findMany({
         where:  { companyId, isActive: true },
         select: { larkTenantKey: true },
+        orderBy: { createdAt: 'desc' },
+        take: 2,
       }),
     ]);
 
-    if (!binding) throw routeError(400, 'No active Lark tenant binding exists for this company');
+    if (bindings.length === 0) throw routeError(400, 'No active Lark tenant binding exists for this company');
+    if (bindings.length > 1) {
+      throw routeError(409, 'Multiple active Lark tenant bindings exist; select one before starting OAuth');
+    }
+    const binding = bindings[0]!;
 
-    const identityFilters = [
-      ...(user?.email ? [{ email: user.email }] : []),
-      ...(existingLink?.larkOpenId ? [
-        { larkOpenId: existingLink.larkOpenId },
-        { externalUserId: existingLink.larkOpenId },
-      ] : []),
-    ];
+    const identityFilters = user?.email ? [{ email: user.email }] : [];
 
     if (identityFilters.length === 0) {
       throw routeError(400, 'No Lark identity is mapped for this admin user');
@@ -481,6 +829,7 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       where: {
         companyId,
         channel: 'lark',
+        externalTenantId: binding.larkTenantKey,
         OR:      identityFilters,
       },
       select: {
@@ -489,17 +838,23 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       },
     });
 
-    const larkOpenId = identity?.larkOpenId ?? identity?.externalUserId ?? existingLink?.larkOpenId;
+    const larkOpenId = identity?.larkOpenId ?? identity?.externalUserId;
     if (!larkOpenId) {
       throw routeError(400, 'No Lark open_id is mapped for this admin user');
     }
 
     const nonce = deps.larkOAuthService.generateNonce();
-    const noncePayload = { companyId, userId, larkOpenId };
+    const noncePayload = { companyId, userId, larkOpenId, tenantKey: binding.larkTenantKey };
     const cacheResult = await deps.cache.set(larkOAuthNonceKey(nonce), noncePayload, LARK_OAUTH_NONCE_TTL_SECONDS);
     if (!cacheResult.ok) throw routeError(503, 'Unable to start Lark OAuth session');
 
-    const state = encodeLarkOAuthState({ companyId, userId, larkOpenId, nonce });
+    const state = encodeLarkOAuthState({
+      companyId,
+      userId,
+      larkOpenId,
+      tenantKey: binding.larkTenantKey,
+      nonce,
+    });
     const url = deps.larkOAuthService.getAuthorizeUrl(state);
 
     deps.logger.info('lark.admin_oauth.start', { companyId, userId, larkOpenId, tenantKey: binding.larkTenantKey });
@@ -603,17 +958,17 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
         break;
       case 'lark':
         if (userId) {
-          await prisma.larkUserAuthLink.updateMany({
-            where: { userId, companyId },
-            data: { revokedAt: new Date() },
+          await prisma.integrationConnection.updateMany({
+            where: { companyId, provider: 'lark', ownerUserId: userId, revokedAt: null },
+            data: { revokedAt: new Date(), status: 'revoked' },
           });
         }
         break;
       case 'google':
         if (userId) {
-          await prisma.companyGoogleAuthLink.updateMany({
-            where: { companyId, revokedAt: null },
-            data: { revokedAt: new Date() },
+          await prisma.integrationConnection.updateMany({
+            where: { companyId, provider: 'google_workspace', ownerType: 'company', revokedAt: null },
+            data: { revokedAt: new Date(), status: 'revoked' },
           });
         }
         break;
@@ -689,11 +1044,12 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       for (const user of users) {
         if (!user.openId) continue;
 
-        // 1. Upsert ChannelIdentity (matched by openId)
+        // 1. Upsert ChannelIdentity within this Lark tenant.
         await prisma.channelIdentity.upsert({
           where: {
-            channel_externalUserId_companyId: {
+            channel_externalTenantId_externalUserId_companyId: {
               channel: 'lark',
+              externalTenantId: binding.larkTenantKey,
               externalUserId: user.openId,
               companyId,
             },
@@ -725,20 +1081,26 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
           const email = user.email.trim().toLowerCase();
           let existingUser = await prisma.user.findUnique({ where: { email }, select: { id: true } });
 
-          // If no User with this email, check LarkUserAuthLink — the canonical
-          // openId→userId mapping. This catches email changes in Lark: the auth
-          // link still points to the original User even after their Lark email changed.
+          // If no User with this email, check the canonical Divo Lark connection.
+          // This catches email changes in Lark while preserving the Divo user.
           if (!existingUser) {
-            const authLink = await prisma.larkUserAuthLink.findFirst({
-              where: { larkOpenId: user.openId },
-              select: { userId: true },
+            const connection = await prisma.integrationConnection.findFirst({
+              where: {
+                companyId,
+                provider: 'lark',
+                externalAccountId: user.openId,
+                ownerUserId: { not: null },
+                status: 'connected',
+                revokedAt: null,
+              },
+              select: { ownerUserId: true },
             });
-            if (authLink) {
+            if (connection?.ownerUserId) {
               await prisma.user.update({
-                where: { id: authLink.userId },
+                where: { id: connection.ownerUserId },
                 data: { email, ...(user.displayName ? { name: user.displayName } : {}) },
               }).catch(() => {});
-              existingUser = { id: authLink.userId };
+              existingUser = { id: connection.ownerUserId };
             }
           }
 
@@ -759,6 +1121,18 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
               where: { id: existingUser.id },
               data: { name: user.displayName },
             }).catch(() => {});
+          }
+
+          if (existingUser) {
+            const activeMembership = await prisma.adminMembership.findFirst({
+              where: { userId: existingUser.id, companyId, isActive: true },
+              select: { id: true },
+            });
+            if (!activeMembership) {
+              await prisma.adminMembership.create({
+                data: { userId: existingUser.id, companyId, role: 'MEMBER', isActive: true },
+              });
+            }
           }
         }
 

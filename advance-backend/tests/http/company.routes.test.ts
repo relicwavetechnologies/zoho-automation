@@ -120,7 +120,7 @@ const fakeMembershipForDirectory = {
   ...fakeMembership,
   user: {
     ...fakeMembership.user,
-    googleAuthLinks:       [],
+    ownedIntegrationConnections: [],
     departmentMemberships: [],
   },
 };
@@ -149,6 +149,25 @@ const fakeActionPerm = {
   enabled:     true,
 };
 
+const fakeGovernedConnection = {
+  id: 'conn-1',
+  provider: 'google_workspace',
+  ownerType: 'user',
+  ownerUserId: 'u-1',
+  label: 'Finance Google',
+  accountEmail: 'finance@example.com',
+  accountName: 'Finance',
+  status: 'connected',
+  scopes: ['gmail.readonly'],
+  connectedAt: new Date('2025-01-01'),
+  lastUsedAt: new Date('2025-01-02'),
+  createdAt: new Date('2025-01-01'),
+  updatedAt: new Date('2025-01-02'),
+  ownerUser: { id: 'u-1', name: 'Alice', email: 'alice@example.com' },
+  grants: [],
+  governance: null,
+};
+
 function makePrisma(overrides: {
   memberships?:       any[];
   identities?:        any[];
@@ -156,10 +175,14 @@ function makePrisma(overrides: {
   createdInvite?:     any;
   zohoConn?:          any;
   larkBinding?:       any;
-  googleLink?:        any;
+  larkBindings?:      any[];
+  googleConnection?:  any;
+  integrationConnections?: any[];
+  capabilityGovernance?: any[];
   user?:              any;
   larkUserAuthLink?:  any;
   channelIdentity?:   any;
+  channelIdentityFindFirst?: (input: any) => Promise<any>;
   toolPerms?:         any[];
   actionPerms?:       any[];
 } = {}) {
@@ -169,10 +192,17 @@ function makePrisma(overrides: {
     },
     adminMembership: {
       findMany: async () => overrides.memberships ?? [fakeMembership],
+      findFirst: async () => fakeMembership,
+      count: async () => 1,
+      updateMany: async () => ({ count: 1 }),
+      update: async () => ({ userId: 'u-1', companyId: 'co-1', role: 'COMPANY_ADMIN' }),
     },
+    adminSession: { updateMany: async () => ({ count: 1 }) },
     channelIdentity: {
       findMany: async () => overrides.identities ?? [],
-      findFirst: async () => overrides.channelIdentity ?? null,
+      findFirst: async (input: any) => overrides.channelIdentityFindFirst
+        ? overrides.channelIdentityFindFirst(input)
+        : overrides.channelIdentity ?? null,
     },
     companyInvite: {
       findMany: async () => overrides.invites ?? [fakeInvite],
@@ -183,12 +213,33 @@ function makePrisma(overrides: {
     },
     larkTenantBinding: {
       findFirst: async () => overrides.larkBinding ?? null,
+      findMany: async () => overrides.larkBindings
+        ?? (overrides.larkBinding ? [overrides.larkBinding] : []),
     },
     larkUserAuthLink: {
       findUnique: async () => overrides.larkUserAuthLink ?? null,
     },
-    companyGoogleAuthLink: {
-      findFirst: async () => overrides.googleLink ?? null,
+    integrationConnection: {
+      findMany: async () => overrides.integrationConnections ?? [],
+      findFirst: async () => overrides.googleConnection ?? overrides.integrationConnections?.[0] ?? null,
+      updateMany: async () => ({ count: 1 }),
+    },
+    integrationConnectionGovernance: {
+      upsert: async (input: any) => ({
+        adminOverrideJson: input.create?.adminOverrideJson ?? input.update?.adminOverrideJson,
+        adminOverriddenAt: new Date('2025-01-03'),
+        adminOverriddenBy: 'u-1',
+        version: 1,
+      }),
+    },
+    companyCapabilityGovernance: {
+      findMany: async () => overrides.capabilityGovernance ?? [],
+      upsert: async (input: any) => ({
+        policyJson: input.create?.policyJson ?? input.update?.policyJson,
+        configuredAt: new Date('2025-01-03'),
+        configuredBy: 'u-1',
+        version: 1,
+      }),
     },
     toolPermission: {
       findMany: async () => overrides.toolPerms ?? [fakeToolPerm],
@@ -282,6 +333,60 @@ describe('GET /members', () => {
   });
 });
 
+// ─── PUT /members/:userId/role ──────────────────────────────────────────────
+
+describe('PUT /members/:userId/role', () => {
+  function roleMutationPrisma(input: { targetRole: 'MEMBER' | 'COMPANY_ADMIN'; companyAdminCount: number; actorIsTarget?: boolean }) {
+    const target = { id: 'target-membership', userId: 'u-target', companyId: 'co-1', role: input.targetRole, isActive: true, createdAt: new Date('2025-01-01'), updatedAt: new Date('2025-01-02') };
+    const actor = input.actorIsTarget
+      ? target
+      : { id: 'actor-membership', userId: 'u-1', companyId: 'co-1', role: 'COMPANY_ADMIN', isActive: true, createdAt: new Date('2025-01-01'), updatedAt: new Date('2025-01-02') };
+    const prisma = makePrisma() as any;
+    prisma.$transaction = async (work: (tx: any) => Promise<unknown>) => work(prisma);
+    prisma.adminMembership = {
+      findFirst: async (args: any) => args.where.userId === actor.userId ? actor : null,
+      findMany: async (args: any) => args.where.userId === 'u-target' ? [target] : [],
+      count: async () => input.companyAdminCount,
+      updateMany: async () => ({ count: 1 }),
+      update: async (args: any) => ({ userId: 'u-target', companyId: 'co-1', role: args.data.role }),
+    };
+    prisma.adminSession = { updateMany: async () => ({ count: 1 }) };
+    return prisma;
+  }
+
+  it('allows a company admin to promote a member within their company', async () => {
+    const { status, body } = await callRoute(
+      createCompanyRoutes(makeRouteDeps(roleMutationPrisma({ targetRole: 'MEMBER', companyAdminCount: 1 }))),
+      'PUT',
+      '/members/u-target/role',
+      { body: { role: 'COMPANY_ADMIN' } },
+    );
+    assert.equal(status, 200);
+    assert.equal((body as any).data.role, 'COMPANY_ADMIN');
+  });
+
+  it('rejects demoting the last active company admin', async () => {
+    const { status, body } = await callRoute(
+      createCompanyRoutes(makeRouteDeps(roleMutationPrisma({ targetRole: 'COMPANY_ADMIN', companyAdminCount: 1, actorIsTarget: true }))),
+      'PUT',
+      '/members/u-target/role',
+      { body: { role: 'MEMBER' }, locals: { ...DEFAULT_LOCALS, userId: 'u-target' } },
+    );
+    assert.equal(status, 409);
+    assert.match((body as any).message, /at least one active company admin/i);
+  });
+
+  it('rejects a request scoped to another company for a company admin', async () => {
+    const { status } = await callRoute(
+      createCompanyRoutes(makeRouteDeps(roleMutationPrisma({ targetRole: 'MEMBER', companyAdminCount: 1 }))),
+      'PUT',
+      '/members/u-target/role',
+      { body: { role: 'COMPANY_ADMIN', companyId: 'aaaaaaaa-aaaa-aaaa-aaaa-000000000001' } },
+    );
+    assert.equal(status, 403);
+  });
+});
+
 // ─── GET /directory ───────────────────────────────────────────────────────────
 
 describe('GET /directory', () => {
@@ -317,7 +422,7 @@ describe('GET /directory', () => {
         ...fakeMembershipForDirectory,
         user: {
           ...fakeMembershipForDirectory.user,
-          googleAuthLinks: [{ id: 'ga-1', revokedAt: null }],
+          ownedIntegrationConnections: [{ id: 'conn-1' }],
         },
       }],
     });
@@ -479,10 +584,32 @@ describe('POST /onboarding/lark-start', () => {
       companyId:  'co-1',
       userId:     'u-1',
       larkOpenId: 'ou_abc',
+      tenantKey:  'tk_abc',
       nonce:      'lark-nonce-1',
     });
     assert.equal(cachedKey, 'lark:oauth:nonce:lark-nonce-1');
-    assert.deepEqual(cachedValue, { companyId: 'co-1', userId: 'u-1', larkOpenId: 'ou_abc' });
+    assert.deepEqual(cachedValue, {
+      companyId: 'co-1',
+      userId: 'u-1',
+      larkOpenId: 'ou_abc',
+      tenantKey: 'tk_abc',
+    });
+  });
+
+  it('selects the admin identity only from the active Lark tenant', async () => {
+    let identityWhere: unknown;
+    const router = makeRouter({
+      larkBinding: { larkTenantKey: 'tk_current', isActive: true, createdAt: new Date('2025-01-01') },
+      channelIdentityFindFirst: async (input: any) => {
+        identityWhere = input.where;
+        return { externalUserId: 'ou_current', larkOpenId: 'ou_current' };
+      },
+    });
+
+    const { status } = await callRoute(router, 'POST', '/onboarding/lark-start');
+
+    assert.equal(status, 200);
+    assert.equal((identityWhere as any).externalTenantId, 'tk_current');
   });
 
   it('returns 400 when the company has no active Lark tenant binding', async () => {
@@ -490,11 +617,36 @@ describe('POST /onboarding/lark-start', () => {
     assert.equal(status, 400);
   });
 
+  it('returns 409 when the company has multiple active Lark tenant bindings', async () => {
+    const { status } = await callRoute(makeRouter({
+      larkBindings: [
+        { larkTenantKey: 'tk_one', isActive: true, createdAt: new Date('2025-01-01') },
+        { larkTenantKey: 'tk_two', isActive: true, createdAt: new Date('2025-01-02') },
+      ],
+    }), 'POST', '/onboarding/lark-start');
+
+    assert.equal(status, 409);
+  });
+
   it('returns 400 when the admin user is not mapped to a Lark identity', async () => {
     const router = makeRouter({
       larkBinding: { larkTenantKey: 'tk_abc', isActive: true, createdAt: new Date('2025-01-01') },
     });
     const { status } = await callRoute(router, 'POST', '/onboarding/lark-start');
+    assert.equal(status, 400);
+  });
+
+  it('does not reuse an account ID from a previous Lark tenant', async () => {
+    const router = makeRouter({
+      larkBinding: { larkTenantKey: 'tk_current', isActive: true, createdAt: new Date('2025-01-01') },
+      integrationConnections: [{
+        provider: 'lark',
+        externalAccountId: 'ou_previous_tenant',
+      }],
+    });
+
+    const { status } = await callRoute(router, 'POST', '/onboarding/lark-start');
+
     assert.equal(status, 400);
   });
 
@@ -601,9 +753,9 @@ describe('GET /onboarding/status', () => {
     assert.equal(lark.details.tenantKey, 'tk_abc');
   });
 
-  it('marks google connected when link exists', async () => {
+  it('marks google connected when company connection exists', async () => {
     const router = makeRouter({
-      googleLink: { googleEmail: 'admin@company.com', linkedAt: new Date('2025-01-01') },
+      googleConnection: { accountEmail: 'admin@company.com', connectedAt: new Date('2025-01-01') },
     });
     const { body } = await callRoute(router, 'GET', '/onboarding/status');
     const google = (body as any).data.find((p: any) => p.provider === 'google');
@@ -647,5 +799,62 @@ describe('GET /tool-permissions', () => {
     const { body } = await callRoute(router, 'GET', '/tool-permissions');
     assert.equal((body as any).data.permissions.length, 0);
     assert.equal((body as any).data.actionPermissions.length, 0);
+  });
+});
+
+// ─── Connection governance ───────────────────────────────────────────────────
+
+describe('connection governance', () => {
+  it('lists governance-safe connection metadata without OAuth credentials', async () => {
+    const { status, body } = await callRoute(makeRouter({ integrationConnections: [fakeGovernedConnection] }), 'GET', '/members/u-1/connections');
+    assert.equal(status, 200);
+    const connection = (body as any).data[0];
+    assert.equal(connection.id, 'conn-1');
+    assert.equal(connection.accountEmail, 'finance@example.com');
+    assert.equal(connection.governance.source, 'platform_default');
+    assert.equal(connection.governance.adminOverride.actions.send.mode, 'inherit');
+    assert.equal('accessTokenEncrypted' in connection, false);
+    assert.equal('tokenMetadata' in connection, false);
+  });
+
+  it('stores a company-admin override for exact connection actions', async () => {
+    const { status, body } = await callRoute(makeRouter({ integrationConnections: [fakeGovernedConnection] }), 'PUT', '/connections/conn-1/governance', {
+      body: {
+        adminOverride: {
+          version: 1,
+          actions: {
+            read: { mode: 'enforced', requestsPerMinute: 60, requestsPerDay: 5000, approval: 'none' },
+            create: { mode: 'inherit' },
+            update: { mode: 'inherit' },
+            delete: { mode: 'enforced', requestsPerMinute: 5, requestsPerDay: 50, approval: 'company_admin' },
+            send: { mode: 'enforced', requestsPerMinute: 10, requestsPerDay: 100, approval: 'connection_owner' },
+            execute: { mode: 'inherit' },
+          },
+        },
+      },
+    });
+    assert.equal(status, 200);
+    assert.equal((body as any).data.adminOverride.actions.delete.approval, 'company_admin');
+    assert.equal((body as any).data.adminOverride.actions.send.requestsPerMinute, 10);
+  });
+
+  it('exposes company capability policies and persists an admin update', async () => {
+    const list = await callRoute(makeRouter(), 'GET', '/capability-governance');
+    assert.equal(list.status, 200);
+    assert.equal((list.body as any).data.find((item: any) => item.id === 'webSearch').source, 'platform_default');
+
+    const update = await callRoute(makeRouter(), 'PUT', '/capability-governance/webSearch', {
+      body: {
+        policy: {
+          version: 1,
+          enabled: true,
+          requestsPerMinute: 30,
+          requestsPerDay: 1000,
+          approval: 'none',
+        },
+      },
+    });
+    assert.equal(update.status, 200);
+    assert.equal((update.body as any).data.policy.requestsPerMinute, 30);
   });
 });

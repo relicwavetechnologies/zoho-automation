@@ -28,6 +28,7 @@ import assert from 'node:assert/strict';
 import type { Request, Response } from 'express';
 import { createDepartmentRoutes } from '../../src/http/admin/departments.routes.ts';
 import type { DepartmentAdminService } from '../../src/application/departments/department-admin.service.ts';
+import { SKILL_SUMMARY_MAX_CHARS } from '../../src/application/skills/skill-limits.ts';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -140,7 +141,7 @@ function makeService(overrides: Partial<DepartmentAdminService> = {}): Departmen
     createDepartment:    async () => ({ ok: true, value: fakeDept }),
     updateDepartment:    async () => ({ ok: true, value: fakeDept }),
     archiveDepartment:   async () => ({ ok: true, value: { id: 'dept-1', status: 'archived' } }),
-    updateConfig:        async () => ({ ok: true, value: { departmentId: 'dept-1', systemPrompt: '', skillsMarkdown: '', isActive: true, updatedAt: '2025-01-01T00:00:00.000Z' } }),
+    updateConfig:        async () => ({ ok: true, value: { departmentId: 'dept-1', systemPrompt: '', desktopPersonaPrompt: '', isActive: true, updatedAt: '2025-01-01T00:00:00.000Z' } }),
     createRole:          async () => ({ ok: true, value: fakeRole }),
     updateRole:          async () => ({ ok: true, value: fakeRole }),
     deleteRole:          async () => ({ ok: true, value: { deleted: true } }),
@@ -151,6 +152,12 @@ function makeService(overrides: Partial<DepartmentAdminService> = {}): Departmen
     archiveSkill:        async () => ({ ok: true, value: { id: 'skill-1', status: 'archived' } }),
     updateRolePermission: async () => ({ ok: true, value: fakePerm }),
     updateUserOverride:   async () => ({ ok: true, value: { id: 'ov-1', allowed: true } }),
+    backfillEmptyRolePermissions: async () => ({
+      ok: true,
+      value: { departmentsTouched: 0, rolesSeeded: 0, rowsCreated: 0 },
+    }),
+    getBookModulePermissions: async () => ({ ok: true, value: [] }),
+    updateBookModulePermission: async () => ({ ok: true, value: { roleId: 'role-1', module: 'invoices', enabled: true } }),
     ...overrides,
   } as unknown as DepartmentAdminService;
 }
@@ -301,7 +308,10 @@ describe('POST /:id/archive', () => {
 // ─── PUT /:id/config ──────────────────────────────────────────────────────────
 
 describe('PUT /:id/config', () => {
-  const validConfig = { systemPrompt: 'You are helpful.', skillsMarkdown: '# Skills' };
+  const validConfig = {
+    systemPrompt: 'You are helpful.',
+    desktopPersonaPrompt: 'Prefer in-chat summaries.',
+  };
 
   it('returns 200 on success', async () => {
     const { status, body } = await callRoute(makeRouter(), 'PUT', '/dept-1/config', {
@@ -313,7 +323,17 @@ describe('PUT /:id/config', () => {
 
   it('returns 400 when systemPrompt is missing', async () => {
     const { status } = await callRoute(makeRouter(), 'PUT', '/dept-1/config', {
-      body: { skillsMarkdown: '# Skills' },
+      body: {},
+    });
+    assert.equal(status, 400);
+  });
+
+  it('rejects an oversized desktop persona prompt', async () => {
+    const { status } = await callRoute(makeRouter(), 'PUT', '/dept-1/config', {
+      body: {
+        systemPrompt: 'You are helpful.',
+        desktopPersonaPrompt: 'x'.repeat(6001),
+      },
     });
     assert.equal(status, 400);
   });
@@ -452,6 +472,26 @@ describe('POST /:id/skills', () => {
     assert.equal(status, 201);
   });
 
+  it('accepts skill summaries up to the shared skill summary limit', async () => {
+    const { status } = await callRoute(makeRouter(), 'POST', '/dept-1/skills', {
+      body: {
+        ...validSkill,
+        summary: 'x'.repeat(SKILL_SUMMARY_MAX_CHARS),
+      },
+    });
+    assert.equal(status, 201);
+  });
+
+  it('returns 400 when skill summary exceeds the shared skill summary limit', async () => {
+    const { status } = await callRoute(makeRouter(), 'POST', '/dept-1/skills', {
+      body: {
+        ...validSkill,
+        summary: 'x'.repeat(SKILL_SUMMARY_MAX_CHARS + 1),
+      },
+    });
+    assert.equal(status, 400);
+  });
+
   it('returns 400 when name is missing', async () => {
     const { status } = await callRoute(makeRouter(), 'POST', '/dept-1/skills', {
       body: { markdown: '## Skill' },
@@ -502,6 +542,35 @@ describe('POST /:id/skills/:skillId/archive', () => {
       'POST', '/dept-1/skills/skill-missing/archive',
     );
     assert.equal(status, 404);
+  });
+});
+
+// ─── POST /backfill-permissions ───────────────────────────────────────────────
+
+describe('POST /backfill-permissions', () => {
+  it('returns 200 on success', async () => {
+    const { status, body } = await callRoute(makeRouter(), 'POST', '/backfill-permissions', {
+      body: {},
+    });
+    assert.equal(status, 200);
+    assert.equal((body as any).success, true);
+  });
+
+  it('passes optional departmentId to service', async () => {
+    let capturedDeptId: string | undefined;
+    const router = createDepartmentRoutes({
+      deptAdminService: makeService({
+        backfillEmptyRolePermissions: async (_companyId, _updatedBy, departmentId) => {
+          capturedDeptId = departmentId;
+          return { ok: true, value: { departmentsTouched: 1, rolesSeeded: 2, rowsCreated: 10 } };
+        },
+      }),
+      logger: noopLogger,
+    });
+    await callRoute(router, 'POST', '/backfill-permissions', {
+      body: { departmentId: 'dept-finance' },
+    });
+    assert.equal(capturedDeptId, 'dept-finance');
   });
 });
 

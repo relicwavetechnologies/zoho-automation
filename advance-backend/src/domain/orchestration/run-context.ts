@@ -43,20 +43,53 @@ export interface RunContext {
    */
   readonly userExternalId?: string;
   /**
+   * Exact Lark open_ids explicitly mentioned in the inbound message.
+   * Backend adapters own this list; tools may use it to avoid fuzzy person
+   * resolution but must not treat it as a permission or approval grant.
+   */
+  readonly mentionedLarkOpenIds?: ReadonlyArray<string>;
+  /**
    * Approval grants issued by a manager.
-   * The gate in ai-sdk-adapter checks this list before sending a new approval request.
+   * The approval gate checks this list before sending a new approval request.
    * A grant is valid only when argsHash matches the tool call args.
    */
   readonly approvalGrants?: ReadonlyArray<ApprovalGrant>;
   /**
    * The Lark chat_id for this run's conversation.
-   * Used by the approval gate for idempotency keying and card delivery.
+   * Used for actual Lark delivery and chat-scoped provider operations.
    */
   readonly chatId?: string;
+  /** Immutable Lark reply target retained across deferred approval execution. */
+  readonly replyToMessageId?: string;
+  /** Whether Lark should keep deferred delivery inside the originating thread. */
+  readonly replyInThread?: boolean;
   /**
-   * When set, outbound delivery must stay locked to the current conversation.
-   * Used by scheduled workflows so "deliver to current chat" cannot be rerouted
-   * by an LLM to another chat or group.
+   * Marks headless scheduled execution so conversation history and background
+   * memory work are skipped, and delegates the final response to a dedicated
+   * runtime adapter — the creator's Lark DM, which is where every scheduled
+   * result goes. A run carrying this must not deliver anywhere itself.
    */
-  readonly deliveryMode?: 'current_chat_only';
+  readonly deliveryMode?: 'scheduled_runtime_delivery';
+  /**
+   * Backend-derived Lark request data used only to create a deferred OAuth
+   * continuation. Tools must never accept these identity or reply fields from
+   * model arguments.
+   */
+  readonly connectionAuthorization?: {
+    readonly larkOpenId: string;
+    readonly larkTenantKey: string;
+    readonly chatId: string;
+    readonly chatType: string;
+    readonly originalMessageId: string;
+    readonly rootMessageId?: string;
+    readonly replyInThread: boolean;
+    readonly groupReplyMode?: string;
+    readonly originalRequest: string;
+  };
+  /**
+   * Backend-issued tool IDs that triggered a deferred OAuth continuation.
+   * The fresh run intersects these with current RBAC before treating them as
+   * resolved; callers and model arguments cannot grant tool access here.
+   */
+  readonly continuationToolIds?: ReadonlyArray<string>;
 }

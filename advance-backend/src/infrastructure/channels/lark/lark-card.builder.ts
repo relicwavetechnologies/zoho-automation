@@ -5,9 +5,10 @@
 
 import type {
   ChannelBranding,
-  ChannelPlanStep,
+  ChannelLedgerRow,
+  ChannelPlanStepStatus,
+  ChannelRunState,
   ChannelTimeline,
-  ChannelToolFamily,
   InteractiveAction,
 } from '../../../domain/channel/outbound';
 
@@ -113,211 +114,316 @@ function hrElement(margin = '4px 0 0 0'): Record<string, unknown> {
   return { tag: 'hr', margin };
 }
 
-const TOOL_FAMILY_LABEL: Record<ChannelToolFamily, string> = {
-  zoho:          'ZOHO',
-  lark:          'LARK',
-  google:        'GOOGLE',
-  context:       'CTX',
-  orchestration: 'PLAN',
-  other:         '',
+// ── Status card: one fact, one place ─────────────────────────────────────────
+
+/**
+ * The status card's whole design rule is that each fact appears exactly once:
+ *
+ *   what was asked  → header title
+ *   run state       → header chip
+ *   what's happening now → the single `●` activity row
+ *   how much work   → footer counter
+ *   the plan        → folded panel
+ *
+ * The card this replaced broke that rule in three places at once: the header
+ * said "Thinking…", the body said "Understanding your request", and the meta
+ * line said "● Thinking · 13s" — three lines carrying one fact. Anything added
+ * here has to claim a cell of that table or it does not belong on the card.
+ */
+
+/**
+ * Visible activity rows; older ones collapse into a counted note, never dropped
+ * silently. The window counts what the model said as well as what it did, so it
+ * is wider than the five it held when only tool calls could appear here — five
+ * interleaved rows is barely two steps of context.
+ */
+const ACTIVITY_VISIBLE_ROWS = 9;
+const ACTIVITY_DETAIL_MAX   = 64;
+const ACTIVITY_SAY_MAX      = 200;
+const TODO_VISIBLE_ROWS     = 8;
+
+const RUN_STATE_WORD: Record<ChannelRunState, string> = {
+  queued:   'Queued',
+  thinking: 'Thinking',
+  planning: 'Planning',
+  working:  'Working',
+  writing:  'Writing',
+  done:     'Done',
+  blocked:  'Stopped',
 };
 
-function circularProgressElement(pct: number): Record<string, unknown> {
-  const clamped = Math.max(0, Math.min(100, Math.round(pct)));
-  const value   = clamped / 100;
+/**
+ * Chip colours, kept deliberately flat: everything in flight is the same neutral
+ * grey, and colour is spent only where it means something — finished, or failed.
+ */
+const RUN_STATE_CHIP: Record<ChannelRunState, string> = {
+  queued:   'neutral',
+  thinking: 'neutral',
+  planning: 'neutral',
+  working:  'neutral',
+  writing:  'neutral',
+  done:     'green',
+  blocked:  'red',
+};
+
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  if (total < 60) return `${total}s`;
+  const mins = Math.floor(total / 60);
+  return `${mins}m ${String(total % 60).padStart(2, '0')}s`;
+}
+
+function actionsPhrase(count: number): string {
+  return `${count} step${count === 1 ? '' : 's'}`;
+}
+
+/**
+ * The footer counter: how much work, and for how long. It deliberately carries
+ * no fraction — a denominator only exists when a checklist was declared, and
+ * that lives on the plan panel where the checklist itself is.
+ */
+export function statusCounterText(timeline: ChannelTimeline, now = Date.now()): string {
+  const parts: string[] = [];
+  const count = timeline.actionCount ?? 0;
+
+  if (count > 0) parts.push(actionsPhrase(count));
+  if (timeline.startedAtMs !== undefined) {
+    parts.push(formatElapsed(Math.max(0, now - timeline.startedAtMs)));
+  }
+  return parts.join(' · ');
+}
+
+/**
+ * Header title: what the user asked for. The state is a chip beside it and the
+ * bot's name is printed above every card by the client, so neither belongs here
+ * — the title is the one line that makes a chat full of Divo cards scannable.
+ */
+function statusHeaderTitle(timeline?: ChannelTimeline): string {
+  const subject = timeline?.subject?.trim();
+  if (subject) return subject;
+  return statusStateTitle(timeline);
+}
+
+function statusStateTitle(timeline?: ChannelTimeline): string {
+  const state = timeline?.state;
+  if (!state) return CARD_TITLE;
+  if (state === 'blocked') return 'Couldn’t finish';
+  if (state === 'done')    return 'Done';
+  return `${RUN_STATE_WORD[state]}…`;
+}
+
+/**
+ * Text from a run, made safe to sit inside the card's own markup.
+ *
+ * Activity detail is now a bash command or a sentence the model wrote, and both
+ * land inside a `<font color='grey'>` the card opened. An angle bracket in a
+ * shell pipeline would close that tag early and take the rest of the card's
+ * structure with it, so the two characters that can do it are removed; a
+ * backtick is dropped for the same reason against code spans. Emphasis
+ * characters are left alone — stripping them would rewrite `my_file.txt`, and
+ * the worst they do is italicise part of a line.
+ */
+export function sanitizeRunText(value: string, maxLength: number): string {
+  const flat = value
+    .replace(/[<>`]/g, '')
+    .replace(/\s+/g, ' ')
+    // The model's final answer streams through the same channel as its
+    // narration, so a line here can begin with that answer's opening heading.
+    // Left alone, one sentence of a run log renders at heading size and the
+    // rest of the card looks like its caption.
+    .replace(/^\s*(?:#{1,6}|>|\*\*)\s*/, '')
+    .trim();
+  return flat.length > maxLength ? `${flat.slice(0, maxLength - 1)}…` : flat;
+}
+
+function truncateOutcome(value: string): string {
+  return sanitizeRunText(value, ACTIVITY_DETAIL_MAX);
+}
+
+const STEP_MARKERS: Record<ChannelPlanStepStatus, string> = {
+  pending: '○',
+  running: '●',
+  done:    '✓',
+  failed:  '✗',
+  skipped: '–',
+};
+
+/**
+ * `✓ **Web search**  4 results` — marker, what ran, what it produced.
+ *
+ * A `say` row is the exception and carries none of that furniture: it is a
+ * sentence the model wrote for the user, and putting a status marker and bold
+ * label on it would dress a human sentence as a machine event. It is simply
+ * the line, indented to sit under nothing.
+ */
+function activityLine(row: ChannelLedgerRow, indent: string): string {
+  if (row.kind === 'say') {
+    return `${indent}${sanitizeRunText(row.label, ACTIVITY_SAY_MAX)}`;
+  }
+  const marker = STEP_MARKERS[row.status];
+  const calls  = row.count > 1 ? ` <font color='grey'>×${row.count}</font>` : '';
+  const detail = row.outcome?.trim()
+    ? `  <font color='grey'>${truncateOutcome(row.outcome)}</font>`
+    : '';
+  return `${indent}${marker} **${row.label}**${calls}${detail}`;
+}
+
+/**
+ * Repeated identical steps, folded into one row that counts them.
+ *
+ * Paging a table nineteen times is one act, and printing it as nineteen rows
+ * buries everything else the run did. Only rows that are *adjacent* and say the
+ * same thing fold — a step that happened after the model spoke belongs after
+ * what it said, and reordering it to join an earlier group would destroy the
+ * chronology the log exists to show. Two calls to the same tool doing different
+ * work stay apart, because they are not the same act.
+ *
+ * The merged status is the worst one present: a failure hidden inside a group
+ * marked ✓ is exactly the thing a run log must not do.
+ */
+export function foldRepeatedRows(
+  rows: readonly ChannelLedgerRow[],
+): readonly ChannelLedgerRow[] {
+  const folded: ChannelLedgerRow[] = [];
+  for (const row of rows) {
+    const last = folded[folded.length - 1];
+    const mergeable = last
+      && row.kind !== 'say' && last.kind !== 'say'
+      && last.label === row.label
+      && (last.outcome ?? '') === (row.outcome ?? '')
+      && !last.children && !row.children;
+    if (!mergeable) {
+      folded.push(row);
+      continue;
+    }
+    folded[folded.length - 1] = {
+      ...last,
+      count: last.count + row.count,
+      status: last.status === 'failed' || row.status === 'failed'
+        ? 'failed'
+        : last.status === 'running' || row.status === 'running'
+          ? 'running'
+          : row.status,
+    };
+  }
+  return folded;
+}
+
+/**
+ * The activity list: one line per step, newest last, each child indented under
+ * the step that farmed it out.
+ *
+ * Only the tail is shown. Older steps collapse into a count rather than being
+ * dropped, because a card that silently forgets what it did is worse than a
+ * card that admits it is showing the last five things.
+ */
+function activityMarkdown(timeline: ChannelTimeline): string | undefined {
+  const rows = timeline.ledger?.length ? foldRepeatedRows(timeline.ledger) : undefined;
+  if (!rows?.length) return undefined;
+
+  const hidden  = Math.max(0, rows.length - ACTIVITY_VISIBLE_ROWS);
+  const visible = hidden > 0 ? rows.slice(-ACTIVITY_VISIBLE_ROWS) : rows;
+  const lines: string[] = [];
+
+  if (hidden > 0) {
+    lines.push(`<font color='grey'>+${hidden} earlier step${hidden === 1 ? '' : 's'}</font>`);
+  }
+  for (const row of visible) {
+    lines.push(activityLine(row, ''));
+    for (const child of row.children ?? []) {
+      lines.push(activityLine(child, '　└ '));
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * The plan, folded.
+ *
+ * Its header already names where the run is, so the panel stays shut in the
+ * normal case and the checklist costs one line. Opening it is for the user who
+ * wants to see the rest, not something the card decides for them.
+ */
+function planPanel(timeline: ChannelTimeline): Record<string, unknown> | undefined {
+  const declared = timeline.declared;
+  if (!declared || declared.total <= 0) return undefined;
+
+  const items = declared.items ?? [];
+  const focus = declared.current ?? declared.next;
+  const heading = [
+    `**Plan**`,
+    `<font color='grey'>${Math.min(declared.done, declared.total)} of ${declared.total}`
+      + `${focus ? ` · ${truncateOutcome(focus)}` : ''}</font>`,
+  ].join('  ');
+
+  // With no named steps there is nothing behind the fold, so the plan is just a
+  // line. A panel that opens onto its own title is a worse version of no panel.
+  if (items.length === 0) {
+    return { tag: 'markdown', element_id: 'run_plan', content: heading, text_size: 'notation' };
+  }
+
+  const hidden  = Math.max(0, items.length - TODO_VISIBLE_ROWS);
+  const visible = hidden > 0 ? items.slice(0, TODO_VISIBLE_ROWS) : items;
+  const body = [
+    ...visible.map(item => {
+      const title = item.status === 'done'
+        ? `<font color='grey'>${item.title}</font>`
+        : item.title;
+      return `${STEP_MARKERS[item.status]} ${title}`;
+    }),
+    ...(hidden > 0 ? [`<font color='grey'>+${hidden} more</font>`] : []),
+  ].join('\n');
+
   return {
-    tag:          'chart',
-    element_id:   'run_progress',
-    height:       '72px',
-    aspect_ratio: '1:1',
-    preview:      false,
-    color_theme:  'brand',
-    chart_spec:   {
-      type:         'circularProgress',
-      data:         { values: [{ type: 'progress', value, text: `${clamped}%` }] },
-      valueField:   'value',
-      categoryField: 'type',
-      seriesField:  'type',
-      radius:       0.85,
-      innerRadius:  0.62,
-      title:        { visible: false },
-      legends:      { visible: false },
-      indicator:    {
-        visible: true,
-        title:   { visible: false },
-        content: [{ visible: true, field: 'text' }],
-      },
+    tag:        'collapsible_panel',
+    element_id: 'run_plan',
+    expanded:   false,
+    padding:    '0px',
+    header: {
+      title:               { tag: 'markdown', content: heading },
+      icon:                { tag: 'standard_icon', token: 'down-small-ccm_outlined', size: '12px 12px', color: 'grey' },
+      icon_position:       'right',
+      icon_expanded_angle: -180,
+      width:               'auto_when_fold',
+      padding:             '0px',
     },
+    elements: [{
+      tag: 'markdown', content: body, text_size: 'notation', margin: '4px 0 0 12px',
+    }],
   };
 }
 
-/** Header subtitle: step counter when the run has plan steps (e.g. "Step 2/5"). */
-function statusHeaderSubtitle(timeline?: ChannelTimeline): string | undefined {
-  const total = timeline?.totalSteps;
-  if (!total || total <= 0) return undefined;
-  const completed = timeline.completedSteps ?? 0;
-  const hasRunning = timeline.plan?.some(s => s.status === 'running') ?? false;
-  const current = hasRunning
-    ? Math.min(completed + 1, total)
-    : Math.max(completed, 1);
-  return `Step ${current}/${total}`;
-}
+/**
+ * Phase words the header chip already carries. A live label that is only one of
+ * these says nothing the chip has not said, and printing it is exactly the
+ * "Thinking… / Thinking" doubling this card exists to remove.
+ */
+const PHASE_ECHO = new Set([
+  'thinking', 'planning', 'working', 'working on your request', 'queued',
+  'preparing response', 'preparing your response', 'writing', 'writing your answer',
+  'continuing', 'understanding your request', 'getting things ready',
+  'done', 'failed', 'blocked',
+]);
 
-const SIDE_RAIL_MAX_CHARS = 24;
-
-function shortStepLabel(step: ChannelPlanStep): string {
-  const badge = step.toolFamily && step.toolFamily !== 'other'
-    ? TOOL_FAMILY_LABEL[step.toolFamily]
-    : '';
-  const words = step.title.split(/\s+/).filter(Boolean).slice(0, 2).join(' ');
-  const base  = badge ? `${badge} · ${words}` : words;
-  return base.length > SIDE_RAIL_MAX_CHARS
-    ? `${base.slice(0, SIDE_RAIL_MAX_CHARS - 1)}…`
-    : base;
-}
-
-function normalizeLiveText(value: string): string {
+function normalizeLive(value: string): string {
   return value.replace(/…+$/u, '').trim().toLowerCase();
 }
 
-/** Compact todo rail from plan steps (✓ done, ● running, ○ next). */
-function planToSideRail(plan: readonly ChannelPlanStep[]): string | undefined {
-  const lines: string[] = [];
-  const done = plan.filter(s => s.status === 'done').slice(-2);
-  const running = plan.find(s => s.status === 'running');
-  const pending = plan.filter(s => s.status === 'pending').slice(0, 1);
+/**
+ * What the agent is saying right now.
+ *
+ * This is the one line that carries the model's own voice, so it is shown only
+ * when no step is running — a running step already occupies that role, and the
+ * two together is the same sentence twice in different words.
+ */
+function narrationMarkdown(timeline: ChannelTimeline): string | undefined {
+  const active = timeline.narrationActive?.trim() || timeline.liveLabel?.trim();
+  if (!active) return undefined;
+  if (timeline.ledger?.some(row => row.status === 'running')) return undefined;
 
-  for (const step of done) lines.push(`✓ ${shortStepLabel(step)}`);
-  if (running) lines.push(`● ${shortStepLabel(running)}`);
-  for (const step of pending) lines.push(`○ ${shortStepLabel(step)}`);
-
-  return lines.length ? lines.join('\n') : undefined;
-}
-
-/** Fallback rail from recent trace lines when plan is not populated yet. */
-function recentToSideRail(recent: readonly string[]): string | undefined {
-  const lines: string[] = [];
-  for (const raw of recent.slice(-3)) {
-    const done = /^\[done\]/i.test(raw);
-    const text = raw.replace(/^\[(run|done)\]\s*/i, '').trim();
-    if (!text) continue;
-    const short = text.length > SIDE_RAIL_MAX_CHARS
-      ? `${text.slice(0, SIDE_RAIL_MAX_CHARS - 1)}…`
-      : text;
-    lines.push(done ? `✓ ${short}` : `● ${short}`);
-  }
-  return lines.length ? lines.join('\n') : undefined;
-}
-
-/** Right column: mini todo rail (never a duplicate of the center live line). */
-function buildSideRailMarkdown(timeline: ChannelTimeline): string | undefined {
-  const plan = timeline.plan;
-  if (plan?.length) {
-    const rail = planToSideRail(plan);
-    if (rail) return rail;
-  }
-
-  if (timeline.recent?.length) {
-    const rail = recentToSideRail(timeline.recent);
-    if (!rail) return undefined;
-    const live = normalizeLiveText(timeline.liveLabel ?? '');
-    const first = normalizeLiveText(rail.replace(/^[●○✓]\s*/, '').split('\n')[0] ?? '');
-    if (live && first === live && !rail.includes('\n')) return undefined;
-    return rail;
-  }
-
-  return undefined;
-}
-
-/** One primary line beside the ring (no separate "Executing" headline). */
-function liveStripMarkdown(timeline: ChannelTimeline): string {
-  let live = timeline.liveLabel ?? 'Working…';
-
-  if (
-    timeline.totalSteps
-    && timeline.completedSteps === timeline.totalSteps
-    && !timeline.plan?.some(s => s.status === 'running')
-    && /working/i.test(live)
-  ) {
-    live = 'Preparing response…';
-  }
-
-  return live;
-}
-
-/** Rolling sentences from streamed model text (Cursor-style narration). */
-function buildNarrationMarkdown(timeline: ChannelTimeline): string | undefined {
-  const done = timeline.narration ?? [];
-  const active = timeline.narrationActive?.trim();
-  if (!done.length && !active) return undefined;
-
-  const parts: string[] = [];
-  for (const line of done) {
-    parts.push(`✓ ${line}`);
-  }
-  if (active) {
-    parts.push(`● **${active}**`);
-  }
-  return parts.join('\n');
-}
-
-/** Optional second line: what's queued after the active step. */
-function liveStripSubline(timeline: ChannelTimeline): string | undefined {
-  const plan = timeline.plan;
-  if (!plan?.length) return undefined;
-  const pending = plan.find(s => s.status === 'pending');
-  if (!pending) return undefined;
-  const fam = pending.toolFamily && pending.toolFamily !== 'other'
-    ? TOOL_FAMILY_LABEL[pending.toolFamily]
-    : '';
-  const hint = fam ? `${fam} next` : 'Next step';
-  const words = pending.title.split(/\s+/).filter(Boolean).slice(0, 4).join(' ');
-  return words ? `${hint} · ${words}` : hint;
-}
-
-function liveStatusColumnSet(timeline: ChannelTimeline): Record<string, unknown> {
-  const columns: Record<string, unknown>[] = [
-    {
-      tag:             'column',
-      width:           'weighted',
-      weight:          1,
-      vertical_align:  'center',
-      elements:        [circularProgressElement(timeline.progressPct ?? 10)],
-    },
-    {
-      tag:             'column',
-      width:           'weighted',
-      weight:          5,
-      vertical_align:  'center',
-      elements:        (() => {
-        const narration = buildNarrationMarkdown(timeline);
-        if (narration) {
-          return [{
-            tag:       'markdown',
-            content:   `**Working on your request**\n\n${narration}`,
-            text_size: 'normal',
-          }];
-        }
-        const main = liveStripMarkdown(timeline);
-        const sub  = liveStripSubline(timeline);
-        const headline = main.replace(/…+$/u, '').trim() || main;
-        const content = sub ? `**${headline}**\n${sub}` : main;
-        return [{
-          tag:       'markdown',
-          content,
-          text_size: 'normal',
-        }];
-      })(),
-    },
-  ];
-
-  return {
-    tag:                 'column_set',
-    element_id:          'live_strip',
-    flex_mode:           'none',
-    horizontal_spacing:  '8px',
-    columns,
-  };
+  const headline = active.replace(/…+$/u, '').trim() || active;
+  if (PHASE_ECHO.has(normalizeLive(headline))) return undefined;
+  return `<font color='grey'>${sanitizeRunText(headline, MAX_ELEMENT_LEN)}</font>`;
 }
 
 function collapsiblePanel(
@@ -413,8 +519,19 @@ function tableElement(parsed: ParsedMarkdownTable, elementId: string): Record<st
   };
 }
 
+/**
+ * Lark's card markdown renders no `#` headings, so they are rewritten as bold.
+ *
+ * The capture is lazy and the trailing run is matched outside it because two
+ * trailing spaces is markdown's hard line break — correct output from a model,
+ * and greedily capturing it produced `**Title  **`, which CommonMark refuses to
+ * close and Lark therefore printed with its asterisks showing.
+ *
+ * Depth goes to six, matching `stripDecorators` and `ensureTableSeparation`;
+ * stopping at three left `#### Heading` on the card as literal hashes.
+ */
 function softenHeadings(md: string): string {
-  return md.replace(/^#{1,3}\s+(.+)$/gm, '**$1**');
+  return md.replace(/^#{1,6}[ \t]+(.+?)[ \t]*$/gm, '**$1**');
 }
 
 function ensureTableSeparation(text: string): string {
@@ -561,17 +678,33 @@ export function splitMarkdown(content: string): string[] {
 
 // ── Card v2 header ────────────────────────────────────────────────────────────
 
+/**
+ * The department chip, and nothing else by default.
+ *
+ * Lark prints the sender's name and its Agent badge directly above every card,
+ * so a header that says "Divo AI" and wears a "Divo" tag spends the widest line
+ * of the card repeating what the client already rendered twice. The chip
+ * survives only when a real department is set — which is information the client
+ * does not have.
+ */
 function buildHeader(
-  subtitle: string | undefined,
+  title: string | undefined,
   branding: ChannelBranding | undefined,
-): Record<string, unknown> {
-  const label = branding?.departmentLabel ?? 'Divo';
-  const color = branding?.departmentColor ?? pickDeptColor(branding?.departmentLabel);
+): Record<string, unknown> | undefined {
+  const label = branding?.departmentLabel?.trim();
+  const chip = label && label.toLowerCase() !== 'divo'
+    ? [{
+        tag:   'text_tag',
+        text:  { tag: 'plain_text', content: label },
+        color: branding?.departmentColor ?? pickDeptColor(label),
+      }]
+    : [];
+
+  if (!title && chip.length === 0) return undefined;
   return {
     template: 'default',
-    title:    { tag: 'plain_text', content: CARD_TITLE },
-    ...(subtitle ? { subtitle: { tag: 'plain_text', content: subtitle } } : {}),
-    text_tag_list: [{ tag: 'text_tag', text: { tag: 'plain_text', content: label }, color }],
+    ...(title ? { title: { tag: 'plain_text', content: title } } : {}),
+    ...(chip.length > 0 ? { text_tag_list: chip } : {}),
   };
 }
 
@@ -603,7 +736,11 @@ function blocksToMarkdown(blocks: readonly FinalCardBodyBlock[]): string {
   return blocks.map(block => block.markdown).join('\n\n').trim();
 }
 
-function buildFinalSubtitle(title: string): string | undefined {
+/**
+ * The heading the answer declared, promoted to the header title. When the reply
+ * has no heading there is nothing to promote, and the card goes out headerless.
+ */
+function buildFinalTitle(title: string): string | undefined {
   return title !== CARD_TITLE ? title : undefined;
 }
 
@@ -665,13 +802,16 @@ function flattenPlanningUnits(units: readonly FinalCardBodyBlock[][]): FinalCard
 function serializeFinalCard(
   elements: readonly Record<string, unknown>[],
   summaryContent: string,
-  subtitle: string | undefined,
+  title: string | undefined,
   branding: ChannelBranding | undefined,
 ): string {
+  // A plain answer gets no header at all — the body is the whole message, and a
+  // one-line reply under a title bar reads like a form, not a reply.
+  const header = buildHeader(title, branding);
   const card = {
     schema: '2.0',
     config: { width_mode: 'fill', update_multi: true, enable_forward: true, summary: { content: summaryContent } },
-    header: buildHeader(subtitle, branding),
+    ...(header ? { header } : {}),
     body: { vertical_spacing: '8px', padding: '12px 12px 12px 12px', elements },
   };
   return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(card) });
@@ -696,23 +836,33 @@ function buildFinalCardResult(input: FinalCardInput & {
     elements.push(traceToCollapsible(executionTrace));
   }
 
+  // Card 2.0 has no `action` container and ignores 1.0's `value` on a button —
+  // callbacks must be declared through `behaviors`, buttons sit in `elements`.
   if (actions?.length) {
     elements.push({
-      tag:    'action',
-      margin: '8px 0 0 0',
-      actions: actions.map((a, i) => ({
-        tag:        'button',
-        element_id: `action_${i + 1}`,
-        text:       { tag: 'plain_text', content: a.label },
-        value:      { action: a.value },
-        type:       a.style === 'primary' ? 'primary' : a.style === 'danger' ? 'danger' : 'default',
+      tag:                'column_set',
+      element_id:         'final_actions',
+      margin:             '8px 0 0 0',
+      flex_mode:          'flow',
+      horizontal_spacing: '8px',
+      columns: actions.map((a, i) => ({
+        tag:      'column',
+        width:    'auto',
+        elements: [{
+          tag:        'button',
+          element_id: `action_${i + 1}`,
+          text:       { tag: 'plain_text', content: a.label },
+          type:       a.style === 'primary' ? 'primary' : a.style === 'danger' ? 'danger' : 'default',
+          size:       'small',
+          behaviors:  [{ type: 'callback', value: { action: a.value } }],
+        }],
       })),
     });
   }
 
   const summaryContent = buildSummary(bodyTitle, normalizedBody);
-  const subtitle = buildFinalSubtitle(bodyTitle);
-  const serialized = serializeFinalCard(elements, summaryContent, subtitle, branding);
+  const headerTitle = buildFinalTitle(bodyTitle);
+  const serialized = serializeFinalCard(elements, summaryContent, headerTitle, branding);
   if (serialized.length <= MAX_CARD_BYTES) {
     return { payload: serialized, tableCount: rendered.tableCount, usedCondensedFallback: false };
   }
@@ -735,7 +885,7 @@ function buildFinalCardResult(input: FinalCardInput & {
     fallbackElements.push(traceToCollapsible(executionTrace));
   }
   return {
-    payload: serializeFinalCard(fallbackElements, summaryContent, subtitle, branding),
+    payload: serializeFinalCard(fallbackElements, summaryContent, headerTitle, branding),
     tableCount: rendered.tableCount,
     usedCondensedFallback: true,
   };
@@ -833,6 +983,9 @@ export function planFinalCards(
       markdown: segmentMarkdown,
       ...(input.branding ? { branding: input.branding } : {}),
       ...(index === partCount - 1 && input.actions ? { actions: input.actions } : {}),
+      // No execution trace on a split reply, deliberately: the split happened
+      // because the answer already fills a card, and a trace on top of that
+      // buys a folded panel at the risk of condensing the answer itself.
       bodyTitle: title,
       bodyText,
       bodyBlocks: segmentBlocks,
@@ -855,56 +1008,133 @@ export function planFinalCards(
 export interface StatusCardInput {
   branding?: ChannelBranding;
   timeline?: ChannelTimeline;
-  actions?:  Array<{ label: string; value: string }>;
 }
 
+/**
+ * The in-flight status card.
+ *
+ * Body, top to bottom: what the agent is saying (only when no step is running),
+ * the activity list with its subagent children, the folded plan, then a footer
+ * rule carrying the counter.
+ *
+ * The card carries no controls. Stopping a run is `/q` in the conversation —
+ * one way to say it, in the same place every other instruction to Divo is
+ * typed, and it works whether or not this particular bubble is still on screen.
+ *
+ * There is no progress ring and no state line. The ring's percentage came from
+ * a denominator the run cannot know, and the state already sits in the header
+ * chip; both were confident-looking restatements of something said elsewhere.
+ */
 export function buildStatusCard(input: StatusCardInput): string {
-  const { branding, timeline, actions } = input;
+  const { branding, timeline } = input;
+  const now = Date.now();
   const elements: unknown[] = [];
 
-  if (timeline) {
-    elements.push(liveStatusColumnSet(timeline));
+  if (!timeline) {
+    elements.push(mdElement(`<font color='grey'>Getting started…</font>`));
   } else {
-    elements.push(mdElement('Working…'));
-  }
-
-  if (timeline?.recent?.length) {
-    const recentBody = timeline.recent
-      .map(line => line.replace(/^\[(run|done)\]\s*/i, ''))
-      .join('\n');
-    const traceTitle = timeline.plan?.length
-      ? `Trace (${timeline.recent.length})`
-      : `Trace (${timeline.recent.length}) — tap to expand`;
-    elements.push(hrElement('8px 0 0 0'));
-    elements.push(collapsiblePanel(
-      'recent_panel',
-      traceTitle,
-      recentBody,
-      false,
-    ));
-  }
-
-  if (actions?.length) {
-    for (const [i, a] of actions.entries()) {
+    const narration = narrationMarkdown(timeline);
+    if (narration) {
       elements.push({
-        tag: 'button', text: { tag: 'plain_text', content: a.label },
-        type: 'default', width: 'default',
-        behaviors: [{ type: 'callback', value: { action: a.value } }],
+        tag: 'markdown', element_id: 'run_say', content: narration, text_size: 'normal',
       });
     }
-  }
-  elements.push({
-    tag: 'button', text: { tag: 'plain_text', content: '⏹ Stop' },
-    type: 'danger_text', width: 'default', size: 'small',
-    behaviors: [{ type: 'callback', value: { action: 'interrupt_run' } }],
-  });
 
+    const activity = activityMarkdown(timeline);
+    if (activity) {
+      elements.push({
+        tag: 'markdown', element_id: 'run_activity', content: activity, text_size: 'normal',
+      });
+    }
+
+    const plan = planPanel(timeline);
+    if (plan) elements.push(plan);
+
+    // An empty body reads as a broken card, so the run always says something.
+    // Deliberately not the state word: the header chip already holds that, and
+    // this line exists precisely for the moment before there is anything else.
+    if (!narration && !activity && !plan) {
+      elements.push(mdElement(`<font color='grey'>Getting started…</font>`));
+    }
+  }
+
+  // The footer is one line of text now, so it needs no column set to hold a
+  // button beside it. A running card also says how to stop it — the command is
+  // useless to someone who has never been told it exists, and this is the only
+  // moment they are looking for it.
+  const counter = timeline ? statusCounterText(timeline, now) : '';
+  // Queued is deliberately excluded: nothing has registered an abort yet, so
+  // `/q` would answer "there is no active run" to someone the card had just
+  // told to send it.
+  const RUNNING: readonly ChannelRunState[] = ['thinking', 'planning', 'working', 'writing'];
+  const stoppable = timeline?.state !== undefined && RUNNING.includes(timeline.state);
+  const footer = [counter, ...(stoppable ? ['send `/q` to stop'] : [])]
+    .filter(Boolean)
+    .join('  ·  ');
+
+  if (footer) {
+    elements.push(hrElement('8px 0 0 0'));
+    elements.push({
+      tag:        'markdown',
+      element_id: 'run_count',
+      content:    `<font color='grey'>${footer}</font>`,
+      text_size:  'notation',
+      margin:     '2px 0 0 0',
+    });
+  }
+
+  const statusHeader = buildStatusHeader(timeline, branding);
   const card = {
     schema: '2.0',
-    config: { width_mode: 'fill', update_multi: true, enable_forward: false },
-    header: buildHeader(statusHeaderSubtitle(timeline), branding),
-    body:   { vertical_spacing: '8px', padding: '12px 12px 12px 12px', elements },
+    config: {
+      width_mode: 'fill',
+      update_multi: true,
+      enable_forward: false,
+      summary: { content: statusSummary(timeline, now) },
+    },
+    ...(statusHeader ? { header: statusHeader } : {}),
+    body:   { vertical_spacing: '6px', padding: '12px 12px 10px 12px', elements },
   };
 
   return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(card) });
+}
+
+/** Notification preview text — the run's subject and state, not a generic "Divo AI". */
+function statusSummary(timeline: ChannelTimeline | undefined, now: number): string {
+  const title   = statusHeaderTitle(timeline);
+  const state   = statusStateTitle(timeline);
+  const counter = timeline ? statusCounterText(timeline, now) : '';
+  const tail    = [title === state ? '' : state, counter].filter(Boolean).join(' · ');
+  return tail ? `${title} — ${tail}` : title;
+}
+
+/**
+ * Title is the subject; the state is a chip beside it.
+ *
+ * The department chip is dropped while a state chip is present — two chips on
+ * one header line is where a status card starts looking like a dashboard, and
+ * the department does not change during a run, so it is the one that can go.
+ *
+ * No header icon: an unrecognised `standard_icon` token makes Lark reject the
+ * whole card, which would cost every run its status bubble.
+ */
+function buildStatusHeader(
+  timeline: ChannelTimeline | undefined,
+  branding: ChannelBranding | undefined,
+): Record<string, unknown> | undefined {
+  const state = timeline?.state;
+  if (!state) return buildHeader(timeline?.subject?.trim(), branding);
+  const subject = timeline.subject?.trim();
+  return {
+    template: 'default',
+    // No title unless the run has a subject. The only other thing to put there
+    // is the state, which is the chip sitting immediately beside it — and
+    // "Working… | Working" is the one-fact-twice this card exists to remove.
+    ...(subject ? { title: { tag: 'plain_text', content: subject } } : {}),
+    text_tag_list: [{
+      tag:   'text_tag',
+      text:  { tag: 'plain_text', content: RUN_STATE_WORD[state] },
+      color: RUN_STATE_CHIP[state],
+    }],
+  };
 }

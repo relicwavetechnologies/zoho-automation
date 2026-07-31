@@ -2,7 +2,7 @@ import type { ToolActionGroup } from '../../domain/permissions/tool-action-group
 import type { PermissionResult } from '../permissions/permission.types';
 import type { RunContext, ApprovalGrant } from '../../domain/orchestration/run-context';
 import { ManagerApprovalConfigSchema } from './approval.types';
-import { sha256 } from '../../shared/hash';
+import { sha256, sha256CanonicalJson } from '../../shared/hash';
 
 export interface ApprovalCheckInput {
   readonly toolId:     string;
@@ -17,10 +17,11 @@ export interface ApprovalCheckResult {
   readonly existingGrant?: ApprovalGrant;
   readonly isSelfBypass:   boolean;
   readonly managerId?:     string;   // userId of dept manager (for later resolution)
+  readonly misconfigured?: string;
 }
 
 export function computeArgsHash(args: unknown): string {
-  return sha256(JSON.stringify(args));
+  return sha256CanonicalJson(args);
 }
 
 export function computeIdempotencyKey(
@@ -50,7 +51,15 @@ export function checkApprovalPolicy(input: ApprovalCheckInput): ApprovalCheckRes
   }
 
   const configParsed = ManagerApprovalConfigSchema.safeParse(deptMeta.managerApprovalJson);
-  if (!configParsed.success || !configParsed.data.enabled) {
+  if (!configParsed.success) {
+    return {
+      required:     false,
+      isSelfBypass: false,
+      misconfigured: 'Invalid manager approval configuration. Please contact your administrator.',
+    };
+  }
+
+  if (!configParsed.data.enabled) {
     return { required: false, isSelfBypass: false };
   }
 

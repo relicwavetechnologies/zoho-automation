@@ -10,10 +10,12 @@ import type { CompanyRoleSlug } from '../../domain/permissions/company-role';
 import { asDepartmentRoleSlug } from '../../domain/permissions/department-role';
 import {
   CANONICAL_TOOL_IDS,
+  TOOL_DERIVED_PERMISSIONS,
   TOOL_DEFAULT_PERMISSIONS,
   TOOL_SUPPORTED_ACTIONS,
   type CanonicalToolId,
 } from '../../domain/tools/tool-id';
+import { DEPARTMENT_GRANT_ONLY_TOOLS } from '../../domain/tools/tool-policy';
 import type { PermissionDecision, PermissionSource } from '../../domain/permissions/permission-decision';
 import type { PermissionQuery, PermissionResult, DepartmentMeta } from './permission.types';
 import {
@@ -75,14 +77,18 @@ export class PermissionServiceImpl implements PermissionService {
 
     // ── No department: pure company-axis ──────────────────────────────
     if (!departmentId) {
-      return this.resolveCompanyOnly(companyId, companyRole);
+      const companyOnly = await this.resolveCompanyOnly(companyId, companyRole);
+      return this.applyCompanyAdminFixedAccess(
+        companyRole,
+        companyOnly.ok ? ok(stripDepartmentGrantOnlyTools(companyOnly.value)) : companyOnly,
+      );
     }
 
     // ── With department: check dept cache first ────────────────────────
     const cached = await this.permCache.getDept(companyId, departmentId, userId, companyRole);
     if (cached.ok && cached.value !== null) {
       this.deps.logger.debug('perm.cache.hit.dept', { companyId, departmentId, userId });
-      return ok(deserializePermissionResult(cached.value));
+      return this.applyCompanyAdminFixedAccess(companyRole, ok(deserializePermissionResult(cached.value)));
     }
 
     // ── Company axis (the ceiling) ─────────────────────────────────────
@@ -122,8 +128,14 @@ export class PermissionServiceImpl implements PermissionService {
       this.deps.deptUserOverrideRepo.getForUser(departmentId, userId),
     ]);
 
-    const deptRolePerms = deptRolePermsResult.ok ? deptRolePermsResult.value : [];
-    const userOverrides = userOverridesResult.ok ? userOverridesResult.value : [];
+    if (!deptRolePermsResult.ok || !userOverridesResult.ok) {
+      return err(new PermissionError({
+        reason: 'department_access_denied',
+        message: 'Failed to load department permission rules',
+      }));
+    }
+    const deptRolePerms = deptRolePermsResult.value;
+    const userOverrides = userOverridesResult.value;
 
     // Build fast lookup maps
     const deptRoleMap = new Map<string, boolean>();
@@ -135,7 +147,8 @@ export class PermissionServiceImpl implements PermissionService {
       overrideMap.set(`${o.toolId}:${o.actionGroup}`, o.allowed);
     }
 
-    // ── Compose: user-override → dept-role → company ceiling ──────────
+    // ── Compose: user-override → dept-role grant → default deny ───────
+    // Company ceiling still clamps any allow; it is not an inherit source.
     const decisions: PermissionDecision[] = [];
     const allowedActionsByTool = new Map<ToolId, Set<ToolActionGroup>>();
 
@@ -158,11 +171,10 @@ export class PermissionServiceImpl implements PermissionService {
           allowed = deptRoleMap.get(key)!;
           source = 'department_role';
         } else {
-          // LAYER 3: fall through to company ceiling
-          // CRITICAL FIX: use companyCeiling (resolved from companyRole) — not dept role slug
-          const ceilingActions = companyCeiling.allowedActionsByTool.get(toolId);
-          allowed = ceilingActions?.has(action) ?? false;
-          source = allowed ? 'company_default' : 'company_default';
+          // LAYER 3: default deny — no explicit dept-role grant means not allowed.
+          // Company ceiling is a clamp on allows, not an inherit source for missing rows.
+          allowed = false;
+          source = 'department_role';
         }
 
         // Department CANNOT exceed company ceiling
@@ -195,17 +207,15 @@ export class PermissionServiceImpl implements PermissionService {
       roleSlug: asDepartmentRoleSlug(membership.roleSlug),
       zohoReadScope: membership.zohoReadScope === 'show_all' ? 'show_all' : 'personalized',
       ...(membership.systemPrompt ? { systemPrompt: membership.systemPrompt } : {}),
-      ...(membership.skillsMarkdown ? { skillsMarkdown: membership.skillsMarkdown } : {}),
       ...(membership.managerApprovalJson !== null ? { managerApprovalJson: membership.managerApprovalJson } : {}),
-      ...(membership.zohoRateLimitJson !== null ? { zohoRateLimitJson: membership.zohoRateLimitJson } : {}),
     };
 
-    const result: PermissionResult = {
+    const result = applyDerivedDepartmentPermissions({
       allowedToolIds,
       allowedActionsByTool,
       decisions,
       department: deptMeta,
-    };
+    }, companyCeiling, deptRoleMap, overrideMap);
 
     this.deps.logger.info('perm.resolved.dept', {
       userId,
@@ -213,14 +223,14 @@ export class PermissionServiceImpl implements PermissionService {
       departmentId,
       companyRole,
       deptRoleSlug: membership.roleSlug,
-      allowedToolCount: allowedToolIds.size,
-      allowedTools: [...allowedToolIds],
+      allowedToolCount: result.allowedToolIds.size,
+      allowedTools: [...result.allowedToolIds],
     });
 
     // Cache the result
     await this.permCache.setDept(companyId, departmentId, userId, companyRole, serializePermissionResult(result));
 
-    return ok(result);
+    return this.applyCompanyAdminFixedAccess(companyRole, ok(result));
   }
 
   // ── Public: canInvoke ────────────────────────────────────────────────
@@ -298,22 +308,25 @@ export class PermissionServiceImpl implements PermissionService {
       this.deps.toolActionRepo.getForCompany(companyId),
     ]);
 
+    if (!toolPermResult.ok || !actionPermResult.ok) {
+      return err(new PermissionError({
+        reason: 'not_allowed',
+        message: 'Failed to load company permission rules',
+      }));
+    }
+
     // Build override maps (explicit admin toggles)
     const toolEnabledMap = new Map<string, boolean>();
-    if (toolPermResult.ok) {
-      for (const row of toolPermResult.value) {
-        if (row.role === companyRole) {
-          toolEnabledMap.set(row.toolId, row.enabled);
-        }
+    for (const row of toolPermResult.value) {
+      if (row.role === companyRole) {
+        toolEnabledMap.set(row.toolId, row.enabled);
       }
     }
 
     const actionEnabledMap = new Map<string, boolean>();
-    if (actionPermResult.ok) {
-      for (const row of actionPermResult.value) {
-        if (row.role === companyRole) {
-          actionEnabledMap.set(`${row.toolId}:${row.actionGroup}`, row.enabled);
-        }
+    for (const row of actionPermResult.value) {
+      if (row.role === companyRole) {
+        actionEnabledMap.set(`${row.toolId}:${row.actionGroup}`, row.enabled);
       }
     }
 
@@ -375,9 +388,122 @@ export class PermissionServiceImpl implements PermissionService {
       decisions,
     };
 
-    // Cache before returning
+    // Cached unstripped: this doubles as the ceiling for the department axis,
+    // and a tool removed here could never be granted to a department at all.
     await this.permCache.setCompany(companyId, companyRole, serializePermissionResult(result));
 
     return ok(result);
   }
+
+  /**
+   * Tools a live company administrator always holds, whatever department is
+   * selected and whatever the department overlay says. The overlay is
+   * default-deny per department role, so a company-wide integration that is
+   * still being piloted by its admin would otherwise be denied everywhere
+   * until each role is granted one by one.
+   */
+  private applyCompanyAdminFixedAccess(
+    companyRole: CompanyRoleSlug,
+    result: Result<PermissionResult, PermissionError>,
+  ): Result<PermissionResult, PermissionError> {
+    if (!result.ok) return result;
+    const base = result.value;
+    if (!['COMPANY_ADMIN', 'SUPER_ADMIN'].includes(companyRole)) return ok(base);
+
+    const allowedActionsByTool = new Map(base.allowedActionsByTool);
+    const allowedToolIds = new Set(base.allowedToolIds);
+    const decisions = [...base.decisions];
+    for (const [toolId, actions] of COMPANY_ADMIN_FIXED_TOOLS) {
+      // A floor, not a replacement: a department grant that already allows
+      // more keeps it, so opening one of these to a role later still works.
+      const granted = new Set<ToolActionGroup>(allowedActionsByTool.get(asToolId(toolId)) ?? []);
+      for (const actionGroup of actions) {
+        if (granted.has(actionGroup)) continue;
+        granted.add(actionGroup);
+        decisions.push({ toolId, actionGroup, allowed: true, source: 'company_default' });
+      }
+      allowedActionsByTool.set(asToolId(toolId), granted);
+      allowedToolIds.add(asToolId(toolId));
+    }
+    return ok({ ...base, allowedToolIds, allowedActionsByTool, decisions });
+  }
+}
+
+/**
+ * Tool → actions a company administrator holds outright. Airtable is here for
+ * the same reason OMS is: a company-wide connection its admin is piloting,
+ * which the default-deny department overlay refuses until every role is
+ * granted by hand.
+ */
+const COMPANY_ADMIN_FIXED_TOOLS: ReadonlyArray<readonly [CanonicalToolId, readonly ToolActionGroup[]]> = [
+  ['omsSiteData', ['read']],
+  ['airtableRecords', ['read', 'create', 'update']],
+  ['airtableSchema', ['read', 'create', 'update']],
+  ['airtableAutomation', ['read', 'create', 'update']],
+  // AITable follows Airtable: an administrator piloting a company connection
+  // holds it outright. 'delete' is withheld from the floor for both tools —
+  // dropping records or a field is not something to acquire by role alone, so
+  // it stays an explicit department grant.
+  ['aitableDatasheets', ['read', 'create', 'update']],
+  ['aitableFields', ['read', 'create']],
+];
+
+/**
+ * The company axis serves two purposes at once: it is the ceiling the
+ * department overlay is clamped against, and — when no department is selected
+ * — it is the answer. DEPARTMENT_GRANT_ONLY_TOOLS need a permissive ceiling so
+ * an admin can grant them to a role at all, but that same ceiling would hand
+ * them to every member in a department-less context. So they are removed on
+ * the department-less path only, and the admin floor puts them back for
+ * administrators.
+ */
+function stripDepartmentGrantOnlyTools(result: PermissionResult): PermissionResult {
+  if (!DEPARTMENT_GRANT_ONLY_TOOLS.some(toolId => result.allowedToolIds.has(asToolId(toolId)))) return result;
+  const allowedToolIds = new Set(result.allowedToolIds);
+  const allowedActionsByTool = new Map(result.allowedActionsByTool);
+  for (const toolId of DEPARTMENT_GRANT_ONLY_TOOLS) {
+    allowedToolIds.delete(asToolId(toolId));
+    allowedActionsByTool.delete(asToolId(toolId));
+  }
+  return {
+    ...result,
+    allowedToolIds,
+    allowedActionsByTool,
+    decisions: result.decisions.filter(decision => !DEPARTMENT_GRANT_ONLY_TOOLS.includes(decision.toolId as CanonicalToolId)),
+  };
+}
+
+function applyDerivedDepartmentPermissions(
+  result: PermissionResult,
+  companyCeiling: PermissionResult,
+  departmentRole: ReadonlyMap<string, boolean>,
+  userOverrides: ReadonlyMap<string, boolean>,
+): PermissionResult {
+  const allowedToolIds = new Set(result.allowedToolIds);
+  const allowedActionsByTool = new Map(result.allowedActionsByTool);
+  const decisions = [...result.decisions];
+  for (const rule of TOOL_DERIVED_PERMISSIONS) {
+    const target = asToolId(rule.toolId);
+    const key = `${rule.toolId}:${rule.action}`;
+    if (allowedActionsByTool.get(target)?.has(rule.action as ToolActionGroup)) continue;
+    if (userOverrides.has(key) || departmentRole.has(key)) continue;
+    if (!companyCeiling.allowedActionsByTool.get(target)?.has(rule.action as ToolActionGroup)) continue;
+    if (!rule.anyOf.some(source =>
+      allowedActionsByTool
+        .get(asToolId(source.toolId))
+        ?.has(source.action as ToolActionGroup)
+    )) continue;
+
+    const actions = new Set(allowedActionsByTool.get(target) ?? []);
+    actions.add(rule.action as ToolActionGroup);
+    allowedActionsByTool.set(target, actions);
+    allowedToolIds.add(target);
+    decisions.push({
+      toolId: target,
+      actionGroup: rule.action as ToolActionGroup,
+      allowed: true,
+      source: 'derived',
+    });
+  }
+  return { ...result, allowedToolIds, allowedActionsByTool, decisions };
 }

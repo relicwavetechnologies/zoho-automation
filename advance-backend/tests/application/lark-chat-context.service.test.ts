@@ -4,7 +4,7 @@ import {
   LarkChatContextService,
   partitionRecentMessages,
 } from '../../src/application/chat-context/lark-chat-context.service.ts';
-import type { GroupChatMessage } from '../../src/domain/conversation/group-context.ts';
+import type { GroupChatMessage, GroupChatSummary } from '../../src/domain/conversation/group-context.ts';
 import { GROUP_CONTEXT_POLICY } from '../../src/domain/conversation/group-context-policy.ts';
 import type {
   LarkChatContextRepoPort,
@@ -14,6 +14,7 @@ import type { InfraError } from '../../src/shared/errors.ts';
 import type { Logger } from '../../src/shared/logger.ts';
 import { ok, type Result } from '../../src/shared/result.ts';
 import type { LanguageModel } from 'ai';
+import { textModel } from '../helpers/mock-model.ts';
 
 function makeMsg(content: string): GroupChatMessage {
   return {
@@ -45,6 +46,7 @@ class FakeLarkChatContextRepo implements LarkChatContextRepoPort {
     summaryJson: null,
     sourceMessageCount: 0,
     lastMessageAt: null,
+    updatedAt: new Date('2026-05-14T00:00:00.000Z'),
   };
 
   async getOrCreate(input: {
@@ -61,15 +63,29 @@ class FakeLarkChatContextRepo implements LarkChatContextRepoPort {
     return ok(this.row);
   }
 
+  async get(input: {
+    companyId: string;
+    chatId: string;
+  }): Promise<Result<LarkChatContextRow | null, InfraError>> {
+    if (this.row.companyId !== input.companyId || this.row.chatId !== input.chatId) {
+      return ok(null);
+    }
+    return ok(this.row);
+  }
+
   async update(
     id: string,
+    expectedUpdatedAt: Date,
     data: {
       recentMessagesJson: unknown;
       summaryJson?: unknown;
       sourceMessageCount: number;
       lastMessageAt: Date;
     },
-  ): Promise<Result<void, InfraError>> {
+  ): Promise<Result<boolean, InfraError>> {
+    if (this.row.updatedAt.getTime() !== expectedUpdatedAt.getTime()) {
+      return ok(false);
+    }
     this.row = {
       ...this.row,
       id,
@@ -77,8 +93,9 @@ class FakeLarkChatContextRepo implements LarkChatContextRepoPort {
       ...(data.summaryJson !== undefined ? { summaryJson: data.summaryJson } : {}),
       sourceMessageCount: data.sourceMessageCount,
       lastMessageAt: data.lastMessageAt,
+      updatedAt: new Date(this.row.updatedAt.getTime() + 1),
     };
-    return ok(undefined);
+    return ok(true);
   }
 
   async clear(): Promise<Result<void, InfraError>> {
@@ -88,6 +105,7 @@ class FakeLarkChatContextRepo implements LarkChatContextRepoPort {
       summaryJson: null,
       sourceMessageCount: 0,
       lastMessageAt: null,
+      updatedAt: new Date(this.row.updatedAt.getTime() + 1),
     };
     return ok(undefined);
   }
@@ -171,9 +189,8 @@ describe('LarkChatContextService attachment snapshots', () => {
         mimeType: 'application/pdf',
         larkFileKey: 'file_key_1',
         larkMessageId: 'om_1',
-        inlineContext: '[Document excerpt from "invoice.pdf":\nInvoice total $100]',
-        isInlineComplete: false,
-        ingestionStatus: 'processing',
+        ingestionStatus: 'unsupported',
+        inlineContext: 'Divo could not open this file, so it was not read.',
       }],
     });
 
@@ -191,10 +208,7 @@ describe('LarkChatContextService attachment snapshots', () => {
         mimeType: 'application/pdf',
         larkFileKey: 'file_key_1',
         larkMessageId: 'om_1',
-        fileAssetId: 'file_asset_1',
-        ingestionStatus: 'indexed',
-        indexedChunkCount: 4,
-        retrievalHint: 'Use contextSearch or documentRag with fileAssetId="file_asset_1".',
+        ingestionStatus: 'workspace',
       }],
     });
 
@@ -203,8 +217,157 @@ describe('LarkChatContextService attachment snapshots', () => {
     assert.equal(messages.length, 1);
     assert.equal(repo.row.sourceMessageCount, 1);
     assert.equal(messages[0]!.id, 'om_1');
-    assert.equal(messages[0]!.attachments?.[0]?.inlineContext?.includes('Invoice total $100'), true);
-    assert.equal(messages[0]!.attachments?.[0]?.fileAssetId, 'file_asset_1');
-    assert.equal(messages[0]!.attachments?.[0]?.ingestionStatus, 'indexed');
+    // A later status wins over the earlier one — the same upload is not
+    // duplicated, and it stops being reported as refused once it lands.
+    assert.equal(messages[0]!.attachments?.length, 1);
+    assert.equal(messages[0]!.attachments?.[0]?.ingestionStatus, 'workspace');
+  });
+});
+
+describe('LarkChatContextService rolling summary', () => {
+  it('uses the fast model when older messages roll out of the protected tail', async () => {
+    const repo = new FakeLarkChatContextRepo();
+    repo.row.recentMessagesJson = Array.from({ length: 40 }, (_, index) => ({
+      ...makeMsg(`Older discussion ${index}: ${'x'.repeat(2_500)}`),
+      id: `om_${index}`,
+      createdAt: new Date(Date.UTC(2026, 4, 14, 8, 0, index)).toISOString(),
+    }));
+    repo.row.summaryJson = {
+      summary: 'Previous compacted discussion',
+      activeEntities: [],
+      decisions: ['Keep the signed-off budget'],
+      owners: ['Alice owns close'],
+      mentionedResources: ['prior-report.xlsx'],
+      completedActions: [],
+      constraints: [],
+      userGoals: [],
+      sourceMessageCount: 40,
+      updatedAt: '2026-05-14T07:59:00.000Z',
+    };
+    repo.row.sourceMessageCount = 40;
+
+    let calls = 0;
+    const model = textModel(JSON.stringify({
+      summary: 'Fast-model compacted discussion',
+      latestObjective: 'Keep the newest room messages raw',
+      decisions: [],
+      owners: [],
+      mentionedResources: [],
+    })) as any;
+    const doGenerate = model.doGenerate;
+    model.doGenerate = async (input: any) => {
+      calls++;
+      return doGenerate(input);
+    };
+
+    const service = new LarkChatContextService({ repo, model, logger });
+    const result = await service.appendMessage({
+      companyId: 'company_1',
+      chatId: 'chat_1',
+      chatType: 'group',
+      messageId: 'om_40',
+      senderOpenId: 'ou_user',
+      senderName: 'Alice',
+      role: 'user',
+      content: `Newest discussion: ${'y'.repeat(2_500)}`,
+      createdAt: '2026-05-14T08:01:00.000Z',
+      botMentioned: false,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(calls, 1);
+    assert.equal((repo.row.summaryJson as GroupChatSummary).summary, 'Fast-model compacted discussion');
+    assert.equal((repo.row.summaryJson as GroupChatSummary).sourceMessageCount, 41);
+    assert.deepEqual((repo.row.summaryJson as GroupChatSummary).decisions, ['Keep the signed-off budget']);
+    assert.deepEqual((repo.row.summaryJson as GroupChatSummary).owners, ['Alice owns close']);
+    assert.deepEqual((repo.row.summaryJson as GroupChatSummary).mentionedResources, ['prior-report.xlsx']);
+    assert.equal((repo.row.recentMessagesJson as GroupChatMessage[]).at(-1)?.id, 'om_40');
+  });
+
+  it('retries overlapping room writes so both messages survive', async () => {
+    const repo = new FakeLarkChatContextRepo();
+    const service = new LarkChatContextService({ repo, logger });
+
+    const append = (messageId: string) => service.appendMessage({
+      companyId: 'company_1',
+      chatId: 'chat_1',
+      chatType: 'group',
+      messageId,
+      senderOpenId: 'ou_user',
+      senderName: 'Alice',
+      role: 'user',
+      content: `Message ${messageId}`,
+      createdAt: '2026-05-14T08:01:00.000Z',
+      botMentioned: false,
+    });
+
+    const [first, second] = await Promise.all([append('om_a'), append('om_b')]);
+
+    assert.equal(first.ok, true);
+    assert.equal(second.ok, true);
+    assert.deepEqual(
+      (repo.row.recentMessagesJson as GroupChatMessage[]).map(message => message.id).sort(),
+      ['om_a', 'om_b'],
+    );
+  });
+
+  it('keeps late attachment enrichment after its raw message was compacted', async () => {
+    const repo = new FakeLarkChatContextRepo();
+    const messages = Array.from({ length: 40 }, (_, index) => ({
+      ...makeMsg(`Older discussion ${index}: ${'x'.repeat(2_500)}`),
+      id: `om_${index}`,
+      createdAt: new Date(Date.UTC(2026, 4, 14, 8, 0, index)).toISOString(),
+    }));
+    messages[0] = {
+      ...messages[0]!,
+      attachments: [{
+        kind: 'file',
+        fileName: 'invoice.pdf',
+        mimeType: 'application/pdf',
+        ingestionStatus: 'processing',
+      }],
+    };
+    repo.row.recentMessagesJson = messages;
+    repo.row.sourceMessageCount = 40;
+
+    const service = new LarkChatContextService({
+      repo,
+      model: textModel(JSON.stringify({ summary: 'Older room discussion' })),
+      logger,
+    });
+    await service.appendMessage({
+      companyId: 'company_1',
+      chatId: 'chat_1',
+      chatType: 'group',
+      messageId: 'om_40',
+      senderOpenId: 'ou_user',
+      senderName: 'Alice',
+      role: 'user',
+      content: `Newest discussion: ${'y'.repeat(2_500)}`,
+      createdAt: '2026-05-14T08:01:00.000Z',
+      botMentioned: false,
+    });
+    assert.equal(
+      (repo.row.recentMessagesJson as GroupChatMessage[]).some(message => message.id === 'om_0'),
+      false,
+    );
+
+    const updated = await service.updateMessageAttachments({
+      companyId: 'company_1',
+      chatId: 'chat_1',
+      messageId: 'om_0',
+      attachments: [{
+        kind: 'file',
+        fileName: 'invoice.pdf',
+        mimeType: 'application/pdf',
+        ingestionStatus: 'workspace',
+      }],
+    });
+
+    assert.equal(updated.ok, true);
+    // The message itself has rolled out of the transcript, so the filename is
+    // the only trace left of it — without that, the file becomes unfindable.
+    const resources = (repo.row.summaryJson as GroupChatSummary).mentionedResources ?? [];
+    assert.ok(resources.includes('invoice.pdf'));
   });
 });

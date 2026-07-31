@@ -16,7 +16,7 @@
  */
 
 import type { Logger } from '../../../shared/logger';
-import type { SerperClient, SerperOrganicResult } from './serper.client';
+import type { SerperOrganicResult, SerperSearchInput, SerperSearchResponse } from './serper.client';
 import { SearchIntegrationError } from './serper.client';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -103,10 +103,20 @@ export interface PageContext {
 }
 
 export interface WebSearchInput {
+  /** Company scope is required when the caller is using company-owned credentials. */
+  readonly companyId?: string;
   readonly query: string;
   readonly exactDomain?: string;
   readonly searchResultsLimit?: number;
   readonly pageContextLimit?: number;
+}
+
+/**
+ * Minimal Serper port. The optional company scope lets Context Search use the
+ * same company-owned connection pool and usage accounting as the webSearch tool.
+ */
+export interface SerperSearchPort {
+  search(input: SerperSearchInput, companyId?: string): Promise<SerperSearchResponse>;
 }
 
 export interface WebSearchResult {
@@ -190,7 +200,7 @@ async function fetchPageContext(
 
 export class WebSearchService {
   constructor(
-    private readonly client: SerperClient,
+    private readonly client: SerperSearchPort,
     private readonly logger: Logger,
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
@@ -206,7 +216,7 @@ export class WebSearchService {
     const pageCtxLimit  = clamp(input.pageContextLimit    ?? DEFAULT_PAGE_CONTEXT_LIMIT, 0, MAX_PAGE_CONTEXT_LIMIT);
 
     // ── Primary search ──────────────────────────────────────────────────────
-    const primary = await this.client.search({ query, num: resultLimit });
+    const primary = await this.client.search({ query, num: resultLimit }, input.companyId);
 
     const merged = new Map<string, WebSearchItem>();
     for (const entry of primary.organic) {
@@ -221,7 +231,7 @@ export class WebSearchService {
         const siteSearch = await this.client.search({
           query: `site:${exactDomain} ${query}`,
           num: resultLimit,
-        });
+        }, input.companyId);
         focusedSiteSearch = true;
         for (const entry of siteSearch.organic) {
           const item = normalizeItem(entry, 'site');

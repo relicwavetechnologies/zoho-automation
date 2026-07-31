@@ -1,0 +1,37 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Divo Dex",
+        "width": 1200,
+        "minWidth": 1024,
+        "height": 800,
+        "minHeight": 740,
+        "resizable": true,
+        "fullscreen": false,
+        "zoomHotkeysEnabled": true,
+        "center": true,
+        "transparent": false,
+        "decorations": false,
+        "dragDropEnabled": true
+      }
+    ]
+  },
+  "bundle": {
+    "targets": ["deb", "appimage"],
+    "resources": ["resources/pre-install/**/*", "resources/LICENSE"],
+    "externalBin": ["resources/bin/uv"],
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": false,
+        "files": {}
+      },
+      "deb": {
+        "files": {
+          "usr/bin/bun": "resources/bin/bun"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Work log — fixed height scroll mock</title>
+  <style>
+    :root {
+      --bg: #141414;
+      --panel: #1c1c1c;
+      --bubble: #2a2a2a;
+      --text: #e8e8e8;
+      --muted: #9a9a9a;
+      --dim: #6e6e6e;
+      --line: #3a3a3a;
+      --dot: #8a8a8a;
+      --accent: #2dd4bf;
+      --border: #333;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: #0d0d0d;
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px 40px;
+      gap: 16px;
+    }
+
+    .caption {
+      max-width: 720px;
+      width: 100%;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .caption strong { color: #cfcfcf; font-weight: 600; }
+
+    .frame {
+      width: 100%;
+      max-width: 720px;
+      height: 720px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.45);
+    }
+
+    .chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 28px 28px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .user-row {
+      display: flex;
+      justify-content: flex-end;
+    }
+
+    .user-bubble {
+      max-width: 88%;
+      background: var(--bubble);
+      border-radius: 18px;
+      padding: 14px 16px;
+      font-size: 14.5px;
+      line-height: 1.45;
+      color: #ececec;
+    }
+
+    .work {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .work-header {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 13.5px;
+      cursor: default;
+      user-select: none;
+      width: fit-content;
+    }
+
+    .work-header svg {
+      width: 14px;
+      height: 14px;
+      opacity: 0.7;
+    }
+
+    /* THE FIX: fixed viewport for thinking / work log */
+    .work-scroll {
+      height: 200px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-right: 8px;
+      border: 1px dashed #3f3f3f;
+      border-radius: 10px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent);
+      position: relative;
+    }
+
+    .work-scroll::-webkit-scrollbar { width: 8px; }
+    .work-scroll::-webkit-scrollbar-thumb {
+      background: #444;
+      border-radius: 8px;
+    }
+    .work-scroll::-webkit-scrollbar-track { background: transparent; }
+
+    .work-scroll-label {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: flex;
+      justify-content: flex-end;
+      pointer-events: none;
+      margin: -1px -1px 0 0;
+    }
+
+    .work-scroll-label span {
+      pointer-events: none;
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #7dcea0;
+      background: #1a2a22;
+      border: 1px solid #2f5a42;
+      border-radius: 0 9px 0 8px;
+      padding: 3px 8px;
+    }
+
+    .timeline {
+      position: relative;
+      padding: 10px 8px 12px 18px;
+    }
+
+    .timeline::before {
+      content: "";
+      position: absolute;
+      left: 5px;
+      top: 18px;
+      bottom: 18px;
+      width: 1px;
+      background: var(--line);
+    }
+
+    .step {
+      position: relative;
+      padding: 0 0 14px 14px;
+      font-size: 13.5px;
+      line-height: 1.5;
+      color: var(--muted);
+    }
+
+    .step::before {
+      content: "";
+      position: absolute;
+      left: -16px;
+      top: 7px;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--dot);
+      box-shadow: 0 0 0 3px var(--bg);
+    }
+
+    .step.tool {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #c8c8c8;
+    }
+
+    .step.tool .wrench {
+      width: 14px;
+      height: 14px;
+      opacity: 0.75;
+      flex-shrink: 0;
+    }
+
+    .step.tool .chev {
+      margin-left: auto;
+      opacity: 0.45;
+      width: 12px;
+      height: 12px;
+    }
+
+    .answer {
+      color: #d8d8d8;
+      font-size: 14.5px;
+      line-height: 1.5;
+      padding-top: 4px;
+    }
+
+    .answer em {
+      font-style: normal;
+      color: var(--dim);
+      font-size: 13px;
+    }
+
+    .composer-wrap {
+      padding: 10px 16px 16px;
+      border-top: 1px solid #222;
+      background: var(--bg);
+    }
+
+    .composer {
+      background: #222;
+      border: 1px solid #2e2e2e;
+      border-radius: 22px;
+      padding: 12px 14px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .composer-placeholder {
+      color: #777;
+      font-size: 14.5px;
+      padding: 2px 4px;
+    }
+
+    .composer-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .icon-btn {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      color: #aaa;
+      background: transparent;
+      border: none;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12.5px;
+      color: #bbb;
+      padding: 4px 8px;
+      border-radius: 999px;
+    }
+
+    .seg {
+      display: inline-flex;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 999px;
+      overflow: hidden;
+      margin-left: auto;
+    }
+
+    .seg button {
+      border: none;
+      background: transparent;
+      color: #999;
+      font-size: 12.5px;
+      padding: 5px 12px;
+      cursor: default;
+    }
+
+    .seg button.active {
+      background: #2a2a2a;
+      color: #eee;
+    }
+
+    .send {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      border: none;
+      background: var(--accent);
+      display: grid;
+      place-items: center;
+      color: #04332c;
+      flex-shrink: 0;
+    }
+
+    .legend {
+      max-width: 720px;
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      font-size: 12.5px;
+    }
+
+    .legend div {
+      border: 1px solid #2a2a2a;
+      background: #161616;
+      border-radius: 10px;
+      padding: 10px 12px;
+      color: var(--muted);
+    }
+
+    .legend .bad { border-color: #4a2a2a; }
+    .legend .good { border-color: #2a4a36; }
+    .legend b { color: #ddd; display: block; margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+  <p class="caption">
+    <strong>Proposed UX:</strong> while the model works, the thinking/work log stays in a fixed ~200px window and scrolls inside it. The chat thread no longer grows endlessly downward.
+  </p>
+
+  <div class="legend">
+    <div class="bad"><b>Current</b>Work log expands forever → page keeps going down</div>
+    <div class="good"><b>This mock</b>Fixed 200px box → only the box scrolls (try scrolling it)</div>
+  </div>
+
+  <div class="frame" aria-label="Chat mock">
+    <div class="chat">
+      <div class="user-row">
+        <div class="user-bubble">
+          Find my 'Finance Review' events during the next 30 days. If exactly one exists, move it one hour later without changing the attendees. If multiple events match, ask me which one before modifying anything.
+        </div>
+      </div>
+
+      <div class="work">
+        <div class="work-header">
+          Worked for 179 seconds
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M6 15l6-6 6 6" />
+          </svg>
+        </div>
+
+        <div class="work-scroll" id="workScroll">
+          <div class="work-scroll-label"><span>fixed 200px · scrolls here</span></div>
+          <div class="timeline">
+            <div class="step">The user wants me to find their 'Finance Review' events in the next 30 days, then either move the single match one hour later or ask which one if there are multiple.</div>
+            <div class="step">I'll start by checking capability bootstrap and what's available for calendar / Lark.</div>
+            <div class="step tool">
+              <svg class="wrench" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+              Used Divo Skill Resolve
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="step">Looking into what's available for calendar tools and listing Lark connections next.</div>
+            <div class="step tool">
+              <svg class="wrench" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+              Used Connections.list
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="step">Found an active Lark calendar connection. Searching events titled “Finance Review” in the next 30 days.</div>
+            <div class="step tool">
+              <svg class="wrench" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+              Used Calendar.search
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="step">Two matching events came back. Per your rule I should not modify anything until you pick which one.</div>
+            <div class="step">Preparing a short comparison of title, time, and attendees so you can choose.</div>
+            <div class="step">Still working through attendee details and timezone normalization…</div>
+            <div class="step">Almost done — formatting the choice prompt for you.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="answer">
+        I found <strong>2</strong> “Finance Review” events in the next 30 days. Which one should I move one hour later?<br /><br />
+        <em>Final answer stays below the fixed work window — not pushed off-screen.</em>
+      </div>
+    </div>
+
+    <div class="composer-wrap">
+      <div class="composer">
+        <div class="composer-placeholder">Ask me anything...</div>
+        <div class="composer-row">
+          <button class="icon-btn" aria-label="attach">+</button>
+          <button class="icon-btn" aria-label="shield">🛡</button>
+          <span class="pill">✦ Quick starts</span>
+          <div class="seg">
+            <button class="active">Flash</button>
+            <button>Pro</button>
+          </div>
+          <button class="send" aria-label="send">↑</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Auto-scroll the work log to bottom like a live working stream
+    const el = document.getElementById("workScroll");
+    el.scrollTop = el.scrollHeight;
+  </script>
+</body>
+</html>

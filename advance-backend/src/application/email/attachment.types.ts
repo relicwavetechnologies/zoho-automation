@@ -1,16 +1,14 @@
 import type { Result } from '../../shared/result';
 
 export type AttachmentSource =
-  | 'file_asset'
   | 'outbound_artifact'
   | 'google_drive'
   | 'lark'
   | 'cloudinary';
 
 export type AttachmentRef =
-  | { readonly source: 'file_asset'; readonly fileAssetId: string }
   | { readonly source: 'outbound_artifact'; readonly artifactId: string }
-  | { readonly source: 'google_drive'; readonly fileId: string; readonly exportMimeType?: string }
+  | { readonly source: 'google_drive'; readonly connectionId: string; readonly fileId: string; readonly exportMimeType?: string }
   | { readonly source: 'lark'; readonly messageId: string; readonly fileKey: string; readonly fileName?: string }
   | { readonly source: 'cloudinary'; readonly publicId: string; readonly fileName?: string; readonly resourceType?: string };
 

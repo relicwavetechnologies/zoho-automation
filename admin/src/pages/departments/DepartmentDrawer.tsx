@@ -51,6 +51,7 @@ type Props = {
   onSetUserOverride: (departmentId: string, userId: string, toolId: string, actionGroup: string, allowed: boolean) => Promise<void>
   onUpdateConfig: (departmentId: string, data: {
     systemPrompt: string
+    desktopPersonaPrompt: string
     skillsMarkdown: string
     zohoRateLimit?: unknown
     managerApproval?: unknown

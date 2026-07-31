@@ -10,16 +10,17 @@ import type { ToolActionGroup } from '../../domain/permissions/tool-action-group
 import type { PermissionResult, DepartmentMeta } from './permission.types';
 import { asDepartmentId } from '../../shared/ids';
 import { asDepartmentRoleSlug } from '../../domain/permissions/department-role';
+import { TOOL_PERMISSION_POLICY_REVISION } from '../../domain/tools/tool-id';
 
 const COMPANY_TTL    = 900;   // 15 min — admin routes invalidate proactively on changes
 const DEPT_TTL       = 900;   // 15 min
 const MEMBERSHIP_TTL = 900;   // 15 min
 
 const companyKey = (companyId: string, roleSlug: string) =>
-  `perm:co:${companyId}:role:${roleSlug}`;
+  `perm:co:${companyId}:policy:${TOOL_PERMISSION_POLICY_REVISION}:role:${roleSlug}`;
 
 const deptKey = (companyId: string, deptId: string, userId: string, companyRoleSlug: string) =>
-  `perm:dep:${companyId}:${deptId}:${userId}:${companyRoleSlug}`;
+  `perm:dep:${companyId}:${deptId}:${userId}:${companyRoleSlug}:policy:${TOOL_PERMISSION_POLICY_REVISION}`;
 
 const membershipKey = (companyId: string, deptId: string, userId: string) =>
   `dept:member:v1:${companyId}:${deptId}:${userId}`;
@@ -36,9 +37,7 @@ export interface CachedMembershipRow {
   roleName:             string;
   zohoReadScope:        string;
   systemPrompt?:        string | null;
-  skillsMarkdown?:      string | null;
   managerApprovalJson?: unknown;
-  zohoRateLimitJson?:   unknown;
 }
 
 export class PermissionCache {
@@ -155,9 +154,7 @@ export const serializePermissionResult = (r: PermissionResult): CachedPermission
       roleSlug: r.department.roleSlug,
       zohoReadScope: r.department.zohoReadScope,
       ...(r.department.systemPrompt !== undefined ? { systemPrompt: r.department.systemPrompt } : {}),
-      ...(r.department.skillsMarkdown !== undefined ? { skillsMarkdown: r.department.skillsMarkdown } : {}),
       ...(r.department.managerApprovalJson !== undefined ? { managerApprovalJson: r.department.managerApprovalJson } : {}),
-      ...(r.department.zohoRateLimitJson !== undefined ? { zohoRateLimitJson: r.department.zohoRateLimitJson } : {}),
     },
   } : {}),
 });
@@ -177,9 +174,7 @@ export const deserializePermissionResult = (c: CachedPermissionResult): Permissi
         roleSlug: asDepartmentRoleSlug(c.department.roleSlug),
         zohoReadScope: c.department.zohoReadScope === 'show_all' ? 'show_all' : 'personalized',
         ...(c.department.systemPrompt !== undefined ? { systemPrompt: c.department.systemPrompt } : {}),
-        ...(c.department.skillsMarkdown !== undefined ? { skillsMarkdown: c.department.skillsMarkdown } : {}),
         ...(c.department.managerApprovalJson !== undefined ? { managerApprovalJson: c.department.managerApprovalJson } : {}),
-        ...(c.department.zohoRateLimitJson !== undefined ? { zohoRateLimitJson: c.department.zohoRateLimitJson } : {}),
       }
     : undefined;
   return {

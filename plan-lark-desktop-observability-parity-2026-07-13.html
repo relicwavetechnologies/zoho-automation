@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Divo Lark ↔ Desktop Control &amp; Observability Parity</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&amp;family=Plus+Jakarta+Sans:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+  <style>
+    :root {
+      --font-display: 'Space Grotesk', 'General Sans', 'Satoshi', system-ui, sans-serif;
+      --font-body: 'Plus Jakarta Sans', 'Satoshi', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+      --fs-xs: 0.75rem; --fs-sm: 0.875rem; --fs-base: 1rem; --fs-lg: 1.125rem;
+      --fs-xl: 1.375rem; --fs-2xl: 1.75rem; --fs-3xl: 2.25rem; --fs-4xl: 3rem; --fs-5xl: 4.25rem;
+      --lh-tight: 1.15; --lh-snug: 1.35; --lh-normal: 1.55; --lh-relaxed: 1.75;
+      --fw-regular: 400; --fw-medium: 500; --fw-semibold: 600; --fw-bold: 700;
+      --bg-primary: #0a0a0f; --bg-secondary: #11111a; --bg-card: #16161f; --bg-elevated: #1d1d28;
+      --text-primary: #f4f4f8; --text-secondary: #b4b4c2; --text-muted: #6f6f80;
+      --accent-primary: #7c5cff; --accent-secondary: #22d3ee; --accent-success: #34d399;
+      --accent-warning: #fbbf24; --accent-danger: #f87171;
+      --border-subtle: rgba(255,255,255,.06); --border-soft: rgba(255,255,255,.10); --border-strong: rgba(255,255,255,.18);
+      --space-xs: .25rem; --space-sm: .5rem; --space-md: 1rem; --space-lg: 1.5rem;
+      --space-xl: 2.5rem; --space-2xl: 4rem; --space-3xl: 6rem;
+      --radius-sm: 6px; --radius-md: 12px; --radius-lg: 20px; --radius-xl: 28px; --radius-full: 9999px;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,.4); --shadow-md: 0 8px 24px rgba(0,0,0,.35);
+      --shadow-lg: 0 24px 60px rgba(0,0,0,.5); --shadow-glow: 0 0 32px rgba(124,92,255,.45);
+      --ease-default: cubic-bezier(.4,0,.2,1); --ease-bounce: cubic-bezier(.34,1.56,.64,1); --ease-smooth: cubic-bezier(.16,1,.3,1);
+      --dur-fast: 150ms; --dur-normal: 300ms; --dur-slow: 600ms;
+      --container-sm: 640px; --container-md: 860px; --container-lg: 1120px; --container-xl: 1320px;
+    }
+    [data-theme="light"] {
+      --bg-primary: #fbfaf7; --bg-secondary: #f3f1ec; --bg-card: #ffffff; --bg-elevated: #ffffff;
+      --text-primary: #15151d; --text-secondary: #4a4a58; --text-muted: #8a8a98;
+      --accent-primary: #6a3df0; --accent-secondary: #0aa7c2; --accent-success: #0d9c6c;
+      --accent-warning: #b9750a; --accent-danger: #d44b4b;
+      --border-subtle: rgba(0,0,0,.06); --border-soft: rgba(0,0,0,.10); --border-strong: rgba(0,0,0,.18);
+      --shadow-sm: 0 1px 2px rgba(20,18,12,.06); --shadow-md: 0 8px 24px rgba(20,18,12,.08);
+      --shadow-lg: 0 24px 60px rgba(20,18,12,.12); --shadow-glow: 0 0 32px rgba(106,61,240,.25);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: var(--bg-primary); color: var(--text-primary); font-family: var(--font-body); font-size: var(--fs-base); line-height: var(--lh-normal); -webkit-font-smoothing: antialiased; }
+    body::before { content: ""; position: fixed; inset: 0; pointer-events: none; background: radial-gradient(circle at 75% 0%, color-mix(in srgb, var(--accent-primary) 14%, transparent), transparent 35%), radial-gradient(circle at 5% 24%, color-mix(in srgb, var(--accent-secondary) 8%, transparent), transparent 28%); z-index: -1; }
+    h1,h2,h3,h4 { font-family: var(--font-display); font-weight: var(--fw-semibold); line-height: var(--lh-tight); letter-spacing: -.01em; }
+    code,pre,.mono { font-family: var(--font-mono); }
+    a { color: var(--accent-secondary); text-decoration: none; }
+    button { font: inherit; }
+    .shell { width: min(var(--container-xl), calc(100% - 40px)); margin: 0 auto; }
+    .topbar { position: sticky; top: 0; z-index: 30; backdrop-filter: blur(18px); background: color-mix(in srgb, var(--bg-primary) 82%, transparent); border-bottom: 1px solid var(--border-subtle); }
+    .topbar-inner { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); }
+    .brand { display: flex; align-items: center; gap: 10px; font-family: var(--font-display); font-weight: var(--fw-semibold); }
+    .brand-mark { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; background: var(--accent-primary); box-shadow: var(--shadow-glow); }
+    .nav-pills { display: flex; align-items: center; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+    .nav-pills a,.control { white-space: nowrap; border: 1px solid var(--border-soft); background: var(--bg-card); color: var(--text-secondary); padding: 7px 11px; border-radius: var(--radius-full); font-size: var(--fs-xs); cursor: pointer; transition: .2s var(--ease-default); }
+    .nav-pills a:hover,.control:hover { color: var(--text-primary); border-color: var(--border-strong); transform: translateY(-1px); }
+    .hero { padding: 84px 0 48px; display: grid; grid-template-columns: 1.25fr .75fr; gap: var(--space-xl); align-items: end; }
+    .eyebrow { color: var(--accent-secondary); font-family: var(--font-mono); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .14em; margin-bottom: 14px; }
+    h1 { font-size: clamp(2.7rem, 6vw, 5.7rem); margin: 0; max-width: 940px; letter-spacing: -.055em; }
+    .hero p { font-size: var(--fs-lg); color: var(--text-secondary); max-width: 760px; margin: 24px 0 0; }
+    .meta-card,.card,.panel { background: color-mix(in srgb, var(--bg-card) 92%, transparent); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); }
+    .meta-card { padding: 20px; display: grid; gap: 15px; }
+    .meta-row { display: flex; justify-content: space-between; gap: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--border-subtle); font-size: var(--fs-sm); }
+    .meta-row:last-child { padding-bottom: 0; border: 0; }
+    .meta-row span:first-child { color: var(--text-muted); }
+    .section { padding: 70px 0; scroll-margin-top: 76px; }
+    .section-head { display: flex; justify-content: space-between; gap: 30px; align-items: end; margin-bottom: 28px; }
+    .section-head h2 { font-size: clamp(2rem, 4vw, 3.25rem); margin: 0; letter-spacing: -.035em; }
+    .section-head p { color: var(--text-secondary); max-width: 620px; margin: 0; }
+    .tldr { padding: 30px; display: grid; grid-template-columns: 1.3fr .7fr; gap: 28px; border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-soft)); }
+    .tldr h2 { font-size: var(--fs-2xl); margin: 0 0 12px; }
+    .tldr .call { font-size: var(--fs-xl); line-height: var(--lh-snug); }
+    .proofs { display: grid; gap: 10px; }
+    .proof { display: grid; grid-template-columns: 30px 1fr; gap: 10px; align-items: start; padding: 12px; border-radius: var(--radius-md); background: var(--bg-secondary); }
+    .proof b { color: var(--accent-success); }
+    .status-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+    .pill { display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px; border-radius: var(--radius-full); border: 1px solid var(--border-soft); font-size: var(--fs-xs); color: var(--text-secondary); }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .good { color: var(--accent-success); } .partial { color: var(--accent-warning); } .missing { color: var(--accent-danger); } .planned { color: var(--accent-secondary); }
+    .insights { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; }
+    .insight { padding: 22px; }
+    .insight .num { font-family: var(--font-display); font-size: var(--fs-3xl); color: var(--accent-primary); margin-bottom: 18px; }
+    .insight h3 { margin: 0 0 8px; }
+    .insight p { color: var(--text-secondary); margin: 0; font-size: var(--fs-sm); }
+    .flow-wrap { position: relative; display: grid; grid-template-columns: 1fr 360px; gap: 18px; min-height: 620px; }
+    .flow-canvas { padding: 26px; overflow: hidden; position: relative; }
+    .flow-lane { display: grid; grid-template-columns: 1fr 70px 1fr; align-items: stretch; gap: 0; }
+    .channel-column { display: grid; gap: 14px; align-content: start; }
+    .channel-label { font-family: var(--font-display); font-size: var(--fs-lg); padding: 0 4px 8px; display: flex; justify-content: space-between; }
+    .flow-node { text-align: left; width: 100%; min-height: 90px; border: 1px solid var(--border-soft); background: var(--bg-secondary); color: var(--text-primary); border-radius: var(--radius-md); padding: 14px; cursor: pointer; position: relative; transition: .2s var(--ease-default); }
+    .flow-node:hover,.flow-node.active { transform: translateY(-2px); border-color: color-mix(in srgb, var(--accent-primary) 62%, var(--border-soft)); box-shadow: 0 10px 26px color-mix(in srgb, var(--accent-primary) 15%, transparent); }
+    .flow-node h4 { margin: 18px 0 4px; font-size: var(--fs-sm); }
+    .flow-node p { color: var(--text-muted); font-size: var(--fs-xs); margin: 0; }
+    .node-status { position: absolute; top: 10px; right: 10px; font-size: .65rem; text-transform: uppercase; letter-spacing: .08em; }
+    .bridge { position: relative; display: flex; align-items: center; justify-content: center; }
+    .bridge::before { content: ""; position: absolute; top: 30px; bottom: 30px; width: 1px; background: linear-gradient(var(--accent-primary),var(--accent-secondary)); opacity: .5; }
+    .bridge span { writing-mode: vertical-rl; transform: rotate(180deg); background: var(--bg-card); border: 1px solid var(--border-soft); color: var(--accent-secondary); padding: 10px 6px; border-radius: var(--radius-full); font-family: var(--font-mono); font-size: .65rem; z-index: 1; }
+    .shared-stack { grid-column: 1/-1; margin-top: 22px; display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; }
+    .shared-node { padding: 16px; border: 1px dashed var(--border-strong); border-radius: var(--radius-md); background: color-mix(in srgb, var(--accent-primary) 6%, var(--bg-secondary)); }
+    .shared-node b { display: block; font-size: var(--fs-sm); }
+    .shared-node span { color: var(--text-muted); font-size: var(--fs-xs); }
+    .detail-panel { padding: 22px; position: sticky; top: 82px; align-self: start; transition: .25s var(--ease-smooth); }
+    .detail-panel h3 { margin: 10px 0; font-size: var(--fs-xl); }
+    .detail-panel p,.detail-panel li { color: var(--text-secondary); font-size: var(--fs-sm); }
+    .detail-panel ul { padding-left: 18px; }
+    .detail-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 18px 0; }
+    .detail-meta div { background: var(--bg-secondary); padding: 10px; border-radius: var(--radius-sm); }
+    .detail-meta small { display: block; color: var(--text-muted); }
+    .detail-meta b { font-size: var(--fs-sm); }
+    .filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+    .filter.active { color: var(--text-primary); border-color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-card)); }
+    .table-wrap { overflow: auto; border: 1px solid var(--border-soft); border-radius: var(--radius-lg); background: var(--bg-card); }
+    table { width: 100%; border-collapse: collapse; min-width: 940px; }
+    th,td { padding: 14px 16px; border-bottom: 1px solid var(--border-subtle); text-align: left; vertical-align: top; font-size: var(--fs-sm); }
+    th { color: var(--text-muted); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .07em; background: var(--bg-secondary); position: sticky; top: 0; }
+    td:nth-child(1) { font-weight: var(--fw-semibold); }
+    tr:last-child td { border-bottom: 0; }
+    .cap-row[hidden] { display: none; }
+    .channel-tag { font-family: var(--font-mono); font-size: .7rem; padding: 4px 7px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); white-space: nowrap; }
+    .architecture { display: grid; grid-template-columns: 1fr 62px 1.2fr 62px 1fr; gap: 0; align-items: stretch; }
+    .arch-box { padding: 22px; }
+    .arch-box h3 { margin-top: 0; }
+    .arch-box ul { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 9px; }
+    .arch-box li { padding: 10px; background: var(--bg-secondary); border-radius: var(--radius-sm); color: var(--text-secondary); font-size: var(--fs-sm); }
+    .arrow { display: grid; place-items: center; color: var(--accent-primary); font-size: var(--fs-2xl); }
+    .architecture .authority { border-color: color-mix(in srgb, var(--accent-primary) 55%, var(--border-soft)); box-shadow: var(--shadow-glow); }
+    .phase-list { display: grid; gap: 12px; }
+    .phase { overflow: hidden; }
+    .phase-button { width: 100%; border: 0; background: transparent; color: inherit; padding: 20px; display: grid; grid-template-columns: 56px 1fr auto; gap: 14px; text-align: left; align-items: center; cursor: pointer; }
+    .phase-index { width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid var(--border-soft); border-radius: 50%; color: var(--accent-secondary); font-family: var(--font-mono); }
+    .phase-title b { display: block; font-family: var(--font-display); }
+    .phase-title span { color: var(--text-muted); font-size: var(--fs-sm); }
+    .effort { color: var(--accent-warning); font-family: var(--font-mono); font-size: var(--fs-xs); }
+    .phase-body { max-height: 0; overflow: hidden; transition: max-height .35s var(--ease-smooth); }
+    .phase.open .phase-body { max-height: 760px; }
+    .phase-inner { padding: 0 20px 22px 90px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .phase-inner h4 { margin: 0 0 8px; }
+    .phase-inner ul { padding-left: 18px; color: var(--text-secondary); font-size: var(--fs-sm); }
+    .risk-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 14px; }
+    .risk { padding: 20px; border-left: 3px solid var(--accent-warning); }
+    .risk.critical { border-left-color: var(--accent-danger); }
+    .risk h3 { margin: 0 0 8px; font-size: var(--fs-lg); }
+    .risk p { color: var(--text-secondary); margin: 0; font-size: var(--fs-sm); }
+    .risk .mitigation { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-subtle); color: var(--accent-success); }
+    .next-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; counter-reset: steps; }
+    .next { padding: 18px; counter-increment: steps; }
+    .next::before { content: "0" counter(steps); color: var(--accent-primary); font-family: var(--font-mono); font-size: var(--fs-xs); }
+    .next h3 { margin: 12px 0 7px; font-size: var(--fs-base); }
+    .next p { margin: 0; color: var(--text-secondary); font-size: var(--fs-sm); }
+    details { border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: var(--bg-card); margin-bottom: 10px; }
+    summary { cursor: pointer; padding: 14px 16px; font-family: var(--font-display); }
+    details > div { padding: 0 16px 16px; color: var(--text-secondary); font-size: var(--fs-sm); }
+    .jump { position: fixed; right: 20px; bottom: 20px; z-index: 20; border: 1px solid var(--border-strong); background: var(--bg-elevated); color: var(--text-primary); border-radius: var(--radius-full); padding: 10px 14px; box-shadow: var(--shadow-lg); cursor: pointer; }
+    footer { padding: 35px 0 60px; color: var(--text-muted); border-top: 1px solid var(--border-subtle); font-size: var(--fs-xs); }
+    @media (max-width: 1000px) {
+      .hero,.tldr,.flow-wrap { grid-template-columns: 1fr; }
+      .detail-panel { position: relative; top: 0; }
+      .insights { grid-template-columns: 1fr 1fr; }
+      .architecture { grid-template-columns: 1fr; gap: 10px; }
+      .arrow { transform: rotate(90deg); min-height: 42px; }
+      .next-grid { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 720px) {
+      .shell { width: min(100% - 24px, var(--container-xl)); }
+      .topbar-inner { align-items: flex-start; padding: 10px 0; flex-direction: column; }
+      .hero { padding-top: 52px; }
+      .insights,.risk-grid,.next-grid,.phase-inner { grid-template-columns: 1fr; }
+      .flow-lane { grid-template-columns: 1fr; gap: 18px; }
+      .bridge { min-height: 60px; }
+      .bridge::before { left: 30px; right: 30px; top: 50%; bottom: auto; height: 1px; width: auto; }
+      .bridge span { writing-mode: horizontal-tb; transform: none; }
+      .shared-stack { grid-template-columns: 1fr 1fr; }
+      .phase-inner { padding-left: 20px; }
+      .phase-button { grid-template-columns: 46px 1fr; }
+      .effort { grid-column: 2; }
+    }
+    @media print {
+      :root { --bg-primary:#fbfaf7; --bg-secondary:#f3f1ec; --bg-card:#ffffff; --bg-elevated:#ffffff; --text-primary:#15151d; --text-secondary:#4a4a58; --text-muted:#8a8a98; --border-subtle:rgba(0,0,0,.06); --border-soft:rgba(0,0,0,.10); --border-strong:rgba(0,0,0,.18); }
+      .topbar,.jump,.filters,.control { display: none !important; }
+      .section { page-break-before: always; padding: 24px 0; }
+      #tldr { page-break-before: auto; }
+      .hero { padding-top: 24px; }
+      .flow-wrap,.architecture { display: block; }
+      .detail-panel { margin-top: 12px; }
+      .phase-body { max-height: none !important; }
+      details > div { display: block !important; }
+      details { break-inside: avoid; }
+      body::before { display:none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <div class="brand"><span class="brand-mark">D</span><span>Cross-channel parity map</span></div>
+      <nav class="nav-pills" aria-label="Plan sections">
+        <a href="#tldr">TL;DR</a><a href="#evidence">Evidence</a><a href="#flow">System map</a><a href="#matrix">Parity matrix</a><a href="#architecture">Target</a><a href="#roadmap">Roadmap</a><a href="#risks">Risks</a>
+      </nav>
+      <button class="control" id="themeToggle" type="button">Light theme</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="shell hero">
+      <div>
+        <div class="eyebrow">System architecture · 13 July 2026</div>
+        <h1>Lark must become a first-class operational channel.</h1>
+        <p>Keep Lark’s delivery and approval UX channel-native, while moving its model calls, policies, traces, usage, cost, errors, and admin controls onto the same backend-owned authority as desktop.</p>
+      </div>
+      <aside class="meta-card">
+        <div class="meta-row"><span>Audience</span><b>Engineering + product</b></div>
+        <div class="meta-row"><span>Plan type</span><b>System + phased roadmap</b></div>
+        <div class="meta-row"><span>Recommendation</span><b>One telemetry authority</b></div>
+        <div class="meta-row"><span>Confidence</span><b class="good">95%</b></div>
+      </aside>
+    </section>
+
+    <section class="shell section" id="tldr">
+      <div class="card tldr">
+        <div>
+          <div class="eyebrow">TL;DR</div>
+          <h2>Extend the desktop control plane; do not clone it.</h2>
+          <div class="call">Create one provider-agnostic inference gateway and one observability recorder inside <code>advance-backend</code>. Desktop/Pi reaches them through HTTP; Lark calls them in-process. Both produce the same run, span, policy, usage, cost, and audit records with an explicit channel dimension.</div>
+          <div class="status-row"><span class="pill good"><span class="dot"></span>Identity/RBAC already shared</span><span class="pill partial"><span class="dot"></span>Run tracing partial</span><span class="pill missing"><span class="dot"></span>Inference governance split</span><span class="pill missing"><span class="dot"></span>Lark usage missing</span></div>
+        </div>
+        <div class="proofs">
+          <div class="proof"><b>01</b><span><strong>Preserve channel context.</strong><br>Every record carries <code>desktop</code>, <code>lark</code>, or future channels.</span></div>
+          <div class="proof"><b>02</b><span><strong>One policy decision.</strong><br>Blocked, model access, rate and budget rules apply before every model call.</span></div>
+          <div class="proof"><b>03</b><span><strong>One admin truth.</strong><br>Runs, costs, errors and denials reconcile from the same linked records.</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="shell section" id="evidence">
+      <div class="section-head"><div><div class="eyebrow">Codebase evidence</div><h2>What the audit found</h2></div><p>The issue is broader than a missing key. The current implementation shares identity and permissions, but forks inference, metering, conversation indexing, and operational controls.</p></div>
+      <div class="insights">
+        <article class="card insight"><div class="num">01</div><h3>Direct provider bypass</h3><p>Lark’s supervisor receives a startup-created AI SDK model. DeepSeek resolution reads the server environment, while desktop uses the authenticated backend proxy and encrypted key store.</p></article>
+        <article class="card insight"><div class="num">02</div><h3>False-green failure</h3><p>A streamed model error is logged, but the supervisor may fall back to “Done.” The run can complete instead of failing, weakening error-rate and incident reporting.</p></article>
+        <article class="card insight"><div class="num">03</div><h3>Token ledger hole</h3><p>The Lark orchestration path never records model usage. Its run header exists, but turns, tokens and cost remain empty in AI Ops.</p></article>
+        <article class="card insight"><div class="num">04</div><h3>Model controls disagree</h3><p>Company settings are written to <code>Company</code>, while startup inference reads a globally unique model target. Admin-visible company policy is not necessarily runtime policy.</p></article>
+        <article class="card insight"><div class="num">05</div><h3>Conversation index gap</h3><p>Desktop and AirNote upsert <code>RuntimeConversation</code>. Normal Lark messages do not; Lark creates one only opportunistically during approval flows.</p></article>
+        <article class="card insight"><div class="num">06</div><h3>Two run authorities</h3><p><code>ExecutionRun</code> powers AI Ops, while <code>RuntimeRun</code> exists separately. Parity should consolidate semantics around the former, not dual-write two competing run ledgers.</p></article>
+      </div>
+    </section>
+
+    <section class="shell section" id="flow">
+      <div class="section-head"><div><div class="eyebrow">Interactive system map</div><h2>Click any node to inspect the gap</h2></div><p>The two channels can keep different runtimes and delivery adapters. The middle authority and the emitted telemetry contract must be the same.</p></div>
+      <div class="flow-wrap">
+        <div class="card flow-canvas">
+          <div class="flow-lane">
+            <div class="channel-column">
+              <div class="channel-label"><span>Desktop / Pi</span><span class="pill good"><span class="dot"></span>routed</span></div>
+              <button class="flow-node" data-node="desktop-ingress"><span class="node-status good">Working</span><h4>Member-auth desktop ingress</h4><p>Pi provider + gateway extensions</p></button>
+              <button class="flow-node" data-node="desktop-proxy"><span class="node-status good">Working</span><h4>Backend inference proxy</h4><p>Key, budget, rate, model gate</p></button>
+              <button class="flow-node" data-node="desktop-trace"><span class="node-status partial">Partial</span><h4>Trace + authoritative usage</h4><p>Proxy-owned or Pi ingest</p></button>
+              <button class="flow-node" data-node="desktop-runtime"><span class="node-status good">Working</span><h4>Conversation index</h4><p>RuntimeConversation upsert</p></button>
+            </div>
+            <div class="bridge"><span>parity boundary</span></div>
+            <div class="channel-column">
+              <div class="channel-label"><span>Lark</span><span class="pill missing"><span class="dot"></span>split</span></div>
+              <button class="flow-node" data-node="lark-ingress"><span class="node-status good">Working</span><h4>Webhook + identity ingress</h4><p>User/company/department resolved</p></button>
+              <button class="flow-node" data-node="lark-model"><span class="node-status missing">Gap</span><h4>Direct SDK model</h4><p>Environment key; proxy bypassed</p></button>
+              <button class="flow-node" data-node="lark-trace"><span class="node-status partial">Partial</span><h4>Engine event trace</h4><p>Run/events yes; model usage no</p></button>
+              <button class="flow-node" data-node="lark-runtime"><span class="node-status missing">Gap</span><h4>Conversation index</h4><p>Only created during HITL</p></button>
+            </div>
+            <div class="shared-stack">
+              <div class="shared-node"><b>Identity + department</b><span>Shared user and company attribution</span></div>
+              <div class="shared-node"><b>PermissionService</b><span>RBAC and tool filtering</span></div>
+              <div class="shared-node"><b>ExecutionRun</b><span>Canonical operational run</span></div>
+              <div class="shared-node"><b>Admin AI Ops</b><span>Target read surface</span></div>
+            </div>
+          </div>
+        </div>
+        <aside class="panel detail-panel" id="detailPanel" aria-live="polite">
+          <span class="pill planned"><span class="dot"></span>Select a node</span>
+          <h3>Parity boundary</h3>
+          <p>Choose a node in the map. This panel will show its current behavior, desired contract, implementation owner and evidence.</p>
+          <div class="detail-meta"><div><small>Authority</small><b>advance-backend</b></div><div><small>Rule</small><b>Channel-tagged</b></div></div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="shell section" id="matrix">
+      <div class="section-head"><div><div class="eyebrow">Parity matrix</div><h2>Everything required for operational parity</h2></div><p>Filter by status. “Shared debt” means the capability should be fixed once for all channels, not copied from desktop.</p></div>
+      <div class="filters" role="group" aria-label="Filter capabilities">
+        <button class="control filter active" data-filter="all">All 24</button><button class="control filter" data-filter="good">Already aligned</button><button class="control filter" data-filter="partial">Partial</button><button class="control filter" data-filter="missing">Missing</button><button class="control filter" data-filter="shared">Shared debt</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Capability</th><th>Desktop today</th><th>Lark today</th><th>Target contract</th><th>Status</th><th>Phase</th></tr></thead>
+          <tbody id="capabilities">
+            <tr class="cap-row" data-status="good"><td>Identity attribution</td><td>User from member session</td><td>User from Lark identity link</td><td>Same Divo <code>userId</code> and <code>companyId</code></td><td><span class="pill good">Aligned</span></td><td>P0 verify</td></tr>
+            <tr class="cap-row" data-status="good"><td>Department context</td><td>Selected department on thread/session</td><td>Active department resolved on identity</td><td>Persist effective department on every run</td><td><span class="pill good">Aligned</span></td><td>P0 verify</td></tr>
+            <tr class="cap-row" data-status="good"><td>RBAC + tool filtering</td><td>Gateway uses PermissionService</td><td>Engine uses PermissionService</td><td>One permission authority; channel is context only</td><td><span class="pill good">Aligned</span></td><td>P0 regression</td></tr>
+            <tr class="cap-row" data-status="partial"><td>Execution run lifecycle</td><td>Proxy/trace creates <code>entrypoint=pi</code></td><td>Engine creates channel-tagged run</td><td>Correct channel-derived entrypoint and deterministic status</td><td><span class="pill partial">Partial</span></td><td>P1</td></tr>
+            <tr class="cap-row" data-status="partial"><td>Correlation IDs</td><td>Pi run/session headers</td><td>Lark message/trace IDs</td><td>One correlation envelope across model, tool, approval and delivery</td><td><span class="pill partial">Partial</span></td><td>P1</td></tr>
+            <tr class="cap-row" data-status="partial"><td>Structured event timeline</td><td>Pi trace + proxy reconstruction</td><td>OrchestrationTracer events</td><td>Same event taxonomy and required fields</td><td><span class="pill partial">Partial</span></td><td>P1</td></tr>
+            <tr class="cap-row" data-status="partial"><td>Tool step results</td><td>Trace ingest records tool I/O</td><td>Agent/tool tracer records outcomes</td><td>Same tool/action/status/duration schema and redaction</td><td><span class="pill partial">Partial</span></td><td>P1</td></tr>
+            <tr class="cap-row" data-status="missing"><td>Provider key resolution</td><td>Encrypted company → platform → env</td><td>Direct server environment key</td><td>Same provider-agnostic key resolver</td><td><span class="pill missing">Missing</span></td><td>P2</td></tr>
+            <tr class="cap-row" data-status="missing"><td>Company model policy</td><td>Proxy canonicalizes allowed models</td><td>Global startup target / agent overrides</td><td>Company default + explicit agent override, resolved per call</td><td><span class="pill missing">Missing</span></td><td>P2</td></tr>
+            <tr class="cap-row" data-status="missing"><td>Member block policy</td><td>Enforced by proxy gate</td><td>Not checked before inference</td><td>Same policy evaluated for every channel</td><td><span class="pill missing">Missing</span></td><td>P2</td></tr>
+            <tr class="cap-row" data-status="missing"><td>Budget + rate policy</td><td>Monthly budget and RPM enforced</td><td>Not enforced</td><td>One company/user bucket across channels</td><td><span class="pill missing">Missing</span></td><td>P2</td></tr>
+            <tr class="cap-row" data-status="missing"><td>Inference request audit</td><td>ProxyRequestLog records decision, latency, key source</td><td>No equivalent row</td><td>Provider-neutral log with <code>channel</code>, provider and agent target</td><td><span class="pill missing">Missing</span></td><td>P2</td></tr>
+            <tr class="cap-row" data-status="missing"><td>Actual token usage</td><td>Provider response usage persisted</td><td>No TokenUsageService call</td><td>Every model call writes exact usage linked to run</td><td><span class="pill missing">Missing</span></td><td>P3</td></tr>
+            <tr class="cap-row" data-status="missing"><td>Cost attribution</td><td>DeepSeek cache-split pricing</td><td>Empty/unattributed</td><td>Provider/model/version pricing table with effective dates</td><td><span class="pill missing">Missing</span></td><td>P3</td></tr>
+            <tr class="cap-row" data-status="partial"><td>Model-call spans</td><td>Proxy creates model event</td><td>Supervisor start/end but not usage span</td><td>One span per supervisor, specialist, fast path, summary, synthesis</td><td><span class="pill partial">Partial</span></td><td>P3</td></tr>
+            <tr class="cap-row" data-status="missing"><td>Model latency + TTFT</td><td>Proxy request latency only</td><td>No consistent model latency</td><td>Total, upstream and first-token latency by channel/model</td><td><span class="pill missing">Missing</span></td><td>P3</td></tr>
+            <tr class="cap-row" data-status="shared"><td>Error semantics</td><td>Proxy upstream errors are explicit</td><td>Stream error may become “Done.”</td><td>Any terminal model error fails span/run; user-safe reply remains separate</td><td><span class="pill missing">Shared debt</span></td><td>P1</td></tr>
+            <tr class="cap-row" data-status="missing"><td>Conversation index</td><td>RuntimeConversation upsert</td><td>Normal messages do not upsert</td><td>Every channel conversation indexed with source metadata</td><td><span class="pill missing">Missing</span></td><td>P4</td></tr>
+            <tr class="cap-row" data-status="partial"><td>HITL monitoring</td><td>Approval gate + local intents</td><td>Native Lark cards + RuntimeApproval</td><td>Same approval state machine, channel-specific presentation</td><td><span class="pill partial">Partial</span></td><td>P4</td></tr>
+            <tr class="cap-row" data-status="missing"><td>Delivery telemetry</td><td>WebSocket delivery errors logged</td><td>Card/reply errors logged</td><td>Delivery span linked to run with channel message ID</td><td><span class="pill missing">Missing</span></td><td>P4</td></tr>
+            <tr class="cap-row" data-status="partial"><td>Admin channel filters</td><td>Runs are filterable</td><td>Lark run headers appear</td><td>Runs, cost, tokens, denials, latency all group/filter by channel</td><td><span class="pill partial">Partial</span></td><td>P5</td></tr>
+            <tr class="cap-row" data-status="missing"><td>Health + alerting</td><td>Proxy 24h health metrics</td><td>Invisible to proxy health</td><td>Error rate, empty reply, latency, denied rate and missing usage alerts</td><td><span class="pill missing">Missing</span></td><td>P5</td></tr>
+            <tr class="cap-row" data-status="shared"><td>Token-limit enforcement</td><td>Token policy displayed, not enforced</td><td>Not enforced</td><td>Define one enforcement source: token cap or spend cap</td><td><span class="pill missing">Shared debt</span></td><td>P2 decision</td></tr>
+            <tr class="cap-row" data-status="shared"><td>Run data authority</td><td>ExecutionRun + RuntimeRun overlap</td><td>Same overlap via HITL</td><td>ExecutionRun is monitoring authority; avoid parallel run ledgers</td><td><span class="pill missing">Shared debt</span></td><td>P0</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="shell section" id="architecture">
+      <div class="section-head"><div><div class="eyebrow">Recommended architecture</div><h2>Adapters at the edges, authority in the middle</h2></div><p>Desktop and Lark do not need identical orchestration runtimes. They need identical policy and telemetry contracts.</p></div>
+      <div class="architecture">
+        <article class="card arch-box"><h3>Channel adapters</h3><ul><li>Desktop/Pi HTTP + WebSocket</li><li>Lark webhook + cards</li><li>AirNote SSE</li><li>Emit canonical identity + channel context</li></ul></article>
+        <div class="arrow">→</div>
+        <article class="card arch-box authority"><h3>Backend authority</h3><ul><li><strong>InferenceGateway</strong> — model/key resolution</li><li><strong>InferencePolicy</strong> — block/model/rate/budget</li><li><strong>ObservabilityRecorder</strong> — runs, spans, usage, audits</li><li><strong>PermissionService + ToolRegistry</strong> — existing authority</li><li><strong>ApprovalGate</strong> — shared state, native presentation</li></ul></article>
+        <div class="arrow">→</div>
+        <article class="card arch-box"><h3>Operational read model</h3><ul><li>ExecutionRun + events + steps</li><li>AiTokenUsage linked to run/span</li><li>InferenceRequestLog with channel</li><li>RuntimeConversation as thread index</li><li>AI Ops, Guardrails, alerts</li></ul></article>
+      </div>
+    </section>
+
+    <section class="shell section" id="roadmap">
+      <div class="section-head"><div><div class="eyebrow">Implementation roadmap</div><h2>Six reversible phases</h2></div><p>Effort is relative for one backend-focused engineer plus admin UI support. Each phase is independently testable and feature-flagged.</p></div>
+      <div class="phase-list">
+        <article class="card phase open"><button class="phase-button"><span class="phase-index">P0</span><span class="phase-title"><b>Freeze contracts and authority</b><span>Choose canonical records before wiring more writes.</span></span><span class="effort">S · 1–2 days</span></button><div class="phase-body"><div class="phase-inner"><div><h4>Ship</h4><ul><li>Document canonical run/event/model-span contracts.</li><li>Make <code>ExecutionRun</code> monitoring authority.</li><li>Define channel enum and entrypoint derivation.</li><li>Define provider/model resolution precedence.</li></ul></div><div><h4>Exit gate</h4><ul><li>No ambiguous owner for run status, usage or budget.</li><li>Golden fixture for one desktop and one Lark turn.</li><li>Rollback: documentation/types only.</li></ul></div></div></div></article>
+        <article class="card phase"><button class="phase-button"><span class="phase-index">P1</span><span class="phase-title"><b>Normalize run and error telemetry</b><span>Make the existing Lark trace operationally truthful.</span></span><span class="effort">M · 3–5 days</span></button><div class="phase-body"><div class="phase-inner"><div><h4>Ship</h4><ul><li>Correct entrypoint per channel.</li><li>Unify event taxonomy and correlation envelope.</li><li>Convert streamed model errors into failed spans/runs.</li><li>Guarantee one terminal run status.</li></ul></div><div><h4>Exit gate</h4><ul><li>Missing-key Lark test ends <code>failed</code>, never “Done.”</li><li>Admin run detail shows channel and exact failure.</li><li>Rollback behind telemetry-v2 flag.</li></ul></div></div></div></article>
+        <article class="card phase"><button class="phase-button"><span class="phase-index">P2</span><span class="phase-title"><b>Unify inference governance</b><span>One resolver and one policy gate for all channels.</span></span><span class="effort">L · 5–8 days</span></button><div class="phase-body"><div class="phase-inner"><div><h4>Ship</h4><ul><li>Generalize DeepSeek-only key store by provider.</li><li>Add internal <code>InferenceGateway</code>.</li><li>Make desktop HTTP proxy a thin adapter.</li><li>Route Lark supervisor and agent model resolution through it.</li><li>Resolve company model settings per request, not startup.</li></ul></div><div><h4>Exit gate</h4><ul><li>Same blocked user is denied on desktop and Lark.</li><li>Same budget bucket sees both channels.</li><li>No provider key reaches clients or logs.</li></ul></div></div></div></article>
+        <article class="card phase"><button class="phase-button"><span class="phase-index">P3</span><span class="phase-title"><b>Capture every model call</b><span>Authoritative tokens, cost, latency and model attribution.</span></span><span class="effort">L · 5–7 days</span></button><div class="phase-body"><div class="phase-inner"><div><h4>Ship</h4><ul><li>Instrument supervisor, specialists, fast path, summary and synthesis.</li><li>Write usage linked to <code>executionRunId</code>.</li><li>Add provider-neutral request log with channel.</li><li>Add dated provider/model pricing catalog.</li></ul></div><div><h4>Exit gate</h4><ul><li>Run total reconciles to sum of model spans.</li><li>Lark tokens and cost appear with <code>channel=lark</code>.</li><li>Dual-write comparison stays within agreed tolerance.</li></ul></div></div></div></article>
+        <article class="card phase"><button class="phase-button"><span class="phase-index">P4</span><span class="phase-title"><b>Complete conversation and approval linkage</b><span>Trace from message to model to tool to delivery.</span></span><span class="effort">M · 4–6 days</span></button><div class="phase-body"><div class="phase-inner"><div><h4>Ship</h4><ul><li>Upsert RuntimeConversation for normal Lark traffic.</li><li>Link ExecutionRun to conversation without creating a second run authority.</li><li>Link approvals and delivery events to the same run.</li><li>Persist Lark message/card IDs as channel references.</li></ul></div><div><h4>Exit gate</h4><ul><li>One admin trace follows webhook → model → tool → card.</li><li>Approval resume continues the original correlation chain.</li><li>Channel deletion/retention behavior tested.</li></ul></div></div></div></article>
+        <article class="card phase"><button class="phase-button"><span class="phase-index">P5</span><span class="phase-title"><b>Admin parity, alerts and rollout</b><span>Turn collected data into operator action.</span></span><span class="effort">M · 4–6 days</span></button><div class="phase-body"><div class="phase-inner"><div><h4>Ship</h4><ul><li>Channel filters on cost, tokens, latency and denials.</li><li>Member page shows cross-channel spend and limits.</li><li>Guardrails feed labels desktop/Lark.</li><li>Alerts for error spikes, empty replies, missing usage and latency.</li></ul></div><div><h4>Exit gate</h4><ul><li>Shadow dashboard reconciles desktop + Lark totals.</li><li>Canary one company, then staged rollout.</li><li>Rollback keeps legacy Lark inference flag available briefly.</li></ul></div></div></div></article>
+      </div>
+    </section>
+
+    <section class="shell section" id="risks">
+      <div class="section-head"><div><div class="eyebrow">Risks and open decisions</div><h2>What can still go wrong</h2></div><p>The plan is high confidence, but these decisions should be explicit before implementation.</p></div>
+      <div class="risk-grid">
+        <article class="card risk critical"><h3>Double counting during migration</h3><p>Proxy-owned usage and SDK instrumentation can both write the same desktop call.</p><p class="mitigation">Attach a deterministic inference request ID; dual-write to a shadow table first and enforce uniqueness before cutover.</p></article>
+        <article class="card risk critical"><h3>Policy changes alter active runs</h3><p>Per-request resolution is correct, but a long run may see a model/key change between steps.</p><p class="mitigation">Snapshot effective policy and provider selection onto the run; define whether changes apply next call or next run.</p></article>
+        <article class="card risk"><h3>Provider usage shapes differ</h3><p>DeepSeek, OpenAI and Google expose different cache and reasoning-token fields.</p><p class="mitigation">Normalize into a canonical usage type while retaining raw sanitized provider usage for reconciliation.</p></article>
+        <article class="card risk"><h3>PI and backend have different orchestration</h3><p>Forcing identical traces would erase useful channel/runtime differences.</p><p class="mitigation">Standardize semantic spans and required fields, not internal step counts or UI presentation.</p></article>
+        <article class="card risk"><h3>Pricing silently undercounts unknown models</h3><p>The current fallback uses the cheapest DeepSeek tier, which is unsafe for OpenAI/Google reporting.</p><p class="mitigation">Version rates by provider/model/effective date and mark unknown costs “unpriced,” never cheap-default.</p></article>
+        <article class="card risk"><h3>Retention and privacy</h3><p>Lark group context and tool outputs may contain broader company data than desktop threads.</p><p class="mitigation">Keep payload redaction, role-scoped reads, short trace-detail retention, and long-lived aggregate usage only.</p></article>
+      </div>
+    </section>
+
+    <section class="shell section" id="next">
+      <div class="section-head"><div><div class="eyebrow">Next actions</div><h2>Start with truth, then governance</h2></div><p>The first code slice should expose accurate failures and usage without changing Lark’s channel UX.</p></div>
+      <div class="next-grid">
+        <article class="card next"><h3>Approve the authority contract</h3><p>ExecutionRun for monitoring, RuntimeConversation for thread indexing, no second run ledger.</p></article>
+        <article class="card next"><h3>Build golden parity fixtures</h3><p>Same user and request on desktop/Lark with expected policy, spans, usage and channel labels.</p></article>
+        <article class="card next"><h3>Ship P1 behind a flag</h3><p>Fix entrypoints and false-green model failures before routing or UI changes.</p></article>
+        <article class="card next"><h3>Spike the internal gateway</h3><p>Prove one Lark supervisor call can use the company key and write one linked usage row.</p></article>
+      </div>
+    </section>
+
+    <section class="shell section" id="appendix">
+      <div class="section-head"><div><div class="eyebrow">Appendix</div><h2>Evidence and alternatives</h2></div></div>
+      <details><summary>Key code evidence</summary><div><ul><li><code>advance-backend/src/composition.ts</code> — startup model and direct DeepSeek resolution.</li><li><code>jan/pi-extensions/divo-llm/index.ts</code> — desktop routes DeepSeek through backend.</li><li><code>advance-backend/src/http/llm/llm-proxy.routes.ts</code> — desktop gate, key resolution, usage and audit.</li><li><code>advance-backend/src/application/orchestration/engine/core.ts</code> — Lark run creation and hard-coded entrypoint.</li><li><code>advance-backend/src/http/desktop/trace-ingest.routes.ts</code> — desktop model/tool telemetry.</li><li><code>advance-backend/prisma/schema.prisma</code> — channel-aware usage and overlapping run models.</li><li><code>advance-backend/src/http/admin/*</code> — AI Ops, spend, guardrails and model-control read surfaces.</li></ul></div></details>
+      <details><summary>Alternative A — make Lark call /api/llm over loopback</summary><div>Useful as a short spike, but not the target. It adds synthetic member authentication, an internal HTTP hop and weak agent/span attribution. Prefer a shared application service with HTTP as one adapter.</div></details>
+      <details><summary>Alternative B — add DEEPSEEK_API_KEY to the backend</summary><div>Fixes the immediate exception only. It preserves the split key authority, skips member guardrails, leaves Lark usage invisible and makes admin controls misleading. Reject as a final design.</div></details>
+      <details><summary>Assumptions</summary><div>The target audience is the Divo engineering/product team. Cross-channel policy and monitoring parity is fixed. Lark-native cards, group context and delivery behavior remain channel-specific. Estimates are sequencing guidance rather than delivery commitments.</div></details>
+    </section>
+  </main>
+
+  <button class="jump" type="button" onclick="document.getElementById('tldr').scrollIntoView()">↑ TL;DR</button>
+  <footer><div class="shell">Prepared by Codex from direct inspection of <code>advance-backend</code>, <code>jan</code>, and <code>admin</code>. No implementation changes were made.</div></footer>
+
+  <script>
+    const nodeDetails = {
+      'desktop-ingress': {status:'Working', tone:'good', title:'Desktop / Pi ingress', authority:'Member auth', effort:'Keep', body:'The desktop carries a Divo member token and calls backend-owned model and capability routes. This is the correct credential boundary.', desired:'Keep transport-specific behavior, but require the canonical correlation envelope on every request.', evidence:'jan/pi-extensions/divo-llm/index.ts'},
+      'desktop-proxy': {status:'Working', tone:'good', title:'Desktop inference proxy', authority:'LLM proxy', effort:'Refactor', body:'The proxy resolves company/platform keys, enforces block/model/rate/budget policy, forwards the request, and records authoritative provider usage.', desired:'Extract these responsibilities into provider-neutral application services; retain HTTP as the desktop adapter.', evidence:'advance-backend/src/http/llm/llm-proxy.routes.ts'},
+      'desktop-trace': {status:'Partial', tone:'partial', title:'Desktop telemetry', authority:'ExecutionRun', effort:'Normalize', body:'Desktop has proxy-owned usage and an optional Pi trace ingest path. The two modes are deliberately separated by PROXY_OWNS_TRACE.', desired:'One deterministic inference ID and one semantic event taxonomy so switching modes cannot double count.', evidence:'advance-backend/src/http/desktop/trace-ingest.routes.ts'},
+      'desktop-runtime': {status:'Working', tone:'good', title:'Desktop conversation index', authority:'RuntimeConversation', effort:'Keep', body:'Desktop proactively upserts a RuntimeConversation with company, user, department, thread and workspace references.', desired:'Use the same conversation-index contract for Lark while keeping ExecutionRun as the monitoring run authority.', evidence:'advance-backend/src/http/desktop/desktop-ws.gateway.ts'},
+      'lark-ingress': {status:'Working', tone:'good', title:'Lark identity and RBAC', authority:'Engine', effort:'Verify', body:'The webhook resolves the Lark open ID into the same Divo user/company identity, builds department context and calls the shared orchestration engine.', desired:'Keep this path; add regression tests proving the same Divo user receives the same RBAC result across channels.', evidence:'advance-backend/src/infrastructure/channels/lark/lark.webhook.routes.ts'},
+      'lark-model': {status:'Gap', tone:'missing', title:'Lark model and key resolution', authority:'Startup env', effort:'Large', body:'The supervisor receives a startup-created model. DeepSeek uses DEEPSEEK_API_KEY directly, bypassing the encrypted proxy key store and per-member policy.', desired:'Resolve provider, model, key and policy per company/member model call through the internal InferenceGateway.', evidence:'advance-backend/src/composition.ts'},
+      'lark-trace': {status:'Partial', tone:'partial', title:'Lark trace and usage', authority:'OrchestrationTracer', effort:'Medium', body:'Lark creates ExecutionRun headers and structured orchestration events. It does not write actual model usage, so tokens, cost and model turns are absent.', desired:'Instrument every AI SDK call and link normalized usage/model spans to the existing execution run.', evidence:'advance-backend/src/application/orchestration/engine/core.ts'},
+      'lark-runtime': {status:'Gap', tone:'missing', title:'Lark conversation index', authority:'Approval side effect', effort:'Medium', body:'Normal Lark messages do not create RuntimeConversation. The approval repository creates a lightweight conversation/run only when HITL occurs.', desired:'Upsert the Lark conversation at ingress and link every execution and approval without creating a second monitoring run.', evidence:'advance-backend/src/infrastructure/persistence/runtime-approval.repository.ts'}
+    };
+    const panel = document.getElementById('detailPanel');
+    document.querySelectorAll('.flow-node').forEach(btn => btn.addEventListener('click', () => {
+      document.querySelectorAll('.flow-node').forEach(n => n.classList.remove('active'));
+      btn.classList.add('active');
+      const d = nodeDetails[btn.dataset.node];
+      panel.innerHTML = `<span class="pill ${d.tone}"><span class="dot"></span>${d.status}</span><h3>${d.title}</h3><p>${d.body}</p><div class="detail-meta"><div><small>Current authority</small><b>${d.authority}</b></div><div><small>Change size</small><b>${d.effort}</b></div></div><h4>Target contract</h4><p>${d.desired}</p><h4>Evidence</h4><p class="mono">${d.evidence}</p>`;
+    }));
+    document.querySelectorAll('.filter').forEach(btn => btn.addEventListener('click', () => {
+      document.querySelectorAll('.filter').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const f = btn.dataset.filter;
+      document.querySelectorAll('.cap-row').forEach(row => row.hidden = f !== 'all' && row.dataset.status !== f);
+    }));
+    document.querySelectorAll('.phase-button').forEach(btn => btn.addEventListener('click', () => btn.closest('.phase').classList.toggle('open')));
+    document.getElementById('themeToggle').addEventListener('click', e => {
+      const root = document.documentElement;
+      const next = root.dataset.theme === 'light' ? 'dark' : 'light';
+      root.dataset.theme = next;
+      e.currentTarget.textContent = next === 'light' ? 'Dark theme' : 'Light theme';
+    });
+  </script>
+</body>
+</html>

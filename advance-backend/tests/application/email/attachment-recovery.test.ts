@@ -24,17 +24,17 @@ describe('attachment recovery', () => {
 
   it('allows zero-byte and unicode filenames after sanitization', async () => {
     const adapter: AttachmentSourceAdapter = {
-      source: 'file_asset',
+      source: 'outbound_artifact',
       resolve: async () => ({
         fileName: 'Résumé 2026.pdf',
         mimeType: 'application/pdf',
         sizeBytes: 0,
         content: Buffer.alloc(0),
-        source: 'file_asset',
+        source: 'outbound_artifact',
       }),
     };
-    const service = new AttachmentResolverService(new Map([['file_asset', adapter]]));
-    const result = await service.resolve([{ source: 'file_asset', fileAssetId: 'f1' }], {
+    const service = new AttachmentResolverService(new Map([['outbound_artifact', adapter]]));
+    const result = await service.resolve([{ source: 'outbound_artifact', artifactId: 'f1' }], {
       companyId: 'co1',
       userId: 'u1',
     });

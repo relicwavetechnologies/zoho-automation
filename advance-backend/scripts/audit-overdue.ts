@@ -15,8 +15,6 @@ import Redis from 'ioredis';
 const env    = loadAndValidateEnv(process.env);
 const prisma = new PrismaClient();
 const log: any = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {}, child: () => log };
-const cloudinary: any = { isAvailable: false, uploadCsvBuffer: async () => null };
-
 async function main() {
   const company = await prisma.company.findFirst();
   if (!company) throw new Error('No company');
@@ -29,14 +27,14 @@ async function main() {
   const connRepo     = new ZohoConnectionRepository(prisma, env);
   const tokenService = new ZohoTokenService(connRepo, cache, env, log);
   const booksClient  = new ZohoBooksPaginatedClient(tokenService, env.ZOHO_API_BASE_URL);
-  const financeOps   = new ZohoFinanceOps(booksClient, cloudinary, log);
+  const financeOps   = new ZohoFinanceOps(booksClient, log);
 
   console.log('=== STEP 1: Build overdue report (same as Divo) ===\n');
   const report = await financeOps.buildOverdueReport({ companyId: company.id });
 
   console.log(`Total overdue invoices: ${report.invoiceCount}`);
   console.log(`Total outstanding (balance): ₹${formatINR(report.totalOutstanding)}`);
-  console.log(`Truncated: ${report.truncated}\n`);
+  console.log(`Truncated: ${report.sourceTruncated}\n`);
 
   console.log('=== STEP 2: Top customers by overdue balance ===\n');
   const topCustomers = (report as any).topCustomers as Array<{

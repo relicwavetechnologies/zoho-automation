@@ -65,19 +65,22 @@ export function createTokenUsageRoutes(deps: TokenUsageRoutesDeps): Router {
     const companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
     const daysRaw   = typeof req.query.days === 'string' ? Number(req.query.days) : 30;
     const days      = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.min(daysRaw, 90) : 30;
+    const channel = typeof req.query.channel === 'string' && ['desktop', 'lark', 'web'].includes(req.query.channel)
+      ? req.query.channel
+      : undefined;
 
     const now  = new Date();
     const from = new Date(now.getTime() - days * 86_400_000);
 
     const [totals, byModel] = await Promise.all([
       prisma.aiTokenUsage.aggregate({
-        where: { companyId, createdAt: { gte: from, lte: now } },
+        where: { companyId, createdAt: { gte: from, lte: now }, ...(channel ? { channel } : {}) },
         _sum: { actualInputTokens: true, actualOutputTokens: true },
         _count: { id: true },
       }),
       prisma.aiTokenUsage.groupBy({
         by: ['modelId', 'provider'],
-        where: { companyId, createdAt: { gte: from, lte: now } },
+        where: { companyId, createdAt: { gte: from, lte: now }, ...(channel ? { channel } : {}) },
         _sum: { actualInputTokens: true, actualOutputTokens: true },
         _count: { id: true },
         orderBy: { _count: { id: 'desc' } },
@@ -111,13 +114,16 @@ export function createTokenUsageRoutes(deps: TokenUsageRoutesDeps): Router {
     const companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
     const daysRaw   = typeof req.query.days === 'string' ? Number(req.query.days) : 30;
     const days      = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.min(daysRaw, 90) : 30;
+    const channel = typeof req.query.channel === 'string' && ['desktop', 'lark', 'web'].includes(req.query.channel)
+      ? req.query.channel
+      : undefined;
 
     const now  = new Date();
     const from = new Date(now.getTime() - days * 86_400_000);
 
     const byUser = await prisma.aiTokenUsage.groupBy({
       by: ['userId'],
-      where: { companyId, createdAt: { gte: from, lte: now } },
+      where: { companyId, createdAt: { gte: from, lte: now }, ...(channel ? { channel } : {}) },
       _sum: { actualInputTokens: true, actualOutputTokens: true },
       _count: { id: true },
       orderBy: { _sum: { actualOutputTokens: 'desc' } },

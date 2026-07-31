@@ -3,36 +3,74 @@ import { randomUUID } from 'node:crypto';
 import type { Container } from './composition';
 import { createHealthRoutes } from './http/health.routes';
 import { createErrorBoundary } from './http/error-boundary';
-import { createLarkWebhookRoutes } from './infrastructure/channels/lark/lark.webhook.routes';
+import {
+  createLarkWebhookRoutes,
+  processAcceptedLarkReceipt,
+  replayLarkMessageAfterLogin,
+  runPiAndDeliver,
+  type LarkWebhookDeps,
+} from './infrastructure/channels/lark/lark.webhook.routes';
 import { createAdminAuthRoutes } from './http/admin/admin-auth.routes';
 import { createAdminPermissionRoutes } from './http/admin/permission.routes';
 import { createGoogleAuthRoutes } from './http/google/google-auth.routes';
+import { createGoogleConnectionRoutes } from './http/google/google-connection.routes';
+import { createGmailPubSubRoutes } from './http/google/gmail-pubsub.routes';
+import { GooglePubSubPushVerifier } from './infrastructure/google/google-pubsub-push-auth';
 import { createZohoAuthRoutes } from './http/zoho/zoho-auth.routes';
 import { createLarkAuthRoutes } from './http/lark/lark-auth.routes';
 import { createExecutionRoutes } from './http/executions/execution.routes';
 import { createAdminAuthMiddleware } from './http/middleware/admin-auth.middleware';
 import { createMemberAuthMiddleware } from './http/middleware/member-auth.middleware';
-import { createFilesRouter } from './http/files/files.routes';
-import { createAgentsRoutes } from './http/agents/agents.routes';
+import { createDesktopToolsRoutes } from './http/desktop/desktop-tools.routes';
+import { createDesktopDepartmentRoutes } from './http/desktop/desktop-departments.routes';
+import { createDesktopApprovalRoutes } from './http/desktop/desktop-approvals.routes';
 import { createDepartmentRoutes } from './http/admin/departments.routes';
+import { createSkillRegistryRoutes } from './http/admin/skill-registry.routes';
 import { createMemoryRoutes } from './http/admin/memory.routes';
 import { createCompanyRoutes } from './http/admin/company.routes';
 import { createAuditRoutes } from './http/admin/audit.routes';
 import { createControlsRoutes } from './http/admin/controls.routes';
 import { createRbacRoutes } from './http/admin/rbac.routes';
 import { createAiModelsRoutes } from './http/admin/ai-models.routes';
-import { createAiProvidersRoutes } from './http/admin/ai-providers.routes';
+import { createToolRegistryRoutes } from './http/admin/tool-registry.routes';
+import { createWebSearchAdminRoutes } from './http/admin/web-search.routes';
 import { createRuntimeRoutes } from './http/admin/runtime.routes';
 import { createAnalyticsRoutes } from './http/admin/analytics.routes';
 import { createTokenUsageRoutes } from './http/admin/token-usage.routes';
+import { createSpendRoutes } from './http/admin/spend.routes';
+import { createProxyPolicyRoutes } from './http/admin/proxy-policy.routes';
+import { createProxyRoutes } from './http/admin/proxy.routes';
+import { createLlmProxyRoutes } from './http/llm/llm-proxy.routes';
 import { createDesktopAuthRoutes } from './http/desktop/desktop-auth.routes';
-import { createDesktopThreadsRoutes } from './http/desktop/desktop-threads.routes';
-import { createDesktopWsGateway } from './http/desktop/desktop-ws.gateway';
-import { createAirnoteRoutes } from './http/airnote/airnote.routes';
-import { IngestionWorker } from './application/ingestion/ingestion.worker';
+import { createTraceIngestRoutes } from './http/desktop/trace-ingest.routes';
+import { ExecutionRepository } from './infrastructure/persistence/execution.repository';
+import { createGatewayRoutes } from './http/gateway/gateway.routes';
+import { DataExportWorker } from './application/data-export/data-export.worker';
+import { LarkIngressWorker } from './application/lark-ingress/lark-ingress.worker';
+import { GoogleConnectionContinuationWorker } from './application/connections/google-connection-continuation';
+import { getGmailPubSubConfig } from './config/env';
+import { PersonaLearningWorker } from './application/persona-learning/persona-learning.worker';
+import { ManagerTeachWorker } from './application/persona-learning/manager-teach.worker';
+import { createManagerTeachRoutes } from './http/desktop/manager-teach.routes';
+import { LarkFileClient } from './infrastructure/channels/lark/clients/lark-file.client';
+import { ElevenLabsTranscriptionClient } from './infrastructure/ai/transcription/elevenlabs-transcription.client';
+
+/** Where the model proxy is mounted. Named because the body parser exempts it. */
+const LLM_PROXY_MOUNT_PATH = '/api/llm';
+
+/**
+ * How large a model request may be.
+ *
+ * Sized above what Pi can put in one: its `read` tool inlines an image up to
+ * 4.5MB of base64, and a turn can carry more than one alongside the
+ * conversation. Every other route keeps the 2mb limit — a request this size is
+ * only ever a picture on its way to a model that can see.
+ */
+const LLM_PROXY_BODY_LIMIT = '24mb';
 
 export const createServer = (c: Container) => {
   const app = express();
+  const gmailPubsubConfig = getGmailPubSubConfig(c.env);
   const allowedOrigins = new Set(
     [
       c.env.APP_BASE_URL,
@@ -48,21 +86,135 @@ export const createServer = (c: Container) => {
       'http://tauri.localhost',
     ].filter(Boolean),
   );
+  const voiceTranscriber = c.env.ELEVEN_LABS_API_KEY
+    ? new ElevenLabsTranscriptionClient({ apiKey: c.env.ELEVEN_LABS_API_KEY })
+    : undefined;
+  const voiceFileClient = voiceTranscriber
+    ? new LarkFileClient(c.env, c.logger)
+    : undefined;
+  // Built in composition so the scheduled-workflow poller shares this exact
+  // instance; two runtimes would mean two lease issuers for one container.
+  const larkPiRuntime = c.larkPiRuntime;
 
-  // Boot BullMQ ingestion worker (queue lives in container, shared with webhook routes)
-  const ingestionWorker = new IngestionWorker({
-    redisUrl:         c.queueRedisUrl,   // isolated BullMQ connection → REDIS_QUEUE_URL
-    ingestionService: c.ingestionService,
-    larkAdapter:      c.larkAdapter,
-    env:              c.env,
-    logger:           c.logger,
-    chatContext:      c.chatContextService,
-    concurrency:      c.env.INGESTION_WORKER_CONCURRENCY,
-    summaryModel:     c.model,
+  const larkWebhookDeps: LarkWebhookDeps = {
+    adapter:               c.larkAdapter,
+    piRuntime:             larkPiRuntime,
+    channelIdentityRepo:   c.channelIdentityRepo,
+    conversationRepo:      c.conversationRepo,
+    ingressReceiptRepo:    c.ingressReceiptRepo,
+    ingressQueue:          c.larkIngressQueue,
+    logger:                c.logger,
+    env:                   c.env,
+    approvalGate:          c.approvalGate,
+    approvalCardHandler:   c.approvalCardHandler,
+    memoryReviewService:   c.larkMemoryReviewService,
+    ...(c.mem0Service ? { mem0: c.mem0Service } : {}),
+    larkOAuthService:      c.larkOAuthService,
+    connectionRepo:        c.integrationConnectionRepo,
+    cache:                 c.memoryCache,
+    serializer:            c.chatSerializer,
+    chatContextService:    c.chatContextService,
+    groupContextHydrator:  c.groupContextHydrator,
+    channelDeliveryRepo:   c.channelDeliveryRepo,
+    laneLeaseHolder:       c.laneLeaseHolder,
+    busyNotices:           c.busyLaneNotices,
+    batchingEnabled:       c.env.LARK_MESSAGE_BATCHING === 'on',
+    prisma:                c.prisma,
+    larkContactsClient:    c.larkContactsClient,
+    ...(voiceFileClient && voiceTranscriber
+      ? { voiceFileClient, voiceTranscriber }
+      : {}),
+  };
+
+  const larkIngressWorker = new LarkIngressWorker({
+    redisUrl: c.queueRedisUrl,
+    queue: c.larkIngressQueue,
+    receiptRepo: c.ingressReceiptRepo,
+    processReceipt: receipt => processAcceptedLarkReceipt(receipt, larkWebhookDeps),
+    logger: c.logger,
   });
-  ingestionWorker.start();
+  larkIngressWorker.start();
 
-  c.scheduledWorkflowService.start();
+  const googleConnectionContinuationWorker =
+    new GoogleConnectionContinuationWorker({
+      redisUrl: c.queueRedisUrl,
+      queue: c.googleConnectionContinuationQueue,
+      intentRepo: c.connectionAuthorizationRepo,
+      identityRepo: c.channelIdentityRepo,
+      connectionRepo: c.integrationConnectionRepo,
+      runPi: input => runPiAndDeliver({
+        ...input,
+        deps: {
+          adapter: input.channelAdapter,
+          piRuntime: larkPiRuntime,
+          channelDeliveryRepo: c.channelDeliveryRepo,
+          groupContextHydrator: c.groupContextHydrator,
+        },
+        log: c.logger,
+        ...(input.abortSignal ? { signal: input.abortSignal } : {}),
+        rethrowRuntimeFailureAfterDelivery: true,
+      }),
+      channelAdapter: c.larkAdapter,
+      laneLeaseHolder: c.laneLeaseHolder,
+      logger: c.logger,
+    });
+  googleConnectionContinuationWorker.start();
+  const recoverGoogleExchanges = () => {
+    const staleBefore = new Date(Date.now() - 2 * 60_000);
+    void c.googleConnectionAuthorization
+      .reconcileStaleExchanges(staleBefore)
+      .catch(error => {
+        c.logger.warn('google.authorization.exchange_reconcile_failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  };
+  if (c.env.DIVO_AUTONOMOUS_WORKERS_ENABLED) {
+    recoverGoogleExchanges();
+    const googleExchangeRecoveryTimer = setInterval(
+      recoverGoogleExchanges,
+      60_000,
+    );
+    googleExchangeRecoveryTimer.unref?.();
+    c.mailOpsWorker.start();
+  }
+
+  const dataExportWorker = new DataExportWorker({
+    redisUrl: c.queueRedisUrl,
+    sources: c.dataExportSources,
+    sink: c.googleWorkspaceExportSink,
+    identityRepo: c.channelIdentityRepo,
+    permissions: c.permissions,
+    resolveGoogleAuth: c.resolveGoogleExportAuth,
+    larkAdapter: c.larkAdapter,
+    logger: c.logger,
+  });
+  dataExportWorker.start();
+
+  // Manager persona promotion remains independent from memory, skills, RBAC,
+  // and runtime prompt delivery. P5 adds a separate read-only delivery path.
+  const personaLearningWorker = new PersonaLearningWorker({
+    redisUrl: c.queueRedisUrl,
+    queueName: c.env.REDIS_PERSONA_LEARNING_QUEUE_NAME,
+    service: c.personaLearningService,
+    promotionService: c.personaLearningPromotionService,
+    logger: c.logger,
+    concurrency: c.env.PERSONA_LEARNING_WORKER_CONCURRENCY,
+  });
+  personaLearningWorker.start();
+
+  const managerTeachWorker = new ManagerTeachWorker({
+    redisUrl: c.queueRedisUrl,
+    queueName: c.env.REDIS_MANAGER_TEACH_QUEUE_NAME,
+    service: c.managerTeachService,
+    logger: c.logger,
+    concurrency: c.env.MANAGER_TEACH_WORKER_CONCURRENCY,
+  });
+  managerTeachWorker.start();
+
+  if (c.env.DIVO_AUTONOMOUS_WORKERS_ENABLED) {
+    c.scheduledWorkflowService.start();
+  }
 
   const runCloudinaryCleanup = () => {
     void c.cloudinaryAdapter.cleanupExpiredExports({
@@ -79,6 +231,34 @@ export const createServer = (c: Container) => {
     c.env.CLOUDINARY_TEMP_EXPORT_CLEANUP_INTERVAL_SECONDS * 1000,
   );
   cloudinaryCleanupTimer.unref?.();
+
+  // Run-trace retention (Track A): prune detailed ExecutionEvent + StepResult
+  // payloads past the window; AiTokenUsage (cost history) is never pruned.
+  const executionRepoForRetention = new ExecutionRepository(c.prisma);
+  const runTraceRetention = () => {
+    const cutoff = new Date(Date.now() - c.env.TRACE_RETENTION_DAYS * 86_400_000);
+    void executionRepoForRetention.pruneExpiredDetail(cutoff)
+      .then((pruned) => {
+        if (pruned.events > 0 || pruned.steps > 0) {
+          c.logger.info('trace.retention.pruned', {
+            events: pruned.events,
+            steps:  pruned.steps,
+            cutoff: cutoff.toISOString(),
+          });
+        }
+      })
+      .catch((error) => {
+        c.logger.warn('trace.retention.failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  };
+  runTraceRetention();
+  const traceRetentionTimer = setInterval(
+    runTraceRetention,
+    c.env.TRACE_RETENTION_INTERVAL_HOURS * 3_600_000,
+  );
+  traceRetentionTimer.unref?.();
 
   app.use((req, res, next) => {
     const origin = req.headers.origin;
@@ -100,15 +280,20 @@ export const createServer = (c: Container) => {
 
   // Capture the raw JSON body string on every request before parsing.
   // The webhook handler needs it to verify the HMAC-SHA256 signature.
-  app.use(
-    express.json({
-      limit: '2mb',
-      verify: (req, _res, buf) => {
-        // Attach raw body for HMAC verification; use unknown-cast to avoid module augmentation.
-        (req as unknown as Record<string, unknown>)['rawBody'] = buf.toString('utf8');
-      },
-    }),
-  );
+  const parseJsonBody = express.json({
+    limit: '2mb',
+    verify: (req, _res, buf) => {
+      // Attach raw body for HMAC verification; use unknown-cast to avoid module augmentation.
+      (req as unknown as Record<string, unknown>)['rawBody'] = buf.toString('utf8');
+    },
+  });
+  // The model proxy is exempt because a vision request carries the picture.
+  // 2mb is right for every other route and far too small for this one: Pi inlines
+  // an image up to 4.5MB of base64 (`DEFAULT_MAX_BYTES` in its image resizer),
+  // and a 413 raised here never reaches the proxy — the run just fails with
+  // advice about truncating tool results, which cannot help an image.
+  app.use((req, res, next) =>
+    req.path.startsWith(LLM_PROXY_MOUNT_PATH) ? next() : parseJsonBody(req, res, next));
   app.use(express.urlencoded({ extended: true }));
 
   // ── Request correlation middleware ──────────────────────────────────────
@@ -166,38 +351,16 @@ export const createServer = (c: Container) => {
   app.use(
     '/admin',
     createAdminPermissionRoutes({
-      toolPermRepo:    c.toolPermRepo,
-      toolActionRepo:  c.toolActionRepo,
-      deptToolPermRepo: c.deptToolPermRepo,
-      permissions:     c.permissions,
-      logger:          c.logger,
-      auditService:    c.auditService,
+      toolPermRepo: c.toolPermRepo,
+      permissions:  c.permissions,
+      logger:       c.logger,
+      auditService: c.auditService,
     }),
   );
 
   app.use(
     '/webhooks/lark',
-    createLarkWebhookRoutes({
-      adapter:               c.larkAdapter,
-      engine:                c.engine,
-      channelIdentityRepo:   c.channelIdentityRepo,
-      conversationRepo:      c.conversationRepo,
-      logger:                c.logger,
-      env:                   c.env,
-      approvalGate:          c.approvalGate,
-      approvalCardHandler:   c.approvalCardHandler,
-      ingestionQueue:        c.ingestionQueue,
-      knowledgeShareService: c.knowledgeShareService,
-      shareResolverService:  c.shareResolverService,
-      ...(c.mem0Service ? { mem0: c.mem0Service } : {}),
-      larkOAuthService:      c.larkOAuthService,
-      larkUserAuthLinkRepo:  c.larkUserAuthLinkRepo,
-      cache:                 c.memoryCache,
-      serializer:            c.chatSerializer,
-      chatContextService:    c.chatContextService,
-      prisma:                c.prisma,
-      cloudinaryAdapter:     c.cloudinaryAdapter,
-    }),
+    createLarkWebhookRoutes(larkWebhookDeps),
   );
 
   // Google OAuth connect + callback
@@ -205,13 +368,42 @@ export const createServer = (c: Container) => {
     '/api/google/auth',
     createGoogleAuthRoutes({
       googleOAuthService:    c.googleOAuthService,
-      googleUserLinkRepo:    c.googleUserLinkRepo,
-      companyGoogleAuthRepo: c.companyGoogleLinkRepo,
+      connectionRepo:        c.integrationConnectionRepo,
       cache:                 c.memoryCache,   // nonces → REDIS_MEMORY_URL
       logger:                c.logger,
       frontendBaseUrl:       c.env.APP_BASE_URL,
     }),
   );
+
+  app.use(
+    '/api/google/connection',
+    createGoogleConnectionRoutes({
+      authorization: c.googleConnectionAuthorization,
+      continuationQueue: c.googleConnectionContinuationQueue,
+      logger: c.logger,
+    }),
+  );
+  if (gmailPubsubConfig) {
+    app.use(
+      '/api/google/gmail-pubsub',
+      createGmailPubSubRoutes({
+        verifier: new GooglePubSubPushVerifier({
+          audience: gmailPubsubConfig.pushAudience,
+          serviceAccountEmail: gmailPubsubConfig.pushServiceAccount,
+        }),
+        expectedSubscription: gmailPubsubConfig.subscription,
+        mailOpsRepo: c.mailOpsRepo,
+        wakeMailOps: () => {
+          if (c.env.DIVO_AUTONOMOUS_WORKERS_ENABLED) c.mailOpsWorker.wake();
+        },
+        logger: c.logger,
+      }),
+    );
+  } else {
+    c.logger.warn('gmail.pubsub.disabled', {
+      reason: 'GOOGLE_PUBSUB_TOPIC, SUBSCRIPTION, PUSH_AUDIENCE, or PUSH_SERVICE_ACCOUNT is missing',
+    });
+  }
 
   // Zoho OAuth connect + callback
   app.use(
@@ -230,14 +422,20 @@ export const createServer = (c: Container) => {
   app.use(
     '/api/lark/auth',
     createLarkAuthRoutes({
-      larkOAuthService:     c.larkOAuthService,
-      larkUserAuthLinkRepo: c.larkUserAuthLinkRepo,
-      cache:                c.memoryCache,   // nonces → REDIS_MEMORY_URL
-      logger:               c.logger,
-      appId:                c.env.LARK_APP_ID,
-      appSecret:            c.env.LARK_APP_SECRET,
-      apiBase:              c.env.LARK_API_BASE_URL,
-      channelIdentityRepo:  c.channelIdentityRepo,
+      larkOAuthService:    c.larkOAuthService,
+      connectionRepo:      c.integrationConnectionRepo,
+      cache:               c.memoryCache,   // nonces → REDIS_MEMORY_URL
+      logger:              c.logger,
+      appId:               c.env.LARK_APP_ID,
+      appSecret:           c.env.LARK_APP_SECRET,
+      apiBase:             c.env.LARK_API_BASE_URL,
+      prisma:              c.prisma,
+      memberSessionTtlMinutes: 7 * 24 * 60,
+      channelIdentityRepo: c.channelIdentityRepo,
+      // Shares the webhook's deps so the replayed turn runs through exactly the
+      // same lane, lease, and delivery path as any other message.
+      onLinked:            pendingEvent =>
+        replayLarkMessageAfterLogin(pendingEvent, larkWebhookDeps),
     }),
   );
 
@@ -271,20 +469,64 @@ export const createServer = (c: Container) => {
     jwtSecret: c.env.MEMBER_JWT_SECRET,
     logger:    c.logger,
   });
+  const piRuntimeMemberAuth = createMemberAuthMiddleware({
+    prisma:    c.prisma,
+    jwtSecret: c.env.MEMBER_JWT_SECRET,
+    logger:    c.logger,
+    allowPiRuntimeLease: () => true,
+  });
   app.use(
-    '/api/files',
-    memberAuth,
-    createFilesRouter({
-      ingestionService:      c.ingestionService,
-      ingestionQueue:        c.ingestionQueue,
-      fileAssetRepo:         c.fileAssetRepo,
-      fileAccessPolicyRepo:  c.fileAccessPolicyRepo,
-      knowledgeShareService: c.knowledgeShareService,
-      logger:                c.logger,
-      maxFileSizeMb:         c.env.DOC_UPLOAD_MAX_MB,
+    '/api/gateway',
+    piRuntimeMemberAuth,
+    createGatewayRoutes({
+      dispatcher: c.gatewayDispatcher,
+      logger:     c.logger,
     }),
   );
 
+  app.use(
+    '/api/desktop',
+    createDesktopApprovalRoutes({
+      prisma:          c.prisma,
+      memberJwtSecret: c.env.MEMBER_JWT_SECRET,
+      logger:          c.logger,
+      inbox:           c.approvalInbox,
+    }),
+  );
+  // Mounted under /auth because that is the base the desktop's
+  // `divo_desktop_json_request` helper prefixes onto every tool path. Moving it
+  // to /api/desktop takes GET /api/desktop/auth/tools off the air, and the
+  // desktop reads that 401 as an expired session.
+  app.use(
+    '/api/desktop/auth',
+    createDesktopToolsRoutes({
+      prisma:                 c.prisma,
+      memberJwtSecret:        c.env.MEMBER_JWT_SECRET,
+      logger:                 c.logger,
+      permissions:            c.permissions,
+      toolActionRepo:         c.toolActionRepo,
+      toolPermRepo:           c.toolPermRepo,
+      companyRoleRepo:        c.companyRoleRepo,
+      deptToolPermRepo:       c.deptToolPermRepo,
+      deptUserOverrideRepo:   c.deptUserOverrideRepo,
+      connectionRepo:         c.integrationConnectionRepo,
+      auditService:           c.auditService,
+      toolRegistry:           c.toolRegistry,
+      serperConnectionRepo:   c.companySerperConnectionRepo,
+      serperService:          c.companySerperService,
+      omsConnectionRepo:      c.companyOmsConnectionRepo,
+      omsSiteDataService:     c.companyOmsSiteDataService,
+    }),
+  );
+  app.use(
+    '/api/desktop',
+    createDesktopDepartmentRoutes({
+      prisma:          c.prisma,
+      memberJwtSecret: c.env.MEMBER_JWT_SECRET,
+      logger:          c.logger,
+      service:         c.desktopDepartmentManagementService,
+    }),
+  );
   // Desktop auth (Lark OAuth, handoff, session management)
   app.use(
     '/api/desktop/auth',
@@ -292,48 +534,75 @@ export const createServer = (c: Container) => {
       prisma:                 c.prisma,
       larkOAuthService:       c.larkOAuthService,
       googleOAuthService:     c.googleOAuthService,
-      larkUserAuthLinkRepo:   c.larkUserAuthLinkRepo,
-      googleUserAuthLinkRepo: c.googleUserLinkRepo,
+      canvaMcpOAuthService:   c.canvaMcpOAuthService,
+      airtableMcpOAuthService: c.airtableMcpOAuthService,
+      aitableKeyVerifier:      c.aitableKeyVerifier,
+      zohoTokenService:       c.zohoTokenService,
+      zohoConnectionRepo:     c.zohoConnectionRepo,
+      connectionRepo:         c.integrationConnectionRepo,
+      permissions:            c.permissions,
+      skillCatalog:           c.skillCatalog,
+      skillAccessEnforcement: c.skillAccessEnforcement,
+      managerPersonaRuntime:  c.managerPersonaRuntimeService,
       logger:                 c.logger,
+      env:                    c.env,
       memberJwtSecret:        c.env.MEMBER_JWT_SECRET,
       backendPublicUrl:       c.env.BACKEND_PUBLIC_URL,
       sessionTtlMinutes:      480,
     }),
   );
 
-  // Desktop threads CRUD (member auth — applied inside router)
+  // Explicit manager Teach recording ingestion. The router owns member auth
+  // and enforces the live department MANAGER membership on every new session.
   app.use(
-    '/api/desktop/threads',
-    createDesktopThreadsRoutes({
-      prisma:          c.prisma,
-      logger:          c.logger,
+    '/api/desktop/teach',
+    createManagerTeachRoutes({
+      prisma: c.prisma,
       memberJwtSecret: c.env.MEMBER_JWT_SECRET,
+      logger: c.logger,
+      service: c.managerTeachService,
+      revisions: c.managerPersonaRevisionService,
+      uploadDir: c.managerTeachUploadDir,
+      maxVideoBytes: c.env.MANAGER_TEACH_MAX_VIDEO_MB * 1_024 * 1_024,
     }),
   );
 
-  // AirNote channel (SSE chat + thread recovery)
+  // Desktop/PI run-trace ingest (Track A — member auth). Current clients share
+  // a run ID with the proxy and declare which source owns token accounting.
   app.use(
-    '/api/airnote',
-    createAirnoteRoutes({
-      prisma:              c.prisma,
-      logger:              c.logger,
-      engine:              c.engine,
-      chatSerializer:      c.chatSerializer,
-      larkOAuthService:    c.larkOAuthService,
-      channelIdentityRepo: c.channelIdentityRepo,
-      approvalGate:        c.approvalGate,
+    '/api/desktop/trace',
+    piRuntimeMemberAuth,
+    createTraceIngestRoutes({
+      prisma:         c.prisma,
+      logger:         c.logger,
+      proxyOwnsTrace: c.env.PROXY_OWNS_TRACE,
+      personaLearning: c.personaLearningService,
     }),
   );
 
-  // Agent definition + channel mapping CRUD (admin auth required)
-  app.use(
-    '/api',
-    adminAuth,
-    createAgentsRoutes({
-      agentAdminService: c.agentAdminService,
-      logger:            c.logger,
-    }),
-  );
+  // LLM proxy (Guardrails) — desktop/Lark → backend → selected provider. Mounts
+  // whenever the flag is on; the provider key is resolved per request. No key
+  // configured ⇒ the route returns 503 "not configured", never 404.
+  // PI holds no key — it authenticates with its member token.
+  if (c.env.LLM_PROXY_ENABLED) {
+    app.use(
+      LLM_PROXY_MOUNT_PATH,
+      express.json({ limit: LLM_PROXY_BODY_LIMIT }),
+      piRuntimeMemberAuth,
+      createLlmProxyRoutes({
+        logger:  c.logger,
+        store:   c.proxyKeyStore,
+        service: c.llmProxyService,
+        baseUrls: { deepseek: c.env.DEEPSEEK_BASE_URL, openai: c.env.OPENAI_BASE_URL },
+        apiKeyExhaustion: c.apiKeyExhaustionNotifier,
+      }),
+    );
+    c.logger.info('llm-proxy.enabled', {
+      deepseek: c.env.DEEPSEEK_BASE_URL,
+      openai: c.env.OPENAI_BASE_URL,
+      canEncrypt: c.proxyKeyStore.canEncrypt(),
+    });
+  }
 
   // Department admin CRUD
   app.use(
@@ -341,7 +610,19 @@ export const createServer = (c: Container) => {
     adminAuth,
     createDepartmentRoutes({
       deptAdminService: c.departmentAdminService,
+      auditService:      c.auditService,
       logger:           c.logger,
+    }),
+  );
+
+  // Skill Registry admin (Skills Lab)
+  app.use(
+    '/api/admin/skill-registry',
+    adminAuth,
+    createSkillRegistryRoutes({
+      skillRegistryService: c.skillRegistryAdminService,
+      auditService:         c.auditService,
+      logger:               c.logger,
     }),
   );
 
@@ -374,7 +655,7 @@ export const createServer = (c: Container) => {
   app.use('/api/admin/audit', adminAuth, createAuditRoutes({ auditService: c.auditService, logger: c.logger }));
 
   // Admin controls
-  app.use('/api/admin/controls', adminAuth, createControlsRoutes({ prisma: c.prisma, logger: c.logger }));
+  app.use('/api/admin/controls', adminAuth, createControlsRoutes({ prisma: c.prisma, logger: c.logger, env: c.env, audit: c.auditService }));
 
   // RBAC permissions
   app.use('/api/admin/rbac', adminAuth, createRbacRoutes({ prisma: c.prisma, logger: c.logger }));
@@ -382,13 +663,11 @@ export const createServer = (c: Container) => {
   // AI model target configs
   app.use('/api/admin/ai-models', adminAuth, createAiModelsRoutes({ prisma: c.prisma, logger: c.logger }));
 
-  // AI provider connections
-  app.use('/api/admin/ai-providers', adminAuth, createAiProvidersRoutes({
-    prisma: c.prisma,
-    env: c.env,
-    logger: c.logger,
-    invalidateGatewayProviderCache: c.invalidateGatewayProviderCache,
-  }));
+  // Registered governed tools, read by Skills Lab and the department editor.
+  app.use('/api/admin/tool-registry', adminAuth, createToolRegistryRoutes({ prisma: c.prisma }));
+
+  // Company-owned Serper connection metadata and Divo-observed usage.
+  app.use('/api/admin/web-search', adminAuth, createWebSearchAdminRoutes({ prisma: c.prisma }));
 
   // Runtime task list (delegates to execution query service)
   app.use('/api/admin/runtime', adminAuth, createRuntimeRoutes({ executionQueryService: c.executionQueryService, logger: c.logger }));
@@ -398,6 +677,17 @@ export const createServer = (c: Container) => {
 
   // Token usage (per-member consumption + limits)
   app.use('/api/admin/token-usage', adminAuth, createTokenUsageRoutes({ prisma: c.prisma, logger: c.logger }));
+
+  app.use('/api/admin/spend', adminAuth, createSpendRoutes({ prisma: c.prisma, logger: c.logger }));
+
+  // Per-member proxy guardrails (block / budget / rate / allowed models).
+  app.use('/api/admin/proxy-policy', adminAuth, createProxyPolicyRoutes({ prisma: c.prisma, logger: c.logger }));
+
+  // Proxy control plane (Guardrails) — key store + status.
+  app.use('/api/admin/proxy', adminAuth, createProxyRoutes({
+    prisma: c.prisma, store: c.proxyKeyStore, logger: c.logger, enabled: c.env.LLM_PROXY_ENABLED,
+    upstreams: { deepseek: c.env.DEEPSEEK_BASE_URL, openai: c.env.OPENAI_BASE_URL },
+  }));
 
   // 404
   app.use((_req, res) => {

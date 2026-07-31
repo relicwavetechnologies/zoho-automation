@@ -1,0 +1,278 @@
+import {
+  CalendarDays,
+  Chrome,
+  FileSpreadsheet,
+  FileText,
+  Github,
+  Mail,
+  Megaphone,
+  Puzzle,
+  Search,
+  ShieldCheck,
+  Sparkles,
+  Users,
+} from 'lucide-react'
+import type { ComponentType } from 'react'
+import {
+  GmailIcon,
+  GoogleAppsScriptIcon,
+  GoogleCalendarIcon,
+  GoogleChatIcon,
+  GoogleContactsIcon,
+  GoogleDocsIcon,
+  GoogleDriveIcon,
+  GoogleFormsIcon,
+  GoogleIcon,
+  GoogleSheetsIcon,
+  GoogleSlidesIcon,
+  GoogleTasksIcon,
+  AirtableIcon,
+  CanvaIcon,
+  LarkIcon,
+  ZohoIcon,
+} from '@/components/brand-icons'
+
+export type DivoPluginCategory = 'connector' | 'skill' | 'data_source'
+
+export type DivoConnectionKind = 'personal' | 'company_shared'
+
+export type DivoConnectionStatus = 'connected' | 'needs_attention' | 'disconnected'
+
+export type DivoConnectionAccess = 'read_only' | 'read_write' | 'admin'
+
+export type DivoPlugin = {
+  id: string
+  name: string
+  category: DivoPluginCategory
+  description: string
+  icon: ComponentType<{ className?: string }>
+  iconClassName?: string
+  accentClassName: string
+  featured?: boolean
+  enabled?: boolean
+  connectionCount?: number
+}
+
+export type DivoConnection = {
+  id: string
+  pluginId: string
+  label: string
+  accountEmail: string
+  kind: DivoConnectionKind
+  status: DivoConnectionStatus
+  access: DivoConnectionAccess
+  owner: string
+  grantedBy?: string
+  grantedTo?: string[]
+  scopes: string[]
+  piAlias: string
+  recommendedFor: string
+  lastUsedAt: string
+  connectedAt?: string
+}
+
+export type DivoPluginSkill = {
+  id: string
+  name: string
+  description: string
+  icon: ComponentType<{ className?: string }>
+  verified?: boolean
+}
+
+export const divoPlugins: DivoPlugin[] = [
+  {
+    id: 'browser',
+    name: 'My Browser',
+    category: 'connector',
+    description: 'Run complex tasks safely through your own browser.',
+    icon: Chrome,
+    accentClassName: 'text-sky-400 bg-sky-400/10 border-sky-400/20',
+    featured: true,
+    enabled: true,
+    connectionCount: 1,
+  },
+  {
+    id: 'google-workspace',
+    name: 'Google Workspace',
+    category: 'connector',
+    description: 'Connect complete Google Workspace accounts through Divo.',
+    icon: GoogleIcon,
+    accentClassName: 'bg-card border-border/70',
+    featured: true,
+    enabled: true,
+  },
+  {
+    id: 'canva',
+    name: 'Canva',
+    category: 'connector',
+    description: 'Connect and share Canva design workspaces through Divo.',
+    icon: CanvaIcon,
+    accentClassName: 'bg-card border-border/70',
+    featured: true,
+    enabled: true,
+  },
+  {
+    id: 'airtable',
+    name: 'Airtable',
+    category: 'connector',
+    description: 'Connect Airtable bases so Divo can read and edit records, schema, and automations.',
+    icon: AirtableIcon,
+    accentClassName: 'bg-card border-border/70',
+    featured: true,
+    enabled: true,
+  },
+  {
+    id: 'zoho',
+    name: 'Zoho',
+    category: 'connector',
+    description: 'Connect Zoho CRM and Books through Divo backend.',
+    icon: ZohoIcon,
+    iconClassName: 'h-5 w-7',
+    accentClassName: 'bg-card border-border/70',
+    featured: true,
+    enabled: true,
+  },
+  {
+    id: 'lark',
+    name: 'Lark',
+    category: 'connector',
+    description: 'Connect and share company-managed Lark accounts through Divo.',
+    icon: LarkIcon,
+    accentClassName: 'bg-card border-border/70',
+    featured: true,
+    enabled: true,
+  },
+  {
+    id: 'github',
+    name: 'GitHub',
+    category: 'connector',
+    description: 'Manage repositories, issues, pull requests, and code changes.',
+    icon: Github,
+    accentClassName: 'text-neutral-200 bg-neutral-500/10 border-neutral-500/20',
+  },
+  {
+    id: 'instagram',
+    name: 'Instagram',
+    category: 'connector',
+    description: 'Generate and publish posts, stories, and reels.',
+    icon: Megaphone,
+    accentClassName: 'text-pink-400 bg-pink-400/10 border-pink-400/20',
+  },
+  {
+    id: 'meta-ads',
+    name: 'Meta Ads Manager',
+    category: 'connector',
+    description: 'Automate ad insights and campaign optimization.',
+    icon: Megaphone,
+    accentClassName: 'text-blue-400 bg-blue-400/10 border-blue-400/20',
+  },
+  {
+    id: 'notion',
+    name: 'Notion',
+    category: 'connector',
+    description: 'Search workspace content, update notes, and automate workflows.',
+    icon: FileText,
+    accentClassName: 'text-neutral-100 bg-neutral-500/10 border-neutral-500/20',
+  },
+  {
+    id: 'higgsfield',
+    name: 'Higgsfield',
+    category: 'connector',
+    description: 'Create cinematic images and videos with Higgsfield.',
+    icon: Sparkles,
+    accentClassName: 'text-lime-300 bg-lime-300/10 border-lime-300/20',
+  },
+]
+
+export const pluginSkills: DivoPluginSkill[] = [
+  {
+    id: 'google-connection-router',
+    name: 'google-connection-router',
+    description: 'Choose the right Google connection by account, grant, and task intent.',
+    icon: ShieldCheck,
+    verified: true,
+  },
+  {
+    id: 'outreach-thread-reader',
+    name: 'outreach-thread-reader',
+    description: 'Read outreach mailboxes safely without drafting or sending replies.',
+    icon: Mail,
+    verified: true,
+  },
+  {
+    id: 'drive-research-assistant',
+    name: 'drive-research-assistant',
+    description: 'Search shared Drive folders and summarize source documents.',
+    icon: Search,
+  },
+  {
+    id: 'calendar-availability-planner',
+    name: 'calendar-availability-planner',
+    description: 'Compare calendars and recommend meeting windows.',
+    icon: CalendarDays,
+  },
+  {
+    id: 'sheet-context-builder',
+    name: 'sheet-context-builder',
+    description: 'Turn spreadsheet ranges into structured context for Divo.',
+    icon: FileSpreadsheet,
+  },
+  {
+    id: 'shared-account-admin',
+    name: 'shared-account-admin',
+    description: 'Help admins grant shared account access with clear approval rules.',
+    icon: Users,
+  },
+]
+
+/**
+ * Every Workspace service carries its OWN product mark.
+ *
+ * These used to fall back to generic lucide glyphs, and the stand-ins actively
+ * misled: Slides drew a megaphone, Tasks a shield, Chat an envelope that reads
+ * as a second Gmail. A list titled "Available services" is a list of products,
+ * so each row has to be recognisable as the product the user already knows.
+ */
+export const googleWorkspaceServices = [
+  { name: 'Gmail', icon: GmailIcon, description: 'Read, search, draft, and send email based on access.' },
+  { name: 'Drive', icon: GoogleDriveIcon, description: 'Search files, inspect metadata, and read shared docs.' },
+  { name: 'Calendar', icon: GoogleCalendarIcon, description: 'Read schedules and create events when allowed.' },
+  { name: 'Docs', icon: GoogleDocsIcon, description: 'Create, edit, format, export, and comment on documents.' },
+  { name: 'Sheets', icon: GoogleSheetsIcon, description: 'Create, read, write, format, and manage spreadsheets.' },
+  { name: 'Slides', icon: GoogleSlidesIcon, description: 'Create, inspect, render, and update presentations.' },
+  { name: 'Forms', icon: GoogleFormsIcon, description: 'Create forms and inspect responses when allowed.' },
+  { name: 'Tasks', icon: GoogleTasksIcon, description: 'Read and manage task lists and tasks.' },
+  { name: 'Contacts', icon: GoogleContactsIcon, description: 'Search and manage contacts and groups.' },
+  { name: 'Chat', icon: GoogleChatIcon, description: 'Read spaces and messages or send messages when allowed.' },
+  { name: 'Apps Script', icon: GoogleAppsScriptIcon, description: 'Inspect, update, deploy, and run Apps Script projects.' },
+]
+
+export const pluginAutomationCards = [
+  {
+    title: 'Run complex tasks safely through your own browser.',
+    icon: Chrome,
+    accentClassName: 'text-sky-400 bg-sky-400/10 border-sky-400/20',
+  },
+  {
+    title: 'Get a personal email assistant for Gmail.',
+    icon: GmailIcon,
+    accentClassName: 'bg-card border-border/70',
+  },
+  {
+    title: 'Turn repeat work into reusable skills.',
+    icon: Puzzle,
+    accentClassName: 'text-violet-300 bg-violet-300/10 border-violet-300/20',
+  },
+]
+
+/**
+ * Tool groups a member without management scope may connect for themselves.
+ * Kept here, beside the plugin catalogue, because the connect flow is spread
+ * across three registries and each one that drifted silently cost a provider
+ * its Connect button.
+ */
+export const PERSONAL_CONNECTABLE_PLUGIN_IDS: readonly string[] = ['google-workspace', 'canva', 'airtable']
+
+export function getPlugin(pluginId: string) {
+  return divoPlugins.find((plugin) => plugin.id === pluginId)
+}

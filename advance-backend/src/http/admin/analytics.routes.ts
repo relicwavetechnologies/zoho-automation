@@ -148,7 +148,7 @@ export function createAnalyticsRoutes(deps: AnalyticsRoutesDeps): Router {
       Promise.all([
         prisma.zohoConnection.count({ where: { companyId, status: 'CONNECTED' } }),
         prisma.larkTenantBinding.count({ where: { companyId, isActive: true } }),
-        prisma.companyGoogleAuthLink.count({ where: { companyId } }),
+        prisma.integrationConnection.count({ where: { companyId, provider: 'google_workspace', revokedAt: null } }),
       ]).then(([zoho, lark, google]) => [
         { provider: 'zoho', connected: zoho > 0 },
         { provider: 'lark', connected: lark > 0 },

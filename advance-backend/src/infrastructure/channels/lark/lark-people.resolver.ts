@@ -54,6 +54,42 @@ function overlapScore(a: Set<string>, b: Set<string>): number {
   return hits / Math.max(a.size, b.size);
 }
 
+function editDistance(left: string, right: string): number {
+  if (left === right) return 0;
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex++) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex++) {
+      current[rightIndex] = Math.min(
+        current[rightIndex - 1]! + 1,
+        previous[rightIndex]! + 1,
+        previous[rightIndex - 1]! + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1),
+      );
+    }
+    previous.splice(0, previous.length, ...current);
+  }
+  return previous[right.length]!;
+}
+
+function conservativeTypoDistance(queryTokens: Set<string>, entryTokens: Set<string>): number | undefined {
+  if (queryTokens.size === 0) return undefined;
+  let total = 0;
+  for (const queryToken of queryTokens) {
+    if (entryTokens.has(queryToken)) continue;
+    if (queryToken.length < 5 || queryToken.includes('@')) return undefined;
+    const distances = [...entryTokens]
+      .filter(entryToken =>
+        entryToken.length >= 5
+        && entryToken[0] === queryToken[0]
+        && Math.abs(entryToken.length - queryToken.length) <= 1)
+      .map(entryToken => editDistance(queryToken, entryToken))
+      .filter(distance => distance === 1);
+    if (distances.length === 0) return undefined;
+    total += Math.min(...distances);
+  }
+  return total > 0 ? total : undefined;
+}
+
 // ── Directory record ──────────────────────────────────────────────────────────
 
 interface DirEntry {
@@ -82,7 +118,22 @@ function matchEntry(query: string, dir: DirEntry[]): ResolveResult {
   if (sub.length === 1) return { kind: 'resolved', person: toPerson(sub[0]!) };
   if (sub.length > 1)  return { kind: 'ambiguous', matches: sub.map(toPerson) };
 
-  // Stage 3 — fuzzy token overlap
+  // Stage 3 — conservative one-letter typo fallback. Exact and whole-token
+  // matches remain authoritative, and tied corrected names stay ambiguous.
+  const typoMatches = dir
+    .map(e => ({ e, distance: conservativeTypoDistance(qTokens, e.tokens) }))
+    .filter((candidate): candidate is { e: DirEntry; distance: number } => candidate.distance !== undefined)
+    .sort((a, b) => a.distance - b.distance);
+  if (typoMatches.length > 0) {
+    const nearestDistance = typoMatches[0]!.distance;
+    const nearest = typoMatches
+      .filter(candidate => candidate.distance === nearestDistance)
+      .map(candidate => candidate.e);
+    if (nearest.length === 1) return { kind: 'resolved', person: toPerson(nearest[0]!) };
+    return { kind: 'ambiguous', matches: nearest.map(toPerson) };
+  }
+
+  // Stage 4 — fuzzy token overlap
   const scored = dir
     .map(e => ({ e, score: overlapScore(qTokens, e.tokens) }))
     .filter(x => x.score >= 0.5)
@@ -117,9 +168,10 @@ export class LarkPeopleResolver {
     const rows = await this.prisma.channelIdentity.findMany({
       where:  { companyId, channel: 'lark' },
       select: { larkOpenId: true, externalUserId: true, displayName: true, email: true },
+      orderBy: { updatedAt: 'desc' },
     });
 
-    const dir: DirEntry[] = [];
+    const byOpenId = new Map<string, DirEntry>();
     for (const r of rows) {
       const openId = r.larkOpenId ?? r.externalUserId;
       if (!openId) continue;
@@ -127,9 +179,15 @@ export class LarkPeopleResolver {
       const normName    = normalize(displayName);
       const entry: DirEntry = { openId, displayName, normName, tokens: tokenize(normName) };
       if (r.email) entry.email = r.email;
-      dir.push(entry);
+      const current = byOpenId.get(openId);
+      if (!current) {
+        byOpenId.set(openId, entry);
+      } else if (!current.email && entry.email) {
+        current.email = entry.email;
+      }
     }
 
+    const dir = [...byOpenId.values()];
     this.cache.set(companyId, dir);
     return dir;
   }

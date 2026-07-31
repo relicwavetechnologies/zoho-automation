@@ -1,157 +1,155 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { LarkHttpClient, LarkApiError } from '../../src/infrastructure/channels/lark/clients/lark-http.client.ts';
-import { TOKEN_RESPONSE, buildMockFetch, errorMock } from '../helpers/mock-fetch.ts';
+import { createServer } from 'node:http';
+import { describe, it } from 'node:test';
+import type { Client } from '@larksuiteoapi/node-sdk';
+import { LarkApiError, LarkHttpClient } from '../../src/infrastructure/channels/lark/clients/lark-http.client.ts';
 
-describe('LarkHttpClient', () => {
-  let originalFetch: typeof globalThis.fetch;
+describe('LarkHttpClient SDK boundary', () => {
+  it('delegates request shape to the official SDK and unwraps data', async () => {
+    let request: unknown;
+    let options: unknown;
+    const sdkClient = {
+      request: async (input: unknown, sdkOptions: unknown) => {
+        request = input;
+        options = sdkOptions;
+        return { code: 0, data: { task_id: 'task-1' } };
+      },
+    } as unknown as Pick<Client, 'request'>;
+    const client = new LarkHttpClient({ appId: 'app', appSecret: 'secret', sdkClient });
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+    const result = await client.request<{ task_id: string }>('POST', '/open-apis/task/v2/tasks', {
+      query: { page_size: 10 },
+      body: { summary: 'Prepare release' },
+    });
 
-  it('fetches a tenant token on first request', async () => {
-    let tokenFetched = false;
-    const calls: string[] = [];
-
-    globalThis.fetch = async (input, _init) => {
-      const url = typeof input === 'string' ? input : (input as URL).toString();
-      calls.push(url);
-      if (url.includes('tenant_access_token')) {
-        tokenFetched = true;
-        return new Response(JSON.stringify(TOKEN_RESPONSE), { status: 200 });
-      }
-      return new Response(JSON.stringify({ code: 0, data: { ok: true } }), { status: 200 });
-    };
-
-    const client = new LarkHttpClient({ appId: 'app1', appSecret: 'secret1' });
-    await client.request('GET', '/open-apis/task/v2/tasks');
-
-    assert.ok(tokenFetched, 'should have fetched a token');
-    assert.equal(calls[0], 'https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal');
+    assert.deepEqual(request, {
+      method: 'POST',
+      url: '/open-apis/task/v2/tasks',
+      params: { page_size: 10 },
+      data: { summary: 'Prepare release' },
+    });
+    assert.equal(options, undefined, 'app-scoped calls let the SDK manage the tenant token');
+    assert.deepEqual(result, { task_id: 'task-1' });
   });
 
-  it('reuses the cached token on subsequent requests', async () => {
-    let tokenCallCount = 0;
-    globalThis.fetch = async (input, _init) => {
-      const url = typeof input === 'string' ? input : (input as URL).toString();
-      if (url.includes('tenant_access_token')) {
-        tokenCallCount++;
-        return new Response(JSON.stringify({ ...TOKEN_RESPONSE, expire: 7200 }), { status: 200 });
-      }
-      return new Response(JSON.stringify({ code: 0, data: {} }), { status: 200 });
-    };
+  it('supplies a user-token SDK option only for a Divo-resolved OAuth connection', async () => {
+    let options: unknown;
+    const sdkClient = {
+      request: async (_input: unknown, sdkOptions: unknown) => {
+        options = sdkOptions;
+        return { code: 0, data: {} };
+      },
+    } as unknown as Pick<Client, 'request'>;
+    const client = new LarkHttpClient({
+      appId: 'app',
+      appSecret: 'secret',
+      userToken: 'never-persisted-by-sdk',
+      sdkClient,
+    });
 
-    const client = new LarkHttpClient({ appId: 'app1', appSecret: 'secret1' });
-    await client.request('GET', '/open-apis/task/v2/tasks');
-    await client.request('GET', '/open-apis/task/v2/tasks');
-    await client.request('GET', '/open-apis/task/v2/tasks');
+    await client.request('GET', '/open-apis/calendar/v4/calendars');
 
-    assert.equal(tokenCallCount, 1, 'token should only be fetched once');
+    assert.notEqual(options, undefined);
   });
 
-  it('re-fetches the token when it expires', async () => {
-    let tokenCallCount = 0;
-    globalThis.fetch = async (input, _init) => {
-      const url = typeof input === 'string' ? input : (input as URL).toString();
-      if (url.includes('tenant_access_token')) {
-        tokenCallCount++;
-        // expire=61 means it expires in 61s, minus 60s buffer = 1s
-        return new Response(JSON.stringify({ ...TOKEN_RESPONSE, expire: 61 }), { status: 200 });
-      }
-      return new Response(JSON.stringify({ code: 0, data: {} }), { status: 200 });
-    };
+  it('serializes array query params in the repeated-key format required by Lark batch APIs', async () => {
+    let request: any;
+    const sdkClient = {
+      request: async (input: unknown) => {
+        request = input;
+        return { code: 0, data: {} };
+      },
+    } as unknown as Pick<Client, 'request'>;
+    const client = new LarkHttpClient({ appId: 'app', appSecret: 'secret', sdkClient });
 
-    const client = new LarkHttpClient({ appId: 'app1', appSecret: 'secret1' });
-    await client.request('GET', '/open-apis/task/v2/tasks');
+    await client.request('GET', '/open-apis/contact/v3/users/batch', {
+      query: { user_ids: ['ou_1', 'ou_2'], user_id_type: 'open_id' },
+    });
 
-    // Simulate expiry by waiting past the 1s buffer (mock expire=61, buffer=60 → 1s left)
-    // Instead: just create a new client to force a fresh token fetch
-    const client2 = new LarkHttpClient({ appId: 'app1', appSecret: 'secret1' });
-    await client2.request('GET', '/open-apis/task/v2/tasks');
-
-    // Each client should have fetched a token once
-    assert.equal(tokenCallCount, 2);
+    assert.equal(
+      request.paramsSerializer(request.params),
+      'user_ids=ou_1&user_ids=ou_2&user_id_type=open_id',
+    );
   });
 
-  it('throws LarkApiError when code != 0', async () => {
-    const { fetch } = buildMockFetch([
-      { match: () => true, response: { code: 99991663, msg: 'insufficient permissions' } },
-    ]);
-    globalThis.fetch = fetch;
+  it('maps Lark API envelopes into a structured error', async () => {
+    const sdkClient = {
+      request: async () => ({ code: 99991663, msg: 'insufficient permissions' }),
+    } as unknown as Pick<Client, 'request'>;
+    const client = new LarkHttpClient({ appId: 'app', appSecret: 'secret', sdkClient });
 
-    const client = new LarkHttpClient({ appId: 'app1', appSecret: 'secret1' });
     await assert.rejects(
       () => client.request('GET', '/open-apis/task/v2/tasks'),
-      (err: unknown) => {
-        assert.ok(err instanceof LarkApiError);
-        assert.ok((err as LarkApiError).message.includes('insufficient permissions'));
-        assert.equal((err as LarkApiError).code, 99991663);
+      (error: unknown) => {
+        assert.ok(error instanceof LarkApiError);
+        assert.equal(error.code, 99991663);
+        assert.equal(error.status, 200);
+        assert.match(error.message, /insufficient permissions/);
         return true;
       },
     );
   });
 
-  it('sends Authorization header with bearer token', async () => {
-    const { fetch, calls } = buildMockFetch([
-      { match: (url) => !url.includes('tenant_access_token'), response: { code: 0, data: {} } },
-    ]);
-    globalThis.fetch = fetch;
+  it('preserves SDK transport status and error code', async () => {
+    const sdkClient = {
+      request: async () => {
+        throw {
+          response: {
+            status: 403,
+            data: { code: 99991663, msg: 'permission denied' },
+          },
+        };
+      },
+    } as unknown as Pick<Client, 'request'>;
+    const client = new LarkHttpClient({ appId: 'app', appSecret: 'secret', sdkClient });
 
-    const client = new LarkHttpClient({ appId: 'app1', appSecret: 'secret1' });
-    await client.request('GET', '/open-apis/task/v2/tasks');
-
-    const apiCall = calls.find(c => !c.url.includes('tenant_access_token'));
-    assert.ok(apiCall?.headers['Authorization']?.startsWith('Bearer '));
-  });
-
-  it('sends JSON body and Content-Type for POST', async () => {
-    const { fetch, calls } = buildMockFetch([
-      { match: (url, m) => m === 'POST' && url.includes('/tasks'), response: { code: 0, data: { task: { guid: 'g1', summary: 'T' } } } },
-    ]);
-    globalThis.fetch = fetch;
-
-    const client = new LarkHttpClient({ appId: 'app1', appSecret: 'secret1' });
-    await client.request('POST', '/open-apis/task/v2/tasks', { body: { summary: 'Test' } });
-
-    const apiCall = calls.find(c => c.method === 'POST' && !c.url.includes('tenant_access_token'));
-    assert.equal(apiCall?.headers['Content-Type'], 'application/json');
-    assert.deepEqual(apiCall?.body, { summary: 'Test' });
-  });
-
-  it('appends query parameters to the URL', async () => {
-    const { fetch, calls } = buildMockFetch([
-      { match: () => true, response: { code: 0, data: {} } },
-    ]);
-    globalThis.fetch = fetch;
-
-    const client = new LarkHttpClient({ appId: 'app1', appSecret: 'secret1' });
-    await client.request('GET', '/open-apis/task/v2/tasks', { query: { page_size: 10, tasklist_id: 'tl1' } });
-
-    const apiCall = calls.find(c => c.url.includes('/tasks') && !c.url.includes('token'));
-    assert.ok(apiCall?.url.includes('page_size=10'));
-    assert.ok(apiCall?.url.includes('tasklist_id=tl1'));
-  });
-
-  it('returns data field when present', async () => {
-    globalThis.fetch = async (input, _init) => {
-      const url = typeof input === 'string' ? input : (input as URL).toString();
-      if (url.includes('token')) return new Response(JSON.stringify(TOKEN_RESPONSE), { status: 200 });
-      return new Response(JSON.stringify({ code: 0, data: { magic: 42 } }), { status: 200 });
-    };
-
-    const client = new LarkHttpClient({ appId: 'app1', appSecret: 'secret1' });
-    const result = await client.request<{ magic: number }>('GET', '/open-apis/test');
-    assert.equal(result.magic, 42);
-  });
-
-  it('throws LarkApiError when token endpoint fails', async () => {
-    globalThis.fetch = async () =>
-      new Response(JSON.stringify({ code: 99991400, msg: 'invalid app_id' }), { status: 200 });
-
-    const client = new LarkHttpClient({ appId: 'bad', appSecret: 'bad' });
     await assert.rejects(
       () => client.request('GET', '/open-apis/task/v2/tasks'),
-      LarkApiError,
+      (error: unknown) => {
+        assert.ok(error instanceof LarkApiError);
+        assert.equal(error.status, 403);
+        assert.equal(error.code, 99991663);
+        assert.equal(error.message, 'permission denied');
+        return true;
+      },
     );
+  });
+
+  it('does not let SDK transport failures print OAuth credentials', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(400, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ code: 99991663, msg: 'permission denied' }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    const calls: unknown[][] = [];
+    const original = { log: console.log, warn: console.warn, error: console.error };
+    console.log = (...args: unknown[]) => { calls.push(args); };
+    console.warn = (...args: unknown[]) => { calls.push(args); };
+    console.error = (...args: unknown[]) => { calls.push(args); };
+
+    try {
+      const client = new LarkHttpClient({
+        appId: 'app',
+        appSecret: 'secret',
+        userToken: 'sensitive-user-access-token',
+        apiBaseUrl: `http://127.0.0.1:${address.port}`,
+      });
+      await assert.rejects(
+        () => client.request('GET', '/open-apis/calendar/v4/calendars/primary/events'),
+        LarkApiError,
+      );
+    } finally {
+      console.log = original.log;
+      console.warn = original.warn;
+      console.error = original.error;
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve());
+      });
+    }
+
+    assert.deepEqual(calls, []);
   });
 });

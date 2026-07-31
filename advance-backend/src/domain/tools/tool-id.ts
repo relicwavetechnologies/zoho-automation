@@ -1,90 +1,246 @@
+import { createHash } from 'node:crypto';
 import type { ToolId } from '../../shared/ids';
 
-/** All canonical tool IDs in the system. Add new tools here. */
-export const CANONICAL_TOOL_IDS = [
-  'larkMessaging',
-  'larkContacts',
-  'larkTask',
-  'larkCalendar',
-  'larkDoc',
-  'larkBase',
-  'larkApproval',
-  'googleGmail',
-  'googleDrive',
-  'googleCalendar',
-  'zohoCrm',
-  'zohoBooks',
-  'contextSearch',
-  'webSearch',
-  'documentRag',
-  'dataProcessor',
-  // NOTE: 'runCommand' is intentionally NOT here. The terminal tool runs on the
-  // user's own machine and is gated per-command by the user, so it is exempt
-  // from company/department RBAC. It lives in the tool registry + RegisteredTool
-  // catalog only. See run-command.tool.ts permissionCheck().
+export const TOOL_FAMILY_IDS = [
+  'lark',
+  'google',
+  'canva',
+  'airtable',
+  'aitable',
+  'zoho',
+  'context',
+  'skills',
+  'memory',
+  'rag',
+  'data',
+  'execution',
+  'scheduling',
+  'semrush',
+  'oms',
 ] as const;
 
-export type CanonicalToolId = typeof CANONICAL_TOOL_IDS[number];
+export type ToolFamily = typeof TOOL_FAMILY_IDS[number];
 
-export type ToolFamily = 'lark' | 'google' | 'zoho' | 'context' | 'rag' | 'data' | 'execution';
+export type CapabilityConnectionProvider =
+  | 'google_workspace'
+  | 'zoho'
+  | 'canva'
+  | 'airtable'
+  | 'aitable'
+  | 'lark';
 
-export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
-  larkMessaging:  'lark',
-  larkContacts:   'lark',
-  larkTask:       'lark',
-  larkCalendar:   'lark',
-  larkDoc:        'lark',
-  larkBase:       'lark',
-  larkApproval:   'lark',
-  googleGmail:    'google',
-  googleDrive:    'google',
-  googleCalendar: 'google',
-  zohoCrm:        'zoho',
-  zohoBooks:      'zoho',
-  contextSearch:  'context',
-  webSearch:      'context',
-  documentRag:    'rag',
-  dataProcessor:  'data',
+export type ToolFamilyDefinition = {
+  readonly displayName: string;
+  readonly connectionMode: 'member_selectable' | 'backend_managed' | 'none';
+  readonly connectionProvider?: CapabilityConnectionProvider;
+  readonly skillMode: 'none' | 'optional' | 'required';
+  readonly routingAliases: readonly string[];
 };
 
-/** Action groups each tool supports. Drives permission defaults. */
-export const TOOL_SUPPORTED_ACTIONS: Record<CanonicalToolId, readonly string[]> = {
-  larkMessaging:  ['read', 'send'],
-  larkContacts:   ['read'],
-  larkTask:       ['read', 'create', 'update', 'delete'],
-  larkCalendar:   ['read', 'create', 'update', 'delete'],
-  larkDoc:        ['read', 'create', 'update'],
-  larkBase:       ['read', 'create', 'update', 'delete'],
-  larkApproval:   ['read', 'create'],
-  googleGmail:    ['read', 'create', 'update', 'delete', 'send'],
-  googleDrive:    ['read', 'create', 'update'],
-  googleCalendar: ['read', 'create', 'update', 'delete'],
-  zohoCrm:        ['read', 'create', 'update', 'delete'],
-  zohoBooks:      ['read', 'create', 'update', 'delete'],
-  contextSearch:  ['read'],
-  webSearch:      ['read'],
-  documentRag:    ['read'],
-  dataProcessor:  ['read'],
+export const TOOL_FAMILY_DEFINITIONS: Record<ToolFamily, ToolFamilyDefinition> = {
+  lark:       { displayName: 'Lark', connectionMode: 'member_selectable', connectionProvider: 'lark', skillMode: 'optional', routingAliases: ['lark', 'feishu'] },
+  google:     { displayName: 'Google Workspace', connectionMode: 'member_selectable', connectionProvider: 'google_workspace', skillMode: 'optional', routingAliases: ['google', 'google workspace', 'gmail'] },
+  canva:      { displayName: 'Canva', connectionMode: 'member_selectable', connectionProvider: 'canva', skillMode: 'optional', routingAliases: ['canva'] },
+  airtable:   { displayName: 'Airtable', connectionMode: 'member_selectable', connectionProvider: 'airtable', skillMode: 'optional', routingAliases: ['airtable'] },
+  aitable:    { displayName: 'AITable', connectionMode: 'member_selectable', connectionProvider: 'aitable', skillMode: 'optional', routingAliases: ['aitable'] },
+  zoho:       { displayName: 'Zoho', connectionMode: 'member_selectable', connectionProvider: 'zoho', skillMode: 'optional', routingAliases: ['zoho'] },
+  context:    { displayName: 'Search and context', connectionMode: 'none', skillMode: 'none', routingAliases: [] },
+  skills:     { displayName: 'Skills', connectionMode: 'none', skillMode: 'optional', routingAliases: [] },
+  memory:     { displayName: 'Memory', connectionMode: 'none', skillMode: 'optional', routingAliases: [] },
+  rag:        { displayName: 'Document retrieval', connectionMode: 'none', skillMode: 'optional', routingAliases: [] },
+  data:       {
+    displayName: 'Data processing',
+    connectionMode: 'none',
+    skillMode: 'optional',
+    routingAliases: ['export data', 'full export', 'complete csv', 'google sheet', 'large dataset'],
+  },
+  execution:  { displayName: 'Local execution', connectionMode: 'none', skillMode: 'optional', routingAliases: [] },
+  scheduling: { displayName: 'Scheduled work', connectionMode: 'none', skillMode: 'required', routingAliases: [] },
+  semrush:    { displayName: 'Semrush', connectionMode: 'backend_managed', skillMode: 'optional', routingAliases: ['semrush'] },
+  oms:        { displayName: 'OMS', connectionMode: 'backend_managed', skillMode: 'optional', routingAliases: ['oms'] },
 };
 
-/** Default permission per tool per built-in company role. */
-export const TOOL_DEFAULT_PERMISSIONS: Record<CanonicalToolId, { MEMBER: boolean; COMPANY_ADMIN: boolean; SUPER_ADMIN: boolean }> = {
-  larkMessaging:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  larkContacts:   { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  larkTask:       { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  larkCalendar:   { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  larkDoc:        { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  larkBase:       { MEMBER: false, COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  larkApproval:   { MEMBER: false, COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  googleGmail:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  googleDrive:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  googleCalendar: { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  zohoCrm:        { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  zohoBooks:      { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  contextSearch:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  webSearch:      { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  documentRag:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  dataProcessor:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
+export function isToolFamily(value: string): value is ToolFamily {
+  return Object.prototype.hasOwnProperty.call(TOOL_FAMILY_DEFINITIONS, value);
+}
+
+export function toolFamiliesForQuery(query: string): ToolFamily[] {
+  const normalized = normalizeRoutingText(query);
+  return TOOL_FAMILY_IDS.filter(family =>
+    TOOL_FAMILY_DEFINITIONS[family].routingAliases.some(alias =>
+      includesRoutingPhrase(normalized, normalizeRoutingText(alias)),
+    ),
+  );
+}
+
+function normalizeRoutingText(value: string): string {
+  return value.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).join(' ');
+}
+
+function includesRoutingPhrase(text: string, phrase: string): boolean {
+  return Boolean(phrase) && ` ${text} `.includes(` ${phrase} `);
+}
+
+export function isCanonicalToolId(value: string): value is CanonicalToolId {
+  return Object.prototype.hasOwnProperty.call(TOOL_CAPABILITY_DEFINITIONS, value);
+}
+
+export type BuiltInRoleDefaults = {
+  readonly MEMBER: boolean;
+  readonly COMPANY_ADMIN: boolean;
+  readonly SUPER_ADMIN: boolean;
 };
+
+const ALL_ROLES: BuiltInRoleDefaults = {
+  MEMBER: true,
+  COMPANY_ADMIN: true,
+  SUPER_ADMIN: true,
+};
+
+const ADMIN_ONLY: BuiltInRoleDefaults = {
+  MEMBER: false,
+  COMPANY_ADMIN: true,
+  SUPER_ADMIN: true,
+};
+
+function defineCapability<const Family extends ToolFamily, const Actions extends readonly string[]>(
+  family: Family,
+  supportedActions: Actions,
+  defaultPermissions: BuiltInRoleDefaults = ALL_ROLES,
+) {
+  return { family, supportedActions, defaultPermissions } as const;
+}
+
+/**
+ * Canonical governed capability taxonomy.
+ *
+ * Family, supported actions, and built-in role ceilings are defined together
+ * so a new tool cannot be added to one policy map and silently omitted from
+ * another. Runtime implementations and PermissionService remain authoritative
+ * for execution; this object does not register or grant a tool.
+ *
+ * `runCommand` is intentionally absent. It runs on the user's own machine and
+ * is gated per command, so it is exempt from company/department RBAC.
+ */
+export const TOOL_CAPABILITY_DEFINITIONS = {
+  larkMessaging:  defineCapability('lark', ['read', 'send']),
+  larkContacts:   defineCapability('lark', ['read']),
+  larkTask:       defineCapability('lark', ['read', 'create', 'update', 'delete']),
+  larkCalendar:   defineCapability('lark', ['read', 'create', 'update', 'delete']),
+  larkMeeting:    defineCapability('lark', ['read']),
+  larkDoc:        defineCapability('lark', ['read', 'create', 'update']),
+  larkBase:       defineCapability('lark', ['read', 'create', 'update', 'delete'], ADMIN_ONLY),
+  larkApproval:   defineCapability('lark', ['read', 'create'], ADMIN_ONLY),
+
+  googleGmail:      defineCapability('google', ['read', 'create', 'update', 'delete', 'send']),
+  googleDrive:      defineCapability('google', ['read', 'create', 'update', 'delete']),
+  googleCalendar:   defineCapability('google', ['read', 'create', 'update', 'delete']),
+  googleDocs:       defineCapability('google', ['read', 'create', 'update', 'delete']),
+  googleSheets:     defineCapability('google', ['read', 'create', 'update', 'delete']),
+  googleSlides:     defineCapability('google', ['read', 'create', 'update', 'delete']),
+  googleForms:      defineCapability('google', ['read', 'create', 'update', 'delete']),
+  googleTasks:      defineCapability('google', ['read', 'create', 'update', 'delete']),
+  googleContacts:   defineCapability('google', ['read', 'create', 'update', 'delete']),
+  googleChat:       defineCapability('google', ['read', 'send', 'update']),
+  googleAppsScript: defineCapability('google', ['read', 'create', 'update', 'delete', 'execute'], ADMIN_ONLY),
+
+  canvaDesign: defineCapability('canva', ['read', 'create', 'update']),
+
+  // Records are ordinary day-to-day work. Schema and automation edit the shape
+  // of a base, so they remain off for members until an administrator grants them.
+  airtableBase:       defineCapability('airtable', ['read']),
+  airtableRecords:    defineCapability('airtable', ['read', 'create', 'update', 'delete']),
+  airtableSchema:     defineCapability('airtable', ['read', 'create', 'update', 'delete'], ADMIN_ONLY),
+  airtableAutomation: defineCapability('airtable', ['read', 'create', 'update', 'delete'], ADMIN_ONLY),
+
+  // AITable is a distinct product. Its vocabulary keeps these IDs visibly
+  // separate from Airtable in the catalogue.
+  aitableDatasheets: defineCapability('aitable', ['read', 'create', 'update', 'delete']),
+  // Fusion API can create and delete a field but has no update endpoint.
+  aitableFields:     defineCapability('aitable', ['read', 'create', 'delete']),
+
+  zohoCrm:   defineCapability('zoho', ['read', 'create', 'update', 'delete']),
+  zohoBooks: defineCapability('zoho', ['read', 'create', 'update', 'delete']),
+
+  webSearch:       defineCapability('context', ['read']),
+  skillPublishing: defineCapability('skills', ['read', 'create', 'update', 'delete'], ADMIN_ONLY),
+  memoryPublishing: defineCapability('memory', ['read', 'create']),
+  memoryRecall:     defineCapability('memory', ['read']),
+  dataExport:       defineCapability('data', ['create']),
+  mailAutomations:  defineCapability('scheduling', ['read', 'create', 'update', 'delete', 'execute']),
+  scheduledWorkflows: defineCapability('scheduling', ['read', 'create', 'update', 'delete', 'execute']),
+
+  // These permissive MEMBER values are ceilings, not grants. Department-only
+  // policy keeps both tools unavailable until explicitly granted.
+  semrush:     defineCapability('semrush', ['read']),
+  omsSiteData: defineCapability('oms', ['read']),
+} as const;
+
+export type CanonicalToolId = keyof typeof TOOL_CAPABILITY_DEFINITIONS;
+
+/** All canonical governed tool IDs, in stable catalogue order. */
+export const CANONICAL_TOOL_IDS = Object.freeze(
+  Object.keys(TOOL_CAPABILITY_DEFINITIONS) as CanonicalToolId[],
+);
+
+function mapCapabilities<Value>(
+  select: (definition: typeof TOOL_CAPABILITY_DEFINITIONS[CanonicalToolId]) => Value,
+): Record<CanonicalToolId, Value> {
+  return Object.fromEntries(
+    CANONICAL_TOOL_IDS.map(toolId => [toolId, select(TOOL_CAPABILITY_DEFINITIONS[toolId])]),
+  ) as Record<CanonicalToolId, Value>;
+}
+
+export const TOOL_FAMILY_MAP: Readonly<Record<CanonicalToolId, ToolFamily>> =
+  mapCapabilities<ToolFamily>(definition => definition.family);
+export const TOOL_SUPPORTED_ACTIONS: Readonly<Record<CanonicalToolId, readonly string[]>> =
+  mapCapabilities<readonly string[]>(definition => definition.supportedActions);
+export const TOOL_DEFAULT_PERMISSIONS: Readonly<Record<CanonicalToolId, BuiltInRoleDefaults>> =
+  mapCapabilities<BuiltInRoleDefaults>(definition => definition.defaultPermissions);
+
+/**
+ * Capabilities whose department permission is derived from another granted
+ * capability. This keeps orchestration helpers such as dataExport available
+ * when a role can read a supported source, without requiring duplicate
+ * department permission rows for every helper.
+ */
+export const TOOL_DERIVED_PERMISSIONS = [
+  {
+    toolId: 'dataExport',
+    action: 'create',
+    anyOf: [
+      { toolId: 'airtableBase', action: 'read' },
+      { toolId: 'airtableRecords', action: 'read' },
+      { toolId: 'zohoBooks', action: 'read' },
+    ],
+  },
+] as const satisfies readonly {
+  readonly toolId: CanonicalToolId;
+  readonly action: string;
+  readonly anyOf: readonly {
+    readonly toolId: CanonicalToolId;
+    readonly action: string;
+  }[];
+}[];
+
+/** Every canonical tool ID in one family, in stable catalogue order. */
+export function toolIdsForFamily(family: ToolFamily): CanonicalToolId[] {
+  return CANONICAL_TOOL_IDS.filter(toolId => TOOL_CAPABILITY_DEFINITIONS[toolId].family === family);
+}
+
+/**
+ * Content-addressed revision for every permission snapshot derived from the
+ * canonical tool policy. Changing a tool ID, supported action, or role default
+ * automatically moves readers to a fresh cache namespace after deployment.
+ */
+export const TOOL_PERMISSION_POLICY_REVISION = createHash('sha256')
+  .update(JSON.stringify({
+    toolIds: CANONICAL_TOOL_IDS,
+    supportedActions: TOOL_SUPPORTED_ACTIONS,
+    defaults: TOOL_DEFAULT_PERMISSIONS,
+    derivedPermissions: TOOL_DERIVED_PERMISSIONS,
+  }))
+  .digest('hex')
+  .slice(0, 16);
 
 export const asToolId = (s: CanonicalToolId): ToolId => s as unknown as ToolId;

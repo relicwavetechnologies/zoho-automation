@@ -8,19 +8,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum VectorVisibility {
-  personal
-  shared
-  public
-}
-
-enum IngestionStatus {
-  pending
-  processing
-  done
-  failed
-}
-
 enum ScheduledWorkflowStatus {
   draft
   published
@@ -46,15 +33,6 @@ enum ScheduledWorkflowRunStatus {
   cancelled
   skipped
   blocked
-}
-
-enum TaskStatus {
-  pending
-  running
-  hitl
-  done
-  failed
-  cancelled
 }
 
 enum UserMemoryKind {
@@ -108,89 +86,202 @@ enum UserMemoryFormatting {
   bullets
 }
 
+// Manager-persona learning is deliberately isolated from personal memory.
+// These rows are evidence/candidates only in P1–P3; no active department
+// persona is written by this pipeline until the promotion phase exists.
+enum PersonaLearningEvidenceStatus {
+  eligible
+  skipped
+}
+
+enum PersonaLearningJobStatus {
+  queued
+  processing
+  shadow_complete
+  no_learning
+  failed
+}
+
+enum PersonaLearningCandidateKind {
+  preference
+  correction
+  workflow
+  skill
+  contradiction
+}
+
+enum PersonaLearningEvidenceStrength {
+  explicit
+  confirmed
+  inferred
+}
+
+enum PersonaLearningCandidateStatus {
+  shadow
+  active
+  reverted
+}
+
+// Active manager persona is its own bounded, department-scoped tree. It is
+// deliberately neither user memory nor a Skill/SkillVersion substitute.
+enum ManagerPersonaNodeStatus {
+  active
+  superseded
+  quarantined
+}
+
+// Canonical learning decision recorded for every Teach-sourced persona or
+// skill transition. Clarification happens before a mutation and is retained in
+// the mutation readiness receipt, so it is intentionally not an applied edge.
+enum ManagerLearningDecision {
+  create
+  merge
+  replace
+  retire
+}
+
+// Explicit manager teaching is separate from passive after-run learning.
+// Media compilation is durable on the backend; an interactive desktop Pi
+// session interprets that evidence and submits governed persona/skill writes.
+enum ManagerTeachSource {
+  recording
+  upload
+}
+
+enum ManagerTeachSessionStatus {
+  awaiting_upload
+  queued
+  ingesting
+  evidence_ready
+  agent_processing
+  completed
+  // Legacy server-synthesis states are retained for historical rows only.
+  ready_for_processing
+  persona_processing
+  persona_updated
+  no_learning
+  failed
+  cancelled
+}
+
+enum ManagerTeachPersonaMutationStatus {
+  applied
+  no_learning
+}
+
+enum ManagerTeachArtifactKind {
+  raw_video
+  evidence_manifest
+}
+
+enum ManagerTeachArtifactStatus {
+  available
+  deleted
+}
+
 model User {
-  id                                 String                       @id @default(uuid())
-  email                              String                       @unique
+  id                                 String                          @id @default(uuid())
+  email                              String                          @unique
   password                           String
   name                               String?
-  createdAt                          DateTime                     @default(now())
-  updatedAt                          DateTime                     @updatedAt
+  createdAt                          DateTime                        @default(now())
+  updatedAt                          DateTime                        @updatedAt
   adminMemberships                   AdminMembership[]
   adminSessions                      AdminSession[]
   departmentMemberships              DepartmentMembership[]
   departmentUserToolOverrides        DepartmentUserToolOverride[]
-  createdDepartmentAgentConfigs      DepartmentAgentConfig[]      @relation("DepartmentAgentConfigCreatedBy")
-  updatedDepartmentAgentConfigs      DepartmentAgentConfig[]      @relation("DepartmentAgentConfigUpdatedBy")
-  createdCompanyPromptProfiles       CompanyPromptProfile[]       @relation("CompanyPromptProfileCreatedBy")
-  updatedCompanyPromptProfiles       CompanyPromptProfile[]       @relation("CompanyPromptProfileUpdatedBy")
-  createdZohoConnectionProfiles      ZohoConnectionProfile[]      @relation("ZohoConnectionProfileCreatedBy")
-  updatedZohoConnectionProfiles      ZohoConnectionProfile[]      @relation("ZohoConnectionProfileUpdatedBy")
-  departmentToolPermissionsUpdated   DepartmentToolPermission[]   @relation("DepartmentToolPermissionUpdatedBy")
-  departmentUserToolOverridesUpdated DepartmentUserToolOverride[] @relation("DepartmentUserToolOverrideUpdatedBy")
+  createdDepartmentAgentConfigs      DepartmentAgentConfig[]         @relation("DepartmentAgentConfigCreatedBy")
+  updatedDepartmentAgentConfigs      DepartmentAgentConfig[]         @relation("DepartmentAgentConfigUpdatedBy")
+  createdZohoConnectionProfiles      ZohoConnectionProfile[]         @relation("ZohoConnectionProfileCreatedBy")
+  updatedZohoConnectionProfiles      ZohoConnectionProfile[]         @relation("ZohoConnectionProfileUpdatedBy")
+  departmentToolPermissionsUpdated   DepartmentToolPermission[]      @relation("DepartmentToolPermissionUpdatedBy")
+  departmentUserToolOverridesUpdated DepartmentUserToolOverride[]    @relation("DepartmentUserToolOverrideUpdatedBy")
   memberSessions                     MemberSession[]
   desktopHandoffs                    DesktopAuthHandoff[]
   desktopWorkspaces                  DesktopWorkspace[]
   desktopThreads                     DesktopThread[]
-  scheduledWorkflowsCreated          ScheduledWorkflow[]          @relation("ScheduledWorkflowCreatedBy")
+  scheduledWorkflowsCreated          ScheduledWorkflow[]             @relation("ScheduledWorkflowCreatedBy")
   executionRuns                      ExecutionRun[]
   larkAuthLinks                      LarkUserAuthLink[]
-  googleAuthLinks                    GoogleUserAuthLink[]
+  ownedIntegrationConnections        IntegrationConnection[]         @relation("IntegrationConnectionOwner")
+  createdIntegrationConnections      IntegrationConnection[]         @relation("IntegrationConnectionCreatedBy")
+  createdSerperConnections           CompanySerperConnection[]       @relation("CompanySerperConnectionCreatedBy")
+  createdOmsConnections              CompanyOmsConnection[]          @relation("CompanyOmsConnectionCreatedBy")
+  grantedIntegrationConnectionGrants IntegrationConnectionGrant[]    @relation("IntegrationConnectionGrantGrantedBy")
   memoryItems                        UserMemoryItem[]
   memoryProfiles                     UserMemoryProfile[]
   departmentPreference               UserDepartmentPreference?
+  personaLearningEvidenceAsManager   PersonaLearningEvidence[]       @relation("PersonaLearningEvidenceManager")
+  personaLearningCandidatesAsManager PersonaLearningCandidate[]      @relation("PersonaLearningCandidateManager")
+  managerPersonaTrees                ManagerPersonaTree[]            @relation("ManagerPersonaTreeManager")
+  managerPersonaNodes                ManagerPersonaNode[]            @relation("ManagerPersonaNodeManager")
+  managerTeachSessions               ManagerTeachSession[]           @relation("ManagerTeachSessionManager")
+  connectionAuthorizationIntents     ConnectionAuthorizationIntent[]
+  mailboxSubscriptions               MailboxSubscription[]
+  mailAutomationRules                MailAutomationRule[]
 }
 
 model Company {
-  id                        String                     @id @default(uuid())
-  name                      String
-  createdAt                 DateTime                   @default(now())
-  updatedAt                 DateTime                   @updatedAt
-  gatewayApiKey             String?                    @map("gateway_api_key")
-  gatewayUrl                String?                    @map("gateway_url")
-  gatewayDedicatedAccountId String?                    @map("gateway_dedicated_account_id")
-  defaultAiProvider         String                     @default("google") @map("default_ai_provider")
-  defaultAiModel            String                     @default("gemini-3.1-flash-lite") @map("default_ai_model")
-  promptProfile             CompanyPromptProfile?
-  departments               Department[]
-  skills                    Skill[]
-  zohoConnections           ZohoConnection[]
-  zohoConnectionProfiles    ZohoConnectionProfile[]
-  zohoSyncJobs              ZohoSyncJob[]
-  zohoOAuthConfig           ZohoOAuthConfig?
-  larkTenantBindings        LarkTenantBinding[]
-  larkWorkspaceConfig       LarkWorkspaceConfig?
-  larkOperationalConfig     LarkOperationalConfig?
-  larkDirectorySyncRuns     LarkDirectorySyncRun[]
-  adminMemberships          AdminMembership[]
-  adminSessions             AdminSession[]
-  invites                   CompanyInvite[]
-  mcpActionLogs             McpActionLog[]
-  channelIdentities         ChannelIdentity[]
-  toolPermissions           ToolPermission[]
-  toolActionPermissions     ToolActionPermission[]
-  booksModulePermissions    BooksModulePermission[]
-  zohoRoleAccessPolicies    ZohoRoleAccessPolicy[]
-  aiRoleDefinitions         AiRoleDefinition[]
-  vectorDocuments           VectorDocument[]
-  vectorShareRequests       VectorShareRequest[]
-  memberSessions            MemberSession[]
-  desktopHandoffs           DesktopAuthHandoff[]
-  desktopWorkspaces         DesktopWorkspace[]
-  desktopThreads            DesktopThread[]
-  larkChatContexts          LarkChatContext[]
-  scheduledWorkflows        ScheduledWorkflow[]
-  executionRuns             ExecutionRun[]
-  larkAuthLinks             LarkUserAuthLink[]
-  googleAuthLinks           GoogleUserAuthLink[]
-  googleWorkspaceAuth       CompanyGoogleAuthLink?
-  fileAssets                FileAsset[]
-  outboundArtifacts         OutboundArtifact[]
-  userMemoryItems           UserMemoryItem[]
-  userMemoryProfiles        UserMemoryProfile[]
-  taskRuns                  TaskRun[]
-  userDepartmentPreferences UserDepartmentPreference[]
-  agentDefinitions          AgentDefinition[]
-  channelAgentMappings      ChannelAgentMapping[]
+  id                              String                            @id @default(uuid())
+  name                            String
+  createdAt                       DateTime                          @default(now())
+  updatedAt                       DateTime                          @updatedAt
+  gatewayApiKey                   String?                           @map("gateway_api_key")
+  gatewayUrl                      String?                           @map("gateway_url")
+  gatewayDedicatedAccountId       String?                           @map("gateway_dedicated_account_id")
+  defaultAiProvider               String                            @default("google") @map("default_ai_provider")
+  defaultAiModel                  String                            @default("gemini-3.1-flash-lite") @map("default_ai_model")
+  departments                     Department[]
+  skills                          Skill[]
+  skillFolders                    SkillFolder[]
+  skillAccessGrants               SkillAccessGrant[]
+  skillRegistryRevision           SkillRegistryRevision?
+  zohoConnections                 ZohoConnection[]
+  zohoConnectionProfiles          ZohoConnectionProfile[]
+  zohoSyncJobs                    ZohoSyncJob[]
+  zohoOAuthConfig                 ZohoOAuthConfig?
+  larkTenantBindings              LarkTenantBinding[]
+  larkWorkspaceConfig             LarkWorkspaceConfig?
+  larkOperationalConfig           LarkOperationalConfig?
+  larkDirectorySyncRuns           LarkDirectorySyncRun[]
+  adminMemberships                AdminMembership[]
+  adminSessions                   AdminSession[]
+  invites                         CompanyInvite[]
+  mcpActionLogs                   McpActionLog[]
+  channelIdentities               ChannelIdentity[]
+  toolPermissions                 ToolPermission[]
+  toolActionPermissions           ToolActionPermission[]
+  booksModulePermissions          BooksModulePermission[]
+  zohoRoleAccessPolicies          ZohoRoleAccessPolicy[]
+  aiRoleDefinitions               AiRoleDefinition[]
+  memberSessions                  MemberSession[]
+  desktopHandoffs                 DesktopAuthHandoff[]
+  desktopWorkspaces               DesktopWorkspace[]
+  desktopThreads                  DesktopThread[]
+  larkChatContexts                LarkChatContext[]
+  scheduledWorkflows              ScheduledWorkflow[]
+  executionRuns                   ExecutionRun[]
+  larkAuthLinks                   LarkUserAuthLink[]
+  integrationConnections          IntegrationConnection[]
+  integrationConnectionGrants     IntegrationConnectionGrant[]
+  integrationConnectionGovernance IntegrationConnectionGovernance[]
+  capabilityGovernance            CompanyCapabilityGovernance[]
+  serperConnections               CompanySerperConnection[]
+  omsConnections                  CompanyOmsConnection[]
+  outboundArtifacts               OutboundArtifact[]
+  userMemoryItems                 UserMemoryItem[]
+  userMemoryProfiles              UserMemoryProfile[]
+  userDepartmentPreferences       UserDepartmentPreference[]
+  personaLearningEvidences        PersonaLearningEvidence[]
+  personaLearningCandidates       PersonaLearningCandidate[]
+  managerPersonaTrees             ManagerPersonaTree[]
+  managerPersonaNodes             ManagerPersonaNode[]
+  managerTeachSessions            ManagerTeachSession[]
+  connectionAuthorizationIntents  ConnectionAuthorizationIntent[]
+  mailboxSubscriptions            MailboxSubscription[]
+  mailAutomationRules             MailAutomationRule[]
+  mailEvents                      MailEvent[]
+  mailDeliveries                  MailDelivery[]
 }
 
 model RegisteredTool {
@@ -210,70 +301,6 @@ model RegisteredTool {
   updatedAt     DateTime @updatedAt
 }
 
-model AgentDefinition {
-  id                    String                @id @default(cuid())
-  companyId             String
-  company               Company               @relation(fields: [companyId], references: [id])
-  name                  String
-  slug                  String
-  description           String?
-  capabilityDescription String?
-  systemPrompt          String
-  hookId                String?
-  maxSteps              Int                   @default(8)
-  temperature           Float                 @default(0)
-  isRootAgent           Boolean               @default(false)
-  isActive              Boolean               @default(true)
-  toolIds               String[]
-  modelId               String?
-  provider              String?
-  parentId              String?
-  parent                AgentDefinition?      @relation("AgentChildren", fields: [parentId], references: [id])
-  children              AgentDefinition[]     @relation("AgentChildren")
-  channelMappings       ChannelAgentMapping[]
-  createdAt             DateTime              @default(now())
-  updatedAt             DateTime              @updatedAt
-
-  @@unique([companyId, name])
-  @@unique([companyId, slug])
-}
-
-model ChannelAgentMapping {
-  id                String          @id @default(cuid())
-  companyId         String
-  company           Company         @relation(fields: [companyId], references: [id])
-  channelType       String
-  channelIdentifier String
-  agentDefinitionId String
-  agentDefinition   AgentDefinition @relation(fields: [agentDefinitionId], references: [id])
-  isActive          Boolean         @default(true)
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
-
-  @@unique([companyId, channelType, channelIdentifier])
-}
-
-model CompanyPromptProfile {
-  id                 String   @id @default(uuid())
-  companyId          String   @unique
-  company            Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  companyContext     String
-  systemsOfRecord    String
-  businessRules      String
-  communicationStyle String
-  formattingDefaults String
-  restrictedClaims   String
-  isActive           Boolean  @default(true)
-  createdBy          String
-  createdByUser      User     @relation("CompanyPromptProfileCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
-  updatedBy          String
-  updatedByUser      User     @relation("CompanyPromptProfileUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
-
-  @@index([companyId, isActive])
-}
-
 model UserDepartmentPreference {
   id                 String   @id @default(uuid())
   companyId          String
@@ -286,27 +313,6 @@ model UserDepartmentPreference {
 
   @@unique([companyId, userId])
   @@index([userId, companyId])
-}
-
-model TaskRun {
-  id              String     @id @default(cuid())
-  companyId       String
-  company         Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  conversationKey String
-  channel         String
-  status          TaskStatus @default(pending)
-  inputMessage    Json
-  currentStep     String?
-  failureReason   String?
-  requeueCount    Int        @default(0)
-  lastHeartbeatAt DateTime?
-  completedAt     DateTime?
-  failedAt        DateTime?
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
-
-  @@index([companyId, conversationKey, status])
-  @@index([status, createdAt])
 }
 
 model UserMemoryItem {
@@ -414,7 +420,6 @@ model ZohoConnection {
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
   syncJobs              ZohoSyncJob[]
-  vectorDocs            VectorDocument[]
 
   @@unique([companyId, environment])
 }
@@ -485,7 +490,7 @@ model ChannelIdentity {
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
-  @@unique([channel, externalUserId, companyId])
+  @@unique([channel, externalTenantId, externalUserId, companyId])
   @@index([companyId, larkOpenId])
   @@index([companyId, larkUserId])
   @@index([companyId, channel])
@@ -628,63 +633,6 @@ model ZohoSyncJobEvent {
   @@index([jobId, createdAt])
 }
 
-model VectorDocument {
-  id                     String           @id @default(uuid())
-  companyId              String
-  company                Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  connectionId           String?
-  connection             ZohoConnection?  @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-  fileAssetId            String?
-  fileAsset              FileAsset?       @relation(fields: [fileAssetId], references: [id], onDelete: Cascade)
-  sourceType             String
-  sourceId               String
-  chunkIndex             Int
-  documentKey            String?
-  contentHash            String
-  visibility             VectorVisibility @default(shared)
-  ownerUserId            String?
-  conversationKey        String?
-  chunkText              String?
-  payload                Json
-  embedding              Float[]          @default([])
-  embeddingSchemaVersion String?
-  retrievalProfile       String?
-  sourceUpdatedAt        DateTime?
-  createdAt              DateTime         @default(now())
-  updatedAt              DateTime         @updatedAt
-
-  @@unique([companyId, sourceType, sourceId, chunkIndex])
-  @@index([companyId, sourceType])
-  @@index([companyId, visibility, ownerUserId])
-  @@index([companyId, conversationKey])
-  @@index([fileAssetId])
-  @@index([documentKey])
-}
-
-model FileAsset {
-  id                     String             @id @default(uuid())
-  companyId              String
-  company                Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  uploaderUserId         String
-  uploaderChannel        String // "lark" | "desktop"
-  fileName               String
-  mimeType               String
-  sizeBytes              Int
-  cloudinaryPublicId     String
-  cloudinaryUrl          String
-  cloudinaryResourceType String             @default("raw")
-  ingestionStatus        IngestionStatus    @default(pending)
-  ingestionError         String?
-  createdAt              DateTime           @default(now())
-  updatedAt              DateTime           @updatedAt
-  accessPolicies         FileAccessPolicy[]
-  vectorDocs             VectorDocument[]
-  outboundArtifacts      OutboundArtifact[]
-
-  @@index([companyId, uploaderUserId])
-  @@index([companyId, ingestionStatus])
-}
-
 model OutboundArtifact {
   id               String     @id @default(uuid())
   companyId        String
@@ -695,8 +643,6 @@ model OutboundArtifact {
   sourceRecordType String?
   sourceRecordId   String?
   sourceMetadata   Json?
-  fileAssetId      String?
-  fileAsset        FileAsset? @relation(fields: [fileAssetId], references: [id], onDelete: SetNull)
   fileName         String
   mimeType         String
   sizeBytes        Int
@@ -708,51 +654,108 @@ model OutboundArtifact {
   @@index([companyId, createdAt])
   @@index([companyId, sourceSystem, sourceKind])
   @@index([companyId, sourceRecordType, sourceRecordId])
-  @@index([fileAssetId])
 }
 
-model FileAccessPolicy {
-  id          String    @id @default(uuid())
-  fileAssetId String
-  fileAsset   FileAsset @relation(fields: [fileAssetId], references: [id], onDelete: Cascade)
-  companyId   String
-  aiRole      String
-  canRead     Boolean   @default(true)
-  grantedBy   String
-  createdAt   DateTime  @default(now())
+/// One outbound delivery attempt-set for a single piece of a run's answer.
+///
+/// Wave 2 made an incoming message survive a restart, but at-least-once
+/// execution only guarantees the work happens again — not that the user sees
+/// one answer. This row is what makes the resend safe: the key is derived from
+/// the run and the segment being delivered, so a retry after a lost HTTP
+/// response finds the existing record instead of sending a second reply.
+model ChannelDelivery {
+  id                String    @id @default(uuid())
+  channel           String
+  /// Stable across every retry of this segment — also sent to Lark as `uuid`.
+  idempotencyKey    String
+  /// Correlates every segment belonging to one agent run.
+  runKey            String
+  /// Which part of the answer this is: final, continuation, or status.
+  purpose           String
+  segmentIndex      Int       @default(0)
+  status            String    @default("pending")
+  attempts          Int       @default(0)
+  companyId         String?
+  chatId            String?
+  /// The rendered reply, kept so a failed delivery can be resent without
+  /// re-running the agent that produced it. Cleared once delivered.
+  payloadJson       Json?
+  /// Provider message ID once the send is confirmed.
+  providerMessageId String?
+  lastError         String?
+  /// Set when a send failed in a way that leaves delivery genuinely unknown.
+  ambiguous         Boolean   @default(false)
+  firstAttemptAt    DateTime  @default(now())
+  startedAt         DateTime?
+  deliveredAt       DateTime?
+  nextAttemptAt     DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
-  @@unique([fileAssetId, aiRole])
-  @@index([companyId, aiRole])
+  @@unique([channel, idempotencyKey])
+  @@index([channel, status, nextAttemptAt])
+  @@index([runKey])
+  @@index([channel, status, firstAttemptAt])
 }
 
-model VectorShareRequest {
-  id                         String    @id @default(uuid())
-  companyId                  String
-  company                    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  requesterUserId            String
-  requesterChannelIdentityId String?
-  conversationKey            String
-  status                     String
-  reason                     String?
-  decisionNote               String?
-  reviewedBy                 String?
-  reviewedAt                 DateTime?
-  expiresAt                  DateTime?
-  promotedVectorCount        Int       @default(0)
-  createdAt                  DateTime  @default(now())
-  updatedAt                  DateTime  @updatedAt
+/// One row per execution lane, holding at most one live owner.
+///
+/// The unique key is the mutual exclusion: two replicas cannot both hold the
+/// same lane, because the second insert collides. Ownership is a lease rather
+/// than a flag so that a replica killed mid-run releases the lane by ceasing to
+/// heartbeat, instead of blocking it forever.
+model ExecutionLaneLease {
+  id           String    @id @default(uuid())
+  channel      String
+  /// Canonical lane identity — see `buildLarkIngressLaneKey`.
+  laneKey      String
+  /// Identifies the process that holds the lane, so only it can renew or release.
+  ownerId      String
+  /// Increments on every acquisition. A holder whose token is behind the
+  /// lane's current one has been superseded and must not publish.
+  fencingToken Int       @default(1)
+  acquiredAt   DateTime  @default(now())
+  heartbeatAt  DateTime  @default(now())
+  /// Past this instant any worker may take the lane from its current owner.
+  expiresAt    DateTime
+  /// Set when an owner finishes cleanly; a released lane is free immediately
+  /// rather than at expiry.
+  releasedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
-  @@index([companyId, status, createdAt])
-  @@index([companyId, requesterUserId, conversationKey])
+  @@unique([channel, laneKey])
+  @@index([channel, expiresAt])
 }
 
 model IngressIdempotencyKey {
-  id        String   @id @default(uuid())
-  channel   String
-  messageId String   @unique
-  createdAt DateTime @default(now())
+  id          String    @id @default(uuid())
+  channel     String
+  tenantKey   String
+  eventId     String?
+  messageId   String
+  payloadJson Json
+  /// Execution lane this event belongs to, recorded at acceptance so a burst
+  /// can be found without re-parsing every pending payload. Nullable because
+  /// receipts accepted before batching existed have no lane recorded.
+  laneKey     String?
+  status      String    @default("accepted")
+  attempts    Int       @default(0)
+  companyId   String?
+  queueJobId  String?
+  lastError   String?
+  acceptedAt  DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
+  @@unique([channel, tenantKey, messageId])
   @@index([channel, createdAt])
+  @@index([channel, tenantKey, eventId])
+  @@index([status, createdAt])
+  @@index([channel, status, acceptedAt])
+  @@index([channel, laneKey, status, acceptedAt])
 }
 
 model RbacPermission {
@@ -811,68 +814,215 @@ model CompanyInvite {
 }
 
 model Department {
-  id                 String                       @id @default(uuid())
-  companyId          String
-  company            Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  name               String
-  slug               String
-  description        String?
-  status             String                       @default("active")
-  createdAt          DateTime                     @default(now())
-  updatedAt          DateTime                     @updatedAt
-  agentConfig        DepartmentAgentConfig?
-  skills             Skill[]
-  roles              DepartmentRole[]
-  memberships        DepartmentMembership[]
-  toolPermissions    DepartmentToolPermission[]
-  userToolOverrides  DepartmentUserToolOverride[]
-  desktopThreads     DesktopThread[]
-  scheduledWorkflows ScheduledWorkflow[]
+  id                             String                          @id @default(uuid())
+  companyId                      String
+  company                        Company                         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name                           String
+  slug                           String
+  description                    String?
+  status                         String                          @default("active")
+  createdAt                      DateTime                        @default(now())
+  updatedAt                      DateTime                        @updatedAt
+  agentConfig                    DepartmentAgentConfig?
+  skills                         Skill[]
+  skillFolders                   SkillFolder[]
+  roles                          DepartmentRole[]
+  memberships                    DepartmentMembership[]
+  toolPermissions                DepartmentToolPermission[]
+  userToolOverrides              DepartmentUserToolOverride[]
+  desktopThreads                 DesktopThread[]
+  scheduledWorkflows             ScheduledWorkflow[]
+  personaLearningEvidences       PersonaLearningEvidence[]
+  personaLearningCandidates      PersonaLearningCandidate[]
+  managerPersonaTrees            ManagerPersonaTree[]
+  managerPersonaNodes            ManagerPersonaNode[]
+  managerTeachSessions           ManagerTeachSession[]
+  connectionAuthorizationIntents ConnectionAuthorizationIntent[]
+  mailAutomationRules            MailAutomationRule[]
 
   @@unique([companyId, slug])
+  @@unique([id, companyId])
   @@index([companyId, status, updatedAt])
 }
 
 model Skill {
-  id           String      @id @default(uuid())
-  companyId    String
-  company      Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  departmentId String?
-  department   Department? @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  scope        String
-  name         String
-  slug         String
-  summary      String
-  markdown     String
-  tags         String[]    @default([])
-  status       String      @default("active")
-  isSystem     Boolean     @default(false)
-  sortOrder    Int         @default(0)
-  createdBy    String?
-  updatedBy    String?
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  id                 String                      @id @default(uuid())
+  companyId          String
+  company            Company                     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  departmentId       String?
+  department         Department?                 @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  folderId           String?
+  folder             SkillFolder?                @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  scope              String
+  name               String
+  slug               String
+  summary            String
+  markdown           String
+  toolIds            String[]                    @default([])
+  tags               String[]                    @default([])
+  status             String                      @default("active")
+  isSystem           Boolean                     @default(false)
+  sortOrder          Int                         @default(0)
+  revision           Int                         @default(1)
+  createdBy          String?
+  updatedBy          String?
+  createdAt          DateTime                    @default(now())
+  updatedAt          DateTime                    @updatedAt
+  versions           SkillVersion[]
+  aliases            SkillAlias[]
+  capabilities       SkillCapability[]
+  accessGrants       SkillAccessGrant[]
+  outgoingRoutes     SkillRoute[]                 @relation("SkillRouteRouter")
+  incomingRoutes     SkillRoute[]                 @relation("SkillRouteTarget")
+  personaLinks       ManagerPersonaSkillLink[]
+  learningProvenance ManagerLearningProvenance[]
 
   @@index([companyId, scope, status, sortOrder])
   @@index([departmentId, status, sortOrder])
+  @@index([folderId, status, sortOrder])
   @@index([companyId, scope, slug])
 }
 
+// Structured router -> specialist edges. Runtime discovery returns only
+// targets that independently pass skill grants and tool RBAC.
+model SkillRoute {
+  routerSkillId String
+  routerSkill   Skill    @relation("SkillRouteRouter", fields: [routerSkillId], references: [id], onDelete: Cascade)
+  targetSkillId String
+  targetSkill   Skill    @relation("SkillRouteTarget", fields: [targetSkillId], references: [id], onDelete: Cascade)
+  source        String   @default("manual") // 'system' | 'manual'
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@id([routerSkillId, targetSkillId])
+  @@index([routerSkillId, sortOrder])
+  @@index([targetSkillId])
+}
+
+// Folder rows are the source of truth for the admin tree. Skills remain
+// addressable by stable IDs and slugs even when moved between folders.
+model SkillFolder {
+  id           String        @id @default(uuid())
+  companyId    String
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  departmentId String?
+  department   Department?   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  parentId     String?
+  parent       SkillFolder?  @relation("SkillFolderTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children     SkillFolder[] @relation("SkillFolderTree")
+  name         String
+  slug         String
+  status       String        @default("active")
+  sortOrder    Int           @default(0)
+  createdBy    String?
+  updatedBy    String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  skills       Skill[]
+
+  @@index([companyId, departmentId, parentId, status, sortOrder])
+}
+
+// Immutable content snapshots. Current skill fields are the only live recipe;
+// versions support audit, rollback, and future publishing workflows.
+model SkillVersion {
+  id           String   @id @default(uuid())
+  skillId      String
+  skill        Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  revision     Int
+  name         String
+  summary      String
+  markdown     String
+  toolIds      String[] @default([])
+  tags         String[] @default([])
+  scope        String
+  departmentId String?
+  status       String
+  createdBy    String?
+  source       String   @default("publish")
+  createdAt    DateTime @default(now())
+
+  @@unique([skillId, revision])
+  @@index([skillId, createdAt])
+}
+
+// Aliases are stable lookup names for a skill. They are not authorization
+// inputs; the resolved current skill remains the policy-bearing record.
+model SkillAlias {
+  id        String   @id @default(uuid())
+  skillId   String
+  skill     Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  alias     String
+  createdAt DateTime @default(now())
+
+  @@unique([skillId, alias])
+  @@index([alias])
+}
+
+// Registry metadata for future action-level publishing. Until its write UI is
+// live, Skill.toolIds remains the sole enforced required-capability list.
+model SkillCapability {
+  id          String   @id @default(uuid())
+  skillId     String
+  skill       Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  toolId      String
+  actionGroup String   @default("any")
+  requirement String   @default("required")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([skillId, toolId, actionGroup])
+  @@index([toolId, requirement])
+}
+
+// Monotonic company revision returned with all skill discovery responses.
+// Desktops use it for observability; their cache stays deliberately short.
+model SkillRegistryRevision {
+  companyId String   @id
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  revision  Int      @default(1)
+  updatedAt DateTime @updatedAt
+}
+
+// Per-skill RBAC. A skill is discoverable by the agent ONLY when the grantee
+// has both an explicit grant and permission for every required tool
+// here — deny-by-default. Grantees are polymorphic (mirrors
+// IntegrationConnectionGrant): a whole company, a department, a department
+// role, or an individual user. granteeId is a bare id (no FK) so a single row
+// shape covers every axis. Company admins manage grants from the Skills Lab;
+// Grant administration remains independent from tool-level policy so admins
+// can prepare access before enabling a tool, but runtime discovery intersects
+// both policies and individual invocations enforce tool actions again.
+model SkillAccessGrant {
+  id          String   @id @default(uuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  skillId     String
+  skill       Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  granteeType String // 'user' | 'department' | 'role' | 'company'
+  granteeId   String
+  grantedBy   String?
+  createdAt   DateTime @default(now())
+
+  @@unique([skillId, granteeType, granteeId])
+  @@index([companyId, granteeType, granteeId])
+}
+
 model DepartmentAgentConfig {
-  id                  String     @id @default(uuid())
-  departmentId        String     @unique
-  department          Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  systemPrompt        String
-  skillsMarkdown      String
-  zohoRateLimitJson   Json?
-  managerApprovalJson Json?
-  isActive            Boolean    @default(true)
-  createdBy           String
-  createdByUser       User       @relation("DepartmentAgentConfigCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
-  updatedBy           String
-  updatedByUser       User       @relation("DepartmentAgentConfigUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
-  createdAt           DateTime   @default(now())
-  updatedAt           DateTime   @updatedAt
+  id                   String     @id @default(uuid())
+  departmentId         String     @unique
+  department           Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  systemPrompt         String
+  desktopPersonaPrompt String     @default("")
+  managerApprovalJson  Json?
+  isActive             Boolean    @default(true)
+  createdBy            String
+  createdByUser        User       @relation("DepartmentAgentConfigCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  updatedBy            String
+  updatedByUser        User       @relation("DepartmentAgentConfigUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
 
   @@index([departmentId, isActive])
 }
@@ -1091,56 +1241,345 @@ model LarkUserAuthLink {
   @@index([companyId, larkEmail])
 }
 
-model GoogleUserAuthLink {
-  id                    String    @id @default(uuid())
-  userId                String
-  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+model IntegrationConnection {
+  id                    String                           @id @default(uuid())
   companyId             String
-  company               Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  googleUserId          String?
-  googleEmail           String?
-  googleName            String?
-  scope                 String?
-  accessTokenEncrypted  String
+  company               Company                          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  provider              String
+  ownerType             String
+  ownerUserId           String?
+  ownerUser             User?                            @relation("IntegrationConnectionOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  label                 String
+  accountEmail          String?
+  accountName           String?
+  externalAccountId     String?
+  dedupeKey             String
+  status                String                           @default("connected")
+  scopes                String[]
+  accessTokenEncrypted  String?
   refreshTokenEncrypted String?
   tokenType             String?
+  tokenCipherVersion    Int                              @default(1)
   accessTokenExpiresAt  DateTime?
   refreshTokenExpiresAt DateTime?
   tokenMetadata         Json?
-  linkedAt              DateTime  @default(now())
+  connectedAt           DateTime                         @default(now())
   lastUsedAt            DateTime?
   revokedAt             DateTime?
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  createdBy             String?
+  createdByUser         User?                            @relation("IntegrationConnectionCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  createdAt             DateTime                         @default(now())
+  updatedAt             DateTime                         @updatedAt
+  grants                IntegrationConnectionGrant[]
+  governance            IntegrationConnectionGovernance?
+  authorizationIntents  ConnectionAuthorizationIntent[]
+  mailboxSubscription   MailboxSubscription?
 
-  @@unique([userId, companyId])
-  @@index([companyId, googleEmail])
-  @@index([companyId, googleUserId])
+  @@unique([companyId, dedupeKey])
+  @@unique([id, companyId, ownerUserId])
+  @@index([companyId, provider, status])
+  @@index([companyId, provider, accountEmail])
+  @@index([companyId, ownerUserId])
 }
 
-model CompanyGoogleAuthLink {
-  id                    String    @id @default(uuid())
-  companyId             String    @unique
-  company               Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  googleUserId          String?
-  googleEmail           String?
-  googleName            String?
-  scope                 String?
-  accessTokenEncrypted  String
-  refreshTokenEncrypted String?
-  tokenType             String?
-  accessTokenExpiresAt  DateTime?
-  refreshTokenExpiresAt DateTime?
-  tokenMetadata         Json?
-  linkedByUserId        String?
-  linkedAt              DateTime  @default(now())
-  lastUsedAt            DateTime?
-  revokedAt             DateTime?
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+/// One browser authorization attempt plus the exact agent continuation target.
+///
+/// Only a hash of the browser state is persisted. The callback claims the row
+/// once, then a separate worker starts a fresh agent run from the stored
+/// request; no model stream stays open while the user completes OAuth.
+model ConnectionAuthorizationIntent {
+  id                         String                 @id @default(uuid())
+  stateHash                  String                 @unique
+  activeDedupeKey            String?                @unique
+  provider                   String
+  companyId                  String
+  company                    Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId                     String
+  user                       User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  departmentId               String?
+  department                 Department?            @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
+  connectionId               String?
+  connection                 IntegrationConnection? @relation(fields: [connectionId, companyId, userId], references: [id, companyId, ownerUserId], onDelete: Restrict)
+  larkOpenId                 String
+  larkTenantKey              String
+  chatId                     String
+  chatType                   String
+  originalMessageId          String
+  rootMessageId              String?
+  replyInThread              Boolean                @default(false)
+  groupReplyMode             String?
+  originalRequest            String
+  requestedToolIds           String[]               @default([])
+  status                     String                 @default("pending")
+  continuationStatus         String                 @default("blocked")
+  continuationIdempotencyKey String                 @unique
+  continuationRunId          String?
+  correlationId              String                 @unique
+  failureCode                String?
+  authorizationCodeEncrypted String?
+  exchangeTokensEncrypted    String?
+  exchangeStartedAt          DateTime?
+  exchangeAttempts           Int                    @default(0)
+  expiresAt                  DateTime
+  consumedAt                 DateTime?
+  connectedAt                DateTime?
+  continuationQueuedAt       DateTime?
+  continuationStartedAt      DateTime?
+  continuationFinishedAt     DateTime?
+  createdAt                  DateTime               @default(now())
+  updatedAt                  DateTime               @updatedAt
 
-  @@index([companyId, googleEmail])
-  @@index([companyId, googleUserId])
+  @@index([companyId, userId, provider, status])
+  @@index([status, expiresAt])
+  @@index([continuationStatus, continuationQueuedAt])
+  @@index([connectionId])
+}
+
+/// One Pub/Sub-triggered history cursor and lease per connected Gmail mailbox.
+/// Rules share this subscription so provider sync cost is per mailbox.
+model MailboxSubscription {
+  id                  String                @id @default(uuid())
+  companyId           String
+  company             Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId              String
+  user                User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connectionId        String                @unique
+  connection          IntegrationConnection @relation(fields: [connectionId, companyId, userId], references: [id, companyId, ownerUserId], onDelete: Cascade)
+  provider            String                @default("google_workspace")
+  mailboxEmail        String
+  status              String                @default("active")
+  historyId           String?
+  nextPollAt          DateTime              @default(now())
+  watchExpirationAt   DateTime?
+  nextWatchRenewalAt  DateTime              @default(now())
+  watchRegisteredAt   DateTime?
+  watchClaimToken     String?
+  watchClaimedAt      DateTime?
+  watchFailureCode    String?
+  signalVersion       Int                   @default(0)
+  lastSignalAt        DateTime?
+  lastSignalHistoryId String?
+  lastSignalMessageId String?
+  claimToken          String?
+  claimedAt           DateTime?
+  lastSyncAt          DateTime?
+  lastSucceededAt     DateTime?
+  lastFailedAt        DateTime?
+  failureCode         String?
+  lastError           String?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  rules               MailAutomationRule[]
+  events              MailEvent[]
+
+  @@unique([connectionId, companyId, userId])
+  @@unique([id, companyId])
+  @@unique([id, companyId, userId])
+  @@index([status, nextPollAt])
+  @@index([status, nextWatchRenewalAt])
+  @@index([claimedAt])
+  @@index([companyId, userId, status])
+}
+
+model MailAutomationRule {
+  id              String              @id @default(uuid())
+  companyId       String
+  company         Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdByUserId String
+  createdByUser   User                @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+  departmentId    String?
+  department      Department?         @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
+  subscriptionId  String
+  subscription    MailboxSubscription @relation(fields: [subscriptionId, companyId, createdByUserId], references: [id, companyId, userId], onDelete: Cascade)
+  name            String
+  status          String              @default("active")
+  matchJson       Json
+  actionJson      Json
+  destinationJson Json
+  dedupeKey       String?             @unique
+  version         Int                 @default(1)
+  pausedAt        DateTime?
+  archivedAt      DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  deliveries      MailDelivery[]
+
+  @@unique([id, companyId, subscriptionId])
+  @@index([companyId, createdByUserId, status])
+  @@index([subscriptionId, status])
+}
+
+/// A deduplicated new-message event discovered from Gmail history.
+model MailEvent {
+  id                String              @id @default(uuid())
+  companyId         String
+  company           Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  subscriptionId    String
+  subscription      MailboxSubscription @relation(fields: [subscriptionId, companyId], references: [id, companyId], onDelete: Cascade)
+  providerMessageId String
+  providerThreadId  String?
+  historyId         String
+  metadataJson      Json
+  occurredAt        DateTime
+  createdAt         DateTime            @default(now())
+  deliveries        MailDelivery[]
+
+  @@unique([subscriptionId, providerMessageId])
+  @@unique([id, companyId, subscriptionId])
+  @@index([companyId, createdAt])
+  @@index([subscriptionId, historyId])
+}
+
+/// Durable, idempotent execution of one rule against one discovered event.
+model MailDelivery {
+  id                String             @id @default(uuid())
+  companyId         String
+  company           Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  ruleId            String
+  subscriptionId    String
+  rule              MailAutomationRule @relation(fields: [ruleId, companyId, subscriptionId], references: [id, companyId, subscriptionId], onDelete: Cascade)
+  eventId           String
+  event             MailEvent          @relation(fields: [eventId, companyId, subscriptionId], references: [id, companyId, subscriptionId], onDelete: Cascade)
+  idempotencyKey    String             @unique
+  status            String             @default("pending")
+  attempts          Int                @default(0)
+  payloadJson       Json?
+  providerMessageId String?
+  lastError         String?
+  ambiguous         Boolean            @default(false)
+  firstAttemptAt    DateTime           @default(now())
+  startedAt         DateTime?
+  deliveredAt       DateTime?
+  nextAttemptAt     DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  @@unique([ruleId, eventId])
+  @@index([companyId, status, nextAttemptAt])
+  @@index([eventId])
+}
+
+/// Connection-scoped operating controls. Access grants answer who may use a
+/// connection; this record answers how safely they may use it. Manager policy
+/// and company-admin overrides are intentionally stored separately so an
+/// override never destroys the manager's original operating preference.
+model IntegrationConnectionGovernance {
+  id                  String                @id @default(uuid())
+  companyId           String
+  company             Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  connectionId        String                @unique
+  connection          IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  managerPolicyJson   Json?
+  managerConfiguredBy String?
+  managerConfiguredAt DateTime?
+  adminOverrideJson   Json?
+  adminOverriddenBy   String?
+  adminOverriddenAt   DateTime?
+  version             Int                   @default(1)
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+
+  @@index([companyId, updatedAt])
+}
+
+/// Company-wide capability controls for facilities such as web search and
+/// shared knowledge. This remains separate from connection governance because
+/// these capabilities may have no OAuth connection or per-user owner.
+model CompanyCapabilityGovernance {
+  id           String   @id @default(uuid())
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  capabilityId String
+  policyJson   Json
+  configuredBy String?
+  configuredAt DateTime @default(now())
+  version      Int      @default(1)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([companyId, capabilityId])
+  @@index([companyId, updatedAt])
+}
+
+/// Company-owned Serper credentials. The raw key is AES-GCM encrypted and never
+/// returned through the desktop API; the fingerprint only supports safe dedupe.
+model CompanySerperConnection {
+  id                     String    @id @default(uuid())
+  companyId              String
+  company                Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  label                  String
+  apiKeyEncrypted        String
+  keyFingerprint         String
+  status                 String    @default("connected")
+  priority               Int       @default(0)
+  lastTestedAt           DateTime?
+  lastSucceededAt        DateTime?
+  lastFailureAt          DateTime?
+  lastFailureCode        String?
+  lastUsedAt             DateTime?
+  successfulRequestCount Int       @default(0)
+  // A company admin copies this value from the Serper dashboard. Divo subtracts
+  // only requests it observes after this timestamp; it is not a provider-synced balance.
+  creditsAtLastSync      Int?
+  usageAtLastCreditSync  Int       @default(0)
+  creditsSyncedAt        DateTime?
+  unavailableUntil       DateTime?
+  createdBy              String?
+  createdByUser          User?     @relation("CompanySerperConnectionCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  revokedAt              DateTime?
+
+  @@unique([companyId, keyFingerprint])
+  @@index([companyId, status, priority])
+  @@index([companyId, status, unavailableUntil])
+}
+
+/// Company-owned OMS Site Data webhook keys. The key is AES-GCM encrypted and
+/// never returned to the desktop, Pi, gateway, logs, or audit records.
+model CompanyOmsConnection {
+  id               String    @id @default(uuid())
+  companyId        String
+  company          Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  label            String
+  apiKeyEncrypted  String
+  keyFingerprint   String
+  status           String    @default("connected")
+  lastTestedAt     DateTime?
+  lastSucceededAt  DateTime?
+  lastFailureAt    DateTime?
+  lastFailureCode  String?
+  lastUsedAt       DateTime?
+  unavailableUntil DateTime?
+  revokedAt        DateTime?
+  createdBy        String?
+  createdByUser    User?     @relation("CompanyOmsConnectionCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([companyId, keyFingerprint])
+  @@index([companyId, status, unavailableUntil])
+}
+
+model IntegrationConnectionGrant {
+  id            String                @id @default(uuid())
+  companyId     String
+  company       Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  connectionId  String
+  connection    IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  granteeType   String
+  granteeId     String
+  access        String
+  grantedBy     String?
+  grantedByUser User?                 @relation("IntegrationConnectionGrantGrantedBy", fields: [grantedBy], references: [id], onDelete: SetNull)
+  grantedAt     DateTime              @default(now())
+  revokedAt     DateTime?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  @@unique([connectionId, granteeType, granteeId])
+  @@index([companyId, granteeType, granteeId, revokedAt])
+  @@index([companyId, connectionId, revokedAt])
 }
 
 model DesktopAuthHandoff {
@@ -1176,19 +1615,19 @@ model DesktopWorkspace {
 }
 
 model DesktopThread {
-  id                 String           @id @default(uuid())
+  id                 String            @id @default(uuid())
   userId             String
-  user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user               User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   companyId          String
-  company            Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  channel            String           @default("desktop")
+  company            Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  channel            String            @default("desktop")
   canonicalThreadKey String?
   workspaceId        String?
   workspace          DesktopWorkspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
   workspacePath      String?
   workspaceName      String?
   departmentId       String?
-  department         Department?      @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  department         Department?       @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   preferredEngine    String?
   title              String?
   summaryJson        Json?
@@ -1196,8 +1635,8 @@ model DesktopThread {
   taskStateJson      Json?
   taskStateUpdatedAt DateTime?
   lastMessageAt      DateTime?
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
   messages           DesktopMessage[]
 
   @@unique([companyId, userId, channel, canonicalThreadKey])
@@ -1261,7 +1700,6 @@ model ScheduledWorkflow {
   nextRunAt             DateTime?
   lastRunAt             DateTime?
   outputConfigJson      Json
-  originChatId          String?
   approvalGrantJson     Json?
   publishedAt           DateTime?
   pausedAt              DateTime?
@@ -1324,11 +1762,21 @@ model AiTokenUsage {
   provider              String // 'openai' | 'google'
   channel               String // 'desktop' | 'lark' | 'web'
   threadId              String?
+  // Links this LLM call to its run trace (Track A). Nullable: backend-channel
+  // calls may not have a run id yet; desktop ingest always sets it.
+  executionRunId        String?
   estimatedInputTokens  Int      @default(0)
   estimatedOutputTokens Int      @default(0)
   // Actual token counts from AI SDK response (if available)
   actualInputTokens     Int?
   actualOutputTokens    Int?
+  // DeepSeek cache split (from PI usage.cacheRead / usage.cacheWrite). Cache-hit
+  // input is priced far cheaper than cache-miss, so this is required for legit cost.
+  cacheReadInputTokens  Int?
+  cacheWriteInputTokens Int?
+  // Provider-reported cost (PI usage.cost.total), kept only as a Track-B cross-check;
+  // NOT the source of truth for billing.
+  reportedCostUsd       Float?
   wasCompacted          Boolean  @default(false)
   mode                  String   @default("high") // 'fast' | 'high' | 'xtreme'
   createdAt             DateTime @default(now())
@@ -1337,34 +1785,36 @@ model AiTokenUsage {
   @@index([companyId, createdAt])
   @@index([userId, createdAt])
   @@index([companyId, modelId, createdAt])
+  @@index([executionRunId])
 }
 
 model ExecutionRun {
-  id            String           @id @default(uuid())
-  companyId     String
-  company       Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  userId        String?
-  user          User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
-  channel       String
-  entrypoint    String
-  requestId     String?          @unique
-  taskId        String?
-  threadId      String?
-  chatId        String?
-  messageId     String?
-  mode          String?
-  agentTarget   String?
-  status        String           @default("running")
-  latestSummary String?
-  errorCode     String?
-  errorMessage  String?
-  lastSequence  Int              @default(0)
-  startedAt     DateTime         @default(now())
-  finishedAt    DateTime?
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
-  events        ExecutionEvent[]
-  stepResults   StepResult[]
+  id                      String                   @id @default(uuid())
+  companyId               String
+  company                 Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId                  String?
+  user                    User?                    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  channel                 String
+  entrypoint              String
+  requestId               String?                  @unique
+  taskId                  String?
+  threadId                String?
+  chatId                  String?
+  messageId               String?
+  mode                    String?
+  agentTarget             String?
+  status                  String                   @default("running")
+  latestSummary           String?
+  errorCode               String?
+  errorMessage            String?
+  lastSequence            Int                      @default(0)
+  startedAt               DateTime                 @default(now())
+  finishedAt              DateTime?
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  events                  ExecutionEvent[]
+  stepResults             StepResult[]
+  personaLearningEvidence PersonaLearningEvidence?
 
   @@index([companyId, startedAt])
   @@index([userId, startedAt])
@@ -1373,6 +1823,283 @@ model ExecutionRun {
   @@index([status, startedAt])
   @@index([taskId])
   @@index([threadId])
+}
+
+// Immutable, bounded evidence captured from a completed manager desktop run.
+// `contextJson` contains redacted user/assistant excerpts only; raw tool I/O
+// remains in the short-retention trace store and is never copied here.
+model PersonaLearningEvidence {
+  id                String                        @id @default(uuid())
+  companyId         String
+  company           Company                       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  managerId         String
+  manager           User                          @relation("PersonaLearningEvidenceManager", fields: [managerId], references: [id], onDelete: Cascade)
+  departmentId      String
+  department        Department                    @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  executionRunId    String                        @unique
+  executionRun      ExecutionRun                  @relation(fields: [executionRunId], references: [id], onDelete: Cascade)
+  threadId          String
+  sourceVersion     Int                           @default(1)
+  status            PersonaLearningEvidenceStatus
+  eligibilityReason String?
+  contextJson       Json
+  toolSummaryJson   Json
+  runSummary        String?
+  capturedAt        DateTime                      @default(now())
+  createdAt         DateTime                      @default(now())
+  updatedAt         DateTime                      @updatedAt
+  jobs              PersonaLearningJob[]
+  candidates        PersonaLearningCandidate[]
+
+  @@index([companyId, departmentId, managerId, capturedAt])
+  @@index([status, capturedAt])
+}
+
+// Database-backed queue state. BullMQ is the executor, while this row is the
+// durable/idempotent source of truth and supports reconciliation after outages.
+model PersonaLearningJob {
+  id              String                     @id @default(uuid())
+  evidenceId      String
+  evidence        PersonaLearningEvidence    @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  pipelineVersion Int                        @default(1)
+  idempotencyKey  String                     @unique
+  status          PersonaLearningJobStatus   @default(queued)
+  attempts        Int                        @default(0)
+  queueJobId      String?
+  modelProvider   String?
+  modelId         String?
+  lastError       String?
+  processedAt     DateTime?
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+  candidates      PersonaLearningCandidate[]
+
+  @@unique([evidenceId, pipelineVersion])
+  @@index([status, createdAt])
+}
+
+// Shadow-only output from the extraction model. P4 will introduce promotion,
+// supersession, and generated persona views; these candidates are never used
+// by runtime prompts in this migration.
+model PersonaLearningCandidate {
+  id               String                          @id @default(uuid())
+  companyId        String
+  company          Company                         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  managerId        String
+  manager          User                            @relation("PersonaLearningCandidateManager", fields: [managerId], references: [id], onDelete: Cascade)
+  departmentId     String
+  department       Department                      @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  evidenceId       String
+  evidence         PersonaLearningEvidence         @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  jobId            String
+  job              PersonaLearningJob              @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  ordinal          Int
+  kind             PersonaLearningCandidateKind
+  scopeKey         String
+  ruleKey          String
+  claim            String
+  rationale        String
+  evidenceStrength PersonaLearningEvidenceStrength
+  status           PersonaLearningCandidateStatus  @default(shadow)
+  promotedNodeId   String?
+  promotedNode     ManagerPersonaNode?             @relation("ManagerPersonaNodeCandidates", fields: [promotedNodeId], references: [id], onDelete: SetNull)
+  promotedAt       DateTime?
+  createdAt        DateTime                        @default(now())
+
+  @@unique([jobId, ordinal])
+  @@index([companyId, departmentId, managerId, status, createdAt])
+  @@index([evidenceId])
+  @@index([status, ruleKey, createdAt])
+}
+
+// One manager-owned tree per department. Its revision is the freshness token
+// consumed by the desktop runtime context in P5; it grants no authority.
+model ManagerPersonaTree {
+  id             String                        @id @default(uuid())
+  companyId      String
+  company        Company                       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  managerId      String
+  manager        User                          @relation("ManagerPersonaTreeManager", fields: [managerId], references: [id], onDelete: Cascade)
+  departmentId   String
+  department     Department                    @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  revision       Int                           @default(1)
+  createdAt      DateTime                      @default(now())
+  updatedAt      DateTime                      @updatedAt
+  nodes          ManagerPersonaNode[]
+  revisions      ManagerPersonaRevision[]
+  teachMutations ManagerTeachPersonaMutation[]
+
+  @@unique([companyId, managerId, departmentId])
+  @@index([companyId, departmentId, updatedAt])
+}
+
+// Bounded snapshots used only for Undo. The current tree remains live in
+// ManagerPersonaNode; at most the two immediately previous snapshots remain.
+model ManagerPersonaRevision {
+  id           String             @id @default(uuid())
+  treeId       String
+  tree         ManagerPersonaTree @relation(fields: [treeId], references: [id], onDelete: Cascade)
+  revision     Int
+  snapshotJson Json
+  source       String
+  createdAt    DateTime           @default(now())
+
+  @@unique([treeId, revision])
+  @@index([treeId, createdAt])
+}
+
+// An active node is promoted by the passive evidence gate or written from an
+// explicit Teach session. It is persona context, never executable authority.
+model ManagerPersonaNode {
+  id                 String                       @id @default(uuid())
+  treeId             String
+  tree               ManagerPersonaTree           @relation(fields: [treeId], references: [id], onDelete: Cascade)
+  companyId          String
+  company            Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  managerId          String
+  manager            User                         @relation("ManagerPersonaNodeManager", fields: [managerId], references: [id], onDelete: Cascade)
+  departmentId       String
+  department         Department                   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  kind               PersonaLearningCandidateKind
+  scopeKey           String
+  ruleKey            String
+  instruction        String
+  confidence         Float
+  evidenceCount      Int
+  firstEvidenceAt    DateTime
+  lastEvidenceAt     DateTime
+  status             ManagerPersonaNodeStatus     @default(active)
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+  candidates         PersonaLearningCandidate[]   @relation("ManagerPersonaNodeCandidates")
+  skillLinks         ManagerPersonaSkillLink[]
+  learningProvenance ManagerLearningProvenance[]
+
+  @@unique([treeId, kind, scopeKey, ruleKey])
+  @@index([companyId, departmentId, managerId, status, scopeKey])
+}
+
+// Persona nodes own the manager's trigger/preference; linked skills own the
+// reusable execution recipe. Runtime resolves this stable relation instead of
+// relying on fuzzy skill search to rediscover a known procedure.
+model ManagerPersonaSkillLink {
+  personaNodeId String
+  personaNode   ManagerPersonaNode @relation(fields: [personaNodeId], references: [id], onDelete: Cascade)
+  skillId       String
+  skill         Skill              @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  createdAt     DateTime           @default(now())
+
+  @@id([personaNodeId, skillId])
+  @@index([skillId])
+}
+
+// Durable job state for an explicit Teach recording. BullMQ executes the job,
+// while this row is authoritative for progress, retries and cancellation.
+model ManagerTeachSession {
+  id                 String                       @id @default(uuid())
+  companyId          String
+  company            Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  managerId          String
+  manager            User                         @relation("ManagerTeachSessionManager", fields: [managerId], references: [id], onDelete: Cascade)
+  departmentId       String
+  department         Department                   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  source             ManagerTeachSource
+  status             ManagerTeachSessionStatus    @default(awaiting_upload)
+  progress           Int                          @default(0)
+  originalFileName   String?
+  mimeType           String?
+  fileSize           Int?
+  queueJobId         String?
+  attempts           Int                          @default(0)
+  cancelRequestedAt  DateTime?
+  startedAt          DateTime?
+  completedAt        DateTime?
+  failedAt           DateTime?
+  lastError          String?
+  parentSessionId    String?
+  parentSession      ManagerTeachSession?         @relation("ManagerTeachRefinements", fields: [parentSessionId], references: [id], onDelete: SetNull)
+  refinements        ManagerTeachSession[]        @relation("ManagerTeachRefinements")
+  managerCorrection  String?
+  agentMutationKey   String?                      @unique
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+  artifacts          ManagerTeachArtifact[]
+  personaMutation    ManagerTeachPersonaMutation?
+  learningProvenance ManagerLearningProvenance[]
+
+  @@index([companyId, departmentId, managerId, createdAt])
+  @@index([parentSessionId, createdAt])
+  @@index([status, createdAt])
+}
+
+// One compact, idempotent learning mutation per Teach session. The historical
+// model/table name is retained for migration stability; patchJson now stores
+// validated canonical persona and department-skill changes atomically.
+model ManagerTeachPersonaMutation {
+  id                 String                            @id @default(uuid())
+  sessionId          String                            @unique
+  session            ManagerTeachSession               @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  treeId             String?
+  tree               ManagerPersonaTree?               @relation(fields: [treeId], references: [id], onDelete: SetNull)
+  baseRevision       Int?
+  appliedRevision    Int?
+  evidenceHash       String
+  modelProvider      String
+  modelId            String
+  status             ManagerTeachPersonaMutationStatus
+  understanding      String
+  patchJson          Json
+  appliedChangeCount Int                               @default(0)
+  createdAt          DateTime                          @default(now())
+  updatedAt          DateTime                          @updatedAt
+  learningProvenance ManagerLearningProvenance[]
+
+  @@index([treeId, createdAt])
+  @@index([status, createdAt])
+}
+
+// Immutable provenance edges for explicit Teach learning. Passive chat/run
+// provenance remains available through ManagerPersonaNode.candidates ->
+// PersonaLearningEvidence. New writes set exactly one target; a target can
+// later become null when the referenced canonical record is deleted.
+model ManagerLearningProvenance {
+  id             String                      @id @default(uuid())
+  teachSessionId String
+  teachSession   ManagerTeachSession         @relation(fields: [teachSessionId], references: [id], onDelete: Cascade)
+  mutationId     String
+  mutation       ManagerTeachPersonaMutation @relation(fields: [mutationId], references: [id], onDelete: Cascade)
+  personaNodeId  String?
+  personaNode    ManagerPersonaNode?         @relation(fields: [personaNodeId], references: [id], onDelete: SetNull)
+  skillId        String?
+  skill          Skill?                      @relation(fields: [skillId], references: [id], onDelete: SetNull)
+  decision       ManagerLearningDecision
+  evidenceRefs   String[]                    @default([])
+  rationale      String
+  priorStateJson Json?
+  createdAt      DateTime                    @default(now())
+
+  @@index([teachSessionId, createdAt])
+  @@index([mutationId])
+  @@index([personaNodeId, createdAt])
+  @@index([skillId, createdAt])
+}
+
+model ManagerTeachArtifact {
+  id         String                     @id @default(uuid())
+  sessionId  String
+  session    ManagerTeachSession        @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  kind       ManagerTeachArtifactKind
+  status     ManagerTeachArtifactStatus @default(available)
+  storageKey String
+  mimeType   String
+  sizeBytes  Int
+  expiresAt  DateTime?
+  deletedAt  DateTime?
+  createdAt  DateTime                   @default(now())
+  updatedAt  DateTime                   @updatedAt
+
+  @@unique([sessionId, kind])
+  @@index([status, expiresAt])
 }
 
 model ExecutionEvent {
@@ -1414,6 +2141,7 @@ model StepResult {
 
   @@unique([executionId, sequence])
   @@index([executionId, createdAt])
+  @@index([createdAt])
 }
 
 model RuntimeConversation {
@@ -1437,7 +2165,6 @@ model RuntimeConversation {
   messages               RuntimeConversationMessage[]
   runs                   RuntimeRun[]
   approvals              RuntimeApproval[]
-  parityReports          RuntimeShadowParityReport[]
 
   @@unique([companyId, channel, channelConversationKey])
   @@index([companyId, updatedAt])
@@ -1494,8 +2221,6 @@ model RuntimeRun {
   updatedAt      DateTime                     @updatedAt
   messages       RuntimeConversationMessage[]
   approvals      RuntimeApproval[]
-  snapshots      RuntimeSnapshot[]
-  parityReports  RuntimeShadowParityReport[]
 
   @@index([conversationId, startedAt])
   @@index([parentRunId])
@@ -1539,39 +2264,6 @@ model RuntimeApproval {
   @@index([idempotencyKey])
 }
 
-model RuntimeSnapshot {
-  id        String     @id @default(uuid())
-  runId     String
-  run       RuntimeRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-  stepIndex Int
-  nodeName  String
-  stateJson Json
-  createdAt DateTime   @default(now())
-
-  @@index([runId, createdAt])
-  @@index([runId, stepIndex])
-}
-
-model RuntimeShadowParityReport {
-  id               String               @id @default(uuid())
-  conversationId   String?
-  conversation     RuntimeConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
-  runId            String?
-  run              RuntimeRun?          @relation(fields: [runId], references: [id], onDelete: SetNull)
-  channel          String
-  baselineEngine   String
-  candidateEngine  String
-  baselineSummary  String?
-  candidateSummary String?
-  diffSummary      String?
-  metricsJson      Json?
-  createdAt        DateTime             @default(now())
-
-  @@index([conversationId, createdAt])
-  @@index([runId, createdAt])
-  @@index([channel, createdAt])
-}
-
 model MemberTokenPolicy {
   id                String   @id @default(uuid())
   userId            String   @unique
@@ -1583,20 +2275,66 @@ model MemberTokenPolicy {
   @@index([companyId])
 }
 
-model SupervisorTodo {
-  id        String   @id @default(cuid())
-  companyId String
-  userId    String
-  channel   String
-  chatId    String
-  threadId  String?
-  title     String
-  status    String   @default("pending") // pending | in_progress | done | cancelled
-  position  Int
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  expiresAt DateTime
+/// Guardrails policy for the LLM proxy: per-member block / budget / rate / model allow-list.
+model MemberProxyPolicy {
+  id               String   @id @default(uuid())
+  userId           String   @unique
+  companyId        String
+  blocked          Boolean  @default(false)
+  monthlyBudgetUsd Float? // null = no cap
+  rateLimitRpm     Int? // null = no per-minute cap
+  allowedModels    String[] @default([]) // empty = all models allowed
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
-  @@index([companyId, userId, chatId, status])
-  @@index([expiresAt])
+  @@index([companyId])
 }
+
+/// Encrypted upstream provider key (DeepSeek) the proxy resolves server-side.
+/// The desktop never holds a key — it authenticates with its member token and
+/// the backend attaches the resolved key. Resolution precedence: company → platform → env.
+model ProxyProviderKey {
+  id           String    @id @default(uuid())
+  provider     String    @default("deepseek")
+  scope        String // 'platform' | 'company'
+  companyId    String? // null for platform scope
+  scopeKey     String // 'platform' or the companyId — the uniqueness discriminator
+  encryptedKey String // AES-256-GCM cipher text (token.crypto v1 format)
+  keyLast4     String // last 4 chars for masked display; never the full key
+  status       String    @default("active") // 'active' | 'disabled'
+  createdBy    String? // admin userId who set it
+  lastUsedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([provider, scopeKey])
+  @@index([companyId])
+}
+
+/// One row per proxied request — the audit trail behind the Guardrails live feed
+/// + health metrics. Tokens are stored (cache-split); cost is priced at read via
+/// pricing.ts (Track B), never stored. Writing this NEVER blocks the proxied call.
+model ProxyRequestLog {
+  id              String   @id @default(uuid())
+  companyId       String
+  userId          String
+  executionRunId  String?
+  model           String
+  channel         String   @default("desktop")
+  provider        String   @default("deepseek")
+  agentTarget     String   @default("pi")
+  decision        String // 'allowed' | 'denied'
+  reason          String? // gate reason / error type when not allowed
+  httpStatus      Int // status returned to the caller
+  cacheHitTokens  Int      @default(0)
+  cacheMissTokens Int      @default(0)
+  outputTokens    Int      @default(0)
+  latencyMs       Int      @default(0)
+  keySource       String? // 'company' | 'platform' | 'env'
+  createdAt       DateTime @default(now())
+
+  @@index([companyId, createdAt])
+  @@index([companyId, userId, createdAt])
+  @@index([companyId, channel, createdAt])
+}
+

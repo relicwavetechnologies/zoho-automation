@@ -12,5 +12,9 @@ export function StatusBadge({ value }: StatusBadgeProps) {
   const label = value || "unknown"
   const normalized = label.toLowerCase()
   const variant = positive.has(normalized) ? "success" : negative.has(normalized) ? "destructive" : warning.has(normalized) ? "secondary" : "outline"
-  return <Badge variant={variant}>{label}</Badge>
+  return (
+    <Badge variant={variant} className="text-[10px] font-semibold uppercase tracking-wide">
+      {label}
+    </Badge>
+  )
 }

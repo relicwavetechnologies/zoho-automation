@@ -11,21 +11,13 @@ import type {
   TerminalBridge,
   TerminalExecRequest,
   ExecResult,
-} from '../../../application/orchestration/tools/shared/terminal-bridge';
-
-export interface DesktopAttachedFile {
-  readonly fileAssetId: string;
-  readonly cloudinaryUrl: string;
-  readonly mimeType: string;
-  readonly fileName: string;
-}
+} from './terminal-bridge';
 
 export interface DesktopChatStartPayload {
   readonly type: 'chat.start';
   readonly requestId: string;
   readonly threadId: string;
   readonly message: string;
-  readonly attachedFiles?: readonly DesktopAttachedFile[];
   readonly mode?: 'fast' | 'high';
   readonly workspace?: { readonly name: string; readonly path: string } | null;
   readonly workflowInvocation?: {
@@ -128,20 +120,7 @@ export class DesktopChannelAdapter implements ChannelAdapter, TerminalBridge {
       }));
     }
 
-    const attachments = (payload.attachedFiles ?? []).map(file => ({
-      type: file.mimeType.startsWith('image/') ? 'image' as const : 'file' as const,
-      url: file.cloudinaryUrl,
-      mimeType: file.mimeType,
-      name: file.fileName,
-    }));
-    const imageUrls = attachments
-      .filter((attachment): attachment is typeof attachment & { readonly type: 'image'; readonly url: string } =>
-        attachment.type === 'image' && typeof attachment.url === 'string' && attachment.url.length > 0,
-      )
-      .map(attachment => attachment.url);
-
-    const attachmentHint = buildAttachmentHint(payload.attachedFiles ?? []);
-    const text = [payload.message.trim(), attachmentHint].filter(Boolean).join('\n\n');
+    const text = payload.message.trim();
 
     return ok({
       channel: 'desktop',
@@ -150,8 +129,7 @@ export class DesktopChannelAdapter implements ChannelAdapter, TerminalBridge {
       chatType: 'p2p',
       userExternalId: payload.userExternalId,
       text,
-      attachments,
-      ...(imageUrls.length > 0 ? { imageUrls } : {}),
+      attachments: [],
       timestamp: payload.timestamp,
       traceId: asCorrelationId(payload.requestId),
       mentions: [],
@@ -321,18 +299,6 @@ export class DesktopChannelAdapter implements ChannelAdapter, TerminalBridge {
       event,
     }));
   }
-}
-
-function buildAttachmentHint(files: readonly DesktopAttachedFile[]): string {
-  if (files.length === 0) return '';
-  const lines = files.map(file =>
-    `- ${file.fileName} (fileAssetId="${file.fileAssetId}", mimeType="${file.mimeType}")`,
-  );
-  return [
-    '[Desktop attachments]',
-    ...lines,
-    'Use documentRag/contextSearch with fileAssetId when file contents are needed.',
-  ].join('\n');
 }
 
 function buildReplyMetadata(reply: FinalReply): Prisma.InputJsonObject {

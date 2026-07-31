@@ -3,7 +3,7 @@
 #
 # Defaults match advance-backend/.env:
 #   local  127.0.0.1:15432
-#   remote 127.0.0.1:5432 on the VPS
+#   remote 127.0.0.1:15433 on the development VPS
 #
 # Authentication:
 #   - Preferred: normal SSH key/agent auth.
@@ -56,10 +56,11 @@ env_or_file() {
 LOCAL_HOST="$(env_or_file DB_TUNNEL_LOCAL_HOST 127.0.0.1)"
 LOCAL_PORT="$(env_or_file DB_TUNNEL_LOCAL_PORT 15432)"
 REMOTE_HOST="$(env_or_file DB_TUNNEL_REMOTE_HOST 127.0.0.1)"
-REMOTE_PORT="$(env_or_file DB_TUNNEL_REMOTE_PORT 5432)"
-SSH_USER="$(env_or_file DB_TUNNEL_SSH_USER root)"
-SSH_HOST="$(env_or_file DB_TUNNEL_SSH_HOST 103.180.163.41)"
-DB_NAME="$(env_or_file DB_TUNNEL_DB_NAME divo)"
+REMOTE_PORT="$(env_or_file DB_TUNNEL_REMOTE_PORT 15433)"
+SSH_USER="$(env_or_file DB_TUNNEL_SSH_USER deploy)"
+SSH_HOST="$(env_or_file DB_TUNNEL_SSH_HOST 103.172.92.187)"
+SSH_IDENTITY_FILE="$(env_or_file DB_TUNNEL_SSH_IDENTITY_FILE '')"
+DB_NAME="$(env_or_file DB_TUNNEL_DB_NAME divo_dev)"
 SSH_PASSWORD="$(env_or_file DB_TUNNEL_SSH_PASSWORD "${SSHPASS:-}")"
 
 mkdir -p "$STATE_DIR"
@@ -136,17 +137,24 @@ start_tunnel() {
   local ssh_args=(
     -fN
     -L "$LOCAL_HOST:$LOCAL_PORT:$REMOTE_HOST:$REMOTE_PORT"
-    "$SSH_USER@$SSH_HOST"
     -o StrictHostKeyChecking=no
     -o ExitOnForwardFailure=yes
     -o ServerAliveInterval=30
     -o ServerAliveCountMax=3
   )
+  if [[ -n "$SSH_IDENTITY_FILE" ]]; then
+    [[ -r "$SSH_IDENTITY_FILE" ]] || die "SSH identity file is not readable: $SSH_IDENTITY_FILE"
+    ssh_args+=(
+      -i "$SSH_IDENTITY_FILE"
+      -o IdentitiesOnly=yes
+    )
+  fi
+  ssh_args+=("$SSH_USER@$SSH_HOST")
 
   if [[ -n "$SSH_PASSWORD" ]]; then
-    SSHPASS="$SSH_PASSWORD" sshpass -e ssh "${ssh_args[@]}"
+    SSHPASS="$SSH_PASSWORD" sshpass -e ssh "${ssh_args[@]}" || die "SSH authentication or port forwarding failed"
   else
-    ssh "${ssh_args[@]}"
+    ssh "${ssh_args[@]}" || die "SSH authentication or port forwarding failed"
   fi
 
   for _ in $(seq 1 20); do
@@ -188,11 +196,12 @@ case "${1:-status}" in
 Usage: scripts/db-tunnel.sh <start|stop|restart|status>
 
 Optional env/.env keys:
-  DB_TUNNEL_SSH_HOST        default: 103.180.163.41
-  DB_TUNNEL_SSH_USER        default: root
+  DB_TUNNEL_SSH_HOST        default: 103.172.92.187
+  DB_TUNNEL_SSH_USER        default: deploy
+  DB_TUNNEL_SSH_IDENTITY_FILE optional private-key path
   DB_TUNNEL_SSH_PASSWORD    optional, not printed
   DB_TUNNEL_LOCAL_PORT      default: 15432
-  DB_TUNNEL_REMOTE_PORT     default: 5432
+  DB_TUNNEL_REMOTE_PORT     default: 15433
 EOF
     exit 2
     ;;

@@ -2,7 +2,7 @@
  * Execution trace routes — read-only observability for orchestration runs.
  *
  * All routes are company-scoped. Auth is enforced by the caller (middleware
- * that sets res.locals.companyId + res.locals.isSuperAdmin).
+ * that sets res.locals.companyId + res.locals.canViewRawExecutionData).
  *
  * Routes:
  *   GET /executions               — list recent runs (paginated)
@@ -32,16 +32,16 @@ export interface ExecutionRoutesDeps {
  * Production wiring must populate these from a verified JWT / session.
  */
 interface AuthLocals {
-  companyId:    string;
-  isSuperAdmin: boolean;
-  userId:       string | null;
+  companyId:                string;
+  canViewRawExecutionData: boolean;
+  userId:                   string | null;
 }
 
 function getAuth(res: Response): AuthLocals {
   return {
-    companyId:    res.locals['companyId']    as string,
-    isSuperAdmin: (res.locals['isSuperAdmin'] as boolean | undefined) ?? false,
-    userId:       (res.locals['userId']       as string | undefined) ?? null,
+    companyId:                res.locals['companyId'] as string,
+    canViewRawExecutionData: (res.locals['canViewRawExecutionData'] as boolean | undefined) ?? false,
+    userId:                   (res.locals['userId'] as string | undefined) ?? null,
   };
 }
 
@@ -51,7 +51,7 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps): Router {
 
   // ── GET /executions ──────────────────────────────────────────────────────
   router.get('/', async (req: Request, res: Response): Promise<void> => {
-    const { companyId, isSuperAdmin } = getAuth(res);
+    const { companyId } = getAuth(res);
 
     if (!companyId) {
       res.status(401).json({ error: 'unauthorized' });
@@ -61,7 +61,6 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps): Router {
     try {
       const runs = await executionQueryService.listRuns({
         companyId,
-        isSuperAdmin,
         limit:   Number(req.query['limit'])  || 50,
         offset:  Number(req.query['offset']) || 0,
         ...(req.query['status']  ? { status:  String(req.query['status']) }  : {}),
@@ -78,7 +77,7 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps): Router {
 
   // ── GET /executions/:id ──────────────────────────────────────────────────
   router.get('/:id', async (req: Request, res: Response): Promise<void> => {
-    const { companyId, isSuperAdmin } = getAuth(res);
+    const { companyId } = getAuth(res);
 
     if (!companyId) {
       res.status(401).json({ error: 'unauthorized' });
@@ -89,7 +88,6 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps): Router {
       const run = await executionQueryService.getRun({
         id: req.params['id']!,
         companyId,
-        isSuperAdmin,
       });
 
       if (!run) {
@@ -106,7 +104,7 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps): Router {
 
   // ── GET /executions/:id/events ───────────────────────────────────────────
   router.get('/:id/events', async (req: Request, res: Response): Promise<void> => {
-    const { companyId, isSuperAdmin } = getAuth(res);
+    const { companyId, canViewRawExecutionData } = getAuth(res);
 
     if (!companyId) {
       res.status(401).json({ error: 'unauthorized' });
@@ -117,7 +115,7 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps): Router {
       const events = await executionQueryService.getEvents({
         executionId: req.params['id']!,
         companyId,
-        isSuperAdmin,
+        canViewRawExecutionData,
         limit:       Number(req.query['limit']) || 500,
         ...(req.query['phase'] ? { phase: String(req.query['phase']) } : {}),
       });

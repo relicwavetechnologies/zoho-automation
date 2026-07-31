@@ -1,23 +1,26 @@
 /**
  * ExecutionQueryService — role-scoped read access to execution run data.
  *
- * Visibility rules (mirrored from old backend):
- *   SUPER_ADMIN  → sees full payload (everything except NEVER_PERSIST_KEYS
- *                  already stripped at write time)
- *   Other roles  → payload key subset (REDACTED_VIEW_KEYS removed from events)
+ * Visibility rules:
+ *   COMPANY_ADMIN and SUPER_ADMIN → see full payload (everything except
+ *                                    NEVER_PERSIST_KEYS already stripped at write time)
+ *   Other roles                   → payload key subset (REDACTED_VIEW_KEYS
+ *                                    removed from events)
  *
  * All queries are company-scoped: a caller can only read runs for their own
  * companyId. The service never returns data across company boundaries.
  */
 
-import type { ExecutionRepository, ExecutionRunView, ExecutionEventView } from '../../infrastructure/persistence/execution.repository';
+import type { ExecutionRepository, ExecutionRunView, ExecutionEventView, RunStatsRow } from '../../infrastructure/persistence/execution.repository';
 import type { Logger } from '../../shared/logger';
+import { costUsd } from './pricing';
 
 // ─── Redaction ────────────────────────────────────────────────────────────────
 
 /**
- * Keys inside `ExecutionEvent.payload` that are hidden from non-SUPER_ADMIN
- * callers. These may contain prompts, history, or other LLM internals.
+ * Keys inside `ExecutionEvent.payload` that are hidden from callers without
+ * raw execution-data access. These may contain prompts, history, or other LLM
+ * internals.
  */
 const REDACTED_VIEW_KEYS = new Set([
   'prompt', 'systemPrompt', 'history', 'historyContext', 'memoryContext',
@@ -25,8 +28,8 @@ const REDACTED_VIEW_KEYS = new Set([
   'modelInput', 'toolCall',
 ]);
 
-function redactPayload(payload: unknown, isSuperAdmin: boolean): unknown {
-  if (isSuperAdmin) return payload;
+function redactPayload(payload: unknown, canViewRawExecutionData: boolean): unknown {
+  if (canViewRawExecutionData) return payload;
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
 
   const out: Record<string, unknown> = {};
@@ -39,7 +42,7 @@ function redactPayload(payload: unknown, isSuperAdmin: boolean): unknown {
 
 // ─── View DTOs ────────────────────────────────────────────────────────────────
 
-export interface RunSummaryDto {
+interface RunBaseDto {
   id:            string;
   status:        string;
   channel:       string;
@@ -52,8 +55,15 @@ export interface RunSummaryDto {
   durationMs:    number | null;
 }
 
+export interface RunSummaryDto extends RunBaseDto {
+  userId:   string | null;
+  userName: string | null;   // resolved display name (or email fallback)
+  turns:    number;          // model calls in the run
+  tokens:   number;          // input + output tokens
+  costUsd:  number | null;   // provider-reported cost (null when unattributed)
+}
+
 export interface RunDetailDto extends RunSummaryDto {
-  userId:      string | null;
   threadId:    string | null;
   chatId:      string | null;
   agentTarget: string | null;
@@ -86,7 +96,6 @@ export class ExecutionQueryService {
   /** List recent runs for the caller's company. */
   async listRuns(input: {
     companyId:    string;
-    isSuperAdmin: boolean;
     limit?:       number;
     offset?:      number;
     userId?:      string;
@@ -102,21 +111,29 @@ export class ExecutionQueryService {
       ...(input.channel ? { channel: input.channel } : {}),
     });
 
-    return runs.map(r => this.toSummary(r));
+    const [stats, users] = await Promise.all([
+      this.deps.repo.aggregateRunStats(runs.map(r => r.id)),
+      this.deps.repo.resolveUsers(runs.map(r => r.userId).filter((x): x is string => Boolean(x))),
+    ]);
+
+    return runs.map(r => this.enrich(r, stats, users));
   }
 
   /** Get a single run's detail (includes userId, chatId, etc.). */
   async getRun(input: {
     id:           string;
     companyId:    string;
-    isSuperAdmin: boolean;
   }): Promise<RunDetailDto | null> {
     const run = await this.deps.repo.findById(input.id, input.companyId);
     if (!run) return null;
 
+    const [stats, users] = await Promise.all([
+      this.deps.repo.aggregateRunStats([run.id]),
+      run.userId ? this.deps.repo.resolveUsers([run.userId]) : Promise.resolve(new Map()),
+    ]);
+
     return {
-      ...this.toSummary(run),
-      userId:      run.userId,
+      ...this.enrich(run, stats, users),
       threadId:    run.threadId,
       chatId:      run.chatId,
       agentTarget: run.agentTarget,
@@ -127,7 +144,7 @@ export class ExecutionQueryService {
   async getEvents(input: {
     executionId:  string;
     companyId:    string;
-    isSuperAdmin: boolean;
+    canViewRawExecutionData: boolean;
     phase?:       string;
     limit?:       number;
   }): Promise<EventDto[]> {
@@ -138,12 +155,12 @@ export class ExecutionQueryService {
       ...(input.phase ? { phase: input.phase } : {}),
     });
 
-    return events.map(e => this.toEventDto(e, input.isSuperAdmin));
+    return events.map(e => this.toEventDto(e, input.canViewRawExecutionData));
   }
 
   // ─── Private helpers ────────────────────────────────────────────────────
 
-  private toSummary(run: ExecutionRunView): RunSummaryDto {
+  private toBase(run: ExecutionRunView): RunBaseDto {
     const durationMs = run.finishedAt
       ? run.finishedAt.getTime() - run.startedAt.getTime()
       : null;
@@ -162,7 +179,31 @@ export class ExecutionQueryService {
     };
   }
 
-  private toEventDto(event: ExecutionEventView, isSuperAdmin: boolean): EventDto {
+  /** Fold per-run stats + resolved user onto the base run shape (cost priced from tokens). */
+  private enrich(
+    run: ExecutionRunView,
+    stats: Map<string, RunStatsRow>,
+    users: Map<string, { name: string | null; email: string }>,
+  ): RunSummaryDto {
+    const s = stats.get(run.id);
+    const u = run.userId ? users.get(run.userId) : undefined;
+    let tokens = 0;
+    let cost = 0;
+    for (const m of s?.models ?? []) {
+      tokens += m.missIn + m.out;
+      cost += costUsd(m.modelId, { cacheMissIn: m.missIn, cacheHitIn: m.hitIn, output: m.out });
+    }
+    return {
+      ...this.toBase(run),
+      userId:   run.userId,
+      userName: u?.name ?? u?.email ?? null,
+      turns:    s?.turns ?? 0,
+      tokens,
+      costUsd:  s && s.models.length > 0 ? cost : null,
+    };
+  }
+
+  private toEventDto(event: ExecutionEventView, canViewRawExecutionData: boolean): EventDto {
     return {
       id:        event.id,
       sequence:  event.sequence,
@@ -173,7 +214,7 @@ export class ExecutionQueryService {
       title:     event.title,
       summary:   event.summary,
       status:    event.status,
-      payload:   redactPayload(event.payload, isSuperAdmin),
+      payload:   redactPayload(event.payload, canViewRawExecutionData),
       createdAt: event.createdAt.toISOString(),
     };
   }

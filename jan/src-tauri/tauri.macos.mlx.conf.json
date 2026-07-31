@@ -1,0 +1,16 @@
+{
+  "bundle": {
+    "resources": [
+      "resources/pre-install/**/*",
+      "resources/LICENSE",
+      "resources/bin/sqlite-vec.dylib",
+      "resources/pi/package.json",
+      "resources/pi/pi-chrome-devtools-bridge.mjs",
+      "resources/pi/agent-template/**/*",
+      "resources/pi/agent-npm/**/*",
+      "resources/pi-extensions/**/*",
+      "resources/pi-skills/**/*",
+      "resources/pi/node_modules/**/*"
+    ]
+  }
+}

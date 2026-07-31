@@ -7,12 +7,26 @@ import type { PrismaClient } from '../../generated/prisma';
 import type { TypedEnv } from '../../config/env';
 import type { AuditService } from '../../application/observability/audit.service';
 import type { Logger } from '../../shared/logger';
+import { provisionShareMemorySystemSkill } from '../../application/skills/share-memory-system-skill';
+import { provisionLarkSystemSkills } from '../../application/skills/lark-system-skills';
+import { provisionGoogleWorkspaceSystemSkills } from '../../application/skills/google-workspace-system-skills';
+import { provisionScheduleDivoWorkSystemSkill } from '../../application/skills/scheduled-work-system-skill';
+import { provisionDivoPresentationsSystemSkill } from '../../application/skills/divo-presentations-system-skill';
+import { provisionDivoOmsSiteDataSystemSkill } from '../../application/skills/oms-site-data-system-skill';
+import { provisionDivoLocalPythonSystemSkill } from '../../application/skills/divo-local-python-system-skill';
+import { provisionDivoSemrushSystemSkill } from '../../application/skills/semrush-system-skill';
+import { provisionConnectedProviderSystemSkills } from '../../application/skills/connected-provider-system-skills';
+import { provisionDataExportSystemSkill } from '../../application/skills/data-export-system-skill';
+import { provisionFilesAndDocumentsSystemSkills } from '../../application/skills/files-and-documents-system-skills';
+import { provisionMailOpsSystemSkills } from '../../application/skills/mail-ops-system-skills';
+import { provisionSystemSkillRoutes } from '../../application/skills/system-skill-routes';
 
 type AdminRole = 'SUPER_ADMIN' | 'COMPANY_ADMIN' | 'DEPARTMENT_MANAGER';
 
 type AdminSessionDto = {
   userId: string;
   companyId?: string;
+  companyName?: string;
   role: AdminRole;
   sessionId: string;
   expiresAt: string;
@@ -392,6 +406,20 @@ export const createAdminAuthRoutes = (deps: AdminAuthRouteDeps): Router => {
           select: { id: true },
         });
 
+        await provisionShareMemorySystemSkill(tx, company.id);
+        await provisionLarkSystemSkills(tx, company.id);
+        await provisionGoogleWorkspaceSystemSkills(tx, company.id);
+        await provisionConnectedProviderSystemSkills(tx, company.id);
+        await provisionDataExportSystemSkill(tx, company.id);
+        await provisionFilesAndDocumentsSystemSkills(tx, company.id);
+        await provisionScheduleDivoWorkSystemSkill(tx, company.id);
+        await provisionDivoPresentationsSystemSkill(tx, company.id);
+        await provisionDivoOmsSiteDataSystemSkill(tx, company.id);
+        await provisionDivoSemrushSystemSkill(tx, company.id);
+        await provisionDivoLocalPythonSystemSkill(tx, company.id);
+        await provisionMailOpsSystemSkills(tx, company.id);
+        await provisionSystemSkillRoutes(tx, company.id);
+
         await tx.adminMembership.create({
           data: {
             userId: user.id,
@@ -526,30 +554,38 @@ export const createAdminAuthRoutes = (deps: AdminAuthRouteDeps): Router => {
     if (!user) throw routeError(404, 'User not found');
     if (!company) throw routeError(404, 'Company not found');
 
-    const existing = await deps.prisma.adminMembership.findFirst({
-      where: {
-        userId: payload.userId,
-        companyId: payload.companyId,
-        role: 'COMPANY_ADMIN',
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    // Keep the platform-only promotion endpoint compatible with the company
+    // role invariant: each user has one authoritative active membership per
+    // company. Without this normalization a prior MEMBER row could remain
+    // active beside a new COMPANY_ADMIN row and produce nondeterministic reads.
+    await deps.prisma.$transaction(async (tx) => {
+      const memberships = await tx.adminMembership.findMany({
+        where: { userId: payload.userId, companyId: payload.companyId, isActive: true },
+        select: { id: true },
+        orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+      });
+      const primary = memberships[0];
+      if (!primary) {
+        await tx.adminMembership.create({
+          data: {
+            userId: payload.userId,
+            companyId: payload.companyId,
+            role: 'COMPANY_ADMIN',
+            isActive: true,
+          },
+        });
+        return;
+      }
 
-    if (existing) {
-      await deps.prisma.adminMembership.update({
-        where: { id: existing.id },
-        data: { isActive: true },
+      await tx.adminMembership.updateMany({
+        where: { userId: payload.userId, companyId: payload.companyId, isActive: true },
+        data: { isActive: false },
       });
-    } else {
-      await deps.prisma.adminMembership.create({
-        data: {
-          userId: payload.userId,
-          companyId: payload.companyId,
-          role: 'COMPANY_ADMIN',
-          isActive: true,
-        },
+      await tx.adminMembership.update({
+        where: { id: primary.id },
+        data: { role: 'COMPANY_ADMIN', isActive: true },
       });
-    }
+    });
 
     deps.auditService.record({
       actorId: actorSession.userId,
@@ -568,6 +604,15 @@ export const createAdminAuthRoutes = (deps: AdminAuthRouteDeps): Router => {
 
   router.get('/me', asyncRoute(async (req, res) => {
     const session = await resolveAdminSession(deps.prisma, deps.env, req);
+    // Company admins are scoped to one company; surface its name for the UI.
+    // Super admins have no single company, so companyName stays undefined.
+    if (session.companyId) {
+      const company = await deps.prisma.company.findUnique({
+        where: { id: session.companyId },
+        select: { name: true },
+      });
+      if (company?.name) session.companyName = company.name;
+    }
     success(res, session, 'Admin session resolved');
   }));
 

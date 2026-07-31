@@ -1,0 +1,298 @@
+import { Folder, MoreHorizontal, Pencil, Trash2, X } from 'lucide-react'
+import { useThreads } from '@/hooks/useThreads'
+import { ThreadStateIndicator } from '@/components/left-sidebar/ThreadStateIndicator'
+import { useMessages } from '@/hooks/useMessages'
+import { useThreadManagement } from '@/hooks/useThreadManagement'
+import { useEffect } from 'react'
+
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
+  SidebarMenuAction,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  useSidebar,
+} from '@/components/ui/sidebar'
+import { useTranslation } from '@/i18n/react-i18next-compat'
+import { memo, useMemo, useState } from 'react'
+import { Link, useParams } from '@tanstack/react-router'
+import { RenameThreadDialog, DeleteThreadDialog } from '@/containers/dialogs'
+import { toast } from 'sonner'
+import { cn } from '@/lib/utils'
+import {
+  readDivoTeachProfile,
+  teachThreadDisplayTitle,
+} from '@/lib/divo-teach-thread'
+
+const ThreadItem = memo(
+  ({
+    thread,
+    isMobile,
+    currentProjectId,
+    hideTeachBadge,
+  }: {
+    thread: Thread
+    isMobile: boolean
+    currentProjectId?: string
+    /** Set when the surrounding group already identifies these as Teach. */
+    hideTeachBadge?: boolean
+  }) => {
+    const deleteThread = useThreads((state) => state.deleteThread)
+    const renameThread = useThreads((state) => state.renameThread)
+    const updateThread = useThreads((state) => state.updateThread)
+    const getFolderById = useThreadManagement().getFolderById
+    const { folders } = useThreadManagement()
+    const { t } = useTranslation()
+    const [renameOpen, setRenameOpen] = useState(false)
+    const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+
+    const messages = useMessages((state) => state.messages[thread.id])
+    const hydrateMessages = useMessages((state) => state.hydrateMessages)
+
+    // Sidebar rows never need full conversation history. Project rows retain a
+    // temporary preview path until previews are written with thread metadata.
+    useEffect(() => {
+      if (!currentProjectId) return
+      void hydrateMessages(thread.id).catch(() => undefined)
+    }, [currentProjectId, hydrateMessages, thread.id])
+
+    const lastUserMessageText = useMemo(() => {
+      const userMessages = (messages ?? []).filter((m) => m.role === 'user')
+      const lastUserMessage = userMessages[userMessages.length - 1]
+      if (!lastUserMessage) return undefined
+      const textContent = lastUserMessage.content?.find((c) => c.type === 'text')
+      return textContent?.text?.value
+    }, [messages])
+
+    const plainTitleForRename = useMemo(() => {
+      return (thread.title || '').replace(/<span[^>]*>|<\/span>/g, '')
+    }, [thread.title])
+
+    const availableProjects = useMemo(() => {
+      return folders
+        .filter((f) => {
+          if (f.id === currentProjectId) return false
+          if (f.id === thread.metadata?.project?.id) return false
+          return true
+        })
+        .sort((a, b) => b.updated_at - a.updated_at)
+    }, [folders, currentProjectId, thread.metadata?.project?.id])
+
+    const assignThreadToProject = (threadId: string, projectId: string) => {
+      const project = getFolderById(projectId)
+      if (project && updateThread) {
+        const projectMetadata = {
+          id: project.id,
+          name: project.name,
+          updated_at: project.updated_at,
+        }
+
+        updateThread(threadId, {
+          metadata: {
+            ...thread.metadata,
+            project: projectMetadata,
+          },
+        })
+
+        toast.success(`Thread assigned to "${project.name}" successfully`)
+      }
+    }
+
+    const currentThreadId = useParams({
+      strict: false,
+      select: (params) => params.threadId,
+    })
+    const isSelected = currentThreadId === thread.id
+    const isTeachThread = Boolean(readDivoTeachProfile(thread.metadata))
+    const rawTitle = thread.title || t('common:newThread')
+    // The badge already says "Teach"; the prefix would repeat it.
+    const displayTitle = isTeachThread
+      ? teachThreadDisplayTitle(rawTitle)
+      : rawTitle
+
+    const teachBadge = isTeachThread && !hideTeachBadge ? (
+      <span
+        className="shrink-0 rounded border border-violet-500/40 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-violet-400"
+        title="Teach conversation"
+      >
+        Teach
+      </span>
+    ) : null
+
+    return (
+      <SidebarMenuItem>
+        {currentProjectId ?
+          <Link to="/threads/$threadId" params={{ threadId: thread.id }} className={cn("bg-card dark:bg-secondary/20 mb-2 px-4 py-4 border hover:dark:bg-secondary/30 rounded-lg block max-w-full overflow-hidden", isSelected && "border-primary")}>
+              <div className="flex items-center gap-1.5 min-w-0">
+                <ThreadStateIndicator threadId={thread.id} />
+                <span className={cn("block min-w-0 flex-1 truncate", isSelected && "font-medium text-primary")} title={displayTitle}>{displayTitle}</span>
+                {teachBadge}
+              </div>
+              {currentProjectId && lastUserMessageText && (
+                <div className="text-muted-foreground text-xs mt-1 line-clamp-1 pr-10">
+                  {lastUserMessageText}
+                </div>
+              )}
+          </Link>
+          :
+          <SidebarMenuButton asChild isActive={isSelected}>
+            <Link to="/threads/$threadId" params={{ threadId: thread.id }}>
+              <ThreadStateIndicator threadId={thread.id} />
+              <span className={cn("block min-w-0 flex-1 truncate", isSelected && "font-medium")} title={displayTitle}>{displayTitle}</span>
+              {teachBadge}
+            </Link>
+          </SidebarMenuButton>
+        }
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <SidebarMenuAction
+              showOnHover
+              className={cn("hover:bg-sidebar-foreground/8", currentProjectId && 'mt-4 mr-2')}
+            >
+              <MoreHorizontal />
+              <span className="sr-only">More</span>
+            </SidebarMenuAction>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            className="w-48"
+            side={isMobile ? 'bottom' : 'right'}
+            align={isMobile ? 'end' : 'start'}
+          >
+            <DropdownMenuItem onSelect={() => setRenameOpen(true)}>
+              <Pencil className="size-4" />
+              <span>{t('common:rename')}</span>
+            </DropdownMenuItem>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger className="gap-2">
+                <Folder className="size-4" />
+                <span>{t('common:projects.addToProject')}</span>
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="max-h-60 min-w-44 overflow-y-auto">
+                {availableProjects.length === 0 ? (
+                  <DropdownMenuItem disabled>
+                    <span className="text-muted-foreground">
+                      {t('common:projects.noProjectsAvailable')}
+                    </span>
+                  </DropdownMenuItem>
+                ) : (
+                  availableProjects.map((folder) => (
+                    <DropdownMenuItem
+                      key={folder.id}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        assignThreadToProject(thread.id, folder.id)
+                      }}
+                    >
+                      <Folder className="size-4" />
+                      <span className="truncate max-w-[200px]">
+                        {folder.name}
+                      </span>
+                    </DropdownMenuItem>
+                  ))
+                )}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            {thread.metadata?.project && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    const projectName = thread.metadata?.project?.name
+                    updateThread(thread.id, {
+                      metadata: {
+                        ...thread.metadata,
+                        project: undefined,
+                      },
+                    })
+                    toast.success(
+                      `Thread removed from "${projectName}" successfully`
+                    )
+                  }}
+                >
+                  <X className="size-4" />
+                  <span>Remove from project</span>
+                </DropdownMenuItem>
+              </>
+            )}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              variant="destructive"
+              disabled={thread.title === 'What is Jan?' && !localStorage.getItem('setup-completed')}
+              onSelect={() => {
+                if (thread.title !== 'What is Jan?' || localStorage.getItem('setup-completed')) {
+                  setDeleteConfirmOpen(true)
+                }
+              }}
+            >
+              <Trash2 className="size-4" />
+              <span>{t('common:delete')}</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        <RenameThreadDialog
+          thread={thread}
+          plainTitleForRename={plainTitleForRename}
+          onRename={renameThread}
+          open={renameOpen}
+          onOpenChange={setRenameOpen}
+          withoutTrigger
+        />
+        
+        <DeleteThreadDialog
+          thread={thread}
+          onDelete={deleteThread}
+          open={deleteConfirmOpen}
+          onOpenChange={setDeleteConfirmOpen}
+          withoutTrigger
+        />
+      </SidebarMenuItem>
+    )
+  }
+)
+
+type ThreadListProps = {
+  threads: Thread[]
+  currentProjectId?: string
+  /** Set when the surrounding group already identifies these as Teach. */
+  hideTeachBadge?: boolean
+}
+
+function ThreadList({
+  threads,
+  currentProjectId,
+  hideTeachBadge,
+}: ThreadListProps) {
+  const { isMobile } = useSidebar()
+
+  const sortedThreads = useMemo(() => {
+    return [...threads].sort((a, b) => {
+      return (b.updated || 0) - (a.updated || 0)
+    })
+  }, [threads])
+
+  return (
+    <>
+      {sortedThreads.map((thread) => (
+        <ThreadItem
+          key={thread.id}
+          thread={thread}
+          isMobile={isMobile}
+          currentProjectId={currentProjectId}
+          hideTeachBadge={hideTeachBadge}
+        />
+      ))}
+    </>
+  )
+}
+
+export default memo(ThreadList)

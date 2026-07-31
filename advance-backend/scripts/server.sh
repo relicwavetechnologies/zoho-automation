@@ -2,8 +2,9 @@
 # server.sh — start the advance-backend server (tsx watch / HMR).
 #
 # Run dev.sh first to start Redis infrastructure.
-# This script only starts the Node.js server — you can Ctrl+C and restart
-# as many times as you like without touching Redis or clearing the cache.
+# This script starts the Node.js server and its Google Workspace MCP sidecar.
+# You can Ctrl+C and restart as many times as you like without touching Redis
+# or clearing the cache. Ctrl+C stops both foreground development processes.
 
 set -uo pipefail
 

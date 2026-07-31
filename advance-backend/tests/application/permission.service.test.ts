@@ -10,8 +10,10 @@ import type { DeptToolPermissionRepoPort, DeptToolPermissionRow } from '../../sr
 import type { DeptUserOverrideRepoPort, DeptUserOverrideRow } from '../../src/infrastructure/persistence/department-user-override.repository.ts';
 import type { CachePort } from '../../src/shared/cache.ts';
 import type { Logger } from '../../src/shared/logger.ts';
-import { ok } from '../../src/shared/result.ts';
+import { ok, err } from '../../src/shared/result.ts';
+import { wrapInfra } from '../../src/shared/errors.ts';
 import type { PermissionQuery } from '../../src/application/permissions/permission.types.ts';
+import { asToolId } from '../../src/shared/ids.ts';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -127,6 +129,11 @@ describe('PermissionService', () => {
       assert.ok(!ids.includes('larkApproval'), 'MEMBER should NOT have larkApproval by default');
       assert.ok(ids.includes('zohoCrm'),       'MEMBER should have zohoCrm by default');
       assert.ok(ids.includes('zohoBooks'),     'MEMBER should have zohoBooks by default');
+      assert.ok(ids.includes('memoryPublishing'), 'MEMBER should have personal memory publishing by default');
+      assert.deepEqual(
+        [...(result.value.allowedActionsByTool.get(asToolId('memoryPublishing')) ?? [])],
+        ['read', 'create'],
+      );
     });
 
     it('COMPANY_ADMIN gets every tool including larkBase, larkApproval, zoho', async () => {
@@ -139,6 +146,86 @@ describe('PermissionService', () => {
       assert.ok(ids.includes('larkApproval'), 'COMPANY_ADMIN should have larkApproval');
       assert.ok(ids.includes('zohoCrm'),      'COMPANY_ADMIN should have zohoCrm');
       assert.ok(ids.includes('zohoBooks'),    'COMPANY_ADMIN should have zohoBooks');
+    });
+
+    it('allows OMS Site Data for company admins only and ignores ordinary role overrides', async () => {
+      const toolPermRepo: ToolPermissionRepoPort = {
+        getForCompany: async () => ok([
+          { companyId: COMPANY_ID, toolId: 'omsSiteData', role: 'MEMBER', enabled: true } as ToolPermissionRow,
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({ toolPermRepo }));
+      const member = await svc.resolve(baseQuery({ companyRole: 'MEMBER' as any }));
+      const admin = await svc.resolve(baseQuery({ companyRole: 'COMPANY_ADMIN' as any, userId: 'admin-1' as any }));
+
+      assert.ok(member.ok);
+      assert.equal(member.value.allowedToolIds.has(asToolId('omsSiteData')), false);
+      assert.ok(admin.ok);
+      assert.deepEqual([...(admin.value.allowedActionsByTool.get(asToolId('omsSiteData')) ?? [])], ['read']);
+      assert.equal(admin.value.decisions.find(decision => String(decision.toolId) === 'omsSiteData')?.source, 'company_default');
+    });
+
+    // Semrush is a metered company subscription. Its permissive company default
+    // is the ceiling that lets an admin grant it to a department at all — read
+    // as a grant, it handed the whole company a paid tool nobody chose to give.
+    it('does not hand Semrush to a member with no department', async () => {
+      const result = await new PermissionServiceImpl(buildDeps()).resolve(baseQuery({ companyRole: 'MEMBER' as any }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedToolIds.has(asToolId('semrush')), false);
+    });
+
+    it('keeps the company Semrush switch authoritative as a ceiling', async () => {
+      const toolPermRepo: ToolPermissionRepoPort = {
+        getForCompany: async () => ok([
+          { companyId: COMPANY_ID, toolId: 'semrush', role: 'MEMBER', enabled: false } as ToolPermissionRow,
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const result = await new PermissionServiceImpl(buildDeps({ toolPermRepo })).resolve(baseQuery({ companyRole: 'MEMBER' as any }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedToolIds.has(asToolId('semrush')), false);
+    });
+
+    // AITable ships to company administrators first. Its MEMBER default is
+    // permissive because that entry is the ceiling a department grant is
+    // clamped against — read as a grant instead, it would hand every member a
+    // company data connection nobody chose to share.
+    it('does not hand AITable to a member with no department', async () => {
+      const result = await new PermissionServiceImpl(buildDeps()).resolve(baseQuery({ companyRole: 'MEMBER' as any }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedToolIds.has(asToolId('aitableDatasheets')), false);
+      assert.equal(result.value.allowedToolIds.has(asToolId('aitableFields')), false);
+    });
+
+    it('gives a company admin AITable outright, without any department grant', async () => {
+      const admin = await new PermissionServiceImpl(buildDeps())
+        .resolve(baseQuery({ companyRole: 'COMPANY_ADMIN' as any, userId: 'admin-1' as any }));
+
+      assert.ok(admin.ok);
+      assert.deepEqual(
+        [...(admin.value.allowedActionsByTool.get(asToolId('aitableDatasheets')) ?? [])],
+        ['read', 'create', 'update'],
+      );
+      assert.equal(
+        admin.value.decisions.find(decision => String(decision.toolId) === 'aitableDatasheets')?.source,
+        'company_default',
+      );
+    });
+
+    // Deleting records or a field is not something to acquire by holding a
+    // role. The admin floor deliberately stops short of it, so it stays an
+    // explicit department grant.
+    it('withholds delete from the AITable company-admin floor', async () => {
+      const admin = await new PermissionServiceImpl(buildDeps())
+        .resolve(baseQuery({ companyRole: 'COMPANY_ADMIN' as any, userId: 'admin-1' as any }));
+
+      assert.ok(admin.ok);
+      assert.equal(admin.value.allowedActionsByTool.get(asToolId('aitableDatasheets'))?.has('delete'), false);
+      assert.equal(admin.value.allowedActionsByTool.get(asToolId('aitableFields'))?.has('delete'), false);
     });
 
     it('SUPER_ADMIN gets every tool', async () => {
@@ -206,6 +293,27 @@ describe('PermissionService', () => {
       assert.ok(ids.includes('larkTask'),  'custom role inherits MEMBER defaults');
       assert.ok(!ids.includes('larkBase'), 'custom role does not get larkBase (not in MEMBER defaults)');
     });
+
+    it('fails on company permission repository errors without caching default authorization', async () => {
+      let attempts = 0;
+      const toolPermRepo: ToolPermissionRepoPort = {
+        getForCompany: async () => {
+          attempts++;
+          return attempts === 1
+            ? err(wrapInfra('prisma', 'getToolPermissions', new Error('db unavailable')))
+            : ok([]);
+        },
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({ toolPermRepo }));
+      const query = baseQuery({ companyRole: 'MEMBER' as any });
+      const first = await svc.resolve(query);
+      assert.ok(!first.ok);
+      assert.equal(first.error.payload.reason, 'not_allowed');
+      const second = await svc.resolve(query);
+      assert.ok(second.ok);
+      assert.equal(attempts, 2);
+    });
   });
 
   // ── Cache behaviour ────────────────────────────────────────────────────────
@@ -260,11 +368,9 @@ describe('PermissionService', () => {
       assert.equal(result.error.payload.reason, 'department_access_denied');
     });
 
-    it('THE CRITICAL BUG CASE: MEMBER + dept MANAGER role → larkTask:create allowed via company_default', async () => {
-      // This is the exact bug that the old backend had wrong.
-      // The old code passed deptRoleSlug into a company-role lookup, so it always got {}.
-      // The new code: company axis resolves larkTask for MEMBER (allowed by default),
-      // then the dept overlay finds no explicit permission → falls through to company ceiling → allowed.
+    it('missing dept-role row → default deny (no company inherit)', async () => {
+      // Department context is a grant matrix: no explicit row means not allowed,
+      // even when the company MEMBER default would allow the tool.
       const svc = new PermissionServiceImpl(buildDeps({
         deptRepo: {
           getMembership: async () => ok(membershipRow({
@@ -272,7 +378,7 @@ describe('PermissionService', () => {
             roleId: 'role_mgr_001',
           })),
         },
-        deptToolPermRepo: emptyDeptToolPermRepo(),  // no explicit dept perms
+        deptToolPermRepo: emptyDeptToolPermRepo(),
         deptUserOverrideRepo: emptyUserOverrideRepo(),
       }));
 
@@ -283,13 +389,53 @@ describe('PermissionService', () => {
 
       assert.ok(result.ok, 'should resolve successfully');
       const taskActions = [...(result.value.allowedActionsByTool.get('larkTask' as any) ?? [])];
-      assert.ok(taskActions.includes('create'), 'larkTask:create must be allowed (MEMBER company default)');
+      assert.equal(taskActions.length, 0, 'larkTask must be denied when no dept-role grant exists');
+      assert.equal(result.value.allowedToolIds.size, 0, 'empty dept matrix yields no allowed tools');
+    });
+
+    it('fails instead of converting a department permission repository error into an empty grant', async () => {
+      const failingDeptPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => err(wrapInfra('prisma', 'getDeptToolPermissions', new Error('db unavailable'))),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo: failingDeptPermRepo,
+      }));
+      const result = await svc.resolve(baseQuery({ companyRole: 'MEMBER' as any, departmentId: DEPT_ID as any }));
+      assert.ok(!result.ok);
+      assert.equal(result.error.payload.reason, 'department_access_denied');
+    });
+
+    it('dept-role explicit allow → allowed when under company ceiling', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_001', toolId: 'larkTask', actionGroup: 'create', allowed: true },
+          { departmentId: DEPT_ID, roleId: 'role_001', toolId: 'larkTask', actionGroup: 'read', allowed: true },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'MEMBER' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      const taskActions = [...(result.value.allowedActionsByTool.get('larkTask' as any) ?? [])];
+      assert.ok(taskActions.includes('create'), 'explicit dept allow must grant larkTask:create');
+      assert.ok(taskActions.includes('read'), 'explicit dept allow must grant larkTask:read');
 
       const createDecision = result.value.decisions.find(
         d => String(d.toolId) === 'larkTask' && d.actionGroup === 'create',
       );
-      assert.ok(createDecision, 'should have a decision entry for larkTask:create');
-      assert.equal(createDecision.source, 'company_default', 'source must be company_default, NOT dept role');
+      assert.ok(createDecision);
+      assert.equal(createDecision.source, 'department_role');
     });
 
     it('dept-role explicit allow for larkBase but MEMBER ceiling excludes larkBase → blocked', async () => {
@@ -440,9 +586,16 @@ describe('PermissionService', () => {
       assert.equal(result.value.department.systemPrompt, 'You are a helpful engineering assistant.');
     });
 
-    it('COMPANY_ADMIN + dept: larkBase remains allowed (ADMIN ceiling includes it)', async () => {
+    it('COMPANY_ADMIN + dept: explicit larkBase grant allowed under ADMIN ceiling', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_001', toolId: 'larkBase', actionGroup: 'read', allowed: true },
+        ]),
+        upsert: async () => ok({} as any),
+      };
       const svc = new PermissionServiceImpl(buildDeps({
         deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
       }));
 
       const result = await svc.resolve(baseQuery({
@@ -452,7 +605,251 @@ describe('PermissionService', () => {
 
       assert.ok(result.ok);
       const ids = [...result.value.allowedToolIds].map(String);
-      assert.ok(ids.includes('larkBase'), 'COMPANY_ADMIN ceiling allows larkBase');
+      assert.ok(ids.includes('larkBase'), 'COMPANY_ADMIN ceiling allows explicit larkBase grant');
+    });
+
+    it('keeps OMS Site Data available to a company admin in a department context without a department grant', async () => {
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo: emptyDeptToolPermRepo(),
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'COMPANY_ADMIN' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      assert.deepEqual([...(result.value.allowedActionsByTool.get(asToolId('omsSiteData')) ?? [])], ['read']);
+    });
+
+    // OMS used to be classified a fixed 'system' tool, so every write path
+    // rejected it and no department could ever be granted it. It is now
+    // grantable — but only explicitly, never inherited from a role default.
+    it('honours an explicit department grant of OMS Site Data for an ordinary member', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_001', toolId: 'omsSiteData', actionGroup: 'read', allowed: true },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'MEMBER' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      assert.deepEqual([...(result.value.allowedActionsByTool.get(asToolId('omsSiteData')) ?? [])], ['read']);
+    });
+
+    it('still denies OMS Site Data to a department member with no explicit grant', async () => {
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo: emptyDeptToolPermRepo(),
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'MEMBER' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedToolIds.has(asToolId('omsSiteData')), false);
+    });
+
+    it('honours an explicit department grant of Semrush for an ordinary member', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_001', toolId: 'semrush', actionGroup: 'read', allowed: true },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({ companyRole: 'MEMBER' as any, departmentId: DEPT_ID as any }));
+
+      assert.ok(result.ok);
+      assert.deepEqual([...(result.value.allowedActionsByTool.get(asToolId('semrush')) ?? [])], ['read']);
+    });
+
+    it('still denies Semrush to a department member with no explicit grant', async () => {
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo: emptyDeptToolPermRepo(),
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({ companyRole: 'MEMBER' as any, departmentId: DEPT_ID as any }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedToolIds.has(asToolId('semrush')), false);
+    });
+
+    it('honours an explicit department grant of AITable for an ordinary member', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_001', toolId: 'aitableDatasheets', actionGroup: 'read', allowed: true },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({ companyRole: 'MEMBER' as any, departmentId: DEPT_ID as any }));
+
+      assert.ok(result.ok);
+      assert.deepEqual([...(result.value.allowedActionsByTool.get(asToolId('aitableDatasheets')) ?? [])], ['read']);
+    });
+
+    it('still denies AITable to a department member with no explicit grant', async () => {
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo: emptyDeptToolPermRepo(),
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({ companyRole: 'MEMBER' as any, departmentId: DEPT_ID as any }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedToolIds.has(asToolId('aitableDatasheets')), false);
+      assert.equal(result.value.allowedToolIds.has(asToolId('aitableFields')), false);
+    });
+
+    it('keeps AITable available to a company admin in a department context without a department grant', async () => {
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo: emptyDeptToolPermRepo(),
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'COMPANY_ADMIN' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      assert.deepEqual(
+        [...(result.value.allowedActionsByTool.get(asToolId('aitableDatasheets')) ?? [])],
+        ['read', 'create', 'update'],
+      );
+    });
+
+    it('keeps Airtable available to a company admin in a department context without a department grant', async () => {
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo: emptyDeptToolPermRepo(),
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'COMPANY_ADMIN' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      for (const toolId of ['airtableRecords', 'airtableSchema', 'airtableAutomation']) {
+        assert.deepEqual(
+          [...(result.value.allowedActionsByTool.get(asToolId(toolId)) ?? [])].sort(),
+          ['create', 'read', 'update'],
+          `${toolId} should be granted to a company admin outright`,
+        );
+      }
+    });
+
+    it('denies Airtable to a department member with no grant, unlike the company admin', async () => {
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo: emptyDeptToolPermRepo(),
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'MEMBER' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedToolIds.has(asToolId('airtableRecords')), false);
+    });
+
+    it('derives dataExport:create from a supported department source read grant', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_member_001', toolId: 'airtableRecords', actionGroup: 'read', allowed: true },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+      }));
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'MEMBER' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedActionsByTool.get(asToolId('dataExport'))?.has('create'), true);
+      assert.equal(
+        result.value.decisions.find(decision => String(decision.toolId) === 'dataExport')?.source,
+        'derived',
+      );
+    });
+
+    it('honors an explicit department denial of derived dataExport access', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_member_001', toolId: 'zohoBooks', actionGroup: 'read', allowed: true },
+          { departmentId: DEPT_ID, roleId: 'role_member_001', toolId: 'dataExport', actionGroup: 'create', allowed: false },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+      }));
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'MEMBER' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      assert.equal(
+        result.value.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') ?? false,
+        false,
+      );
+    });
+
+    // The admin grant is a floor. OMS is exclusive and replaces whatever the
+    // department says; Airtable must not, or opening it to a role later would
+    // be silently overwritten by the admin's narrower action set.
+    it('keeps a department grant that reaches further than the Airtable admin floor', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_001', toolId: 'airtableRecords', actionGroup: 'delete', allowed: true },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'COMPANY_ADMIN' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      assert.deepEqual(
+        [...(result.value.allowedActionsByTool.get(asToolId('airtableRecords')) ?? [])].sort(),
+        ['create', 'delete', 'read', 'update'],
+      );
     });
 
     it('dept cache: second call with same params does not re-query dept repos', async () => {

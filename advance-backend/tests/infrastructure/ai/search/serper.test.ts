@@ -125,9 +125,29 @@ describe('SerperClient.search', () => {
     await assert.rejects(
       () => makeClient().search({ query: 'test' }),
       (e: SearchIntegrationError) => {
-        assert.equal(e.code, 'search_unavailable');
+        assert.equal(e.code, 'search_auth_failed');
         return true;
       },
+    );
+  });
+
+  it('preserves Retry-After for rate-limited calls', async () => {
+    mockResponses.push({ status: 429, body: 'Too Many Requests', headers: { 'retry-after': '12' } });
+    await assert.rejects(
+      () => makeClient().search({ query: 'test' }),
+      (e: SearchIntegrationError) => {
+        assert.equal(e.code, 'search_rate_limited');
+        assert.equal(e.retryAfterMs, 12_000);
+        return true;
+      },
+    );
+  });
+
+  it('recognizes Serper credit exhaustion returned as HTTP 400', async () => {
+    mockResponses.push({ status: 400, body: { message: 'Not enough credits', statusCode: 400 } });
+    await assert.rejects(
+      () => makeClient().search({ query: 'test' }),
+      (e: SearchIntegrationError) => e.code === 'search_credits_exhausted',
     );
   });
 
@@ -194,6 +214,19 @@ describe('SerperClient.search', () => {
 // ─── B. WebSearchService ──────────────────────────────────────────────────────
 
 describe('WebSearchService.search', () => {
+  it('forwards the company scope to the configured Serper pool', async () => {
+    let companyId: string | undefined;
+    const service = new WebSearchService({
+      search: async (_input, scope) => {
+        companyId = scope;
+        return { organic: [] };
+      },
+    }, noopLogger, (globalThis as any).fetch);
+
+    await service.search({ companyId: 'company-1', query: 'test', pageContextLimit: 0 });
+    assert.equal(companyId, 'company-1');
+  });
+
   it('returns empty result for empty query', async () => {
     const svc = makeService();
     const result = await svc.search({ query: '   ' });

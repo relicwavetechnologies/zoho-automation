@@ -36,6 +36,28 @@ export interface RecordTokensInput {
   mode?:               string;
 }
 
+/**
+ * Token usage for one model call within a traced run (Track A ingest path).
+ * Unlike `record()`, this is awaited and always persists — a desktop call may
+ * report only cache-hit input and still cost money.
+ */
+export interface RecordRunTokensInput {
+  executionRunId:         string;
+  companyId:              string;
+  userId:                 string;
+  agentTarget:            string;
+  modelId:                string;
+  provider:               string;
+  channel:                string;   // 'desktop'
+  threadId?:              string;
+  actualInputTokens?:     number;
+  actualOutputTokens?:    number;
+  cacheReadInputTokens?:  number;   // DeepSeek cache-hit input (PI usage.cacheRead)
+  cacheWriteInputTokens?: number;   // DeepSeek cache-write input (PI usage.cacheWrite)
+  reportedCostUsd?:       number;   // PI usage.cost.total — cross-check only
+  mode?:                  string;
+}
+
 export interface TokenUsageSummary {
   modelId:             string;
   totalInputTokens:    number;
@@ -84,6 +106,32 @@ export class TokenUsageService {
         agentTarget: input.agentTarget,
         error:       String(e),
       });
+    });
+  }
+
+  /**
+   * Record token usage for one model call inside a traced run (desktop ingest).
+   * Awaited and always persists (cache-only calls still cost money).
+   * Throws on failure so the ingest handler can decide (it swallows per-event).
+   */
+  async recordForRun(input: RecordRunTokensInput): Promise<void> {
+    await this.prisma.aiTokenUsage.create({
+      data: {
+        executionRunId: input.executionRunId,
+        companyId:      input.companyId,
+        userId:         input.userId,
+        agentTarget:    input.agentTarget,
+        modelId:        input.modelId,
+        provider:       input.provider,
+        channel:        input.channel,
+        mode:           input.mode ?? 'high',
+        ...(input.threadId             !== undefined ? { threadId:              input.threadId }             : {}),
+        ...(input.actualInputTokens    !== undefined ? { actualInputTokens:     input.actualInputTokens }    : {}),
+        ...(input.actualOutputTokens   !== undefined ? { actualOutputTokens:    input.actualOutputTokens }   : {}),
+        ...(input.cacheReadInputTokens !== undefined ? { cacheReadInputTokens:  input.cacheReadInputTokens } : {}),
+        ...(input.cacheWriteInputTokens!== undefined ? { cacheWriteInputTokens: input.cacheWriteInputTokens }: {}),
+        ...(input.reportedCostUsd      !== undefined ? { reportedCostUsd:       input.reportedCostUsd }      : {}),
+      },
     });
   }
 

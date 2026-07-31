@@ -88,6 +88,12 @@ export interface ExecutionEventView {
   createdAt:   Date;
 }
 
+/** Per-run rollup: turn count + per-model cache-split tokens for pricing. */
+export interface RunStatsRow {
+  turns:  number;
+  models: { modelId: string; missIn: number; hitIn: number; out: number }[];
+}
+
 // ─── Repository ───────────────────────────────────────────────────────────────
 
 export class ExecutionRepository {
@@ -111,6 +117,57 @@ export class ExecutionRepository {
       select: { id: true },
     });
     return run.id;
+  }
+
+  /**
+   * Find an ExecutionRun by its external run id (stored as the unique
+   * requestId), or create it. Used by the desktop/PI trace ingest path, where
+   * PI mints the run id and streams batches per turn — several batches for the
+   * same run can arrive concurrently. Prisma's upsert isn't atomic, so racing
+   * creates violate the unique requestId; we fast-path the lookup and, on a
+   * unique-violation (P2002), re-fetch the row the winning create inserted.
+   */
+  async findOrCreateByRequestId(input: CreateRunInput & { requestId: string }): Promise<string> {
+    const existing = await this.prisma.executionRun.findUnique({
+      where:  { requestId: input.requestId },
+      select: { id: true, companyId: true, userId: true },
+    });
+    if (existing) {
+      assertRunCorrelationOwner(existing, input);
+      return existing.id;
+    }
+
+    try {
+      const run = await this.prisma.executionRun.create({
+        data: {
+          companyId:   input.companyId,
+          channel:     input.channel,
+          entrypoint:  input.entrypoint,
+          requestId:   input.requestId,
+          status:      'running',
+          ...(input.userId      ? { userId:      input.userId }      : {}),
+          ...(input.threadId    ? { threadId:    input.threadId }    : {}),
+          ...(input.chatId      ? { chatId:      input.chatId }      : {}),
+          ...(input.messageId   ? { messageId:   input.messageId }   : {}),
+          ...(input.agentTarget ? { agentTarget: input.agentTarget } : {}),
+        },
+        select: { id: true },
+      });
+      return run.id;
+    } catch (e) {
+      // A concurrent batch created the run first — fetch the winner.
+      if ((e as { code?: string }).code === 'P2002') {
+        const row = await this.prisma.executionRun.findUnique({
+          where:  { requestId: input.requestId },
+          select: { id: true, companyId: true, userId: true },
+        });
+        if (row) {
+          assertRunCorrelationOwner(row, input);
+          return row.id;
+        }
+      }
+      throw e;
+    }
   }
 
   /**
@@ -156,6 +213,20 @@ export class ExecutionRepository {
       create: data,
       update: data,
     });
+  }
+
+  /**
+   * Retention (Track A): delete detailed trace payloads older than `cutoff`.
+   * Removes ExecutionEvent + StepResult rows; leaves ExecutionRun headers (a
+   * cheap long-lived index) and AiTokenUsage (cost/spend history) untouched.
+   * Returns how many rows were removed from each table.
+   */
+  async pruneExpiredDetail(cutoff: Date): Promise<{ events: number; steps: number }> {
+    const [events, steps] = await this.prisma.$transaction([
+      this.prisma.executionEvent.deleteMany({ where: { createdAt: { lt: cutoff } } }),
+      this.prisma.stepResult.deleteMany({ where: { createdAt: { lt: cutoff } } }),
+    ]);
+    return { events: events.count, steps: steps.count };
   }
 
   /** Mark a run as completed successfully. */
@@ -216,6 +287,83 @@ export class ExecutionRepository {
   }
 
   /**
+   * Batch per-run rollups for the list/detail views, keyed by executionId:
+   *   turns  — number of model calls (one per turn in the PI loop)
+   *   models — per-model cache-split token counts, so the application layer can
+   *            price the run (see pricing.ts) rather than trusting reportedCostUsd
+   * Two grouped queries, so listing N runs stays O(1) round-trips.
+   */
+  async aggregateRunStats(
+    runIds: string[],
+  ): Promise<Map<string, RunStatsRow>> {
+    const out = new Map<string, RunStatsRow>();
+    if (runIds.length === 0) return out;
+    for (const id of runIds) out.set(id, { turns: 0, models: [] });
+
+    const [turnGroups, tokenGroups] = await this.prisma.$transaction([
+      this.prisma.executionEvent.groupBy({
+        by:      ['executionId'],
+        where:   { executionId: { in: runIds }, eventType: 'model_call' },
+        _count:  { _all: true },
+        orderBy: { executionId: 'asc' },
+      }),
+      this.prisma.aiTokenUsage.groupBy({
+        by:      ['executionRunId', 'modelId'],
+        where:   { executionRunId: { in: runIds } },
+        _sum:    { actualInputTokens: true, cacheReadInputTokens: true, actualOutputTokens: true },
+        orderBy: { executionRunId: 'asc' },
+      }),
+    ]);
+
+    // Prisma's groupBy return typing for _count/_sum is awkward to narrow; the
+    // runtime shape is stable, so read it through a precise local cast.
+    for (const g of turnGroups as Array<{ executionId: string; _count?: { _all?: number } }>) {
+      const e = out.get(g.executionId);
+      if (e) e.turns = g._count?._all ?? 0;
+    }
+    for (const g of tokenGroups as Array<{
+      executionRunId: string | null;
+      modelId: string;
+      _sum?: { actualInputTokens: number | null; cacheReadInputTokens: number | null; actualOutputTokens: number | null };
+    }>) {
+      if (!g.executionRunId) continue;
+      const e = out.get(g.executionRunId);
+      if (e) {
+        e.models.push({
+          modelId: g.modelId,
+          missIn:  g._sum?.actualInputTokens ?? 0,
+          hitIn:   g._sum?.cacheReadInputTokens ?? 0,
+          out:     g._sum?.actualOutputTokens ?? 0,
+        });
+      }
+    }
+    return out;
+  }
+
+  /** Atomically reserve the next event sequence number for a run. */
+  async nextSequence(executionId: string): Promise<number> {
+    const run = await this.prisma.executionRun.update({
+      where:  { id: executionId },
+      data:   { lastSequence: { increment: 1 } },
+      select: { lastSequence: true },
+    });
+    return run.lastSequence;
+  }
+
+  /** Resolve userId → display name/email for run attribution (batch, deduped). */
+  async resolveUsers(userIds: string[]): Promise<Map<string, { name: string | null; email: string }>> {
+    const out = new Map<string, { name: string | null; email: string }>();
+    const ids = [...new Set(userIds.filter(Boolean))];
+    if (ids.length === 0) return out;
+    const users = await this.prisma.user.findMany({
+      where:  { id: { in: ids } },
+      select: { id: true, name: true, email: true },
+    });
+    for (const u of users) out.set(u.id, { name: u.name, email: u.email });
+    return out;
+  }
+
+  /**
    * Fetch the ordered event stream for a run.
    * `phase` filter is optional (e.g. 'plan', 'execute', 'synthesis').
    */
@@ -240,5 +388,14 @@ export class ExecutionRepository {
       orderBy: { sequence: 'asc' },
       take:    input.limit ?? 500,
     });
+  }
+}
+
+function assertRunCorrelationOwner(
+  row: { companyId: string; userId: string | null },
+  input: { companyId: string; userId?: string },
+): void {
+  if (row.companyId !== input.companyId || row.userId !== (input.userId ?? null)) {
+    throw new Error('Execution run correlation belongs to a different authenticated principal');
   }
 }

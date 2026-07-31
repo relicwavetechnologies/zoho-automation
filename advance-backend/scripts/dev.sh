@@ -2,16 +2,18 @@
 # dev.sh — start local infrastructure for advance-backend.
 #
 # Starts:
-#   1. VM Postgres SSH tunnel (local 127.0.0.1:15432)
-#   2. Redis queue  (port 6380, no memory limit)
-#   3. Redis cache  (port 6381, 50 MB LRU)
+#   1. Redis queue  (port 6380, no memory limit)
+#   2. Redis cache  (port 6381, 50 MB LRU)
+#
+# pnpm dev:e2e starts and verifies the VM Postgres SSH tunnel before invoking
+# this script, so a tunnel failure aborts the command before infra reports ready.
 #
 # Infra keeps running until you explicitly kill it with stop.sh.
-# Restart the backend independently with: pnpm dev  (or scripts/server.sh)
+# Restart the backend and Google Workspace MCP sidecar with: pnpm dev
 #
 # Ctrl+C exits this script but does NOT kill Redis/tunnel.
 
-set -uo pipefail
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -61,8 +63,7 @@ start_redis() {
   done
 }
 
-# ── Start DB tunnel + Redis (daemonised — survives script exit) ───────────────
-"$SCRIPT_DIR/db-tunnel.sh" start
+# ── Start Redis (daemonised — survives script exit) ────────────────────────────────────────
 start_redis "queue" "$REDIS_QUEUE_PORT" ""      /tmp/divo-redis-queue.log
 start_redis "cache" "$REDIS_CACHE_PORT" "50mb"  /tmp/divo-redis-cache.log
 
@@ -78,6 +79,7 @@ echo ""
 echo -e "  ${GREEN}Postgres${NC}     localhost:15432  (SSH tunnel to VM, daemonised)"
 echo -e "  ${GREEN}Redis queue${NC}  localhost:$REDIS_QUEUE_PORT  (no limit, daemonised)"
 echo -e "  ${GREEN}Redis cache${NC}  localhost:$REDIS_CACHE_PORT  (50 MB max, LRU, daemonised)"
+echo -e "  ${GREEN}Google MCP${NC}   starts automatically with pnpm dev"
 echo ""
 echo -e "  Start the backend:  ${CYAN}pnpm dev${NC}  (or  ${CYAN}scripts/server.sh${NC})"
 echo -e "  Stop everything:    ${CYAN}pnpm stop${NC}"

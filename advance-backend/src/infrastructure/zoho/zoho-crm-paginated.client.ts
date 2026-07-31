@@ -15,6 +15,7 @@
  */
 
 import type { ZohoTokenService } from './zoho-token.service';
+import type { IntegrationGrantAccess } from '../persistence/integration-connection.repository';
 
 // ─── Module types ─────────────────────────────────────────────────────────────
 
@@ -35,6 +36,12 @@ export interface ZohoCrmListResult {
 export interface ZohoCrmRecordResult {
   readonly id:     string;
   readonly data:   Record<string, unknown>;
+}
+
+interface ZohoConnectionAuth {
+  readonly userId?: string;
+  readonly connectionId?: string;
+  readonly minimumAccess?: IntegrationGrantAccess;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -103,9 +110,21 @@ export class ZohoCrmPaginatedClient {
     companyId: string,
     path:      string,
     init:      RequestInit = {},
+    auth:      ZohoConnectionAuth = {},
   ): Promise<T | null> {
-    const token = await this.tokenService.getValidToken(companyId);
-    const url = `${this.crmBase}${path}`;
+    const connectionAuth = auth.connectionId && auth.userId
+      ? await this.tokenService.getValidConnectionAuth({
+        companyId,
+        userId: auth.userId,
+        connectionId: auth.connectionId,
+        minimumAccess: auth.minimumAccess ?? 'read_only',
+      })
+      : null;
+    const token = connectionAuth?.accessToken ?? await this.tokenService.getValidToken(companyId);
+    const crmBase = connectionAuth
+      ? `${connectionAuth.apiBaseUrl}/crm/v6`
+      : this.crmBase;
+    const url = `${crmBase}${path}`;
 
     const res = await fetch(url, {
       ...init,
@@ -139,6 +158,8 @@ export class ZohoCrmPaginatedClient {
    */
   async listRecords(input: {
     companyId:   string;
+    userId?:     string;
+    connectionId?: string;
     module:      string;
     filters?:    Record<string, string>;
     sortBy?:     string;
@@ -158,7 +179,7 @@ export class ZohoCrmPaginatedClient {
         ...(input.sortBy ? { sortBy: input.sortBy } : {}),
         ...(input.sortOrder ? { sortOrder: input.sortOrder } : {}),
         ...(input.fields ? { fields: input.fields } : {}),
-      });
+      }, input);
       return { items: pg.items, hasMore: pg.moreRecords, page: input.page, ...(pg.nextPageToken ? { nextPageToken: pg.nextPageToken } : {}) };
     }
 
@@ -173,7 +194,7 @@ export class ZohoCrmPaginatedClient {
         ...(input.sortBy ? { sortBy: input.sortBy } : {}),
         ...(input.sortOrder ? { sortOrder: input.sortOrder } : {}),
         ...(input.fields ? { fields: input.fields } : {}),
-      });
+      }, input);
       collected.push(...pg.items);
       const deduped = dedupeRecords(collected);
       lastHasMore = pg.moreRecords;
@@ -203,6 +224,8 @@ export class ZohoCrmPaginatedClient {
    */
   async listAllRecords(input: {
     companyId:   string;
+    userId?:     string;
+    connectionId?: string;
     module:      string;
     filters?:    Record<string, string>;
     sortBy?:     string;
@@ -224,7 +247,7 @@ export class ZohoCrmPaginatedClient {
         ...(input.sortBy ? { sortBy: input.sortBy } : {}),
         ...(input.sortOrder ? { sortOrder: input.sortOrder } : {}),
         ...(input.fields ? { fields: input.fields } : {}),
-      });
+      }, input);
 
       for (const item of pg.items) {
         const id = recordId(item);
@@ -248,6 +271,8 @@ export class ZohoCrmPaginatedClient {
    */
   async searchRecords(input: {
     companyId: string;
+    userId?:   string;
+    connectionId?: string;
     module:    string;
     criteria:  string;
     perPage?:  number;
@@ -266,6 +291,8 @@ export class ZohoCrmPaginatedClient {
     const data = await this.request<Record<string, unknown>>(
       input.companyId,
       `/${mod}/search?${params}`,
+      {},
+      input,
     );
 
     if (!data) return { items: [], hasMore: false, page };
@@ -283,6 +310,8 @@ export class ZohoCrmPaginatedClient {
    */
   async searchByText(input: {
     companyId: string;
+    userId?:   string;
+    connectionId?: string;
     module:    string;
     query:     string;
     perPage?:  number;
@@ -299,6 +328,8 @@ export class ZohoCrmPaginatedClient {
     try {
       return await this.searchRecords({
         companyId: input.companyId,
+        ...(input.userId ? { userId: input.userId } : {}),
+        ...(input.connectionId ? { connectionId: input.connectionId } : {}),
         module:    mod,
         criteria:  criteriaOr,
         ...(input.perPage !== undefined ? { perPage: input.perPage } : {}),
@@ -313,6 +344,8 @@ export class ZohoCrmPaginatedClient {
    */
   async getRecord(input: {
     companyId: string;
+    userId?:   string;
+    connectionId?: string;
     module:    string;
     recordId:  string;
   }): Promise<Record<string, unknown> | null> {
@@ -320,6 +353,8 @@ export class ZohoCrmPaginatedClient {
     const data = await this.request<Record<string, unknown>>(
       input.companyId,
       `/${mod}/${encodeURIComponent(input.recordId)}`,
+      {},
+      input,
     );
     if (!data) return null;
     const records = asArrayOfRecords(data['data']);
@@ -331,6 +366,8 @@ export class ZohoCrmPaginatedClient {
    */
   async createRecord(input: {
     companyId: string;
+    userId?:   string;
+    connectionId?: string;
     module:    string;
     fields:    Record<string, unknown>;
   }): Promise<ZohoCrmRecordResult> {
@@ -339,6 +376,7 @@ export class ZohoCrmPaginatedClient {
       input.companyId,
       `/${mod}`,
       { method: 'POST', body: JSON.stringify({ data: [input.fields] }) },
+      { ...input, minimumAccess: 'read_write' },
     );
     if (!data) throw new Error('Zoho CRM createRecord: empty response');
 
@@ -356,6 +394,8 @@ export class ZohoCrmPaginatedClient {
    */
   async updateRecord(input: {
     companyId: string;
+    userId?:   string;
+    connectionId?: string;
     module:    string;
     recordId:  string;
     fields:    Record<string, unknown>;
@@ -365,6 +405,7 @@ export class ZohoCrmPaginatedClient {
       input.companyId,
       `/${mod}/${encodeURIComponent(input.recordId)}`,
       { method: 'PUT', body: JSON.stringify({ data: [{ ...input.fields, id: input.recordId }] }) },
+      { ...input, minimumAccess: 'read_write' },
     );
   }
 
@@ -373,6 +414,8 @@ export class ZohoCrmPaginatedClient {
    */
   async deleteRecord(input: {
     companyId: string;
+    userId?:   string;
+    connectionId?: string;
     module:    string;
     recordId:  string;
   }): Promise<void> {
@@ -381,6 +424,7 @@ export class ZohoCrmPaginatedClient {
       input.companyId,
       `/${mod}/${encodeURIComponent(input.recordId)}`,
       { method: 'DELETE' },
+      { ...input, minimumAccess: 'read_write' },
     );
   }
 
@@ -397,6 +441,7 @@ export class ZohoCrmPaginatedClient {
       sortOrder?: 'asc' | 'desc';
       fields?:    string[];
     },
+    auth: ZohoConnectionAuth = {},
   ): Promise<{ items: Array<Record<string, unknown>>; moreRecords: boolean; nextPageToken?: string }> {
     const params = new URLSearchParams({
       per_page: String(opts.perPage),
@@ -419,6 +464,8 @@ export class ZohoCrmPaginatedClient {
     const data = await this.request<Record<string, unknown>>(
       companyId,
       `/${module}?${params}`,
+      {},
+      auth,
     );
 
     if (!data) return { items: [], moreRecords: false };

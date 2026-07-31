@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Divo Workflow Learning Pipeline — Architecture Review</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&amp;family=Plus+Jakarta+Sans:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+  <style>
+    :root {
+      --font-display: 'Space Grotesk', 'General Sans', 'Satoshi', system-ui, sans-serif;
+      --font-body: 'Plus Jakarta Sans', 'Satoshi', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+      --fs-xs: .75rem; --fs-sm: .875rem; --fs-base: 1rem; --fs-lg: 1.125rem;
+      --fs-xl: 1.375rem; --fs-2xl: 1.75rem; --fs-3xl: 2.25rem; --fs-4xl: 3rem;
+      --lh-tight: 1.15; --lh-snug: 1.35; --lh-normal: 1.55; --lh-relaxed: 1.75;
+      --fw-regular: 400; --fw-medium: 500; --fw-semibold: 600; --fw-bold: 700;
+      --bg-primary: #0a0a0f; --bg-secondary: #11111a; --bg-card: #16161f; --bg-elevated: #1d1d28;
+      --text-primary: #f4f4f8; --text-secondary: #b4b4c2; --text-muted: #6f6f80;
+      --accent-primary: #7c5cff; --accent-secondary: #22d3ee; --accent-success: #34d399;
+      --accent-warning: #fbbf24; --accent-danger: #f87171;
+      --border-subtle: rgba(255,255,255,.06); --border-soft: rgba(255,255,255,.10); --border-strong: rgba(255,255,255,.18);
+      --space-xs: .25rem; --space-sm: .5rem; --space-md: 1rem; --space-lg: 1.5rem;
+      --space-xl: 2.5rem; --space-2xl: 4rem; --space-3xl: 6rem;
+      --radius-sm: 6px; --radius-md: 12px; --radius-lg: 20px; --radius-xl: 28px; --radius-full: 9999px;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,.4); --shadow-md: 0 8px 24px rgba(0,0,0,.35);
+      --shadow-lg: 0 24px 60px rgba(0,0,0,.5); --shadow-glow: 0 0 32px rgba(124,92,255,.45);
+      --ease-default: cubic-bezier(.4,0,.2,1); --ease-smooth: cubic-bezier(.16,1,.3,1);
+      --dur-fast: 150ms; --dur-normal: 300ms; --container-xl: 1320px;
+    }
+    [data-theme="light"] {
+      --bg-primary: #fbfaf7; --bg-secondary: #f3f1ec; --bg-card: #fff; --bg-elevated: #fff;
+      --text-primary: #15151d; --text-secondary: #4a4a58; --text-muted: #8a8a98;
+      --accent-primary: #6a3df0; --accent-secondary: #0aa7c2; --accent-success: #0d9c6c;
+      --accent-warning: #b9750a; --accent-danger: #d44b4b;
+      --border-subtle: rgba(0,0,0,.06); --border-soft: rgba(0,0,0,.10); --border-strong: rgba(0,0,0,.18);
+      --shadow-sm: 0 1px 2px rgba(20,18,12,.06); --shadow-md: 0 8px 24px rgba(20,18,12,.08);
+      --shadow-lg: 0 24px 60px rgba(20,18,12,.12); --shadow-glow: 0 0 32px rgba(106,61,240,.25);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: var(--bg-primary); color: var(--text-primary); font: var(--fw-regular) var(--fs-base)/var(--lh-normal) var(--font-body); -webkit-font-smoothing: antialiased; }
+    h1,h2,h3,h4 { font-family: var(--font-display); font-weight: var(--fw-semibold); line-height: var(--lh-tight); letter-spacing: -.01em; }
+    code,pre,.mono { font-family: var(--font-mono); }
+    a { color: var(--accent-secondary); }
+    button { font: inherit; }
+    .shell { width: min(calc(100% - 32px), var(--container-xl)); margin: 0 auto; padding-bottom: var(--space-3xl); }
+    .topbar { position: sticky; top: 0; z-index: 20; display: flex; gap: var(--space-md); align-items: center; justify-content: space-between; padding: .8rem 0; background: color-mix(in srgb, var(--bg-primary) 88%, transparent); backdrop-filter: blur(16px); border-bottom: 1px solid var(--border-subtle); }
+    .topbar nav { display: flex; gap: var(--space-lg); align-items: center; }
+    .topbar a { color: var(--text-secondary); text-decoration: none; font-size: var(--fs-sm); }
+    .btn,.chip { border: 1px solid var(--border-soft); color: var(--text-primary); background: var(--bg-card); border-radius: var(--radius-full); padding: .55rem .85rem; cursor: pointer; transition: all var(--dur-fast) var(--ease-default); }
+    .btn:hover,.chip:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+    .hero { padding: var(--space-3xl) 0 var(--space-2xl); display: grid; grid-template-columns: 1fr 340px; gap: var(--space-2xl); align-items: end; }
+    .eyebrow { color: var(--accent-secondary); text-transform: uppercase; letter-spacing: .14em; font-size: var(--fs-xs); font-weight: var(--fw-bold); }
+    h1 { font-size: clamp(2.5rem,7vw,5.4rem); max-width: 950px; margin: var(--space-md) 0; }
+    .lede { color: var(--text-secondary); font-size: var(--fs-xl); max-width: 880px; }
+    .verdict { border: 1px solid color-mix(in srgb,var(--accent-warning) 34%,var(--border-soft)); background: color-mix(in srgb,var(--accent-warning) 7%,var(--bg-card)); border-radius: var(--radius-lg); padding: var(--space-lg); }
+    .score { display: flex; align-items: center; gap: var(--space-md); }
+    .gauge { width: 84px; aspect-ratio: 1; border-radius: 50%; display: grid; place-items: center; background: conic-gradient(var(--accent-danger) 0 82%, var(--bg-elevated) 82% 100%); position: relative; }
+    .gauge::after { content: ''; position: absolute; inset: 9px; border-radius: inherit; background: var(--bg-card); }
+    .gauge b { position: relative; z-index: 1; font: var(--fw-bold) var(--fs-2xl)/1 var(--font-display); }
+    .grid { display: grid; grid-template-columns: repeat(12,1fr); gap: var(--space-md); }
+    section { padding: var(--space-2xl) 0; scroll-margin-top: 70px; }
+    section > h2 { font-size: var(--fs-3xl); margin: 0 0 var(--space-sm); }
+    .section-lede { color: var(--text-secondary); max-width: 900px; margin: 0 0 var(--space-xl); }
+    .card { background: var(--bg-card); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); padding: var(--space-lg); box-shadow: var(--shadow-sm); }
+    .card h3 { margin-top: 0; }
+    .metric { grid-column: span 3; }
+    .metric b { display: block; color: var(--text-primary); font-size: var(--fs-2xl); }
+    .metric span { color: var(--text-secondary); font-size: var(--fs-sm); }
+    .filters { position: sticky; top: 58px; z-index: 10; display: flex; flex-wrap: wrap; gap: var(--space-sm); padding: var(--space-md) 0; background: color-mix(in srgb,var(--bg-primary) 90%,transparent); backdrop-filter: blur(14px); }
+    .chip.active { background: var(--accent-primary); border-color: var(--accent-primary); color: var(--text-primary); }
+    .findings { display: grid; gap: var(--space-md); }
+    .finding { border-left: 4px solid var(--text-muted); transition: transform var(--dur-fast) var(--ease-default), opacity var(--dur-fast); }
+    .finding:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+    .finding[data-severity="critical"] { border-left-color: var(--accent-danger); }
+    .finding[data-severity="warning"] { border-left-color: var(--accent-warning); }
+    .finding[data-severity="suggestion"] { border-left-color: var(--accent-secondary); }
+    .finding[data-severity="positive"] { border-left-color: var(--accent-success); }
+    .finding.hidden { display: none; }
+    .finding-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-lg); }
+    .badge { display: inline-flex; align-items: center; gap: .4rem; text-transform: uppercase; letter-spacing: .08em; font-size: .68rem; font-weight: var(--fw-bold); }
+    .critical { color: var(--accent-danger); } .warning { color: var(--accent-warning); } .suggestion { color: var(--accent-secondary); } .positive { color: var(--accent-success); }
+    .evidence { color: var(--text-muted); font: var(--fs-xs)/1.5 var(--font-mono); overflow-wrap: anywhere; }
+    .fix { margin-top: var(--space-md); padding: var(--space-md); background: var(--bg-secondary); border-radius: var(--radius-md); color: var(--text-secondary); }
+    .flow { display: grid; grid-template-columns: repeat(5,1fr); gap: var(--space-md); align-items: stretch; }
+    .node { min-height: 180px; position: relative; }
+    .node:not(:last-child)::after { content: '→'; position: absolute; right: -.95rem; top: 45%; color: var(--accent-primary); font-size: var(--fs-xl); z-index: 2; }
+    .node b { color: var(--accent-secondary); }
+    .owner { display: inline-block; margin-top: .6rem; padding: .25rem .5rem; border: 1px solid var(--border-soft); border-radius: var(--radius-full); color: var(--text-muted); font-size: var(--fs-xs); }
+    .lane { grid-column: span 4; }
+    .lane h3 { display: flex; justify-content: space-between; gap: var(--space-md); }
+    .lane ul,.finding ul,.card ul { padding-left: 1.2rem; color: var(--text-secondary); }
+    .timeline { display: grid; gap: var(--space-sm); counter-reset: wave; }
+    .wave { display: grid; grid-template-columns: 72px 1fr 180px; gap: var(--space-lg); align-items: start; }
+    .wave::before { counter-increment: wave; content: '0' counter(wave); color: var(--accent-primary); font: var(--fw-bold) var(--fs-xl)/1 var(--font-mono); }
+    .wave .exit { color: var(--accent-success); font-size: var(--fs-sm); }
+    .screen { grid-column: span 4; min-height: 210px; }
+    .screen small { color: var(--text-muted); }
+    .screen .mock { margin-top: var(--space-md); padding: var(--space-md); min-height: 105px; background: var(--bg-secondary); border: 1px dashed var(--border-strong); border-radius: var(--radius-md); }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--border-soft); border-radius: var(--radius-lg); }
+    table { width: 100%; border-collapse: collapse; min-width: 860px; }
+    th,td { text-align: left; padding: .9rem 1rem; border-bottom: 1px solid var(--border-subtle); vertical-align: top; }
+    th { color: var(--text-muted); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .08em; }
+    td { color: var(--text-secondary); }
+    .cdot { display: inline-block; width: .55rem; height: .55rem; border-radius: 999px; margin-left: .35rem; vertical-align: .1em; position: relative; cursor: help; transition: transform .15s ease; }
+    .cdot:hover { transform: scale(1.4); }
+    .cdot-high { background: var(--accent-success); box-shadow: 0 0 0 2px color-mix(in oklab,var(--accent-success) 25%,transparent); }
+    .cdot-medium { background: var(--accent-warning); box-shadow: 0 0 0 2px color-mix(in oklab,var(--accent-warning) 25%,transparent); }
+    .cdot-low { background: var(--text-muted); box-shadow: 0 0 0 2px color-mix(in oklab,var(--text-muted) 25%,transparent); }
+    .cdot[title]::after { content: attr(title); position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); background: var(--bg-elevated); color: var(--text-primary); font-size: var(--fs-xs); font-family: var(--font-body); white-space: nowrap; padding: .35rem .6rem; border-radius: 6px; border: 1px solid var(--border-soft); opacity: 0; pointer-events: none; transition: opacity .15s ease; }
+    .cdot:hover[title]::after { opacity: 1; }
+    .callout { padding: var(--space-xl); border: 1px solid color-mix(in srgb,var(--accent-primary) 35%,var(--border-soft)); background: color-mix(in srgb,var(--accent-primary) 7%,var(--bg-card)); border-radius: var(--radius-xl); }
+    .sources li { margin-bottom: .65rem; }
+    .footer { color: var(--text-muted); text-align: center; padding-top: var(--space-2xl); }
+    @media(max-width: 900px) { .hero { grid-template-columns: 1fr; } .metric,.lane,.screen { grid-column: span 6; } .flow { grid-template-columns: 1fr; } .node:not(:last-child)::after { content: '↓'; right: 50%; top: auto; bottom: -1.15rem; } .wave { grid-template-columns: 52px 1fr; } .wave .exit { grid-column: 2; } }
+    @media(max-width: 680px) { .topbar nav { display: none; } .metric,.lane,.screen { grid-column: 1/-1; } .finding-head { display: block; } .evidence { margin-top: var(--space-sm); } h1 { font-size: 2.7rem; } }
+    @media(prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *,*::before,*::after { transition: none!important; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="topbar">
+      <strong>Divo / Architecture Review</strong>
+      <nav aria-label="Report sections"><a href="#summary">Summary</a><a href="#findings">Findings</a><a href="#architecture">Architecture</a><a href="#mock">Mock UI</a><a href="#roadmap">Roadmap</a></nav>
+      <button class="btn" id="theme" type="button">Toggle theme</button>
+    </div>
+
+    <header class="hero" id="summary">
+      <div>
+        <div class="eyebrow">Decision review · 17 July 2026</div>
+        <h1>Keep the one-button demonstration. Replace “record everything” with governed evidence capture.</h1>
+        <p class="lede">The user experience is directionally right for low-training company users. The proposed internals are not: continuous full monitoring, raw-video model ingestion, and self-editing live skills would create unnecessary privacy, cost, reliability, and authority failures.</p>
+      </div>
+      <aside class="verdict">
+        <div class="score"><div class="gauge"><b>82</b></div><div><div class="badge warning">Current-plan risk</div><p>Proceed only with a redesigned spike.</p></div></div>
+        <p><strong>Verdict:</strong> preserve the recording metaphor; implement a session-scoped, sparse event recorder and a draft/confirm/publish lifecycle.</p>
+        <p><strong>Decision confidence:</strong> 92%<span class="cdot cdot-high" title="High — codebase and current provider docs reviewed"></span></p>
+      </aside>
+    </header>
+
+    <section>
+      <div class="grid">
+        <article class="card metric"><b>1 click</b><span>Target start experience</span></article>
+        <article class="card metric"><b>0 keylogs</b><span>Never capture raw keystrokes</span></article>
+        <article class="card metric"><b>3 gates</b><span>Understand → test → publish</span></article>
+        <article class="card metric"><b>Manual first</b><span>Safest initial trigger</span></article>
+      </div>
+    </section>
+
+    <section id="findings">
+      <h2>Findings</h2>
+      <p class="section-lede">Severity reflects production impact if the original proposal is implemented directly. Positives identify Divo components that should be reused instead of duplicated.</p>
+      <div class="filters" role="group" aria-label="Finding filters">
+        <button class="chip active" data-filter="all">All (11)</button>
+        <button class="chip" data-filter="critical">Critical (2)</button>
+        <button class="chip" data-filter="warning">Warning (5)</button>
+        <button class="chip" data-filter="suggestion">Suggestion (1)</button>
+        <button class="chip" data-filter="positive">Positive (3)</button>
+      </div>
+      <div class="findings">
+        <article class="card finding" data-severity="critical">
+          <div class="finding-head"><div><div class="badge critical">Critical</div><h3>“Monitor everything” is the wrong data contract</h3></div><div class="evidence">Proposal + GDPR Art. 5 + DPDP Rules 2025</div></div>
+          <p>Full video, all URLs, system audio, and app history inevitably collect passwords, private messages, customer data, third-party conversations, and unrelated work. Consent alone does not make unlimited collection safe or proportionate.</p>
+          <div class="fix"><strong>Required change:</strong> session-scoped capture with a visible recording indicator, pause/stop, selected display/window, excluded apps/domains, no incognito/password-manager/auth windows, no keystrokes/clipboard, domain-only browser metadata by default, and short raw-artifact retention.</div>
+        </article>
+
+        <article class="card finding" data-severity="critical">
+          <div class="finding-head"><div><div class="badge critical">Critical</div><h3>An AI must not directly rewrite an active company skill</h3></div><div class="evidence">skill-publishing.tool.ts:162–177 · skill-registry-versioning.ts:29–59</div></div>
+          <p>The current agent-facing publishing tool creates a new skill and rejects duplicate slugs; department admin updates mutate the live skill. There is no candidate-revision approval or rollback route. Automatic live edits would bypass the intended company/department authority boundary.</p>
+          <div class="fix"><strong>Required change:</strong> feedback creates a proposed patch against a pinned skill revision. The author can approve a personal draft; department/company changes require manager/admin publish. Keep immutable versions and add explicit rollback.</div>
+        </article>
+
+        <article class="card finding" data-severity="warning">
+          <div class="finding-head"><div><div class="badge warning">Warning</div><h3>DeepSeek V4 Pro is a compiler here, not the vision pipeline</h3></div><div class="evidence">DeepSeek Chat Completion schema · media-ocr.service.ts:9–68</div></div>
+          <p>DeepSeek officially supports V4 Pro, max reasoning, JSON output, and tools, but the current API schema accepts text message content. Raw screenshots cannot be the direct model input.</p>
+          <div class="fix"><strong>Design:</strong> keyframes go through a vision/OCR stage; audio goes through speech-to-text; DeepSeek receives a compact, timestamped, structured timeline plus tool/skill/policy snapshots. Validate JSON because the provider notes occasional empty JSON output.</div>
+        </article>
+
+        <article class="card finding" data-severity="warning">
+          <div class="finding-head"><div><div class="badge warning">Warning</div><h3>The existing OCR route is a single-image helper, not a recording processor</h3></div><div class="evidence">gateway.types.ts:3–16 · media-ocr.service.ts:9–15</div></div>
+          <p><code>media.image_ocr</code> accepts one inline image with a 1.25 MB decoded cap. It has useful secret redaction and labels observations as untrusted, but no queue, artifact lifecycle, session RBAC, frame deduplication, or batch budget.</p>
+          <div class="fix"><strong>Design:</strong> reuse the extractor behind an asynchronous media pipeline. Add capture-specific authorization, object storage, checksums, deduplication, retries, backpressure, and per-session cost ceilings.</div>
+        </article>
+
+        <article class="card finding" data-severity="warning">
+          <div class="finding-head"><div><div class="badge warning">Warning</div><h3>Current scheduling is time-only and prompt-driven</h3></div><div class="evidence">schedule-config.ts:12–41 · schedule-task.tool.ts:59–75 · scheduled-workflow.service.ts:182–235</div></div>
+          <p>The scheduler supports one-time/hourly/daily/weekly/monthly triggers and executes a compiled free-form prompt through the Lark engine. Rich workflow fields exist but are currently written as empty objects. This is insufficient for reliable event-triggered learned workflows.</p>
+          <div class="fix"><strong>Design:</strong> separate a versioned workflow definition from trigger bindings. Start with manual trigger, then reuse the existing scheduler as a schedule trigger adapter. Provider events and polling conditions come later.</div>
+        </article>
+
+        <article class="card finding" data-severity="warning">
+          <div class="finding-head"><div><div class="badge warning">Warning</div><h3>Skill tool IDs are too coarse for learned automation</h3></div><div class="evidence">schema.prisma:938–951 · skill-catalog.service.ts:149–165</div></div>
+          <p>Runtime visibility currently requires every <code>Skill.toolIds</code> entry to be permitted. Action-level <code>SkillCapability</code> metadata exists, but its own comment says the write UI is not live and <code>toolIds</code> remains the enforced list.</p>
+          <div class="fix"><strong>Design:</strong> each compiled workflow step must pin <code>toolId</code>, action group, operation/schema revision, input mapping, output mapping, and approval policy. Do not infer write authority from skill prose.</div>
+        </article>
+
+        <article class="card finding" data-severity="warning">
+          <div class="finding-head"><div><div class="badge warning">Warning</div><h3>Pro Max is not the current default and cost accounting needs verification</h3></div><div class="evidence">runtime.rs:24–26,190–196 · llm-proxy.service.ts:48–80 · pricing.ts:21–24</div></div>
+          <p>Jan company mode defaults to V4 Flash with medium thinking; the backend proxy defaults members to Flash-only. Pro must be explicitly granted. Also, the repository's Pro prices differ from the currently published DeepSeek pricing page, so budget decisions may be overstated.</p>
+          <div class="fix"><strong>Design:</strong> run compilation as a backend workload identity (<code>workflow.compiler</code>) with company budgets, explicit <code>deepseek-v4-pro</code>, thinking enabled, <code>reasoning_effort=max</code>, and updated pricing tests. Do not depend on a desktop member's chat model preference.</div>
+        </article>
+
+        <article class="card finding" data-severity="suggestion">
+          <div class="finding-head"><div><div class="badge suggestion">Suggestion</div><h3>Make narration a push-to-explain affordance before continuous audio</h3></div><div class="evidence">Deepgram pre-recorded + utterance documentation</div></div>
+          <p>Short voice notes attached to marked steps produce better intent evidence with less unrelated speech and much lower privacy exposure. Continuous microphone and system-audio capture can remain an opt-in later.</p>
+          <div class="fix"><strong>V1:</strong> “Mark step” + “Explain what I’m doing” voice note. If long recordings are added, chunk audio asynchronously; Deepgram documents timeouts for long synchronous pre-recorded requests.</div>
+        </article>
+
+        <article class="card finding" data-severity="positive">
+          <div class="finding-head"><div><div class="badge positive">Positive</div><h3>The backend already owns the correct company boundary</h3></div><div class="evidence">gateway-dispatcher.ts:47–64 · tool-executor.ts:186–309</div></div>
+          <p>Tool discovery, input validation, permission resolution, preflight, execution, audit, and approval are already backend-owned. The new compiler should consume these contracts and never reproduce RBAC or credentials in Jan/Pi.</p>
+        </article>
+
+        <article class="card finding" data-severity="positive">
+          <div class="finding-head"><div><div class="badge positive">Positive</div><h3>HITL primitives already support exact-action review</h3></div><div class="evidence">local-approval-intent.service.ts:168–319 · tool-executor.ts:120–177</div></div>
+          <p>Local approval intents bind exact validated arguments to a session, expire, and are revalidated before commit. Manager approval can then gate department actions. Reuse this for workflow execution rather than inventing workflow-specific approval logic.</p>
+        </article>
+
+        <article class="card finding" data-severity="positive">
+          <div class="finding-head"><div><div class="badge positive">Positive</div><h3>Versions, registry revisions, traces, and tool readiness already exist</h3></div><div class="evidence">schema.prisma:902–960 · trace-ingest.routes.ts:45–84 · gateway-dispatcher.ts:477–505</div></div>
+          <p>Immutable skill snapshots, company registry revisions, desktop execution traces, and side-effect-free tool preflight significantly reduce the amount of new platform work. The new pipeline should link to these records instead of storing opaque model output.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <h2>Recommended architecture</h2>
+      <p class="section-lede">The recording is evidence, the workflow specification is the executable truth, and the skill is the human-readable recipe. They are related records—not one blob.</p>
+      <div class="flow">
+        <article class="card node"><b>1. Capture</b><h3>Session evidence</h3><p>App focus, domain changes, sparse keyframes, markers, optional voice notes.</p><span class="owner">Jan/Tauri owns device capture</span></article>
+        <article class="card node"><b>2. Enrich</b><h3>Structured timeline</h3><p>OCR/vision, speech-to-text, secret flags, event segmentation, dedupe.</p><span class="owner">Backend media workers</span></article>
+        <article class="card node"><b>3. Compile</b><h3>Draft workflow</h3><p>DeepSeek Pro Max maps steps to approved skills/tools and lists unknowns.</p><span class="owner">Backend compiler service</span></article>
+        <article class="card node"><b>4. Validate</b><h3>Confirm + test</h3><p>User edits understanding; gateway checks RBAC, connections, schemas, approvals.</p><span class="owner">Backend authority + Jan UX</span></article>
+        <article class="card node"><b>5. Run + learn</b><h3>Versioned execution</h3><p>Manual/schedule/event trigger, HITL, traces, step feedback, candidate patch.</p><span class="owner">Backend workflow runtime</span></article>
+      </div>
+
+      <div class="grid" style="margin-top:1rem">
+        <article class="card lane"><h3>Device capture plane <span class="positive">Local-first</span></h3><ul><li>OS capture permission and system picker; visible red indicator at all times.</li><li>Keep full raw video locally and ephemeral, or avoid generating it in V1.</li><li>Upload only selected/deduplicated keyframes and explicit voice notes.</li><li>Browser companion sends domain/title events only while a recording session is active.</li></ul></article>
+        <article class="card lane"><h3>Workflow learning plane <span class="warning">New backend subsystem</span></h3><ul><li><code>WorkflowCaptureSession</code>, ordered observations, artifact references, consent version, retention deadline.</li><li>Asynchronous OCR/STT jobs produce timestamped observations; raw media is never trusted as instructions.</li><li>Compiler sees current tool schemas, visible skills, connections, RBAC, and registry revision.</li><li>Web research runs only for capability gaps and produces proposed integrations—never grants or installs them.</li></ul></article>
+        <article class="card lane"><h3>Control and publishing plane <span class="positive">Reuse existing authority</span></h3><ul><li><code>WorkflowDraft</code> contains steps, branches, inputs, outputs, tool/action bindings, trigger candidates, uncertainty, and risk.</li><li>Confirmation edits the draft; preflight checks each proposed tool invocation/readiness where concrete arguments exist.</li><li>Publish creates a versioned workflow and a candidate skill revision. Scope decides who must approve.</li><li>Every run pins workflow version, skill revision, registry revision, connection, and trigger revision.</li></ul></article>
+      </div>
+    </section>
+
+    <section>
+      <h2>What gets created</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Artifact</th><th>Purpose</th><th>Current Divo fit</th><th>Authority</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Capture session</strong></td><td>Consent, capture policy, evidence timeline, retention.</td><td>New; do not overload Pi execution traces.</td><td>User owns session; backend enforces tenant/RBAC.</td></tr>
+            <tr><td><strong>Workflow draft</strong></td><td>Model's structured understanding plus unknowns and proposed bindings.</td><td>New; can borrow fields from <code>ScheduledWorkflow</code>.</td><td>Not executable until confirmed and validated.</td></tr>
+            <tr><td><strong>Skill revision</strong></td><td>Human-readable “how to perform this work” recipe.</td><td>Reuse <code>Skill</code>, <code>SkillVersion</code>, grants, registry revision.</td><td>Department/company publish requires manager/admin.</td></tr>
+            <tr><td><strong>Workflow definition version</strong></td><td>Executable ordered graph with typed step bindings and validators.</td><td>New; current scheduled prompt is too free-form.</td><td>Backend-only execution contract.</td></tr>
+            <tr><td><strong>Trigger binding</strong></td><td>Manual, schedule, provider event, or bounded polling condition.</td><td>Reuse scheduler as one adapter after manual trigger.</td><td>User enables; policy may require manager approval.</td></tr>
+            <tr><td><strong>Feedback patch</strong></td><td>Step-specific correction linked to an actual run.</td><td>New; links execution trace to candidate revision.</td><td>Never silently modifies the live skill/workflow.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="mock">
+      <h2>Mock UI first</h2>
+      <p class="section-lede">Build these states with fake events before any OS capture work. This tests whether low-training users can complete the lifecycle and whether they understand what will be recorded.</p>
+      <div class="grid">
+        <article class="card screen"><h3>1. Record workflow</h3><small>Entry point</small><div class="mock"><strong>Teach Divo how you do this</strong><p>Record one example. Divo will draft the steps for you to review.</p><button class="btn">Record workflow</button></div></article>
+        <article class="card screen"><h3>2. Permission sheet</h3><small>Granular consent</small><div class="mock">Screen/window: required<br>App names: on<br>Browser domains: optional<br>Voice notes: optional<br>Excluded apps: Password Manager, Personal Chat</div></article>
+        <article class="card screen"><h3>3. Live recorder</h3><small>Always visible</small><div class="mock"><span class="critical">● Recording 04:18</span><p>Excel · Vendor Tracker.xlsx<br>Captured 17 meaningful changes</p><button class="btn">Mark step</button> <button class="btn">Pause</button> <button class="btn">Finish</button></div></article>
+        <article class="card screen"><h3>4. Understanding review</h3><small>First HITL</small><div class="mock">1. Read the newest vendor email<br>2. Add vendor fields to the sheet<br>3. Create follow-up event<br><span class="warning">Question: Which inbox should always be used?</span></div></article>
+        <article class="card screen"><h3>5. Tool + trigger map</h3><small>Capability readiness</small><div class="mock">Reuse: Gmail, Google Sheets, Calendar<br>Missing: Contacts scope<br>Default trigger: Manual<br>Optional: Every weekday at 9:00</div></article>
+        <article class="card screen"><h3>6. Test + publish</h3><small>Dry run / shadow</small><div class="mock">Run with sample data<br>Writes paused for approval<br>Publish to: Only me / Department<br><button class="btn">Test workflow</button></div></article>
+        <article class="card screen"><h3>7. Run review</h3><small>Operational feedback</small><div class="mock">Did Divo complete this correctly?<br><button class="btn">Yes</button> <button class="btn">Fix a step</button><p>Correction targets a step and creates a draft patch.</p></div></article>
+        <article class="card screen"><h3>8. Revision approval</h3><small>No self-modifying live skill</small><div class="mock">Changed step 2: use “Approved Vendor” tab<br>Impact: Department workflow<br>Approver: Department Manager<br><button class="btn">Submit revision</button></div></article>
+      </div>
+    </section>
+
+    <section id="roadmap">
+      <h2>Phased implementation</h2>
+      <div class="timeline">
+        <article class="card wave"><div><h3>Mock contract</h3><p>All eight UI states, fake timeline, draft edits, trigger choice, test result, correction patch.</p></div><div class="exit">Exit: 5–10 target users can teach and confirm a workflow without training.</div></article>
+        <article class="card wave"><div><h3>Capture spike</h3><p>macOS ScreenCaptureKit and Windows Graphics Capture proof; app focus; sparse keyframes; explicit voice notes; local deletion.</p></div><div class="exit">Exit: 20-minute session stays bounded and excludes configured sensitive apps.</div></article>
+        <article class="card wave"><div><h3>Analysis pipeline</h3><p>Capture session records, object storage, queue, OCR/STT adapters, DeepSeek structured compiler, uncertainty questions.</p></div><div class="exit">Exit: a replayable fixture produces a schema-valid draft with linked evidence.</div></article>
+        <article class="card wave"><div><h3>Governed publish</h3><p>Tool/skill inventory snapshot, action-level bindings, connection readiness, confirmation, draft revision, admin approval.</p></div><div class="exit">Exit: no workflow can publish or execute with missing permissions/scopes.</div></article>
+        <article class="card wave"><div><h3>Manual execution</h3><p>Version-pinned run, preflight, local/manager HITL, traces, expected-output validators, step feedback.</p></div><div class="exit">Exit: corrections create a reviewable patch and rollback is tested.</div></article>
+        <article class="card wave"><div><h3>Triggers</h3><p>Schedule adapter first; then provider webhooks and bounded polling. No invisible always-on desktop monitoring.</p></div><div class="exit">Exit: duplicate delivery, retry, idempotency, and trigger disable paths are proven.</div></article>
+      </div>
+    </section>
+
+    <section>
+      <div class="callout">
+        <div class="eyebrow">Recommendation</div>
+        <h2>Build the teaching experience now; delay raw video infrastructure.</h2>
+        <p>For the first functional slice, make the UI feel like screen recording while capturing a sparse, explainable evidence stream. Use manual trigger and explicit approval. Only add continuous video upload if real user tests show that sparse screenshots + marked voice notes cannot reconstruct workflows accurately.</p>
+        <button class="btn" id="copy">Copy recommendations</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Evidence and sources</h2>
+      <ul class="sources">
+        <li>Backend gateway and RBAC: <code>advance-backend/src/application/gateway/gateway-dispatcher.ts</code>, <code>tool-executor.ts</code>, and <code>local-approval-intent.service.ts</code>.</li>
+        <li>Skills and versions: <code>advance-backend/prisma/schema.prisma</code>, <code>skill-catalog.service.ts</code>, <code>skill-publishing.tool.ts</code>, and <code>skill-registry-versioning.ts</code>.</li>
+        <li>Capture readiness: <code>jan/src-tauri/Info.plist</code> has no screen-capture usage description; <code>jan/autoqa/screen_recorder.py</code> is QA-only Python capture, not product architecture.</li>
+        <li><a href="https://api-docs.deepseek.com/guides/thinking_mode">DeepSeek Thinking Mode</a> and <a href="https://api-docs.deepseek.com/api/create-chat-completion/">Chat Completion contract</a>.</li>
+        <li><a href="https://developer.apple.com/documentation/ScreenCaptureKit">Apple ScreenCaptureKit</a> and <a href="https://learn.microsoft.com/en-us/windows/apps/develop/media-authoring-processing/screen-capture">Windows Graphics Capture</a>.</li>
+        <li><a href="https://developers.deepgram.com/docs/pre-recorded-audio">Deepgram pre-recorded transcription</a>, <a href="https://developers.deepgram.com/docs/utterances">utterances</a>, and <a href="https://developers.deepgram.com/docs/diarization/">diarization</a>.</li>
+        <li><a href="https://developer.chrome.com/docs/extensions/develop/concepts/activeTab">Chrome activeTab permission</a> and <a href="https://developer.chrome.com/docs/extensions/develop/security-privacy/user-privacy">extension privacy guidance</a>.</li>
+        <li><a href="https://eur-lex.europa.eu/eli/reg/2016/679/art_6/oj/eng">GDPR principles</a> and <a href="https://www.meity.gov.in/documents/act-and-policies/digital-personal-data-protection-rules-2025-gDOxUjMtQWa">India DPDP Rules 2025</a>. Legal counsel should validate the deployment-specific lawful basis and employee notice.</li>
+      </ul>
+    </section>
+
+    <footer class="footer">Architecture review only · No application code changed · Generated from the Divo workspace on 17 July 2026</footer>
+  </main>
+  <script>
+    const chips = document.querySelectorAll('[data-filter]');
+    const findings = document.querySelectorAll('.finding');
+    chips.forEach(chip => chip.addEventListener('click', () => {
+      chips.forEach(item => item.classList.remove('active'));
+      chip.classList.add('active');
+      const filter = chip.dataset.filter;
+      findings.forEach(item => item.classList.toggle('hidden', filter !== 'all' && item.dataset.severity !== filter));
+    }));
+    document.querySelector('#theme').addEventListener('click', () => {
+      document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'light' ? '' : 'light';
+    });
+    document.querySelector('#copy').addEventListener('click', async event => {
+      const text = [
+        '1. Build the eight-state mock UI and test it with target users.',
+        '2. Use session-scoped sparse evidence capture; never keylog or continuously monitor outside a teaching session.',
+        '3. Process keyframes with OCR/vision and audio with STT; send only a structured timeline to DeepSeek V4 Pro Max.',
+        '4. Separate skill, workflow definition, trigger, run, and feedback patch.',
+        '5. Start with manual execution, backend preflight, exact-action HITL, and candidate revisions before schedule/event triggers.'
+      ].join('\n');
+      await navigator.clipboard.writeText(text);
+      event.currentTarget.textContent = 'Copied';
+      setTimeout(() => event.currentTarget.textContent = 'Copy recommendations', 1600);
+    });
+  </script>
+</body>
+</html>

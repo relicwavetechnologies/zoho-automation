@@ -7,7 +7,7 @@
  */
 
 import type { PermissionResult } from '../../src/application/permissions/permission.types.ts';
-import type { ToolExecutionContext } from '../../src/application/orchestration/tools/tool.contract.ts';
+import type { ToolExecutionContext } from '../../src/application/tools/tool.contract.ts';
 import type { ToolActionGroup } from '../../src/domain/permissions/tool-action-group.ts';
 import type { Logger } from '../../src/shared/logger.ts';
 import { asToolId, asCompanyId, asUserId } from '../../src/shared/ids.ts';

@@ -7,23 +7,26 @@
  *   2. GET /api/lark/auth/callback  — validate state, exchange code, persist tokens, DM user, show result page
  *
  * State parameter (base64url-encoded JSON):
- *   { companyId, userId, larkOpenId, nonce }
+ *   { companyId, userId, larkOpenId, tenantKey, nonce }
  *
  * CSRF: random nonce stored in Redis (TTL 10 min) on /connect, validated + consumed on /callback.
  *
  * After successful connect the callback:
- *   - Stores encrypted tokens in LarkUserAuthLink
+ *   - Stores encrypted tokens in Divo's generic IntegrationConnection
  *   - Sends a Lark DM to the user confirming connection
  *   - Returns a simple HTML success page the user can close
  */
 
 import { Router, type Request, type Response } from 'express';
+import { SCHEDULED_SESSION_AUTH_PROVIDER } from '../../application/scheduling/scheduled-runtime-session';
 import { randomBytes } from 'node:crypto';
+import { Client as LarkSdkClient, LoggerLevel } from '@larksuiteoapi/node-sdk';
 import type { LarkOAuthService } from '../../infrastructure/lark/lark-oauth.service';
-import type { LarkUserAuthLinkRepository } from '../../infrastructure/persistence/lark-user-auth-link.repository';
+import type { IntegrationConnectionRepository } from '../../infrastructure/persistence/integration-connection.repository';
 import type { CachePort } from '../../shared/cache';
 import type { Logger } from '../../shared/logger';
 import type { ChannelIdentityRepository } from '../../infrastructure/persistence/channel-identity.repository';
+import type { PrismaClient } from '../../generated/prisma';
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -31,6 +34,7 @@ interface OAuthState {
   companyId:  string;
   userId:     string;
   larkOpenId: string;
+  tenantKey:  string;
   nonce:      string;
 }
 
@@ -51,6 +55,7 @@ function decodeState(raw: string): OAuthState | null {
       typeof parsed.companyId  === 'string' &&
       typeof parsed.userId     === 'string' &&
       typeof parsed.larkOpenId === 'string' &&
+      typeof parsed.tenantKey  === 'string' &&
       typeof parsed.nonce      === 'string'
     ) return parsed as OAuthState;
     return null;
@@ -89,7 +94,7 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// ─── Lark DM helper (tenant-token based) ──────────────────────────────────────
+// ─── Lark DM helper (SDK tenant-token based) ──────────────────────────────────
 
 async function sendLarkDm(
   appId:      string,
@@ -98,51 +103,53 @@ async function sendLarkDm(
   text:       string,
   apiBase:    string,
 ): Promise<void> {
-  // Get tenant token
-  const tokenRes = await fetch(`${apiBase}/open-apis/auth/v3/tenant_access_token/internal`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ app_id: appId, app_secret: appSecret }),
+  const client = new LarkSdkClient({
+    appId,
+    appSecret,
+    domain: apiBase.replace(/\/$/, ''),
+    loggerLevel: LoggerLevel.warn,
+    source: 'divo',
   });
-  const tokenData = await tokenRes.json() as Record<string, unknown>;
-  const tenantToken = tokenData['tenant_access_token'] as string | undefined;
-  if (!tenantToken) return;
-
-  await fetch(`${apiBase}/open-apis/im/v1/messages?receive_id_type=open_id`, {
-    method:  'POST',
-    headers: {
-      'Authorization': `Bearer ${tenantToken}`,
-      'Content-Type':  'application/json',
-    },
-    body: JSON.stringify({
-      receive_id: openId,
-      msg_type:   'text',
-      content:    JSON.stringify({ text }),
-    }),
+  const response = await client.im.v1.message.create({
+    params: { receive_id_type: 'open_id' },
+    data: { receive_id: openId, msg_type: 'text', content: JSON.stringify({ text }) },
   });
+  if (response.code !== undefined && response.code !== 0) {
+    throw new Error(`Lark DM failed: ${response.msg ?? response.code}`);
+  }
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
 export function createLarkAuthRoutes(deps: {
+  /**
+   * Answer the message the user sent before signing in. Optional so the routes
+   * stay usable without the webhook wiring; absent simply means they have to
+   * resend, which is the behaviour this replaced.
+   */
+  onLinked?:             (pendingEvent: Record<string, unknown>) => Promise<void>;
   larkOAuthService:      LarkOAuthService;
-  larkUserAuthLinkRepo:  LarkUserAuthLinkRepository;
+  connectionRepo:        IntegrationConnectionRepository;
   cache:                 CachePort;
   logger:                Logger;
   appId:                 string;
   appSecret:             string;
   apiBase:               string;
+  prisma:                PrismaClient;
+  memberSessionTtlMinutes: number;
   /** Optional: invalidate identity cache after OAuth link is saved. */
   channelIdentityRepo?:  ChannelIdentityRepository;
+  /** Test seam; production uses the installed Lark app. */
+  sendConfirmationDm?: typeof sendLarkDm;
 }): Router {
   const router = Router();
   const log    = deps.logger.child({ router: 'lark-auth' });
 
   // ── 1. Generate authorize URL ──────────────────────────────────────────────
   //
-  // Called internally by the /login slash command handler.
-  // Requires: x-company-id, x-user-id, x-lark-open-id headers.
-  // Returns: { url } — the slash command handler sends this to the user.
+  // Legacy HTTP entry point. The webhook normally creates this URL internally.
+  // Header values are never trusted: they must match the server-side Lark
+  // identity mapping before an OAuth nonce is issued.
   //
   router.get('/connect', async (req: Request, res: Response) => {
     if (!deps.larkOAuthService.isConfigured()) {
@@ -153,16 +160,39 @@ export function createLarkAuthRoutes(deps: {
     const companyId  = req.headers['x-company-id']   as string | undefined;
     const userId     = req.headers['x-user-id']       as string | undefined;
     const larkOpenId = req.headers['x-lark-open-id']  as string | undefined;
+    const tenantKey  = req.headers['x-lark-tenant-key'] as string | undefined;
 
-    if (!companyId || !userId || !larkOpenId) {
+    if (!companyId || !userId || !larkOpenId || !tenantKey) {
       res.status(400).json({ error: 'missing_required_headers' });
       return;
     }
 
-    const nonce = deps.larkOAuthService.generateNonce();
-    await deps.cache.set(larkOAuthNonceKey(nonce), { companyId, userId, larkOpenId }, LARK_OAUTH_NONCE_TTL_SECONDS);
+    if (!deps.channelIdentityRepo) {
+      res.status(503).json({ error: 'lark_identity_validation_unavailable' });
+      return;
+    }
 
-    const state = encodeLarkOAuthState({ companyId, userId, larkOpenId, nonce });
+    const identity = await deps.channelIdentityRepo.prepareLarkLogin(larkOpenId, tenantKey);
+    if (
+      !identity.ok
+      || identity.value?.status !== 'ready'
+      || identity.value.companyId !== companyId
+      || identity.value.userId !== userId
+      || identity.value.larkOpenId !== larkOpenId
+    ) {
+      log.warn('lark.auth.connect.identity_mismatch', { companyId, userId, larkOpenId });
+      res.status(403).json({ error: 'lark_identity_mismatch' });
+      return;
+    }
+
+    const nonce = deps.larkOAuthService.generateNonce();
+    await deps.cache.set(
+      larkOAuthNonceKey(nonce),
+      { companyId, userId, larkOpenId, tenantKey },
+      LARK_OAUTH_NONCE_TTL_SECONDS,
+    );
+
+    const state = encodeLarkOAuthState({ companyId, userId, larkOpenId, tenantKey, nonce });
     const url   = deps.larkOAuthService.getAuthorizeUrl(state);
 
     log.info('lark.auth.connect.initiated', { companyId, userId, larkOpenId });
@@ -199,10 +229,23 @@ export function createLarkAuthRoutes(deps: {
     }
 
     // Validate CSRF nonce
-    const stored = await deps.cache.get<{ companyId: string; userId: string; larkOpenId: string }>(
+    const stored = await deps.cache.get<{
+      companyId: string;
+      userId: string;
+      larkOpenId: string;
+      tenantKey: string;
+      pendingEvent?: Record<string, unknown>;
+    }>(
       larkOAuthNonceKey(state.nonce),
     );
-    if (!stored.ok || !stored.value || stored.value.companyId !== state.companyId) {
+    if (
+      !stored.ok
+      || !stored.value
+      || stored.value.companyId !== state.companyId
+      || stored.value.userId !== state.userId
+      || stored.value.larkOpenId !== state.larkOpenId
+      || stored.value.tenantKey !== state.tenantKey
+    ) {
       log.warn('lark.auth.callback.nonce_mismatch', { companyId: state.companyId });
       sendError('Session expired or invalid — please run /login again.');
       return;
@@ -210,10 +253,45 @@ export function createLarkAuthRoutes(deps: {
     await deps.cache.del(larkOAuthNonceKey(state.nonce));
 
     try {
+      if (!deps.channelIdentityRepo) {
+        throw new Error('Lark identity validation is unavailable');
+      }
+      const identity = await deps.channelIdentityRepo.prepareLarkLogin(
+        state.larkOpenId,
+        state.tenantKey,
+      );
+      if (
+        !identity.ok
+        || identity.value?.status !== 'ready'
+        || identity.value.companyId !== state.companyId
+        || identity.value.userId !== state.userId
+      ) {
+        throw new Error('The Lark workspace binding is no longer active');
+      }
+
       const tokens = await deps.larkOAuthService.exchangeCode(code);
 
       if (!tokens.accessToken) {
         throw new Error('No access token returned from Lark');
+      }
+
+      if (!tokens.larkOpenId || tokens.larkOpenId !== state.larkOpenId) {
+        log.warn('lark.auth.callback.account_mismatch', {
+          expectedLarkOpenId: state.larkOpenId,
+          returnedLarkOpenId: tokens.larkOpenId || null,
+          companyId: state.companyId,
+          userId: state.userId,
+        });
+        throw new Error('The authorised Lark account does not match the account that started this connection');
+      }
+      if (!tokens.tenantKey || tokens.tenantKey !== state.tenantKey) {
+        log.warn('lark.auth.callback.tenant_mismatch', {
+          expectedTenantKey: state.tenantKey,
+          returnedTenantKey: tokens.tenantKey || null,
+          companyId: state.companyId,
+          userId: state.userId,
+        });
+        throw new Error('The authorised Lark workspace does not match the workspace that started this connection');
       }
 
       const accessExpiresAt  = new Date(Date.now() + tokens.expiresIn * 1000);
@@ -221,49 +299,103 @@ export function createLarkAuthRoutes(deps: {
         ? new Date(Date.now() + tokens.refreshTokenExpiresIn * 1000)
         : null;
 
-      const result = await deps.larkUserAuthLinkRepo.upsert({
-        userId:                state.userId,
-        companyId:             state.companyId,
-        larkTenantKey:         tokens.tenantKey ?? '',
-        larkEmail:             tokens.larkEmail ?? '',
-        accessToken:           tokens.accessToken,
-        refreshToken:          tokens.refreshToken,
-        tokenType:             tokens.tokenType,
-        larkOpenId:            tokens.larkOpenId || state.larkOpenId,
-        larkUserId:            tokens.larkUserId,
-        larkName:              tokens.larkName,
-        accessTokenExpiresAt:  accessExpiresAt,
+      const resolvedOpenId = tokens.larkOpenId;
+      const result = await deps.connectionRepo.upsertLarkConnection({
+        companyId: state.companyId,
+        ownerType: 'user',
+        ownerUserId: state.userId,
+        createdBy: state.userId,
+        larkOpenId: resolvedOpenId,
+        larkTenantKey: tokens.tenantKey,
+        larkEmail: tokens.larkEmail,
+        larkUserId: tokens.larkUserId,
+        larkName: tokens.larkName,
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        tokenType: tokens.tokenType,
+        accessTokenExpiresAt: accessExpiresAt,
         refreshTokenExpiresAt: refreshExpiresAt,
+        scopes: tokens.scope?.split(/\s+/).filter(Boolean) ?? [],
+        initialAccess: 'admin',
       });
 
       if (!result.ok) {
         throw new Error(result.error.message);
       }
 
+      const memberSessionExpiresAt = new Date(
+        Date.now() + deps.memberSessionTtlMinutes * 60_000,
+      );
+      const renewed = await deps.prisma.memberSession.updateMany({
+        where: {
+          userId: state.userId,
+          companyId: state.companyId,
+          channel: 'lark',
+          larkTenantKey: state.tenantKey,
+          larkOpenId: resolvedOpenId,
+          revokedAt: null,
+          // A scheduled run's session is machine-issued and gets revoked when
+          // that run ends. Renewing it here would hand the signing-in member a
+          // session the scheduler is about to retire under them.
+          authProvider: { not: SCHEDULED_SESSION_AUTH_PROVIDER },
+        },
+        data: {
+          role: identity.value.aiRole,
+          authProvider: 'lark',
+          larkTenantKey: state.tenantKey,
+          larkOpenId: resolvedOpenId,
+          larkUserId: tokens.larkUserId ?? null,
+          expiresAt: memberSessionExpiresAt,
+        },
+      });
+      if (renewed.count === 0) {
+        await deps.prisma.memberSession.create({
+          data: {
+            userId: state.userId,
+            companyId: state.companyId,
+            role: identity.value.aiRole,
+            channel: 'lark',
+            authProvider: 'lark',
+            larkTenantKey: state.tenantKey,
+            larkOpenId: resolvedOpenId,
+            larkUserId: tokens.larkUserId ?? null,
+            expiresAt: memberSessionExpiresAt,
+          },
+        });
+      }
+
       const displayName = tokens.larkName ?? tokens.larkEmail ?? 'you';
       log.info('lark.auth.user_link.saved', {
         companyId:  state.companyId,
         userId:     state.userId,
-        larkOpenId: tokens.larkOpenId || state.larkOpenId,
+        larkOpenId: resolvedOpenId,
         larkEmail:  tokens.larkEmail,
       });
 
       // Bust identity cache so next message resolves fresh DB state.
-      const resolvedOpenId = tokens.larkOpenId || state.larkOpenId;
       if (resolvedOpenId && deps.channelIdentityRepo) {
         void deps.channelIdentityRepo.invalidateIdentityCache(resolvedOpenId);
       }
 
       // Send DM confirmation (best-effort — don't fail the callback if this errors)
-      const openIdForDm = tokens.larkOpenId || state.larkOpenId;
+      const openIdForDm = resolvedOpenId;
       if (openIdForDm) {
-        void sendLarkDm(
+        void (deps.sendConfirmationDm ?? sendLarkDm)(
           deps.appId,
           deps.appSecret,
           openIdForDm,
           `✅ Connected! I can now act on your behalf in Lark — tasks, calendar, and more will show as created by you. Type /status to check your connection.`,
           deps.apiBase,
         ).catch(e => log.warn('lark.auth.dm_failed', { error: String(e) }));
+      }
+
+      // Answer what they asked before signing in. Deliberately not awaited: the
+      // browser is waiting on this response, and an agent run takes far longer
+      // than a page load should. Failures are logged inside the replay.
+      const pendingEvent = stored.value.pendingEvent;
+      if (pendingEvent && deps.onLinked) {
+        void deps.onLinked(pendingEvent).catch(e =>
+          log.warn('lark.auth.replay_failed', { error: String(e), companyId: state.companyId }));
       }
 
       res.send(successHtml(displayName));

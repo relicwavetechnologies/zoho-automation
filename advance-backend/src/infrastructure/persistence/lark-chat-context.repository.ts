@@ -13,6 +13,7 @@ export interface LarkChatContextRow {
   summaryJson: unknown;
   sourceMessageCount: number;
   lastMessageAt: Date | null;
+  updatedAt: Date;
 }
 
 export interface LarkChatContextRepoPort {
@@ -22,15 +23,29 @@ export interface LarkChatContextRepoPort {
     chatType?: string;
   }): Promise<Result<LarkChatContextRow, InfraError>>;
 
+
+  /**
+   * The room as stored, or `null` when it has none. Creates nothing.
+   *
+   * Read paths must use this rather than `getOrCreate`: that one upserts, so
+   * reading through it would leave an empty row behind for every room Divo
+   * merely observed and refresh `updatedAt` on rooms nobody wrote to.
+   */
+  get(input: {
+    companyId: string;
+    chatId: string;
+  }): Promise<Result<LarkChatContextRow | null, InfraError>>;
+
   update(
     id: string,
+    expectedUpdatedAt: Date,
     data: {
       recentMessagesJson: unknown;
       summaryJson?: unknown;
       sourceMessageCount: number;
       lastMessageAt: Date;
     },
-  ): Promise<Result<void, InfraError>>;
+  ): Promise<Result<boolean, InfraError>>;
 
   clear(companyId: string, chatId: string): Promise<Result<void, InfraError>>;
 }
@@ -71,24 +86,58 @@ export class LarkChatContextRepository implements LarkChatContextRepoPort {
         summaryJson: row.summaryJson,
         sourceMessageCount: row.sourceMessageCount,
         lastMessageAt: row.lastMessageAt,
+        updatedAt: row.updatedAt,
       });
     } catch (e) {
       return err(wrapInfra('prisma', 'larkChatContext.getOrCreate', e));
     }
   }
 
+  async get(input: {
+    companyId: string;
+    chatId: string;
+  }): Promise<Result<LarkChatContextRow | null, InfraError>> {
+    try {
+      const row = await this.db.larkChatContext.findUnique({
+        where: {
+          companyId_channel_chatId: {
+            companyId: input.companyId,
+            channel: 'lark',
+            chatId: input.chatId,
+          },
+        },
+      });
+      if (!row) return ok(null);
+      return ok({
+        id: row.id,
+        companyId: row.companyId,
+        chatId: row.chatId,
+        chatType: row.chatType,
+        recentMessagesJson: row.recentMessagesJson,
+        summaryJson: row.summaryJson,
+        sourceMessageCount: row.sourceMessageCount,
+        lastMessageAt: row.lastMessageAt,
+        updatedAt: row.updatedAt,
+      });
+    } catch (e) {
+      return err(wrapInfra('prisma', 'larkChatContext.get', e));
+    }
+  }
+
+
   async update(
     id: string,
+    expectedUpdatedAt: Date,
     data: {
       recentMessagesJson: unknown;
       summaryJson?: unknown;
       sourceMessageCount: number;
       lastMessageAt: Date;
     },
-  ): Promise<Result<void, InfraError>> {
+  ): Promise<Result<boolean, InfraError>> {
     try {
-      await this.db.larkChatContext.update({
-        where: { id },
+      const updated = await this.db.larkChatContext.updateMany({
+        where: { id, updatedAt: expectedUpdatedAt },
         data: {
           recentMessagesJson: data.recentMessagesJson as any,
           ...(data.summaryJson !== undefined
@@ -98,7 +147,7 @@ export class LarkChatContextRepository implements LarkChatContextRepoPort {
           lastMessageAt: data.lastMessageAt,
         },
       });
-      return ok(undefined);
+      return ok(updated.count === 1);
     } catch (e) {
       return err(wrapInfra('prisma', 'larkChatContext.update', e));
     }

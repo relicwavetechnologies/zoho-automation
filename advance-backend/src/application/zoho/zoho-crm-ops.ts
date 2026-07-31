@@ -137,12 +137,16 @@ export class ZohoCrmOps {
    */
   async buildPipelineSummary(input: {
     companyId: string;
+    userId?: string;
+    connectionId?: string;
     currency?: string;
   }): Promise<PipelineSummaryResult> {
     this.logger.info('zoho.crm.pipeline_summary.start', { companyId: input.companyId });
 
     const { items: deals, truncated } = await this.crmClient.listAllRecords({
       companyId: input.companyId,
+      ...(input.userId ? { userId: input.userId } : {}),
+      ...(input.connectionId ? { connectionId: input.connectionId } : {}),
       module:    'Deals',
     });
 
@@ -241,11 +245,15 @@ export class ZohoCrmOps {
    */
   async buildLeadReport(input: {
     companyId: string;
+    userId?: string;
+    connectionId?: string;
   }): Promise<LeadReportResult> {
     this.logger.info('zoho.crm.lead_report.start', { companyId: input.companyId });
 
     const { items: leads, truncated } = await this.crmClient.listAllRecords({
       companyId: input.companyId,
+      ...(input.userId ? { userId: input.userId } : {}),
+      ...(input.connectionId ? { connectionId: input.connectionId } : {}),
       module:    'Leads',
     });
 
@@ -330,6 +338,8 @@ export class ZohoCrmOps {
    */
   async buildDealForecast(input: {
     companyId:     string;
+    userId?:       string;
+    connectionId?: string;
     closingFrom?:  string;
     closingTo?:    string;
     currency?:     string;
@@ -338,6 +348,8 @@ export class ZohoCrmOps {
 
     const { items: allDeals, truncated } = await this.crmClient.listAllRecords({
       companyId: input.companyId,
+      ...(input.userId ? { userId: input.userId } : {}),
+      ...(input.connectionId ? { connectionId: input.connectionId } : {}),
       module:    'Deals',
     });
 

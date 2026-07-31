@@ -143,6 +143,12 @@ describe('createAdminAuthMiddleware', () => {
       assert.equal(res.locals['userId'], null);
     });
 
+    it('grants raw execution-data access for API key auth', async () => {
+      const mw = makeMiddleware({ withApiKey: true });
+      const { res } = await call(mw, makeReq({ apiKey: TEST_API_KEY }));
+      assert.equal(res.locals['canViewRawExecutionData'], true);
+    });
+
     it('falls through to JWT path when internalApiKey not configured', async () => {
       const mw = makeMiddleware({ withApiKey: false });
       const { res } = await call(mw, makeReq({ apiKey: TEST_API_KEY }));
@@ -162,6 +168,22 @@ describe('createAdminAuthMiddleware', () => {
       const { res, nextCalled } = await call(mw, makeReq({ authorization: `Bearer ${TEST_API_KEY}` }));
       assert.equal(nextCalled, true);
       assert.equal(res.locals['isSuperAdmin'], true);
+      assert.equal(res.locals['canViewRawExecutionData'], true);
+    });
+
+    it('grants company admins raw execution-data access without granting super-admin scope', async () => {
+      const mw = makeMiddleware({
+        sessionResult: {
+          companyId: 'co-1', role: 'COMPANY_ADMIN', userId: 'u-1',
+          expiresAt: new Date(Date.now() + 3_600_000),
+          revokedAt: null,
+        },
+      });
+      const token = buildJwt({ userId: 'u-1', sessionId: 'sess-1', role: 'COMPANY_ADMIN' }, TEST_SECRET, 3600);
+      const { res, nextCalled } = await call(mw, makeReq({ authorization: `Bearer ${token}` }));
+      assert.equal(nextCalled, true);
+      assert.equal(res.locals['isSuperAdmin'], false);
+      assert.equal(res.locals['canViewRawExecutionData'], true);
     });
   });
 

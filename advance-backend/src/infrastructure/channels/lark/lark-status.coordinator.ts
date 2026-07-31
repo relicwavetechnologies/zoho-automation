@@ -22,6 +22,13 @@ const DEFAULT_HEARTBEAT_MS     = 6000;
 const FINALIZE_DRAIN_MS        = 10_000;
 const FINALIZE_POLL_MS         = 25;
 
+export class LarkStatusDrainTimeoutError extends Error {
+  constructor() {
+    super('A status update was still in flight when final delivery began');
+    this.name = 'LarkStatusDrainTimeoutError';
+  }
+}
+
 /**
  * Manages ephemeral Lark status cards during a run.
  * Rate-limits and deduplicates updates; adds a heartbeat to keep the card fresh
@@ -34,6 +41,7 @@ export class LarkStatusCoordinator {
   private readonly replyInThread:     boolean | undefined;
   private readonly logger:            Logger;
   private readonly minIntervalMs:     number;
+  private readonly correlationId:     string | undefined;
 
   private statusMessageId:  string | undefined = undefined;
   private lastSentAt        = 0;
@@ -54,6 +62,7 @@ export class LarkStatusCoordinator {
     this.replyInThread      = input.replyInThread;
     this.logger             = input.logger;
     this.minIntervalMs      = input.minUpdateIntervalMs ?? DEFAULT_MIN_INTERVAL_MS;
+    this.correlationId      = input.correlationId;
   }
 
   getStatusMessageId(): string | undefined { return this.statusMessageId; }
@@ -124,6 +133,7 @@ export class LarkStatusCoordinator {
     }
     if (this.inFlight) {
       this.logger.warn('lark.status.finalize.drain_timeout');
+      throw new LarkStatusDrainTimeoutError();
     }
   }
 
@@ -143,14 +153,18 @@ export class LarkStatusCoordinator {
   private renderBodyPreview(input: StatusCardInput): string {
     const t = input.timeline;
     if (!t) return 'Working…';
+    // Everything the card renders must appear here, or a real change can be
+    // deduped away as "no update". Elapsed time is deliberately excluded — it
+    // ticks every second and would defeat the rate limiter on its own.
     const parts = [
       t.phase,
-      String(t.progressPct ?? ''),
+      t.state,
+      String(t.actionCount ?? ''),
+      t.declared ? `${t.declared.done}/${t.declared.total}:${t.declared.current ?? ''}` : '',
       t.liveLabel,
-      t.narration?.join('|'),
       t.narrationActive,
+      t.ledger?.map(r => `${r.status}:${r.label}:${r.count}:${r.outcome}`).join('|'),
       t.plan?.map(p => `${p.status}:${p.title}:${p.subtitle ?? ''}`).join('|'),
-      t.recent?.join('|'),
     ].filter(Boolean);
     return parts.join('\n');
   }
@@ -164,6 +178,8 @@ export class LarkStatusCoordinator {
     if (this.inFlight || this.finalizing) return;
     const toSend = heartbeat ? this.lastRenderable : this.pending;
     if (!toSend) return;
+    const startedAtMs = Date.now();
+    const operation = this.statusMessageId ? 'update' : 'create';
 
     if (!heartbeat) {
       this.pending = undefined;
@@ -191,8 +207,21 @@ export class LarkStatusCoordinator {
         this.lastRenderable = toSend;
         this.lastSentAt     = Date.now();
       }
+      this.logger.info('lark.status.flush.completed', {
+        correlationId: this.correlationId ?? null,
+        operation,
+        heartbeat,
+        durationMs: Date.now() - startedAtMs,
+        messageId: this.statusMessageId ?? null,
+      });
     } catch (e) {
-      this.logger.warn('lark.status.flush.error', { error: String(e) });
+      this.logger.warn('lark.status.flush.error', {
+        correlationId: this.correlationId ?? null,
+        operation,
+        heartbeat,
+        durationMs: Date.now() - startedAtMs,
+        error: String(e),
+      });
     } finally {
       this.inFlight = false;
     }

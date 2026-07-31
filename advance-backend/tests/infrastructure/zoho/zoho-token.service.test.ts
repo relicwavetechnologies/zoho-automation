@@ -13,7 +13,7 @@ import 'dotenv/config';
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { ZohoTokenService } from '../../../src/infrastructure/zoho/zoho-token.service';
-import type { ZohoConnectionRepository, ActiveZohoConnection } from '../../../src/infrastructure/zoho/zoho-connection.repository';
+import type { ZohoConnectionRepository, ActiveZohoConnection, ZohoOAuthCredentials } from '../../../src/infrastructure/zoho/zoho-connection.repository';
 import type { CachePort } from '../../../src/shared/cache';
 import { ok } from '../../../src/shared/result';
 
@@ -54,6 +54,7 @@ function makeCache(): CachePort & { store: Map<string, unknown> } {
 interface MockRepo {
   repo: ZohoConnectionRepository;
   connections: Map<string, ActiveZohoConnection | null>;
+  oauthCredentials: Map<string, ZohoOAuthCredentials | null>;
   updateTokensCalls: Array<Parameters<ZohoConnectionRepository['updateTokens']>[0]>;
   setFailureCalls: Array<{ companyId: string; environment: string; code: string }>;
 }
@@ -63,6 +64,7 @@ function makeRepo(
 ): MockRepo {
   const connections = new Map<string, ActiveZohoConnection | null>();
   connections.set('default', defaultConn);
+  const oauthCredentials = new Map<string, ZohoOAuthCredentials | null>();
   const updateTokensCalls: MockRepo['updateTokensCalls'] = [];
   const setFailureCalls:   MockRepo['setFailureCalls']   = [];
 
@@ -71,6 +73,9 @@ function makeRepo(
       const key = `${companyId}:${environment}`;
       const conn = connections.has(key) ? connections.get(key)! : connections.get('default')!;
       return ok(conn);
+    },
+    async findOAuthCredentials(companyId) {
+      return ok(oauthCredentials.get(companyId) ?? null);
     },
     async updateTokens(opts) {
       updateTokensCalls.push(opts);
@@ -81,7 +86,7 @@ function makeRepo(
     },
   } as unknown as ZohoConnectionRepository;
 
-  return { repo, connections, updateTokensCalls, setFailureCalls };
+  return { repo, connections, oauthCredentials, updateTokensCalls, setFailureCalls };
 }
 
 // ─── Fetch mock helper ────────────────────────────────────────────────────────
@@ -322,6 +327,41 @@ describe('ZohoTokenService', () => {
         globalThis.fetch = origFetch;
       }
     });
+
+    it('prefers company OAuth config over env credentials for refresh', async () => {
+      const conn = expiredConnection();
+      const mock = makeRepo(conn);
+      mock.oauthCredentials.set('co1', {
+        clientId:        'company-client-id',
+        clientSecret:    'company-client-secret',
+        redirectUri:     'https://app.example.test/zoho/callback',
+        accountsBaseUrl: 'https://accounts.zoho.in',
+        apiBaseUrl:      'https://www.zohoapis.in',
+      });
+
+      const origFetch = globalThis.fetch;
+      try {
+        let seenUrl = '';
+        let seenBody: URLSearchParams | null = null;
+        globalThis.fetch = async (url, init) => {
+          seenUrl = String(url);
+          seenBody = new URLSearchParams(String(init?.body ?? ''));
+          return new Response(JSON.stringify({ access_token: 'fresh-token', expires_in: 3600 }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        };
+
+        const svc = new ZohoTokenService(mock.repo, cache, BASE_ENV, nullLogger);
+        await svc.getValidToken('co1');
+
+        assert.equal(seenUrl, 'https://accounts.zoho.in/oauth/v2/token');
+        assert.equal(seenBody?.get('client_id'), 'company-client-id');
+        assert.equal(seenBody?.get('client_secret'), 'company-client-secret');
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+    });
   });
 
   // ── Refresh failure ───────────────────────────────────────────────────────
@@ -429,6 +469,7 @@ describe('ZohoTokenService', () => {
         assert.equal(result.refreshToken, 'new-rt');
         assert.equal(result.expiresIn,    3600);
         assert.deepEqual(result.scopes, ['ZohoCRM.modules.ALL', 'ZohoBooks.fullaccess.all']);
+        assert.equal(result.accountsBaseUrl, BASE_ENV.ZOHO_ACCOUNTS_BASE_URL);
       } finally {
         globalThis.fetch = origFetch;
       }

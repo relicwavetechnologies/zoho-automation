@@ -3,6 +3,7 @@ export type AdminRole = 'SUPER_ADMIN' | 'COMPANY_ADMIN' | 'DEPARTMENT_MANAGER';
 export type AdminSession = {
   userId: string;
   companyId?: string;
+  companyName?: string;
   role: AdminRole;
   sessionId: string;
   expiresAt: string;

@@ -5,9 +5,8 @@
  *   1. ALL filtering is done in CODE, not by the LLM. "Overdue" means
  *      due_date < today AND status ∈ {overdue, sent, partially_paid} — computed here.
  *   2. Pagination is exhaustive: loops has_more_page up to 20 × 200 = 4 000 records.
- *   3. Token budget is enforced by the tool layer:
- *        - LLM always receives: summary stats + top-N inline records
- *        - Full dataset > INLINE_THRESHOLD → CSV uploaded to Cloudinary → signed link
+ *   3. Token budget is enforced by returning summary stats + top-N records.
+ *      Complete row delivery belongs exclusively to the dataExport pipeline.
  *   4. No LLM calls in this file — pure data transformation.
  *
  * Ported from:
@@ -15,7 +14,6 @@
  */
 
 import type { ZohoBooksPaginatedClient } from '../../infrastructure/zoho/zoho-books-paginated.client';
-import type { CloudinaryAdapter }         from '../../infrastructure/cloudinary/cloudinary.adapter';
 import type { Logger }                    from '../../shared/logger';
 import { formatAmount }                   from './zoho-format.utils';
 
@@ -71,24 +69,6 @@ function isWithinRange(d: Date | undefined, from: Date | undefined, to: Date | u
   return true;
 }
 
-// ─── CSV serialization ────────────────────────────────────────────────────────
-
-function escapeCsvCell(v: unknown): string {
-  const s = String(v ?? '');
-  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
-    return `"${s.replace(/"/g, '""')}"`;
-  }
-  return s;
-}
-
-function recordsToCsv(headers: string[], rows: Array<Record<string, unknown>>): Buffer {
-  const lines: string[] = [headers.map(escapeCsvCell).join(',')];
-  for (const row of rows) {
-    lines.push(headers.map(h => escapeCsvCell(row[h])).join(','));
-  }
-  return Buffer.from(lines.join('\n'), 'utf-8');
-}
-
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface OverdueInvoice {
@@ -132,10 +112,6 @@ export interface OverdueReportResult {
   topCustomers:         TopCustomer[];
   /** Always ≤ inlineThreshold — what goes directly into LLM context. */
   inlineInvoices:       OverdueInvoice[];
-  /** Set when totalCount > inlineThreshold — Cloudinary signed URL. */
-  csvLink?:             string;
-  csvPublicId?:         string;
-  csvExpiresAt?:        string;
   sourceTruncated:      boolean;
   appliedFilters: {
     minOverdueDays:  number;
@@ -149,10 +125,8 @@ export interface OverdueReportResult {
 export class ZohoFinanceOps {
   constructor(
     private readonly booksClient:     ZohoBooksPaginatedClient,
-    private readonly cloudinary:      CloudinaryAdapter,
     private readonly logger:          Logger,
     private readonly inlineThreshold: number = 10,
-    private readonly csvLinkTtl:      number = 86_400,
   ) {}
 
   /**
@@ -162,11 +136,12 @@ export class ZohoFinanceOps {
    *   1. Paginate ALL invoices with status=overdue (up to 20 × 200 = 4 000)
    *   2. Filter deterministically: balance > 0, overdueDays >= minOverdueDays, date range
    *   3. Compute aging buckets + top-10 customers
-   *   4. If total > inlineThreshold → serialize CSV → upload Cloudinary → return link
-   *   5. Return bounded result (top-N inline + summary + optional link)
+   *   4. Return a bounded result (top-N inline + deterministic summary)
    */
   async buildOverdueReport(input: {
     companyId:        string;
+    userId?:          string;
+    connectionId?:    string;
     organizationId?:  string;
     asOfDate?:        string;
     minOverdueDays?:  number;
@@ -187,6 +162,8 @@ export class ZohoFinanceOps {
     // ── 1. Exhaust all overdue invoice pages ─────────────────────────────────
     const { organizationId, items: rawInvoices, truncated } = await this.booksClient.listAllRecords({
       companyId:  input.companyId,
+      ...(input.userId ? { userId: input.userId } : {}),
+      ...(input.connectionId ? { connectionId: input.connectionId } : {}),
       moduleName: 'invoices',
       filters:    { status: 'overdue' },
       ...(input.organizationId !== undefined ? { organizationId: input.organizationId } : {}),
@@ -275,50 +252,7 @@ export class ZohoFinanceOps {
     const invoiceCount     = enriched.length;
     const inlineInvoices   = enriched.slice(0, this.inlineThreshold);
 
-    // ── 4. CSV export for large result sets ──────────────────────────────────
-    let csvLink:     string | undefined;
-    let csvPublicId: string | undefined;
-    let csvExpiresAt: string | undefined;
-
-    if (invoiceCount > this.inlineThreshold && this.cloudinary.isAvailable) {
-      try {
-        const csvHeaders = [
-          'invoiceId', 'invoiceNumber', 'customerName', 'customerId',
-          'currencyCode', 'status', 'dueDate', 'invoiceDate', 'total', 'balance', 'overdueDays',
-        ];
-        const csvBuffer  = recordsToCsv(csvHeaders, enriched as unknown as Array<Record<string, unknown>>);
-        const dateStr    = asOfDate.toISOString().slice(0, 10);
-        const fileName   = `overdue_invoices_${dateStr}_${input.companyId.slice(0, 8)}.csv`;
-
-        const exported = await this.cloudinary.uploadCsvBuffer({
-          buffer:     csvBuffer,
-          fileName,
-          companyId:  input.companyId,
-          ttlSeconds: this.csvLinkTtl,
-        });
-
-        if (exported) {
-          csvLink     = exported.signedUrl;
-          csvPublicId = exported.publicId;
-          csvExpiresAt = exported.expiresAt;
-
-          this.logger.info('zoho.finance.overdue_report.csv_exported', {
-            companyId:  input.companyId,
-            invoices:   invoiceCount,
-            fileName,
-            expiresAt:  csvExpiresAt,
-          });
-        }
-      } catch (e) {
-        this.logger.warn('zoho.finance.overdue_report.csv_failed', {
-          companyId: input.companyId,
-          error:     String(e),
-        });
-        // Non-fatal — inline data still returned
-      }
-    }
-
-    // ── 5. Build summary string (goes verbatim into LLM context) ─────────────
+    // ── 4. Build summary string (goes verbatim into LLM context) ─────────────
     // Group totals by currency so multi-currency orgs get correct display
     const currencyTotals = new Map<string, number>();
     for (const inv of enriched) {
@@ -335,9 +269,6 @@ export class ZohoFinanceOps {
 
     if (invoiceCount > this.inlineThreshold) {
       summary += ` Showing top ${inlineInvoices.length} by overdue days.`;
-    }
-    if (csvLink) {
-      summary += ` Full dataset available as CSV (link expires in 24 h).`;
     }
     if (truncated) {
       summary += ' Note: pagination limit reached — additional invoices may exist beyond the scan window.';
@@ -358,9 +289,6 @@ export class ZohoFinanceOps {
         ...(input.invoiceDateFrom ? { invoiceDateFrom: input.invoiceDateFrom } : {}),
         ...(input.invoiceDateTo   ? { invoiceDateTo:   input.invoiceDateTo   } : {}),
       },
-      ...(csvLink     ? { csvLink }     : {}),
-      ...(csvPublicId ? { csvPublicId } : {}),
-      ...(csvExpiresAt ? { csvExpiresAt } : {}),
     };
   }
 }

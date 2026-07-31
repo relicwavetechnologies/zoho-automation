@@ -13,12 +13,14 @@
  *   TTL:  (expiresIn - 60) seconds (60s safety buffer)
  *   Stored value: { token: string; expiresAtMs: number }
  *
- * No googleapis SDK — pure fetch calls.
+ * Token exchange/refresh stays in Divo. Runtime operations receive only a
+ * short-lived access token through the private Workspace MCP adapter.
  */
 
 import type { Logger } from '../../shared/logger';
 import type { CachePort } from '../../shared/cache';
 import type { TypedEnv } from '../../config/env';
+import { GOOGLE_WORKSPACE_OAUTH_SCOPES } from '../../domain/google/google-workspace-scope';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -27,19 +29,7 @@ const GOOGLE_TOKEN_URL       = 'https://oauth2.googleapis.com/token';
 const GOOGLE_USERINFO_URL    = 'https://openidconnect.googleapis.com/v1/userinfo';
 const TOKEN_EXPIRY_BUFFER_MS = 60_000; // 60 s buffer before actual expiry
 
-const DEFAULT_SCOPES = [
-  'openid',
-  'https://www.googleapis.com/auth/userinfo.email',
-  'https://www.googleapis.com/auth/userinfo.profile',
-  'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.compose',
-  'https://www.googleapis.com/auth/gmail.send',
-  'https://www.googleapis.com/auth/gmail.modify',
-  'https://www.googleapis.com/auth/drive.readonly',
-  'https://www.googleapis.com/auth/drive.file',
-  'https://www.googleapis.com/auth/calendar.readonly',
-  'https://www.googleapis.com/auth/calendar.events',
-] as const;
+const DEFAULT_SCOPES = GOOGLE_WORKSPACE_OAUTH_SCOPES;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -200,6 +190,7 @@ export class GoogleOAuthService {
 
   async refreshAccessToken(
     refreshToken: string,
+    abortSignal?: AbortSignal,
   ): Promise<{
     accessToken: string;
     tokenType?:  string;
@@ -219,8 +210,10 @@ export class GoogleOAuthService {
           refresh_token: refreshToken.trim(),
           grant_type:    'refresh_token',
         }),
+        ...(abortSignal ? { signal: abortSignal } : {}),
       });
     } catch (e) {
+      abortSignal?.throwIfAborted();
       throw new Error(`Google token refresh network error: ${String(e)}`);
     }
 
@@ -255,11 +248,14 @@ export class GoogleOAuthService {
     companyId:    string;
     userId:       string;
     refreshToken: string;
+    abortSignal?: AbortSignal;
   }): Promise<string> {
+    opts.abortSignal?.throwIfAborted();
     const cacheKey = buildCacheKey(opts.companyId, opts.userId);
 
     // ── Try cache ──────────────────────────────────────────────────────────
     const cachedResult = await this.cache.get<CachedGoogleToken>(cacheKey);
+    opts.abortSignal?.throwIfAborted();
     if (cachedResult.ok && cachedResult.value) {
       const cached = cachedResult.value;
       if (typeof cached.token === 'string' && cached.token &&
@@ -270,12 +266,14 @@ export class GoogleOAuthService {
     }
 
     // ── Refresh ────────────────────────────────────────────────────────────
-    const refreshed    = await this.refreshAccessToken(opts.refreshToken);
+    const refreshed    = await this.refreshAccessToken(opts.refreshToken, opts.abortSignal);
+    opts.abortSignal?.throwIfAborted();
     const expiresAtMs  = Date.now() + (refreshed.expiresIn ?? 3600) * 1000;
     const ttlSeconds   = Math.max(60, Math.floor((expiresAtMs - Date.now() - TOKEN_EXPIRY_BUFFER_MS) / 1000));
 
     const cached: CachedGoogleToken = { token: refreshed.accessToken, expiresAtMs };
     await this.cache.set(cacheKey, cached, ttlSeconds);
+    opts.abortSignal?.throwIfAborted();
 
     this.log.debug('google.oauth.token.refreshed', {
       companyId:   opts.companyId,

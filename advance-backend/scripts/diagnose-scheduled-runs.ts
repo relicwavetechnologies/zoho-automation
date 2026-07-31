@@ -61,7 +61,6 @@ void (async () => {
       console.log(`     scheduleType:     ${wf.scheduleType}`);
       console.log(`     scheduleEnabled:  ${wf.scheduleEnabled}`);
       console.log(`     timezone:         ${wf.timezone}`);
-      console.log(`     originChatId:     ${wf.originChatId ?? '(null)'}`);
       console.log(`     nextRunAt:        ${wf.nextRunAt?.toISOString() ?? '(null)'}`);
       console.log(`     lastRunAt:        ${wf.lastRunAt?.toISOString() ?? '(null)'}`);
       console.log(`     compiledPrompt:   ${trunc(wf.compiledPrompt, 200)}`);

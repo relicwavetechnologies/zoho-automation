@@ -71,6 +71,8 @@ export type ChannelFailureReason =
   | 'malformed'
   | 'upstream_4xx'
   | 'upstream_5xx'
+  | 'ambiguous_delivery'
+  | 'partial_delivery'
   | 'timeout'
   | 'not_supported'
   | 'rate_limited';

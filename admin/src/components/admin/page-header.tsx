@@ -11,9 +11,11 @@ export function PageHeader({ eyebrow, title, description, actions }: PageHeaderP
   return (
     <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
       <div className="space-y-1">
-        {eyebrow ? <p className="text-[11px] font-medium uppercase tracking-[0.15em] text-accent">{eyebrow}</p> : null}
+        {/* Cursor: eyebrows are muted, not brand-coloured — orange stays scarce. */}
+        {eyebrow ? <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">{eyebrow}</p> : null}
         <div className="space-y-0.5">
-          <h1 className="text-xl font-semibold tracking-tight text-foreground md:text-2xl">{title}</h1>
+          {/* Cursor editorial display: Inter, regular weight, tight tracking (never bold). */}
+          <h1 className="text-2xl font-normal tracking-tight text-foreground md:text-[28px]">{title}</h1>
           {description ? <p className="max-w-2xl text-[12px] leading-5 text-muted-foreground">{description}</p> : null}
         </div>
       </div>

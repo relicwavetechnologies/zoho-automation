@@ -2,14 +2,40 @@ import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from '../../generated/prisma';
 import { Prisma } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
+import type { PermissionService } from '../permissions/permission.service';
 import {
   CANONICAL_TOOL_IDS,
+  TOOL_DEFAULT_PERMISSIONS,
   TOOL_SUPPORTED_ACTIONS,
+  type CanonicalToolId,
 } from '../../domain/tools/tool-id';
+import { unknownSkillToolIds } from '../skills/skill-tool-validation';
+import { recordSkillRegistryMutation } from '../skills/skill-registry-versioning';
+import { larkSkillEnglishOnlyError } from '../skills/lark-skill-language-policy';
+import { provisionZohoFinanceSystemSkills } from '../skills/zoho-finance-system-skills';
+import { syncSystemSkillRoutes } from '../skills/system-skill-routes';
+import { isFixedToolPolicy, isDepartmentGrantOnlyTool } from '../../domain/tools/tool-policy';
 
 export interface DepartmentAdminServiceDeps {
   prisma: PrismaClient;
   logger: Logger;
+  permissions: PermissionService;
+}
+
+/** Sparse MEMBER-template grants used to seed department role matrices. */
+export function memberTemplateGrants(): Array<{ toolId: string; actionGroup: string }> {
+  const grants: Array<{ toolId: string; actionGroup: string }> = [];
+  for (const toolId of CANONICAL_TOOL_IDS) {
+    if (isFixedToolPolicy(toolId)) continue;
+    // Permissive by role default, but only as a ceiling — seeding it here
+    // would hand it to every member of every new role matrix.
+    if (isDepartmentGrantOnlyTool(toolId)) continue;
+    if (!TOOL_DEFAULT_PERMISSIONS[toolId].MEMBER) continue;
+    for (const actionGroup of TOOL_SUPPORTED_ACTIONS[toolId as CanonicalToolId]) {
+      grants.push({ toolId, actionGroup });
+    }
+  }
+  return grants;
 }
 
 export type DeptServiceError =
@@ -39,6 +65,9 @@ const VALID_TOOL_IDS = new Set<string>(CANONICAL_TOOL_IDS);
 function validateToolAndAction(toolId: string, actionGroup: string): DeptServiceError | null {
   if (!VALID_TOOL_IDS.has(toolId)) {
     return { kind: 'validation', message: `Unknown tool ID: ${toolId}` };
+  }
+  if (isFixedToolPolicy(toolId)) {
+    return { kind: 'validation', message: `Fixed-policy tool cannot be configured: ${toolId}` };
   }
   const supported = TOOL_SUPPORTED_ACTIONS[toolId as keyof typeof TOOL_SUPPORTED_ACTIONS] ?? [];
   if (actionGroup !== 'all' && !supported.includes(actionGroup)) {
@@ -110,10 +139,12 @@ export interface SkillView {
   slug:         string;
   summary:      string;
   markdown:     string;
+  toolIds:      string[];
   tags:         string[];
   status:       string;
   scope:        string;
   departmentId: string | null;
+  folderId:     string | null;
 }
 
 export type DeptDetailSection =
@@ -139,8 +170,7 @@ export interface DeptDetail {
   };
   config: {
     systemPrompt:    string;
-    skillsMarkdown:  string;
-    zohoRateLimit:   unknown;
+    desktopPersonaPrompt: string;
     managerApproval: unknown;
     isActive:        boolean;
   };
@@ -288,10 +318,10 @@ export class DepartmentAdminService {
           : Promise.resolve([]),
       ]);
 
-      const mapSkill = (s: { id: string; name: string; slug: string; summary: string; markdown: string; tags: string[]; status: string; scope: string; departmentId: string | null }): SkillView => ({
+      const mapSkill = (s: { id: string; name: string; slug: string; summary: string; markdown: string; toolIds: string[]; tags: string[]; status: string; scope: string; departmentId: string | null; folderId: string | null }): SkillView => ({
         id: s.id, name: s.name, slug: s.slug, summary: s.summary,
-        markdown: s.markdown, tags: s.tags, status: s.status,
-        scope: s.scope, departmentId: s.departmentId,
+        markdown: s.markdown, toolIds: s.toolIds, tags: s.tags, status: s.status,
+        scope: s.scope, departmentId: s.departmentId, folderId: s.folderId,
       });
 
       return ok({
@@ -308,8 +338,7 @@ export class DepartmentAdminService {
         },
         config: {
           systemPrompt:    agentConfig?.systemPrompt ?? '',
-          skillsMarkdown:  agentConfig?.skillsMarkdown ?? '',
-          zohoRateLimit:   agentConfig?.zohoRateLimitJson ?? null,
+          desktopPersonaPrompt: agentConfig?.desktopPersonaPrompt ?? '',
           managerApproval: agentConfig?.managerApprovalJson ?? null,
           isActive:        agentConfig?.isActive ?? true,
         },
@@ -479,8 +508,30 @@ export class DepartmentAdminService {
           data: { departmentId: created.id, name: 'Member',  slug: 'MEMBER',  isSystem: true, isDefault: true },
         });
         await tx.departmentAgentConfig.create({
-          data: { departmentId: created.id, systemPrompt: '', skillsMarkdown: '', isActive: true, createdBy, updatedBy: createdBy },
+          data: { departmentId: created.id, systemPrompt: '', isActive: true, createdBy, updatedBy: createdBy },
         });
+
+        // Seed sparse allow rows from MEMBER company defaults for both system roles.
+        // Missing rows are denied at runtime; without this seed new depts would lock all tools.
+        const grants = memberTemplateGrants();
+        if (grants.length > 0) {
+          await tx.departmentToolPermission.createMany({
+            data: [managerRole.id, memberRole.id].flatMap((roleId) =>
+              grants.map((g) => ({
+                departmentId: created.id,
+                roleId,
+                toolId: g.toolId,
+                actionGroup: g.actionGroup,
+                allowed: true,
+                updatedBy: createdBy,
+              })),
+            ),
+          });
+        }
+
+        await provisionZohoFinanceSystemSkills(tx, companyId);
+        await syncSystemSkillRoutes(tx, companyId);
+
         return { created, managerRole, memberRole };
       });
 
@@ -491,6 +542,77 @@ export class DepartmentAdminService {
       }
       this.log.error('dept.create.failed', { companyId, error: String(e) });
       return fail({ kind: 'internal', message: 'Failed to create department' });
+    }
+  }
+
+  /**
+   * Seed MEMBER-template grants for department roles that currently have zero
+   * tool-permission rows. Safe to re-run: roles that already have any rows are skipped.
+   */
+  async backfillEmptyRolePermissions(
+    companyId: string,
+    updatedBy: string,
+    departmentId?: string,
+  ): Promise<ServiceResult<{ departmentsTouched: number; rolesSeeded: number; rowsCreated: number }>> {
+    try {
+      const departments = await this.deps.prisma.department.findMany({
+        where: {
+          companyId,
+          status: 'active',
+          ...(departmentId ? { id: departmentId } : {}),
+        },
+        select: {
+          id: true,
+          roles: { select: { id: true } },
+        },
+      });
+
+      const grants = memberTemplateGrants();
+      let departmentsTouched = 0;
+      let rolesSeeded = 0;
+      let rowsCreated = 0;
+
+      for (const dept of departments) {
+        let deptTouched = false;
+        for (const role of dept.roles) {
+          const existing = await this.deps.prisma.departmentToolPermission.count({
+            where: { departmentId: dept.id, roleId: role.id },
+          });
+          if (existing > 0 || grants.length === 0) continue;
+
+          const created = await this.deps.prisma.departmentToolPermission.createMany({
+            data: grants.map((g) => ({
+              departmentId: dept.id,
+              roleId: role.id,
+              toolId: g.toolId,
+              actionGroup: g.actionGroup,
+              allowed: true,
+              updatedBy,
+            })),
+            skipDuplicates: true,
+          });
+          rolesSeeded += 1;
+          rowsCreated += created.count;
+          deptTouched = true;
+        }
+        if (deptTouched) {
+          departmentsTouched += 1;
+          await this.deps.permissions.invalidateDept(companyId, dept.id);
+        }
+      }
+
+      this.log.info('dept.permissions.backfill.done', {
+        companyId,
+        departmentId: departmentId ?? null,
+        departmentsTouched,
+        rolesSeeded,
+        rowsCreated,
+      });
+
+      return ok({ departmentsTouched, rolesSeeded, rowsCreated });
+    } catch (e) {
+      this.log.error('dept.permissions.backfill.failed', { companyId, departmentId, error: String(e) });
+      return fail({ kind: 'internal', message: 'Failed to backfill department permissions' });
     }
   }
 
@@ -550,17 +672,17 @@ export class DepartmentAdminService {
     departmentId: string,
     companyId: string,
     updatedBy: string,
-    input: { systemPrompt: string; skillsMarkdown: string; zohoRateLimit?: unknown; managerApproval?: unknown; isActive?: boolean | undefined },
-  ): Promise<ServiceResult<{ departmentId: string; systemPrompt: string; skillsMarkdown: string; isActive: boolean; updatedAt: string }>> {
+    input: { systemPrompt: string; desktopPersonaPrompt?: string | undefined; managerApproval?: unknown; isActive?: boolean | undefined },
+  ): Promise<ServiceResult<{ departmentId: string; systemPrompt: string; desktopPersonaPrompt: string; isActive: boolean; updatedAt: string }>> {
     const check = await this.assertDepartmentInCompany(departmentId, companyId);
-    if (!check.ok) return check as ServiceResult<{ departmentId: string; systemPrompt: string; skillsMarkdown: string; isActive: boolean; updatedAt: string }>;
+    if (!check.ok) return check as ServiceResult<{ departmentId: string; systemPrompt: string; desktopPersonaPrompt: string; isActive: boolean; updatedAt: string }>;
     try {
       const updated = await this.deps.prisma.departmentAgentConfig.upsert({
         where:  { departmentId },
-        update: { systemPrompt: input.systemPrompt, skillsMarkdown: input.skillsMarkdown, ...(input.zohoRateLimit !== undefined ? { zohoRateLimitJson: input.zohoRateLimit as object } : {}), ...(input.managerApproval !== undefined ? { managerApprovalJson: input.managerApproval as object } : {}), ...(input.isActive !== undefined ? { isActive: input.isActive } : {}), updatedBy },
-        create: { departmentId, systemPrompt: input.systemPrompt, skillsMarkdown: input.skillsMarkdown, ...(input.zohoRateLimit !== undefined ? { zohoRateLimitJson: input.zohoRateLimit as object } : {}), ...(input.managerApproval !== undefined ? { managerApprovalJson: input.managerApproval as object } : {}), isActive: input.isActive ?? true, createdBy: updatedBy, updatedBy },
+        update: { systemPrompt: input.systemPrompt, ...(input.desktopPersonaPrompt !== undefined ? { desktopPersonaPrompt: input.desktopPersonaPrompt } : {}), ...(input.managerApproval !== undefined ? { managerApprovalJson: input.managerApproval as object } : {}), ...(input.isActive !== undefined ? { isActive: input.isActive } : {}), updatedBy },
+        create: { departmentId, systemPrompt: input.systemPrompt, desktopPersonaPrompt: input.desktopPersonaPrompt ?? '', ...(input.managerApproval !== undefined ? { managerApprovalJson: input.managerApproval as object } : {}), isActive: input.isActive ?? true, createdBy: updatedBy, updatedBy },
       });
-      return ok({ departmentId, systemPrompt: updated.systemPrompt, skillsMarkdown: updated.skillsMarkdown, isActive: updated.isActive, updatedAt: updated.updatedAt.toISOString() });
+      return ok({ departmentId, systemPrompt: updated.systemPrompt, desktopPersonaPrompt: updated.desktopPersonaPrompt, isActive: updated.isActive, updatedAt: updated.updatedAt.toISOString() });
     } catch (e) {
       this.log.error('dept.config.update.failed', { departmentId, error: String(e) });
       return fail({ kind: 'internal', message: 'Failed to update department config' });
@@ -683,6 +805,7 @@ export class DepartmentAdminService {
         create: { departmentId, userId: resolvedUserId, roleId: role.id, status: input.status ?? 'active' },
         include: { user: { select: { id: true, name: true, email: true } }, role: true },
       });
+      await this.deps.permissions.invalidateDept(companyId, departmentId);
       return ok({ id: membership.id, userId: membership.userId, name: membership.user.name, email: membership.user.email, roleId: membership.roleId, roleSlug: membership.role.slug, roleName: membership.role.name, status: membership.status, createdAt: membership.createdAt.toISOString(), updatedAt: membership.updatedAt.toISOString() });
     } catch (e) {
       return fail({ kind: 'internal', message: 'Failed to save membership' });
@@ -694,6 +817,7 @@ export class DepartmentAdminService {
     if (!check.ok) return check as ServiceResult<{ deleted: boolean }>;
     try {
       await this.deps.prisma.departmentMembership.delete({ where: { departmentId_userId: { departmentId, userId } } });
+      await this.deps.permissions.invalidateDept(companyId, departmentId);
       return ok({ deleted: true });
     } catch (e) {
       if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') {
@@ -729,6 +853,7 @@ export class DepartmentAdminService {
         update: { allowed, updatedBy },
         create: { departmentId, roleId, toolId, actionGroup, allowed, updatedBy },
       });
+      await this.deps.permissions.invalidateDept(companyId, departmentId);
       return ok({ id: row.id, roleId: row.roleId, toolId: row.toolId, actionGroup: row.actionGroup, allowed: row.allowed });
     } catch (e) {
       return fail({ kind: 'internal', message: 'Failed to update role permission' });
@@ -758,6 +883,7 @@ export class DepartmentAdminService {
         update: { allowed, updatedBy },
         create: { departmentId, userId, toolId, actionGroup, allowed, updatedBy },
       });
+      await this.deps.permissions.invalidateDept(companyId, departmentId);
       return ok({ id: row.id, userId: row.userId, toolId: row.toolId, actionGroup: row.actionGroup, allowed: row.allowed });
     } catch (e) {
       return fail({ kind: 'internal', message: 'Failed to update user override' });
@@ -766,26 +892,70 @@ export class DepartmentAdminService {
 
   // ── Skills ────────────────────────────────────────────────────────────────
 
+  /**
+   * Validates that a folder is a legal home for a department-scoped skill:
+   * it must exist, live in the same company, be active, and belong to the
+   * same department. `null` (root) is always allowed. Mirrors the scope rules
+   * enforced by SkillRegistryAdminService.moveSkill.
+   */
+  private async assertSkillFolderPlacement(
+    companyId: string,
+    departmentId: string,
+    folderId: string | null,
+  ): Promise<ServiceResult<null>> {
+    if (folderId === null) return ok(null);
+    const folder = await this.deps.prisma.skillFolder.findFirst({
+      where: { id: folderId, companyId },
+      select: { departmentId: true, status: true },
+    });
+    if (!folder || folder.status !== 'active') {
+      return fail({ kind: 'not_found', message: 'Folder not found' });
+    }
+    if (folder.departmentId !== departmentId) {
+      return fail({ kind: 'validation', message: 'Folder belongs to a different department' });
+    }
+    return ok(null);
+  }
+
   async createSkill(
     departmentId: string,
     companyId: string,
     createdBy: string,
-    input: { name: string; slug?: string | undefined; summary?: string | undefined; markdown: string; tags?: string[] | undefined; status?: string | undefined },
+    input: { name: string; slug?: string | undefined; summary?: string | undefined; markdown: string; toolIds?: string[] | undefined; tags?: string[] | undefined; status?: string | undefined; folderId?: string | null | undefined },
   ): Promise<ServiceResult<SkillView>> {
     const check = await this.assertDepartmentInCompany(departmentId, companyId);
     if (!check.ok) return check as ServiceResult<SkillView>;
 
     const slug = input.slug ? normalizeSlug(input.slug) : normalizeSlug(input.name);
+    const unknownToolIds = unknownSkillToolIds(input.toolIds);
+    if (unknownToolIds.length > 0) {
+      return fail({ kind: 'validation', message: `Unknown skill toolIds: ${unknownToolIds.join(', ')}` });
+    }
+    const languageError = larkSkillEnglishOnlyError({
+      slug,
+      name: input.name,
+      summary: input.summary ?? '',
+      markdown: input.markdown,
+      toolIds: input.toolIds ?? [],
+      tags: input.tags ?? [],
+    });
+    if (languageError) return fail({ kind: 'validation', message: languageError });
+
+    const folderId = input.folderId ?? null;
+    const placement = await this.assertSkillFolderPlacement(companyId, departmentId, folderId);
+    if (!placement.ok) return placement as ServiceResult<SkillView>;
+
     try {
       const skill = await this.deps.prisma.skill.create({
         data: {
-          companyId, departmentId, scope: 'department',
+          companyId, departmentId, scope: 'department', folderId,
           name: input.name.trim(), slug, summary: input.summary ?? '',
-          markdown: input.markdown, tags: input.tags ?? [],
+          markdown: input.markdown, toolIds: input.toolIds ?? [], tags: input.tags ?? [],
           status: input.status ?? 'active', createdBy, updatedBy: createdBy,
         },
       });
-      return ok({ id: skill.id, name: skill.name, slug: skill.slug, summary: skill.summary, markdown: skill.markdown, tags: skill.tags, status: skill.status, scope: skill.scope, departmentId: skill.departmentId });
+      await recordSkillRegistryMutation(this.deps.prisma, skill);
+      return ok({ id: skill.id, name: skill.name, slug: skill.slug, summary: skill.summary, markdown: skill.markdown, toolIds: skill.toolIds, tags: skill.tags, status: skill.status, scope: skill.scope, departmentId: skill.departmentId, folderId: skill.folderId });
     } catch (e) {
       if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
         return fail({ kind: 'conflict', message: 'A skill with this slug already exists' });
@@ -799,13 +969,32 @@ export class DepartmentAdminService {
     companyId: string,
     skillId: string,
     updatedBy: string,
-    input: { name?: string | undefined; summary?: string | undefined; markdown?: string | undefined; tags?: string[] | undefined; status?: string | undefined },
+    input: { name?: string | undefined; summary?: string | undefined; markdown?: string | undefined; toolIds?: string[] | undefined; tags?: string[] | undefined; status?: string | undefined; folderId?: string | null | undefined },
   ): Promise<ServiceResult<SkillView>> {
     const check = await this.assertDepartmentInCompany(departmentId, companyId);
     if (!check.ok) return check as ServiceResult<SkillView>;
 
     const existing = await this.deps.prisma.skill.findFirst({ where: { id: skillId, departmentId } });
     if (!existing) return fail({ kind: 'not_found', message: 'Skill not found' });
+    const unknownToolIds = unknownSkillToolIds(input.toolIds);
+    if (unknownToolIds.length > 0) {
+      return fail({ kind: 'validation', message: `Unknown skill toolIds: ${unknownToolIds.join(', ')}` });
+    }
+    const languageError = larkSkillEnglishOnlyError({
+      slug: existing.slug,
+      name: input.name ?? existing.name,
+      summary: input.summary ?? existing.summary,
+      markdown: input.markdown ?? existing.markdown,
+      toolIds: input.toolIds ?? existing.toolIds,
+      tags: input.tags ?? existing.tags,
+    });
+    if (languageError) return fail({ kind: 'validation', message: languageError });
+
+    if (input.folderId !== undefined) {
+      const placement = await this.assertSkillFolderPlacement(companyId, departmentId, input.folderId);
+      if (!placement.ok) return placement as ServiceResult<SkillView>;
+    }
+
     try {
       const skill = await this.deps.prisma.skill.update({
         where: { id: skillId },
@@ -813,25 +1002,42 @@ export class DepartmentAdminService {
           ...(input.name     !== undefined ? { name:     input.name.trim() } : {}),
           ...(input.summary  !== undefined ? { summary:  input.summary }     : {}),
           ...(input.markdown !== undefined ? { markdown: input.markdown }    : {}),
+          ...(input.toolIds  !== undefined ? { toolIds:  input.toolIds }     : {}),
           ...(input.tags     !== undefined ? { tags:     input.tags }        : {}),
           ...(input.status   !== undefined ? { status:   input.status }      : {}),
+          ...(input.folderId !== undefined ? { folderId: input.folderId }    : {}),
+          revision: { increment: 1 },
           updatedBy,
         },
       });
-      return ok({ id: skill.id, name: skill.name, slug: skill.slug, summary: skill.summary, markdown: skill.markdown, tags: skill.tags, status: skill.status, scope: skill.scope, departmentId: skill.departmentId });
+      await recordSkillRegistryMutation(this.deps.prisma, skill);
+      return ok({ id: skill.id, name: skill.name, slug: skill.slug, summary: skill.summary, markdown: skill.markdown, toolIds: skill.toolIds, tags: skill.tags, status: skill.status, scope: skill.scope, departmentId: skill.departmentId, folderId: skill.folderId });
     } catch (e) {
       return fail({ kind: 'internal', message: 'Failed to update skill' });
     }
   }
 
-  async archiveSkill(departmentId: string, companyId: string, skillId: string): Promise<ServiceResult<{ archived: boolean }>> {
+  async archiveSkill(
+    departmentId: string,
+    companyId: string,
+    skillId: string,
+    updatedBy?: string,
+  ): Promise<ServiceResult<{ archived: boolean }>> {
     const check = await this.assertDepartmentInCompany(departmentId, companyId);
     if (!check.ok) return check as ServiceResult<{ archived: boolean }>;
 
     const existing = await this.deps.prisma.skill.findFirst({ where: { id: skillId, departmentId } });
     if (!existing) return fail({ kind: 'not_found', message: 'Skill not found' });
     try {
-      await this.deps.prisma.skill.update({ where: { id: skillId }, data: { status: 'archived' } });
+      const skill = await this.deps.prisma.skill.update({
+        where: { id: skillId },
+        data: {
+          status: 'archived',
+          revision: { increment: 1 },
+          ...(updatedBy ? { updatedBy } : {}),
+        },
+      });
+      await recordSkillRegistryMutation(this.deps.prisma, skill, 'archive');
       return ok({ archived: true });
     } catch (e) {
       return fail({ kind: 'internal', message: 'Failed to archive skill' });
@@ -889,6 +1095,10 @@ export class DepartmentAdminService {
       create: { companyId, departmentRoleId: roleId, module, enabled, updatedBy: actorId },
       update: { enabled, updatedBy: actorId },
     });
+
+    // Books module gates are evaluated at tool runtime; clear dept permission cache
+    // so subsequent resolves do not serve a stale allowed-tool snapshot.
+    await this.deps.permissions.invalidateDept(companyId, departmentId);
 
     return ok({ roleId, module, enabled });
   }

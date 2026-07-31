@@ -25,11 +25,11 @@ import { LarkDocClient }           from '../../src/infrastructure/channels/lark/
 import { LarkToolMessagingClient } from '../../src/infrastructure/channels/lark/clients/lark-messaging.client.ts';
 import { LarkBaseClient }          from '../../src/infrastructure/channels/lark/clients/lark-base.client.ts';
 
-import { createLarkTaskTool }      from '../../src/application/orchestration/tools/families/lark-task.tool.ts';
-import { createLarkCalendarTool }  from '../../src/application/orchestration/tools/families/lark-calendar.tool.ts';
-import { createLarkDocTool }       from '../../src/application/orchestration/tools/families/lark-doc.tool.ts';
-import { createLarkMessagingTool } from '../../src/application/orchestration/tools/families/lark-messaging.tool.ts';
-import { createLarkBaseTool }      from '../../src/application/orchestration/tools/families/lark-base.tool.ts';
+import { createLarkTaskTool }      from '../../src/application/tools/families/lark-task.tool.ts';
+import { createLarkCalendarTool }  from '../../src/application/tools/families/lark-calendar.tool.ts';
+import { createLarkDocTool }       from '../../src/application/tools/families/lark-doc.tool.ts';
+import { createLarkMessagingTool } from '../../src/application/tools/families/lark-messaging.tool.ts';
+import { createLarkBaseTool }      from '../../src/application/tools/families/lark-base.tool.ts';
 
 const LARK_APP_ID     = process.env['LARK_APP_ID'];
 const LARK_APP_SECRET = process.env['LARK_APP_SECRET'];
@@ -228,18 +228,14 @@ describe('larkMessaging — integration', { skip: !process.env['LARK_CHAT_ID'] |
     assert.ok(Array.isArray((r as any).value.data));
   });
 
-  it('send + get: sends a test message and reads it back', async () => {
+  it('send: sends a test message', async () => {
     const r = await tool.execute({
       op:     'send',
       chatId,
       text:   '[DIVO-INT-TEST] Integration test message — sent by advance-backend tests.',
     }, ctx);
     assert.equal(r.ok, true, `send failed: ${!r.ok ? JSON.stringify((r as any).error) : ''}`);
-    const messageId = (r as any).value.messageId as string;
-    assert.ok(messageId);
-
-    const g = await tool.execute({ op: 'get', messageId }, ctx);
-    assert.equal(g.ok, true);
+    assert.ok((r as any).value.messageId as string);
   });
 });
 

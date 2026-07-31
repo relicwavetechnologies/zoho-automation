@@ -68,6 +68,20 @@ export const api = {
     request<T>(path, { method: "GET" }, token),
 };
 
+export type CompanyMemberRole = "MEMBER" | "COMPANY_ADMIN";
+
+export const companyMembersApi = {
+  updateRole: (
+    userId: string,
+    input: { role: CompanyMemberRole; companyId?: string },
+    token?: string,
+  ) => api.put<{ userId: string; companyId: string; role: CompanyMemberRole }>(
+    `/api/admin/company/members/${userId}/role`,
+    input,
+    token,
+  ),
+};
+
 export type CreateAgentInput = {
   name: string;
   description?: string;
@@ -96,89 +110,15 @@ export type ModelCatalogEntry = {
   supportsThinking?: boolean;
 };
 
-export type SetMappingInput = {
-  channelType: "lark" | "desktop";
-  channelIdentifier: string;
-  agentDefinitionId: string;
-};
-
-export type RemoveMappingInput = {
-  channelType: string;
-  channelIdentifier: string;
-};
-
 export const agentsApi = {
-  list: <T = any>(token?: string) => api.get<T[]>("/api/agents", token),
-  get: <T = any>(id: string, token?: string) =>
-    api.get<T>(`/api/agents/${id}`, token),
-  create: <T = any>(body: CreateAgentInput, token?: string) =>
-    api.post<T>("/api/agents", body, token),
-  update: <T = any>(id: string, body: UpdateAgentInput, token?: string) =>
-    api.put<T>(`/api/agents/${id}`, body, token),
-  delete: (id: string, token?: string) =>
-    api.delete(`/api/agents/${id}`, {}, token),
-  toggle: (id: string, token?: string) =>
-    api.post(`/api/agents/${id}/toggle`, {}, token),
+  /**
+   * The governed tool catalogue. Named for its historical client, but it is not
+   * about agents — Skills Lab and the department editor are what read it.
+   */
   toolRegistry: <T = any>(token?: string) =>
-    api.get<T[]>("/api/agents/tools/registry", token),
-  modelCatalog: (token?: string) =>
-    api.get<ModelCatalogEntry[]>("/api/agents/models/catalog", token),
+    api.get<T[]>("/api/admin/tool-registry", token),
 };
 
-export const channelMappingsApi = {
-  list: <T = any>(token?: string) =>
-    api.get<T[]>("/api/channel-mappings", token),
-  set: (body: SetMappingInput, token?: string) =>
-    api.post("/api/channel-mappings", body, token),
-  remove: (body: RemoveMappingInput, token?: string) =>
-    api.delete("/api/channel-mappings", body, token),
-};
-
-export type ZohoScopeLevel = "read_only" | "read_write" | "full";
-
-export type ZohoConnectStart = {
-  authUrl: string;
-  provider: "zoho";
-  scopeLevel: ZohoScopeLevel;
-  message: string;
-};
-
-export const companyIntegrationsApi = {
-  startZoho: (scopeLevel: ZohoScopeLevel, token?: string) =>
-    api.post<ZohoConnectStart>("/api/admin/company/onboarding/zoho-start", { scopeLevel }, token),
-  startLark: (token?: string) =>
-    api.post<{ url: string }>("/api/admin/company/onboarding/lark-start", {}, token),
-  startGoogle: (linkType: "user" | "company", token?: string) =>
-    api.get<{ url: string }>(`/api/google/auth/connect?linkType=${linkType}&returnTo=${encodeURIComponent(window.location.origin + "/settings?tab=integrations")}`, token),
-  disconnect: (provider: string, token?: string) =>
-    api.post<{ disconnected: boolean }>(`/api/admin/company/onboarding/disconnect`, { provider }, token),
-};
-
-export type AiProviderStatus = {
-  companyId: string;
-  providers: {
-    openai: {
-      connected: boolean;
-      status: string;
-      gatewayUrl: string | null;
-      dedicatedAccountId: string | null;
-      planType?: string | null;
-      primaryWindowPct?: number | null;
-      secondaryWindowPct?: number | null;
-      creditsBalance?: number | null;
-      lastUsedAt?: string | null;
-    };
-    google: {
-      connected: boolean;
-      status: string;
-    };
-  };
-  settings: {
-    defaultAiProvider: "openai" | "google" | string;
-    defaultAiModel: string;
-  };
-  updatedAt: string;
-};
 
 export type ConnectOpenAiInput = {
   tier?: "free" | "pro";
@@ -243,82 +183,6 @@ export type UpdateAiModelTargetInput = {
   xtremeThinkingLevel?: string | null;
 };
 
-export const aiProvidersApi = {
-  status: (token?: string) =>
-    api.get<AiProviderStatus>("/api/admin/ai-providers/status", token),
-  connectOpenAI: (body: ConnectOpenAiInput = {}, token?: string) =>
-    api.post<OpenAiConnectStart>(
-      "/api/admin/ai-providers/openai/connect",
-      body,
-      token,
-    ),
-  completeOpenAI: (body: CompleteOpenAiInput, token?: string) =>
-    api.post<OpenAiConnectComplete>(
-      "/api/admin/ai-providers/openai/complete",
-      body,
-      token,
-    ),
-  disconnectOpenAI: (token?: string) =>
-    api.delete<{ connected: boolean; updatedAt: string }>(
-      "/api/admin/ai-providers/openai/disconnect",
-      {},
-      token,
-    ),
-  testOpenAI: (token?: string) =>
-    api.post<OpenAiTestResult>(
-      "/api/admin/ai-providers/openai/test",
-      {},
-      token,
-    ),
-  updateSettings: (
-    body: { defaultAiProvider: "openai" | "google"; defaultAiModel: string },
-    token?: string,
-  ) => api.put("/api/admin/ai-providers/settings", body, token),
-};
-
-export const aiModelsApi = {
-  list: (token?: string) => api.get<AiModelTarget[]>("/api/admin/ai-models", token),
-  update: (targetKey: string, body: UpdateAiModelTargetInput, token?: string) =>
-    api.put<AiModelTarget>(
-      `/api/admin/ai-models/${encodeURIComponent(targetKey)}`,
-      body,
-      token,
-    ),
-};
-
-export function useProviderStatus(token?: string, refreshMs = 0) {
-  const [data, setData] = useState<AiProviderStatus | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-
-  const refresh = useCallback(async () => {
-    if (!token) {
-      setLoading(false);
-      return;
-    }
-    try {
-      setError(null);
-      const next = await aiProvidersApi.status(token);
-      setData(next);
-    } catch (e) {
-      setError(e instanceof Error ? e : new Error(String(e)));
-    } finally {
-      setLoading(false);
-    }
-  }, [token]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  useEffect(() => {
-    if (!refreshMs || !token) return;
-    const id = window.setInterval(() => void refresh(), refreshMs);
-    return () => window.clearInterval(id);
-  }, [refresh, refreshMs, token]);
-
-  return { data, loading, error, refresh };
-}
 
 export type DepartmentSummary = {
   id: string;
@@ -413,6 +277,7 @@ export type DepartmentDetail = {
   };
   config: {
     systemPrompt: string;
+    desktopPersonaPrompt: string;
     skillsMarkdown: string;
     zohoRateLimit: unknown;
     managerApproval: unknown;
@@ -455,6 +320,7 @@ export type UpdateDepartmentInput = {
 
 export type UpdateDepartmentConfigInput = {
   systemPrompt: string;
+  desktopPersonaPrompt: string;
   skillsMarkdown: string;
   zohoRateLimit?: unknown;
   managerApproval?: unknown;
@@ -542,6 +408,7 @@ export const departmentsApi = {
     api.put<{
       departmentId: string;
       systemPrompt: string;
+      desktopPersonaPrompt: string;
       skillsMarkdown: string;
       isActive: boolean;
       updatedAt: string;
@@ -643,4 +510,166 @@ export type BooksModulePermission = {
   roleId: string;
   module: string;
   enabled: boolean;
+};
+
+// ─── Skill Registry (Skills Lab) ──────────────────────────────────────────────
+
+export type SkillRegistrySkillNode = {
+  id: string;
+  name: string;
+  slug: string;
+  summary: string;
+  toolIds: string[];
+  tags: string[];
+  status: string;
+  scope: string;
+  departmentId: string | null;
+  folderId: string | null;
+  isSystem: boolean;
+  revision: number;
+  updatedAt: string;
+};
+
+export type SkillRegistryFolderNode = {
+  id: string;
+  name: string;
+  slug: string;
+  departmentId: string | null;
+  parentId: string | null;
+  status: string;
+  children: SkillRegistryFolderNode[];
+  skills: SkillRegistrySkillNode[];
+};
+
+export type SkillRegistryRoot = {
+  folders: SkillRegistryFolderNode[];
+  skills: SkillRegistrySkillNode[];
+};
+
+export type SkillRegistryTree = {
+  registryRevision: number;
+  companyWide: SkillRegistryRoot;
+  departments: (SkillRegistryRoot & { id: string; name: string })[];
+};
+
+export type SkillDetail = {
+  id: string;
+  name: string;
+  slug: string;
+  summary: string;
+  markdown: string;
+  toolIds: string[];
+  tags: string[];
+  aliases: string[];
+  status: string;
+  scope: string;
+  departmentId: string | null;
+  departmentName: string | null;
+  folderId: string | null;
+  folderPath: string[];
+  isSystem: boolean;
+  revision: number;
+  createdBy: string | null;
+  updatedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SkillGranteeType = "user" | "department" | "role" | "company";
+export type SkillGranteeCandidate = {
+  granteeId: string;
+  label: string;
+  detail: string | null;
+};
+export type SkillGrant = {
+  granteeType: SkillGranteeType;
+  granteeId: string;
+  label: string;
+  detail: string | null;
+  grantedBy: string | null;
+  createdAt: string;
+};
+export type SkillAccess = {
+  skillId: string;
+  scope: string;
+  departmentId: string | null;
+  grants: SkillGrant[];
+  candidates: {
+    users: SkillGranteeCandidate[];
+    departments: SkillGranteeCandidate[];
+    roles: SkillGranteeCandidate[];
+    company: SkillGranteeCandidate | null;
+  };
+};
+
+export type SkillAuditEntry = {
+  id: string;
+  action: string;
+  actorId: string;
+  outcome: string;
+  metadata: unknown;
+  createdAt: string;
+};
+
+export type SkillRegistryFolder = {
+  id: string;
+  name: string;
+  slug: string;
+  departmentId: string | null;
+  parentId: string | null;
+  status: string;
+};
+
+const withCompany = (path: string, companyId?: string): string =>
+  companyId ? `${path}${path.includes("?") ? "&" : "?"}companyId=${encodeURIComponent(companyId)}` : path;
+
+// companyId (super-admin only) travels in the query on GET and the body on writes.
+const body = (payload: Record<string, unknown>, companyId?: string) =>
+  companyId ? { ...payload, companyId } : payload;
+
+const REGISTRY_BASE = "/api/admin/skill-registry";
+
+export const skillRegistryApi = {
+  tree: (opts: { includeArchived?: boolean; companyId?: string } = {}, token?: string) =>
+    api.get<SkillRegistryTree>(
+      withCompany(`${REGISTRY_BASE}/tree${opts.includeArchived ? "?includeArchived=true" : ""}`, opts.companyId),
+      token,
+    ),
+  skill: (skillId: string, companyId?: string, token?: string) =>
+    api.get<SkillDetail>(withCompany(`${REGISTRY_BASE}/skills/${skillId}`, companyId), token),
+  access: (skillId: string, companyId?: string, token?: string) =>
+    api.get<SkillAccess>(withCompany(`${REGISTRY_BASE}/skills/${skillId}/access`, companyId), token),
+  grantAccess: (skillId: string, granteeType: SkillGranteeType, granteeId: string, companyId?: string, token?: string) =>
+    api.post<SkillGrant>(`${REGISTRY_BASE}/skills/${skillId}/access`, body({ granteeType, granteeId }, companyId), token),
+  revokeAccess: (skillId: string, granteeType: SkillGranteeType, granteeId: string, companyId?: string, token?: string) =>
+    api.delete<{ skillId: string; granteeType: SkillGranteeType; granteeId: string }>(
+      withCompany(`${REGISTRY_BASE}/skills/${skillId}/access/${granteeType}/${granteeId}`, companyId),
+      {},
+      token,
+    ),
+  audit: (skillId: string, companyId?: string, token?: string) =>
+    api.get<SkillAuditEntry[]>(withCompany(`${REGISTRY_BASE}/skills/${skillId}/audit`, companyId), token),
+  createFolder: (
+    input: { name: string; parentId?: string | null; departmentId?: string | null },
+    companyId?: string,
+    token?: string,
+  ) => api.post<SkillRegistryFolder>(`${REGISTRY_BASE}/folders`, body(input, companyId), token),
+  renameFolder: (folderId: string, name: string, companyId?: string, token?: string) =>
+    api.put<SkillRegistryFolder>(`${REGISTRY_BASE}/folders/${folderId}`, body({ name }, companyId), token),
+  moveFolder: (folderId: string, parentId: string | null, companyId?: string, token?: string) =>
+    api.post<SkillRegistryFolder>(`${REGISTRY_BASE}/folders/${folderId}/move`, body({ parentId }, companyId), token),
+  archiveFolder: (folderId: string, companyId?: string, token?: string) =>
+    api.post<{ archivedFolders: number; detachedSkills: number }>(
+      `${REGISTRY_BASE}/folders/${folderId}/archive`,
+      body({}, companyId),
+      token,
+    ),
+  moveSkill: (skillId: string, folderId: string | null, companyId?: string, token?: string) =>
+    api.post<{ skillId: string; folderId: string | null }>(
+      `${REGISTRY_BASE}/skills/${skillId}/move`,
+      body({ folderId }, companyId),
+      token,
+    ),
+  backfill: (companyId?: string, token?: string) =>
+    api.post<{ foldersCreated: number; skillsPlaced: number }>(`${REGISTRY_BASE}/backfill`, body({}, companyId), token),
 };

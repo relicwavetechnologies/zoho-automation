@@ -172,7 +172,11 @@ describe('GET /tasks', () => {
     assert.equal(capturedArgs.limit, 200);
   });
 
-  it('passes isSuperAdmin flag to service', async () => {
+  // Super-admin used to reach the service as its own flag, where it decided
+  // whether run payloads were redacted. Company admins now get full trace
+  // visibility, so that flag is gone and the route's only job is to resolve
+  // which company a super-admin is asking about.
+  it('scopes a super-admin request to the requested company', async () => {
     let capturedArgs: any;
     const router = createRuntimeRoutes({
       executionQueryService: makeService({ listRuns: async (args) => { capturedArgs = args; return []; } }),
@@ -182,6 +186,7 @@ describe('GET /tasks', () => {
       locals: SUPER_ADMIN_LOCALS,
       query:  { companyId: 'co-any' },
     });
-    assert.equal(capturedArgs.isSuperAdmin, true);
+    assert.equal(capturedArgs.companyId, 'co-any');
+    assert.equal(capturedArgs.isSuperAdmin, undefined);
   });
 });

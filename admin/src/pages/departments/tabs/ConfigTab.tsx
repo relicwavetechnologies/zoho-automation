@@ -9,6 +9,7 @@ type Props = {
   detail: DepartmentDetail
   onSave: (data: {
     systemPrompt: string
+    desktopPersonaPrompt: string
     skillsMarkdown: string
     zohoRateLimit?: unknown
     managerApproval?: unknown
@@ -32,6 +33,7 @@ function parseJsonField(value: string) {
 
 export function ConfigTab({ detail, onSave }: Props) {
   const [systemPrompt, setSystemPrompt] = useState(detail.config.systemPrompt)
+  const [desktopPersonaPrompt, setDesktopPersonaPrompt] = useState(detail.config.desktopPersonaPrompt)
   const [skillsMarkdown, setSkillsMarkdown] = useState(detail.config.skillsMarkdown)
   const [zohoRateLimit, setZohoRateLimit] = useState(stringifyJson(detail.config.zohoRateLimit))
   const [managerApproval, setManagerApproval] = useState(stringifyJson(detail.config.managerApproval))
@@ -41,6 +43,7 @@ export function ConfigTab({ detail, onSave }: Props) {
 
   useEffect(() => {
     setSystemPrompt(detail.config.systemPrompt)
+    setDesktopPersonaPrompt(detail.config.desktopPersonaPrompt)
     setSkillsMarkdown(detail.config.skillsMarkdown)
     setZohoRateLimit(stringifyJson(detail.config.zohoRateLimit))
     setManagerApproval(stringifyJson(detail.config.managerApproval))
@@ -51,6 +54,7 @@ export function ConfigTab({ detail, onSave }: Props) {
   const dirty = useMemo(
     () =>
       systemPrompt !== detail.config.systemPrompt ||
+      desktopPersonaPrompt !== detail.config.desktopPersonaPrompt ||
       skillsMarkdown !== detail.config.skillsMarkdown ||
       zohoRateLimit !== stringifyJson(detail.config.zohoRateLimit) ||
       managerApproval !== stringifyJson(detail.config.managerApproval) ||
@@ -58,11 +62,13 @@ export function ConfigTab({ detail, onSave }: Props) {
     [
       detail.config.isActive,
       detail.config.managerApproval,
+      detail.config.desktopPersonaPrompt,
       detail.config.skillsMarkdown,
       detail.config.systemPrompt,
       detail.config.zohoRateLimit,
       isActive,
       managerApproval,
+      desktopPersonaPrompt,
       skillsMarkdown,
       systemPrompt,
       zohoRateLimit,
@@ -78,6 +84,7 @@ export function ConfigTab({ detail, onSave }: Props) {
       const managerApprovalValue = parseJsonField(managerApproval)
       await onSave({
         systemPrompt,
+        desktopPersonaPrompt,
         skillsMarkdown,
         zohoRateLimit: zohoRateLimitValue,
         managerApproval: managerApprovalValue,
@@ -120,6 +127,23 @@ export function ConfigTab({ detail, onSave }: Props) {
             placeholder="Shared department skills, playbooks, and operating notes."
           />
         </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <div>
+          <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Divo Dex department persona</Label>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Applied to each desktop Divo Dex run for this department. It guides working style and domain rules, but cannot override company security, permissions, or approvals.
+          </p>
+        </div>
+        <Textarea
+          value={desktopPersonaPrompt}
+          onChange={(event) => setDesktopPersonaPrompt(event.target.value)}
+          maxLength={6000}
+          className="min-h-[220px] bg-card font-mono text-[12px] leading-5"
+          placeholder={'Department purpose:\n- Help Finance complete work through connected tools.\n\nDefault working style:\n- Prefer summaries, tables, and verified records.\n- Do not create apps or local files unless explicitly requested.'}
+        />
+        <p className="text-right text-[11px] text-muted-foreground">{desktopPersonaPrompt.length.toLocaleString()} / 6,000</p>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">

@@ -19,8 +19,8 @@ import { makeIntCtx, noopLogger } from './helpers/int.helpers.ts';
 
 import { ZohoBooksClient }    from '../../src/infrastructure/zoho/zoho-books.client.ts';
 import { ZohoCrmClient }      from '../../src/infrastructure/zoho/zoho-crm.client.ts';
-import { createZohoBooksTool } from '../../src/application/orchestration/tools/families/zoho-books.tool.ts';
-import { createZohoCrmTool }   from '../../src/application/orchestration/tools/families/zoho-crm.tool.ts';
+import { createZohoBooksTool } from '../../src/application/tools/families/zoho-books.tool.ts';
+import { createZohoCrmTool }   from '../../src/application/tools/families/zoho-crm.tool.ts';
 
 const ZOHO_ACCESS_TOKEN = process.env['ZOHO_ACCESS_TOKEN'];
 const ZOHO_ORG_ID       = process.env['ZOHO_ORG_ID'];

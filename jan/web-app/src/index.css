@@ -1,0 +1,481 @@
+@import 'tailwindcss';
+/* HeroUI v3. Must follow `tailwindcss` — its own entry re-imports tailwind and
+   tw-animate-css, and layers its base/components/theme on top of them.
+
+   NOTE ON TOKENS: HeroUI declares bare `--background`, `--foreground`,
+   `--border`, `--muted` and `--accent` in a @layer, and Jan declares all five
+   UNLAYERED in :root — so Jan wins the cascade. Three of them agree in meaning;
+   two do NOT. Jan's `--accent` is a near-white hover fill and its `--muted` is
+   a surface, whereas HeroUI means a vivid brand colour and a mid-grey text
+   colour. Left alone, HeroUI's own components inherit Jan's greys and render
+   nearly invisible — no error, no build failure. See the scoped override
+   below, which hands HeroUI its own values back wherever HeroUI is used. */
+@import '@heroui/styles';
+@import 'tw-animate-css';
+@import 'katex/dist/katex.min.css';
+/* Linked from 'self' so CSP keeps it: WebView2 drops sonner's runtime <style>
+   once index.html's inline <style> makes Tauri hash style-src (voids unsafe-inline). */
+@import 'sonner/dist/styles.css';
+
+/* Accent tint for neutral toasts (Appearance > Accent color, --primary).
+   Set via class, not an inline style prop, so WebView2's hashed style-src
+   CSP doesn't drop it. richColors typed toasts keep their semantics. */
+.toaster {
+  --normal-bg: color-mix(in oklch, var(--popover) 92%, var(--primary));
+  --normal-text: var(--popover-foreground);
+  --normal-border: color-mix(in oklch, var(--border) 55%, var(--primary));
+}
+@import '@/styles/font.css';
+@import '@/styles/markdown.css';
+@source '../node_modules/streamdown/dist/**/*.js';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --animate-hue-rotate: hue-rotate 4s infinite;
+  --font-studio: "StudioFeixenSans";
+  /* System stack, matching the Codex macOS app — SF Pro on Mac, Segoe on
+     Windows. Inter stays as the packaged fallback for Linux webviews. */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter",
+    sans-serif;
+  /* Codex's code stack, read off its Appearance panel — its exported theme
+     JSON carries `fonts: null`, meaning "defaults", so the values come from
+     the settings UI rather than the export. */
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  /* Font scale based on --font-size-base */
+  --text-xs: calc(var(--font-size-base) * 0.75); /* ~12px */
+  --text-sm: calc(var(--font-size-base) * 0.875); /* ~14px */
+  --text-base: var(--font-size-base); /* ~16px */
+  --text-lg: calc(var(--font-size-base) * 1.125); /* ~18px */
+  --text-xl: calc(var(--font-size-base) * 1.25); /* ~20px */
+  --text-2xl: calc(var(--font-size-base) * 1.5); /* ~24px */
+  --text-3xl: calc(var(--font-size-base) * 1.875); /* ~30px */
+  --text-4xl: calc(var(--font-size-base) * 2.25); /* ~36px */
+  --text-5xl: calc(var(--font-size-base) * 3); /* ~48px */
+  --text-6xl: calc(var(--font-size-base) * 3.75); /* ~60px */
+  --text-7xl: calc(var(--font-size-base) * 4.5); /* ~72px */
+  --text-8xl: calc(var(--font-size-base) * 6); /* ~96px */
+  --text-9xl: calc(var(--font-size-base) * 8); /* ~128px */
+
+}
+
+/* Light surfaces follow the Codex palette, reconstructed from the two anchors
+   Codex exports: `surface` #ffffff and `ink` #1a1c1f. Every intermediate grey
+   here is ink mixed into surface at a fixed percentage (4% / 5% / 12% / 55%),
+   which is what makes the ramp read as one system.
+
+   That derivation is the whole fix. The old light theme had `--background`,
+   `--card` and `--popover` all at pure white with a single hairline border, so
+   nothing had depth — the dark theme got a stepped ramp and light never did.
+
+   `--primary` stays OUT of this. Codex's accent is #339cff, but ours is the
+   user's chosen accent (see `useInterfaceSettings`); adopting the blue would
+   silently overwrite their pick. */
+:root {
+  --radius: 0.625rem;
+  --background: #ffffff;
+  --foreground: #1a1c1f;
+  --card: #ffffff;
+  --card-foreground: #1a1c1f;
+  --popover: #ffffff;
+  --popover-foreground: #1a1c1f;
+  --primary: oklch(0.7003 0.1611 35.09);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: #f4f4f5;
+  --secondary-foreground: #2b2d31;
+  --muted: #f4f4f5;
+  --muted-foreground: #818284;
+  --accent: #f0f0f1;
+  --accent-foreground: #1a1c1f;
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: #e4e4e5;
+  --input: #dcdcde;
+  --ring: #b4b5b8;
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  /* The rail is the OFFSET surface in both themes: a step darker than the
+     white content pane here, a step lighter than the near-black one in dark.
+     Same relationship, mirrored — don't flatten it to match `--background`. */
+  --sidebar: #f6f6f7;
+  --sidebar-foreground: #3f4145;
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: #e9e9eb;
+  --sidebar-accent-foreground: #1a1c1f;
+  --sidebar-border: #e4e4e5;
+  --sidebar-ring: #b4b5b8;
+
+  /* Codex's semantic colours, exported per variant. Not yet consumed by any
+     component — recorded here so diffs and skill chips have one source when
+     they are built, instead of a fresh guess at each call site. */
+  --diff-added: #00a240;
+  --diff-removed: #ba2623;
+  --skill: #924ff7;
+}
+
+/* Dark surfaces follow the Codex palette: flat neutral greys, no tint, and a
+   very narrow spread between them (#181818 → #303030). `--background` #181818
+   and `--sidebar` #242424 are sampled from the Codex app itself — don't drift
+   them. Borders are near-invisible: separation comes from the step in fill, not
+   from a line. `--primary` is the user's accent (see `useInterfaceSettings`)
+   and is deliberately left alone. */
+.dark {
+  --background: #181818;
+  --foreground: #ededed;
+  --card: #1f1f1f;
+  --card-foreground: #ededed;
+  --popover: #242424;
+  --popover-foreground: #ededed;
+  --primary: oklch(0.7003 0.1611 35.09);
+  --primary-foreground: #181818;
+  --secondary: #262626;
+  --secondary-foreground: #ededed;
+  --muted: #262626;
+  --muted-foreground: #9b9b9b;
+  --accent: #262626;
+  --accent-foreground: #ededed;
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 7%);
+  --input: oklch(1 0 0 / 10%);
+  --ring: #4d4d4d;
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  /* The rail is the *raised* surface and the content pane recedes below it —
+     the opposite of the usual dark-app instinct, and what makes Codex read the
+     way it does. Keep `--sidebar` lighter than `--background`. */
+  --sidebar: #242424;
+  /* Rows read near-white in Codex — only group labels and metadata recede
+     (they take this at reduced opacity). */
+  --sidebar-foreground: #d6d6d6;
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: #ededed;
+  --sidebar-accent: #303030;
+  --sidebar-accent-foreground: #ededed;
+  --sidebar-border: oklch(1 0 0 / 6%);
+  --sidebar-ring: #4d4d4d;
+
+  /* Codex ships brighter semantics for dark — a light-mode diff green on a
+     #181818 surface is close to unreadable. */
+  --diff-added: #40c977;
+  --diff-removed: #fa423e;
+  --skill: #ad7bf9;
+}
+
+/* HeroUI token bridge.
+ *
+ * HeroUI and Jan both declare six bare tokens. Three agree — --background,
+ * --foreground and --border mean the same thing in both — and Jan wins those by
+ * being unlayered, which is exactly what we want: HeroUI components inherit
+ * Jan's surfaces and look native rather than pasted in.
+ *
+ * The other three mean OPPOSITE things:
+ *
+ *   --accent             Jan: near-white hover FILL   HeroUI: vivid brand colour
+ *   --accent-foreground  Jan: dark text on that fill  HeroUI: text ON the brand
+ *   --muted              Jan: near-white SURFACE      HeroUI: mid-grey TEXT
+ *
+ * Jan wins those too, so an unbridged HeroUI button paints its brand fill in
+ * #f0f0f1 and its label in near-white — invisible, with no error to explain it.
+ *
+ * This CANNOT be fixed at :root. Jan's `@theme inline` maps --color-accent and
+ * --color-muted onto these names, so redefining them globally would turn every
+ * `bg-accent` hover and `bg-muted` surface in the app into the brand colour.
+ * So the bridge is scoped: anything under [data-heroui] gets HeroUI's meaning,
+ * everything else keeps Jan's. Values point at Jan's own equivalents rather
+ * than HeroUI's defaults, so HeroUI renders in Divo's coral instead of its
+ * stock blue, and follows light/dark for free.
+ */
+[data-heroui] {
+  --accent: var(--primary);
+  --accent-foreground: var(--primary-foreground);
+  --muted: var(--muted-foreground);
+}
+
+/* Running-state text: a highlight sweeps left-to-right across the label instead
+   of a spinner sitting beside it. The element carries its own colour through the
+   gradient, so it must be removed (not just paused) when work finishes —
+   callers apply this class conditionally. */
+@keyframes text-shimmer {
+  from {
+    background-position: 150% center;
+  }
+  to {
+    background-position: -50% center;
+  }
+}
+
+.text-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--muted-foreground) 0%,
+    var(--muted-foreground) 35%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 65%,
+    var(--muted-foreground) 100%
+  );
+  background-size: 200% auto;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: text-shimmer 1.4s linear infinite;
+}
+
+/* Reduced motion still needs a "this is live" signal — hold the sweep at the
+   bright end rather than dropping to transparent text. */
+@media (prefers-reduced-motion: reduce) {
+  .text-shimmer {
+    animation: none;
+    background-image: none;
+    color: var(--foreground);
+  }
+}
+
+/* Boot skeleton: a highlight sweeps left-to-right across each placeholder.
+
+   This replaces `animate-pulse` on the boot screen. A uniform opacity pulse
+   makes every block breathe on the same beat, which reads as "this UI is
+   broken" rather than "this UI is arriving" — the sweep, staggered per row by
+   the caller's `animation-delay`, reads as content streaming in.
+
+   The gradient sits over each block's own background colour, so the base tint
+   still shows through between sweeps. */
+@keyframes skeleton-sheen {
+  from {
+    background-position: 180% 0;
+  }
+  to {
+    background-position: -80% 0;
+  }
+}
+
+.skeleton-sheen {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in oklab, var(--foreground) 5%, transparent) 42%,
+    color-mix(in oklab, var(--foreground) 10%, transparent) 50%,
+    color-mix(in oklab, var(--foreground) 5%, transparent) 58%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: skeleton-sheen 1.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-sheen {
+    animation: none;
+    background-image: none;
+  }
+}
+
+/* The running indicator: a 2x3 dot matrix. Two rhythms, used in two places.
+
+   `dot-wave` — the work log. Every dot fades on a diagonal stagger. It reads as
+   "activity" without implying forward motion, which matters because a tool row
+   can sit unchanged for a minute and a progress-flavoured glyph would be
+   quietly lying about it.
+
+   The contrast range is deliberately wide (0.12 → 1). An earlier pass used
+   0.18 → 1 on 2px dots and the animation was invisible at that scale — the grid
+   read as a static glyph. Don't narrow it without also growing the dots. */
+@keyframes dot-wave {
+  0%,
+  100% {
+    opacity: 0.12;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+.dot-wave-cell {
+  animation: dot-wave 1.05s ease-in-out infinite;
+}
+
+/* `dot-scatter` — the sidebar thread list. THREE of the six dots are lit at any
+   instant, and which three keeps changing, so the cluster looks alive rather
+   than like a single travelling pixel.
+
+   Exactly three, not roughly three: each dot is lit for half the cycle and the
+   six phases are spread evenly at 1/6 intervals, so the count is invariant —
+   one dot switches off exactly as another switches on. The scattered LOOK comes
+   from which grid cell gets which phase (see `DELAYS` in DotsLoader), not from
+   randomness, which CSS can't do and which would flicker anyway. */
+@keyframes dot-scatter {
+  0%,
+  44% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+  50%,
+  94% {
+    opacity: 0.12;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+.dot-scatter-cell {
+  animation: dot-scatter 1.8s ease-in-out infinite;
+}
+
+/* Held mid-sweep rather than stopped: motion-sensitive users still need to see
+   that these rows are live, and a frozen dot grid is indistinguishable from a
+   settled one. */
+@media (prefers-reduced-motion: reduce) {
+  .dot-wave-cell,
+  .dot-scatter-cell {
+    animation: none;
+    opacity: 0.65;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    caret-color: var(--foreground);
+  }
+  body {
+    @apply bg-background text-foreground font-sans text-sm antialiased overflow-hidden;
+  }
+
+  ::-ms-reveal {
+    display: none;
+  }
+
+  /* WebKit (Safari/Tauri) input caret fix */
+  input,
+  textarea {
+    caret-color: var(--foreground) !important;
+    -webkit-text-fill-color: currentColor;
+  }
+
+  /* WebKit number input spin buttons */
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--foreground);
+    opacity: 0.5;
+    cursor: pointer;
+  }
+
+  input[type="number"]::-webkit-inner-spin-button:hover,
+  input[type="number"]::-webkit-outer-spin-button:hover {
+    opacity: 0.8;
+  }
+
+  code,
+  pre,
+  kbd,
+  samp {
+    @apply font-mono;
+  }
+
+  svg.lucide {
+    width: 14px;
+    height: 14px;
+  }
+
+  svg {
+    stroke-width: 2;
+  }
+
+  /* Scrollbar styles */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: oklch(0.708 0 0 / 30%);
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: oklch(0.708 0 0 / 50%);
+  }
+
+  .dark ::-webkit-scrollbar-thumb {
+    background: oklch(0.985 0 0 / 20%);
+  }
+
+  .dark ::-webkit-scrollbar-thumb:hover {
+    background: oklch(0.985 0 0 / 35%);
+  }
+
+  /* Firefox scrollbar */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: oklch(0.708 0 0 / 30%) transparent;
+  }
+
+  .dark * {
+    scrollbar-color: oklch(0.985 0 0 / 20%) transparent;
+  }
+
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  [data-streamdown="code-block-header"] {
+    padding: 6px 16px !important;
+  }
+}

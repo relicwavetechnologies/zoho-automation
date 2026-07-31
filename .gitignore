@@ -1,7 +1,24 @@
 ottomator-agents/
 
+# OS / dependency noise
+.DS_Store
+**/.DS_Store
+**/node_modules/
+.pnpm-store/
+*.tsbuildinfo
+**/*.tsbuildinfo
+pi-bridge/
+t3-code/
+advance-backend/pnpm-workspace.yaml
+
 # graphify knowledge graph (local only, never commit)
 graphify-out/
+
+# External reference codebases used for local research only
+research/
+research/hermes-agent/
+research/graphiti/
+openworker/
 
 # production/local secrets
 .env
@@ -10,3 +27,19 @@ graphify-out/
 .env.production.local
 .env.*.local
 .context/secrets/
+
+# Local desktop release output and updater signing material.
+jan/local-dmg/
+jan/release-output/
+.scratch/
+
+# Local runtime, downloaded evidence, and planning artifacts.
+.commandcode/
+advance-backend/.data/
+advance-backend/latest-agent-run.log
+lark-im-resources/
+lark-search-message-auth.png
+plan-divo-*.html
+
+# Local-only handover/context notes. Never committed.
+*.local.md

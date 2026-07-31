@@ -12,7 +12,7 @@
  *   - 404 when getRun returns null
  *   - 500 when service throws
  *   - query param forwarding (limit, offset, status, channel, phase)
- *   - isSuperAdmin forwarded from res.locals
+ *   - raw execution-data access forwarded from res.locals
  */
 
 import { describe, it } from 'node:test';
@@ -180,7 +180,7 @@ describe('GET /executions', () => {
     assert.equal(capturedInput.channel, 'lark');
   });
 
-  it('forwards isSuperAdmin from res.locals', async () => {
+  it('does not forward global super-admin scope for run listing', async () => {
     let capturedInput: any = null;
     const svc = makeService({
       listRuns: async (input) => { capturedInput = input; return []; },
@@ -189,7 +189,7 @@ describe('GET /executions', () => {
     await callRoute(router, 'GET', '/', {
       locals: { companyId: 'co-1', isSuperAdmin: true },
     });
-    assert.equal(capturedInput.isSuperAdmin, true);
+    assert.equal('isSuperAdmin' in capturedInput, false);
   });
 
   it('returns 500 when service throws', async () => {
@@ -287,12 +287,12 @@ describe('GET /executions/:id/events', () => {
     assert.equal(capturedInput.limit, 25);
   });
 
-  it('forwards isSuperAdmin from res.locals', async () => {
+  it('forwards raw execution-data access from res.locals', async () => {
     let capturedInput: any = null;
     const svc = makeService({ getEvents: async (input) => { capturedInput = input; return []; } });
     const router = createExecutionRoutes({ executionQueryService: svc, logger: noopLogger });
-    await callRoute(router, 'GET', '/run-1/events', { locals: { companyId: 'co-1', isSuperAdmin: true } });
-    assert.equal(capturedInput.isSuperAdmin, true);
+    await callRoute(router, 'GET', '/run-1/events', { locals: { companyId: 'co-1', canViewRawExecutionData: true } });
+    assert.equal(capturedInput.canViewRawExecutionData, true);
   });
 
   it('returns 500 when service throws', async () => {

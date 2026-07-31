@@ -1,4 +1,4 @@
-import type { LarkBaseClientPort } from '../../../../application/orchestration/tools/families/lark-base.tool';
+import type { LarkBaseClientPort } from '../../../../application/tools/families/lark-base.tool';
 import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 
 type RecordData = Record<string, unknown>;
@@ -57,16 +57,43 @@ export class LarkBaseClient implements LarkBaseClientPort {
     );
   }
 
-  async searchRecords(appToken: string, tableId: string, filter: string, limit?: number): Promise<unknown[]> {
+  async searchRecords(
+    appToken: string,
+    tableId: string,
+    filter: string,
+    limit?: number,
+    fieldName?: string,
+  ): Promise<unknown[]> {
     type SearchResponse = { items?: RecordData[] };
+    const resolvedFieldName = fieldName ?? await this.resolvePrimaryFieldName(appToken, tableId);
     const data = await this.http.request<SearchResponse>(
       'POST',
       `${basePath(appToken, tableId)}/search`,
       {
         query: { page_size: limit ?? 20 },
-        body: { filter: { conjunction: 'and', conditions: [{ field_name: 'name', operator: 'contains', value: [filter] }] } },
+        body: {
+          filter: {
+            conjunction: 'and',
+            conditions: [{ field_name: resolvedFieldName, operator: 'contains', value: [filter] }],
+          },
+        },
       },
     );
     return data.items ?? [];
+  }
+
+  private async resolvePrimaryFieldName(appToken: string, tableId: string): Promise<string> {
+    type FieldsResponse = { items?: Array<Record<string, unknown>> };
+    const data = await this.http.request<FieldsResponse>(
+      'GET',
+      `/open-apis/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/fields`,
+      { query: { page_size: 100 } },
+    );
+    const primary = (data.items ?? []).find(field => field['is_primary'] === true);
+    const fieldName = primary?.['field_name'];
+    if (typeof fieldName !== 'string' || !fieldName.trim()) {
+      throw new Error('Could not determine the Base primary field; provide fieldName explicitly.');
+    }
+    return fieldName;
   }
 }

@@ -16,6 +16,12 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import {
+  Client as LarkSdkClient,
+  Domain,
+  LoggerLevel,
+  withUserAccessToken,
+} from '@larksuiteoapi/node-sdk';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -32,6 +38,7 @@ export interface LarkTokenResponse {
   larkEnName:             string | null;
   tenantKey:              string | null;
   scope:                  string | null;
+  avatarUrl:              string | null;
 }
 
 export interface LarkUserInfo {
@@ -44,29 +51,74 @@ export interface LarkUserInfo {
   avatarUrl:   string | null;
 }
 
-interface LarkAppAccessToken {
-  token:       string;
-  expiresAtMs: number;
-}
-
+/**
+ * Scopes requested in every Divo Lark user-consent flow. They must also be
+ * enabled and published in Lark Developer Console; declaring them here makes
+ * the OAuth grant explicit instead of depending on console defaults.
+ */
 export const LARK_USER_OAUTH_SCOPES = [
+  'auth:user.id:read',
+  'calendar:calendar.event:create',
+  'calendar:calendar.event:delete',
+  'calendar:calendar.event:read',
+  'calendar:calendar.event:update',
+  'calendar:calendar.free_busy:read',
+  'calendar:calendar:read',
+  'bitable:app',
+  'contact:contact.base:readonly',
+  'contact:user.base:readonly',
   'contact:user.email:readonly',
+  'contact:user.employee:readonly',
+  'contact:user:search',
+  'docx:document',
+  'drive:drive',
+  'im:chat:read',
+  'im:message',
+  'im:message.group_msg:get_as_user',
+  'im:message.p2p_msg:get_as_user',
+  'im:message.send_as_user',
+  'im:message:readonly',
   'task:task:read',
   'task:task:write',
+  'task:tasklist:read',
+  'task:tasklist:write',
+  'vc:meeting.search:read',
+  'vc:meeting.meetingevent:read',
+  'vc:record:readonly',
   'offline_access',
 ] as const;
+
+function firstNonBlankString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const normalized = value.trim();
+    if (normalized) return normalized;
+  }
+  return null;
+}
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 export class LarkOAuthService {
-  private appAccessToken: LarkAppAccessToken | null = null;
+  private readonly client: LarkSdkClient;
 
   constructor(
     private readonly appId:       string,
     private readonly appSecret:   string,
     private readonly redirectUri: string,
     private readonly apiBase:     string = 'https://open.larksuite.com',
-  ) {}
+    /** Test seam; production composition always constructs the official SDK client. */
+    sdkClient?: LarkSdkClient,
+  ) {
+    this.client = sdkClient ?? new LarkSdkClient({
+      appId,
+      appSecret,
+      domain: apiBase.replace(/\/$/, '') || Domain.Lark,
+      oauthBaseUrl: this.authBase(),
+      loggerLevel: LoggerLevel.warn,
+      source: 'divo',
+    });
+  }
 
   isConfigured(): boolean {
     return Boolean(this.appId && this.appSecret && this.redirectUri);
@@ -79,97 +131,77 @@ export class LarkOAuthService {
       client_id:    this.appId,
       redirect_uri: opts?.redirectUri ?? this.redirectUri,
       state,
-      scope:        (opts?.scopes ?? LARK_USER_OAUTH_SCOPES).join(' '),
     });
+    const scopes = opts?.scopes ?? LARK_USER_OAUTH_SCOPES;
+    if (scopes.length > 0) params.set('scope', scopes.join(' '));
     return `${this.authBase()}/open-apis/authen/v1/authorize?${params}`;
   }
 
   // ── 2. Exchange authorization code ────────────────────────────────────────
 
   async exchangeCode(code: string, redirectUri: string = this.redirectUri): Promise<LarkTokenResponse> {
-    const res = await fetch(`${this.apiBase}/open-apis/authen/v2/oauth/token`, {
-      method:  'POST',
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-      },
-      body: JSON.stringify({
-        grant_type:    'authorization_code',
-        client_id:     this.appId,
-        client_secret: this.appSecret,
-        code,
-        redirect_uri:  redirectUri,
-      }),
+    const token = await this.client.accessToken.retrieveByAuthorizationCode({
+      code,
+      redirectUri,
     });
-
-    const raw = await res.json() as Record<string, unknown>;
-    if (!res.ok || !this.isSuccess(raw['code'])) {
-      throw new Error(`Lark token exchange failed: ${raw['error_description'] ?? raw['msg'] ?? raw['message'] ?? res.status}`);
-    }
-
-    const data = (raw['data'] ?? raw) as Record<string, unknown>;
-    return this.enrichTokenResponse(data);
+    return this.enrichTokenResponse({
+      access_token: token.accessToken,
+      refresh_token: token.refreshToken,
+      token_type: token.tokenType,
+      expires_in: token.expiresIn,
+      refresh_token_expires_in: token.refreshTokenExpiresIn,
+      scope: token.scope,
+    });
   }
 
   // ── 3. Refresh access token ────────────────────────────────────────────────
 
   async refreshUserToken(refreshToken: string): Promise<LarkTokenResponse> {
-    const res = await fetch(`${this.apiBase}/open-apis/authen/v2/oauth/token`, {
-      method:  'POST',
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-      },
-      body: JSON.stringify({
-        grant_type:    'refresh_token',
-        client_id:     this.appId,
-        client_secret: this.appSecret,
-        refresh_token: refreshToken,
-      }),
+    const token = await this.client.accessToken.refresh({ refreshToken });
+    return this.enrichTokenResponse({
+      access_token: token.accessToken,
+      refresh_token: token.refreshToken,
+      token_type: token.tokenType,
+      expires_in: token.expiresIn,
+      refresh_token_expires_in: token.refreshTokenExpiresIn,
+      scope: token.scope,
     });
-
-    const raw = await res.json() as Record<string, unknown>;
-    if (!res.ok || !this.isSuccess(raw['code'])) {
-      throw new Error(`Lark token refresh failed: ${raw['error_description'] ?? raw['msg'] ?? raw['message'] ?? res.status}`);
-    }
-
-    const data = (raw['data'] ?? raw) as Record<string, unknown>;
-    return this.enrichTokenResponse(data);
   }
 
   // ── 4. Get user info with a live user token ────────────────────────────────
 
   async getUserInfo(userAccessToken: string): Promise<LarkUserInfo> {
-    const res = await fetch(`${this.apiBase}/open-apis/authen/v1/user_info`, {
-      headers: { 'Authorization': `Bearer ${userAccessToken}` },
-    });
-
-    const raw = await res.json() as Record<string, unknown>;
-    if (!res.ok || raw['code'] !== 0) {
-      throw new Error(`Lark user info failed: ${raw['msg'] ?? raw['message'] ?? res.status}`);
-    }
-
-    const data = raw['data'] as Record<string, unknown>;
+    const response = await this.client.authen.userInfo.get({}, withUserAccessToken(userAccessToken));
+    this.assertSuccess(response, 'Lark user info failed');
+    const data = response.data ?? {};
     return {
-      larkOpenId:  String(data['open_id']          ?? ''),
-      larkUserId:  (data['user_id']  as string)    ?? null,
-      larkName:    (data['name']     as string)     ?? null,
-      larkEmail:   ((data['enterprise_email'] ?? data['email']) as string) ?? null,
-      larkEnName:  (data['en_name']  as string)    ?? null,
-      tenantKey:   (data['tenant_key'] as string)  ?? null,
-      avatarUrl:   (data['avatar_url'] as string)  ?? null,
+      larkOpenId:  String(data.open_id ?? ''),
+      larkUserId:  data.user_id ?? null,
+      larkName:    data.name ?? null,
+      // Lark commonly includes enterprise_email as an empty string while the
+      // ordinary email field is populated. Nullish coalescing would discard the
+      // valid fallback, so select the first non-blank value instead.
+      larkEmail:   firstNonBlankString(data.enterprise_email, data.email),
+      larkEnName:  data.en_name ?? null,
+      tenantKey:   data.tenant_key ?? null,
+      avatarUrl:   data.avatar_url ?? null,
     };
   }
 
-  async fetchUserEmailByOpenId(openId: string): Promise<string | null> {
-    const appToken = await this.getAppAccessToken();
-    const res = await fetch(
-      `${this.apiBase}/open-apis/contact/v3/users/${openId}?user_id_type=open_id`,
-      { headers: { 'Authorization': `Bearer ${appToken}` } },
-    );
-    const raw = await res.json() as Record<string, unknown>;
-    if (!res.ok || raw['code'] !== 0) return null;
-    const data = raw['data'] as Record<string, unknown> | undefined;
-    const user = data?.['user'] as Record<string, unknown> | undefined;
-    return (user?.['enterprise_email'] as string) || (user?.['email'] as string) || null;
+  async fetchUserEmailByOpenId(openId: string, userAccessToken: string): Promise<string | null> {
+    try {
+      const response = await this.client.contact.v3.user.get({
+        path: { user_id: openId },
+        params: { user_id_type: 'open_id' },
+      }, withUserAccessToken(userAccessToken));
+      if (response.code !== undefined && response.code !== 0) return null;
+      return firstNonBlankString(
+        response.data?.user?.enterprise_email,
+        response.data?.user?.email,
+      );
+    } catch {
+      return null;
+    }
   }
 
   generateNonce(): string {
@@ -178,60 +210,38 @@ export class LarkOAuthService {
 
   // ── Private ───────────────────────────────────────────────────────────────
 
-  private async getAppAccessToken(): Promise<string> {
-    const now = Date.now();
-    if (this.appAccessToken && this.appAccessToken.expiresAtMs > now + 60_000) {
-      return this.appAccessToken.token;
-    }
-
-    const res = await fetch(`${this.apiBase}/open-apis/auth/v3/app_access_token/internal`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ app_id: this.appId, app_secret: this.appSecret }),
-    });
-
-    const raw = await res.json() as Record<string, unknown>;
-    if (!res.ok || raw['code'] !== 0) {
-      throw new Error(`Lark app token failed: ${raw['msg'] ?? raw['message'] ?? res.status}`);
-    }
-
-    const data = (raw['data'] ?? raw) as Record<string, unknown>;
-    const token = data['app_access_token'] as string | undefined;
-    if (!token) {
-      throw new Error('Lark app token failed: missing app_access_token');
-    }
-
-    const expiresInSeconds = Number(data['expire'] ?? data['expires_in'] ?? 7200);
-    this.appAccessToken = {
-      token,
-      expiresAtMs: now + expiresInSeconds * 1000,
-    };
-    return token;
-  }
-
   private authBase(): string {
     if (this.apiBase.includes('open.feishu.cn')) return 'https://accounts.feishu.cn';
     if (this.apiBase.includes('open.larksuite.com')) return 'https://accounts.larksuite.com';
     return this.apiBase.replace(/\/$/, '');
   }
 
-  private isSuccess(code: unknown): boolean {
-    return code === 0 || code === '0';
+  private assertSuccess(response: { code?: number | undefined; msg?: string | undefined }, prefix: string): void {
+    if (response.code !== undefined && response.code !== 0) {
+      throw new Error(`${prefix}: ${response.msg ?? response.code}`);
+    }
   }
 
   private async enrichTokenResponse(data: Record<string, unknown>): Promise<LarkTokenResponse> {
     const parsed = this.parseTokenResponse(data);
     const userInfo = await this.getUserInfo(parsed.accessToken);
+    // The OAuth profile endpoint can legitimately omit email even when the
+    // approved contact:user.email:readonly scope is present. Resolve it with
+    // the official Contacts endpoint before treating the identity as incomplete.
+    const contactEmail = !userInfo.larkEmail && userInfo.larkOpenId
+      ? await this.fetchUserEmailByOpenId(userInfo.larkOpenId, parsed.accessToken)
+      : null;
 
     return {
       ...parsed,
       larkOpenId: userInfo.larkOpenId || parsed.larkOpenId,
       larkUserId: userInfo.larkUserId ?? parsed.larkUserId,
       larkName:   userInfo.larkName   ?? parsed.larkName,
-      larkEmail:  userInfo.larkEmail  ?? parsed.larkEmail,
+      larkEmail:  userInfo.larkEmail  ?? contactEmail ?? parsed.larkEmail,
       larkEnName: userInfo.larkEnName ?? parsed.larkEnName,
       tenantKey:  userInfo.tenantKey  ?? parsed.tenantKey,
       scope:      parsed.scope,
+      avatarUrl:  userInfo.avatarUrl  ?? parsed.avatarUrl,
     };
   }
 
@@ -246,10 +256,11 @@ export class LarkOAuthService {
       larkOpenId:            String(data['open_id']              ?? ''),
       larkUserId:            (data['user_id']   as string)       ?? null,
       larkName:              (data['name']      as string)       ?? null,
-      larkEmail:             ((data['enterprise_email'] ?? data['email']) as string) ?? null,
+      larkEmail:             firstNonBlankString(data['enterprise_email'], data['email']),
       larkEnName:            (data['en_name']   as string)       ?? null,
       tenantKey:             (data['tenant_key'] as string)      ?? null,
       scope:                 (data['scope'] as string)           ?? null,
+      avatarUrl:             (data['avatar_url'] as string)      ?? null,
     };
   }
 }

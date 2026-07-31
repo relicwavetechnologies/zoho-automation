@@ -1,0 +1,367 @@
+#!/bin/bash
+# Build local Divo Dex DMGs from the current checkout.
+#
+# By default this produces separate Apple Silicon and Intel packages. Each app
+# and DMG is signed with the local Developer ID identity, submitted to Apple's
+# notarization service, stapled, and verified before the script succeeds.
+#
+# Apple credentials are read from environment variables, the existing AirNote
+# Keychain entry, or the local deploy-airnote skill. Secrets are never written
+# into this repository or printed by this script.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JAN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+TAURI_DIR="$JAN_DIR/src-tauri"
+OUTPUT_DIR="${DIVO_LOCAL_DMG_OUTPUT_DIR:-$JAN_DIR/local-dmg}"
+SELECTOR="${1:-all}"
+
+APPLE_ID="${APPLE_ID:-shivam@emiactech.com}"
+APPLE_TEAM_ID="${APPLE_TEAM_ID:-96ZQGP7L3B}"
+APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-Developer ID Application: EMIAC TECHNOLOGIES LIMITED (96ZQGP7L3B)}"
+APPLE_KEYCHAIN_PROFILE="${APPLE_KEYCHAIN_PROFILE:-airnote-deploy}"
+NOTARY_TIMEOUT="${NOTARY_TIMEOUT:-45m}"
+DEPLOY_AIRNOTE_SKILL="${DEPLOY_AIRNOTE_SKILL:-$HOME/.codex/skills/deploy-airnote/SKILL.md}"
+
+# Notarization is the slow half of a build (an Apple round trip). A DMG built on
+# this Mac carries no com.apple.quarantine attribute, so an un-notarized build
+# opens fine here and is enough to test a change. It must never leave this Mac:
+# on any other machine Gatekeeper has only the download quarantine flag to go on
+# and will refuse it.
+SKIP_NOTARIZATION="${DIVO_SKIP_NOTARIZATION:-0}"
+
+ACTIVE_MOUNT_POINT=""
+
+cleanup() {
+  if [ -n "$ACTIVE_MOUNT_POINT" ] && mount | grep -Fq "on $ACTIVE_MOUNT_POINT "; then
+    hdiutil detach "$ACTIVE_MOUNT_POINT" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$ACTIVE_MOUNT_POINT" ]; then
+    rmdir "$ACTIVE_MOUNT_POINT" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+fail() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "required command '$1' was not found"
+}
+
+case "$SELECTOR" in
+  all)
+    TARGETS="aarch64-apple-darwin x86_64-apple-darwin"
+    ;;
+  aarch64|arm64|aarch64-apple-darwin)
+    TARGETS="aarch64-apple-darwin"
+    ;;
+  x86_64|intel|x86_64-apple-darwin)
+    TARGETS="x86_64-apple-darwin"
+    ;;
+  --preflight)
+    TARGETS=""
+    ;;
+  *)
+    fail "unknown target '$SELECTOR' (use all, aarch64, x86_64, or --preflight)"
+    ;;
+esac
+
+[ "$(uname -s)" = "Darwin" ] || fail "local signed DMGs must be built on macOS"
+
+for command_name in codesign file hdiutil node rustup security shasum spctl xcrun yarn; do
+  require_command "$command_name"
+done
+
+if ! security find-identity -v -p codesigning | grep -Fq "\"$APPLE_SIGNING_IDENTITY\""; then
+  fail "Developer ID identity '$APPLE_SIGNING_IDENTITY' is not available in the login Keychain"
+fi
+
+NOTARY_MODE="skipped"
+if [ "$SKIP_NOTARIZATION" != "1" ]; then
+  APPLE_NOTARY_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD:-${APPLE_PASSWORD:-}}"
+  if [ -z "$APPLE_NOTARY_PASSWORD" ]; then
+    APPLE_NOTARY_PASSWORD="$(
+      security find-generic-password -a "$APPLE_ID" -s airnote-apple-app-password -w 2>/dev/null \
+        || awk '
+          /Known working Apple app-specific password/ {getline; gsub(/^[[:space:]]*`|`[[:space:]]*$/, ""); print; exit}
+        ' "$DEPLOY_AIRNOTE_SKILL" 2>/dev/null
+    )"
+  fi
+
+  NOTARY_MODE="profile"
+  if [ -n "$APPLE_ID" ] && [ -n "$APPLE_NOTARY_PASSWORD" ]; then
+    NOTARY_MODE="password"
+    if ! xcrun notarytool history \
+      --apple-id "$APPLE_ID" \
+      --team-id "$APPLE_TEAM_ID" \
+      --password "$APPLE_NOTARY_PASSWORD" >/dev/null 2>&1; then
+      fail "Apple notarization credentials were found but Apple rejected them"
+    fi
+  elif ! xcrun notarytool history --keychain-profile "$APPLE_KEYCHAIN_PROFILE" >/dev/null 2>&1; then
+    fail "no valid Apple notarization credentials were found; configure '$APPLE_KEYCHAIN_PROFILE' or APPLE_APP_SPECIFIC_PASSWORD"
+  fi
+fi
+
+echo "Signing identity: $APPLE_SIGNING_IDENTITY"
+echo "Apple team: $APPLE_TEAM_ID"
+if [ "$SKIP_NOTARIZATION" = "1" ]; then
+  echo "Notarization: SKIPPED (this Mac only; do not share the resulting DMG)"
+else
+  echo "Notarization credentials: validated ($NOTARY_MODE)"
+fi
+
+if [ "$SELECTOR" = "--preflight" ]; then
+  echo "Local DMG signing/notarization preflight passed."
+  exit 0
+fi
+
+VERSION="$(node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(p.version)" "$TAURI_DIR/tauri.conf.json")"
+EXPECTED_BUNDLE_ID="$(node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(p.identifier)" "$TAURI_DIR/tauri.conf.json")"
+[ -n "$VERSION" ] || fail "could not read the desktop version"
+[ -n "$EXPECTED_BUNDLE_ID" ] || fail "could not read the desktop bundle identifier"
+
+# An un-notarized DMG is named differently so it can never be mistaken for a
+# shippable one sitting in the same folder.
+DMG_SUFFIX=""
+[ "$SKIP_NOTARIZATION" != "1" ] || DMG_SUFFIX="-local"
+
+mkdir -p "$OUTPUT_DIR"
+
+sign_app() {
+  local app_path="$1"
+  local candidate
+  local main_executable
+
+  main_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Contents/Info.plist")"
+
+  while IFS= read -r -d '' candidate; do
+    # Signing a bundle's main executable directly makes codesign validate the
+    # whole bundle before its sidecars are ready. Sign every nested Mach-O
+    # first, then let the final app-bundle signature cover the main executable.
+    if [ "$candidate" = "$app_path/Contents/MacOS/$main_executable" ]; then
+      continue
+    fi
+    if file -b "$candidate" | grep -q 'Mach-O'; then
+      codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$candidate"
+    fi
+  done < <(
+    find "$app_path/Contents" -type f \
+      \( -perm -111 -o -name '*.dylib' -o -name '*.node' -o -name '*.so' \) \
+      -print0
+  )
+
+  codesign --force --deep --options runtime --timestamp \
+    --entitlements "$TAURI_DIR/Entitlements.plist" \
+    --sign "$APPLE_SIGNING_IDENTITY" "$app_path"
+  codesign --verify --deep --strict --verbose=2 "$app_path"
+}
+
+verify_mounted_dmg() {
+  local dmg_path="$1"
+  local architecture="$2"
+  local mounted_app
+  local mounted_bundle_id
+
+  ACTIVE_MOUNT_POINT="$(mktemp -d "${TMPDIR:-/tmp}/divo-dmg-mount.XXXXXX")"
+  hdiutil attach -readonly -nobrowse -mountpoint "$ACTIVE_MOUNT_POINT" "$dmg_path" >/dev/null
+  mounted_app="$ACTIVE_MOUNT_POINT/Divo Dex.app"
+  [ -d "$mounted_app" ] || fail "Divo Dex.app is missing from $dmg_path"
+
+  mounted_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$mounted_app/Contents/Info.plist")"
+  [ "$mounted_bundle_id" = "$EXPECTED_BUNDLE_ID" ] \
+    || fail "unexpected bundle identifier '$mounted_bundle_id' in $dmg_path"
+
+  codesign --verify --deep --strict --verbose=2 "$mounted_app"
+  "$SCRIPT_DIR/verify-macos-architecture.sh" "$mounted_app" "$architecture"
+
+  hdiutil detach "$ACTIVE_MOUNT_POINT" >/dev/null
+  rmdir "$ACTIVE_MOUNT_POINT"
+  ACTIVE_MOUNT_POINT=""
+}
+
+# Run notarytool with whichever credential mode preflight validated.
+notarytool_run() {
+  if [ "$NOTARY_MODE" = "password" ]; then
+    xcrun notarytool "$@" \
+      --apple-id "$APPLE_ID" \
+      --team-id "$APPLE_TEAM_ID" \
+      --password "$APPLE_NOTARY_PASSWORD"
+  else
+    xcrun notarytool "$@" --keychain-profile "$APPLE_KEYCHAIN_PROFILE"
+  fi
+}
+
+notarize_dmg() {
+  local dmg_path="$1"
+  # The record is keyed to the DMG's contents, not its path. Resuming a
+  # submission for different bytes would ask Apple about an artifact we no
+  # longer have, so a rebuilt DMG must start a fresh submission.
+  local record_file="${dmg_path}.notary-submission"
+  local dmg_digest notary_log notary_status submission_id=""
+  dmg_digest="$(shasum -a 256 "$dmg_path" | awk '{ print $1 }')"
+  notary_log="$(mktemp "${TMPDIR:-/tmp}/divo-notary.XXXXXX")"
+
+  if [ -s "$record_file" ]; then
+    local recorded_digest recorded_id
+    read -r recorded_digest recorded_id < "$record_file" || true
+    if [ "$recorded_digest" = "$dmg_digest" ] && [ -n "${recorded_id:-}" ]; then
+      submission_id="$recorded_id"
+      echo "Resuming notarization submission $submission_id (already uploaded)"
+    else
+      rm -f "$record_file"
+    fi
+  fi
+
+  set +e
+  if [ -n "$submission_id" ]; then
+    notarytool_run wait "$submission_id" --timeout "$NOTARY_TIMEOUT" 2>&1 | tee "$notary_log"
+    notary_status=${PIPESTATUS[0]}
+  else
+    # Stream to a file rather than capturing in a variable: if this process is
+    # killed mid-wait, the submission id has already been written to disk and
+    # the next run resumes instead of paying for the upload and queue again.
+    notarytool_run submit "$dmg_path" --timeout "$NOTARY_TIMEOUT" --wait 2>&1 | tee "$notary_log"
+    notary_status=${PIPESTATUS[0]}
+    submission_id="$(awk '/^[[:space:]]*id:[[:space:]]/ { print $2; exit }' "$notary_log")"
+    [ -z "$submission_id" ] || printf '%s %s\n' "$dmg_digest" "$submission_id" > "$record_file"
+  fi
+  set -e
+
+  # An exit status above 128 is death by signal (128 + signum). That says
+  # nothing about Apple's verdict — reporting it as a rejection is what made an
+  # interrupted run look like a failed build and discard a good submission.
+  if [ "$notary_status" -gt 128 ]; then
+    rm -f "$notary_log"
+    fail "notarization was interrupted by signal $((notary_status - 128)); Apple did not reject this build.
+Submission ${submission_id:-<not yet assigned>} may still be in progress. Re-run the same command to wait on it again — the app is not rebuilt and the DMG is not re-uploaded."
+  fi
+
+  if [ "$notary_status" -ne 0 ] || ! grep -Eq 'status:[[:space:]]*Accepted' "$notary_log"; then
+    if [ -n "$submission_id" ]; then
+      echo "--- Apple notarization log for $submission_id ---"
+      notarytool_run log "$submission_id" 2>&1 | head -n 60 || true
+    fi
+    rm -f "$notary_log" "$record_file"
+    fail "Apple did not accept $dmg_path"
+  fi
+
+  rm -f "$notary_log" "$record_file"
+}
+
+build_target() {
+  local target="$1"
+  local architecture
+  local verification_architecture
+  local package_script
+  local source_app
+  local source_bundle_id
+  local output_dmg
+  local stage_dir
+  local gatekeeper_output
+
+  case "$target" in
+    aarch64-apple-darwin)
+      architecture="aarch64"
+      verification_architecture="arm64"
+      package_script="build:macos:aarch64"
+      ;;
+    x86_64-apple-darwin)
+      architecture="x86_64"
+      verification_architecture="x86_64"
+      package_script="build:macos:x86_64"
+      ;;
+    *)
+      fail "unsupported build target '$target'"
+      ;;
+  esac
+
+  echo
+  echo "==> Building Divo Dex $VERSION for $architecture"
+  if [ "${DIVO_LOCAL_DMG_SKIP_BUILD:-0}" = "1" ]; then
+    echo "Reusing the existing $target app bundle."
+  else
+    rustup target add "$target"
+
+    (
+      unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY
+      unset APPLE_ID APPLE_PASSWORD APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
+      unset APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_PATH
+      cd "$JAN_DIR"
+      yarn "$package_script"
+    )
+  fi
+
+  source_app="$TAURI_DIR/target/$target/release/bundle/macos/Divo Dex.app"
+  [ -d "$source_app" ] || fail "Tauri did not produce $source_app"
+
+  source_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$source_app/Contents/Info.plist")"
+  [ "$source_bundle_id" = "$EXPECTED_BUNDLE_ID" ] \
+    || fail "unexpected bundle identifier '$source_bundle_id' in $source_app"
+
+  "$SCRIPT_DIR/verify-macos-architecture.sh" "$source_app" "$verification_architecture"
+  sign_app "$source_app"
+  "$SCRIPT_DIR/verify-macos-architecture.sh" "$source_app" "$verification_architecture"
+
+  output_dmg="$OUTPUT_DIR/Divo_Dex_${VERSION}_${architecture}${DMG_SUFFIX}.dmg"
+  rm -f "$output_dmg"
+  stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/divo-dmg-stage.XXXXXX")"
+  ditto "$source_app" "$stage_dir/Divo Dex.app"
+  ln -s /Applications "$stage_dir/Applications"
+
+  hdiutil create \
+    -volname "Divo Dex" \
+    -srcfolder "$stage_dir" \
+    -ov \
+    -format UDZO \
+    "$output_dmg"
+  rm -rf "$stage_dir"
+
+  codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$output_dmg"
+  codesign --verify --verbose=2 "$output_dmg"
+  hdiutil verify "$output_dmg"
+  verify_mounted_dmg "$output_dmg" "$verification_architecture"
+
+  if [ "$SKIP_NOTARIZATION" = "1" ]; then
+    echo "==> Skipping notarization for $(basename "$output_dmg")"
+  else
+    echo "==> Notarizing $(basename "$output_dmg")"
+    notarize_dmg "$output_dmg"
+    xcrun stapler staple "$output_dmg"
+    xcrun stapler validate "$output_dmg"
+
+    set +e
+    gatekeeper_output="$(spctl --assess --type open --context context:primary-signature -v "$output_dmg" 2>&1)"
+    gatekeeper_status=$?
+    set -e
+    printf '%s\n' "$gatekeeper_output"
+    [ "$gatekeeper_status" -eq 0 ] || fail "Gatekeeper rejected $output_dmg"
+    printf '%s\n' "$gatekeeper_output" | grep -Fq 'source=Notarized Developer ID' \
+      || fail "Gatekeeper did not identify $output_dmg as a notarized Developer ID package"
+  fi
+
+  verify_mounted_dmg "$output_dmg" "$verification_architecture"
+  shasum -a 256 "$output_dmg"
+  echo "==> Finished $output_dmg"
+}
+
+for target in $TARGETS; do
+  build_target "$target"
+done
+
+echo
+if [ "$SKIP_NOTARIZATION" = "1" ]; then
+  echo "Signed (NOT notarized) Divo Dex DMGs — this Mac only:"
+else
+  echo "Signed and notarized Divo Dex DMGs:"
+fi
+for target in $TARGETS; do
+  case "$target" in
+    aarch64-apple-darwin) architecture="aarch64" ;;
+    x86_64-apple-darwin) architecture="x86_64" ;;
+  esac
+  echo "  $OUTPUT_DIR/Divo_Dex_${VERSION}_${architecture}${DMG_SUFFIX}.dmg"
+done
