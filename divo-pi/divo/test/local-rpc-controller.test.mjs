@@ -15,6 +15,7 @@ import {
 	runtimeIdentityNames,
 	runtimeContainerNeedsReplacement,
 	validateProfileName,
+	validateRuntimeModel,
 	validateThread,
 } from "../local-rpc-controller.mjs";
 
@@ -307,4 +308,30 @@ test("credential reads are serialized and time out", async () => {
 		loadToken("stuck", () => new Promise(() => {}), 10),
 		/Keychain read timed out/,
 	);
+});
+
+// The backend names the member's model on the run request. Saying nothing must
+// leave the manifest's default in place, because that is what a terminal launch
+// and every pre-selection caller sends.
+test("an unnamed model leaves the runtime on its default", () => {
+	assert.equal(validateRuntimeModel(undefined), undefined);
+	assert.equal(validateRuntimeModel(""), undefined);
+});
+
+test("a named model carries the provider that serves it", () => {
+	assert.deepEqual(validateRuntimeModel("gpt-5.6-luna"), {
+		model: "gpt-5.6-luna",
+		provider: "openai",
+	});
+	assert.deepEqual(validateRuntimeModel("deepseek-v4-pro"), {
+		model: "deepseek-v4-pro",
+		provider: "deepseek",
+	});
+});
+
+// Rejected rather than passed through: the value becomes a command-line argument
+// to the agent, and an unknown one fails the run where the user sees only silence.
+test("a model this runtime does not carry is refused by name", () => {
+	assert.throws(() => validateRuntimeModel("gpt-4o"), /must be one of/);
+	assert.throws(() => validateRuntimeModel({ model: "gpt-5.6-luna" }), /must be one of/);
 });

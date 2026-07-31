@@ -16,6 +16,11 @@ import {
 	classifyDivoRunTerminal,
 	isTransientDivoRunFailure,
 } from "./run-terminal.mjs";
+import {
+	RUNTIME_MODEL_IDS,
+	isRuntimeModel,
+	providerForModel,
+} from "./runtime-models.mjs";
 
 const execFileAsync = promisify(execFile);
 const IMAGE = process.env.DIVO_PI_IMAGE ?? "divo-pi-local:phase0";
@@ -82,6 +87,21 @@ export function validateSessionScope(value) {
 		throw new Error(`sessionScope must be one of: ${SESSION_SCOPES.join(", ")}`);
 	}
 	return value;
+}
+
+/**
+ * The model a run is launched on.
+ *
+ * The backend picks one from the member's grant and names it here; naming none
+ * leaves the manifest's default, which is what every run used before the grant
+ * could reach this far.
+ */
+export function validateRuntimeModel(value) {
+	if (value === undefined || value === null || value === "") return undefined;
+	if (!isRuntimeModel(value)) {
+		throw new Error(`model must be one of: ${RUNTIME_MODEL_IDS.join(", ")}`);
+	}
+	return { model: value, provider: providerForModel(value) };
 }
 
 export function resourcesFor(profileName) {
@@ -1447,11 +1467,13 @@ async function runPrompt({
 	answerRequest,
 	attachments,
 	sessionScope,
+	model,
 	signal,
 	onProgress,
 }) {
 	if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
 	let resources = resourcesFor(profile);
+	const selectedModel = validateRuntimeModel(model);
 	const bootstrap = {
 		backendUrl: backendUrlForContainer(backendUrl),
 		token,
@@ -1462,6 +1484,7 @@ async function runPrompt({
 		companyId,
 		departmentId,
 		sessionScope: validateSessionScope(sessionScope),
+		...(selectedModel ?? {}),
 	};
 	await idleContainers.activate(profile);
 	emitRuntimeProgress(onProgress, {
@@ -1634,6 +1657,7 @@ export async function promptWithRuntimeLease(runtime, message, options = {}) {
 		answerRequest: createHeadlessExtensionResponder(),
 		attachments: options.attachments,
 		sessionScope: validateSessionScope(options.sessionScope),
+		model: options.model,
 		signal: options.signal,
 		onProgress: options.onProgress,
 	});

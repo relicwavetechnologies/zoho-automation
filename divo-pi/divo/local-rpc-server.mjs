@@ -16,6 +16,7 @@ import {
 	validateAttachmentFileId,
 	validateAttachmentRequestId,
 	validateProfileName,
+	validateRuntimeModel,
 	validateSessionScope,
 	validateThread,
 } from "./local-rpc-controller.mjs";
@@ -109,6 +110,7 @@ export function createAdmissionController({
 			message,
 			attachments,
 			sessionScope,
+			model,
 			signal,
 			onProgress,
 		}) {
@@ -118,6 +120,14 @@ export function createAdmissionController({
 				normalizedSessionScope = validateSessionScope(sessionScope);
 			} catch (error) {
 				throw admissionError(400, "invalid_session_scope", error.message);
+			}
+			// Rejected here rather than deep inside the launch, so a backend that
+			// names a model this runtime does not carry gets a 400 naming the ones
+			// it does instead of a container that fails to start.
+			try {
+				validateRuntimeModel(model);
+			} catch (error) {
+				throw admissionError(400, "invalid_model", error.message);
 			}
 			// Descriptors are re-derived, not trusted: `resolveStagedAttachments`
 			// recomputes every path from validated parts and ignores whatever the
@@ -133,6 +143,7 @@ export function createAdmissionController({
 				executeRuntime(runtime, normalizedMessage, {
 					signal,
 					sessionScope: normalizedSessionScope,
+					...(model ? { model } : {}),
 					...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
 					...(onProgress ? { onProgress } : {}),
 				}),

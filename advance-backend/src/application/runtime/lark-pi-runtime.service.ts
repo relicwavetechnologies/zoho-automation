@@ -6,6 +6,12 @@ import type { IncomingMessage } from '../../domain/channel/incoming-message';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import { issuePiRuntimeLease } from './pi-runtime-lease';
 import {
+  DEFAULT_MODEL,
+  bestGrantedModel,
+  providerOf,
+  type ProxyModel,
+} from '../observability/pricing';
+import {
   renderContextBlock,
   type GroupContextBlock,
 } from '../chat-context/group-context.hydrator';
@@ -152,6 +158,8 @@ export interface LarkPiRuntimeServiceDeps {
   readonly leaseTtlSeconds: number;
   readonly runTimeoutMs: number;
   readonly fetch?: typeof globalThis.fetch;
+  /** The member's model grant. Absent means every run takes the default. */
+  readonly allowedModelsFor?: (userId: string) => Promise<readonly string[]>;
 }
 
 /**
@@ -234,6 +242,28 @@ export function fitBodyToController<T extends Record<string, unknown>>(
   return sent('', build(ask));
 }
 
+/**
+ * Tell the run about the files it was not given.
+ *
+ * Written as an instruction rather than a fixed sentence so the shortfall is
+ * folded into whatever else the answer says, in Divo's own voice. The naming
+ * matters: "I could only open the first four" is actionable, while an answer
+ * built from four of six pictures with no mention of the other two is wrong in
+ * a way the user cannot see.
+ */
+export function droppedAttachmentNotice(
+  dropped: readonly LarkPiRuntimeAttachment[],
+  ask: string | undefined,
+): string | undefined {
+  if (dropped.length === 0) return ask;
+  const names = dropped.map(attachment => `"${attachment.name}"`).join(', ');
+  const notice = `[Not saved: ${names}. Only the first ${MAX_RUNTIME_ATTACHMENTS} files in a message are saved to your workspace.\n`
+    + 'Answer from the ones you have, then tell the user in your own words which files you could not open '
+    + 'and ask them to send those in a separate message. '
+    + 'Do not guess at their contents, and do not claim to have read them.]';
+  return ask?.trim() ? `${notice}\n\n${ask}` : notice;
+}
+
 export class LarkPiRuntimeService {
   private readonly log: Logger;
 
@@ -296,6 +326,27 @@ export class LarkPiRuntimeService {
     return Boolean(await this.findActiveSession(runContext));
   }
 
+  /**
+   * The model this member's run should ask for.
+   *
+   * Sent to the controller so the container launches on it. Until now the
+   * container read one model out of its manifest, which meant an admin could
+   * grant somebody Pro and watch every Lark run keep using Flash — the grant
+   * was enforced at the proxy but nothing ever asked for the other model.
+   *
+   * A failure here falls back to the default rather than failing the run: not
+   * knowing the grant is a reason to be conservative, not a reason to be silent.
+   */
+  async modelFor(userId: string): Promise<ProxyModel> {
+    if (!this.deps.allowedModelsFor) return DEFAULT_MODEL;
+    try {
+      return bestGrantedModel(await this.deps.allowedModelsFor(userId));
+    } catch (error) {
+      this.log.warn('pi.model.resolve_failed', { userId, error: String(error) });
+      return DEFAULT_MODEL;
+    }
+  }
+
   async run(input: LarkPiRuntimeInput): Promise<{ text: string }> {
     const session = await this.findActiveSession(input.runContext, input.sessionId);
     if (!session) {
@@ -325,12 +376,19 @@ export class LarkPiRuntimeService {
     const signal = input.abortSignal
       ? AbortSignal.any([input.abortSignal, timeoutSignal])
       : timeoutSignal;
-    const attachments = input.attachments ?? [];
-    if (attachments.length > MAX_RUNTIME_ATTACHMENTS) {
-      throw new LarkPiRuntimeError(
-        'too_many_attachments',
-        `Please send at most ${MAX_RUNTIME_ATTACHMENTS} files in one request.`,
-      );
+    // Sending five screenshots at once is an ordinary thing to do, and refusing
+    // the whole turn for it answered nothing at all. Stage what fits, and name
+    // the rest in the prompt so the run says which files it did not open rather
+    // than quietly working from a subset.
+    const offered = input.attachments ?? [];
+    const attachments = offered.slice(0, MAX_RUNTIME_ATTACHMENTS);
+    const dropped = offered.slice(MAX_RUNTIME_ATTACHMENTS);
+    if (dropped.length > 0) {
+      this.log.warn('pi.attachments.truncated', {
+        offered: offered.length,
+        staged: attachments.length,
+        correlationId: input.incoming.traceId,
+      });
     }
 
     let response: Response;
@@ -340,15 +398,19 @@ export class LarkPiRuntimeService {
         runtimeLease,
         signal,
       );
+      const model = await this.modelFor(String(input.runContext.userId));
+      const ask = droppedAttachmentNotice(dropped, input.incoming.text);
       const fitted = fitBodyToController(
         message => ({
           backendUrl: this.deps.backendUrl,
           runtimeLease,
           message,
+          model,
+          provider: providerOf(model),
           ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
           ...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
         }),
-        input.incoming.text,
+        ask,
         input.sharedContext,
       );
       // Losing shared context is silent from the outside: the run answers, just

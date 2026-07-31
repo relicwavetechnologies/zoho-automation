@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import {
 	buildChildEnvironment,
 	buildPiArguments,
+	imagePolicyFor,
 	resolveRuntimeThreadId,
 	prepareSessionDirectories,
 	resolveSessionPaths,
@@ -21,8 +22,10 @@ const values = {
 	homeDir: "/tmp/divo-home",
 	internalDir: "/tmp/workspace/.divo",
 	logsDir: "/tmp/run/logs",
+	model: "deepseek-v4-flash",
 	print: true,
 	prompt: "hello",
+	provider: "deepseek",
 	runContextPath: "/tmp/run-context.json",
 	runDir: "/tmp/run",
 	runId: "run-1",
@@ -166,6 +169,48 @@ describe("Abandoned run session sweep", () => {
 
 	it("is a no-op when no run sessions were ever written", () => {
 		assert.deepEqual(sweepAbandonedRunSessions("/nonexistent/divo/runs", "run-1"), []);
+	});
+});
+
+describe("The run launches on the model it was given", () => {
+	// Every run used to launch on the manifest's model no matter who sent it, so
+	// an admin could grant somebody Pro or Luna and watch nothing change. These
+	// two arguments are the whole mechanism by which the grant is now honoured.
+	it("passes the selected model and its provider to the agent", () => {
+		const args = buildPiArguments({ ...values, model: "gpt-5.6-luna", provider: "openai" });
+
+		assert.equal(args[args.indexOf("--model") + 1], "gpt-5.6-luna");
+		assert.equal(args[args.indexOf("--provider") + 1], "openai");
+	});
+
+	it("keeps DeepSeek on DeepSeek", () => {
+		const args = buildPiArguments(values);
+
+		assert.equal(args[args.indexOf("--model") + 1], "deepseek-v4-flash");
+		assert.equal(args[args.indexOf("--provider") + 1], "deepseek");
+	});
+});
+
+describe("How a run is told to look at a picture", () => {
+	// The agent cannot work this out for itself: a text-only model that tries to
+	// read an image gets a refusal note back, and a vision model that sends every
+	// picture away to be transcribed never actually looks at one. Whichever half
+	// of this is wrong for the running model, the failure is quiet.
+	it("sends a vision model to the file and a text model to the gateway", () => {
+		assert.match(imagePolicyFor("gpt-5.6-luna"), /read tool/);
+		assert.doesNotMatch(imagePolicyFor("gpt-5.6-luna"), /media\.image_ocr/);
+
+		assert.match(imagePolicyFor("deepseek-v4-flash"), /media\.image_ocr/);
+		assert.match(imagePolicyFor("deepseek-v4-pro"), /media\.image_ocr/);
+	});
+
+	it("puts exactly one policy into the prompt the agent is given", () => {
+		const args = buildPiArguments({ ...values, model: "gpt-5.6-luna", provider: "openai" });
+		const prompt = args[args.indexOf("--append-system-prompt") + 1];
+
+		assert.ok(!prompt.includes("{{image_policy}}"));
+		assert.ok(prompt.includes(imagePolicyFor("gpt-5.6-luna")));
+		assert.ok(!prompt.includes(imagePolicyFor("deepseek-v4-flash")));
 	});
 });
 
