@@ -163,6 +163,8 @@ jobs:
         run: |
           docker build -t divo-pi:ci ./divo-pi
           docker build -f divo-pi/Dockerfile.controller -t divo-pi-controller:ci ./divo-pi
+          docker run --rm --entrypoint node divo-pi-controller:ci \
+            --input-type=module --eval "await import('./divo/local-rpc-server.mjs')"
 
       - name: Validate Compose config
         run: DIVO_ENV_FILE=/dev/null docker compose --env-file .env.production.example config >/dev/null
