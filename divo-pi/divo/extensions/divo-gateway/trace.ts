@@ -18,6 +18,7 @@ import {
 	classifyDivoRunTerminal,
 	isTransientDivoRunFailure,
 } from "../../run-terminal.mjs";
+import { RUNTIME_MODELS } from "../../runtime-models.mjs";
 import { resolveDivoGatewayConfig } from "./gateway-client.ts";
 import { readDivoRunCorrelation } from "./run-correlation.ts";
 
@@ -27,6 +28,7 @@ const TRACE_PATH = "/api/desktop/trace";
 const POST_TIMEOUT_MS = 15_000;
 const WIRE_CAP = 16_000; // per-field cap; backend caps again defensively
 const MAX_BUFFER = 2_000; // bound memory if the backend is unreachable
+const DIVO_PROXY_PROVIDERS = new Set(Object.values(RUNTIME_MODELS));
 
 interface WireUsage {
 	input?: number;
@@ -103,7 +105,7 @@ export interface DivoRunTerminal {
 export function isRecoverableDivoRequestTooLarge(messages: readonly unknown[]): boolean {
 	const last = asRecord(messages.at(-1));
 	if (!last || last.role !== "assistant" || last.stopReason !== "error") return false;
-	if (last.provider !== "deepseek") return false;
+	if (!DIVO_PROXY_PROVIDERS.has(String(last.provider))) return false;
 	const errorMessage = typeof last.errorMessage === "string" ? last.errorMessage : "";
 	return /request[_ ]too[_ ]large|payload[_ ]too[_ ]large|entity\.too\.large|PayloadTooLargeError|\b413\b/i.test(errorMessage);
 }
@@ -224,11 +226,11 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 		});
 	});
 
-	// Correlate the Divo-owned DeepSeek proxy request with this exact desktop
+	// Correlate a Divo-owned model proxy request with this exact desktop
 	// run. The proxy keeps authoritative token usage while this extension owns
 	// the detailed local tool/model timeline.
 	pi.on("before_provider_request", async (event, ctx) => {
-		if (ctx.model?.provider !== "deepseek") return undefined;
+		if (!DIVO_PROXY_PROVIDERS.has(ctx.model?.provider)) return undefined;
 		if (process.env.DIVO_LLM_PROXY_ACTIVE !== "1") return undefined;
 		if ("error" in resolveDivoGatewayConfig()) return undefined;
 		const correlation = await tryReadRunCorrelation();

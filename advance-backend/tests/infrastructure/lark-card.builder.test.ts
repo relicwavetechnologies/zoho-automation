@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildFinalCard, buildStatusCard, planFinalCards } from '../../src/infrastructure/channels/lark/lark-card.builder.ts';
+import { buildFinalCard, buildStatusCard, foldRepeatedRows, planFinalCards } from '../../src/infrastructure/channels/lark/lark-card.builder.ts'
+import type { ChannelLedgerRow } from '../../src/domain/channel/outbound.ts';
 
 function parseCard(payload: string): Record<string, unknown> {
   const outer = JSON.parse(payload) as { card: string };
@@ -128,15 +129,26 @@ describe('lark-card.builder buildStatusCard', () => {
   });
 
   it('counts older activity rows instead of dropping them silently', () => {
-    const rows = Array.from({ length: 8 }, (_, i) => ({
+    const rows = Array.from({ length: 12 }, (_, i) => ({
       label: `Tool${i}`, count: 1, outcome: `Did ${i}`, status: 'done' as const,
     }));
     const activity = parseCard(buildStatusCard({ timeline: { ...workingTimeline, ledger: rows } }));
     const content = elementById(activity, 'run_activity')!['content'] as string;
 
     assert.match(content, /\+3 earlier steps/);
-    assert.match(content, /Tool7/);
+    assert.match(content, /Tool11/);
     assert.doesNotMatch(content, /Tool0\b/);
+  });
+
+  // The header chip already says the state. A title that falls back to the same
+  // word puts one fact in two places a centimetre apart — the exact doubling
+  // this card was rebuilt to remove.
+  it('leaves the header to the chip when the run has no subject', () => {
+    const { subject: _drop, ...noSubject } = workingTimeline;
+    const card = parseCard(buildStatusCard({ timeline: noSubject }));
+
+    assert.equal(headerTitle(card), undefined);
+    assert.deepEqual(chips(card), ['Working']);
   });
 
   it('suppresses the agent’s live sentence while a step is running', () => {
@@ -291,6 +303,48 @@ describe('lark-card.builder buildStatusCard', () => {
   });
 });
 
+describe('lark-card.builder activity log', () => {
+  // A run that only shows its tool calls reads as a machine grinding. What the
+  // model says between them is the one thing on the card written for a person.
+  it('interleaves what the model said with what it did, in order', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: {
+        state: 'working' as const,
+        ledger: [
+          { kind: 'say' as const, label: 'Let me see which Airtable bases you can reach.', count: 1, status: 'done' as const },
+          { kind: 'tool' as const, label: 'Terminal', count: 1, outcome: 'airtable list-bases', status: 'done' as const },
+          { kind: 'say' as const, label: 'Found 3. Profiling the largest.', count: 1, status: 'done' as const },
+          { kind: 'tool' as const, label: 'Files', count: 1, outcome: 'bases.json', status: 'running' as const },
+        ],
+      },
+    }));
+
+    assert.equal(elementById(card, 'run_activity')!['content'], [
+      'Let me see which Airtable bases you can reach.',
+      "✓ **Terminal**  <font color='grey'>airtable list-bases</font>",
+      'Found 3. Profiling the largest.',
+      "● **Files**  <font color='grey'>bases.json</font>",
+    ].join('\n'));
+  });
+
+  // Detail is now a shell command or a sentence the model wrote, and it lands
+  // inside a <font> tag the card opened. A pipeline containing an angle bracket
+  // would close that tag early and take the card's structure with it.
+  it('will not let a redirect in a command close the card markup', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: {
+        state: 'working' as const,
+        ledger: [{ label: 'Terminal', count: 1, outcome: 'echo hi > /tmp/f && cat <x>', status: 'done' as const }],
+      },
+    }));
+    const activity = elementById(card, 'run_activity')!['content'] as string;
+
+    assert.match(activity, /echo hi \/tmp\/f && cat x/);
+    // Exactly the one opening and one closing tag the builder wrote itself.
+    assert.equal((activity.match(/</g) ?? []).length, 2);
+  });
+});
+
 describe('lark-card.builder heading softening', () => {
   // Two trailing spaces is markdown's hard line break, so a model writing
   // correct markdown produced `**Title  **` — a bold run CommonMark will not
@@ -441,5 +495,58 @@ describe('lark-card.builder final card header', () => {
       branding: { departmentLabel: 'Divo' },
     }));
     assert.equal(card['header'], undefined);
+  });
+});
+
+// Paging a table nineteen times is one act. Printed as nineteen rows it buries
+// everything else the run did.
+describe('lark-card.builder repeated step folding', () => {
+  const step = (label: string, outcome?: string, status: 'done' | 'running' | 'failed' = 'done') =>
+    ({ kind: 'tool' as const, label, count: 1, status, ...(outcome ? { outcome } : {}) });
+  const said = (label: string) => ({ kind: 'say' as const, label, count: 1, status: 'done' as const });
+
+  const labels = (rows: readonly ChannelLedgerRow[]) =>
+    foldRepeatedRows(rows).map(r => `${r.label}${r.count > 1 ? `×${r.count}` : ''}:${r.status}`);
+
+  it('counts identical adjacent steps as one row', () => {
+    assert.deepEqual(
+      labels([step('Airtable', 'Records'), step('Airtable', 'Records'), step('Airtable', 'Records')]),
+      ['Airtable×3:done'],
+    );
+  });
+
+  // Two calls to the same tool doing different work are not the same act.
+  it('keeps the same tool apart when it did different things', () => {
+    assert.deepEqual(
+      labels([step('Airtable', 'Records'), step('Airtable', 'Schema')]),
+      ['Airtable:done', 'Airtable:done'],
+    );
+  });
+
+  // The whole point of the log is the order things happened in.
+  it('will not reorder a step across something the model said', () => {
+    assert.deepEqual(
+      labels([step('Airtable', 'Records'), said('Found 3.'), step('Airtable', 'Records')]),
+      ['Airtable:done', 'Found 3.:done', 'Airtable:done'],
+    );
+  });
+
+  it('surfaces a failure hidden inside a group instead of marking it done', () => {
+    assert.deepEqual(
+      labels([step('Airtable', 'Records'), step('Airtable', 'Records', 'failed'), step('Airtable', 'Records')]),
+      ['Airtable×3:failed'],
+    );
+    assert.deepEqual(
+      labels([step('Airtable', 'Records'), step('Airtable', 'Records', 'running')]),
+      ['Airtable×2:running'],
+    );
+  });
+
+  it('renders the count the card has always had a renderer for', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: { state: 'working' as const, ledger: [step('Airtable', 'Records'), step('Airtable', 'Records')] },
+    }));
+
+    assert.match(elementById(card, 'run_activity')!['content'] as string, /✓ \*\*Airtable\*\* .*×2/);
   });
 });

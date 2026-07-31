@@ -94,7 +94,7 @@ describe("Divo LLM proxy failure normalization", () => {
 		const luna = providers.get("openai").models[0];
 		assert.equal(luna.id, "gpt-5.6-luna");
 		assert.deepEqual(luna.input, ["text", "image"]);
-		assert.equal(luna.api, "openai-completions");
+		assert.equal(luna.api, "openai-responses");
 
 		providers.clear();
 		divoLlmExtension({

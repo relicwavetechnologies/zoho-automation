@@ -309,9 +309,10 @@ export function backendUrlForContainer(value) {
 	return url.toString().replace(/\/+$/, "");
 }
 
-export function runtimeContainerNeedsReplacement(container, image = IMAGE) {
+export function runtimeContainerNeedsReplacement(container, image = IMAGE, imageId) {
 	return (
 		container?.Config?.Image !== image ||
+		(typeof imageId === "string" && container?.Image !== imageId) ||
 		container?.Config?.Labels?.["dev.divo.runtime-mode"] !== RUNTIME_CONTAINER_MODE
 	);
 }
@@ -419,6 +420,15 @@ async function dockerObjectExists(kind, name) {
 	} catch {
 		return false;
 	}
+}
+
+async function inspectImageId(image) {
+	const result = await docker(["image", "inspect", image]);
+	const [metadata] = JSON.parse(result.stdout);
+	if (typeof metadata?.Id !== "string" || !metadata.Id) {
+		throw new Error(`Docker image ${image} has no resolved image ID`);
+	}
+	return metadata.Id;
 }
 
 async function storeToken(profile, token) {
@@ -637,6 +647,7 @@ async function ensureRuntime(profile) {
 			`Image ${IMAGE} is missing. Build it with: docker build -t ${IMAGE} .`,
 		);
 	}
+	const imageId = await inspectImageId(IMAGE);
 	if (!(await dockerObjectExists("network", resources.network))) {
 		await docker([
 			"network",
@@ -652,7 +663,7 @@ async function ensureRuntime(profile) {
 	await ensureVolume(profile, resources.authVolume);
 	if (await dockerObjectExists("container", resources.container)) {
 		const container = await inspectOwnedContainer(profile);
-		if (runtimeContainerNeedsReplacement(container)) {
+		if (runtimeContainerNeedsReplacement(container, IMAGE, imageId)) {
 			if (container.State.Running) await docker(["stop", resources.container]);
 			await docker(["rm", resources.container]);
 		} else {
@@ -898,11 +909,73 @@ const PROGRESS_LABEL_MAX = 80;
 const PROGRESS_CHILDREN_MAX = 8;
 const PROGRESS_TODOS_MAX = 12;
 
-function progressLabel(value) {
+const PROGRESS_DETAIL_MAX = 64;
+const PROGRESS_SAY_MAX = 200;
+
+function progressLabel(value, maxLength = PROGRESS_LABEL_MAX) {
 	if (typeof value !== "string") return undefined;
 	const flat = value.replace(/\s+/g, " ").trim();
 	if (!flat) return undefined;
-	return flat.length > PROGRESS_LABEL_MAX ? `${flat.slice(0, PROGRESS_LABEL_MAX - 1)}…` : flat;
+	return flat.length > maxLength ? `${flat.slice(0, maxLength - 1)}…` : flat;
+}
+
+/**
+ * What a tool call is about, taken from the arguments it was called with.
+ *
+ * Five rows reading "Terminal / Files / Terminal" say only that something ran.
+ * The argument that names the work is already in hand here — the projection
+ * simply threw it away — and one short phrase per row is the difference between
+ * a progress bar and a log somebody can read.
+ *
+ * Only the one identifying argument crosses, never the whole object: a tool's
+ * arguments can carry a whole file body or a customer record, and this string
+ * is rendered into a chat window a room full of colleagues can read.
+ */
+function progressToolDetail(toolName, args) {
+	if (!args || typeof args !== "object") return undefined;
+	const fileName = (value) =>
+		typeof value === "string" ? value.split("/").filter(Boolean).at(-1) : undefined;
+
+	if (toolName === "bash") return progressLabel(args.command, PROGRESS_DETAIL_MAX);
+	if (toolName === "read" || toolName === "write" || toolName === "edit") {
+		return progressLabel(fileName(args.file_path ?? args.path), PROGRESS_DETAIL_MAX);
+	}
+	// A skill is addressed by UUID, which names nothing to the person reading the
+	// card. The row stays bare until the call returns and can be labelled with
+	// the skill's actual name.
+	if (toolName === "divo_skill_view") {
+		return UUID_PATTERN.test(String(args.skillId ?? ""))
+			? undefined
+			: progressLabel(args.skillId, PROGRESS_DETAIL_MAX);
+	}
+	// The tool id already travels as its own field, and the backend holds the
+	// table that turns it into a product name — so only the operation goes here.
+	// Sending the raw id too would print it twice, untranslated.
+	if (toolName === "divo_gateway") return progressLabel(args.op, PROGRESS_DETAIL_MAX);
+	return undefined;
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The text block the model is writing right now, out of the accumulated message. */
+function assistantBlockText(assistantMessageEvent) {
+	const content = assistantMessageEvent?.partial?.content;
+	const block = Array.isArray(content) ? content[assistantMessageEvent.contentIndex] : undefined;
+	return block?.type === "text" && typeof block.text === "string" ? block.text : undefined;
+}
+
+/**
+ * Only whole sentences leave the container.
+ *
+ * A text delta arrives per token, and forwarding each one would redraw the
+ * status card for every word of a thirteen-minute run — hundreds of edits of
+ * one chat message, for a card nobody is reading letter by letter. Cutting at
+ * the last completed sentence makes the projection self-rate-limiting without
+ * any timer: the value only changes when the model finishes saying something.
+ */
+export function settledSentences(text) {
+	const match = /^[\s\S]*[.!?…](?=["'’”)\]]*(?:\s|$))/.exec(text ?? "");
+	return match ? match[0].trim() : "";
 }
 
 /** Pi child states, in the vocabulary the status card renders. */
@@ -960,6 +1033,11 @@ function progressDetail(details) {
 	if (children) return { children };
 	const todos = progressTodos(details);
 	if (todos) return { todos };
+	// A loaded skill knows its own name, which is the only readable thing about
+	// a call the model addressed by UUID. It is only knowable once the call has
+	// returned, so the row is named on the way out rather than the way in.
+	const name = progressLabel(details.name, PROGRESS_DETAIL_MAX);
+	if (name && typeof details.revision === "number") return { detail: name };
 	return undefined;
 }
 
@@ -971,11 +1049,13 @@ export function projectRuntimeProgress(event) {
 	if (event.type === "tool_execution_start") {
 		const toolName = typeof event.toolName === "string" ? event.toolName : "tool";
 		const toolId = progressToolId(toolName, event.args);
+		const detail = progressToolDetail(toolName, event.args);
 		return {
 			type: "tool_start",
 			callId: String(event.toolCallId ?? ""),
 			toolName,
 			...(toolId ? { toolId } : {}),
+			...(detail ? { detail } : {}),
 		};
 	}
 	if (event.type === "tool_execution_update") {
@@ -1006,23 +1086,46 @@ export function projectRuntimeProgress(event) {
 		event.type === "message_update"
 		&& event.assistantMessageEvent?.type === "text_delta"
 	) {
-		return { type: "writing" };
+		// A long run that says nothing reads as a hang, however much work it is
+		// doing. What the model says between its tool calls is the only thing on
+		// the card written for a person rather than derived from one, so it is
+		// forwarded rather than flattened into a bare "writing" flag.
+		const said = progressLabel(
+			settledSentences(assistantBlockText(event.assistantMessageEvent)),
+			PROGRESS_SAY_MAX,
+		);
+		if (!said) return { type: "writing" };
+		return {
+			type: "say",
+			index: Number.isInteger(event.assistantMessageEvent.contentIndex)
+				? event.assistantMessageEvent.contentIndex
+				: 0,
+			text: said,
+		};
 	}
+	// Reasoning stays inside the container. `thinking_delta` is the model
+	// talking to itself, not to the room, and a status card is read by everyone
+	// in the chat.
 	return undefined;
 }
 
 export function collectRunAssistantText(messages) {
 	if (!Array.isArray(messages)) return "";
-	const chunks = [];
 	const lastUserIndex = messages.findLastIndex((message) => message?.role === "user");
-	for (const message of messages.slice(lastUserIndex + 1)) {
-		if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-		for (const content of message.content) {
-			if (content?.type !== "text" || typeof content.text !== "string") continue;
-			const text = content.text.trim();
-			if (text) chunks.push(text);
-		}
-	}
+	const candidates = messages.slice(lastUserIndex + 1).filter(
+		(message) =>
+			message?.role === "assistant" &&
+			Array.isArray(message.content) &&
+			message.content.some((content) => content?.type === "text" && content.text?.trim()),
+	);
+	const finalMessage = candidates.findLast((message) => message.stopReason === "stop")
+		?? candidates.at(-1);
+	if (!finalMessage) return "";
+	const chunks = finalMessage.content.flatMap((content) => {
+		if (content?.type !== "text" || typeof content.text !== "string") return [];
+		const text = content.text.trim();
+		return text ? [text] : [];
+	});
 	return chunks.join("\n\n");
 }
 
@@ -1407,7 +1510,11 @@ export async function finalizeRuntimeLifecycle({
 	),
 } = {}) {
 	const cleanupErrors = [];
-	if (bootstrapAttempted) {
+	// Only a run that failed can still be holding the token. Reaching completion
+	// means container-entry read the bootstrap, and it unlinks the file the moment
+	// it does, so clearing again spends a throwaway container deleting nothing.
+	// A run that died earlier may never have read it, and that one still needs it.
+	if (bootstrapAttempted && !completedSuccessfully) {
 		try {
 			await clearBootstrapFn(resources.authVolume);
 		} catch (error) {
@@ -1550,14 +1657,6 @@ async function runPrompt({
 				emitRuntimeProgress(onProgress, { type: "thinking" });
 			},
 		});
-		const stats = await docker([
-			"stats",
-			"--no-stream",
-			"--format",
-			"{{json .}}",
-			resources.container,
-		]);
-		console.error(`Runtime stats: ${stats.stdout.trim()}`);
 		const text = collectRunAssistantText(completion?.messages);
 		if (!text) {
 			throw terminalRunError({

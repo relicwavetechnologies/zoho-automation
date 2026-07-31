@@ -47,12 +47,6 @@ agent when Pi fails. A visible Pi failure is a valid test result.
 | Direct harness | Intended to prove DB identity, active member session, runtime lease, Pi controller, isolated container, Divo Gateway, status renderer, and final Lark delivery | Lark webhook verification, ingress receipt, queue admission, inbound Lark media |
 | Live Lark message | The complete path from Lark ingress through Pi and back to Lark, including sign-in cards, group routing, attachments, approvals, status, and final delivery | Nothing in the user-facing channel path |
 
-**Current blocker:** the runtime service requires `runContext.tenantId`, but the
-direct harness does not currently populate it. On the current code, use the
-live Lark path for a passing E2E test. A direct harness
-`runtime_session_missing` result is a known harness wiring defect, not proof
-that the user's Lark session is absent.
-
 ## Current source of truth
 
 Verify instructions against these files when behavior changes:

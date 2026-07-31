@@ -16,7 +16,7 @@ interface Forwarded {
 }
 
 /**
- * Run one chat-completions request and return what reached the provider.
+ * Run one proxy request and return what reached the provider.
  *
  * The upstream call is stubbed at `fetch` — this route forwards with `fetch`
  * directly rather than through the AI SDK, so the request is observable. The URL
@@ -30,21 +30,38 @@ async function forward(
     locals?: Record<string, unknown>;
     calls?: Array<{ method: string; input: Record<string, unknown> }>;
     keyByProvider?: Record<string, string>;
+    endpoint?: 'chat' | 'responses';
+    stream?: boolean;
   } = {},
 ): Promise<Forwarded> {
   const originalFetch = globalThis.fetch;
   const captured: Forwarded = { body: {}, url: '', authorization: '' };
+  const responsesApi = options.endpoint === 'responses';
 
   globalThis.fetch = (async (url: unknown, init: any) => {
     captured.body = JSON.parse(String(init?.body ?? '{}'));
     captured.url = String(url);
     captured.authorization = String(init?.headers?.Authorization ?? '');
-    return new Response(JSON.stringify({
-      id: 'chatcmpl-1',
-      model: 'deepseek-v4-pro',
-      choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 1, completion_tokens: 1 },
-    }), { status: 200, headers: { 'content-type': 'application/json' } });
+    const payload = responsesApi
+      ? {
+          id: 'resp-1',
+          model: 'gpt-5.6-luna',
+          output: [],
+          usage: { input_tokens: 7, output_tokens: 3, input_tokens_details: { cached_tokens: 2 } },
+        }
+      : {
+          id: 'chatcmpl-1',
+          model: 'deepseek-v4-pro',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+        };
+    const responseBody = options.stream
+      ? `data: ${JSON.stringify(responsesApi ? { type: 'response.completed', response: payload } : payload)}\n\n`
+      : JSON.stringify(payload);
+    return new Response(responseBody, {
+      status: 200,
+      headers: { 'content-type': options.stream ? 'text/event-stream' : 'application/json' },
+    });
   }) as typeof globalThis.fetch;
 
   try {
@@ -77,12 +94,16 @@ async function forward(
       },
     });
 
+    const routePath = responsesApi ? '/v1/responses' : '/v1/chat/completions';
     const handler = (router as any).stack.find(
-      (layer: any) => layer.route?.path === '/v1/chat/completions',
+      (layer: any) => layer.route?.path === routePath,
     ).route.stack[0].handle;
 
     const req = {
-      body: { model: clientModel, messages: [{ role: 'user', content: 'hi' }], stream: false },
+      path: routePath,
+      body: responsesApi
+        ? { model: clientModel, input: [{ role: 'user', content: 'hi' }], stream: options.stream === true }
+        : { model: clientModel, messages: [{ role: 'user', content: 'hi' }], stream: options.stream === true },
       on: () => {},
       header: () => undefined,
       get: () => undefined,
@@ -147,13 +168,22 @@ describe('LLM proxy model forwarding', () => {
   it('sends Luna to OpenAI with the OpenAI key', async () => {
     // The model decides the upstream and the credential. Both keys are stored
     // against the same company, so nothing but `providerOf` separates them.
+    const calls: Array<{ method: string; input: Record<string, unknown> }> = [];
     const { url, authorization, body } = await forward('gpt-5.6-luna', {
+      endpoint: 'responses',
+      stream: true,
+      calls,
       keyByProvider: { deepseek: 'sk-deepseek', openai: 'sk-openai' },
     });
 
-    assert.equal(url, 'https://api.openai.example/v1/chat/completions');
+    assert.equal(url, 'https://api.openai.example/v1/responses');
     assert.equal(authorization, 'Bearer sk-openai');
     assert.equal(body['model'], 'gpt-5.6-luna');
+    assert.deepEqual(calls.find(call => call.method === 'recordModelCall')?.input['usage'], {
+      prompt_tokens: 7,
+      completion_tokens: 3,
+      prompt_tokens_details: { cached_tokens: 2 },
+    });
   });
 
   it('attributes a runtime lease request to Lark through run, usage, and audit', async () => {

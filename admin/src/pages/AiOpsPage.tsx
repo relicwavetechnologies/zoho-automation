@@ -94,7 +94,7 @@ export function AiOpsPage() {
             <option value="">All channels</option><option value="desktop">desktop</option><option value="lark">lark</option><option value="web">web</option>
           </select>
           <span className="muted" style={{ fontSize: "12px" }}>
-            {channel === "lark" ? "Lark · pinned to DeepSeek V4 Flash" : channel ? `${channel} activity only` : "Company-wide activity"}
+            {channel === "lark" ? "Lark · model selected from each member's grant" : channel ? `${channel} activity only` : "Company-wide activity"}
           </span>
         </div>
       ) : null}

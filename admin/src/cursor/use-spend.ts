@@ -11,7 +11,7 @@ export function useCompanyScope(): string | undefined {
 
 /*
  * Spend / directory data hooks — REAL data from /api/admin/spend + /company/directory.
- * Cost is provider-reported (reportedCostUsd); legit DeepSeek pricing is Track B.
+ * Cost is reconstructed from canonical per-model pricing in the backend.
  *
  * `companyId` is only needed for SUPER_ADMIN callers (the backend's
  * resolveCompanyId requires it); company-admins resolve from their session. Use

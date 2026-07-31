@@ -38,7 +38,17 @@ export interface ChannelPlanStep {
  * `children` is one level deep, for work a step farms out: a subagent's tasks
  * sit under the `divo_subagents` row rather than becoming peers of it.
  */
+/**
+ * One entry in the run's log, in the order it happened.
+ *
+ * `say` is something the model told the user; `tool` is something it did. They
+ * share a list because they share a timeline — a run that only shows its tool
+ * calls reads as a machine grinding, and one that only shows its talking hides
+ * the work. Interleaved, the two explain each other.
+ */
 export interface ChannelLedgerRow {
+  /** Defaults to `tool`; rows written before this field existed are tool rows. */
+  readonly kind?:     'tool' | 'say';
   readonly label:     string;
   readonly count:     number;
   readonly outcome?:  string;

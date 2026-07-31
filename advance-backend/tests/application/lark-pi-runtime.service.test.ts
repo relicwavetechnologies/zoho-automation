@@ -203,6 +203,7 @@ test('streams sanitized controller progress before returning the final text', as
           result: { secret: 'ignored' },
         },
       }),
+      JSON.stringify({ type: 'heartbeat' }),
       JSON.stringify({ type: 'progress', progress: { type: 'writing' } }),
       JSON.stringify({ type: 'result', text: 'Finished' }),
       '',

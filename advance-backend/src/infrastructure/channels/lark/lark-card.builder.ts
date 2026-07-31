@@ -131,9 +131,15 @@ function hrElement(margin = '4px 0 0 0'): Record<string, unknown> {
  * here has to claim a cell of that table or it does not belong on the card.
  */
 
-/** Visible activity rows; older ones collapse into a counted note, never dropped silently. */
-const ACTIVITY_VISIBLE_ROWS = 5;
+/**
+ * Visible activity rows; older ones collapse into a counted note, never dropped
+ * silently. The window counts what the model said as well as what it did, so it
+ * is wider than the five it held when only tool calls could appear here — five
+ * interleaved rows is barely two steps of context.
+ */
+const ACTIVITY_VISIBLE_ROWS = 9;
 const ACTIVITY_DETAIL_MAX   = 64;
+const ACTIVITY_SAY_MAX      = 200;
 const TODO_VISIBLE_ROWS     = 8;
 
 const RUN_STATE_WORD: Record<ChannelRunState, string> = {
@@ -206,11 +212,32 @@ function statusStateTitle(timeline?: ChannelTimeline): string {
   return `${RUN_STATE_WORD[state]}…`;
 }
 
+/**
+ * Text from a run, made safe to sit inside the card's own markup.
+ *
+ * Activity detail is now a bash command or a sentence the model wrote, and both
+ * land inside a `<font color='grey'>` the card opened. An angle bracket in a
+ * shell pipeline would close that tag early and take the rest of the card's
+ * structure with it, so the two characters that can do it are removed; a
+ * backtick is dropped for the same reason against code spans. Emphasis
+ * characters are left alone — stripping them would rewrite `my_file.txt`, and
+ * the worst they do is italicise part of a line.
+ */
+export function sanitizeRunText(value: string, maxLength: number): string {
+  const flat = value
+    .replace(/[<>`]/g, '')
+    .replace(/\s+/g, ' ')
+    // The model's final answer streams through the same channel as its
+    // narration, so a line here can begin with that answer's opening heading.
+    // Left alone, one sentence of a run log renders at heading size and the
+    // rest of the card looks like its caption.
+    .replace(/^\s*(?:#{1,6}|>|\*\*)\s*/, '')
+    .trim();
+  return flat.length > maxLength ? `${flat.slice(0, maxLength - 1)}…` : flat;
+}
+
 function truncateOutcome(value: string): string {
-  const flat = value.replace(/\s+/g, ' ').trim();
-  return flat.length > ACTIVITY_DETAIL_MAX
-    ? `${flat.slice(0, ACTIVITY_DETAIL_MAX - 1)}…`
-    : flat;
+  return sanitizeRunText(value, ACTIVITY_DETAIL_MAX);
 }
 
 const STEP_MARKERS: Record<ChannelPlanStepStatus, string> = {
@@ -221,14 +248,65 @@ const STEP_MARKERS: Record<ChannelPlanStepStatus, string> = {
   skipped: '–',
 };
 
-/** `✓ **Web search**  4 results` — marker, what ran, what it produced. Nothing else. */
+/**
+ * `✓ **Web search**  4 results` — marker, what ran, what it produced.
+ *
+ * A `say` row is the exception and carries none of that furniture: it is a
+ * sentence the model wrote for the user, and putting a status marker and bold
+ * label on it would dress a human sentence as a machine event. It is simply
+ * the line, indented to sit under nothing.
+ */
 function activityLine(row: ChannelLedgerRow, indent: string): string {
+  if (row.kind === 'say') {
+    return `${indent}${sanitizeRunText(row.label, ACTIVITY_SAY_MAX)}`;
+  }
   const marker = STEP_MARKERS[row.status];
   const calls  = row.count > 1 ? ` <font color='grey'>×${row.count}</font>` : '';
   const detail = row.outcome?.trim()
     ? `  <font color='grey'>${truncateOutcome(row.outcome)}</font>`
     : '';
   return `${indent}${marker} **${row.label}**${calls}${detail}`;
+}
+
+/**
+ * Repeated identical steps, folded into one row that counts them.
+ *
+ * Paging a table nineteen times is one act, and printing it as nineteen rows
+ * buries everything else the run did. Only rows that are *adjacent* and say the
+ * same thing fold — a step that happened after the model spoke belongs after
+ * what it said, and reordering it to join an earlier group would destroy the
+ * chronology the log exists to show. Two calls to the same tool doing different
+ * work stay apart, because they are not the same act.
+ *
+ * The merged status is the worst one present: a failure hidden inside a group
+ * marked ✓ is exactly the thing a run log must not do.
+ */
+export function foldRepeatedRows(
+  rows: readonly ChannelLedgerRow[],
+): readonly ChannelLedgerRow[] {
+  const folded: ChannelLedgerRow[] = [];
+  for (const row of rows) {
+    const last = folded[folded.length - 1];
+    const mergeable = last
+      && row.kind !== 'say' && last.kind !== 'say'
+      && last.label === row.label
+      && (last.outcome ?? '') === (row.outcome ?? '')
+      && !last.children && !row.children;
+    if (!mergeable) {
+      folded.push(row);
+      continue;
+    }
+    folded[folded.length - 1] = {
+      ...last,
+      count: last.count + row.count,
+      status: last.status === 'failed' || row.status === 'failed'
+        ? 'failed'
+        : last.status === 'running' || row.status === 'running'
+          ? 'running'
+          : row.status,
+    };
+  }
+  return folded;
 }
 
 /**
@@ -240,7 +318,7 @@ function activityLine(row: ChannelLedgerRow, indent: string): string {
  * card that admits it is showing the last five things.
  */
 function activityMarkdown(timeline: ChannelTimeline): string | undefined {
-  const rows = timeline.ledger;
+  const rows = timeline.ledger?.length ? foldRepeatedRows(timeline.ledger) : undefined;
   if (!rows?.length) return undefined;
 
   const hidden  = Math.max(0, rows.length - ACTIVITY_VISIBLE_ROWS);
@@ -905,6 +983,9 @@ export function planFinalCards(
       markdown: segmentMarkdown,
       ...(input.branding ? { branding: input.branding } : {}),
       ...(index === partCount - 1 && input.actions ? { actions: input.actions } : {}),
+      // No execution trace on a split reply, deliberately: the split happened
+      // because the answer already fills a card, and a trace on top of that
+      // buys a folded panel at the risk of condensing the answer itself.
       bodyTitle: title,
       bodyText,
       bodyBlocks: segmentBlocks,
@@ -1043,9 +1124,13 @@ function buildStatusHeader(
 ): Record<string, unknown> | undefined {
   const state = timeline?.state;
   if (!state) return buildHeader(timeline?.subject?.trim(), branding);
+  const subject = timeline.subject?.trim();
   return {
     template: 'default',
-    title:    { tag: 'plain_text', content: statusHeaderTitle(timeline) },
+    // No title unless the run has a subject. The only other thing to put there
+    // is the state, which is the chip sitting immediately beside it — and
+    // "Working… | Working" is the one-fact-twice this card exists to remove.
+    ...(subject ? { title: { tag: 'plain_text', content: subject } } : {}),
     text_tag_list: [{
       tag:   'text_tag',
       text:  { tag: 'plain_text', content: RUN_STATE_WORD[state] },

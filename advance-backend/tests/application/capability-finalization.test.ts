@@ -284,7 +284,7 @@ describe('Lark engine harness controls', () => {
     assert.equal(defaults.userSelector, 'abhishek@emiactech.com');
     assert.equal(defaults.backendUrl, 'http://127.0.0.1:8000');
     assert.equal(defaults.chatId, 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50');
-    assert.equal(defaults.model, 'flash');
+    assert.equal(defaults.model, undefined);
     assert.equal(defaults.trace, true);
     assert.equal(defaults.freshContext, false);
     assert.equal(defaults.oauthE2e, false);
@@ -293,7 +293,7 @@ describe('Lark engine harness controls', () => {
     assert.equal(defaults.threadRootMessageId, undefined);
     assert.deepEqual(
       parseEngineHarnessArgs([
-        '--model', 'pro',
+        '--model', 'luna',
         '--allow-impersonation',
         '--user', 'Anish Suman',
         '--backend-url', 'http://127.0.0.1:9000/',
@@ -309,7 +309,7 @@ describe('Lark engine harness controls', () => {
         chatId: 'oc_custom',
         chatType: 'group',
         groupReplyMode: 'inline',
-        model: 'pro',
+        model: 'luna',
         prompt: 'list Airtable bases',
         debugSigs: false,
         trace: true,
@@ -323,11 +323,10 @@ describe('Lark engine harness controls', () => {
     );
   });
 
-  it('rejects legacy engine-only options before starting cloud Pi', () => {
-    assert.throws(
-      () => assertPiHarnessOptions(parseEngineHarnessArgs(['--model', 'pro'], {})),
-      /not available in cloud Pi/,
-    );
+  it('accepts current cloud Pi models and rejects legacy engine-only options', () => {
+    assert.doesNotThrow(() => assertPiHarnessOptions(parseEngineHarnessArgs(['--model', 'flash'], {})));
+    assert.doesNotThrow(() => assertPiHarnessOptions(parseEngineHarnessArgs(['--model', 'pro'], {})));
+    assert.doesNotThrow(() => assertPiHarnessOptions(parseEngineHarnessArgs(['--model', 'luna'], {})));
     assert.throws(
       () => assertPiHarnessOptions(parseEngineHarnessArgs(['--debug-sigs'], {})),
       /retired Gemini harness/,
@@ -353,7 +352,7 @@ describe('Lark engine harness controls', () => {
     );
     assert.throws(
       () => parseEngineHarnessArgs(['--model', 'ultra'], {}),
-      /flash or pro/,
+      /flash, pro, or luna/,
     );
     assert.throws(
       () => parseEngineHarnessArgs(['--backend-url', 'not-a-url'], {}),

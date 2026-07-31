@@ -19,7 +19,7 @@ function deferred() {
 	return { promise, resolve };
 }
 
-test("final delivery preserves every assistant text block from the completed run", () => {
+test("final delivery excludes progress narration before the terminal answer", () => {
 	assert.equal(
 		collectRunAssistantText([
 			{
@@ -38,7 +38,7 @@ test("final delivery preserves every assistant text block from the completed run
 				content: [{ type: "text", text: "The report above is complete." }],
 			},
 		]),
-		"Complete report\n\nThe report above is complete.",
+		"The report above is complete.",
 	);
 });
 
@@ -565,6 +565,52 @@ test("Lark runs stream progress and one final result as NDJSON", async (context)
 	]);
 });
 
+test("Lark run streams stay alive while the runtime is silent", async (context) => {
+	const finish = deferred();
+	const admission = createAdmissionController({
+		resolveLease: async ({ backendUrl, lease }) => ({
+			profile: "cloud-derived",
+			thread: "lark-derived",
+			backendUrl,
+			token: lease,
+			userId: "user-1",
+			companyId: "company-1",
+			instanceId: "pi-local-1",
+		}),
+		executeRuntime: async () => {
+			await finish.promise;
+			return { text: "Finished" };
+		},
+	});
+	const { server } = createControllerServer({ admission, streamHeartbeatMs: 5 });
+	await new Promise((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", resolve);
+	});
+	context.after(() => server.close());
+	const { port } = server.address();
+	const response = await fetch(`http://127.0.0.1:${port}/v1/lark-runs`, {
+		method: "POST",
+		headers: {
+			"content-type": "application/json",
+			accept: "application/x-ndjson",
+		},
+		body: JSON.stringify({
+			backendUrl: "https://backend.example",
+			runtimeLease: "signed-lease",
+			message: "work",
+		}),
+	});
+
+	finish.resolve();
+	const events = (await response.text())
+		.trim()
+		.split("\n")
+		.map((line) => JSON.parse(line));
+	assert.deepEqual(events[0], { type: "heartbeat" });
+	assert.deepEqual(events.at(-1), { type: "result", text: "Finished" });
+});
+
 test("a failed model continuation streams an error and never a narration result", async (context) => {
 	const admission = createAdmissionController({
 		resolveLease: async ({ backendUrl, lease }) => ({
@@ -732,4 +778,94 @@ test("an unknown session scope is rejected before any container starts", async (
 		},
 	);
 	assert.equal(started, false);
+});
+
+// Five rows reading "Terminal / Files / Terminal" say only that something ran.
+// The argument that names the work was already in hand and was being discarded.
+test("a tool call carries the argument that says what it is about", () => {
+	const detailOf = (toolName, args) =>
+		projectRuntimeProgress({ type: "tool_execution_start", toolCallId: "c1", toolName, args }).detail;
+
+	assert.equal(detailOf("bash", { command: "airtable  list-bases\n" }), "airtable list-bases");
+	assert.equal(detailOf("read", { file_path: "/data/workspace/.divo/inbox/bases.json" }), "bases.json");
+	assert.equal(detailOf("divo_skill_view", { skillId: "zoho-unpaid-invoices" }), "zoho-unpaid-invoices");
+	// A UUID names nothing to the reader; the row is labelled from the skill's
+	// own name once the call returns.
+	assert.equal(detailOf("divo_skill_view", { skillId: "71a1f55f-d757-42c6-9d5e-c9e514c5c305" }), undefined);
+	// Only the operation: the tool id already travels as its own field, and the
+	// table that turns it into "Zoho Books" lives in the backend.
+	assert.equal(detailOf("divo_gateway", { op: "tools.invoke", payload: { toolId: "zohoBooks" } }), "tools.invoke");
+	// An unmapped tool has no argument worth naming, and a card row is better
+	// bare than filled with whichever key happened to sort first.
+	assert.equal(detailOf("mystery_tool", { whatever: "x" }), undefined);
+});
+
+// A tool's arguments can hold a whole file body or a customer record.
+test("only the identifying argument crosses, never the whole object", () => {
+	const update = projectRuntimeProgress({
+		type: "tool_execution_start",
+		toolCallId: "c1",
+		toolName: "write",
+		args: { file_path: "/tmp/report.md", content: "must-not-leak" },
+	});
+
+	assert.equal(update.detail, "report.md");
+	assert.doesNotMatch(JSON.stringify(update), /must-not-leak/);
+});
+
+// A long run that says nothing reads as a hang, however much work it is doing.
+test("a finished sentence leaves the container, a half-typed one does not", () => {
+	const say = (text) => projectRuntimeProgress({
+		type: "message_update",
+		assistantMessageEvent: {
+			type: "text_delta",
+			contentIndex: 0,
+			partial: { content: [{ type: "text", text }] },
+		},
+	});
+
+	// Mid-sentence: nothing to show yet, so the run only reports that it writes.
+	assert.deepEqual(say("Let me check which Airtable bases"), { type: "writing" });
+	// Complete: the sentence goes, the half-typed tail behind it stays.
+	assert.deepEqual(
+		say("Found 3 bases. I'll profile the la"),
+		{ type: "say", index: 0, text: "Found 3 bases." },
+	);
+});
+
+// Reasoning is the model talking to itself; the card is read by the whole room.
+test("thinking never leaves the container", () => {
+	assert.equal(
+		projectRuntimeProgress({
+			type: "message_update",
+			assistantMessageEvent: {
+				type: "thinking_delta",
+				contentIndex: 0,
+				partial: { content: [{ type: "thinking", text: "the user probably means." }] },
+			},
+		}),
+		undefined,
+	);
+});
+
+
+// The model addresses a skill by UUID, so the only readable thing about the call
+// is the skill's own name — which is knowable only once it has returned.
+test("a loaded skill names its own row on the way out", () => {
+	assert.deepEqual(
+		projectRuntimeProgress({
+			type: "tool_execution_end",
+			toolCallId: "call-skill",
+			toolName: "divo_skill_view",
+			isError: false,
+			result: { details: { name: "Unpaid invoice report", revision: 4, instructions: "must-not-leak" } },
+		}),
+		{
+			type: "tool_end",
+			callId: "call-skill",
+			toolName: "divo_skill_view",
+			isError: false,
+			detail: "Unpaid invoice report",
+		},
+	);
 });

@@ -1,13 +1,13 @@
 /**
  * LLM proxy service — the guardrails + authoritative-usage brain behind the
- * desktop→backend→DeepSeek proxy.
+ * desktop/Lark→backend→provider proxy.
  *
  *   gate()            — block / budget / rate / model-allow decision, pre-forward
  *   ensureRun()       — group completions into an ExecutionRun by correlation id
  *   recordToolResults() — reconstruct tool steps from the request `messages`
  *   recordModelCall() — record the turn's model call + AUTHORITATIVE token usage
  *
- * Cost is never stored — we persist DeepSeek's own token split; every read path
+ * Cost is never stored — we persist the provider's token split; every read path
  * prices it via pricing.ts (Track B). This replaces PI self-reported usage.
  */
 
@@ -28,8 +28,8 @@ export interface GateResult {
   reason?: string;
 }
 
-/** DeepSeek `usage` object (OpenAI-compatible + cache split). */
-export interface DeepSeekUsage {
+/** OpenAI-compatible provider `usage` object, including optional cache splits. */
+export interface ProviderUsage {
   prompt_tokens?:            number;
   completion_tokens?:        number;
   prompt_cache_hit_tokens?:  number;
@@ -197,7 +197,7 @@ export class LlmProxyService {
     userId:      string;
     model:       string;
     provider:    string;
-    usage:       DeepSeekUsage;
+    usage:       ProviderUsage;
     agentTarget?: string;
     channel?:    string;
     threadId?:   string;
@@ -245,7 +245,7 @@ export class LlmProxyService {
     userId: string;
     model: string;
     provider: string;
-    usage: DeepSeekUsage;
+    usage: ProviderUsage;
     agentTarget: string;
     channel: string;
     threadId?: string;
@@ -294,7 +294,7 @@ export class LlmProxyService {
     decision:     'allowed' | 'denied';
     reason?:      string | undefined;
     httpStatus:   number;
-    usage?:       DeepSeekUsage | null;
+    usage?:       ProviderUsage | null;
     latencyMs:    number;
     keySource?:   string | null;
     channel?:     string;

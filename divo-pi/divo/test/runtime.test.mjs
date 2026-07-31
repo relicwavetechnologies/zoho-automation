@@ -181,6 +181,7 @@ describe("The run launches on the model it was given", () => {
 
 		assert.equal(args[args.indexOf("--model") + 1], "gpt-5.6-luna");
 		assert.equal(args[args.indexOf("--provider") + 1], "openai");
+		assert.equal(args[args.indexOf("--thinking") + 1], "high");
 	});
 
 	it("keeps DeepSeek on DeepSeek", () => {
@@ -188,6 +189,7 @@ describe("The run launches on the model it was given", () => {
 
 		assert.equal(args[args.indexOf("--model") + 1], "deepseek-v4-flash");
 		assert.equal(args[args.indexOf("--provider") + 1], "deepseek");
+		assert.equal(args[args.indexOf("--thinking") + 1], "medium");
 	});
 });
 

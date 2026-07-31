@@ -1,5 +1,5 @@
 /**
- * Admin proxy-policy routes — per-member guardrails for the DeepSeek proxy.
+ * Admin proxy-policy routes — per-member guardrails for the model proxy.
  *
  * Mounted at /api/admin/proxy-policy.
  *

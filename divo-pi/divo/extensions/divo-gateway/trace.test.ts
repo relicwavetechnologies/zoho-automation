@@ -63,6 +63,12 @@ const SUCCESS_MESSAGE = {
 	usage: { input: 20, output: 5, cacheRead: 0, cacheWrite: 0 },
 };
 
+const LUNA_REQUEST_TOO_LARGE_MESSAGE = {
+	...REQUEST_TOO_LARGE_MESSAGE,
+	provider: "openai",
+	model: "gpt-5.6-luna",
+};
+
 describe("Divo trace terminal classification", () => {
 	it("accepts only a stopped assistant completion with recorded tokens", () => {
 		assert.deepEqual(classifyDivoRunTerminal([{
@@ -95,11 +101,12 @@ describe("Divo trace terminal classification", () => {
 		});
 	});
 
-	it("identifies only Divo DeepSeek request-too-large failures as recoverable", () => {
+	it("identifies request-too-large failures from every Divo-proxied provider as recoverable", () => {
 		assert.equal(isRecoverableDivoRequestTooLarge([REQUEST_TOO_LARGE_MESSAGE]), true);
+		assert.equal(isRecoverableDivoRequestTooLarge([LUNA_REQUEST_TOO_LARGE_MESSAGE]), true);
 		assert.equal(isRecoverableDivoRequestTooLarge([{
 			...REQUEST_TOO_LARGE_MESSAGE,
-			provider: "openai",
+			provider: "anthropic",
 		}]), false);
 		assert.equal(isRecoverableDivoRequestTooLarge([{
 			...REQUEST_TOO_LARGE_MESSAGE,
@@ -119,7 +126,7 @@ describe("Divo trace terminal classification", () => {
 });
 
 describe("Divo trace correlation", () => {
-	it("injects the desktop run correlation only into the governed DeepSeek request", async () => {
+	it("injects desktop run correlation into every governed model request", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "divo-trace-"));
 		const contextPath = join(directory, "run.json");
 		await writeFile(contextPath, JSON.stringify({
@@ -150,9 +157,19 @@ describe("Divo trace correlation", () => {
 			divo_trace_mode: "desktop",
 		});
 
+		const lunaPayload = await handlers.get("before_provider_request")?.(
+			{ type: "before_provider_request", payload: { model: "gpt-5.6-luna" } },
+			{ model: { provider: "openai" } },
+		);
+		assert.deepEqual(lunaPayload, {
+			model: "gpt-5.6-luna",
+			divo_run_id: "run-1",
+			divo_trace_mode: "desktop",
+		});
+
 		const untouched = await handlers.get("before_provider_request")?.(
 			{ type: "before_provider_request", payload: { model: "other" } },
-			{ model: { provider: "openai" } },
+			{ model: { provider: "anthropic" } },
 		);
 		assert.equal(untouched, undefined);
 	});

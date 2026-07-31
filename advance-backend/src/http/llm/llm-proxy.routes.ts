@@ -1,7 +1,8 @@
 /**
  * LLM proxy route — desktop/PI → backend → the model's provider.
  *
- *   POST /api/llm/v1/chat/completions   (member auth)
+ *   POST /api/llm/v1/chat/completions   (DeepSeek, member auth)
+ *   POST /api/llm/v1/responses          (OpenAI/Luna, member auth)
  *
  * The backend gates the request (block / budget / rate / model), forwards it to
  * whichever provider serves the requested model with that provider's real key,
@@ -10,17 +11,16 @@
  * authenticates with its member token. Enabled only when LLM_PROXY_ENABLED=true;
  * otherwise this router isn't mounted.
  *
- * Every provider here speaks the OpenAI chat-completions shape, so the request
- * body, the SSE framing and the `usage` object are the same on all of them. The
- * only thing that varies by provider is where the request goes and which key
- * signs it — which is exactly what `providerOf` decides.
+ * Each request shape is forwarded unchanged to the matching provider endpoint.
+ * The only normalization is authoritative usage, which is stored in the
+ * provider-neutral shape consumed by LlmProxyService.
  */
 
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import type { Logger } from '../../shared/logger';
-import { LlmProxyService, type DeepSeekUsage } from '../../application/proxy/llm-proxy.service';
+import { LlmProxyService, type ProviderUsage } from '../../application/proxy/llm-proxy.service';
 import { canonicalModel, providerOf, type ModelProvider } from '../../application/observability/pricing';
 import type { ProxyKeyStore } from '../../application/proxy/proxy-key.store';
 import type { ApiKeyExhaustionNotifierPort } from '../../application/governance/api-key-exhaustion.notifier';
@@ -40,9 +40,10 @@ const PROVIDER_LABEL: Record<ModelProvider, string> = {
   deepseek: 'DeepSeek',
   openai: 'OpenAI',
 };
-interface ChatBody {
+interface ProxyBody {
   model?: string;
   messages?: unknown[];
+  input?: unknown;
   stream?: boolean;
   stream_options?: { include_usage?: boolean };
   divo_run_id?: string;
@@ -54,23 +55,42 @@ interface ChatBody {
   [k: string]: unknown;
 }
 
+interface ResponsesUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  input_tokens_details?: { cached_tokens?: number };
+}
+
 const THREAD_TITLE_REQUEST_KIND = 'thread_title' as const;
 const THREAD_TITLE_AGENT_TARGET = 'desktop.thread_title';
 
-function isThreadTitleRequest(body: ChatBody): boolean {
+function isThreadTitleRequest(body: ProxyBody): boolean {
   return body.divo_request_kind === THREAD_TITLE_REQUEST_KIND;
 }
 
-function auxiliaryThreadId(body: ChatBody): string | undefined {
+function auxiliaryThreadId(body: ProxyBody): string | undefined {
   const threadId = typeof body.divo_thread_id === 'string'
     ? body.divo_thread_id.trim()
     : '';
   return threadId || undefined;
 }
 
-/** Pull the last usage object + the resolved model id out of an SSE buffer. */
-function extractFinal(sse: string): { usage: DeepSeekUsage | null; model: string | null } {
-  let usage: DeepSeekUsage | null = null;
+function normalizeUsage(value: unknown, responsesApi: boolean): ProviderUsage | null {
+  if (!value || typeof value !== 'object') return null;
+  if (!responsesApi) return value as ProviderUsage;
+  const usage = value as ResponsesUsage;
+  return {
+    ...(usage.input_tokens !== undefined ? { prompt_tokens: usage.input_tokens } : {}),
+    ...(usage.output_tokens !== undefined ? { completion_tokens: usage.output_tokens } : {}),
+    ...(usage.input_tokens_details !== undefined
+      ? { prompt_tokens_details: usage.input_tokens_details }
+      : {}),
+  };
+}
+
+/** Pull the terminal usage object + resolved model id out of an SSE buffer. */
+function extractFinal(sse: string, responsesApi: boolean): { usage: ProviderUsage | null; model: string | null } {
+  let usage: ProviderUsage | null = null;
   let model: string | null = null;
   for (const line of sse.split('\n')) {
     const trimmed = line.trim();
@@ -78,9 +98,15 @@ function extractFinal(sse: string): { usage: DeepSeekUsage | null; model: string
     const payload = trimmed.slice(5).trim();
     if (!payload || payload === '[DONE]') continue;
     try {
-      const obj = JSON.parse(payload) as { usage?: DeepSeekUsage; model?: string };
-      if (obj.usage) usage = obj.usage;
-      if (typeof obj.model === 'string') model = obj.model;  // DeepSeek resolves aliases here
+      const obj = JSON.parse(payload) as {
+        usage?: ProviderUsage;
+        model?: string;
+        response?: { usage?: ResponsesUsage; model?: string };
+      };
+      const terminal = responsesApi ? obj.response : obj;
+      const normalized = normalizeUsage(terminal?.usage, responsesApi);
+      if (normalized) usage = normalized;
+      if (typeof terminal?.model === 'string') model = terminal.model;
     } catch { /* partial/non-JSON keepalive line */ }
   }
   return { usage, model };
@@ -91,7 +117,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
   const svc = deps.service;
   const log = deps.logger.child({ service: 'llm-proxy' });
 
-  router.post('/v1/chat/completions', async (req: Request, res: Response): Promise<void> => {
+  const handleRequest = async (req: Request, res: Response): Promise<void> => {
     const companyId = res.locals['companyId'] as string | undefined;
     const userId = res.locals['userId'] as string | undefined;
     if (!companyId || !userId) { res.status(401).json({ error: { message: 'Unauthenticated', type: 'auth' } }); return; }
@@ -99,7 +125,8 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     const runtimeThreadId = res.locals['runtimeThreadId'] as string | undefined;
 
     const startedAt = Date.now();
-    const body = (req.body ?? {}) as ChatBody;
+    const responsesApi = req.path === '/v1/responses';
+    const body = (req.body ?? {}) as ProxyBody;
     const threadTitleRequest = isThreadTitleRequest(body);
     const threadId = auxiliaryThreadId(body);
     const attributedThreadId = runtimeThreadId ?? threadId;
@@ -128,7 +155,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
       return;
     }
 
-    // ── Resolve the upstream key (company → platform → env) ───────────────────
+    // ── Resolve the upstream key (company → platform) ─────────────────────────
     const resolved = await deps.store.resolve(provider, companyId);
     if (!resolved) {
       log.warn('proxy.no_key', { companyId, provider });
@@ -162,13 +189,13 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     // would authorise one model and then call another. It is also the only
     // correct name to send — DeepSeek has retired the legacy aliases that
     // `canonicalModel` still accepts from clients, and now rejects them.
-    const forwardBody: ChatBody = { ...body, model };
+    const forwardBody: ProxyBody = { ...body, model };
     delete forwardBody.divo_run_id;
     delete forwardBody.divo_trace_mode;
     delete forwardBody.divo_request_kind;
     delete forwardBody.divo_thread_id;
     const wantsStream = forwardBody.stream !== false;
-    if (wantsStream && !forwardBody.stream_options?.include_usage) {
+    if (!responsesApi && wantsStream && !forwardBody.stream_options?.include_usage) {
       forwardBody.stream_options = { ...(forwardBody.stream_options ?? {}), include_usage: true };
     }
 
@@ -184,7 +211,8 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
 
     let upstream: globalThis.Response;
     try {
-      upstream = await fetch(`${deps.baseUrls[provider]}/v1/chat/completions`, {
+      const endpoint = responsesApi ? '/v1/responses' : '/v1/chat/completions';
+      upstream = await fetch(`${deps.baseUrls[provider]}${endpoint}`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${resolved.key}` },
         body:    JSON.stringify(forwardBody),
@@ -203,7 +231,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
       void maybeNotifyUpstreamExhaustion(deps, companyId, provider, upstream.status, () => upstream.clone().text());
     }
 
-    const audit = (ok: boolean, usage: DeepSeekUsage | null, responseModel?: string | null, reason?: string) =>
+    const audit = (ok: boolean, usage: ProviderUsage | null, responseModel?: string | null, reason?: string) =>
       void svc.recordAudit({
         companyId, userId, executionId,
         channel,
@@ -218,7 +246,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
         ...auxiliaryAuditTarget,
       });
 
-    const recordUsage = async (usage: DeepSeekUsage | null, responseModel?: string | null) => {
+    const recordUsage = async (usage: ProviderUsage | null, responseModel?: string | null) => {
       if (!usage) return;
       // Prefer the model the provider actually served (aliases resolved), else the request's.
       const served = canonicalModel(responseModel ?? model);
@@ -259,9 +287,14 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
       res.status(upstream.status);
       res.setHeader('Content-Type', upstream.headers.get('content-type') ?? 'application/json');
       res.send(text);
-      let parsed: { usage?: DeepSeekUsage; model?: string } = {};
+      let parsed: { usage?: unknown; model?: string } = {};
+      let usage: ProviderUsage | null = null;
       if (upstream.ok) {
-        try { parsed = JSON.parse(text) as { usage?: DeepSeekUsage; model?: string }; await recordUsage(parsed.usage ?? null, parsed.model ?? null); } catch { /* ignore */ }
+        try {
+          parsed = JSON.parse(text) as { usage?: unknown; model?: string };
+          usage = normalizeUsage(parsed.usage, responsesApi);
+          await recordUsage(usage, parsed.model ?? null);
+        } catch { /* ignore */ }
       }
       if (threadTitleRequest) {
         log.info('proxy.thread_title.completed', {
@@ -272,7 +305,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
           latencyMs: Date.now() - startedAt,
         });
       }
-      audit(upstream.ok, parsed.usage ?? null, parsed.model ?? null);
+      audit(upstream.ok, usage, parsed.model ?? null);
       return;
     }
 
@@ -303,7 +336,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     // A stream that broke mid-flight isn't a clean success — don't count it as an
     // allowed 200 in the audit/metrics, and don't trust a partial usage chunk.
     const ok = upstream.ok && !interrupted;
-    const final = ok ? extractFinal(acc) : { usage: null, model: null };
+    const final = ok ? extractFinal(acc, responsesApi) : { usage: null, model: null };
     if (ok) await recordUsage(final.usage, final.model);
     if (threadTitleRequest) {
       log.info('proxy.thread_title.completed', {
@@ -316,7 +349,10 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
       });
     }
     audit(ok, final.usage, final.model, interrupted ? 'stream_interrupted' : undefined);
-  });
+  };
+
+  router.post('/v1/chat/completions', handleRequest);
+  router.post('/v1/responses', handleRequest);
 
   return router;
 }

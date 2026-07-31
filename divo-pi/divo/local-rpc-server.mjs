@@ -24,6 +24,7 @@ import {
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4317;
 const DEFAULT_MAX_ACTIVE_RUNS = 2;
+const DEFAULT_STREAM_HEARTBEAT_MS = 15_000;
 const MAX_BODY_BYTES = 64 * 1024;
 const RETRY_AFTER_SECONDS = 60;
 const UPLOAD_BUDGET_TTL_MS = 15 * 60_000;
@@ -327,6 +328,11 @@ export function createControllerServer(options = {}) {
 		});
 	const stageFile = options.stageFile ?? stageRuntimeFile;
 	const budget = options.uploadBudget ?? createUploadBudget();
+	const streamHeartbeatMs = positiveInteger(
+		options.streamHeartbeatMs,
+		DEFAULT_STREAM_HEARTBEAT_MS,
+		"streamHeartbeatMs",
+	);
 	const server = http.createServer(async (request, response) => {
 		if (request.method === "GET" && request.url === "/health") {
 			sendJson(response, 200, {
@@ -371,13 +377,22 @@ export function createControllerServer(options = {}) {
 					"cache-control": "no-store",
 					connection: "keep-alive",
 				});
-				const result = await admission.runRuntime({
-					...body,
-					signal: controller.signal,
-					onProgress: (progress) =>
-						sendNdjson(response, { type: "progress", progress }),
-				});
-				sendNdjson(response, { type: "result", text: result.text });
+				const heartbeat = setInterval(
+					() => sendNdjson(response, { type: "heartbeat" }),
+					streamHeartbeatMs,
+				);
+				heartbeat.unref();
+				try {
+					const result = await admission.runRuntime({
+						...body,
+						signal: controller.signal,
+						onProgress: (progress) =>
+							sendNdjson(response, { type: "progress", progress }),
+					});
+					sendNdjson(response, { type: "result", text: result.text });
+				} finally {
+					clearInterval(heartbeat);
+				}
 				response.end();
 				return;
 			}

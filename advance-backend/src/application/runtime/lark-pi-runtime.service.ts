@@ -110,6 +110,8 @@ export interface LarkPiProgressTodo {
 interface LarkPiProgressDetail {
   readonly children?: readonly LarkPiProgressChild[];
   readonly todos?: readonly LarkPiProgressTodo[];
+  /** What the call turned out to be — a skill's name, known only on the way out. */
+  readonly detail?: string;
 }
 
 export type LarkPiProgressEvent =
@@ -119,11 +121,15 @@ export type LarkPiProgressEvent =
       readonly label: string;
     }
   | { readonly type: 'ready' | 'thinking' | 'writing' }
+  /** A whole sentence the model finished saying between its tool calls. */
+  | { readonly type: 'say'; readonly index: number; readonly text: string }
   | {
       readonly type: 'tool_start';
       readonly callId: string;
       readonly toolName: string;
       readonly toolId?: string;
+      /** What this call is about, from the argument that names the work. */
+      readonly detail?: string;
     }
   | ({
       readonly type: 'tool_progress';
@@ -566,6 +572,7 @@ export class LarkPiRuntimeService {
       }
       if (!event || typeof event !== 'object') return;
       const record = event as Record<string, unknown>;
+      if (record['type'] === 'heartbeat') return;
       if (record['type'] === 'progress') {
         const progress = parseProgressEvent(record['progress']);
         if (progress && input.onProgress) {
@@ -671,9 +678,12 @@ function safeProgressDetail(event: Record<string, unknown>): LarkPiProgressDetai
       })
     : [];
 
+  const detail = safeProgressString(event['detail'], 64);
+
   return {
     ...(children.length > 0 ? { children } : {}),
     ...(todos.length > 0 ? { todos } : {}),
+    ...(detail ? { detail } : {}),
   };
 }
 
@@ -690,12 +700,32 @@ function parseProgressEvent(value: unknown): LarkPiProgressEvent | undefined {
     }
     return undefined;
   }
+  // Free text the model wrote, so it is capped and flattened here the same way
+  // every other string crossing this boundary is — the container is trusted to
+  // run the work, not to decide how much of a chat card it may occupy.
+  if (type === 'say') {
+    const text = safeProgressString(event['text'], 200);
+    if (!text) return undefined;
+    const rawIndex = event['index'];
+    return {
+      type,
+      index: typeof rawIndex === 'number' && Number.isInteger(rawIndex) && rawIndex >= 0
+        ? rawIndex
+        : 0,
+      text,
+    };
+  }
   if (type === 'tool_start') {
     const callId = safeProgressString(event['callId'], 100);
     const toolName = safeProgressString(event['toolName'], 80);
     const toolId = safeProgressString(event['toolId'], 80);
+    const detail = safeProgressString(event['detail'], 64);
     if (!callId || !toolName) return undefined;
-    return { type, callId, toolName, ...(toolId ? { toolId } : {}) };
+    return {
+      type, callId, toolName,
+      ...(toolId ? { toolId } : {}),
+      ...(detail ? { detail } : {}),
+    };
   }
   if (type === 'tool_progress') {
     const callId = safeProgressString(event['callId'], 100);
@@ -703,7 +733,7 @@ function parseProgressEvent(value: unknown): LarkPiProgressEvent | undefined {
     if (!callId || !toolName) return undefined;
     const detail = safeProgressDetail(event);
     // A progress event with nothing to show is a redraw for no reason.
-    if (!detail.children && !detail.todos) return undefined;
+    if (!detail.children && !detail.todos && !detail.detail) return undefined;
     return { type, callId, toolName, ...detail };
   }
   if (type === 'tool_end') {

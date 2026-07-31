@@ -8,22 +8,6 @@ It does **not** simulate an inbound Lark webhook. Use
 [03-live-lark-webhook.md](./03-live-lark-webhook.md) when webhook admission,
 sign-in/approval cards, or inbound attachments are under test.
 
-## Current code blocker
-
-Do not present this harness as passing on the current code without fixing and
-verifying its tenant binding first:
-
-- `LarkPiRuntimeService.findActiveSession` requires both
-  `runContext.tenantId` and `runContext.userExternalId`.
-- `run-engine-harness.ts` currently supplies the open ID but not `tenantId`.
-- The resulting `runtime_session_missing` is therefore expected even when the
-  person has an active Lark session.
-
-Until that wiring is corrected with a focused regression test, use the live
-Lark webhook path for the authoritative E2E proof. The commands below remain
-the intended direct-harness contract and are useful after that blocker is
-fixed.
-
 ## Before running
 
 Complete [01-setup-and-secrets.md](./01-setup-and-secrets.md). Confirm:
@@ -33,8 +17,7 @@ curl -fsS http://127.0.0.1:4317/health | jq .
 curl -fsS http://127.0.0.1:8000/health | jq .
 ```
 
-After the current tenant-binding blocker is fixed, the selected person must
-already have:
+The selected person must already have:
 
 - one unambiguous DB-linked Lark identity;
 - an unrevoked Lark member session with more than five minutes remaining;
@@ -48,7 +31,7 @@ From `advance-backend/`:
 
 ```bash
 pnpm tsx scripts/run-engine-harness.ts \
-  --model flash \
+  --model luna \
   "Reply with exactly: DIVO CLOUD PI LIVE"
 ```
 
@@ -62,7 +45,7 @@ Use this when Lark delivery itself is not under test:
 
 ```bash
 pnpm tsx scripts/run-engine-harness.ts \
-  --model flash \
+  --model luna \
   --no-delivery \
   "Reply with exactly: LOCAL PI LIVE"
 ```
@@ -121,6 +104,7 @@ Use live Lark traffic, not the group harness, to prove mention admission rules.
 A passing run has all of these:
 
 - console says `runtime: cloud Pi (legacy AI SDK disabled)`;
+- console reports the active model selected by the member's backend policy;
 - the resolved identity and principal are the intended person/company;
 - the controller URL is `http://127.0.0.1:4317` unless deliberately changed;
 - console reaches `piRuntime.run done`;
@@ -154,7 +138,9 @@ rg -n 'model_call|tool_call|specialist|run_complete|run_failed' \
 
 ## Supported options that matter
 
-- `--model flash`: the only cloud Pi model currently accepted.
+- `--model flash|pro|luna`: assert the model selected by the member's backend
+  grant. This never overrides policy; omit it to accept whichever model the
+  backend selects.
 - `--backend-url <url>`: defaults to local port `8000`.
 - `--fresh-context`: fresh conversational context; durable workspace remains.
 - `--no-trace`: skip persisted trace output.
@@ -163,6 +149,5 @@ rg -n 'model_call|tool_call|specialist|run_complete|run_failed' \
 - `--chat-id <allowed-id>`: explicit allowlisted destination.
 - `--group`, `--thread-root`, `--group-mode`: group-thread harness controls.
 
-`--model pro`, `--oauth-e2e`, `--full-debug`, and `--debug-sigs` are rejected
-by the current direct cloud Pi harness. Do not document or report them as
-working paths.
+`--oauth-e2e`, `--full-debug`, and `--debug-sigs` are rejected by the current
+direct cloud Pi harness. Do not document or report them as working paths.

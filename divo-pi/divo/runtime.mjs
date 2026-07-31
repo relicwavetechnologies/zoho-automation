@@ -9,6 +9,7 @@ import {
 	VISION_MODELS,
 	isRuntimeModel,
 	providerForModel,
+	thinkingLevelForModel,
 } from "./runtime-models.mjs";
 
 const divoDir = path.dirname(fileURLToPath(import.meta.url));
@@ -325,7 +326,7 @@ export function buildPiArguments(values) {
 		"--model",
 		values.model,
 		"--thinking",
-		manifest.thinkingLevel,
+		thinkingLevelForModel(values.model, manifest.thinkingLevel),
 		"--append-system-prompt",
 		renderWorkspacePrompt({
 			workspace: values.workspace,
@@ -448,7 +449,7 @@ export function startDivoPi({
 				packages: [],
 				defaultProvider: provider,
 				defaultModel: model,
-				defaultThinkingLevel: manifest.thinkingLevel,
+				defaultThinkingLevel: thinkingLevelForModel(model, manifest.thinkingLevel),
 			},
 			null,
 			2,

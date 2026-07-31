@@ -89,6 +89,7 @@ test("cloud container creation can remove the host gateway route", () => {
 
 test("a runtime container is replaced only when its image changes", () => {
 	const container = {
+		Image: "sha256:old",
 		Config: {
 			Image: "ghcr.io/relicwavetechnologies/divo-pi:dev-old",
 			Labels: { "dev.divo.runtime-mode": "exec-v1" },
@@ -105,8 +106,17 @@ test("a runtime container is replaced only when its image changes", () => {
 		runtimeContainerNeedsReplacement(
 			container,
 			"ghcr.io/relicwavetechnologies/divo-pi:dev-old",
+			"sha256:old",
 		),
 		false,
+	);
+	assert.equal(
+		runtimeContainerNeedsReplacement(
+			container,
+			"ghcr.io/relicwavetechnologies/divo-pi:dev-old",
+			"sha256:new",
+		),
+		true,
 	);
 	assert.equal(
 		runtimeContainerNeedsReplacement({
@@ -196,7 +206,7 @@ test("credential cleanup failure stops the container instead of keeping it warm"
 			profile: "abhishek",
 			resources: { authVolume: "auth-volume" },
 			bootstrapAttempted: true,
-			completedSuccessfully: true,
+			completedSuccessfully: false,
 		}, {
 			clearBootstrapFn: async () => {
 				calls.push("clear");
@@ -207,6 +217,24 @@ test("credential cleanup failure stops the container instead of keeping it warm"
 		AggregateError,
 	);
 	assert.deepEqual(calls, ["clear", "stop"]);
+});
+
+test("a completed run is kept warm without spending a container to clear the bootstrap", async () => {
+	const calls = [];
+	await finalizeRuntimeLifecycle({
+		profile: "abhishek",
+		resources: { authVolume: "auth-volume" },
+		bootstrapAttempted: true,
+		completedSuccessfully: true,
+	}, {
+		clearBootstrapFn: async () => calls.push("clear"),
+		scheduler: {
+			keepWarm: () => calls.push("warm"),
+			stopNow: async () => calls.push("stop"),
+		},
+	});
+	// container-entry already unlinked it; the absent "clear" is the point.
+	assert.deepEqual(calls, ["warm"]);
 });
 
 test("a startup failure stops the container even before bootstrap is written", async () => {

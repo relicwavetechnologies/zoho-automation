@@ -13,6 +13,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import {
+	isRuntimeModel,
+	providerForModel,
+	thinkingLevelForModel,
+} from "../../runtime-models.mjs";
 import { DIVO_SUBAGENT_ROLES, getDivoSubagentRole } from "./agents.ts";
 import { resolveDivoGatewayConfig } from "../divo-gateway/gateway-client.ts";
 import {
@@ -32,6 +37,11 @@ import {
 
 const DIVO_CHILD_PROVIDER = "deepseek";
 const DIVO_CHILD_MODEL = "deepseek-v4-flash";
+
+interface DivoChildModel {
+	provider: string;
+	model: string;
+}
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -229,16 +239,24 @@ export function buildDivoSubagentEnvironment(
 }
 
 /**
- * Company subagents must not inherit a mutable Pi default provider. Pinning the
- * provider/model keeps every child on the backend-proxied DeepSeek route that
- * divo-llm registers, even when the shared agent directory contains an older
- * or user-selected default provider.
+ * A child inherits the supported model that launched its parent. This keeps a
+ * Luna-only member on the same authorized backend-proxied route; the Flash
+ * fallback applies only when Pi has no recognized active parent model.
  */
+export function resolveDivoChildModel(parent?: { id?: unknown; provider?: unknown }): DivoChildModel {
+	const model = typeof parent?.id === "string" ? parent.id : "";
+	const provider = typeof parent?.provider === "string" ? parent.provider : "";
+	return isRuntimeModel(model) && providerForModel(model) === provider
+		? { model, provider }
+		: { model: DIVO_CHILD_MODEL, provider: DIVO_CHILD_PROVIDER };
+}
+
 export function buildDivoSubagentArgs(
 	role: NonNullable<ReturnType<typeof getDivoSubagentRole>>,
 	promptPath: string,
 	extensionPaths: string[],
 	delegatedTask: string,
+	childModel: DivoChildModel = { model: DIVO_CHILD_MODEL, provider: DIVO_CHILD_PROVIDER },
 ): string[] {
 	const args = [
 		"--mode",
@@ -250,9 +268,11 @@ export function buildDivoSubagentArgs(
 		"--no-prompt-templates",
 		"--no-context-files",
 		"--provider",
-		DIVO_CHILD_PROVIDER,
+		childModel.provider,
 		"--model",
-		DIVO_CHILD_MODEL,
+		childModel.model,
+		"--thinking",
+		thinkingLevelForModel(childModel.model),
 		"--tools",
 		role.tools.join(","),
 		"--append-system-prompt",
@@ -326,6 +346,7 @@ function createUpdateEmitter(
 async function runChild(
 	child: SubagentChild,
 	delegatedTask: string,
+	childModel: DivoChildModel,
 	signal: AbortSignal | undefined,
 	emit: () => void,
 	registerAborter: RegisterAborter
@@ -363,6 +384,7 @@ async function runChild(
 			promptPath,
 			childExtensions.paths,
 			delegatedTask,
+			childModel,
 		);
 
 		const exitCode = await new Promise<number>((resolve) => {
@@ -512,7 +534,7 @@ export default function divoSubagentsExtension(pi: ExtensionAPI) {
 		],
 		parameters: SubagentParams,
 
-		async execute(toolCallId, params, signal, onUpdate) {
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const single = params.agent && params.task ? [{ agent: params.agent, task: params.task }] : undefined;
 			const parallel = params.tasks?.length ? params.tasks : undefined;
 			const chain = params.chain?.length ? params.chain : undefined;
@@ -546,12 +568,13 @@ export default function divoSubagentsExtension(pi: ExtensionAPI) {
 			}
 
 			const children = requested.map((task, index) => createChild(index, task.agent.trim(), task.task.trim()));
+			const childModel = resolveDivoChildModel(ctx.model);
 			const emitter = createUpdateEmitter(onUpdate, toolCallId, mode, children);
 			emitter.emit(true);
 
 			if (mode === "parallel") {
 				await mapWithConcurrency(children, MAX_CONCURRENCY, async (child) => {
-					await runChild(child, child.task, signal, () => emitter.emit(), registerAborter);
+					await runChild(child, child.task, childModel, signal, () => emitter.emit(), registerAborter);
 				});
 				emitter.flush();
 				const details = makeDetails(toolCallId, mode, children);
@@ -566,7 +589,7 @@ export default function divoSubagentsExtension(pi: ExtensionAPI) {
 			for (const child of children) {
 				const delegatedTask =
 					mode === "chain" ? child.task.replaceAll("{previous}", previousOutput) : child.task;
-				await runChild(child, delegatedTask, signal, () => emitter.emit(), registerAborter);
+				await runChild(child, delegatedTask, childModel, signal, () => emitter.emit(), registerAborter);
 				if (isFailed(child)) {
 					emitter.flush();
 					return {

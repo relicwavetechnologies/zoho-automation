@@ -574,9 +574,9 @@ export const createServer = (c: Container) => {
     }),
   );
 
-  // LLM proxy (Guardrails) — desktop → backend → DeepSeek. Mounts whenever the
-  // flag is on; the key is resolved per-request by the store (company → platform →
-  // env). No key configured ⇒ the route returns 503 "not configured", never 404.
+  // LLM proxy (Guardrails) — desktop/Lark → backend → selected provider. Mounts
+  // whenever the flag is on; the provider key is resolved per request. No key
+  // configured ⇒ the route returns 503 "not configured", never 404.
   // PI holds no key — it authenticates with its member token.
   if (c.env.LLM_PROXY_ENABLED) {
     app.use(

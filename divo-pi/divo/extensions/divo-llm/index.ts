@@ -11,11 +11,9 @@
  * launcher (DIVO_BACKEND_URL, DIVO_MEMBER_TOKEN). Missing configuration is
  * fatal: standalone Divo Pi never falls back to a direct provider.
  *
- * OpenAI is declared with an explicit model list rather than inherited, because
- * Pi's own OpenAI catalogue speaks the Responses API and the Divo proxy is
- * OpenAI *chat-completions* shaped — the same shape DeepSeek already uses. One
- * upstream request shape for every model is what keeps the proxy a single
- * forwarder rather than two.
+ * OpenAI is declared with an explicit model list rather than inherited. Luna
+ * uses the Responses API because OpenAI does not support reasoning plus tools
+ * for this model through Chat Completions. DeepSeek remains on Chat Completions.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -41,7 +39,7 @@ const REQUEST_TOO_LARGE_PATTERN =
 export const DIVO_LUNA_MODEL = {
 	id: "gpt-5.6-luna",
 	name: "GPT-5.6 Luna",
-	api: "openai-completions" as const,
+	api: "openai-responses" as const,
 	reasoning: true,
 	input: ["text", "image"] as ("text" | "image")[],
 	cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0 },
@@ -79,7 +77,7 @@ export default function divoLlmExtension(pi: ExtensionAPI) {
 	// proxy-only fields from leaking into direct provider requests.
 	process.env.DIVO_LLM_PROXY_ACTIVE = "1";
 
-	// Our OpenAI-compatible proxy. The SDK appends /chat/completions.
+	// Our OpenAI-compatible proxy. Each provider SDK appends its own endpoint.
 	const baseUrl = `${config.backendUrl}/api/llm/v1`;
 	const proxied = {
 		baseUrl,
@@ -94,7 +92,7 @@ export default function divoLlmExtension(pi: ExtensionAPI) {
 	pi.registerProvider("deepseek", { ...proxied });
 	pi.registerProvider("openai", {
 		...proxied,
-		api: "openai-completions",
+		api: "openai-responses",
 		models: [DIVO_LUNA_MODEL],
 	});
 	// A request rejected by Express never reaches the LLM proxy or emits model

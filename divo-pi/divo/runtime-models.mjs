@@ -31,3 +31,7 @@ export function isRuntimeModel(value) {
 export function providerForModel(value) {
 	return RUNTIME_MODELS[value];
 }
+
+export function thinkingLevelForModel(value, fallback = "medium") {
+	return value === "gpt-5.6-luna" ? "high" : fallback;
+}
