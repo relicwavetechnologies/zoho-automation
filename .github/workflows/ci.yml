@@ -29,6 +29,16 @@ env:
   NODE_VERSION: 22
 
 jobs:
+  main-pr-source:
+    name: main-pr-source
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require dev as the source branch
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: test "${HEAD_REF}" = dev
+
   advance-backend:
     name: advance-backend
     runs-on: ubuntu-latest
@@ -178,6 +188,8 @@ jobs:
           DIVO_DEV_PI_CONTROLLER_IMAGE=divo-pi-controller:ci \
           DIVO_DEV_POSTGRES_PASSWORD=ci-placeholder \
           DIVO_DEV_PUBLIC_URL=https://app-dev.103.172.92.187.sslip.io \
+          LARK_APP_ID_DEV_ENV=ci-placeholder \
+          LARK_APP_SECRET_DEV_ENV=ci-placeholder \
           docker compose -f docker-compose.dev.yml config >/dev/null
 
   publish-development-images:

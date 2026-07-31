@@ -39,6 +39,11 @@ test("two profiles receive distinct Docker resources", () => {
 	assert.equal(anish.volume, "divo-pi-local-anish");
 });
 
+test("deployments can isolate Docker resources with distinct prefixes", () => {
+	assert.equal(resourcesFor("abhishek", "divo-pi-dev").volume, "divo-pi-dev-abhishek");
+	assert.equal(resourcesFor("abhishek", "divo-pi-main").volume, "divo-pi-main-abhishek");
+});
+
 test("cloud runtime names are stable, isolated, and safe for Docker", () => {
 	const first = runtimeIdentityNames("company-1", "user-1", "lark:chat-1");
 	const sameUserOtherThread = runtimeIdentityNames("company-1", "user-1", "lark:chat-2");

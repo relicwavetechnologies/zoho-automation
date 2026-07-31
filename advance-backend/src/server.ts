@@ -169,13 +169,15 @@ export const createServer = (c: Container) => {
         });
       });
   };
-  recoverGoogleExchanges();
-  const googleExchangeRecoveryTimer = setInterval(
-    recoverGoogleExchanges,
-    60_000,
-  );
-  googleExchangeRecoveryTimer.unref?.();
-  c.mailOpsWorker.start();
+  if (c.env.DIVO_AUTONOMOUS_WORKERS_ENABLED) {
+    recoverGoogleExchanges();
+    const googleExchangeRecoveryTimer = setInterval(
+      recoverGoogleExchanges,
+      60_000,
+    );
+    googleExchangeRecoveryTimer.unref?.();
+    c.mailOpsWorker.start();
+  }
 
   const dataExportWorker = new DataExportWorker({
     redisUrl: c.queueRedisUrl,
@@ -210,7 +212,9 @@ export const createServer = (c: Container) => {
   });
   managerTeachWorker.start();
 
-  c.scheduledWorkflowService.start();
+  if (c.env.DIVO_AUTONOMOUS_WORKERS_ENABLED) {
+    c.scheduledWorkflowService.start();
+  }
 
   const runCloudinaryCleanup = () => {
     void c.cloudinaryAdapter.cleanupExpiredExports({
@@ -389,7 +393,9 @@ export const createServer = (c: Container) => {
         }),
         expectedSubscription: gmailPubsubConfig.subscription,
         mailOpsRepo: c.mailOpsRepo,
-        wakeMailOps: () => c.mailOpsWorker.wake(),
+        wakeMailOps: () => {
+          if (c.env.DIVO_AUTONOMOUS_WORKERS_ENABLED) c.mailOpsWorker.wake();
+        },
         logger: c.logger,
       }),
     );

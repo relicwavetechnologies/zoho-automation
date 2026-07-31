@@ -303,6 +303,9 @@ const EnvSchema = z.object({
     .transform(value => value === 0 ? 0 : Math.max(value, 600_000)),
 
   // ── Scheduled workflow executor ──────────────────────────────────────────
+  // Disable only autonomous DB-scanning work while cloning an environment.
+  // Interactive Lark, OAuth, tools, and queue-backed work remain available.
+  DIVO_AUTONOMOUS_WORKERS_ENABLED: booleanStr.default('true'),
   SCHEDULED_WORKFLOW_POLL_INTERVAL_MS: z.coerce.number().int().min(10_000).default(120_000),
 
   // ── Mem0 persistent memory layer ─────────────────────────────────────────

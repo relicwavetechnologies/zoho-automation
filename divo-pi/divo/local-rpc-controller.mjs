@@ -26,7 +26,7 @@ const execFileAsync = promisify(execFile);
 const IMAGE = process.env.DIVO_PI_IMAGE ?? "divo-pi-local:phase0";
 const KEYCHAIN_SERVICE = "dev.divo-pi.local";
 const PROFILE_ROOT = path.join(os.homedir(), ".divo-pi", "profiles");
-const RESOURCE_PREFIX = "divo-pi-local";
+const RESOURCE_PREFIX = process.env.DIVO_PI_RESOURCE_PREFIX ?? "divo-pi-local";
 const RPC_TIMEOUT_MS = 30_000;
 const KEYCHAIN_TIMEOUT_MS = 15_000;
 const MAX_TRANSIENT_MODEL_RETRIES = 3;
@@ -104,13 +104,14 @@ export function validateRuntimeModel(value) {
 	return { model: value, provider: providerForModel(value) };
 }
 
-export function resourcesFor(profileName) {
+export function resourcesFor(profileName, resourcePrefix = RESOURCE_PREFIX) {
 	const profile = validateProfileName(profileName);
+	const prefix = validateProfileName(resourcePrefix);
 	return {
-		authVolume: `${RESOURCE_PREFIX}-${profile}-auth`,
-		container: `${RESOURCE_PREFIX}-${profile}`,
-		network: `${RESOURCE_PREFIX}-${profile}`,
-		volume: `${RESOURCE_PREFIX}-${profile}`,
+		authVolume: `${prefix}-${profile}-auth`,
+		container: `${prefix}-${profile}`,
+		network: `${prefix}-${profile}`,
+		volume: `${prefix}-${profile}`,
 	};
 }
 
