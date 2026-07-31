@@ -5,13 +5,14 @@ import { getAdminQueryScope } from "@/lib/query-client"
 /*
  * Proxy control plane — REAL data from /api/admin/proxy.
  *
- * The DeepSeek key lives encrypted server-side; the desktop never holds it. These
- * hooks drive the Guardrails key card + header status. `companyId` is only needed
+ * Provider keys live encrypted server-side, one per provider, and the desktop
+ * never holds one. These hooks drive the Guardrails key cards + header status. `companyId` is only needed
  * for SUPER_ADMIN callers (use useCompanyScope()).
  */
 
 export type KeyScope = "platform" | "company"
-export type KeySource = "company" | "platform" | "env"
+/* A key an admin saved is the only key — there is no server-env fallback. */
+export type KeySource = "company" | "platform"
 
 /** A provider an admin can hold a key for. One key card per entry. */
 export type KeyProvider = "deepseek" | "openai"

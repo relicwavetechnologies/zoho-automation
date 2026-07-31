@@ -369,8 +369,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     prisma,
     logger,
     encryptionKey: env.PROXY_KEY_ENCRYPTION_KEY ?? env.ZOHO_TOKEN_ENCRYPTION_KEY,
-    // OpenAI has no env fallback on purpose — see the note in env.ts.
-    envFallbackKeys: { deepseek: env.DEEPSEEK_API_KEY },
   });
   const llmProxyService = new LlmProxyService(prisma, logger.child({ service: 'llm-proxy-policy' }));
 

@@ -117,7 +117,7 @@ export function GuardrailsPage() {
         <div>
           <div className="eyebrow">Operations</div>
           <h1 className="display">Guardrails</h1>
-          <p>Every model call routes through the backend proxy — hold the DeepSeek key here, cap spend, rate-limit, and block abuse in real time.</p>
+          <p>Every model call routes through the backend proxy — hold each provider's key here, cap spend, rate-limit, and block abuse in real time.</p>
         </div>
         <div className="role-pill" title={`Proxy ${STATE_META[state].label}`}>
           <span className="dot" style={{ width: 7, height: 7, borderRadius: "50%", background: STATE_META[state].color }} />
@@ -150,8 +150,8 @@ export function GuardrailsPage() {
             </div>
             {status?.keyError === "unreadable" ? (
               <div style={{ fontSize: "12px", marginTop: "6px", color: "var(--cur-error)" }}>Stored key can’t be decrypted (encryption secret changed or corrupt). Paste the key again to fix — requests are failing with 503 until then.</div>
-            ) : status?.source === "env" ? (
-              <div className="muted" style={{ fontSize: "12px", marginTop: "6px" }}>Using the server env key. Save one here to manage rotation from the UI.</div>
+            ) : status && !status.configured ? (
+              <div className="muted" style={{ fontSize: "12px", marginTop: "6px" }}>No {providerMeta.label} key saved. Models served by {providerMeta.label} return 503 until one is added here — there is no server fallback.</div>
             ) : null}
             {status && !status.canEncrypt ? (
               <div style={{ fontSize: "12px", marginTop: "6px", color: "var(--cur-error)" }}>Server encryption key is not configured — set PROXY_KEY_ENCRYPTION_KEY to store keys here.</div>
@@ -162,7 +162,7 @@ export function GuardrailsPage() {
               <button className="btn primary" type="button" onClick={submitKey} disabled={saveKey.isPending || (status ? !status.canEncrypt : false)}>
                 {status?.keyLast4 ? <RotateCw size={15} /> : <KeyRound size={15} />} {saveKey.isPending ? "Saving…" : status?.keyLast4 ? "Rotate" : "Save"}
               </button>
-              {status?.keyLast4 && status.source !== "env" ? (
+              {status?.keyLast4 ? (
                 <button className="btn" type="button" onClick={clearKey} disabled={removeKey.isPending} title="Remove key">
                   <Trash2 size={15} />
                 </button>

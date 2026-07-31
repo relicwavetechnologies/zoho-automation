@@ -66,23 +66,23 @@ describe('model catalogue', () => {
   });
 });
 
-// A company that has not saved an OpenAI key in Guardrails must be told so, not
-// quietly billed against the platform key that memory and transcription share.
-// The 503 branch only exists if resolve() can actually return null.
+// A company that has saved no key must be told so, not quietly billed against
+// whatever the process happened to be started with. Both the 503 and the panel's
+// "not configured" only exist if resolve() and status() can report nothing.
 describe('provider keys', () => {
-  const store = (envFallbackKeys: Record<string, string>) =>
+  const emptyStore = () =>
     new ProxyKeyStore({
       prisma: { proxyProviderKey: { findMany: async () => [] } } as never,
       logger: { info() {}, warn() {}, error() {}, debug() {}, child() { return this } } as never,
       encryptionKey: 'a'.repeat(64),
-      envFallbackKeys,
     });
 
-  it('has no OpenAI key until an admin saves one', async () => {
-    const configured = store({ deepseek: 'sk-deepseek' });
+  it('has no key for either provider until an admin saves one', async () => {
+    const store = emptyStore();
 
-    assert.equal(await configured.resolve('openai', 'company-1'), null);
-    assert.equal((await configured.status('openai', 'company-1')).configured, false);
-    assert.notEqual(await configured.resolve('deepseek', 'company-1'), null);
+    for (const provider of ['openai', 'deepseek'] as const) {
+      assert.equal(await store.resolve(provider, 'company-1'), null, `resolve ${provider}`);
+      assert.equal((await store.status(provider, 'company-1')).configured, false, `status ${provider}`);
+    }
   });
 });

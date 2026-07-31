@@ -8,8 +8,12 @@
  * Resolution precedence for a request from company X:
  *   1. company-scoped active key for X
  *   2. platform-wide active key
- *   3. the provider's env key (legacy seed / fallback)
- *   4. none → caller returns 503 "not configured" (proxy stays mounted)
+ *   3. none → caller returns 503 "not configured" (proxy stays mounted)
+ *
+ * A key an admin saved is the only key. There used to be an env fallback under
+ * those two, which meant a company that had configured nothing still billed
+ * against whatever the process happened to be started with, and "no key" was a
+ * state the proxy could not report. Both providers now say so plainly instead.
  *
  * Every path is scoped by provider. The row is already keyed on
  * (provider, scopeKey), so a company can hold a DeepSeek key and an OpenAI key
@@ -27,7 +31,7 @@ import type { ModelProvider } from '../observability/pricing';
 import { encryptToken, decryptToken, TokenCryptoError } from '../../infrastructure/shared/token.crypto';
 
 export type KeyScope = 'platform' | 'company';
-export type KeySource = 'company' | 'platform' | 'env';
+export type KeySource = 'company' | 'platform';
 
 /** The providers an admin can hold a key for. */
 export const KEY_PROVIDERS = ['deepseek', 'openai'] as const satisfies readonly ModelProvider[];
@@ -61,29 +65,17 @@ export interface ProxyKeyStoreDeps {
   prisma: PrismaClient;
   logger: Logger;
   encryptionKey?: string | undefined;   // PROXY_KEY_ENCRYPTION_KEY ?? ZOHO_TOKEN_ENCRYPTION_KEY
-  /** Per-provider env key, used when no row is stored (legacy seed / fallback). */
-  envFallbackKeys?: Partial<Record<ModelProvider, string | undefined>>;
 }
 
 export class ProxyKeyStore {
   private readonly prisma: PrismaClient;
   private readonly log: Logger;
   private readonly encryptionKey?: string | undefined;
-  private readonly envFallbackKeys: Partial<Record<ModelProvider, string>>;
 
   constructor(deps: ProxyKeyStoreDeps) {
     this.prisma = deps.prisma;
     this.log = deps.logger.child({ service: 'proxy-key-store' });
     this.encryptionKey = deps.encryptionKey?.trim() || undefined;
-    this.envFallbackKeys = {};
-    for (const [provider, key] of Object.entries(deps.envFallbackKeys ?? {})) {
-      const trimmed = key?.trim();
-      if (trimmed) this.envFallbackKeys[provider as ModelProvider] = trimmed;
-    }
-  }
-
-  private envKeyFor(provider: ModelProvider): string | undefined {
-    return this.envFallbackKeys[provider];
   }
 
   /** Whether an admin can persist keys (encryption secret present). */
@@ -110,9 +102,9 @@ export class ProxyKeyStore {
       if (chosen) {
         // Fail CLOSED on decrypt failure. If the chosen key can't be decrypted
         // (secret rotated without re-encrypt, or ciphertext corrupt) we must NOT
-        // fall through to a lower-precedence key or the env key — that would
-        // silently swap which credential runs, moving billing/enforcement. Surface
-        // it as 503 instead so the operator fixes the secret.
+        // fall through to a lower-precedence key — that would silently swap which
+        // credential runs, moving billing/enforcement. Surface it as 503 instead
+        // so the operator fixes the secret.
         try {
           const key = decryptToken(chosen.encryptedKey, this.encryptionKey);
           return { key, source: chosen.scope === 'platform' ? 'platform' : 'company' };
@@ -122,8 +114,6 @@ export class ProxyKeyStore {
         }
       }
     }
-    const envKey = this.envKeyFor(provider);
-    if (envKey) return { key: envKey, source: 'env' };
     return null;
   }
 
@@ -161,10 +151,6 @@ export class ProxyKeyStore {
         keyError,
         lastUsedAt: shown.lastUsedAt?.toISOString() ?? null,
       };
-    }
-    const envKey = this.envKeyFor(provider);
-    if (envKey) {
-      return { ...empty, configured: true, source: 'env', keyLast4: last4(envKey), keyMasked: maskFromLast4(last4(envKey)) };
     }
     return empty;
   }
@@ -206,7 +192,6 @@ export class ProxyKeyStore {
 
   /** Best-effort last-used stamp (never throws into the request path). */
   async touch(provider: ModelProvider, source: KeySource, companyId: string): Promise<void> {
-    if (source === 'env') return;
     const scopeKey = source === 'platform' ? PLATFORM_SCOPE_KEY : companyId;
     try {
       await this.prisma.proxyProviderKey.updateMany({ where: { provider, scopeKey }, data: { lastUsedAt: new Date() } });
