@@ -476,14 +476,6 @@ export const MY_USAGE = {
   ],
 }
 
-export const TEAM_USAGE = {
-  spend30d: 102.21,
-  runs30d: 1171,
-  activePeople: 5,
-  totalPeople: 6,
-  topSpender: 'Rohan Iyer',
-}
-
 /* ── Activity ────────────────────────────────────────── */
 
 
@@ -517,18 +509,12 @@ export const DATA_SOURCES: Record<string, { state: DataState; note: string }> = 
   teamPeople: { state: 'live', note: 'GET /api/desktop/departments/:id/manage — real today' },
   skills: { state: 'live', note: 'gateway op skills.list — real today' },
   profile: { state: 'live', note: 'GET /api/desktop/auth/me + /model-options — real today' },
-  myUsage: { state: 'needs-endpoint', note: 'Only totals exist (/auth/usage, unused). Per-day and cost need a member-scoped route.' },
-  myRuns: { state: 'needs-endpoint', note: 'Runs are admin-only today. Data exists and is indexed by userId; the route does not.' },
-  teamUsage: { state: 'needs-backend', note: 'No spend or execution route accepts a departmentId. Team aggregation is net-new.' },
+  myUsage: { state: 'live', note: 'GET /api/desktop/me/usage — real today' },
+  myRuns: { state: 'live', note: 'GET /api/desktop/me/runs — real today' },
+  teamUsage: { state: 'live', note: 'GET /api/desktop/departments/:id/usage — real today' },
   memory: { state: 'needs-endpoint', note: 'Memory is admin-only. A member cannot list or delete their own memories today.' },
   accessRequest: { state: 'needs-backend', note: 'No access-request model exists. RuntimeApproval is per-tool-call, not a standing grant.' },
-  /**
-   * Removing a per-user override is impossible today. DepartmentUserToolOverride has
-   * only findMany + upsert in the entire codebase — no delete. So `allowed: false`
-   * (an explicit deny that still outranks the role) is the closest the backend can
-   * get, and it is NOT the same as falling back to the role. Needs a DELETE route.
-   */
-  overrideRemoval: { state: 'needs-backend', note: 'The override table has no delete — an exception can be flipped, never lifted.' },
+  overrideRemoval: { state: 'live', note: 'DELETE /tools/:toolId/departments/:id/members/:userId/actions/:action — real today' },
   /**
    * The Pi artifact extension exists but is switched off, and runtime.test.mjs
    * asserts it stays off. Its mime map is markdown-only, the file never leaves

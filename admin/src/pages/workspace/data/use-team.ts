@@ -128,69 +128,134 @@ export function useDepartment(departmentId?: string) {
   return { snapshot, loading, error, refresh: load, setMemberRole, removeMember }
 }
 
+export type CoverageTool = {
+  tool: { toolId: string; name: string; description: string | null; category: string; domain: string }
+  supportedActions: string[]
+  actionLabels: Record<string, string>
+  actionsGranted: string[]
+  approvalActions: string[]
+  peopleWithAccess: number
+  blockedActions: string[]
+  exceptionCount: number
+}
+
+export type Coverage = {
+  department: { id: string; name: string }
+  totalPeople: number
+  tools: CoverageTool[]
+}
+
 /**
- * One tool's permissions in one department, with provenance and ceiling.
+ * Every configurable tool in one department, each with its full permission
+ * snapshot.
  *
- * `scope` is the manager's department. The same route serves the company view
- * with `scope=global`, which is why the audience is a parameter rather than two
- * separate hooks — one editor, two audiences.
+ * The backend is tool-first — one snapshot per tool — while a manager thinks
+ * person-first. Rather than ask the backend to grow a second shape, the whole
+ * set is fetched once and pivoted here: a person's row is their entries across
+ * every tool's `memberActionStates`, a role's row is the same across
+ * `roleActionStates`. It is one burst of small parallel reads on entering the
+ * scope, and every later view is instant and consistent.
  */
-export function useToolScope(toolId?: string, departmentId?: string) {
+export function useDepartmentMatrix(departmentId?: string) {
   const { token } = useAdminAuth()
-  const [snapshot, setSnapshot] = useState<ToolScopeSnapshot | null>(null)
+  const [coverage, setCoverage] = useState<Coverage | null>(null)
+  const [tools, setTools] = useState<ToolScopeSnapshot[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
-    if (!token || !toolId || !departmentId) { setLoading(false); return }
-    setLoading(true)
+    if (!token || !departmentId) { setLoading(false); return }
     try {
+      const cover = await api.get<Coverage>(
+        `${base}/tools/coverage/${departmentId}`, token, { quiet: true, raw: true },
+      )
       const query = `scope=department&departmentId=${encodeURIComponent(departmentId)}`
-      setSnapshot(await api.get<ToolScopeSnapshot>(
-        `${base}/tools/${toolId}/manage?${query}`, token, { quiet: true, raw: true },
+      const snapshots = await Promise.all(cover.tools.map((entry) =>
+        api.get<ToolScopeSnapshot>(
+          `${base}/tools/${entry.tool.toolId}/manage?${query}`, token, { quiet: true, raw: true },
+        ).catch(() => null),
       ))
-    } catch {
-      setSnapshot(null)
+      setCoverage(cover)
+      // A tool that refuses is dropped rather than rendered as a blank row —
+      // an empty grid reads as "nothing is allowed", which is a lie.
+      setTools(snapshots.filter((s): s is ToolScopeSnapshot => s !== null))
+      setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load this team’s permissions.')
+      setCoverage(null)
+      setTools([])
     } finally {
       setLoading(false)
     }
-  }, [token, toolId, departmentId])
+  }, [token, departmentId])
 
   useEffect(() => { void load() }, [load])
 
-  /** Grant or withhold an action for a whole role. */
-  const setRoleAction = useCallback(async (roleId: string, actionGroup: string, allowed: boolean) => {
-    if (!token || !toolId || !departmentId) return
+  /** Re-reads one tool after a write, leaving the other snapshots alone. */
+  const reloadTool = useCallback(async (toolId: string) => {
+    if (!token || !departmentId) return
+    const query = `scope=department&departmentId=${encodeURIComponent(departmentId)}`
+    const fresh = await api.get<ToolScopeSnapshot>(
+      `${base}/tools/${toolId}/manage?${query}`, token, { quiet: true, raw: true },
+    )
+    setTools((prev) => prev.map((s) => (s.tool.toolId === toolId ? fresh : s)))
+  }, [token, departmentId])
+
+  const setRoleAction = useCallback(async (toolId: string, roleId: string, actionGroup: string, allowed: boolean) => {
+    if (!token || !departmentId) return
     await api.put(
       `${base}/tools/${toolId}/departments/${departmentId}/roles/${roleId}/actions/${actionGroup}`,
       { allowed }, token, { raw: true },
     )
-    await load()
-  }, [token, toolId, departmentId, load])
+    await reloadTool(toolId)
+  }, [token, departmentId, reloadTool])
 
-  /**
-   * An exception for one person.
-   *
-   * Note there is no way to lift one back to the role: the override table has
-   * only findMany and upsert in the entire backend, so `allowed: false` is an
-   * explicit deny that still outranks the role rather than a return to
-   * inheriting. The UI must not offer "reset to role" until a DELETE exists.
-   */
-  const setMemberAction = useCallback(async (userId: string, actionGroup: string, allowed: boolean) => {
-    if (!token || !toolId || !departmentId) return
+  const setMemberAction = useCallback(async (toolId: string, userId: string, actionGroup: string, allowed: boolean) => {
+    if (!token || !departmentId) return
     await api.put(
       `${base}/tools/${toolId}/departments/${departmentId}/members/${userId}/actions/${actionGroup}`,
       { allowed }, token, { raw: true },
     )
-    await load()
-  }, [token, toolId, departmentId, load])
+    await reloadTool(toolId)
+  }, [token, departmentId, reloadTool])
 
-  return { snapshot, loading, refresh: load, setRoleAction, setMemberAction }
+  const clearMemberAction = useCallback(async (toolId: string, userId: string, actionGroup: string) => {
+    if (!token || !departmentId) return
+    await api.delete(
+      `${base}/tools/${toolId}/departments/${departmentId}/members/${userId}/actions/${actionGroup}`,
+      {}, token, { raw: true },
+    )
+    await reloadTool(toolId)
+  }, [token, departmentId, reloadTool])
+
+  return { coverage, tools, loading, error, refresh: load, setRoleAction, setMemberAction, clearMemberAction }
 }
 
-/** Every tool's configured reach in one department, in one round trip. */
-export function useDepartmentCoverage(departmentId?: string) {
+export type TeamMemberUsage = {
+  userId: string
+  name: string | null
+  email: string
+  roleSlug: string
+  roleName: string
+  spendUsd: number
+  runs: number
+}
+
+export type TeamUsage = {
+  days: number
+  spendUsd: number
+  runs: number
+  totalPeople: number
+  activePeople: number
+  people: TeamMemberUsage[]
+}
+
+const EMPTY_USAGE: TeamUsage = { days: 30, spendUsd: 0, runs: 0, totalPeople: 0, activePeople: 0, people: [] }
+
+/** What this department cost, per person, heaviest first. */
+export function useTeamUsage(departmentId?: string, days = 30) {
   const { token } = useAdminAuth()
-  const [coverage, setCoverage] = useState<unknown>(null)
+  const [usage, setUsage] = useState<TeamUsage>(EMPTY_USAGE)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -198,10 +263,45 @@ export function useDepartmentCoverage(departmentId?: string) {
     let live = true
     void (async () => {
       try {
-        const data = await api.get(`${base}/tools/coverage/${departmentId}`, token, { quiet: true, raw: true })
-        if (live) setCoverage(data)
+        const data = await api.get<TeamUsage>(
+          `${base}/departments/${departmentId}/usage?days=${days}`, token, { quiet: true },
+        )
+        if (live) setUsage(data)
       } catch {
-        if (live) setCoverage(null)
+        if (live) setUsage({ ...EMPTY_USAGE, days })
+      } finally {
+        if (live) setLoading(false)
+      }
+    })()
+    return () => { live = false }
+  }, [token, departmentId, days])
+
+  return { usage, loading }
+}
+
+export type ApprovalPolicy = {
+  enabled: boolean
+  requiredActions: { toolId: string; actions: string[] }[]
+}
+
+/** What Divo must ask this manager about before doing it. */
+export function useApprovalPolicy(departmentId?: string) {
+  const { token } = useAdminAuth()
+  const [policy, setPolicy] = useState<ApprovalPolicy | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!token || !departmentId) { setLoading(false); return }
+    let live = true
+    void (async () => {
+      try {
+        const data = await api.get<ApprovalPolicy>(
+          `${base}/departments/${departmentId}/manager-approval`, token, { quiet: true, raw: true },
+        )
+        if (live) setPolicy(data)
+      } catch {
+        if (live) setPolicy(null)
       } finally {
         if (live) setLoading(false)
       }
@@ -209,7 +309,25 @@ export function useDepartmentCoverage(departmentId?: string) {
     return () => { live = false }
   }, [token, departmentId])
 
-  return { coverage, loading }
+  /**
+   * The route replaces the whole policy, so the caller sends the complete next
+   * state rather than a delta — and the local copy is only adopted once the
+   * backend has echoed its own normalised version back.
+   */
+  const save = useCallback(async (next: ApprovalPolicy) => {
+    if (!token || !departmentId) return
+    setSaving(true)
+    try {
+      const saved = await api.put<ApprovalPolicy>(
+        `${base}/departments/${departmentId}/manager-approval`, next, token, { raw: true },
+      )
+      setPolicy(saved)
+    } finally {
+      setSaving(false)
+    }
+  }, [token, departmentId])
+
+  return { policy, loading, saving, save }
 }
 
 /**
