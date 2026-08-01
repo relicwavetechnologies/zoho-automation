@@ -546,10 +546,27 @@ export const MY_RUNS: Run[] = [
 /* ── Data honesty ────────────────────────────────────
    Which panels run on something real. Rendered in the UI as a small marker so
    this mock cannot imply more is built than actually is. */
-export type DataState = 'live' | 'needs-endpoint' | 'needs-backend'
+/**
+ * `live`          — this panel is reading a real endpoint right now.
+ * `not-wired`     — a real endpoint exists, but this panel still renders
+ *                   fixtures. Distinct from the two below on purpose: those
+ *                   describe what the backend lacks, this describes what the
+ *                   FRONTEND has not done yet, and it is the one that can
+ *                   quietly mislead someone signed into the real app.
+ * `needs-endpoint`— the data exists, no route serves it to this audience.
+ * `needs-backend` — the data does not exist at all.
+ */
+export type DataState = 'live' | 'not-wired' | 'needs-endpoint' | 'needs-backend'
 
 export const DATA_SOURCES: Record<string, { state: DataState; note: string }> = {
   connections: { state: 'live', note: 'GET /api/desktop/auth/{provider}/status — real today' },
+  /**
+   * Mounted at the real /connections path while still on fixtures — the only
+   * screen in the signed-in app where that is true. The endpoints behind it
+   * exist; nothing calls them yet.
+   */
+  companyConnections: { state: 'not-wired', note: 'The provider endpoints exist. This screen still renders fixtures — wire it before anyone trusts these rows.' },
+  connectionCoverage: { state: 'needs-backend', note: 'No route reports per-provider coverage or expiry across a company. Token expiry is stored but never evaluated.' },
   connectionManage: { state: 'live', note: 'GET /{provider}/connections/:id/manage — real today' },
   approvals: { state: 'live', note: 'GET /api/desktop/approvals — real today' },
   permissions: { state: 'live', note: 'GET /api/desktop/auth/tools/:toolId/manage — real today' },

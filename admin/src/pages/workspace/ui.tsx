@@ -107,9 +107,13 @@ export function Panel({
 export function DataNote({ source }: { source: keyof typeof DATA_SOURCES }) {
   const d = DATA_SOURCES[source]
   if (d.state === 'live') return null
+  const label =
+    d.state === 'not-wired' ? 'Sample data'
+      : d.state === 'needs-endpoint' ? 'Needs an endpoint'
+        : 'Needs backend'
   return (
-    <span className="ws-note" data-kind="new" title={d.note}>
-      {d.state === 'needs-endpoint' ? 'Needs an endpoint' : 'Needs backend'}
+    <span className="ws-note" data-kind={d.state === 'not-wired' ? 'sample' : 'new'} title={d.note}>
+      {label}
     </span>
   )
 }

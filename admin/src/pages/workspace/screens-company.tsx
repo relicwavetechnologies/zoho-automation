@@ -480,7 +480,7 @@ export function CompanyConnections({ replay, toast }: Props) {
         description="What the company connected once for everyone, and how much of the company is actually connected. Personal connections stay private to whoever made them — you can see that one exists, never its contents."
       />
       <div className="ws-stack">
-        <Panel title="Connected for the company" source="connections">
+        <Panel title="Connected for the company" source="companyConnections">
           {!r1 ? <SkelRows n={3} /> : (
             <Fade>
               <div className="ws-rows">
@@ -516,7 +516,7 @@ export function CompanyConnections({ replay, toast }: Props) {
         <Panel
           title="Coverage"
           description={`How much of the company can actually use each connector${expiring ? ` · ${expiring} tokens expire within a week` : ''}`}
-          source="reconnect"
+          source="connectionCoverage"
         >
           {!r2 ? <SkelRows n={4} /> : (
             <Fade>

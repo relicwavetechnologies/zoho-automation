@@ -277,6 +277,13 @@
   border: 1px dashed var(--cur-hairline-strong); color: var(--cur-muted); background: var(--cur-canvas-soft);
 }
 .cur .ws-note[data-kind="new"] { color: var(--ws-warning); border-color: color-mix(in srgb, var(--ws-warning) 40%, transparent); }
+/* Fixtures rendered at a real path. Solid, not dashed — this one is a claim
+   about the numbers on screen, not a note about the roadmap. */
+.cur .ws-note[data-kind="sample"] {
+  border-style: solid; color: var(--cur-primary);
+  border-color: color-mix(in srgb, var(--cur-primary) 38%, transparent);
+  background: color-mix(in srgb, var(--cur-primary) 8%, transparent);
+}
 
 /* ── Skeletons ────────────────────────────────────────
    Shape-matched, so nothing reflows when the real content lands. Pulse is
