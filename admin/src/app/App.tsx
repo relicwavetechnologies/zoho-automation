@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom"
 import { Toaster } from "@/components/ui/sonner"
-import { AdminShell } from "@/components/admin/admin-shell"
+import { WorkspaceShell } from "@/components/admin/workspace-shell"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { AiOpsPage } from "@/pages/AiOpsPage"
 import { CompanyAdminSignupPage } from "@/pages/CompanyAdminSignupPage"
@@ -21,6 +21,16 @@ import { MemoriesPage } from "@/pages/MemoriesPage"
 import { SkillsLabPage } from "@/pages/SkillsLabPage"
 import { SettingsPage } from "@/pages/SettingsPage"
 import { MockDashboardPage } from "@/pages/MockDashboardPage"
+import { routed } from "@/pages/workspace/routes"
+import {
+  YouAccess, YouApprovals, YouConnections, YouHome, YouMemory, YouSettings, YouSkills, YouUsage,
+} from "@/pages/workspace/screens-you"
+import {
+  TeamApprovalPolicy, TeamHome, TeamPeople, TeamRoles, TeamUsage,
+} from "@/pages/workspace/screens-team"
+import { CompanyConnections } from "@/pages/workspace/screens-company"
+import { ConnectFlow } from "@/pages/workspace/screens-connect"
+import { Artifacts } from "@/pages/workspace/screens-artifacts"
 
 type ProtectedProps = {
   children: JSX.Element
@@ -51,18 +61,37 @@ const DefaultProtectedRoute = () => {
 }
 
 /**
- * Padding/rhythm wrapper for the not-yet-redesigned shadcn pages. The Cursor
- * shell's scroll area has no padding (designed pages self-pad via `.page`), so
- * these legacy pages get their old `space-y-5 p-6` container here until they're
- * ported to the mock design too.
+ * Padding/rhythm wrapper for the not-yet-redesigned shadcn pages. The Workspace
+ * shell's scroll area has no padding — designed pages self-pad via `.page` —
+ * so the three remaining legacy pages keep their old `space-y-5 p-6` container
+ * here until they are ported.
  */
 const Legacy = ({ children }: { children: JSX.Element }) => <div className="space-y-5 p-6">{children}</div>
+
+/* Workspace screens, adapted to routes. Still on fixtures; each marks itself. */
+const MeHome = routed(YouHome)
+const MeApprovals = routed(YouApprovals)
+const MeArtifacts = routed(Artifacts)
+const MeConnections = routed(YouConnections)
+const MeConnectFlow = routed(ConnectFlow)
+const MeAccess = routed(YouAccess)
+const MeSkills = routed(YouSkills)
+const MeMemory = routed(YouMemory)
+const MeUsage = routed(YouUsage)
+const MeSettings = routed(YouSettings)
+const TeamOverview = routed(TeamHome)
+const TeamPeopleRoute = routed(TeamPeople)
+const TeamRolesRoute = routed(TeamRoles)
+const TeamApprovalsRoute = routed(TeamApprovalPolicy)
+const TeamUsageRoute = routed(TeamUsage)
+const CompanyConnectionsRoute = routed(CompanyConnections)
 
 export function App() {
   return (
     <>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        {/* Standalone spec preview — all three personas on one page, no session. */}
         <Route path="/mock-dashboard" element={<MockDashboardPage />} />
         <Route path="/desktop-login" element={<MemberLoginPage />} />
         <Route path="/member-login" element={<MemberLoginPage />} />
@@ -76,35 +105,57 @@ export function App() {
           path="/"
           element={
             <Protected>
-              <AdminShell />
+              <WorkspaceShell />
             </Protected>
           }
         >
           <Route index element={<DefaultProtectedRoute />} />
+
+          {/* ── You ─────────────────────────────────────────
+              Fixtures. Every panel marks its own data state. */}
+          <Route path="me" element={<MeHome />} />
+          <Route path="me/approvals" element={<MeApprovals />} />
+          <Route path="me/artifacts" element={<MeArtifacts />} />
+          <Route path="me/connections" element={<MeConnections />} />
+          <Route path="me/connections/lark-flow" element={<MeConnectFlow />} />
+          <Route path="me/access" element={<MeAccess />} />
+          <Route path="me/skills" element={<MeSkills />} />
+          <Route path="me/memory" element={<MeMemory />} />
+          <Route path="me/usage" element={<MeUsage />} />
+          <Route path="me/settings" element={<MeSettings />} />
+
+          {/* ── Your team ───────────────────────────────────
+              Fixtures. The manager endpoints are real (see
+              /api/desktop/departments/*) — wiring is the next step. */}
+          <Route path="team" element={<TeamOverview />} />
+          <Route path="team/people" element={<TeamPeopleRoute />} />
+          <Route path="team/roles" element={<TeamRolesRoute />} />
+          <Route path="team/approvals" element={<TeamApprovalsRoute />} />
+          <Route path="team/usage" element={<TeamUsageRoute />} />
+
+          {/* ── Company ─────────────────────────────────────
+              Live pages, absorbed into the Workspace shell. */}
           <Route path="home" element={<OverviewPage />} />
-          <Route path="overview" element={<Navigate to="/home" replace />} />
-          <Route path="workspaces" element={<Legacy><SettingsPage /></Legacy>} />
           <Route path="people" element={<MembersPage />} />
           <Route path="people/:userId" element={<MemberDetailPage />} />
           <Route path="people/:userId/connections/:connectionId" element={<ConnectionGovernancePage />} />
-          <Route path="members" element={<Navigate to="/people" replace />} />
           <Route path="departments" element={<Legacy><DepartmentsPage /></Legacy>} />
           <Route path="ai-ops" element={<AiOpsPage />} />
           <Route path="ai-ops/runs/:runId" element={<RunDetailPage />} />
           <Route path="skills" element={<SkillsLabPage />} />
-          <Route path="guardrails" element={<GuardrailsPage />} />
-          <Route path="web-search" element={<WebSearchPage />} />
           <Route path="memories" element={<Legacy><MemoriesPage /></Legacy>} />
-          <Route path="settings" element={<Legacy><SettingsPage /></Legacy>} />
-          <Route path="rbac" element={<Navigate to="/settings" replace />} />
-          <Route path="executions" element={<Navigate to="/ai-ops?tab=executions" replace />} />
-          <Route path="token-usage" element={<Navigate to="/ai-ops" replace />} />
-          <Route path="integrations" element={<Navigate to="/settings" replace />} />
-          <Route path="audit" element={<Navigate to="/settings" replace />} />
-          <Route path="controls" element={<CompanyControlsPage />} />
-          <Route path="vector-requests" element={<Navigate to="/settings" replace />} />
-          <Route path="ai-models" element={<Navigate to="/ai-ops?tab=models" replace />} />
+          <Route path="guardrails" element={<GuardrailsPage />} />
+          {/* Company ceiling — capability governance today; the full tool ceiling
+              matrix from the Workspace spec supersedes this. */}
+          <Route path="policy" element={<CompanyControlsPage />} />
+          {/* Connections — fixture overview; web search is the one real company
+              connection surface that exists today. */}
+          <Route path="connections" element={<CompanyConnectionsRoute />} />
+          <Route path="connections/web-search" element={<WebSearchPage />} />
+          {/* Renamed: this page is an audit-log viewer, not settings. */}
+          <Route path="activity" element={<Legacy><SettingsPage /></Legacy>} />
         </Route>
+
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <Toaster richColors position="top-right" />

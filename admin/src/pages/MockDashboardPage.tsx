@@ -38,6 +38,9 @@ import {
 } from './workspace/screens-company'
 import { ConnectFlow } from './workspace/screens-connect'
 import { Artifacts } from './workspace/screens-artifacts'
+import {
+  CompanyDepartmentDetail, CompanyPersonDetail, CompanyRunDetail, CompanySkillDetail,
+} from './workspace/screens-company-detail'
 import '@/styles/cursor.css'
 import '@/styles/workspace.css'
 
@@ -123,6 +126,7 @@ const TITLES: Record<string, string> = {
   'co-home': 'Overview', 'co-people': 'Everyone', 'co-departments': 'Departments',
   'co-policy': 'Company ceiling', 'co-connections': 'Connections', 'co-audit': 'Activity',
   'co-aiops': 'AI Ops', 'co-skills': 'Skills', 'co-memory': 'Memory', 'co-guardrails': 'Guardrails',
+  'co-run': 'Run', 'co-person': 'Person', 'co-department': 'Department', 'co-skill': 'Skill',
 }
 
 const FIRST_SCREEN: Record<Scope['kind'], string> = { you: 'home', team: 'team-home', company: 'co-home' }
@@ -444,6 +448,10 @@ function Screen(props: { screen: string; persona: Persona; replay: number; toast
     case 'co-skills': return <CompanySkills {...rest} />
     case 'co-memory': return <CompanyMemory {...rest} />
     case 'co-guardrails': return <CompanyGuardrails {...rest} />
+    case 'co-run': return <CompanyRunDetail {...rest} />
+    case 'co-person': return <CompanyPersonDetail {...rest} />
+    case 'co-department': return <CompanyDepartmentDetail {...rest} />
+    case 'co-skill': return <CompanySkillDetail {...rest} />
     default: return <YouHome {...rest} />
   }
 }

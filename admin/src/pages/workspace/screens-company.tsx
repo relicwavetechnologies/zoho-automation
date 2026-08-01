@@ -221,7 +221,7 @@ export function CompanyPolicy({ replay, toast }: Props) {
 }
 
 /* ══ Directory ═════════════════════════════════════════ */
-export function CompanyPeople({ replay, toast }: Props) {
+export function CompanyPeople({ replay, toast, go }: Props) {
   const [r1] = useStaged([300], replay)
   const [query, setQuery] = useState('')
   const list = PEOPLE.filter((p) => p.name.toLowerCase().includes(query.toLowerCase()))
@@ -251,7 +251,7 @@ export function CompanyPeople({ replay, toast }: Props) {
           <Fade>
             <div className="ws-rows">
               {list.map((p) => (
-                <div className="ws-row click" key={p.id} onClick={() => toast(`${p.name} — full profile`)}>
+                <div className="ws-row click" key={p.id} onClick={() => go('co-person')}>
                   <span className="avatar">{p.initials}</span>
                   <div className="ws-row-main">
                     <b>{p.name}{p.deptRole === 'MANAGER' ? <span className="ws-tag">Manager</span> : null}</b>
@@ -272,7 +272,7 @@ export function CompanyPeople({ replay, toast }: Props) {
 }
 
 /* ══ Departments ═══════════════════════════════════════ */
-export function CompanyDepartments({ replay, toast }: Props) {
+export function CompanyDepartments({ replay, toast, go }: Props) {
   const [r1] = useStaged([280], replay)
   return (
     <>
@@ -287,7 +287,7 @@ export function CompanyDepartments({ replay, toast }: Props) {
           <Fade>
             <div className="ws-rows">
               {DEPARTMENTS.map((d) => (
-                <div className="ws-row click" key={d.id} onClick={() => toast(`Open ${d.name}`)}>
+                <div className="ws-row click" key={d.id} onClick={() => go('co-department')}>
                   <span className="ws-ic" data-tone={d.manager ? undefined : 'warn'}><Building2 size={14} /></span>
                   <div className="ws-row-main">
                     <b>{d.name}{!d.manager ? <span className="ws-prov" data-src="department_user_override">No manager</span> : null}</b>
@@ -430,7 +430,7 @@ const MODEL_SPEND = [
 ]
 
 /* ══ AI Ops ════════════════════════════════════════════ */
-export function CompanyAiOps({ replay, toast }: Props) {
+export function CompanyAiOps({ replay, toast, go }: Props) {
   const [r1, r2] = useStaged([280, 560], replay)
   const [tab, setTab] = useState<'runs' | 'cost'>('runs')
   const total = MODEL_SPEND.reduce((n, m) => n + m.cost, 0)
@@ -452,7 +452,7 @@ export function CompanyAiOps({ replay, toast }: Props) {
             <Fade>
               <div className="ws-rows">
                 {RUNS.map((r) => (
-                  <div className="ws-row click" key={r.id} onClick={() => toast(`Open run ${r.id}`)}>
+                  <div className="ws-row click" key={r.id} onClick={() => go('co-run')}>
                     <div className="ws-row-main">
                       <b>
                         {r.summary}
@@ -593,7 +593,7 @@ export function CompanyGuardrails({ replay, toast }: Props) {
 }
 
 /* ══ Skills ════════════════════════════════════════════ */
-export function CompanySkills({ replay, toast }: Props) {
+export function CompanySkills({ replay, toast, go }: Props) {
   const [r1] = useStaged([300], replay)
   return (
     <>
@@ -608,7 +608,7 @@ export function CompanySkills({ replay, toast }: Props) {
           <Fade>
             <div className="ws-rows">
               {SKILLS.map((s) => (
-                <div className="ws-row click" key={s.id} onClick={() => toast(`Open ${s.name}`)}>
+                <div className="ws-row click" key={s.id} onClick={() => go('co-skill')}>
                   <span className="ws-ic"><Sparkles size={14} /></span>
                   <div className="ws-row-main">
                     <b>{s.name}<span className="ws-tag">{s.scope}</span></b>
