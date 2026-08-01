@@ -9,18 +9,31 @@
  * That inverts the old allow-list. The container has PDF, Office, image, text
  * and archive tooling, so refusing anything not on a list of extensions would
  * refuse files it can open perfectly well. What it genuinely has no skill for
- * is a short, stable set — audio, video, and opaque binaries — so that is what
- * is named here. Everything else is staged and left to the agent.
+ * is a short, stable set — video and opaque binaries — so that is what is named
+ * here. Recognised audio files are intercepted by the voice transcription path
+ * before this classifier. Everything else is staged and left to the agent.
  */
 
 import type { GroupChatAttachmentContext } from '../../../domain/conversation/group-context';
 
 export type LarkMediaSupport = 'supported' | 'unsupported_document';
 
+const AUDIO_MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  flac: 'audio/flac',
+  ogg: 'audio/ogg',
+  opus: 'audio/opus',
+  wma: 'audio/x-ms-wma',
+  amr: 'audio/amr',
+};
+
 /**
- * Formats no container skill can open. Audio and video would need
- * transcription Divo does not have; the rest are opaque binaries whose bytes
- * carry nothing a reader could recover.
+ * Formats no container skill can open. Recognised audio is removed from this
+ * path for transcription; these entries keep the fallback closed if that
+ * routing is ever bypassed. Video and opaque binaries remain unreadable.
  */
 const UNREADABLE_EXTENSIONS = new Set([
   'mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'opus', 'wma', 'amr',
@@ -32,6 +45,9 @@ const UNREADABLE_MIME_PREFIXES = ['audio/', 'video/'];
 
 const extensionOf = (fileName: string | undefined): string =>
   (fileName ?? '').toLowerCase().split('.').at(-1) ?? '';
+
+export const larkAudioMimeType = (fileName: string | undefined): string | null =>
+  AUDIO_MIME_BY_EXTENSION[extensionOf(fileName)] ?? null;
 
 /**
  * The extension is consulted as well as the MIME type because Lark reports
@@ -81,7 +97,7 @@ export const MAX_INLINE_IMAGE_BYTES = 4 * 1_024 * 1_024;
 export const unsupportedDocumentNotice = (fileName: string): string =>
   `[File: "${fileName}" — NOT SAVED. Divo has no skill that can open this file format.\n`
   + 'Tell the user in your own words that you cannot work with this particular format. '
-  + 'Audio and video cannot be transcribed, and program binaries cannot be inspected. '
+  + 'This audio or video format cannot be transcribed, and program binaries cannot be inspected. '
   + 'Documents, spreadsheets, images, text, and archives all work. '
   + 'Do not guess or infer anything about this file\'s contents from its name. '
   + 'Do not claim to have read it, and do not promise to read it later in this conversation.]';

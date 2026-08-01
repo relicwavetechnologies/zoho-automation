@@ -16,6 +16,7 @@ import {
   unsupportedDocumentNotice,
   quotedDocumentNotice,
   isSupportedLarkMedia,
+  larkAudioMimeType,
   MAX_INLINE_IMAGE_BYTES,
 } from './lark-media-support';
 import type { ChannelIdentityRepoPort } from '../../persistence/channel-identity.repository';
@@ -25,7 +26,10 @@ import { extractInteractiveCardText } from './lark-message-content';
 export type ParentMessageResult = ReferencedMessage & {
   readonly audioAttachment?: {
     readonly fileKey: string;
+    readonly fileName: string;
+    readonly mimeType: string;
     readonly durationMs: number | null;
+    readonly source: 'voice-note' | 'file';
   };
 };
 
@@ -100,18 +104,25 @@ export async function fetchParentMessage(input: {
         if (url) imageUrls.push(url);
       }
     } else if (msgType === 'file') {
-      // The quoted message is a document. Divo read it when it arrived and the
-      // transcript for this room carries what it found on the message being
-      // quoted — so the useful move is to point at that rather than to
-      // re-download the file here.
-      //
-      // Formats with no extractor are still refused outright: for those there
-      // is no annotation to find, and a bare filename is exactly what a model
-      // will speculate from.
       const fileName = (content['file_name'] as string) ?? 'attachment';
-      text = isSupportedLarkMedia({ type: 'file', fileName })
-        ? quotedDocumentNotice(fileName)
-        : unsupportedDocumentNotice(fileName);
+      const fileKey = content['file_key'];
+      const audioMimeType = larkAudioMimeType(fileName);
+      if (audioMimeType && typeof fileKey === 'string' && fileKey) {
+        audioAttachment = {
+          fileKey,
+          fileName,
+          mimeType: audioMimeType,
+          durationMs: null,
+          source: 'file',
+        };
+      } else {
+        // Divo read a quoted document when it arrived, so point at that
+        // workspace copy rather than downloading it again. Formats with no
+        // reader are refused outright instead of inviting filename guesses.
+        text = isSupportedLarkMedia({ type: 'file', fileName })
+          ? quotedDocumentNotice(fileName)
+          : unsupportedDocumentNotice(fileName);
+      }
     } else if (msgType === 'media') {
       text = '[Media/Video]';
     } else if (msgType === 'audio') {
@@ -122,7 +133,10 @@ export async function fetchParentMessage(input: {
       }
       audioAttachment = {
         fileKey,
+        fileName: 'voice-note.ogg',
+        mimeType: 'audio/ogg',
         durationMs: Number.isFinite(duration) && duration > 0 ? duration : null,
+        source: 'voice-note',
       };
     } else if (msgType === 'interactive') {
       text = extractInteractiveCardText(content);

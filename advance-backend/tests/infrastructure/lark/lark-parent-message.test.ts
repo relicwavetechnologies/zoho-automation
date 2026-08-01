@@ -210,6 +210,30 @@ describe('Lark parent message references', () => {
     assert.match(buildParentContextPrefix(result), /unsupported message type \(system\)/);
   });
 
+  it('exposes a quoted audio file for transcription', async () => {
+    const result = await fetchWith({
+      code: 0,
+      data: {
+        items: [{
+          chat_id: 'oc_expected',
+          msg_type: 'file',
+          sender: { id: 'ou_alice' },
+          body: { content: JSON.stringify({ file_key: 'file_audio', file_name: 'update.m4a' }) },
+        }],
+      },
+    });
+
+    assert.equal(result.status, 'available');
+    assert.equal(result.text, '');
+    assert.deepEqual(result.audioAttachment, {
+      fileKey: 'file_audio',
+      fileName: 'update.m4a',
+      mimeType: 'audio/mp4',
+      durationMs: null,
+      source: 'file',
+    });
+  });
+
   it('reads visible text from a quoted Card 1.0 without exposing action state', async () => {
     const result = await fetchWith({
       code: 0,
