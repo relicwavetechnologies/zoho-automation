@@ -16,9 +16,6 @@ import {
   Search, ShieldCheck, Sparkles, Trash2, TriangleAlert, Users,
 } from 'lucide-react'
 import {
-  CONNECTORS, MEMORIES, SKILLS, toolById,
-} from './fixtures'
-import {
   Bar, DataNote, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, Seg, Skel, SkelRows,
   Switch, compact, money, useStaged,
 } from './ui'
@@ -1287,7 +1284,9 @@ export function CompanyGuardrails({ replay, toast }: Props) {
           blocked: !nowBlocked,
           monthlyBudgetUsd: existing?.monthlyBudgetUsd ?? null,
           rateLimitRpm: existing?.rateLimitRpm ?? null,
-          allowedModels: existing?.allowedModels ?? [],
+          // Omitted when they have no stored policy: an empty list is a
+          // validation failure, not "leave it alone".
+          ...(existing?.allowedModels?.length ? { allowedModels: existing.allowedModels } : {}),
         },
       })
       toast(nowBlocked ? `${name} unblocked` : `${name} blocked`)

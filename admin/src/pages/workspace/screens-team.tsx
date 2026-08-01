@@ -913,6 +913,9 @@ export function TeamApprovalPolicy({ replay, toast }: Props) {
 
   /** The route replaces the policy wholesale, so send the complete next state. */
   const commit = async (next: Set<string>, enabled: boolean) => {
+    // Every write replaces the whole policy, so committing before the current
+    // one is known would overwrite it with whatever the empty default is.
+    if (!policy) { toast('The approval policy has not loaded yet'); return }
     const byTool = new Map<string, string[]>()
     for (const key of next) {
       const [toolId, action] = key.split(':') as [string, string]
@@ -949,11 +952,18 @@ export function TeamApprovalPolicy({ replay, toast }: Props) {
                 When off, Divo acts immediately for everyone in {dept.name}, within whatever their role allows.
               </p>
             </div>
-            <Switch
-              on={policy?.enabled ?? false}
-              onToggle={() => void commit(gated, !(policy?.enabled ?? false))}
-              label="Approvals"
-            />
+            {/* Held back until the policy has actually loaded. `gated` is derived
+                from it, so toggling against a null policy would send an empty
+                requiredActions and silently delete every gate in the team. */}
+            {loading ? <Skel w={38} h={22} /> : policy === null ? (
+              <span className="ws-sub">Could not read the policy</span>
+            ) : (
+              <Switch
+                on={policy.enabled}
+                onToggle={() => void commit(gated, !policy.enabled)}
+                label="Approvals"
+              />
+            )}
           </div>
         </Panel>
 

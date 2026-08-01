@@ -28,7 +28,9 @@ export function useToolInventory() {
   const { token } = useAdminAuth()
   const [tools, setTools] = useState<InventoryEntry[]>([])
   const [loading, setLoading] = useState(true)
-  const [refused, setRefused] = useState(false)
+  // Distinct from an empty list: "the fetch failed" and "you may govern nothing"
+  // look identical downstream otherwise, and one of those is retryable.
+  const [failed, setFailed] = useState(false)
 
   useEffect(() => {
     if (!token) return
@@ -38,11 +40,11 @@ export function useToolInventory() {
         const data = await api.get<{ tools: InventoryEntry[] }>(
           '/api/desktop/auth/tools', token, { quiet: true, raw: true },
         )
-        if (live) { setTools(data.tools); setRefused(false) }
+        if (live) { setTools(data.tools); setFailed(false) }
       } catch {
-        // The route answers every signed-in member, so a failure here is not a
-        // permission problem — the empty list is the honest fallback.
-        if (live) { setTools([]); setRefused(false) }
+        // The route answers every signed-in member, so a failure here is never a
+        // permission problem — it is something to retry.
+        if (live) { setTools([]); setFailed(true) }
       } finally {
         if (live) setLoading(false)
       }
@@ -50,5 +52,5 @@ export function useToolInventory() {
     return () => { live = false }
   }, [token])
 
-  return { tools, loading, refused }
+  return { tools, loading, failed }
 }

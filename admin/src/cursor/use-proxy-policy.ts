@@ -44,7 +44,15 @@ export interface ProxyPolicyInput {
   blocked: boolean
   monthlyBudgetUsd: number | null
   rateLimitRpm: number | null
-  allowedModels: string[]
+  /**
+   * Optional, and it must stay optional.
+   *
+   * The route rejects an empty array — "at least one model must be allowed" —
+   * and most members have no stored policy at all, so there is no list to
+   * echo back. Omitting the field leaves the backend on its default; sending
+   * `[]` fails the write with a message about a field nobody touched.
+   */
+  allowedModels?: string[]
 }
 
 const scoped = (path: string, companyId?: string): string =>

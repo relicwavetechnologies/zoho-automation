@@ -295,7 +295,7 @@ export type CeilingTool = {
  */
 export function useCompanyCeiling() {
   const { token } = useAdminAuth()
-  const { tools: inventory, loading: inventoryLoading } = useToolInventory()
+  const { tools: inventory, loading: inventoryLoading, failed: inventoryFailed } = useToolInventory()
   const [tools, setTools] = useState<CeilingTool[]>([])
   const [loading, setLoading] = useState(true)
   const [refused, setRefused] = useState(false)
@@ -307,7 +307,9 @@ export function useCompanyCeiling() {
       // Only tools this admin may actually govern globally — listing one that
       // cannot be edited is a row whose switches silently do nothing.
       const governable = inventory.filter((t) => t.managementScopes.some((s) => s.kind === 'global'))
-      if (governable.length === 0) { setTools([]); setRefused(true); setLoading(false); return }
+      // Nothing governable is a refusal only if the inventory was actually read.
+      // A failed fetch is empty for a reason the reader can retry.
+      if (governable.length === 0) { setTools([]); setRefused(!inventoryFailed); setLoading(false); return }
       const snapshots = await Promise.all(governable.map((t) =>
         api.get<CeilingTool>(
           `/api/desktop/auth/tools/${t.tool.toolId}/manage?scope=global`, token, { quiet: true, raw: true },
@@ -323,7 +325,7 @@ export function useCompanyCeiling() {
     } finally {
       setLoading(false)
     }
-  }, [token, inventory, inventoryLoading])
+  }, [token, inventory, inventoryLoading, inventoryFailed])
 
   useEffect(() => { void load() }, [load])
 

@@ -42,7 +42,6 @@ export function YouHome({ persona, replay, toast, go }: ScreenProps) {
   // First name only. A dashboard greeting reading "Welcome back, Ananya Mehta"
   // is a form letter; the surname adds nothing the person does not know.
   const viewer = (session?.name ?? session?.email ?? 'there').split(/[\s@]/)[0]
-  const brokenSkill = SKILLS.find((s) => s.blockedBy)
   const runChange = changePct(usage.runs, usage.previousRuns)
   const connected = CONNECTABLE
     .map((provider) => ({ provider, status: byProvider.get(provider) }))
@@ -59,16 +58,9 @@ export function YouHome({ persona, replay, toast, go }: ScreenProps) {
         onClick: () => go('approvals'),
       }
     }),
-    ...(brokenSkill
-      ? [{
-          tone: 'warn' as const,
-          title: `"${brokenSkill.name}" cannot run for you`,
-          body: `It needs ${toolById(brokenSkill.blockedBy!)?.name}, which your role does not grant. Divo hides skills you cannot complete rather than failing halfway.`,
-          meta: ['Shared by ' + brokenSkill.owner],
-          cta: 'See why',
-          onClick: () => go('access'),
-        }]
-      : []),
+    // A "this skill cannot run for you" card belongs here, but it was built from
+    // fixtures — it asserted a fact about the reader's own permissions that
+    // nothing had read. A wrong claim about your own access is worse than none.
     ...requestedByMe
       .filter((a) => expiryLabel(a.expiresAt)?.expired && a.status === 'pending')
       .map((a) => ({

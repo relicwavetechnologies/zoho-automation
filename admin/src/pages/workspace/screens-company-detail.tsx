@@ -334,7 +334,7 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
           blocked: current?.blocked ?? false,
           monthlyBudgetUsd: current?.monthlyBudgetUsd ?? null,
           rateLimitRpm: current?.rateLimitRpm ?? null,
-          allowedModels: current?.allowedModels ?? [],
+          ...(current?.allowedModels?.length ? { allowedModels: current.allowedModels } : {}),
           ...patch,
         },
       })
@@ -346,9 +346,11 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
 
   const toggleModel = (id: string) => {
     const next = allowed.includes(id) ? allowed.filter((m) => m !== id) : [...allowed, id]
-    // An empty list means "every model", so emptying the last one would widen
-    // access rather than remove it. Refuse instead of doing the opposite.
-    if (allowed.length > 0 && next.length === 0) {
+    // Emptying the list does not mean "every model" — the backend falls back to
+    // its default (Flash only) and the write rejects an empty array outright.
+    // Refuse here so the reason is legible rather than a 400 about a field the
+    // person did not touch.
+    if (next.length === 0) {
       toast('At least one model must stay allowed')
       return
     }
@@ -570,7 +572,7 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
               </div>
             )}
             <div className="ws-panel-foot">
-              An empty list means every model is allowed — which is why the last one cannot be switched off
+              At least one model must stay on — with none stored, Divo falls back to Flash only
             </div>
           </Panel>
 
