@@ -56,7 +56,7 @@ services:
       CLAMAV_HOST: divo-clamav
       CLAMAV_PORT: 3310
     depends_on:
-      divo-migrate:
+      divo-schema-sync:
         condition: service_completed_successfully
       divo-postgres:
         condition: service_healthy
@@ -88,13 +88,13 @@ services:
       start_period: 45s
       retries: 5
 
-  # One release gate owns schema migration. App replicas never race ad-hoc
-  # db-push operations, and they cannot start against an unversioned schema.
-  divo-migrate:
+  # One release gate synchronizes Prisma's declared schema before app replicas
+  # start. This deployment lineage is managed with Prisma db push.
+  divo-schema-sync:
     image: ${DIVO_BACKEND_IMAGE:?DIVO_BACKEND_IMAGE is required}
     env_file:
       - ${DIVO_ENV_FILE:-/dev/null}
-    command: ["pnpm", "prisma:migrate:deploy"]
+    command: ["pnpm", "prisma", "db", "push", "--skip-generate"]
     depends_on:
       divo-postgres:
         condition: service_healthy
