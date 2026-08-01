@@ -6,11 +6,13 @@
  * records enough to reconstruct a run turn by turn; nothing else in the product
  * shows it.
  *
- * Trace styling deliberately reuses the `.turn` / `.step` / `.raw` / `.gate`
- * primitives already in cursor.css, which the existing RunDetailPage uses — so
- * porting that page to this layout is a re-skin, not a rewrite.
+ * Trace styling reuses the `.turn` / `.step` / `.raw` / `.gate` primitives
+ * already in cursor.css, and the run trace reuses `reconstructRun` — turning a
+ * flat event stream back into turns is the hard part, and it was already
+ * right.
  */
 import { useState } from 'react'
+import { useParams } from 'react-router-dom'
 import {
   ArrowLeft, Ban, Brain, Building2, Check, ChevronDown, CircleAlert, Clock, Coins,
   KeyRound, Link2, Lock, Search, ShieldCheck, Sparkles, TriangleAlert, Users, Wrench,
@@ -22,6 +24,22 @@ import {
   Bar, DataNote, Empty, Fade, Matrix, PageHeader, Panel, Seg, Skel, SkelRows, Spark,
   Switch, compact, money, useStaged,
 } from './ui'
+import { useAdminAuth } from '@/auth/AdminAuthProvider'
+import { useRunDetail, type RunTurnView } from '@/cursor/use-run-detail'
+import { useCompanyScope, useMemberSpend } from '@/cursor/use-spend'
+import { useProxyPolicy, useSaveProxyPolicy, type ProxyPolicyInput } from '@/cursor/use-proxy-policy'
+import { useProxyAudit, useProxyModels } from '@/cursor/use-proxy'
+import { ROLE_LABEL, ago, displayName, initialsOf, useDirectory, useRuns } from './data/use-company'
+
+/** Mirrors the run badge on the AI Ops list, so a status reads the same everywhere. */
+const RunStatusBadge = ({ status }: { status: string }) => (
+  <span className={status === 'failed' ? 'badge b-err' : status === 'running' ? 'badge b-run' : 'badge b-ok'}>
+    <span className="dot" />{status === 'failed' ? 'Failed' : status === 'running' ? 'Running' : 'Done'}
+  </span>
+)
+
+/** How a channel is named in prose, as opposed to in a filter chip. */
+const CHANNEL_WORD: Record<string, string> = { lark: 'in a Lark chat', desktop: 'on the desktop', api: 'over the API' }
 
 type Props = { replay: number; toast: (m: string) => void; go: (s: string) => void }
 
@@ -29,61 +47,63 @@ type Props = { replay: number; toast: (m: string) => void; go: (s: string) => vo
    Run detail — the trace
    ══════════════════════════════════════════════════════ */
 
-type Step = {
-  tool: string
-  stage: 'thinking' | 'grep' | 'read' | 'edit' | 'done'
-  subtitle: string
-  ms: number
-  ok: boolean
-  raw?: { input: string; output: string }
-}
-
-type Turn = {
-  n: number
-  model: string
-  input: number
-  output: number
-  cacheRead: number
-  costUsd: number
-  steps: Step[]
-}
-
-const TURNS: Turn[] = [
-  {
-    n: 1, model: 'deepseek-v4-pro', input: 18_400, output: 1_210, cacheRead: 14_900, costUsd: 0.0642,
-    steps: [
-      { tool: 'zohoBooks', stage: 'read', subtitle: 'list_invoices · status=unpaid', ms: 1840, ok: true,
-        raw: { input: '{ "op": "list_invoices", "status": "unpaid", "limit": 200 }', output: '{ "count": 47, "totalOutstanding": 2148000, "currency": "INR" }' } },
-      { tool: 'zohoBooks', stage: 'read', subtitle: 'get_contacts · 47 suppliers', ms: 920, ok: true },
-    ],
-  },
-  {
-    n: 2, model: 'deepseek-v4-pro', input: 24_100, output: 3_480, cacheRead: 21_600, costUsd: 0.1287,
-    steps: [
-      { tool: 'googleSheets', stage: 'read', subtitle: 'read_range · Aged debt!A1:H200', ms: 1210, ok: true },
-      { tool: 'memoryRecall', stage: 'thinking', subtitle: 'recall · supplier preferences', ms: 180, ok: true,
-        raw: { input: '{ "query": "supplier contact preferences" }', output: '{ "hits": 2, "items": ["Vendor reminders should cc finance@acme.co", "Never contact Sharma Textiles directly"] }' } },
-      { tool: 'googleGmail', stage: 'edit', subtitle: 'create_draft · 14 drafts', ms: 4310, ok: true },
-    ],
-  },
-  {
-    n: 3, model: 'deepseek-v4-flash', input: 6_200, output: 640, cacheRead: 5_800, costUsd: 0.0021,
-    steps: [
-      { tool: 'googleGmail', stage: 'done', subtitle: 'send · blocked, waiting on approval', ms: 40, ok: false },
-    ],
-  },
-]
-
-export function CompanyRunDetail({ replay, toast, go }: Props) {
+/**
+ * Reconstructing turns from a flat event stream is the hard part of this
+ * screen, and `reconstructRun` already did it correctly for the old page. That
+ * logic is kept verbatim; only the presentation changes — which is exactly what
+ * this file's header predicted a port would be.
+ *
+ * What did change is honesty about the gate: raw tool input and output are
+ * redacted by the backend unless the session carries `canViewRawExecutionData`,
+ * so the toggle says which of those two things is happening rather than
+ * pretending the button failed.
+ */
+export function CompanyRunDetail({ replay, go }: Props) {
+  const { runId } = useParams()
+  const { token, session } = useAdminAuth()
   const [r1, r2] = useStaged([240, 520], replay)
   const [open, setOpen] = useState<string | null>(null)
   const [showRaw, setShowRaw] = useState(true)
+  const { data: run, isLoading, isError } = useRunDetail(runId, token)
 
-  const totalCost = TURNS.reduce((n, t) => n + t.costUsd, 0)
-  const totalIn = TURNS.reduce((n, t) => n + t.input, 0)
-  const totalOut = TURNS.reduce((n, t) => n + t.output, 0)
-  const totalCache = TURNS.reduce((n, t) => n + t.cacheRead, 0)
-  const steps = TURNS.reduce((n, t) => n + t.steps.length, 0)
+  // Only a company or super admin is served raw I/O; anyone else gets the
+  // summary and a locked panel, matching what the backend will actually return.
+  const maySeeRaw = session?.role === 'COMPANY_ADMIN' || session?.role === 'SUPER_ADMIN'
+
+  if (isLoading) {
+    return (
+      <>
+        <div className="crumbs">
+          <button type="button" className="btn" style={{ height: 30, padding: '0 11px' }} onClick={() => go('co-aiops')}>
+            <ArrowLeft size={13} />AI Ops
+          </button>
+        </div>
+        <Skel w="100%" h={26} />
+        <div style={{ marginTop: 20 }}><SkelRows n={5} icon={false} /></div>
+      </>
+    )
+  }
+
+  if (isError || !run) {
+    return (
+      <>
+        <div className="crumbs">
+          <button type="button" className="btn" style={{ height: 30, padding: '0 11px' }} onClick={() => go('co-aiops')}>
+            <ArrowLeft size={13} />AI Ops
+          </button>
+        </div>
+        <Empty
+          icon={CircleAlert}
+          title="This run cannot be shown"
+          body="Either it does not belong to your company, or its trace has been pruned — step detail is kept for a week."
+        />
+      </>
+    )
+  }
+
+  const steps = run.turns.reduce((n, t) => n + t.tools.length, 0)
+  const turnCost = (turn: RunTurnView) => turn.model?.costUsd ?? 0
+  const totalCost = run.totals.costUsd
 
   return (
     <>
@@ -95,8 +115,8 @@ export function CompanyRunDetail({ replay, toast, go }: Props) {
 
       <PageHeader
         eyebrow="Run"
-        title="Drafted 14 supplier reminders"
-        description="Asked by Ananya Mehta in a Lark chat · 2 hours ago"
+        title={run.latestSummary ?? 'No summary recorded'}
+        description={`Asked by ${run.userName ?? 'someone unattributed'} · ${CHANNEL_WORD[run.channel] ?? run.channel} · ${run.entrypoint}`}
         actions={
           <button type="button" className="btn" onClick={() => setShowRaw((v) => !v)}>
             {showRaw ? <Lock size={14} /> : <Search size={14} />}
@@ -108,12 +128,12 @@ export function CompanyRunDetail({ replay, toast, go }: Props) {
       {!r1 ? <Skel w="100%" h={26} /> : (
         <Fade>
           <div className="runmeta">
-            <span>Status <b>Completed</b></span>
-            <span>Duration <b>3m 41s</b></span>
-            <span>Turns <b>{TURNS.length}</b></span>
+            <span>Status <b>{run.statusLabel}</b></span>
+            <span>Duration <b>{run.durationLabel}</b></span>
+            <span>Turns <b>{run.totals.turns}</b></span>
             <span>Steps <b>{steps}</b></span>
-            <span>Tokens <b>{compact(totalIn + totalOut)}</b></span>
-            <span>Cache <b>{Math.round((totalCache / totalIn) * 100)}%</b></span>
+            <span>Tokens <b>{compact(run.totals.tokens)}</b></span>
+            <span>Cache <b>{run.cacheOfInputPct}%</b></span>
             <span>Cost <b style={{ color: 'var(--cur-primary)' }}>{money(totalCost)}</b></span>
           </div>
         </Fade>
@@ -122,28 +142,37 @@ export function CompanyRunDetail({ replay, toast, go }: Props) {
       <div className="ws-stack">
         <Panel title="Where the money went" description="Cost per turn, in order">
           <div className="ws-panel-body">
-            {!r1 ? <Skel w="100%" h={40} /> : (
+            {!r1 ? <Skel w="100%" h={40} /> : totalCost === 0 ? (
+              <p className="ws-sub" style={{ lineHeight: 1.5 }}>
+                No token usage was attributed to this run. That is not the same as it being free — it means the
+                model calls were recorded without a run id, which is normal on the Lark channel.
+              </p>
+            ) : (
               <Fade>
                 <div className="costbar">
-                  {TURNS.map((t, i) => (
+                  {run.turns.map((turn, i) => (
                     <span
-                      key={t.n}
-                      title={`Turn ${t.n} — ${money(t.costUsd)}`}
+                      key={i}
+                      title={`Turn ${i + 1} — ${money(turnCost(turn))}`}
                       style={{
-                        width: `${(t.costUsd / totalCost) * 100}%`,
-                        background: i === 0 ? 'var(--cur-primary)' : i === 1 ? 'color-mix(in srgb, var(--cur-primary) 55%, transparent)' : 'var(--cur-surface-strong)',
+                        width: `${(turnCost(turn) / totalCost) * 100}%`,
+                        background: i === 0
+                          ? 'var(--cur-primary)'
+                          : i % 2 === 1
+                            ? 'color-mix(in srgb, var(--cur-primary) 55%, transparent)'
+                            : 'var(--cur-surface-strong)',
                       }}
                     />
                   ))}
                 </div>
                 <div className="ws-legend" style={{ marginTop: 12 }}>
-                  {TURNS.map((t) => (
-                    <span key={t.n}>Turn {t.n} · {t.model.replace('deepseek-v4-', '')} · {money(t.costUsd)}</span>
+                  {run.turns.map((turn, i) => (
+                    <span key={i}>Turn {i + 1}{turn.model ? ` · ${turn.model.modelName}` : ''} · {money(turnCost(turn))}</span>
                   ))}
                 </div>
                 <p className="ws-sub" style={{ marginTop: 14, lineHeight: 1.5 }}>
-                  Turn 2 cost twice turn 1 because it read a 200-row sheet into context. {Math.round((totalCache / totalIn) * 100)}% of
-                  input was served from cache, which is roughly 50× cheaper than a fresh read.
+                  {run.cacheOfInputPct}% of input was served from cache, which is roughly 50× cheaper than a
+                  fresh read. The turns that read most into context are the ones that cost.
                 </p>
               </Fade>
             )}
@@ -152,69 +181,71 @@ export function CompanyRunDetail({ replay, toast, go }: Props) {
 
         <Panel title="What Divo actually did">
           <div className="ws-panel-body">
-            {!r2 ? <SkelRows n={5} icon={false} /> : (
+            {!r2 ? <SkelRows n={5} icon={false} /> : run.turns.length === 0 ? (
+              <Empty title="No trace for this run" body="Step detail is kept for 7 days; cost and token history is kept indefinitely." />
+            ) : (
               <Fade>
-                {TURNS.map((turn) => (
-                  <div className="turn" key={turn.n}>
+                {run.turns.map((turn, ti) => (
+                  <div className="turn" key={ti}>
                     <div className="turn-h">
-                      Turn {turn.n}
+                      Turn {ti + 1}
                       <span className="ln" />
-                      <span>{turn.model}</span>
-                      <span>{compact(turn.input)} in · {compact(turn.output)} out</span>
-                      <span style={{ color: 'var(--cur-primary)' }}>{money(turn.costUsd)}</span>
+                      {turn.model ? (
+                        <>
+                          <span>{turn.model.modelName}</span>
+                          <span>{compact(turn.model.input)} in · {compact(turn.model.output)} out</span>
+                          <span style={{ color: 'var(--cur-primary)' }}>{money(turn.model.costUsd)}</span>
+                        </>
+                      ) : (
+                        <span className="ws-sub">no model call recorded</span>
+                      )}
                     </div>
 
-                    {turn.steps.map((step, i) => {
-                      const id = `${turn.n}-${i}`
+                    {turn.tools.map((step, i) => {
+                      const id = `${ti}-${i}`
                       const isOpen = open === id
-                      const tool = toolById(step.tool)
                       return (
                         <div className="step" key={id}>
                           <span className={`tl tl-${step.stage}`} style={{ height: 20, alignSelf: 'flex-start' }}>
-                            {step.stage}
+                            {step.label}
                           </span>
                           <div className="main">
                             <div className="title">
-                              <span className="name">{tool?.name ?? step.tool}</span>
-                              <span className="muted" style={{ fontSize: 12.5 }}>{step.subtitle}</span>
-                              {!step.ok ? <span className="badge b-err"><span className="dot" />Blocked</span> : null}
+                              <span className="name">{step.n}</span>
+                              {step._subtitle ? <span className="muted" style={{ fontSize: 12.5 }}>{step._subtitle}</span> : null}
+                              {step._error ? <span className="badge b-err"><span className="dot" />Failed</span> : null}
                             </div>
                             <div className="meta">
-                              <span>Took <b>{step.ms < 1000 ? `${step.ms}ms` : `${(step.ms / 1000).toFixed(1)}s`}</b></span>
-                              {step.raw ? (
-                                <button
-                                  type="button"
-                                  className={`expand${isOpen ? ' open' : ''}`}
-                                  style={{ border: 0, background: 'none', padding: 0 }}
-                                  onClick={() => setOpen(isOpen ? null : id)}
-                                >
-                                  {isOpen ? 'Hide' : 'Show'} raw <ChevronDown size={12} />
-                                </button>
-                              ) : null}
+                              <button
+                                type="button"
+                                className={`expand${isOpen ? ' open' : ''}`}
+                                style={{ border: 0, background: 'none', padding: 0 }}
+                                onClick={() => setOpen(isOpen ? null : id)}
+                              >
+                                {isOpen ? 'Hide' : 'Show'} raw <ChevronDown size={12} />
+                              </button>
                             </div>
 
-                            {isOpen && step.raw ? (
-                              showRaw ? (
-                                <div className="raw">
-                                  <div className="lbl">Input</div>
-                                  <pre>{step.raw.input}</pre>
-                                  <div className="lbl">Output</div>
-                                  <pre>{step.raw.output}</pre>
-                                </div>
-                              ) : (
+                            {isOpen ? (
+                              !maySeeRaw ? (
                                 <div className="gate">
                                   <Lock size={13} />
-                                  Raw input and output are hidden. The backend redacts these unless your session
-                                  carries <b>canViewRawExecutionData</b>.
+                                  Raw input and output are held back by the backend unless your session carries{' '}
+                                  <b>canViewRawExecutionData</b>. The summary above is what every admin sees.
+                                </div>
+                              ) : !showRaw ? (
+                                <div className="gate">
+                                  <Lock size={13} />
+                                  Hidden by you — use <b>Show raw</b> above. Nothing is being withheld by the backend.
+                                </div>
+                              ) : (
+                                <div className="raw">
+                                  <div className="lbl">Input</div>
+                                  <pre>{JSON.stringify(step.i, null, 2)}</pre>
+                                  <div className="lbl">Output</div>
+                                  <pre>{JSON.stringify(step.o, null, 2)}</pre>
                                 </div>
                               )
-                            ) : null}
-
-                            {!step.ok ? (
-                              <div className="gate">
-                                <ShieldCheck size={13} />
-                                Divo stopped here and asked Arjun Shah to approve sending. It did not send anything.
-                              </div>
                             ) : null}
                           </div>
                         </div>
@@ -222,6 +253,11 @@ export function CompanyRunDetail({ replay, toast, go }: Props) {
                     })}
                   </div>
                 ))}
+                {run.ended ? (
+                  <div className="step" style={{ justifyContent: 'center', gap: 9 }}>
+                    <span className="tl tl-done">Done</span><b>run_end · {run.statusLabel}</b>
+                  </div>
+                ) : null}
               </Fade>
             )}
           </div>
@@ -239,16 +275,85 @@ export function CompanyRunDetail({ replay, toast, go }: Props) {
    Person detail
    ══════════════════════════════════════════════════════ */
 
-const DENIALS = [
-  { when: '2 days ago', model: 'deepseek-v4-pro', reason: 'Monthly budget reached', status: 402 },
-  { when: '2 days ago', model: 'deepseek-v4-pro', reason: 'Monthly budget reached', status: 402 },
-]
-
-export function CompanyPersonDetail({ personId = 'u_ananya', replay, toast, go }: Props & { personId?: string }) {
+/**
+ * One person, from a company admin's side of the fence.
+ *
+ * Deliberately not a permission editor. A company admin editing one person's
+ * grants directly is how drift starts — the department is where access is
+ * decided, so this states what they hold and sends you there. The tabs it does
+ * own are the two an admin actually needs from here: what this is costing, and
+ * what the proxy will let them do.
+ */
+export function CompanyPersonDetail({ replay, toast, go }: Props) {
+  const { userId } = useParams()
+  const { token } = useAdminAuth()
+  const companyId = useCompanyScope()
   const [r1, r2] = useStaged([260, 560], replay)
-  const person = PEOPLE.find((p) => p.id === personId) ?? PEOPLE[0]
   const [tab, setTab] = useState<'activity' | 'access' | 'limits'>('activity')
-  const budget = 40
+
+  const spend = useMemberSpend(token, userId, 30, companyId)
+  const directory = useDirectory()
+  const runs = useRuns({ userId, limit: 10 })
+  const policy = useProxyPolicy(token, userId, companyId)
+  const savePolicy = useSaveProxyPolicy(token, companyId)
+  const models = useProxyModels(token)
+  const denials = useProxyAudit(token, companyId, { userId, decision: 'denied', limit: 5 })
+
+  const person = directory.data.find((p) => p.userId === userId)
+  const detail = spend.data
+  const name = person ? displayName(person.name, person.email) : detail?.name ?? '—'
+  const email = person?.email ?? detail?.email ?? ''
+
+  if (!spend.isLoading && !directory.loading && !person && !detail) {
+    return (
+      <>
+        <div className="crumbs">
+          <button type="button" className="btn" style={{ height: 30, padding: '0 11px' }} onClick={() => go('co-people')}>
+            <ArrowLeft size={13} />Everyone
+          </button>
+        </div>
+        <Empty icon={Users} title="Nobody here" body="This person is not an active member of your company." />
+      </>
+    )
+  }
+
+  const current = policy.data
+  const budget = current?.monthlyBudgetUsd ?? null
+  const spent = detail?.spend30d ?? 0
+  const allowed = current?.allowedModels ?? []
+
+  /**
+   * The route replaces the whole policy, so every write sends the complete
+   * next state — patching one field would silently clear the others.
+   */
+  const write = async (patch: Partial<ProxyPolicyInput>, message: string) => {
+    try {
+      await savePolicy.mutateAsync({
+        userId: userId!,
+        input: {
+          blocked: current?.blocked ?? false,
+          monthlyBudgetUsd: current?.monthlyBudgetUsd ?? null,
+          rateLimitRpm: current?.rateLimitRpm ?? null,
+          allowedModels: current?.allowedModels ?? [],
+          ...patch,
+        },
+      })
+      toast(message)
+    } catch {
+      toast('Could not save that limit')
+    }
+  }
+
+  const toggleModel = (id: string) => {
+    const next = allowed.includes(id) ? allowed.filter((m) => m !== id) : [...allowed, id]
+    // An empty list means "every model", so emptying the last one would widen
+    // access rather than remove it. Refuse instead of doing the opposite.
+    if (allowed.length > 0 && next.length === 0) {
+      toast('At least one model must stay allowed')
+      return
+    }
+    void write({ allowedModels: next }, 'Model access updated')
+  }
 
   return (
     <>
@@ -258,23 +363,19 @@ export function CompanyPersonDetail({ personId = 'u_ananya', replay, toast, go }
         </button>
       </div>
 
-      {!r1 ? <Skel w={300} h={56} /> : (
+      {!r1 || spend.isLoading ? <Skel w={300} h={56} /> : (
         <Fade>
           <div className="profile">
-            <div className="pic">{person.initials}</div>
+            <div className="pic">{initialsOf(person?.name ?? name, email)}</div>
             <div style={{ flex: 1 }}>
-              <h1>{person.name}</h1>
+              <h1>{name}</h1>
               <div className="sub">
-                <span>{person.email}</span>
-                <span>·</span>
-                <span>{person.title}</span>
-                <span>·</span>
-                <span>{person.deptRoleName} in Finance</span>
+                <span>{email}</span>
+                {person ? <><span>·</span><span>{ROLE_LABEL[person.companyRole] ?? person.companyRole}</span></> : null}
+                {person?.departmentNames.length
+                  ? <><span>·</span><span>{person.departmentNames.join(', ')}</span></>
+                  : <><span>·</span><span>no department</span></>}
               </div>
-            </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button type="button" className="btn" onClick={() => toast('Message in Lark')}>Message</button>
-              <button type="button" className="btn" onClick={() => go('co-people')}>Change role</button>
             </div>
           </div>
         </Fade>
@@ -297,46 +398,48 @@ export function CompanyPersonDetail({ personId = 'u_ananya', replay, toast, go }
           <div className="ws-cols">
             <Panel title="Last 30 days">
               <div className="ws-panel-body">
-                {!r2 ? <Skel w="100%" h={110} /> : (
+                {!r2 || spend.isLoading ? <Skel w="100%" h={110} /> : (
                   <Fade>
                     <div style={{ display: 'flex', gap: 44, flexWrap: 'wrap' }}>
                       <div>
                         <div className="ws-lbl">Cost</div>
-                        <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(person.spend30d)}</div>
+                        <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(spent)}</div>
                       </div>
                       <div>
                         <div className="ws-lbl">Tasks</div>
-                        <div className="ws-num" style={{ marginTop: 8 }}>{person.runs30d}</div>
+                        <div className="ws-num" style={{ marginTop: 8 }}>{detail?.runs ?? 0}</div>
                       </div>
                       <div>
                         <div className="ws-lbl">Avg per task</div>
                         <div className="ws-num" style={{ marginTop: 8 }}>
-                          {person.runs30d ? money(person.spend30d / person.runs30d) : '—'}
+                          {detail?.runs ? money(detail.avgPerRun) : '—'}
                         </div>
                       </div>
                     </div>
-                    <div style={{ marginTop: 22 }}><Spark data={MY_USAGE.daily} /></div>
+                    {detail?.sparkline.length ? (
+                      <div style={{ marginTop: 22 }}><Spark data={detail.sparkline} /></div>
+                    ) : null}
                   </Fade>
                 )}
               </div>
             </Panel>
 
-            <Panel title="Connections" description="What they have linked">
-              {!r2 ? <SkelRows n={3} /> : (
+            <Panel title="Connected accounts" description="What Divo may act through on their behalf">
+              {!r2 || directory.loading ? <SkelRows n={3} /> : !person ? null : (
                 <Fade>
                   <div className="ws-rows">
-                    {person.connections.length === 0 ? (
-                      <div style={{ padding: 18 }}>
-                        <Empty icon={Link2} title="Nothing connected" body="Divo cannot act on their behalf anywhere yet." />
-                      </div>
-                    ) : person.connections.map((c) => (
-                      <div className="ws-row click" key={c} onClick={() => toast('Connection governance')}>
-                        <span className="ws-ic"><Link2 size={14} /></span>
-                        <div className="ws-row-main">
-                          <b>{c === 'google_workspace' ? 'Google Workspace' : c === 'lark' ? 'Lark' : c === 'zoho' ? 'Zoho (company)' : 'Airtable'}</b>
-                          <p>{c === 'zoho' ? 'Shared with them' : 'Their own account'}</p>
-                        </div>
-                        <span className="badge b-ok"><span className="dot" />On</span>
+                    {/* The directory reports these two and only these two. Listing a
+                        provider it cannot speak for would be a guess. */}
+                    {[
+                      { name: 'Lark', on: person.larkLinked, note: person.larkLinked ? 'Identity linked' : 'Divo in Lark cannot recognise them' },
+                      { name: 'Google Workspace', on: person.googleConnected, note: person.googleConnected ? 'Their own account' : 'Not connected' },
+                    ].map((c) => (
+                      <div className="ws-row" key={c.name}>
+                        <span className="ws-ic" data-tone={c.on ? 'ok' : undefined}><Link2 size={14} /></span>
+                        <div className="ws-row-main"><b>{c.name}</b><p>{c.note}</p></div>
+                        {c.on
+                          ? <span className="badge b-ok"><span className="dot" />On</span>
+                          : <span className="ws-sub">Off</span>}
                       </div>
                     ))}
                   </div>
@@ -350,25 +453,20 @@ export function CompanyPersonDetail({ personId = 'u_ananya', replay, toast, go }
           </div>
 
           <Panel title="Recent runs" source="myRuns">
-            {!r2 ? <SkelRows n={4} icon={false} /> : (
+            {!r2 || runs.loading ? <SkelRows n={4} icon={false} /> : runs.data.length === 0 ? (
+              <Empty title="Nothing has run for them" body="They have permissions but Divo has not done anything on their behalf." />
+            ) : (
               <Fade>
                 <div className="ws-rows">
-                  {[
-                    { s: 'Drafted 14 supplier reminders', w: '2 hours ago', c: 0.38, st: 'completed' },
-                    { s: 'Reconciled the March vendor ledger', w: 'Yesterday', c: 0.21, st: 'running' },
-                    { s: 'Built the Q2 expense breakdown', w: '2 days ago', c: 0.71, st: 'completed' },
-                    { s: 'Looked up supplier GST numbers', w: '3 days ago', c: 0.02, st: 'failed' },
-                  ].map((r) => (
-                    <div className="ws-row click" key={r.s} onClick={() => go('co-run')}>
+                  {runs.data.map((r) => (
+                    <div className="ws-row click" key={r.id} onClick={() => go(`co-run:${r.id}`)}>
                       <div className="ws-row-main">
-                        <b>{r.s}</b>
-                        <p>{r.w}</p>
+                        <b>{r.latestSummary ?? 'No summary recorded'}</b>
+                        <p>{ago(r.startedAt)} · {CHANNEL_WORD[r.channel] ?? r.channel}</p>
                       </div>
                       <div className="ws-row-act">
-                        <span className="ws-sub">{money(r.c)}</span>
-                        {r.st === 'failed' ? <span className="badge b-err"><span className="dot" />Failed</span> : null}
-                        {r.st === 'completed' ? <span className="badge b-ok"><span className="dot" />Done</span> : null}
-                        {r.st === 'running' ? <span className="badge b-run"><span className="dot" />Running</span> : null}
+                        <span className="ws-sub">{r.costUsd === null ? 'unattributed' : money(r.costUsd)}</span>
+                        <RunStatusBadge status={r.status} />
                       </div>
                     </div>
                   ))}
@@ -380,66 +478,113 @@ export function CompanyPersonDetail({ personId = 'u_ananya', replay, toast, go }
       ) : null}
 
       {tab === 'access' ? (
-        <Panel title="What Divo can do for them" description={`From the ${person.deptRoleName} role in Finance, plus anything granted personally`} source="permissions">
-          <div className="ws-panel-body">
-            {!r2 ? <SkelRows n={6} icon={false} /> : (
-              <Fade><Matrix grants={resolveGrants(person)} readOnly tools={TOOLS.filter((t) => !t.adminOnly)} /></Fade>
-            )}
-          </div>
+        <Panel title="Where their access comes from" source="permissions">
+          {!r2 || directory.loading ? <SkelRows n={3} /> : (
+            <Fade>
+              <div className="ws-rows">
+                {person?.departmentNames.length ? person.departmentNames.map((d) => (
+                  <div className="ws-row click" key={d} onClick={() => go('co-departments')}>
+                    <span className="ws-ic"><Building2 size={14} /></span>
+                    <div className="ws-row-main">
+                      <b>{d}</b>
+                      <p>Their role in this department decides what Divo may do for them</p>
+                    </div>
+                    <span className="ws-sub">Open</span>
+                  </div>
+                )) : (
+                  <div style={{ padding: 18 }}>
+                    <Empty
+                      icon={Building2}
+                      title="They are in no department"
+                      body="Divo can do nothing for them until they are — a company role alone grants no tools."
+                    />
+                  </div>
+                )}
+                {person && person.managerDepartmentCount > 0 ? (
+                  <div className="ws-row">
+                    <span className="ws-ic" data-tone="ok"><ShieldCheck size={14} /></span>
+                    <div className="ws-row-main">
+                      <b>Manages {person.managerDepartmentCount} {person.managerDepartmentCount === 1 ? 'department' : 'departments'}</b>
+                      <p>They can grant permissions and answer approvals for the teams they lead</p>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </Fade>
+          )}
           <div className="ws-panel-foot">
-            Change these from the department, not here — a company admin editing one person is how drift starts
+            Permissions are edited in the department, not here — a company admin changing one person directly is how drift starts
           </div>
         </Panel>
       ) : null}
 
       {tab === 'limits' ? (
         <div className="ws-stack">
-          <Panel title="Spending" description="Enforced — the proxy returns 402 when the budget is reached">
+          <Panel title="Spending" description="Enforced — the proxy refuses the call when the budget is reached">
             <div className="ws-panel-body">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                <span className="ws-num-sm">{money(person.spend30d)}</span>
-                <span className="ws-sub">of {money(budget)} this month</span>
+                <span className="ws-num-sm">{money(spent)}</span>
+                <span className="ws-sub">{budget === null ? 'no dollar budget set' : `of ${money(budget)} this month`}</span>
               </div>
-              <div style={{ marginTop: 12 }}><Bar pct={(person.spend30d / budget) * 100} tone="brand" /></div>
+              {budget !== null ? (
+                <div style={{ marginTop: 12 }}><Bar pct={(spent / budget) * 100} tone="brand" /></div>
+              ) : null}
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 22 }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 13, fontWeight: 500 }}>Allow Divo to work for them</div>
                   <div className="ws-sub" style={{ marginTop: 3 }}>Blocking is immediate and applies to every channel</div>
                 </div>
-                <Switch on onToggle={() => toast('Blocked')} label="Allow" />
+                <Switch
+                  on={!(current?.blocked ?? false)}
+                  onToggle={() => void write(
+                    { blocked: !(current?.blocked ?? false) },
+                    current?.blocked ? `${name.split(' ')[0]} unblocked` : `${name.split(' ')[0]} blocked`,
+                  )}
+                  label="Allow"
+                />
               </div>
             </div>
+            {current?.isDefault ? (
+              <div className="ws-panel-foot">
+                They are on the company default — the first change here creates a policy of their own.
+              </div>
+            ) : null}
           </Panel>
 
           <Panel title="Models they may use">
-            <div className="ws-rows">
-              {[
-                { id: 'flash', name: 'Flash', on: true },
-                { id: 'pro', name: 'Pro', on: true },
-                { id: 'luna', name: 'Luna', on: false },
-              ].map((m) => (
-                <div className="ws-row" key={m.id}>
-                  <div className="ws-row-main"><b>{m.name}</b></div>
-                  <Switch on={m.on} onToggle={() => toast(`${m.name} toggled`)} label={m.name} />
-                </div>
-              ))}
-            </div>
+            {models.isLoading ? <SkelRows n={3} icon={false} /> : (
+              <div className="ws-rows">
+                {(models.data ?? []).map((m) => (
+                  <div className="ws-row" key={m.id}>
+                    <div className="ws-row-main">
+                      <b>{m.label}</b>
+                      <p>{m.id} · {m.provider}</p>
+                    </div>
+                    <Switch
+                      on={allowed.length === 0 || allowed.includes(m.id)}
+                      onToggle={() => toggleModel(m.id)}
+                      label={m.label}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="ws-panel-foot">
-              An empty list means every model is allowed — the picker hides itself when only one is
+              An empty list means every model is allowed — which is why the last one cannot be switched off
             </div>
           </Panel>
 
           <Panel title="Recent refusals" description="Requests the proxy turned away">
-            {DENIALS.length === 0 ? (
-              <Empty icon={Check} title="Nothing refused" />
+            {denials.isLoading ? <SkelRows n={2} icon={false} /> : (denials.data ?? []).length === 0 ? (
+              <Empty icon={Check} title="Nothing refused" body="Every request they made was allowed through." />
             ) : (
               <div className="ws-rows">
-                {DENIALS.map((d, i) => (
-                  <div className="ws-row" key={i}>
+                {(denials.data ?? []).map((d) => (
+                  <div className="ws-row" key={d.id}>
                     <span className="ws-ic" data-tone="err"><Ban size={14} /></span>
                     <div className="ws-row-main">
-                      <b style={{ fontWeight: 400 }}>{d.reason}</b>
-                      <p>{d.when} · {d.model} · HTTP {d.status}</p>
+                      <b style={{ fontWeight: 400 }}>{d.reason ?? 'Refused'}</b>
+                      <p>{ago(d.createdAt)} · {d.model} · HTTP {d.httpStatus}</p>
                     </div>
                   </div>
                 ))}

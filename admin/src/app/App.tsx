@@ -7,11 +7,9 @@ import type { ScopeKind } from "@/auth/types"
 import { CompanyAdminSignupPage } from "@/pages/CompanyAdminSignupPage"
 import { LoginPage } from "@/pages/LoginPage"
 import { MemberInviteAcceptPage } from "@/pages/MemberInviteAcceptPage"
-import { MemberDetailPage } from "@/pages/MemberDetailPage"
 import { ConnectionGovernancePage } from "@/pages/ConnectionGovernancePage"
 import { OAuthCallbackPage } from "@/pages/OAuthCallbackPage"
 import { WebSearchPage } from "@/pages/WebSearchPage"
-import { RunDetailPage } from "@/pages/RunDetailPage"
 import { MemoriesPage } from "@/pages/MemoriesPage"
 import { SkillsLabPage } from "@/pages/SkillsLabPage"
 import { MockDashboardPage } from "@/pages/MockDashboardPage"
@@ -28,6 +26,7 @@ import {
 } from "@/pages/workspace/screens-company"
 import { ConnectFlow } from "@/pages/workspace/screens-connect"
 import { Artifacts } from "@/pages/workspace/screens-artifacts"
+import { CompanyPersonDetail, CompanyRunDetail } from "@/pages/workspace/screens-company-detail"
 
 type ProtectedProps = {
   children: JSX.Element
@@ -108,6 +107,8 @@ const CompanyAiOpsRoute = routed(CompanyAiOps)
 const CompanyGuardrailsRoute = routed(CompanyGuardrails)
 const CompanyAuditRoute = routed(CompanyAudit)
 const CompanyPolicyRoute = routed(CompanyPolicy)
+const CompanyRunDetailRoute = routed(CompanyRunDetail)
+const CompanyPersonDetailRoute = routed(CompanyPersonDetail)
 
 export function App() {
   return (
@@ -156,11 +157,11 @@ export function App() {
               The Workspace screens, on the admin API the old pages used. */}
           <Route path="home" element={<RequireScope kind="company"><CompanyHomeRoute /></RequireScope>} />
           <Route path="people" element={<RequireScope kind="company"><CompanyPeopleRoute /></RequireScope>} />
-          <Route path="people/:userId" element={<RequireScope kind="company"><MemberDetailPage /></RequireScope>} />
+          <Route path="people/:userId" element={<RequireScope kind="company"><CompanyPersonDetailRoute /></RequireScope>} />
           <Route path="people/:userId/connections/:connectionId" element={<RequireScope kind="company"><ConnectionGovernancePage /></RequireScope>} />
           <Route path="departments" element={<RequireScope kind="company"><CompanyDepartmentsRoute /></RequireScope>} />
           <Route path="ai-ops" element={<RequireScope kind="company"><CompanyAiOpsRoute /></RequireScope>} />
-          <Route path="ai-ops/runs/:runId" element={<RequireScope kind="company"><RunDetailPage /></RequireScope>} />
+          <Route path="ai-ops/runs/:runId" element={<RequireScope kind="company"><CompanyRunDetailRoute /></RequireScope>} />
           <Route path="skills" element={<RequireScope kind="company"><SkillsLabPage /></RequireScope>} />
           <Route path="memories" element={<RequireScope kind="company"><MemoriesPage /></RequireScope>} />
           <Route path="guardrails" element={<RequireScope kind="company"><CompanyGuardrailsRoute /></RequireScope>} />
