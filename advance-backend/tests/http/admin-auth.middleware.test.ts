@@ -297,3 +297,141 @@ describe('createAdminAuthMiddleware', () => {
     });
   });
 });
+
+/**
+ * Mode 3 — the single session the web app signs in with.
+ *
+ * Sign-in became one act producing one member session, and the console needs
+ * both halves of the API. The condition on that change was that admin authority
+ * must not widen by any amount, so these tests are about what is REFUSED at
+ * least as much as what is admitted.
+ */
+describe('admin auth via a member session', () => {
+  const MEMBER_SECRET = 'test-member-secret-32-bytes-long';
+
+  function memberMiddleware(opts: {
+    session?: unknown;
+    membership?: unknown;
+    memberSecretConfigured?: boolean;
+  }) {
+    const prisma = {
+      adminSession:    { findUnique: async () => null },
+      memberSession:   { findUnique: async () => opts.session ?? null },
+      adminMembership: { findFirst:  async () => opts.membership ?? null },
+    };
+    return createAdminAuthMiddleware({
+      prisma:    prisma as any,
+      jwtSecret: TEST_SECRET,
+      logger:    noopLogger as any,
+      ...(opts.memberSecretConfigured === false ? {} : { memberJwtSecret: MEMBER_SECRET }),
+    });
+  }
+
+  const liveSession = {
+    userId: 'user-1',
+    companyId: 'company-1',
+    expiresAt: new Date(Date.now() + 3_600_000),
+    revokedAt: null,
+  };
+  const memberToken = (extra: Record<string, unknown> = {}) =>
+    buildJwt({ sessionId: 'session-1', userId: 'user-1', companyId: 'company-1', ...extra }, MEMBER_SECRET, 3_600);
+
+  it('admits a company admin and reads authority from the live membership', async () => {
+    const mw = memberMiddleware({ session: liveSession, membership: { role: 'COMPANY_ADMIN' } });
+    const { res, nextCalled } = await call(mw, makeReq({ authorization: `Bearer ${memberToken()}` }));
+
+    assert.equal(nextCalled, true);
+    assert.equal(res.locals['companyId'], 'company-1');
+    assert.equal(res.locals['userId'], 'user-1');
+    assert.equal(res.locals['isSuperAdmin'], false);
+  });
+
+  it('marks a super admin from the membership row, not the token', async () => {
+    const mw = memberMiddleware({ session: liveSession, membership: { role: 'SUPER_ADMIN' } });
+    // The token claims nothing about role on purpose — a forged or stale role
+    // claim must have no effect on what the request is allowed to do.
+    const { res, nextCalled } = await call(mw, makeReq({ authorization: `Bearer ${memberToken({ role: 'MEMBER' })}` }));
+
+    assert.equal(nextCalled, true);
+    assert.equal(res.locals['isSuperAdmin'], true);
+  });
+
+  it('refuses an ordinary member with 403', async () => {
+    const mw = memberMiddleware({ session: liveSession, membership: { role: 'MEMBER' } });
+    const { res, nextCalled } = await call(mw, makeReq({ authorization: `Bearer ${memberToken()}` }));
+
+    assert.equal(nextCalled, false);
+    assert.equal(res._status, 403);
+  });
+
+  it('applies a demotion on the very next request', async () => {
+    let role = 'COMPANY_ADMIN';
+    const prisma = {
+      adminSession:    { findUnique: async () => null },
+      memberSession:   { findUnique: async () => liveSession },
+      adminMembership: { findFirst:  async () => ({ role }) },
+    };
+    const mw = createAdminAuthMiddleware({
+      prisma: prisma as any, jwtSecret: TEST_SECRET, memberJwtSecret: MEMBER_SECRET, logger: noopLogger as any,
+    });
+
+    assert.equal((await call(mw, makeReq({ authorization: `Bearer ${memberToken()}` }))).nextCalled, true);
+    role = 'MEMBER';
+    const after = await call(mw, makeReq({ authorization: `Bearer ${memberToken()}` }));
+    assert.equal(after.nextCalled, false);
+    assert.equal(after.res._status, 403);
+  });
+
+  it('refuses a Pi runtime lease outright, even for an admin', async () => {
+    const mw = memberMiddleware({ session: liveSession, membership: { role: 'SUPER_ADMIN' } });
+
+    // Each marker on its own must be enough. member-auth admits leases on two
+    // read-only routes by exception; nothing like that exists here, and a lease
+    // held inside a member's container must never reach the admin API.
+    for (const lease of [
+      memberToken({ aud: 'divo-pi-runtime' }),
+      memberToken({ instanceId: 'pi-1' }),
+      memberToken({ threadId: 'lark:chat-1:user-1' }),
+      memberToken({ channel: 'lark' }),
+    ]) {
+      const { res, nextCalled } = await call(mw, makeReq({ authorization: `Bearer ${lease}` }));
+      assert.equal(nextCalled, false);
+      assert.equal(res._status, 403);
+    }
+  });
+
+  it('refuses a revoked or expired session', async () => {
+    for (const session of [
+      { ...liveSession, revokedAt: new Date() },
+      { ...liveSession, expiresAt: new Date(Date.now() - 1_000) },
+    ]) {
+      const mw = memberMiddleware({ session, membership: { role: 'COMPANY_ADMIN' } });
+      const { res, nextCalled } = await call(mw, makeReq({ authorization: `Bearer ${memberToken()}` }));
+      assert.equal(nextCalled, false);
+      assert.equal(res._status, 401);
+    }
+  });
+
+  it('refuses a token whose identity does not match its session row', async () => {
+    const mw = memberMiddleware({
+      session: { ...liveSession, userId: 'someone-else' },
+      membership: { role: 'COMPANY_ADMIN' },
+    });
+    const { res, nextCalled } = await call(mw, makeReq({ authorization: `Bearer ${memberToken()}` }));
+
+    assert.equal(nextCalled, false);
+    assert.equal(res._status, 401);
+  });
+
+  it('refuses member tokens entirely where no member secret is configured', async () => {
+    const mw = memberMiddleware({
+      session: liveSession,
+      membership: { role: 'SUPER_ADMIN' },
+      memberSecretConfigured: false,
+    });
+    const { res, nextCalled } = await call(mw, makeReq({ authorization: `Bearer ${memberToken()}` }));
+
+    assert.equal(nextCalled, false);
+    assert.equal(res._status, 401);
+  });
+});

@@ -443,6 +443,9 @@ export const createServer = (c: Container) => {
   const adminAuth = createAdminAuthMiddleware({
     prisma:          c.prisma,
     jwtSecret:       c.env.ADMIN_JWT_SECRET,
+    // The web app signs in once and holds one session. Admin routes accept it
+    // only when the person's live membership says COMPANY_ADMIN or SUPER_ADMIN.
+    memberJwtSecret: c.env.MEMBER_JWT_SECRET,
     ...(c.env.INTERNAL_API_KEY !== undefined ? { internalApiKey: c.env.INTERNAL_API_KEY } : {}),
     logger:          c.logger,
   });
