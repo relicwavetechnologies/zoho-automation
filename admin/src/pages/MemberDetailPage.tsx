@@ -9,10 +9,6 @@ import { compact, usd, useCompanyScope, useDirectory, useMemberSpend } from "@/c
 import { activeModel, useProxyPolicy, useSaveProxyPolicy } from "@/cursor/use-proxy-policy"
 import { useProxyAudit, useProxyModels } from "@/cursor/use-proxy"
 import { companyMembersApi, type CompanyMemberRole } from "@/lib/api"
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Button } from "@/components/ui/button"
-import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { MemberConnectionsPanel } from "@/components/governance/MemberConnectionsPanel"
 
 export function MemberDetailPage() {
@@ -222,29 +218,47 @@ export function MemberDetailPage() {
 
       <MemberConnectionsPanel token={token} userId={userId} companyId={companyId} />
 
-      <Dialog open={manageOpen} onOpenChange={setManageOpen}>
-        <DialogContent className="border-border/40 bg-mat sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="text-[15px] font-semibold">Manage member</DialogTitle>
-            <DialogDescription className="text-[12px]">Set this person’s company-level access. Department roles are managed from the Department page.</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2 py-2">
-            <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground" htmlFor="company-role">Company role</Label>
-            <Select value={roleDraft} onValueChange={(value) => setRoleDraft(value as CompanyMemberRole)}>
-              <SelectTrigger id="company-role" className="h-9 bg-card text-[13px]"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="MEMBER">Member</SelectItem>
-                <SelectItem value="COMPANY_ADMIN">Company Admin</SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="text-[12px] text-muted-foreground">A company must always retain at least one active Company Admin. Super Admin is platform-only and cannot be assigned here.</p>
+      {manageOpen ? (
+        <>
+          <div className="ws-scrim" onClick={() => setManageOpen(false)} />
+          <div className="ws-modal-wrap">
+            <div className="ws-modal" role="dialog" aria-label="Manage member">
+              <div className="ws-modal-h">
+                <h2>Company role</h2>
+                <p>This is the ceiling on everything Divo may do for this person. What they can actually do is granted per department, beneath it.</p>
+              </div>
+              <div className="ws-modal-b">
+                <div className="ws-field">
+                  <label htmlFor="company-role">Role</label>
+                  <select
+                    id="company-role"
+                    className="select"
+                    value={roleDraft}
+                    onChange={(event) => setRoleDraft(event.target.value as CompanyMemberRole)}
+                  >
+                    <option value="MEMBER">Member</option>
+                    <option value="COMPANY_ADMIN">Company admin</option>
+                  </select>
+                  <div className="hint">
+                    A company must keep at least one active company admin. Super admin is platform-only and cannot be assigned here.
+                  </div>
+                </div>
+              </div>
+              <div className="ws-modal-f">
+                <button type="button" className="btn" onClick={() => setManageOpen(false)} disabled={savingRole}>Cancel</button>
+                <button
+                  type="button"
+                  className="btn primary"
+                  onClick={() => void saveRole()}
+                  disabled={savingRole || roleDraft === role}
+                >
+                  {savingRole ? "Saving…" : "Save role"}
+                </button>
+              </div>
+            </div>
           </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" size="sm" className="h-8 text-[12px]" onClick={() => setManageOpen(false)} disabled={savingRole}>Cancel</Button>
-            <Button type="button" size="sm" className="h-8 bg-emphasis text-[12px] font-semibold text-emphasis-foreground hover:bg-emphasis/90" onClick={() => void saveRole()} disabled={savingRole || roleDraft === role}>{savingRole ? "Saving…" : "Save role"}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </>
+      ) : null}
 
       <div className="grid g2 mt24">
         <div className="section">

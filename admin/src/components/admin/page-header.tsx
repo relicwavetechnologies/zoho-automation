@@ -1,5 +1,12 @@
 import type { ReactNode } from "react"
 
+/**
+ * Page header for the pages still on the shared admin components.
+ *
+ * Same markup as the Workspace `PageHeader` (`.ws-ph`) so the two sets of
+ * pages have identical rhythm — a header that is a few pixels off is the kind
+ * of thing nobody can name but everybody registers as "these are two apps".
+ */
 type PageHeaderProps = {
   eyebrow?: string
   title: string
@@ -9,17 +16,13 @@ type PageHeaderProps = {
 
 export function PageHeader({ eyebrow, title, description, actions }: PageHeaderProps) {
   return (
-    <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-      <div className="space-y-1">
-        {/* Cursor: eyebrows are muted, not brand-coloured — orange stays scarce. */}
-        {eyebrow ? <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">{eyebrow}</p> : null}
-        <div className="space-y-0.5">
-          {/* Cursor editorial display: Inter, regular weight, tight tracking (never bold). */}
-          <h1 className="text-2xl font-normal tracking-tight text-foreground md:text-[28px]">{title}</h1>
-          {description ? <p className="max-w-2xl text-[12px] leading-5 text-muted-foreground">{description}</p> : null}
-        </div>
+    <div className="ws-ph">
+      <div>
+        {eyebrow ? <div className="eyebrow">{eyebrow}</div> : null}
+        <h1 style={{ marginTop: eyebrow ? 7 : 0 }}>{title}</h1>
+        {description ? <p>{description}</p> : null}
       </div>
-      {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
+      {actions ? <div className="ws-ph-act">{actions}</div> : null}
     </div>
   )
 }

@@ -1,17 +1,18 @@
 import { Building2, Plus, Shield, Users } from "lucide-react"
 import { DataTable } from "@/components/admin/data-table"
 import { EmptyState } from "@/components/admin/empty-state"
-import { MetricCard } from "@/components/admin/metric-card"
+import { MetricCard, MetricStrip } from "@/components/admin/metric-card"
 import { PageHeader } from "@/components/admin/page-header"
 import { SectionCard } from "@/components/admin/section-card"
 import { StatusBadge } from "@/components/admin/status-badge"
-import { Button } from "@/components/ui/button"
+import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { CreateDepartmentDialog } from "./departments/CreateDepartmentDialog"
 import { DepartmentDrawer } from "./departments/DepartmentDrawer"
 import { useDepartmentData } from "./departments/use-department-data"
 import { useMemo, useState } from "react"
 
 export function DepartmentsPage() {
+  const { session } = useAdminAuth()
   const {
     departments,
     detailById,
@@ -48,39 +49,40 @@ export function DepartmentsPage() {
   const selectedOverviewLoading = selectedDepartmentId ? isSectionLoading(selectedDepartmentId, "overview") : false
 
   return (
-    <>
+    <div className="page">
       <PageHeader
-        eyebrow="Organization"
+        eyebrow={session?.companyName ?? "Organisation"}
         title="Departments"
-        description="Create departments, manage roles and members, tune tool permissions, and configure the department agent surface."
+        description="A department is the only unit below the company. Its roles decide what Divo may do for the people in it, within the company ceiling."
         actions={
-          <Button
-            type="button"
-            className="h-8 gap-1.5 rounded-md bg-emphasis px-3 text-[12px] font-semibold text-emphasis-foreground hover:bg-emphasis/90"
-            onClick={() => setCreateOpen(true)}
-          >
-            <Plus className="h-3.5 w-3.5" />
+          <button type="button" className="btn primary" onClick={() => setCreateOpen(true)}>
+            <Plus size={14} />
             New department
-          </Button>
+          </button>
         }
       />
 
-      <section className="grid gap-3 md:grid-cols-4">
-        <MetricCard label="Departments" value={String(stats.total)} detail={`${stats.roles} roles across the org`} icon={Building2} />
-        <MetricCard label="Active" value={String(stats.active)} detail="Currently operating" icon={Shield} tone="accent" />
-        <MetricCard label="Members" value={String(stats.members)} detail="Assigned across all departments" icon={Users} />
-        <MetricCard label="Archived" value={String(stats.archived)} detail="Hidden from active routing" icon={Building2} tone="emphasis" />
-      </section>
+      <div className="ws-stack">
+        <MetricStrip>
+          <MetricCard label="Departments" value={String(stats.total)} detail={`${stats.roles} roles between them`} icon={Building2} />
+          <MetricCard label="Active" value={String(stats.active)} detail="Routing work today" icon={Shield} />
+          <MetricCard label="People" value={String(stats.members)} detail="Assigned across all departments" icon={Users} />
+          <MetricCard label="Archived" value={String(stats.archived)} detail="Kept for the record, never routed to" icon={Building2} />
+        </MetricStrip>
 
-      <SectionCard title="Department registry" description="Select a department to open the full management drawer.">
+        <SectionCard
+          title="Every department"
+          description="Open one to manage its roles, its people and what they may do."
+          flush
+        >
         {error ? (
           <EmptyState title="Department API unavailable" description={error} />
         ) : (
           <DataTable
             rows={departments}
             loading={loading}
-            emptyTitle="No departments"
-            emptyDescription="Create the first department to start assigning roles, memberships, and permissions."
+            emptyTitle="No departments yet"
+            emptyDescription="Create the first one to start assigning roles, people and permissions."
             onRowClick={(row) => {
               setSelectedDepartmentId(row.id)
               void loadDetailSection(row.id, "overview")
@@ -90,29 +92,31 @@ export function DepartmentsPage() {
                 key: "name",
                 header: "Name",
                 render: (row) => (
-                  <div className="min-w-0">
-                    <p className="truncate text-[13px] font-semibold">{row.name}</p>
-                    <p className="truncate text-[11px] text-muted-foreground">{row.description || "No description"}</p>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 500 }}>{row.name}</div>
+                    <div className="ws-sub" style={{ marginTop: 3 }}>{row.description || "No description"}</div>
                   </div>
                 ),
               },
-              { key: "slug", header: "Slug", render: (row) => <span className="font-mono text-[12px] text-muted-foreground">{row.slug}</span> },
+              { key: "slug", header: "Slug", render: (row) => <span className="mono ws-sub">{row.slug}</span> },
               { key: "status", header: "Status", render: (row) => <StatusBadge value={row.status} /> },
-              { key: "memberCount", header: "Members" },
+              { key: "memberCount", header: "People" },
               { key: "roleCount", header: "Roles" },
               {
                 key: "hasAgentConfig",
                 header: "Config",
                 render: (row) => (
-                  <span className={row.hasAgentConfig ? "text-[12px] font-medium text-emerald-600 dark:text-emerald-400" : "text-[12px] text-muted-foreground"}>
-                    {row.hasAgentConfig ? "Ready" : "Missing"}
+                  <span className={row.hasAgentConfig ? "badge b-ok" : "badge"}>
+                    {row.hasAgentConfig ? <span className="dot" /> : null}
+                    {row.hasAgentConfig ? "Ready" : "Not set up"}
                   </span>
                 ),
               },
             ]}
           />
         )}
-      </SectionCard>
+        </SectionCard>
+      </div>
 
       <DepartmentDrawer
         department={selectedDepartment}
@@ -148,6 +152,6 @@ export function DepartmentsPage() {
           return created
         }}
       />
-    </>
+    </div>
   )
 }

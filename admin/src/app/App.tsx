@@ -64,14 +64,6 @@ const DefaultProtectedRoute = () => {
   return <Navigate to={fallbackPath} replace />
 }
 
-/**
- * Padding/rhythm wrapper for the not-yet-redesigned shadcn pages. The Workspace
- * shell's scroll area has no padding — designed pages self-pad via `.page` —
- * so the three remaining legacy pages keep their old `space-y-5 p-6` container
- * here until they are ported.
- */
-const Legacy = ({ children }: { children: JSX.Element }) => <div className="space-y-5 p-6">{children}</div>
-
 /* Workspace screens, adapted to routes. Still on fixtures; each marks itself. */
 const MeHome = routed(YouHome)
 const MeApprovals = routed(YouApprovals)
@@ -143,11 +135,11 @@ export function App() {
           <Route path="people" element={<MembersPage />} />
           <Route path="people/:userId" element={<MemberDetailPage />} />
           <Route path="people/:userId/connections/:connectionId" element={<ConnectionGovernancePage />} />
-          <Route path="departments" element={<Legacy><DepartmentsPage /></Legacy>} />
+          <Route path="departments" element={<DepartmentsPage />} />
           <Route path="ai-ops" element={<AiOpsPage />} />
           <Route path="ai-ops/runs/:runId" element={<RunDetailPage />} />
           <Route path="skills" element={<SkillsLabPage />} />
-          <Route path="memories" element={<Legacy><MemoriesPage /></Legacy>} />
+          <Route path="memories" element={<MemoriesPage />} />
           <Route path="guardrails" element={<GuardrailsPage />} />
           {/* Company ceiling — capability governance today; the full tool ceiling
               matrix from the Workspace spec supersedes this. */}
@@ -157,7 +149,7 @@ export function App() {
           <Route path="connections" element={<CompanyConnectionsRoute />} />
           <Route path="connections/web-search" element={<WebSearchPage />} />
           {/* Renamed: this page is an audit-log viewer, not settings. */}
-          <Route path="activity" element={<Legacy><SettingsPage /></Legacy>} />
+          <Route path="activity" element={<SettingsPage />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />
