@@ -615,7 +615,7 @@ export function CompanyDepartmentDetail({ replay, go }: Props) {
   const { departmentId } = useParams()
   const [r1, r2] = useStaged([280, 560], replay)
   const [tab, setTab] = useState<'people' | 'roles' | 'access'>('people')
-  const { data, loading, refused } = useDepartmentDetail(departmentId)
+  const { data, loading, refused, notFound, error, refresh } = useDepartmentDetail(departmentId)
   const { usage } = useTeamUsage(departmentId)
 
   if (!loading && !data) {
@@ -631,8 +631,18 @@ export function CompanyDepartmentDetail({ replay, go }: Props) {
             what="this department"
             who="Reaching into a department you do not administer is limited to company admins and that team's manager."
           />
-        ) : (
+        ) : notFound ? (
           <Empty icon={Building2} title="No such department" body="It may have been archived, or belongs to another company." />
+        ) : (
+          /* Anything else: the department may well be sitting there fine and the
+             request is what failed. Saying "no such department" would send the
+             reader to check their data instead of retrying. */
+          <Empty
+            icon={TriangleAlert}
+            title="Could not load this department"
+            body={error ?? 'The request failed.'}
+            action={<button type="button" className="btn" onClick={() => void refresh()}>Try again</button>}
+          />
         )}
       </>
     )

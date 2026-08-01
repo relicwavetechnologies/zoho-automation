@@ -20,7 +20,7 @@
  * covers only what it does not.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { ApiError, api } from '@/lib/api'
+import { ApiError, api, type DepartmentDetailSection } from '@/lib/api'
 import { useToolInventory } from './use-tools'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 
@@ -35,6 +35,17 @@ function useAdminResource<T>(path: string | null, fallback: T) {
   // Kept apart from `error`: a refusal is an answer the screen should render as
   // one, a failure is something to retry.
   const [refused, setRefused] = useState(false)
+  /**
+   * Only a real 404.
+   *
+   * Screens turn "no data" into a sentence about the world — "no such
+   * department". That sentence is only true when the server said the thing does
+   * not exist. Any other failure, a 400 from a malformed query most of all,
+   * also arrives here as an empty `data`, and reporting it as "no such thing"
+   * sends people looking at their database instead of at the request. Worth its
+   * own flag rather than being inferred from emptiness.
+   */
+  const [notFound, setNotFound] = useState(false)
 
   const load = useCallback(async () => {
     if (!token || !path) { setLoading(false); return }
@@ -42,9 +53,11 @@ function useAdminResource<T>(path: string | null, fallback: T) {
       setData(await api.get<T>(`${base}${path}`, token, { quiet: true }))
       setError(null)
       setRefused(false)
+      setNotFound(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load this.')
       setRefused(e instanceof ApiError && (e.status === 403 || e.status === 401))
+      setNotFound(e instanceof ApiError && e.status === 404)
       setData(fallback)
     } finally {
       setLoading(false)
@@ -55,7 +68,7 @@ function useAdminResource<T>(path: string | null, fallback: T) {
 
   useEffect(() => { void load() }, [load])
 
-  return { data, loading, error, refused, refresh: load }
+  return { data, loading, error, refused, notFound, refresh: load }
 }
 
 /* ── Overview ─────────────────────────────────────────── */
@@ -185,9 +198,20 @@ export type DepartmentDetail = {
  * The desktop route requires MANAGER membership, so a company admin who does
  * not personally lead the team gets a 403 there. Same data, different door.
  */
+/**
+ * Typed, not a hand-written string.
+ *
+ * This list used to be spelled out inline and said `memberships` where the
+ * backend's enum says `members`. The route parses each section with `z.enum`
+ * and throws on anything it does not recognise, so every department detail
+ * page 400'd — and the screen reported that as "No such department". Naming the
+ * union here makes a typo a compile error instead of a lie about the data.
+ */
+const DETAIL_SECTIONS: DepartmentDetailSection[] = ['roles', 'members', 'permissions', 'config']
+
 export const useDepartmentDetail = (departmentId?: string) =>
   useAdminResource<DepartmentDetail | null>(
-    departmentId ? `/departments/${departmentId}?sections=roles,memberships,permissions,config` : null,
+    departmentId ? `/departments/${departmentId}?sections=${DETAIL_SECTIONS.join(',')}` : null,
     null,
   )
 
