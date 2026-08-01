@@ -4,23 +4,17 @@ import { Toaster } from "@/components/ui/sonner"
 import { WorkspaceShell } from "@/components/admin/workspace-shell"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import type { ScopeKind } from "@/auth/types"
-import { AiOpsPage } from "@/pages/AiOpsPage"
 import { CompanyAdminSignupPage } from "@/pages/CompanyAdminSignupPage"
-import { DepartmentsPage } from "@/pages/DepartmentsPage"
 import { LoginPage } from "@/pages/LoginPage"
 import { MemberInviteAcceptPage } from "@/pages/MemberInviteAcceptPage"
 import { MemberDetailPage } from "@/pages/MemberDetailPage"
 import { ConnectionGovernancePage } from "@/pages/ConnectionGovernancePage"
 import { CompanyControlsPage } from "@/pages/CompanyControlsPage"
-import { MembersPage } from "@/pages/MembersPage"
 import { OAuthCallbackPage } from "@/pages/OAuthCallbackPage"
-import { OverviewPage } from "@/pages/OverviewPage"
-import { GuardrailsPage } from "@/pages/GuardrailsPage"
 import { WebSearchPage } from "@/pages/WebSearchPage"
 import { RunDetailPage } from "@/pages/RunDetailPage"
 import { MemoriesPage } from "@/pages/MemoriesPage"
 import { SkillsLabPage } from "@/pages/SkillsLabPage"
-import { SettingsPage } from "@/pages/SettingsPage"
 import { MockDashboardPage } from "@/pages/MockDashboardPage"
 import { routed } from "@/pages/workspace/routes"
 import {
@@ -29,7 +23,10 @@ import {
 import {
   TeamApprovalPolicy, TeamHome, TeamPeople, TeamRoles, TeamUsage,
 } from "@/pages/workspace/screens-team"
-import { CompanyConnections } from "@/pages/workspace/screens-company"
+import {
+  CompanyAiOps, CompanyAudit, CompanyConnections, CompanyDepartments, CompanyGuardrails,
+  CompanyHome, CompanyPeople,
+} from "@/pages/workspace/screens-company"
 import { ConnectFlow } from "@/pages/workspace/screens-connect"
 import { Artifacts } from "@/pages/workspace/screens-artifacts"
 
@@ -105,6 +102,12 @@ const TeamRolesRoute = routed(TeamRoles)
 const TeamApprovalsRoute = routed(TeamApprovalPolicy)
 const TeamUsageRoute = routed(TeamUsage)
 const CompanyConnectionsRoute = routed(CompanyConnections)
+const CompanyHomeRoute = routed(CompanyHome)
+const CompanyPeopleRoute = routed(CompanyPeople)
+const CompanyDepartmentsRoute = routed(CompanyDepartments)
+const CompanyAiOpsRoute = routed(CompanyAiOps)
+const CompanyGuardrailsRoute = routed(CompanyGuardrails)
+const CompanyAuditRoute = routed(CompanyAudit)
 
 export function App() {
   return (
@@ -142,9 +145,7 @@ export function App() {
           <Route path="me/usage" element={<MeUsage />} />
           <Route path="me/settings" element={<MeSettings />} />
 
-          {/* ── Your team ───────────────────────────────────
-              Fixtures. The manager endpoints are real (see
-              /api/desktop/departments/*) — wiring is the next step. */}
+          {/* ── Your team ─────────────────────────────────── */}
           <Route path="team" element={<RequireScope kind="team"><TeamOverview /></RequireScope>} />
           <Route path="team/people" element={<RequireScope kind="team"><TeamPeopleRoute /></RequireScope>} />
           <Route path="team/roles" element={<RequireScope kind="team"><TeamRolesRoute /></RequireScope>} />
@@ -152,26 +153,25 @@ export function App() {
           <Route path="team/usage" element={<RequireScope kind="team"><TeamUsageRoute /></RequireScope>} />
 
           {/* ── Company ─────────────────────────────────────
-              Live pages, absorbed into the Workspace shell. */}
-          <Route path="home" element={<RequireScope kind="company"><OverviewPage /></RequireScope>} />
-          <Route path="people" element={<RequireScope kind="company"><MembersPage /></RequireScope>} />
+              The Workspace screens, on the admin API the old pages used. */}
+          <Route path="home" element={<RequireScope kind="company"><CompanyHomeRoute /></RequireScope>} />
+          <Route path="people" element={<RequireScope kind="company"><CompanyPeopleRoute /></RequireScope>} />
           <Route path="people/:userId" element={<RequireScope kind="company"><MemberDetailPage /></RequireScope>} />
           <Route path="people/:userId/connections/:connectionId" element={<RequireScope kind="company"><ConnectionGovernancePage /></RequireScope>} />
-          <Route path="departments" element={<RequireScope kind="company"><DepartmentsPage /></RequireScope>} />
-          <Route path="ai-ops" element={<RequireScope kind="company"><AiOpsPage /></RequireScope>} />
+          <Route path="departments" element={<RequireScope kind="company"><CompanyDepartmentsRoute /></RequireScope>} />
+          <Route path="ai-ops" element={<RequireScope kind="company"><CompanyAiOpsRoute /></RequireScope>} />
           <Route path="ai-ops/runs/:runId" element={<RequireScope kind="company"><RunDetailPage /></RequireScope>} />
           <Route path="skills" element={<RequireScope kind="company"><SkillsLabPage /></RequireScope>} />
           <Route path="memories" element={<RequireScope kind="company"><MemoriesPage /></RequireScope>} />
-          <Route path="guardrails" element={<RequireScope kind="company"><GuardrailsPage /></RequireScope>} />
-          {/* Company ceiling — capability governance today; the full tool ceiling
-              matrix from the Workspace spec supersedes this. */}
+          <Route path="guardrails" element={<RequireScope kind="company"><CompanyGuardrailsRoute /></RequireScope>} />
+          {/* Company ceiling — still the capability-governance screen; the full
+              tool ceiling matrix is the next thing to wire. */}
           <Route path="policy" element={<RequireScope kind="company"><CompanyControlsPage /></RequireScope>} />
           {/* Connections — fixture overview; web search is the one real company
               connection surface that exists today. */}
           <Route path="connections" element={<RequireScope kind="company"><CompanyConnectionsRoute /></RequireScope>} />
           <Route path="connections/web-search" element={<RequireScope kind="company"><WebSearchPage /></RequireScope>} />
-          {/* Renamed: this page is an audit-log viewer, not settings. */}
-          <Route path="activity" element={<RequireScope kind="company"><SettingsPage /></RequireScope>} />
+          <Route path="activity" element={<RequireScope kind="company"><CompanyAuditRoute /></RequireScope>} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />

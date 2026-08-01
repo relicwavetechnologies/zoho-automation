@@ -43,13 +43,36 @@ const PATHS: Record<string, string> = {
   'co-skills': '/skills',
   'co-memory': '/memories',
   'co-guardrails': '/guardrails',
-  /* Drill-ins. The mock's detail screens map onto the live pages' list routes
-     until those pages are ported — a routed screen must never resolve to `/me`
-     just because an id is missing here. */
+  /* Drill-ins. A screen passes `co-run:<id>`; the id is appended to the base
+     path below. Without one it lands on the list, which is a worse answer than
+     the detail but never a wrong one. */
+  'co-run': '/ai-ops/runs',
+  'co-person': '/people',
+  'co-department': '/departments',
+  'co-skill': '/skills',
+}
+
+/** Falls back to the list route when a screen passes no id. */
+const LIST_FALLBACK: Record<string, string> = {
   'co-run': '/ai-ops',
   'co-person': '/people',
   'co-department': '/departments',
   'co-skill': '/skills',
+}
+
+/**
+ * `go('co-run:abc')` → `/ai-ops/runs/abc`.
+ *
+ * The screens were written against opaque screen ids, so an id rides along
+ * after a colon rather than the screens learning about the router.
+ */
+export function resolvePath(screen: string): string {
+  const [key, id] = screen.split(':')
+  if (!key) return '/me'
+  const base = PATHS[key]
+  if (!base) return '/me'
+  if (!id) return LIST_FALLBACK[key] ?? base
+  return `${base}/${id}`
 }
 
 type ScreenProps = {
@@ -82,7 +105,7 @@ export function routed(Screen: ComponentType<ScreenProps>) {
           persona={persona}
           replay={replay}
           toast={(m) => sonner.success(m)}
-          go={(screen) => navigate(PATHS[screen] ?? '/me')}
+          go={(screen) => navigate(resolvePath(screen))}
         />
       </div>
     )
