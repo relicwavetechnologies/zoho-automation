@@ -66,12 +66,25 @@ export function useConnections() {
   const [connecting, setConnecting] = useState<Provider | null>(null)
   const alive = useRef(true)
 
-  useEffect(() => () => { alive.current = false }, [])
+  useEffect(() => {
+    // Set on every mount, not just declared once at the top.
+    //
+    // React's development double-mount runs a component's effects, tears them
+    // down, and runs them again. A flag that is only ever set to `false` by the
+    // teardown is still `false` for the second mount, so that mount's fetch
+    // resolves into a guard that discards it — and `loading` never turns off.
+    // The page holds its skeletons forever, in dev only, which is exactly where
+    // it gets looked at.
+    alive.current = true
+    return () => { alive.current = false }
+  }, [])
 
   const load = useCallback(async () => {
     if (!token) return
-    // Settled, not all: a provider that is not configured on this deployment
-    // answers 503, and that must not take the other five down with it.
+    // `all` is safe here only because the mapper below never rejects: each
+    // provider catches its own failure and returns a row saying so. A provider
+    // that is not configured on this deployment answers 503, and that must not
+    // take the other five down with it.
     const results = await Promise.all(
       CONNECTABLE.map(async (provider): Promise<ProviderStatus> => {
         try {
