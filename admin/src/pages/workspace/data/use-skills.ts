@@ -36,7 +36,7 @@ export function useToolLabels(): (id: string) => string {
   return useCallback((id: string) => map.get(id) ?? id, [map])
 }
 
-export function useSkillsLabData() {
+export function useSkillRegistry() {
   const { token, session } = useAdminAuth()
   const scope = getAdminQueryScope(token)
   const companyId = useCompanyScope() // super-admin: selected company; company-admin: undefined
@@ -129,11 +129,17 @@ export function useSkillsLabData() {
     registryRevision: tree?.registryRevision ?? null,
     loading: treeQuery.isPending && !needsCompany,
     error,
+    /**
+     * The raw failure, not just its message.
+     *
+     * A 403 here is an answer — "you may not read this company's registry" —
+     * and telling it apart from a genuine outage needs the status code, which
+     * `error` above has already thrown away.
+     */
+    errorCause: treeQuery.error as unknown,
     needsCompany,
-    companyId,
     includeArchived,
     setIncludeArchived,
-    refresh: () => treeQuery.refetch().then(() => undefined),
     createFolder,
     renameFolder,
     moveFolder,

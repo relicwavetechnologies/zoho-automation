@@ -10,7 +10,7 @@ import { ConnectionGovernancePage } from "@/pages/ConnectionGovernancePage"
 import { OAuthCallbackPage } from "@/pages/OAuthCallbackPage"
 import { WebSearchPage } from "@/pages/WebSearchPage"
 import { MemoriesPage } from "@/pages/MemoriesPage"
-import { SkillsLabPage } from "@/pages/SkillsLabPage"
+import { CompanySkills } from "@/pages/workspace/screens-company-skills"
 import { routed } from "@/pages/workspace/routes"
 import { NoAccess } from "@/pages/workspace/ui"
 import {
@@ -112,6 +112,7 @@ const CompanyAuditRoute = routed(CompanyAudit)
 const CompanyPolicyRoute = routed(CompanyPolicy)
 const CompanyRunDetailRoute = routed(CompanyRunDetail)
 const CompanyPersonDetailRoute = routed(CompanyPersonDetail)
+const CompanySkillsRoute = routed(CompanySkills)
 const CompanyDepartmentDetailRoute = routed(CompanyDepartmentDetail)
 
 export function App() {
@@ -166,7 +167,7 @@ export function App() {
           <Route path="departments/:departmentId" element={<RequireScope kind="company"><CompanyDepartmentDetailRoute /></RequireScope>} />
           <Route path="ai-ops" element={<RequireScope kind="company"><CompanyAiOpsRoute /></RequireScope>} />
           <Route path="ai-ops/runs/:runId" element={<RequireScope kind="company"><CompanyRunDetailRoute /></RequireScope>} />
-          <Route path="skills" element={<RequireScope kind="company"><SkillsLabPage /></RequireScope>} />
+          <Route path="skills" element={<RequireScope kind="company"><CompanySkillsRoute /></RequireScope>} />
           <Route path="memories" element={<RequireScope kind="company"><MemoriesPage /></RequireScope>} />
           <Route path="guardrails" element={<RequireScope kind="company"><CompanyGuardrailsRoute /></RequireScope>} />
           <Route path="policy" element={<RequireScope kind="company"><CompanyPolicyRoute /></RequireScope>} />

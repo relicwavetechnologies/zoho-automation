@@ -177,7 +177,7 @@ export const isRefusal = (error: unknown): boolean =>
  * The confirm stays disabled until the field has something in it, so the
  * failure mode is "nothing happens" rather than a 400 from the backend.
  */
-export function Prompt({ title, description, label, placeholder, confirm, secret, onConfirm, onClose }: {
+export function Prompt({ title, description, label, placeholder, confirm, secret, initial, onConfirm, onClose }: {
   title: string
   description?: string
   label: string
@@ -185,10 +185,15 @@ export function Prompt({ title, description, label, placeholder, confirm, secret
   confirm: string
   /** Masks the field and stops the browser offering to remember it. */
   secret?: boolean
+  /**
+   * Seeds the field — for renames, where the current value is what you are
+   * editing rather than a hint. Never combine with `secret`.
+   */
+  initial?: string
   onConfirm: (value: string) => Promise<void> | void
   onClose: () => void
 }) {
-  const [value, setValue] = useState('')
+  const [value, setValue] = useState(initial ?? '')
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -230,6 +235,55 @@ export function Prompt({ title, description, label, placeholder, confirm, secret
           <div className="ws-modal-f">
             <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
             <button type="button" className="btn primary" onClick={() => void submit()} disabled={busy || !value.trim()}>
+              {busy ? 'Working…' : confirm}
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
+/**
+ * Ask before something irreversible, and say what it actually does.
+ *
+ * The pair to `Prompt`: same overlay, no field. The `body` is where the honesty
+ * goes — "sub-folders are archived too" is the sentence that stops a person
+ * finding out afterwards.
+ */
+export function Confirm({ title, body, confirm, onConfirm, onClose }: {
+  title: string
+  body?: string
+  confirm: string
+  onConfirm: () => Promise<void> | void
+  onClose: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const submit = async () => {
+    if (busy) return
+    setBusy(true)
+    try { await onConfirm(); onClose() } finally { setBusy(false) }
+  }
+
+  return (
+    <>
+      <div className="ws-scrim" onClick={onClose} />
+      <div className="ws-modal-wrap">
+        <div className="ws-modal" role="dialog" aria-label={title}>
+          <div className="ws-modal-h">
+            <h2>{title}</h2>
+            {body ? <p>{body}</p> : null}
+          </div>
+          <div className="ws-modal-f">
+            <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+            <button type="button" className="btn primary" onClick={() => void submit()} disabled={busy}>
               {busy ? 'Working…' : confirm}
             </button>
           </div>

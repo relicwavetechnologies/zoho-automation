@@ -492,7 +492,6 @@ export function CompanyPeople({ replay, go }: Props) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Find anyone"
-            style={{ border: 0, background: 'none', outline: 'none', flex: 1, fontSize: 13, color: 'var(--cur-ink)', fontFamily: 'inherit' }}
           />
         </div>
       </div>
@@ -831,7 +830,6 @@ export function CompanyAudit({ replay }: Props) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search changes"
-            style={{ border: 0, background: 'none', outline: 'none', flex: 1, fontSize: 13, color: 'var(--cur-ink)', fontFamily: 'inherit' }}
           />
         </div>
         <select className="select" value={actor} onChange={(e) => setActor(e.target.value)}>
@@ -1056,7 +1054,6 @@ export function CompanyAiOps({ replay, go }: Props) {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search runs"
-                style={{ border: 0, background: 'none', outline: 'none', flex: 1, fontSize: 13, color: 'var(--cur-ink)', fontFamily: 'inherit' }}
               />
             </div>
             {channelsPresent.map((c) => (

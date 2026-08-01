@@ -342,7 +342,6 @@ export function TeamPeople({ replay, toast }: Props) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Find someone"
-            style={{ border: 0, background: 'none', outline: 'none', flex: 1, fontSize: 13, color: 'var(--cur-ink)', fontFamily: 'inherit' }}
           />
         </div>
       </div>
@@ -465,7 +464,6 @@ function AddPersonDrawer({ roles, search, onAdd, onClose }: {
           value={picked ? displayName(picked.name, picked.email) : query}
           onChange={(e) => { setPicked(null); setQuery(e.target.value) }}
           placeholder="Search by name or email"
-          style={{ border: 0, background: 'none', outline: 'none', flex: 1, fontSize: 13, color: 'var(--cur-ink)', fontFamily: 'inherit' }}
         />
       </div>
 

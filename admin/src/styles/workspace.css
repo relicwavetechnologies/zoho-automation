@@ -369,6 +369,9 @@
   display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px;
   font-size: 11px; background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline); color: var(--cur-body);
 }
+/* A tag that is reporting something that did not go well. Amber, not red: an
+   audit row saying "denied" is a record, not an incident. */
+.cur .ws-tag[data-tone="warn"] { color: var(--ws-warning); border-color: color-mix(in srgb, var(--ws-warning) 34%, transparent); }
 .cur .ws-num { font-size: 30px; letter-spacing: -0.03em; font-weight: 400; }
 .cur .ws-num-sm { font-size: 20px; letter-spacing: -0.02em; font-weight: 400; }
 .cur .ws-lbl { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--cur-muted); }
@@ -756,3 +759,64 @@
 }
 .cur .ws-more svg { transition: transform .14s ease; }
 .cur .ws-more[data-open="true"] svg { transform: rotate(90deg); }
+
+/* ── Skills library ───────────────────────────────────
+   A tree on the left, one thing at a time on the right. The registry has real
+   nesting — company-wide folders plus a root per department — and a flat list
+   would hide where a skill actually lives, which is exactly what decides who
+   can be given it. */
+.cur .ws-skills {
+  display: grid; gap: 16px; grid-template-columns: 292px minmax(0, 1fr); align-items: start;
+}
+@media (max-width: 1080px) { .cur .ws-skills { grid-template-columns: 1fr; } }
+.cur .ws-skills .search { max-width: none; }
+
+.cur .ws-tree { padding: 4px 0 8px; max-height: 62vh; overflow-y: auto; border-top: 1px solid var(--cur-hairline-soft); }
+.cur .ws-node {
+  display: flex; align-items: center; gap: 7px; width: 100%; padding: 5px 12px 5px 0;
+  border: 0; background: none; font-family: inherit; font-size: 13px; color: var(--cur-body);
+  text-align: left; cursor: pointer;
+}
+.cur .ws-node:hover { background: var(--cur-canvas-soft); }
+.cur .ws-node[data-on="true"] { background: var(--cur-canvas-soft); color: var(--cur-ink); font-weight: 500; }
+.cur .ws-node .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cur .ws-node .ct { font-size: 11px; color: var(--cur-muted); flex-shrink: 0; }
+.cur .ws-node .cv { color: var(--cur-muted-soft); flex-shrink: 0; transition: transform .12s ease; }
+.cur .ws-node[data-open="true"] > .cv { transform: rotate(90deg); }
+.cur .ws-node-ic { color: var(--cur-muted); flex-shrink: 0; }
+.cur .ws-node-ic[data-skill="true"] { color: var(--cur-body); }
+
+/* Facts about one thing. Two columns so the labels line up and the eye can run
+   down the values rather than hunting for them. */
+.cur .ws-kv { border-top: 1px solid var(--cur-hairline-soft); }
+.cur .ws-kv > div {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 20px;
+  padding: 11px 18px; border-top: 1px solid var(--cur-hairline-soft);
+}
+.cur .ws-kv > div:first-child { border-top: 0; }
+.cur .ws-kv span { font-size: 12px; color: var(--cur-muted); flex-shrink: 0; }
+.cur .ws-kv b { font-size: 13px; font-weight: 400; color: var(--cur-ink); text-align: right; min-width: 0; }
+
+/* The skill recipe, verbatim. It is written as markdown and read as text; the
+   agent gets these exact characters, so pretty-printing it would be a lie. */
+.cur .ws-code {
+  margin: 0; padding: 16px 18px; border-top: 1px solid var(--cur-hairline-soft);
+  font-family: var(--cur-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px; line-height: 1.6; color: var(--cur-body);
+  white-space: pre-wrap; word-break: break-word; max-height: 60vh; overflow-y: auto;
+}
+
+.cur .ws-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--cur-muted); cursor: pointer; }
+.cur .ws-check input { accent-color: var(--cur-ink); }
+
+.cur .ws-chev { color: var(--cur-muted-soft); flex-shrink: 0; }
+
+.cur .ws-row[data-on="true"] { background: var(--cur-canvas-soft); }
+
+/* Every search field styled its own input inline. One rule instead, so the
+   five call sites stay in step when it changes. */
+.cur .search input {
+  flex: 1; min-width: 0; border: 0; background: none; outline: none;
+  font-family: inherit; font-size: 13px; color: var(--cur-ink);
+}
+.cur .search input::placeholder { color: var(--cur-muted-soft); }

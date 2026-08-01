@@ -472,6 +472,7 @@ export const DATA_SOURCES: Record<string, { state: DataState; note: string }> = 
   permissions: { state: 'live', note: 'GET /api/desktop/auth/tools/:toolId/manage — real today' },
   teamPeople: { state: 'live', note: 'GET /api/desktop/departments/:id/manage — real today' },
   skills: { state: 'not-wired', note: 'The gateway serves skills.list. These panels still render fixtures — wire them before anyone trusts these rows.' },
+  skillRegistry: { state: 'live', note: 'GET /api/admin/skill-registry/* — real today, including the grants' },
   profile: { state: 'live', note: 'GET /api/desktop/auth/me + /auth/model-options — real today' },
   myUsage: { state: 'live', note: 'GET /api/desktop/me/usage — real today' },
   myRuns: { state: 'live', note: 'GET /api/desktop/me/runs — real today' },
