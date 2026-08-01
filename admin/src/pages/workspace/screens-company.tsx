@@ -16,8 +16,7 @@ import {
   Search, ShieldCheck, Sparkles, Trash2, TriangleAlert, Users,
 } from 'lucide-react'
 import {
-  ACTION_GROUPS, COMPANY_CEILING, CONNECTORS, MEMORIES, PEOPLE, SKILLS, TOOLS, toolById,
-  type ActionGroup,
+  CONNECTORS, MEMORIES, SKILLS, toolById,
 } from './fixtures'
 import {
   Bar, Empty, Fade, PageHeader, Panel, ProviderMark, Seg, Skel, SkelRows,
@@ -27,8 +26,8 @@ import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import {
   ROLE_LABEL, ago, displayName, durationLabel, initialsOf,
   useAuditLog, useCompanyDepartments, useDepartmentSpend, useDirectory,
-  useOverview, useProxyPolicies, useProxyStatus, useRuns, useSpendByMember, useSpendByModel, useSpendDaily,
-  type Run,
+  useCompanyCeiling, useOverview, useProxyPolicies, useProxyStatus, useRuns, useSpendByMember, useSpendByModel, useSpendDaily,
+  type CeilingAction, type CeilingTool, type Run,
 } from './data/use-company'
 
 type Props = { replay: number; toast: (m: string) => void; go: (screen: string) => void }
@@ -322,13 +321,46 @@ export function CompanyHome({ replay, go }: Props) {
    ceiling, teams grant beneath it, and a team grant above it silently does
    nothing. Placing it in the same app as the team matrix is the point. */
 export function CompanyPolicy({ replay, toast }: Props) {
+  const { session } = useAdminAuth()
   const [r1] = useStaged([300], replay)
-  const [role, setRole] = useState<'MEMBER' | 'COMPANY_ADMIN'>('MEMBER')
+  const [role, setRole] = useState<string | null>(null)
+  const [saving, setSaving] = useState<string | null>(null)
+  const { tools, loading, error, setCeiling } = useCompanyCeiling()
+
+  // Roles come from the snapshot rather than a hardcoded pair, because a
+  // company can define its own and a missing column is a permission nobody
+  // can see they granted.
+  const roles = tools[0]?.roles.map((r) => r.role) ?? []
+  const selected = role && roles.includes(role) ? role : roles[0] ?? null
+  const columns = useMemo(() => {
+    const seen: string[] = []
+    for (const t of tools) for (const a of t.supportedActions) if (!seen.includes(a)) seen.push(a)
+    return seen
+  }, [tools])
+
+  const cellFor = (tool: CeilingTool, action: string) =>
+    tool.roles.find((r) => r.role === selected)?.actions.find((a) => a.actionGroup === action)
+
+  const toggle = async (tool: CeilingTool, action: string, current: CeilingAction) => {
+    if (!selected) return
+    const key = `${tool.tool.toolId}:${action}`
+    setSaving(key)
+    try {
+      await setCeiling(tool.tool.toolId, selected, action, !current.storedAllowed)
+      toast(current.storedAllowed
+        ? `No team may grant ${tool.actionLabels[action] ?? action} now`
+        : `Teams may grant ${tool.actionLabels[action] ?? action}`)
+    } catch {
+      toast('Could not change the ceiling')
+    } finally {
+      setSaving(null)
+    }
+  }
 
   return (
     <>
       <PageHeader
-        eyebrow="Acme Technologies"
+        eyebrow={session?.companyName ?? 'Company'}
         title="Company ceiling"
         description="The highest anything can go. A department manager grants within this — never above it."
       />
@@ -342,52 +374,67 @@ export function CompanyPolicy({ replay, toast }: Props) {
           </div>
         </div>
 
-        <div className="filters">
-          <Seg
-            value={role}
-            onChange={setRole}
-            options={[{ value: 'MEMBER', label: 'Everyone' }, { value: 'COMPANY_ADMIN', label: 'Admins' }]}
-          />
-        </div>
+        {roles.length > 1 ? (
+          <div className="filters">
+            <Seg
+              value={selected ?? ''}
+              onChange={setRole}
+              options={roles.map((r) => ({ value: r, label: ROLE_LABEL[r] ?? r }))}
+            />
+          </div>
+        ) : null}
 
         <Panel title="What may be granted at all" source="permissions">
-          {!r1 ? <SkelRows n={6} icon={false} /> : (
+          {!r1 || loading ? <SkelRows n={6} icon={false} /> : error ? (
+            <Empty icon={Lock} title="This view is company-admin only" body={error} />
+          ) : tools.length === 0 ? (
+            <Empty title="No configurable tools" />
+          ) : (
             <Fade>
               <div style={{ overflowX: 'auto' }}>
                 <table className="ws-matrix">
                   <thead>
                     <tr>
                       <th>Tool</th>
-                      {ACTION_GROUPS.map((a) => <th key={a} className="act">{a}</th>)}
+                      {columns.map((a) => <th key={a} className="act">{a}</th>)}
                     </tr>
                   </thead>
                   <tbody>
-                    {TOOLS.map((tool) => (
-                      <tr key={tool.id}>
+                    {tools.map((tool) => (
+                      <tr key={tool.tool.toolId}>
                         <td>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                            <span style={{ fontWeight: 500 }}>{tool.name}</span>
-                            <span className="ws-sub">{tool.family}</span>
-                            {tool.adminOnly ? <span className="ws-tag"><Lock size={10} />Admins</span> : null}
+                            <span style={{ fontWeight: 500 }}>{tool.tool.name}</span>
                           </div>
                         </td>
-                        {ACTION_GROUPS.map((action) => {
-                          const supported = tool.actions.includes(action)
-                          if (!supported) return <td key={action} className="act"><span className="ws-cell-na">·</span></td>
-                          const on = (COMPANY_CEILING[tool.id] ?? []).includes(action as ActionGroup)
-                          const forbidden = role === 'MEMBER' && tool.adminOnly
+                        {columns.map((action) => {
+                          if (!tool.supportedActions.includes(action)) {
+                            return <td key={action} className="act"><span className="ws-cell-na">·</span></td>
+                          }
+                          const cell = cellFor(tool, action)
+                          if (!cell) return <td key={action} className="act"><span className="ws-cell-na">·</span></td>
+                          // The whole tool being off for this role outranks the
+                          // action row, so the action can read "allow" and mean
+                          // nothing. Show the clamp rather than the lie.
+                          const clamped = cell.clampReason !== null
+                          const key = `${tool.tool.toolId}:${action}`
                           return (
                             <td key={action} className="act">
                               <button
                                 type="button"
                                 className="ws-cell"
-                                data-on={on && !forbidden}
-                                data-locked={forbidden}
-                                disabled={forbidden}
-                                title={forbidden ? 'This tool is admin-only by design' : on ? 'Teams may grant this' : 'No team may grant this'}
-                                onClick={() => toast(`${on ? 'Blocked' : 'Allowed'} ${action} on ${tool.name}`)}
+                                data-on={cell.effectiveAllowed}
+                                data-locked={clamped}
+                                disabled={saving === key}
+                                title={
+                                  clamped
+                                    ? `The whole tool is switched off for ${ROLE_LABEL[selected ?? ''] ?? selected}, so this action does nothing`
+                                    : `${cell.effectiveAllowed ? 'Teams may grant' : 'No team may grant'} ${tool.actionLabels[action] ?? action}`
+                                      + (cell.storedProvenance === 'override' ? ' — set here' : ' — company default')
+                                }
+                                onClick={() => void toggle(tool, action, cell)}
                               >
-                                {forbidden ? <Lock size={11} /> : on ? <Check size={13} /> : null}
+                                {clamped ? <Lock size={11} /> : cell.effectiveAllowed ? <Check size={13} /> : null}
                               </button>
                             </td>
                           )
@@ -400,7 +447,7 @@ export function CompanyPolicy({ replay, toast }: Props) {
             </Fade>
           )}
           <div className="ws-panel-foot">
-            Deleting mail and deleting Airtable records are off company-wide — no team can turn them on.
+            An action with no stored row is allowed by default — the ceiling only ever narrows what the tool itself permits.
           </div>
         </Panel>
       </div>

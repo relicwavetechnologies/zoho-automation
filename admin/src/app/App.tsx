@@ -9,7 +9,6 @@ import { LoginPage } from "@/pages/LoginPage"
 import { MemberInviteAcceptPage } from "@/pages/MemberInviteAcceptPage"
 import { MemberDetailPage } from "@/pages/MemberDetailPage"
 import { ConnectionGovernancePage } from "@/pages/ConnectionGovernancePage"
-import { CompanyControlsPage } from "@/pages/CompanyControlsPage"
 import { OAuthCallbackPage } from "@/pages/OAuthCallbackPage"
 import { WebSearchPage } from "@/pages/WebSearchPage"
 import { RunDetailPage } from "@/pages/RunDetailPage"
@@ -25,7 +24,7 @@ import {
 } from "@/pages/workspace/screens-team"
 import {
   CompanyAiOps, CompanyAudit, CompanyConnections, CompanyDepartments, CompanyGuardrails,
-  CompanyHome, CompanyPeople,
+  CompanyHome, CompanyPeople, CompanyPolicy,
 } from "@/pages/workspace/screens-company"
 import { ConnectFlow } from "@/pages/workspace/screens-connect"
 import { Artifacts } from "@/pages/workspace/screens-artifacts"
@@ -108,6 +107,7 @@ const CompanyDepartmentsRoute = routed(CompanyDepartments)
 const CompanyAiOpsRoute = routed(CompanyAiOps)
 const CompanyGuardrailsRoute = routed(CompanyGuardrails)
 const CompanyAuditRoute = routed(CompanyAudit)
+const CompanyPolicyRoute = routed(CompanyPolicy)
 
 export function App() {
   return (
@@ -164,9 +164,7 @@ export function App() {
           <Route path="skills" element={<RequireScope kind="company"><SkillsLabPage /></RequireScope>} />
           <Route path="memories" element={<RequireScope kind="company"><MemoriesPage /></RequireScope>} />
           <Route path="guardrails" element={<RequireScope kind="company"><CompanyGuardrailsRoute /></RequireScope>} />
-          {/* Company ceiling — still the capability-governance screen; the full
-              tool ceiling matrix is the next thing to wire. */}
-          <Route path="policy" element={<RequireScope kind="company"><CompanyControlsPage /></RequireScope>} />
+          <Route path="policy" element={<RequireScope kind="company"><CompanyPolicyRoute /></RequireScope>} />
           {/* Connections — fixture overview; web search is the one real company
               connection surface that exists today. */}
           <Route path="connections" element={<RequireScope kind="company"><CompanyConnectionsRoute /></RequireScope>} />

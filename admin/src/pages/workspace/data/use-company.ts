@@ -284,6 +284,89 @@ export type AuditEntry = {
 export const useAuditLog = (limit = 100) =>
   useAdminResource<AuditEntry[]>(`/audit/logs?limit=${limit}`, [])
 
+/* ── The company ceiling ──────────────────────────────── */
+
+export type CeilingAction = {
+  actionGroup: string
+  /** What a person in this role can actually do, after the tool gate. */
+  effectiveAllowed: boolean
+  /** What the action row says on its own — `true` by default. */
+  storedAllowed: boolean
+  storedProvenance: 'override' | 'default'
+  /**
+   * Set when the whole tool is switched off for the role, which overrides every
+   * action beneath it. The action row can say allow and mean nothing.
+   */
+  clampReason: 'company_tool_disabled' | null
+}
+
+export type CeilingTool = {
+  tool: { toolId: string; name: string; description: string }
+  supportedActions: string[]
+  actionLabels: Record<string, string>
+  roles: { role: string; actions: CeilingAction[] }[]
+}
+
+/**
+ * The ceiling every department grant is clamped to.
+ *
+ * Same route as the manager's editor with `scope=global` — one editor, two
+ * audiences, which is why the shape of this hook mirrors useDepartmentMatrix.
+ * Only company admins are admitted; a manager gets a 403 per tool and sees an
+ * empty grid rather than a wrong one.
+ */
+export function useCompanyCeiling() {
+  const { token } = useAdminAuth()
+  const [tools, setTools] = useState<CeilingTool[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    if (!token) { setLoading(false); return }
+    try {
+      const inventory = await api.get<{ tools: { tool: { toolId: string }; managementScopes: { kind: string }[] }[] }>(
+        '/api/desktop/auth/tools', token, { quiet: true, raw: true },
+      )
+      // Only tools this admin may actually govern globally — listing one that
+      // cannot be edited is a row whose switches silently do nothing.
+      const governable = inventory.tools.filter((t) => t.managementScopes.some((s) => s.kind === 'global'))
+      const snapshots = await Promise.all(governable.map((t) =>
+        api.get<CeilingTool>(
+          `/api/desktop/auth/tools/${t.tool.toolId}/manage?scope=global`, token, { quiet: true, raw: true },
+        ).catch(() => null),
+      ))
+      setTools(snapshots.filter((s): s is CeilingTool => s !== null))
+      setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load the company ceiling.')
+      setTools([])
+    } finally {
+      setLoading(false)
+    }
+  }, [token])
+
+  useEffect(() => { void load() }, [load])
+
+  const reloadTool = useCallback(async (toolId: string) => {
+    if (!token) return
+    const fresh = await api.get<CeilingTool>(
+      `/api/desktop/auth/tools/${toolId}/manage?scope=global`, token, { quiet: true, raw: true },
+    )
+    setTools((prev) => prev.map((t) => (t.tool.toolId === toolId ? fresh : t)))
+  }, [token])
+
+  const setCeiling = useCallback(async (toolId: string, role: string, actionGroup: string, enabled: boolean) => {
+    if (!token) return
+    await api.put(
+      `/api/desktop/auth/tools/${toolId}/global/roles/${role}/actions/${actionGroup}`,
+      { enabled }, token, { raw: true },
+    )
+    await reloadTool(toolId)
+  }, [token, reloadTool])
+
+  return { tools, loading, error, refresh: load, setCeiling }
+}
+
 /* ── Provider keys and per-person limits ──────────────── */
 
 export type ProxyKeyStatus = {
