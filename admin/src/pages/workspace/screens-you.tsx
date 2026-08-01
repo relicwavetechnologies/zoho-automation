@@ -11,12 +11,13 @@ import {
   Eye, Gauge, Link2, Lock, MessageSquare, Plus, ShieldCheck, Sparkles, Trash2, TriangleAlert, X,
 } from 'lucide-react'
 import {
-  AWAITING_ME, CONNECTORS, MEMORIES, MY_CONNECTIONS, MY_RUNS, MY_USAGE, PEOPLE, REQUESTED_BY_ME,
-  SKILLS, TOOLS, personById, resolveGrants, toolById,
-  type Connection, type Memory, type Persona, type Provider,
+  CONNECTORS, MEMORIES, PEOPLE, SKILLS, TOOLS, personById, resolveGrants, toolById,
+  type Memory, type Persona, type Provider,
 } from './fixtures'
-import { useConnectionGrants, useConnections, type LiveConnection } from './data/use-connections'
+import { useAdminAuth } from '@/auth/AdminAuthProvider'
+import { CONNECTABLE, useConnectionGrants, useConnections, type LiveConnection } from './data/use-connections'
 import { ago, expiryLabel, useApprovals } from './data/use-approvals'
+import { changePct, durationLabel, useMyRuns, useMyUsage, type MyRun } from './data/use-my-activity'
 import {
   Bar, ChangePreview, DataNote, Drawer, Empty, Fade, Matrix, PageHeader, Panel, Provenance,
   ProviderMark, Seg, Skel, SkelRows, Spark, Switch, compact, listPhrase, money,
@@ -31,17 +32,31 @@ type ScreenProps = { persona: Persona; replay: number; toast: (m: string) => voi
    with a comparison rather than a bare count. */
 export function YouHome({ persona, replay, toast, go }: ScreenProps) {
   const [r1, r2, r3] = useStaged([260, 520, 800], replay)
-  const viewer = persona === 'member' ? 'Ananya' : persona === 'manager' ? 'Arjun' : 'Dev'
+  const { session } = useAdminAuth()
+  const { awaitingMe, requestedByMe, loading: approvalsLoading } = useApprovals()
+  const { usage, loading: usageLoading } = useMyUsage(30)
+  const { runs, loading: runsLoading } = useMyRuns(4)
+  const { byProvider, loading: connectionsLoading } = useConnections()
+  // First name only. A dashboard greeting reading "Welcome back, Ananya Mehta"
+  // is a form letter; the surname adds nothing the person does not know.
+  const viewer = (session?.name ?? session?.email ?? 'there').split(/[\s@]/)[0]
   const brokenSkill = SKILLS.find((s) => s.blockedBy)
+  const runChange = changePct(usage.runs, usage.previousRuns)
+  const connected = CONNECTABLE
+    .map((provider) => ({ provider, status: byProvider.get(provider) }))
+    .filter((entry) => entry.status?.connected)
   const attention = [
-    ...AWAITING_ME.map((a) => ({
-      tone: 'act' as const,
-      title: a.summary,
-      body: a.detail,
-      meta: [`${a.requestedBy} · ${a.requestedAt}`, `Expires ${a.expiresIn}`],
-      cta: 'Review',
-      onClick: () => go('approvals'),
-    })),
+    ...awaitingMe.map((a) => {
+      const expiry = expiryLabel(a.expiresAt)
+      return {
+        tone: 'act' as const,
+        title: a.description?.summary ?? `${a.toolId} · ${a.action}`,
+        body: a.description?.detail ?? '',
+        meta: [`${a.requestedByName} · ${ago(a.requestedAt)}`, expiry ? `Expires ${expiry.text}` : 'No deadline'],
+        cta: 'Review',
+        onClick: () => go('approvals'),
+      }
+    }),
     ...(brokenSkill
       ? [{
           tone: 'warn' as const,
@@ -52,16 +67,16 @@ export function YouHome({ persona, replay, toast, go }: ScreenProps) {
           onClick: () => go('access'),
         }]
       : []),
-    ...(REQUESTED_BY_ME.some((a) => a.expiresIn === 'expired')
-      ? [{
-          tone: 'warn' as const,
-          title: 'One of your requests expired unanswered',
-          body: 'Clearing 42 duplicate export files was never approved, so Divo stopped and did nothing.',
-          meta: ['2 hours ago'],
-          cta: 'Ask again',
-          onClick: () => toast('Request re-sent to Arjun Shah'),
-        }]
-      : []),
+    ...requestedByMe
+      .filter((a) => expiryLabel(a.expiresAt)?.expired && a.status === 'pending')
+      .map((a) => ({
+        tone: 'warn' as const,
+        title: 'One of your requests expired unanswered',
+        body: `${a.description?.summary ?? a.toolId} was never approved, so Divo stopped and did nothing.`,
+        meta: [ago(a.requestedAt)],
+        cta: 'Ask again',
+        onClick: () => toast('Ask in Lark or raise it with your manager — Divo cannot re-open an expired request.'),
+      })),
   ]
 
   return (
@@ -75,7 +90,7 @@ export function YouHome({ persona, replay, toast, go }: ScreenProps) {
           title="Needs you"
           description={attention.length ? `${attention.length} item${attention.length > 1 ? 's' : ''} waiting` : undefined}
         >
-          {!r1 ? <SkelRows n={2} icon={false} /> : attention.length === 0 ? (
+          {!r1 || approvalsLoading ? <SkelRows n={2} icon={false} /> : attention.length === 0 ? (
             <Empty icon={Check} title="Nothing is waiting" body="Approvals and blocked work will show up here." />
           ) : (
             <Fade>
@@ -103,7 +118,7 @@ export function YouHome({ persona, replay, toast, go }: ScreenProps) {
             aside={<button type="button" className="btn" onClick={() => go('usage')}>Details</button>}
           >
             <div className="ws-panel-body">
-              {!r2 ? (
+              {!r2 || usageLoading ? (
                 <>
                   <div style={{ display: 'flex', gap: 40 }}>
                     <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
@@ -117,44 +132,53 @@ export function YouHome({ persona, replay, toast, go }: ScreenProps) {
                   <div style={{ display: 'flex', gap: 44, flexWrap: 'wrap' }}>
                     <div>
                       <div className="ws-lbl">Tasks run</div>
-                      <div className="ws-num" style={{ marginTop: 8 }}>{MY_USAGE.runs30d}</div>
+                      <div className="ws-num" style={{ marginTop: 8 }}>{usage.runs}</div>
                       <div className="ws-sub" style={{ marginTop: 5, display: 'flex', alignItems: 'center', gap: 5 }}>
-                        <ArrowUpRight size={13} style={{ color: 'var(--cur-success)' }} />
-                        {Math.round(((MY_USAGE.runs30d - MY_USAGE.runsPrev) / MY_USAGE.runsPrev) * 100)}% vs last month
+                        {runChange >= 0 ? <ArrowUpRight size={13} style={{ color: 'var(--cur-success)' }} /> : null}
+                        {runChange >= 0 ? '+' : '−'}{Math.abs(runChange)}% vs the month before
                       </div>
                     </div>
                     <div>
                       <div className="ws-lbl">Cost</div>
-                      <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(MY_USAGE.spend30d)}</div>
-                      <div className="ws-sub" style={{ marginTop: 5 }}>{money(MY_USAGE.spendToday)} today</div>
+                      <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(usage.spendUsd)}</div>
+                      <div className="ws-sub" style={{ marginTop: 5 }}>{money(usage.spendTodayUsd)} today</div>
                     </div>
                   </div>
-                  <div style={{ marginTop: 22 }}><Spark data={MY_USAGE.daily} /></div>
+                  <div style={{ marginTop: 22 }}><Spark data={usage.series.map((p) => p.spendUsd)} /></div>
                 </Fade>
               )}
             </div>
           </Panel>
 
           <Panel title="Connected" aside={<button type="button" className="btn" onClick={() => go('connections')}>Manage</button>}>
-            {!r2 ? <SkelRows n={3} /> : (
+            {!r2 || connectionsLoading ? <SkelRows n={3} /> : connected.length === 0 ? (
+              <Empty icon={Link2} title="Nothing connected yet" body="Divo can only act through accounts you connect." />
+            ) : (
               <Fade>
                 <div className="ws-rows">
-                  {MY_CONNECTIONS.map((c) => (
-                    <div className="ws-row" key={c.id}>
-                      <ProviderMark provider={c.provider} />
-                      <div className="ws-row-main">
-                        <b>{providerName(c.provider)}</b>
-                        <p>{c.ownerType === 'company' ? 'Shared by your company' : c.account}</p>
+                  {connected.map(({ provider, status }) => {
+                    const first = status!.connections[0]
+                    return (
+                      <div className="ws-row" key={provider}>
+                        <ProviderMark provider={provider} />
+                        <div className="ws-row-main">
+                          <b>{providerName(provider)}</b>
+                          <p>{first?.ownerType === 'company' ? 'Shared by your company' : first?.accountEmail ?? first?.label}</p>
+                        </div>
+                        <span className="badge b-ok"><span className="dot" />On</span>
                       </div>
-                      <span className="badge b-ok"><span className="dot" />On</span>
+                    )
+                  })}
+                  {CONNECTABLE.length - connected.length > 0 ? (
+                    <div className="ws-row click" onClick={() => go('connections')}>
+                      <span className="ws-ic"><Plus size={14} /></span>
+                      <div className="ws-row-main">
+                        <b className="muted" style={{ fontWeight: 400 }}>
+                          {CONNECTABLE.length - connected.length} more you can connect
+                        </b>
+                      </div>
                     </div>
-                  ))}
-                  <div className="ws-row">
-                    <span className="ws-ic"><Plus size={14} /></span>
-                    <div className="ws-row-main">
-                      <b className="muted" style={{ fontWeight: 400 }}>3 more you can connect</b>
-                    </div>
-                  </div>
+                  ) : null}
                 </div>
               </Fade>
             )}
@@ -162,8 +186,10 @@ export function YouHome({ persona, replay, toast, go }: ScreenProps) {
         </div>
 
         <Panel title="Recent activity" source="myRuns" aside={<button type="button" className="btn" onClick={() => go('usage')}>All activity</button>}>
-          {!r3 ? <SkelRows n={4} icon={false} /> : (
-            <Fade><RunList runs={MY_RUNS.slice(0, 4)} /></Fade>
+          {!r3 || runsLoading ? <SkelRows n={4} icon={false} /> : runs.length === 0 ? (
+            <Empty icon={Activity} title="Nothing yet" body="Runs appear here once you ask Divo to do something." />
+          ) : (
+            <Fade><RunList runs={runs} /></Fade>
           )}
         </Panel>
       </div>
@@ -171,33 +197,39 @@ export function YouHome({ persona, replay, toast, go }: ScreenProps) {
   )
 }
 
-function RunList({ runs }: { runs: typeof MY_RUNS }) {
+function RunList({ runs }: { runs: MyRun[] }) {
   return (
     <div className="ws-rows">
-      {runs.map((r) => (
-        <div className="ws-row" key={r.id}>
-          <div className="ws-row-main">
-            <b>
-              {r.summary}
-              {r.status === 'running' && r.channel === 'lark' ? (
-                <span className="ws-note" title="Lark runs are never closed by the backend — status and duration are unreliable for this channel.">
-                  status unknown
-                </span>
-              ) : null}
-            </b>
-            <p>
-              {r.when} · {r.channel === 'lark' ? 'Lark' : 'Desktop'}
-              {r.duration ? ` · ${r.duration}` : ''} · {r.tools.map((t) => toolById(t)?.name).filter(Boolean).join(', ')}
-            </p>
+      {runs.map((r) => {
+        const duration = durationLabel(r.durationMs)
+        return (
+          <div className="ws-row" key={r.id}>
+            <div className="ws-row-main">
+              <b>
+                {r.summary ?? r.entrypoint}
+                {r.status === 'running' && r.channel === 'lark' ? (
+                  <span className="ws-note" title="Lark runs are never closed by the backend — status and duration are unreliable for this channel.">
+                    status unknown
+                  </span>
+                ) : null}
+              </b>
+              <p>
+                {ago(r.startedAt)} · {r.channel === 'lark' ? 'Lark' : 'Desktop'}
+                {duration ? ` · ${duration}` : ''}
+                {r.errorMessage ? ` · ${r.errorMessage}` : ''}
+              </p>
+            </div>
+            <div className="ws-row-act">
+              {/* Zero means nothing was attributed to this run, not that it was
+                  free — so it reads as a dash rather than an exact $0.00. */}
+              <span className="ws-sub">{r.costUsd > 0 ? money(r.costUsd) : '—'}</span>
+              {r.status === 'failed' ? <span className="badge b-err"><span className="dot" />Failed</span> : null}
+              {r.status === 'completed' ? <span className="badge b-ok"><span className="dot" />Done</span> : null}
+              {r.status === 'running' ? <span className="badge b-run"><span className="dot" />Running</span> : null}
+            </div>
           </div>
-          <div className="ws-row-act">
-            <span className="ws-sub">{money(r.costUsd)}</span>
-            {r.status === 'failed' ? <span className="badge b-err"><span className="dot" />Failed</span> : null}
-            {r.status === 'completed' ? <span className="badge b-ok"><span className="dot" />Done</span> : null}
-            {r.status === 'running' ? <span className="badge b-run"><span className="dot" />Running</span> : null}
-          </div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -754,7 +786,11 @@ export function YouSkills({ replay, toast }: ScreenProps) {
 /* ══ Usage ═════════════════════════════════════════════ */
 export function YouUsage({ replay }: ScreenProps) {
   const [r1, r2] = useStaged([300, 620], replay)
-  const budgetPct = (MY_USAGE.spend30d / MY_USAGE.budgetUsd) * 100
+  const { usage, loading } = useMyUsage(30)
+  const { runs, loading: runsLoading } = useMyRuns(20)
+  const ready = r1 && !loading
+  const runsReady = r2 && !runsLoading
+  const runChange = changePct(usage.runs, usage.previousRuns)
 
   return (
     <>
@@ -764,69 +800,54 @@ export function YouUsage({ replay }: ScreenProps) {
         description="What Divo has done for you and what it cost. Cost is priced from real token counts, not estimated."
       />
       <div className="ws-stack">
-        <div className="ws-cols">
-          <Panel title="Last 30 days" source="myUsage">
-            <div className="ws-panel-body">
-              {!r1 ? (<><Skel w={140} h={30} /><div style={{ height: 22 }} /><Skel w="100%" h={46} /></>) : (
-                <Fade>
-                  <div style={{ display: 'flex', gap: 44, flexWrap: 'wrap' }}>
-                    <div>
-                      <div className="ws-lbl">Cost</div>
-                      <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(MY_USAGE.spend30d)}</div>
-                    </div>
-                    <div>
-                      <div className="ws-lbl">Tasks</div>
-                      <div className="ws-num" style={{ marginTop: 8 }}>{MY_USAGE.runs30d}</div>
-                    </div>
-                    <div>
-                      <div className="ws-lbl">Tokens</div>
-                      <div className="ws-num" style={{ marginTop: 8 }}>{compact(MY_USAGE.tokensIn + MY_USAGE.tokensOut)}</div>
-                      <div className="ws-sub" style={{ marginTop: 5 }}>{MY_USAGE.cacheSavingsPct}% served from cache</div>
+        <Panel title="Last 30 days" source="myUsage">
+          <div className="ws-panel-body">
+            {!ready ? (<><Skel w={140} h={30} /><div style={{ height: 22 }} /><Skel w="100%" h={46} /></>) : (
+              <Fade>
+                <div style={{ display: 'flex', gap: 44, flexWrap: 'wrap' }}>
+                  <div>
+                    <div className="ws-lbl">Cost</div>
+                    <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(usage.spendUsd)}</div>
+                    <div className="ws-sub" style={{ marginTop: 5 }}>{money(usage.spendTodayUsd)} today</div>
+                  </div>
+                  <div>
+                    <div className="ws-lbl">Tasks</div>
+                    <div className="ws-num" style={{ marginTop: 8 }}>{usage.runs}</div>
+                    {/* Tone is not inferred from the sign. More runs is not bad
+                        news, and guessing gets it backwards half the time. */}
+                    <div className="ws-sub" style={{ marginTop: 5 }}>
+                      {runChange >= 0 ? '+' : '−'}{Math.abs(runChange)}% on the 30 days before
                     </div>
                   </div>
-                  <div style={{ marginTop: 24 }}><Spark data={MY_USAGE.daily} /></div>
-                  <div className="ws-sub" style={{ marginTop: 8 }}>Daily cost, last 30 days</div>
-                </Fade>
-              )}
-            </div>
-          </Panel>
-
-          <Panel title="Your budget">
-            <div className="ws-panel-body">
-              {!r1 ? <Skel w="100%" h={54} /> : (
-                <Fade>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                    <span className="ws-num-sm">{money(MY_USAGE.spend30d)}</span>
-                    <span className="ws-sub">of {money(MY_USAGE.budgetUsd)}</span>
+                  <div>
+                    <div className="ws-lbl">Tokens</div>
+                    <div className="ws-num" style={{ marginTop: 8 }}>{compact(usage.tokensIn + usage.tokensOut)}</div>
+                    <div className="ws-sub" style={{ marginTop: 5 }}>{usage.cacheSavingsPct}% served from cache</div>
                   </div>
-                  <div style={{ marginTop: 12 }}><Bar pct={budgetPct} tone="brand" /></div>
-                  <p className="ws-sub" style={{ marginTop: 12, lineHeight: 1.5 }}>
-                    This is a real limit. If you reach it, Divo stops until your admin raises it.
-                  </p>
-                  <div className="ws-ceiling" style={{ marginTop: 14 }}>
-                    <TriangleAlert size={14} />
-                    <div>
-                      There is a second "token limit" elsewhere in the admin that is displayed but{' '}
-                      <b>never enforced by anything</b>. Only the dollar budget above actually stops work.
-                    </div>
-                  </div>
-                </Fade>
-              )}
-            </div>
-          </Panel>
-        </div>
+                </div>
+                <div style={{ marginTop: 24 }}><Spark data={usage.series.map((p) => p.spendUsd)} /></div>
+                <div className="ws-sub" style={{ marginTop: 8 }}>Daily cost, last 30 days</div>
+              </Fade>
+            )}
+          </div>
+        </Panel>
 
         <Panel title="By model" source="myUsage">
           <div className="ws-panel-body">
-            {!r2 ? <SkelRows n={2} icon={false} /> : (
+            {!ready ? <SkelRows n={2} icon={false} /> : usage.byModel.length === 0 ? (
+              <div className="ws-sub">Nothing recorded in this window yet.</div>
+            ) : (
               <Fade>
-                {MY_USAGE.byModel.map((m) => (
-                  <div key={m.model} style={{ marginBottom: 16 }}>
+                {usage.byModel.map((m) => (
+                  <div key={m.modelId} style={{ marginBottom: 16 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                      <span style={{ fontSize: 13, fontWeight: 500 }}>{m.label}</span>
+                      <span style={{ fontSize: 13, fontWeight: 500 }}>{m.modelId}</span>
                       <span className="ws-sub">{m.calls} calls · {money(m.costUsd)}</span>
                     </div>
-                    <Bar pct={(m.costUsd / MY_USAGE.spend30d) * 100} tone={m.model.includes('pro') ? 'brand' : undefined} />
+                    <Bar
+                      pct={usage.spendUsd > 0 ? (m.costUsd / usage.spendUsd) * 100 : 0}
+                      tone={m.modelId.includes('pro') ? 'brand' : undefined}
+                    />
                   </div>
                 ))}
               </Fade>
@@ -835,7 +856,9 @@ export function YouUsage({ replay }: ScreenProps) {
         </Panel>
 
         <Panel title="All activity" source="myRuns">
-          {!r2 ? <SkelRows n={5} icon={false} /> : <Fade><RunList runs={MY_RUNS} /></Fade>}
+          {!runsReady ? <SkelRows n={5} icon={false} /> : runs.length === 0 ? (
+            <Empty icon={Activity} title="Nothing yet" body="Runs appear here once you ask Divo to do something." />
+          ) : <Fade><RunList runs={runs} /></Fade>}
           <div className="ws-panel-foot">
             <CircleAlert size={13} />
             Step-by-step detail is kept for 7 days. Cost history is kept indefinitely.

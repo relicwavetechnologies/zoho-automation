@@ -373,37 +373,6 @@ export const CONNECTORS: ConnectionDef[] = [
   },
 ]
 
-export type Connection = {
-  id: string
-  provider: Provider
-  status: ConnStatus
-  label: string
-  account?: string
-  ownerType: 'user' | 'company'
-  ownerName?: string
-  connectedAt?: string
-  lastUsed?: string
-  sharedWith: { label: string; detail: string; access: 'read_only' | 'read_write' | 'admin' }[]
-}
-
-export const MY_CONNECTIONS: Connection[] = [
-  {
-    id: 'c_google', provider: 'google_workspace', status: 'connected', label: 'Google Workspace',
-    account: 'ananya@acme.co', ownerType: 'user', connectedAt: '14 Jun 2026', lastUsed: '12 minutes ago',
-    sharedWith: [{ label: 'Finance', detail: '6 people', access: 'read_only' }],
-  },
-  {
-    id: 'c_lark', provider: 'lark', status: 'connected', label: 'Lark',
-    account: 'ananya@acme.co', ownerType: 'user', connectedAt: '2 Apr 2026', lastUsed: '4 minutes ago',
-    sharedWith: [],
-  },
-  {
-    id: 'c_zoho', provider: 'zoho', status: 'connected', label: 'Zoho (company)',
-    account: 'finance@acme.co', ownerType: 'company', ownerName: 'Arjun Shah',
-    connectedAt: '9 Jan 2026', lastUsed: '2 hours ago',
-    sharedWith: [{ label: 'Finance', detail: 'Read only', access: 'read_only' }],
-  },
-]
 
 /* ── Approvals ───────────────────────────────────────── */
 export type Approval = {
@@ -433,14 +402,6 @@ export const AWAITING_ME: Approval[] = [
   },
 ]
 
-export const REQUESTED_BY_ME: Approval[] = [
-  {
-    id: 'a3', toolId: 'googleDrive', action: 'delete',
-    summary: 'Clear 42 duplicate export files',
-    detail: 'Waiting on Arjun Shah.',
-    requestedBy: 'You', requestedByInitials: 'AM', requestedAt: '2 hours ago', expiresIn: 'expired',
-  },
-]
 
 /* ── Skills ──────────────────────────────────────────── */
 export type Skill = {
@@ -524,24 +485,7 @@ export const TEAM_USAGE = {
 }
 
 /* ── Activity ────────────────────────────────────────── */
-export type Run = {
-  id: string
-  summary: string
-  channel: 'lark' | 'desktop'
-  status: 'completed' | 'failed' | 'running'
-  when: string
-  duration: string | null
-  costUsd: number
-  tools: string[]
-}
 
-export const MY_RUNS: Run[] = [
-  { id: 'r1', summary: 'Reconciled the March vendor ledger', channel: 'lark', status: 'running', when: '4 min ago', duration: null, costUsd: 0.21, tools: ['zohoBooks', 'googleSheets'] },
-  { id: 'r2', summary: 'Drafted 14 supplier reminders', channel: 'desktop', status: 'completed', when: '2 hours ago', duration: '3m 41s', costUsd: 0.38, tools: ['zohoBooks', 'googleGmail'] },
-  { id: 'r3', summary: 'Summarised the audit thread', channel: 'lark', status: 'running', when: 'Yesterday', duration: null, costUsd: 0.09, tools: ['larkMessaging'] },
-  { id: 'r4', summary: 'Built the Q2 expense breakdown', channel: 'desktop', status: 'completed', when: 'Yesterday', duration: '6m 02s', costUsd: 0.71, tools: ['googleSheets', 'googleDrive'] },
-  { id: 'r5', summary: 'Looked up three supplier GST numbers', channel: 'desktop', status: 'failed', when: '2 days ago', duration: '0m 22s', costUsd: 0.02, tools: ['webSearch'] },
-]
 
 /* ── Data honesty ────────────────────────────────────
    Which panels run on something real. Rendered in the UI as a small marker so
