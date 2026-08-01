@@ -141,6 +141,10 @@ export function MockDashboardPage() {
   const [replay, setReplay] = useState(0)
   const { resolved, setTheme } = useTheme()
   const { message, show } = useToast()
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Land at the top of a new screen, the same as a real navigation would.
+  useEffect(() => { scrollRef.current?.scrollTo({ top: 0 }) }, [screen])
 
   const scope = scopes.find((s) => s.id === scopeId) ?? scopes[0]
   const groups = NAV[scope.kind]
@@ -259,7 +263,7 @@ export function MockDashboardPage() {
         </header>
 
         <div className="content">
-          <div className="scroll">
+          <div className="scroll" ref={scrollRef}>
             <div className="page">
               <Screen screen={screen} persona={persona} replay={replay} toast={show} go={go} />
             </div>

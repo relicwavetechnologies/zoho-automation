@@ -115,6 +115,11 @@ export function WorkspaceShell() {
   const [scopeOpen, setScopeOpen] = useState(false)
   const [palette, setPalette] = useState(false)
   const scopeRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Land at the top of a new screen. Without this the router keeps the previous
+  // page's offset, so a short page opens scrolled past its own header.
+  useEffect(() => { scrollRef.current?.scrollTo({ top: 0 }) }, [location.pathname])
 
   const scope = scopeOfPath(location.pathname)
   const groups = NAV[scope]
@@ -261,7 +266,7 @@ export function WorkspaceShell() {
           </header>
 
           <div className="content">
-            <div className="scroll">
+            <div className="scroll" ref={scrollRef}>
               <Outlet />
             </div>
           </div>

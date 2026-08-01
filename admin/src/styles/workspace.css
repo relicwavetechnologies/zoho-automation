@@ -519,3 +519,129 @@
 .cur .ws-ver-rail { flex: 1; width: 1px; background: var(--cur-hairline); margin-top: 4px; }
 .cur .ws-ver b { font-size: 12px; font-weight: 500; display: block; }
 .cur .ws-ver p { font-size: 11px; color: var(--cur-muted); margin-top: 2px; }
+
+/* ══════════════════════════════════════════════════════
+   Company list surfaces.
+
+   The drill-ins (run trace, person, department) were deep while the lists
+   above them stayed flat — so an admin could study one run in detail but had
+   no way to find the run worth studying. These are the styles for the layer
+   that answers "what happened, and which of it needs me".
+   ══════════════════════════════════════════════════════ */
+
+/* ── Metric strip — a number is useless without its direction ── */
+.cur .ws-metrics { display: grid; grid-template-columns: repeat(4, 1fr); }
+.cur .ws-metric { padding: 16px 18px; border-left: 1px solid var(--cur-hairline); }
+.cur .ws-metric:first-child { border-left: 0; }
+.cur .ws-metric .k { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--cur-muted); }
+.cur .ws-metric .v { font-size: 20px; letter-spacing: -0.02em; margin-top: 9px; display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.cur .ws-metric .s { font-size: 12px; color: var(--cur-muted); margin-top: 6px; line-height: 1.45; }
+@media (max-width: 900px) {
+  .cur .ws-metrics { grid-template-columns: repeat(2, 1fr); }
+  .cur .ws-metric:nth-child(odd) { border-left: 0; }
+  .cur .ws-metric:nth-child(n+3) { border-top: 1px solid var(--cur-hairline); }
+}
+
+/* Tone is passed explicitly, never inferred from the sign: spend going up is
+   bad, runs going up is not, and guessing gets it backwards half the time. */
+.cur .ws-delta {
+  display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 500; background: var(--cur-canvas-soft);
+  border: 1px solid var(--cur-hairline); color: var(--cur-muted);
+}
+.cur .ws-delta[data-tone="warn"] { color: var(--cur-primary); border-color: color-mix(in srgb, var(--cur-primary) 32%, transparent); background: color-mix(in srgb, var(--cur-primary) 8%, transparent); }
+.cur .ws-delta[data-tone="good"] { color: var(--cur-success); border-color: color-mix(in srgb, var(--cur-success) 32%, transparent); background: color-mix(in srgb, var(--cur-success) 8%, transparent); }
+
+/* ── Day chart ────────────────────────────────────────
+   Hover gives the exact figure. A chart nobody can read a value off is
+   decoration, and this one exists to be interrogated. */
+.cur .ws-chart { display: flex; align-items: flex-end; gap: 4px; height: 118px; }
+.cur .ws-chart-col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; position: relative; }
+.cur .ws-chart-col i { display: block; border-radius: 3px 3px 0 0; background: var(--cur-surface-strong); min-height: 2px; transition: background .12s ease; }
+/* The current window reads as "now" in ink. Orange is spent on the single
+   outlier the annotation below explains — not on a whole week of bars. */
+.cur .ws-chart-col[data-hot="true"] i { background: color-mix(in srgb, var(--cur-ink) 34%, transparent); }
+.cur .ws-chart-col[data-peak="true"] i { background: var(--cur-primary); }
+.cur .ws-chart-col:hover i { background: var(--cur-ink); }
+.cur .ws-chart-tip {
+  position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); z-index: 5;
+  white-space: nowrap; background: var(--cur-ink); color: var(--cur-canvas); font-size: 11px;
+  padding: 5px 9px; border-radius: 8px; opacity: 0; pointer-events: none; transition: opacity .12s ease;
+}
+.cur .ws-chart-col:hover .ws-chart-tip { opacity: 1; }
+.cur .ws-chart-x { display: flex; justify-content: space-between; margin-top: 10px; font-size: 11px; color: var(--cur-muted-soft); }
+
+/* The reason, attached to the number. A spike without an explanation just
+   makes someone open five screens to find the same answer every week. */
+.cur .ws-why {
+  display: flex; gap: 10px; margin-top: 16px; padding: 11px 13px; border-radius: var(--cur-r-cta);
+  background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline);
+  font-size: 12px; color: var(--cur-body); line-height: 1.5;
+}
+.cur .ws-why svg { color: var(--cur-muted); flex-shrink: 0; margin-top: 1px; }
+.cur .ws-why b { color: var(--cur-ink); font-weight: 500; }
+.cur .ws-why button { border: 0; background: none; padding: 0; font: inherit; color: var(--cur-primary); cursor: pointer; }
+
+/* ── Filter chips ─────────────────────────────────────
+   Counts live on the chip. Filtering to an empty set is a dead end you should
+   be able to see before you click it. */
+.cur .ws-chip {
+  height: 30px; padding: 0 11px; border-radius: 999px; border: 1px solid var(--cur-hairline-strong);
+  background: var(--cur-surface); font-size: 12px; color: var(--cur-body); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 7px; font-family: inherit;
+}
+.cur .ws-chip:hover { border-color: var(--cur-muted-soft); }
+.cur .ws-chip[data-on="true"] { background: var(--cur-ink); border-color: var(--cur-ink); color: var(--cur-canvas); }
+.cur .ws-chip[data-empty="true"] { opacity: 0.5; }
+.cur .ws-chip .n { font-size: 11px; color: var(--cur-muted); }
+.cur .ws-chip[data-on="true"] .n { color: var(--cur-canvas); opacity: 0.65; }
+.cur .ws-chip-dot { width: 6px; height: 6px; border-radius: 50%; }
+.cur .ws-filter-x { margin-left: auto; }
+
+/* Result summary — what the current filter actually selected. */
+.cur .ws-sum {
+  display: flex; gap: 20px; flex-wrap: wrap; align-items: center; padding: 11px 18px;
+  border-bottom: 1px solid var(--cur-hairline); background: var(--cur-canvas-soft);
+  font-size: 12px; color: var(--cur-muted);
+}
+.cur .ws-sum b { color: var(--cur-ink); font-weight: 500; }
+.cur .ws-sum .sep { width: 1px; height: 12px; background: var(--cur-hairline-strong); }
+
+/* ── Day divider inside a row list ───────────────────── */
+.cur .ws-day {
+  padding: 8px 18px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em;
+  color: var(--cur-muted-soft); background: var(--cur-canvas-soft); border-top: 1px solid var(--cur-hairline);
+}
+.cur .ws-rows > .ws-day:first-child { border-top: 0; }
+
+/* ── Before → after ───────────────────────────────────
+   An audit line that says "changed permissions" is not an audit line. */
+.cur .ws-ba {
+  display: flex; flex-direction: column; gap: 8px; margin-top: 12px; padding: 12px 14px;
+  border-radius: var(--cur-r-cta); background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline);
+}
+.cur .ws-ba-r { display: flex; gap: 10px; align-items: baseline; font-size: 12px; }
+.cur .ws-ba-r .k { width: 108px; flex-shrink: 0; color: var(--cur-muted); }
+.cur .ws-ba-r .from { color: var(--cur-muted); text-decoration: line-through; }
+.cur .ws-ba-r .to { color: var(--cur-ink); font-weight: 500; }
+.cur .ws-ba-r svg { color: var(--cur-muted-soft); flex-shrink: 0; align-self: center; }
+
+/* ── Connection coverage ──────────────────────────────
+   One stacked bar per provider: connected / expiring / never. The third
+   segment is the one that matters — those people are silently broken. */
+.cur .ws-hbar { display: flex; height: 6px; border-radius: 999px; overflow: hidden; background: var(--cur-surface-strong); }
+.cur .ws-hbar i { display: block; height: 100%; }
+.cur .ws-hbar i[data-k="ok"] { background: var(--cur-success); }
+.cur .ws-hbar i[data-k="soon"] { background: var(--ws-warning); }
+.cur .ws-hbar i[data-k="none"] { background: var(--cur-hairline-strong); }
+.cur .ws-hkey { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 9px; font-size: 11px; color: var(--cur-muted); }
+.cur .ws-hkey span { display: inline-flex; align-items: center; gap: 6px; }
+.cur .ws-hkey i { width: 7px; height: 7px; border-radius: 2px; display: inline-block; }
+
+/* ── Disclosure row ──────────────────────────────────── */
+.cur .ws-more {
+  border: 0; background: none; padding: 0; font-size: 12px; color: var(--cur-primary);
+  cursor: pointer; display: inline-flex; align-items: center; gap: 5px; font-family: inherit;
+}
+.cur .ws-more svg { transition: transform .14s ease; }
+.cur .ws-more[data-open="true"] svg { transform: rotate(90deg); }

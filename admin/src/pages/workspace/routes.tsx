@@ -43,6 +43,13 @@ const PATHS: Record<string, string> = {
   'co-skills': '/skills',
   'co-memory': '/memories',
   'co-guardrails': '/guardrails',
+  /* Drill-ins. The mock's detail screens map onto the live pages' list routes
+     until those pages are ported — a routed screen must never resolve to `/me`
+     just because an id is missing here. */
+  'co-run': '/ai-ops',
+  'co-person': '/people',
+  'co-department': '/departments',
+  'co-skill': '/skills',
 }
 
 type ScreenProps = {
