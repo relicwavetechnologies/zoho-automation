@@ -1,5 +1,4 @@
-import { Navigate, Route, Routes } from "react-router-dom"
-import { EmptyState } from "@/components/admin/empty-state"
+import { Link, Navigate, Route, Routes } from "react-router-dom"
 import { Toaster } from "@/components/ui/sonner"
 import { WorkspaceShell } from "@/components/admin/workspace-shell"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
@@ -13,6 +12,7 @@ import { WebSearchPage } from "@/pages/WebSearchPage"
 import { MemoriesPage } from "@/pages/MemoriesPage"
 import { SkillsLabPage } from "@/pages/SkillsLabPage"
 import { routed } from "@/pages/workspace/routes"
+import { NoAccess } from "@/pages/workspace/ui"
 import {
   YouAccess, YouApprovals, YouConnections, YouHome, YouMemory, YouSettings, YouSkills, YouUsage,
 } from "@/pages/workspace/screens-you"
@@ -73,13 +73,15 @@ const RequireScope = ({ kind, children }: { kind: ScopeKind; children: JSX.Eleme
   const { scopes } = useAdminAuth()
   if (scopes.some((scope) => scope.kind === kind)) return children
 
-  const reason = kind === "team"
-    ? "This is a manager's view of a department. You do not lead one."
-    : "This is the company-wide view. It is limited to company admins."
-
   return (
     <div className="page">
-      <EmptyState title="You do not have access to this" description={reason} />
+      <NoAccess
+        what={kind === "team" ? "a team view" : "the company view"}
+        who={kind === "team"
+          ? "This is a manager's view of a department, and you do not lead one. Whoever holds the Manager role in a team can see it."
+          : "This is the company-wide view, limited to company admins. Your own workspace and any team you lead are still yours."}
+        action={<Link className="btn" to="/me">Go to your workspace</Link>}
+      />
     </div>
   )
 }

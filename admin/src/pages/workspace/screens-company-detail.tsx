@@ -18,7 +18,7 @@ import {
   KeyRound, Link2, Lock, Search, ShieldCheck, Sparkles, TriangleAlert, Users, Wrench,
 } from 'lucide-react'
 import {
-  Bar, Empty, Fade, PageHeader, Panel, Seg, Skel, SkelRows, Spark,
+  Bar, Empty, Fade, NoAccess, PageHeader, Panel, Seg, Skel, SkelRows, Spark,
   Switch, compact, money, useStaged,
 } from './ui'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
@@ -613,7 +613,7 @@ export function CompanyDepartmentDetail({ replay, go }: Props) {
   const { departmentId } = useParams()
   const [r1, r2] = useStaged([280, 560], replay)
   const [tab, setTab] = useState<'people' | 'roles' | 'access'>('people')
-  const { data, loading } = useDepartmentDetail(departmentId)
+  const { data, loading, refused } = useDepartmentDetail(departmentId)
   const { usage } = useTeamUsage(departmentId)
 
   if (!loading && !data) {
@@ -624,7 +624,14 @@ export function CompanyDepartmentDetail({ replay, go }: Props) {
             <ArrowLeft size={13} />Departments
           </button>
         </div>
-        <Empty icon={Building2} title="No such department" body="It may have been archived, or belongs to another company." />
+        {refused ? (
+          <NoAccess
+            what="this department"
+            who="Reaching into a department you do not administer is limited to company admins and that team's manager."
+          />
+        ) : (
+          <Empty icon={Building2} title="No such department" body="It may have been archived, or belongs to another company." />
+        )}
       </>
     )
   }

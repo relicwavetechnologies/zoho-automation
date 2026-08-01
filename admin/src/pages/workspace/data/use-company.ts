@@ -13,7 +13,7 @@
  * figures for the same month is the fastest way to lose trust in both.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { api } from '@/lib/api'
+import { ApiError, api } from '@/lib/api'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 
 const base = '/api/admin'
@@ -24,14 +24,19 @@ function useAdminResource<T>(path: string | null, fallback: T) {
   const [data, setData] = useState<T>(fallback)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // Kept apart from `error`: a refusal is an answer the screen should render as
+  // one, a failure is something to retry.
+  const [refused, setRefused] = useState(false)
 
   const load = useCallback(async () => {
     if (!token || !path) { setLoading(false); return }
     try {
       setData(await api.get<T>(`${base}${path}`, token, { quiet: true }))
       setError(null)
+      setRefused(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load this.')
+      setRefused(e instanceof ApiError && (e.status === 403 || e.status === 401))
       setData(fallback)
     } finally {
       setLoading(false)
@@ -42,7 +47,7 @@ function useAdminResource<T>(path: string | null, fallback: T) {
 
   useEffect(() => { void load() }, [load])
 
-  return { data, loading, error, refresh: load }
+  return { data, loading, error, refused, refresh: load }
 }
 
 /* ── Overview ─────────────────────────────────────────── */
@@ -343,7 +348,7 @@ export function useCompanyCeiling() {
   const { token } = useAdminAuth()
   const [tools, setTools] = useState<CeilingTool[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [refused, setRefused] = useState(false)
 
   const load = useCallback(async () => {
     if (!token) { setLoading(false); return }
@@ -360,9 +365,11 @@ export function useCompanyCeiling() {
         ).catch(() => null),
       ))
       setTools(snapshots.filter((s): s is CeilingTool => s !== null))
-      setError(null)
+      setRefused(false)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not load the company ceiling.')
+      // The inventory itself refuses a non-admin, which is the honest signal —
+      // the per-tool reads below would only ever return an empty grid.
+      setRefused(e instanceof ApiError && (e.status === 403 || e.status === 401))
       setTools([])
     } finally {
       setLoading(false)
@@ -388,7 +395,7 @@ export function useCompanyCeiling() {
     await reloadTool(toolId)
   }, [token, reloadTool])
 
-  return { tools, loading, error, refresh: load, setCeiling }
+  return { tools, loading, refused, refresh: load, setCeiling }
 }
 
 /* ── Provider keys and per-person limits ──────────────── */

@@ -19,7 +19,7 @@ import {
   CONNECTORS, MEMORIES, SKILLS, toolById,
 } from './fixtures'
 import {
-  Bar, DataNote, Empty, Fade, PageHeader, Panel, Seg, Skel, SkelRows,
+  Bar, DataNote, Empty, Fade, NoAccess, PageHeader, Panel, Seg, Skel, SkelRows,
   Switch, compact, money, useStaged,
 } from './ui'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
@@ -325,7 +325,7 @@ export function CompanyPolicy({ replay, toast }: Props) {
   const [r1] = useStaged([300], replay)
   const [role, setRole] = useState<string | null>(null)
   const [saving, setSaving] = useState<string | null>(null)
-  const { tools, loading, error, setCeiling } = useCompanyCeiling()
+  const { tools, loading, refused, setCeiling } = useCompanyCeiling()
 
   // Roles come from the snapshot rather than a hardcoded pair, because a
   // company can define its own and a missing column is a permission nobody
@@ -385,8 +385,11 @@ export function CompanyPolicy({ replay, toast }: Props) {
         ) : null}
 
         <Panel title="What may be granted at all" source="permissions">
-          {!r1 || loading ? <SkelRows n={6} icon={false} /> : error ? (
-            <Empty icon={Lock} title="This view is company-admin only" body={error} />
+          {!r1 || loading ? <SkelRows n={6} icon={false} /> : refused ? (
+            <NoAccess
+              what="the company ceiling"
+              who="Only a company admin can set what departments are allowed to grant. A manager sets grants within it, from their own team."
+            />
           ) : tools.length === 0 ? (
             <Empty title="No configurable tools" />
           ) : (

@@ -12,7 +12,7 @@
  * { success, data }, hence `raw` on every call.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { api } from '@/lib/api'
+import { ApiError, api } from '@/lib/api'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 
 export type DeptRole = { id: string; name: string; slug: string; isDefault?: boolean }
@@ -92,6 +92,7 @@ export function useDepartment(departmentId?: string) {
   const [snapshot, setSnapshot] = useState<DepartmentSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [refused, setRefused] = useState(false)
 
   const load = useCallback(async () => {
     if (!token || !departmentId) { setLoading(false); return }
@@ -101,10 +102,12 @@ export function useDepartment(departmentId?: string) {
       )
       setSnapshot(data)
       setError(null)
+      setRefused(false)
     } catch (e) {
       // The route refuses anyone who does not manage this department, which is
       // a meaningful answer rather than a failure — say so plainly.
       setError(e instanceof Error ? e.message : 'Could not load this department.')
+      setRefused(e instanceof ApiError && (e.status === 403 || e.status === 401))
       setSnapshot(null)
     } finally {
       setLoading(false)
@@ -125,7 +128,7 @@ export function useDepartment(departmentId?: string) {
     await load()
   }, [token, departmentId, load])
 
-  return { snapshot, loading, error, refresh: load, setMemberRole, removeMember }
+  return { snapshot, loading, error, refused, refresh: load, setMemberRole, removeMember }
 }
 
 export type CoverageTool = {

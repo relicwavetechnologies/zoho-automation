@@ -75,7 +75,15 @@ const request = async <T>(
   if (!response.ok) {
     const errorMsg = await extractErrorMessage(response);
     if (!opts.quiet) {
-      toast.error(`Error ${response.status}`, { description: errorMsg });
+      // A refusal is not an error the person can fix by retrying, and
+      // "Error 403" tells them nothing about which it is. Name the two cases.
+      if (response.status === 403) {
+        toast.error("You do not have access to that", { description: errorMsg });
+      } else if (response.status === 401) {
+        toast.error("Your session has expired", { description: "Sign in again to continue." });
+      } else {
+        toast.error(`Error ${response.status}`, { description: errorMsg });
+      }
     }
     throw new ApiError(response.status, errorMsg);
   }

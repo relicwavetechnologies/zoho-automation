@@ -15,6 +15,7 @@ import {
   ACTION_GROUPS, DATA_SOURCES, SOURCE_LABEL, ceilingAllows, resolveGrants, toolById,
   type ActionGroup, type GrantMap, type Person, type PermissionSource, type Provider,
 } from './fixtures'
+import { ApiError } from '@/lib/api'
 
 /* ── Staged loading ───────────────────────────────────
    Regions light up in reading order rather than all at once. The delays are
@@ -128,6 +129,42 @@ export const Empty = ({ icon: Icon = Inbox, title, body, action }: {
     {action ? <div style={{ marginTop: 14 }}>{action}</div> : null}
   </div>
 )
+
+/**
+ * What a refusal looks like.
+ *
+ * A 403 is an answer, not a failure — somebody asked a question they are not
+ * allowed to ask, and the useful reply names who *is* allowed rather than
+ * saying "error". Everything that can be refused renders this instead of an
+ * empty panel, so a person never has to guess whether Divo is broken or they
+ * simply lack the access.
+ */
+export function NoAccess({ what, who, action }: {
+  /** The thing being refused, in the reader's words: "this department". */
+  what: string
+  /** Who may see it, so the reader knows what to do next. */
+  who: string
+  action?: ReactNode
+}) {
+  return (
+    <div className="ws-empty">
+      <div className="ic"><Lock size={17} /></div>
+      <b>You do not have access to {what}</b>
+      <p>{who}</p>
+      {action ? <div style={{ marginTop: 14 }}>{action}</div> : null}
+    </div>
+  )
+}
+
+/**
+ * Turns a failed request into either a refusal or a genuine error.
+ *
+ * Worth keeping apart: "you may not see this" needs a person to ask someone,
+ * "this broke" needs a retry. Collapsing them into one message sends people
+ * to the wrong place.
+ */
+export const isRefusal = (error: unknown): boolean =>
+  error instanceof ApiError && (error.status === 403 || error.status === 401)
 
 export const Switch = ({ on, onToggle, label }: { on: boolean; onToggle: () => void; label: string }) => (
   <button type="button" className="ws-switch" data-on={on} aria-label={label} aria-pressed={on} onClick={onToggle}>

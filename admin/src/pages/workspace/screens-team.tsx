@@ -20,7 +20,7 @@ import {
   TriangleAlert, UserPlus, Users,
 } from 'lucide-react'
 import {
-  Bar, DataNote, Drawer, Empty, Fade, PageHeader, Panel, Seg, Skel, SkelRows, Switch,
+  Bar, DataNote, Drawer, Empty, Fade, NoAccess, PageHeader, Panel, Seg, Skel, SkelRows, Switch,
   listPhrase, money, useStaged,
 } from './ui'
 import {
@@ -174,12 +174,15 @@ const NoTeam = () => (
 export function TeamHome({ replay, go }: Props) {
   const dept = useMyManagedDepartment()
   const [r1, r2] = useStaged([260, 560], replay)
-  const { snapshot, loading } = useDepartment(dept?.id)
+  const { snapshot, loading, refused } = useDepartment(dept?.id)
   const { usage } = useTeamUsage(dept?.id)
   const { coverage } = useDepartmentMatrix(dept?.id)
   const { awaitingMe } = useApprovals()
 
   if (!dept) return <NoTeam />
+  // Being removed as manager mid-session is the case this catches: the scope
+  // switcher still shows the team until the session refreshes.
+  if (refused) return <NoAccess what="this team" who="You no longer lead this department. Whoever holds the Manager role in it can see this." />
 
   const people = snapshot?.memberships ?? []
   const spendByUser = new Map(usage.people.map((p) => [p.userId, p]))
