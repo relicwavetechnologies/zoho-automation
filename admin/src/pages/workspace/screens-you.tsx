@@ -15,6 +15,8 @@ import {
   SKILLS, TOOLS, personById, resolveGrants, toolById,
   type Connection, type Memory, type Persona, type Provider,
 } from './fixtures'
+import { useConnectionGrants, useConnections, type LiveConnection } from './data/use-connections'
+import { ago, expiryLabel, useApprovals } from './data/use-approvals'
 import {
   Bar, ChangePreview, DataNote, Drawer, Empty, Fade, Matrix, PageHeader, Panel, Provenance,
   ProviderMark, Seg, Skel, SkelRows, Spark, Switch, compact, listPhrase, money,
@@ -206,7 +208,12 @@ function RunList({ runs }: { runs: typeof MY_RUNS }) {
 export function YouConnections({ replay, toast, go }: ScreenProps) {
   const [r1] = useStaged([320], replay)
   const [open, setOpen] = useState<Provider | null>(null)
-  const connected = new Map(MY_CONNECTIONS.map((c) => [c.provider, c]))
+  const { byProvider, loading, connecting, connect, disconnect } = useConnections()
+
+  // Two gates, not one. `r1` is the staged reveal that keeps the page from
+  // snapping in; `loading` is the real fetch. Showing content when only one has
+  // settled would either flash empty rows or defeat the staging entirely.
+  const ready = r1 && !loading
 
   return (
     <>
@@ -225,11 +232,12 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
         </div>
 
         <Panel title="Your connections" source="connections">
-          {!r1 ? <SkelRows n={4} /> : (
+          {!ready ? <SkelRows n={4} /> : (
             <Fade>
               <div className="ws-rows">
                 {CONNECTORS.map((def) => {
-                  const conn = connected.get(def.provider)
+                  const status = byProvider.get(def.provider)
+                  const conn = status?.connections[0]
                   const state = conn ? 'connected' : def.memberCanConnect ? 'available' : 'admin'
                   return (
                     <div className="ws-row click" key={def.provider} onClick={() => setOpen(def.provider)}>
@@ -239,7 +247,13 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
                           {def.name}
                           {conn?.ownerType === 'company' ? <span className="ws-tag">Company</span> : null}
                         </b>
-                        <p>{conn ? `${conn.account} · last used ${conn.lastUsed}` : def.blurb}</p>
+                        <p>
+                          {status?.error
+                            ? status.error
+                            : conn
+                              ? `${conn.accountEmail ?? conn.label} · last used ${since(conn.lastUsedAt)}`
+                              : def.blurb}
+                        </p>
                       </div>
                       <div className="ws-row-act">
                         {state === 'connected' ? <span className="badge b-ok"><span className="dot" />Connected</span> : null}
@@ -247,9 +261,10 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
                           <button
                             type="button"
                             className="btn"
-                            onClick={(e) => { e.stopPropagation(); toast(`Opening ${def.name} sign-in…`) }}
+                            disabled={connecting !== null}
+                            onClick={(e) => { e.stopPropagation(); void connect(def.provider) }}
                           >
-                            Connect
+                            {connecting === def.provider ? 'Waiting…' : 'Connect'}
                           </button>
                         ) : null}
                         {state === 'admin' ? <span className="ws-tag"><Lock size={11} />Admin connects this</span> : null}
@@ -293,20 +308,59 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
         </Panel>
       </div>
 
-      {open ? <ConnectionDrawer provider={open} connection={connected.get(open)} onClose={() => setOpen(null)} toast={toast} /> : null}
+      {open ? (
+        <ConnectionDrawer
+          provider={open}
+          connection={byProvider.get(open)?.connections[0]}
+          onClose={() => setOpen(null)}
+          onConnect={() => { void connect(open) }}
+          onDisconnect={async (connectionId) => {
+            await disconnect(open, connectionId)
+            toast(`${providerName(open)} disconnected`)
+            setOpen(null)
+          }}
+          toast={toast}
+        />
+      ) : null}
     </>
   )
 }
 
-function ConnectionDrawer({ provider, connection, onClose, toast }: {
-  provider: Provider; connection?: Connection; onClose: () => void; toast: (m: string) => void
+/** "4 minutes ago" from an ISO timestamp, or an honest blank. */
+function since(iso?: string | null): string {
+  if (!iso) return 'never'
+  const ms = Date.now() - new Date(iso).getTime()
+  const mins = Math.round(ms / 60_000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`
+  const hours = Math.round(mins / 60)
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`
+  const days = Math.round(hours / 24)
+  return `${days} day${days === 1 ? '' : 's'} ago`
+}
+
+const onDate = (iso?: string | null): string =>
+  iso ? new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
+
+function ConnectionDrawer({ provider, connection, onClose, onConnect, onDisconnect, toast }: {
+  provider: Provider
+  connection?: LiveConnection
+  onClose: () => void
+  onConnect: () => void
+  onDisconnect: (connectionId: string) => Promise<void>
+  toast: (m: string) => void
 }) {
   const def = CONNECTORS.find((c) => c.provider === provider)!
   const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const grants = useConnectionGrants(provider, connection?.connectionId)
+
   return (
     <Drawer
       title={def.name}
-      subtitle={connection ? `${connection.account} · connected ${connection.connectedAt}` : def.blurb}
+      subtitle={connection
+        ? `${connection.accountEmail ?? connection.label} · connected ${onDate(connection.connectedAt)}`
+        : def.blurb}
       onClose={onClose}
       footer={
         connection ? (
@@ -317,19 +371,23 @@ function ConnectionDrawer({ provider, connection, onClose, toast }: {
                 type="button"
                 className="btn"
                 style={{ color: 'var(--cur-error)', borderColor: 'var(--cur-error)' }}
-                onClick={() => { toast(`${def.name} disconnected`); onClose() }}
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true)
+                  try { await onDisconnect(connection.connectionId) } finally { setBusy(false) }
+                }}
               >
-                Yes, disconnect
+                {busy ? 'Disconnecting…' : 'Yes, disconnect'}
               </button>
             </>
           ) : (
             <>
               <button type="button" className="btn" onClick={() => setConfirming(true)}>Disconnect</button>
-              <button type="button" className="btn primary" onClick={() => { toast('Sharing updated'); onClose() }}>Done</button>
+              <button type="button" className="btn primary" onClick={onClose}>Done</button>
             </>
           )
         ) : def.memberCanConnect ? (
-          <button type="button" className="btn primary" onClick={() => { toast(`Opening ${def.name} sign-in…`); onClose() }}>
+          <button type="button" className="btn primary" onClick={() => { onConnect(); onClose() }}>
             Connect {def.name}
           </button>
         ) : (
@@ -342,7 +400,7 @@ function ConnectionDrawer({ provider, connection, onClose, toast }: {
           <TriangleAlert size={14} />
           <div>
             Disconnecting removes Divo's access immediately and{' '}
-            <b>revokes the {connection?.sharedWith.length ?? 0} share{(connection?.sharedWith.length ?? 0) === 1 ? '' : 's'} you granted</b>.
+            <b>revokes the {grants.length} share{grants.length === 1 ? '' : 's'} you granted</b>.
             Anything running against it will stop.
           </div>
         </div>
@@ -367,33 +425,29 @@ function ConnectionDrawer({ provider, connection, onClose, toast }: {
       {connection ? (
         <>
           <div className="ws-lbl" style={{ marginTop: 26 }}>Who else can use it</div>
-          {connection.sharedWith.length === 0 ? (
+          {grants.length === 0 ? (
             <div className="ws-private" style={{ marginTop: 12 }}>
               <ShieldCheck size={15} />
               <div>Only you. Nobody else in your company can act through this connection.</div>
             </div>
           ) : (
             <div className="ws-rows" style={{ marginTop: 8 }}>
-              {connection.sharedWith.map((s) => (
-                <div className="ws-row" style={{ paddingLeft: 0, paddingRight: 0 }} key={s.label}>
+              {grants.map((grant) => (
+                <div className="ws-row" style={{ paddingLeft: 0, paddingRight: 0 }} key={grant.id}>
                   <div className="ws-row-main">
-                    <b>{s.label}</b>
-                    <p>{s.detail} · {s.access.replace('_', ' ')}</p>
+                    <b>{grant.granteeLabel}</b>
+                    <p>{grant.granteeDetail ?? grant.granteeType} · {grant.access.replace('_', ' ')}</p>
                   </div>
-                  <button type="button" className="btn" onClick={() => toast('Share removed')}>Remove</button>
                 </div>
               ))}
             </div>
           )}
-          <button type="button" className="btn" style={{ marginTop: 12 }} onClick={() => toast('Pick who to share with')}>
-            <Plus size={14} />Share with someone
-          </button>
 
           <div className="ws-lbl" style={{ marginTop: 26 }}>Details</div>
           <div style={{ marginTop: 6 }}>
-            <div className="kv"><span className="k">Connected</span><span className="v">{connection.connectedAt}</span></div>
-            <div className="kv"><span className="k">Last used</span><span className="v">{connection.lastUsed}</span></div>
-            <div className="kv"><span className="k">Owned by</span><span className="v">{connection.ownerType === 'company' ? connection.ownerName + ' (company)' : 'You'}</span></div>
+            <div className="kv"><span className="k">Connected</span><span className="v">{onDate(connection.connectedAt)}</span></div>
+            <div className="kv"><span className="k">Last used</span><span className="v">{since(connection.lastUsedAt)}</span></div>
+            <div className="kv"><span className="k">Owned by</span><span className="v">{connection.ownerType === 'company' ? 'The company' : 'You'}</span></div>
             <div className="kv"><span className="k">Sign-in method</span><span className="v">{def.auth}</span></div>
           </div>
         </>
@@ -547,7 +601,18 @@ export function YouAccess({ replay, toast }: ScreenProps) {
 export function YouApprovals({ replay, toast }: ScreenProps) {
   const [r1] = useStaged([240], replay)
   const [tab, setTab] = useState<'awaiting' | 'mine'>('awaiting')
-  const list = tab === 'awaiting' ? AWAITING_ME : REQUESTED_BY_ME
+  const { awaitingMe, requestedByMe, loading, deciding, decide } = useApprovals()
+  const list = tab === 'awaiting' ? awaitingMe : requestedByMe
+  const ready = r1 && !loading
+
+  const answer = async (id: string, decision: 'approved' | 'rejected') => {
+    const outcome = await decide(id, decision)
+    // The same row can be resolved from a Lark card, so losing the race is a
+    // normal outcome and says so — not a generic failure.
+    toast(outcome.ok
+      ? decision === 'approved' ? 'Approved — Divo is continuing' : 'Rejected'
+      : outcome.message)
+  }
 
   return (
     <>
@@ -561,43 +626,61 @@ export function YouApprovals({ replay, toast }: ScreenProps) {
           value={tab}
           onChange={setTab}
           options={[
-            { value: 'awaiting', label: `Waiting on you (${AWAITING_ME.length})` },
-            { value: 'mine', label: `Your requests (${REQUESTED_BY_ME.length})` },
+            { value: 'awaiting', label: `Waiting on you (${awaitingMe.length})` },
+            { value: 'mine', label: `Your requests (${requestedByMe.length})` },
           ]}
         />
       </div>
       <Panel source="approvals">
-        {!r1 ? <SkelRows n={2} icon={false} /> : list.length === 0 ? (
+        {!ready ? <SkelRows n={2} icon={false} /> : list.length === 0 ? (
           <Empty icon={Check} title="Nothing here" body="Approvals appear when Divo needs a person to say yes." />
         ) : (
           <Fade>
             <div className="ws-attn">
               {list.map((a) => {
-                const tool = toolById(a.toolId)
-                const expired = a.expiresIn === 'expired'
+                const expiry = expiryLabel(a.expiresAt)
+                const expired = expiry?.expired ?? false
+                const pending = a.status === 'pending'
                 return (
                   <div className="ws-attn-item" data-tone={expired ? 'warn' : 'act'} key={a.id}>
                     <span className="ws-attn-bar" />
                     <div className="ws-attn-main">
-                      <b>{a.summary}</b>
-                      <p>{a.detail}</p>
+                      <b>{a.description?.summary ?? `${a.toolId} · ${a.action}`}</b>
+                      {a.description?.detail ? <p>{a.description.detail}</p> : null}
                       <div className="ws-attn-meta">
-                        <span>{tool?.name} · {a.action}</span>
-                        <span>{a.requestedBy} · {a.requestedAt}</span>
-                        <span style={expired ? { color: 'var(--cur-error)' } : undefined}>
-                          <Clock size={11} style={{ marginRight: 4 }} />{expired ? 'Expired' : `Expires ${a.expiresIn}`}
-                        </span>
+                        <span>{toolById(a.toolId)?.name ?? a.toolId} · {a.action}</span>
+                        <span>{a.requestedByName} · {ago(a.requestedAt)}</span>
+                        {expiry ? (
+                          <span style={expired ? { color: 'var(--cur-error)' } : undefined}>
+                            <Clock size={11} style={{ marginRight: 4 }} />
+                            {expired ? 'Expired' : `Expires ${expiry.text}`}
+                          </span>
+                        ) : null}
                       </div>
                     </div>
-                    {tab === 'awaiting' ? (
+                    {tab === 'awaiting' && pending && !expired ? (
                       <div className="ws-row-act">
-                        <button type="button" className="btn" onClick={() => toast('Rejected')}><X size={14} />No</button>
-                        <button type="button" className="btn primary" onClick={() => toast('Approved — Divo is continuing')}>
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={deciding === a.id}
+                          onClick={() => void answer(a.id, 'rejected')}
+                        >
+                          <X size={14} />No
+                        </button>
+                        <button
+                          type="button"
+                          className="btn primary"
+                          disabled={deciding === a.id}
+                          onClick={() => void answer(a.id, 'approved')}
+                        >
                           <Check size={14} />Approve
                         </button>
                       </div>
                     ) : (
-                      <span className="badge b-err"><span className="dot" />Expired</span>
+                      <span className={`badge ${expired || a.status === 'rejected' ? 'b-err' : 'b-ok'}`}>
+                        <span className="dot" />{expired ? 'Expired' : a.status}
+                      </span>
                     )}
                   </div>
                 )

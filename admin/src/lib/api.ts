@@ -44,6 +44,15 @@ type RequestOptions = {
    * field that caused it — a toast on top of that is the same news twice.
    */
   quiet?: boolean;
+  /**
+   * Return the parsed body instead of `body.data`.
+   *
+   * Most routes answer `{ success, data }`, but the approvals router returns
+   * its payload bare. Unwrapping that would hand back `undefined`, which reads
+   * downstream as "no approvals" rather than as a bug — so the exception is
+   * declared at the call site rather than guessed at here.
+   */
+  raw?: boolean;
 };
 
 const request = async <T>(
@@ -72,7 +81,7 @@ const request = async <T>(
   }
 
   const body = (await response.json()) as ApiResponse<T>;
-  return body.data;
+  return opts.raw ? (body as unknown as T) : body.data;
 };
 
 export const api = {
