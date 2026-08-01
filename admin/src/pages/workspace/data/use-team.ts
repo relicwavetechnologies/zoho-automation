@@ -122,13 +122,56 @@ export function useDepartment(departmentId?: string) {
     await load()
   }, [token, departmentId, load])
 
+  /**
+   * Adds or moves somebody. The same PUT does both — the backend upserts, so
+   * "add Ananya as Analyst" and "move Ananya to Analyst" are one call.
+   */
+  const addMember = useCallback(async (userId: string, roleId: string) => {
+    if (!token || !departmentId) return
+    await api.put(`${base}/departments/${departmentId}/memberships`, { userId, roleId }, token, { raw: true })
+    await load()
+  }, [token, departmentId, load])
+
+  /** Search people who could join, excluding those already in. */
+  const findCandidates = useCallback(async (query: string) => {
+    if (!token || !departmentId || query.trim().length === 0) return []
+    return api.get<{ userId: string; name: string | null; email: string }[]>(
+      `${base}/departments/${departmentId}/candidates?query=${encodeURIComponent(query)}`,
+      token, { quiet: true, raw: true },
+    ).catch(() => [])
+  }, [token, departmentId])
+
+  const createRole = useCallback(async (name: string) => {
+    if (!token || !departmentId) return
+    // The slug is the stable identifier the backend matches on and is not
+    // user-editable afterwards, so it is derived rather than asked for.
+    const slug = name.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40)
+    await api.post(`${base}/departments/${departmentId}/roles`, { name: name.trim(), slug }, token, { raw: true })
+    await load()
+  }, [token, departmentId, load])
+
+  const renameRole = useCallback(async (roleId: string, name: string) => {
+    if (!token || !departmentId) return
+    await api.put(`${base}/departments/${departmentId}/roles/${roleId}`, { name: name.trim() }, token, { raw: true })
+    await load()
+  }, [token, departmentId, load])
+
+  const deleteRole = useCallback(async (roleId: string) => {
+    if (!token || !departmentId) return
+    await api.delete(`${base}/departments/${departmentId}/roles/${roleId}`, {}, token, { raw: true })
+    await load()
+  }, [token, departmentId, load])
+
   const removeMember = useCallback(async (userId: string) => {
     if (!token || !departmentId) return
     await api.delete(`${base}/departments/${departmentId}/memberships/${userId}`, {}, token, { raw: true })
     await load()
   }, [token, departmentId, load])
 
-  return { snapshot, loading, error, refused, refresh: load, setMemberRole, removeMember }
+  return {
+    snapshot, loading, error, refused, refresh: load,
+    setMemberRole, addMember, removeMember, findCandidates, createRole, renameRole, deleteRole,
+  }
 }
 
 export type CoverageTool = {

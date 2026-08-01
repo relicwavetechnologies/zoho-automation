@@ -108,7 +108,26 @@ export type CompanyDepartment = {
   updatedAt: string
 }
 
-export const useCompanyDepartments = () => useAdminResource<CompanyDepartment[]>('/departments', [])
+export function useCompanyDepartments() {
+  const { token } = useAdminAuth()
+  const resource = useAdminResource<CompanyDepartment[]>('/departments', [])
+
+  const createDepartment = useCallback(async (name: string, description?: string) => {
+    if (!token) return
+    await api.post(`${base}/departments`, { name: name.trim(), ...(description ? { description } : {}) }, token)
+    await resource.refresh()
+  }, [token, resource])
+
+  const archiveDepartment = useCallback(async (id: string) => {
+    if (!token) return
+    // Archived rather than deleted: memberships, grants and audit rows point at
+    // it, and a hard delete would orphan the history that explains them.
+    await api.post(`${base}/departments/${id}/archive`, {}, token)
+    await resource.refresh()
+  }, [token, resource])
+
+  return { ...resource, createDepartment, archiveDepartment }
+}
 
 /**
  * Spend per department.

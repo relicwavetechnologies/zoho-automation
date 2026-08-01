@@ -166,6 +166,79 @@ export function NoAccess({ what, who, action }: {
 export const isRefusal = (error: unknown): boolean =>
   error instanceof ApiError && (error.status === 403 || error.status === 401)
 
+/**
+ * A small ask-then-do dialog.
+ *
+ * Creating a role or a department is one field and a confirm, and routing that
+ * through a full drawer made it feel heavier than the decision is. Reuses the
+ * modal and scrim primitives already in the stylesheet so it is not a third
+ * kind of overlay.
+ *
+ * The confirm stays disabled until the field has something in it, so the
+ * failure mode is "nothing happens" rather than a 400 from the backend.
+ */
+export function Prompt({ title, description, label, placeholder, confirm, secret, onConfirm, onClose }: {
+  title: string
+  description?: string
+  label: string
+  placeholder?: string
+  confirm: string
+  /** Masks the field and stops the browser offering to remember it. */
+  secret?: boolean
+  onConfirm: (value: string) => Promise<void> | void
+  onClose: () => void
+}) {
+  const [value, setValue] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const submit = async () => {
+    if (!value.trim() || busy) return
+    setBusy(true)
+    try { await onConfirm(value.trim()); onClose() } finally { setBusy(false) }
+  }
+
+  return (
+    <>
+      <div className="ws-scrim" onClick={onClose} />
+      <div className="ws-modal-wrap">
+        <div className="ws-modal" role="dialog" aria-label={title}>
+          <div className="ws-modal-h">
+            <h2>{title}</h2>
+            {description ? <p>{description}</p> : null}
+          </div>
+          <div className="ws-modal-b">
+            <div className="ws-lbl">{label}</div>
+            <input
+              className="input"
+              autoFocus
+              type={secret ? 'password' : 'text'}
+              autoComplete={secret ? 'off' : undefined}
+              spellCheck={secret ? false : undefined}
+              value={value}
+              placeholder={placeholder}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void submit() }}
+              style={{ width: '100%', marginTop: 8 }}
+            />
+          </div>
+          <div className="ws-modal-f">
+            <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+            <button type="button" className="btn primary" onClick={() => void submit()} disabled={busy || !value.trim()}>
+              {busy ? 'Working…' : confirm}
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
 export const Switch = ({ on, onToggle, label }: { on: boolean; onToggle: () => void; label: string }) => (
   <button type="button" className="ws-switch" data-on={on} aria-label={label} aria-pressed={on} onClick={onToggle}>
     <i />

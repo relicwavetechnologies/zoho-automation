@@ -14,14 +14,14 @@
  * those disagree — which company rule is holding it down. So a locked cell here
  * names the real reason rather than guessing at a ceiling.
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowRight, Check, Clock, Copy, Lock, Plus, Search, ShieldCheck,
   TriangleAlert, UserPlus, Users,
 } from 'lucide-react'
 import {
-  Bar, DataNote, Drawer, Empty, Fade, NoAccess, PageHeader, Panel, Seg, Skel, SkelRows, Switch,
-  listPhrase, money, useStaged,
+  Bar, DataNote, Drawer, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, Seg, Skel, SkelRows,
+  Switch, listPhrase, money, useStaged,
 } from './ui'
 import {
   useApprovalPolicy, useDepartment, useDepartmentMatrix, useMyManagedDepartment, useTeamUsage,
@@ -309,9 +309,10 @@ export function TeamPeople({ replay, toast }: Props) {
   const [r1] = useStaged([300], replay)
   const [open, setOpen] = useState<string | null>(null)
   const [query, setQuery] = useState('')
-  const { snapshot, loading } = useDepartment(dept?.id)
+  const { snapshot, loading, addMember, findCandidates } = useDepartment(dept?.id)
   const { usage } = useTeamUsage(dept?.id)
   const matrix = useDepartmentMatrix(dept?.id)
+  const [adding, setAdding] = useState(false)
 
   const people = snapshot?.memberships ?? []
   const list = useMemo(
@@ -332,7 +333,7 @@ export function TeamPeople({ replay, toast }: Props) {
         eyebrow={dept.name}
         title="People"
         description="Open anyone to see what Divo can do for them, in plain English, and change it."
-        actions={<button type="button" className="btn primary" onClick={() => toast('Adding people is a company-admin action')}><UserPlus size={14} />Add someone</button>}
+        actions={<button type="button" className="btn primary" onClick={() => setAdding(true)}><UserPlus size={14} />Add someone</button>}
       />
       <div className="filters">
         <div className="search" style={{ maxWidth: 300 }}>
@@ -378,6 +379,18 @@ export function TeamPeople({ replay, toast }: Props) {
         )}
       </Panel>
 
+      {adding ? (
+        <AddPersonDrawer
+          roles={snapshot?.roles ?? []}
+          search={findCandidates}
+          onAdd={async (userId, roleId, name) => {
+            try { await addMember(userId, roleId); toast(`${name} added`) }
+            catch { toast('Could not add them') }
+          }}
+          onClose={() => setAdding(false)}
+        />
+      ) : null}
+
       {open ? (
         <PersonDrawer
           userId={open}
@@ -388,6 +401,101 @@ export function TeamPeople({ replay, toast }: Props) {
         />
       ) : null}
     </>
+  )
+}
+
+/**
+ * Adding somebody to the team.
+ *
+ * The search is server-side and already excludes people who are in — a list
+ * that offers a name and then rejects it is worse than no list. A role is
+ * required rather than defaulted, because "which role" is the whole decision
+ * and silently picking one hides it.
+ */
+function AddPersonDrawer({ roles, search, onAdd, onClose }: {
+  roles: { id: string; name: string }[]
+  search: (query: string) => Promise<{ userId: string; name: string | null; email: string }[]>
+  onAdd: (userId: string, roleId: string, name: string) => Promise<void>
+  onClose: () => void
+}) {
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<{ userId: string; name: string | null; email: string }[]>([])
+  const [picked, setPicked] = useState<{ userId: string; name: string | null; email: string } | null>(null)
+  const [roleId, setRoleId] = useState(roles[0]?.id ?? '')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (query.trim().length < 2) { setResults([]); return }
+    let live = true
+    // Debounced: this hits the backend on every keystroke otherwise, and the
+    // route searches the whole company directory.
+    const timer = setTimeout(() => { void search(query).then((r) => { if (live) setResults(r) }) }, 220)
+    return () => { live = false; clearTimeout(timer) }
+  }, [query, search])
+
+  return (
+    <Drawer
+      title="Add someone"
+      subtitle="They keep their company role — this decides what Divo may do for them in this team"
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={!picked || !roleId || busy}
+            onClick={async () => {
+              if (!picked || !roleId) return
+              setBusy(true)
+              try { await onAdd(picked.userId, roleId, displayName(picked.name, picked.email)); onClose() }
+              finally { setBusy(false) }
+            }}
+          >
+            {busy ? 'Adding…' : 'Add to team'}
+          </button>
+        </>
+      }
+    >
+      <div className="ws-lbl">Who</div>
+      <div className="search" style={{ marginTop: 8 }}>
+        <Search size={14} />
+        <input
+          autoFocus
+          value={picked ? displayName(picked.name, picked.email) : query}
+          onChange={(e) => { setPicked(null); setQuery(e.target.value) }}
+          placeholder="Search by name or email"
+          style={{ border: 0, background: 'none', outline: 'none', flex: 1, fontSize: 13, color: 'var(--cur-ink)', fontFamily: 'inherit' }}
+        />
+      </div>
+
+      {!picked && query.trim().length >= 2 ? (
+        <div className="ws-rows" style={{ marginTop: 10 }}>
+          {results.length === 0 ? (
+            <div style={{ padding: 16 }}>
+              <Empty title="Nobody matches" body="They may already be in this team, or not in the company yet." />
+            </div>
+          ) : results.map((r) => (
+            <div className="ws-row click" key={r.userId} onClick={() => setPicked(r)}>
+              <span className="avatar">{initialsOf(r.name, r.email)}</span>
+              <div className="ws-row-main"><b>{displayName(r.name, r.email)}</b><p>{r.email}</p></div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {picked ? (
+        <>
+          <div className="ws-lbl" style={{ marginTop: 22 }}>Role in this team</div>
+          <select className="select" style={{ width: '100%', marginTop: 8 }} value={roleId} onChange={(e) => setRoleId(e.target.value)}>
+            {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+          <p className="ws-sentence-note">
+            Whatever this role grants applies to them immediately. Nothing is granted personally.
+          </p>
+        </>
+      ) : null}
+    </Drawer>
   )
 }
 
@@ -644,9 +752,10 @@ const stateOfUser = (tool: ToolScopeSnapshot, userId: string, action: string) =>
 export function TeamRoles({ replay, toast }: Props) {
   const dept = useMyManagedDepartment()
   const [r1] = useStaged([300], replay)
-  const { snapshot } = useDepartment(dept?.id)
+  const { snapshot, createRole } = useDepartment(dept?.id)
   const matrix = useDepartmentMatrix(dept?.id)
   const [roleId, setRoleId] = useState<string | null>(null)
+  const [creatingRole, setCreatingRole] = useState(false)
   const [pending, setPending] = useState<{ toolId: string; action: string; next: boolean }[]>([])
   const [saving, setSaving] = useState(false)
 
@@ -700,7 +809,7 @@ export function TeamRoles({ replay, toast }: Props) {
         eyebrow={dept.name}
         title="Roles"
         description="A role is a starting point, not a cage. Change one here and it changes for everyone who holds it."
-        actions={<button type="button" className="btn" onClick={() => toast('New roles are created from the company scope')}><Plus size={14} />New role</button>}
+        actions={<button type="button" className="btn" onClick={() => setCreatingRole(true)}><Plus size={14} />New role</button>}
       />
       {editable.length > 1 ? (
         <div className="filters">
@@ -765,6 +874,21 @@ export function TeamRoles({ replay, toast }: Props) {
           </div>
         </Panel>
       </div>
+
+      {creatingRole ? (
+        <Prompt
+          title="New role"
+          description="A role starts with nothing granted. Add people to it and then decide what Divo may do for them."
+          label="Name"
+          placeholder="Analyst"
+          confirm="Create"
+          onClose={() => setCreatingRole(false)}
+          onConfirm={async (name) => {
+            try { await createRole(name); toast(`${name} created`) }
+            catch { toast('Could not create that role') }
+          }}
+        />
+      ) : null}
     </>
   )
 }

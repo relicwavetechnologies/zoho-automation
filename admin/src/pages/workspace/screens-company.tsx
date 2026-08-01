@@ -19,7 +19,7 @@ import {
   CONNECTORS, MEMORIES, SKILLS, toolById,
 } from './fixtures'
 import {
-  Bar, DataNote, Empty, Fade, NoAccess, PageHeader, Panel, Seg, Skel, SkelRows,
+  Bar, DataNote, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, Seg, Skel, SkelRows,
   Switch, compact, money, useStaged,
 } from './ui'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
@@ -29,7 +29,7 @@ import {
   type CeilingAction, type CeilingTool, type Run,
 } from './data/use-company'
 import { useCompanyDaily, useCompanyScope, useDirectory, useSpendByModel, useSpendMembers } from '@/cursor/use-spend'
-import { useProxyStatus } from '@/cursor/use-proxy'
+import { useProxyStatus, useSaveProxyKey } from '@/cursor/use-proxy'
 import { useProxyPolicies, useSaveProxyPolicy } from '@/cursor/use-proxy-policy'
 
 /** The cursor hooks take a token and a company; every screen here needs both. */
@@ -542,7 +542,8 @@ export function CompanyPeople({ replay, go }: Props) {
 export function CompanyDepartments({ replay, toast, go }: Props) {
   const { session } = useAdminAuth()
   const [r1] = useStaged([280], replay)
-  const { data: departments, loading } = useCompanyDepartments()
+  const { data: departments, loading, createDepartment } = useCompanyDepartments()
+  const [creating, setCreating] = useState(false)
   const active = departments.filter((d) => d.status === 'active')
   const { spend } = useDepartmentSpend(active, 30)
 
@@ -552,7 +553,7 @@ export function CompanyDepartments({ replay, toast, go }: Props) {
         eyebrow={session?.companyName ?? 'Company'}
         title="Departments"
         description="A department is the only unit below the company. Its manager is whoever holds the Manager role in it."
-        actions={<button type="button" className="btn primary" onClick={() => toast('Creating a department is not wired to this screen yet')}>New department</button>}
+        actions={<button type="button" className="btn primary" onClick={() => setCreating(true)}>New department</button>}
       />
       <Panel source="teamPeople">
         {!r1 || loading ? <SkelRows n={4} /> : active.length === 0 ? (
@@ -585,6 +586,21 @@ export function CompanyDepartments({ replay, toast, go }: Props) {
           There are no reporting lines in Divo — "manager" means holding the Manager role in a department, nothing more.
         </div>
       </Panel>
+
+      {creating ? (
+        <Prompt
+          title="New department"
+          description="A department is where access is decided. Give it a name and add people once it exists."
+          label="Name"
+          placeholder="Finance"
+          confirm="Create"
+          onClose={() => setCreating(false)}
+          onConfirm={async (name) => {
+            try { await createDepartment(name); toast(`${name} created`) }
+            catch { toast('Could not create that department') }
+          }}
+        />
+      ) : null}
     </>
   )
 }
@@ -1252,9 +1268,12 @@ export function CompanyGuardrails({ replay, toast }: Props) {
   const savePolicy = useSaveProxyPolicy(token, companyId)
 
   const policyFor = (userId: string) => policies.find((p) => p.userId === userId)
+  const [keyFor, setKeyFor] = useState<'deepseek' | 'openai' | null>(null)
+  const saveDeepseek = useSaveProxyKey(token, 'deepseek', companyId)
+  const saveOpenai = useSaveProxyKey(token, 'openai', companyId)
   const keys = [
-    { provider: 'DeepSeek', status: deepseek },
-    { provider: 'OpenAI', status: openai },
+    { id: 'deepseek' as const, provider: 'DeepSeek', status: deepseek },
+    { id: 'openai' as const, provider: 'OpenAI', status: openai },
   ]
 
   const toggleBlocked = async (userId: string, name: string, nowBlocked: boolean) => {
@@ -1289,7 +1308,7 @@ export function CompanyGuardrails({ replay, toast }: Props) {
           {!r1 ? <SkelRows n={2} /> : (
             <Fade>
               <div className="ws-rows">
-                {keys.map(({ provider, status }) => (
+                {keys.map(({ id, provider, status }) => (
                   <div className="ws-row" key={provider}>
                     <span className="ws-ic" data-tone={status?.keyError ? 'err' : status?.configured ? 'ok' : undefined}>
                       <KeyRound size={14} />
@@ -1309,7 +1328,7 @@ export function CompanyGuardrails({ replay, toast }: Props) {
                             : 'Not configured'}
                       </p>
                     </div>
-                    <button type="button" className="btn" onClick={() => toast(`Key management for ${provider} is not on this screen yet`)}>
+                    <button type="button" className="btn" onClick={() => setKeyFor(id)}>
                       {status?.configured ? 'Replace' : 'Add key'}
                     </button>
                   </div>
@@ -1373,6 +1392,30 @@ export function CompanyGuardrails({ replay, toast }: Props) {
           </div>
         </Panel>
       </div>
+
+      {keyFor ? (
+        <Prompt
+          title={`${keyFor === 'deepseek' ? 'DeepSeek' : 'OpenAI'} key`}
+          description="Stored encrypted by the backend and never returned to any client — this screen can only tell you that one exists."
+          label="API key"
+          placeholder="sk-…"
+          confirm="Save key"
+          secret
+          onClose={() => setKeyFor(null)}
+          onConfirm={async (key) => {
+            try {
+              // Company scope only: a platform-wide key is super-admin and set
+              // elsewhere, so offering the choice here would present an option
+              // most admins cannot use.
+              const save = keyFor === 'deepseek' ? saveDeepseek : saveOpenai
+              await save.mutateAsync({ key, keyScope: 'company' })
+              toast('Key saved')
+            } catch {
+              toast('Could not save that key')
+            }
+          }}
+        />
+      ) : null}
     </>
   )
 }
