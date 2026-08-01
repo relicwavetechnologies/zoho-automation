@@ -213,6 +213,30 @@ export function useDepartmentSpend(departments: CompanyDepartment[], days = 30) 
   return { spend, loading }
 }
 
+export type DepartmentDetail = {
+  department: CompanyDepartment
+  roles: { id: string; name: string; slug: string; isSystem: boolean; isDefault: boolean }[]
+  memberships: {
+    id: string; userId: string; name: string | null; email: string
+    roleId: string; roleSlug: string; roleName: string; status: string
+  }[]
+  toolPermissions: { id: string; roleId: string; toolId: string; actionGroup: string; allowed: boolean }[]
+  userOverrides: { id: string; userId: string; toolId: string; actionGroup: string; allowed: boolean }[]
+  skills?: { id: string; name: string; summary: string; status: string }[]
+}
+
+/**
+ * One department, read through the admin route rather than the manager's.
+ *
+ * The desktop route requires MANAGER membership, so a company admin who does
+ * not personally lead the team gets a 403 there. Same data, different door.
+ */
+export const useDepartmentDetail = (departmentId?: string) =>
+  useAdminResource<DepartmentDetail | null>(
+    departmentId ? `/departments/${departmentId}?sections=roles,memberships,permissions,config` : null,
+    null,
+  )
+
 /* ── Runs ─────────────────────────────────────────────── */
 
 export type Run = {

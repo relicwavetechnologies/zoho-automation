@@ -12,7 +12,6 @@ import { OAuthCallbackPage } from "@/pages/OAuthCallbackPage"
 import { WebSearchPage } from "@/pages/WebSearchPage"
 import { MemoriesPage } from "@/pages/MemoriesPage"
 import { SkillsLabPage } from "@/pages/SkillsLabPage"
-import { MockDashboardPage } from "@/pages/MockDashboardPage"
 import { routed } from "@/pages/workspace/routes"
 import {
   YouAccess, YouApprovals, YouConnections, YouHome, YouMemory, YouSettings, YouSkills, YouUsage,
@@ -26,7 +25,9 @@ import {
 } from "@/pages/workspace/screens-company"
 import { ConnectFlow } from "@/pages/workspace/screens-connect"
 import { Artifacts } from "@/pages/workspace/screens-artifacts"
-import { CompanyPersonDetail, CompanyRunDetail } from "@/pages/workspace/screens-company-detail"
+import {
+  CompanyDepartmentDetail, CompanyPersonDetail, CompanyRunDetail,
+} from "@/pages/workspace/screens-company-detail"
 
 type ProtectedProps = {
   children: JSX.Element
@@ -109,6 +110,7 @@ const CompanyAuditRoute = routed(CompanyAudit)
 const CompanyPolicyRoute = routed(CompanyPolicy)
 const CompanyRunDetailRoute = routed(CompanyRunDetail)
 const CompanyPersonDetailRoute = routed(CompanyPersonDetail)
+const CompanyDepartmentDetailRoute = routed(CompanyDepartmentDetail)
 
 export function App() {
   return (
@@ -116,7 +118,6 @@ export function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         {/* Standalone spec preview — all three personas on one page, no session. */}
-        <Route path="/mock-dashboard" element={<MockDashboardPage />} />
         <Route path="/signup/company-admin" element={<CompanyAdminSignupPage />} />
         <Route path="/signup/member-invite" element={<MemberInviteAcceptPage />} />
         <Route path="/zoho/callback" element={<OAuthCallbackPage provider="zoho" />} />
@@ -160,6 +161,7 @@ export function App() {
           <Route path="people/:userId" element={<RequireScope kind="company"><CompanyPersonDetailRoute /></RequireScope>} />
           <Route path="people/:userId/connections/:connectionId" element={<RequireScope kind="company"><ConnectionGovernancePage /></RequireScope>} />
           <Route path="departments" element={<RequireScope kind="company"><CompanyDepartmentsRoute /></RequireScope>} />
+          <Route path="departments/:departmentId" element={<RequireScope kind="company"><CompanyDepartmentDetailRoute /></RequireScope>} />
           <Route path="ai-ops" element={<RequireScope kind="company"><CompanyAiOpsRoute /></RequireScope>} />
           <Route path="ai-ops/runs/:runId" element={<RequireScope kind="company"><CompanyRunDetailRoute /></RequireScope>} />
           <Route path="skills" element={<RequireScope kind="company"><SkillsLabPage /></RequireScope>} />

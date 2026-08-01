@@ -1,11 +1,10 @@
 /**
  * Router adapters for the Workspace screens.
  *
- * The screens were written for the standalone mock, where navigation was local
- * state and `go(screenId)` switched it. Routed into the real app they need the
- * same contract backed by the router instead, so the screens themselves stay
- * untouched and keep working in both places — the `/mock-dashboard` preview
- * (all three personas, one page) and the real app (one persona, real URLs).
+ * The screens were written for a standalone mock, where navigation was local
+ * state and `go(screenId)` switched it. They are the real app now, so the same
+ * contract is backed by the router instead — which kept the port to real data a
+ * re-skin rather than a rewrite.
  *
  * `replay` re-runs the staged loading sequence. In the real app it advances on
  * mount so each navigation plays its skeletons once, the same as a real fetch.
@@ -43,6 +42,7 @@ const PATHS: Record<string, string> = {
   'co-skills': '/skills',
   'co-memory': '/memories',
   'co-guardrails': '/guardrails',
+  'co-web-search': '/connections/web-search',
   /* Drill-ins. A screen passes `co-run:<id>`; the id is appended to the base
      path below. Without one it lands on the list, which is a worse answer than
      the detail but never a wrong one. */

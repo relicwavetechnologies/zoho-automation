@@ -387,23 +387,6 @@ export type Approval = {
   expiresIn: string
 }
 
-export const AWAITING_ME: Approval[] = [
-  {
-    id: 'a1', toolId: 'googleGmail', action: 'send',
-    summary: 'Send the Q3 vendor reminder to 14 suppliers',
-    detail: 'Rohan asked Divo to chase unpaid invoices. The draft is ready and goes out from rohan@acme.co.',
-    requestedBy: 'Rohan Iyer', requestedByInitials: 'RI', requestedAt: '9 minutes ago', expiresIn: 'in 51 min',
-  },
-  {
-    id: 'a2', toolId: 'zohoBooks', action: 'update',
-    summary: 'Mark 6 invoices as written off',
-    detail: 'Total value ₹2,14,800. Divo matched these against the aged-debt sheet Priya shared.',
-    requestedBy: 'Priya Nair', requestedByInitials: 'PN', requestedAt: '40 minutes ago', expiresIn: 'in 20 min',
-  },
-]
-
-
-/* ── Skills ──────────────────────────────────────────── */
 export type Skill = {
   id: string
   name: string
@@ -530,22 +513,3 @@ export const DATA_SOURCES: Record<string, { state: DataState; note: string }> = 
 }
 
 /* ── Scopes per persona ──────────────────────────────── */
-export const SCOPES: Record<Persona, Scope[]> = {
-  member: [{ id: 'you', kind: 'you', label: 'Ananya Mehta', detail: 'Your workspace' }],
-  manager: [
-    { id: 'you', kind: 'you', label: 'Arjun Shah', detail: 'Your workspace' },
-    { id: 'team-finance', kind: 'team', label: 'Finance', detail: '6 people · you lead', departmentId: 'd_finance' },
-  ],
-  admin: [
-    { id: 'you', kind: 'you', label: 'Dev Kapoor', detail: 'Your workspace' },
-    { id: 'team-finance', kind: 'team', label: 'Finance', detail: '6 people', departmentId: 'd_finance' },
-    { id: 'team-ops', kind: 'team', label: 'Operations', detail: '11 people', departmentId: 'd_ops' },
-    { id: 'company', kind: 'company', label: 'Acme Technologies', detail: '48 people · whole company' },
-  ],
-}
-
-export const VIEWER: Record<Persona, { name: string; email: string; initials: string; role: string }> = {
-  member: { name: 'Ananya Mehta', email: 'ananya@acme.co', initials: 'AM', role: 'Member · Finance' },
-  manager: { name: 'Arjun Shah', email: 'arjun@acme.co', initials: 'AS', role: 'Manager · Finance' },
-  admin: { name: 'Dev Kapoor', email: 'dev@acme.co', initials: 'DK', role: 'Company admin' },
-}

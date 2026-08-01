@@ -18,10 +18,7 @@ import {
   KeyRound, Link2, Lock, Search, ShieldCheck, Sparkles, TriangleAlert, Users, Wrench,
 } from 'lucide-react'
 import {
-  MY_USAGE, PEOPLE, ROLE_GRANTS, SKILLS, TOOLS, resolveGrants, toolById, type Person,
-} from './fixtures'
-import {
-  Bar, DataNote, Empty, Fade, Matrix, PageHeader, Panel, Seg, Skel, SkelRows, Spark,
+  Bar, Empty, Fade, PageHeader, Panel, Seg, Skel, SkelRows, Spark,
   Switch, compact, money, useStaged,
 } from './ui'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
@@ -29,7 +26,10 @@ import { useRunDetail, type RunTurnView } from '@/cursor/use-run-detail'
 import { useCompanyScope, useMemberSpend } from '@/cursor/use-spend'
 import { useProxyPolicy, useSaveProxyPolicy, type ProxyPolicyInput } from '@/cursor/use-proxy-policy'
 import { useProxyAudit, useProxyModels } from '@/cursor/use-proxy'
-import { ROLE_LABEL, ago, displayName, initialsOf, useDirectory, useRuns } from './data/use-company'
+import {
+  ROLE_LABEL, ago, displayName, initialsOf, useDepartmentDetail, useDirectory, useRuns,
+} from './data/use-company'
+import { useTeamUsage } from './data/use-team'
 
 /** Mirrors the run badge on the AI Ops list, so a status reads the same everywhere. */
 const RunStatusBadge = ({ status }: { status: string }) => (
@@ -601,10 +601,45 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
    Department detail
    ══════════════════════════════════════════════════════ */
 
-export function CompanyDepartmentDetail({ replay, toast, go }: Props) {
-  const [r1] = useStaged([280], replay)
-  const [tab, setTab] = useState<'people' | 'roles' | 'access' | 'config'>('people')
-  const members = PEOPLE
+/**
+ * A department, from the company side.
+ *
+ * The manager owns this team day to day; this view is for when an admin needs
+ * to reach in — usually because nobody is managing it. So the first thing it
+ * answers is who can approve for these people, and the permission tabs are
+ * read-only pointers back to the manager's editor rather than a second one.
+ */
+export function CompanyDepartmentDetail({ replay, go }: Props) {
+  const { departmentId } = useParams()
+  const [r1, r2] = useStaged([280, 560], replay)
+  const [tab, setTab] = useState<'people' | 'roles' | 'access'>('people')
+  const { data, loading } = useDepartmentDetail(departmentId)
+  const { usage } = useTeamUsage(departmentId)
+
+  if (!loading && !data) {
+    return (
+      <>
+        <div className="crumbs">
+          <button type="button" className="btn" style={{ height: 30, padding: '0 11px' }} onClick={() => go('co-departments')}>
+            <ArrowLeft size={13} />Departments
+          </button>
+        </div>
+        <Empty icon={Building2} title="No such department" body="It may have been archived, or belongs to another company." />
+      </>
+    )
+  }
+
+  const dept = data?.department
+  const members = data?.memberships ?? []
+  const roles = data?.roles ?? []
+  const managers = members.filter((m) => m.roleSlug === 'MANAGER')
+  const spendByUser = new Map(usage.people.map((p) => [p.userId, p]))
+  const overridesByUser = new Map<string, number>()
+  for (const o of data?.userOverrides ?? []) overridesByUser.set(o.userId, (overridesByUser.get(o.userId) ?? 0) + 1)
+  const grantsByRole = new Map<string, number>()
+  for (const g of data?.toolPermissions ?? []) {
+    if (g.allowed) grantsByRole.set(g.roleId, (grantsByRole.get(g.roleId) ?? 0) + 1)
+  }
 
   return (
     <>
@@ -616,42 +651,82 @@ export function CompanyDepartmentDetail({ replay, toast, go }: Props) {
 
       <PageHeader
         eyebrow="Department"
-        title="Finance"
-        description="Six people, three roles, led by Arjun Shah. Managers govern their own department — this view is for when you need to reach in."
-        actions={<button type="button" className="btn" onClick={() => toast('Archive department')}>Archive</button>}
+        title={dept?.name ?? '—'}
+        description={
+          dept?.description
+          ?? `${members.length} ${members.length === 1 ? 'person' : 'people'}, ${roles.length} ${roles.length === 1 ? 'role' : 'roles'}. Managers govern their own department — this view is for when you need to reach in.`
+        }
       />
+
+      {/* The one condition an admin has to act on: with no manager, every gated
+          action fails closed and the person who asked is never told why. */}
+      {!loading && managers.length === 0 ? (
+        <div className="ws-ceiling" style={{ marginBottom: 18 }}>
+          <TriangleAlert size={14} />
+          <div>
+            <b>Nobody manages this department.</b>{' '}
+            Anything needing approval stops and waits for a manager who does not exist. Give someone the Manager
+            role to unblock it.
+          </div>
+        </div>
+      ) : null}
+
+      {!r1 ? <Skel w="100%" h={26} /> : (
+        <Fade>
+          <div className="runmeta">
+            <span>People <b>{members.length}</b></span>
+            <span>Roles <b>{roles.length}</b></span>
+            <span>Managers <b>{managers.length}</b></span>
+            <span>Using Divo <b>{usage.activePeople}</b></span>
+            <span>30-day cost <b style={{ color: 'var(--cur-primary)' }}>{money(usage.spendUsd)}</b></span>
+          </div>
+        </Fade>
+      )}
 
       <div className="filters">
         <Seg
           value={tab}
           onChange={setTab}
           options={[
-            { value: 'people', label: `People (${members.length})` },
-            { value: 'roles', label: 'Roles (3)' },
+            { value: 'people', label: `People · ${members.length}` },
+            { value: 'roles', label: `Roles · ${roles.length}` },
             { value: 'access', label: 'Access' },
-            { value: 'config', label: 'Persona' },
           ]}
         />
       </div>
 
       {tab === 'people' ? (
         <Panel source="teamPeople">
-          {!r1 ? <SkelRows n={6} /> : (
+          {!r2 || loading ? <SkelRows n={5} /> : members.length === 0 ? (
+            <Empty icon={Users} title="Nobody in this department" body="Divo can do nothing for a team with no members." />
+          ) : (
             <Fade>
               <div className="ws-rows">
-                {members.map((p) => (
-                  <div className="ws-row click" key={p.id} onClick={() => go('co-person')}>
-                    <span className="avatar">{p.initials}</span>
-                    <div className="ws-row-main">
-                      <b>{p.name}{p.deptRole === 'MANAGER' ? <span className="ws-tag">Manager</span> : null}</b>
-                      <p>{p.title} · {p.deptRoleName}</p>
+                {members.map((m) => {
+                  const spend = spendByUser.get(m.userId)
+                  const exceptions = overridesByUser.get(m.userId) ?? 0
+                  return (
+                    <div className="ws-row click" key={m.userId} onClick={() => go(`co-person:${m.userId}`)}>
+                      <span className="avatar">{initialsOf(m.name, m.email)}</span>
+                      <div className="ws-row-main">
+                        <b>
+                          {displayName(m.name, m.email)}
+                          {m.roleSlug === 'MANAGER' ? <span className="ws-tag">Leads this team</span> : null}
+                          {exceptions > 0 ? (
+                            <span className="ws-prov" data-src="department_user_override">
+                              {exceptions} personal exception{exceptions > 1 ? 's' : ''}
+                            </span>
+                          ) : null}
+                        </b>
+                        <p>{m.email} · {m.roleName}</p>
+                      </div>
+                      <div className="ws-row-act">
+                        <span className="ws-sub">{money(spend?.spendUsd ?? 0)}</span>
+                        <span className="ws-sub">{spend?.runs ?? 0} tasks</span>
+                      </div>
                     </div>
-                    <div className="ws-row-act">
-                      <span className="ws-sub">{money(p.spend30d)}</span>
-                      <span className="ws-sub">{p.lastActive}</span>
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </Fade>
           )}
@@ -659,176 +734,83 @@ export function CompanyDepartmentDetail({ replay, toast, go }: Props) {
       ) : null}
 
       {tab === 'roles' ? (
-        <Panel title="Roles in Finance" description="Manager and Member are system roles and cannot be renamed or deleted">
-          <div className="ws-rows">
-            {[
-              { name: 'Manager', slug: 'MANAGER', system: true, holders: 1 },
-              { name: 'Analyst', slug: 'ANALYST', system: false, holders: 2 },
-              { name: 'Member', slug: 'MEMBER', system: true, holders: 3 },
-            ].map((r) => (
-              <div className="ws-row" key={r.slug}>
-                <span className="ws-ic"><Users size={14} /></span>
-                <div className="ws-row-main">
-                  <b>{r.name}{r.system ? <span className="ws-tag"><Lock size={10} />System</span> : null}</b>
-                  <p>{r.holders} {r.holders === 1 ? 'person' : 'people'} · slug {r.slug}</p>
-                </div>
-                {!r.system ? <button type="button" className="btn" onClick={() => toast('Rename')}>Rename</button> : null}
+        <Panel source="permissions">
+          {!r2 || loading ? <SkelRows n={4} /> : (
+            <Fade>
+              <div className="ws-rows">
+                {roles.map((role) => {
+                  const holders = members.filter((m) => m.roleId === role.id)
+                  return (
+                    <div className="ws-row" key={role.id}>
+                      <span className="ws-ic"><Users size={14} /></span>
+                      <div className="ws-row-main">
+                        <b>
+                          {role.name}
+                          {role.isDefault ? <span className="ws-tag">Default</span> : null}
+                          {role.isSystem ? <span className="ws-tag">Built in</span> : null}
+                        </b>
+                        <p>
+                          {holders.length} {holders.length === 1 ? 'person' : 'people'} ·{' '}
+                          {grantsByRole.get(role.id) ?? 0} action{(grantsByRole.get(role.id) ?? 0) === 1 ? '' : 's'} granted
+                          {holders.length ? ` · ${holders.map((h) => displayName(h.name, h.email).split(' ')[0]).join(', ')}` : ''}
+                        </p>
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
-            ))}
+            </Fade>
+          )}
+          <div className="ws-panel-foot">
+            Role grants are edited by the department's manager. The company ceiling is the only thing you set from here.
           </div>
         </Panel>
       ) : null}
 
       {tab === 'access' ? (
         <div className="ws-stack">
-          <div className="ws-ceiling">
-            <TriangleAlert size={14} />
-            <div>
-              This is the same matrix the department's manager sees. Editing here <b>silently overrides them</b> —
-              prefer asking the manager unless they are unreachable.
-            </div>
-          </div>
-          <Panel title="Member role" source="permissions">
-            <div className="ws-panel-body">
-              {!r1 ? <SkelRows n={6} icon={false} /> : (
-                <Fade><Matrix grants={ROLE_GRANTS.MEMBER} readOnly tools={TOOLS.filter((t) => !t.adminOnly)} /></Fade>
-              )}
-            </div>
-          </Panel>
-        </div>
-      ) : null}
-
-      {tab === 'config' ? (
-        <div className="ws-stack">
-          <Panel title="How Divo behaves for this department" description="Prepended to every run for anyone in Finance">
-            <div className="ws-panel-body">
-              <textarea
-                className="input"
-                style={{ width: '100%', height: 130, padding: 12, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.55 }}
-                defaultValue={'Figures in lakhs unless asked otherwise. The quarter closes on the 5th, not the last working day. Always cc finance@acme.co on anything going to a supplier.'}
-              />
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
-                <button type="button" className="btn primary" onClick={() => toast('Persona saved')}>Save</button>
-              </div>
-            </div>
-            <div className="ws-panel-foot">
-              <Brain size={13} />
-              This is context, never authority — it cannot grant a permission the role does not have
-            </div>
-          </Panel>
-        </div>
-      ) : null}
-    </>
-  )
-}
-
-/* ══════════════════════════════════════════════════════
-   Skill detail
-   ══════════════════════════════════════════════════════ */
-
-export function CompanySkillDetail({ replay, toast, go }: Props) {
-  const [r1] = useStaged([260], replay)
-  const skill = SKILLS[0]
-
-  return (
-    <>
-      <div className="crumbs">
-        <button type="button" className="btn" style={{ height: 30, padding: '0 11px' }} onClick={() => go('co-skills')}>
-          <ArrowLeft size={13} />Skills
-        </button>
-      </div>
-
-      <PageHeader
-        eyebrow="Skill"
-        title={skill.name}
-        description={skill.blurb}
-        actions={<button type="button" className="btn" onClick={() => toast('Archive skill')}>Archive</button>}
-      />
-
-      <div className="ws-cols">
-        <div className="ws-stack">
-          <Panel title="What it needs" description="A skill stays invisible unless the person holds every tool it uses">
-            <div className="ws-rows">
-              {skill.tools.map((t) => {
-                const tool = toolById(t)
-                return (
-                  <div className="ws-row" key={t}>
-                    <span className="ws-ic" data-tone="ok"><Wrench size={14} /></span>
-                    <div className="ws-row-main">
-                      <b>{tool?.name}</b>
-                      <p>{tool?.family}</p>
-                    </div>
-                    <span className="badge b-ok"><span className="dot" />Granted</span>
-                  </div>
-                )
-              })}
-            </div>
-            <div className="ws-panel-foot">
-              <CircleAlert size={13} />
-              Divo hides a skill it cannot complete rather than starting it and failing halfway
-            </div>
-          </Panel>
-
-          <Panel title="Who can run it" description="Deny by default — access is an explicit grant">
-            {!r1 ? <SkelRows n={3} /> : (
+          <Panel title="What this team has been granted" description="Counted from the department's own grant rows">
+            {!r2 || loading ? <SkelRows n={4} icon={false} /> : (
               <Fade>
-                <div className="ws-rows">
-                  {[
-                    { icon: Building2, label: 'Finance', detail: 'Department · 6 people' },
-                    { icon: Users, label: 'Analyst', detail: 'Role · 2 people' },
-                    { icon: Users, label: 'Kabir Shah', detail: 'Person' },
-                  ].map((g) => (
-                    <div className="ws-row" key={g.label}>
-                      <span className="ws-ic"><g.icon size={14} /></span>
-                      <div className="ws-row-main"><b>{g.label}</b><p>{g.detail}</p></div>
-                      <button type="button" className="btn" onClick={() => toast('Access removed')}>Remove</button>
-                    </div>
-                  ))}
+                <div className="ws-metrics">
+                  <div className="ws-metric">
+                    <div className="k">Actions granted</div>
+                    <div className="v">{(data?.toolPermissions ?? []).filter((p) => p.allowed).length}</div>
+                    <div className="s">Across every role in this department</div>
+                  </div>
+                  <div className="ws-metric">
+                    <div className="k">Personal exceptions</div>
+                    <div className="v">{(data?.userOverrides ?? []).length}</div>
+                    <div className="s">Granted to individuals, outside any role</div>
+                  </div>
+                  <div className="ws-metric">
+                    <div className="k">Tools touched</div>
+                    <div className="v">{new Set((data?.toolPermissions ?? []).map((p) => p.toolId)).size}</div>
+                    <div className="s">Distinct tools with a grant row</div>
+                  </div>
                 </div>
               </Fade>
             )}
             <div className="ws-panel-foot">
-              <button type="button" className="btn" onClick={() => toast('Grant access')}>Grant access</button>
+              <ShieldCheck size={13} />
+              These are what was configured. What each person can actually do is clamped by the company ceiling.
             </div>
           </Panel>
-        </div>
 
-        <div className="ws-stack">
-          <Panel title="Usage">
+          <Panel title="Changing any of this">
             <div className="ws-panel-body">
-              <div className="ws-lbl">Runs, 30 days</div>
-              <div className="ws-num" style={{ marginTop: 8 }}>{skill.runs30d}</div>
-              <div style={{ marginTop: 20 }}>
-                <div className="kv"><span className="k">Owner</span><span className="v">{skill.owner}</span></div>
-                <div className="kv"><span className="k">Scope</span><span className="v">{skill.scope}</span></div>
-                <div className="kv"><span className="k">Updated</span><span className="v">{skill.updated}</span></div>
-                <div className="kv"><span className="k">Revision</span><span className="v">4</span></div>
+              <p className="ws-sub" style={{ lineHeight: 1.6 }}>
+                Permissions inside a department are the manager's to set, and there is deliberately no second editor
+                here — two places to change the same grant is how the two disagree. Raise or lower what any team is
+                allowed to grant at all from the <b>company ceiling</b>.
+              </p>
+              <div style={{ marginTop: 14 }}>
+                <button type="button" className="btn" onClick={() => go('co-policy')}>Open the company ceiling</button>
               </div>
             </div>
           </Panel>
-
-          <Panel title="History">
-            <div className="ws-panel-body">
-              {[
-                { v: 'Revision 4', d: '3 days ago — added the cc rule' },
-                { v: 'Revision 3', d: '2 weeks ago — narrowed to unpaid only' },
-                { v: 'Revision 2', d: '1 month ago — first shared version' },
-              ].map((h, i) => (
-                <div className="ws-ver" key={h.v}>
-                  <div className="ws-ver-line">
-                    <span className="ws-ver-dot" data-now={i === 0} />
-                    {i < 2 ? <span className="ws-ver-rail" /> : null}
-                  </div>
-                  <div style={{ paddingBottom: i < 2 ? 12 : 0 }}>
-                    <b>{h.v}</b>
-                    <p>{h.d}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Panel>
         </div>
-      </div>
+      ) : null}
     </>
   )
 }

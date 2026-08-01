@@ -12,14 +12,14 @@
  */
 import { Fragment, useMemo, useState } from 'react'
 import {
-  ArrowRight, Brain, Building2, Check, ChevronRight, Clock, Info, KeyRound, Lock, Plus,
+  Brain, Building2, Check, ChevronRight, Clock, Info, KeyRound, Link2, Lock, Plus,
   Search, ShieldCheck, Sparkles, Trash2, TriangleAlert, Users,
 } from 'lucide-react'
 import {
   CONNECTORS, MEMORIES, SKILLS, toolById,
 } from './fixtures'
 import {
-  Bar, Empty, Fade, PageHeader, Panel, ProviderMark, Seg, Skel, SkelRows,
+  Bar, DataNote, Empty, Fade, PageHeader, Panel, Seg, Skel, SkelRows,
   Switch, compact, money, useStaged,
 } from './ui'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
@@ -580,132 +580,85 @@ export function CompanyDepartments({ replay, toast, go }: Props) {
    config list. "Who is about to break" is coverage — and it is the one that
    costs a day of failed runs when nobody looks at it. */
 
-type Coverage = {
-  provider: (typeof CONNECTORS)[number]['provider']
-  name: string
-  connected: number
-  expiring: number
-  never: number
-  missing: string[]
-  lastUsed: string
-}
-
-const COVERAGE: Coverage[] = [
-  {
-    provider: 'lark', name: 'Lark', connected: 46, expiring: 0, never: 2, lastUsed: 'Just now',
-    missing: ['Meera Rao', 'Dinesh Pillai'],
-  },
-  {
-    provider: 'google_workspace', name: 'Google Workspace', connected: 27, expiring: 4, never: 17, lastUsed: '3 minutes ago',
-    missing: ['Meera Rao', 'Kabir Shah', 'Nikhil Roy', 'Farah Khan', 'and 13 others'],
-  },
-  {
-    provider: 'airtable', name: 'Airtable', connected: 6, expiring: 0, never: 42, lastUsed: '2 days ago',
-    missing: ['Everyone outside Finance and Operations'],
-  },
-  {
-    provider: 'canva', name: 'Canva', connected: 11, expiring: 1, never: 36, lastUsed: 'Yesterday', missing: ['Mostly Sales — 8 of 19 connected'],
-  },
-]
-
-export function CompanyConnections({ replay, toast }: Props) {
-  const [r1, r2] = useStaged([260, 520], replay)
+export function CompanyConnections({ replay, go }: Props) {
+  const { session } = useAdminAuth()
+  const [r1, r2] = useStaged([280, 540], replay)
   const [open, setOpen] = useState<string | null>(null)
-  const totalPeople = 48
-  const expiring = sum(COVERAGE.map((c) => c.expiring))
+  const { data: directory, loading } = useDirectory()
+
+  /**
+   * Coverage for the two providers the directory actually reports.
+   *
+   * There is no company-wide connection route — only per-member — so anything
+   * beyond Lark and Google would mean one request per person on page load.
+   * Two real rows beat six invented ones, and the gap is stated rather than
+   * filled in.
+   */
+  const coverage = [
+    {
+      key: 'lark',
+      name: 'Lark',
+      connected: directory.filter((p) => p.larkLinked),
+      missing: directory.filter((p) => !p.larkLinked),
+      consequence: 'Divo in Lark cannot recognise them — it answers as if they were a stranger.',
+    },
+    {
+      key: 'google_workspace',
+      name: 'Google Workspace',
+      connected: directory.filter((p) => p.googleConnected),
+      missing: directory.filter((p) => !p.googleConnected),
+      consequence: 'Every Gmail, Drive, Sheets or Calendar step fails for them, mid-task.',
+    },
+  ]
 
   return (
     <>
       <PageHeader
-        eyebrow="Acme Technologies"
+        eyebrow={session?.companyName ?? 'Company'}
         title="Connections"
-        description="What the company connected once for everyone, and how much of the company is actually connected. Personal connections stay private to whoever made them — you can see that one exists, never its contents."
+        description="What Divo can reach on your people's behalf. A permission without a connection does nothing."
       />
       <div className="ws-stack">
-        <Panel title="Connected for the company" source="companyConnections">
-          {!r1 ? <SkelRows n={3} /> : (
+        <Panel title="Coverage" description="Who is connected, and what breaks for whoever is not" source="connections">
+          {!r1 || loading ? <SkelRows n={2} /> : (
             <Fade>
               <div className="ws-rows">
-                {CONNECTORS.filter((c) => !c.memberCanConnect).map((c) => (
-                  <div className="ws-row click" key={c.provider} onClick={() => toast(`Manage ${c.name}`)}>
-                    <ProviderMark provider={c.provider} />
-                    <div className="ws-row-main">
-                      <b>{c.name}</b>
-                      <p>{c.blurb} · {c.auth} · added by Dev Kapoor</p>
-                    </div>
-                    <div className="ws-row-act">
-                      <span className="ws-sub">Used 2 hours ago</span>
-                      <span className="badge b-ok"><span className="dot" />On</span>
-                    </div>
-                  </div>
-                ))}
-                <div className="ws-row click" onClick={() => toast('Manage web search')}>
-                  <span className="ws-ic"><KeyRound size={14} /></span>
-                  <div className="ws-row-main">
-                    <b>Web search</b>
-                    <p>Company API key · 41,200 credits remaining · every department</p>
-                  </div>
-                  <div className="ws-row-act">
-                    <span className="ws-sub">Used 6 minutes ago</span>
-                    <span className="badge b-ok"><span className="dot" />On</span>
-                  </div>
-                </div>
-              </div>
-            </Fade>
-          )}
-        </Panel>
-
-        <Panel
-          title="Coverage"
-          description={`How much of the company can actually use each connector${expiring ? ` · ${expiring} tokens expire within a week` : ''}`}
-          source="connectionCoverage"
-        >
-          {!r2 ? <SkelRows n={4} /> : (
-            <Fade>
-              <div className="ws-rows">
-                {COVERAGE.map((c) => {
-                  const isOpen = open === c.provider
+                {coverage.map((row) => {
+                  const pct = directory.length ? Math.round((row.connected.length / directory.length) * 100) : 0
+                  const isOpen = open === row.key
                   return (
-                    <div className="ws-row" key={c.provider} style={{ alignItems: 'flex-start' }}>
-                      <ProviderMark provider={c.provider} />
+                    <div className="ws-row" key={row.key} style={{ alignItems: 'flex-start' }}>
+                      <span className="ws-ic" data-tone={row.missing.length ? 'warn' : 'ok'}><Link2 size={14} /></span>
                       <div className="ws-row-main">
-                        <b>
-                          {c.name}
-                          {c.expiring > 0 ? <span className="ws-prov" data-src="department_user_override">{c.expiring} expiring</span> : null}
-                        </b>
-                        <p>{c.connected} of {totalPeople} connected · last used {c.lastUsed}</p>
-                        <div style={{ marginTop: 10, maxWidth: 380 }}>
-                          <div className="ws-hbar">
-                            <i data-k="ok" style={{ width: `${((c.connected - c.expiring) / totalPeople) * 100}%` }} />
-                            <i data-k="soon" style={{ width: `${(c.expiring / totalPeople) * 100}%` }} />
-                            <i data-k="none" style={{ width: `${(c.never / totalPeople) * 100}%` }} />
-                          </div>
-                          <div className="ws-hkey">
-                            <span><i style={{ background: 'var(--cur-success)' }} />{c.connected - c.expiring} working</span>
-                            {c.expiring ? <span><i style={{ background: 'var(--ws-warning)' }} />{c.expiring} expiring</span> : null}
-                            <span><i style={{ background: 'var(--cur-hairline-strong)' }} />{c.never} never connected</span>
-                          </div>
+                        <b>{row.name}<span className="ws-tag">{pct}%</span></b>
+                        <p>
+                          {row.connected.length} of {directory.length} connected
+                          {row.missing.length ? ` · ${row.consequence}` : ' · nobody is missing'}
+                        </p>
+                        <div style={{ marginTop: 9, maxWidth: 320 }}>
+                          <Bar pct={pct} tone={pct < 60 ? 'brand' : undefined} />
                         </div>
-                        {isOpen ? (
-                          <div className="ws-ba">
-                            <div className="ws-lbl">Not connected</div>
-                            {c.missing.map((m) => (
-                              <div className="ws-ba-r" key={m}><span className="to">{m}</span></div>
+                        {isOpen && row.missing.length ? (
+                          <div className="ws-ba" style={{ marginTop: 12 }}>
+                            {row.missing.slice(0, 20).map((p) => (
+                              <div className="ws-ba-r" key={p.userId}>
+                                <span className="k">{displayName(p.name, p.email)}</span>
+                                <span className="to">{p.email}</span>
+                              </div>
                             ))}
+                            {row.missing.length > 20 ? (
+                              <div className="ws-ba-r"><span className="k">and {row.missing.length - 20} more</span></div>
+                            ) : null}
                           </div>
                         ) : null}
-                        <div style={{ marginTop: 11 }}>
-                          <button
-                            type="button"
-                            className="ws-more"
-                            data-open={isOpen}
-                            onClick={() => setOpen(isOpen ? null : c.provider)}
-                          >
-                            <ChevronRight size={13} />{isOpen ? 'Hide' : 'Who is missing'}
-                          </button>
-                        </div>
+                        {row.missing.length ? (
+                          <div style={{ marginTop: 9 }}>
+                            <button type="button" className="ws-more" data-open={isOpen} onClick={() => setOpen(isOpen ? null : row.key)}>
+                              <ChevronRight size={13} />{isOpen ? 'Hide' : `Who is missing · ${row.missing.length}`}
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
-                      <button type="button" className="btn" onClick={() => toast('Reminder sent in Lark')}>Ask them</button>
                     </div>
                   )
                 })}
@@ -713,8 +666,41 @@ export function CompanyConnections({ replay, toast }: Props) {
             </Fade>
           )}
           <div className="ws-panel-foot">
+            <DataNote source="connectionCoverage" />
+            Only Lark and Google are reported company-wide. The rest are visible one person at a time.
+          </div>
+        </Panel>
+
+        <Panel title="Company-held connections" description="Connected once by an admin and shared, rather than per person">
+          {!r2 ? <SkelRows n={2} /> : (
+            <Fade>
+              <div className="ws-rows">
+                <div className="ws-row click" onClick={() => go('co-web-search')}>
+                  <span className="ws-ic"><Search size={14} /></span>
+                  <div className="ws-row-main">
+                    <b>Web search</b>
+                    <p>A company-wide search key with its own credit budget — the one shared connection that exists today</p>
+                  </div>
+                  <span className="ws-sub">Manage</span>
+                </div>
+              </div>
+            </Fade>
+          )}
+          <div className="ws-panel-foot">
             <ShieldCheck size={13} />
-            You can set rate limits and approval rules on these — you cannot read their contents or tokens.
+            Tokens and credentials never leave the backend — this shows that a connection exists, never what is in it
+          </div>
+        </Panel>
+
+        <Panel title="Per-person connections">
+          <div className="ws-panel-body">
+            <p className="ws-sub" style={{ lineHeight: 1.6 }}>
+              Everything else is connected by each person from their own <b>Connected apps</b> page, and governed from
+              their profile. Open anyone in <b>Everyone</b> to see what they have linked and set policy on it.
+            </p>
+            <div style={{ marginTop: 14 }}>
+              <button type="button" className="btn" onClick={() => go('co-people')}>Open the directory</button>
+            </div>
           </div>
         </Panel>
       </div>
@@ -1356,83 +1342,6 @@ export function CompanyGuardrails({ replay, toast }: Props) {
           </div>
         </Panel>
       </div>
-    </>
-  )
-}
-
-/* ══ Skills ════════════════════════════════════════════ */
-export function CompanySkills({ replay, toast, go }: Props) {
-  const [r1] = useStaged([300], replay)
-  return (
-    <>
-      <PageHeader
-        eyebrow="Acme Technologies"
-        title="Skills"
-        description="Saved ways of working, and who may run each one. A skill stays invisible until someone is granted it and holds every tool it needs."
-        actions={<button type="button" className="btn" onClick={() => toast('New folder')}><Plus size={14} />New folder</button>}
-      />
-      <Panel source="skills">
-        {!r1 ? <SkelRows n={5} /> : (
-          <Fade>
-            <div className="ws-rows">
-              {SKILLS.map((s) => (
-                <div className="ws-row click" key={s.id} onClick={() => go('co-skill')}>
-                  <span className="ws-ic"><Sparkles size={14} /></span>
-                  <div className="ws-row-main">
-                    <b>{s.name}<span className="ws-tag">{s.scope}</span></b>
-                    <p>
-                      {s.blurb} · needs {s.tools.map((t) => toolById(t)?.name).filter(Boolean).join(', ')}
-                    </p>
-                  </div>
-                  <div className="ws-row-act">
-                    <span className="ws-sub">{s.runs30d} runs</span>
-                    <span className="ws-sub">{s.owner}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Fade>
-        )}
-        <div className="ws-panel-foot">
-          Access is a grant per user, department, role or company — deny by default, exactly like connections
-        </div>
-      </Panel>
-    </>
-  )
-}
-
-/* ══ Memory ════════════════════════════════════════════ */
-export function CompanyMemory({ replay, toast }: Props) {
-  const [r1] = useStaged([300], replay)
-  return (
-    <>
-      <PageHeader
-        eyebrow="Acme Technologies"
-        title="Memory"
-        description="What Divo has learned that applies beyond one person. Personal memories stay private to whoever taught them."
-      />
-      <Panel>
-        {!r1 ? <SkelRows n={4} /> : (
-          <Fade>
-            <div className="ws-rows">
-              {MEMORIES.filter((m) => m.scope !== 'personal').map((m) => (
-                <div className="ws-row" key={m.id}>
-                  <span className="ws-ic"><Brain size={14} /></span>
-                  <div className="ws-row-main">
-                    <b style={{ fontWeight: 400 }}>{m.text}</b>
-                    <p>{m.scope === 'department' ? 'Everyone in Finance' : 'Everyone at Acme'} · learned {m.learned} · used {m.usedCount} times</p>
-                  </div>
-                  <button type="button" className="btn" onClick={() => toast('Forgotten')}><Trash2 size={14} />Forget</button>
-                </div>
-              ))}
-            </div>
-          </Fade>
-        )}
-        <div className="ws-panel-foot">
-          <TriangleAlert size={13} />
-          Memory is being reworked separately — treat this screen as a placeholder and do not wire it yet
-        </div>
-      </Panel>
     </>
   )
 }
