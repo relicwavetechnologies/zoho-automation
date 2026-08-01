@@ -25,10 +25,18 @@ import {
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import {
   ROLE_LABEL, ago, displayName, durationLabel, initialsOf,
-  useAuditLog, useCompanyDepartments, useDepartmentSpend, useDirectory,
-  useCompanyCeiling, useOverview, useProxyPolicies, useProxyStatus, useRuns, useSpendByMember, useSpendByModel, useSpendDaily,
+  useAuditLog, useCompanyCeiling, useCompanyDepartments, useDepartmentSpend, useOverview, useRuns,
   type CeilingAction, type CeilingTool, type Run,
 } from './data/use-company'
+import { useCompanyDaily, useCompanyScope, useDirectory, useSpendByModel, useSpendMembers } from '@/cursor/use-spend'
+import { useProxyStatus } from '@/cursor/use-proxy'
+import { useProxyPolicies, useSaveProxyPolicy } from '@/cursor/use-proxy-policy'
+
+/** The cursor hooks take a token and a company; every screen here needs both. */
+function useAdminScope() {
+  const { token } = useAdminAuth()
+  return { token, companyId: useCompanyScope() }
+}
 
 type Props = { replay: number; toast: (m: string) => void; go: (screen: string) => void }
 
@@ -118,20 +126,21 @@ function DayChart({ days, hotFrom }: { days: { label: string; v: number }[]; hot
 export function CompanyHome({ replay, go }: Props) {
   const { session } = useAdminAuth()
   const [r1, r2, r3] = useStaged([240, 480, 700], replay)
+  const { token, companyId } = useAdminScope()
   const { data: overview } = useOverview(30)
-  const { data: daily } = useSpendDaily(14)
-  const { data: memberSpend } = useSpendByMember(30)
-  const { data: directory } = useDirectory()
+  const daily = useCompanyDaily(token, 14, companyId).data
+  const memberSpend = useSpendMembers(token, 30, companyId).data
+  const directory = useDirectory(token, companyId).data ?? []
   const { data: departments } = useCompanyDepartments()
   const { spend: deptSpend } = useDepartmentSpend(departments, 30)
   const { data: audit } = useAuditLog(6)
 
-  const days = daily.series.map((point) => ({ label: shortDate(point.date), v: point.spendUsd }))
+  const days = (daily?.series ?? []).map((point) => ({ label: shortDate(point.date), v: point.spendUsd }))
   const last7 = sum(days.slice(-7).map((d) => d.v))
   const prev7 = sum(days.slice(0, Math.max(days.length - 7, 0)).map((d) => d.v))
   const active = departments.filter((d) => d.status === 'active')
   const unmanaged = active.filter((d) => d.managerCount === 0)
-  const overBudget = memberSpend.members.filter((m) => m.usagePct >= 85)
+  const overBudget = (memberSpend?.members ?? []).filter((m) => m.usagePct >= 85)
   const unlinked = directory.filter((p) => !p.larkLinked)
   const totalDeptSpend = sum(Object.values(deptSpend).map((s) => s.spendUsd))
   const completed = Math.round(overview.executions.total * (overview.successRate / 100))
@@ -248,7 +257,7 @@ export function CompanyHome({ replay, go }: Props) {
                   <Info size={14} />
                   <div>
                     Priced per model from the token counts each run reported, with cached input charged at its own
-                    rate — {daily.cacheSavingsPct}% of input tokens were served from cache in this window.
+                    rate — {daily?.cacheSavingsPct ?? 0}% of input tokens were served from cache in this window.
                   </div>
                 </div>
               </Fade>
@@ -463,10 +472,12 @@ export function CompanyPeople({ replay, go }: Props) {
   const { session } = useAdminAuth()
   const [r1] = useStaged([300], replay)
   const [query, setQuery] = useState('')
-  const { data: directory, loading } = useDirectory()
-  const { data: memberSpend } = useSpendByMember(30)
+  const { token, companyId } = useAdminScope()
+  const { data: directoryData, isLoading: loading } = useDirectory(token, companyId)
+  const memberSpend = useSpendMembers(token, 30, companyId).data
+  const directory = directoryData ?? []
 
-  const spendByUser = new Map(memberSpend.members.map((m) => [m.userId, m]))
+  const spendByUser = new Map((memberSpend?.members ?? []).map((m) => [m.userId, m]))
   const list = directory.filter((p) =>
     `${p.name ?? ''} ${p.email}`.toLowerCase().includes(query.toLowerCase()))
 
@@ -587,7 +598,9 @@ export function CompanyConnections({ replay, go }: Props) {
   const { session } = useAdminAuth()
   const [r1, r2] = useStaged([280, 540], replay)
   const [open, setOpen] = useState<string | null>(null)
-  const { data: directory, loading } = useDirectory()
+  const { token, companyId } = useAdminScope()
+  const { data: directoryData, isLoading: loading } = useDirectory(token, companyId)
+  const directory = directoryData ?? []
 
   /**
    * Coverage for the two providers the directory actually reports.
@@ -756,8 +769,9 @@ export function CompanyAudit({ replay }: Props) {
   const [actor, setActor] = useState('all')
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState<string | null>(null)
+  const { token, companyId } = useAdminScope()
   const { data: entries, loading } = useAuditLog(200)
-  const { data: directory } = useDirectory()
+  const directory = useDirectory(token, companyId).data ?? []
 
   const nameById = useMemo(
     () => new Map(directory.map((p) => [p.userId, displayName(p.name, p.email)])),
@@ -968,12 +982,13 @@ export function CompanyAiOps({ replay, go }: Props) {
   const [query, setQuery] = useState('')
 
   const { data: runs, loading } = useRuns({ limit: 200 })
-  const { data: byModel } = useSpendByModel(30)
+  const { token, companyId } = useAdminScope()
+  const byModel = useSpendByModel(token, 30, companyId).data ?? []
   const { data: departments } = useCompanyDepartments()
   const activeDepts = departments.filter((d) => d.status === 'active')
   const { spend: deptSpend } = useDepartmentSpend(activeDepts, 30)
-  const { data: desktopSpend } = useSpendDaily(30, 'desktop')
-  const { data: larkSpend } = useSpendDaily(30, 'lark')
+  const desktopSpend = useCompanyDaily(token, 30, companyId, 'desktop').data
+  const larkSpend = useCompanyDaily(token, 30, companyId, 'lark').data
 
   const list = runs.filter((r) => {
     if (channels.length && !channels.includes(r.channel)) return false
@@ -1203,12 +1218,12 @@ export function CompanyAiOps({ replay, go }: Props) {
                   <div className="ws-metrics" style={{ gridTemplateColumns: '1fr 1fr' }}>
                     <div className="ws-metric">
                       <div className="k">Desktop</div>
-                      <div className="v">{money(sum(desktopSpend.series.map((p) => p.spendUsd)))}</div>
+                      <div className="v">{money(sum((desktopSpend?.series ?? []).map((p) => p.spendUsd)))}</div>
                       <div className="s">Longer tasks, higher cost each</div>
                     </div>
                     <div className="ws-metric">
                       <div className="k">Lark</div>
-                      <div className="v">{money(sum(larkSpend.series.map((p) => p.spendUsd)))}</div>
+                      <div className="v">{money(sum((larkSpend?.series ?? []).map((p) => p.spendUsd)))}</div>
                       <div className="s">Short questions, most of the volume</div>
                     </div>
                   </div>
@@ -1229,10 +1244,12 @@ export function CompanyAiOps({ replay, go }: Props) {
 export function CompanyGuardrails({ replay, toast }: Props) {
   const { session } = useAdminAuth()
   const [r1] = useStaged([300], replay)
-  const { data: deepseek } = useProxyStatus('deepseek')
-  const { data: openai } = useProxyStatus('openai')
-  const { data: memberSpend } = useSpendByMember(30)
-  const { data: policies, setPolicy } = useProxyPolicies()
+  const { token, companyId } = useAdminScope()
+  const deepseek = useProxyStatus(token, 'deepseek', companyId).data
+  const openai = useProxyStatus(token, 'openai', companyId).data
+  const memberSpend = useSpendMembers(token, 30, companyId).data
+  const policies = useProxyPolicies(token, companyId).data ?? []
+  const savePolicy = useSaveProxyPolicy(token, companyId)
 
   const policyFor = (userId: string) => policies.find((p) => p.userId === userId)
   const keys = [
@@ -1241,8 +1258,19 @@ export function CompanyGuardrails({ replay, toast }: Props) {
   ]
 
   const toggleBlocked = async (userId: string, name: string, nowBlocked: boolean) => {
+    const existing = policyFor(userId)
     try {
-      await setPolicy(userId, { blocked: !nowBlocked })
+      // The route replaces the whole policy, so a partial write would silently
+      // clear the budget and model list alongside the block.
+      await savePolicy.mutateAsync({
+        userId,
+        input: {
+          blocked: !nowBlocked,
+          monthlyBudgetUsd: existing?.monthlyBudgetUsd ?? null,
+          rateLimitRpm: existing?.rateLimitRpm ?? null,
+          allowedModels: existing?.allowedModels ?? [],
+        },
+      })
       toast(nowBlocked ? `${name} unblocked` : `${name} blocked`)
     } catch {
       toast('Could not change that limit')
@@ -1299,12 +1327,12 @@ export function CompanyGuardrails({ replay, toast }: Props) {
           title="Per-person limits"
           description="A monthly budget in dollars, enforced — the proxy refuses the call when it is reached"
         >
-          {!r1 ? <SkelRows n={4} /> : memberSpend.members.length === 0 ? (
+          {!r1 ? <SkelRows n={4} /> : (memberSpend?.members ?? []).length === 0 ? (
             <Empty title="Nobody has spent anything yet" body="Limits appear here once someone starts using Divo." />
           ) : (
             <Fade>
               <div className="ws-rows">
-                {memberSpend.members.slice(0, 12).map((m) => {
+                {(memberSpend?.members ?? []).slice(0, 12).map((m) => {
                   const policy = policyFor(m.userId)
                   const isBlocked = policy?.blocked ?? false
                   const budget = policy?.monthlyBudgetUsd ?? null

@@ -29,12 +29,29 @@ const scoped = (path: string, params: Record<string, string | number | undefined
 }
 
 // ─── Directory (identity) ─────────────────────────────────────────────────────
+/**
+ * The whole directory row, not a slice of it.
+ *
+ * It was declared as the five fields one page happened to read, which meant the
+ * next screen that needed `larkLinked` had to either widen this or build a
+ * second hook over the same route. The route returns all of this; the type says
+ * so now.
+ */
 export interface DirectoryMember {
   userId: string
   name: string | null
   email: string
-  companyRole: string | null
+  companyRole: string
+  /** No Lark identity means Divo in Lark cannot recognise them. */
+  larkLinked: boolean
+  googleConnected: boolean
+  larkOpenId: string | null
+  larkDisplayName: string | null
+  departmentCount: number
+  managerDepartmentCount: number
   departmentNames: string[]
+  createdAt: string
+  updatedAt: string
 }
 
 export function useDirectory(token: string | null, companyId?: string) {

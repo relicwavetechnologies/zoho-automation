@@ -11,9 +11,17 @@
  * spend routes price each model separately and split cached input from fresh,
  * which is what the member and team surfaces already report. Two different
  * figures for the same month is the fastest way to lose trust in both.
+ *
+ * Nothing here duplicates `cursor/use-spend.ts`, `use-proxy.ts` or
+ * `use-proxy-policy.ts`. Those own spend, the directory and the proxy — they
+ * cache through react-query and they take a `companyId`, which is what a
+ * super-admin looking at another workspace needs. Two hooks over one route is
+ * two answers to one question; when in doubt the cursor one wins and this file
+ * covers only what it does not.
  */
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError, api } from '@/lib/api'
+import { useToolInventory } from './use-tools'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 
 const base = '/api/admin'
@@ -81,84 +89,6 @@ const EMPTY_OVERVIEW: Overview = {
  */
 export const useOverview = (days = 30) =>
   useAdminResource<Overview>(`/analytics/overview?days=${days}`, EMPTY_OVERVIEW)
-
-/* ── Spend ────────────────────────────────────────────── */
-
-export type SpendDaily = {
-  today: { spendUsd: number; runs: number }
-  series: { date: string; spendUsd: number }[]
-  cacheSavingsPct: number
-}
-
-export type SpendModel = {
-  modelId: string
-  provider: string
-  calls: number
-  cacheMissIn: number
-  cacheHitIn: number
-  output: number
-  costUsd: number
-}
-
-export type SpendMember = {
-  userId: string
-  name: string | null
-  email: string | null
-  tokens: number
-  spend30d: number
-  spendToday: number
-  runs: number
-  monthlyLimit: number
-  usagePct: number
-}
-
-export type SpendMembers = {
-  members: SpendMember[]
-  totals: {
-    memberCount: number
-    spend30d: number
-    topSpender: { name: string; amount: number } | null
-    overLimit: { count: number; name: string | null; pct: number | null }
-  }
-}
-
-const EMPTY_SPEND_MEMBERS: SpendMembers = {
-  members: [],
-  totals: { memberCount: 0, spend30d: 0, topSpender: null, overLimit: { count: 0, name: null, pct: null } },
-}
-
-/** `channel` narrows to one surface; the route accepts it and omits the filter otherwise. */
-export const useSpendDaily = (days = 30, channel?: string) =>
-  useAdminResource<SpendDaily>(
-    `/spend/company-daily?days=${days}${channel ? `&channel=${encodeURIComponent(channel)}` : ''}`,
-    { today: { spendUsd: 0, runs: 0 }, series: [], cacheSavingsPct: 0 },
-  )
-
-export const useSpendByModel = (days = 30) =>
-  useAdminResource<SpendModel[]>(`/spend/by-model?days=${days}`, [])
-
-export const useSpendByMember = (days = 30) =>
-  useAdminResource<SpendMembers>(`/spend/members?days=${days}`, EMPTY_SPEND_MEMBERS)
-
-/* ── Directory ────────────────────────────────────────── */
-
-export type DirectoryEntry = {
-  userId: string
-  name: string | null
-  email: string
-  companyRole: string
-  larkLinked: boolean
-  googleConnected: boolean
-  larkOpenId: string | null
-  larkDisplayName: string | null
-  departmentCount: number
-  managerDepartmentCount: number
-  departmentNames: string[]
-  createdAt: string
-  updatedAt: string
-}
-
-export const useDirectory = () => useAdminResource<DirectoryEntry[]>('/company/directory', [])
 
 /* ── Departments ──────────────────────────────────────── */
 
@@ -346,19 +276,19 @@ export type CeilingTool = {
  */
 export function useCompanyCeiling() {
   const { token } = useAdminAuth()
+  const { tools: inventory, loading: inventoryLoading } = useToolInventory()
   const [tools, setTools] = useState<CeilingTool[]>([])
   const [loading, setLoading] = useState(true)
   const [refused, setRefused] = useState(false)
 
   const load = useCallback(async () => {
     if (!token) { setLoading(false); return }
+    if (inventoryLoading) return
     try {
-      const inventory = await api.get<{ tools: { tool: { toolId: string }; managementScopes: { kind: string }[] }[] }>(
-        '/api/desktop/auth/tools', token, { quiet: true, raw: true },
-      )
       // Only tools this admin may actually govern globally — listing one that
       // cannot be edited is a row whose switches silently do nothing.
-      const governable = inventory.tools.filter((t) => t.managementScopes.some((s) => s.kind === 'global'))
+      const governable = inventory.filter((t) => t.managementScopes.some((s) => s.kind === 'global'))
+      if (governable.length === 0) { setTools([]); setRefused(true); setLoading(false); return }
       const snapshots = await Promise.all(governable.map((t) =>
         api.get<CeilingTool>(
           `/api/desktop/auth/tools/${t.tool.toolId}/manage?scope=global`, token, { quiet: true, raw: true },
@@ -374,7 +304,7 @@ export function useCompanyCeiling() {
     } finally {
       setLoading(false)
     }
-  }, [token])
+  }, [token, inventory, inventoryLoading])
 
   useEffect(() => { void load() }, [load])
 
@@ -396,55 +326,6 @@ export function useCompanyCeiling() {
   }, [token, reloadTool])
 
   return { tools, loading, refused, refresh: load, setCeiling }
-}
-
-/* ── Provider keys and per-person limits ──────────────── */
-
-export type ProxyKeyStatus = {
-  provider: string
-  configured: boolean
-  source: string | null
-  scope: 'platform' | 'company' | null
-  keyLast4: string | null
-  keyMasked: string | null
-  status: string | null
-  /** Set when the stored key exists but will not decrypt — a false green otherwise. */
-  keyError: 'unreadable' | null
-  lastUsedAt: string | null
-  desktopProxyEnabled: boolean
-  upstream: string
-  canEncrypt: boolean
-}
-
-export const useProxyStatus = (provider: string) =>
-  useAdminResource<ProxyKeyStatus | null>(`/proxy/status?provider=${provider}`, null)
-
-export type ProxyPolicy = {
-  userId: string
-  blocked: boolean
-  monthlyBudgetUsd: number | null
-  rateLimitRpm: number | null
-  allowedModels: string[]
-  /** No stored row — this person is on the company default. */
-  isDefault: boolean
-}
-
-/**
- * Only members with an explicit policy have a row; everyone else is on the
- * default, which is why this returns a list to look up against rather than one
- * entry per person.
- */
-export function useProxyPolicies() {
-  const { token } = useAdminAuth()
-  const resource = useAdminResource<ProxyPolicy[]>('/proxy-policy', [])
-
-  const setPolicy = useCallback(async (userId: string, patch: Partial<Omit<ProxyPolicy, 'userId' | 'isDefault'>>) => {
-    if (!token) return
-    await api.put(`${base}/proxy-policy/${userId}`, patch, token)
-    await resource.refresh()
-  }, [token, resource])
-
-  return { ...resource, setPolicy }
 }
 
 /* ── Formatting shared by the company screens ─────────── */

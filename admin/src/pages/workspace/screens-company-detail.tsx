@@ -23,11 +23,11 @@ import {
 } from './ui'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useRunDetail, type RunTurnView } from '@/cursor/use-run-detail'
-import { useCompanyScope, useMemberSpend } from '@/cursor/use-spend'
+import { useCompanyScope, useDirectory, useMemberSpend } from '@/cursor/use-spend'
 import { useProxyPolicy, useSaveProxyPolicy, type ProxyPolicyInput } from '@/cursor/use-proxy-policy'
 import { useProxyAudit, useProxyModels } from '@/cursor/use-proxy'
 import {
-  ROLE_LABEL, ago, displayName, initialsOf, useDepartmentDetail, useDirectory, useRuns,
+  ROLE_LABEL, ago, displayName, initialsOf, useDepartmentDetail, useRuns,
 } from './data/use-company'
 import { useTeamUsage } from './data/use-team'
 
@@ -292,19 +292,19 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
   const [tab, setTab] = useState<'activity' | 'access' | 'limits'>('activity')
 
   const spend = useMemberSpend(token, userId, 30, companyId)
-  const directory = useDirectory()
+  const directory = useDirectory(token, companyId)
   const runs = useRuns({ userId, limit: 10 })
   const policy = useProxyPolicy(token, userId, companyId)
   const savePolicy = useSaveProxyPolicy(token, companyId)
   const models = useProxyModels(token)
   const denials = useProxyAudit(token, companyId, { userId, decision: 'denied', limit: 5 })
 
-  const person = directory.data.find((p) => p.userId === userId)
+  const person = directory.data?.find((p) => p.userId === userId)
   const detail = spend.data
   const name = person ? displayName(person.name, person.email) : detail?.name ?? '—'
   const email = person?.email ?? detail?.email ?? ''
 
-  if (!spend.isLoading && !directory.loading && !person && !detail) {
+  if (!spend.isLoading && !directory.isLoading && !person && !detail) {
     return (
       <>
         <div className="crumbs">
@@ -425,7 +425,7 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
             </Panel>
 
             <Panel title="Connected accounts" description="What Divo may act through on their behalf">
-              {!r2 || directory.loading ? <SkelRows n={3} /> : !person ? null : (
+              {!r2 || directory.isLoading ? <SkelRows n={3} /> : !person ? null : (
                 <Fade>
                   <div className="ws-rows">
                     {/* The directory reports these two and only these two. Listing a
@@ -479,7 +479,7 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
 
       {tab === 'access' ? (
         <Panel title="Where their access comes from" source="permissions">
-          {!r2 || directory.loading ? <SkelRows n={3} /> : (
+          {!r2 || directory.isLoading ? <SkelRows n={3} /> : (
             <Fade>
               <div className="ws-rows">
                 {person?.departmentNames.length ? person.departmentNames.map((d) => (
