@@ -17,7 +17,9 @@ import {
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { CONNECTABLE, useConnectionGrants, useConnections, type LiveConnection } from './data/use-connections'
 import { ago, expiryLabel, useApprovals } from './data/use-approvals'
-import { changePct, durationLabel, useMyRuns, useMyUsage, type MyRun } from './data/use-my-activity'
+import {
+  changePct, durationLabel, useMyRuns, useMyTools, useMyUsage, type MyRun,
+} from './data/use-my-activity'
 import {
   Bar, ChangePreview, DataNote, Drawer, Empty, Fade, Matrix, PageHeader, Panel, Provenance,
   ProviderMark, Seg, Skel, SkelRows, Spark, Switch, compact, listPhrase, money,
@@ -500,26 +502,43 @@ function ConnectionDrawer({ provider, connection, onClose, onConnect, onDisconne
    The member's read-only view of their own permissions — with the one thing
    every RBAC UI omits: why. And a request path, because "I can't do X" is
    the reason most people open this page at all. */
-export function YouAccess({ replay, toast }: ScreenProps) {
+/**
+ * What Divo may do for the signed-in person.
+ *
+ * Read from the tool inventory, which reports per tool the actions this person
+ * can *actually* use, and where each grant came from — global (their company
+ * role) or a named department. That provenance is the answer to "why can I do
+ * this", which is the only question this screen exists to settle.
+ */
+export function YouAccess({ replay }: ScreenProps) {
+  const { session } = useAdminAuth()
   const [r1, r2] = useStaged([280, 560], replay)
-  const me = personById('u_ananya')!
-  const grants = resolveGrants(me)
-  const { can, cannot } = permissionSentence(me)
-  const [requesting, setRequesting] = useState<string | null>(null)
+  const { inventory, loading } = useMyTools()
 
-  const blockedSkills = SKILLS.filter((s) => s.blockedBy)
+  const usable = inventory.filter((entry) => entry.allowedActions.length > 0)
+  const can = usable.flatMap((entry) =>
+    entry.allowedActions.map((a) => entry.actionLabels[a] ?? `${a} ${entry.tool.name}`))
+  // Worth naming: a tool this person holds no action on at all, which is the
+  // shape of "why did Divo say it could not do that".
+  const withheld = inventory.filter((entry) => entry.allowedActions.length === 0 && entry.configurable)
+  const needsConnection = inventory.filter((entry) => entry.readiness === 'connection_required')
+
+  const departmentGrants = usable.filter((e) => e.origins.some((o) => o.kind === 'department'))
+  const departmentNames = Array.from(new Set(
+    departmentGrants.flatMap((e) => e.origins.filter((o) => o.kind === 'department').map((o) => o.departmentName!)),
+  ))
 
   return (
     <>
       <PageHeader
         eyebrow="Your workspace"
         title="What Divo can do for you"
-        description="Your access comes from your role in Finance. Where something is missing, you can ask for it."
+        description="Your access comes from your company role and from the departments you are in. Where something is missing, ask whoever leads that team."
       />
       <div className="ws-stack">
         <Panel source="permissions">
           <div className="ws-panel-body">
-            {!r1 ? (
+            {!r1 || loading ? (
               <>
                 <Skel w="92%" h={15} /><div style={{ height: 12 }} />
                 <Skel w="78%" h={15} /><div style={{ height: 12 }} />
@@ -527,48 +546,49 @@ export function YouAccess({ replay, toast }: ScreenProps) {
               </>
             ) : (
               <Fade>
-                <p className="ws-sentence">
-                  Divo can <b>{listPhrase(can, 6)}</b> on your behalf.
-                </p>
-                {cannot.length ? (
+                {can.length ? (
+                  <p className="ws-sentence">Divo can <b>{listPhrase(can, 6)}</b> on your behalf.</p>
+                ) : (
+                  <p className="ws-sentence">Divo cannot do anything on your behalf yet.</p>
+                )}
+                {withheld.length ? (
                   <p className="ws-sentence" style={{ marginTop: 12 }}>
-                    <span className="neg">It cannot {listPhrase(cannot, 4)}.</span>
+                    <span className="neg">
+                      It cannot use {listPhrase(withheld.map((e) => e.tool.name), 4)}.
+                    </span>
                   </p>
                 ) : null}
                 <p className="ws-sentence-note">
-                  Almost all of this comes from the <b>Member</b> role in Finance, so it changes if your role does.
-                  Sending mail as you was granted to you personally by Arjun Shah.
+                  {departmentNames.length
+                    ? <>Most of this comes from your role in <b>{listPhrase(departmentNames, 3)}</b>, so it changes if your role does.</>
+                    : <>You are in no department, so everything here comes from your company role alone.</>}
+                  {session?.role === 'MEMBER' ? '' : ' Being an admin does not by itself grant tools — those still come from a department.'}
                 </p>
               </Fade>
             )}
           </div>
         </Panel>
 
-        {blockedSkills.length ? (
-          <Panel title="Blocked for you" description="Shared skills you cannot run yet">
+        {needsConnection.length ? (
+          <Panel title="Waiting on a connection" description="Granted to you, but Divo has nothing to act through">
             {!r2 ? <SkelRows n={2} icon={false} /> : (
               <Fade>
                 <div className="ws-rows">
-                  {blockedSkills.map((s) => {
-                    const tool = toolById(s.blockedBy!)
-                    return (
-                      <div className="ws-row" key={s.id}>
-                        <span className="ws-ic" data-tone="warn"><Ban size={14} /></span>
-                        <div className="ws-row-main">
-                          <b>{s.name}</b>
-                          <p>Needs <b style={{ fontWeight: 500 }}>{tool?.name}</b>, which your role does not grant. Shared by {s.owner}.</p>
-                        </div>
-                        <button type="button" className="btn" onClick={() => setRequesting(s.blockedBy!)}>Request access</button>
+                  {needsConnection.map((entry) => (
+                    <div className="ws-row" key={entry.tool.toolId}>
+                      <span className="ws-ic" data-tone="warn"><Ban size={14} /></span>
+                      <div className="ws-row-main">
+                        <b>{entry.tool.name}</b>
+                        <p>
+                          You have permission, but no account is connected — so every step that needs it stops.
+                          Connect it from <b>Connected apps</b>.
+                        </p>
                       </div>
-                    )
-                  })}
+                    </div>
+                  ))}
                 </div>
               </Fade>
             )}
-            <div className="ws-panel-foot">
-              <DataNote source="accessRequest" />
-              No access-request model exists yet — approvals today are per-task, not standing grants
-            </div>
           </Panel>
         ) : null}
 
@@ -578,53 +598,47 @@ export function YouAccess({ replay, toast }: ScreenProps) {
           source="permissions"
         >
           <div className="ws-panel-body">
-            {!r2 ? <SkelRows n={5} icon={false} /> : (
-              <Fade><Matrix grants={grants} readOnly tools={TOOLS.filter((t) => !t.adminOnly)} /></Fade>
+            {!r2 || loading ? <SkelRows n={5} icon={false} /> : inventory.length === 0 ? (
+              <Empty title="Nothing is configured for you" body="Divo has no tools it may use on your behalf." />
+            ) : (
+              <Fade>
+                <div className="ws-rows">
+                  {inventory.map((entry) => (
+                    <div className="ws-row" key={entry.tool.toolId} style={{ alignItems: 'flex-start' }}>
+                      <div className="ws-row-main">
+                        <b>
+                          {entry.tool.name}
+                          {entry.readiness === 'connection_required'
+                            ? <span className="ws-prov" data-src="department_user_override">Needs a connection</span>
+                            : null}
+                        </b>
+                        <p>
+                          {entry.allowedActions.length
+                            ? entry.allowedActions.map((a) => entry.actionLabels[a] ?? a).join(' · ')
+                            : 'Nothing — no role you hold grants this'}
+                        </p>
+                        {entry.origins.length ? (
+                          <div className="ws-attn-meta" style={{ marginTop: 7 }}>
+                            {entry.origins.map((o, i) => (
+                              <span key={i}>
+                                {o.kind === 'department' ? `via ${o.departmentName}` : o.kind === 'global' ? 'via your company role' : o.kind}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Fade>
             )}
           </div>
           <div className="ws-panel-foot">
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
-              <span className="ws-cell" data-on="true" style={{ width: 16, height: 16, pointerEvents: 'none' }} /> Allowed
-            </span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
-              <span className="ws-cell" data-on="true" data-src="department_user_override" style={{ width: 16, height: 16, pointerEvents: 'none' }} /> Given to you personally
-            </span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
-              <span className="ws-cell" data-locked="true" style={{ width: 16, height: 16, pointerEvents: 'none' }} /> Company policy blocks it
-            </span>
+            A tool with no actions is not hidden — knowing Divo *could* do something if you were granted it is
+            usually why someone asks.
           </div>
         </Panel>
       </div>
-
-      {requesting ? (
-        <Drawer
-          title={`Request ${toolById(requesting)?.name}`}
-          subtitle="Goes to Arjun Shah, who leads Finance"
-          onClose={() => setRequesting(null)}
-          footer={
-            <>
-              <button type="button" className="btn" onClick={() => setRequesting(null)}>Cancel</button>
-              <button type="button" className="btn primary" onClick={() => { toast('Request sent to Arjun Shah'); setRequesting(null) }}>
-                Send request
-              </button>
-            </>
-          }
-        >
-          <div className="ws-lbl">Why do you need it?</div>
-          <textarea
-            className="input"
-            style={{ width: '100%', height: 96, padding: 11, marginTop: 10, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.5 }}
-            defaultValue="I need to run the Vendor onboarding pack skill, which files the CRM record after collecting documents."
-          />
-          <div className="ws-ceiling" style={{ marginTop: 16 }}>
-            <TriangleAlert size={14} />
-            <div>
-              <b>This flow is designed, not built.</b> The backend has no access-request table —
-              its approvals are tied to a single live task and expire. Making this real is net-new work.
-            </div>
-          </div>
-        </Drawer>
-      ) : null}
     </>
   )
 }

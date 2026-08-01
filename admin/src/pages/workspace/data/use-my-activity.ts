@@ -103,3 +103,79 @@ export const durationLabel = (ms: number | null): string | null => {
 /** Percentage change between two windows, guarding the divide by zero. */
 export const changePct = (now: number, before: number): number =>
   before === 0 ? (now > 0 ? 100 : 0) : Math.round(((now - before) / before) * 100)
+
+/* ── What Divo may do for me ──────────────────────────── */
+
+export type ToolOrigin = {
+  kind: 'global' | 'department' | 'system' | 'local'
+  departmentName?: string
+  allowedActions?: string[]
+}
+
+export type MyTool = {
+  tool: { toolId: string; name: string; description: string; category: string; domain: string }
+  /** Union of what every origin allows — what this person can actually use. */
+  allowedActions: string[]
+  actionLabels: Record<string, string>
+  origins: ToolOrigin[]
+  readiness: string
+  /** False for Local/System tools, which are policy-fixed and not grantable. */
+  configurable: boolean
+}
+
+type InventoryWire = {
+  tools: {
+    tool: { toolId: string; name: string; description: string; category: string; domain: string }
+    origins: { kind: string; department?: { id: string; name: string }; allowedActions?: string[] }[]
+    readiness: string
+  }[]
+}
+
+/**
+ * The signed-in person's own tool inventory.
+ *
+ * Reports, per tool, which actions are in effect for them and which origin each
+ * came from — their company role, or a named department. That provenance is the
+ * answer to "why can I do this", and it is the only place the product states it
+ * for a member rather than for their manager.
+ */
+export function useMyTools() {
+  const { token } = useAdminAuth()
+  const [inventory, setInventory] = useState<MyTool[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!token) return
+    let live = true
+    void (async () => {
+      try {
+        const data = await api.get<InventoryWire>('/api/desktop/auth/tools', token, { quiet: true, raw: true })
+        if (!live) return
+        setInventory(data.tools.map((entry) => {
+          const actions = Array.from(new Set(entry.origins.flatMap((o) => o.allowedActions ?? [])))
+          return {
+            tool: entry.tool,
+            allowedActions: actions,
+            // The catalogue phrases actions per tool; without a label the raw
+            // verb is still readable, which beats hiding the row.
+            actionLabels: Object.fromEntries(actions.map((a) => [a, `${a} ${entry.tool.name.toLowerCase()}`])),
+            origins: entry.origins.map((o) => ({
+              kind: o.kind as ToolOrigin['kind'],
+              ...(o.department ? { departmentName: o.department.name } : {}),
+              ...(o.allowedActions ? { allowedActions: o.allowedActions } : {}),
+            })),
+            readiness: entry.readiness,
+            configurable: entry.origins.every((o) => o.kind !== 'system' && o.kind !== 'local'),
+          }
+        }))
+      } catch {
+        if (live) setInventory([])
+      } finally {
+        if (live) setLoading(false)
+      }
+    })()
+    return () => { live = false }
+  }, [token])
+
+  return { inventory, loading }
+}

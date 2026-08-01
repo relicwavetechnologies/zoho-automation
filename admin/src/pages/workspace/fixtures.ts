@@ -443,25 +443,6 @@ export const MEMORIES: Memory[] = [
 ]
 
 /* ── Usage ───────────────────────────────────────────── */
-export const MY_USAGE = {
-  runs30d: 214,
-  runsPrev: 168,
-  spend30d: 18.42,
-  spendToday: 0.94,
-  tokensIn: 4_182_000,
-  tokensOut: 291_400,
-  cacheSavingsPct: 71,
-  budgetUsd: 40,
-  daily: [3, 5, 2, 8, 11, 6, 4, 9, 14, 7, 5, 12, 16, 9, 6, 11, 8, 4, 13, 17, 10, 7, 9, 15, 11, 6, 8, 12, 14, 9],
-  byModel: [
-    { model: 'deepseek-v4-flash', label: 'Flash', calls: 812, costUsd: 6.11 },
-    { model: 'deepseek-v4-pro', label: 'Pro', calls: 143, costUsd: 12.31 },
-  ],
-}
-
-/* ── Activity ────────────────────────────────────────── */
-
-
 /* ── Data honesty ────────────────────────────────────
    Which panels run on something real. Rendered in the UI as a small marker so
    this mock cannot imply more is built than actually is. */
