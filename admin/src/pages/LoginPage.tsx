@@ -1,12 +1,7 @@
 import { FormEvent, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { ArrowRight, Loader2 } from "lucide-react"
-import { AuthCard } from "@/components/admin/auth-card"
-import { ErrorCallout } from "@/components/admin/error-callout"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { AuthCard, AuthError, Field } from "@/components/admin/auth-card"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 
 type LoginMode = "company" | "super"
@@ -39,45 +34,55 @@ export function LoginPage() {
   }
 
   return (
-    <AuthCard title="Welcome back" description="Sign in with your admin credentials to continue managing Divo workspaces.">
-      <form className="space-y-5" onSubmit={submit}>
-        <div className="space-y-2">
-          <Label htmlFor="mode">Access type</Label>
-          <Select value={mode} onValueChange={(value) => setMode(value as LoginMode)}>
-            <SelectTrigger id="mode">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="company">Company admin</SelectItem>
-              <SelectItem value="super">Super admin</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="email">Email</Label>
-          <Input id="email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="password">Password</Label>
-          <Input id="password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} required autoComplete="current-password" />
-        </div>
-        <ErrorCallout message={error} />
-        <Button type="submit" className="w-full rounded-full" disabled={submitting}>
-          {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-          Sign in
-        </Button>
-        <div className="relative py-1">
-          <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
-          <div className="relative flex justify-center text-[10px] uppercase tracking-[0.18em]">
-            <span className="bg-card px-3 text-muted-foreground">Explore first</span>
-          </div>
-        </div>
-        <Button asChild type="button" variant="outline" className="w-full">
-          <Link to="/mock-dashboard">Open mock dashboard <ArrowRight className="h-4 w-4" /></Link>
-        </Button>
-        <div className="flex flex-wrap justify-between gap-2 text-sm text-muted-foreground">
-          <Link className="hover:text-foreground" to="/signup/company-admin">Create workspace</Link>
-          <Link className="hover:text-foreground" to="/signup/member-invite">Accept invite</Link>
+    <AuthCard title="Sign in" description="Company admin and super admin accounts. Members sign in from Lark or the desktop app.">
+      <form className="ws-auth-form" onSubmit={submit}>
+        <Field
+          label="Account type"
+          hint={mode === "super" ? "Super admin sees every company and the platform-scoped provider keys." : undefined}
+        >
+          <select className="select" value={mode} onChange={(event) => setMode(event.target.value as LoginMode)}>
+            <option value="company">Company admin</option>
+            <option value="super">Super admin</option>
+          </select>
+        </Field>
+
+        <Field label="Email">
+          <input
+            className="input"
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            required
+            autoComplete="email"
+            placeholder="you@company.com"
+          />
+        </Field>
+
+        <Field label="Password">
+          <input
+            className="input"
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            required
+            autoComplete="current-password"
+          />
+        </Field>
+
+        <AuthError message={error} />
+
+        <button type="submit" className="btn primary" disabled={submitting}>
+          {submitting ? <Loader2 size={14} className="ws-spin" /> : null}
+          {submitting ? "Signing in" : "Sign in"}
+        </button>
+
+        <Link className="btn" to="/mock-dashboard" style={{ justifyContent: "center" }}>
+          Look around first <ArrowRight size={14} />
+        </Link>
+
+        <div className="ws-auth-alt">
+          <Link to="/signup/company-admin">Create a workspace</Link>
+          <Link to="/signup/member-invite">Accept an invite</Link>
         </div>
       </form>
     </AuthCard>

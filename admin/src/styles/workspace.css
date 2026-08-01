@@ -638,6 +638,85 @@
 .cur .ws-hkey span { display: inline-flex; align-items: center; gap: 6px; }
 .cur .ws-hkey i { width: 7px; height: 7px; border-radius: 2px; display: inline-block; }
 
+/* ══════════════════════════════════════════════════════
+   Auth surfaces.
+
+   The first screen anyone sees, and until now the only part of the product
+   still wearing the old shadcn skin — so people met one design language and
+   then immediately met another. Same tokens as the shell, same radii, same
+   scarce orange, and the theme toggle is present here too because a person
+   who prefers dark should not have to sign in to get it.
+   ══════════════════════════════════════════════════════ */
+.cur .ws-auth { min-height: 100vh; display: grid; grid-template-columns: 1fr 1fr; background: var(--cur-canvas); }
+@media (max-width: 1020px) { .cur .ws-auth { grid-template-columns: 1fr; } .cur .ws-auth-aside { display: none; } }
+
+/* Left: what this is. Not marketing, and pointedly not design-system trivia. */
+.cur .ws-auth-aside {
+  padding: 44px; display: flex; flex-direction: column; justify-content: space-between;
+  border-right: 1px solid var(--cur-hairline); background: var(--cur-canvas-soft);
+}
+.cur .ws-auth-aside h1 { font-size: 30px; font-weight: 400; letter-spacing: -0.028em; line-height: 1.18; max-width: 15ch; }
+.cur .ws-auth-aside > div > p { font-size: 13px; color: var(--cur-body); line-height: 1.6; margin-top: 14px; max-width: 44ch; }
+.cur .ws-auth-list { display: flex; flex-direction: column; gap: 2px; margin-top: 30px; }
+/* Direct children only — the inner wrapper holds the text and must stay block. */
+.cur .ws-auth-list > div { display: flex; gap: 11px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--cur-hairline-soft); }
+.cur .ws-auth-list > div:first-child { border-top: 0; }
+.cur .ws-auth-list svg { color: var(--cur-muted); flex-shrink: 0; margin-top: 2px; }
+.cur .ws-auth-list b { font-size: 13px; font-weight: 500; display: block; }
+.cur .ws-auth-list p { font-size: 12px; color: var(--cur-muted); margin-top: 3px; line-height: 1.45; }
+.cur .ws-auth-foot { font-size: 11px; color: var(--cur-muted-soft); }
+
+/* Right: the form. Bounded, centred, never full-bleed. */
+.cur .ws-auth-main { display: flex; align-items: center; justify-content: center; padding: 44px 32px; position: relative; }
+.cur .ws-auth-theme { position: absolute; top: 22px; right: 22px; }
+.cur .ws-auth-box { width: 100%; max-width: 372px; }
+/* The mark inside the box is the fallback identity for narrow screens, where
+   the aside that carries it is gone. Two marks side by side is one too many. */
+.cur .ws-auth-box > .brand { display: none; }
+@media (max-width: 1020px) { .cur .ws-auth-box > .brand { display: flex; } }
+.cur .ws-auth-box > h2 { font-size: 20px; font-weight: 400; letter-spacing: -0.02em; margin-top: 0; }
+.cur .ws-auth-box > .brand + h2 { margin-top: 26px; }
+.cur .ws-auth-box > h2 + p { font-size: 13px; color: var(--cur-muted); margin-top: 8px; line-height: 1.55; }
+.cur .ws-auth-form { display: flex; flex-direction: column; gap: 16px; margin-top: 26px; }
+.cur .ws-auth-form .btn { width: 100%; justify-content: center; height: 38px; }
+
+.cur .ws-field label {
+  display: block; font-size: 12px; font-weight: 500; color: var(--cur-body); margin-bottom: 7px;
+}
+.cur .ws-field .input, .cur .ws-field .select { width: 100%; height: 38px; font-family: inherit; }
+.cur .ws-field .input::placeholder { color: var(--cur-muted-soft); }
+.cur .ws-field .input:focus, .cur .ws-field .select:focus {
+  outline: none; border-color: var(--cur-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cur-primary) 16%, transparent);
+}
+.cur .ws-field .hint { font-size: 11px; color: var(--cur-muted); margin-top: 6px; line-height: 1.45; }
+
+.cur .ws-auth-err {
+  display: flex; gap: 9px; padding: 11px 13px; border-radius: var(--cur-r-cta); font-size: 12px; line-height: 1.5;
+  color: var(--cur-error); background: color-mix(in srgb, var(--cur-error) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cur-error) 30%, transparent);
+}
+.cur .ws-auth-err svg { flex-shrink: 0; margin-top: 1px; }
+.cur .ws-auth-ok {
+  display: flex; gap: 9px; padding: 11px 13px; border-radius: var(--cur-r-cta); font-size: 12px; line-height: 1.5;
+  color: var(--cur-success); background: color-mix(in srgb, var(--cur-success) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cur-success) 30%, transparent);
+}
+.cur .ws-auth-ok svg { flex-shrink: 0; margin-top: 1px; }
+.cur .ws-auth-wait {
+  display: flex; gap: 9px; align-items: center; padding: 11px 13px; border-radius: var(--cur-r-cta);
+  font-size: 12px; color: var(--cur-muted); background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline);
+}
+@keyframes ws-spin { to { transform: rotate(360deg); } }
+.cur .ws-spin { animation: ws-spin .9s linear infinite; }
+
+.cur .ws-auth-alt {
+  display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding-top: 16px; border-top: 1px solid var(--cur-hairline); font-size: 12px;
+}
+.cur .ws-auth-alt a { color: var(--cur-muted); }
+.cur .ws-auth-alt a:hover { color: var(--cur-primary); }
+
 /* ── Disclosure row ──────────────────────────────────── */
 .cur .ws-more {
   border: 0; background: none; padding: 0; font-size: 12px; color: var(--cur-primary);

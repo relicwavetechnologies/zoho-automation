@@ -39,10 +39,14 @@ type ProtectedProps = {
 const Protected = ({ children }: ProtectedProps) => {
   const { session, loading } = useAdminAuth()
 
+  // Painted before anything else on a cold load, so it has to be on the same
+  // tokens as the shell — a shadcn-styled flash here undoes the whole point.
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background">
-        <div className="rounded-2xl shadow-soft px-5 py-3 text-sm font-medium text-muted-foreground">Loading admin session...</div>
+      <div className="cur">
+        <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "var(--cur-canvas)" }}>
+          <div className="ws-auth-wait">Restoring your session…</div>
+        </div>
       </div>
     )
   }
