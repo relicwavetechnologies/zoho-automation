@@ -21,6 +21,7 @@ import {
   approvalDeliveryUnknownCheckpoint,
   isDefiniteApprovalNonDelivery,
 } from './approval-delivery';
+import type { KnowledgeMutationService } from '../knowledge/knowledge-mutation.service';
 
 export type { ApprovalAuthority } from './approval.types';
 
@@ -45,6 +46,10 @@ export interface ApprovalGateInput {
 
 export interface ApprovalGateOptions {
   readonly disableManagerSelfBypass?: boolean;
+  readonly knowledgeMutations?: Pick<
+    KnowledgeMutationService,
+    'get' | 'attachRuntimeApproval'
+  >;
 }
 
 interface ApprovalCompatibilityScope {
@@ -59,6 +64,12 @@ export type ApprovalRequirement =
       readonly kind: 'required';
       readonly approver: ResolvedManager;
       readonly authority: 'department_manager';
+      readonly connectionScope?: never;
+    }
+  | {
+      readonly kind: 'required';
+      readonly approver: ResolvedManager;
+      readonly authority: 'company_admin';
       readonly connectionScope?: never;
     }
   | {
@@ -97,6 +108,10 @@ export class ApprovalGateService {
     const requirement = await this.inspect({ toolId, action, args, perm, runContext });
     if (requirement.kind !== 'required') return requirement;
     const manager = requirement.approver;
+    const requesterDisplay = await this.resolver.resolveUserDisplayName?.(
+      String(runContext.userId),
+    ) ?? runContext.requesterEmail ?? 'A team member';
+    const departmentName = perm.department?.name ?? 'Company-wide';
 
     // Approval required. The authority and exact approver are part of the
     // idempotency namespace, so a policy/manager change cannot reuse an older
@@ -151,6 +166,8 @@ export class ApprovalGateService {
         payloadJson:    { toolId, action, args, argsHash },
         metadataJson:   {
           requesterId,
+          requesterName:          requesterDisplay,
+          requesterEmail:         runContext.requesterEmail ?? null,
           requesterLarkOpenId:    runContext.channel === 'lark' && runContext.userExternalId
             ? String(runContext.userExternalId)
             : null,
@@ -158,6 +175,7 @@ export class ApprovalGateService {
             ? String(runContext.tenantId)
             : null,
           departmentId,
+          departmentName,
           approvalOrigin:         runContext.channel === 'lark' && execution
             ? 'cloud_pi'
             : approvalOriginFromChatId(sourceChatId),
@@ -203,6 +221,17 @@ export class ApprovalGateService {
     }
 
     const { approval, created, replacedExpired } = createResult.value;
+    const knowledgeBound = await this.bindKnowledgeApproval({
+      toolId,
+      args,
+      runContext,
+      approvalId: approval.id,
+      authority: requirement.authority,
+    });
+    if (!knowledgeBound.ok) {
+      await this.approvalRepo.markFailed(approval.id, 'knowledge_binding_failed');
+      return { kind: 'misconfigured', message: knowledgeBound.message };
+    }
     if (!created) {
       return this.decisionFromExisting({
         approval,
@@ -239,15 +268,16 @@ export class ApprovalGateService {
     }
 
     // Build and send the approval card to the manager
-    const deptName = perm.department?.name ?? 'your department';
-    const requesterDisplay = String(runContext.userExternalId ?? runContext.userId);
     const cardContent = buildApprovalCard({
       approvalId:     approval.id,
       toolId,
       action,
+      args,
       summary:        argsSummary,
       requesterName:  requesterDisplay,
-      departmentName: deptName,
+      approverName:   manager.displayName,
+      authority:      requirement.authority,
+      departmentName,
     });
 
     const sendResult = await this.larkAdapter.sendDirectCard(manager.larkOpenId, cardContent);
@@ -341,6 +371,9 @@ export class ApprovalGateService {
    */
   async inspect(input: Pick<ApprovalGateInput, 'toolId' | 'action' | 'args' | 'perm' | 'runContext'>): Promise<ApprovalRequirement> {
     const { toolId, action, args, perm, runContext } = input;
+    const knowledgeRequirement = await this.inspectKnowledgeMutation(input);
+    if (knowledgeRequirement) return knowledgeRequirement;
+
     const policyResult = checkApprovalPolicy({ toolId, action, args, perm, runContext });
     const connectionId = connectionIdFromArgs(args);
     const connectionPolicy = this.connectionRateLimits
@@ -420,6 +453,132 @@ export class ApprovalGateService {
       return { kind: 'allowed' };
     }
     return { kind: 'required', approver, authority: 'department_manager' };
+  }
+
+  private async inspectKnowledgeMutation(
+    input: Pick<ApprovalGateInput, 'toolId' | 'action' | 'args' | 'perm' | 'runContext'>,
+  ): Promise<ApprovalRequirement | null> {
+    if (input.toolId !== 'knowledge') return null;
+    const parsed = knowledgeApplyArgs(input.args);
+    if (!parsed) {
+      // Target discovery and proposal creation have no provider side effect and
+      // never enter the authority-approval stage.
+      return isKnowledgeNonApply(input.args)
+        ? { kind: 'allowed' }
+        : { kind: 'misconfigured', message: 'Invalid knowledge apply request.' };
+    }
+    if (!this.options.knowledgeMutations) {
+      return { kind: 'misconfigured', message: 'The knowledge authority is not configured.' };
+    }
+
+    let mutation: Awaited<ReturnType<KnowledgeMutationService['get']>>;
+    try {
+      mutation = await this.options.knowledgeMutations.get({
+        mutationId: parsed.mutationId,
+        companyId: String(input.runContext.companyId),
+      });
+    } catch {
+      return { kind: 'misconfigured', message: 'The exact knowledge proposal could not be resolved.' };
+    }
+
+    const expectedAction = mutation.action === 'publish' ? 'create' : mutation.action;
+    const requestedDepartmentId = parsed.scope === 'department' ? parsed.departmentId : null;
+    if (
+      input.action !== expectedAction
+      || mutation.requesterId !== String(input.runContext.userId)
+      || mutation.kind !== parsed.kind
+      || mutation.action !== parsed.action
+      || mutation.scope !== parsed.scope
+      || mutation.departmentId !== requestedDepartmentId
+      || mutation.proposedContentHash !== parsed.contentHash
+    ) {
+      return { kind: 'misconfigured', message: 'The knowledge apply request does not match the reviewed proposal.' };
+    }
+
+    if (mutation.requiredAuthority === 'none') {
+      return mutation.status === 'approved' || mutation.status === 'applied'
+        ? { kind: 'allowed' }
+        : { kind: 'misconfigured', message: 'This personal proposal is still waiting for its owner review.' };
+    }
+    if (!mutation.requesterReviewedAt) {
+      return { kind: 'misconfigured', message: 'The requester must review the exact content before it reaches an approver.' };
+    }
+    if (!['awaiting_approval', 'approved', 'applied'].includes(mutation.status)) {
+      return { kind: 'misconfigured', message: 'This knowledge proposal is no longer eligible for approval.' };
+    }
+
+    if (mutation.requiredAuthority === 'department_manager') {
+      if (
+        !mutation.departmentId
+        || mutation.departmentId !== String(input.runContext.departmentId ?? '')
+        || mutation.departmentId !== String(input.perm.department?.id ?? '')
+      ) {
+        return { kind: 'misconfigured', message: 'The proposal is outside the authenticated department context.' };
+      }
+      const approver = await this.resolver.resolveManager(
+        mutation.departmentId,
+        mutation.companyId,
+        {
+          excludeUserId: mutation.requesterId,
+          allowCompanyAdminFallback: false,
+        },
+      );
+      return approver
+        ? { kind: 'required', approver, authority: 'department_manager' }
+        : {
+            kind: 'misconfigured',
+            message: 'A different active department manager is required, but none is configured.',
+          };
+    }
+
+    const approver = await this.resolver.resolveCompanyAdmin(
+      mutation.companyId,
+      { excludeUserId: mutation.requesterId },
+    );
+    return approver
+      ? { kind: 'required', approver, authority: 'company_admin' }
+      : {
+          kind: 'misconfigured',
+          message: 'A different company admin is required, but none is configured.',
+        };
+  }
+
+  private async bindKnowledgeApproval(input: {
+    toolId: string;
+    args: unknown;
+    runContext: RunContext;
+    approvalId: string;
+    authority: ApprovalAuthority;
+  }): Promise<{ ok: true } | { ok: false; message: string }> {
+    if (input.toolId !== 'knowledge') return { ok: true };
+    const parsed = knowledgeApplyArgs(input.args);
+    if (!parsed || !this.options.knowledgeMutations) {
+      return { ok: false, message: 'The knowledge approval could not be bound to its proposal.' };
+    }
+    if (input.authority !== 'department_manager' && input.authority !== 'company_admin') {
+      return { ok: false, message: 'The knowledge approval resolved an invalid authority.' };
+    }
+    try {
+      const mutation = await this.options.knowledgeMutations.get({
+        mutationId: parsed.mutationId,
+        companyId: String(input.runContext.companyId),
+      });
+      if (mutation.runtimeApprovalId === input.approvalId) return { ok: true };
+      if (mutation.runtimeApprovalId) {
+        return { ok: false, message: 'This knowledge proposal is already bound to a different approval.' };
+      }
+      await this.options.knowledgeMutations.attachRuntimeApproval({
+        mutationId: mutation.id,
+        companyId: mutation.companyId,
+        requesterId: String(input.runContext.userId),
+        expectedContentHash: parsed.contentHash,
+        approvalId: input.approvalId,
+        authority: input.authority,
+      });
+      return { ok: true };
+    } catch {
+      return { ok: false, message: 'The knowledge approval could not be durably bound to its exact proposal.' };
+    }
   }
 
   private async resolveConnectionApprover(
@@ -567,7 +726,13 @@ export class ApprovalGateService {
     }
 
     this.logger.info('approval.gate.approved_grant_claimed', { approvalId: approval.id, toolId, action });
-    return { kind: 'allowed', executionGrant: { approvalId: approval.id } };
+    return {
+      kind: 'allowed',
+      executionGrant: {
+        approvalId: approval.id,
+        authority,
+      },
+    };
   }
 
   private decisionFromExisting(input: {
@@ -700,6 +865,50 @@ export class ApprovalGateService {
       retry: 'change_request',
     };
   }
+}
+
+interface KnowledgeApplyArgs {
+  readonly mutationId: string;
+  readonly contentHash: string | null;
+  readonly kind: 'memory' | 'skill' | 'file';
+  readonly action: 'create' | 'update' | 'publish' | 'delete';
+  readonly scope: 'personal' | 'department' | 'company';
+  readonly departmentId: string | null;
+}
+
+function knowledgeApplyArgs(value: unknown): KnowledgeApplyArgs | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const args = value as Record<string, unknown>;
+  if (args['operation'] !== 'apply') return null;
+  const mutationId = args['mutationId'];
+  const contentHash = args['contentHash'];
+  const kind = args['kind'];
+  const action = args['action'];
+  const scope = args['scope'];
+  const departmentId = args['departmentId'];
+  if (
+    typeof mutationId !== 'string'
+    || (contentHash !== null && typeof contentHash !== 'string')
+    || (kind !== 'memory' && kind !== 'skill' && kind !== 'file')
+    || (action !== 'create' && action !== 'update' && action !== 'publish' && action !== 'delete')
+    || (scope !== 'personal' && scope !== 'department' && scope !== 'company')
+    || (scope === 'department' && typeof departmentId !== 'string')
+    || (scope !== 'department' && departmentId !== undefined)
+  ) return null;
+  return {
+    mutationId,
+    contentHash: contentHash ?? null,
+    kind,
+    action,
+    scope,
+    departmentId: scope === 'department' ? departmentId as string : null,
+  };
+}
+
+function isKnowledgeNonApply(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const operation = (value as Record<string, unknown>)['operation'];
+  return operation === 'check_targets' || operation === 'recall' || operation === 'propose';
 }
 
 function completedDecision(

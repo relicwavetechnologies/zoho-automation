@@ -318,7 +318,7 @@ function redactInvocations(invocations: readonly Invocation[]): Invocation[] {
 
 async function main(): Promise<void> {
   const requestedAccount = parseAccount(process.argv.slice(2));
-  const env = loadAndValidateEnv({ ...process.env, MEM0_ENABLED: 'false' });
+  const env = loadAndValidateEnv({ ...process.env, HINDSIGHT_ENABLED: 'false' });
   const container = await buildContainer(env);
   const restoreFetch = installZohoWriteBlock();
 

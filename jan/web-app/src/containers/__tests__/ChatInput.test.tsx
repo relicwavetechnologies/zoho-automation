@@ -858,7 +858,7 @@ describe('ChatInput', () => {
     fireEvent.click(await screen.findByTestId('share-memory-command'))
 
     expect(onSubmit).toHaveBeenCalledWith(
-      'Resolve and fetch the backend Share Memory skill, then call memoryPublishing.check_authority. Propose bounded durable memory bullets and call the local divo_memory_review tool with only proposalId and bullets. Do not pass departmentId or allowedTargets and do not call memoryPublishing.publish directly; the local review tool uses the desktop-configured selected department context, independently fetches canonical allowed targets, and owns the review card and final prepare/commit.',
+      'Help me share something with my team or company memory. Ask me what should be saved and where it should be shared.',
       undefined
     )
     expect(onSubmit).toHaveBeenCalledTimes(1)
@@ -877,7 +877,7 @@ describe('ChatInput', () => {
     fireEvent.keyDown(getTextarea(), { key: 'Enter' })
 
     expect(onSubmit).toHaveBeenCalledWith(
-      'Resolve and fetch the backend Share Memory skill, then call memoryPublishing.check_authority. Propose bounded durable memory bullets and call the local divo_memory_review tool with only proposalId and bullets. Do not pass departmentId or allowedTargets and do not call memoryPublishing.publish directly; the local review tool uses the desktop-configured selected department context, independently fetches canonical allowed targets, and owns the review card and final prepare/commit.',
+      'Help me share something with my team or company memory. Ask me what should be saved and where it should be shared.',
       undefined
     )
     expect(onSubmit).toHaveBeenCalledTimes(1)

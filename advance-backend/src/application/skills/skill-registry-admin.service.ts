@@ -11,7 +11,7 @@ import type { Logger } from '../../shared/logger';
  * never decides placement or access.
  *
  * Folders are one of two kinds, and the two never mix in a single subtree:
- *   • company-wide  → departmentId = null  (holds `global` / `company` skills)
+ *   • company-wide  → departmentId = null and scope = `company`
  *   • department    → departmentId = <id>  (holds that department's skills)
  */
 
@@ -34,6 +34,9 @@ const ok = <T>(value: T): ServiceResult<T> => ({ ok: true, value });
 const fail = <T>(error: RegistryError): ServiceResult<T> => ({ ok: false, error });
 
 // ── Scope helpers ─────────────────────────────────────────────────────────────
+// `company` is the governed knowledge scope. `global` remains a read-compatible
+// legacy/system-skill scope until those rows are migrated; both are company-wide
+// for registry placement and grant validation.
 const COMPANY_WIDE_SCOPES = ['company', 'global'] as const;
 const isCompanyWideScope = (scope: string): boolean =>
   (COMPANY_WIDE_SCOPES as readonly string[]).includes(scope);
@@ -216,7 +219,11 @@ export class SkillRegistryAdminService {
           orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
         }),
         this.db.skill.findMany({
-          where: { companyId, ...(skillStatusIn ? { status: skillStatusIn } : {}) },
+          where: {
+            companyId,
+            scope: { not: 'personal' },
+            ...(skillStatusIn ? { status: skillStatusIn } : {}),
+          },
           select: SKILL_SELECT,
           orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
         }),
@@ -246,7 +253,7 @@ export class SkillRegistryAdminService {
   ): Promise<ServiceResult<SkillDetailDto>> {
     try {
       const skill = await this.db.skill.findFirst({
-        where: { id: skillId, companyId },
+        where: { id: skillId, companyId, scope: { not: 'personal' } },
         select: {
           ...SKILL_SELECT,
           markdown: true,
@@ -304,7 +311,7 @@ export class SkillRegistryAdminService {
   ): Promise<ServiceResult<SkillAuditEntryDto[]>> {
     const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
     const skill = await this.db.skill.findFirst({
-      where: { id: skillId, companyId },
+      where: { id: skillId, companyId, scope: { not: 'personal' } },
       select: { id: true },
     });
     if (!skill) return fail({ kind: 'not_found', message: 'Skill not found' });
@@ -347,7 +354,7 @@ export class SkillRegistryAdminService {
     skillId: string,
   ): Promise<ServiceResult<SkillAccessDto>> {
     const skill = await this.db.skill.findFirst({
-      where: { id: skillId, companyId },
+      where: { id: skillId, companyId, scope: { not: 'personal' } },
       select: { id: true, scope: true, departmentId: true },
     });
     if (!skill) return fail({ kind: 'not_found', message: 'Skill not found' });
@@ -438,10 +445,16 @@ export class SkillRegistryAdminService {
     grantedBy: string,
   ): Promise<ServiceResult<SkillGrantDto>> {
     const skill = await this.db.skill.findFirst({
-      where: { id: skillId, companyId },
-      select: { id: true, scope: true, departmentId: true },
+      where: { id: skillId, companyId, scope: { not: 'personal' } },
+      select: { id: true, scope: true, departmentId: true, knowledgeResourceId: true },
     });
     if (!skill) return fail({ kind: 'not_found', message: 'Skill not found' });
+    if (skill.knowledgeResourceId) {
+      return fail({
+        kind: 'conflict',
+        message: 'Governed skill access is derived from its approved knowledge scope and cannot be changed directly.',
+      });
+    }
 
     const resolved = await this.validateGrantee(companyId, skill, granteeType, granteeId);
     if (!resolved.ok) return resolved as ServiceResult<SkillGrantDto>;
@@ -475,10 +488,16 @@ export class SkillRegistryAdminService {
     granteeId: string,
   ): Promise<ServiceResult<{ skillId: string; granteeType: GranteeType; granteeId: string }>> {
     const skill = await this.db.skill.findFirst({
-      where: { id: skillId, companyId },
-      select: { id: true },
+      where: { id: skillId, companyId, scope: { not: 'personal' } },
+      select: { id: true, knowledgeResourceId: true },
     });
     if (!skill) return fail({ kind: 'not_found', message: 'Skill not found' });
+    if (skill.knowledgeResourceId) {
+      return fail({
+        kind: 'conflict',
+        message: 'Governed skill access is derived from its approved knowledge scope and cannot be changed directly.',
+      });
+    }
 
     try {
       await this.db.skillAccessGrant.deleteMany({ where: { skillId, granteeType, granteeId, companyId } });
@@ -749,7 +768,7 @@ export class SkillRegistryAdminService {
     input: { folderId: string | null },
   ): Promise<ServiceResult<{ skillId: string; folderId: string | null }>> {
     const skill = await this.db.skill.findFirst({
-      where: { id: skillId, companyId },
+      where: { id: skillId, companyId, scope: { not: 'personal' } },
       select: { id: true, scope: true, departmentId: true },
     });
     if (!skill) return fail({ kind: 'not_found', message: 'Skill not found' });

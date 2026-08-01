@@ -8,6 +8,7 @@ const PI_RUNTIME_BLOCKED_OPS = new Set([
   'teach.learning.apply',
   'tools.commit',
   'automation.plan.create',
+  'knowledge.review.decide',
 ]);
 
 export interface GatewayRoutesDeps {
@@ -41,18 +42,6 @@ export function createGatewayRoutes(deps: GatewayRoutesDeps): Router {
       res.status(400).json(gatewayFailure('bad_request', issues));
       return;
     }
-    if (res.locals['isPiRuntimeLease'] === true) {
-      const runtimeThreadId = res.locals['runtimeThreadId'] as string | undefined;
-      if (!runtimeThreadId || parsed.data.execution?.threadId !== runtimeThreadId) {
-        res.status(403).json(
-          gatewayFailure(
-            'permission_denied',
-            'Pi runtime execution does not match its signed thread.',
-          ),
-        );
-        return;
-      }
-    }
     if (
       res.locals['isPiRuntimeLease'] === true
       && PI_RUNTIME_BLOCKED_OPS.has(parsed.data.op)
@@ -65,7 +54,33 @@ export function createGatewayRoutes(deps: GatewayRoutesDeps): Router {
       );
       return;
     }
-
+    if (
+      res.locals['isPiRuntimeLease'] === true
+      && parsed.data.op === 'knowledge.review.open'
+      && !parsed.data.execution
+    ) {
+      res.status(400).json(
+        gatewayFailure('bad_request', 'Knowledge review requires exact run execution provenance.'),
+      );
+      return;
+    }
+    if (res.locals['isPiRuntimeLease'] === true) {
+      const runtimeThreadId = res.locals['runtimeThreadId'] as string | undefined;
+      const runtimeRunId = res.locals['runtimeRunId'] as string | undefined;
+      if (
+        !runtimeThreadId
+        || parsed.data.execution?.threadId !== runtimeThreadId
+        || (runtimeRunId && parsed.data.execution?.runId !== runtimeRunId)
+      ) {
+        res.status(403).json(
+          gatewayFailure(
+            'permission_denied',
+            'Pi runtime execution does not match its signed run and thread.',
+          ),
+        );
+        return;
+      }
+    }
     const member: GatewayMemberContext = {
       companyId,
       userId,
@@ -74,6 +89,15 @@ export function createGatewayRoutes(deps: GatewayRoutesDeps): Router {
       email: (res.locals['email'] as string | null | undefined) ?? null,
       larkOpenId: (res.locals['larkOpenId'] as string | null | undefined) ?? null,
       larkTenantKey: (res.locals['larkTenantKey'] as string | null | undefined) ?? null,
+      ...(typeof res.locals['runtimeChatId'] === 'string'
+        ? { runtimeChatId: res.locals['runtimeChatId'] as string }
+        : {}),
+      ...(typeof res.locals['runtimeRunId'] === 'string'
+        ? { runtimeRunId: res.locals['runtimeRunId'] as string }
+        : {}),
+      ...(typeof res.locals['runtimeThreadId'] === 'string'
+        ? { runtimeThreadId: res.locals['runtimeThreadId'] as string }
+        : {}),
       sessionId,
       authProvider: (res.locals['authProvider'] as string | null | undefined) ?? null,
     };

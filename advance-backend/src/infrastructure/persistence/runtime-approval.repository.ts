@@ -103,7 +103,7 @@ export class RuntimeApprovalRepository {
             SELECT pg_advisory_xact_lock(
               hashtext('runtime-approval'),
               hashtext(${key})
-            )
+            )::text AS lock_result
           `;
         }
 

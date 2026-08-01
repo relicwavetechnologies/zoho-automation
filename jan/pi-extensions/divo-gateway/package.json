@@ -7,7 +7,7 @@
     "typebox": "1.1.38"
   },
   "scripts": {
-    "test": "node --import tsx --test approval-gate.test.ts department-persona.test.ts gateway-client.test.ts gateway-execution.test.ts local-broker.test.ts local-broker-response.test.mjs memory-recall.test.ts memory-review.test.ts routing-policy.test.ts skill-resolver.test.ts skill-view.test.ts teach-clarification.test.ts teach-profile.test.ts trace.test.ts"
+    "test": "node --import tsx --test approval-gate.test.ts department-persona.test.ts gateway-client.test.ts gateway-execution.test.ts knowledge-review.test.ts local-broker.test.ts local-broker-response.test.mjs memory-recall.test.ts memory-review.test.ts personal-memory.test.ts routing-policy.test.ts skill-resolver.test.ts skill-view.test.ts teach-clarification.test.ts teach-profile.test.ts trace.test.ts"
   },
   "devDependencies": {
     "tsx": "^4.19.4"

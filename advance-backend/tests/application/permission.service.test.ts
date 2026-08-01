@@ -129,10 +129,10 @@ describe('PermissionService', () => {
       assert.ok(!ids.includes('larkApproval'), 'MEMBER should NOT have larkApproval by default');
       assert.ok(ids.includes('zohoCrm'),       'MEMBER should have zohoCrm by default');
       assert.ok(ids.includes('zohoBooks'),     'MEMBER should have zohoBooks by default');
-      assert.ok(ids.includes('memoryPublishing'), 'MEMBER should have personal memory publishing by default');
+      assert.ok(ids.includes('knowledge'), 'MEMBER should have governed knowledge access by default');
       assert.deepEqual(
-        [...(result.value.allowedActionsByTool.get(asToolId('memoryPublishing')) ?? [])],
-        ['read', 'create'],
+        [...(result.value.allowedActionsByTool.get(asToolId('knowledge')) ?? [])],
+        ['read', 'create', 'update', 'delete'],
       );
     });
 
@@ -368,7 +368,7 @@ describe('PermissionService', () => {
       assert.equal(result.error.payload.reason, 'department_access_denied');
     });
 
-    it('missing dept-role row → default deny (no company inherit)', async () => {
+    it('missing dept-role row denies ordinary tools but inherits central knowledge RBAC', async () => {
       // Department context is a grant matrix: no explicit row means not allowed,
       // even when the company MEMBER default would allow the tool.
       const svc = new PermissionServiceImpl(buildDeps({
@@ -390,7 +390,11 @@ describe('PermissionService', () => {
       assert.ok(result.ok, 'should resolve successfully');
       const taskActions = [...(result.value.allowedActionsByTool.get('larkTask' as any) ?? [])];
       assert.equal(taskActions.length, 0, 'larkTask must be denied when no dept-role grant exists');
-      assert.equal(result.value.allowedToolIds.size, 0, 'empty dept matrix yields no allowed tools');
+      assert.deepEqual(
+        [...result.value.allowedToolIds].map(String),
+        ['knowledge'],
+        'only the explicitly company-inherited knowledge authority remains available',
+      );
     });
 
     it('fails instead of converting a department permission repository error into an empty grant', async () => {

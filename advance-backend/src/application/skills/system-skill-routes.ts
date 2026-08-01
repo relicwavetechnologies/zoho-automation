@@ -17,7 +17,7 @@ import { DIVO_OMS_SITE_DATA_SYSTEM_SKILL } from './oms-site-data-system-skill';
 import { DIVO_LOCAL_PYTHON_SKILL_SLUG } from './divo-local-python-system-skill';
 import { SCHEDULE_DIVO_WORK_SKILL_SLUG } from './scheduled-work-system-skill';
 import { DIVO_SEMRUSH_SYSTEM_SKILL } from './semrush-system-skill';
-import { SHARE_MEMORY_SKILL_SLUG } from './share-memory-system-skill';
+import { KNOWLEDGE_MANAGEMENT_SKILL_SLUG } from './knowledge-system-skill';
 import { ZOHO_FINANCE_SYSTEM_SKILLS } from './zoho-finance-system-skills';
 
 const ROUTING_SYSTEM_SKILLS = [
@@ -159,15 +159,16 @@ Calendar events belong to the relevant Google or Lark calendar specialist instea
   },
   {
     slug: 'memory-router',
-    name: 'Personal Memory Router',
-    summary: 'Routes explicit requests to save durable personal memory for review.',
-    markdown: `# Personal Memory Router
+    name: 'Knowledge Router',
+    summary: 'Routes durable memory, taught procedures, and governed files through the correct review path.',
+    markdown: `# Knowledge Router
 
-Choose \`share-memory\` only when the member explicitly asks to save or share durable memory.
-Do not route transient task state, secrets, or unconfirmed assistant inference to memory.`,
+Choose \`share-memory\` for durable personal or shared memory, a reusable procedure the member has finished teaching, or a file they want retained for later use.
+Natural language is enough; the member does not need to know Divo's internal resource or approval terms.
+Do not route transient task state, secrets, unfinished teaching, one-off work, or unconfirmed assistant inference into durable knowledge.`,
     toolIds: [],
-    tags: ['personal', 'memory', 'router', 'save', 'remember', 'review'],
-    aliases: ['remember this', 'save memory', 'share memory', 'personal memory'],
+    tags: ['knowledge', 'personal', 'memory', 'procedure', 'file', 'router', 'save', 'remember', 'shared', 'review'],
+    aliases: ['remember this', 'save memory', 'share memory', 'personal memory', 'teach divo', 'save procedure', 'keep this file'],
     sortOrder: 9,
   },
   {
@@ -248,7 +249,7 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
   },
   {
     routerSlug: 'memory-router',
-    targetSlugs: [SHARE_MEMORY_SKILL_SLUG],
+    targetSlugs: [KNOWLEDGE_MANAGEMENT_SKILL_SLUG],
   },
 ] as const;
 
@@ -271,7 +272,7 @@ export const ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS = [
   .map(skill => skill.slug)
   .concat(
     SCHEDULE_DIVO_WORK_SKILL_SLUG,
-    SHARE_MEMORY_SKILL_SLUG,
+    KNOWLEDGE_MANAGEMENT_SKILL_SLUG,
     DIVO_LOCAL_PYTHON_SKILL_SLUG,
   );
 

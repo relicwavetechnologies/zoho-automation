@@ -4,7 +4,6 @@ import {
   FileSearch,
   Globe,
   ScanSearch,
-  Share2,
   SquareTerminal,
 } from 'lucide-react'
 import type { ComponentType } from 'react'
@@ -37,7 +36,7 @@ const providers = [
   { id: 'airtable', title: 'Airtable', description: 'Records, base schema, interfaces, and automations.', Icon: AirtableIcon, toolIds: ['airtableRecords', 'airtableSchema', 'airtableAutomation'] },
   { id: 'zoho', title: 'Zoho', description: 'CRM and Books tools.', Icon: ZohoIcon, iconClassName: 'h-5 w-7', toolIds: ['zohoCrm', 'zohoBooks'] },
   { id: 'lark', title: 'Lark', description: 'Company-managed Lark connections and collaboration tools.', Icon: LarkIcon, toolIds: ['larkMessaging', 'larkContacts', 'larkTask', 'larkCalendar', 'larkDoc', 'larkBase', 'larkApproval'] },
-  { id: 'tool-memory', title: 'Memory', description: 'Company memory and knowledge tools.', Icon: Brain, toolIds: ['memoryPublishing', 'memoryRecall'] },
+  { id: 'tool-memory', title: 'Memory', description: 'Personal and shared governed knowledge.', Icon: Brain, toolIds: ['knowledge'] },
 ] as const
 
 // Distinct, fitting icons for the standalone capability tools so each card reads
@@ -46,12 +45,10 @@ const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
   dataProcessor: Cpu,
   runCommand: SquareTerminal,
   documentRag: FileSearch,
-  skillPublishing: Share2,
   webSearch: Globe,
   contextSearch: ScanSearch,
   semrush: SemrushIcon,
-  memoryRecall: Brain,
-  memoryPublishing: Brain,
+  knowledge: Brain,
 }
 
 export function groupToolInventory(items: DivoToolInventoryItem[]): ToolPresentationGroup[] {

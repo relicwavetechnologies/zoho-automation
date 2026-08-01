@@ -163,9 +163,7 @@ export const TOOL_CAPABILITY_DEFINITIONS = {
   zohoBooks: defineCapability('zoho', ['read', 'create', 'update', 'delete']),
 
   webSearch:       defineCapability('context', ['read']),
-  skillPublishing: defineCapability('skills', ['read', 'create', 'update', 'delete'], ADMIN_ONLY),
-  memoryPublishing: defineCapability('memory', ['read', 'create']),
-  memoryRecall:     defineCapability('memory', ['read']),
+  knowledge:       defineCapability('memory', ['read', 'create', 'update', 'delete']),
   dataExport:       defineCapability('data', ['create']),
   mailAutomations:  defineCapability('scheduling', ['read', 'create', 'update', 'delete', 'execute']),
   scheduledWorkflows: defineCapability('scheduling', ['read', 'create', 'update', 'delete', 'execute']),

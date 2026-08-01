@@ -102,6 +102,7 @@ fn member_departments_runtime_context(session: &DivoSession) -> DivoRuntimeConte
         persona_prompt: String::new(),
         version: None,
         departments: member_department_names(session),
+        personal_memory: vec![],
         capability_bootstrap: None,
     }
 }
@@ -115,14 +116,17 @@ pub(crate) async fn refresh_runtime_context<R: Runtime>(app: &AppHandle<R>) -> R
     let member_context = member_departments_runtime_context(&session);
 
     let result = async {
-        let Some(department_id) = session.department_id.as_deref() else {
-            return write_runtime_context(&context_path, &member_context);
-        };
-
+        let runtime_context_path = session
+            .department_id
+            .as_deref()
+            .map(|department_id| {
+                format!("/runtime-context?departmentId={department_id}&capabilityVersion=3")
+            })
+            .unwrap_or_else(|| "/runtime-context?capabilityVersion=3".to_string());
         let response = divo_desktop_json_request(
             app,
             reqwest::Method::GET,
-            &format!("/runtime-context?departmentId={department_id}&capabilityVersion=3"),
+            &runtime_context_path,
             None,
             "Divo runtime context refresh",
         )
@@ -135,7 +139,7 @@ pub(crate) async fn refresh_runtime_context<R: Runtime>(app: &AppHandle<R>) -> R
         let mut context: DivoRuntimeContext = serde_json::from_value(data)
             .map_err(|e| format!("Divo runtime context response is invalid: {e}"))?;
 
-        if context.department_id.as_deref() != Some(department_id) {
+        if context.department_id.as_deref() != session.department_id.as_deref() {
             return Err(
                 "Divo runtime context department does not match the active session department"
                     .to_string(),
@@ -1080,6 +1084,11 @@ pub async fn divo_set_department<R: Runtime>(
 /// Re-write `pi-agent/divo.env` from stored session (e.g. before Pi start).
 #[tauri::command]
 pub async fn divo_sync_pi_env<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    if load_divo_session(&app)?.is_some() {
+        if let Err(error) = refresh_runtime_context(&app).await {
+            log::warn!("divo.runtime_context.refresh_failed before=pi_start error={error}");
+        }
+    }
     sync_pi_divo_env(&app)
 }
 

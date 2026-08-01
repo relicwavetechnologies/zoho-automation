@@ -23,7 +23,9 @@ import {
 import {
   assertPiHarnessOptions,
   buildHarnessTextMessage,
+  isolateHarnessPiThread,
   parseEngineHarnessArgs,
+  resolveHarnessRuntimeAddress,
   resolveHarnessOpenId,
   resolveHarnessTenantKey,
   waitForDataExports,
@@ -278,6 +280,39 @@ describe('capability catalogue reconciliation', () => {
 });
 
 describe('Lark engine harness controls', () => {
+  it('keeps fresh Pi isolation separate from the real Lark delivery address', () => {
+    assert.deepEqual(
+      resolveHarnessRuntimeAddress('oc_real_chat', 'om_request', true),
+      {
+        chatId: 'oc_real_chat',
+        freshThreadId: 'harness_fresh_om_request',
+      },
+    );
+    assert.deepEqual(
+      resolveHarnessRuntimeAddress('oc_real_chat', 'om_request', false),
+      { chatId: 'oc_real_chat' },
+    );
+  });
+
+  it('overrides only the Pi thread for a fresh delivered run', async () => {
+    let received: Record<string, unknown> | undefined;
+    const runtime = {
+      run: async (input: Record<string, unknown>) => {
+        received = input;
+        return { text: 'ok' };
+      },
+    };
+
+    const isolated = isolateHarnessPiThread(runtime as never, 'harness_fresh_om_request');
+    await isolated.run({
+      threadId: 'oc_real_chat',
+      incoming: { chatId: 'oc_real_chat' },
+    } as never);
+
+    assert.equal(received?.threadId, 'harness_fresh_om_request');
+    assert.deepEqual(received?.incoming, { chatId: 'oc_real_chat' });
+  });
+
   it('defaults to Abhishek and accepts an explicit principal and destination', () => {
     const defaults = parseEngineHarnessArgs([], {});
     assert.doesNotThrow(() => assertPiHarnessOptions(defaults));

@@ -6,7 +6,12 @@ import {
   TOOL_SUPPORTED_ACTIONS,
   type CanonicalToolId,
 } from '../../src/domain/tools/tool-id.ts';
-import { DEPARTMENT_GRANT_ONLY_TOOLS, isDepartmentGrantOnlyTool, isFixedToolPolicy } from '../../src/domain/tools/tool-policy.ts';
+import {
+  DEPARTMENT_COMPANY_INHERITED_TOOLS,
+  DEPARTMENT_GRANT_ONLY_TOOLS,
+  isDepartmentGrantOnlyTool,
+  isFixedToolPolicy,
+} from '../../src/domain/tools/tool-policy.ts';
 
 describe('memberTemplateGrants', () => {
   it('includes only MEMBER-enabled tools and all of their supported actions', () => {
@@ -27,6 +32,15 @@ describe('memberTemplateGrants', () => {
       if (isDepartmentGrantOnlyTool(toolId)) {
         for (const action of actions) {
           assert.ok(!keys.has(`${toolId}:${action}`), `department-grant-only tool must not be seeded: ${toolId}:${action}`);
+        }
+        continue;
+      }
+      // These capabilities inherit their single company-level RBAC decision.
+      // Duplicating them into every department role would create a second,
+      // stale authority for the same access decision.
+      if (DEPARTMENT_COMPANY_INHERITED_TOOLS.includes(toolId as CanonicalToolId)) {
+        for (const action of actions) {
+          assert.ok(!keys.has(`${toolId}:${action}`), `company-inherited tool must not be seeded: ${toolId}:${action}`);
         }
         continue;
       }

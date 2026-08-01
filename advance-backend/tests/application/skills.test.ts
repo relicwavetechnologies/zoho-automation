@@ -55,7 +55,7 @@ describe('SkillRepository', () => {
       assert.equal((result as any).value.length, 1);
       assert.equal(captured.where.companyId, 'co-1');
       assert.deepEqual(captured.where.AND, [
-        { OR: [{ scope: { in: ['company', 'global'] }, departmentId: null }, { scope: 'department', departmentId: 'dept-1' }] },
+        { OR: [{ scope: 'company', departmentId: null }, { scope: 'department', departmentId: 'dept-1' }] },
       ]);
     });
   });
@@ -117,7 +117,7 @@ describe('SkillRepository', () => {
       const repo = new SkillRepository(prisma);
       await repo.search({ companyId: 'co-1', departmentId: 'dept-1', query: 'foo', limit: 5 });
       assert.deepEqual(captured.where.AND[0], {
-        OR: [{ scope: { in: ['company', 'global'] }, departmentId: null }, { scope: 'department', departmentId: 'dept-1' }],
+        OR: [{ scope: 'company', departmentId: null }, { scope: 'department', departmentId: 'dept-1' }],
       });
       assert.ok(Array.isArray(captured.where.AND[1].OR));
       assert(captured.where.AND[1].OR.some((entry: any) => entry.aliases?.some));
@@ -131,7 +131,7 @@ describe('SkillRepository', () => {
       } as any;
       const repo = new SkillRepository(prisma);
       await repo.search({ companyId: 'co-1', query: 'foo', limit: 5 });
-      assert.deepEqual(captured.where.AND[0], { scope: { in: ['company', 'global'] }, departmentId: null });
+      assert.deepEqual(captured.where.AND[0], { scope: 'company', departmentId: null });
     });
 
     it('wraps Prisma error as InfraError', async () => {
@@ -184,7 +184,7 @@ describe('SkillRepository', () => {
       const repo = new SkillRepository(prisma);
       await repo.findById({ companyId: 'co-1', departmentId: 'dept-2', skillId: 'x' });
       assert.deepEqual(captured.where.AND[0], {
-        OR: [{ scope: { in: ['company', 'global'] }, departmentId: null }, { scope: 'department', departmentId: 'dept-2' }],
+        OR: [{ scope: 'company', departmentId: null }, { scope: 'department', departmentId: 'dept-2' }],
       });
       assert.ok(Array.isArray(captured.where.AND[1].OR));
     });
@@ -218,7 +218,7 @@ describe('SkillRepository', () => {
       assert.equal(captured.where.targetSkill.companyId, 'co-1');
       assert.deepEqual(captured.where.targetSkill.AND[0], {
         OR: [
-          { scope: { in: ['company', 'global'] }, departmentId: null },
+          { scope: 'company', departmentId: null },
           { scope: 'department', departmentId: 'dept-1' },
         ],
       });

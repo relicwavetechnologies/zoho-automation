@@ -15,9 +15,9 @@
  *   DELETE /:id/roles/:roleId                     — delete role
  *   PUT    /:id/memberships                       — upsert membership
  *   DELETE /:id/memberships/:userId               — remove membership
- *   POST   /:id/skills                            — create skill
- *   PUT    /:id/skills/:skillId                   — update skill
- *   POST   /:id/skills/:skillId/archive           — archive skill
+ *   POST   /:id/skills                            — rejected legacy direct write
+ *   PUT    /:id/skills/:skillId                   — rejected legacy direct write
+ *   POST   /:id/skills/:skillId/archive           — rejected legacy direct write
  *   PUT    /:id/role-permissions/:roleId/:toolId/:actionGroup — update role permission
  *   PUT    /:id/user-overrides/:userId/:toolId/:actionGroup   — update user override
  *   POST   /backfill-permissions                              — seed empty role matrices
@@ -27,7 +27,6 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { DepartmentAdminService } from '../../application/departments/department-admin.service';
-import { SKILL_SUMMARY_MAX_CHARS } from '../../application/skills/skill-limits';
 import type { AuditService } from '../../application/observability/audit.service';
 import type { Logger } from '../../shared/logger';
 
@@ -129,27 +128,6 @@ const upsertMembershipSchema = z.object({
   channelIdentityId: z.string().uuid().optional(),
   roleId:            z.string().uuid().optional(),
   status:            z.enum(['active', 'inactive']).optional(),
-});
-
-const upsertSkillSchema = z.object({
-  name:     z.string().min(1).max(120),
-  slug:     z.string().min(1).max(120).optional(),
-  summary:  z.string().max(SKILL_SUMMARY_MAX_CHARS).optional(),
-  markdown: z.string().min(1).max(40000),
-  toolIds:  z.array(z.string().min(1).max(120)).max(50).optional(),
-  tags:     z.array(z.string().min(1).max(60)).max(20).optional(),
-  status:   z.enum(['active', 'archived']).optional(),
-  folderId: z.string().uuid().nullish(),
-});
-
-const updateSkillSchema = z.object({
-  name:     z.string().min(1).max(120).optional(),
-  summary:  z.string().max(SKILL_SUMMARY_MAX_CHARS).optional(),
-  markdown: z.string().max(40000).optional(),
-  toolIds:  z.array(z.string().min(1).max(120)).max(50).optional(),
-  tags:     z.array(z.string().min(1).max(60)).max(20).optional(),
-  status:   z.enum(['active', 'archived']).optional(),
-  folderId: z.string().uuid().nullish(),
 });
 
 const allowedSchema = z.object({ allowed: z.boolean() });
@@ -298,44 +276,20 @@ export function createDepartmentRoutes(deps: DepartmentRoutesDeps): Router {
     success(res, result.value, 'Department membership removed');
   }));
 
-  // ── Create skill ──────────────────────────────────────────────────────────
-  router.post('/:id/skills', asyncRoute(async (req, res) => {
-    const { id }    = req.params as { id: string };
-    const payload   = upsertSkillSchema.parse(req.body);
-    const companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
-    const userId    = resolveUserId(res);
-    const result    = await svc.createSkill(id, companyId, userId, payload);
-    if (!result.ok) { resolveServiceError(res, result.error); return; }
-    success(res, result.value, 'Department skill created', 201);
-  }));
-
-  // ── Update skill ──────────────────────────────────────────────────────────
-  router.put('/:id/skills/:skillId', asyncRoute(async (req, res) => {
-    const { id, skillId } = req.params as { id: string; skillId: string };
-    const payload         = updateSkillSchema.parse(req.body);
-    const companyId       = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
-    const userId          = resolveUserId(res);
-    const result          = await svc.updateSkill(id, companyId, skillId, userId, payload);
-    if (!result.ok) { resolveServiceError(res, result.error); return; }
-    success(res, result.value, 'Department skill updated');
-  }));
-
-  // ── Archive skill ─────────────────────────────────────────────────────────
-  router.post('/:id/skills/:skillId/archive', asyncRoute(async (req, res) => {
-    const { id, skillId } = req.params as { id: string; skillId: string };
-    const companyId       = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
-    const userId          = resolveUserId(res);
-    const result          = await svc.archiveSkill(id, companyId, skillId, userId);
-    if (!result.ok) { resolveServiceError(res, result.error); return; }
-    deps.auditService?.record({
-      actorId: userId,
-      companyId,
-      action: 'skill.archive',
-      outcome: 'success',
-      metadata: { departmentId: id, skillId },
-    });
-    success(res, result.value, 'Department skill archived');
-  }));
+  // Keep the old URLs as explicit fail-closed guards during client rollout.
+  // Skill content is shared knowledge and must never be written by an admin
+  // CRUD endpoint because that would skip requester review, distinct approval,
+  // immutable versions, and the projection outbox.
+  const rejectLegacySkillWrite = (_req: Request, res: Response): void => {
+    fail(
+      res,
+      409,
+      'Direct skill writes are disabled. Use the governed knowledge review flow.',
+    );
+  };
+  router.post('/:id/skills', rejectLegacySkillWrite);
+  router.put('/:id/skills/:skillId', rejectLegacySkillWrite);
+  router.post('/:id/skills/:skillId/archive', rejectLegacySkillWrite);
 
   // ── Role permission ───────────────────────────────────────────────────────
   router.put('/:id/role-permissions/:roleId/:toolId/:actionGroup', asyncRoute(async (req, res) => {

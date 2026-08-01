@@ -464,6 +464,46 @@ function buildApprovalPresentation(
     };
   }
 
+  if (toolId === 'knowledge' && operation === 'propose') {
+    const scope = args['scope'] === 'personal'
+      ? 'Personal'
+      : args['scope'] === 'company'
+        ? 'Company'
+        : 'Selected department';
+    const kind = args['kind'] === 'skill'
+      ? 'procedure'
+      : args['kind'] === 'file'
+        ? 'file'
+        : 'memory';
+    const rawContent = args['content'];
+    const exactContent = args['kind'] === 'file'
+      && rawContent
+      && typeof rawContent === 'object'
+      && !Array.isArray(rawContent)
+      ? pickDefined(rawContent as Record<string, unknown>, [
+          'fileName',
+          'mimeType',
+          'sizeBytes',
+          'sha256',
+        ])
+      : rawContent ?? null;
+    return {
+      kind: `knowledge.${String(args['kind'] ?? 'resource')}.${String(args['action'] ?? action)}`,
+      provider: 'divo',
+      title: `Review ${scope.toLowerCase()} ${kind} change`,
+      action,
+      operation,
+      details: {
+        target: scope,
+        resource: kind,
+        change: args['action'],
+        logicalKey: args['logicalKey'],
+        ...(args['baseVersion'] === undefined ? {} : { currentVersion: args['baseVersion'] }),
+        exactContent,
+      },
+    };
+  }
+
   return {
     kind: `generic.${toolId}.${operation}`,
     provider: 'generic',

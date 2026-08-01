@@ -13,6 +13,9 @@ export const GATEWAY_OPS = [
   'teach.learning.apply',
   'connections.list',
   'media.image_ocr',
+  'memory.personal.mutate',
+  'knowledge.review.open',
+  'knowledge.review.decide',
   'tools.preflight',
   'tools.prepare',
   'tools.commit',
@@ -82,6 +85,75 @@ export const toolsInvokePayloadSchema = toolInvocationPayloadSchema.extend({
 });
 
 export type ToolsInvokePayload = z.infer<typeof toolsInvokePayloadSchema>;
+
+export const personalMemoryCommandPayloadSchema = z.discriminatedUnion('action', [
+  z.object({
+    action: z.literal('set'),
+    subject: z.string().trim().min(1).max(500),
+    logicalKey: z.string().trim().min(1).max(240),
+    facts: z.array(z.string().trim().min(1).max(500)).min(1).max(100),
+  }).strict(),
+  z.object({
+    action: z.literal('delete'),
+    subject: z.string().trim().min(1).max(500),
+    logicalKey: z.string().trim().min(1).max(240),
+  }).strict(),
+]);
+
+export type PersonalMemoryCommandPayload = z.infer<typeof personalMemoryCommandPayloadSchema>;
+
+const memoryKnowledgeReviewOpenPayloadSchema = z.object({
+  skillId: z.string().trim().min(1).max(200),
+  requestId: z.string().trim().min(1).max(120),
+  kind: z.literal('memory'),
+  bullets: z.array(z.string().trim().min(1).max(500)).min(1).max(10),
+  requestedScope: z.enum(['department', 'company']).optional(),
+}).strict();
+
+const resourceKnowledgeReviewOpenPayloadSchema = z.object({
+  skillId: z.string().trim().min(1).max(200),
+  requestId: z.string().trim().min(1).max(120),
+  kind: z.enum(['skill', 'file']),
+  action: z.enum(['create', 'update', 'publish', 'delete']),
+  scope: z.enum(['personal', 'department', 'company']),
+  logicalKey: z.string().trim().min(1).max(240),
+  baseVersion: z.number().int().positive().optional(),
+  content: z.unknown().optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.action === 'create' && value.baseVersion !== undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['baseVersion'], message: 'Create must not include baseVersion.' });
+  }
+  if (value.action !== 'create' && value.action !== 'publish' && value.baseVersion === undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['baseVersion'], message: `${value.action} requires baseVersion.` });
+  }
+  if (value.action === 'delete' && value.content !== undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['content'], message: 'Delete must not include content.' });
+  }
+  if (value.action !== 'delete' && value.content === undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['content'], message: `${value.action} requires content.` });
+  }
+  if (value.content !== undefined) {
+    try {
+      const encoded = JSON.stringify(value.content);
+      if (encoded === undefined || Buffer.byteLength(encoded, 'utf8') > 250_000) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['content'], message: 'Content exceeds 250 KB.' });
+      }
+    } catch {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['content'], message: 'Content must be JSON.' });
+    }
+  }
+});
+
+export const knowledgeReviewOpenPayloadSchema = z.union([
+  memoryKnowledgeReviewOpenPayloadSchema,
+  resourceKnowledgeReviewOpenPayloadSchema,
+]);
+
+export const knowledgeReviewDecisionPayloadSchema = z.object({
+  mutationId: z.string().uuid(),
+  contentHash: z.string().length(64).nullable(),
+  decision: z.enum(['approve', 'cancel']),
+}).strict();
 
 /**
  * Validates a set of proposed calls without executing tool code, creating an
@@ -197,6 +269,9 @@ export interface GatewayMemberContext {
   readonly email: string | null;
   readonly larkOpenId: string | null;
   readonly larkTenantKey?: string | null;
+  readonly runtimeChatId?: string;
+  readonly runtimeRunId?: string;
+  readonly runtimeThreadId?: string;
   readonly sessionId: string;
   /**
    * How the session was issued. `scheduled_workflow` marks a machine-issued

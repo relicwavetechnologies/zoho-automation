@@ -24,7 +24,12 @@ export interface ConversationMeta {
 
 export interface ConversationRepoPort {
   getHistory(chatId: string, limit?: number, scope?: ConversationScope): Promise<Result<Turn[], InfraError>>;
-  appendTurn(chatId: string, turn: Omit<Turn, 'id'>, scope?: ConversationScope): Promise<Result<Turn, InfraError>>;
+  appendTurn(
+    chatId: string,
+    turn: Omit<Turn, 'id'>,
+    scope?: ConversationScope,
+    metadata?: ConversationTurnMetadata,
+  ): Promise<Result<Turn, InfraError>>;
   /** Clear one exact DM, thread, or inline-requester conversation. */
   clearHistory(chatId: string, scope: ConversationScope): Promise<Result<boolean, InfraError>>;
   /**
@@ -39,6 +44,12 @@ export interface ConversationRepoPort {
     lastSummarizedSequence: number;
   }): Promise<Result<void, InfraError>>;
   getHistoryAfterSequence(chatId: string, afterSequence: number, limit?: number, scope?: ConversationScope): Promise<Result<Turn[], InfraError>>;
+}
+
+export interface ConversationTurnMetadata {
+  /** Stable channel/run key. Re-delivery returns the existing turn. */
+  readonly dedupeKey?: string;
+  readonly sourceMessageId?: string;
 }
 
 /**
@@ -110,6 +121,7 @@ export class ConversationRepository implements ConversationRepoPort {
     chatId: string,
     turn: Omit<Turn, 'id'>,
     scope?: ConversationScope,
+    metadata?: ConversationTurnMetadata,
   ): Promise<Result<Turn, InfraError>> {
     try {
       const companyId = scope?.companyId ?? 'system';
@@ -155,18 +167,35 @@ export class ConversationRepository implements ConversationRepoPort {
       });
       const sequence = claimed.lastMessageSequence;
 
-      const row = await this.db.runtimeConversationMessage.create({
-        data: {
-          conversationId: conv.id,
-          sequence,
-          role: turn.role,
-          messageKind: turn.role === 'tool' ? 'tool_result' : 'text',
-          sourceChannel: channel,
-          contentText: turn.content,
-          ...(turn.toolName !== undefined ? { toolCallJson: { name: turn.toolName } } : {}),
-          ...(turn.toolOutcome !== undefined ? { toolResultJson: turn.toolOutcome as object } : {}),
-        },
-      });
+      let row;
+      try {
+        row = await this.db.runtimeConversationMessage.create({
+          data: {
+            conversationId: conv.id,
+            sequence,
+            role: turn.role,
+            messageKind: turn.role === 'tool' ? 'tool_result' : 'text',
+            sourceChannel: channel,
+            contentText: turn.content,
+            ...(metadata?.dedupeKey ? { dedupeKey: metadata.dedupeKey } : {}),
+            ...(metadata?.sourceMessageId ? { sourceMessageId: metadata.sourceMessageId } : {}),
+            ...(turn.toolName !== undefined ? { toolCallJson: { name: turn.toolName } } : {}),
+            ...(turn.toolOutcome !== undefined ? { toolResultJson: turn.toolOutcome as object } : {}),
+          },
+        });
+      } catch (cause) {
+        if (!metadata?.dedupeKey || (cause as { code?: string }).code !== 'P2002') throw cause;
+        const existing = await this.db.runtimeConversationMessage.findUnique({
+          where: {
+            conversationId_dedupeKey: {
+              conversationId: conv.id,
+              dedupeKey: metadata.dedupeKey,
+            },
+          },
+        });
+        if (!existing) throw cause;
+        row = existing;
+      }
       // No separate lastMessageSequence update needed — already incremented above.
 
       const appended: Turn = {

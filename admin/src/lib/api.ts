@@ -348,19 +348,15 @@ export type UpsertDepartmentMembershipInput = {
 
 export const memoriesApi = {
   list: (token?: string, params?: Record<string, string>) =>
-    api.get<Array<{ id: string; memory: string; score?: number; createdAt?: string; updatedAt?: string; metadata?: Record<string, unknown> }>>(
+    api.get<Array<{ id: string; memory: string; scope: "department" | "company"; score?: number; createdAt?: string; updatedAt?: string; metadata?: Record<string, unknown> }>>(
       `/api/admin/memories${params ? `?${new URLSearchParams(params)}` : ''}`,
       token,
     ),
   stats: (token?: string) =>
-    api.get<{ totalUser: number; totalDepartment: number; totalCompany: number }>(
+    api.get<{ totalPersonal: number; totalDepartment: number; totalCompany: number }>(
       '/api/admin/memories/stats',
       token,
     ),
-  delete: (id: string, token?: string) =>
-    api.delete<{ deleted: boolean }>(`/api/admin/memories/${id}`, {}, token),
-  deleteAllForUser: (userId: string, token?: string) =>
-    api.delete<{ deleted: boolean }>(`/api/admin/memories/user/${userId}`, {}, token),
 };
 
 export const departmentsApi = {

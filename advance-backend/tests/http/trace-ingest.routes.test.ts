@@ -38,7 +38,7 @@ describe('desktop trace usage ownership', () => {
       test.runs,
       test.tokens,
       noopLogger,
-      { companyId: 'company-1', userId: 'user-1' },
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
       {
         runId: 'run-1',
         threadId: 'thread-1',
@@ -64,7 +64,7 @@ describe('desktop trace usage ownership', () => {
       test.runs,
       test.tokens,
       noopLogger,
-      { companyId: 'company-1', userId: 'user-1' },
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
       {
         runId: 'run-direct',
         usageAuthority: 'desktop',
@@ -115,7 +115,7 @@ describe('desktop trace terminal status', () => {
       test.runs,
       test.tokens,
       noopLogger,
-      { companyId: 'company-1', userId: 'user-1' },
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
       {
         runId: 'run-failed',
         usageAuthority: 'proxy',
@@ -157,7 +157,7 @@ describe('desktop trace terminal status', () => {
       test.runs,
       test.tokens,
       noopLogger,
-      { companyId: 'company-1', userId: 'manager-1' },
+      { companyId: 'company-1', userId: 'manager-1', companyRole: 'MEMBER' },
       {
         runId: 'run-learning',
         threadId: 'thread-1',
@@ -211,7 +211,7 @@ describe('desktop trace terminal status', () => {
       test.runs,
       test.tokens,
       noopLogger,
-      { companyId: 'company-1', userId: 'manager-1' },
+      { companyId: 'company-1', userId: 'manager-1', companyRole: 'MEMBER' },
       {
         runId: 'run-failed-learning',
         threadId: 'thread-1',
@@ -225,5 +225,120 @@ describe('desktop trace terminal status', () => {
     );
 
     assert.deepEqual(captured, []);
+  });
+
+  it('durably captures a successful desktop turn for policy-governed personal learning', async () => {
+    const test = harness();
+    const retained: unknown[] = [];
+    const knowledgeLearning = {
+      captureCompletedTurn: async (input: unknown) => {
+        retained.push(input);
+      },
+    };
+
+    await ingestTraceBatch(
+      test.runs,
+      test.tokens,
+      noopLogger,
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
+      {
+        runId: 'run-personal-memory',
+        usageAuthority: 'desktop',
+        events: [
+          {
+            kind: 'learning_context',
+            seq: 1,
+            userMessages: ['I prefer short summaries.', 'Please remember that.'],
+            assistantResponse: 'I will keep future summaries short.',
+            toolSummary: [],
+          },
+          { kind: 'run_end', seq: 2, status: 'ok' },
+        ],
+      },
+      undefined,
+      knowledgeLearning,
+    );
+
+    assert.deepEqual(retained, [{
+      companyId: 'company-1',
+      userId: 'user-1',
+      companyRole: 'MEMBER',
+      channel: 'desktop',
+      userMessages: ['I prefer short summaries.', 'Please remember that.'],
+      assistantText: 'I will keep future summaries short.',
+      sourceId: 'desktop:execution-1',
+    }]);
+  });
+
+  it('does not duplicate personal learning from a Lark trace already owned by the Lark runtime', async () => {
+    const test = harness();
+    const retained: unknown[] = [];
+    const knowledgeLearning = {
+      captureCompletedTurn: async (input: unknown) => {
+        retained.push(input);
+      },
+    };
+
+    const result = await ingestTraceBatch(
+      test.runs,
+      test.tokens,
+      noopLogger,
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
+      {
+        runId: 'run-lark-personal-memory',
+        runtimeChannel: 'lark',
+        usageAuthority: 'proxy',
+        events: [
+          {
+            kind: 'learning_context',
+            seq: 1,
+            userMessages: ['I always want detailed answers, remember it.'],
+            assistantResponse: 'Got it — I’ll give you detailed answers from now on.',
+            toolSummary: [],
+          },
+          { kind: 'run_end', seq: 2, status: 'ok' },
+        ],
+      },
+      undefined,
+      knowledgeLearning,
+    );
+
+    assert.equal(result.failed, 0, 'the Lark timeline is still persisted');
+    assert.deepEqual(retained, [], 'LarkPiRuntimeService is the sole learning owner');
+  });
+
+  it('does not capture personal learning from a failed desktop run', async () => {
+    const test = harness();
+    const retained: unknown[] = [];
+    const knowledgeLearning = {
+      captureCompletedTurn: async (input: unknown) => {
+        retained.push(input);
+      },
+    };
+
+    await ingestTraceBatch(
+      test.runs,
+      test.tokens,
+      noopLogger,
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
+      {
+        runId: 'run-failed-memory',
+        usageAuthority: 'desktop',
+        events: [
+          {
+            kind: 'learning_context',
+            seq: 1,
+            userMessages: ['Do not retain this failed turn.'],
+            assistantResponse: 'Partial response',
+            toolSummary: [],
+          },
+          { kind: 'run_end', seq: 2, status: 'error' },
+        ],
+      },
+      undefined,
+      knowledgeLearning,
+    );
+
+    assert.deepEqual(retained, []);
   });
 });

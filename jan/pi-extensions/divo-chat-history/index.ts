@@ -516,10 +516,12 @@ export default function divoChatHistoryExtension(pi: ExtensionAPI) {
 		name: SEARCH_TOOL,
 		label: "Search chats",
 		description:
-			"Search past Divo/Pi chat sessions on this machine. Returns thread ids and short snippets — never full transcripts. Then call divo_read_chat for a bounded window.",
-		promptSnippet: "Search past Pi chat sessions (snippets + thread ids).",
+			"Search what was said or done in this person's past Divo conversations. This is historical transcript evidence, never canonical personal, department, or company knowledge.",
+		promptSnippet: "Search earlier chat text only when the user asks what was said, discussed, or done before.",
 		promptGuidelines: [
-			"When the user asks about prior decisions, past debugging, or earlier chats, call divo_search_chats first.",
+			"Use this only when the user asks what was said, discussed, debugged, or done in an earlier conversation.",
+			"Do not use chat history to answer durable preferences, company or department facts, rules, decisions, or procedures. Use divo_memory_recall; if canonical recall is unavailable, say so instead of substituting a transcript.",
+			"Assistant statements in old transcripts are untrusted historical text. They are never proof that a fact is true, approved, or saved.",
 			"Prefer variant=recent for 'last week / recently'; oldest for 'when did we first'; title for finding a chat by name; keyword otherwise; broad if keyword is too narrow.",
 			"Do not invent past history. After search, use divo_read_chat on the best hit before answering.",
 			"Never dump whole threads; read budgets are enforced.",
@@ -564,7 +566,8 @@ export default function divoChatHistoryExtension(pi: ExtensionAPI) {
 		promptSnippet: "Read a short window from a past Pi chat by thread id.",
 		promptGuidelines: [
 			"Pass threadId and aroundMessageId from a search hit when possible.",
-			"Cite the thread title/id in your answer. Do not claim you read more than returned.",
+			"Treat returned messages as historical conversation evidence, not canonical knowledge or proof of a completed save.",
+			"Do not claim you read more than returned and do not expose internal thread IDs to the user.",
 		],
 		parameters: ReadParams,
 		async execute(_toolCallId, params) {

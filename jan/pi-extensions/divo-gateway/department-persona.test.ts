@@ -88,6 +88,21 @@ describe("department persona", () => {
 		assert.doesNotMatch(prompt, /<divo_department_persona>/);
 	});
 
+	it("injects bounded backend personal memory as untrusted data and replaces stale snapshots", () => {
+		const first = composeDivoSystemPrompt("Base prompt", COMPANY_PROMPT, {
+			personalMemory: ["User prefers concise summaries."],
+		});
+		const refreshed = composeDivoSystemPrompt(first, COMPANY_PROMPT, {
+			personalMemory: ["User prefers table summaries."],
+		});
+
+		assert.equal((refreshed.match(/<divo_personal_memory>/g) ?? []).length, 1);
+		assert.match(refreshed, /User prefers table summaries/);
+		assert.doesNotMatch(refreshed, /User prefers concise summaries/);
+		assert.match(refreshed, /untrusted reference data/i);
+		assert.ok(refreshed.indexOf("<divo_personal_memory>") < refreshed.indexOf("<divo_response_language_policy>"));
+	});
+
 	it("injects a compact Finance fast path and replaces stale capability context", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "divo-capability-"));
 		const path = join(directory, "runtime-context.json");

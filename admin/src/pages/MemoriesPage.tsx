@@ -1,18 +1,15 @@
 import { useState } from "react"
-import { Brain, Loader2, Trash2, Users, Building2, Globe, ChevronDown } from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { Brain, Loader2, Users, Building2, Globe } from "lucide-react"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { MetricCard } from "@/components/admin/metric-card"
 import { PageHeader } from "@/components/admin/page-header"
 import { SectionCard } from "@/components/admin/section-card"
-import { StatusBadge } from "@/components/admin/status-badge"
 import { EmptyState } from "@/components/admin/empty-state"
 import { cn } from "@/lib/utils"
 import { useMemoryData, type MemoryEntry } from "./memory/use-memory-data"
 
 const scopeColor: Record<string, string> = {
-  user: "bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300",
+  personal: "bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300",
   department: "bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300",
   company: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
 }
@@ -25,9 +22,8 @@ function formatDate(iso?: string): string {
 }
 
 export function MemoriesPage() {
-  const { memories, stats, loading, error, filters, setFilters, deleteMemory } = useMemoryData()
+  const { memories, stats, loading, error, filters, setFilters } = useMemoryData()
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
 
   if (loading) {
     return (
@@ -42,14 +38,14 @@ export function MemoriesPage() {
       <PageHeader
         eyebrow="AI Memory"
         title="Memories"
-        description="Long-term facts learned by Divo from conversations. Memories persist across sessions and help the AI provide personalized, contextual responses."
+        description="Backend-governed personal, department, and company memory. Shared facts are published only through review, RBAC, and approval."
       />
 
       <section className="grid gap-3 md:grid-cols-3">
         <MetricCard
-          label="User memories"
-          value={String(stats?.totalUser ?? 0)}
-          detail="Personal preferences & context"
+          label="Personal memories"
+          value={String(stats?.totalPersonal ?? 0)}
+          detail="Private content hidden from admins"
           icon={Users}
         />
         <MetricCard
@@ -68,7 +64,7 @@ export function MemoriesPage() {
         />
       </section>
 
-      <SectionCard title="Memory browser" description="Filter and manage stored memories.">
+      <SectionCard title="Memory browser" description="Canonical versioned memory. Changes use the governed review and approval flow.">
         {/* Filters */}
         <div className="mb-4 flex items-center gap-2">
           <Select
@@ -80,17 +76,10 @@ export function MemoriesPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all" className="text-[12px]">All scopes</SelectItem>
-              <SelectItem value="user" className="text-[12px]">User</SelectItem>
               <SelectItem value="department" className="text-[12px]">Department</SelectItem>
               <SelectItem value="company" className="text-[12px]">Company</SelectItem>
             </SelectContent>
           </Select>
-          <Input
-            placeholder="Filter by user ID..."
-            value={filters.userId ?? ""}
-            onChange={(e) => setFilters({ ...filters, userId: e.target.value || undefined })}
-            className="h-8 w-48 bg-card text-[12px]"
-          />
         </div>
 
         {error ? (
@@ -98,7 +87,7 @@ export function MemoriesPage() {
         ) : memories.length === 0 ? (
           <EmptyState
             title="No memories"
-            description="Memories are automatically learned from conversations. Use /remember in Lark to add facts explicitly."
+            description="Personal memory is learned from eligible conversations. Department and company knowledge always use the governed review and approval flow."
           />
         ) : (
           <div className="space-y-1.5">
@@ -107,17 +96,7 @@ export function MemoriesPage() {
                 key={mem.id}
                 memory={mem}
                 expanded={expandedId === mem.id}
-                confirmDelete={confirmDeleteId === mem.id}
                 onToggle={() => setExpandedId(expandedId === mem.id ? null : mem.id)}
-                onDelete={() => {
-                  if (confirmDeleteId === mem.id) {
-                    deleteMemory(mem.id)
-                    setConfirmDeleteId(null)
-                  } else {
-                    setConfirmDeleteId(mem.id)
-                  }
-                }}
-                onCancelDelete={() => setConfirmDeleteId(null)}
               />
             ))}
           </div>
@@ -130,19 +109,13 @@ export function MemoriesPage() {
 function MemoryRow({
   memory,
   expanded,
-  confirmDelete,
   onToggle,
-  onDelete,
-  onCancelDelete,
 }: {
   memory: MemoryEntry
   expanded: boolean
-  confirmDelete: boolean
   onToggle: () => void
-  onDelete: () => void
-  onCancelDelete: () => void
 }) {
-  const scope = (memory.metadata?.scope as string) ?? "user"
+  const scope = memory.scope
   const source = (memory.metadata?.source as string) ?? "auto"
 
   return (
@@ -162,26 +135,6 @@ function MemoryRow({
         <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
           {formatDate(memory.createdAt)}
         </span>
-        {!confirmDelete ? (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 w-6 shrink-0 p-0 text-muted-foreground hover:text-destructive"
-            onClick={(e) => { e.stopPropagation(); onDelete(); }}
-          >
-            <Trash2 className="h-3 w-3" />
-          </Button>
-        ) : (
-          <Button
-            variant="destructive"
-            size="sm"
-            className="h-6 shrink-0 px-2 text-[10px]"
-            onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            onBlur={onCancelDelete}
-          >
-            Confirm
-          </Button>
-        )}
       </div>
       {expanded && (
         <div className="border-t border-border/40 px-3 py-2.5 space-y-2">

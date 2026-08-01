@@ -9,6 +9,7 @@ import {
 	MAX_SESSION_FILE_BYTES,
 	parseSessionMessages,
 	readChat,
+	default as registerDivoChatHistory,
 	sanitizeThreadId,
 	searchChats,
 } from "./index.ts";
@@ -49,6 +50,18 @@ async function fixtureRoot(): Promise<string> {
 }
 
 describe("divo-chat-history", () => {
+	it("cannot present transcript search as canonical memory", () => {
+		const registered: Array<Record<string, unknown>> = [];
+		registerDivoChatHistory({
+			registerTool: (tool: Record<string, unknown>) => registered.push(tool),
+		} as never);
+		const search = registered.find(tool => tool.name === "divo_search_chats");
+		const guidance = String(search?.promptGuidelines);
+		assert.match(guidance, /Do not use chat history to answer durable preferences/i);
+		assert.match(guidance, /Use divo_memory_recall/i);
+		assert.match(guidance, /never proof that a fact is true, approved, or saved/i);
+	});
+
 	it("parses user/assistant and skips thinking", () => {
 		const msgs = parseSessionMessages(
 			[

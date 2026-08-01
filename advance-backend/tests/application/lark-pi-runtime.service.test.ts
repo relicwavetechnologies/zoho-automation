@@ -13,12 +13,16 @@ const logger = {
   error() {},
   debug() {},
 } as any;
+const runEffectReceipts = {
+  getVerifiedKnowledgeEffect: async () => null,
+};
 
 function runtimeInput() {
   return {
     incoming: {
       traceId: 'trace-1',
       text: 'Do the work',
+      chatId: 'chat-1',
     },
     runContext: {
       companyId: 'company-1',
@@ -59,6 +63,7 @@ test('mints a scoped Lark lease and sends no caller-selected profile or approval
     instanceId: 'pi-local-1',
     leaseTtlSeconds: 3_600,
     runTimeoutMs: 30_000,
+    runEffectReceipts,
     fetch: async (url, init) => {
       assert.equal(url, 'http://127.0.0.1:4317/v1/lark-runs');
       assert.match(new Headers(init?.headers).get('accept') ?? '', /application\/x-ndjson/);
@@ -70,7 +75,11 @@ test('mints a scoped Lark lease and sends no caller-selected profile or approval
     },
   });
 
-  assert.deepEqual(await service.run(runtimeInput()), { text: 'Finished' });
+  assert.deepEqual(await service.run(runtimeInput()), {
+    text: 'Finished',
+    effects: [],
+    effectVerification: 'verified',
+  });
   assert.equal(controllerBody?.['backendUrl'], 'https://backend.example');
   assert.equal(controllerBody?.['message'], 'Do the work');
   assert.equal('profile' in (controllerBody ?? {}), false);
@@ -87,6 +96,199 @@ test('mints a scoped Lark lease and sends no caller-selected profile or approval
   assert.equal(claims.companyId, 'company-1');
   assert.equal(claims.instanceId, 'pi-local-1');
   assert.equal(claims.threadId, 'lark:chat-1:user-1');
+  assert.equal(claims.runId, 'trace-1');
+  assert.equal(claims.chatId, 'chat-1');
+  assert.equal(claims.contextAudience, 'private');
+});
+
+test('binds a group run to a shared audience in the signed runtime lease', async () => {
+  let controllerBody: Record<string, unknown> | undefined;
+  const service = serviceCapturingBody(value => { controllerBody = value; });
+
+  await service.run({
+    ...runtimeInput(),
+    incoming: { ...runtimeInput().incoming, chatType: 'group' },
+    sessionScope: 'run',
+  } as any);
+
+  const token = String(controllerBody?.['runtimeLease']);
+  const claims = JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString('utf8'));
+  assert.equal(claims.contextAudience, 'shared');
+  assert.equal(controllerBody?.['sessionScope'], 'run');
+});
+
+test('delivers a natural personal-preference acknowledgement and captures learning once', async () => {
+  const captured: unknown[] = [];
+  const acknowledgement = 'Got it — I’ll give you very detailed answers from now on.';
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts,
+    knowledgeLearning: {
+      captureCompletedTurn: async (input) => { captured.push(input); },
+    },
+    fetch: async () => new Response(JSON.stringify({ text: acknowledgement }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  const result = await service.run({
+    ...runtimeInput(),
+    incoming: {
+      ...runtimeInput().incoming,
+      chatType: 'p2p',
+      text: 'I always want very detailed answers, remember it.',
+    },
+  });
+
+  assert.equal(result.text, acknowledgement);
+  assert.deepEqual(captured, [{
+    sourceId: 'lark:trace-1',
+    companyId: 'company-1',
+    userId: 'user-1',
+    companyRole: 'MEMBER',
+    channel: 'lark',
+    userMessages: ['I always want very detailed answers, remember it.'],
+    assistantText: acknowledgement,
+  }]);
+});
+
+test('persists private turns idempotently and teaches from the recent human conversation', async () => {
+  const appended: Array<Record<string, unknown>> = [];
+  let captured: any;
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts,
+    conversationHistory: {
+      appendTurn: async (chatId, turn, scope, metadata) => {
+        appended.push({ chatId, turn, scope, metadata });
+        return { ok: true as const, value: { id: `turn-${appended.length}`, ...turn } };
+      },
+      getHistory: async () => ({
+        ok: true as const,
+        value: [
+          { id: '1', role: 'user' as const, content: 'Start with a summary.', timestamp: '2026-07-31T00:00:00.000Z' },
+          { id: '2', role: 'assistant' as const, content: 'Understood.', timestamp: '2026-07-31T00:00:01.000Z' },
+          { id: '3', role: 'user' as const, content: 'Then include a detailed table.', timestamp: '2026-07-31T00:00:02.000Z' },
+        ],
+      }),
+    },
+    knowledgeLearning: {
+      captureCompletedTurn: async input => { captured = input; },
+    },
+    fetch: async () => new Response(JSON.stringify({ text: 'I will follow that format.' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  await service.run({
+    ...runtimeInput(),
+    incoming: {
+      ...runtimeInput().incoming,
+      chatType: 'p2p',
+      messageId: 'om-message-1',
+      timestamp: '2026-07-31T00:00:02.000Z',
+      text: 'Then include a detailed table.',
+    },
+  });
+
+  assert.equal(appended.length, 2);
+  assert.equal((appended[0]?.metadata as any)?.dedupeKey, 'lark:om-message-1:user');
+  assert.equal((appended[1]?.metadata as any)?.dedupeKey, 'lark:om-message-1:assistant');
+  assert.deepEqual(captured.userMessages, [
+    'Start with a summary.',
+    'Then include a detailed table.',
+  ]);
+});
+
+test('allows a verified explicit personal save and does not enqueue duplicate implicit learning', async () => {
+  let learningCaptures = 0;
+  const effect = {
+    version: 1 as const,
+    kind: 'personal_memory' as const,
+    status: 'applied' as const,
+    effectKind: 'personal_memory_applied' as const,
+    companyId: 'company-1',
+    userId: 'user-1',
+    chatId: 'chat-1',
+    threadId: 'lark:chat-1:user-1',
+    runId: 'trace-1',
+    actionId: 'memory-call-1',
+    action: 'updated' as const,
+    logicalKey: 'communication.answers.detail',
+    resourceId: '11111111-1111-4111-8111-111111111111',
+    resourceVersion: 3,
+    projection: 'completed' as const,
+    appliedAt: '2026-07-31T00:00:00.000Z',
+  };
+  const text = "Done — I've saved your detailed-answer preference in personal memory.";
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts: { getVerifiedKnowledgeEffect: async () => effect },
+    knowledgeLearning: {
+      captureCompletedTurn: async () => { learningCaptures++; },
+    },
+    fetch: async () => new Response(JSON.stringify({ text }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  const result = await service.run({
+    ...runtimeInput(),
+    incoming: {
+      ...runtimeInput().incoming,
+      chatType: 'p2p',
+      text: 'I always want very detailed answers, remember it.',
+    },
+  });
+
+  assert.equal(result.text, text);
+  assert.deepEqual(result.effects, [effect]);
+  assert.equal(learningCaptures, 0);
 });
 
 test('reports an inactive cloud session before contacting the controller', async () => {
@@ -257,6 +459,7 @@ test('preserves controller capacity errors and never invokes a fallback', async 
     instanceId: 'pi-local-1',
     leaseTtlSeconds: 3_600,
     runTimeoutMs: 30_000,
+    runEffectReceipts,
     fetch: async () => new Response(JSON.stringify({
       error: {
         code: 'capacity_full',
@@ -331,6 +534,7 @@ test('propagates caller interruption instead of converting it to a Pi failure', 
     instanceId: 'pi-local-1',
     leaseTtlSeconds: 3_600,
     runTimeoutMs: 30_000,
+    runEffectReceipts,
     fetch: async (_url, init) => new Promise((_resolve, reject) => {
       init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
       controller.abort();
@@ -359,6 +563,7 @@ function textAttachment(name: string, body: string, mimeType = 'application/pdf'
 function stagingService(
   onCall: (url: string, init: RequestInit | undefined) => Response | Promise<Response>,
 ) {
+  const pendingRows: any[] = [];
   return new LarkPiRuntimeService({
     prisma: {
       memberSession: {
@@ -366,6 +571,30 @@ function stagingService(
           sessionId: 'session-1',
           expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
         }),
+      },
+      runtimePendingAttachment: {
+        count: async () => pendingRows.filter(row => !row.consumedAt).length,
+        createMany: async ({ data }: any) => {
+          pendingRows.push(...data.map((row: any, index: number) => ({
+            id: `pending-${pendingRows.length + index + 1}`,
+            ...row,
+            consumedAt: null,
+          })));
+          return { count: data.length };
+        },
+        findMany: async () => pendingRows
+          .filter(row => !row.consumedAt)
+          .map(row => ({ id: row.id, descriptorJson: row.descriptorJson })),
+        updateMany: async ({ where, data }: any) => {
+          let count = 0;
+          for (const row of pendingRows) {
+            if (where.id.in.includes(row.id) && !row.consumedAt) {
+              row.consumedAt = data.consumedAt;
+              count++;
+            }
+          }
+          return { count };
+        },
       },
     } as any,
     logger,
@@ -390,7 +619,10 @@ test('files are staged into the container before the run and carry the same leas
     });
     if (url.endsWith('/v1/runtime-files')) {
       return new Response(
-        JSON.stringify({ attachment: { requestId: 'r', fileId: 'file-1', fileName: 'bill.pdf' } }),
+        JSON.stringify({ attachment: {
+          requestId: 'request-1', fileId: 'file-1', fileName: 'bill.pdf',
+          kind: 'file', mimeType: 'application/pdf', bytes: 8,
+        } }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
     }
@@ -422,12 +654,70 @@ test('files are staged into the container before the run and carry the same leas
   );
 });
 
+test('an attachment-only DM stages bytes without starting a model run', async () => {
+  const calls: Array<{ url: string; authorization: string | null }> = [];
+  let runBody: any;
+  const service = stagingService(async (url, init) => {
+    calls.push({
+      url,
+      authorization: new Headers(init?.headers).get('authorization'),
+    });
+    if (url.endsWith('/v1/runtime-files')) {
+      return new Response(
+        JSON.stringify({ attachment: {
+          requestId: 'request-1', fileId: 'file-1', fileName: 'notes.txt',
+          kind: 'file', mimeType: 'text/plain', bytes: 13,
+        } }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    runBody = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ text: 'Summarized.' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  await service.stagePendingAttachments({
+    ...runtimeInput(),
+    incoming: {
+      ...runtimeInput().incoming,
+      chatType: 'p2p',
+      messageId: 'om-file-only',
+      text: '',
+    },
+    attachments: [textAttachment('notes.txt', 'private notes', 'text/plain')],
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0]!.url, /\/v1\/runtime-files$/);
+  const lease = String(calls[0]!.authorization).replace(/^Bearer /, '');
+  const claims = JSON.parse(Buffer.from(lease.split('.')[1]!, 'base64url').toString('utf8'));
+  assert.equal(claims.contextAudience, 'private');
+  assert.equal(claims.runId, 'trace-1');
+
+  await service.run({
+    ...runtimeInput(),
+    incoming: {
+      ...runtimeInput().incoming,
+      chatType: 'p2p',
+      messageId: 'om-follow-up',
+      text: 'Please summarize the file I just sent.',
+    },
+  });
+  assert.equal(runBody.attachments.length, 1);
+  assert.equal(runBody.attachments[0].fileName, 'notes.txt');
+});
+
 test('attachment bytes stream rather than riding in JSON or base64', async () => {
   let uploadBody: unknown;
   const service = stagingService(async (url, init) => {
     if (url.endsWith('/v1/runtime-files')) {
       uploadBody = init?.body;
-      return new Response(JSON.stringify({ attachment: { fileId: 'file-1' } }), {
+      return new Response(JSON.stringify({ attachment: {
+        requestId: 'request-1', fileId: 'file-1', fileName: 'bill.pdf',
+        kind: 'file', mimeType: 'application/pdf', bytes: 14,
+      } }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -454,7 +744,10 @@ test('only the controller-issued descriptors reach the run request', async () =>
     if (url.endsWith('/v1/runtime-files')) {
       return new Response(
         JSON.stringify({
-          attachment: { requestId: 'r-1', fileId: 'file-1', fileName: 'bill.pdf', bytes: 8 },
+          attachment: {
+            requestId: 'request-1', fileId: 'file-1', fileName: 'bill.pdf', bytes: 8,
+            kind: 'file', mimeType: 'application/pdf',
+          },
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
@@ -472,7 +765,14 @@ test('only the controller-issued descriptors reach the run request', async () =>
   });
 
   assert.deepEqual(runBody?.['attachments'], [
-    { requestId: 'r-1', fileId: 'file-1', fileName: 'bill.pdf', bytes: 8 },
+    {
+      requestId: 'request-1',
+      fileId: 'file-1',
+      fileName: 'bill.pdf',
+      kind: 'file',
+      mimeType: 'application/pdf',
+      bytes: 8,
+    },
   ]);
 });
 
@@ -547,8 +847,17 @@ test('every file in one message shares a request id and gets its own file id', a
   const uploads: Headers[] = [];
   const service = stagingService(async (url, init) => {
     if (url.endsWith('/v1/runtime-files')) {
-      uploads.push(new Headers(init?.headers));
-      return new Response(JSON.stringify({ attachment: { fileId: 'x' } }), {
+      const headers = new Headers(init?.headers);
+      uploads.push(headers);
+      const fileId = String(headers.get('x-divo-file-id'));
+      return new Response(JSON.stringify({ attachment: {
+        requestId: String(headers.get('x-divo-request-id')),
+        fileId,
+        fileName: fileId === 'file-1' ? 'a.pdf' : 'b.pdf',
+        kind: 'file',
+        mimeType: 'application/pdf',
+        bytes: 1,
+      } }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });

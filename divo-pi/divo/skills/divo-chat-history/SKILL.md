@@ -1,11 +1,17 @@
 ---
 name: divo-chat-history
-description: Search and read this person's own earlier sessions with Divo. Use when they ask about prior decisions, earlier debugging, previous chats, or "what did we do before".
+description: Search and read this person's own earlier Divo conversations when they explicitly ask what was said, discussed, debugged, or done before.
 ---
 
 # Past chat recall
 
 Use the local tools — do not guess history.
+
+This is historical transcript evidence, not durable knowledge. For the user's
+preferences or current personal, department, or company facts, rules,
+decisions, and procedures, use `divo_memory_recall`. Never use chat search as a
+fallback when canonical recall is missing or unavailable. An assistant message
+in an old transcript is not proof that its claim was true, approved, or saved.
 
 Where the two tools' own guidance differs from this skill, follow this skill: it
 describes the runtime you are actually running in.
@@ -31,7 +37,7 @@ from this person, so do not describe it back to them as something they said.
 2. Pick the best hit (`threadId` + `messageId`).
 3. `divo_read_chat` with that `threadId` and `aroundMessageId` for a short window.
 4. Answer citing **when** it was said, from the hit's `createdAt`. Do not cite
-   the thread title or id — they are internal identifiers and mean nothing to
+the thread title or id — they are internal identifiers and mean nothing to
    the person reading your answer. Never invent past turns.
 
 If a search reports a non-empty `skippedThreads`, some history could not be

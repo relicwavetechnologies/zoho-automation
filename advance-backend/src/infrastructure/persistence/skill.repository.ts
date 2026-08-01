@@ -31,6 +31,7 @@ export interface SkillRepoPort {
   search(input: {
     companyId: string;
     departmentId?: string;
+    additionalGrantedSkillIds?: readonly string[];
     query: string;
     limit: number;
     abortSignal?: AbortSignal;
@@ -78,12 +79,11 @@ function visibilityWhere(
   departmentId?: string,
   additionalDepartmentSkillIds: readonly string[] = [],
 ) {
-  const companyWideScopes = ['company', 'global'];
   const visibleScopes = [
-    { scope: { in: companyWideScopes }, departmentId: null as string | null },
+    { scope: 'company', departmentId: null as string | null },
     ...(departmentId ? [{ scope: 'department', departmentId }] : []),
     ...(additionalDepartmentSkillIds.length > 0
-      ? [{ scope: 'department', id: { in: [...additionalDepartmentSkillIds] } }]
+      ? [{ scope: { in: ['personal', 'department'] }, id: { in: [...additionalDepartmentSkillIds] } }]
       : []),
   ];
   return visibleScopes.length === 1 ? visibleScopes[0]! : { OR: visibleScopes };
@@ -122,13 +122,14 @@ export class SkillRepository implements SkillRepoPort {
   async search(input: {
     companyId: string;
     departmentId?: string;
+    additionalGrantedSkillIds?: readonly string[];
     query: string;
     limit: number;
     abortSignal?: AbortSignal;
   }): Promise<Result<SkillRow[], InfraError>> {
     try {
       input.abortSignal?.throwIfAborted();
-      const { companyId, departmentId, query, limit } = input;
+      const { companyId, departmentId, additionalGrantedSkillIds, query, limit } = input;
       const terms = searchTerms(query);
 
       if (terms.length === 0) return ok([]);
@@ -138,7 +139,7 @@ export class SkillRepository implements SkillRepoPort {
           companyId,
           status: 'active',
           AND: [
-            visibilityWhere(departmentId),
+            visibilityWhere(departmentId, additionalGrantedSkillIds),
             { OR: terms.flatMap((term) => searchableFieldsFor(term)) },
           ],
         },

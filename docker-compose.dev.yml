@@ -38,10 +38,13 @@ services:
     env_file:
       - ${DIVO_DEV_ENV_FILE:-/dev/null}
     environment:
-      NODE_ENV: production
+      # This stack intentionally permits local test credentials and HITL test
+      # switches. The production compose file enforces strict startup secrets.
+      NODE_ENV: development
       PORT: 3001
       APP_BASE_URL: ${DIVO_DEV_PUBLIC_URL:?DIVO_DEV_PUBLIC_URL is required}
       BACKEND_PUBLIC_URL: ${DIVO_DEV_PUBLIC_URL:?DIVO_DEV_PUBLIC_URL is required}
+      LARK_CARD_CALLBACK_URL: "${DIVO_DEV_PUBLIC_URL:?DIVO_DEV_PUBLIC_URL is required}/webhooks/lark/events"
       REDIS_URL: redis://divo-dev-redis-cache:6379/0
       REDIS_QUEUE_URL: redis://divo-dev-redis-queue:6379/0
       REDIS_CACHE_URL: redis://divo-dev-redis-cache:6379/0
@@ -49,6 +52,12 @@ services:
       GOOGLE_WORKSPACE_MCP_URL: http://google-workspace-mcp:8000/mcp
       PI_LARK_CONTROLLER_URL: http://divo-dev-pi-controller:4317
       PI_LARK_RUNTIME_INSTANCE_ID: ${PI_LARK_RUNTIME_INSTANCE_ID:-pi-development-1}
+      HINDSIGHT_ENABLED: "true"
+      HINDSIGHT_URL: http://divo-dev-hindsight:8888
+      HINDSIGHT_API_KEY: ${DIVO_DEV_HINDSIGHT_API_KEY:-divo-dev-memory-key}
+      KNOWLEDGE_FILE_MALWARE_SCAN_MODE: required
+      CLAMAV_HOST: divo-dev-clamav
+      CLAMAV_PORT: 3310
     depends_on:
       divo-dev-postgres:
         condition: service_healthy
@@ -61,6 +70,10 @@ services:
       google-workspace-mcp:
         condition: service_healthy
       divo-dev-pi-controller:
+        condition: service_healthy
+      divo-dev-hindsight:
+        condition: service_healthy
+      divo-dev-clamav:
         condition: service_healthy
     ports:
       - "127.0.0.1:${DIVO_DEV_BACKEND_PORT:-13001}:3001"
@@ -75,6 +88,61 @@ services:
       timeout: 5s
       start_period: 45s
       retries: 5
+
+  divo-dev-hindsight:
+    image: ghcr.io/vectorize-io/hindsight:0.8.6
+    env_file:
+      - ${DIVO_DEV_ENV_FILE:-/dev/null}
+    environment:
+      HINDSIGHT_API_DATABASE_URL: postgresql://hindsight:${DIVO_DEV_HINDSIGHT_DB_PASSWORD:-divo-dev-hindsight}@divo-dev-hindsight-postgres:5432/hindsight
+      HINDSIGHT_API_LLM_PROVIDER: ${HINDSIGHT_LLM_PROVIDER:-openai}
+      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_LLM_MODEL:-gpt-4o-mini}
+      HINDSIGHT_API_LLM_API_KEY: ${HINDSIGHT_LLM_API_KEY:?HINDSIGHT_LLM_API_KEY is required}
+      HINDSIGHT_API_RERANKER_PROVIDER: rrf
+      HINDSIGHT_API_WORKER_ID: divo-development-1
+      HINDSIGHT_API_TENANT_EXTENSION: hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension
+      HINDSIGHT_API_TENANT_API_KEY: ${DIVO_DEV_HINDSIGHT_API_KEY:-divo-dev-memory-key}
+      HINDSIGHT_API_ENABLE_BANK_CONFIG_API: "false"
+      HINDSIGHT_API_DEFAULT_BANK_TEMPLATE: '{"version":"1","bank":{"retain_strategies":{"exact":{"retain_extraction_mode":"verbatim","enable_observations":false}}}}'
+    depends_on:
+      divo-dev-hindsight-postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - divo-dev-internal
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/health', timeout=3)\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 8
+
+  divo-dev-clamav:
+    image: clamav/clamav:1.5.3
+    volumes:
+      - divo_dev_clamav_signatures:/var/lib/clamav
+    restart: unless-stopped
+    networks:
+      - divo-dev-internal
+
+  divo-dev-hindsight-postgres:
+    image: pgvector/pgvector:0.8.1-pg16
+    environment:
+      POSTGRES_DB: hindsight
+      POSTGRES_USER: hindsight
+      POSTGRES_PASSWORD: ${DIVO_DEV_HINDSIGHT_DB_PASSWORD:-divo-dev-hindsight}
+    volumes:
+      - divo_dev_hindsight_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - divo-dev-internal
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hindsight -d hindsight"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
 
   divo-dev-pi-controller:
     image: ${DIVO_DEV_PI_CONTROLLER_IMAGE:?DIVO_DEV_PI_CONTROLLER_IMAGE is required}
@@ -204,3 +272,5 @@ volumes:
   divo_dev_redis_queue_data:
   divo_dev_redis_cache_data:
   divo_dev_redis_memory_data:
+  divo_dev_hindsight_postgres_data:
+  divo_dev_clamav_signatures:

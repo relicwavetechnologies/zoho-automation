@@ -43,6 +43,32 @@ test("cloud runtime names are stable, isolated, and safe for Docker", () => {
 	assert.equal(validateThread(first.thread), first.thread);
 });
 
+test("shared runtimes receive a unique disposable profile instead of the private user profile", () => {
+	const privateRuntime = runtimeIdentityNames("company-1", "user-1", "lark:chat-1");
+	const firstShared = runtimeIdentityNames(
+		"company-1",
+		"user-1",
+		"lark:chat-1",
+		{ contextAudience: "shared", runId: "run-1" },
+	);
+	const secondShared = runtimeIdentityNames(
+		"company-1",
+		"user-1",
+		"lark:chat-1",
+		{ contextAudience: "shared", runId: "run-2" },
+	);
+
+	assert.equal(privateRuntime.ephemeral, false);
+	assert.equal(firstShared.ephemeral, true);
+	assert.match(firstShared.profile, /^shared-[a-f0-9]{20}$/);
+	assert.notEqual(firstShared.profile, privateRuntime.profile);
+	assert.notEqual(firstShared.profile, secondShared.profile);
+	assert.throws(
+		() => runtimeIdentityNames("company-1", "user-1", "lark:chat-1", { contextAudience: "shared" }),
+		/shared runtime requires a run identity/i,
+	);
+});
+
 test("headless mode allows isolated workspace work but not company mutations", () => {
 	assert.equal(approveHeadlessWorkspaceAction(
 		"divo_approval_v1",
@@ -79,6 +105,21 @@ test("container creation is hardened and contains no member secret", () => {
 	assert.doesNotMatch(serialized, /token|password|secret/i);
 });
 
+test("a shared container mounts only its run-specific disposable volumes", () => {
+	const shared = runtimeIdentityNames(
+		"company-1",
+		"user-1",
+		"lark:chat-1",
+		{ contextAudience: "shared", runId: "run-1" },
+	);
+	const privateRuntime = runtimeIdentityNames("company-1", "user-1", "lark:chat-1");
+	const serialized = buildContainerCreateArgs(shared.profile, "divo-pi:test", { ephemeral: true }).join(" ");
+
+	assert.match(serialized, /dev\.divo\.ephemeral=true/);
+	assert.match(serialized, new RegExp(`src=${resourcesFor(shared.profile).volume},dst=/data`));
+	assert.doesNotMatch(serialized, new RegExp(resourcesFor(privateRuntime.profile).volume));
+});
+
 test("cloud container creation can remove the host gateway route", () => {
 	const args = buildContainerCreateArgs("abhishek", "divo-pi:test", {
 		addHostGateway: false,
@@ -88,6 +129,7 @@ test("cloud container creation can remove the host gateway route", () => {
 
 test("a runtime container is replaced only when its image changes", () => {
 	const container = {
+		Image: "sha256:old-image",
 		Config: {
 			Image: "ghcr.io/relicwavetechnologies/divo-pi:dev-old",
 			Labels: { "dev.divo.runtime-mode": "exec-v1" },
@@ -104,8 +146,17 @@ test("a runtime container is replaced only when its image changes", () => {
 		runtimeContainerNeedsReplacement(
 			container,
 			"ghcr.io/relicwavetechnologies/divo-pi:dev-old",
+			"sha256:old-image",
 		),
 		false,
+	);
+	assert.equal(
+		runtimeContainerNeedsReplacement(
+			container,
+			"ghcr.io/relicwavetechnologies/divo-pi:dev-old",
+			"sha256:new-image",
+		),
+		true,
 	);
 	assert.equal(
 		runtimeContainerNeedsReplacement({
@@ -226,6 +277,25 @@ test("a startup failure stops the container even before bootstrap is written", a
 		onCleanupError: () => calls.push("cleanup-error"),
 	});
 	assert.deepEqual(calls, ["stop"]);
+});
+
+test("a shared runtime is destroyed immediately and is never kept warm", async () => {
+	const calls = [];
+	await finalizeRuntimeLifecycle({
+		profile: "shared-0123456789abcdef0123",
+		resources: { authVolume: "shared-auth-volume" },
+		bootstrapAttempted: true,
+		completedSuccessfully: true,
+		ephemeral: true,
+	}, {
+		clearBootstrapFn: async () => calls.push("clear"),
+		destroyRuntimeFn: async () => calls.push("destroy"),
+		scheduler: {
+			keepWarm: () => calls.push("warm"),
+			stopNow: async () => calls.push("stop"),
+		},
+	});
+	assert.deepEqual(calls, ["clear", "destroy"]);
 });
 
 test("loopback backend URLs are translated only for the container", () => {

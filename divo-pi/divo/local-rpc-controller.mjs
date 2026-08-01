@@ -86,15 +86,32 @@ export function resourcesFor(profileName) {
 	};
 }
 
-export function runtimeIdentityNames(companyId, userId, runtimeThreadId) {
+export function runtimeIdentityNames(
+	companyId,
+	userId,
+	runtimeThreadId,
+	{ contextAudience = "private", runId } = {},
+) {
 	if (!companyId || !userId || !runtimeThreadId) {
 		throw new Error("Runtime identity is incomplete");
 	}
+	if (contextAudience !== "private" && contextAudience !== "shared") {
+		throw new Error("Runtime context audience is invalid");
+	}
+	if (contextAudience === "shared" && !runId) {
+		throw new Error("A shared runtime requires a run identity");
+	}
 	const digest = (value) => createHash("sha256").update(value).digest("hex");
+	const privateProfile = `cloud-${digest(`${companyId}:${userId}`).slice(0, 20)}`;
+	const sharedProfile = runId
+		? `shared-${digest(`${companyId}:${userId}:${runId}`).slice(0, 20)}`
+		: undefined;
 	return {
-		profile: `cloud-${digest(`${companyId}:${userId}`).slice(0, 20)}`,
+		profile: contextAudience === "shared" ? sharedProfile : privateProfile,
 		thread: `lark-${digest(runtimeThreadId).slice(0, 24)}`,
 		runtimeThreadId,
+		contextAudience,
+		ephemeral: contextAudience === "shared",
 	};
 }
 
@@ -228,7 +245,10 @@ function shellQuote(value) {
 export function buildContainerCreateArgs(
 	profileName,
 	image = IMAGE,
-	{ addHostGateway = process.env.DIVO_PI_ADD_HOST_GATEWAY !== "false" } = {},
+	{
+		addHostGateway = process.env.DIVO_PI_ADD_HOST_GATEWAY !== "false",
+		ephemeral = false,
+	} = {},
 ) {
 	const profile = validateProfileName(profileName);
 	const resources = resourcesFor(profile);
@@ -243,6 +263,8 @@ export function buildContainerCreateArgs(
 		`dev.divo.volume=${resources.volume}`,
 		"--label",
 		`dev.divo.runtime-mode=${RUNTIME_CONTAINER_MODE}`,
+		"--label",
+		`dev.divo.ephemeral=${ephemeral ? "true" : "false"}`,
 		"--network",
 		resources.network,
 		...(addHostGateway
@@ -281,10 +303,15 @@ export function backendUrlForContainer(value) {
 	return url.toString().replace(/\/+$/, "");
 }
 
-export function runtimeContainerNeedsReplacement(container, image = IMAGE) {
+export function runtimeContainerNeedsReplacement(
+	container,
+	image = IMAGE,
+	currentImageId,
+) {
 	return (
 		container?.Config?.Image !== image ||
-		container?.Config?.Labels?.["dev.divo.runtime-mode"] !== RUNTIME_CONTAINER_MODE
+		container?.Config?.Labels?.["dev.divo.runtime-mode"] !== RUNTIME_CONTAINER_MODE ||
+		Boolean(currentImageId && container?.Image !== currentImageId)
 	);
 }
 
@@ -601,13 +628,28 @@ export async function ensureProfileVolume(profileName) {
 	return ensureVolume(profile, resourcesFor(profile).volume);
 }
 
-async function ensureRuntime(profile) {
+async function ensureRuntime(profile, { ephemeral = false } = {}) {
 	const resources = resourcesFor(profile);
 	let wasRunning = false;
 	if (!(await dockerObjectExists("image", IMAGE))) {
 		throw new Error(
 			`Image ${IMAGE} is missing. Build it with: docker build -t ${IMAGE} .`,
 		);
+	}
+	// A mutable tag can point at a newly built image while an existing warm
+	// container still uses the previous immutable image. Inspect the tag for
+	// every activation so the replacement decision below cannot serve stale
+	// agent code after a deploy or local rebuild.
+	const inspectedImage = await docker([
+		"image",
+		"inspect",
+		"--format",
+		"{{.Id}}",
+		IMAGE,
+	]);
+	const currentImageId = inspectedImage.stdout.trim();
+	if (!currentImageId) {
+		throw new Error(`Image ${IMAGE} has no inspectable immutable ID.`);
 	}
 	if (!(await dockerObjectExists("network", resources.network))) {
 		await docker([
@@ -624,7 +666,7 @@ async function ensureRuntime(profile) {
 	await ensureVolume(profile, resources.authVolume);
 	if (await dockerObjectExists("container", resources.container)) {
 		const container = await inspectOwnedContainer(profile);
-		if (runtimeContainerNeedsReplacement(container)) {
+		if (runtimeContainerNeedsReplacement(container, IMAGE, currentImageId)) {
 			if (container.State.Running) await docker(["stop", resources.container]);
 			await docker(["rm", resources.container]);
 		} else {
@@ -632,10 +674,36 @@ async function ensureRuntime(profile) {
 		}
 	}
 	if (!(await dockerObjectExists("container", resources.container))) {
-		await docker(buildContainerCreateArgs(profile));
+		await docker(buildContainerCreateArgs(profile, IMAGE, { ephemeral }));
 	}
 	await inspectOwnedContainer(profile);
 	return { resources, wasRunning };
+}
+
+/**
+ * Remove one run-scoped runtime and both of its empty per-run volumes.
+ *
+ * The profile is derived from a signed lease and every Docker object is
+ * inspected through the existing ownership check before removal. A shared run
+ * never becomes warm state and therefore cannot leave a later room any bytes.
+ */
+async function destroyEphemeralRuntime(profileName) {
+	const profile = validateProfileName(profileName);
+	if (!profile.startsWith("shared-")) {
+		throw new Error(`Refusing to destroy a non-ephemeral runtime: ${profile}`);
+	}
+	const resources = resourcesFor(profile);
+	if (await dockerObjectExists("container", resources.container)) {
+		const container = await inspectOwnedContainer(profile);
+		if (container.State.Running) await docker(["stop", resources.container]);
+		await docker(["rm", resources.container]);
+	}
+	for (const volume of [resources.authVolume, resources.volume]) {
+		if (await dockerObjectExists("volume", volume)) await docker(["volume", "rm", volume]);
+	}
+	if (await dockerObjectExists("network", resources.network)) {
+		await docker(["network", "rm", resources.network]);
+	}
 }
 
 export function buildAttachmentStagingArgs(volume, script, image = IMAGE) {
@@ -1283,9 +1351,11 @@ export async function finalizeRuntimeLifecycle({
 	completedSuccessfully,
 	runError,
 	abortStop,
+	ephemeral = false,
 }, {
 	clearBootstrapFn = clearBootstrap,
 	scheduler = idleContainers,
+	destroyRuntimeFn = destroyEphemeralRuntime,
 	onCleanupError = (error) => console.error(
 		`[Pi] ${error.message}: ${error.errors.map(String).join("; ")}`,
 	),
@@ -1300,7 +1370,13 @@ export async function finalizeRuntimeLifecycle({
 	}
 	const abortError = await abortStop;
 	if (abortError) cleanupErrors.push(abortError);
-	if (completedSuccessfully && cleanupErrors.length === 0) {
+	if (ephemeral) {
+		try {
+			await destroyRuntimeFn(profile);
+		} catch (error) {
+			cleanupErrors.push(error);
+		}
+	} else if (completedSuccessfully && cleanupErrors.length === 0) {
 		scheduler.keepWarm(profile);
 	} else {
 		try {
@@ -1319,16 +1395,44 @@ export async function finalizeRuntimeLifecycle({
 }
 
 export async function reconcileOwnedContainers() {
-	const result = await docker([
-		"ps",
-		"--filter",
-		"label=dev.divo.profile",
-		"--format",
-		'{{.Label "dev.divo.profile"}}',
+	const results = await Promise.all([
+		docker([
+			"ps",
+			"--all",
+			"--filter",
+			"label=dev.divo.profile",
+			"--format",
+			'{{.Label "dev.divo.profile"}}',
+		]),
+		docker([
+			"volume",
+			"ls",
+			"--filter",
+			"label=dev.divo.profile",
+			"--format",
+			'{{.Label "dev.divo.profile"}}',
+		]),
+		docker([
+			"network",
+			"ls",
+			"--filter",
+			"label=dev.divo.profile",
+			"--format",
+			'{{.Label "dev.divo.profile"}}',
+		]),
 	]);
-	const profiles = [...new Set(result.stdout.split("\n").filter(Boolean))];
+	const profiles = [...new Set(
+		results.flatMap(result => result.stdout.split("\n").filter(Boolean)),
+	)];
 	for (const profileName of profiles) {
 		const profile = validateProfileName(profileName);
+		if (profile.startsWith("shared-")) {
+			// Normal completion removes every shared object immediately. Reaching
+			// startup means the controller crashed mid-run; remove the exact
+			// signed-run profile before new work is admitted.
+			await destroyEphemeralRuntime(profile);
+			continue;
+		}
 		const resources = resourcesFor(profile);
 		await stopOwnedContainer(profile);
 		if (await dockerObjectExists("volume", resources.authVolume)) {
@@ -1347,13 +1451,20 @@ async function runPrompt({
 	userId,
 	companyId,
 	departmentId,
+	runId,
 	runtimeThreadId,
+	channel,
 	answerRequest,
 	attachments,
 	sessionScope,
 	signal,
 	onProgress,
+	ephemeral = false,
 }) {
+	const normalizedSessionScope = validateSessionScope(sessionScope);
+	if (ephemeral && normalizedSessionScope !== "run") {
+		throw new Error("A shared runtime must use a run-scoped session");
+	}
 	if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
 	let resources = resourcesFor(profile);
 	const bootstrap = {
@@ -1364,10 +1475,12 @@ async function runPrompt({
 		...(runtimeThreadId ? { runtimeThreadId } : {}),
 		userId,
 		companyId,
+		...(runId ? { runId } : {}),
 		departmentId,
-		sessionScope: validateSessionScope(sessionScope),
+		sessionScope: normalizedSessionScope,
+		...(channel ? { channel } : {}),
 	};
-	await idleContainers.activate(profile);
+	if (!ephemeral) await idleContainers.activate(profile);
 	emitRuntimeProgress(onProgress, {
 		type: "starting",
 		stage: "workspace",
@@ -1387,7 +1500,7 @@ async function runPrompt({
 	signal?.addEventListener("abort", abort, { once: true });
 	if (signal?.aborted) abort();
 	try {
-		const runtime = await ensureRuntime(profile);
+		const runtime = await ensureRuntime(profile, { ephemeral });
 		resources = runtime.resources;
 		if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
 		bootstrapAttempted = true;
@@ -1460,6 +1573,7 @@ async function runPrompt({
 			completedSuccessfully,
 			runError,
 			abortStop,
+			ephemeral,
 		});
 	}
 }
@@ -1499,7 +1613,8 @@ export async function resolveRuntimeLease({ backendUrl, lease }) {
 	if (
 		session.runtime?.channel !== "lark" ||
 		!session.runtime.instanceId ||
-		!session.runtime.threadId
+		!session.runtime.threadId ||
+		!session.runtime.runId
 	) {
 		throw new Error("Divo backend did not validate a Lark Pi runtime lease");
 	}
@@ -1507,6 +1622,10 @@ export async function resolveRuntimeLease({ backendUrl, lease }) {
 		session.companyId,
 		session.userId,
 		session.runtime.threadId,
+		{
+			contextAudience: session.runtime.contextAudience,
+			runId: session.runtime.runId,
+		},
 	);
 	return {
 		...names,
@@ -1515,10 +1634,13 @@ export async function resolveRuntimeLease({ backendUrl, lease }) {
 		userId: session.userId,
 		companyId: session.companyId,
 		instanceId: session.runtime.instanceId,
+		channel: session.runtime.channel,
+		runId: session.runtime.runId,
 		// The department the backend launched this run for. Without it the
 		// container picks the member's first department, so a run scoped to one
 		// department would execute under another's tool grants.
 		departmentId: session.runtime.departmentId ?? undefined,
+		contextAudience: session.runtime.contextAudience,
 	};
 }
 
@@ -1529,6 +1651,7 @@ export async function promptWithRuntimeLease(runtime, message, options = {}) {
 		answerRequest: createHeadlessExtensionResponder(),
 		attachments: options.attachments,
 		sessionScope: validateSessionScope(options.sessionScope),
+		ephemeral: runtime.ephemeral === true,
 		signal: options.signal,
 		onProgress: options.onProgress,
 	});

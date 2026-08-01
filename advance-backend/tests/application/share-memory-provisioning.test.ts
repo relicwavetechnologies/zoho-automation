@@ -1,10 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  MEMORY_PUBLISHING_REGISTERED_TOOL,
-  provisionShareMemoryForExistingCompanies,
-} from '../../src/application/skills/share-memory-provisioning.ts';
-import { LarkMemoryReviewService } from '../../src/application/memory/lark-memory-review.service.ts';
+  DEFAULT_KNOWLEDGE_POLICIES,
+  KNOWLEDGE_REGISTERED_TOOL,
+  provisionKnowledgeForExistingCompanies,
+} from '../../src/application/skills/knowledge-provisioning.ts';
+import { LarkKnowledgeReviewService } from '../../src/application/knowledge/lark-knowledge-review.service.ts';
 import { buildArgsSummary } from '../../src/application/gateway/args-summary.ts';
 import { asCompanyId, asUserId } from '../../src/shared/ids.ts';
 import { asCompanyRoleSlug } from '../../src/domain/permissions/company-role.ts';
@@ -14,9 +15,23 @@ describe('Share Memory provisioning', () => {
     const createdTools: unknown[] = [];
     const createdSkills: unknown[] = [];
     const createdGrants: unknown[] = [];
-    const db = {
+    const createdPolicies: unknown[] = [];
+    const db: any = {
+      $transaction: async (operation: (tx: any) => Promise<unknown>) => operation(db),
+      skillCapability: { deleteMany: async () => ({ count: 0 }) },
+      departmentUserToolOverride: { deleteMany: async () => ({ count: 0 }) },
+      departmentToolPermission: { deleteMany: async () => ({ count: 0 }) },
+      toolActionPermission: { deleteMany: async () => ({ count: 0 }) },
+      toolPermission: { deleteMany: async () => ({ count: 0 }) },
+      knowledgePolicy: {
+        createMany: async ({ data }: { data: unknown[] }) => {
+          createdPolicies.push(...data);
+          return { count: data.length };
+        },
+      },
       registeredTool: {
         findUnique: async () => null,
+        deleteMany: async () => ({ count: 3 }),
         create: async ({ data }: { data: unknown }) => {
           createdTools.push(data);
           return { id: 'memory-publishing' };
@@ -24,6 +39,7 @@ describe('Share Memory provisioning', () => {
       },
       company: { findMany: async () => [{ id: 'company-1' }, { id: 'company-2' }] },
       skill: {
+        updateMany: async () => ({ count: 2 }),
         findFirst: async ({ where }: { where: { companyId: string } }) =>
           where.companyId === 'company-2' ? { id: 'existing-skill', isSystem: false } : null,
         upsert: async ({ create }: { create: Record<string, unknown> }) => {
@@ -40,23 +56,31 @@ describe('Share Memory provisioning', () => {
           return {};
         },
       },
-    } as any;
+    };
 
-    const result = await provisionShareMemoryForExistingCompanies(db);
+    const result = await provisionKnowledgeForExistingCompanies(db);
 
     assert.deepEqual(result, {
       registeredToolCreated: true,
+      policiesCreated: 36,
+      legacySkillsArchived: 2,
+      retiredToolsDeleted: 3,
       skillsCreated: 1,
       skillsUpdated: 0,
       skillsExisting: 1,
     });
+    assert.deepEqual(createdPolicies, DEFAULT_KNOWLEDGE_POLICIES);
     assert.deepEqual(createdTools, [{
-      ...MEMORY_PUBLISHING_REGISTERED_TOOL,
-      guardrails: [...MEMORY_PUBLISHING_REGISTERED_TOOL.guardrails],
+      ...KNOWLEDGE_REGISTERED_TOOL,
+      guardrails: [...KNOWLEDGE_REGISTERED_TOOL.guardrails],
       engines: [],
       deprecated: false,
     }]);
     assert.equal((createdSkills[0] as { companyId: string }).companyId, 'company-1');
+    const knowledgeInstructions = String((createdSkills[0] as { markdown?: unknown }).markdown);
+    assert.match(knowledgeInstructions, /dedicated synchronous personal-memory command/i);
+    assert.match(knowledgeInstructions, /report completion only from its verified result/i);
+    assert.match(knowledgeInstructions, /implicit personal facts may be evaluated asynchronously/i);
     assert.deepEqual(createdGrants, [{
       companyId: 'company-1',
       skillId: (createdSkills[0] as { id: string }).id,
@@ -67,26 +91,124 @@ describe('Share Memory provisioning', () => {
 });
 
 describe('Lark Share Memory review', () => {
-  it('publishes only the requester-reviewed facts and backend-returned target after a live RBAC recheck', async () => {
+  it('opens a department-only card for an explicit backend-routed department command', async () => {
     const fixture = createMemoryReviewFixture();
-    const tool = fixture.service.createMemoryReviewTool({
+    const result = await openMemoryReview(
+      fixture,
+      'proposal-department-only',
+      ['Finance closes its weekly books every Friday.'],
+      'department',
+    );
+
+    assert.equal(result.opened, true);
+    const buttons = findCardButtons(parseCard(fixture.sentCards[0]));
+    assert.ok(buttons.some(button => button.text.content === 'Save to Department: Finance'));
+    assert.equal(buttons.some(button => button.text.content === 'Save to Department: Operations'), false);
+    assert.equal(buttons.some(button => button.text.content === 'Save to Company'), false);
+  });
+
+  it('reviews and submits an exact shared procedure through the same central Lark flow', async () => {
+    const fixture = createMemoryReviewFixture();
+    const content = {
+      name: 'Document creation',
+      slug: 'document-creation',
+      summary: 'Create documents consistently.',
+      markdown: '# Document creation\n\nRollback before Owners.',
+      toolIds: [],
+      tags: ['documents'],
+    };
+    const opened = await fixture.service.openResourceForRuntime({
+      requestId: 'knowledge:skill-1',
+      kind: 'skill',
+      action: 'publish',
+      scope: 'department',
+      logicalKey: 'document-creation',
+      content,
       runContext: fixture.runContext,
       perm: fixture.permission,
       chatId: 'chat-1',
-      isSkillResolved: () => true,
-    }) as { execute: (input: unknown) => Promise<string> };
-
-    const result = await tool.execute({
-      proposalId: 'proposal-1',
-      bullets: ['Prefers concise weekly updates.', 'Project Atlas uses Lark.'],
     });
-    assert.match(result, /waiting in a Lark review card/i);
+    assert.equal(opened.opened, true);
+    const card = parseCard(fixture.sentCards[0]);
+    assert.match(JSON.stringify(card), /Rollback before Owners/);
+    const button = findCardButtons(card)
+      .find(candidate => candidate.text.content === 'Send to Department: Finance');
+    assert.ok(button);
+    const handled = await fixture.service.handle(
+      { action: { value: button.value } },
+      fixture.actor,
+    );
+    assert.equal(handled.ok, true);
+    assert.deepEqual(fixture.publishArgs, {
+      operation: 'apply',
+      mutationId: 'mutation-1',
+      contentHash: 'a'.repeat(64),
+      kind: 'skill',
+      action: 'publish',
+      scope: 'department',
+      departmentId: 'dept-1',
+      content,
+    });
+  });
+
+  it('reviews a personal procedure and applies it without creating shared approval', async () => {
+    const fixture = createMemoryReviewFixture();
+    const content = {
+      name: 'My document style',
+      slug: 'my-document-style',
+      summary: 'My private document procedure.',
+      markdown: '# My document style\n\nUse a two-column summary.',
+      toolIds: [],
+      tags: ['documents'],
+    };
+    const opened = await fixture.service.openResourceForRuntime({
+      requestId: 'knowledge:personal-skill-1',
+      kind: 'skill',
+      action: 'publish',
+      scope: 'personal',
+      logicalKey: 'my-document-style',
+      content,
+      runContext: fixture.runContext,
+      perm: fixture.permission,
+      chatId: 'chat-1',
+    });
+    assert.equal(opened.opened, true);
+    assert.match(opened.message, /exact procedure change/i);
+    const button = findCardButtons(parseCard(fixture.sentCards[0]))
+      .find(candidate => candidate.text.content === 'Save to Personal');
+    assert.ok(button);
+
+    const handled = await fixture.service.handle(
+      { action: { value: button.value } },
+      fixture.actor,
+    );
+
+    assert.equal(handled.ok, true);
+    assert.deepEqual(fixture.publishArgs, {
+      operation: 'apply',
+      mutationId: 'mutation-1',
+      contentHash: 'a'.repeat(64),
+      kind: 'skill',
+      action: 'publish',
+      scope: 'personal',
+      content,
+    });
+  });
+
+  it('publishes only the requester-reviewed facts and backend-returned target after a live RBAC recheck', async () => {
+    const fixture = createMemoryReviewFixture();
+    const result = await openMemoryReview(fixture, 'proposal-1', [
+      'Prefers concise weekly updates.',
+      'Project Atlas uses Lark.',
+    ]);
+    assert.match(result.message, /waiting in a Lark review card/i);
     const reviewCard = parseCard(fixture.sentCards[0]);
     assert.match(JSON.stringify(reviewCard), /Prefers concise weekly updates/);
 
-    const targetButton = findCardButtons(reviewCard).find(button => button.text.content === 'Save to Finance');
+    const targetButton = findCardButtons(reviewCard)
+      .find(button => button.text.content === 'Save to Department: Finance');
     assert.ok(targetButton);
-    const value = JSON.parse(targetButton.value);
+    const value = targetButton.value as Record<string, unknown>;
     const handled = await fixture.service.handle({
       action: { value: targetButton.value },
     }, fixture.actor);
@@ -94,10 +216,14 @@ describe('Lark Share Memory review', () => {
     assert.equal(handled.ok, true);
     assert.equal(fixture.permissionResolutions, 1);
     assert.deepEqual(fixture.publishArgs, {
-      operation: 'publish',
+      operation: 'apply',
+      mutationId: 'mutation-1',
+      contentHash: 'a'.repeat(64),
+      kind: 'memory',
+      action: 'publish',
       scope: 'department',
       departmentId: 'dept-1',
-      facts: ['Prefers concise weekly updates.', 'Project Atlas uses Lark.'],
+      content: { facts: ['Prefers concise weekly updates.', 'Project Atlas uses Lark.'] },
     });
     assert.equal(fixture.publishRunContext?.tenantId, 'tenant-1');
     assert.equal(value.targetKey, 'department:dept-1');
@@ -106,16 +232,10 @@ describe('Lark Share Memory review', () => {
 
   it('rejects another group member and cancellation saves nothing', async () => {
     const fixture = createMemoryReviewFixture();
-    const tool = fixture.service.createMemoryReviewTool({
-      runContext: fixture.runContext,
-      perm: fixture.permission,
-      chatId: 'chat-1',
-      isSkillResolved: () => true,
-    }) as { execute: (input: unknown) => Promise<string> };
-    await tool.execute({ proposalId: 'proposal-2', bullets: ['Uses dark mode.'] });
+    await openMemoryReview(fixture, 'proposal-2', ['Uses dark mode.']);
     const reviewCard = parseCard(fixture.sentCards[0]);
     const buttons = findCardButtons(reviewCard);
-    const saveButton = buttons.find(button => button.text.content === 'Save to Personal');
+    const saveButton = buttons.find(button => button.text.content === 'Save to Department: Finance');
     const cancelButton = buttons.find(button => button.text.content === 'Cancel');
     assert.ok(saveButton);
     assert.ok(cancelButton);
@@ -140,15 +260,9 @@ describe('Lark Share Memory review', () => {
     let releasePublish!: () => void;
     const publishGate = new Promise<void>((resolve) => { releasePublish = resolve; });
     const fixture = createMemoryReviewFixture({ publishGate });
-    const tool = fixture.service.createMemoryReviewTool({
-      runContext: fixture.runContext,
-      perm: fixture.permission,
-      chatId: 'chat-1',
-      isSkillResolved: () => true,
-    }) as { execute: (input: unknown) => Promise<string> };
-    await tool.execute({ proposalId: 'proposal-3', bullets: ['Uses dark mode.'] });
+    await openMemoryReview(fixture, 'proposal-3', ['Uses dark mode.']);
     const saveButton = findCardButtons(parseCard(fixture.sentCards[0]))
-      .find(button => button.text.content === 'Save to Personal');
+      .find(button => button.text.content === 'Save to Department: Finance');
     assert.ok(saveButton);
 
     const first = fixture.service.handle(
@@ -168,20 +282,137 @@ describe('Lark Share Memory review', () => {
     assert.equal(fixture.publishCalls, 1);
   });
 
+  it('acknowledges a card decision immediately and processes it once through the durable queue', async () => {
+    const fixture = createMemoryReviewFixture({ queued: true });
+    await openMemoryReview(fixture, 'proposal-queued', ['Uses dark mode.']);
+    const reviewCard = parseCard(fixture.sentCards[0]);
+    const saveButton = findCardButtons(reviewCard)
+      .find(button => button.text.content === 'Save to Department: Finance');
+    assert.ok(saveButton);
+    assert.deepEqual(saveButton.confirm, {
+      title: { tag: 'plain_text', content: 'Confirm shared memory target' },
+      text: {
+        tag: 'plain_text',
+        content: 'Send these exact facts for Finance department-manager approval?',
+      },
+    });
+    const value = saveButton.value as Record<string, string>;
+
+    const first = await fixture.service.handle(
+      { action: { value: saveButton.value } },
+      fixture.actor,
+    );
+    const duplicate = await fixture.service.handle(
+      { action: { value: saveButton.value } },
+      fixture.actor,
+    );
+
+    assert.match(JSON.stringify(first.responseBody), /Memory decision received/);
+    assert.match(JSON.stringify(duplicate.responseBody), /Memory decision received/);
+    assert.deepEqual(fixture.enqueuedReviewIds, [value.reviewId]);
+    assert.equal(fixture.publishCalls, 0);
+
+    await fixture.service.processQueuedDecision(value.reviewId);
+    assert.equal(fixture.publishCalls, 1);
+    assert.match(JSON.stringify(parseCard(fixture.updatedCards[0])), /Saved 1 reviewed fact/);
+
+    await fixture.service.processQueuedDecision(value.reviewId);
+    assert.equal(fixture.publishCalls, 1);
+  });
+
+  it('refreshes mutable role and department authority before a queued decision executes', async () => {
+    const fixture = createMemoryReviewFixture({
+      queued: true,
+      liveQueuedIdentity: {
+        userId: 'user-1',
+        companyId: 'company-1',
+        aiRole: 'COMPANY_ADMIN',
+        channel: 'lark',
+        activeDepartmentId: 'dept-2',
+      },
+    });
+    await openMemoryReview(fixture, 'proposal-live-rbac', ['Uses dark mode.']);
+    const button = findCardButtons(parseCard(fixture.sentCards[0]))
+      .find(candidate => candidate.text.content === 'Save to Department: Finance');
+    assert.ok(button);
+    const value = button.value as Record<string, string>;
+
+    await fixture.service.handle({ action: { value: button.value } }, fixture.actor);
+    await fixture.service.processQueuedDecision(value.reviewId);
+
+    assert.equal(fixture.publishRunContext?.['companyRole'], 'COMPANY_ADMIN');
+    assert.equal(fixture.publishRunContext?.['departmentId'], 'dept-2');
+  });
+
+  it('fails a queued decision closed when the Lark identity is remapped', async () => {
+    const fixture = createMemoryReviewFixture({
+      queued: true,
+      liveQueuedIdentity: {
+        userId: 'different-user',
+        companyId: 'company-1',
+        aiRole: 'MEMBER',
+        channel: 'lark',
+      },
+    });
+    await openMemoryReview(fixture, 'proposal-remapped', ['Uses dark mode.']);
+    const button = findCardButtons(parseCard(fixture.sentCards[0]))
+      .find(candidate => candidate.text.content === 'Save to Department: Finance');
+    assert.ok(button);
+    const value = button.value as Record<string, string>;
+
+    await fixture.service.handle({ action: { value: button.value } }, fixture.actor);
+    await fixture.service.processQueuedDecision(value.reviewId);
+
+    assert.equal(fixture.publishCalls, 0);
+    assert.match(JSON.stringify(parseCard(fixture.updatedCards.at(-1)!)), /access to this target changed/i);
+  });
+
+  it('does not send a dead interactive card when its callback URL is unconfigured', async () => {
+    const fixture = createMemoryReviewFixture({ callbacksConfigured: false });
+    const result = await openMemoryReview(
+      fixture,
+      'proposal-no-callback',
+      ['Uses dark mode.'],
+    );
+
+    assert.match(result.message, /card callback is not configured/i);
+    assert.equal(fixture.sentCards.length, 0);
+  });
+
   it('closes a delivered card when its actionable state cannot be persisted', async () => {
     const fixture = createMemoryReviewFixture({ failCardStatePersist: true });
-    const tool = fixture.service.createMemoryReviewTool({
+    const result = await openMemoryReview(fixture, 'proposal-4', ['Uses dark mode.']);
+    assert.match(result.message, /could not be opened safely/i);
+    assert.match(JSON.stringify(parseCard(fixture.updatedCards[0])), /Memory was not saved/);
+    const saveButton = findCardButtons(parseCard(fixture.sentCards[0]))
+      .find(button => button.text.content === 'Save to Department: Finance');
+    assert.ok(saveButton);
+    const replay = await fixture.service.handle(
+      { action: { value: saveButton.value } },
+      fixture.actor,
+    );
+    assert.equal(replay.ok, false);
+    assert.equal(fixture.publishCalls, 0);
+  });
+
+  it('closes a delivered card when its backend run-effect receipt cannot be persisted', async () => {
+    const fixture = createMemoryReviewFixture();
+    const result = await fixture.service.openMemoryForRuntime({
+      proposalId: 'proposal-effect-receipt-failure',
+      facts: ['Uses dark mode.'],
       runContext: fixture.runContext,
       perm: fixture.permission,
       chatId: 'chat-1',
-      isSkillResolved: () => true,
-    }) as { execute: (input: unknown) => Promise<string> };
+      onOpened: async () => {
+        throw new Error('shared receipt store unavailable');
+      },
+    });
 
-    const result = await tool.execute({ proposalId: 'proposal-4', bullets: ['Uses dark mode.'] });
-    assert.match(result, /could not be opened safely/i);
+    assert.equal(result.opened, false);
+    assert.match(result.message, /could not be verified safely/i);
     assert.match(JSON.stringify(parseCard(fixture.updatedCards[0])), /Memory was not saved/);
     const saveButton = findCardButtons(parseCard(fixture.sentCards[0]))
-      .find(button => button.text.content === 'Save to Personal');
+      .find(button => button.text.content === 'Save to Department: Finance');
     assert.ok(saveButton);
     const replay = await fixture.service.handle(
       { action: { value: saveButton.value } },
@@ -197,17 +428,10 @@ describe('Lark Share Memory review', () => {
       failCompensation: true,
       failCardUpdate: true,
     });
-    const tool = fixture.service.createMemoryReviewTool({
-      runContext: fixture.runContext,
-      perm: fixture.permission,
-      chatId: 'chat-1',
-      isSkillResolved: () => true,
-    }) as { execute: (input: unknown) => Promise<string> };
-
-    const result = await tool.execute({ proposalId: 'proposal-5', bullets: ['Uses dark mode.'] });
-    assert.match(result, /could not be opened safely/i);
+    const result = await openMemoryReview(fixture, 'proposal-5', ['Uses dark mode.']);
+    assert.match(result.message, /could not be opened safely/i);
     const saveButton = findCardButtons(parseCard(fixture.sentCards[0]))
-      .find(button => button.text.content === 'Save to Personal');
+      .find(button => button.text.content === 'Save to Department: Finance');
     assert.ok(saveButton);
     const replay = await fixture.service.handle(
       { action: { value: saveButton.value } },
@@ -219,35 +443,66 @@ describe('Lark Share Memory review', () => {
   });
 
   it('shows exact memory facts and target in a manager approval summary', () => {
-    const summary = buildArgsSummary('memoryPublishing', 'create', {
-      operation: 'publish',
+    const summary = buildArgsSummary('knowledge', 'create', {
+      operation: 'apply',
+      kind: 'memory',
+      action: 'publish',
       scope: 'company',
-      facts: ['Uses dark mode.', 'Weekly finance review is Monday.'],
+      mutationId: 'mutation-1',
+      contentHash: 'a'.repeat(64),
+      content: { facts: ['Uses dark mode.', 'Weekly finance review is Monday.'] },
     });
     assert.equal(
       summary,
-      'memoryPublishing.create | target=company\n1. Uses dark mode.\n2. Weekly finance review is Monday.',
+      'Publish 2 reviewed facts to company memory\n1. Uses dark mode.\n2. Weekly finance review is Monday.',
     );
   });
 });
+
+function openMemoryReview(
+  fixture: ReturnType<typeof createMemoryReviewFixture>,
+  proposalId: string,
+  facts: readonly string[],
+  requestedScope?: 'department' | 'company',
+) {
+  return fixture.service.openMemoryForRuntime({
+    proposalId,
+    facts: [...facts],
+    runContext: fixture.runContext,
+    perm: fixture.permission,
+    chatId: 'chat-1',
+    ...(requestedScope ? { requestedScope } : {}),
+  });
+}
 
 function createMemoryReviewFixture(options: {
   publishGate?: Promise<void>;
   failCardStatePersist?: boolean;
   failCompensation?: boolean;
   failCardUpdate?: boolean;
+  queued?: boolean;
+  callbacksConfigured?: boolean;
+  liveQueuedIdentity?: {
+    userId: string;
+    companyId: string;
+    aiRole: string;
+    channel: string;
+    activeDepartmentId?: string;
+  } | null;
 } = {}) {
   const values = new Map<string, unknown>();
   const sentCards: string[] = [];
   const updatedCards: string[] = [];
+  const enqueuedReviewIds: string[] = [];
   let publishArgs: Record<string, unknown> | undefined;
   let publishRunContext: Record<string, unknown> | undefined;
+  let publishApprovalGate: unknown;
   let publishCalls = 0;
   let permissionResolutions = 0;
   let setCalls = 0;
   const permission = {
-    allowedToolIds: new Set(['memoryPublishing']),
-    allowedActionsByTool: new Map([['memoryPublishing', new Set(['read', 'create'])]]),
+    allowedToolIds: new Set(['knowledge']),
+    allowedActionsByTool: new Map([['knowledge', new Set(['read', 'create', 'update', 'delete'])]]),
     decisions: [],
     department: {
       id: 'dept-1',
@@ -300,32 +555,51 @@ function createMemoryReviewFixture(options: {
     executeForRuntime: async (input: {
       args: Record<string, unknown>;
       runContext?: Record<string, unknown>;
+      approvalGate?: unknown;
     }) => {
-      if (input.args['operation'] === 'check_authority') {
+      if (input.args['operation'] === 'check_targets') {
         return {
           status: 'success',
-          toolId: 'memoryPublishing',
+          toolId: 'knowledge',
           result: {
-            operation: 'check_authority',
-            availability: 'available',
+            operation: 'check_targets',
             targets: [
               { scope: 'personal', label: 'Personal' },
               { scope: 'department', label: 'Finance', departmentId: 'dept-1' },
+              { scope: 'department', label: 'Operations', departmentId: 'dept-2' },
+              { scope: 'company', label: 'Company' },
             ],
-            scopeOutcomes: [],
+          },
+        };
+      }
+      if (input.args['operation'] === 'propose') {
+        return {
+          status: 'success',
+          toolId: 'knowledge',
+          result: {
+            operation: 'propose',
+            mutationId: 'mutation-1',
+            contentHash: 'a'.repeat(64),
+            status: 'awaiting_requester_review',
           },
         };
       }
       publishCalls += 1;
       publishArgs = input.args;
       publishRunContext = input.runContext;
+      publishApprovalGate = input.approvalGate;
       if (options.publishGate) await options.publishGate;
       return {
         status: 'success',
-        toolId: 'memoryPublishing',
-        result: { operation: 'publish', scope: input.args['scope'], factCount: 2 },
+        toolId: 'knowledge',
+        result: input.args['operation'] === 'propose'
+          ? { operation: 'propose', status: 'applied', applied: true }
+          : { operation: 'apply', status: 'applied', resourceId: 'resource-1', version: 1 },
       };
     },
+  };
+  const knowledgeMutations = {
+    confirmRequesterReview: async () => ({ status: 'awaiting_approval' }),
   };
   const permissions = {
     resolve: async () => {
@@ -340,13 +614,45 @@ function createMemoryReviewFixture(options: {
     error: () => undefined,
     debug: () => undefined,
   };
-  const service = new LarkMemoryReviewService(
+  const actor = {
+    userId: 'user-1',
+    companyId: 'company-1',
+    aiRole: 'MEMBER',
+    openId: 'open-1',
+    tenantKey: 'tenant-1',
+    activeDepartmentId: 'dept-1',
+  };
+  const service = new LarkKnowledgeReviewService(
     cache as any,
     adapter as any,
     toolExecutor as any,
     permissions as any,
     {} as any,
+    knowledgeMutations as any,
     logger as any,
+    options.queued ? {
+      enqueue: async (reviewId: string) => {
+        if (!enqueuedReviewIds.includes(reviewId)) {
+          enqueuedReviewIds.push(reviewId);
+        }
+        return `knowledge_review_${reviewId}`;
+      },
+    } : undefined,
+    options.callbacksConfigured ?? true,
+    options.queued ? {
+      resolveByLarkTenantIdentity: async () => ({
+        ok: true as const,
+        value: options.liveQueuedIdentity === null
+          ? null
+          : options.liveQueuedIdentity ?? {
+            userId: actor.userId,
+            companyId: actor.companyId,
+            aiRole: actor.aiRole,
+            channel: 'lark',
+            activeDepartmentId: actor.activeDepartmentId,
+          },
+      }),
+    } : undefined,
   );
   const runContext = {
     companyId: asCompanyId('company-1'),
@@ -357,14 +663,6 @@ function createMemoryReviewFixture(options: {
     userExternalId: 'open-1',
     chatId: 'chat-1',
   } as any;
-  const actor = {
-    userId: 'user-1',
-    companyId: 'company-1',
-    aiRole: 'MEMBER',
-    openId: 'open-1',
-    tenantKey: 'tenant-1',
-    activeDepartmentId: 'dept-1',
-  };
   return {
     service,
     permission,
@@ -372,8 +670,10 @@ function createMemoryReviewFixture(options: {
     actor,
     sentCards,
     updatedCards,
+    enqueuedReviewIds,
     get publishArgs() { return publishArgs; },
     get publishRunContext() { return publishRunContext; },
+    get publishApprovalGate() { return publishApprovalGate; },
     get publishCalls() { return publishCalls; },
     get permissionResolutions() { return permissionResolutions; },
   };
@@ -394,7 +694,8 @@ function parseCard(raw: string): Record<string, any> {
 
 function findCardButtons(card: Record<string, any>): Array<{
   text: { content: string };
-  value: string;
+  value: unknown;
+  confirm?: unknown;
 }> {
   return card.elements
     .filter((element: Record<string, unknown>) => element['tag'] === 'action')

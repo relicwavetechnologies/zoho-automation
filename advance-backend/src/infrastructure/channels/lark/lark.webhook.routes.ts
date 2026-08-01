@@ -22,7 +22,7 @@ import type {
   LarkApprovalCardHandler,
   LarkAuthenticatedCardActor,
 } from './lark-approval-card.handler';
-import type { LarkMemoryReviewService } from '../../../application/memory/lark-memory-review.service';
+import type { LarkKnowledgeReviewService } from '../../../application/knowledge/lark-knowledge-review.service';
 import type { ChatMessageSerializer } from '../../../application/channels/chat-message-serializer';
 import type { LaneLeaseHolder } from '../../../application/channels/lane-lease.holder';
 import { fenceFinalReplies } from './lark-lane-fence';
@@ -32,7 +32,6 @@ import {
   completeAbsorbedReceipts,
   toBatchableMessage,
 } from './lark-message-batch';
-import type { Mem0Service } from '../../../application/memory/mem0.service';
 import type { LarkOAuthService } from '../../lark/lark-oauth.service';
 import type { IntegrationConnectionRepository } from '../../persistence/integration-connection.repository';
 import type { CachePort } from '../../../shared/cache';
@@ -129,7 +128,7 @@ import type { LarkIngressQueue } from '../../../application/lark-ingress/lark-in
 
 type LarkPiRuntimePort =
   Pick<LarkPiRuntimeService, 'run'>
-  & Partial<Pick<LarkPiRuntimeService, 'hasActiveSession'>>;
+  & Partial<Pick<LarkPiRuntimeService, 'hasActiveSession' | 'stagePendingAttachments'>>;
 
 const QUEUED_REQUEST_TEXT =
   'Your request is queued. I’ll start it as soon as your previous request finishes.';
@@ -145,8 +144,7 @@ export interface LarkWebhookDeps {
   env: TypedEnv;
   approvalGate?: ApprovalGateService;
   approvalCardHandler?: LarkApprovalCardHandler;
-  memoryReviewService?: LarkMemoryReviewService;
-  mem0?: Mem0Service;
+  knowledgeReviewService?: LarkKnowledgeReviewService;
   larkOAuthService?: LarkOAuthService;
   connectionRepo?: IntegrationConnectionRepository;
   cache: CachePort;
@@ -282,8 +280,8 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
 
           // Requester-owned memory review decisions are resolved before the
           // generic approval handler so they cannot be mistaken for manager HITL.
-          if (deps.memoryReviewService?.isMemoryReviewAction(cardEvent)) {
-            const result = await deps.memoryReviewService.handle(cardEvent, actor);
+          if (deps.knowledgeReviewService?.isKnowledgeReviewAction(cardEvent)) {
+            const result = await deps.knowledgeReviewService.handle(cardEvent, actor);
             res.status(200).json(result.responseBody);
             return;
           }
@@ -1142,6 +1140,7 @@ export async function runPiAndDeliver(input: {
   deps: {
     adapter: LarkChannelAdapter;
     piRuntime: LarkPiRuntimePort;
+    conversationRepo?: Pick<ConversationRepoPort, 'appendTurn'>;
     channelDeliveryRepo?: ChannelDeliveryRepoPort;
     groupContextHydrator?: Pick<GroupContextHydrator, 'hydrate'>;
     onRetryableDelivery?: () => Promise<void>;
@@ -1327,6 +1326,35 @@ export async function runPiAndDeliver(input: {
     deps.adapter.cleanupAbortController(correlationId);
   }
 
+  if (runtimeFailure && deps.conversationRepo) {
+    const conversationKey = runtimeThreadIdFor(incoming);
+    const scope = { companyId: String(runContext.companyId), channel: 'lark' as const };
+    const sourceMessageId = String(incoming.messageId);
+    const userTurn = await deps.conversationRepo.appendTurn(
+      conversationKey,
+      {
+        role: 'user',
+        content: userHistoryContent(incoming),
+        timestamp: incoming.timestamp,
+      },
+      scope,
+      { dedupeKey: `lark:${sourceMessageId}:user`, sourceMessageId },
+    );
+    const assistantTurn = await deps.conversationRepo.appendTurn(
+      conversationKey,
+      { role: 'assistant', content: text, timestamp: new Date().toISOString() },
+      scope,
+      { dedupeKey: `lark:${sourceMessageId}:assistant`, sourceMessageId },
+    );
+    if (!userTurn.ok || !assistantTurn.ok) {
+      log.warn('webhook.pi.failure_history_persist_failed', {
+        correlationId,
+        userTurnSaved: userTurn.ok,
+        assistantTurnSaved: assistantTurn.ok,
+      });
+    }
+  }
+
   phase = 'Writing';
   state = 'writing';
   liveLabel = 'Preparing your response…';
@@ -1417,7 +1445,6 @@ async function processInBackground(
     conversationRepo: ConversationRepoPort;
     logger: Logger;
     env: TypedEnv;
-    mem0?: Mem0Service;
     larkOAuthService?: LarkOAuthService;
     connectionRepo?: IntegrationConnectionRepository;
     cache: CachePort;
@@ -1951,17 +1978,42 @@ async function processInBackground(
       log,
     });
 
-    // An attachment with no question attached to it yet. Record what it shows
-    // so the next message can ask about it, and say nothing — see
-    // `isAwaitingItsQuestion`.
+    const { LarkFileClient: RuntimeFileClient } = await import('./clients/lark-file.client');
+    const runtimeFileClient = new RuntimeFileClient(deps.env, log);
+    const runtimeAttachments: LarkPiRuntimeAttachment[] = attachments
+      .filter(isSupportedLarkMedia)
+      .map(attachment => ({
+        kind: attachment.type,
+        name: attachment.fileName,
+        mimeType: attachment.mimeType,
+        openStream: () => attachment.type === 'image'
+          ? runtimeFileClient.openImage(attachment.messageId, attachment.key)
+          : runtimeFileClient.openFile(attachment.messageId, attachment.key),
+      }));
+
+    // An attachment with no question attached to it yet. Stage the bytes into
+    // the sender's signed private workspace, record the filename, and say
+    // nothing until the user explains what they want.
     if (isAwaitingItsQuestion({
       chatType: incoming.chatType,
       text: incoming.text,
       supportedAttachmentCount: attachments.filter(isSupportedLarkMedia).length,
       unsupportedAttachmentCount: attachments.filter(a => !isSupportedLarkMedia(a)).length,
     })) {
+      if (!deps.piRuntime.stagePendingAttachments) {
+        throw new Error('The Divo runtime cannot safely retain a pending attachment.');
+      }
+      await deps.piRuntime.stagePendingAttachments({
+        incoming: withLarkSenderName(incoming, identity),
+        runContext,
+        conversation,
+        threadId: runtimeThreadIdFor(incoming),
+        attachments: runtimeAttachments,
+        ...(signal ? { abortSignal: signal } : {}),
+      });
       // Only the filenames, plus any refusal notice. The bytes are not read
-      // here — the next message is what sends them into the workspace.
+      // into Postgres; the signed controller already placed them in the
+      // private workspace for the next message.
       const seen = preparedAttachments
         .map(item => item.context.inlineContext ?? `[Attached: ${item.context.fileName}]`)
         .join('\n\n');
@@ -2028,19 +2080,6 @@ async function processInBackground(
       ...incoming,
       text: syntheticText,
     });
-    const { LarkFileClient: RuntimeFileClient } = await import('./clients/lark-file.client');
-    const runtimeFileClient = new RuntimeFileClient(deps.env, log);
-    const runtimeAttachments: LarkPiRuntimeAttachment[] = attachments
-      .filter(isSupportedLarkMedia)
-      .map(attachment => ({
-        kind: attachment.type,
-        name: attachment.fileName,
-        mimeType: attachment.mimeType,
-        openStream: () => attachment.type === 'image'
-          ? runtimeFileClient.openImage(attachment.messageId, attachment.key)
-          : runtimeFileClient.openFile(attachment.messageId, attachment.key),
-      }));
-
     const replyText = await runPiAndDeliver({
       incoming: withLarkSenderName(enrichedIncoming, identity),
       runContext,
@@ -2400,7 +2439,6 @@ async function handleSlashCommand(args: {
     channelIdentityRepo: ChannelIdentityRepoPort;
     conversationRepo: ConversationRepoPort;
     logger: Logger;
-    mem0?: Mem0Service;
     larkOAuthService?: LarkOAuthService;
     connectionRepo?: IntegrationConnectionRepository;
     cache: CachePort;
@@ -2541,48 +2579,6 @@ async function handleSlashCommand(args: {
         ? 'Done. Divo history for this group and all its threads is cleared.'
         : 'Done. This conversation is cleared — I\'ll start fresh from here.',
     );
-    return;
-  }
-
-  if (cmd === '/remember') {
-    const fact = text.slice(cmd.length).trim();
-    if (!fact) {
-      await reply('Usage: /remember <fact to remember>\nExample: /remember Acme Corp uses net-30 payment terms');
-      return;
-    }
-
-    if (!deps.mem0) {
-      await reply('Memory system is not enabled.');
-      return;
-    }
-
-    const role = identity.aiRole;
-    const scope = role === 'COMPANY_ADMIN' || role === 'SUPER_ADMIN'
-      ? 'company'
-      : role === 'MANAGER' && identity.activeDepartmentId
-        ? 'department'
-        : 'user';
-
-    try {
-      await deps.mem0.rememberExplicit({
-        fact,
-        scope,
-        userId:    identity.userId,
-        companyId: identity.companyId,
-        ...(identity.activeDepartmentId ? { departmentId: identity.activeDepartmentId } : {}),
-      });
-
-      const scopeLabel = scope === 'company'
-        ? 'the company'
-        : scope === 'department'
-          ? 'your team'
-          : 'you';
-      log.info('webhook.command.remember.ok', { scope, factLength: fact.length, correlationId });
-      await reply(`Got it. I'll remember that for ${scopeLabel}.`);
-    } catch (error) {
-      log.warn('webhook.command.remember.failed', { error: String(error), correlationId });
-      await reply('Could not store that memory. Please try again.');
-    }
     return;
   }
 
@@ -2773,8 +2769,6 @@ async function handleSlashCommand(args: {
       '`/stop` — Stop the active run in this conversation.\n' +
       '`/group-settings` — Admin-only group reply settings.\n' +
       '`/group-mode status` — Confirm that group replies stay in threads.\n' +
-      '`/remember <fact>` — Save a fact Divo will recall in future chats.\n' +
-      '  _Example:_ `/remember Acme Corp uses net-30 payment terms`\n\n' +
       '**Account**\n' +
       '`/login` — Connect your Lark account so actions run as you, not the bot.\n' +
       '`/logout` — Disconnect your Lark account.\n' +

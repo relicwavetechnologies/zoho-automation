@@ -155,8 +155,8 @@ async function runWebhook(body: unknown, options: {
   /** Observe the transcript write / ingestion enqueue ordering. */
   onRetain?: () => void;
   onEnqueue?: () => void;
-  memoryReviewService?: {
-    isMemoryReviewAction(cardEvent: unknown): boolean;
+  knowledgeReviewService?: {
+    isKnowledgeReviewAction(cardEvent: unknown): boolean;
     handle(cardEvent: unknown, actor: unknown): Promise<{ responseBody: Record<string, unknown> }>;
   };
   acceptReceipt?: () => Promise<{
@@ -219,6 +219,7 @@ async function runWebhook(body: unknown, options: {
   const acceptedLaneKeys: string[] = [];
   const acceptedCompanyIds: string[] = [];
   const engineInputs: unknown[] = [];
+  const pendingAttachmentInputs: unknown[] = [];
   const piSessionContexts: unknown[] = [];
   const serializerKeys: string[] = [];
   const identityLookups: Array<{ openId: string; tenantKey: string }> = [];
@@ -294,6 +295,10 @@ async function runWebhook(body: unknown, options: {
           return { text: result?.value?.finalReply?.text ?? result?.text ?? 'done' };
         }
         return { text: 'done' };
+      },
+      stagePendingAttachments: async (input: unknown) => {
+        order.push('stage-pending');
+        pendingAttachmentInputs.push(input);
       },
     } as any,
     channelIdentityRepo: {
@@ -509,8 +514,8 @@ async function runWebhook(body: unknown, options: {
         await task(new AbortController().signal);
       },
     } as any,
-    ...(options.memoryReviewService
-      ? { memoryReviewService: options.memoryReviewService as any }
+    ...(options.knowledgeReviewService
+      ? { knowledgeReviewService: options.knowledgeReviewService as any }
       : {}),
   } as any;
   const router = createLarkWebhookRoutes(routeDeps);
@@ -565,6 +570,7 @@ async function runWebhook(body: unknown, options: {
     responseBody,
     order,
     engineInputs,
+    pendingAttachmentInputs,
     piSessionContexts,
     serializerKeys,
     identityLookups,
@@ -1149,6 +1155,7 @@ describe('Lark webhook admission', () => {
 
   it('delivers a harness-visible Pi failure before rethrowing it', async () => {
     const finalReplies: string[] = [];
+    const persisted: unknown[] = [];
     const failure = new LarkPiRuntimeError(
       'capacity_full',
       'PI is busy. Please retry.',
@@ -1200,6 +1207,12 @@ describe('Lark webhook admission', () => {
           piRuntime: {
             run: async () => { throw failure; },
           },
+          conversationRepo: {
+            appendTurn: async (...args: unknown[]) => {
+              persisted.push(args);
+              return ok({});
+            },
+          } as any,
         },
         log: noopLogger,
         rethrowRuntimeFailureAfterDelivery: true,
@@ -1207,6 +1220,11 @@ describe('Lark webhook admission', () => {
       error => error === failure,
     );
     assert.deepEqual(finalReplies, ['Divo is busy. Please retry.']);
+    assert.equal(persisted.length, 2);
+    assert.equal((persisted[0] as any[])[1].role, 'user');
+    assert.equal((persisted[1] as any[])[1].role, 'assistant');
+    assert.equal((persisted[0] as any[])[3].dedupeKey, 'lark:om_1:user');
+    assert.equal((persisted[1] as any[])[3].dedupeKey, 'lark:om_1:assistant');
   });
 
   it('delivers an explicit Pi failure and lets the next same-chat message run', async () => {
@@ -1288,8 +1306,8 @@ describe('Lark webhook card authorization', () => {
         aiRole: 'COMPANY_ADMIN',
         channel: 'lark',
       },
-      memoryReviewService: {
-        isMemoryReviewAction: () => true,
+      knowledgeReviewService: {
+        isKnowledgeReviewAction: () => true,
         handle: async (_event, actor) => {
           receivedActor = actor;
           return { responseBody: { ok: true } };
@@ -2410,6 +2428,8 @@ describe('Lark document attachments', () => {
     })));
 
     assert.ok(!result.order.includes('engine'), 'no agent run');
+    assert.ok(result.order.includes('stage-pending'), 'bytes are retained in the signed private workspace');
+    assert.equal(result.pendingAttachmentInputs.length, 1);
     assert.ok(
       result.logEvents.some(e => e.event === 'webhook.attachment.awaiting_question'),
       'and the wait is recorded',

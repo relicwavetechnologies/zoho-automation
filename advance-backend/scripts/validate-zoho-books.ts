@@ -122,7 +122,7 @@ async function zohoGet(
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
-  const env = loadAndValidateEnv({ ...process.env, MEM0_ENABLED: 'false' });
+  const env = loadAndValidateEnv(process.env);
   const container = await buildContainer(env);
 
   try {

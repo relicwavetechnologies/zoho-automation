@@ -7,7 +7,7 @@ import {
 } from '../../src/application/skills/divo-presentations-system-skill';
 
 describe('Divo Presentations system skill', () => {
-  it('creates a globally granted router without making local work depend on Google Slides permission', async () => {
+  it('creates a company-wide router without making local work depend on Google Slides permission', async () => {
     const created: Record<string, unknown>[] = [];
     const grants: Record<string, unknown>[] = [];
     const aliases: Record<string, unknown>[] = [];
@@ -44,7 +44,7 @@ describe('Divo Presentations system skill', () => {
     assert.equal(result.outcome, 'created');
     assert.equal(created.length, 1);
     assert.equal(created[0].slug, DIVO_PRESENTATIONS_SKILL_SLUG);
-    assert.equal(created[0].scope, 'global');
+    assert.equal(created[0].scope, 'company');
     assert.equal(created[0].isSystem, true);
     assert.deepEqual(created[0].toolIds, []);
     assert.deepEqual(grants, [{

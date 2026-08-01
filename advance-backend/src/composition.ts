@@ -121,7 +121,7 @@ import { DepartmentAdminService } from './application/departments/department-adm
 import { DesktopDepartmentManagementService } from './application/desktop/desktop-department-management.service';
 import { ChatMessageSerializer } from './application/channels/chat-message-serializer';
 
-// Document RAG
+// Data export and async ingress
 import { DataExportQueue } from './application/data-export/data-export.queue';
 import { DataExportSourceRegistry } from './application/data-export/data-export.types';
 import {
@@ -158,9 +158,32 @@ import { PeepshowManagerTeachExtractor } from './infrastructure/media/peepshow-m
 import { OpenRouterManagerTeachFrameOcr } from './infrastructure/ai/ocr/openrouter-manager-teach.ocr';
 import { OpenAiManagerTeachTranscriber } from './infrastructure/ai/transcription/openai-manager-teach.transcriber';
 
-// Knowledge Share
-import { Mem0Service } from './application/memory/mem0.service';
-import { LarkMemoryReviewService } from './application/memory/lark-memory-review.service';
+// Central knowledge authority and semantic recall projection
+import type { MemoryService } from './application/knowledge/semantic-memory.port';
+import { HindsightMemoryService } from './infrastructure/knowledge/hindsight-memory.service';
+import { LarkKnowledgeReviewService } from './application/knowledge/lark-knowledge-review.service';
+import { RunEffectReceiptStore } from './application/runtime/run-effect-receipt.store';
+import { KnowledgeReviewDecisionQueue } from './application/knowledge/knowledge-review-decision.queue';
+import { KnowledgeMutationService } from './application/knowledge/knowledge-mutation.service';
+import { KnowledgeProjectionService } from './application/knowledge/knowledge-projection.service';
+import { KnowledgeOperationsService } from './application/knowledge/knowledge-operations.service';
+import { KnowledgeRecallService } from './application/knowledge/knowledge-recall.service';
+import { KnowledgeResourceQueryService } from './application/knowledge/knowledge-resource-query.service';
+import { PersonalMemoryCommandService } from './application/knowledge/personal-memory-command.service';
+import { KnowledgeLearningQueue } from './application/knowledge/knowledge-learning.queue';
+import { KnowledgeLearningService } from './application/knowledge/knowledge-learning.service';
+import { DeepSeekKnowledgeLearningExtractor } from './application/knowledge/knowledge-learning.extractor';
+import { PrismaKnowledgeMutationStore } from './infrastructure/persistence/knowledge-mutation.repository';
+import { DefaultKnowledgeContentValidator } from './application/knowledge/knowledge-content-validator';
+import { KnowledgeFileService } from './application/knowledge/knowledge-file.service';
+import { PrismaKnowledgeFileAssetRepository } from './infrastructure/persistence/knowledge-file-asset.repository';
+import { CloudinaryKnowledgeFileStore } from './infrastructure/knowledge/cloudinary-knowledge-file.store';
+import { KnowledgeDocumentIndexService } from './application/knowledge/knowledge-document-index.service';
+import { KnowledgeDocumentSearchService } from './application/knowledge/knowledge-document-search.service';
+import { PrismaKnowledgeDocumentRepository } from './infrastructure/persistence/knowledge-document.repository';
+import { DefaultKnowledgeDocumentParser } from './infrastructure/knowledge/default-knowledge-document.parser';
+import { OpenRouterKnowledgeOcr } from './infrastructure/knowledge/openrouter-knowledge.ocr';
+import { ClamAvKnowledgeFileScanner } from './infrastructure/knowledge/clamav-knowledge-file.scanner';
 
 // Tools
 import { createLarkTaskTool } from './application/tools/families/lark-task.tool';
@@ -182,9 +205,7 @@ import { hasAirtableScopeGroups } from './application/airtable/airtable-mcp-mani
 import { createZohoCrmTool } from './application/tools/families/zoho-crm.tool';
 import { createZohoBooksTool } from './application/tools/families/zoho-books.tool';
 import { createWebSearchTool } from './application/tools/families/web-search.tool';
-import { createSkillPublishingTool } from './application/tools/families/skill-publishing.tool';
-import { createMemoryPublishingTool } from './application/tools/families/memory-publishing.tool';
-import { createMemoryRecallTool } from './application/tools/families/memory-recall.tool';
+import { createKnowledgeTool } from './application/tools/families/knowledge.tool';
 import { createDataExportTool } from './application/tools/families/data-export.tool';
 import { createRunCommandTool } from './application/tools/families/run-command.tool';
 import { createScheduledWorkflowsTool } from './application/tools/families/scheduled-workflows.tool';
@@ -235,8 +256,8 @@ export interface Container {
   prisma: ReturnType<typeof getPrismaClient>;
   /** Hot-path app cache: permissions, OAuth tokens, agent defs. → REDIS_CACHE_URL */
   cache: CachePort;
-  /** Memory system + short-lived keys: nonces, knowledge-share, Cloudinary. → REDIS_MEMORY_URL */
-  memoryCache: CachePort;
+  /** Short-lived security/workflow keys: nonces, run effects, uploads. → REDIS_MEMORY_URL (legacy env name) */
+  ephemeralCache: CachePort;
   /** Resolved Redis URL for the BullMQ queue — exposed so workers can share the same URL. */
   queueRedisUrl: string;
   /** Per-chat message serializer — one engine.run() at a time per chatId. */
@@ -310,9 +331,19 @@ export interface Container {
   managerTeachService: ManagerTeachService;
   managerTeachUploadDir: string;
   cloudinaryAdapter: CloudinaryAdapter;
-  // Persistent memory
-  mem0Service: Mem0Service | null;
-  larkMemoryReviewService: LarkMemoryReviewService;
+  // Non-authoritative semantic recall projection; Postgres knowledge follows.
+  memoryService: MemoryService | null;
+  knowledgeMutations: KnowledgeMutationService;
+  knowledgeProjections: KnowledgeProjectionService;
+  knowledgeOperations: KnowledgeOperationsService;
+  knowledgeRecall: KnowledgeRecallService;
+  knowledgeResources: KnowledgeResourceQueryService;
+  knowledgeLearningQueue: KnowledgeLearningQueue;
+  knowledgeLearningService: KnowledgeLearningService;
+  knowledgeFileService: KnowledgeFileService;
+  knowledgeDocumentSearch: KnowledgeDocumentSearchService;
+  larkKnowledgeReviewService: LarkKnowledgeReviewService;
+  knowledgeReviewDecisionQueue: KnowledgeReviewDecisionQueue;
   // Group chat context
   chatContextService: LarkChatContextService;
   /** Renders the shared room conversation for an isolated Pi run. */
@@ -345,13 +376,14 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   // dev so a single Redis instance continues to work with no config changes.
   //   queueRedisUrl  → BullMQ only (blocking cmds, Lua scripts, pub/sub)
   //   cacheRedisUrl  → hot-path app cache (permissions, tokens, agent defs)
-  //   memoryRedisUrl → memory system + nonces + knowledge-share + Cloudinary
+  //   ephemeralRedisUrl → short-lived security/workflow keys. REDIS_MEMORY_URL
+  //   is retained only as a deployment-compatible environment name.
   const queueRedisUrl  = resolveRedisUrl(env.REDIS_QUEUE_URL,  env.REDIS_URL);
   const cacheRedisUrl  = resolveRedisUrl(env.REDIS_CACHE_URL,  env.REDIS_URL);
-  const memoryRedisUrl = resolveRedisUrl(env.REDIS_MEMORY_URL, env.REDIS_URL);
+  const ephemeralRedisUrl = resolveRedisUrl(env.REDIS_MEMORY_URL, env.REDIS_URL);
 
   const cache       = new RedisCache(getRedisClient(cacheRedisUrl));
-  const memoryCache = new RedisCache(getRedisClient(memoryRedisUrl));
+  const ephemeralCache = new RedisCache(getRedisClient(ephemeralRedisUrl));
   const connectionRateLimits = new ConnectionRateLimitService({
     repository: new PrismaConnectionGovernanceRepository(prisma),
     store: new RedisRateLimitStore(getRedisClient(cacheRedisUrl)),
@@ -486,7 +518,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const companySerperConnectionRepo = new CompanySerperConnectionRepository(prisma, serperEncryptionKey);
   const companySerperService = new CompanySerperService(
     companySerperConnectionRepo,
-    memoryCache,
+    ephemeralCache,
     env.SERPER_TIMEOUT_MS,
     logger.child({ service: 'company-serper' }),
     env.SERPER_API_KEY ?? '',
@@ -500,7 +532,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const companyOmsSiteDataService = new CompanyOmsSiteDataService(
     companyOmsConnectionRepo,
     new OmsSiteDataClient({ timeoutMs: env.OMS_SITE_DATA_TIMEOUT_MS }),
-    memoryCache,
+    ephemeralCache,
     logger.child({ service: 'company-oms-site-data' }),
     env.OMS_SITE_DATA_API_KEY ?? '',
   );
@@ -594,8 +626,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     return { status: 'sent' as const, intentId: issued.intentId };
   };
   const googleWorkspaceMcpSchemas = new GoogleWorkspaceMcpSchemaCatalog();
-  const canvaMcpOAuthService      = new CanvaMcpOAuthService({ env, cache: memoryCache, logger });
-  const airtableMcpOAuthService   = new AirtableMcpOAuthService({ env, cache: memoryCache, logger });
+  const canvaMcpOAuthService      = new CanvaMcpOAuthService({ env, cache: ephemeralCache, logger });
+  const airtableMcpOAuthService   = new AirtableMcpOAuthService({ env, cache: ephemeralCache, logger });
   const airtableMcpSchemas        = new AirtableMcpSchemaCatalog();
   // AITable authenticates with a personal API key, so there is no OAuth service
   // to construct — only the check that proves a pasted key before it is stored.
@@ -1215,7 +1247,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   const cloudinaryAdapter = new CloudinaryAdapter(
     cloudinaryConfig,
-    memoryCache,
+    ephemeralCache,
     logger.child({ service: 'cloudinary' }),
   );
 
@@ -1331,28 +1363,144 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     },
   };
 
-  logger.info('mem0.config', {
-    MEM0_ENABLED: env.MEM0_ENABLED,
-    MEM0_EXTRACTION_MODEL: env.MEM0_EXTRACTION_MODEL,
-    MEM0_QDRANT_COLLECTION: env.MEM0_QDRANT_COLLECTION,
-    QDRANT_URL: env.QDRANT_URL,
-    hasQdrantApiKey: !!env.QDRANT_API_KEY,
-    qdrantApiKeyLength: env.QDRANT_API_KEY?.length ?? 0,
+  logger.info('hindsight.config', {
+    enabled: env.HINDSIGHT_ENABLED,
+    baseUrl: env.HINDSIGHT_URL,
+    hasApiKey: !!env.HINDSIGHT_API_KEY,
   });
 
-  const mem0Service = env.MEM0_ENABLED
-    ? new Mem0Service({
-      openaiApiKey:    env.OPENAI_API_KEY,
-      qdrantUrl:       env.QDRANT_URL,
-      ...(env.QDRANT_API_KEY ? { qdrantApiKey: env.QDRANT_API_KEY } : {}),
-      collectionName:  env.MEM0_QDRANT_COLLECTION,
-      extractionModel: env.MEM0_EXTRACTION_MODEL,
-      maxResults:      env.MEM0_MAX_RESULTS,
-      logger:          logger.child({ service: 'mem0' }),
+  const hindsightService = env.HINDSIGHT_ENABLED
+    ? new HindsightMemoryService({
+      baseUrl: env.HINDSIGHT_URL,
+      ...(env.HINDSIGHT_API_KEY ? { apiKey: env.HINDSIGHT_API_KEY } : {}),
+      maxResults: env.HINDSIGHT_MAX_RESULTS,
+      recallMaxTokens: env.HINDSIGHT_RECALL_MAX_TOKENS,
+      recallBudget: env.HINDSIGHT_RECALL_BUDGET,
+      requestTimeoutMs: env.HINDSIGHT_REQUEST_TIMEOUT_MS,
+      recallConcurrency: env.HINDSIGHT_RECALL_CONCURRENCY,
+      logger: logger.child({ service: 'hindsight-memory' }),
     })
     : null;
+  const memoryService: MemoryService | null = hindsightService;
 
-  logger.info('mem0.status', { enabled: !!mem0Service });
+  logger.info('hindsight.status', { enabled: !!memoryService });
+
+  const knowledgeFileAssets = new PrismaKnowledgeFileAssetRepository(prisma);
+  const knowledgeFileObjects = new CloudinaryKnowledgeFileStore(cloudinaryAdapter);
+  const knowledgeThreatScanner = env.KNOWLEDGE_FILE_MALWARE_SCAN_MODE === 'required'
+    ? new ClamAvKnowledgeFileScanner({
+        host: env.CLAMAV_HOST,
+        port: env.CLAMAV_PORT,
+        timeoutMs: env.CLAMAV_SCAN_TIMEOUT_SECONDS * 1_000,
+      })
+    : null;
+  const knowledgeFileService = new KnowledgeFileService({
+    assets: knowledgeFileAssets,
+    objects: knowledgeFileObjects,
+    permissions,
+    logger,
+    maxBytes: env.KNOWLEDGE_FILE_MAX_MB * 1_024 * 1_024,
+    stagingTtlMs: env.KNOWLEDGE_FILE_STAGING_TTL_HOURS * 60 * 60_000,
+    deletionLeaseMs: env.KNOWLEDGE_FILE_DELETION_LEASE_SECONDS * 1_000,
+    threatScanner: knowledgeThreatScanner,
+    threatScanRequired: env.KNOWLEDGE_FILE_MALWARE_SCAN_MODE === 'required',
+    threatScanTimeoutMs: env.CLAMAV_SCAN_TIMEOUT_SECONDS * 1_000,
+  });
+  const knowledgeDocuments = new PrismaKnowledgeDocumentRepository(prisma);
+  const knowledgeDocumentIndex = new KnowledgeDocumentIndexService({
+    documents: knowledgeDocuments,
+    objects: knowledgeFileObjects,
+    parser: new DefaultKnowledgeDocumentParser({
+      ocr: env.OPENROUTER_API_KEY
+        ? new OpenRouterKnowledgeOcr({
+            apiKey: env.OPENROUTER_API_KEY,
+            model: env.VISION_OCR_MODEL,
+            providerOrder: env.OPENROUTER_PROVIDER_ORDER,
+          })
+        : null,
+      maxPages: env.KNOWLEDGE_DOCUMENT_MAX_PAGES,
+      maxOcrPages: env.KNOWLEDGE_DOCUMENT_MAX_OCR_PAGES,
+      maxArchiveEntries: env.KNOWLEDGE_DOCUMENT_MAX_ARCHIVE_ENTRIES,
+      maxArchiveUncompressedBytes: env.KNOWLEDGE_DOCUMENT_MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+      maxArchiveCompressionRatio: env.KNOWLEDGE_DOCUMENT_MAX_ARCHIVE_COMPRESSION_RATIO,
+    }),
+    semantic: hindsightService,
+    logger,
+    maxBytes: env.KNOWLEDGE_FILE_MAX_MB * 1_024 * 1_024,
+    parseTimeoutMs: env.KNOWLEDGE_DOCUMENT_PARSE_TIMEOUT_SECONDS * 1_000,
+    maxConcurrency: env.KNOWLEDGE_DOCUMENT_INDEX_CONCURRENCY,
+    chunking: {
+      targetChars: env.KNOWLEDGE_DOCUMENT_CHUNK_TARGET_CHARS,
+      maxChars: env.KNOWLEDGE_DOCUMENT_CHUNK_MAX_CHARS,
+      overlapChars: env.KNOWLEDGE_DOCUMENT_CHUNK_OVERLAP_CHARS,
+      maxChunks: env.KNOWLEDGE_DOCUMENT_MAX_CHUNKS,
+      maxExtractedChars: env.KNOWLEDGE_DOCUMENT_MAX_EXTRACTED_CHARS,
+    },
+  });
+  const knowledgeMutations = new KnowledgeMutationService(
+    new PrismaKnowledgeMutationStore(prisma),
+    new DefaultKnowledgeContentValidator(knowledgeFileAssets, {
+      requireThreatScan: env.KNOWLEDGE_FILE_MALWARE_SCAN_MODE === 'required',
+    }),
+  );
+  const knowledgeProjections = new KnowledgeProjectionService({
+    prisma,
+    memory: memoryService,
+    documents: knowledgeDocumentIndex,
+    fileAssets: knowledgeFileAssets,
+    files: knowledgeFileService,
+    logger,
+    options: {
+      batchSize: env.KNOWLEDGE_PROJECTION_BATCH_SIZE,
+      maxAttempts: env.KNOWLEDGE_PROJECTION_MAX_ATTEMPTS,
+      processingLeaseMs: env.KNOWLEDGE_PROJECTION_PROCESSING_LEASE_SECONDS * 1_000,
+    },
+  });
+  const knowledgeOperations = new KnowledgeOperationsService(prisma, {
+    pendingAgeWarningMs: env.KNOWLEDGE_HEALTH_PENDING_AGE_WARNING_SECONDS * 1_000,
+    processingLeaseMs: env.KNOWLEDGE_PROJECTION_PROCESSING_LEASE_SECONDS * 1_000,
+  });
+  const knowledgeResources = new KnowledgeResourceQueryService({
+    prisma,
+    departments: deptRepo,
+  });
+  const personalMemoryCommands = new PersonalMemoryCommandService({
+    permissions,
+    resources: knowledgeResources,
+    mutations: knowledgeMutations,
+    projections: knowledgeProjections,
+  });
+  const knowledgeRecall = new KnowledgeRecallService({
+    memory: memoryService,
+    departments: deptRepo,
+    permissions,
+    resources: knowledgeResources,
+  });
+  const knowledgeDocumentSearch = new KnowledgeDocumentSearchService({
+    documents: knowledgeDocuments,
+    semantic: hindsightService,
+    departments: deptRepo,
+    permissions,
+  });
+  const knowledgeLearningQueue = new KnowledgeLearningQueue(
+    queueRedisUrl,
+    env.REDIS_KNOWLEDGE_LEARNING_QUEUE_NAME,
+  );
+  const knowledgeLearningService = new KnowledgeLearningService({
+    prisma,
+    queue: knowledgeLearningQueue,
+    extractor: new DeepSeekKnowledgeLearningExtractor(
+      deepSeekModel(env.KNOWLEDGE_LEARNING_MODEL_ID),
+      env.KNOWLEDGE_LEARNING_MODEL_ID,
+    ),
+    personalMemoryCommands,
+    logger,
+    options: {
+      immediateConfidence: env.KNOWLEDGE_LEARNING_IMMEDIATE_CONFIDENCE,
+      repeatedConfidence: env.KNOWLEDGE_LEARNING_REPEATED_CONFIDENCE,
+      repeatedEvidenceCount: env.KNOWLEDGE_LEARNING_REPEATED_EVIDENCE_COUNT,
+    },
+  });
 
   // ── Tool registry ──────────────────────────────────────────────────────
   const toolRegistry = new ToolRegistry();
@@ -1499,9 +1647,14 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     inlineThreshold: env.ZOHO_BOOKS_CSV_INLINE_THRESHOLD,
   }));
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
-  toolRegistry.register(createSkillPublishingTool({ prisma }));
-  toolRegistry.register(createMemoryPublishingTool({ mem0: mem0Service }));
-  toolRegistry.register(createMemoryRecallTool({ mem0: mem0Service, departmentRepo: deptRepo }));
+  toolRegistry.register(createKnowledgeTool({
+    mutations: knowledgeMutations,
+    projections: knowledgeProjections,
+    recall: knowledgeRecall,
+    resources: knowledgeResources,
+    files: knowledgeFileService,
+    documents: knowledgeDocumentSearch,
+  }));
   toolRegistry.register(createDataExportTool({ queue: dataExportQueue }));
   toolRegistry.register(createSemrushTool({
     service: semrushService,
@@ -1592,15 +1745,20 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ component: 'lane-lease' }),
   });
   const busyLaneNotices = new BusyLaneNotices();
+  const runEffectReceipts = new RunEffectReceiptStore(ephemeralCache);
   const larkPiRuntime = new (await import('./application/runtime/lark-pi-runtime.service')).LarkPiRuntimeService({
     prisma,
     logger,
     memberJwtSecret: env.MEMBER_JWT_SECRET,
-    backendUrl: env.BACKEND_PUBLIC_URL,
+    backendUrl: env.PI_LARK_BACKEND_URL ?? env.BACKEND_PUBLIC_URL,
     controllerUrl: env.PI_LARK_CONTROLLER_URL,
     instanceId: env.PI_LARK_RUNTIME_INSTANCE_ID,
     leaseTtlSeconds: env.PI_RUNTIME_LEASE_TTL_SECONDS,
     runTimeoutMs: env.PI_LARK_RUN_TIMEOUT_MS,
+    runEffectReceipts,
+    conversationHistory: conversationRepo,
+    knowledgeRecall,
+    ...(env.KNOWLEDGE_LEARNING_ENABLED ? { knowledgeLearning: knowledgeLearningService } : {}),
   });
 
   const larkAdapter = new LarkChannelAdapter({
@@ -1725,7 +1883,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     approvalResolver,
     larkAdapter,
     logger.child({ service: 'approval-gate' }),
-    { disableManagerSelfBypass },
+    { disableManagerSelfBypass, knowledgeMutations },
     connectionRateLimits,
   );
   const gatewayToolExecutor = new ToolExecutor({
@@ -1813,6 +1971,19 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   });
   const mediaOcr = new MediaOcrService(env, logger);
   mediaOcr.bindExhaustionNotifier(apiKeyExhaustionNotifier);
+  const knowledgeReviewDecisionQueue = new KnowledgeReviewDecisionQueue(queueRedisUrl);
+  const larkKnowledgeReviewService = new LarkKnowledgeReviewService(
+    ephemeralCache,
+    larkAdapter,
+    larkRuntimeToolExecutor,
+    permissions,
+    approvalGate,
+    knowledgeMutations,
+    logger,
+    knowledgeReviewDecisionQueue,
+    Boolean(env.LARK_CARD_CALLBACK_URL),
+    channelIdentityRepo,
+  );
   const gatewayDispatcher = new GatewayDispatcher({
     permissions,
     toolRegistry,
@@ -1828,17 +1999,12 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     automationPlanService,
     skillAccessEnforcement,
     auditService,
+    larkKnowledgeReview: larkKnowledgeReviewService,
+    knowledgeMutations,
+    personalMemoryCommands,
+    runEffectReceipts,
     logger: logger.child({ service: 'gateway-dispatcher' }),
   });
-
-  const larkMemoryReviewService = new LarkMemoryReviewService(
-    memoryCache,
-    larkAdapter,
-    larkRuntimeToolExecutor,
-    permissions,
-    approvalGate,
-    logger,
-  );
 
   logger.info('container.built', { channels: channelRegistry.keys() });
 
@@ -1852,7 +2018,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger,
     prisma,
     cache,
-    memoryCache,
+    ephemeralCache,
     queueRedisUrl,
     permissions,
     toolPermRepo,
@@ -1900,7 +2066,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     approvalCardHandler,
     approvalResumer,
     approvalInbox,
-    // Document RAG
+    // Data export and async ingress
     dataExportQueue,
     dataExportSources,
     googleWorkspaceExportSink,
@@ -1916,9 +2082,19 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     managerTeachService,
     managerTeachUploadDir,
     cloudinaryAdapter,
-    // Knowledge Share
-    mem0Service,
-    larkMemoryReviewService,
+    // Central knowledge authority
+    memoryService,
+    knowledgeMutations,
+    knowledgeProjections,
+    knowledgeOperations,
+    knowledgeRecall,
+    knowledgeResources,
+    knowledgeLearningQueue,
+    knowledgeLearningService,
+    knowledgeFileService,
+    knowledgeDocumentSearch,
+    larkKnowledgeReviewService,
+    knowledgeReviewDecisionQueue,
     // Message serialization
     chatSerializer,
     // Group chat context

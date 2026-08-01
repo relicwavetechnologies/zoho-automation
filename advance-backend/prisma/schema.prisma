@@ -35,55 +35,78 @@ enum ScheduledWorkflowRunStatus {
   blocked
 }
 
-enum UserMemoryKind {
-  identity
-  response_style
-  preference
-  constraint
-  ongoing_task
-  project
-  decision
-  tool_routing
+enum KnowledgeResourceKind {
+  memory
+  skill
+  file
 }
 
-enum UserMemoryScope {
-  user_global
-  thread_pinned
+enum KnowledgeResourceScope {
+  personal
+  department
+  company
 }
 
-enum UserMemoryStatus {
+enum KnowledgeResourceStatus {
+  draft
   active
   archived
-  forgotten
+  deleted
+}
+
+enum KnowledgeMutationAction {
+  create
+  update
+  publish
+  delete
+}
+
+enum KnowledgeMutationStatus {
+  awaiting_requester_review
+  awaiting_approval
+  approved
+  applying
+  applied
+  rejected
+  cancelled
+  failed
   superseded
 }
 
-enum UserMemorySource {
-  user_explicit
-  assistant_compacted
-  tool_result
+enum KnowledgeApprovalAuthority {
+  none
+  department_manager
+  company_admin
 }
 
-enum UserMemoryChannelOrigin {
-  desktop
-  lark
+enum KnowledgeOutboxStatus {
+  pending
+  processing
+  completed
+  failed
 }
 
-enum UserMemoryReplyLength {
-  short
-  balanced
-  detailed
+enum KnowledgeFileAssetStatus {
+  staged
+  deleting
+  attached
+  deleted
 }
 
-enum UserMemoryTone {
-  neutral
-  warm
-  direct
+enum KnowledgeFileDocumentStatus {
+  processing
+  ready
+  failed
+  superseded
+  deleted
 }
 
-enum UserMemoryFormatting {
-  paragraphs
-  bullets
+enum KnowledgeLearningJobStatus {
+  queued
+  processing
+  completed
+  no_learning
+  failed
 }
 
 // Manager-persona learning is deliberately isolated from personal memory.
@@ -208,8 +231,6 @@ model User {
   createdSerperConnections           CompanySerperConnection[]       @relation("CompanySerperConnectionCreatedBy")
   createdOmsConnections              CompanyOmsConnection[]          @relation("CompanyOmsConnectionCreatedBy")
   grantedIntegrationConnectionGrants IntegrationConnectionGrant[]    @relation("IntegrationConnectionGrantGrantedBy")
-  memoryItems                        UserMemoryItem[]
-  memoryProfiles                     UserMemoryProfile[]
   departmentPreference               UserDepartmentPreference?
   personaLearningEvidenceAsManager   PersonaLearningEvidence[]       @relation("PersonaLearningEvidenceManager")
   personaLearningCandidatesAsManager PersonaLearningCandidate[]      @relation("PersonaLearningCandidateManager")
@@ -219,6 +240,13 @@ model User {
   connectionAuthorizationIntents     ConnectionAuthorizationIntent[]
   mailboxSubscriptions               MailboxSubscription[]
   mailAutomationRules                MailAutomationRule[]
+  knowledgeResourcesOwned            KnowledgeResource[]             @relation("KnowledgeResourceOwner")
+  knowledgeResourcesCreated          KnowledgeResource[]             @relation("KnowledgeResourceCreatedBy")
+  knowledgeVersionsCreated           KnowledgeVersion[]              @relation("KnowledgeVersionCreatedBy")
+  knowledgeMutationsRequested        KnowledgeMutation[]             @relation("KnowledgeMutationRequester")
+  knowledgeMutationTargets           KnowledgeMutation[]             @relation("KnowledgeMutationOwner")
+  knowledgeLearningJobs              KnowledgeLearningJob[]
+  knowledgeFileAssetsUploaded        KnowledgeFileAsset[]             @relation("KnowledgeFileAssetUploadedBy")
 }
 
 model Company {
@@ -261,6 +289,7 @@ model Company {
   larkChatContexts                LarkChatContext[]
   scheduledWorkflows              ScheduledWorkflow[]
   executionRuns                   ExecutionRun[]
+  knowledgeLearningJobs           KnowledgeLearningJob[]
   larkAuthLinks                   LarkUserAuthLink[]
   integrationConnections          IntegrationConnection[]
   integrationConnectionGrants     IntegrationConnectionGrant[]
@@ -269,8 +298,6 @@ model Company {
   serperConnections               CompanySerperConnection[]
   omsConnections                  CompanyOmsConnection[]
   outboundArtifacts               OutboundArtifact[]
-  userMemoryItems                 UserMemoryItem[]
-  userMemoryProfiles              UserMemoryProfile[]
   userDepartmentPreferences       UserDepartmentPreference[]
   personaLearningEvidences        PersonaLearningEvidence[]
   personaLearningCandidates       PersonaLearningCandidate[]
@@ -282,6 +309,11 @@ model Company {
   mailAutomationRules             MailAutomationRule[]
   mailEvents                      MailEvent[]
   mailDeliveries                  MailDelivery[]
+  knowledgeResources              KnowledgeResource[]
+  knowledgeMutations              KnowledgeMutation[]
+  knowledgeFileAssets             KnowledgeFileAsset[]
+  knowledgeFileDocuments          KnowledgeFileDocument[]
+  knowledgeFileChunks             KnowledgeFileChunk[]
 }
 
 model RegisteredTool {
@@ -313,52 +345,6 @@ model UserDepartmentPreference {
 
   @@unique([companyId, userId])
   @@index([userId, companyId])
-}
-
-model UserMemoryItem {
-  id              String                  @id @default(uuid())
-  companyId       String
-  company         Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  userId          String
-  user            User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  kind            UserMemoryKind
-  scope           UserMemoryScope
-  channelOrigin   UserMemoryChannelOrigin
-  threadId        String?
-  conversationKey String?
-  subjectKey      String
-  summary         String
-  valueJson       Json
-  confidence      Float
-  status          UserMemoryStatus        @default(active)
-  source          UserMemorySource
-  firstSeenAt     DateTime
-  lastSeenAt      DateTime
-  lastConfirmedAt DateTime?
-  staleAfterAt    DateTime?
-  supersededById  String?
-  createdAt       DateTime                @default(now())
-  updatedAt       DateTime                @updatedAt
-
-  @@index([companyId, userId, status, kind, updatedAt])
-  @@index([companyId, userId, subjectKey, status])
-  @@index([companyId, userId, status, scope, threadId, conversationKey])
-}
-
-model UserMemoryProfile {
-  id                      String                 @id @default(uuid())
-  companyId               String
-  company                 Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  userId                  String
-  user                    User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  preferredReplyLength    UserMemoryReplyLength?
-  preferredTone           UserMemoryTone?
-  preferredFormatting     UserMemoryFormatting?
-  updatedFromMemoryItemId String?
-  createdAt               DateTime               @default(now())
-  updatedAt               DateTime               @updatedAt
-
-  @@unique([companyId, userId])
 }
 
 model AdminMembership {
@@ -393,11 +379,11 @@ model AdminSession {
 }
 
 model ZohoConnection {
-  id                    String           @id @default(uuid())
+  id                    String        @id @default(uuid())
   companyId             String
-  company               Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  environment           String           @default("prod")
-  providerMode          String           @default("rest")
+  company               Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  environment           String        @default("prod")
+  providerMode          String        @default("rest")
   status                String
   connectedAt           DateTime
   scopes                String[]
@@ -411,14 +397,14 @@ model ZohoConnection {
   mcpLastHealthStatus   String?
   accessTokenEncrypted  String?
   refreshTokenEncrypted String?
-  tokenCipherVersion    Int              @default(1)
+  tokenCipherVersion    Int           @default(1)
   accessTokenExpiresAt  DateTime?
   refreshTokenExpiresAt DateTime?
   tokenFailureCode      String?
   lastTokenRefreshAt    DateTime?
   tokenMetadata         Json?
-  createdAt             DateTime         @default(now())
-  updatedAt             DateTime         @updatedAt
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
   syncJobs              ZohoSyncJob[]
 
   @@unique([companyId, environment])
@@ -634,9 +620,9 @@ model ZohoSyncJobEvent {
 }
 
 model OutboundArtifact {
-  id               String     @id @default(uuid())
+  id               String   @id @default(uuid())
   companyId        String
-  company          Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company          Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   createdByUserId  String?
   sourceSystem     String
   sourceKind       String
@@ -646,10 +632,10 @@ model OutboundArtifact {
   fileName         String
   mimeType         String
   sizeBytes        Int
-  storageKind      String     @default("inline_base64")
+  storageKind      String   @default("inline_base64")
   contentBase64    String
-  createdAt        DateTime   @default(now())
-  updatedAt        DateTime   @updatedAt
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   @@index([companyId, createdAt])
   @@index([companyId, sourceSystem, sourceKind])
@@ -839,6 +825,8 @@ model Department {
   managerTeachSessions           ManagerTeachSession[]
   connectionAuthorizationIntents ConnectionAuthorizationIntent[]
   mailAutomationRules            MailAutomationRule[]
+  knowledgeResources             KnowledgeResource[]
+  knowledgeMutations             KnowledgeMutation[]
 
   @@unique([companyId, slug])
   @@unique([id, companyId])
@@ -846,36 +834,38 @@ model Department {
 }
 
 model Skill {
-  id                 String                      @id @default(uuid())
-  companyId          String
-  company            Company                     @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  departmentId       String?
-  department         Department?                 @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  folderId           String?
-  folder             SkillFolder?                @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  scope              String
-  name               String
-  slug               String
-  summary            String
-  markdown           String
-  toolIds            String[]                    @default([])
-  tags               String[]                    @default([])
-  status             String                      @default("active")
-  isSystem           Boolean                     @default(false)
-  sortOrder          Int                         @default(0)
-  revision           Int                         @default(1)
-  createdBy          String?
-  updatedBy          String?
-  createdAt          DateTime                    @default(now())
-  updatedAt          DateTime                    @updatedAt
-  versions           SkillVersion[]
-  aliases            SkillAlias[]
-  capabilities       SkillCapability[]
-  accessGrants       SkillAccessGrant[]
-  outgoingRoutes     SkillRoute[]                 @relation("SkillRouteRouter")
-  incomingRoutes     SkillRoute[]                 @relation("SkillRouteTarget")
-  personaLinks       ManagerPersonaSkillLink[]
-  learningProvenance ManagerLearningProvenance[]
+  id                  String                      @id @default(uuid())
+  knowledgeResourceId String?                     @unique
+  knowledgeResource   KnowledgeResource?          @relation(fields: [knowledgeResourceId], references: [id], onDelete: SetNull)
+  companyId           String
+  company             Company                     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  departmentId        String?
+  department          Department?                 @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  folderId            String?
+  folder              SkillFolder?                @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  scope               String
+  name                String
+  slug                String
+  summary             String
+  markdown            String
+  toolIds             String[]                    @default([])
+  tags                String[]                    @default([])
+  status              String                      @default("active")
+  isSystem            Boolean                     @default(false)
+  sortOrder           Int                         @default(0)
+  revision            Int                         @default(1)
+  createdBy           String?
+  updatedBy           String?
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+  versions            SkillVersion[]
+  aliases             SkillAlias[]
+  capabilities        SkillCapability[]
+  accessGrants        SkillAccessGrant[]
+  outgoingRoutes      SkillRoute[]                @relation("SkillRouteRouter")
+  incomingRoutes      SkillRoute[]                @relation("SkillRouteTarget")
+  personaLinks        ManagerPersonaSkillLink[]
+  learningProvenance  ManagerLearningProvenance[]
 
   @@index([companyId, scope, status, sortOrder])
   @@index([departmentId, status, sortOrder])
@@ -2193,9 +2183,31 @@ model RuntimeConversationMessage {
   createdAt       DateTime            @default(now())
 
   @@unique([conversationId, sequence])
+  @@unique([conversationId, dedupeKey])
   @@index([conversationId, createdAt])
   @@index([runId, createdAt])
   @@index([dedupeKey])
+}
+
+// Attachment-only direct messages are staged before the user asks what to do.
+// This durable pointer is consumed by the next private run; bytes remain in the
+// user's private Docker volume and expire there independently.
+model RuntimePendingAttachment {
+  id              String   @id @default(uuid())
+  companyId       String
+  userId          String
+  channel         String
+  conversationKey String
+  requestId       String
+  fileId          String
+  descriptorJson  Json
+  expiresAt       DateTime
+  consumedAt      DateTime?
+  createdAt       DateTime @default(now())
+
+  @@unique([companyId, userId, channel, conversationKey, requestId, fileId], map: "RuntimePendingAttachment_identity_file_key")
+  @@index([companyId, userId, channel, conversationKey, consumedAt, expiresAt])
+  @@index([expiresAt])
 }
 
 model RuntimeRun {
@@ -2256,12 +2268,304 @@ model RuntimeApproval {
   resolutionReason    String?
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
+  knowledgeMutation   KnowledgeMutation?
 
   @@index([conversationId, createdAt])
   @@index([runId, createdAt])
   @@index([status, createdAt])
   @@index([externalActionId])
   @@index([idempotencyKey])
+}
+
+// One durable resource exists in exactly one authenticated target. A request
+// to publish to both a department and its company creates two resources and
+// two mutations so neither target can inherit the other's approval.
+model KnowledgeResource {
+  id             String                  @id @default(uuid())
+  companyId      String
+  company        Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  kind           KnowledgeResourceKind
+  scope          KnowledgeResourceScope
+  targetKey      String
+  ownerUserId    String?
+  ownerUser      User?                   @relation("KnowledgeResourceOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  departmentId   String?
+  department     Department?             @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  logicalKey     String
+  status         KnowledgeResourceStatus @default(draft)
+  currentVersion Int                     @default(0)
+  createdById    String
+  createdBy      User                    @relation("KnowledgeResourceCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+  versions       KnowledgeVersion[]
+  mutations      KnowledgeMutation[]
+  projectedSkill Skill?
+  fileAssets     KnowledgeFileAsset[]
+  fileDocuments  KnowledgeFileDocument[]
+
+  @@unique([companyId, kind, targetKey, logicalKey])
+  @@index([companyId, scope, status, updatedAt])
+  @@index([ownerUserId, kind, status, updatedAt])
+  @@index([departmentId, kind, status, updatedAt])
+}
+
+// Private bytes are staged before any scope decision. The agent receives only
+// this opaque asset ID; provider keys never become model-controlled authority.
+// A staged asset can be attached to exactly one governed resource after the
+// central mutation has passed RBAC and every required human decision.
+model KnowledgeFileAsset {
+  id                  String                   @id @default(uuid())
+  companyId           String
+  company             Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  uploadedById        String
+  uploadedBy          User                     @relation("KnowledgeFileAssetUploadedBy", fields: [uploadedById], references: [id], onDelete: Restrict)
+  knowledgeResourceId String?
+  knowledgeResource   KnowledgeResource?       @relation(fields: [knowledgeResourceId], references: [id], onDelete: SetNull)
+  mutations           KnowledgeMutation[]
+  provider            String
+  storageKey          String                   @unique
+  resourceType        String
+  deliveryType        String
+  fileName            String
+  mimeType            String
+  sizeBytes           Int
+  sha256              String
+  inspectionVersion   String                   @default("strict-v1")
+  inspectedAt         DateTime                 @default(now())
+  threatScanProvider  String?
+  threatScanVersion   String?
+  threatScannedAt     DateTime?
+  status              KnowledgeFileAssetStatus @default(staged)
+  expiresAt           DateTime
+  attachedAt          DateTime?
+  deletedAt           DateTime?
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+  document            KnowledgeFileDocument?
+
+  @@index([companyId, uploadedById, status, createdAt])
+  @@index([knowledgeResourceId, status])
+  @@index([status, expiresAt])
+  @@index([companyId, sha256])
+}
+
+// Parsed text is a reproducible, non-authoritative projection of one immutable
+// governed file version. The original private object and KnowledgeVersion stay
+// canonical; failed parsing never changes file visibility or approval state.
+model KnowledgeFileDocument {
+  id                 String                      @id @default(uuid())
+  companyId          String
+  company            Company                     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  resourceId         String
+  resource           KnowledgeResource           @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  resourceVersion    Int
+  fileAssetId        String                      @unique
+  fileAsset          KnowledgeFileAsset           @relation(fields: [fileAssetId], references: [id], onDelete: Cascade)
+  sourceSha256       String
+  mimeType           String
+  parserVersion      String
+  status             KnowledgeFileDocumentStatus @default(processing)
+  pageCount          Int?
+  chunkCount         Int                         @default(0)
+  warningsJson       Json?
+  attempts           Int                         @default(0)
+  lockedAt           DateTime?
+  indexedAt          DateTime?
+  failureCode        String?
+  failureMessage     String?
+  createdAt          DateTime                    @default(now())
+  updatedAt          DateTime                    @updatedAt
+  chunks             KnowledgeFileChunk[]
+
+  @@unique([resourceId, resourceVersion])
+  @@index([companyId, status, updatedAt])
+  @@index([resourceId, status, resourceVersion])
+}
+
+// Chunks retain page/section provenance for citations. `searchVector` is
+// populated by the repository so Prisma db push and SQL migrations behave the
+// same; Hindsight remains the semantic/reranking projection.
+model KnowledgeFileChunk {
+  id              String                @id @default(uuid())
+  companyId       String
+  company         Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  documentId      String
+  document        KnowledgeFileDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  resourceId      String
+  resourceVersion Int
+  ordinal         Int
+  pageStart       Int?
+  pageEnd         Int?
+  sectionPath     String[]              @default([])
+  text            String
+  textHash        String
+  charCount       Int
+  tokenEstimate   Int
+  searchVector    Unsupported("tsvector")?
+  createdAt       DateTime              @default(now())
+
+  @@unique([documentId, ordinal])
+  @@index([companyId, resourceId, resourceVersion, ordinal])
+  @@index([documentId, pageStart, pageEnd])
+  @@index([searchVector], type: Gin)
+}
+
+// Content versions are immutable. The hash is over canonical JSON and is also
+// bound into requester review, human approval, and projection idempotency.
+model KnowledgeVersion {
+  id                 String              @id @default(uuid())
+  resourceId         String
+  resource           KnowledgeResource   @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  version            Int
+  contentJson        Json
+  contentHash        String
+  // Deterministic Postgres retrieval projection. This is rebuilt from the
+  // immutable logical key + content and never becomes mutation authority.
+  searchText         String?
+  searchVector       Unsupported("tsvector")?
+  evidenceJson       Json?
+  sourceType         String
+  sourceRef          String?
+  createdById        String
+  createdBy          User                @relation("KnowledgeVersionCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt          DateTime            @default(now())
+  appliedByMutations KnowledgeMutation[] @relation("KnowledgeMutationAppliedVersion")
+
+  @@unique([resourceId, version])
+  @@unique([resourceId, contentHash])
+  @@index([contentHash])
+  @@index([searchVector], type: Gin)
+}
+
+// This is the sole lifecycle authority for create/update/publish/delete. The
+// model may propose content, but it cannot provide owner IDs, skip review, pick
+// an approver, or write a projection directly.
+model KnowledgeMutation {
+  id                      String                     @id @default(uuid())
+  companyId               String
+  company                 Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  resourceId              String?
+  resource                KnowledgeResource?         @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  kind                    KnowledgeResourceKind
+  scope                   KnowledgeResourceScope
+  targetKey               String
+  ownerUserId             String?
+  ownerUser               User?                      @relation("KnowledgeMutationOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  departmentId            String?
+  department              Department?                @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  logicalKey              String
+  action                  KnowledgeMutationAction
+  baseVersion             Int?
+  proposedContentJson     Json?
+  proposedContentHash     String?
+  evidenceJson            Json?
+  sourceType              String
+  sourceRef               String?
+  requesterId             String
+  requester               User                       @relation("KnowledgeMutationRequester", fields: [requesterId], references: [id], onDelete: Restrict)
+  requesterReviewRequired Boolean
+  requesterReviewedAt     DateTime?
+  requiredAuthority       KnowledgeApprovalAuthority
+  distinctApprover        Boolean                    @default(true)
+  policyId                String
+  policyVersion           Int
+  runtimeApprovalId       String?                    @unique
+  runtimeApproval         RuntimeApproval?           @relation(fields: [runtimeApprovalId], references: [id], onDelete: Restrict)
+  appliedVersionId        String?
+  appliedVersion          KnowledgeVersion?          @relation("KnowledgeMutationAppliedVersion", fields: [appliedVersionId], references: [id], onDelete: Restrict)
+  fileAssetId             String?
+  fileAsset               KnowledgeFileAsset?        @relation(fields: [fileAssetId], references: [id], onDelete: Restrict)
+  status                  KnowledgeMutationStatus
+  idempotencyKey          String                     @unique
+  rejectionReason         String?
+  failureCode             String?
+  failureMessage          String?
+  createdAt               DateTime                   @default(now())
+  updatedAt               DateTime                   @updatedAt
+  decidedAt               DateTime?
+  appliedAt               DateTime?
+  outboxEvents            KnowledgeOutbox[]
+
+  @@index([companyId, requesterId, status, createdAt])
+  @@index([companyId, departmentId, status, createdAt])
+  @@index([resourceId, createdAt])
+  @@index([runtimeApprovalId])
+  @@index([fileAssetId, status])
+}
+
+// Policies are data, not scattered tool conditionals. `tenantKey=global`
+// provides the production defaults; a company ID can override one exact row.
+model KnowledgePolicy {
+  id                      String                     @id @default(uuid())
+  tenantKey               String                     @default("global")
+  kind                    KnowledgeResourceKind
+  scope                   KnowledgeResourceScope
+  action                  KnowledgeMutationAction
+  requesterReviewRequired Boolean
+  requiredAuthority       KnowledgeApprovalAuthority
+  distinctApprover        Boolean                    @default(true)
+  enabled                 Boolean                    @default(true)
+  version                 Int                        @default(1)
+  createdAt               DateTime                   @default(now())
+  updatedAt               DateTime                   @updatedAt
+
+  @@unique([tenantKey, kind, scope, action])
+  @@index([tenantKey, enabled])
+}
+
+// Projection side effects (Hindsight, skill registry, object visibility) are
+// delivered from this transactional outbox. Containers can die after commit
+// without losing or duplicating an authoritative mutation.
+model KnowledgeOutbox {
+  id          String                @id @default(uuid())
+  mutationId  String
+  mutation    KnowledgeMutation     @relation(fields: [mutationId], references: [id], onDelete: Cascade)
+  eventType   String
+  payloadJson Json
+  dedupeKey   String                @unique
+  status      KnowledgeOutboxStatus @default(pending)
+  attempts    Int                   @default(0)
+  availableAt DateTime              @default(now())
+  lockedAt    DateTime?
+  completedAt DateTime?
+  lastError   String?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  @@index([status, availableAt])
+  @@index([mutationId])
+}
+
+// Completed user turns are first captured durably, then classified by a
+// structured model in a retryable worker. The worker may propose personal
+// memory only; the ordinary KnowledgeMutation policy remains the sole writer.
+model KnowledgeLearningJob {
+  id              String                     @id @default(uuid())
+  companyId       String
+  company         Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceId        String
+  channel         String
+  companyRole     String
+  userMessages    Json
+  assistantText   String?
+  pipelineVersion Int                        @default(1)
+  status          KnowledgeLearningJobStatus @default(queued)
+  attempts        Int                        @default(0)
+  lockedAt        DateTime?
+  processedAt     DateTime?
+  modelProvider   String?
+  modelId         String?
+  outcomesJson    Json?
+  lastError       String?
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+
+  @@unique([companyId, userId, sourceId, pipelineVersion], map: "KnowledgeLearningJob_identity_pipeline_key")
+  @@index([status, lockedAt, createdAt])
+  @@index([companyId, userId, createdAt])
 }
 
 model MemberTokenPolicy {
@@ -2337,4 +2641,3 @@ model ProxyRequestLog {
   @@index([companyId, userId, createdAt])
   @@index([companyId, channel, createdAt])
 }
-

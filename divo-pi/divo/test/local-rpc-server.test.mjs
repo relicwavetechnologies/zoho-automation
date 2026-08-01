@@ -291,6 +291,9 @@ test("Lark runs admit only the profile derived from a validated runtime lease", 
 				userId: "user-1",
 				companyId: "company-1",
 				instanceId: "pi-local-1",
+				channel: "lark",
+				runId: "backend-run-1",
+				runtimeThreadId: "lark:tenant:chat:dm",
 			};
 		},
 		executeRuntime: async (runtime, message, options) => {

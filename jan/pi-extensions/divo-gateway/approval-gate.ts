@@ -193,17 +193,21 @@ function gateDivoInvocation(event: ToolCallEvent): ToolCallEventResult | undefin
 			`payload.args must be an object. Expected ${DIVO_TOOLS_INVOKE_ENVELOPE}`,
 		);
 	}
-	if (toolId === "memoryRecall") {
+	if (toolId === "knowledge" && nonEmptyString(args?.operation) === "recall") {
 		return approvalBlock(
 			"Memory recall must use divo_memory_recall with a query and optional exact department-name ranking preferences. The backend derives and searches all active memberships; names do not select or grant scope.",
 		);
 	}
 	if (
-		toolId === "memoryPublishing" &&
-		nonEmptyString(args?.operation) === "publish"
+		toolId === "knowledge" && ["propose", "apply"].includes(nonEmptyString(args?.operation) ?? "")
 	) {
+		if (nonEmptyString(args?.scope) === "personal" && nonEmptyString(args?.kind) === "memory") {
+			return approvalBlock(
+				"Raw personal-memory proposals are disabled. Use divo_memory for an explicit personal save, correction, or deletion; implicit learning remains a separate backend process.",
+			);
+		}
 		return approvalBlock(
-			"Memory publishing must use divo_memory_review so the user can select the exact facts and target before the backend binds them.",
+			"Personal skills/files and all shared knowledge changes must use the dedicated review surface so the exact content and target are reviewed before backend policy can apply them.",
 		);
 	}
 

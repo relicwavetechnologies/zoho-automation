@@ -33,7 +33,6 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildContainer } from '../src/composition';
 import { loadAndValidateEnv } from '../src/config/env';
-import { LarkPiRuntimeService } from '../src/application/runtime/lark-pi-runtime.service';
 import type { PrismaClient } from '../src/generated/prisma';
 import { asMessageId, asChatId, asCorrelationId, asCompanyId, asUserId, asDepartmentId } from '../src/shared/ids';
 import { asCompanyRoleSlug } from '../src/domain/permissions/company-role';
@@ -69,6 +68,38 @@ export interface EngineHarnessOptions {
   readonly oauthE2e: boolean;
   readonly deliverToLark: boolean;
   readonly help: boolean;
+}
+
+/**
+ * Keep the provider delivery address separate from the disposable Pi thread.
+ * Lark callbacks and review cards must always use the real chat ID; fresh
+ * harness isolation belongs only in the agent session key.
+ */
+export function resolveHarnessRuntimeAddress(
+  chatId: string,
+  messageId: string,
+  freshContext: boolean,
+): { chatId: string; freshThreadId?: string } {
+  return {
+    chatId,
+    ...(freshContext ? { freshThreadId: `harness_fresh_${messageId}` } : {}),
+  };
+}
+
+/**
+ * Keep production delivery intact while replacing only the Pi session key.
+ * `runPiAndDeliver` correctly derives a DM session from the real chat ID; the
+ * harness needs this narrow wrapper because a fresh test must not reopen that
+ * user's durable conversation merely to deliver the result to the same DM.
+ */
+export function isolateHarnessPiThread(
+  runtime: Pick<LarkPiRuntimeService, 'run'>,
+  freshThreadId?: string,
+): Pick<LarkPiRuntimeService, 'run'> {
+  if (!freshThreadId) return runtime;
+  return {
+    run: input => runtime.run({ ...input, threadId: freshThreadId }),
+  };
 }
 
 export function parseEngineHarnessArgs(
@@ -631,21 +662,19 @@ async function main() {
   console.log(`persisted trace: ${options.trace}`);
   console.log(`full debug: ${options.fullDebug}\n`);
 
-  const env = loadAndValidateEnv(options.freshContext
-    ? { ...process.env, MEM0_ENABLED: 'false' }
-    : process.env);
-  const container = await buildContainer(env);
-  const { larkAdapter, channelIdentityRepo, prisma } = container;
-  const piRuntime = new LarkPiRuntimeService({
-    prisma,
-    logger: container.logger,
-    memberJwtSecret: env.MEMBER_JWT_SECRET,
-    backendUrl: options.backendUrl,
-    controllerUrl: env.PI_LARK_CONTROLLER_URL,
-    instanceId: env.PI_LARK_RUNTIME_INSTANCE_ID,
-    leaseTtlSeconds: env.PI_RUNTIME_LEASE_TTL_SECONDS,
-    runTimeoutMs: env.PI_LARK_RUN_TIMEOUT_MS,
+  const env = loadAndValidateEnv({
+    ...process.env,
+    // Build the same fully composed runtime used by the webhook while still
+    // allowing the harness to target an explicitly selected backend.
+    PI_LARK_BACKEND_URL: options.backendUrl,
   });
+  const container = await buildContainer(env);
+  const {
+    larkAdapter,
+    channelIdentityRepo,
+    prisma,
+    larkPiRuntime: piRuntime,
+  } = container;
 
   // ── 1. Resolve identity (mirrors webhook) ─────────────────────────────────
   const userOpenId = await resolveHarnessOpenId(prisma, options.userSelector);
@@ -682,11 +711,12 @@ async function main() {
     ? threadRootMessageId!
     : `om_harness_${randomUUID()}`;
   const traceId   = asCorrelationId(`${messageId}-${now.getTime()}`);
-  const contextChatId = options.chatType === 'group' && options.groupReplyMode === 'threaded'
-    ? options.chatId
-    : options.freshContext
-    ? `harness_fresh_${messageId}`
-    : options.chatId;
+  const runtimeAddress = resolveHarnessRuntimeAddress(
+    options.chatId,
+    messageId,
+    options.freshContext,
+  );
+  const contextChatId = runtimeAddress.chatId;
   console.log(`traceId: ${traceId}`);
   console.log(`requestId: ${messageId}\n`);
   console.log(`context chatId: ${contextChatId}\n`);
@@ -776,7 +806,7 @@ async function main() {
   }
 
   // ── 4. Run cloud Pi through the same lease/controller boundary as Lark ────
-  const runtimeThreadId = String(conversationKeyForMessage({
+  const runtimeThreadId = runtimeAddress.freshThreadId ?? String(conversationKeyForMessage({
     chatId: String(incoming.chatId),
     chatType: incoming.chatType,
     messageId: String(incoming.messageId),
@@ -797,7 +827,7 @@ async function main() {
         conversation,
         deps: {
           adapter: larkAdapter,
-          piRuntime,
+          piRuntime: isolateHarnessPiThread(piRuntime, runtimeAddress.freshThreadId),
         },
         log: container.logger,
         rethrowRuntimeFailureAfterDelivery: true,

@@ -130,11 +130,11 @@ describe('createGatewayRoutes', () => {
   });
 
   it('passes trusted Lark provenance to the dispatcher', async () => {
-    let dispatchedChannel: string | undefined;
+    let dispatchedMember: Record<string, unknown> | undefined;
     const router = createGatewayRoutes({
       dispatcher: {
         dispatch: async (_request, member) => {
-          dispatchedChannel = member.channel;
+          dispatchedMember = member as unknown as Record<string, unknown>;
           return { ok: true, status: 'success', data: {} };
         },
       } as GatewayDispatcher,
@@ -149,11 +149,82 @@ describe('createGatewayRoutes', () => {
         aiRole: 'MEMBER',
         sessionId: 'sess-1',
         channel: 'lark',
+        runtimeRunId: 'run-1',
+        runtimeThreadId: 'thread-1',
+        runtimeChatId: 'chat-1',
       },
     });
 
     assert.equal(status, 200);
-    assert.equal(dispatchedChannel, 'lark');
+    assert.equal(dispatchedMember?.['channel'], 'lark');
+    assert.equal(dispatchedMember?.['runtimeRunId'], 'run-1');
+    assert.equal(dispatchedMember?.['runtimeThreadId'], 'thread-1');
+    assert.equal(dispatchedMember?.['runtimeChatId'], 'chat-1');
+  });
+
+  it('requires exact lease-bound run and thread provenance for a Pi memory effect', async () => {
+    let dispatchCount = 0;
+    const router = createGatewayRoutes({
+      dispatcher: {
+        dispatch: async () => {
+          dispatchCount++;
+          return { ok: true, status: 'success', data: {} };
+        },
+      } as GatewayDispatcher,
+      logger: noopLogger,
+    });
+    const locals = {
+      companyId: 'co-1',
+      userId: 'user-1',
+      aiRole: 'MEMBER',
+      sessionId: 'sess-1',
+      channel: 'lark',
+      isPiRuntimeLease: true,
+      runtimeRunId: 'run-1',
+      runtimeThreadId: 'thread-1',
+      runtimeChatId: 'chat-1',
+    };
+    const payload = {
+      skillId: 'share-memory',
+      requestId: 'proposal-1',
+      kind: 'memory',
+      bullets: ['Company fact'],
+    };
+
+    const missing = await callPost(router, {
+      body: { op: 'knowledge.review.open', payload },
+      locals,
+    });
+    assert.equal(missing.status, 400);
+    assert.equal(missing.body.status, 'bad_request');
+
+    for (const execution of [
+      { version: 1, runId: 'other-run', threadId: 'thread-1', actionId: 'action-1' },
+      { version: 1, runId: 'run-1', threadId: 'other-thread', actionId: 'action-1' },
+    ]) {
+      const mismatched = await callPost(router, {
+        body: { op: 'knowledge.review.open', execution, payload },
+        locals,
+      });
+      assert.equal(mismatched.status, 403);
+      assert.equal(mismatched.body.status, 'permission_denied');
+    }
+
+    const exact = await callPost(router, {
+      body: {
+        op: 'knowledge.review.open',
+        execution: {
+          version: 1,
+          runId: 'run-1',
+          threadId: 'thread-1',
+          actionId: 'action-1',
+        },
+        payload,
+      },
+      locals,
+    });
+    assert.equal(exact.status, 200);
+    assert.equal(dispatchCount, 1);
   });
 
   it('blocks company-mutation operations from a Pi runtime lease', async () => {
