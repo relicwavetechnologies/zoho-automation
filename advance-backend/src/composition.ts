@@ -1593,7 +1593,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     instanceId: env.PI_LARK_RUNTIME_INSTANCE_ID,
     leaseTtlSeconds: env.PI_RUNTIME_LEASE_TTL_SECONDS,
     runTimeoutMs: env.PI_LARK_RUN_TIMEOUT_MS,
-    allowedModelsFor: (userId) => llmProxyService.allowedModelsFor(userId),
   });
 
   const larkAdapter = new LarkChannelAdapter({

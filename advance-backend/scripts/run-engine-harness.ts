@@ -644,7 +644,6 @@ async function main() {
     instanceId: env.PI_LARK_RUNTIME_INSTANCE_ID,
     leaseTtlSeconds: env.PI_RUNTIME_LEASE_TTL_SECONDS,
     runTimeoutMs: env.PI_LARK_RUN_TIMEOUT_MS,
-    allowedModelsFor: userId => container.llmProxyService.allowedModelsFor(userId),
   });
 
   // ── 1. Resolve identity (mirrors webhook) ─────────────────────────────────
@@ -660,8 +659,8 @@ async function main() {
   const expectedModelId = options.model ? HARNESS_MODEL_IDS[options.model] : undefined;
   if (expectedModelId && activeModelId !== expectedModelId) {
     throw new Error(
-      `--model ${options.model} expects ${expectedModelId}, but this member's active model is ${activeModelId}. `
-      + 'The harness follows the backend grant and does not override it; update the member policy or omit --model.',
+      `--model ${options.model} expects ${expectedModelId}, but Lark is pinned to ${activeModelId}. `
+      + 'Update the channel pin or omit --model.',
     );
   }
   console.log(`identity: ${identity.displayName ?? identity.email ?? userOpenId} (${userOpenId})`);

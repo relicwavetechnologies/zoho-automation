@@ -817,10 +817,7 @@ test('a caller-issued session is used verbatim, not the member\'s own sign-in', 
   assert.equal(where['revokedAt'], null);
 });
 
-// Every Lark run used to launch on the model pinned in the container manifest,
-// so granting somebody Pro or Luna changed nothing they could see. The run
-// request is where the grant finally becomes the model that answers.
-test('the run asks for the best model the member is granted', async () => {
+test('the run asks for the Flash model pinned to the Lark channel', async () => {
   let runBody: Record<string, unknown> | undefined;
   const service = new LarkPiRuntimeService({
     prisma: {
@@ -838,43 +835,6 @@ test('the run asks for the best model the member is granted', async () => {
     instanceId: 'pi-local-1',
     leaseTtlSeconds: 3_600,
     runTimeoutMs: 30_000,
-    allowedModelsFor: async () => ['deepseek-v4-flash', 'gpt-5.6-luna'],
-    fetch: (async (_url: string, init?: RequestInit) => {
-      runBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
-      return new Response(JSON.stringify({ text: 'ok' }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as any,
-  });
-
-  await service.run(runtimeInput());
-
-  assert.equal(runBody?.['model'], 'gpt-5.6-luna');
-  assert.equal(runBody?.['provider'], 'openai');
-});
-
-// Not knowing the grant is a reason to be careful, not a reason to fail a turn
-// the member could otherwise have had answered.
-test('a grant lookup that throws still runs, on the default model', async () => {
-  let runBody: Record<string, unknown> | undefined;
-  const service = new LarkPiRuntimeService({
-    prisma: {
-      memberSession: {
-        findFirst: async () => ({
-          sessionId: 'session-1',
-          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
-        }),
-      },
-    } as any,
-    logger,
-    memberJwtSecret: 'test-secret',
-    backendUrl: 'https://backend.example',
-    controllerUrl: 'http://127.0.0.1:4317',
-    instanceId: 'pi-local-1',
-    leaseTtlSeconds: 3_600,
-    runTimeoutMs: 30_000,
-    allowedModelsFor: async () => { throw new Error('policy store is down'); },
     fetch: (async (_url: string, init?: RequestInit) => {
       runBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
       return new Response(JSON.stringify({ text: 'ok' }), {

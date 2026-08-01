@@ -33,5 +33,7 @@ export function providerForModel(value) {
 }
 
 export function thinkingLevelForModel(value, fallback = "medium") {
-	return value === "gpt-5.6-luna" ? "high" : fallback;
+	return value === "gpt-5.6-luna" || value === "deepseek-v4-flash"
+		? "high"
+		: fallback;
 }

@@ -6,8 +6,6 @@ import type { IncomingMessage } from '../../domain/channel/incoming-message';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import { issuePiRuntimeLease } from './pi-runtime-lease';
 import {
-  DEFAULT_MODEL,
-  bestGrantedModel,
   providerOf,
   type ProxyModel,
 } from '../observability/pricing';
@@ -17,6 +15,7 @@ import {
 } from '../chat-context/group-context.hydrator';
 
 const MAX_RUNTIME_ATTACHMENTS = 4;
+const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-flash';
 
 function asyncIterableBody(source: AsyncIterable<Uint8Array>): ReadableStream<Uint8Array> {
   const iterator = source[Symbol.asyncIterator]();
@@ -164,8 +163,6 @@ export interface LarkPiRuntimeServiceDeps {
   readonly leaseTtlSeconds: number;
   readonly runTimeoutMs: number;
   readonly fetch?: typeof globalThis.fetch;
-  /** The member's model grant. Absent means every run takes the default. */
-  readonly allowedModelsFor?: (userId: string) => Promise<readonly string[]>;
 }
 
 /**
@@ -338,24 +335,11 @@ export class LarkPiRuntimeService {
   }
 
   /**
-   * The model this member's run should ask for.
-   *
-   * Sent to the controller so the container launches on it. Until now the
-   * container read one model out of its manifest, which meant an admin could
-   * grant somebody Pro and watch every Lark run keep using Flash — the grant
-   * was enforced at the proxy but nothing ever asked for the other model.
-   *
-   * A failure here falls back to the default rather than failing the run: not
-   * knowing the grant is a reason to be conservative, not a reason to be silent.
+   * Lark is intentionally pinned independently of member proxy grants. Grants
+   * authorize proxy use; they do not choose the channel's runtime model.
    */
-  async modelFor(userId: string): Promise<ProxyModel> {
-    if (!this.deps.allowedModelsFor) return DEFAULT_MODEL;
-    try {
-      return bestGrantedModel(await this.deps.allowedModelsFor(userId));
-    } catch (error) {
-      this.log.warn('pi.model.resolve_failed', { userId, error: String(error) });
-      return DEFAULT_MODEL;
-    }
+  async modelFor(_userId: string): Promise<ProxyModel> {
+    return LARK_RUNTIME_MODEL;
   }
 
   async run(input: LarkPiRuntimeInput): Promise<{ text: string }> {

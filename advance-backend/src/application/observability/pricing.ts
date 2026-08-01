@@ -85,13 +85,14 @@ const DEFAULT_RATE: ModelRate = SPEC_BY_ID.get('deepseek-v4-flash')!.rate
 export const PROXY_MODEL_SPECS: readonly ProxyModelSpec[] = SPECS
 
 /**
- * Canonicalize a provider/model id to one of our priced models. DeepSeek aliases
- * `deepseek-chat`→flash and `deepseek-reasoner`→pro, and clients may send
+ * Canonicalize a provider/model id to one of our priced models. DeepSeek's
+ * retired chat/reasoner aliases both resolve to V4 Flash (non-thinking/thinking
+ * mode respectively), and clients may send
  * short/versioned ids; we normalize so allow-list checks AND pricing are exact.
  */
 const MODEL_ALIASES: Record<string, ProxyModel> = {
   'deepseek-chat': 'deepseek-v4-flash',
-  'deepseek-reasoner': 'deepseek-v4-pro',
+  'deepseek-reasoner': 'deepseek-v4-flash',
   luna: 'gpt-5.6-luna',
 }
 
@@ -138,8 +139,8 @@ export function providerOf(modelId: string): ModelProvider {
  */
 export const RUNTIME_MODEL_PREFERENCE = [
   'gpt-5.6-luna',
-  'deepseek-v4-pro',
   'deepseek-v4-flash',
+  'deepseek-v4-pro',
 ] as const satisfies readonly ProxyModel[]
 
 /** The lowest-privilege model, and what a member with no grant at all runs on. */
