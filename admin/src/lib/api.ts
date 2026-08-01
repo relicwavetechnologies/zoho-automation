@@ -27,10 +27,30 @@ const extractErrorMessage = async (response: Response): Promise<string> => {
   }
 };
 
+/**
+ * Thrown instead of a bare Error so a caller can tell "wrong password" (401)
+ * from "no workspace" (403) from "the server fell over" without parsing prose.
+ */
+export class ApiError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+type RequestOptions = {
+  /**
+   * Suppress the error toast. Sign-in renders its failure inline, next to the
+   * field that caused it — a toast on top of that is the same news twice.
+   */
+  quiet?: boolean;
+};
+
 const request = async <T>(
   path: string,
   init: RequestInit = {},
   token?: string,
+  opts: RequestOptions = {},
 ): Promise<T> => {
   const headers = new Headers(init.headers);
   headers.set("Content-Type", "application/json");
@@ -45,8 +65,10 @@ const request = async <T>(
 
   if (!response.ok) {
     const errorMsg = await extractErrorMessage(response);
-    toast.error(`Error ${response.status}`, { description: errorMsg });
-    throw new Error(errorMsg);
+    if (!opts.quiet) {
+      toast.error(`Error ${response.status}`, { description: errorMsg });
+    }
+    throw new ApiError(response.status, errorMsg);
   }
 
   const body = (await response.json()) as ApiResponse<T>;
@@ -54,18 +76,19 @@ const request = async <T>(
 };
 
 export const api = {
-  post: <T>(path: string, payload: unknown, token?: string) =>
-    request<T>(path, { method: "POST", body: JSON.stringify(payload) }, token),
-  put: <T>(path: string, payload: unknown, token?: string) =>
-    request<T>(path, { method: "PUT", body: JSON.stringify(payload) }, token),
-  delete: <T>(path: string, payload: unknown, token?: string) =>
+  post: <T>(path: string, payload: unknown, token?: string, opts?: RequestOptions) =>
+    request<T>(path, { method: "POST", body: JSON.stringify(payload) }, token, opts),
+  put: <T>(path: string, payload: unknown, token?: string, opts?: RequestOptions) =>
+    request<T>(path, { method: "PUT", body: JSON.stringify(payload) }, token, opts),
+  delete: <T>(path: string, payload: unknown, token?: string, opts?: RequestOptions) =>
     request<T>(
       path,
       { method: "DELETE", body: JSON.stringify(payload) },
       token,
+      opts,
     ),
-  get: <T>(path: string, token?: string) =>
-    request<T>(path, { method: "GET" }, token),
+  get: <T>(path: string, token?: string, opts?: RequestOptions) =>
+    request<T>(path, { method: "GET" }, token, opts),
 };
 
 export type CompanyMemberRole = "MEMBER" | "COMPANY_ADMIN";

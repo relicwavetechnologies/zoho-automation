@@ -1,13 +1,14 @@
 import { Navigate, Route, Routes } from "react-router-dom"
+import { EmptyState } from "@/components/admin/empty-state"
 import { Toaster } from "@/components/ui/sonner"
 import { WorkspaceShell } from "@/components/admin/workspace-shell"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
+import type { ScopeKind } from "@/auth/types"
 import { AiOpsPage } from "@/pages/AiOpsPage"
 import { CompanyAdminSignupPage } from "@/pages/CompanyAdminSignupPage"
 import { DepartmentsPage } from "@/pages/DepartmentsPage"
 import { LoginPage } from "@/pages/LoginPage"
 import { MemberInviteAcceptPage } from "@/pages/MemberInviteAcceptPage"
-import { MemberLoginPage } from "@/pages/MemberLoginPage"
 import { MemberDetailPage } from "@/pages/MemberDetailPage"
 import { ConnectionGovernancePage } from "@/pages/ConnectionGovernancePage"
 import { CompanyControlsPage } from "@/pages/CompanyControlsPage"
@@ -58,10 +59,33 @@ const Protected = ({ children }: ProtectedProps) => {
   return children
 }
 
-const DefaultProtectedRoute = () => {
-  const { navItems } = useAdminAuth()
-  const fallbackPath = navItems[0]?.path ?? "/home"
-  return <Navigate to={fallbackPath} replace />
+/**
+ * Where "/" lands. Everyone has a You scope, so that is the honest default —
+ * an admin gets the Company scope from the switcher rather than being dropped
+ * into it, because the first thing most people want is their own workspace.
+ */
+const DefaultProtectedRoute = () => <Navigate to="/me" replace />
+
+/**
+ * Guards a scope this person may not have.
+ *
+ * Deep links matter here: someone forwards a `/team/people` URL to a colleague
+ * who leads nothing, and silently redirecting to `/me` reads like the app is
+ * broken. It says what happened instead.
+ */
+const RequireScope = ({ kind, children }: { kind: ScopeKind; children: JSX.Element }) => {
+  const { scopes } = useAdminAuth()
+  if (scopes.some((scope) => scope.kind === kind)) return children
+
+  const reason = kind === "team"
+    ? "This is a manager's view of a department. You do not lead one."
+    : "This is the company-wide view. It is limited to company admins."
+
+  return (
+    <div className="page">
+      <EmptyState title="You do not have access to this" description={reason} />
+    </div>
+  )
 }
 
 /* Workspace screens, adapted to routes. Still on fixtures; each marks itself. */
@@ -89,8 +113,6 @@ export function App() {
         <Route path="/login" element={<LoginPage />} />
         {/* Standalone spec preview — all three personas on one page, no session. */}
         <Route path="/mock-dashboard" element={<MockDashboardPage />} />
-        <Route path="/desktop-login" element={<MemberLoginPage />} />
-        <Route path="/member-login" element={<MemberLoginPage />} />
         <Route path="/signup/company-admin" element={<CompanyAdminSignupPage />} />
         <Route path="/signup/member-invite" element={<MemberInviteAcceptPage />} />
         <Route path="/zoho/callback" element={<OAuthCallbackPage provider="zoho" />} />
@@ -123,33 +145,33 @@ export function App() {
           {/* ── Your team ───────────────────────────────────
               Fixtures. The manager endpoints are real (see
               /api/desktop/departments/*) — wiring is the next step. */}
-          <Route path="team" element={<TeamOverview />} />
-          <Route path="team/people" element={<TeamPeopleRoute />} />
-          <Route path="team/roles" element={<TeamRolesRoute />} />
-          <Route path="team/approvals" element={<TeamApprovalsRoute />} />
-          <Route path="team/usage" element={<TeamUsageRoute />} />
+          <Route path="team" element={<RequireScope kind="team"><TeamOverview /></RequireScope>} />
+          <Route path="team/people" element={<RequireScope kind="team"><TeamPeopleRoute /></RequireScope>} />
+          <Route path="team/roles" element={<RequireScope kind="team"><TeamRolesRoute /></RequireScope>} />
+          <Route path="team/approvals" element={<RequireScope kind="team"><TeamApprovalsRoute /></RequireScope>} />
+          <Route path="team/usage" element={<RequireScope kind="team"><TeamUsageRoute /></RequireScope>} />
 
           {/* ── Company ─────────────────────────────────────
               Live pages, absorbed into the Workspace shell. */}
-          <Route path="home" element={<OverviewPage />} />
-          <Route path="people" element={<MembersPage />} />
-          <Route path="people/:userId" element={<MemberDetailPage />} />
-          <Route path="people/:userId/connections/:connectionId" element={<ConnectionGovernancePage />} />
-          <Route path="departments" element={<DepartmentsPage />} />
-          <Route path="ai-ops" element={<AiOpsPage />} />
-          <Route path="ai-ops/runs/:runId" element={<RunDetailPage />} />
-          <Route path="skills" element={<SkillsLabPage />} />
-          <Route path="memories" element={<MemoriesPage />} />
-          <Route path="guardrails" element={<GuardrailsPage />} />
+          <Route path="home" element={<RequireScope kind="company"><OverviewPage /></RequireScope>} />
+          <Route path="people" element={<RequireScope kind="company"><MembersPage /></RequireScope>} />
+          <Route path="people/:userId" element={<RequireScope kind="company"><MemberDetailPage /></RequireScope>} />
+          <Route path="people/:userId/connections/:connectionId" element={<RequireScope kind="company"><ConnectionGovernancePage /></RequireScope>} />
+          <Route path="departments" element={<RequireScope kind="company"><DepartmentsPage /></RequireScope>} />
+          <Route path="ai-ops" element={<RequireScope kind="company"><AiOpsPage /></RequireScope>} />
+          <Route path="ai-ops/runs/:runId" element={<RequireScope kind="company"><RunDetailPage /></RequireScope>} />
+          <Route path="skills" element={<RequireScope kind="company"><SkillsLabPage /></RequireScope>} />
+          <Route path="memories" element={<RequireScope kind="company"><MemoriesPage /></RequireScope>} />
+          <Route path="guardrails" element={<RequireScope kind="company"><GuardrailsPage /></RequireScope>} />
           {/* Company ceiling — capability governance today; the full tool ceiling
               matrix from the Workspace spec supersedes this. */}
-          <Route path="policy" element={<CompanyControlsPage />} />
+          <Route path="policy" element={<RequireScope kind="company"><CompanyControlsPage /></RequireScope>} />
           {/* Connections — fixture overview; web search is the one real company
               connection surface that exists today. */}
-          <Route path="connections" element={<CompanyConnectionsRoute />} />
-          <Route path="connections/web-search" element={<WebSearchPage />} />
+          <Route path="connections" element={<RequireScope kind="company"><CompanyConnectionsRoute /></RequireScope>} />
+          <Route path="connections/web-search" element={<RequireScope kind="company"><WebSearchPage /></RequireScope>} />
           {/* Renamed: this page is an audit-log viewer, not settings. */}
-          <Route path="activity" element={<SettingsPage />} />
+          <Route path="activity" element={<RequireScope kind="company"><SettingsPage /></RequireScope>} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />

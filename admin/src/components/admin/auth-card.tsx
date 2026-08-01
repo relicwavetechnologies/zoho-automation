@@ -61,7 +61,7 @@ export function AuthCard({ title, description, children }: AuthCardProps) {
               </div>
             </div>
           </div>
-          <div className="ws-auth-foot">Company admin and super admin sign in here. Members use Lark or the desktop app.</div>
+          <div className="ws-auth-foot">One sign-in for everyone — the same account works here, in Lark, and on the desktop.</div>
         </aside>
 
         <main className="ws-auth-main">

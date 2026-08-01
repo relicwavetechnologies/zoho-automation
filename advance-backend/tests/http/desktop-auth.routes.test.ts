@@ -1207,3 +1207,59 @@ describe('desktop password sign-in', () => {
     assert.equal(result.status, 403);
   });
 });
+
+describe('desktop /me reports the department role', () => {
+  /**
+   * Company role is the ceiling; leading a department is a separate axis. The
+   * web shell decides whether someone gets a Team scope from the second one,
+   * and cannot derive it from the first — so /me has to carry both.
+   */
+  const mePrisma = (memberships: unknown[]) => ({
+    user:    { findUnique: async () => ({ id: 'user-1', email: 'a@acme.co', name: 'A' }) },
+    company: { findUnique: async () => ({ name: 'Acme Technologies' }) },
+    departmentMembership: { findMany: async () => memberships },
+  });
+
+  const connectionRepo = {
+    listAccessibleLarkConnections:   async () => ({ ok: true, value: [] }),
+    listAccessibleGoogleConnections: async () => ({ ok: true, value: [] }),
+  };
+
+  it('marks the department a person manages', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      connectionRepo,
+      prisma: mePrisma([
+        { department: { id: 'd_fin', name: 'Finance' }, role: { slug: 'MANAGER', name: 'Manager' } },
+        { department: { id: 'd_ops', name: 'Operations' }, role: { slug: 'MEMBER', name: 'Member' } },
+      ]),
+    }));
+
+    const result = await callRoute(router, 'GET', '/me', {
+      locals: { userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER' },
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(result.body.data.companyName, 'Acme Technologies');
+    assert.deepEqual(result.body.data.departments, [
+      { id: 'd_fin', name: 'Finance', roleSlug: 'MANAGER', roleName: 'Manager', isManager: true },
+      { id: 'd_ops', name: 'Operations', roleSlug: 'MEMBER', roleName: 'Member', isManager: false },
+    ]);
+  });
+
+  it('keys manager off the slug, not the editable role name', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      connectionRepo,
+      // An admin renamed the MEMBER role to "Team Manager". The label changed;
+      // the authority did not, and only the slug says so.
+      prisma: mePrisma([
+        { department: { id: 'd_fin', name: 'Finance' }, role: { slug: 'MEMBER', name: 'Team Manager' } },
+      ]),
+    }));
+
+    const result = await callRoute(router, 'GET', '/me', {
+      locals: { userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER' },
+    });
+
+    assert.equal(result.body.data.departments[0].isManager, false);
+  });
+});

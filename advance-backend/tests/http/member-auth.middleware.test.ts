@@ -394,7 +394,8 @@ describe('member authentication uses the live company membership', () => {
       memberSession: { findUnique: async () => sessionFixture() },
       adminMembership: { findFirst: async () => ({ role: 'COMPANY_ADMIN' }) },
       user: { findUnique: async () => ({ id: 'user-1', email: 'member@example.com', name: 'Member' }) },
-      department: { findMany: async () => [] },
+      company: { findUnique: async () => ({ name: 'Acme' }) },
+      departmentMembership: { findMany: async () => [] },
     };
     const connectionRepo = {
       listAccessibleLarkConnections: async () => ({ ok: true, value: [] }),

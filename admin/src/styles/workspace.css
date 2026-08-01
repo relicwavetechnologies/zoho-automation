@@ -740,6 +740,15 @@
 .cur .ws-auth-alt a { color: var(--cur-muted); }
 .cur .ws-auth-alt a:hover { color: var(--cur-primary); }
 
+/* Separator between the two ways in. A rule through the middle rather than a
+   heading, because neither side is a section — they are one choice. */
+.cur .ws-auth-or {
+  display: flex; align-items: center; gap: 12px;
+  font-size: 11px; color: var(--cur-muted-soft); text-transform: uppercase; letter-spacing: .06em; font-weight: 600;
+}
+.cur .ws-auth-or::before,
+.cur .ws-auth-or::after { content: ''; flex: 1; height: 1px; background: var(--cur-hairline); }
+
 /* ── Disclosure row ──────────────────────────────────── */
 .cur .ws-more {
   border: 0; background: none; padding: 0; font-size: 12px; color: var(--cur-primary);

@@ -107,8 +107,20 @@ const scopeOfPath = (pathname: string): ScopeKind =>
 
 const HOME: Record<ScopeKind, string> = { you: '/me', team: '/team', company: '/home' }
 
+/** Two letters from a name, falling back to the email's local part. */
+const initialsOf = (name?: string | null, email?: string | null): string => {
+  const source = name?.trim() || email?.split('@')[0] || ''
+  const parts = source.split(/[\s._-]+/).filter(Boolean)
+  if (parts.length === 0) return '·'
+  const letters = parts.length === 1 ? parts[0].slice(0, 2) : parts[0][0] + parts[parts.length - 1][0]
+  return letters.toUpperCase()
+}
+
+const roleLabel = (role?: string): string =>
+  role === 'SUPER_ADMIN' ? 'Super admin' : role === 'COMPANY_ADMIN' ? 'Company admin' : 'Member'
+
 export function WorkspaceShell() {
-  const { session, logout } = useAdminAuth()
+  const { session, scopes, logout } = useAdminAuth()
   const location = useLocation()
   const navigate = useNavigate()
   const { resolved, setTheme } = useTheme()
@@ -124,18 +136,11 @@ export function WorkspaceShell() {
   const scope = scopeOfPath(location.pathname)
   const groups = NAV[scope]
 
-  const isAdmin = session?.role === 'SUPER_ADMIN' || session?.role === 'COMPANY_ADMIN'
-  const company = session?.companyName ?? (session?.role === 'SUPER_ADMIN' ? 'All workspaces' : 'Your company')
-
-  const scopes = useMemo(
-    () => [
-      { kind: 'you' as const, label: 'You', detail: session?.role === 'SUPER_ADMIN' ? 'Super admin' : 'Your workspace' },
-      { kind: 'team' as const, label: 'Your team', detail: 'Preview · needs department data' },
-      ...(isAdmin ? [{ kind: 'company' as const, label: company, detail: 'Whole company' }] : []),
-    ],
-    [company, isAdmin, session?.role],
-  )
-
+  // Scopes come from the session now — a Team scope appears only when this
+  // person actually leads a department, and Company only when their live
+  // membership is admin. The old list showed all three to everyone and labelled
+  // Team a "preview", which meant the switcher advertised a place to go that
+  // had no data and no right to any.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setPalette((v) => !v) }
@@ -223,11 +228,13 @@ export function WorkspaceShell() {
           </nav>
 
           <div className="sidebar-foot">
+            {/* The person, not their rank. Members sign in here now, and
+                "Company admin" was printed for everyone regardless. */}
             <button type="button" className="ws-acct" onClick={() => logout()}>
-              <span className="avatar">{(session?.role === 'SUPER_ADMIN' ? 'SA' : 'CA')}</span>
+              <span className="avatar">{initialsOf(session?.name, session?.email)}</span>
               <span className="ws-acct-txt">
-                <b>{session?.role === 'SUPER_ADMIN' ? 'Super admin' : 'Company admin'}</b>
-                <span>{company}</span>
+                <b>{session?.name ?? session?.email ?? 'Signed in'}</b>
+                <span>{roleLabel(session?.role)}</span>
               </span>
               <LogOut size={14} className="muted" />
             </button>

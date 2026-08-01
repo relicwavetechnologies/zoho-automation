@@ -695,7 +695,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     <main style="width:min(420px,calc(100vw - 48px));border:1px solid rgba(255,255,255,.12);border-radius:18px;background:#181a22;padding:28px;box-shadow:0 24px 80px rgba(0,0,0,.45);text-align:center">
       <div style="width:44px;height:44px;border-radius:14px;background:linear-gradient(135deg,#2563eb,#7c3aed);display:grid;place-items:center;margin:0 auto 16px;font-weight:800">D</div>
       <h1 style="font-size:20px;line-height:1.25;margin:0 0 8px">Authentication complete</h1>
-      <p style="font-size:14px;line-height:1.6;color:#a1a1aa;margin:0 0 18px">Return to Divo Desktop. This tab can be closed.</p>
+      <p style="font-size:14px;line-height:1.6;color:#a1a1aa;margin:0 0 18px">Return to Divo. This tab can be closed.</p>
       <button onclick="window.close()" style="border:1px solid rgba(255,255,255,.16);border-radius:10px;background:#f4f4f5;color:#111217;padding:10px 14px;font-weight:650;cursor:pointer">Close window</button>
       <p style="font-size:12px;color:#71717a;margin:18px 0 0">If it does not close automatically, close it manually.</p>
     </main>
@@ -1052,10 +1052,29 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         where: { id: userId },
         select: { id: true, email: true, name: true },
       });
-      const departments = await deps.prisma.department.findMany({
-        where: { companyId, memberships: { some: { userId } } },
-        select: { id: true, name: true },
+      const company = await deps.prisma.company.findUnique({
+        where: { id: companyId },
+        select: { name: true },
       });
+      // The department role travels with the membership, because it is what
+      // decides whether this person sees a Team scope at all. Company role is
+      // the ceiling; leading a department is a separate axis, and the web shell
+      // cannot derive one from the other.
+      const memberships = await deps.prisma.departmentMembership.findMany({
+        where:  { userId, status: 'active', department: { companyId } },
+        select: {
+          department: { select: { id: true, name: true } },
+          role:       { select: { slug: true, name: true } },
+        },
+      });
+      const departments = memberships.map(m => ({
+        id:       m.department.id,
+        name:     m.department.name,
+        roleSlug: m.role.slug,
+        roleName: m.role.name,
+        // Slug is the stable identifier; DepartmentRole.name is user-editable.
+        isManager: m.role.slug === 'MANAGER',
+      }));
       const larkConnections = await deps.connectionRepo.listAccessibleLarkConnections({ userId, companyId });
       const googleConnections = await deps.connectionRepo.listAccessibleGoogleConnections({ userId, companyId });
 
@@ -1063,6 +1082,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         success: true,
         data: {
           userId, companyId,
+          companyName: company?.name ?? null,
           role: res.locals['aiRole'],
           runtime: res.locals['channel'] === 'lark'
             ? {
