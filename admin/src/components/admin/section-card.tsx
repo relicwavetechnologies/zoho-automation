@@ -1,34 +1,31 @@
 import type { ReactNode } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { cn } from "@/lib/utils"
 
+/**
+ * A titled panel. Was a shadcn Card with a gradient wash; now the same
+ * `.ws-panel` the Workspace screens use — hairline border, no gradient, no
+ * shadow. Depth in this design language is a one-pixel rule, not a glow.
+ */
 type SectionCardProps = {
   title: string
   description?: string
   actions?: ReactNode
   children: ReactNode
   className?: string
-  /** When true, applies a more visible accent gradient (matches the home page right rail). */
-  hero?: boolean
+  /** Content that should sit flush to the panel edges (tables, row lists). */
+  flush?: boolean
 }
 
-export function SectionCard({ title, description, actions, children, className, hero }: SectionCardProps) {
+export function SectionCard({ title, description, actions, children, className, flush }: SectionCardProps) {
   return (
-    <Card
-      className={cn(
-        "border-transparent bg-gradient-to-br via-card to-accent/[0.05]",
-        hero ? "from-accent/15 to-card" : "from-card",
-        className,
-      )}
-    >
-      <CardHeader className="flex flex-col gap-2 p-3 pb-2 md:flex-row md:items-start md:justify-between">
-        <div className="space-y-0.5">
-          <CardTitle className="text-[13px] font-semibold">{title}</CardTitle>
-          {description ? <CardDescription className="text-[11px]">{description}</CardDescription> : null}
+    <section className={className ? `ws-panel ${className}` : "ws-panel"}>
+      <header>
+        <div className="ws-panel-t">
+          <h2>{title}</h2>
+          {description ? <p>{description}</p> : null}
         </div>
-        {actions ? <div className="flex flex-wrap gap-1.5">{actions}</div> : null}
-      </CardHeader>
-      <CardContent className="p-3 pt-0">{children}</CardContent>
-    </Card>
+        {actions ? <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{actions}</div> : null}
+      </header>
+      {flush ? children : <div className="ws-panel-body">{children}</div>}
+    </section>
   )
 }

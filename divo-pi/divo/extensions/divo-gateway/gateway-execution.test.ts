@@ -23,9 +23,6 @@ describe("gateway execution protocol", () => {
 					requests.push(request);
 					return { body: { ok: true, status: "success", data: { messages: [] } }, httpStatus: 200 };
 				},
-				approveIntent: async () => {
-					throw new Error("read must not request approval");
-				},
 			},
 		);
 
@@ -33,9 +30,8 @@ describe("gateway execution protocol", () => {
 		assert.equal(requests.length, 1);
 	});
 
-	it("commits only the backend-bound intent after approval", async () => {
+	it("never opens desktop-local approval from the cloud runtime", async () => {
 		const requests: GatewayRequestBody[] = [];
-		const approved: unknown[] = [];
 		const original: GatewayRequestBody = {
 			op: "tools.invoke",
 			departmentId: "dept-1",
@@ -50,36 +46,18 @@ describe("gateway execution protocol", () => {
 		const result = await executeGatewayRequest(config, original, "call-write", ctx, {
 			callGateway: async (_config, request) => {
 				requests.push(request);
-				return requests.length === 1
-					? {
-						body: {
-							ok: false,
-							status: "local_approval_required",
-							data: { intentId: "intent-1", presentation: { operation: "send" } },
-						},
-						httpStatus: 200,
-					}
-					: { body: { ok: true, status: "success", data: { sent: true } }, httpStatus: 200 };
-			},
-			approveIntent: async (toolCallId, data) => {
-				approved.push({ toolCallId, data });
-				return "intent-1";
+				return {
+					body: {
+						ok: false,
+						status: "local_approval_required",
+						data: { intentId: "intent-1", presentation: { operation: "send" } },
+					},
+					httpStatus: 200,
+				};
 			},
 		});
 
-		assert.equal(result.body.status, "success");
-		assert.deepEqual(approved, [{
-			toolCallId: "call-write",
-			data: { intentId: "intent-1", presentation: { operation: "send" } },
-		}]);
-		assert.deepEqual(requests, [
-			original,
-			{
-				op: "tools.commit",
-				departmentId: "dept-1",
-				payload: { intentId: "intent-1" },
-				execution: original.execution,
-			},
-		]);
+		assert.equal(result.body.status, "local_approval_required");
+		assert.deepEqual(requests, [original]);
 	});
 });

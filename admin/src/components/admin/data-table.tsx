@@ -1,9 +1,13 @@
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Skeleton } from "@/components/ui/skeleton"
 import { EmptyState } from "@/components/admin/empty-state"
 import type { JsonRecord } from "@/components/admin/types"
 import type { ReactNode } from "react"
 
+/**
+ * The shared table. Now rendered on the bare `.cur table` styles from
+ * cursor.css rather than the shadcn Table set, so it matches every other list
+ * in the app — and the loading state is shape-matched rows instead of three
+ * grey slabs that reflow the moment data lands.
+ */
 type Column<T extends JsonRecord> = {
   key: keyof T & string
   header: string
@@ -22,18 +26,23 @@ type DataTableProps<T extends JsonRecord> = {
 }
 
 const renderValue = (value: unknown): ReactNode => {
-  if (value === null || value === undefined || value === "") return <span className="text-muted-foreground">-</span>
+  if (value === null || value === undefined || value === "") return <span className="muted">—</span>
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value)
-  return <span className="text-muted-foreground">{JSON.stringify(value)}</span>
+  return <span className="muted">{JSON.stringify(value)}</span>
 }
 
 export function DataTable<T extends JsonRecord>({ columns, rows, loading, emptyTitle, emptyDescription, onRowClick }: DataTableProps<T>) {
   if (loading) {
     return (
-      <div className="space-y-3">
-        <Skeleton className="h-12 w-full" />
-        <Skeleton className="h-12 w-full" />
-        <Skeleton className="h-12 w-full" />
+      <div>
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div className="ws-skel-row" key={i}>
+            <div style={{ flex: 1 }}>
+              <div className="ws-skel line" style={{ width: `${46 + ((i * 17) % 30)}%` }} />
+            </div>
+            <div className="ws-skel line" style={{ width: 64 }} />
+          </div>
+        ))}
       </div>
     )
   }
@@ -43,29 +52,33 @@ export function DataTable<T extends JsonRecord>({ columns, rows, loading, emptyT
   }
 
   return (
-    <div className="overflow-hidden rounded-lg border bg-card">
-      <Table>
-        <TableHeader>
-          <TableRow>
+    <div style={{ overflowX: "auto" }}>
+      <table>
+        <thead>
+          <tr>
             {columns.map((column) => (
-              <TableHead key={column.key} className={column.align === "right" ? "text-right" : undefined}>
+              <th key={column.key} style={column.align === "right" ? { textAlign: "right" } : undefined}>
                 {column.header}
-              </TableHead>
+              </th>
             ))}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
+          </tr>
+        </thead>
+        <tbody>
           {rows.map((row, index) => (
-            <TableRow key={String(row.id ?? row._id ?? index)} className={onRowClick ? "cursor-pointer hover:bg-accent/5" : ""} onClick={() => onRowClick?.(row)}>
+            <tr
+              key={String(row.id ?? row._id ?? index)}
+              className={onRowClick ? "click" : undefined}
+              onClick={() => onRowClick?.(row)}
+            >
               {columns.map((column) => (
-                <TableCell key={column.key} className={column.align === "right" ? "text-right" : undefined}>
+                <td key={column.key} style={column.align === "right" ? { textAlign: "right" } : undefined}>
                   {column.render ? column.render(row) : renderValue(row[column.key])}
-                </TableCell>
+                </td>
               ))}
-            </TableRow>
+            </tr>
           ))}
-        </TableBody>
-      </Table>
+        </tbody>
+      </table>
     </div>
   )
 }

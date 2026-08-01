@@ -1,27 +1,27 @@
 import { useState } from "react"
-import { Brain, Loader2, Trash2, Users, Building2, Globe, ChevronDown } from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { MetricCard } from "@/components/admin/metric-card"
+import { Brain, Building2, ChevronRight, Globe, Loader2, Trash2, Users } from "lucide-react"
+import { MetricCard, MetricStrip } from "@/components/admin/metric-card"
 import { PageHeader } from "@/components/admin/page-header"
 import { SectionCard } from "@/components/admin/section-card"
-import { StatusBadge } from "@/components/admin/status-badge"
 import { EmptyState } from "@/components/admin/empty-state"
-import { cn } from "@/lib/utils"
 import { useMemoryData, type MemoryEntry } from "./memory/use-memory-data"
 
-const scopeColor: Record<string, string> = {
-  user: "bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300",
-  department: "bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300",
-  company: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
-}
+/**
+ * Presentation only. The memory subsystem itself is being reworked elsewhere —
+ * nothing here reaches past `use-memory-data`.
+ */
 
 function formatDate(iso?: string): string {
   if (!iso) return "—"
   try {
     return new Date(iso).toLocaleDateString("en-IN", { month: "short", day: "numeric", year: "numeric" })
   } catch { return iso }
+}
+
+const SCOPE_LABEL: Record<string, string> = {
+  user: "One person",
+  department: "A department",
+  company: "Everyone",
 }
 
 export function MemoriesPage() {
@@ -31,99 +31,83 @@ export function MemoriesPage() {
 
   if (loading) {
     return (
-      <div className="flex h-96 items-center justify-center">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      <div className="page">
+        <div className="ws-auth-wait" style={{ maxWidth: 260 }}>
+          <Loader2 size={14} className="ws-spin" />
+          Loading memories…
+        </div>
       </div>
     )
   }
 
   return (
-    <>
+    <div className="page">
       <PageHeader
-        eyebrow="AI Memory"
-        title="Memories"
-        description="Long-term facts learned by Divo from conversations. Memories persist across sessions and help the AI provide personalized, contextual responses."
+        eyebrow="Memory"
+        title="What Divo has learned"
+        description="Facts Divo picked up from conversations and kept. They persist across sessions, which is why a wrong one is worth deleting rather than ignoring."
       />
 
-      <section className="grid gap-3 md:grid-cols-3">
-        <MetricCard
-          label="User memories"
-          value={String(stats?.totalUser ?? 0)}
-          detail="Personal preferences & context"
-          icon={Users}
-        />
-        <MetricCard
-          label="Team memories"
-          value={String(stats?.totalDepartment ?? 0)}
-          detail="Department-level knowledge"
-          icon={Building2}
-          tone="accent"
-        />
-        <MetricCard
-          label="Company memories"
-          value={String(stats?.totalCompany ?? 0)}
-          detail="Org-wide policies & facts"
-          icon={Globe}
-          tone="emphasis"
-        />
-      </section>
+      <div className="ws-stack">
+        <MetricStrip columns={3}>
+          <MetricCard label="Personal" value={String(stats?.totalUser ?? 0)} detail="Private to one person" icon={Users} />
+          <MetricCard label="Department" value={String(stats?.totalDepartment ?? 0)} detail="Shared inside one team" icon={Building2} />
+          <MetricCard label="Company" value={String(stats?.totalCompany ?? 0)} detail="Applies to everyone" icon={Globe} />
+        </MetricStrip>
 
-      <SectionCard title="Memory browser" description="Filter and manage stored memories.">
-        {/* Filters */}
-        <div className="mb-4 flex items-center gap-2">
-          <Select
+        <div className="filters">
+          <select
+            className="select"
             value={filters.scope ?? "all"}
-            onValueChange={(v) => setFilters({ ...filters, scope: v === "all" ? undefined : v })}
+            onChange={(e) => setFilters({ ...filters, scope: e.target.value === "all" ? undefined : e.target.value })}
           >
-            <SelectTrigger className="h-8 w-36 bg-card text-[12px]">
-              <SelectValue placeholder="All scopes" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all" className="text-[12px]">All scopes</SelectItem>
-              <SelectItem value="user" className="text-[12px]">User</SelectItem>
-              <SelectItem value="department" className="text-[12px]">Department</SelectItem>
-              <SelectItem value="company" className="text-[12px]">Company</SelectItem>
-            </SelectContent>
-          </Select>
-          <Input
-            placeholder="Filter by user ID..."
+            <option value="all">Every scope</option>
+            <option value="user">Personal</option>
+            <option value="department">Department</option>
+            <option value="company">Company</option>
+          </select>
+          <input
+            className="input"
+            placeholder="Filter by user ID"
             value={filters.userId ?? ""}
             onChange={(e) => setFilters({ ...filters, userId: e.target.value || undefined })}
-            className="h-8 w-48 bg-card text-[12px]"
+            style={{ width: 210 }}
           />
         </div>
 
-        {error ? (
-          <EmptyState title="Memory API unavailable" description={error} />
-        ) : memories.length === 0 ? (
-          <EmptyState
-            title="No memories"
-            description="Memories are automatically learned from conversations. Use /remember in Lark to add facts explicitly."
-          />
-        ) : (
-          <div className="space-y-1.5">
-            {memories.map((mem) => (
-              <MemoryRow
-                key={mem.id}
-                memory={mem}
-                expanded={expandedId === mem.id}
-                confirmDelete={confirmDeleteId === mem.id}
-                onToggle={() => setExpandedId(expandedId === mem.id ? null : mem.id)}
-                onDelete={() => {
-                  if (confirmDeleteId === mem.id) {
-                    deleteMemory(mem.id)
-                    setConfirmDeleteId(null)
-                  } else {
-                    setConfirmDeleteId(mem.id)
-                  }
-                }}
-                onCancelDelete={() => setConfirmDeleteId(null)}
-              />
-            ))}
-          </div>
-        )}
-      </SectionCard>
-    </>
+        <SectionCard title="Stored memories" description="Newest first. Open one to see where it came from." flush>
+          {error ? (
+            <EmptyState title="Memory API unavailable" description={error} />
+          ) : memories.length === 0 ? (
+            <EmptyState
+              title="Nothing learned yet"
+              description="Memories are picked up from conversations. Someone can also add one explicitly with /remember in Lark."
+            />
+          ) : (
+            <div className="ws-rows">
+              {memories.map((mem) => (
+                <MemoryRow
+                  key={mem.id}
+                  memory={mem}
+                  expanded={expandedId === mem.id}
+                  confirmDelete={confirmDeleteId === mem.id}
+                  onToggle={() => setExpandedId(expandedId === mem.id ? null : mem.id)}
+                  onDelete={() => {
+                    if (confirmDeleteId === mem.id) {
+                      deleteMemory(mem.id)
+                      setConfirmDeleteId(null)
+                    } else {
+                      setConfirmDeleteId(mem.id)
+                    }
+                  }}
+                  onCancelDelete={() => setConfirmDeleteId(null)}
+                />
+              ))}
+            </div>
+          )}
+        </SectionCard>
+      </div>
+    </div>
   )
 }
 
@@ -146,55 +130,47 @@ function MemoryRow({
   const source = (memory.metadata?.source as string) ?? "auto"
 
   return (
-    <div className={cn("rounded-md bg-card shadow-soft transition-colors", expanded && "ring-1 ring-accent/30")}>
-      <div
-        className="flex cursor-pointer items-center gap-3 px-3 py-2.5"
-        onClick={onToggle}
-      >
-        <Brain className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <p className="flex-1 truncate text-[12px]">{memory.memory}</p>
-        <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold", scopeColor[scope] ?? "bg-secondary text-muted-foreground")}>
-          {scope}
-        </span>
-        <span className="shrink-0 rounded-sm bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-          {source}
-        </span>
-        <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+    <div className="ws-row" style={{ alignItems: "flex-start" }}>
+      <span className="ws-ic"><Brain size={14} /></span>
+      <div className="ws-row-main">
+        <b style={{ fontWeight: 400 }}>{memory.memory}</b>
+        <p>
+          {SCOPE_LABEL[scope] ?? scope} · {source === "auto" ? "learned on its own" : `added ${source}`} ·{" "}
           {formatDate(memory.createdAt)}
-        </span>
-        {!confirmDelete ? (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 w-6 shrink-0 p-0 text-muted-foreground hover:text-destructive"
-            onClick={(e) => { e.stopPropagation(); onDelete(); }}
-          >
-            <Trash2 className="h-3 w-3" />
-          </Button>
-        ) : (
-          <Button
-            variant="destructive"
-            size="sm"
-            className="h-6 shrink-0 px-2 text-[10px]"
-            onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            onBlur={onCancelDelete}
-          >
-            Confirm
-          </Button>
-        )}
-      </div>
-      {expanded && (
-        <div className="border-t border-border/40 px-3 py-2.5 space-y-2">
-          <p className="text-[12px] leading-5 text-foreground/85">{memory.memory}</p>
-          {memory.metadata && Object.keys(memory.metadata).length > 0 && (
-            <pre className="max-h-32 overflow-auto rounded-md bg-secondary/50 p-2 font-mono text-[10px] text-muted-foreground">
-              {JSON.stringify(memory.metadata, null, 2)}
-            </pre>
-          )}
-          {memory.score !== undefined && (
-            <p className="text-[10px] text-muted-foreground">Relevance score: {memory.score.toFixed(3)}</p>
-          )}
+        </p>
+
+        {expanded ? (
+          <div className="ws-ba">
+            {memory.metadata && Object.keys(memory.metadata).length > 0 ? (
+              <div className="raw">
+                <div className="lbl">Where it came from</div>
+                <pre>{JSON.stringify(memory.metadata, null, 2)}</pre>
+              </div>
+            ) : (
+              <div className="ws-sub">No source recorded for this memory.</div>
+            )}
+            {memory.score !== undefined ? (
+              <div className="ws-sub">Relevance {memory.score.toFixed(3)}</div>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div style={{ marginTop: 9 }}>
+          <button type="button" className="ws-more" data-open={expanded} onClick={onToggle}>
+            <ChevronRight size={13} />{expanded ? "Hide" : "Details"}
+          </button>
         </div>
+      </div>
+
+      {/* Two-step delete: memory is the one thing here that cannot be restored. */}
+      {!confirmDelete ? (
+        <button type="button" className="icon-btn" title="Forget this" onClick={onDelete}>
+          <Trash2 size={14} />
+        </button>
+      ) : (
+        <button type="button" className="btn" onClick={onDelete} onBlur={onCancelDelete} autoFocus>
+          Forget it
+        </button>
       )}
     </div>
   )

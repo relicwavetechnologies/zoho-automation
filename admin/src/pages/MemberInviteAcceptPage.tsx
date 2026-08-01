@@ -1,12 +1,7 @@
 import { FormEvent, useState } from "react"
 import { Link } from "react-router-dom"
-import { Loader2 } from "lucide-react"
-import { toast } from "sonner"
-import { AuthCard } from "@/components/admin/auth-card"
-import { ErrorCallout } from "@/components/admin/error-callout"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
+import { Check, Loader2 } from "lucide-react"
+import { AuthCard, AuthError, Field } from "@/components/admin/auth-card"
 import { api } from "@/lib/api"
 
 type InviteResult = {
@@ -20,6 +15,7 @@ export function MemberInviteAcceptPage() {
   const [password, setPassword] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [accepted, setAccepted] = useState<InviteResult | null>(null)
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -27,7 +23,7 @@ export function MemberInviteAcceptPage() {
     setError(null)
     try {
       const result = await api.post<InviteResult>("/api/admin/auth/signup/member-invite", { inviteToken, name, password })
-      toast.success("Invite accepted", { description: `${result.role} access granted for ${result.companyId}` })
+      setAccepted(result)
     } catch (inviteError) {
       setError(inviteError instanceof Error ? inviteError.message : "Invite acceptance failed.")
     } finally {
@@ -35,29 +31,63 @@ export function MemberInviteAcceptPage() {
     }
   }
 
+  /* The outcome belongs on the page, not in a toast that disappears — this is
+     the last screen of the flow, and it has to say what access was granted. */
+  if (accepted) {
+    return (
+      <AuthCard title="You're in" description="Your account is set up and your access has been granted.">
+        <div className="ws-auth-form">
+          <div className="ws-auth-ok">
+            <Check size={14} />
+            <span>{accepted.role} access granted.</span>
+          </div>
+          <p className="ws-sub" style={{ lineHeight: 1.55 }}>
+            Divo lives in Lark and in the desktop app — that is where you will actually work with it. Sign in here only
+            if you also administer the company.
+          </p>
+          <Link className="btn primary" to="/login" style={{ justifyContent: "center" }}>Go to sign in</Link>
+        </div>
+      </AuthCard>
+    )
+  }
+
   return (
-    <AuthCard title="Accept invite" description="Use the invite token from your workspace admin to finish account setup.">
-      <form className="space-y-5" onSubmit={submit}>
-        <div className="space-y-2">
-          <Label htmlFor="inviteToken">Invite token</Label>
-          <Input id="inviteToken" value={inviteToken} onChange={(event) => setInviteToken(event.target.value)} required />
+    <AuthCard
+      title="Accept your invite"
+      description="Paste the token your admin sent you, then choose a password."
+    >
+      <form className="ws-auth-form" onSubmit={submit}>
+        <Field label="Invite token" hint="A long string from the invite message. It can only be used once.">
+          <input className="input" value={inviteToken} onChange={(event) => setInviteToken(event.target.value)} required />
+        </Field>
+
+        <Field label="Your name">
+          <input className="input" value={name} onChange={(event) => setName(event.target.value)} required autoComplete="name" />
+        </Field>
+
+        <Field label="Password" hint="At least 8 characters.">
+          <input
+            className="input"
+            type="password"
+            minLength={8}
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            required
+            autoComplete="new-password"
+          />
+        </Field>
+
+        <AuthError message={error} />
+
+        <button type="submit" className="btn primary" disabled={submitting}>
+          {submitting ? <Loader2 size={14} className="ws-spin" /> : null}
+          {submitting ? "Accepting" : "Accept invite"}
+        </button>
+
+        <div className="ws-auth-alt">
+          <span className="ws-sub">Already set up?</span>
+          <Link to="/login">Sign in</Link>
         </div>
-        <div className="space-y-2">
-          <Label htmlFor="name">Your name</Label>
-          <Input id="name" value={name} onChange={(event) => setName(event.target.value)} required />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="password">Password</Label>
-          <Input id="password" type="password" minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} required />
-        </div>
-        <ErrorCallout message={error} />
-        <Button type="submit" className="w-full rounded-full" disabled={submitting}>
-          {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-          Accept invite
-        </Button>
-        <p className="text-center text-sm text-muted-foreground">
-          Ready to sign in? <Link className="font-semibold text-foreground" to="/login">Go to login</Link>
-        </p>
       </form>
     </AuthCard>
   )

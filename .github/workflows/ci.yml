@@ -188,8 +188,6 @@ jobs:
           DIVO_DEV_PI_CONTROLLER_IMAGE=divo-pi-controller:ci \
           DIVO_DEV_POSTGRES_PASSWORD=ci-placeholder \
           DIVO_DEV_PUBLIC_URL=https://app-dev.103.172.92.187.sslip.io \
-          LARK_APP_ID_DEV_ENV=ci-placeholder \
-          LARK_APP_SECRET_DEV_ENV=ci-placeholder \
           docker compose -f docker-compose.dev.yml config >/dev/null
 
   publish-development-images:
