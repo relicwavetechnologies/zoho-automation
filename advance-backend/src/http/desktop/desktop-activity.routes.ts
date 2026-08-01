@@ -191,3 +191,138 @@ export function createDesktopActivityRoutes(deps: DesktopActivityRoutesDeps): Ro
 
   return router;
 }
+
+const COMPANY_ADMIN_ROLES = new Set(['COMPANY_ADMIN', 'SUPER_ADMIN']);
+
+/**
+ * What one department cost, broken down by the people in it.
+ *
+ * This is the only genuinely net-new read in the manager scope. Usage is
+ * indexed per person, and nothing joined it to a department — so a manager
+ * could approve an action but never see what their team's work cost.
+ *
+ * The department is resolved to its members first, and every query is then
+ * pinned to that member list. A manager therefore cannot see beyond their own
+ * team even by naming another department: the authority check runs before the
+ * member list is built, and the member list is the only thing the queries read.
+ */
+export function createDesktopTeamActivityRoutes(deps: DesktopActivityRoutesDeps): Router {
+  const router = Router();
+  const log = deps.logger.child({ service: 'desktop-team-activity' });
+  const memberAuth = createMemberAuthMiddleware({
+    prisma: deps.prisma,
+    jwtSecret: deps.memberJwtSecret,
+    logger: deps.logger,
+  });
+
+  /** Its manager, or any company admin — the same rule the tool-access service uses. */
+  const mayRead = async (userId: string, companyId: string, departmentId: string): Promise<boolean> => {
+    const membership = await deps.prisma.adminMembership.findFirst({
+      where: { userId, companyId, isActive: true },
+      select: { role: true },
+      orderBy: { updatedAt: 'desc' },
+    });
+    if (!membership) return false;
+    if (COMPANY_ADMIN_ROLES.has(membership.role)) return true;
+    const manages = await deps.prisma.departmentMembership.findFirst({
+      where: {
+        userId, departmentId, status: 'active',
+        department: { companyId, status: 'active' },
+        role: { slug: 'MANAGER' },
+      },
+      select: { id: true },
+    });
+    return Boolean(manages);
+  };
+
+  router.get('/departments/:departmentId/usage', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const actorId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const departmentId = req.params['departmentId'] as string;
+
+      if (!await mayRead(actorId, companyId, departmentId)) {
+        res.status(403).json({ success: false, message: 'You do not manage this team.' });
+        return;
+      }
+
+      const days = readDays(req, 30);
+      const from = new Date(Date.now() - days * 86_400_000);
+
+      const memberships = await deps.prisma.departmentMembership.findMany({
+        where: { departmentId, status: 'active', department: { companyId } },
+        select: {
+          userId: true,
+          user: { select: { name: true, email: true } },
+          role: { select: { slug: true, name: true } },
+        },
+      });
+      const userIds = memberships.map(m => m.userId);
+
+      if (userIds.length === 0) {
+        res.json({
+          success: true,
+          data: { days, spendUsd: 0, runs: 0, totalPeople: 0, activePeople: 0, people: [] },
+        });
+        return;
+      }
+
+      const [byUserModel, runsByUser] = await Promise.all([
+        deps.prisma.aiTokenUsage.groupBy({
+          by: ['userId', 'modelId'],
+          where: { companyId, userId: { in: userIds }, createdAt: { gte: from } },
+          _sum: { actualInputTokens: true, cacheReadInputTokens: true, actualOutputTokens: true },
+          orderBy: { userId: 'asc' },
+        }),
+        deps.prisma.executionRun.groupBy({
+          by: ['userId'],
+          where: { companyId, userId: { in: userIds }, startedAt: { gte: from } },
+          _count: { id: true },
+          orderBy: { userId: 'asc' },
+        }),
+      ]);
+
+      const spendByUser = new Map<string, number>();
+      for (const row of byUserModel) {
+        if (!row.userId) continue;
+        spendByUser.set(row.userId, (spendByUser.get(row.userId) ?? 0) + priceSum(row.modelId, row._sum));
+      }
+      const runCountByUser = new Map<string, number>();
+      for (const row of runsByUser) {
+        if (!row.userId) continue;
+        runCountByUser.set(row.userId, row._count.id);
+      }
+
+      const people = memberships
+        .map(m => ({
+          userId: m.userId,
+          name: m.user?.name ?? null,
+          email: m.user?.email ?? '',
+          roleSlug: m.role.slug,
+          roleName: m.role.name,
+          spendUsd: spendByUser.get(m.userId) ?? 0,
+          runs: runCountByUser.get(m.userId) ?? 0,
+        }))
+        .sort((a, b) => b.spendUsd - a.spendUsd);
+
+      res.json({
+        success: true,
+        data: {
+          days,
+          spendUsd: people.reduce((sum, p) => sum + p.spendUsd, 0),
+          runs: people.reduce((sum, p) => sum + p.runs, 0),
+          totalPeople: people.length,
+          // "Used Divo at all in this window", which is the number a manager
+          // actually wants — adoption, not headcount.
+          activePeople: people.filter(p => p.runs > 0).length,
+          people,
+        },
+      });
+    } catch (e) {
+      log.error('desktop.team_usage.error', { error: String(e) });
+      res.status(500).json({ success: false, message: 'Could not read this team’s usage.' });
+    }
+  });
+
+  return router;
+}

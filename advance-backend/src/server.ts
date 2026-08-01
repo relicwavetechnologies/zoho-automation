@@ -24,7 +24,7 @@ import { createMemberAuthMiddleware, MEMBER_SESSION_TTL_MINUTES } from './http/m
 import { createDesktopToolsRoutes } from './http/desktop/desktop-tools.routes';
 import { createDesktopDepartmentRoutes } from './http/desktop/desktop-departments.routes';
 import { createDesktopApprovalRoutes } from './http/desktop/desktop-approvals.routes';
-import { createDesktopActivityRoutes } from './http/desktop/desktop-activity.routes';
+import { createDesktopActivityRoutes, createDesktopTeamActivityRoutes } from './http/desktop/desktop-activity.routes';
 import { createDepartmentRoutes } from './http/admin/departments.routes';
 import { createSkillRegistryRoutes } from './http/admin/skill-registry.routes';
 import { createMemoryRoutes } from './http/admin/memory.routes';
@@ -503,6 +503,17 @@ export const createServer = (c: Container) => {
   app.use(
     '/api/desktop/me',
     createDesktopActivityRoutes({
+      prisma:          c.prisma,
+      memberJwtSecret: c.env.MEMBER_JWT_SECRET,
+      logger:          c.logger,
+    }),
+  );
+  // A manager's view of their own department's cost. Separate mount because the
+  // path is department-scoped rather than /me, and its authority check is the
+  // department one rather than "this is you".
+  app.use(
+    '/api/desktop',
+    createDesktopTeamActivityRoutes({
       prisma:          c.prisma,
       memberJwtSecret: c.env.MEMBER_JWT_SECRET,
       logger:          c.logger,

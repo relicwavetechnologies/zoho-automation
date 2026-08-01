@@ -2,7 +2,10 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Request, Response } from 'express';
 
-import { createDesktopActivityRoutes } from '../../src/http/desktop/desktop-activity.routes.ts';
+import {
+  createDesktopActivityRoutes,
+  createDesktopTeamActivityRoutes,
+} from '../../src/http/desktop/desktop-activity.routes.ts';
 
 const noopLogger = {
   info: () => {}, warn: () => {}, error: () => {}, debug: () => {},
@@ -18,11 +21,11 @@ function callRoute(
   router: ReturnType<typeof createDesktopActivityRoutes>,
   method: 'GET',
   path: string,
-  opts: { query?: Record<string, string>; locals?: Record<string, unknown> } = {},
+  opts: { query?: Record<string, string>; locals?: Record<string, unknown>; params?: Record<string, string> } = {},
 ): Promise<{ status: number; body: any }> {
   return new Promise((resolve) => {
     let status = 200;
-    const req = { method, path, params: {}, query: opts.query ?? {}, headers: {}, body: {} } as unknown as Request;
+    const req = { method, path, params: opts.params ?? {}, query: opts.query ?? {}, headers: {}, body: {} } as unknown as Request;
     const res = {
       locals: opts.locals ?? {},
       status: (s: number) => { status = s; return res; },
@@ -165,5 +168,129 @@ describe('a member reads their own activity', () => {
     assert.equal(result.status, 200);
     assert.equal(result.body.data.runs[0].costUsd, 0);
     assert.equal(result.body.data.runs[0].durationMs, null);
+  });
+});
+
+describe('a manager reads their team’s cost', () => {
+  const deps = (prisma: any) => ({ prisma, logger: noopLogger, memberJwtSecret: 'x' });
+  const locals = { userId: 'manager-1', companyId: 'company-1' };
+  const params = { departmentId: 'dept-1' };
+
+  /**
+   * `companyRole` is what AdminMembership says; `managesDepartment` is whether
+   * the MANAGER lookup finds a row. Together they cover the two ways in.
+   */
+  function spyPrisma(options: {
+    companyRole?: string | null;
+    managesDepartment?: boolean;
+    members?: Array<{ userId: string; name: string; email: string; slug: string }>;
+    usage?: Array<{ userId: string; modelId: string; _sum: Record<string, number> }>;
+    runs?: Array<{ userId: string; count: number }>;
+  } = {}) {
+    const wheres: Record<string, unknown>[] = [];
+    const members = options.members ?? [
+      { userId: 'user-a', name: 'Ada', email: 'ada@example.com', slug: 'MEMBER' },
+      { userId: 'user-b', name: 'Ben', email: 'ben@example.com', slug: 'MEMBER' },
+    ];
+    return {
+      wheres,
+      prisma: {
+        adminMembership: {
+          findFirst: async () => (options.companyRole === null ? null : { role: options.companyRole ?? 'MEMBER' }),
+        },
+        departmentMembership: {
+          findFirst: async () => (options.managesDepartment ?? true ? { id: 'membership-1' } : null),
+          findMany: async () => members.map(m => ({
+            userId: m.userId,
+            user: { name: m.name, email: m.email },
+            role: { slug: m.slug, name: m.slug === 'MANAGER' ? 'Manager' : 'Member' },
+          })),
+        },
+        aiTokenUsage: {
+          groupBy: async (args: any) => { wheres.push(args?.where ?? {}); return options.usage ?? []; },
+        },
+        executionRun: {
+          groupBy: async (args: any) => {
+            wheres.push(args?.where ?? {});
+            return (options.runs ?? []).map(r => ({ userId: r.userId, _count: { id: r.count } }));
+          },
+        },
+      } as any,
+    };
+  }
+
+  it('refuses somebody who neither manages the team nor administers the company', async () => {
+    const { prisma } = spyPrisma({ companyRole: 'MEMBER', managesDepartment: false });
+    const result = await callRoute(
+      createDesktopTeamActivityRoutes(deps(prisma)), 'GET', '/departments/:departmentId/usage', { locals, params },
+    );
+
+    assert.equal(result.status, 403);
+  });
+
+  it('refuses somebody with no live membership in the company at all', async () => {
+    const { prisma } = spyPrisma({ companyRole: null });
+    const result = await callRoute(
+      createDesktopTeamActivityRoutes(deps(prisma)), 'GET', '/departments/:departmentId/usage', { locals, params },
+    );
+
+    assert.equal(result.status, 403);
+  });
+
+  it('admits a company admin who does not personally manage the team', async () => {
+    const { prisma } = spyPrisma({ companyRole: 'COMPANY_ADMIN', managesDepartment: false });
+    const result = await callRoute(
+      createDesktopTeamActivityRoutes(deps(prisma)), 'GET', '/departments/:departmentId/usage', { locals, params },
+    );
+
+    assert.equal(result.status, 200);
+  });
+
+  it('reads only the people in this department', async () => {
+    const { prisma, wheres } = spyPrisma({ managesDepartment: true });
+    await callRoute(
+      createDesktopTeamActivityRoutes(deps(prisma)), 'GET', '/departments/:departmentId/usage', { locals, params },
+    );
+
+    // The member list is the only thing bounding these queries, so it has to
+    // reach every one of them — otherwise a manager sees the whole company.
+    assert.ok(wheres.length > 0);
+    for (const where of wheres) {
+      assert.equal(where['companyId'], 'company-1');
+      assert.deepEqual((where['userId'] as any)?.in, ['user-a', 'user-b']);
+    }
+  });
+
+  it('totals spend and runs per person, heaviest first', async () => {
+    const { prisma } = spyPrisma({
+      usage: [
+        { userId: 'user-a', modelId: 'deepseek-v4-flash', _sum: { actualInputTokens: 1_000_000, cacheReadInputTokens: 0, actualOutputTokens: 0 } },
+        { userId: 'user-b', modelId: 'deepseek-v4-flash', _sum: { actualInputTokens: 5_000_000, cacheReadInputTokens: 0, actualOutputTokens: 0 } },
+      ],
+      runs: [{ userId: 'user-a', count: 3 }],
+    });
+    const result = await callRoute(
+      createDesktopTeamActivityRoutes(deps(prisma)), 'GET', '/departments/:departmentId/usage', { locals, params },
+    );
+
+    const { people, spendUsd, runs, totalPeople, activePeople } = result.body.data;
+    assert.deepEqual(people.map((p: any) => p.userId), ['user-b', 'user-a']);
+    assert.ok(spendUsd > 0);
+    assert.equal(runs, 3);
+    assert.equal(totalPeople, 2);
+    // Ben spent tokens but has no runs in the window; adoption counts runs.
+    assert.equal(activePeople, 1);
+  });
+
+  it('answers plainly for a department with nobody in it', async () => {
+    const { prisma } = spyPrisma({ members: [] });
+    const result = await callRoute(
+      createDesktopTeamActivityRoutes(deps(prisma)), 'GET', '/departments/:departmentId/usage', { locals, params },
+    );
+
+    // An empty team must not turn into an unbounded `userId: { in: [] }` query
+    // or a divide-by-zero in the caller's percentages.
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body.data, { days: 30, spendUsd: 0, runs: 0, totalPeople: 0, activePeople: 0, people: [] });
   });
 });

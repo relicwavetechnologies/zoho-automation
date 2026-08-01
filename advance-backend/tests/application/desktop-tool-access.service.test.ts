@@ -95,6 +95,7 @@ function makeService(options: {
   } as any;
   const deptUserOverrideRepo = {
     upsert: async (...args: any[]) => { writes.push({ scope: 'department-member', args }); return { ok: true as const, value: {} }; },
+    remove: async (...args: any[]) => { writes.push({ scope: 'department-member-clear', args }); options.onWrite?.(); return { ok: true as const, value: null }; },
   } as any;
   const permissionWrites = new PermissionWriteService({
     toolActionRepo, deptToolPermRepo, deptUserOverrideRepo, permissions,
@@ -319,6 +320,45 @@ describe('DesktopToolAccessService', () => {
 
     await service.setDepartmentMember(actor, 'larkTask', 'ops', 'user-1', 'create', false);
     assert.equal(writes.at(-1)?.scope, 'department-member');
+  });
+
+  it('lifts a personal exception so the person follows their role again', async () => {
+    const { service, writes, invalidations, audits } = makeService({ managerDepartments: ['ops'] });
+    await service.clearDepartmentMember(actor, 'larkTask', 'ops', 'user-1', 'create');
+
+    assert.equal(writes.at(-1)?.scope, 'department-member-clear');
+    assert.deepEqual(invalidations, ['dept:company-1:ops']);
+    // Audited apart from setting one: "the exception was removed" and "the
+    // exception now says deny" are different decisions to read back later.
+    assert.equal(audits.at(-1)?.action, 'permission.clear_dept_member_action');
+  });
+
+  it('guards lifting an exception exactly as tightly as imposing one', async () => {
+    // On a stored deny, removing the row *widens* what Divo may do — so a
+    // manager of another department must not be able to reach it.
+    const outsider = makeService({ managerDepartments: ['outreach'] });
+    await assert.rejects(
+      () => outsider.service.clearDepartmentMember(actor, 'larkTask', 'ops', 'user-1', 'create'),
+      (error: unknown) => error instanceof DesktopToolAccessError && error.code === 'forbidden',
+    );
+    assert.equal(outsider.writes.length, 0);
+
+    // And a manager demoted between the check and the write loses the write.
+    const demoted = makeService({ managerDepartments: ['ops'], revokeManagerOnSecondCheck: true });
+    await assert.rejects(
+      () => demoted.service.clearDepartmentMember(actor, 'larkTask', 'ops', 'user-1', 'create'),
+      (error: unknown) => error instanceof DesktopToolAccessError && error.code === 'invalid',
+    );
+    assert.equal(demoted.writes.length, 0);
+  });
+
+  it('refuses to lift an exception on a tool nobody may configure', async () => {
+    const { service, writes } = makeService({ managerDepartments: ['ops'] });
+    await assert.rejects(
+      () => service.clearDepartmentMember(actor, 'memoryRecall', 'ops', 'user-1', 'read'),
+      (error: unknown) => error instanceof DesktopToolAccessError && error.code === 'invalid',
+    );
+    assert.equal(writes.length, 0);
   });
 
   it('restricts global action writes to a live company admin', async () => {
