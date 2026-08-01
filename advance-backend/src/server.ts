@@ -58,6 +58,12 @@ import { createKnowledgeFileRoutes } from './http/desktop/knowledge-files.routes
 import { LarkFileClient } from './infrastructure/channels/lark/clients/lark-file.client';
 import { ElevenLabsTranscriptionClient } from './infrastructure/ai/transcription/elevenlabs-transcription.client';
 
+/** Where the model proxy is mounted. Named because the body parser exempts it. */
+const LLM_PROXY_MOUNT_PATH = '/api/llm';
+
+/** Vision requests can contain several inlined images; other routes stay at 2 MB. */
+const LLM_PROXY_BODY_LIMIT = '24mb';
+
 export type DivoServerApplication = Express & {
   shutdown(): Promise<void>;
 };
@@ -163,13 +169,16 @@ export const createServer = (c: Container): DivoServerApplication => {
         });
       });
   };
-  recoverGoogleExchanges();
-  const googleExchangeRecoveryTimer = setInterval(
-    recoverGoogleExchanges,
-    60_000,
-  );
-  googleExchangeRecoveryTimer.unref?.();
-  c.mailOpsWorker.start();
+  let googleExchangeRecoveryTimer: NodeJS.Timeout | undefined;
+  if (c.env.DIVO_AUTONOMOUS_WORKERS_ENABLED) {
+    recoverGoogleExchanges();
+    googleExchangeRecoveryTimer = setInterval(
+      recoverGoogleExchanges,
+      60_000,
+    );
+    googleExchangeRecoveryTimer.unref?.();
+    c.mailOpsWorker.start();
+  }
 
   const dataExportWorker = new DataExportWorker({
     redisUrl: c.queueRedisUrl,
@@ -251,7 +260,9 @@ export const createServer = (c: Container): DivoServerApplication => {
   );
   knowledgeFileCleanupTimer.unref?.();
 
-  c.scheduledWorkflowService.start();
+  if (c.env.DIVO_AUTONOMOUS_WORKERS_ENABLED) {
+    c.scheduledWorkflowService.start();
+  }
 
   const runCloudinaryCleanup = () => {
     void c.cloudinaryAdapter.cleanupExpiredExports({
@@ -317,15 +328,20 @@ export const createServer = (c: Container): DivoServerApplication => {
 
   // Capture the raw JSON body string on every request before parsing.
   // The webhook handler needs it to verify the HMAC-SHA256 signature.
-  app.use(
-    express.json({
-      limit: '2mb',
-      verify: (req, _res, buf) => {
-        // Attach raw body for HMAC verification; use unknown-cast to avoid module augmentation.
-        (req as unknown as Record<string, unknown>)['rawBody'] = buf.toString('utf8');
-      },
-    }),
-  );
+  const parseJsonBody = express.json({
+    limit: '2mb',
+    verify: (req, _res, buf) => {
+      // Attach raw body for HMAC verification; use unknown-cast to avoid module augmentation.
+      (req as unknown as Record<string, unknown>)['rawBody'] = buf.toString('utf8');
+    },
+  });
+  // The model proxy is exempt because a vision request carries the picture.
+  // 2mb is right for every other route and far too small for this one: Pi inlines
+  // an image up to 4.5MB of base64 (`DEFAULT_MAX_BYTES` in its image resizer),
+  // and a 413 raised here never reaches the proxy — the run just fails with
+  // advice about truncating tool results, which cannot help an image.
+  app.use((req, res, next) =>
+    req.path.startsWith(LLM_PROXY_MOUNT_PATH) ? next() : parseJsonBody(req, res, next));
   app.use(express.urlencoded({ extended: true }));
 
   // ── Request correlation middleware ──────────────────────────────────────
@@ -430,7 +446,9 @@ export const createServer = (c: Container): DivoServerApplication => {
         }),
         expectedSubscription: gmailPubsubConfig.subscription,
         mailOpsRepo: c.mailOpsRepo,
-        wakeMailOps: () => c.mailOpsWorker.wake(),
+        wakeMailOps: () => {
+          if (c.env.DIVO_AUTONOMOUS_WORKERS_ENABLED) c.mailOpsWorker.wake();
+        },
         logger: c.logger,
       }),
     );
@@ -628,23 +646,28 @@ export const createServer = (c: Container): DivoServerApplication => {
     }),
   );
 
-  // LLM proxy (Guardrails) — desktop → backend → DeepSeek. Mounts whenever the
-  // flag is on; the key is resolved per-request by the store (company → platform →
-  // env). No key configured ⇒ the route returns 503 "not configured", never 404.
+  // LLM proxy (Guardrails) — desktop/Lark → backend → selected provider. Mounts
+  // whenever the flag is on; the provider key is resolved per request. No key
+  // configured ⇒ the route returns 503 "not configured", never 404.
   // PI holds no key — it authenticates with its member token.
   if (c.env.LLM_PROXY_ENABLED) {
     app.use(
-      '/api/llm',
+      LLM_PROXY_MOUNT_PATH,
+      express.json({ limit: LLM_PROXY_BODY_LIMIT }),
       piRuntimeMemberAuth,
       createLlmProxyRoutes({
         logger:  c.logger,
         store:   c.proxyKeyStore,
         service: c.llmProxyService,
-        baseUrl: c.env.DEEPSEEK_BASE_URL,
+        baseUrls: { deepseek: c.env.DEEPSEEK_BASE_URL, openai: c.env.OPENAI_BASE_URL },
         apiKeyExhaustion: c.apiKeyExhaustionNotifier,
       }),
     );
-    c.logger.info('llm-proxy.enabled', { baseUrl: c.env.DEEPSEEK_BASE_URL, canEncrypt: c.proxyKeyStore.canEncrypt() });
+    c.logger.info('llm-proxy.enabled', {
+      deepseek: c.env.DEEPSEEK_BASE_URL,
+      openai: c.env.OPENAI_BASE_URL,
+      canEncrypt: c.proxyKeyStore.canEncrypt(),
+    });
   }
 
   // Department admin CRUD
@@ -733,7 +756,8 @@ export const createServer = (c: Container): DivoServerApplication => {
 
   // Proxy control plane (Guardrails) — key store + status.
   app.use('/api/admin/proxy', adminAuth, createProxyRoutes({
-    prisma: c.prisma, store: c.proxyKeyStore, logger: c.logger, enabled: c.env.LLM_PROXY_ENABLED, upstream: c.env.DEEPSEEK_BASE_URL,
+    prisma: c.prisma, store: c.proxyKeyStore, logger: c.logger, enabled: c.env.LLM_PROXY_ENABLED,
+    upstreams: { deepseek: c.env.DEEPSEEK_BASE_URL, openai: c.env.OPENAI_BASE_URL },
   }));
 
   // 404
@@ -747,7 +771,7 @@ export const createServer = (c: Container): DivoServerApplication => {
   let shutdownPromise: Promise<void> | undefined;
   app.shutdown = () => {
     shutdownPromise ??= (async () => {
-      clearInterval(googleExchangeRecoveryTimer);
+      if (googleExchangeRecoveryTimer) clearInterval(googleExchangeRecoveryTimer);
       clearInterval(knowledgeProjectionTimer);
       clearInterval(knowledgeFileCleanupTimer);
       clearInterval(cloudinaryCleanupTimer);

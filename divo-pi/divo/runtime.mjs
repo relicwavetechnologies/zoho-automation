@@ -4,6 +4,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+	RUNTIME_MODEL_IDS,
+	VISION_MODELS,
+	isRuntimeModel,
+	providerForModel,
+	thinkingLevelForModel,
+} from "./runtime-models.mjs";
 
 const divoDir = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(divoDir, "..");
@@ -229,6 +236,22 @@ function ensureExtensionLink(agentDir, extensionName) {
 	fs.symlinkSync(target, link, "dir");
 }
 
+/**
+ * The one sentence that decides how this run looks at a picture.
+ *
+ * Which of the two is correct depends entirely on the model the run launched
+ * on, and the agent cannot work that out for itself: a text-only model asked to
+ * `read` an image gets a note saying it cannot see it, and a vision model told
+ * to send every picture to the OCR service loses the ability to actually look
+ * at one. So the launcher, which is the only thing that knows the model,
+ * settles it here rather than leaving the agent to discover it a call at a time.
+ */
+export function imagePolicyFor(model) {
+	return VISION_MODELS.has(model)
+		? "To understand a picture, open it with the read tool. This model sees images directly, so read the file itself rather than sending it anywhere to be transcribed."
+		: "To understand a picture, call divo_gateway with op \"media.image_ocr\" and payload { filePath }. This model cannot see images, so reading the file yourself returns nothing usable; the gateway returns the text, a description of what is shown, and the interface elements in it.";
+}
+
 function renderWorkspacePrompt(values) {
 	let prompt = fs.readFileSync(
 		path.join(divoDir, "prompts", "company-workspace.md"),
@@ -357,14 +380,15 @@ export function buildPiArguments(values) {
 		"--session-dir",
 		values.sessionDir,
 		"--provider",
-		manifest.provider,
+		values.provider,
 		"--model",
-		manifest.model,
+		values.model,
 		"--thinking",
-		manifest.thinkingLevel,
+		thinkingLevelForModel(values.model, manifest.thinkingLevel),
 		"--append-system-prompt",
 		renderWorkspacePrompt({
 			workspace: values.workspace,
+			image_policy: imagePolicyFor(values.model),
 			thread_id: values.thread,
 			run_dir: values.runDir,
 			artifacts_dir: values.artifactsDir,
@@ -397,11 +421,22 @@ export function startDivoPi({
 	runtimeThreadId,
 	mode = "tui",
 	sessionScope = "thread",
+	// The model the run was launched for. The backend picks it from the member's
+	// grant; the manifest supplies it when nothing else does, which is what a
+	// terminal launch and every run before per-member selection existed use.
+	model = manifest.model,
+	provider = manifest.provider,
 	print = false,
 	prompt,
 }) {
 	if (!backendUrl || !token) {
 		throw new Error("Divo authentication is required before Pi can start");
+	}
+	if (!isRuntimeModel(model)) {
+		throw new Error(`Model must be one of: ${RUNTIME_MODEL_IDS.join(", ")}`);
+	}
+	if (providerForModel(model) !== provider) {
+		throw new Error(`Model ${model} is served by ${providerForModel(model)}, not ${provider}`);
 	}
 	if (!/^[A-Za-z0-9._-]+$/.test(thread)) {
 		throw new Error("Thread must contain only letters, numbers, dot, underscore, or dash");
@@ -473,9 +508,9 @@ export function startDivoPi({
 		`${JSON.stringify(
 			{
 				packages: [],
-				defaultProvider: manifest.provider,
-				defaultModel: manifest.model,
-				defaultThinkingLevel: manifest.thinkingLevel,
+				defaultProvider: provider,
+				defaultModel: model,
+				defaultThinkingLevel: thinkingLevelForModel(model, manifest.thinkingLevel),
 			},
 			null,
 			2,
@@ -512,8 +547,10 @@ export function startDivoPi({
 		isRunScoped,
 		logsDir,
 		mode,
+		model,
 		print,
 		prompt,
+		provider,
 		runContextPath,
 		runDir,
 		runId,

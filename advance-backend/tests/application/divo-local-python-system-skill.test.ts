@@ -4,6 +4,10 @@ import {
   DIVO_LOCAL_PYTHON_SYSTEM_SKILL,
   provisionDivoLocalPythonSystemSkill,
 } from '../../src/application/skills/divo-local-python-system-skill.ts';
+import {
+  CREATE_FILES_SYSTEM_SKILL,
+  READ_FILES_SYSTEM_SKILL,
+} from '../../src/application/skills/files-and-documents-system-skills.ts';
 
 describe('Divo local Python system skill', () => {
   it('updates the stable system-skill identity to the persistent file workflow', () => {
@@ -20,6 +24,22 @@ describe('Divo local Python system skill', () => {
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /returned == parsed \+ skipped/i);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /missing or unparsed source record/i);
     assert.doesNotMatch(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /def run\(input_data, divo\)/i);
+  });
+
+  it('keeps local artifact delivery disabled only for Lark', () => {
+    for (const markdown of [
+      READ_FILES_SYSTEM_SKILL.markdown,
+      CREATE_FILES_SYSTEM_SKILL.markdown,
+      DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown,
+    ]) {
+      assert.match(markdown, /In Lark/i);
+      assert.match(markdown, /Jan desktop/i);
+      assert.doesNotMatch(markdown, /DIVO_ARTIFACTS_DIR` (?:so|instead;).*delivered/i);
+    }
+
+    assert.match(READ_FILES_SYSTEM_SKILL.markdown, /complete user-facing result in chat/i);
+    assert.match(CREATE_FILES_SYSTEM_SKILL.markdown, /local file delivery is unavailable/i);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /never claim a local path was delivered/i);
   });
 
   it('replaces an existing legacy system recipe in place', async () => {

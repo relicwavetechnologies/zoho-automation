@@ -3,13 +3,13 @@ import { Activity, Ban, CheckCircle2, KeyRound, RotateCw, ShieldCheck, Trash2 } 
 import { toast } from "sonner"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { compact, usd, useCompanyScope, useSpendMembers } from "@/cursor/use-spend"
-import { PROXY_MODELS, useProxyPolicies, useSaveProxyPolicy, type ProxyPolicy } from "@/cursor/use-proxy-policy"
-import { proxyState, useProxyAudit, useProxyMetrics, useProxyStatus, useRemoveProxyKey, useSaveProxyKey, type AuditDecision, type KeyScope } from "@/cursor/use-proxy"
+import { activeModel, useProxyPolicies, useSaveProxyPolicy, type ProxyPolicy } from "@/cursor/use-proxy-policy"
+import { KEY_PROVIDERS, proxyState, useProxyAudit, useProxyMetrics, useProxyModels, useProxyStatus, useRemoveProxyKey, useSaveProxyKey, type AuditDecision, type KeyProvider, type KeyScope } from "@/cursor/use-proxy"
 
 /*
- * Guardrails — DeepSeek proxy control plane. Fully wired: the DeepSeek key card +
- * proxy status (encrypted key-store), member controls (block / budget / rate /
- * models), health metrics, and the live audit feed all read/write real backend.
+ * Guardrails — model proxy control plane. Fully wired: a key card per provider
+ * (encrypted key-store), member controls (block / budget / rate / models),
+ * health metrics, and the live audit feed all read/write real backend.
  */
 const STATE_META: Record<ReturnType<typeof proxyState>, { label: string; color: string }> = {
   active: { label: "Active", color: "var(--cur-success)" },
@@ -23,11 +23,18 @@ export function GuardrailsPage() {
   const companyId = useCompanyScope()
   const isSuper = session?.role === "SUPER_ADMIN"
 
-  const statusQ = useProxyStatus(token, companyId)
-  const saveKey = useSaveProxyKey(token, companyId)
-  const removeKey = useRemoveProxyKey(token, companyId)
+  // One key card at a time. Both keys are stored side by side; this only picks
+  // which one is on screen.
+  const [provider, setProvider] = useState<KeyProvider>("deepseek")
+  const statusQ = useProxyStatus(token, provider, companyId)
+  const saveKey = useSaveProxyKey(token, provider, companyId)
+  const removeKey = useRemoveProxyKey(token, provider, companyId)
   const status = statusQ.data
   const state = proxyState(status)
+  const providerMeta = KEY_PROVIDERS.find((p) => p.id === provider)!
+
+  const modelsQ = useProxyModels(token)
+  const models = modelsQ.data
 
   // Default to the scope this admin is actually allowed to set (platform is super-admin-only).
   const [scope, setScope] = useState<KeyScope>(isSuper ? "platform" : "company")
@@ -35,7 +42,7 @@ export function GuardrailsPage() {
 
   const submitKey = () => {
     const key = apiKey.trim()
-    if (key.length < 20) { toast.error("Paste a valid DeepSeek key (sk-…)"); return }
+    if (key.length < 20) { toast.error(`Paste a valid ${providerMeta.label} key (sk-…)`); return }
     // Guard against a stale 'platform' scope for non-super-admins (session may load late).
     const keyScope: KeyScope = isSuper ? scope : "company"
     saveKey.mutate({ key, keyScope }, { onSuccess: () => { setApiKey(""); toast.success("Key saved") } })
@@ -110,7 +117,7 @@ export function GuardrailsPage() {
         <div>
           <div className="eyebrow">Operations</div>
           <h1 className="display">Guardrails</h1>
-          <p>Every model call routes through the backend proxy — hold the DeepSeek key here, cap spend, rate-limit, and block abuse in real time.</p>
+          <p>Every model call routes through the backend proxy — hold each provider's key here, cap spend, rate-limit, and block abuse in real time.</p>
         </div>
         <div className="role-pill" title={`Proxy ${STATE_META[state].label}`}>
           <span className="dot" style={{ width: 7, height: 7, borderRadius: "50%", background: STATE_META[state].color }} />
@@ -118,30 +125,44 @@ export function GuardrailsPage() {
         </div>
       </div>
 
-      {/* DeepSeek proxy key — REAL (encrypted key-store; desktop never holds a key) */}
+      {/* Provider keys — REAL (encrypted key-store; desktop never holds a key) */}
       <div className="section">
-        <header><h3>DeepSeek proxy key</h3><p>Stored encrypted server-side. The desktop never sees it — requests carry only the member token, and the backend attaches the key.</p></header>
+        <header style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <h3>Provider keys</h3>
+            <p>Stored encrypted server-side, one per provider. The desktop never sees them — requests carry only the member token, and the backend attaches the key for whichever model was asked for.</p>
+          </div>
+          <div style={{ display: "flex", gap: "6px" }}>
+            {KEY_PROVIDERS.map((p) => (
+              <button key={p.id} className="badge" type="button" onClick={() => { setProvider(p.id); setApiKey("") }} title={p.hint}
+                style={{ cursor: "pointer", textTransform: "none", ...(p.id === provider ? { color: "var(--cur-primary)", borderColor: "color-mix(in srgb, var(--cur-primary) 45%, transparent)" } : { color: "var(--cur-muted-soft)", opacity: 0.6 }) }}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </header>
         <div style={{ padding: "18px", display: "grid", gap: "16px", gridTemplateColumns: "1.4fr 1fr" }}>
           <div>
+            <div className="muted" style={{ fontSize: "12.5px", marginBottom: "10px" }}>{providerMeta.hint}</div>
             <div className="kv">
               <span className="k">Current key</span>
               <span className="v mono">{statusQ.isLoading ? "…" : status?.keyMasked ?? "Not configured"}</span>
             </div>
             {status?.keyError === "unreadable" ? (
               <div style={{ fontSize: "12px", marginTop: "6px", color: "var(--cur-error)" }}>Stored key can’t be decrypted (encryption secret changed or corrupt). Paste the key again to fix — requests are failing with 503 until then.</div>
-            ) : status?.source === "env" ? (
-              <div className="muted" style={{ fontSize: "12px", marginTop: "6px" }}>Using the server env key. Save one here to manage rotation from the UI.</div>
+            ) : status && !status.configured ? (
+              <div className="muted" style={{ fontSize: "12px", marginTop: "6px" }}>No {providerMeta.label} key saved. Models served by {providerMeta.label} return 503 until one is added here — there is no server fallback.</div>
             ) : null}
             {status && !status.canEncrypt ? (
               <div style={{ fontSize: "12px", marginTop: "6px", color: "var(--cur-error)" }}>Server encryption key is not configured — set PROXY_KEY_ENCRYPTION_KEY to store keys here.</div>
             ) : null}
             <div style={{ display: "flex", gap: "9px", marginTop: "12px", alignItems: "center" }}>
-              <input className="input" style={{ flex: 1 }} placeholder="Paste DeepSeek API key (sk-…)" value={apiKey} onChange={(e) => setApiKey(e.target.value)}
+              <input className="input" style={{ flex: 1 }} placeholder={`Paste ${providerMeta.label} API key (sk-…)`} value={apiKey} onChange={(e) => setApiKey(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") submitKey() }} disabled={status ? !status.canEncrypt : false} />
               <button className="btn primary" type="button" onClick={submitKey} disabled={saveKey.isPending || (status ? !status.canEncrypt : false)}>
                 {status?.keyLast4 ? <RotateCw size={15} /> : <KeyRound size={15} />} {saveKey.isPending ? "Saving…" : status?.keyLast4 ? "Rotate" : "Save"}
               </button>
-              {status?.keyLast4 && status.source !== "env" ? (
+              {status?.keyLast4 ? (
                 <button className="btn" type="button" onClick={clearKey} disabled={removeKey.isPending} title="Remove key">
                   <Trash2 size={15} />
                 </button>
@@ -178,16 +199,16 @@ export function GuardrailsPage() {
 
       {/* Member controls — REAL (writes MemberProxyPolicy) */}
       <div className="section mt24">
-        <header><h3>Member controls</h3><p>Model access is admin-controlled — toggle Flash/Pro, block abusers, and see live 30-day spend. Budget &amp; rate caps are set on each member’s page.</p></header>
+        <header><h3>Member controls</h3><p>Model access is admin-controlled — grant a member the models they may use, block abusers, and see live 30-day spend. Granting several means the best of them answers; <b>Runs on</b> shows which that is. Budget &amp; rate caps are set on each member’s page.</p></header>
         <table>
           <thead>
-            <tr><th>Member</th><th className="right">30d spend</th><th className="right">Budget cap</th><th className="right">Rate</th><th>Model access</th><th className="right">Access</th></tr>
+            <tr><th>Member</th><th className="right">30d spend</th><th className="right">Budget cap</th><th className="right">Rate</th><th>Model access</th><th>Runs on</th><th className="right">Access</th></tr>
           </thead>
           <tbody>
             {membersQ.isLoading ? (
-              <tr><td colSpan={6} className="muted" style={{ padding: "24px", textAlign: "center" }}>Loading members…</td></tr>
+              <tr><td colSpan={7} className="muted" style={{ padding: "24px", textAlign: "center" }}>Loading members…</td></tr>
             ) : members.length === 0 ? (
-              <tr><td colSpan={6} className="muted" style={{ padding: "24px", textAlign: "center" }}>No member usage yet.</td></tr>
+              <tr><td colSpan={7} className="muted" style={{ padding: "24px", textAlign: "center" }}>No member usage yet.</td></tr>
             ) : (
               members.map((m) => {
                 const p = effPolicy(m.userId)
@@ -216,16 +237,29 @@ export function GuardrailsPage() {
                     </td>
                     <td>
                       <div style={{ display: "flex", gap: "6px" }}>
-                        {PROXY_MODELS.map((mm) => {
+                        {(models ?? []).map((mm) => {
                           const on = p.allowedModels.includes(mm.id)
                           return (
                             <button key={mm.id} className="badge" type="button" onClick={() => toggleModel(m.userId, mm.id)} disabled={savePolicy.isPending || !policiesReady}
+                              title={`${mm.provider} · $${mm.inputPerMillionUsd}/M in, $${mm.outputPerMillionUsd}/M out${mm.vision ? " · reads images" : ""}`}
                               style={{ cursor: "pointer", textTransform: "none", ...(on ? { color: "var(--cur-primary)", borderColor: "color-mix(in srgb, var(--cur-primary) 45%, transparent)" } : { color: "var(--cur-muted-soft)", opacity: 0.6 }) }}>
                               {mm.label}
                             </button>
                           )
                         })}
                       </div>
+                    </td>
+                    <td>
+                      {(() => {
+                        const running = activeModel(models, p.allowedModels)
+                        if (!running) return <span className="muted">—</span>
+                        return (
+                          <span className="mono" style={{ fontSize: "12.5px" }} title={running.id}>
+                            {running.label}
+                            {running.vision ? <span className="muted" style={{ marginLeft: 6 }}>sees images</span> : null}
+                          </span>
+                        )
+                      })()}
                     </td>
                     <td className="right">
                       <button className="btn" type="button" onClick={() => toggleBlock(m.userId)} disabled={savePolicy.isPending || !policiesReady} style={p.blocked ? { color: "var(--cur-error)", borderColor: "color-mix(in srgb, var(--cur-error) 40%, transparent)" } : undefined}>

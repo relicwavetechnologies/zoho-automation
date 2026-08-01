@@ -13,8 +13,8 @@ import type { RunStatus, TraceTool } from "@/cursor/data"
  * Desktop/PI runs persist model calls (with usage) and tool calls (with I/O) as
  * ExecutionEvents; we fold the flat stream back into turns → {model, tools} and
  * sum tokens/cost client-side. Cost is the provider-reported `usage.cost` summed
- * per run (stored at ingest); legit DeepSeek-priced cost is Track B — swap the
- * `costUsd` source here when that lands, the view model stays the same.
+ * per run (stored at ingest); canonical per-model pricing is mirrored by
+ * `costUsd`, so the view model remains provider-neutral.
  */
 
 // ─── Backend DTOs (from execution-query.service.ts) ──────────────────────────

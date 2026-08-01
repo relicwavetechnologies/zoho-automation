@@ -86,14 +86,6 @@ import {
   type WorkBootstrap,
 } from './work-bootstrap.service';
 
-const LARK_DIRECT_MAIL_AUTOMATION_OPERATIONS = new Set([
-  'create',
-  'update',
-  'pause',
-  'resume',
-  'archive',
-]);
-
 /**
  * Per-skill RBAC. Skill discovery is deny-by-default: a member sees/uses only
  * skills explicitly granted to them (as a user, or via a department, role, or
@@ -804,18 +796,16 @@ export class GatewayDispatcher {
       return prepared;
     }
     const operation = parsed.data.args['operation'];
-    const isDirectLarkMailAutomationMutation = member.channel === 'lark'
-      && parsed.data.toolId === 'mailAutomations'
-      && typeof operation === 'string'
-      && LARK_DIRECT_MAIL_AUTOMATION_OPERATIONS.has(operation);
     // `knowledge.apply` can only consume an exact, versioned mutation whose
     // requester review and any manager/admin approval were already recorded by
     // the central knowledge authority. A second generic local confirmation
-    // would review the same payload again and still could not broaden access.
+    // on desktop would review the same payload again and still could not
+    // broaden access. Lark mutations use their backend-owned HITL flow instead
+    // of desktop's local confirmation intent.
     const isReviewedKnowledgeApply = parsed.data.toolId === 'knowledge'
       && operation === 'apply';
     const needsLocalApproval = prepared.data.action !== 'read'
-      && !isDirectLarkMailAutomationMutation
+      && member.channel !== 'lark'
       && !isReviewedKnowledgeApply;
     if (needsLocalApproval) {
       if (!this.deps.localApprovalIntents) {

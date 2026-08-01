@@ -16,7 +16,7 @@ import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { buildContainer } from '../src/composition';
 import { loadAndValidateEnv } from '../src/config/env';
-import { LARK_MODEL_IDS } from '../src/application/proxy/lark-inference.service';
+import { DEFAULT_MODEL } from '../src/application/observability/pricing';
 import { resolveHarnessOpenId } from './run-engine-harness';
 import {
   asChatId,
@@ -456,7 +456,7 @@ async function main(): Promise<void> {
       conversation,
       channelAdapter: container.larkAdapter,
       approvalGate: container.approvalGate,
-      larkModelId: LARK_MODEL_IDS.flash,
+      larkModelId: DEFAULT_MODEL,
     });
     const durationMs = Date.now() - startedAt;
     if (!result.ok) throw result.error;
@@ -479,7 +479,7 @@ async function main(): Promise<void> {
       generatedAt: new Date().toISOString(),
       reviewer: 'Codex manual review required',
       principal: SHIVAM_SELECTOR,
-      model: LARK_MODEL_IDS.flash,
+      model: DEFAULT_MODEL,
       account: connection.label,
       organization: organizationName,
       organizationId: `…${organizationId.slice(-6)}`,

@@ -5,7 +5,9 @@ import {
   createLarkWebhookRoutes,
   processAcceptedLarkReceipt,
   replayLarkMessageAfterLogin,
+  quotedImageAttachments,
   runPiAndDeliver,
+  runTranscript,
   type LarkWebhookDeps,
 } from '../../../src/infrastructure/channels/lark/lark.webhook.routes.ts';
 import { LarkPiRuntimeError } from '../../../src/application/runtime/lark-pi-runtime.service.ts';
@@ -1050,31 +1052,51 @@ describe('Lark webhook admission', () => {
     });
 
     const adapter = result.routeDeps.adapter as any;
-    assert.ok(adapter.__statusUpdates.length >= 5);
+    assert.ok(adapter.__statusUpdates.length >= 3);
     assert.equal(adapter.__outboundOrder[0], 'status');
     assert.equal(adapter.__outboundOrder.at(-1), 'final');
     assert.deepEqual(adapter.__finalReplies, ['Report complete']);
-    assert.deepEqual(
-      adapter.__statusUpdates.map((update: any) => update.timeline.state),
-      ['thinking', 'thinking', 'thinking', 'thinking', 'working', 'working', 'writing', 'writing'],
-    );
+
+    // Status cards are published without blocking the run, so a transition that
+    // is superseded before its card goes out is dropped rather than replayed.
+    // What the card owes the user is therefore not every frame, but an order it
+    // never walks back: it opens on "thinking" and ends on "writing".
+    const RANK: Record<string, number> = { thinking: 0, working: 1, writing: 2 };
+    const states = adapter.__statusUpdates.map((update: any) => update.timeline.state);
+    assert.equal(states[0], 'thinking');
+    assert.equal(states.at(-1), 'writing');
+    for (let i = 1; i < states.length; i += 1) {
+      assert.ok(
+        RANK[states[i]] >= RANK[states[i - 1]],
+        `status card went backwards: ${states[i - 1]} → ${states[i]}`,
+      );
+    }
+
+    // The opening frame is awaited before the run starts, so it is exact.
     assert.equal(adapter.__statusUpdates[0].timeline.liveLabel, 'Getting things ready…');
-    assert.equal(adapter.__statusUpdates[1].timeline.liveLabel, 'Checking your workspace…');
-    assert.equal(adapter.__statusUpdates[2].timeline.liveLabel, 'Resuming your work…');
     assert.doesNotMatch(
       adapter.__statusUpdates.map((update: any) => update.timeline.liveLabel).join(' '),
       /\bPi\b/,
     );
-    const toolUpdate = adapter.__statusUpdates.find(
-      (update: any) => update.timeline.ledger?.[0]?.status === 'running',
-    );
-    // No outcome text: the row's marker carries running/done/failed, so a
-    // placeholder here would render as "● Google — In progress".
-    assert.deepEqual(toolUpdate.timeline.ledger, [{
-      label: 'Google',
+
+    // The ledger accumulates, so the settled last frame carries the finished
+    // tool whether or not its "running" frame ever made it out.
+    assert.deepEqual(adapter.__statusUpdates.at(-1).timeline.ledger, [{
+      kind: 'tool',
+      // The tool table's name, not a vendor guessed from the id's prefix: the
+      // run used Drive, and "Google" was as close as the old regex could get.
+      label: 'Google Drive',
       count: 1,
-      status: 'running',
+      status: 'done',
     }]);
+    // A call whose arguments named nothing worth showing stays bare. The row's
+    // marker already carries running/done/failed, so an invented placeholder
+    // would render as "● Google — In progress" and say nothing.
+    for (const update of adapter.__statusUpdates) {
+      for (const row of update.timeline.ledger ?? []) {
+        assert.ok(!('outcome' in row), `ledger row carried placeholder outcome: ${JSON.stringify(row)}`);
+      }
+    }
     assert.doesNotMatch(
       JSON.stringify(adapter.__statusUpdates),
       /token|secret|must-not-render|args|result/i,
@@ -1150,7 +1172,77 @@ describe('Lark webhook admission', () => {
 
     const adapter = result.routeDeps.adapter as any;
     const row = adapter.__statusUpdates.at(-1).timeline.ledger[0];
-    assert.equal(row.label, 'Skill view');
+    // Not "Skill view" — that was the humanizer spelling out an internal tool
+    // id, with the space in it, on a card a customer reads.
+    assert.equal(row.label, 'Skill');
+  });
+
+  // A thirteen-minute run whose card only ever shows tool names reads as broken,
+  // however well it is going. What the model says between its calls is the only
+  // part of that card written for a person.
+  it('interleaves the model talking with the steps it took, and says what each was about', async () => {
+    const result = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      rootId: null,
+      parentId: null,
+      text: 'Audit the Airtable bases',
+    }), {
+      engineRun: async (input: unknown) => {
+        const onProgress = (input as any).onProgress;
+        await onProgress({ type: 'say', index: 0, text: 'Let me see which bases you can reach.' });
+        await onProgress({
+          type: 'tool_start', callId: 'c1', toolName: 'bash', detail: 'airtable list-bases',
+        });
+        await onProgress({ type: 'tool_end', callId: 'c1', toolName: 'bash', isError: false });
+        await onProgress({ type: 'say', index: 0, text: 'Found 3. Profiling the largest.' });
+        await onProgress({
+          type: 'tool_start', callId: 'c2', toolName: 'read', detail: 'bases.json',
+        });
+        return { text: 'Audit complete' };
+      },
+    });
+
+    const adapter = result.routeDeps.adapter as any;
+    assert.deepEqual(
+      adapter.__statusUpdates.at(-1).timeline.ledger.map((row: any) =>
+        [row.kind, row.label, row.outcome ?? ''].join('|')),
+      [
+        'say|Let me see which bases you can reach.|',
+        'tool|Terminal|airtable list-bases',
+        'say|Found 3. Profiling the largest.|',
+        'tool|Files|bases.json',
+      ],
+    );
+
+    // The final card edits the status card in place, so without this the whole
+    // log is destroyed at the moment the answer lands.
+    const trace = adapter.__finalTraces[0] as string;
+    assert.match(trace, /airtable list-bases/);
+    assert.match(trace, /Let me see which bases you can reach\./);
+  });
+
+  // A block index restarts at zero in every new assistant message, so keying on
+  // it alone makes the second thing the model says overwrite the first.
+  it('keeps a second sentence after a tool call instead of overwriting the first', async () => {
+    const result = await runWebhook(makeEvent({
+      chatType: 'p2p', rootId: null, parentId: null, text: 'Do the thing',
+    }), {
+      engineRun: async (input: unknown) => {
+        const onProgress = (input as any).onProgress;
+        await onProgress({ type: 'say', index: 0, text: 'First I will look.' });
+        await onProgress({ type: 'tool_start', callId: 'c1', toolName: 'bash' });
+        await onProgress({ type: 'say', index: 0, text: 'Now I will write it up.' });
+        return { text: 'done' };
+      },
+    });
+
+    const adapter = result.routeDeps.adapter as any;
+    assert.deepEqual(
+      adapter.__statusUpdates.at(-1).timeline.ledger
+        .filter((row: any) => row.kind === 'say')
+        .map((row: any) => row.label),
+      ['First I will look.', 'Now I will write it up.'],
+    );
   });
 
   it('delivers a harness-visible Pi failure before rethrowing it', async () => {
@@ -1285,7 +1377,6 @@ describe('Lark webhook admission', () => {
     }
   });
 });
-
 describe('Lark webhook card authorization', () => {
   it('passes the authenticated tenant-scoped actor to memory review', async () => {
     let receivedActor: any;
@@ -1326,64 +1417,6 @@ describe('Lark webhook card authorization', () => {
     });
   });
 
-  it('passes the authenticated actor to interrupt authorization and returns its result', async () => {
-    let actor: any;
-    const result = await runWebhook({
-      header: {
-        event_type: 'card.action.trigger',
-        token: 'verify',
-        tenant_key: 'tenant-1',
-      },
-      event: {
-        operator: { open_id: 'ou_member' },
-        context: { open_message_id: 'om_status' },
-        action: { value: { action: 'interrupt_run' } },
-      },
-    }, {
-      setupAdapter: adapter => {
-        (adapter as any).findCorrelationByStatusMessage = () => 'corr-1';
-        (adapter as any).interruptRun = (_correlationId: string, value: unknown) => {
-          actor = value;
-          return 'forbidden';
-        };
-      },
-    });
-
-    assert.deepEqual(actor, {
-      tenantKey: 'tenant-1',
-      openId: 'ou_member',
-      userId: 'user-1',
-      companyId: 'company-1',
-      aiRole: 'MEMBER',
-    });
-    assert.deepEqual(result.responseBody, {
-      toast: { type: 'warning', content: 'You are not authorized to interrupt this run.' },
-    });
-  });
-
-  it('reports an interrupt request without claiming the run already stopped', async () => {
-    const result = await runWebhook({
-      header: {
-        event_type: 'card.action.trigger',
-        token: 'verify',
-        tenant_key: 'tenant-1',
-      },
-      event: {
-        operator: { open_id: 'ou_member' },
-        context: { open_message_id: 'om_status' },
-        action: { value: { action: 'interrupt_run' } },
-      },
-    }, {
-      setupAdapter: adapter => {
-        (adapter as any).findCorrelationByStatusMessage = () => 'corr-1';
-        (adapter as any).interruptRun = () => 'aborted';
-      },
-    });
-
-    assert.deepEqual(result.responseBody, {
-      toast: { type: 'success', content: 'Interrupt requested.' },
-    });
-  });
 
   it('treats old group-mode card actions as informational', async () => {
     const result = await runWebhook({
@@ -1498,6 +1531,7 @@ function captureOutbound(adapter: any): void {
   adapter.__sentCards = [];
   adapter.__sentCardDeliveries = [];
   adapter.__finalReplies = [];
+  adapter.__finalTraces = [];
   adapter.__statusUpdates = [];
   adapter.__outboundOrder = [];
   adapter.sendStatus = async (_conversation: unknown, update: unknown) => {
@@ -1535,8 +1569,12 @@ function captureOutbound(adapter: any): void {
     adapter.__sentCardDeliveries.push({ replyToMessageId, replyInThread });
     return ok({ messageId: 'om_card' });
   };
-  adapter.sendFinalReply = async (_conversation: unknown, reply: { text: string }) => {
+  adapter.sendFinalReply = async (
+    _conversation: unknown,
+    reply: { text: string; executionTrace?: string },
+  ) => {
     adapter.__finalReplies.push(reply.text);
+    adapter.__finalTraces.push(reply.executionTrace);
     adapter.__outboundOrder.push('final');
     return ok({ messageId: 'om_reply' });
   };
@@ -1672,41 +1710,47 @@ describe('Lark conversation commands', () => {
     assert.match(adapter.__finalReplies[0], /inside the thread/i);
   });
 
-  it('handles /stop before entering the busy conversation lane', async () => {
-    let adapter: any;
-    let interrupted: unknown;
-    const result = await runWebhook(makeEvent({
-      chatType: 'group',
-      mentionsBot: true,
-      text: '/stop',
-      rootId: 'om_thread_root',
-    }), {
-      setupAdapter: value => {
-        adapter = value;
-        captureOutbound(value);
-        value.interruptConversation = (key: string, actor: unknown) => {
-          interrupted = { key, actor };
-          return 'aborted';
-        };
-      },
-    });
+  // Both spellings enter the same handler; `/q` is the one the card and /help
+  // advertise, `/stop` is kept for the people who already learned it.
+  for (const command of ['/q', '/stop']) {
+    it(`handles ${command} before entering the busy conversation lane`, async () => {
+      let adapter: any;
+      let interrupted: unknown;
+      const result = await runWebhook(makeEvent({
+        chatType: 'group',
+        mentionsBot: true,
+        text: command,
+        rootId: 'om_thread_root',
+      }), {
+        setupAdapter: value => {
+          adapter = value;
+          captureOutbound(value);
+          value.interruptConversation = (key: string, actor: unknown) => {
+            interrupted = { key, actor };
+            return 'aborted';
+          };
+        },
+      });
 
-    assert.deepEqual(interrupted, {
-      key: 'oc_1:thread:om_thread_root',
-      actor: {
-        userId: 'user-1',
-        companyId: 'company-1',
-        aiRole: 'MEMBER',
-      },
+      assert.deepEqual(interrupted, {
+        key: 'oc_1:thread:om_thread_root',
+        actor: {
+          userId: 'user-1',
+          companyId: 'company-1',
+          aiRole: 'MEMBER',
+        },
+      });
+      // The whole point of intercepting here: a stop that queued behind the run
+      // it is stopping would arrive after that run had already finished.
+      assert.deepEqual(result.serializerKeys, []);
+      assert.equal(result.engineInputs.length, 0);
+      assert.match(noticesSent(adapter)[0], /Stop requested/i);
+      assert.deepEqual(adapter.__sentTextDeliveries, [{
+        replyToMessageId: 'om_1',
+        replyInThread: true,
+      }]);
     });
-    assert.deepEqual(result.serializerKeys, []);
-    assert.equal(result.engineInputs.length, 0);
-    assert.match(noticesSent(adapter)[0], /Stop requested/i);
-    assert.deepEqual(adapter.__sentTextDeliveries, [{
-      replyToMessageId: 'om_1',
-      replyInThread: true,
-    }]);
-  });
+  }
 });
 
 describe('Lark first contact', () => {
@@ -3180,5 +3224,74 @@ describe('Lark delivery resume', () => {
 
     // Failing closed here would strand the message: no resume and no run.
     assert.ok(result.order.includes('engine'));
+  });
+});
+
+// A quoted picture used to be downloaded, base64-encoded onto the incoming
+// message, and then dropped: nothing downstream read `imageUrls`. Divo answered
+// quote-replies about an image from the surrounding text alone.
+it('a quoted image becomes a file the run can open', async () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const attachments = quotedImageAttachments(
+    [`data:image/png;base64,${png.toString('base64')}`],
+    noopLogger,
+  );
+
+  assert.equal(attachments.length, 1);
+  assert.equal(attachments[0]!.kind, 'image');
+  assert.equal(attachments[0]!.mimeType, 'image/png');
+  assert.match(attachments[0]!.name, /\.png$/);
+
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of await attachments[0]!.openStream()) chunks.push(chunk);
+  assert.deepEqual(Buffer.concat(chunks), png);
+});
+
+// A half-written file in the inbox reads to the agent as a picture it ought to
+// be able to open, so a URL that will not decode is dropped instead of staged.
+it('an undecodable quoted image is dropped rather than staged empty', () => {
+  assert.deepEqual(
+    quotedImageAttachments(['https://example.com/not-a-data-url', 'data:image/png;base64,'], noopLogger),
+    [],
+  );
+});
+
+// Delivering the answer edits the status card in place, so on a thirteen-minute
+// run the entire record of the work is destroyed at the moment it succeeds.
+describe('run transcript kept past the final card', () => {
+  const say = (label: string) => ({ kind: 'say' as const, label, count: 1, status: 'done' as const });
+  const ran = (label: string, outcome: string) =>
+    ({ kind: 'tool' as const, label, count: 1, outcome, status: 'done' as const });
+
+  it('keeps what was said and what was done, in order', () => {
+    assert.equal(
+      runTranscript([say('Checking the bases.'), ran('Terminal', 'airtable list-bases')]),
+      'Checking the bases.\n**Terminal**  airtable list-bases',
+    );
+  });
+
+  // Its log would just be the model talking, which is what the answer already is.
+  it('gives a run that called no tool no trace at all', () => {
+    assert.equal(runTranscript([say('Sure — here you go.')]), undefined);
+    assert.equal(runTranscript([]), undefined);
+  });
+
+  // The trace shares the card's byte budget with the answer, and the answer is
+  // the thing the user asked for. Steps nearest it are the ones that explain it.
+  it('drops the oldest steps by name rather than silently truncating', () => {
+    const rows = Array.from({ length: 400 }, (_, i) => ran('Terminal', `step number ${i}`));
+    const trace = runTranscript(rows)!;
+
+    assert.ok(trace.length < 3_400, `trace was ${trace.length} chars`);
+    assert.match(trace, /^_\+\d+ earlier steps\._/);
+    assert.match(trace, /step number 399/);
+    assert.doesNotMatch(trace, /step number 0\b/);
+  });
+
+  it('will not let a command close the card markup it is rendered into', () => {
+    assert.equal(
+      runTranscript([ran('Terminal', 'cat <secret> `whoami`')]),
+      '**Terminal**  cat secret whoami',
+    );
   });
 });

@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildFinalCard, buildStatusCard, planFinalCards } from '../../src/infrastructure/channels/lark/lark-card.builder.ts';
+import { buildFinalCard, buildStatusCard, foldRepeatedRows, planFinalCards } from '../../src/infrastructure/channels/lark/lark-card.builder.ts'
+import type { ChannelLedgerRow } from '../../src/domain/channel/outbound.ts';
 
 function parseCard(payload: string): Record<string, unknown> {
   const outer = JSON.parse(payload) as { card: string };
@@ -128,15 +129,26 @@ describe('lark-card.builder buildStatusCard', () => {
   });
 
   it('counts older activity rows instead of dropping them silently', () => {
-    const rows = Array.from({ length: 8 }, (_, i) => ({
+    const rows = Array.from({ length: 12 }, (_, i) => ({
       label: `Tool${i}`, count: 1, outcome: `Did ${i}`, status: 'done' as const,
     }));
     const activity = parseCard(buildStatusCard({ timeline: { ...workingTimeline, ledger: rows } }));
     const content = elementById(activity, 'run_activity')!['content'] as string;
 
     assert.match(content, /\+3 earlier steps/);
-    assert.match(content, /Tool7/);
+    assert.match(content, /Tool11/);
     assert.doesNotMatch(content, /Tool0\b/);
+  });
+
+  // The header chip already says the state. A title that falls back to the same
+  // word puts one fact in two places a centimetre apart — the exact doubling
+  // this card was rebuilt to remove.
+  it('leaves the header to the chip when the run has no subject', () => {
+    const { subject: _drop, ...noSubject } = workingTimeline;
+    const card = parseCard(buildStatusCard({ timeline: noSubject }));
+
+    assert.equal(headerTitle(card), undefined);
+    assert.deepEqual(chips(card), ['Working']);
   });
 
   it('suppresses the agent’s live sentence while a step is running', () => {
@@ -153,6 +165,15 @@ describe('lark-card.builder buildStatusCard', () => {
       },
     }));
     assert.match(elementById(card, 'run_say')!['content'] as string, /payment already cleared/);
+  });
+
+  it('does not apply the compact activity-row limit to narration', () => {
+    const queued = 'Your request is queued. I’ll start it as soon as your previous request finishes.';
+    const card = parseCard(buildStatusCard({
+      timeline: { state: 'queued' as const, liveLabel: queued },
+    }));
+
+    assert.match(elementById(card, 'run_say')!['content'] as string, new RegExp(queued));
   });
 
   it('drops a live sentence that only echoes the state chip', () => {
@@ -202,33 +223,31 @@ describe('lark-card.builder buildStatusCard', () => {
     assert.match(plan['content'] as string, /1 of 3/);
   });
 
-  it('keeps the counter and Stop on one footer row', () => {
-    const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
-    const footer = elementById(card, 'run_footer') as {
-      tag: string;
-      columns: Array<{ elements: Array<Record<string, unknown>> }>;
-    };
+  it('puts the counter and how to stop on one footer line', () => {
+    const footer = elementById(parseCard(buildStatusCard({ timeline: workingTimeline })), 'run_count')!;
 
-    assert.equal(footer.tag, 'column_set');
-    assert.match(footer.columns[0]!.elements[0]!['content'] as string, /11 steps · 1m 04s/);
-    assert.equal(footer.columns[1]!.elements[0]!['element_id'], 'run_stop');
+    assert.equal(footer['tag'], 'markdown');
+    assert.match(footer['content'] as string, /11 steps · 1m 04s/);
+    assert.match(footer['content'] as string, /`\/q` to stop/);
   });
 
-  it('wires Stop as a 2.0 callback', () => {
+  // The card is a message, not a control panel: a callback button is the one
+  // affordance that stops working the moment the bubble scrolls away, and it
+  // was a second way to say something `/q` already says.
+  it('carries no buttons at all', () => {
     const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
-    const stop = (elementById(card, 'run_footer')!['columns'] as Array<{
-      elements: Array<{ text: { content: string }; behaviors: Array<{ type: string; value: { action: string } }> }>;
-    }>)[1]!.elements[0]!;
 
-    assert.equal(stop.text.content, 'Stop');
-    assert.equal(stop.behaviors[0]!.type, 'callback');
-    assert.equal(stop.behaviors[0]!.value.action, 'interrupt_run');
+    assert.doesNotMatch(JSON.stringify(card), /"tag":"button"/);
+    assert.doesNotMatch(JSON.stringify(card), /callback/);
   });
 
-  it('offers no Stop button on a run that cannot be stopped', () => {
+  // Naming `/q` on a run nobody can stop sends the user to a command that
+  // answers "there is no active run" — queued included, since nothing has
+  // registered an abort until the lane opens.
+  it('names the stop command only while a run can actually be stopped', () => {
     for (const state of ['queued', 'done', 'blocked'] as const) {
       const card = parseCard(buildStatusCard({ timeline: { ...workingTimeline, state } }));
-      assert.doesNotMatch(JSON.stringify(card), /interrupt_run/, state);
+      assert.doesNotMatch(JSON.stringify(card), /to stop/, state);
     }
   });
 
@@ -242,7 +261,11 @@ describe('lark-card.builder buildStatusCard', () => {
 
     assert.match(elementById(card, 'run_activity')!['content'] as string, /✗ \*\*Zoho\*\*.*401 token expired/);
     assert.deepEqual(chips(card), ['Working']);
-    assert.match(JSON.stringify(card), /interrupt_run/, 'a failed step does not end the run');
+    assert.match(
+      elementById(card, 'run_count')!['content'] as string,
+      /to stop/,
+      'a failed step does not end the run',
+    );
   });
 
   it('never renders a progress chart', () => {
@@ -267,9 +290,7 @@ describe('lark-card.builder buildStatusCard', () => {
   it('recomputes elapsed time at render, not at snapshot time', () => {
     const startedAtMs = 1_000_000;
     const counterOf = (card: Record<string, unknown>) =>
-      ((card['body'] as { elements: Array<Record<string, unknown>> }).elements
-        .find(e => e['element_id'] === 'run_footer')!['columns'] as Array<{ elements: Array<{ content: string }> }>)
-        [0]!.elements[0]!.content.match(/(\d+m \d+s|\d+s)/)?.[0];
+      (elementById(card, 'run_count')!['content'] as string).match(/(\d+m \d+s|\d+s)/)?.[0];
 
     const originalNow = Date.now;
     (Date as { now: () => number }).now = () => startedAtMs + 30_000;
@@ -288,6 +309,67 @@ describe('lark-card.builder buildStatusCard', () => {
     const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
     const config = card['config'] as { summary: { content: string } };
     assert.match(config.summary.content, /Invoice for Acme Corp — Working… · 11 steps/);
+  });
+});
+
+describe('lark-card.builder activity log', () => {
+  // A run that only shows its tool calls reads as a machine grinding. What the
+  // model says between them is the one thing on the card written for a person.
+  it('interleaves what the model said with what it did, in order', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: {
+        state: 'working' as const,
+        ledger: [
+          { kind: 'say' as const, label: 'Let me see which Airtable bases you can reach.', count: 1, status: 'done' as const },
+          { kind: 'tool' as const, label: 'Terminal', count: 1, outcome: 'airtable list-bases', status: 'done' as const },
+          { kind: 'say' as const, label: 'Found 3. Profiling the largest.', count: 1, status: 'done' as const },
+          { kind: 'tool' as const, label: 'Files', count: 1, outcome: 'bases.json', status: 'running' as const },
+        ],
+      },
+    }));
+
+    assert.equal(elementById(card, 'run_activity')!['content'], [
+      'Let me see which Airtable bases you can reach.',
+      "✓ **Terminal**  <font color='grey'>airtable list-bases</font>",
+      'Found 3. Profiling the largest.',
+      "● **Files**  <font color='grey'>bases.json</font>",
+    ].join('\n'));
+  });
+
+  // Detail is now a shell command or a sentence the model wrote, and it lands
+  // inside a <font> tag the card opened. A pipeline containing an angle bracket
+  // would close that tag early and take the card's structure with it.
+  it('will not let a redirect in a command close the card markup', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: {
+        state: 'working' as const,
+        ledger: [{ label: 'Terminal', count: 1, outcome: 'echo hi > /tmp/f && cat <x>', status: 'done' as const }],
+      },
+    }));
+    const activity = elementById(card, 'run_activity')!['content'] as string;
+
+    assert.match(activity, /echo hi \/tmp\/f && cat x/);
+    // Exactly the one opening and one closing tag the builder wrote itself.
+    assert.equal((activity.match(/</g) ?? []).length, 2);
+  });
+});
+
+describe('lark-card.builder heading softening', () => {
+  // Two trailing spaces is markdown's hard line break, so a model writing
+  // correct markdown produced `**Title  **` — a bold run CommonMark will not
+  // close. The card printed the asterisks to the user.
+  it('bolds a heading that ends in trailing whitespace', () => {
+    const card = parseCard(buildFinalCard({
+      markdown: '## CFO Receivables Review  \n\nZoho Books shows 153 invoices.',
+    }));
+
+    assert.equal(markdownContents(card)[0], '**CFO Receivables Review**');
+  });
+
+  it('softens headings deeper than three, which used to reach the card as hashes', () => {
+    const card = parseCard(buildFinalCard({ markdown: '#### Ageing buckets\n\nDetail.' }));
+
+    assert.equal(markdownContents(card)[0], '**Ageing buckets**');
   });
 });
 
@@ -422,5 +504,58 @@ describe('lark-card.builder final card header', () => {
       branding: { departmentLabel: 'Divo' },
     }));
     assert.equal(card['header'], undefined);
+  });
+});
+
+// Paging a table nineteen times is one act. Printed as nineteen rows it buries
+// everything else the run did.
+describe('lark-card.builder repeated step folding', () => {
+  const step = (label: string, outcome?: string, status: 'done' | 'running' | 'failed' = 'done') =>
+    ({ kind: 'tool' as const, label, count: 1, status, ...(outcome ? { outcome } : {}) });
+  const said = (label: string) => ({ kind: 'say' as const, label, count: 1, status: 'done' as const });
+
+  const labels = (rows: readonly ChannelLedgerRow[]) =>
+    foldRepeatedRows(rows).map(r => `${r.label}${r.count > 1 ? `×${r.count}` : ''}:${r.status}`);
+
+  it('counts identical adjacent steps as one row', () => {
+    assert.deepEqual(
+      labels([step('Airtable', 'Records'), step('Airtable', 'Records'), step('Airtable', 'Records')]),
+      ['Airtable×3:done'],
+    );
+  });
+
+  // Two calls to the same tool doing different work are not the same act.
+  it('keeps the same tool apart when it did different things', () => {
+    assert.deepEqual(
+      labels([step('Airtable', 'Records'), step('Airtable', 'Schema')]),
+      ['Airtable:done', 'Airtable:done'],
+    );
+  });
+
+  // The whole point of the log is the order things happened in.
+  it('will not reorder a step across something the model said', () => {
+    assert.deepEqual(
+      labels([step('Airtable', 'Records'), said('Found 3.'), step('Airtable', 'Records')]),
+      ['Airtable:done', 'Found 3.:done', 'Airtable:done'],
+    );
+  });
+
+  it('surfaces a failure hidden inside a group instead of marking it done', () => {
+    assert.deepEqual(
+      labels([step('Airtable', 'Records'), step('Airtable', 'Records', 'failed'), step('Airtable', 'Records')]),
+      ['Airtable×3:failed'],
+    );
+    assert.deepEqual(
+      labels([step('Airtable', 'Records'), step('Airtable', 'Records', 'running')]),
+      ['Airtable×2:running'],
+    );
+  });
+
+  it('renders the count the card has always had a renderer for', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: { state: 'working' as const, ledger: [step('Airtable', 'Records'), step('Airtable', 'Records')] },
+    }));
+
+    assert.match(elementById(card, 'run_activity')!['content'] as string, /✓ \*\*Airtable\*\* .*×2/);
   });
 });

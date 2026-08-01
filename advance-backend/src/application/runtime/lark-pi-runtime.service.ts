@@ -20,6 +20,12 @@ import type {
   VerifiedKnowledgeEffect,
 } from './run-effect-receipt.store';
 import {
+  DEFAULT_MODEL,
+  bestGrantedModel,
+  providerOf,
+  type ProxyModel,
+} from '../observability/pricing';
+import {
   renderContextBlock,
   type GroupContextBlock,
 } from '../chat-context/group-context.hydrator';
@@ -127,6 +133,8 @@ export interface LarkPiProgressTodo {
 interface LarkPiProgressDetail {
   readonly children?: readonly LarkPiProgressChild[];
   readonly todos?: readonly LarkPiProgressTodo[];
+  /** What the call turned out to be — a skill's name, known only on the way out. */
+  readonly detail?: string;
 }
 
 export type LarkPiProgressEvent =
@@ -135,12 +143,16 @@ export type LarkPiProgressEvent =
       readonly stage: 'workspace' | 'container';
       readonly label: string;
     }
-  | { readonly type: 'ready' | 'thinking' | 'writing' }
+  | { readonly type: 'ready' | 'thinking' | 'working' | 'writing' }
+  /** A whole sentence the model finished saying between its tool calls. */
+  | { readonly type: 'say'; readonly index: number; readonly text: string }
   | {
       readonly type: 'tool_start';
       readonly callId: string;
       readonly toolName: string;
       readonly toolId?: string;
+      /** What this call is about, from the argument that names the work. */
+      readonly detail?: string;
     }
   | ({
       readonly type: 'tool_progress';
@@ -187,6 +199,8 @@ export interface LarkPiRuntimeServiceDeps {
   };
   readonly knowledgeRecall?: Pick<KnowledgeRecallService, 'recall'>;
   readonly fetch?: typeof globalThis.fetch;
+  /** The member's model grant. Absent means every run takes the default. */
+  readonly allowedModelsFor?: (userId: string) => Promise<readonly string[]>;
 }
 
 export interface LarkPiRuntimeResult {
@@ -275,6 +289,28 @@ export function fitBodyToController<T extends Record<string, unknown>>(
   return sent('', build(ask));
 }
 
+/**
+ * Tell the run about the files it was not given.
+ *
+ * Written as an instruction rather than a fixed sentence so the shortfall is
+ * folded into whatever else the answer says, in Divo's own voice. The naming
+ * matters: "I could only open the first four" is actionable, while an answer
+ * built from four of six pictures with no mention of the other two is wrong in
+ * a way the user cannot see.
+ */
+export function droppedAttachmentNotice(
+  dropped: readonly LarkPiRuntimeAttachment[],
+  ask: string | undefined,
+): string | undefined {
+  if (dropped.length === 0) return ask;
+  const names = dropped.map(attachment => `"${attachment.name}"`).join(', ');
+  const notice = `[Not saved: ${names}. Only the first ${MAX_RUNTIME_ATTACHMENTS} files in a message are saved to your workspace.\n`
+    + 'Answer from the ones you have, then tell the user in your own words which files you could not open '
+    + 'and ask them to send those in a separate message. '
+    + 'Do not guess at their contents, and do not claim to have read them.]';
+  return ask?.trim() ? `${notice}\n\n${ask}` : notice;
+}
+
 export class LarkPiRuntimeService {
   private readonly log: Logger;
 
@@ -335,6 +371,20 @@ export class LarkPiRuntimeService {
     runContext: LarkPiRuntimeInput['runContext'],
   ): Promise<boolean> {
     return Boolean(await this.findActiveSession(runContext));
+  }
+
+  /**
+   * The model this member's run should ask for. A grant lookup failure falls
+   * back to the conservative default instead of failing the whole user turn.
+   */
+  async modelFor(userId: string): Promise<ProxyModel> {
+    if (!this.deps.allowedModelsFor) return DEFAULT_MODEL;
+    try {
+      return bestGrantedModel(await this.deps.allowedModelsFor(userId));
+    } catch (error) {
+      this.log.warn('pi.model.resolve_failed', { userId, error: String(error) });
+      return DEFAULT_MODEL;
+    }
   }
 
   /**
@@ -456,14 +506,22 @@ export class LarkPiRuntimeService {
     const signal = input.abortSignal
       ? AbortSignal.any([input.abortSignal, timeoutSignal])
       : timeoutSignal;
-    const attachments = input.attachments ?? [];
     const pendingRows = await this.loadPendingAttachments(input);
     const pendingAttachments = pendingRows.map(row => row.descriptor);
-    if (attachments.length + pendingAttachments.length > MAX_RUNTIME_ATTACHMENTS) {
-      throw new LarkPiRuntimeError(
-        'too_many_attachments',
-        `Please send at most ${MAX_RUNTIME_ATTACHMENTS} files in one request.`,
-      );
+    // Sending five screenshots at once is an ordinary thing to do, and refusing
+    // the whole turn answers nothing. Pending DM files consume the same bounded
+    // capacity, so stage only what still fits and name every omitted file.
+    const offered = input.attachments ?? [];
+    const remainingCapacity = Math.max(0, MAX_RUNTIME_ATTACHMENTS - pendingAttachments.length);
+    const attachments = offered.slice(0, remainingCapacity);
+    const dropped = offered.slice(remainingCapacity);
+    if (dropped.length > 0) {
+      this.log.warn('pi.attachments.truncated', {
+        offered: offered.length,
+        staged: attachments.length,
+        pending: pendingAttachments.length,
+        correlationId: input.incoming.traceId,
+      });
     }
 
     let response: Response;
@@ -471,21 +529,26 @@ export class LarkPiRuntimeService {
       const stagedAttachments = [
         ...pendingAttachments.map(validateStagedAttachment),
         ...await this.stageAttachments(
-        attachments,
-        runtimeLease,
-        signal,
+          attachments,
+          runtimeLease,
+          signal,
         ),
       ];
       const runtimeMessage = await this.withRecalledKnowledge(input);
+      const ask = droppedAttachmentNotice(dropped, runtimeMessage);
+      const askWithoutRecall = droppedAttachmentNotice(dropped, input.incoming.text);
+      const model = await this.modelFor(String(input.runContext.userId));
       let fitted = fitBodyToController(
         message => ({
           backendUrl: this.deps.backendUrl,
           runtimeLease,
           message,
+          model,
+          provider: providerOf(model),
           ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
           ...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
         }),
-        runtimeMessage,
+        ask,
         input.sharedContext,
       );
       // Recalled context is advisory. If it makes an otherwise valid maximum-
@@ -500,10 +563,12 @@ export class LarkPiRuntimeService {
             backendUrl: this.deps.backendUrl,
             runtimeLease,
             message,
+            model,
+            provider: providerOf(model),
             ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
             ...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
           }),
-          input.incoming.text,
+          askWithoutRecall,
           input.sharedContext,
         );
       }
@@ -854,6 +919,7 @@ export class LarkPiRuntimeService {
       }
       if (!event || typeof event !== 'object') return;
       const record = event as Record<string, unknown>;
+      if (record['type'] === 'heartbeat') return;
       if (record['type'] === 'progress') {
         const progress = parseProgressEvent(record['progress']);
         if (progress && input.onProgress) {
@@ -1017,9 +1083,12 @@ function safeProgressDetail(event: Record<string, unknown>): LarkPiProgressDetai
       })
     : [];
 
+  const detail = safeProgressString(event['detail'], 64);
+
   return {
     ...(children.length > 0 ? { children } : {}),
     ...(todos.length > 0 ? { todos } : {}),
+    ...(detail ? { detail } : {}),
   };
 }
 
@@ -1027,7 +1096,7 @@ function parseProgressEvent(value: unknown): LarkPiProgressEvent | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const event = value as Record<string, unknown>;
   const type = event['type'];
-  if (type === 'ready' || type === 'thinking' || type === 'writing') return { type };
+  if (type === 'ready' || type === 'thinking' || type === 'working' || type === 'writing') return { type };
   if (type === 'starting') {
     const stage = event['stage'];
     const label = safeProgressString(event['label']);
@@ -1036,12 +1105,32 @@ function parseProgressEvent(value: unknown): LarkPiProgressEvent | undefined {
     }
     return undefined;
   }
+  // Free text the model wrote, so it is capped and flattened here the same way
+  // every other string crossing this boundary is — the container is trusted to
+  // run the work, not to decide how much of a chat card it may occupy.
+  if (type === 'say') {
+    const text = safeProgressString(event['text'], 200);
+    if (!text) return undefined;
+    const rawIndex = event['index'];
+    return {
+      type,
+      index: typeof rawIndex === 'number' && Number.isInteger(rawIndex) && rawIndex >= 0
+        ? rawIndex
+        : 0,
+      text,
+    };
+  }
   if (type === 'tool_start') {
     const callId = safeProgressString(event['callId'], 100);
     const toolName = safeProgressString(event['toolName'], 80);
     const toolId = safeProgressString(event['toolId'], 80);
+    const detail = safeProgressString(event['detail'], 64);
     if (!callId || !toolName) return undefined;
-    return { type, callId, toolName, ...(toolId ? { toolId } : {}) };
+    return {
+      type, callId, toolName,
+      ...(toolId ? { toolId } : {}),
+      ...(detail ? { detail } : {}),
+    };
   }
   if (type === 'tool_progress') {
     const callId = safeProgressString(event['callId'], 100);
@@ -1049,7 +1138,7 @@ function parseProgressEvent(value: unknown): LarkPiProgressEvent | undefined {
     if (!callId || !toolName) return undefined;
     const detail = safeProgressDetail(event);
     // A progress event with nothing to show is a redraw for no reason.
-    if (!detail.children && !detail.todos) return undefined;
+    if (!detail.children && !detail.todos && !detail.detail) return undefined;
     return { type, callId, toolName, ...detail };
   }
   if (type === 'tool_end') {

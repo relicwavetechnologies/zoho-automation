@@ -30,50 +30,80 @@ describe("Divo LLM proxy failure normalization", () => {
 		});
 	});
 
-	it("does not rewrite unrelated providers or failures", () => {
-		const unrelated = {
+	// Both providers are the same Divo proxy under different names, so the 413
+	// Express raises before the proxy is reached reads identically on either.
+	it("normalizes the same failure on the OpenAI side", () => {
+		const original = {
 			role: "assistant",
 			provider: "openai",
 			stopReason: "error",
+			errorMessage: "PayloadTooLargeError: request entity too large",
+		};
+
+		assert.deepEqual(normalizeDivoLlmRequestError(original), {
+			...original,
+			errorMessage: DIVO_REQUEST_TOO_LARGE_ERROR,
+		});
+	});
+
+	it("does not rewrite unproxied providers or unrelated failures", () => {
+		const unproxied = {
+			role: "assistant",
+			provider: "anthropic",
+			stopReason: "error",
 			errorMessage: "HTTP 413",
 		};
-		assert.equal(normalizeDivoLlmRequestError(unrelated), unrelated);
+		assert.equal(normalizeDivoLlmRequestError(unproxied), unproxied);
 
-		const deepseekRateLimit = {
+		const rateLimit = {
 			role: "assistant",
 			provider: "deepseek",
 			stopReason: "error",
 			errorMessage: "429 rate limit",
 		};
-		assert.equal(normalizeDivoLlmRequestError(deepseekRateLimit), deepseekRateLimit);
+		assert.equal(normalizeDivoLlmRequestError(rateLimit), rateLimit);
 	});
 
 	it("registers the normalizer only when the Divo proxy is configured", () => {
 		process.env.DIVO_BACKEND_URL = "http://localhost:4000/";
 		process.env.DIVO_MEMBER_TOKEN = "member-token";
 		const handlers = new Map<string, (event: any) => unknown>();
-		let providerConfig: unknown;
+		const providers = new Map<string, any>();
 
 		divoLlmExtension({
-			registerProvider: (_provider: string, config: unknown) => {
-				providerConfig = config;
+			registerProvider: (provider: string, config: unknown) => {
+				providers.set(provider, config);
 			},
 			on: (name: string, handler: (event: any) => unknown) => {
 				handlers.set(name, handler);
 			},
 		} as never);
 
-		assert.ok(providerConfig);
-		assert.equal((providerConfig as { apiKey?: string }).apiKey, "member-token");
+		// Every provider goes to the Divo proxy with the member token, never to
+		// the vendor with a key — Pi holds none.
+		assert.deepEqual([...providers.keys()].sort(), ["deepseek", "openai"]);
+		for (const config of providers.values()) {
+			assert.equal(config.apiKey, "member-token");
+			assert.equal(config.baseUrl, "http://localhost:4000/api/llm/v1");
+		}
 		assert.equal(process.env.DIVO_MEMBER_TOKEN, undefined);
-		providerConfig = undefined;
+
+		// Luna is the only model that can be shown a picture, and Pi's read tool
+		// consults exactly this to decide whether to hand over image bytes. A
+		// wrong value here does not error — it silently blinds the model.
+		const luna = providers.get("openai").models[0];
+		assert.equal(luna.id, "gpt-5.6-luna");
+		assert.deepEqual(luna.input, ["text", "image"]);
+		assert.equal(luna.api, "openai-responses");
+
+		providers.clear();
 		divoLlmExtension({
-			registerProvider: (_provider: string, config: unknown) => {
-				providerConfig = config;
+			registerProvider: (provider: string, config: unknown) => {
+				providers.set(provider, config);
 			},
 			on: () => undefined,
 		} as never);
-		assert.equal((providerConfig as { apiKey?: string }).apiKey, "member-token");
+		assert.equal(providers.get("deepseek").apiKey, "member-token");
 		assert.equal(process.env.DIVO_LLM_PROXY_ACTIVE, "1");
 		const original = {
 			role: "assistant",

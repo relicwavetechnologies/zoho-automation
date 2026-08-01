@@ -21,7 +21,7 @@ export function OverviewPage() {
   const daily = useCompanyDaily(token, 14, companyId)
   const members = useSpendMembers(token, 30, companyId)
   const runs = useRuns(token, { limit: 4 })
-  const proxyStatus = useProxyStatus(token, companyId)
+  const proxyStatus = useProxyStatus(token, "deepseek", companyId)
   const proxyMetrics = useProxyMetrics(token, companyId)
   const webSearch = useWebSearchConnections(token)
 
@@ -59,7 +59,7 @@ export function OverviewPage() {
         return (
           <div className="section mt24" style={{ cursor: "pointer" }} onClick={() => navigate("/guardrails")}>
             <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div><h3>AI proxy</h3><p>DeepSeek proxy health · last 24h — open Guardrails to manage</p></div>
+              <div><h3>AI proxy</h3><p>DeepSeek provider health · last 24h — open Guardrails to manage all providers</p></div>
               <span className="role-pill"><span className="dot" style={{ width: 7, height: 7, borderRadius: "50%", background: meta.color }} />{meta.label}</span>
             </header>
             <div style={{ display: "flex", gap: "36px", padding: "16px 18px", flexWrap: "wrap" }}>

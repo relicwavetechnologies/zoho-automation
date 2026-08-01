@@ -78,3 +78,41 @@ export function actionPhrase(toolId: string, action: string): string {
   const { noun } = toolLabel(toolId);
   return `${ACTION_VERBS[action] ?? humaniseToolId(action)} ${noun}`;
 }
+
+/**
+ * Gateway operations that are worth naming. `tools.invoke` is absent on
+ * purpose: it is the operation that simply runs the tool, so it is true of
+ * almost every row and printing it says nothing the tool's own name has not.
+ */
+const GATEWAY_OPS: Readonly<Record<string, string>> = {
+  'tools.preflight':       'Checking access',
+  'tools.list':            'Listing tools',
+  'media.image_ocr':       'Reading a picture',
+  'teach.learning.apply':  'Saving what it learnt',
+  'skills.search':         'Finding a skill',
+  'work.persona.resolve':  'Reading the team profile',
+};
+
+/**
+ * What a governed Divo call is doing, in words.
+ *
+ * The raw pair reads `omsSiteData · tools.invoke` on a status card — a
+ * camelCase identifier and an internal namespace, neither of which is written
+ * for the person waiting on the run. The tool table already holds the product
+ * name, acronyms and all, so the only new judgement here is which operations
+ * deserve saying out loud.
+ */
+export function gatewayOpPhrase(op?: string): string | undefined {
+  // The container and this service ship separately, so an older container may
+  // still send the tool id joined onto the operation. Reading the last segment
+  // accepts either shape; without it the joined form was translated as though
+  // the whole string were an operation, and printed the tool's name twice.
+  const operation = op?.split('·').map(part => part.trim()).filter(Boolean).at(-1);
+  // Compared on a normalised form so every spelling of the default operation is
+  // recognised — including `tools invoke`, which is what an older backend had
+  // already made of it before this function existed.
+  if (!operation || operation.toLowerCase().replace(/[^a-z0-9]+/g, '.') === 'tools.invoke') {
+    return undefined;
+  }
+  return GATEWAY_OPS[operation] ?? humaniseToolId(operation.replace(/^tools\./, ''));
+}

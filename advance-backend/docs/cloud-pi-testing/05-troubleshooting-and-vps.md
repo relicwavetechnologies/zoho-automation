@@ -11,7 +11,7 @@ changing anything. Do not hide a Pi failure with the retired AI SDK agent.
 | Backend health fails | Backend, DB, Redis, env validation, or MCP startup failed | Read the first backend error; check tunnel and Redis before restarting |
 | `runtime_image_missing` / image missing | `divo-pi-local:phase0` is not built locally | Build from `divo-pi/` with `docker build -t divo-pi-local:phase0 .` |
 | `runtime_session_missing` in live webhook | No matching unrevoked Lark member session with more than five minutes remaining | Sign in through the real Divo Lark flow; do not synthesize a session |
-| `runtime_session_missing` in direct harness | The current harness omits the tenant ID required by runtime session lookup | Use live Lark for E2E; fix the harness tenant binding separately rather than asking the user to sign in repeatedly |
+| `runtime_session_missing` in direct harness | No matching unrevoked Lark member session exists for the resolved tenant and user | Sign in through the real Divo Lark flow; do not synthesize a session |
 | No DB-linked identity / ambiguous identity | `--user` did not resolve exactly one Lark identity | Ask for exact email or `open_id` |
 | Chat is not allowlisted | Custom `--chat-id` is absent from `HARNESS_LARK_ALLOWED_CHAT_IDS` | Confirm the exact destination, then add only that ID for the command |
 | `controller_unreachable` | Backend cannot reach the private controller | Check controller health and backend/controller network address |
@@ -19,7 +19,7 @@ changing anything. Do not hide a Pi failure with the retired AI SDK agent.
 | `429 capacity_full` | All controller slots are occupied | Wait for a slot; do not increase limits during a correctness test |
 | `empty_runtime_response` | Pi ended without usable final text | Inspect controller stderr and the persisted trace |
 | `invalid_controller_stream` | Controller emitted malformed NDJSON | Capture the response/trace and stop; this is a runtime protocol defect |
-| Harness rejects `pro` | Dynamic cloud Pi model switching is not implemented | Use `--model flash` |
+| Harness model assertion fails | The expected `--model` differs from the member's backend-selected grant | Update the member policy or omit `--model`; never bypass the grant in the harness |
 | Lark shows no response | Event URL, signature/token, queue admission, identity, or delivery failed | Check webhook HTTP status and backend logs in that order |
 | ngrok shows `503` | Local backend was unavailable or returned ingress failure | Confirm port `8000`, DB tunnel, Redis, and backend logs |
 | Container is `Exited` after success | Normal idle behavior | Verify its volume remains; do not restart it manually |

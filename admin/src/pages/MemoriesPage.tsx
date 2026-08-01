@@ -1,18 +1,10 @@
 import { useState } from "react"
-import { Brain, Loader2, Users, Building2, Globe } from "lucide-react"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { MetricCard } from "@/components/admin/metric-card"
+import { Brain, Building2, ChevronRight, Globe, Loader2, Users } from "lucide-react"
+import { MetricCard, MetricStrip } from "@/components/admin/metric-card"
 import { PageHeader } from "@/components/admin/page-header"
 import { SectionCard } from "@/components/admin/section-card"
 import { EmptyState } from "@/components/admin/empty-state"
-import { cn } from "@/lib/utils"
 import { useMemoryData, type MemoryEntry } from "./memory/use-memory-data"
-
-const scopeColor: Record<string, string> = {
-  personal: "bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300",
-  department: "bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300",
-  company: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
-}
 
 function formatDate(iso?: string): string {
   if (!iso) return "—"
@@ -21,88 +13,79 @@ function formatDate(iso?: string): string {
   } catch { return iso }
 }
 
+const SCOPE_LABEL: Record<MemoryEntry["scope"], string> = {
+  department: "A department",
+  company: "Everyone",
+}
+
 export function MemoriesPage() {
   const { memories, stats, loading, error, filters, setFilters } = useMemoryData()
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
   if (loading) {
     return (
-      <div className="flex h-96 items-center justify-center">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      <div className="page">
+        <div className="ws-auth-wait" style={{ maxWidth: 260 }}>
+          <Loader2 size={14} className="ws-spin" />
+          Loading memories…
+        </div>
       </div>
     )
   }
 
   return (
-    <>
+    <div className="page">
       <PageHeader
         eyebrow="AI Memory"
-        title="Memories"
-        description="Backend-governed personal, department, and company memory. Shared facts are published only through review, RBAC, and approval."
+        title="Governed knowledge"
+        description="Canonical department and company memory. Shared changes always follow review, live RBAC, and approval policy. Personal content stays private."
       />
 
-      <section className="grid gap-3 md:grid-cols-3">
-        <MetricCard
-          label="Personal memories"
-          value={String(stats?.totalPersonal ?? 0)}
-          detail="Private content hidden from admins"
-          icon={Users}
-        />
-        <MetricCard
-          label="Team memories"
-          value={String(stats?.totalDepartment ?? 0)}
-          detail="Department-level knowledge"
-          icon={Building2}
-          tone="accent"
-        />
-        <MetricCard
-          label="Company memories"
-          value={String(stats?.totalCompany ?? 0)}
-          detail="Org-wide policies & facts"
-          icon={Globe}
-          tone="emphasis"
-        />
-      </section>
+      <div className="ws-stack">
+        <MetricStrip columns={3}>
+          <MetricCard label="Personal" value={String(stats?.totalPersonal ?? 0)} detail="Private content hidden from admins" icon={Users} />
+          <MetricCard label="Department" value={String(stats?.totalDepartment ?? 0)} detail="Shared inside one team" icon={Building2} />
+          <MetricCard label="Company" value={String(stats?.totalCompany ?? 0)} detail="Applies to everyone" icon={Globe} />
+        </MetricStrip>
 
-      <SectionCard title="Memory browser" description="Canonical versioned memory. Changes use the governed review and approval flow.">
-        {/* Filters */}
-        <div className="mb-4 flex items-center gap-2">
-          <Select
+        <div className="filters">
+          <select
+            className="select"
             value={filters.scope ?? "all"}
-            onValueChange={(v) => setFilters({ ...filters, scope: v === "all" ? undefined : v })}
+            onChange={(event) => setFilters({
+              ...filters,
+              scope: event.target.value === "all" ? undefined : event.target.value,
+            })}
           >
-            <SelectTrigger className="h-8 w-36 bg-card text-[12px]">
-              <SelectValue placeholder="All scopes" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all" className="text-[12px]">All scopes</SelectItem>
-              <SelectItem value="department" className="text-[12px]">Department</SelectItem>
-              <SelectItem value="company" className="text-[12px]">Company</SelectItem>
-            </SelectContent>
-          </Select>
+            <option value="all">Every shared scope</option>
+            <option value="department">Department</option>
+            <option value="company">Company</option>
+          </select>
         </div>
 
-        {error ? (
-          <EmptyState title="Memory API unavailable" description={error} />
-        ) : memories.length === 0 ? (
-          <EmptyState
-            title="No memories"
-            description="Personal memory is learned from eligible conversations. Department and company knowledge always use the governed review and approval flow."
-          />
-        ) : (
-          <div className="space-y-1.5">
-            {memories.map((mem) => (
-              <MemoryRow
-                key={mem.id}
-                memory={mem}
-                expanded={expandedId === mem.id}
-                onToggle={() => setExpandedId(expandedId === mem.id ? null : mem.id)}
-              />
-            ))}
-          </div>
-        )}
-      </SectionCard>
-    </>
+        <SectionCard title="Stored memories" description="Newest first. Open one to inspect its human-readable provenance." flush>
+          {error ? (
+            <EmptyState title="Memory API unavailable" description={error} />
+          ) : memories.length === 0 ? (
+            <EmptyState
+              title="No shared memories"
+              description="Department and company knowledge appears here only after the governed review and approval flow completes."
+            />
+          ) : (
+            <div className="ws-rows">
+              {memories.map((memory) => (
+                <MemoryRow
+                  key={memory.id}
+                  memory={memory}
+                  expanded={expandedId === memory.id}
+                  onToggle={() => setExpandedId(expandedId === memory.id ? null : memory.id)}
+                />
+              ))}
+            </div>
+          )}
+        </SectionCard>
+      </div>
+    </div>
   )
 }
 
@@ -115,40 +98,39 @@ function MemoryRow({
   expanded: boolean
   onToggle: () => void
 }) {
-  const scope = memory.scope
-  const source = (memory.metadata?.source as string) ?? "auto"
+  const source = typeof memory.metadata?.source === "string" ? memory.metadata.source : "governed review"
 
   return (
-    <div className={cn("rounded-md bg-card shadow-soft transition-colors", expanded && "ring-1 ring-accent/30")}>
-      <div
-        className="flex cursor-pointer items-center gap-3 px-3 py-2.5"
-        onClick={onToggle}
-      >
-        <Brain className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <p className="flex-1 truncate text-[12px]">{memory.memory}</p>
-        <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold", scopeColor[scope] ?? "bg-secondary text-muted-foreground")}>
-          {scope}
-        </span>
-        <span className="shrink-0 rounded-sm bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-          {source}
-        </span>
-        <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-          {formatDate(memory.createdAt)}
-        </span>
-      </div>
-      {expanded && (
-        <div className="border-t border-border/40 px-3 py-2.5 space-y-2">
-          <p className="text-[12px] leading-5 text-foreground/85">{memory.memory}</p>
-          {memory.metadata && Object.keys(memory.metadata).length > 0 && (
-            <pre className="max-h-32 overflow-auto rounded-md bg-secondary/50 p-2 font-mono text-[10px] text-muted-foreground">
-              {JSON.stringify(memory.metadata, null, 2)}
-            </pre>
-          )}
-          {memory.score !== undefined && (
-            <p className="text-[10px] text-muted-foreground">Relevance score: {memory.score.toFixed(3)}</p>
-          )}
+    <div className="ws-row" style={{ alignItems: "flex-start" }}>
+      <span className="ws-ic"><Brain size={14} /></span>
+      <div className="ws-row-main">
+        <b style={{ fontWeight: 400 }}>{memory.memory}</b>
+        <p>
+          {SCOPE_LABEL[memory.scope]} · {source} · {formatDate(memory.createdAt)}
+        </p>
+
+        {expanded ? (
+          <div className="ws-ba">
+            {memory.metadata && Object.keys(memory.metadata).length > 0 ? (
+              <div className="raw">
+                <div className="lbl">Where it came from</div>
+                <pre>{JSON.stringify(memory.metadata, null, 2)}</pre>
+              </div>
+            ) : (
+              <div className="ws-sub">No additional provenance was recorded.</div>
+            )}
+            {memory.score !== undefined ? (
+              <div className="ws-sub">Relevance {memory.score.toFixed(3)}</div>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div style={{ marginTop: 9 }}>
+          <button type="button" className="ws-more" data-open={expanded} onClick={onToggle}>
+            <ChevronRight size={13} />{expanded ? "Hide" : "Details"}
+          </button>
         </div>
-      )}
+      </div>
     </div>
   )
 }

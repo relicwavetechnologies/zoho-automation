@@ -12,7 +12,6 @@
     "divo-llm",
     "divo-gateway",
     "divo-subagents",
-    "divo-artifact",
     "divo-chat-history",
     "divo-todos"
   ],
@@ -34,7 +33,6 @@
     "divo_knowledge_review",
     "divo_teach_clarify",
     "divo_subagents",
-    "divo_artifact",
     "divo_todos",
     "divo_search_chats",
     "divo_read_chat"

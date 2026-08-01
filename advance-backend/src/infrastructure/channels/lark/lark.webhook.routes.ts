@@ -112,6 +112,8 @@ import {
   withLarkGroupMode,
 } from './lark-group-mode';
 import { parseLarkFinalDeliveryEnvelope } from './lark-final-delivery';
+import { foldRepeatedRows, sanitizeRunText } from './lark-card.builder';
+import { gatewayOpPhrase, toolLabel } from '../../../domain/tools/tool-labels';
 import {
   buildSignInCard,
   signInFallbackText,
@@ -286,7 +288,6 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
             return;
           }
 
-          // Handle interrupt button clicks on status cards
           const actionValue = (cardEvent as any)?.action?.value;
           const actionObj = typeof actionValue === 'string' ? (() => { try { return JSON.parse(actionValue); } catch { return null; } })() : actionValue;
           if (actionObj?.action === 'set_group_mode') {
@@ -298,32 +299,6 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
             });
             return;
           }
-          if (actionObj?.action === 'interrupt_run') {
-            const messageId = (cardEvent as any)?.open_message_id
-              ?? (cardEvent as any)?.context?.open_message_id
-              ?? (cardEvent as any)?.message_id;
-            if (messageId) {
-              const corrId = deps.adapter.findCorrelationByStatusMessage(messageId);
-              if (corrId) {
-                const result = deps.adapter.interruptRun(corrId, actor);
-                log.info('webhook.interrupt', { correlationId: corrId, result, actorUserId: actor.userId });
-                const content = result === 'aborted'
-                  ? 'Interrupt requested.'
-                  : result === 'forbidden'
-                    ? 'You are not authorized to interrupt this run.'
-                    : 'This run is no longer active.';
-                res.status(200).json({
-                  toast: { type: result === 'aborted' ? 'success' : 'warning', content },
-                });
-                return;
-              }
-            }
-            res.status(200).json({
-              toast: { type: 'warning', content: 'This run is no longer active.' },
-            });
-            return;
-          }
-
           if (deps.approvalCardHandler) {
             const result = await deps.approvalCardHandler.handle(cardEvent, actor);
             res.status(200).json(result.responseBody ?? { ok: true });
@@ -1063,16 +1038,27 @@ function piToolStatus(toolName: string, toolId?: string): {
   label: string;
   liveLabel: string;
 } {
-  const id = toolId ?? toolName;
-  if (/^lark/i.test(id)) return { label: 'Lark', liveLabel: 'Working in Lark…' };
-  if (/^google/i.test(id)) return { label: 'Google', liveLabel: 'Working in Google…' };
-  if (/^zoho/i.test(id)) return { label: 'Zoho', liveLabel: 'Working in Zoho…' };
-  if (/^airtable/i.test(id)) return { label: 'Airtable', liveLabel: 'Working in Airtable…' };
-  if (id === 'webSearch') return { label: 'Web', liveLabel: 'Searching the web…' };
+  // A governed call is named by the tool it ran, not by the gateway it went
+  // through. Heading the row "Divo" spent its widest word on plumbing and then
+  // repeated the real name in the detail beside it; and the vendor-prefix
+  // guesses this replaced said "Google" where the tool table already knows to
+  // say "Google Drive".
+  if (toolId) {
+    const { name } = toolLabel(toolId);
+    return { label: name, liveLabel: `Working in ${name}…` };
+  }
   if (toolName === 'bash') return { label: 'Terminal', liveLabel: 'Running a terminal command…' };
   if (toolName === 'read') return { label: 'Files', liveLabel: 'Reading files…' };
   if (toolName === 'write') return { label: 'Files', liveLabel: 'Writing files…' };
   if (toolName === 'edit') return { label: 'Files', liveLabel: 'Editing files…' };
+  // Named rather than left to the humanizer below, which was rendering these
+  // as "Skill view" and "Todos" — an internal tool id spelled out with a space
+  // in it, on a card a customer reads.
+  if (toolName === 'divo_skill_view') return { label: 'Skill', liveLabel: 'Loading a Divo skill…' };
+  if (toolName === 'divo_skill_resolve') {
+    return { label: 'Skill', liveLabel: 'Finding the right Divo skill…' };
+  }
+  if (toolName === 'divo_todos') return { label: 'Plan', liveLabel: 'Planning the work…' };
   if (toolName === 'divo_subagents') {
     return { label: 'Subagents', liveLabel: 'Running a subagent…' };
   }
@@ -1094,6 +1080,28 @@ function piToolStatus(toolName: string, toolId?: string): {
   const label = humanized ? humanized.charAt(0).toUpperCase() + humanized.slice(1) : 'Tool';
   return { label, liveLabel: `Running ${label.toLowerCase()}…` };
 }
+
+/**
+ * What a step is about, in words rather than identifiers.
+ *
+ * The container sends the argument that names the work, untranslated, because
+ * the table that turns `omsSiteData` into "OMS Site Data" lives here — a card
+ * reading `omsSiteData · tools.invoke` shows the user two internal identifiers
+ * and an internal namespace. A shell command or a file name is already words
+ * and is passed through as it stands.
+ */
+function piCallDetail(
+  toolName: string,
+  toolId: string | undefined,
+  detail: string | undefined,
+): string | undefined {
+  if (toolName === 'divo_gateway' || toolId) return gatewayOpPhrase(detail);
+  // An older container still sends a skill's UUID here. It names nothing to a
+  // reader, and the row is labelled properly when the call returns anyway.
+  return detail && UUID_ONLY.test(detail) ? undefined : detail;
+}
+
+const UUID_ONLY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function divoFacingRuntimeMessage(message: string): string {
   return message
@@ -1133,6 +1141,145 @@ async function sharedConversationFor(input: {
   return block ?? undefined;
 }
 
+/**
+ * Turn the quoted message's images into attachments the run can open.
+ *
+ * The parent hydrator has already downloaded and size-capped these, so the
+ * bytes are in hand as data URLs and the only work left is decoding them. A URL
+ * that will not decode is dropped rather than staged: a truncated file in the
+ * inbox reads to the agent as a picture it should be able to open.
+ */
+export function quotedImageAttachments(
+  imageUrls: readonly string[] | undefined,
+  log: Logger,
+): LarkPiRuntimeAttachment[] {
+  const attachments: LarkPiRuntimeAttachment[] = [];
+  for (const [index, url] of (imageUrls ?? []).entries()) {
+    const match = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(url);
+    if (!match) {
+      log.warn('webhook.quoted_image.unreadable', { index });
+      continue;
+    }
+    const mimeType = match[1]!.toLowerCase();
+    const bytes = Buffer.from(match[2]!, 'base64');
+    if (bytes.length === 0) {
+      log.warn('webhook.quoted_image.empty', { index, mimeType });
+      continue;
+    }
+    const extension = mimeType.split('/')[1]?.replace('jpeg', 'jpg') ?? 'png';
+    attachments.push({
+      kind: 'image',
+      name: `quoted_image_${index + 1}.${extension}`,
+      mimeType,
+      openStream: async () => (async function* () { yield new Uint8Array(bytes); })(),
+    });
+  }
+  return attachments;
+}
+
+/**
+ * A publisher its callers never wait on.
+ *
+ * Publishing a Lark status card costs a network round trip, and the runtime
+ * reads its result stream one line at a time, awaiting each progress event
+ * before taking the next. Awaiting a card there puts every one of those round
+ * trips between the model finishing and the answer being read.
+ *
+ * So `queue` returns at once. At most one publish is in flight, and everything
+ * raised while it runs collapses into a single follow-up carrying whatever the
+ * newest state is by the time that follow-up starts. A card shows current
+ * status rather than a replay, so dropping superseded frames is the intent.
+ * Serializing also keeps the first publish — the one that creates the card —
+ * from racing a second into a duplicate card.
+ */
+export function createCoalescedPublisher(
+  publish: () => Promise<void>,
+  onError: (error: unknown) => void,
+): { readonly queue: () => void; readonly settle: () => Promise<void> } {
+  let inFlight: Promise<void> | null = null;
+  let pending = false;
+
+  const drain = async (): Promise<void> => {
+    try {
+      await publish();
+      while (pending) {
+        pending = false;
+        await publish();
+      }
+    } catch (error) {
+      onError(error);
+    }
+  };
+
+  // Cleared by identity, so a drain that finished before its promise was even
+  // stored cannot leave a settled promise parked in the slot forever — which
+  // would strand every later publish and hang `settle`.
+  const start = (): Promise<void> => {
+    const run: Promise<void> = drain().finally(() => {
+      if (inFlight === run) inFlight = null;
+    });
+    return run;
+  };
+
+  return {
+    queue: () => {
+      if (inFlight) {
+        pending = true;
+        return;
+      }
+      inFlight = start();
+    },
+    settle: async () => {
+      while (inFlight) await inFlight;
+    },
+  };
+}
+
+const TRANSCRIPT_MAX_CHARS = 3_000;
+const TRANSCRIPT_LINE_MAX  = 240;
+
+/**
+ * The run's log, kept for after the answer has replaced it.
+ *
+ * The final card is an edit of the status card, so delivering the answer
+ * destroys every trace of how it was reached — on a thirteen-minute run that is
+ * the entire record of the work. Folded onto the answer as a trace panel, it
+ * costs one closed line and is there for the person who asks "what did it
+ * actually do".
+ *
+ * A run that called no tool gets none: its log is only the model talking, which
+ * is what the answer already is.
+ */
+export function runTranscript(input: readonly ChannelLedgerRow[]): string | undefined {
+  if (!input.some(row => row.kind !== 'say')) return undefined;
+
+  // Folded the same way the live card folds, so the trace is the log the user
+  // was watching rather than a second, longer account of the same run.
+  const rows = foldRepeatedRows(input);
+  const rendered = rows.map(row => row.kind === 'say'
+    ? sanitizeRunText(row.label, TRANSCRIPT_LINE_MAX)
+    : [
+        `**${row.label}**`,
+        ...(row.count > 1 ? [`×${row.count}`] : []),
+        ...(row.outcome ? [sanitizeRunText(row.outcome, TRANSCRIPT_LINE_MAX)] : []),
+      ].join('  '));
+
+  // Kept from the newest backwards, matching how the live card windows itself —
+  // the steps nearest the answer are the ones that explain it.
+  const kept: string[] = [];
+  let used = 0;
+  for (let i = rendered.length - 1; i >= 0; i -= 1) {
+    const line = rendered[i]!;
+    if (used + line.length > TRANSCRIPT_MAX_CHARS) {
+      kept.unshift(`_+${i + 1} earlier step${i === 0 ? '' : 's'}._`);
+      break;
+    }
+    kept.unshift(line);
+    used += line.length + 1;
+  }
+  return kept.length > 0 ? kept.join('\n') : undefined;
+}
+
 export async function runPiAndDeliver(input: {
   incoming: IncomingMessage;
   runContext: Parameters<LarkPiRuntimeService['run']>[0]['runContext'];
@@ -1169,6 +1316,8 @@ export async function runPiAndDeliver(input: {
   let liveLabel = 'Getting things ready…';
   let actionCount = 0;
   let declared: ChannelDeclaredPlan | undefined;
+  /** Bumped per tool call so each stretch of talking gets its own ledger keys. */
+  let sayTurn = 0;
 
   /**
    * A tool that reported work underneath itself: subagents become children of
@@ -1183,8 +1332,14 @@ export async function runPiAndDeliver(input: {
     detail: {
       readonly children?: readonly { label: string; status: ChannelPlanStepStatus; detail?: string }[];
       readonly todos?: readonly { title: string; status: ChannelPlanStepStatus }[];
+      readonly detail?: string;
     },
   ): void => {
+    // A call the model addressed by UUID can only be named once it returns.
+    if (detail.detail) {
+      const current = ledger.get(callId);
+      if (current) ledger.set(callId, { ...current, outcome: detail.detail });
+    }
     if (detail.children?.length) {
       const current = ledger.get(callId);
       if (current) {
@@ -1240,25 +1395,57 @@ export async function runPiAndDeliver(input: {
     }
   };
 
-  const reportProgress = async (event: LarkPiProgressEvent): Promise<void> => {
+  const { queue: queueStatus, settle: settleStatus } = createCoalescedPublisher(
+    publishStatus,
+    error => log.warn('webhook.pi.status_failed', { error: String(error), correlationId }),
+  );
+
+  const reportProgress = (event: LarkPiProgressEvent): void => {
     if (event.type === 'starting') {
       phase = 'Starting';
       state = 'thinking';
       liveLabel = divoFacingRuntimeMessage(event.label);
+    } else if (event.type === 'working') {
+      phase = 'Working';
+      state = 'working';
+      liveLabel = 'Working…';
     } else if (event.type === 'ready' || event.type === 'thinking') {
       phase = 'Thinking';
       state = 'thinking';
       liveLabel = 'Understanding your request…';
+    } else if (event.type === 'say') {
+      phase = 'Writing';
+      state = 'writing';
+      liveLabel = 'Preparing your response…';
+      // Keyed by turn as well as block, because a block index restarts at zero
+      // in each new assistant message — without the turn, the second thing the
+      // model says would overwrite the first instead of following it.
+      ledger.set(`say:${sayTurn}:${event.index}`, {
+        kind: 'say',
+        label: event.text,
+        count: 1,
+        status: 'done',
+      });
     } else if (event.type === 'tool_start') {
       const tool = piToolStatus(event.toolName, event.toolId);
       phase = 'Working';
       state = 'working';
       liveLabel = tool.liveLabel;
       actionCount += 1;
-      // No outcome text: the row's marker already carries running/done/failed,
-      // and "In progress" beside a ● is the restatement the card is built to
-      // avoid. The field is for what a step produced, which is not known yet.
-      ledger.set(event.callId, { label: tool.label, count: 1, status: 'running' });
+      // A tool call closes whatever the model was saying; what it says next
+      // belongs after this row, not merged into the sentence before it.
+      sayTurn += 1;
+      // The outcome starts as what the call is *about* — the command, the file,
+      // the capability — because "what it produced" is not known yet and a bare
+      // "In progress" beside a ● is the restatement the card is built to avoid.
+      const about = piCallDetail(event.toolName, event.toolId, event.detail);
+      ledger.set(event.callId, {
+        kind: 'tool',
+        label: tool.label,
+        count: 1,
+        status: 'running',
+        ...(about ? { outcome: about } : {}),
+      });
     } else if (event.type === 'tool_progress') {
       applyProgressDetail(event.callId, event);
       phase = 'Working';
@@ -1280,7 +1467,7 @@ export async function runPiAndDeliver(input: {
       state = 'writing';
       liveLabel = 'Preparing your response…';
     }
-    await publishStatus();
+    queueStatus();
   };
 
   let text: string;
@@ -1358,12 +1545,17 @@ export async function runPiAndDeliver(input: {
   phase = 'Writing';
   state = 'writing';
   liveLabel = 'Preparing your response…';
-  await publishStatus();
+  // Settled rather than queued: the answer goes out next, and the card should
+  // not still be claiming the run is working once it has landed.
+  queueStatus();
+  await settleStatus();
 
+  const transcript = runTranscript([...ledger.values()]);
   const delivered = await deps.adapter.sendFinalReply(conversation, {
     kind: 'final',
     text,
     format: 'markdown',
+    ...(transcript ? { executionTrace: transcript } : {}),
   });
   if (!delivered.ok) {
     log.error('webhook.pi.delivery_failed', {
@@ -2209,12 +2401,18 @@ async function processInBackground(
   });
 
   // ── Normal message → isolated Pi runtime ──────────────────────────────────
+  // A quoted picture is staged into the workspace exactly like an attached one.
+  // It used to be downloaded, encoded, and then dropped: nothing downstream ever
+  // read `imageUrls`, so quote-replying an image asked Divo about something it
+  // could not see, and it answered from the surrounding text.
+  const quotedImages = quotedImageAttachments(parentRef?.imageUrls, log);
   const replyText = await runPiAndDeliver({
     incoming: withLarkSenderName(effectiveIncoming, identity),
     runContext,
     conversation,
     deps,
     log,
+    ...(quotedImages.length > 0 ? { attachments: quotedImages } : {}),
     ...(signal ? { signal } : {}),
   });
 
@@ -2366,8 +2564,21 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
   return values.find(value => typeof value === 'string' && value.trim().length > 0) as string | undefined;
 }
 
+/**
+ * Stopping a run is a command, not a button.
+ *
+ * `/q` is the one Divo advertises — it is two keystrokes in the box the user is
+ * already typing in, and it reaches a run whose status card has long since
+ * scrolled away. `/stop` is kept only because it is what people already know;
+ * both spellings enter the same handler, so there is one implementation.
+ *
+ * This is checked before the execution lane on purpose: a stop that queued
+ * behind the turn it is trying to stop would arrive after that turn finished.
+ */
+const STOP_COMMANDS: ReadonlySet<string> = new Set(['/q', '/stop']);
+
 const isStopCommand = (text: string | undefined): boolean =>
-  (text ?? '').trim().toLowerCase() === '/stop';
+  STOP_COMMANDS.has((text ?? '').trim().toLowerCase());
 
 async function handleStopBeforeLane(
   incoming: IncomingMessage,
@@ -2766,7 +2977,7 @@ async function handleSlashCommand(args: {
       '**Conversation**\n' +
       '`/clear` — Reset this DM, thread, or inline session.\n' +
       '`/clear room` — Admin-only two-step reset for every thread in this group.\n' +
-      '`/stop` — Stop the active run in this conversation.\n' +
+      '`/q` — Stop the active run in this conversation.\n' +
       '`/group-settings` — Admin-only group reply settings.\n' +
       '`/group-mode status` — Confirm that group replies stay in threads.\n' +
       '**Account**\n' +

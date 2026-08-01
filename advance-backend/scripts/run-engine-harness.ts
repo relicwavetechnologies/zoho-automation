@@ -11,7 +11,7 @@
  * Usage:
  *   pnpm tsx scripts/run-engine-harness.ts                     # Abhishek → Abhishek DM
  *   pnpm tsx scripts/run-engine-harness.ts "your prompt here"
- *   pnpm tsx scripts/run-engine-harness.ts --model flash "your prompt"
+ *   pnpm tsx scripts/run-engine-harness.ts --model luna "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --allow-impersonation --user "Anish Suman" "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --fresh-context --allow-impersonation --user "Shivam Bhateja" "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --group "your prompt" # seeds a real Lark thread
@@ -39,17 +39,22 @@ import { asCompanyRoleSlug } from '../src/domain/permissions/company-role';
 import type { IncomingMessage } from '../src/domain/channel/incoming-message';
 import type { RunContext } from '../src/domain/orchestration/run-context';
 import type { ConversationHandle } from '../src/application/channels/channel.adapter';
+import type { LarkPiRuntimeService } from '../src/application/runtime/lark-pi-runtime.service';
 import { conversationKeyForMessage } from '../src/domain/conversation/conversation-key';
 import { runPiAndDeliver } from '../src/infrastructure/channels/lark/lark.webhook.routes';
 
-const PI_MODEL_ID = 'deepseek-v4-flash';
+const HARNESS_MODEL_IDS = {
+  flash: 'deepseek-v4-flash',
+  pro: 'deepseek-v4-pro',
+  luna: 'gpt-5.6-luna',
+} as const;
 const DEFAULT_PROMPT = 'Reply with exactly: Divo Pi harness is working. Do not call any tools.';
 const DEFAULT_USER_SELECTOR = 'abhishek@emiactech.com';
 const P2P_CHAT_ID      = 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50';
 const GROUP_CHAT_ID    = 'oc_b9169aab0765f46b2fe9147068e3c79f';
 const TRACE_PATH       = join(tmpdir(), 'divo-harness-latest.jsonl');
 
-export type HarnessModel = 'flash' | 'pro';
+export type HarnessModel = keyof typeof HARNESS_MODEL_IDS;
 
 export interface EngineHarnessOptions {
   readonly userSelector: string;
@@ -58,7 +63,7 @@ export interface EngineHarnessOptions {
   readonly chatType: 'p2p' | 'group';
   readonly groupReplyMode: 'threaded' | 'inline';
   readonly threadRootMessageId?: string;
-  readonly model: HarnessModel;
+  readonly model?: HarnessModel;
   readonly prompt: string;
   readonly debugSigs: boolean;
   readonly trace: boolean;
@@ -113,7 +118,7 @@ export function parseEngineHarnessArgs(
   let chatType: 'p2p' | 'group' = 'p2p';
   let groupReplyMode: 'threaded' | 'inline' = 'threaded';
   let threadRootMessageId: string | undefined;
-  let model: HarnessModel = 'flash';
+  let model: HarnessModel | undefined;
   let debugSigs = false;
   let trace = true;
   let fullDebug = false;
@@ -186,8 +191,8 @@ export function parseEngineHarnessArgs(
       if (value === '--chat-id') explicitChatId = optionValue;
       if (value === '--thread-root') threadRootMessageId = optionValue;
       if (value === '--model') {
-        if (optionValue !== 'flash' && optionValue !== 'pro') {
-          throw new Error('--model must be flash or pro');
+        if (optionValue !== 'flash' && optionValue !== 'pro' && optionValue !== 'luna') {
+          throw new Error('--model must be flash, pro, or luna');
         }
         model = optionValue;
       }
@@ -261,7 +266,7 @@ export function parseEngineHarnessArgs(
     chatType,
     groupReplyMode,
     ...(threadRootMessageId ? { threadRootMessageId } : {}),
-    model,
+    ...(model ? { model } : {}),
     prompt: promptParts.join(' ').trim() || DEFAULT_PROMPT,
     debugSigs,
     trace,
@@ -275,11 +280,6 @@ export function parseEngineHarnessArgs(
 }
 
 export function assertPiHarnessOptions(options: EngineHarnessOptions): void {
-  if (options.model !== 'flash') {
-    throw new Error(
-      `--model ${options.model} is not available in cloud Pi yet; use --model flash (${PI_MODEL_ID})`,
-    );
-  }
   if (options.debugSigs) {
     throw new Error('--debug-sigs applies only to the retired Gemini harness path');
   }
@@ -551,7 +551,8 @@ async function printPersistedTrace(input: {
   db: Pick<PrismaClient, 'executionRun'>;
   requestId: string;
   traceId: string;
-  requestedModelId: string;
+  expectedModel: HarnessModel | null;
+  activeModelId: string;
 }): Promise<void> {
   let run: HarnessTrace | null = null;
   for (let attempt = 0; attempt < 8; attempt++) {
@@ -607,7 +608,8 @@ async function printPersistedTrace(input: {
       kind: 'run',
       traceId: input.traceId,
       requestId: input.requestId,
-      requestedModelId: input.requestedModelId,
+      expectedModel: input.expectedModel,
+      activeModelId: input.activeModelId,
       executionRunId: run.id,
       status: run.status,
       latestSummary: run.latestSummary,
@@ -643,17 +645,15 @@ async function printPersistedTrace(input: {
 async function main() {
   const options = parseEngineHarnessArgs(process.argv.slice(2));
   if (options.help) {
-    console.log('Usage: pnpm tsx scripts/run-engine-harness.ts [--model flash] [--backend-url <local-backend-url>] [--fresh-context] [--no-delivery] [--allow-impersonation --user <email|name|open_id>] [--chat-id <allowed-id>] [--chat-type p2p|group] [--group] [--group-mode threaded|inline] [--thread-root <message-id>] [--no-trace] [prompt]');
+    console.log('Usage: pnpm tsx scripts/run-engine-harness.ts [--model flash|pro|luna] [--backend-url <local-backend-url>] [--fresh-context] [--no-delivery] [--allow-impersonation --user <email|name|open_id>] [--chat-id <allowed-id>] [--chat-type p2p|group] [--group] [--group-mode threaded|inline] [--thread-root <message-id>] [--no-trace] [prompt]');
     return;
   }
   assertPiHarnessOptions(options);
-  const requestedModelId = PI_MODEL_ID;
-
   console.log('\n=== run-engine-harness ===');
   console.log('runtime: cloud Pi (legacy AI SDK disabled)');
   console.log(`mode:   ${options.chatType}`);
   if (options.chatType === 'group') console.log(`group reply mode: ${options.groupReplyMode}`);
-  console.log(`model:  ${requestedModelId}`);
+  console.log(`expected model: ${options.model ?? 'member policy'}`);
   console.log(`user selector: ${options.userSelector}`);
   console.log(`delivery: ${options.deliverToLark ? `Lark chat ${options.chatId}` : 'local only'}`);
   console.log(`fresh context: ${options.freshContext}`);
@@ -685,8 +685,17 @@ async function main() {
   }
   const identity = identityResult.value;
   const tenantKey = await resolveHarnessTenantKey(prisma, identity.companyId, userOpenId);
+  const activeModelId = await piRuntime.modelFor(identity.userId);
+  const expectedModelId = options.model ? HARNESS_MODEL_IDS[options.model] : undefined;
+  if (expectedModelId && activeModelId !== expectedModelId) {
+    throw new Error(
+      `--model ${options.model} expects ${expectedModelId}, but this member's active model is ${activeModelId}. `
+      + 'The harness follows the backend grant and does not override it; update the member policy or omit --model.',
+    );
+  }
   console.log(`identity: ${identity.displayName ?? identity.email ?? userOpenId} (${userOpenId})`);
   console.log(`principal: companyId=${identity.companyId} userId=${identity.userId} role=${identity.aiRole} dept=${identity.activeDepartmentId ?? '∅'} tenant=${tenantKey}\n`);
+  console.log(`active model: ${activeModelId}\n`);
 
   // ── 2. Build IncomingMessage + RunContext exactly like the webhook ────────
   let threadRootMessageId = options.threadRootMessageId;
@@ -856,7 +865,8 @@ async function main() {
       db: prisma,
       requestId: messageId,
       traceId: String(traceId),
-      requestedModelId,
+      expectedModel: options.model ?? null,
+      activeModelId,
     });
   }
 

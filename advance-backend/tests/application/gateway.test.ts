@@ -2520,6 +2520,104 @@ describe('GatewayDispatcher', () => {
     assert.equal(executions, 1);
   });
 
+  it('executes Lark writes without desktop-local approval', async () => {
+    let executions = 0;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      actionGroups: new Set(['create']),
+      permissionCheck: () => ok('create'),
+      execute: async () => {
+        executions++;
+        return ok({ result: 'created' });
+      },
+    }));
+    const permissions = makePermissionService(makeAllowedPerm('fakeTool', ['create']));
+    const toolExecutor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([allowedSkill]),
+      toolExecutor,
+      logger: noopLogger,
+    });
+
+    const response = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      payload: { skillId: 'allowed-skill', toolId: 'fakeTool', args: { query: 'create' } },
+    }, { ...member, channel: 'lark' });
+
+    assert.equal(response.ok, true);
+    assert.equal(executions, 1);
+  });
+
+  it('returns backend HITL for a governed Lark write without executing it', async () => {
+    let executions = 0;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      actionGroups: new Set(['create']),
+      permissionCheck: () => ok('create'),
+      execute: async () => {
+        executions++;
+        return ok({ result: 'created' });
+      },
+    }));
+    const permissions = makePermissionService(makeAllowedPerm('fakeTool', ['create']));
+    const toolExecutor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      approvalGate: {
+        check: async () => ({
+          kind: 'pending',
+          approvalId: 'approval-lark-create',
+          message: 'Finance Manager has an approval request waiting in Divo.',
+          authority: 'department_manager',
+          approverName: 'Finance Manager',
+          requestState: 'pending',
+          nextAction: 'wait_for_approval',
+          retry: 'retry_exact_after_approval',
+        }),
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([allowedSkill]),
+      toolExecutor,
+      logger: noopLogger,
+    });
+
+    const response = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      payload: { skillId: 'allowed-skill', toolId: 'fakeTool', args: { query: 'create' } },
+    }, {
+      ...member,
+      channel: 'lark',
+      larkTenantKey: 'tenant-1',
+    });
+
+    assert.equal(response.status, 'approval_required');
+    assert.equal(response.ok, false);
+    assert.equal(executions, 0);
+    assert.deepEqual(response.approval, {
+      approvalId: 'approval-lark-create',
+      message: 'Finance Manager has an approval request waiting in Divo.',
+      status: 'pending',
+      authority: 'department_manager',
+      approverName: 'Finance Manager',
+      scope: 'once',
+      requestState: 'pending',
+      nextAction: 'wait_for_approval',
+      retry: 'retry_exact_after_approval',
+    });
+  });
+
   it('executes user-owned Mail Ops mutations directly for Lark only', async () => {
     let replacements = 0;
     const registry = new ToolRegistry();
@@ -2603,7 +2701,7 @@ describe('GatewayDispatcher', () => {
     assert.equal(replacements, 1);
   });
 
-  it('keeps unknown future Mail Ops mutations approval-gated in Lark', async () => {
+  it('does not reintroduce desktop-local approval for future Lark Mail Ops mutations', async () => {
     let executions = 0;
     const registry = new ToolRegistry();
     registry.register(makeFakeTool({
@@ -2657,8 +2755,8 @@ describe('GatewayDispatcher', () => {
     },
       { ...member, channel: 'lark' },
     );
-    assert.equal(response.status, 'local_approval_required');
-    assert.equal(executions, 0);
+    assert.equal(response.ok, true);
+    assert.equal(executions, 1);
   });
 
   it('exposes and invokes webSearch through the backend gateway when RBAC allows it', async () => {

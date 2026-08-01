@@ -405,6 +405,8 @@ test('streams sanitized controller progress before returning the final text', as
           result: { secret: 'ignored' },
         },
       }),
+      JSON.stringify({ type: 'heartbeat' }),
+      JSON.stringify({ type: 'progress', progress: { type: 'working' } }),
       JSON.stringify({ type: 'progress', progress: { type: 'writing' } }),
       JSON.stringify({ type: 'result', text: 'Finished' }),
       '',
@@ -438,6 +440,7 @@ test('streams sanitized controller progress before returning the final text', as
       toolName: 'divo_gateway',
       isError: false,
     },
+    { type: 'working' },
     { type: 'writing' },
   ]);
 });
@@ -790,31 +793,52 @@ test('a run with no attachments omits the field entirely', async () => {
   assert.equal('attachments' in (runBody ?? {}), false);
 });
 
-test('more than four files is refused before anything is downloaded or uploaded', async () => {
+// Five screenshots in one message is an ordinary thing to send. Refusing the
+// whole turn for it answered nothing at all; the run now gets the first four and
+// is told, by name, which it does not have — so the shortfall reaches the user
+// instead of being hidden inside a confident answer built from a subset.
+test('past the fourth file the run is trimmed and told what it is missing', async () => {
   let opened = 0;
-  let called = false;
-  const service = stagingService(async () => {
-    called = true;
-    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+  let runBody: Record<string, unknown> | undefined;
+  const service = stagingService(async (url, init) => {
+    if (url.endsWith('/v1/lark-runs')) {
+      runBody = JSON.parse(String((init as RequestInit | undefined)?.body ?? '{}')) as Record<string, unknown>;
+      return new Response(JSON.stringify({ text: 'ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    const headers = new Headers(init?.headers);
+    return new Response(JSON.stringify({
+      attachment: {
+        requestId: headers.get('x-divo-request-id'),
+        fileId: headers.get('x-divo-file-id'),
+        fileName: `shot-${opened}.png`,
+        kind: 'image',
+        mimeType: 'image/png',
+        bytes: 1,
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
   });
 
-  const attachment = () => ({
-    kind: 'file' as const,
-    name: 'x.pdf',
-    mimeType: 'application/pdf',
+  const attachment = (index: number) => ({
+    kind: 'image' as const,
+    name: `shot-${index}.png`,
+    mimeType: 'image/png',
     openStream: async () => {
       opened += 1;
-      return (async function* () { yield new Uint8Array(); })();
+      return (async function* () { yield new Uint8Array([1]); })();
     },
   });
 
-  await assert.rejects(
-    () => service.run({ ...runtimeInput(), attachments: [1, 2, 3, 4, 5].map(attachment) }),
-    (error: unknown) =>
-      error instanceof LarkPiRuntimeError && error.code === 'too_many_attachments',
-  );
-  assert.equal(opened, 0);
-  assert.equal(called, false);
+  await service.run({ ...runtimeInput(), attachments: [1, 2, 3, 4, 5, 6].map(attachment) });
+
+  assert.equal(opened, 4);
+  assert.equal((runBody?.['attachments'] as unknown[]).length, 4);
+  const message = String(runBody?.['message'] ?? '');
+  assert.match(message, /shot-5\.png/);
+  assert.match(message, /shot-6\.png/);
+  assert.doesNotMatch(message, /shot-4\.png/);
 });
 
 test('a rejected upload names the file and never starts the run', async () => {
@@ -1104,4 +1128,77 @@ test('a caller-issued session is used verbatim, not the member\'s own sign-in', 
   // Never widened to "any session for this member".
   assert.equal(where['userId'], 'user-1');
   assert.equal(where['revokedAt'], null);
+});
+
+// Every Lark run used to launch on the model pinned in the container manifest,
+// so granting somebody Pro or Luna changed nothing they could see. The run
+// request is where the grant finally becomes the model that answers.
+test('the run asks for the best model the member is granted', async () => {
+  let runBody: Record<string, unknown> | undefined;
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    allowedModelsFor: async () => ['deepseek-v4-flash', 'gpt-5.6-luna'],
+    fetch: (async (_url: string, init?: RequestInit) => {
+      runBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return new Response(JSON.stringify({ text: 'ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as any,
+  });
+
+  await service.run(runtimeInput());
+
+  assert.equal(runBody?.['model'], 'gpt-5.6-luna');
+  assert.equal(runBody?.['provider'], 'openai');
+});
+
+// Not knowing the grant is a reason to be careful, not a reason to fail a turn
+// the member could otherwise have had answered.
+test('a grant lookup that throws still runs, on the default model', async () => {
+  let runBody: Record<string, unknown> | undefined;
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    allowedModelsFor: async () => { throw new Error('policy store is down'); },
+    fetch: (async (_url: string, init?: RequestInit) => {
+      runBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return new Response(JSON.stringify({ text: 'ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as any,
+  });
+
+  await service.run(runtimeInput());
+
+  assert.equal(runBody?.['model'], 'deepseek-v4-flash');
+  assert.equal(runBody?.['provider'], 'deepseek');
 });

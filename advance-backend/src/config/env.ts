@@ -63,20 +63,33 @@ const EnvSchema = z.object({
   OPENAI_TEMPERATURE:    positiveNum(0.1),
 
   // ── DeepSeek ──────────────────────────────────────────────────────────────
+  // Backend-side background inference only — the group-room rollover summary and
+  // persona learning, which call the SDK directly. It is NOT the proxy's key: a
+  // run's model credential comes from what an admin saved in Guardrails, and
+  // nowhere else.
   DEEPSEEK_API_KEY:  z.string().optional(),
 
   // ── LLM proxy (Guardrails) ────────────────────────────────────────────────
-  // The proxy is ON by default — the route mounts and resolves the DeepSeek key
-  // server-side (company → platform → env). With no key configured it simply
+  // The proxy is ON by default — the route mounts and resolves the requested
+  // model provider's key server-side. With no key configured it simply
   // returns 503 "not configured" (never 404). Set LLM_PROXY_ENABLED=false only as
   // a kill switch. PI is repointed at /api/llm/v1 via the divo-llm extension.
   LLM_PROXY_ENABLED:  z.string().default('true').transform((v) => v === 'true' || v === '1'),
   DEEPSEEK_BASE_URL:  z.string().default('https://api.deepseek.com'),
+  // Luna is served from OpenAI's own OpenAI-compatible endpoint, so the proxy
+  // routes to it by the model's provider and forwards an OpenAI key instead.
+  OPENAI_BASE_URL:    z.string().default('https://api.openai.com'),
+  // Neither provider has an env fallback for the proxy. The key an admin saved
+  // in Guardrails is the only key a run uses, so a company that has added none
+  // gets a 503 naming that rather than quietly spending on whatever the process
+  // was started with. For OpenAI that matters twice over: OPENAI_API_KEY is
+  // required and already the platform credential for memory and transcription,
+  // so using it here would report every company as configured.
   // Legacy trace-ingest kill switch for older desktop builds that cannot declare
   // per-batch usage ownership. Current builds merge their local timeline into the
   // proxy-correlated run and let the proxy own only authoritative token usage.
   PROXY_OWNS_TRACE:   z.string().default('false').transform((v) => v === 'true' || v === '1'),
-  // Encrypts DeepSeek keys admins add via the Guardrails UI (AES-256-GCM, token.crypto
+  // Encrypts provider keys admins add via the Guardrails UI (AES-256-GCM, token.crypto
   // format). Falls back to ZOHO_TOKEN_ENCRYPTION_KEY so no new secret is required to ship.
   PROXY_KEY_ENCRYPTION_KEY: z.string().optional(),
 
@@ -297,6 +310,9 @@ const EnvSchema = z.object({
     .transform(value => value === 0 ? 0 : Math.max(value, 600_000)),
 
   // ── Scheduled workflow executor ──────────────────────────────────────────
+  // Disable only autonomous DB-scanning work while cloning an environment.
+  // Interactive Lark, OAuth, tools, and queue-backed work remain available.
+  DIVO_AUTONOMOUS_WORKERS_ENABLED: booleanStr.default('true'),
   SCHEDULED_WORKFLOW_POLL_INTERVAL_MS: z.coerce.number().int().min(10_000).default(120_000),
 
   // ── Hindsight semantic recall projection ────────────────────────────────

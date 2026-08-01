@@ -1,25 +1,54 @@
-name: divo
+name: divo-main
+
+x-default-logging: &default-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+    compress: "true"
 
 services:
+  divo-postgres:
+    image: postgres:16-alpine
+    env_file:
+      - ${DIVO_ENV_FILE:-/dev/null}
+    environment:
+      POSTGRES_DB: ${DIVO_POSTGRES_DB:-divo_main}
+      POSTGRES_USER: ${DIVO_POSTGRES_USER:-divo_main_app}
+      POSTGRES_PASSWORD: ${DIVO_POSTGRES_PASSWORD:?DIVO_POSTGRES_PASSWORD is required}
+    volumes:
+      - divo_main_postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${DIVO_POSTGRES_PORT:-15434}:5432"
+    restart: unless-stopped
+    networks:
+      - divo-main-internal
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   divo-backend:
-    image: ${DIVO_BACKEND_IMAGE:-divo-backend:local}
-    build:
-      context: ./advance-backend
-      dockerfile: Dockerfile
+    image: ${DIVO_BACKEND_IMAGE:?DIVO_BACKEND_IMAGE is required}
     env_file:
       - ${DIVO_ENV_FILE:-/dev/null}
     environment:
       NODE_ENV: production
       PORT: 3001
+      APP_BASE_URL: ${DIVO_PUBLIC_URL:?DIVO_PUBLIC_URL is required}
+      BACKEND_PUBLIC_URL: ${DIVO_PUBLIC_URL:?DIVO_PUBLIC_URL is required}
       REDIS_URL: redis://divo-redis-cache:6379/0
       REDIS_QUEUE_URL: redis://divo-redis-queue:6379/0
       REDIS_CACHE_URL: redis://divo-redis-cache:6379/0
       REDIS_MEMORY_URL: redis://divo-redis-memory:6379/0
       GOOGLE_WORKSPACE_MCP_URL: http://google-workspace-mcp:8000/mcp
-      # The production controller is a separately isolated private service.
-      # Never mount the host Docker socket into the public backend container.
-      PI_LARK_CONTROLLER_URL: ${PI_LARK_CONTROLLER_URL:?Private Pi controller URL is required}
-      PI_LARK_RUNTIME_INSTANCE_ID: ${PI_LARK_RUNTIME_INSTANCE_ID:-pi-production-1}
+      # The Docker socket is isolated in the private controller service; it is
+      # never mounted into the public backend container.
+      PI_LARK_CONTROLLER_URL: http://divo-pi-controller:4317
+      PI_LARK_RUNTIME_INSTANCE_ID: ${PI_LARK_RUNTIME_INSTANCE_ID:-pi-main-1}
+      DIVO_AUTONOMOUS_WORKERS_ENABLED: ${DIVO_AUTONOMOUS_WORKERS_ENABLED:-false}
       HINDSIGHT_ENABLED: "true"
       HINDSIGHT_URL: http://divo-hindsight:8888
       HINDSIGHT_API_KEY: ${HINDSIGHT_API_KEY:?HINDSIGHT_API_KEY is required}
@@ -29,6 +58,8 @@ services:
     depends_on:
       divo-migrate:
         condition: service_completed_successfully
+      divo-postgres:
+        condition: service_healthy
       divo-redis-queue:
         condition: service_healthy
       divo-redis-cache:
@@ -41,11 +72,15 @@ services:
         condition: service_healthy
       divo-clamav:
         condition: service_healthy
+      divo-pi-controller:
+        condition: service_healthy
     ports:
-      - "${DIVO_BACKEND_PORT:-3001}:3001"
+      - "127.0.0.1:${DIVO_BACKEND_PORT:-13002}:3001"
     restart: unless-stopped
     networks:
-      - divo-internal
+      - divo-main-internal
+      - divo-main-agent-control
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 30s
@@ -56,13 +91,17 @@ services:
   # One release gate owns schema migration. App replicas never race ad-hoc
   # db-push operations, and they cannot start against an unversioned schema.
   divo-migrate:
-    image: ${DIVO_BACKEND_IMAGE:-divo-backend:local}
+    image: ${DIVO_BACKEND_IMAGE:?DIVO_BACKEND_IMAGE is required}
     env_file:
       - ${DIVO_ENV_FILE:-/dev/null}
     command: ["pnpm", "prisma:migrate:deploy"]
+    depends_on:
+      divo-postgres:
+        condition: service_healthy
     restart: "no"
     networks:
-      - divo-internal
+      - divo-main-internal
+    logging: *default-logging
 
   divo-hindsight:
     image: ghcr.io/vectorize-io/hindsight:0.8.6
@@ -82,7 +121,8 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - divo-internal
+      - divo-main-internal
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/health', timeout=3)\""]
       interval: 15s
@@ -93,10 +133,11 @@ services:
   divo-clamav:
     image: clamav/clamav:1.5.3
     volumes:
-      - divo_clamav_signatures:/var/lib/clamav
+      - divo_main_clamav_signatures:/var/lib/clamav
     restart: unless-stopped
     networks:
-      - divo-internal
+      - divo-main-internal
+    logging: *default-logging
 
   divo-hindsight-postgres:
     image: pgvector/pgvector:0.8.1-pg16
@@ -105,15 +146,47 @@ services:
       POSTGRES_USER: hindsight
       POSTGRES_PASSWORD: ${HINDSIGHT_DB_PASSWORD:?HINDSIGHT_DB_PASSWORD is required}
     volumes:
-      - divo_hindsight_postgres_data:/var/lib/postgresql/data
+      - divo_main_hindsight_postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
     networks:
-      - divo-internal
+      - divo-main-internal
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hindsight -d hindsight"]
       interval: 10s
       timeout: 5s
       retries: 8
+
+  divo-pi-controller:
+    image: ${DIVO_PI_CONTROLLER_IMAGE:?DIVO_PI_CONTROLLER_IMAGE is required}
+    user: "0:0"
+    environment:
+      DIVO_CONTROLLER_HOST: 0.0.0.0
+      DIVO_CONTROLLER_PORT: 4317
+      DIVO_PI_IMAGE: ${DIVO_PI_IMAGE:?DIVO_PI_IMAGE is required}
+      DIVO_PI_RESOURCE_PREFIX: divo-pi-main
+      DIVO_PI_ADD_HOST_GATEWAY: "false"
+      MAX_ACTIVE_RUNS: ${DIVO_PI_MAX_ACTIVE_RUNS:-2}
+      HOME: /tmp
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    networks:
+      - divo-main-agent-control
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4317/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
 
   google-workspace-mcp:
     image: ghcr.io/taylorwilsdon/google_workspace_mcp:1.22.0
@@ -128,11 +201,10 @@ services:
       TOOL_TIER: complete
       TOOLS: gmail drive calendar docs sheets slides forms tasks contacts chat appscript
       ALLOWED_FILE_DIRS: /tmp/divo-no-local-files
-    ports:
-      - "127.0.0.1:${GOOGLE_WORKSPACE_MCP_PORT:-18000}:8000"
     restart: unless-stopped
     networks:
-      - divo-internal
+      - divo-main-internal
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health >/dev/null || exit 1"]
       interval: 30s
@@ -141,20 +213,16 @@ services:
       retries: 5
 
   divo-admin:
-    image: ${DIVO_ADMIN_IMAGE:-divo-admin:local}
-    build:
-      context: ./admin
-      dockerfile: Dockerfile
-      args:
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+    image: ${DIVO_ADMIN_IMAGE:?DIVO_ADMIN_IMAGE is required}
     depends_on:
       divo-backend:
         condition: service_started
     ports:
-      - "${DIVO_ADMIN_PORT:-8081}:80"
+      - "127.0.0.1:${DIVO_ADMIN_PORT:-18082}:80"
     restart: unless-stopped
     networks:
-      - divo-internal
+      - divo-main-internal
+    logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null || exit 1"]
       interval: 30s
@@ -166,10 +234,11 @@ services:
     image: redis:7.4-alpine
     command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
     volumes:
-      - divo_redis_queue_data:/data
+      - divo_main_redis_queue_data:/data
     restart: unless-stopped
     networks:
-      - divo-internal
+      - divo-main-internal
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -180,10 +249,11 @@ services:
     image: redis:7.4-alpine
     command: ["redis-server", "--appendonly", "yes", "--save", "300", "10"]
     volumes:
-      - divo_redis_cache_data:/data
+      - divo_main_redis_cache_data:/data
     restart: unless-stopped
     networks:
-      - divo-internal
+      - divo-main-internal
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -194,10 +264,11 @@ services:
     image: redis:7.4-alpine
     command: ["redis-server", "--appendonly", "yes", "--save", "300", "10"]
     volumes:
-      - divo_redis_memory_data:/data
+      - divo_main_redis_memory_data:/data
     restart: unless-stopped
     networks:
-      - divo-internal
+      - divo-main-internal
+    logging: *default-logging
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -205,12 +276,15 @@ services:
       retries: 5
 
 networks:
-  divo-internal:
+  divo-main-internal:
+    driver: bridge
+  divo-main-agent-control:
     driver: bridge
 
 volumes:
-  divo_redis_queue_data:
-  divo_redis_cache_data:
-  divo_redis_memory_data:
-  divo_hindsight_postgres_data:
-  divo_clamav_signatures:
+  divo_main_postgres_data:
+  divo_main_redis_queue_data:
+  divo_main_redis_cache_data:
+  divo_main_redis_memory_data:
+  divo_main_hindsight_postgres_data:
+  divo_main_clamav_signatures:

@@ -5,15 +5,33 @@ import { getAdminQueryScope } from "@/lib/query-client"
 /*
  * Proxy control plane — REAL data from /api/admin/proxy.
  *
- * The DeepSeek key lives encrypted server-side; the desktop never holds it. These
- * hooks drive the Guardrails key card + header status. `companyId` is only needed
+ * Provider keys live encrypted server-side, one per provider, and the desktop
+ * never holds one. These hooks drive the Guardrails key cards + header status. `companyId` is only needed
  * for SUPER_ADMIN callers (use useCompanyScope()).
  */
 
 export type KeyScope = "platform" | "company"
-export type KeySource = "company" | "platform" | "env"
+/* A key an admin saved is the only key — there is no server-env fallback. */
+export type KeySource = "company" | "platform"
+
+/** A provider an admin can hold a key for. One key card per entry. */
+export type KeyProvider = "deepseek" | "openai"
+export const KEY_PROVIDERS: ReadonlyArray<{ id: KeyProvider; label: string; hint: string }> = [
+  { id: "deepseek", label: "DeepSeek", hint: "Serves Flash and Pro." },
+  { id: "openai", label: "OpenAI", hint: "Serves Luna, the only model that can read an image." },
+]
+
+export interface ProxyModel {
+  id: string
+  label: string
+  provider: KeyProvider
+  vision: boolean
+  inputPerMillionUsd: number
+  outputPerMillionUsd: number
+}
 
 export interface ProxyStatus {
+  provider: KeyProvider
   enabled: boolean
   desktopProxyEnabled: boolean
   larkEnabled: boolean
@@ -38,43 +56,64 @@ export function proxyState(s: ProxyStatus | undefined): ProxyState {
   return s.status === "disabled" ? "paused" : "active"
 }
 
-const scoped = (path: string, companyId?: string): string =>
-  companyId ? `${path}?companyId=${encodeURIComponent(companyId)}` : path
+const scoped = (path: string, companyId?: string, provider?: KeyProvider): string => {
+  const params = new URLSearchParams()
+  if (companyId) params.set("companyId", companyId)
+  if (provider) params.set("provider", provider)
+  return params.size ? `${path}?${params}` : path
+}
 
-const statusKey = (scope: string, companyId?: string) =>
-  ["admin", scope, "proxy-status", companyId ?? ""] as const
+const statusKey = (scope: string, provider: KeyProvider, companyId?: string) =>
+  ["admin", scope, "proxy-status", provider, companyId ?? ""] as const
 
-export function useProxyStatus(token: string | null, companyId?: string) {
+export function useProxyStatus(token: string | null, provider: KeyProvider, companyId?: string) {
   const scope = getAdminQueryScope(token)
   return useQuery({
-    queryKey: statusKey(scope, companyId),
+    queryKey: statusKey(scope, provider, companyId),
     enabled: Boolean(token),
-    queryFn: () => api.get<ProxyStatus>(scoped("/api/admin/proxy/status", companyId), token!),
+    queryFn: () => api.get<ProxyStatus>(scoped("/api/admin/proxy/status", companyId, provider), token!),
   })
 }
 
-export function useSaveProxyKey(token: string | null, companyId?: string) {
+/**
+ * The models an admin can grant, best first.
+ *
+ * Served by the backend rather than listed here so that adding a model is one
+ * edit. A second copy in the panel is how a member ends up granted something
+ * the proxy has never heard of.
+ */
+export function useProxyModels(token: string | null) {
+  const scope = getAdminQueryScope(token)
+  return useQuery({
+    queryKey: ["admin", scope, "proxy-models"] as const,
+    enabled: Boolean(token),
+    staleTime: 5 * 60_000,
+    queryFn: () => api.get<ProxyModel[]>("/api/admin/proxy/models", token!),
+  })
+}
+
+export function useSaveProxyKey(token: string | null, provider: KeyProvider, companyId?: string) {
   const scope = getAdminQueryScope(token)
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ key, keyScope }: { key: string; keyScope: KeyScope }) =>
-      api.put<ProxyStatus>("/api/admin/proxy/key", { key, scope: keyScope, companyId }, token!),
+      api.put<ProxyStatus>("/api/admin/proxy/key", { key, provider, scope: keyScope, companyId }, token!),
     onSuccess: (data) => {
-      qc.setQueryData(statusKey(scope, companyId), data)
-      void qc.invalidateQueries({ queryKey: statusKey(scope, companyId) })
+      qc.setQueryData(statusKey(scope, provider, companyId), data)
+      void qc.invalidateQueries({ queryKey: statusKey(scope, provider, companyId) })
     },
   })
 }
 
-export function useRemoveProxyKey(token: string | null, companyId?: string) {
+export function useRemoveProxyKey(token: string | null, provider: KeyProvider, companyId?: string) {
   const scope = getAdminQueryScope(token)
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ keyScope }: { keyScope: KeyScope }) =>
-      api.delete<ProxyStatus>("/api/admin/proxy/key", { scope: keyScope, companyId }, token!),
+      api.delete<ProxyStatus>("/api/admin/proxy/key", { provider, scope: keyScope, companyId }, token!),
     onSuccess: (data) => {
-      qc.setQueryData(statusKey(scope, companyId), data)
-      void qc.invalidateQueries({ queryKey: statusKey(scope, companyId) })
+      qc.setQueryData(statusKey(scope, provider, companyId), data)
+      void qc.invalidateQueries({ queryKey: statusKey(scope, provider, companyId) })
     },
   })
 }

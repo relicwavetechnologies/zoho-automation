@@ -2,7 +2,7 @@
  * Model pricing (frontend mirror of advance-backend/src/application/observability/pricing.ts).
  * Used only to price the run-detail trace client-side (reconstructed from the
  * event stream, which carries per-turn cache-split tokens). Keep RATES in sync
- * with the backend — both are DeepSeek official, verified 2026-07.
+ * with the backend — rates are provider-specific and verified 2026-07.
  */
 
 export interface ModelRate {
@@ -14,6 +14,7 @@ export interface ModelRate {
 const RATES: Record<string, ModelRate> = {
   "deepseek-v4-flash": { cacheHitIn: 0.0028, cacheMissIn: 0.14, output: 0.28 },
   "deepseek-v4-pro": { cacheHitIn: 0.0145, cacheMissIn: 1.74, output: 3.48 },
+  "gpt-5.6-luna": { cacheHitIn: 0.02, cacheMissIn: 0.2, output: 1.2 },
 }
 const DEFAULT_RATE: ModelRate = RATES["deepseek-v4-flash"]!
 

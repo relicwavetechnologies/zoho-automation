@@ -5,6 +5,7 @@ import extension, {
 	buildDivoSubagentArgs,
 	buildDivoSubagentEnvironment,
 	getPiInvocation,
+	resolveDivoChildModel,
 } from "./index.ts";
 import { getDivoSubagentRole } from "./agents.ts";
 import { createChild, MAX_OUTPUT_PREVIEW_CHARS } from "./progress.ts";
@@ -95,7 +96,7 @@ test("fails closed instead of launching a direct-provider child without member a
 	}
 });
 
-test("pins child inference to the Divo-proxied DeepSeek model", () => {
+test("launches child inference on the parent Divo-proxied model", () => {
 	const role = getDivoSubagentRole("scout");
 	assert.ok(role);
 	if (!role) return;
@@ -104,16 +105,28 @@ test("pins child inference to the Divo-proxied DeepSeek model", () => {
 		"/tmp/scout.md",
 		["/bundle/divo-llm/index.ts", "/bundle/divo-gateway/index.ts"],
 		"Inspect the evidence",
+		resolveDivoChildModel({ id: "gpt-5.6-luna", provider: "openai" }),
 	);
 
 	assert.deepEqual(args.slice(args.indexOf("--provider"), args.indexOf("--provider") + 4), [
 		"--provider",
-		"deepseek",
+		"openai",
 		"--model",
-		"deepseek-v4-flash",
+		"gpt-5.6-luna",
+	]);
+	assert.deepEqual(args.slice(args.indexOf("--thinking"), args.indexOf("--thinking") + 2), [
+		"--thinking",
+		"high",
 	]);
 	assert.ok(args.includes("/bundle/divo-llm/index.ts"));
 	assert.ok(args.includes("/bundle/divo-gateway/index.ts"));
+});
+
+test("falls back to Flash when Pi has no supported active parent model", () => {
+	assert.deepEqual(resolveDivoChildModel(), {
+		provider: "deepseek",
+		model: "deepseek-v4-flash",
+	});
 });
 
 test("preserves the source runtime loader when launching a child Pi", () => {

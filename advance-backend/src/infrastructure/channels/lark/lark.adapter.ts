@@ -717,8 +717,14 @@ export class LarkChannelAdapter implements ChannelAdapter {
     this.runOwners.set(correlationId, owner);
   }
 
-  /** Interrupt a run only for its requester or an admin in the same company. */
-  interruptRun(correlationId: string, actor: LarkInterruptActor): LarkInterruptResult {
+  /**
+   * Interrupt a run only for its requester or an admin in the same company.
+   *
+   * Private because a run is addressed by the conversation it belongs to, not
+   * by an internal correlation id: `/q` names a conversation, and there is no
+   * longer any surface that hands a caller a raw correlation id to stop.
+   */
+  private interruptRun(correlationId: string, actor: LarkInterruptActor): LarkInterruptResult {
     const controller = this.abortControllers.get(correlationId);
     const owner = this.runOwners.get(correlationId);
     if (!controller || !owner) return 'not_found';
@@ -743,14 +749,6 @@ export class LarkChannelAdapter implements ChannelAdapter {
     const active = [...this.runOwners.entries()]
       .find(([, owner]) => owner.conversationKey === conversationKey);
     return active ? this.interruptRun(active[0], actor) : 'not_found';
-  }
-
-  /** Find the correlationId for a run by its status message ID. */
-  findCorrelationByStatusMessage(messageId: string): string | undefined {
-    for (const [corrId, coordinator] of this.coordinators) {
-      if (coordinator.getStatusMessageId() === messageId) return corrId;
-    }
-    return undefined;
   }
 
   /** Clean up abort controller after run completes. */

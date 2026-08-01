@@ -12,14 +12,27 @@ import {
 	normalizeBackendUrl,
 	signInWithLark,
 } from "./auth.mjs";
+import {
+	classifyDivoRunTerminal,
+	isTransientDivoRunFailure,
+} from "./run-terminal.mjs";
+import {
+	RUNTIME_MODEL_IDS,
+	isRuntimeModel,
+	providerForModel,
+} from "./runtime-models.mjs";
 
 const execFileAsync = promisify(execFile);
 const IMAGE = process.env.DIVO_PI_IMAGE ?? "divo-pi-local:phase0";
 const KEYCHAIN_SERVICE = "dev.divo-pi.local";
 const PROFILE_ROOT = path.join(os.homedir(), ".divo-pi", "profiles");
-const RESOURCE_PREFIX = "divo-pi-local";
+const RESOURCE_PREFIX = process.env.DIVO_PI_RESOURCE_PREFIX ?? "divo-pi-local";
 const RPC_TIMEOUT_MS = 30_000;
 const KEYCHAIN_TIMEOUT_MS = 15_000;
+const MAX_TRANSIENT_MODEL_RETRIES = 3;
+const MODEL_RETRY_IDLE_TIMEOUT_MS = 5_000;
+const MODEL_RETRY_PROMPT =
+	"The previous model continuation failed because the provider was temporarily unavailable. Continue this same request from the work already present in the session. Do not repeat completed tool calls or side effects. Finish the remaining work and return only the final user-facing answer.";
 export const RUNTIME_IDLE_TIMEOUT_MS = 10 * 60_000;
 export const RUNTIME_STOP_RETRY_MS = 30_000;
 const RUNTIME_CONTAINER_MODE = "exec-v1";
@@ -76,13 +89,29 @@ export function validateSessionScope(value) {
 	return value;
 }
 
-export function resourcesFor(profileName) {
+/**
+ * The model a run is launched on.
+ *
+ * The backend picks one from the member's grant and names it here; naming none
+ * leaves the manifest's default, which is what every run used before the grant
+ * could reach this far.
+ */
+export function validateRuntimeModel(value) {
+	if (value === undefined || value === null || value === "") return undefined;
+	if (!isRuntimeModel(value)) {
+		throw new Error(`model must be one of: ${RUNTIME_MODEL_IDS.join(", ")}`);
+	}
+	return { model: value, provider: providerForModel(value) };
+}
+
+export function resourcesFor(profileName, resourcePrefix = RESOURCE_PREFIX) {
 	const profile = validateProfileName(profileName);
+	const prefix = validateProfileName(resourcePrefix);
 	return {
-		authVolume: `${RESOURCE_PREFIX}-${profile}-auth`,
-		container: `${RESOURCE_PREFIX}-${profile}`,
-		network: `${RESOURCE_PREFIX}-${profile}`,
-		volume: `${RESOURCE_PREFIX}-${profile}`,
+		authVolume: `${prefix}-${profile}-auth`,
+		container: `${prefix}-${profile}`,
+		network: `${prefix}-${profile}`,
+		volume: `${prefix}-${profile}`,
 	};
 }
 
@@ -303,15 +332,11 @@ export function backendUrlForContainer(value) {
 	return url.toString().replace(/\/+$/, "");
 }
 
-export function runtimeContainerNeedsReplacement(
-	container,
-	image = IMAGE,
-	currentImageId,
-) {
+export function runtimeContainerNeedsReplacement(container, image = IMAGE, imageId) {
 	return (
 		container?.Config?.Image !== image ||
-		container?.Config?.Labels?.["dev.divo.runtime-mode"] !== RUNTIME_CONTAINER_MODE ||
-		Boolean(currentImageId && container?.Image !== currentImageId)
+		(typeof imageId === "string" && container?.Image !== imageId) ||
+		container?.Config?.Labels?.["dev.divo.runtime-mode"] !== RUNTIME_CONTAINER_MODE
 	);
 }
 
@@ -418,6 +443,15 @@ async function dockerObjectExists(kind, name) {
 	} catch {
 		return false;
 	}
+}
+
+async function inspectImageId(image) {
+	const result = await docker(["image", "inspect", image]);
+	const [metadata] = JSON.parse(result.stdout);
+	if (typeof metadata?.Id !== "string" || !metadata.Id) {
+		throw new Error(`Docker image ${image} has no resolved image ID`);
+	}
+	return metadata.Id;
 }
 
 async function storeToken(profile, token) {
@@ -636,21 +670,9 @@ async function ensureRuntime(profile, { ephemeral = false } = {}) {
 			`Image ${IMAGE} is missing. Build it with: docker build -t ${IMAGE} .`,
 		);
 	}
-	// A mutable tag can point at a newly built image while an existing warm
-	// container still uses the previous immutable image. Inspect the tag for
-	// every activation so the replacement decision below cannot serve stale
-	// agent code after a deploy or local rebuild.
-	const inspectedImage = await docker([
-		"image",
-		"inspect",
-		"--format",
-		"{{.Id}}",
-		IMAGE,
-	]);
-	const currentImageId = inspectedImage.stdout.trim();
-	if (!currentImageId) {
-		throw new Error(`Image ${IMAGE} has no inspectable immutable ID.`);
-	}
+	// Resolve the immutable image ID on every activation. A mutable tag can move
+	// after a deploy or rebuild while a warm container still runs old code.
+	const imageId = await inspectImageId(IMAGE);
 	if (!(await dockerObjectExists("network", resources.network))) {
 		await docker([
 			"network",
@@ -666,7 +688,7 @@ async function ensureRuntime(profile, { ephemeral = false } = {}) {
 	await ensureVolume(profile, resources.authVolume);
 	if (await dockerObjectExists("container", resources.container)) {
 		const container = await inspectOwnedContainer(profile);
-		if (runtimeContainerNeedsReplacement(container, IMAGE, currentImageId)) {
+		if (runtimeContainerNeedsReplacement(container, IMAGE, imageId)) {
 			if (container.State.Running) await docker(["stop", resources.container]);
 			await docker(["rm", resources.container]);
 		} else {
@@ -938,11 +960,73 @@ const PROGRESS_LABEL_MAX = 80;
 const PROGRESS_CHILDREN_MAX = 8;
 const PROGRESS_TODOS_MAX = 12;
 
-function progressLabel(value) {
+const PROGRESS_DETAIL_MAX = 64;
+const PROGRESS_SAY_MAX = 200;
+
+function progressLabel(value, maxLength = PROGRESS_LABEL_MAX) {
 	if (typeof value !== "string") return undefined;
 	const flat = value.replace(/\s+/g, " ").trim();
 	if (!flat) return undefined;
-	return flat.length > PROGRESS_LABEL_MAX ? `${flat.slice(0, PROGRESS_LABEL_MAX - 1)}…` : flat;
+	return flat.length > maxLength ? `${flat.slice(0, maxLength - 1)}…` : flat;
+}
+
+/**
+ * What a tool call is about, taken from the arguments it was called with.
+ *
+ * Five rows reading "Terminal / Files / Terminal" say only that something ran.
+ * The argument that names the work is already in hand here — the projection
+ * simply threw it away — and one short phrase per row is the difference between
+ * a progress bar and a log somebody can read.
+ *
+ * Only the one identifying argument crosses, never the whole object: a tool's
+ * arguments can carry a whole file body or a customer record, and this string
+ * is rendered into a chat window a room full of colleagues can read.
+ */
+function progressToolDetail(toolName, args) {
+	if (!args || typeof args !== "object") return undefined;
+	const fileName = (value) =>
+		typeof value === "string" ? value.split("/").filter(Boolean).at(-1) : undefined;
+
+	if (toolName === "bash") return progressLabel(args.command, PROGRESS_DETAIL_MAX);
+	if (toolName === "read" || toolName === "write" || toolName === "edit") {
+		return progressLabel(fileName(args.file_path ?? args.path), PROGRESS_DETAIL_MAX);
+	}
+	// A skill is addressed by UUID, which names nothing to the person reading the
+	// card. The row stays bare until the call returns and can be labelled with
+	// the skill's actual name.
+	if (toolName === "divo_skill_view") {
+		return UUID_PATTERN.test(String(args.skillId ?? ""))
+			? undefined
+			: progressLabel(args.skillId, PROGRESS_DETAIL_MAX);
+	}
+	// The tool id already travels as its own field, and the backend holds the
+	// table that turns it into a product name — so only the operation goes here.
+	// Sending the raw id too would print it twice, untranslated.
+	if (toolName === "divo_gateway") return progressLabel(args.op, PROGRESS_DETAIL_MAX);
+	return undefined;
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The text block the model is writing right now, out of the accumulated message. */
+function assistantBlockText(assistantMessageEvent) {
+	const content = assistantMessageEvent?.partial?.content;
+	const block = Array.isArray(content) ? content[assistantMessageEvent.contentIndex] : undefined;
+	return block?.type === "text" && typeof block.text === "string" ? block.text : undefined;
+}
+
+/**
+ * Only whole sentences leave the container.
+ *
+ * A text delta arrives per token, and forwarding each one would redraw the
+ * status card for every word of a thirteen-minute run — hundreds of edits of
+ * one chat message, for a card nobody is reading letter by letter. Cutting at
+ * the last completed sentence makes the projection self-rate-limiting without
+ * any timer: the value only changes when the model finishes saying something.
+ */
+export function settledSentences(text) {
+	const match = /^[\s\S]*[.!?…](?=["'’”)\]]*(?:\s|$))/.exec(text ?? "");
+	return match ? match[0].trim() : "";
 }
 
 /** Pi child states, in the vocabulary the status card renders. */
@@ -1000,6 +1084,11 @@ function progressDetail(details) {
 	if (children) return { children };
 	const todos = progressTodos(details);
 	if (todos) return { todos };
+	// A loaded skill knows its own name, which is the only readable thing about
+	// a call the model addressed by UUID. It is only knowable once the call has
+	// returned, so the row is named on the way out rather than the way in.
+	const name = progressLabel(details.name, PROGRESS_DETAIL_MAX);
+	if (name && typeof details.revision === "number") return { detail: name };
 	return undefined;
 }
 
@@ -1011,11 +1100,13 @@ export function projectRuntimeProgress(event) {
 	if (event.type === "tool_execution_start") {
 		const toolName = typeof event.toolName === "string" ? event.toolName : "tool";
 		const toolId = progressToolId(toolName, event.args);
+		const detail = progressToolDetail(toolName, event.args);
 		return {
 			type: "tool_start",
 			callId: String(event.toolCallId ?? ""),
 			toolName,
 			...(toolId ? { toolId } : {}),
+			...(detail ? { detail } : {}),
 		};
 	}
 	if (event.type === "tool_execution_update") {
@@ -1046,23 +1137,134 @@ export function projectRuntimeProgress(event) {
 		event.type === "message_update"
 		&& event.assistantMessageEvent?.type === "text_delta"
 	) {
-		return { type: "writing" };
+		// A long run that says nothing reads as a hang, however much work it is
+		// doing. What the model says between its tool calls is the only thing on
+		// the card written for a person rather than derived from one, so it is
+		// forwarded rather than flattened into a bare "writing" flag.
+		const said = progressLabel(
+			settledSentences(assistantBlockText(event.assistantMessageEvent)),
+			PROGRESS_SAY_MAX,
+		);
+		if (!said) return { type: "writing" };
+		return {
+			type: "say",
+			index: Number.isInteger(event.assistantMessageEvent.contentIndex)
+				? event.assistantMessageEvent.contentIndex
+				: 0,
+			text: said,
+		};
 	}
+	// Reasoning stays inside the container. `thinking_delta` is the model
+	// talking to itself, not to the room, and a status card is read by everyone
+	// in the chat.
 	return undefined;
 }
 
 export function collectRunAssistantText(messages) {
 	if (!Array.isArray(messages)) return "";
-	const chunks = [];
-	for (const message of messages) {
+	const lastUserIndex = messages.findLastIndex((message) => message?.role === "user");
+	const candidates = messages.slice(lastUserIndex + 1).filter(
+		(message) =>
+			message?.role === "assistant" &&
+			Array.isArray(message.content) &&
+			message.content.some((content) => content?.type === "text" && content.text?.trim()),
+	);
+	const finalMessage = candidates.findLast((message) => message.stopReason === "stop")
+		?? candidates.at(-1);
+	if (!finalMessage) return "";
+	const chunks = finalMessage.content.flatMap((content) => {
+		if (content?.type !== "text" || typeof content.text !== "string") return [];
+		const text = content.text.trim();
+		return text ? [text] : [];
+	});
+	return chunks.join("\n\n");
+}
+
+function terminalRunError(terminal) {
+	const error = new Error(terminal.summary ?? "The model continuation did not complete.");
+	error.code = "model_continuation_failed";
+	error.statusCode = 502;
+	return error;
+}
+
+function completedGatewayAction(messages) {
+	if (!Array.isArray(messages)) return false;
+	const lastUserIndex = messages.findLastIndex((message) => message?.role === "user");
+	const currentRun = messages.slice(lastUserIndex + 1);
+	const actionIds = new Set();
+	for (const message of currentRun) {
 		if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
 		for (const content of message.content) {
-			if (content?.type !== "text" || typeof content.text !== "string") continue;
-			const text = content.text.trim();
-			if (text) chunks.push(text);
+			if (
+				content?.type === "toolCall"
+				&& content.name === "divo_gateway"
+				&& (content.arguments?.op === "tools.invoke" || content.arguments?.op === "teach.learning.apply")
+				&& typeof content.id === "string"
+			) {
+				actionIds.add(content.id);
+			}
 		}
 	}
-	return chunks.join("\n\n");
+	return currentRun.some(
+		(message) =>
+			message?.role === "toolResult"
+			&& actionIds.has(message.toolCallId)
+			&& message.isError !== true,
+	);
+}
+
+async function waitForRpcIdle(rpc, {
+	timeoutMs = MODEL_RETRY_IDLE_TIMEOUT_MS,
+	pollMs = 25,
+	sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() <= deadline) {
+		const state = await rpc.send(
+			{ type: "get_state" },
+			Math.min(timeoutMs, RPC_TIMEOUT_MS),
+		);
+		if (state?.isStreaming !== true && state?.isCompacting !== true) return;
+		await sleep(pollMs);
+	}
+	throw terminalRunError({
+		summary: "The model runtime did not become idle after a transient provider failure.",
+	});
+}
+
+export async function promptWithTransientRetries({
+	rpc,
+	message,
+	maxRetries = MAX_TRANSIENT_MODEL_RETRIES,
+	retryDelayMs = 1_000,
+	waitForIdle = waitForRpcIdle,
+	onRetry,
+}) {
+	for (let retry = 0; ; retry += 1) {
+		const completed = rpc.waitFor("agent_end");
+		await rpc.send(
+			{ type: "prompt", message: retry === 0 ? message : MODEL_RETRY_PROMPT },
+			90_000,
+		);
+		const completion = await completed;
+		const terminal = classifyDivoRunTerminal(completion?.messages);
+		if (terminal.status === "ok") return completion;
+		if (!isTransientDivoRunFailure(completion?.messages) || retry >= maxRetries) {
+			throw terminalRunError(terminal);
+		}
+		if (completedGatewayAction(completion?.messages)) {
+			throw terminalRunError({
+				summary:
+					"The model provider failed after a company action completed. Divo stopped instead of retrying and risking a duplicate action.",
+			});
+		}
+		const attempt = retry + 1;
+		onRetry?.({ attempt, maxRetries, summary: terminal.summary });
+		if (retryDelayMs > 0) {
+			await new Promise((resolve) => setTimeout(resolve, retryDelayMs * 2 ** retry));
+		}
+		await waitForIdle(rpc);
+	}
 }
 
 function emitRuntimeProgress(onProgress, event) {
@@ -1075,6 +1277,15 @@ function emitRuntimeProgress(onProgress, event) {
 	} catch {
 		// Status delivery must never interrupt the agent run.
 	}
+}
+
+export function runtimeStartupProgress(wasRunning) {
+	return wasRunning
+		? [{ type: "working" }]
+		: [
+			{ type: "starting", stage: "workspace", label: "Checking your workspace…" },
+			{ type: "starting", stage: "container", label: "Waking up Divo…" },
+		];
 }
 
 export class JsonlRpc {
@@ -1361,7 +1572,11 @@ export async function finalizeRuntimeLifecycle({
 	),
 } = {}) {
 	const cleanupErrors = [];
-	if (bootstrapAttempted) {
+	// Only a run that failed can still be holding the token. Reaching completion
+	// means container-entry read the bootstrap, and it unlinks the file the moment
+	// it does, so clearing again spends a throwaway container deleting nothing.
+	// A run that died earlier may never have read it, and that one still needs it.
+	if (bootstrapAttempted && !completedSuccessfully) {
 		try {
 			await clearBootstrapFn(resources.authVolume);
 		} catch (error) {
@@ -1457,6 +1672,7 @@ async function runPrompt({
 	answerRequest,
 	attachments,
 	sessionScope,
+	model,
 	signal,
 	onProgress,
 	ephemeral = false,
@@ -1467,6 +1683,7 @@ async function runPrompt({
 	}
 	if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
 	let resources = resourcesFor(profile);
+	const selectedModel = validateRuntimeModel(model);
 	const bootstrap = {
 		backendUrl: backendUrlForContainer(backendUrl),
 		token,
@@ -1479,6 +1696,7 @@ async function runPrompt({
 		departmentId,
 		sessionScope: normalizedSessionScope,
 		...(channel ? { channel } : {}),
+		...(selectedModel ?? {}),
 	};
 	if (!ephemeral) await idleContainers.activate(profile);
 	emitRuntimeProgress(onProgress, {
@@ -1502,14 +1720,12 @@ async function runPrompt({
 	try {
 		const runtime = await ensureRuntime(profile, { ephemeral });
 		resources = runtime.resources;
+		for (const progress of runtimeStartupProgress(runtime.wasRunning)) {
+			emitRuntimeProgress(onProgress, progress);
+		}
 		if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
 		bootstrapAttempted = true;
 		await writeBootstrap(resources.authVolume, bootstrap);
-		emitRuntimeProgress(onProgress, {
-			type: "starting",
-			stage: "container",
-			label: runtime.wasRunning ? "Resuming your work…" : "Waking up Divo…",
-		});
 		const startedAt = Date.now();
 		const container = await inspectOwnedContainer(profile);
 		if (!container.State.Running) await docker(["start", resources.container]);
@@ -1534,21 +1750,22 @@ async function runPrompt({
 			`Ready ${profile}/${thread} in ${Date.now() - startedAt}ms (session ${state.sessionId})`,
 		);
 		emitRuntimeProgress(onProgress, { type: "ready" });
-		const completed = rpc.waitFor("agent_end");
-		await rpc.send(
-			{ type: "prompt", message: `${attachmentManifestBlock(attachments)}${message}` },
-			90_000,
-		);
-		const completion = await completed;
-		const stats = await docker([
-			"stats",
-			"--no-stream",
-			"--format",
-			"{{json .}}",
-			resources.container,
-		]);
-		console.error(`Runtime stats: ${stats.stdout.trim()}`);
+		const completion = await promptWithTransientRetries({
+			rpc,
+			message: `${attachmentManifestBlock(attachments)}${message}`,
+			onRetry: ({ attempt, maxRetries, summary }) => {
+				console.error(
+					`Transient model failure; retrying continuation ${attempt}/${maxRetries}: ${summary}`,
+				);
+				emitRuntimeProgress(onProgress, { type: "thinking" });
+			},
+		});
 		const text = collectRunAssistantText(completion?.messages);
+		if (!text) {
+			throw terminalRunError({
+				summary: "The model continuation completed without a final answer.",
+			});
+		}
 		console.log(text);
 		child.stdin.end();
 		const outcome = await exited;
@@ -1652,6 +1869,7 @@ export async function promptWithRuntimeLease(runtime, message, options = {}) {
 		attachments: options.attachments,
 		sessionScope: validateSessionScope(options.sessionScope),
 		ephemeral: runtime.ephemeral === true,
+		model: options.model,
 		signal: options.signal,
 		onProgress: options.onProgress,
 	});

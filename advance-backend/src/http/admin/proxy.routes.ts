@@ -1,11 +1,16 @@
 /**
- * Admin proxy routes — the DeepSeek proxy control plane (Guardrails).
+ * Admin proxy routes — the model proxy control plane (Guardrails).
  *
  * Mounted at /api/admin/proxy.
  *
  *   GET    /status   — proxy enabled? key configured? masked key + scope + last-used
- *   PUT    /key      — save / rotate a DeepSeek key (encrypted server-side)
+ *   PUT    /key      — save / rotate a provider key (encrypted server-side)
  *   DELETE /key      — remove a stored key for a scope
+ *   GET    /models   — the catalogue an admin grants from, with who serves each
+ *
+ * Every key path is scoped by `provider` (defaulting to deepseek, which is what
+ * the single-provider clients sent before OpenAI existed here), so one company
+ * can hold a DeepSeek key and an OpenAI key side by side.
  *
  * The plaintext key is accepted once on PUT, encrypted immediately, and never
  * returned again — reads expose only keyLast4 / a mask. Platform-scoped keys are
@@ -17,16 +22,22 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
-import { ProxyKeyStore } from '../../application/proxy/proxy-key.store';
+import { ProxyKeyStore, KEY_PROVIDERS } from '../../application/proxy/proxy-key.store';
 import { TokenCryptoError } from '../../infrastructure/shared/token.crypto';
-import { costUsd } from '../../application/observability/pricing';
+import {
+  costUsd,
+  PROXY_MODEL_SPECS,
+  RUNTIME_MODEL_PREFERENCE,
+  type ModelProvider,
+} from '../../application/observability/pricing';
 
 export interface ProxyRoutesDeps {
   prisma: PrismaClient;
   store: ProxyKeyStore;
   logger: Logger;
   enabled: boolean;   // LLM_PROXY_ENABLED
-  upstream: string;   // DEEPSEEK_BASE_URL host
+  /** Upstream host per provider, for display. */
+  upstreams: Record<ModelProvider, string>;
 }
 
 const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
@@ -76,17 +87,31 @@ const bodyCompany = (req: Request, res: Response) => {
   return resolveCompanyId(res, provided ?? (typeof req.query.companyId === 'string' ? req.query.companyId : undefined));
 };
 
+const providerSchema = z.enum(KEY_PROVIDERS).default('deepseek');
+
 const keySchema = z.object({
   key: z.string().trim().min(20, 'That does not look like a valid API key').max(400),
+  provider: providerSchema,
   scope: z.enum(['platform', 'company']),
   companyId: z.string().optional(),
 });
-const removeSchema = z.object({ scope: z.enum(['platform', 'company']), companyId: z.string().optional() });
+const removeSchema = z.object({
+  provider: providerSchema,
+  scope: z.enum(['platform', 'company']),
+  companyId: z.string().optional(),
+});
+
+/** Which provider this request is about. Absent means deepseek, as it always did. */
+const qProvider = (req: Request): ModelProvider =>
+  providerSchema.parse(typeof req.query.provider === 'string' ? req.query.provider : undefined);
 
 export function createProxyRoutes(deps: ProxyRoutesDeps): Router {
   const router = Router();
   const { store, prisma } = deps;
-  const upstreamHost = (() => { try { return new URL(deps.upstream).host; } catch { return deps.upstream; } })();
+  const hostOf = (value: string): string => { try { return new URL(value).host; } catch { return value; } };
+  const upstreamHosts = Object.fromEntries(
+    Object.entries(deps.upstreams).map(([provider, url]) => [provider, hostOf(url)]),
+  ) as Record<ModelProvider, string>;
 
   const requireSuperAdminForPlatform = (res: Response, scope: 'platform' | 'company') => {
     if (scope === 'platform' && !res.locals['isSuperAdmin']) {
@@ -94,11 +119,43 @@ export function createProxyRoutes(deps: ProxyRoutesDeps): Router {
     }
   };
 
+  const envelope = (provider: ModelProvider, status: Awaited<ReturnType<ProxyKeyStore['status']>>) => ({
+    ...status,
+    provider,
+    enabled: true,
+    desktopProxyEnabled: deps.enabled,
+    larkEnabled: true,
+    upstream: upstreamHosts[provider],
+    canEncrypt: store.canEncrypt(),
+  });
+
   // ─── GET /status ────────────────────────────────────────────────────
   router.get('/status', asyncRoute(async (req, res) => {
     const companyId = qCompany(req, res);
-    const status = await store.status(companyId);
-    success(res, { ...status, enabled: true, desktopProxyEnabled: deps.enabled, larkEnabled: true, upstream: upstreamHost, canEncrypt: store.canEncrypt() });
+    const provider = qProvider(req);
+    success(res, envelope(provider, await store.status(provider, companyId)));
+  }));
+
+  // ─── GET /models — the catalogue the grant is drawn from ────────────
+  // Served rather than mirrored in the UI so a model added to pricing.ts shows
+  // up in the admin panel without a second edit that can drift out of step.
+  //
+  // Returned in runtime preference order, best first, because that ordering is
+  // what decides which of a member's granted models actually answers. An admin
+  // panel that showed a different order would be describing a choice the
+  // backend does not make.
+  router.get('/models', asyncRoute(async (_req, res) => {
+    const ordered = RUNTIME_MODEL_PREFERENCE
+      .map((id) => PROXY_MODEL_SPECS.find((spec) => spec.id === id))
+      .filter((spec): spec is (typeof PROXY_MODEL_SPECS)[number] => Boolean(spec));
+    success(res, ordered.map((spec) => ({
+      id: spec.id,
+      label: spec.label,
+      provider: spec.provider,
+      vision: spec.vision,
+      inputPerMillionUsd: spec.rate.cacheMissIn,
+      outputPerMillionUsd: spec.rate.output,
+    })));
   }));
 
   // ─── PUT /key — save / rotate ───────────────────────────────────────
@@ -107,9 +164,9 @@ export function createProxyRoutes(deps: ProxyRoutesDeps): Router {
     requireSuperAdminForPlatform(res, body.scope);
     const companyId = bodyCompany(req, res);
     const createdBy = res.locals['userId'] as string | undefined;
-    const status = await store.save({ scope: body.scope, companyId, plaintextKey: body.key, createdBy });
-    deps.logger.info('proxy.key.saved', { companyId, scope: body.scope, by: createdBy });
-    success(res, { ...status, enabled: true, desktopProxyEnabled: deps.enabled, larkEnabled: true, upstream: upstreamHost, canEncrypt: store.canEncrypt() });
+    const status = await store.save({ provider: body.provider, scope: body.scope, companyId, plaintextKey: body.key, createdBy });
+    deps.logger.info('proxy.key.saved', { companyId, provider: body.provider, scope: body.scope, by: createdBy });
+    success(res, envelope(body.provider, status));
   }));
 
   // ─── DELETE /key — remove ───────────────────────────────────────────
@@ -117,9 +174,9 @@ export function createProxyRoutes(deps: ProxyRoutesDeps): Router {
     const body = removeSchema.parse(req.body ?? {});
     requireSuperAdminForPlatform(res, body.scope);
     const companyId = bodyCompany(req, res);
-    const status = await store.remove({ scope: body.scope, companyId });
-    deps.logger.info('proxy.key.removed', { companyId, scope: body.scope });
-    success(res, { ...status, enabled: true, desktopProxyEnabled: deps.enabled, larkEnabled: true, upstream: upstreamHost, canEncrypt: store.canEncrypt() });
+    const status = await store.remove({ provider: body.provider, scope: body.scope, companyId });
+    deps.logger.info('proxy.key.removed', { companyId, provider: body.provider, scope: body.scope });
+    success(res, envelope(body.provider, status));
   }));
 
   // ─── GET /metrics — proxy health over the last 24h ──────────────────

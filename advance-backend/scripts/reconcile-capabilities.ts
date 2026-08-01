@@ -16,6 +16,8 @@ import {
 import { provisionScheduleDivoWorkForExistingCompanies } from '../src/application/skills/scheduled-work-system-skill';
 import { provisionSystemSkillRoutesForExistingCompanies } from '../src/application/skills/system-skill-routes';
 import { provisionKnowledgeForExistingCompanies } from '../src/application/skills/knowledge-provisioning';
+import { provisionFilesAndDocumentsForExistingCompanies } from '../src/application/skills/files-and-documents-system-skills';
+import { provisionDivoLocalPythonForExistingCompanies } from '../src/application/skills/divo-local-python-system-skill';
 
 export async function provisionConnectedProviderSkillsForExistingCompanies(prisma: PrismaClient) {
   const totals = { companies: 0, created: 0, updated: 0, existing: 0, skipped: 0 };
@@ -43,6 +45,8 @@ export async function reconcileCapabilities(prisma: PrismaClient) {
     scheduling: await provisionScheduleDivoWorkForExistingCompanies(prisma),
     mailOps: await provisionMailOpsSkillsForExistingCompanies(prisma),
     knowledge: await provisionKnowledgeForExistingCompanies(prisma),
+    filesAndDocuments: await provisionFilesAndDocumentsForExistingCompanies(prisma),
+    localPython: await provisionDivoLocalPythonForExistingCompanies(prisma),
   };
   const skillRoutes = await provisionSystemSkillRoutesForExistingCompanies(prisma);
   const permissions = {

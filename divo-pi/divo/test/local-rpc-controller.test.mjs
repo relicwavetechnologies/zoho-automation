@@ -14,9 +14,19 @@ import {
 	resourcesFor,
 	runtimeIdentityNames,
 	runtimeContainerNeedsReplacement,
+	runtimeStartupProgress,
 	validateProfileName,
+	validateRuntimeModel,
 	validateThread,
 } from "../local-rpc-controller.mjs";
+
+test("startup progress names cold work only and keeps warm runs generic", () => {
+	assert.deepEqual(runtimeStartupProgress(true), [{ type: "working" }]);
+	assert.deepEqual(runtimeStartupProgress(false), [
+		{ type: "starting", stage: "workspace", label: "Checking your workspace…" },
+		{ type: "starting", stage: "container", label: "Waking up Divo…" },
+	]);
+});
 
 test("two profiles receive distinct Docker resources", () => {
 	const abhishek = resourcesFor("abhishek");
@@ -27,6 +37,11 @@ test("two profiles receive distinct Docker resources", () => {
 	assert.notEqual(abhishek.authVolume, anish.authVolume);
 	assert.equal(abhishek.volume, "divo-pi-local-abhishek");
 	assert.equal(anish.volume, "divo-pi-local-anish");
+});
+
+test("deployments can isolate Docker resources with distinct prefixes", () => {
+	assert.equal(resourcesFor("abhishek", "divo-pi-dev").volume, "divo-pi-dev-abhishek");
+	assert.equal(resourcesFor("abhishek", "divo-pi-main").volume, "divo-pi-main-abhishek");
 });
 
 test("cloud runtime names are stable, isolated, and safe for Docker", () => {
@@ -246,7 +261,7 @@ test("credential cleanup failure stops the container instead of keeping it warm"
 			profile: "abhishek",
 			resources: { authVolume: "auth-volume" },
 			bootstrapAttempted: true,
-			completedSuccessfully: true,
+			completedSuccessfully: false,
 		}, {
 			clearBootstrapFn: async () => {
 				calls.push("clear");
@@ -257,6 +272,24 @@ test("credential cleanup failure stops the container instead of keeping it warm"
 		AggregateError,
 	);
 	assert.deepEqual(calls, ["clear", "stop"]);
+});
+
+test("a completed run is kept warm without spending a container to clear the bootstrap", async () => {
+	const calls = [];
+	await finalizeRuntimeLifecycle({
+		profile: "abhishek",
+		resources: { authVolume: "auth-volume" },
+		bootstrapAttempted: true,
+		completedSuccessfully: true,
+	}, {
+		clearBootstrapFn: async () => calls.push("clear"),
+		scheduler: {
+			keepWarm: () => calls.push("warm"),
+			stopNow: async () => calls.push("stop"),
+		},
+	});
+	// container-entry already unlinked it; the absent "clear" is the point.
+	assert.deepEqual(calls, ["warm"]);
 });
 
 test("a startup failure stops the container even before bootstrap is written", async () => {
@@ -295,7 +328,9 @@ test("a shared runtime is destroyed immediately and is never kept warm", async (
 			stopNow: async () => calls.push("stop"),
 		},
 	});
-	assert.deepEqual(calls, ["clear", "destroy"]);
+	// A successful container-entry already unlinked its bootstrap. Destroying the
+	// disposable container and volumes is the remaining isolation boundary.
+	assert.deepEqual(calls, ["destroy"]);
 });
 
 test("loopback backend URLs are translated only for the container", () => {
@@ -377,4 +412,30 @@ test("credential reads are serialized and time out", async () => {
 		loadToken("stuck", () => new Promise(() => {}), 10),
 		/Keychain read timed out/,
 	);
+});
+
+// The backend names the member's model on the run request. Saying nothing must
+// leave the manifest's default in place, because that is what a terminal launch
+// and every pre-selection caller sends.
+test("an unnamed model leaves the runtime on its default", () => {
+	assert.equal(validateRuntimeModel(undefined), undefined);
+	assert.equal(validateRuntimeModel(""), undefined);
+});
+
+test("a named model carries the provider that serves it", () => {
+	assert.deepEqual(validateRuntimeModel("gpt-5.6-luna"), {
+		model: "gpt-5.6-luna",
+		provider: "openai",
+	});
+	assert.deepEqual(validateRuntimeModel("deepseek-v4-pro"), {
+		model: "deepseek-v4-pro",
+		provider: "deepseek",
+	});
+});
+
+// Rejected rather than passed through: the value becomes a command-line argument
+// to the agent, and an unknown one fails the run where the user sees only silence.
+test("a model this runtime does not carry is refused by name", () => {
+	assert.throws(() => validateRuntimeModel("gpt-4o"), /must be one of/);
+	assert.throws(() => validateRuntimeModel({ model: "gpt-5.6-luna" }), /must be one of/);
 });

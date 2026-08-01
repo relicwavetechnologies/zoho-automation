@@ -1,204 +1,287 @@
-name: Deploy
+name: Deploy main
 
 on:
-  workflow_run:
-    workflows:
-      - CI
-    branches:
-      - main
-    types:
-      - completed
   workflow_dispatch:
+    inputs:
+      clone_development_database:
+        description: Replace the main database with an exact logical copy of development
+        required: true
+        type: boolean
+        default: false
+      apply_schema:
+        description: Apply the checked-in Prisma schema after the optional clone
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
   packages: write
 
 concurrency:
-  group: deploy-production
+  group: deploy-main
   cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAMESPACE: relicwavetechnologies/zoho-automation
-  DEPLOY_DIR: /opt/divo
+  DEPLOY_DIR: /opt/divo-main
+  DIVO_MAIN_DOMAIN: app.103.172.92.187.sslip.io
+  DIVO_MAIN_HOST: 103.172.92.187
+  DIVO_MAIN_USER: deploy
 
 jobs:
+  main-guard:
+    name: main-guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the main branch
+        run: test "${GITHUB_REF}" = refs/heads/main
+
   build-and-push:
     name: build-and-push
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    needs: main-guard
     outputs:
-      image-tag: ${{ steps.meta.outputs.image-tag }}
       backend-image: ${{ steps.meta.outputs.backend-image }}
       admin-image: ${{ steps.meta.outputs.admin-image }}
+      pi-image: ${{ steps.meta.outputs.pi-image }}
+      pi-controller-image: ${{ steps.meta.outputs.pi-controller-image }}
     steps:
       - name: Resolve image metadata
         id: meta
         run: |
-          IMAGE_TAG="${{ github.event.workflow_run.head_sha || github.sha }}"
-          BACKEND_IMAGE="${REGISTRY}/${IMAGE_NAMESPACE}/backend:${IMAGE_TAG}"
-          ADMIN_IMAGE="${REGISTRY}/${IMAGE_NAMESPACE}/admin:${IMAGE_TAG}"
+          IMAGE_TAG="main-${GITHUB_SHA}"
+          {
+            echo "backend-image=${REGISTRY}/${IMAGE_NAMESPACE}/backend:${IMAGE_TAG}"
+            echo "admin-image=${REGISTRY}/${IMAGE_NAMESPACE}/admin:${IMAGE_TAG}"
+            echo "pi-image=${REGISTRY}/${IMAGE_NAMESPACE}/pi:${IMAGE_TAG}"
+            echo "pi-controller-image=${REGISTRY}/${IMAGE_NAMESPACE}/pi-controller:${IMAGE_TAG}"
+          } >> "$GITHUB_OUTPUT"
 
-          echo "image-tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "backend-image=${BACKEND_IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "admin-image=${ADMIN_IMAGE}" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout
+      - name: Checkout main
         uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.meta.outputs.image-tag }}
 
       - name: Log in to GHCR
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: printf '%s' "${GHCR_TOKEN}" | docker login "${REGISTRY}" -u "${{ github.actor }}" --password-stdin
 
-      - name: Build and push backend image
+      - name: Build and push backend and admin
         run: |
           docker build \
+            --label com.divo.environment=main \
             -t "${{ steps.meta.outputs.backend-image }}" \
-            -t "${REGISTRY}/${IMAGE_NAMESPACE}/backend:latest" \
+            -t "${REGISTRY}/${IMAGE_NAMESPACE}/backend:main-latest" \
             ./advance-backend
 
-          docker push "${{ steps.meta.outputs.backend-image }}"
-          docker push "${REGISTRY}/${IMAGE_NAMESPACE}/backend:latest"
-
-      - name: Build and push admin image
-        run: |
           docker build \
+            --label com.divo.environment=main \
             --build-arg VITE_API_BASE_URL="" \
             -t "${{ steps.meta.outputs.admin-image }}" \
-            -t "${REGISTRY}/${IMAGE_NAMESPACE}/admin:latest" \
+            -t "${REGISTRY}/${IMAGE_NAMESPACE}/admin:main-latest" \
             ./admin
 
+          docker push "${{ steps.meta.outputs.backend-image }}"
+          docker push "${REGISTRY}/${IMAGE_NAMESPACE}/backend:main-latest"
           docker push "${{ steps.meta.outputs.admin-image }}"
-          docker push "${REGISTRY}/${IMAGE_NAMESPACE}/admin:latest"
+          docker push "${REGISTRY}/${IMAGE_NAMESPACE}/admin:main-latest"
+
+      - name: Build and push Pi images
+        run: |
+          docker build \
+            --label com.divo.environment=main \
+            -t "${{ steps.meta.outputs.pi-image }}" \
+            -t "${REGISTRY}/${IMAGE_NAMESPACE}/pi:main-latest" \
+            ./divo-pi
+
+          docker build \
+            --label com.divo.environment=main \
+            -f divo-pi/Dockerfile.controller \
+            -t "${{ steps.meta.outputs.pi-controller-image }}" \
+            -t "${REGISTRY}/${IMAGE_NAMESPACE}/pi-controller:main-latest" \
+            ./divo-pi
+
+          docker push "${{ steps.meta.outputs.pi-image }}"
+          docker push "${REGISTRY}/${IMAGE_NAMESPACE}/pi:main-latest"
+          docker push "${{ steps.meta.outputs.pi-controller-image }}"
+          docker push "${REGISTRY}/${IMAGE_NAMESPACE}/pi-controller:main-latest"
 
   deploy:
-    name: deploy-vps
+    name: deploy-main-vps
     runs-on: ubuntu-latest
-    needs:
-      - build-and-push
+    needs: build-and-push
+    permissions:
+      contents: read
+      packages: read
     steps:
-      - name: Checkout
+      - name: Checkout main
         uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.build-and-push.outputs.image-tag }}
 
-      - name: Validate deployment secrets
+      - name: Configure SSH
+        env:
+          DIVO_MAIN_SSH_KEY: ${{ secrets.DIVO_DEV_SSH_KEY }}
+        run: |
+          test -n "${DIVO_MAIN_SSH_KEY}"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${DIVO_MAIN_SSH_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' '103.172.92.187 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICer9x9ARy2oBqzIGOALmDDLZPwpIfEmbXuutFu53Nuy' >> ~/.ssh/known_hosts
+
+      - name: Provision main directory, environment, and HTTPS
         env:
           PRODUCTION_ENV_FILE: ${{ secrets.PRODUCTION_ENV_FILE }}
-          VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
-          test -n "${VPS_HOST}"
-          test -n "${VPS_USER}"
-          test -n "${VPS_PASSWORD}"
           test -n "${PRODUCTION_ENV_FILE}"
-
-      - name: Install SSH password helper
-        run: |
+          test -n "${VPS_PASSWORD}"
+          test -n "${VPS_USER}"
           sudo apt-get update
           sudo apt-get install -y sshpass
 
-      - name: Prepare deployment files
-        env:
-          PRODUCTION_ENV_FILE: ${{ secrets.PRODUCTION_ENV_FILE }}
+          printf '%s' "${PRODUCTION_ENV_FILE}" | SSHPASS="${VPS_PASSWORD}" sshpass -e \
+            ssh -o StrictHostKeyChecking=yes "${VPS_USER}@${DIVO_MAIN_HOST}" \
+            "test \"\$(id -u)\" = 0 && install -d -m 700 -o deploy -g deploy '${DEPLOY_DIR}' && cat > '${DEPLOY_DIR}/.env.production.local' && chown deploy:deploy '${DEPLOY_DIR}/.env.production.local' && chmod 600 '${DEPLOY_DIR}/.env.production.local'"
+
+          SSHPASS="${VPS_PASSWORD}" sshpass -e scp -o StrictHostKeyChecking=yes \
+            infra/production/nginx/app.http.conf \
+            infra/production/nginx/app.conf \
+            "${VPS_USER}@${DIVO_MAIN_HOST}:/tmp/"
+
+          SSHPASS="${VPS_PASSWORD}" sshpass -e ssh -o StrictHostKeyChecking=yes \
+            "${VPS_USER}@${DIVO_MAIN_HOST}" "DIVO_MAIN_DOMAIN='${DIVO_MAIN_DOMAIN}' bash -s" <<'ROOT'
+          set -euo pipefail
+          install -d -m 755 /var/www/certbot
+          install -m 644 /tmp/app.http.conf /etc/nginx/sites-available/divo-main.conf
+          ln -sfn /etc/nginx/sites-available/divo-main.conf /etc/nginx/sites-enabled/divo-main.conf
+          nginx -t
+          systemctl reload nginx
+
+          if [[ ! -s "/etc/letsencrypt/live/${DIVO_MAIN_DOMAIN}/fullchain.pem" ]]; then
+            certbot certonly --webroot -w /var/www/certbot \
+              -d "${DIVO_MAIN_DOMAIN}" --non-interactive --agree-tos \
+              --register-unsafely-without-email
+          fi
+
+          install -m 644 /tmp/app.conf /etc/nginx/sites-available/divo-main.conf
+          rm -f /tmp/app.http.conf /tmp/app.conf
+          nginx -t
+          systemctl reload nginx
+          ROOT
+
+      - name: Verify main environment is provisioned
         run: |
-          install -m 700 -d .deploy
-          cp docker-compose.yml .deploy/docker-compose.yml
-          cp docker-compose.postgres.yml .deploy/docker-compose.postgres.yml
-          printf '%s' "${PRODUCTION_ENV_FILE}" > .deploy/.env.production.local
-          chmod 600 .deploy/.env.production.local
+          ssh -i ~/.ssh/id_ed25519 "${DIVO_MAIN_USER}@${DIVO_MAIN_HOST}" \
+            "test -r '${DEPLOY_DIR}/.env.production.local' && command -v docker >/dev/null && docker compose version >/dev/null"
 
-      - name: Check VPS Docker runtime
-        env:
-          SSHPASS: ${{ secrets.VPS_PASSWORD }}
+      - name: Upload main configuration
         run: |
-          sshpass -e ssh -o StrictHostKeyChecking=accept-new "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            "command -v docker >/dev/null && docker compose version >/dev/null"
+          ssh -i ~/.ssh/id_ed25519 "${DIVO_MAIN_USER}@${DIVO_MAIN_HOST}" \
+            "install -d -m 700 '${DEPLOY_DIR}'"
+          scp -i ~/.ssh/id_ed25519 docker-compose.yml \
+            "${DIVO_MAIN_USER}@${DIVO_MAIN_HOST}:${DEPLOY_DIR}/docker-compose.yml"
 
-      - name: Upload Compose and env files
+      - name: Pull images, optionally clone data, and restart
         env:
-          SSHPASS: ${{ secrets.VPS_PASSWORD }}
-        run: |
-          sshpass -e ssh -o StrictHostKeyChecking=accept-new "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            "mkdir -p '${DEPLOY_DIR}' && chmod 700 '${DEPLOY_DIR}'"
-
-          sshpass -e scp -o StrictHostKeyChecking=accept-new \
-            .deploy/docker-compose.yml \
-            .deploy/docker-compose.postgres.yml \
-            .deploy/.env.production.local \
-            "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${DEPLOY_DIR}/"
-
-      - name: Pull images and restart containers
-        env:
-          SSHPASS: ${{ secrets.VPS_PASSWORD }}
           BACKEND_IMAGE: ${{ needs.build-and-push.outputs.backend-image }}
           ADMIN_IMAGE: ${{ needs.build-and-push.outputs.admin-image }}
+          PI_IMAGE: ${{ needs.build-and-push.outputs.pi-image }}
+          PI_CONTROLLER_IMAGE: ${{ needs.build-and-push.outputs.pi-controller-image }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLONE_DEVELOPMENT_DATABASE: ${{ inputs.clone_development_database }}
+          APPLY_SCHEMA: ${{ inputs.apply_schema }}
         run: |
-          printf '%s' "${GHCR_TOKEN}" | sshpass -e ssh -o StrictHostKeyChecking=accept-new "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            "docker login '${REGISTRY}' -u '${{ github.actor }}' --password-stdin"
+          printf '%s' "${GHCR_TOKEN}" | ssh -i ~/.ssh/id_ed25519 "${DIVO_MAIN_USER}@${DIVO_MAIN_HOST}" \
+            "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
 
-          sshpass -e ssh -o StrictHostKeyChecking=accept-new "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            "cd '${DEPLOY_DIR}' && \
-             mkdir -p /opt/divo-postgres && \
-             cp docker-compose.postgres.yml /opt/divo-postgres/docker-compose.yml && \
-             if ! docker network inspect divo_divo-internal >/dev/null 2>&1; then docker network create divo_divo-internal; fi && \
-             if ! docker volume inspect divo_divo_postgres_data >/dev/null 2>&1; then docker volume create divo_divo_postgres_data; fi && \
-             cd /opt/divo-postgres && \
-             DIVO_ENV_FILE='${DEPLOY_DIR}/.env.production.local' \
-             docker compose --env-file '${DEPLOY_DIR}/.env.production.local' up -d && \
-             cd '${DEPLOY_DIR}' && \
-             DIVO_ENV_FILE=.env.production.local \
-             DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
-             DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
-             docker compose --env-file .env.production.local pull divo-backend divo-admin google-workspace-mcp && \
-             DIVO_ENV_FILE=.env.production.local \
-             DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
-             DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
-             docker compose --env-file .env.production.local run --rm --no-deps divo-backend pnpm prisma db execute --file prisma/migrations/20260731_drop_scheduled_workflow_origin_chat/migration.sql --schema prisma/schema.prisma && \
-             DIVO_ENV_FILE=.env.production.local \
-             DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
-             DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
-             docker compose --env-file .env.production.local run --rm --no-deps divo-backend pnpm prisma db push --skip-generate && \
-             DIVO_ENV_FILE=.env.production.local \
-             DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
-             DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
-             docker compose --env-file .env.production.local run --rm --no-deps divo-backend pnpm tsx scripts/seed-registered-tools.ts && \
-             DIVO_ENV_FILE=.env.production.local \
-             DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
-             DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
-             docker compose --env-file .env.production.local run --rm --no-deps divo-backend pnpm provision:google-workspace-skills && \
-             DIVO_ENV_FILE=.env.production.local \
-             DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
-             DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
-             docker compose --env-file .env.production.local up -d --no-build --remove-orphans"
-
-      - name: Smoke test
-        env:
-          SSHPASS: ${{ secrets.VPS_PASSWORD }}
-        run: |
-          sshpass -e ssh -o StrictHostKeyChecking=accept-new "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
-            "DEPLOY_DIR='${DEPLOY_DIR}' bash -s" <<'REMOTE'
+          ssh -i ~/.ssh/id_ed25519 "${DIVO_MAIN_USER}@${DIVO_MAIN_HOST}" \
+            "DEPLOY_DIR='${DEPLOY_DIR}' BACKEND_IMAGE='${BACKEND_IMAGE}' ADMIN_IMAGE='${ADMIN_IMAGE}' PI_IMAGE='${PI_IMAGE}' PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' CLONE_DEVELOPMENT_DATABASE='${CLONE_DEVELOPMENT_DATABASE}' APPLY_SCHEMA='${APPLY_SCHEMA}' bash -s" <<'REMOTE'
           set -euo pipefail
 
           cd "${DEPLOY_DIR}"
+          export DIVO_ENV_FILE=.env.production.local
+          export DIVO_BACKEND_IMAGE="${BACKEND_IMAGE}"
+          export DIVO_ADMIN_IMAGE="${ADMIN_IMAGE}"
+          export DIVO_PI_IMAGE="${PI_IMAGE}"
+          export DIVO_PI_CONTROLLER_IMAGE="${PI_CONTROLLER_IMAGE}"
+
+          docker compose --env-file .env.production.local pull
+          docker pull "${DIVO_PI_IMAGE}"
+          docker compose --env-file .env.production.local up -d --wait \
+            divo-postgres divo-redis-queue divo-redis-cache divo-redis-memory
+
+          if [[ "${CLONE_DEVELOPMENT_DATABASE}" == "true" ]]; then
+            dev_db_container=divo-development-divo-dev-postgres-1
+            main_db_container=divo-main-divo-postgres-1
+            dump_file="$(mktemp "${DEPLOY_DIR}/dev-database.XXXXXX.dump")"
+            chmod 600 "${dump_file}"
+            trap 'rm -f "${dump_file}"' EXIT
+
+            docker inspect "${dev_db_container}" >/dev/null
+            docker compose --env-file .env.production.local stop divo-backend >/dev/null 2>&1 || true
+            docker exec "${dev_db_container}" sh -lc \
+              'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "${dump_file}"
+            test -s "${dump_file}"
+
+            docker exec "${main_db_container}" sh -lc \
+              'dropdb --if-exists --force -U "$POSTGRES_USER" "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
+            docker exec -i "${main_db_container}" sh -lc \
+              'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-acl' < "${dump_file}"
+
+            dev_tables="$(docker exec "${dev_db_container}" sh -lc \
+              'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "select count(*) from information_schema.tables where table_schema = '\''public'\'' and table_type = '\''BASE TABLE'\''"')"
+            main_tables="$(docker exec "${main_db_container}" sh -lc \
+              'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "select count(*) from information_schema.tables where table_schema = '\''public'\'' and table_type = '\''BASE TABLE'\''"')"
+            test "${dev_tables}" = "${main_tables}"
+            rm -f "${dump_file}"
+            trap - EXIT
+          fi
+
+          if [[ "${APPLY_SCHEMA}" == "true" ]]; then
+            docker compose --env-file .env.production.local run --rm --no-deps \
+              divo-backend pnpm prisma db push --skip-generate
+            docker compose --env-file .env.production.local run --rm --no-deps \
+              divo-backend pnpm tsx scripts/seed-registered-tools.ts
+            docker compose --env-file .env.production.local run --rm --no-deps \
+              divo-backend pnpm provision:google-workspace-skills
+          fi
+
+          docker compose --env-file .env.production.local up -d --no-build --remove-orphans
+          REMOTE
+
+      - name: Smoke test main
+        env:
+          BACKEND_IMAGE: ${{ needs.build-and-push.outputs.backend-image }}
+          ADMIN_IMAGE: ${{ needs.build-and-push.outputs.admin-image }}
+          PI_IMAGE: ${{ needs.build-and-push.outputs.pi-image }}
+          PI_CONTROLLER_IMAGE: ${{ needs.build-and-push.outputs.pi-controller-image }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "${DIVO_MAIN_USER}@${DIVO_MAIN_HOST}" \
+            "DIVO_MAIN_DOMAIN='${DIVO_MAIN_DOMAIN}' DEPLOY_DIR='${DEPLOY_DIR}' DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' DIVO_PI_IMAGE='${PI_IMAGE}' DIVO_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          cd "${DEPLOY_DIR}"
+          export DIVO_ENV_FILE=.env.production.local
 
           for attempt in $(seq 1 30); do
-            if curl -fsS --max-time 10 http://127.0.0.1:3001/health >/dev/null \
-              && curl -fsS --max-time 10 http://127.0.0.1:8081/ >/dev/null; then
+            if curl -fsS --max-time 10 http://127.0.0.1:13002/health >/dev/null \
+              && curl -fsS --max-time 10 http://127.0.0.1:18082/ >/dev/null \
+              && curl -fsS --max-time 15 --resolve "${DIVO_MAIN_DOMAIN}:443:127.0.0.1" "https://${DIVO_MAIN_DOMAIN}/" >/dev/null \
+              && DIVO_BACKEND_IMAGE="${DIVO_BACKEND_IMAGE}" \
+                 DIVO_ADMIN_IMAGE="${DIVO_ADMIN_IMAGE}" \
+                 DIVO_PI_IMAGE="${DIVO_PI_IMAGE}" \
+                 DIVO_PI_CONTROLLER_IMAGE="${DIVO_PI_CONTROLLER_IMAGE}" \
+                 docker compose --env-file .env.production.local exec -T divo-backend \
+                 node -e "fetch('http://divo-pi-controller:4317/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
               docker compose --env-file .env.production.local ps
               exit 0
             fi
-
             sleep 5
           done
 
           docker compose --env-file .env.production.local ps
-          docker compose --env-file .env.production.local logs --tail=120 divo-backend divo-admin google-workspace-mcp
+          docker compose --env-file .env.production.local logs --tail=160 \
+            divo-backend divo-admin google-workspace-mcp divo-pi-controller
           exit 1
           REMOTE

@@ -1,15 +1,19 @@
 /**
- * Divo LLM proxy — repoints DeepSeek inference through the Divo backend.
+ * Divo LLM proxy — repoints model inference through the Divo backend.
  *
- * PI holds NO DeepSeek key. It authenticates with DIVO_MEMBER_TOKEN; the backend
- * gates the request (block / budget / rate / model), forwards it to DeepSeek with
- * the real key, streams the response back, and records authoritative token usage.
+ * PI holds NO provider key. It authenticates with DIVO_MEMBER_TOKEN; the backend
+ * gates the request (block / budget / rate / model), forwards it to whichever
+ * provider serves the model with the real key, streams the response back, and
+ * records authoritative token usage.
  *
- * This overrides only the built-in `deepseek` provider's baseUrl + auth, so the
- * existing model ids (deepseek-v4-flash / -pro) and request shape are unchanged.
- * Config comes from the Divo runtime launcher (DIVO_BACKEND_URL,
- * DIVO_MEMBER_TOKEN). Missing configuration is fatal: standalone Divo Pi never
- * falls back to a direct provider.
+ * This overrides the built-in providers' baseUrl + auth, so the existing model
+ * ids and request shape are unchanged. Config comes from the Divo runtime
+ * launcher (DIVO_BACKEND_URL, DIVO_MEMBER_TOKEN). Missing configuration is
+ * fatal: standalone Divo Pi never falls back to a direct provider.
+ *
+ * OpenAI is declared with an explicit model list rather than inherited. Luna
+ * uses the Responses API because OpenAI does not support reasoning plus tools
+ * for this model through Chat Completions. DeepSeek remains on Chat Completions.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -21,11 +25,35 @@ export const DIVO_REQUEST_TOO_LARGE_ERROR =
 const REQUEST_TOO_LARGE_PATTERN =
 	/\b413\b|request[_ ]too[_ ]large|payload[_ ]too[_ ]large|entity\.too\.large|PayloadTooLargeError/i;
 
+/**
+ * GPT-5.6 Luna, as Pi needs to know it.
+ *
+ * `input` carries the whole point: it is the one model here that can be handed
+ * a picture, and Pi's `read` tool consults exactly this field to decide whether
+ * to return image bytes or a note saying the model cannot see them. Getting it
+ * wrong does not error — it silently turns every image into "I can't view that".
+ *
+ * Costs are recorded for Pi's own display only; the backend prices the run from
+ * the provider's authoritative usage and never reads these.
+ */
+export const DIVO_LUNA_MODEL = {
+	id: "gpt-5.6-luna",
+	name: "GPT-5.6 Luna",
+	api: "openai-responses" as const,
+	reasoning: true,
+	input: ["text", "image"] as ("text" | "image")[],
+	cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0 },
+	contextWindow: 1_050_000,
+	maxTokens: 128_000,
+};
+
 export function normalizeDivoLlmRequestError<T>(message: T): T {
 	if (typeof message !== "object" || message === null) return message;
 	const candidate = message as Record<string, unknown>;
 	if (candidate.role !== "assistant" || candidate.stopReason !== "error") return message;
-	if (candidate.provider !== "deepseek") return message;
+	// Every provider here is the Divo proxy behind a different name, so the 413
+	// Express raises before the proxy is reached looks the same on all of them.
+	if (candidate.provider !== "deepseek" && candidate.provider !== "openai") return message;
 	const errorMessage = typeof candidate.errorMessage === "string" ? candidate.errorMessage : "";
 	if (!REQUEST_TOO_LARGE_PATTERN.test(errorMessage)) return message;
 	if (errorMessage === DIVO_REQUEST_TOO_LARGE_ERROR) return message;
@@ -49,15 +77,23 @@ export default function divoLlmExtension(pi: ExtensionAPI) {
 	// proxy-only fields from leaking into direct provider requests.
 	process.env.DIVO_LLM_PROXY_ACTIVE = "1";
 
-	pi.registerProvider("deepseek", {
-		// Our OpenAI-compatible proxy. The SDK appends /chat/completions.
-		baseUrl: `${config.backendUrl}/api/llm/v1`,
+	// Our OpenAI-compatible proxy. Each provider SDK appends its own endpoint.
+	const baseUrl = `${config.backendUrl}/api/llm/v1`;
+	const proxied = {
+		baseUrl,
 		// Pi keeps this value in provider memory. Remove it from process.env below
 		// so ordinary Bash/Python children cannot inherit the member credential.
 		apiKey: config.memberToken,
 		authHeader: true,
 		// Emit the session id header so the backend can group calls into a run.
 		compat: { sendSessionAffinityHeaders: true },
+	} as const;
+
+	pi.registerProvider("deepseek", { ...proxied });
+	pi.registerProvider("openai", {
+		...proxied,
+		api: "openai-responses",
+		models: [DIVO_LUNA_MODEL],
 	});
 	// A request rejected by Express never reaches the LLM proxy or emits model
 	// tokens. Keep the provider failure concise and machine-recognisable so Pi

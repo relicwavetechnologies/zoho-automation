@@ -16,6 +16,7 @@ import {
 	validateAttachmentFileId,
 	validateAttachmentRequestId,
 	validateProfileName,
+	validateRuntimeModel,
 	validateSessionScope,
 	validateThread,
 } from "./local-rpc-controller.mjs";
@@ -23,6 +24,7 @@ import {
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4317;
 const DEFAULT_MAX_ACTIVE_RUNS = 2;
+const DEFAULT_STREAM_HEARTBEAT_MS = 15_000;
 const MAX_BODY_BYTES = 64 * 1024;
 const RETRY_AFTER_SECONDS = 60;
 const UPLOAD_BUDGET_TTL_MS = 15 * 60_000;
@@ -109,6 +111,7 @@ export function createAdmissionController({
 			message,
 			attachments,
 			sessionScope,
+			model,
 			signal,
 			onProgress,
 		}) {
@@ -118,6 +121,14 @@ export function createAdmissionController({
 				normalizedSessionScope = validateSessionScope(sessionScope);
 			} catch (error) {
 				throw admissionError(400, "invalid_session_scope", error.message);
+			}
+			// Rejected here rather than deep inside the launch, so a backend that
+			// names a model this runtime does not carry gets a 400 naming the ones
+			// it does instead of a container that fails to start.
+			try {
+				validateRuntimeModel(model);
+			} catch (error) {
+				throw admissionError(400, "invalid_model", error.message);
 			}
 			// Descriptors are re-derived, not trusted: `resolveStagedAttachments`
 			// recomputes every path from validated parts and ignores whatever the
@@ -133,6 +144,7 @@ export function createAdmissionController({
 				executeRuntime(runtime, normalizedMessage, {
 					signal,
 					sessionScope: normalizedSessionScope,
+					...(model ? { model } : {}),
 					...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
 					...(onProgress ? { onProgress } : {}),
 				}),
@@ -316,6 +328,11 @@ export function createControllerServer(options = {}) {
 		});
 	const stageFile = options.stageFile ?? stageRuntimeFile;
 	const budget = options.uploadBudget ?? createUploadBudget();
+	const streamHeartbeatMs = positiveInteger(
+		options.streamHeartbeatMs,
+		DEFAULT_STREAM_HEARTBEAT_MS,
+		"streamHeartbeatMs",
+	);
 	const server = http.createServer(async (request, response) => {
 		if (request.method === "GET" && request.url === "/health") {
 			sendJson(response, 200, {
@@ -360,13 +377,22 @@ export function createControllerServer(options = {}) {
 					"cache-control": "no-store",
 					connection: "keep-alive",
 				});
-				const result = await admission.runRuntime({
-					...body,
-					signal: controller.signal,
-					onProgress: (progress) =>
-						sendNdjson(response, { type: "progress", progress }),
-				});
-				sendNdjson(response, { type: "result", text: result.text });
+				const heartbeat = setInterval(
+					() => sendNdjson(response, { type: "heartbeat" }),
+					streamHeartbeatMs,
+				);
+				heartbeat.unref();
+				try {
+					const result = await admission.runRuntime({
+						...body,
+						signal: controller.signal,
+						onProgress: (progress) =>
+							sendNdjson(response, { type: "progress", progress }),
+					});
+					sendNdjson(response, { type: "result", text: result.text });
+				} finally {
+					clearInterval(heartbeat);
+				}
 				response.end();
 				return;
 			}
