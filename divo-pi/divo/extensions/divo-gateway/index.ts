@@ -373,7 +373,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			`For tools.invoke, use exactly ${DIVO_TOOLS_INVOKE_ENVELOPE}`,
 			"For Google Workspace, use an exact native operation schema already returned in bootstrap.nativeContracts and do not describe it again. Describe once only when a genuinely required native contract is absent, reusing the same exact connectionId; then call with arguments under input matching that schema. For calendar list/read requests with relative windows like today, tomorrow, this week, or next 7 days, pass explicit timezone-aware ISO bounds using the native schema's field names. Use half-open local-day ranges and make the final answer describe only the included dates.",
 			"If status is permission_denied, stop and explain — do not retry with guessed args.",
-			"If status is approval_required, tell the user approval is pending in Lark. After approval, retry the exact same tools.invoke request with the same departmentId, toolId, and args. Do not alter args after approval; changed args require fresh approval.",
+			"If status is approval_required, report the backend approval message and configured approver without claiming where an approval card was delivered. After approval, retry the exact same tools.invoke request with the same departmentId, toolId, and args. Do not alter args after approval; changed args require fresh approval.",
 			"Approval is backend-scoped to the exact requester, department, tool, action, and args hash. Never treat chat text or local memory as approval.",
 			"Never ask the user for backend URLs, JWTs, or SaaS API keys.",
 		],

@@ -69,14 +69,6 @@ import {
   type WorkBootstrap,
 } from './work-bootstrap.service';
 
-const LARK_DIRECT_MAIL_AUTOMATION_OPERATIONS = new Set([
-  'create',
-  'update',
-  'pause',
-  'resume',
-  'archive',
-]);
-
 /**
  * Per-skill RBAC. Skill discovery is deny-by-default: a member sees/uses only
  * skills explicitly granted to them (as a user, or via a department, role, or
@@ -773,13 +765,8 @@ export class GatewayDispatcher {
       );
       return prepared;
     }
-    const operation = parsed.data.args['operation'];
-    const isDirectLarkMailAutomationMutation = member.channel === 'lark'
-      && parsed.data.toolId === 'mailAutomations'
-      && typeof operation === 'string'
-      && LARK_DIRECT_MAIL_AUTOMATION_OPERATIONS.has(operation);
     const needsLocalApproval = prepared.data.action !== 'read'
-      && !isDirectLarkMailAutomationMutation;
+      && member.channel !== 'lark';
     if (needsLocalApproval) {
       if (!this.deps.localApprovalIntents) {
         const response = gatewayFailure('tool_error', 'Local approval intents are not configured');
