@@ -24,6 +24,7 @@ import { createMemberAuthMiddleware, MEMBER_SESSION_TTL_MINUTES } from './http/m
 import { createDesktopToolsRoutes } from './http/desktop/desktop-tools.routes';
 import { createDesktopDepartmentRoutes } from './http/desktop/desktop-departments.routes';
 import { createDesktopApprovalRoutes } from './http/desktop/desktop-approvals.routes';
+import { createDesktopActivityRoutes } from './http/desktop/desktop-activity.routes';
 import { createDepartmentRoutes } from './http/admin/departments.routes';
 import { createSkillRegistryRoutes } from './http/admin/skill-registry.routes';
 import { createMemoryRoutes } from './http/admin/memory.routes';
@@ -494,6 +495,17 @@ export const createServer = (c: Container) => {
       memberJwtSecret: c.env.MEMBER_JWT_SECRET,
       logger:          c.logger,
       inbox:           c.approvalInbox,
+    }),
+  );
+
+  // A member's own usage and runs. Pinned to the signed-in user inside the
+  // router; there is no userId parameter to get wrong.
+  app.use(
+    '/api/desktop/me',
+    createDesktopActivityRoutes({
+      prisma:          c.prisma,
+      memberJwtSecret: c.env.MEMBER_JWT_SECRET,
+      logger:          c.logger,
     }),
   );
   // Mounted under /auth because that is the base the desktop's
