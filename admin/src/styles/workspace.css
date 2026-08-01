@@ -752,6 +752,14 @@
 .cur .ws-auth-or::before,
 .cur .ws-auth-or::after { content: ''; flex: 1; height: 1px; background: var(--cur-hairline); }
 
+/* Outcome lines on the auth cards. Green for "it worked", amber for "it did
+   not, and nothing changed" — the second is not an error, it is an answer. */
+.cur .ws-auth-done, .cur .ws-auth-warn {
+  display: flex; align-items: center; gap: 8px; font-size: 13px; line-height: 1.45;
+}
+.cur .ws-auth-done { color: var(--cur-success); }
+.cur .ws-auth-warn { color: var(--ws-warning); }
+
 /* ── Disclosure row ──────────────────────────────────── */
 .cur .ws-more {
   border: 0; background: none; padding: 0; font-size: 12px; color: var(--cur-primary);

@@ -11,6 +11,7 @@ import { OAuthCallbackPage } from "@/pages/OAuthCallbackPage"
 import { WebSearchPage } from "@/pages/WebSearchPage"
 import { MemoriesPage } from "@/pages/MemoriesPage"
 import { CompanySkills } from "@/pages/workspace/screens-company-skills"
+import { LinkLarkPage } from "@/pages/LinkLarkPage"
 import { routed } from "@/pages/workspace/routes"
 import { NoAccess } from "@/pages/workspace/ui"
 import {
@@ -120,6 +121,9 @@ export function App() {
     <>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        {/* Where the Lark sign-in card lands. Public on purpose — it sends you
+            to /login itself and returns here, so the nonce survives the trip. */}
+        <Route path="/link/lark" element={<LinkLarkPage />} />
         {/* Standalone spec preview — all three personas on one page, no session. */}
         <Route path="/signup/company-admin" element={<CompanyAdminSignupPage />} />
         <Route path="/signup/member-invite" element={<MemberInviteAcceptPage />} />

@@ -145,6 +145,7 @@ async function runWebhook(body: unknown, options: {
   tenantCompanyLookupFails?: boolean;
   /** Whether Lark OAuth is configured on this deployment. */
   oauthConfigured?: boolean;
+  appBaseUrl?: string;
   /** Whether the resolved member already has a live cloud-Pi session. */
   activePiSession?: boolean;
   /** Active memberships after the saved Lark department context changed. */
@@ -490,6 +491,9 @@ async function runWebhook(body: unknown, options: {
           } as any,
         }
       : {}),
+    // The sign-in card points at the web app now, so the link needs no Lark
+    // OAuth at all — only somewhere to send people.
+    appBaseUrl: options.appBaseUrl ?? 'https://app.example',
     ...(options.oauthConfigured
       ? {
           larkOAuthService: {
@@ -1768,7 +1772,7 @@ describe('Lark first contact', () => {
     assert.match(noticesSent(adapter)[0]!, /couldn't verify your account/i);
   });
 
-  it('admits when sign-in is not configured on this deployment', async () => {
+  it('signs people in on a deployment with no Lark OAuth at all', async () => {
     let adapter: any;
     await runWebhook(firstTimer(), {
       unknownUser: true,
@@ -1776,13 +1780,14 @@ describe('Lark first contact', () => {
         status: 'ready', companyId: 'company-1', userId: 'user-1',
         larkOpenId: 'ou_sender', displayName: 'Alice', email: 'alice@example.com',
       },
-      // oauthConfigured omitted: createLarkLoginUrl returns null.
+      // oauthConfigured deliberately omitted. Sign-in happens in the web app,
+      // so a deployment that has never configured Lark OAuth must still be
+      // able to let people in — it just cannot act as them afterwards.
       setupAdapter: a => { adapter = a; captureOutbound(a); },
     });
 
-    // This used to fall through to a silent return, so a deployment missing its
-    // OAuth credentials ignored every new user and looked identical to a bug.
-    assert.match(noticesSent(adapter)[0]!, /sign-in isn't configured/i);
+    assert.equal(adapter.__sentCards.length, 1, 'a sign-in card, not an apology');
+    assert.deepEqual(noticesSent(adapter), []);
   });
 
   it('explains a profile with no email', async () => {
@@ -2004,7 +2009,7 @@ describe('Lark first contact', () => {
 
     // A working link in an ugly message beats a button nobody received.
     assert.equal(noticesSent(adapter).length, 1);
-    assert.match(noticesSent(adapter)[0]!, /https:\/\/lark\.example\/authorize/);
+    assert.match(noticesSent(adapter)[0]!, /https:\/\/app\.example\/link\/lark\?state=/);
   });
 });
 
@@ -2029,7 +2034,7 @@ describe('Lark auth commands', () => {
     const card = JSON.parse(JSON.parse(adapter.__sentCards[0]).card);
     const button = card.body.elements.find((element: any) => element.tag === 'button');
     assert.equal(button.behaviors[0].type, 'open_url');
-    assert.match(button.behaviors[0].default_url, /^https:\/\/lark\.example\/authorize\?/);
+    assert.match(button.behaviors[0].default_url, /^https:\/\/app\.example\/link\/lark\?state=/);
   });
 
   it('keeps the /login card inside a group thread', async () => {
@@ -2215,6 +2220,42 @@ describe('Lark voice notes', () => {
     assert.ok(result.logEvents.some(entry => entry.event === 'webhook.voice.group_ignored'));
   });
 
+  it('transcribes an uploaded audio file in a private chat without requiring duration metadata', async () => {
+    let transcription: { audio: Buffer; fileName: string; mimeType: string } | undefined;
+    const result = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      messageId: 'om_audio_file',
+      file: { key: 'file_audio_upload', name: 'standup.mp3' },
+    }), {
+      voiceFileClient: {
+        downloadFile: async () => Buffer.from('fake-mp3'),
+      },
+      voiceTranscriber: {
+        transcribe: async input => {
+          transcription = {
+            audio: input.audio,
+            fileName: input.fileName,
+            mimeType: input.mimeType,
+          };
+          return { text: 'Here is the project update.' };
+        },
+      },
+    });
+
+    assert.deepEqual(transcription, {
+      audio: Buffer.from('fake-mp3'),
+      fileName: 'standup.mp3',
+      mimeType: 'audio/mpeg',
+    });
+    assert.equal((result.engineInputs[0] as any).incoming.text, 'Here is the project update.');
+    assert.deepEqual((result.engineInputs[0] as any).incoming.attachments, [{
+      type: 'audio',
+      fileKey: 'file_audio_upload',
+      mimeType: 'audio/mpeg',
+      name: 'standup.mp3',
+    }]);
+  });
+
   it('transcribes referenced audio when a group reply explicitly mentions Divo', async () => {
     const downloads: unknown[][] = [];
     const result = await runWebhook(makeEvent({
@@ -2230,7 +2271,10 @@ describe('Lark voice notes', () => {
         text: '',
         senderExternalId: 'ou_alice',
         imageUrls: [],
-        audioAttachment: { fileKey: 'file_voice_parent', durationMs: 8_000 },
+        audioAttachment: {
+          fileKey: 'file_voice_parent', fileName: 'voice-note.ogg', mimeType: 'audio/ogg',
+          durationMs: 8_000, source: 'voice-note',
+        },
       },
       voiceFileClient: {
         downloadFile: async (...args: unknown[]) => {
@@ -2259,6 +2303,48 @@ describe('Lark voice notes', () => {
     }]);
   });
 
+  it('transcribes a referenced audio file and preserves its format metadata', async () => {
+    const transcriptions: Array<{ fileName: string; mimeType: string }> = [];
+    const result = await runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      text: 'summarize this',
+      parentId: 'om_audio_file_parent',
+    }), {
+      parentMessage: {
+        messageId: 'om_audio_file_parent',
+        status: 'available',
+        messageType: 'file',
+        text: '',
+        senderExternalId: 'ou_alice',
+        imageUrls: [],
+        audioAttachment: {
+          fileKey: 'file_audio_parent', fileName: 'meeting.wav', mimeType: 'audio/wav',
+          durationMs: null, source: 'file',
+        },
+      },
+      voiceFileClient: {
+        downloadFile: async () => Buffer.from('fake-wav'),
+      },
+      voiceTranscriber: {
+        transcribe: async input => {
+          transcriptions.push({ fileName: input.fileName, mimeType: input.mimeType });
+          return { text: 'The team approved the launch.' };
+        },
+      },
+    });
+
+    assert.deepEqual(transcriptions, [{ fileName: 'meeting.wav', mimeType: 'audio/wav' }]);
+    const incoming = (result.engineInputs[0] as any).incoming;
+    assert.match(incoming.text, /Voice note transcript: The team approved the launch/);
+    assert.deepEqual(incoming.attachments[0], {
+      type: 'audio',
+      fileKey: 'file_audio_parent',
+      mimeType: 'audio/wav',
+      name: 'meeting.wav',
+    });
+  });
+
   it('uses referenced audio as the context for a later bare group mention', async () => {
     const result = await runWebhook(makeEvent({
       chatType: 'group',
@@ -2274,7 +2360,10 @@ describe('Lark voice notes', () => {
         text: '',
         senderExternalId: 'ou_sender',
         imageUrls: [],
-        audioAttachment: { fileKey: 'file_voice_parent', durationMs: 4_000 },
+        audioAttachment: {
+          fileKey: 'file_voice_parent', fileName: 'voice-note.ogg', mimeType: 'audio/ogg',
+          durationMs: 4_000, source: 'voice-note',
+        },
       },
       voiceFileClient: {
         downloadFile: async () => Buffer.from('fake-ogg'),

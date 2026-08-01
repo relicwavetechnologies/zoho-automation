@@ -106,6 +106,7 @@ export const createServer = (c: Container) => {
     ingressQueue:          c.larkIngressQueue,
     logger:                c.logger,
     env:                   c.env,
+    appBaseUrl:            c.env.APP_BASE_URL,
     approvalGate:          c.approvalGate,
     approvalCardHandler:   c.approvalCardHandler,
     memoryReviewService:   c.larkMemoryReviewService,
@@ -419,6 +420,14 @@ export const createServer = (c: Container) => {
     }),
   );
 
+  // Shared by every route that acts for a signed-in person, including the
+  // Lark identity link below — one session type, one middleware.
+  const memberAuth = createMemberAuthMiddleware({
+    prisma:    c.prisma,
+    jwtSecret: c.env.MEMBER_JWT_SECRET,
+    logger:    c.logger,
+  });
+
   // Lark user OAuth connect + callback
   app.use(
     '/api/lark/auth',
@@ -433,6 +442,7 @@ export const createServer = (c: Container) => {
       prisma:              c.prisma,
       memberSessionTtlMinutes: MEMBER_SESSION_TTL_MINUTES,
       channelIdentityRepo: c.channelIdentityRepo,
+      memberAuth,
       // Shares the webhook's deps so the replayed turn runs through exactly the
       // same lane, lease, and delivery path as any other message.
       onLinked:            pendingEvent =>
@@ -468,11 +478,6 @@ export const createServer = (c: Container) => {
   );
 
   // ── File management routes (member auth) ─────────────────────────────────
-  const memberAuth = createMemberAuthMiddleware({
-    prisma:    c.prisma,
-    jwtSecret: c.env.MEMBER_JWT_SECRET,
-    logger:    c.logger,
-  });
   const piRuntimeMemberAuth = createMemberAuthMiddleware({
     prisma:    c.prisma,
     jwtSecret: c.env.MEMBER_JWT_SECRET,

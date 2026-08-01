@@ -296,3 +296,176 @@ describe('Lark OAuth account binding', () => {
     assert.equal(renewalWhere?.['larkTenantKey'], 'tenant-1');
   });
 });
+
+/**
+ * The hop that replaced Lark's own consent screen.
+ *
+ * The card in Lark now opens the web login, and this route attaches the Lark
+ * identity to the session that sign-in produced. It is the one place where a
+ * link somebody else can see in a group chat meets a real session, so most of
+ * what is worth testing here is what it refuses.
+ */
+async function callLink(
+  router: ReturnType<typeof createLarkAuthRoutes>,
+  body: unknown,
+  locals: Record<string, unknown>,
+): Promise<{ status: number; body: any }> {
+  return new Promise((resolve) => {
+    let status = 200;
+    const req = { method: 'POST', path: '/link', headers: {}, query: {}, body } as unknown as Request;
+    const res = {
+      locals,
+      status: (next: number) => { status = next; return res; },
+      json: (value: unknown) => { resolve({ status, body: value }); return res; },
+      send: (value: unknown) => { resolve({ status, body: value }); return res; },
+    } as unknown as Response;
+
+    const layer = (router as any).stack.find(
+      (item: any) => item.route?.path === '/link' && item.route?.methods?.post,
+    );
+    const handler = layer?.route?.stack?.at(-1)?.handle;
+    if (!handler) return resolve({ status: 404, body: { error: 'not_found' } });
+    Promise.resolve(handler(req, res, () => resolve({ status: 404, body: { error: 'next' } })))
+      .catch((error) => resolve({ status: 500, body: String(error) }));
+  });
+}
+
+const linkState = (over: Record<string, string> = {}) => encodeLarkOAuthState({
+  companyId: 'company-1', userId: 'user-1', larkOpenId: 'ou_alice',
+  tenantKey: 'tenant-1', nonce: 'nonce-1', ...over,
+} as any);
+
+const storedNonce = (extra: Record<string, unknown> = {}) => ({
+  companyId: 'company-1', userId: 'user-1', larkOpenId: 'ou_alice',
+  tenantKey: 'tenant-1', ...extra,
+});
+
+const signedInAs = (userId: string) => ({ userId, companyId: 'company-1', sessionId: 'session-1' });
+
+describe('attaching a Lark identity to a web session', () => {
+  it('refuses when the person who signed in is not the person the card named', async () => {
+    const writes: string[] = [];
+    const deleted: string[] = [];
+    const router = makeRouter({
+      cache: {
+        get: async () => ok(storedNonce()),
+        set: async () => ok(undefined),
+        del: async (key: string) => { deleted.push(key); return ok(undefined); },
+        setNx: async () => ok(true),
+        scanDel: async () => ok(0),
+      },
+      prisma: {
+        memberSession: {
+          update: async () => { writes.push('update'); return {}; },
+          updateMany: async () => { writes.push('updateMany'); return { count: 0 }; },
+        },
+      },
+    });
+
+    const response = await callLink(router, { state: linkState() }, signedInAs('user-bob'));
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(response.body, { error: 'different_account' });
+    // The dangerous outcome is a half-done link, so nothing may be written and
+    // the nonce must survive for the person it was actually for.
+    assert.deepEqual(writes, []);
+    assert.deepEqual(deleted, []);
+  });
+
+  it('reports an expired link separately from a refusal, so the page can say "ask for a new one"', async () => {
+    const router = makeRouter({
+      cache: {
+        get: async () => ok(null),
+        set: async () => ok(undefined),
+        del: async () => ok(undefined),
+        setNx: async () => ok(true),
+        scanDel: async () => ok(0),
+      },
+    });
+
+    const response = await callLink(router, { state: linkState() }, signedInAs('user-1'));
+
+    assert.equal(response.status, 410);
+    assert.deepEqual(response.body, { error: 'link_expired' });
+  });
+
+  it('refuses when the workspace mapping went away while the card sat unread', async () => {
+    const router = makeRouter({
+      cache: {
+        get: async () => ok(storedNonce()),
+        set: async () => ok(undefined),
+        del: async () => ok(undefined),
+        setNx: async () => ok(true),
+        scanDel: async () => ok(0),
+      },
+      channelIdentityRepo: {
+        prepareLarkLogin: async () => ok({ status: 'missing_email', companyId: 'company-1' }),
+        invalidateIdentityCache: async () => {},
+      },
+    });
+
+    const response = await callLink(router, { state: linkState() }, signedInAs('user-1'));
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(response.body, { error: 'lark_identity_mismatch' });
+  });
+
+  it('stamps the caller\'s session, detaches the identity from any other, and replays the question', async () => {
+    const deleted: string[] = [];
+    let stamped: any = null;
+    let detached: any = null;
+    let replayed: unknown = null;
+
+    const router = makeRouter({
+      cache: {
+        get: async () => ok(storedNonce({ pendingEvent: { message: 'what is on my calendar?' } })),
+        set: async () => ok(undefined),
+        del: async (key: string) => { deleted.push(key); return ok(undefined); },
+        setNx: async () => ok(true),
+        scanDel: async () => ok(0),
+      },
+      prisma: {
+        memberSession: {
+          update: async (args: any) => { stamped = args; return {}; },
+          updateMany: async (args: any) => { detached = args; return { count: 1 }; },
+        },
+      },
+      onLinked: async (event: Record<string, unknown>) => { replayed = event; },
+    });
+
+    const response = await callLink(router, { state: linkState() }, signedInAs('user-1'));
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body, { linked: true, replaying: true });
+
+    // The session the person is holding right now is the one that gets the
+    // identity — nothing is created, so this cannot become a second sign-in.
+    assert.equal(stamped.where.sessionId, 'session-1');
+    assert.equal(stamped.data.larkOpenId, 'ou_alice');
+    assert.equal(stamped.data.larkTenantKey, 'tenant-1');
+
+    // One Lark identity resolves to one session, or the runtime has a choice
+    // to make and no way to make it.
+    assert.equal(detached.where.sessionId.not, 'session-1');
+    assert.equal(detached.data.larkOpenId, null);
+
+    assert.deepEqual(deleted, [larkOAuthNonceKey('nonce-1')], 'single use');
+
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(replayed, { message: 'what is on my calendar?' });
+  });
+
+  it('says so plainly when the link is not a link', async () => {
+    const router = makeRouter();
+    const response = await callLink(router, { state: 'not-base64-json' }, signedInAs('user-1'));
+    assert.equal(response.status, 400);
+    assert.deepEqual(response.body, { error: 'invalid_link' });
+  });
+
+  it('needs a session — the route never creates one', async () => {
+    const router = makeRouter();
+    const response = await callLink(router, { state: linkState() }, {});
+    assert.equal(response.status, 401);
+    assert.deepEqual(response.body, { error: 'not_signed_in' });
+  });
+});

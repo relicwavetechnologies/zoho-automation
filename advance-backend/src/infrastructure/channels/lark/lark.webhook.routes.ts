@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import { randomBytes } from 'node:crypto';
 import {
   isLarkHumanMessage,
   shouldStartLarkAgent,
@@ -120,7 +121,7 @@ import {
   signInFallbackText,
   SIGN_IN_WORKSPACE_NOT_CONNECTED,
   SIGN_IN_DIRECTORY_UNAVAILABLE,
-  SIGN_IN_NOT_CONFIGURED,
+  SIGN_IN_UNAVAILABLE,
   SIGN_IN_MISSING_EMAIL,
 } from './lark-signin';
 import type {
@@ -151,6 +152,8 @@ export interface LarkWebhookDeps {
   mem0?: Mem0Service;
   larkOAuthService?: LarkOAuthService;
   connectionRepo?: IntegrationConnectionRepository;
+  /** Origin of the web app — the sign-in card's button points here. */
+  appBaseUrl: string;
   cache: CachePort;
   voiceFileClient?: Pick<LarkFileClient, 'downloadFile'>;
   voiceTranscriber?: Pick<ElevenLabsTranscriptionClient, 'transcribe'>;
@@ -1559,6 +1562,20 @@ function encodeLarkOAuthState(input: {
   return Buffer.from(JSON.stringify(input)).toString('base64url');
 }
 
+/**
+ * Where the sign-in card's button goes.
+ *
+ * It used to go straight to Lark's OAuth consent screen, and the callback that
+ * came back both stored tokens and minted a session — a second way to sign in,
+ * living beside the web one. There is one sign-in now: this points at the web
+ * login, carrying a one-time nonce that says which Lark account asked. The web
+ * app hands that nonce back to `POST /api/lark/auth/link`, which attaches the
+ * identity to the session the web sign-in already created.
+ *
+ * Consequently this no longer needs Lark OAuth to be configured at all. A
+ * deployment without `LARK_OAUTH_REDIRECT_URI` can still let people sign in;
+ * it just cannot act *as* them until they connect Lark separately.
+ */
 async function createLarkLoginUrl(input: {
   companyId: string;
   userId: string;
@@ -1567,14 +1584,11 @@ async function createLarkLoginUrl(input: {
   /** The message that triggered the prompt, answered once sign-in completes. */
   pendingEvent?: Record<string, unknown>;
   deps: {
-    larkOAuthService?: LarkOAuthService;
+    appBaseUrl: string;
     cache: CachePort;
   };
 }): Promise<string | null> {
-  const oauth = input.deps.larkOAuthService;
-  if (!oauth?.isConfigured()) return null;
-
-  const nonce = oauth.generateNonce();
+  const nonce = randomBytes(32).toString('base64url');
   const cached = await input.deps.cache.set(
     larkOAuthNonceKey(nonce),
     {
@@ -1587,16 +1601,20 @@ async function createLarkLoginUrl(input: {
     LARK_OAUTH_NONCE_TTL_SECONDS,
   );
   if (!cached.ok) {
-    throw new Error(cached.error.message);
+    // Without the stored nonce the link cannot be honoured, so returning one
+    // would send the person to a page that refuses them. `null` is the caller's
+    // signal to say so plainly instead.
+    return null;
   }
 
-  return oauth.getAuthorizeUrl(encodeLarkOAuthState({
+  const state = encodeLarkOAuthState({
     companyId:  input.companyId,
     userId:     input.userId,
     larkOpenId: input.larkOpenId,
     tenantKey:  input.tenantKey,
     nonce,
-  }));
+  });
+  return `${input.deps.appBaseUrl.replace(/\/+$/, '')}/link/lark?state=${encodeURIComponent(state)}`;
 }
 
 async function processInBackground(
@@ -1612,6 +1630,7 @@ async function processInBackground(
     mem0?: Mem0Service;
     larkOAuthService?: LarkOAuthService;
     connectionRepo?: IntegrationConnectionRepository;
+    appBaseUrl: string;
     cache: CachePort;
     channelDeliveryRepo?: ChannelDeliveryRepoPort;
     onRetryableDelivery?: () => Promise<void>;
@@ -1845,7 +1864,7 @@ async function processInBackground(
       }
 
       // Recognised, but this deployment cannot complete a sign-in.
-      await tell(SIGN_IN_NOT_CONFIGURED);
+      await tell(SIGN_IN_UNAVAILABLE);
       log.error('webhook.login_prompt.oauth_unconfigured', {
         larkOpenId: incoming.userExternalId,
         companyId: pending.value.companyId,
@@ -1897,7 +1916,7 @@ async function processInBackground(
     if (!loginUrl) {
       await deps.adapter.sendToChatId(
         String(incoming.chatId),
-        SIGN_IN_NOT_CONFIGURED,
+        SIGN_IN_UNAVAILABLE,
         String(incoming.messageId),
         undefined,
         incoming.chatType === 'group'
@@ -2069,9 +2088,10 @@ async function processInBackground(
     const transcript = await transcribeLarkVoiceNote({
       attachment: {
         type: 'audio',
+        source: parentRef.audioAttachment.source,
         key: parentRef.audioAttachment.fileKey,
-        fileName: 'voice-note.ogg',
-        mimeType: 'audio/ogg',
+        fileName: parentRef.audioAttachment.fileName,
+        mimeType: parentRef.audioAttachment.mimeType,
         messageId: parentRef.messageId,
         durationMs: parentRef.audioAttachment.durationMs,
       },
@@ -2335,8 +2355,8 @@ async function processInBackground(
               {
                 type: 'audio' as const,
                 fileKey: parentRef.audioAttachment.fileKey,
-                mimeType: 'audio/ogg',
-                name: 'voice-note.ogg',
+                mimeType: parentRef.audioAttachment.mimeType,
+                name: parentRef.audioAttachment.fileName,
               },
             ],
           }
@@ -2614,6 +2634,7 @@ async function handleSlashCommand(args: {
     mem0?: Mem0Service;
     larkOAuthService?: LarkOAuthService;
     connectionRepo?: IntegrationConnectionRepository;
+    appBaseUrl: string;
     cache: CachePort;
     chatContextService?: LarkChatContextService;
     groupContextHydrator?: Pick<GroupContextHydrator, 'hydrate'>;
@@ -2797,13 +2818,12 @@ async function handleSlashCommand(args: {
     return;
   }
 
-  // ── /login — start Lark user OAuth ─────────────────────────────────────────
+  // ── /login — hand them the web sign-in ─────────────────────────────────────
+  //
+  // No longer gated on Lark OAuth being configured: signing in happens in the
+  // web app now, and Lark OAuth is a separate, later thing you do only if you
+  // want Divo acting under your own name.
   if (cmd === '/login') {
-    if (!deps.larkOAuthService?.isConfigured()) {
-      await reply('User OAuth is not configured on this server. Ask your admin to set LARK_OAUTH_REDIRECT_URI.');
-      return;
-    }
-
     const url = await createLarkLoginUrl({
       companyId:  identity.companyId,
       userId:     identity.userId,
@@ -2813,7 +2833,7 @@ async function handleSlashCommand(args: {
     });
 
     if (!url) {
-      await reply('User OAuth is not configured on this server. Ask your admin to set LARK_OAUTH_REDIRECT_URI.');
+      await reply('Could not start sign-in just now. Please try again in a moment.');
       return;
     }
 
@@ -3034,14 +3054,14 @@ async function transcribeLarkVoiceNote(input: {
     if (!sent.ok) log.warn('webhook.voice.notice_failed', { error: sent.error.message });
   };
 
-  if (attachment.durationMs === null) {
+  if (attachment.source === 'voice-note' && attachment.durationMs === null) {
     log.info('webhook.voice.duration_missing');
     await notify(
       'I could not verify the length of that voice note. Please send it again or type your request.',
     );
     return null;
   }
-  if (attachment.durationMs > MAX_LARK_VOICE_DURATION_MS) {
+  if (attachment.durationMs !== null && attachment.durationMs > MAX_LARK_VOICE_DURATION_MS) {
     log.info('webhook.voice.duration_rejected', { durationMs: attachment.durationMs });
     await notify('That voice note is longer than the 10-minute limit. Please send a shorter one.');
     return null;

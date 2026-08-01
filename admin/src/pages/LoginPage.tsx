@@ -9,7 +9,7 @@
  * app, and the page says plainly what it does not do.
  */
 import { FormEvent, useState } from "react"
-import { Link, useNavigate } from "react-router-dom"
+import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { Loader2 } from "lucide-react"
 import { AuthCard, AuthError, Field } from "@/components/admin/auth-card"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
@@ -22,13 +22,24 @@ export function LoginPage() {
   const [busy, setBusy] = useState<"lark" | "password" | null>(null)
   const { loginWithLark, loginWithPassword } = useAdminAuth()
   const navigate = useNavigate()
+  const [params] = useSearchParams()
+
+  /**
+   * Where to go once signed in.
+   *
+   * Only a path on this site, and never a protocol-relative one — `//evil.example`
+   * is a valid URL to a different origin, and an open redirect on a login page is
+   * how a convincing phishing link gets built.
+   */
+  const requested = params.get("next")
+  const next = requested && requested.startsWith("/") && !requested.startsWith("//") ? requested : "/"
 
   const attempt = async (kind: "lark" | "password", run: () => Promise<void>) => {
     setBusy(kind)
     setError(null)
     try {
       await run()
-      navigate("/", { replace: true })
+      navigate(next, { replace: true })
     } catch (signInError) {
       setError(signInError instanceof Error ? signInError.message : "Sign-in failed.")
     } finally {

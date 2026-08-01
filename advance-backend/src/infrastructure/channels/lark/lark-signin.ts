@@ -25,10 +25,17 @@ export const SIGN_IN_DIRECTORY_UNAVAILABLE =
   "I couldn't verify your account against this workspace's directory just now.\n\n"
   + 'This is on my side, not yours. Try again in a minute — if it keeps happening, ask an admin to check the Divo app permissions in Lark.';
 
-/** Sign-in exists but this deployment has no OAuth credentials configured. */
-export const SIGN_IN_NOT_CONFIGURED =
-  "I know who you are, but sign-in isn't configured on this Divo deployment yet, so I can't connect your account.\n\n"
-  + 'Ask an admin to finish the Lark app setup in Divo.';
+/**
+ * The sign-in link could not be created.
+ *
+ * This used to mean "no Lark OAuth credentials". Sign-in happens in the web app
+ * now and needs none, so the only way to get here is a failure on our side —
+ * and the message says that rather than sending an admin to check a setting
+ * that is no longer involved.
+ */
+export const SIGN_IN_UNAVAILABLE =
+  "I know who you are, but I couldn't create your sign-in link just now.\n\n"
+  + 'This is on my side, not yours. Message me again in a minute.';
 
 /** Recognised in the workspace, but with no email address to key an account on. */
 export const SIGN_IN_MISSING_EMAIL =
@@ -47,7 +54,7 @@ export const signInFallbackText = (input: {
   readonly reason?: string;
 }): string =>
   `${input.reason ?? `Hi ${input.name} — one quick step before I can work for you.`}\n\n`
-  + `Connect your Lark account:\n${input.url}\n\n`
+  + `Sign in to Divo:\n${input.url}\n\n`
   + `The link expires in ${SIGN_IN_LINK_TTL_MINUTES} minutes. `
   + "I'll answer your message as soon as you're connected — no need to send it again.";
 
@@ -55,10 +62,14 @@ export const signInFallbackText = (input: {
  * Sign-in card with a single button.
  *
  * `open_url` rather than a callback: there is no state to mutate here, and a
- * callback button would need a live run to answer it. The URL already carries a
- * signed, single-use state that the callback validates against the authorising
- * Lark account, so the button is safe to render even in a group where other
- * people can see it.
+ * callback button would need a live run to answer it.
+ *
+ * The button opens the web sign-in, not Lark's consent screen — one place to
+ * sign in, and the identity is mapped afterwards rather than a second session
+ * being minted. The URL carries a single-use nonce naming the Lark account that
+ * asked, and the link endpoint refuses it if somebody else signs in. That is
+ * what makes the button safe to render in a group where other people can see
+ * it: following someone else's link gets you told it was not for you.
  */
 export const buildSignInCard = (input: {
   readonly name: string;
@@ -70,7 +81,7 @@ export const buildSignInCard = (input: {
     config: { width_mode: 'fill', update_multi: false, enable_forward: false },
     header: {
       template: 'blue',
-      title: { tag: 'plain_text', content: 'Connect your Lark account' },
+      title: { tag: 'plain_text', content: 'Sign in to Divo' },
     },
     body: {
       vertical_spacing: '8px',
@@ -82,7 +93,7 @@ export const buildSignInCard = (input: {
         },
         {
           tag: 'button',
-          text: { tag: 'plain_text', content: 'Connect Lark' },
+          text: { tag: 'plain_text', content: 'Sign in' },
           type: 'primary',
           width: 'default',
           behaviors: [{ type: 'open_url', default_url: input.url }],
