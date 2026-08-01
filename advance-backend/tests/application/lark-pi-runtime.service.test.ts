@@ -75,9 +75,12 @@ test('mints a scoped Lark lease and sends no caller-selected profile or approval
   assert.equal(controllerBody?.['message'], 'Do the work');
   assert.equal('profile' in (controllerBody ?? {}), false);
   assert.equal('approve' in (controllerBody ?? {}), false);
-  assert.equal((sessionQuery?.['where'] as Record<string, unknown>)?.['channel'], 'lark');
+  // Identity-bound, not channel-bound. Sign-in happens once in the web app now,
+  // and the session it creates is stamped `desktop` — pinning `channel: 'lark'`
+  // here would make that session invisible and force Lark to mint its own.
   assert.equal((sessionQuery?.['where'] as Record<string, unknown>)?.['larkTenantKey'], 'tenant-1');
   assert.equal((sessionQuery?.['where'] as Record<string, unknown>)?.['larkOpenId'], 'ou-user-1');
+  assert.equal('channel' in ((sessionQuery?.['where'] as Record<string, unknown>) ?? {}), false);
 
   const token = String(controllerBody?.['runtimeLease']);
   const claims = JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString('utf8'));

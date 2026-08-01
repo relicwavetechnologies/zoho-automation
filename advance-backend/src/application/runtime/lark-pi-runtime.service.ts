@@ -306,10 +306,15 @@ export class LarkPiRuntimeService {
     // scheduler then revokes underneath it. Prefer a real sign-in, and fall
     // back to a machine row only when there is none, which is precisely the
     // scheduled run looking up its own.
+    // Deliberately not filtered by `channel`. The security binding is the pair
+    // below — this Lark tenant plus this Lark open id resolve to this User, and
+    // that is what proves the person in the chat is the account. `channel` only
+    // records which surface happened to create the row, and pinning it here is
+    // what used to force Lark to mint sessions of its own. A web sign-in via
+    // Lark OAuth stamps the same identity, so it is equally valid for this run.
     const where = {
       userId: String(runContext.userId),
       companyId: String(runContext.companyId),
-      channel: 'lark',
       larkTenantKey: String(runContext.tenantId),
       larkOpenId: String(runContext.userExternalId),
       revokedAt: null,

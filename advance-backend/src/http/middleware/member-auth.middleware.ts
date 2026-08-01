@@ -26,11 +26,31 @@ import {
   PI_RUNTIME_AUDIENCE,
 } from '../../application/runtime/pi-runtime-lease';
 
+/**
+ * One lifetime for every member session, whichever surface created it.
+ *
+ * Sign-in is a single act now, and the session it produces drives both the web
+ * app and Lark chat. The old desktop value of 8 hours would have taken Lark
+ * down mid-afternoon for anyone who signed in that morning, so the longer Lark
+ * figure wins and both sides read it from here.
+ */
+export const MEMBER_SESSION_TTL_MINUTES = 7 * 24 * 60;
+
+/**
+ * Renew once a session is past halfway through its life. Sliding on every
+ * request would mean a database write per call for no added safety; sliding at
+ * the midpoint keeps someone who uses Divo at all from ever being logged out,
+ * while an abandoned session still expires on schedule.
+ */
+const RENEW_AFTER_FRACTION = 0.5;
+
 export interface MemberAuthMiddlewareDeps {
   prisma:     PrismaClient;
   jwtSecret:  string;
   logger:     Logger;
   allowPiRuntimeLease?: (req: Request) => boolean;
+  /** Defaults to the shared lifetime above; every member router renews. */
+  sessionTtlMinutes?: number;
 }
 
 interface MemberJwtPayload {
@@ -178,6 +198,33 @@ export function createMemberAuthMiddleware(deps: MemberAuthMiddlewareDeps) {
       res.locals['email']      = session.user?.email ?? null;
       res.locals['channel']    = hasRuntimeClaims ? 'lark' : 'desktop';
       res.locals['isPiRuntimeLease'] = hasRuntimeClaims;
+
+      // Slide the expiry for a person who is actually using Divo. Skipped for a
+      // Pi runtime lease: that token is held by a container, and a long-running
+      // agent should not be able to keep its owner's sign-in alive indefinitely
+      // on its own — only the human's own traffic renews the human's session.
+      if (!hasRuntimeClaims) {
+        const ttlMs = (deps.sessionTtlMinutes ?? MEMBER_SESSION_TTL_MINUTES) * 60_000;
+        const remaining = session.expiresAt.getTime() - Date.now();
+        if (remaining < ttlMs * RENEW_AFTER_FRACTION) {
+          // Best effort, and isolated on purpose: a failed renewal must not fail
+          // the request it rode in on. The try/catch is not redundant with the
+          // .catch() — a synchronous throw from the call itself would otherwise
+          // escape into the handler below and turn an authenticated request into
+          // a 500. The session stays valid for the rest of its term either way,
+          // and the next call gets another chance to extend it.
+          try {
+            void deps.prisma.memberSession
+              .update({
+                where: { sessionId: session.sessionId },
+                data:  { expiresAt: new Date(Date.now() + ttlMs) },
+              })
+              .catch(e => deps.logger.warn('member-auth.renew_failed', { error: String(e) }));
+          } catch (e) {
+            deps.logger.warn('member-auth.renew_failed', { error: String(e) });
+          }
+        }
+      }
       if (payload.aud === PI_RUNTIME_AUDIENCE) {
         res.locals['runtimeInstanceId'] = payload.instanceId;
         res.locals['runtimeThreadId'] = payload.threadId;

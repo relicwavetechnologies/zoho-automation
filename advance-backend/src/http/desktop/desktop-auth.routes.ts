@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { z } from 'zod';
 import type { Prisma, PrismaClient } from '../../generated/prisma';
 import type { LarkOAuthService } from '../../infrastructure/lark/lark-oauth.service';
@@ -65,6 +66,26 @@ interface StatePayload {
   redirectUri?: string;
   exp?: number;
 }
+
+const require = createRequire(__filename);
+const bcrypt = require('bcryptjs') as {
+  compare(input: string, hashed: string): Promise<boolean>;
+};
+
+/**
+ * A Lark-provisioned user is created with an HMAC digest in `password` rather
+ * than a bcrypt hash, because that account has no password to speak of
+ * (see the `lark.exchange.user_created` path below). bcryptjs is not obliged to
+ * fail cleanly on a hash it cannot parse, so the shape is checked here instead
+ * of relying on `compare` to return false for it.
+ */
+const isBcryptHash = (value: string): boolean => /^\$2[aby]?\$\d{2}\$/.test(value);
+
+const loginSchema = z.object({
+  email:     z.string().email(),
+  password:  z.string().min(1),
+  companyId: z.string().uuid().optional(),
+});
 
 const DESKTOP_PROTOCOL = 'cursorr';
 const HANDOFF_TTL_MS   = 5 * 60 * 1000;
@@ -862,6 +883,92 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     } catch (e) {
       log.error('lark.exchange.error', { error: String(e) });
       res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  // ── Password sign-in (no auth — the credential is the body) ──────────────
+
+  /**
+   * The fallback half of the single sign-in page. Lark OAuth is the primary
+   * route and the only one that produces a session Lark chat can use; this
+   * exists for super admins outside the customer's Lark tenant and for members
+   * who set a password when they accepted an email invite.
+   *
+   * A session minted here carries no Lark identity, so it deliberately does not
+   * satisfy the runtime lookup — that person's chat stays dark until they link
+   * Lark once, which is the honest outcome rather than a half-working one.
+   */
+  router.post('/login', async (req: Request, res: Response) => {
+    try {
+      const parsed = loginSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ success: false, message: 'email and password are required' });
+        return;
+      }
+      const payload = parsed.data;
+
+      const user = await deps.prisma.user.findUnique({ where: { email: payload.email } });
+      // One failure message for "no such account" and "wrong password" alike, so
+      // this route cannot be used to enumerate who has a Divo account.
+      const invalid = () => res.status(401).json({ success: false, message: 'Invalid email or password' });
+
+      if (!user || !isBcryptHash(user.password) || !(await bcrypt.compare(payload.password, user.password))) {
+        log.warn('desktop.login.rejected', { email: payload.email });
+        invalid();
+        return;
+      }
+
+      const membership = await deps.prisma.adminMembership.findFirst({
+        where: {
+          userId:   user.id,
+          isActive: true,
+          ...(payload.companyId ? { companyId: payload.companyId } : {}),
+        },
+        orderBy: { updatedAt: 'desc' },
+        select: { companyId: true, role: true },
+      });
+      // A super admin's membership can carry no company at all, and a session
+      // has to belong to one — so this is "no workspace", not a bad password.
+      const companyId = membership?.companyId;
+      if (!membership || !companyId) {
+        // Credentials were right, so this is not an enumeration risk — and the
+        // person needs to know the account is real but has no active workspace.
+        res.status(403).json({ success: false, message: 'This account has no active workspace membership' });
+        return;
+      }
+
+      const session = await issueDesktopSession(deps, user.id, companyId, membership.role, {
+        authProvider: 'password',
+      });
+
+      const departments = await deps.prisma.department.findMany({
+        where:  { companyId, memberships: { some: { userId: user.id } } },
+        select: { id: true, name: true },
+      });
+
+      log.info('desktop.login.ok', { userId: user.id, companyId });
+
+      res.json({
+        success: true,
+        data: {
+          token: session.token,
+          session: {
+            ...session,
+            authProvider: 'password',
+            email: user.email,
+            name:  user.name ?? user.email,
+            // No Lark identity on a password session. The client reads this to
+            // tell the person their chat will not work until they link Lark.
+            larkTenantKey: null,
+            larkOpenId:    null,
+            departments,
+          },
+        },
+        message: 'Session issued',
+      });
+    } catch (e) {
+      log.error('desktop.login.error', { error: String(e) });
+      res.status(500).json({ success: false, message: 'Sign-in failed' });
     }
   });
 

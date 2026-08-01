@@ -326,11 +326,14 @@ export function createLarkAuthRoutes(deps: {
       const memberSessionExpiresAt = new Date(
         Date.now() + deps.memberSessionTtlMinutes * 60_000,
       );
+      // Matched on Lark identity, not on `channel` — the counterpart to the
+      // runtime lookup. Keeping `channel: 'lark'` here would mean a session the
+      // person created by signing into the web app never renews, and this call
+      // would quietly create a second row alongside it every time.
       const renewed = await deps.prisma.memberSession.updateMany({
         where: {
           userId: state.userId,
           companyId: state.companyId,
-          channel: 'lark',
           larkTenantKey: state.tenantKey,
           larkOpenId: resolvedOpenId,
           revokedAt: null,

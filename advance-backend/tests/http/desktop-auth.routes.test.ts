@@ -1,5 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
+import { createRequire } from 'node:module';
 import type { Request, Response } from 'express';
 
 import { createDesktopAuthRoutes } from '../../src/http/desktop/desktop-auth.routes.ts';
@@ -1111,5 +1113,97 @@ describe('desktop auth routes', () => {
       personaPrompt: '',
       version: null,
     });
+  });
+});
+
+describe('desktop password sign-in', () => {
+  const require_ = createRequire(import.meta.url);
+  const bcrypt = require_('bcryptjs') as {
+    hashSync(input: string, rounds: number): string;
+  };
+  const PASSWORD = 'correct-horse-battery';
+  const HASH = bcrypt.hashSync(PASSWORD, 4);
+
+  /**
+   * `password` holds an HMAC digest rather than a bcrypt hash for an account
+   * Lark provisioned — that person never chose a password. Copied from the
+   * shape `lark.exchange.user_created` writes.
+   */
+  const LARK_PROVISIONED_PASSWORD = createHmac('sha256', 'irrelevant').update('x').digest('hex');
+
+  const loginPrisma = (user: { password: string } | null, membership: unknown) => ({
+    user: { findUnique: async () => (user ? { id: 'user-1', email: 'a@acme.co', name: 'A', ...user } : null) },
+    adminMembership: { findFirst: async () => membership },
+    department: { findMany: async () => [] },
+    memberSession: { create: async () => ({}) },
+  });
+
+  it('issues a member session for valid credentials', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: loginPrisma({ password: HASH }, { companyId: 'company-1', role: 'MEMBER' }),
+    }));
+
+    const result = await callRoute(router, 'POST', '/login', {
+      body: { email: 'a@acme.co', password: PASSWORD },
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(typeof result.body.data.token, 'string');
+    assert.equal(result.body.data.session.authProvider, 'password');
+    // No Lark identity on this session, and the client is told so rather than
+    // left to discover that the person's Lark chat does not work.
+    assert.equal(result.body.data.session.larkOpenId, null);
+  });
+
+  it('gives an unknown email and a wrong password the same answer', async () => {
+    const wrongPassword = createDesktopAuthRoutes(makeDeps({
+      prisma: loginPrisma({ password: HASH }, { companyId: 'company-1', role: 'MEMBER' }),
+    }));
+    const unknownEmail = createDesktopAuthRoutes(makeDeps({
+      prisma: loginPrisma(null, null),
+    }));
+
+    const a = await callRoute(wrongPassword, 'POST', '/login', {
+      body: { email: 'a@acme.co', password: 'not-it' },
+    });
+    const b = await callRoute(unknownEmail, 'POST', '/login', {
+      body: { email: 'nobody@acme.co', password: PASSWORD },
+    });
+
+    assert.equal(a.status, 401);
+    assert.equal(b.status, 401);
+    // Identical, so this route cannot be used to discover who has an account.
+    assert.equal(a.body.message, b.body.message);
+  });
+
+  it('refuses an account Lark provisioned, whose stored password is not a hash', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: loginPrisma(
+        { password: LARK_PROVISIONED_PASSWORD },
+        { companyId: 'company-1', role: 'MEMBER' },
+      ),
+    }));
+
+    // The digest itself, which is the one value most likely to be guessed if
+    // the shape were ever compared directly.
+    const result = await callRoute(router, 'POST', '/login', {
+      body: { email: 'a@acme.co', password: LARK_PROVISIONED_PASSWORD },
+    });
+
+    assert.equal(result.status, 401);
+  });
+
+  it('refuses an account with no active workspace membership', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: loginPrisma({ password: HASH }, null),
+    }));
+
+    const result = await callRoute(router, 'POST', '/login', {
+      body: { email: 'a@acme.co', password: PASSWORD },
+    });
+
+    // 403 and not 401: the credentials were right, so saying so leaks nothing
+    // this caller does not already know, and "wrong password" would be a lie.
+    assert.equal(result.status, 403);
   });
 });

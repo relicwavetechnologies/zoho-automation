@@ -20,7 +20,7 @@ import { createZohoAuthRoutes } from './http/zoho/zoho-auth.routes';
 import { createLarkAuthRoutes } from './http/lark/lark-auth.routes';
 import { createExecutionRoutes } from './http/executions/execution.routes';
 import { createAdminAuthMiddleware } from './http/middleware/admin-auth.middleware';
-import { createMemberAuthMiddleware } from './http/middleware/member-auth.middleware';
+import { createMemberAuthMiddleware, MEMBER_SESSION_TTL_MINUTES } from './http/middleware/member-auth.middleware';
 import { createDesktopToolsRoutes } from './http/desktop/desktop-tools.routes';
 import { createDesktopDepartmentRoutes } from './http/desktop/desktop-departments.routes';
 import { createDesktopApprovalRoutes } from './http/desktop/desktop-approvals.routes';
@@ -430,7 +430,7 @@ export const createServer = (c: Container) => {
       appSecret:           c.env.LARK_APP_SECRET,
       apiBase:             c.env.LARK_API_BASE_URL,
       prisma:              c.prisma,
-      memberSessionTtlMinutes: 7 * 24 * 60,
+      memberSessionTtlMinutes: MEMBER_SESSION_TTL_MINUTES,
       channelIdentityRepo: c.channelIdentityRepo,
       // Shares the webhook's deps so the replayed turn runs through exactly the
       // same lane, lease, and delivery path as any other message.
@@ -548,7 +548,7 @@ export const createServer = (c: Container) => {
       env:                    c.env,
       memberJwtSecret:        c.env.MEMBER_JWT_SECRET,
       backendPublicUrl:       c.env.BACKEND_PUBLIC_URL,
-      sessionTtlMinutes:      480,
+      sessionTtlMinutes:      MEMBER_SESSION_TTL_MINUTES,
     }),
   );
 
