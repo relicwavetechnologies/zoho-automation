@@ -1,4 +1,4 @@
-FROM node:22.22.0-bookworm-slim
+FROM node:24.15.0-bookworm-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
 
 # Python packages install on demand into per-user venvs on the volume (see the
 # files-and-documents skill), so only OS-level binaries belong here — the ones

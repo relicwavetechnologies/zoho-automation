@@ -20,27 +20,28 @@ const CANONICAL_TOOL_IDS = [
   'canvaDesign',
   'airtableRecords', 'airtableSchema', 'airtableAutomation',
   'zohoCrm', 'zohoBooks',
-  'contextSearch', 'webSearch', 'skillPublishing', 'memoryPublishing',
-  'memoryRecall', 'documentRag', 'dataProcessor', 'scheduledWorkflows',
+  'contextSearch', 'webSearch', 'knowledge',
+  'documentRag', 'dataProcessor', 'scheduledWorkflows',
   'semrush', 'omsSiteData',
   'runCommand',
 ]
 
 /** CANONICAL_TOOL_IDS in the backend, plus runCommand. Update both together. */
-const EXPECTED_CANONICAL_TOOL_COUNT = 36
+const EXPECTED_CANONICAL_TOOL_COUNT = 34
 
 // Mirrors GATEWAY_OPS in advance-backend/src/application/gateway/gateway.types.ts.
 const GATEWAY_OPS = [
   'capabilities.get', 'tools.list', 'skills.list', 'skills.search', 'skills.get',
   'work.resolve', 'persona.resolve', 'teach.context.get', 'teach.learning.apply',
-  'connections.list', 'media.image_ocr', 'tools.preflight', 'tools.prepare',
+  'connections.list', 'media.image_ocr', 'memory.personal.mutate',
+  'knowledge.review.open', 'knowledge.review.decide', 'tools.preflight', 'tools.prepare',
   'tools.commit', 'tools.invoke', 'automation.plan.create', 'automation.plan.status',
 ]
 
 // Mirrors COMPANY_TOOL_ALLOWLIST in jan/src-tauri/src/core/pi/runtime.rs.
 const DESKTOP_TOOLS = [
   'read', 'write', 'edit', 'bash', 'divo_gateway', 'divo_skill_resolve',
-  'divo_memory_recall', 'divo_memory_review', 'divo_teach_clarify', 'memory',
+  'divo_memory_recall', 'divo_memory', 'divo_memory_review', 'divo_knowledge_review', 'divo_teach_clarify',
   'divo_todos', 'divo_artifact',
 ]
 

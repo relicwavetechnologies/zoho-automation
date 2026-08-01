@@ -49,6 +49,7 @@ export type ApprovalDecision =
 
 export interface ApprovalExecutionGrant {
   readonly approvalId: string;
+  readonly authority: ApprovalAuthority;
 }
 
 // ─── managerApprovalJson schema ───────────────────────────────────────────────

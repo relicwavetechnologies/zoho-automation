@@ -13,8 +13,9 @@
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:push": "prisma db push",
-    "provision:share-memory": "tsx scripts/provision-share-memory.ts",
+    "provision:knowledge": "tsx scripts/provision-knowledge.ts",
     "provision:lark-skills": "tsx scripts/provision-lark-skills.ts",
     "provision:google-workspace-skills": "tsx scripts/provision-google-workspace-skills.ts",
     "provision:files-and-documents-skills": "tsx scripts/provision-files-and-documents-skills.ts",
@@ -38,7 +39,7 @@
     "@larksuiteoapi/node-sdk": "^1.71.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@prisma/client": "^6.1.0",
-    "@qdrant/js-client-rest": "^1.17.0",
+    "@vectorize-io/hindsight-client": "0.8.6",
     "ai": "^6.0.116",
     "ajv": "8.20.0",
     "bcryptjs": "^3.0.3",
@@ -49,8 +50,8 @@
     "googleapis": "^173.0.0",
     "groq-sdk": "^1.1.2",
     "ioredis": "5.9.2",
+    "jszip": "^3.10.1",
     "mammoth": "^1.12.0",
-    "mem0ai": "^3.0.2",
     "multer": "^2.1.1",
     "pdfjs-dist": "^5.6.205",
     "peepshow": "0.9.1",
@@ -73,8 +74,7 @@
   },
   "pnpm": {
     "overrides": {
-      "jose": "4.15.5",
-      "@qdrant/js-client-rest": "1.17.0"
+      "jose": "4.15.5"
     }
   }
 }

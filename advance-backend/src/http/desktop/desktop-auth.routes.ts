@@ -20,6 +20,7 @@ import type { PermissionService } from '../../application/permissions/permission
 import type { SkillCatalogService } from '../../application/skills/skill-catalog.service';
 import type { SkillAccessEnforcementPort } from '../../application/skills/skill-access.port';
 import type { ManagerPersonaRuntimeService } from '../../application/persona-learning/manager-persona-runtime.service';
+import type { MemoryService } from '../../application/knowledge/semantic-memory.port';
 import { buildDesktopCapabilityBootstrap, isFinanceDepartment } from '../../application/desktop/desktop-capability-bootstrap';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
@@ -48,6 +49,7 @@ export interface DesktopAuthRoutesDeps {
   skillCatalog:           SkillCatalogService;
   skillAccessEnforcement: SkillAccessEnforcementPort;
   managerPersonaRuntime:  ManagerPersonaRuntimeService;
+  memory?: Pick<MemoryService, 'getPersonalSnapshot'>;
   logger:                 Logger;
   env:                    TypedEnv;
   memberJwtSecret:        string;
@@ -1089,6 +1091,9 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
                 channel: 'lark',
                 instanceId: res.locals['runtimeInstanceId'],
                 threadId: res.locals['runtimeThreadId'],
+                runId: res.locals['runtimeRunId'],
+                chatId: res.locals['runtimeChatId'],
+                contextAudience: res.locals['runtimeContextAudience'],
                 departmentId: res.locals['runtimeDepartmentId'] ?? null,
               }
             : null,
@@ -1171,6 +1176,26 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     const userId = res.locals['userId'] as string;
     const companyId = res.locals['companyId'] as string;
     const departmentId = parsed.data.departmentId;
+    let personalMemory: string[] = [];
+    if (deps.memory) {
+      try {
+        personalMemory = await deps.memory.getPersonalSnapshot({
+          userId,
+          companyId,
+          limit: 12,
+          maxFactChars: 500,
+          maxTotalChars: 2_200,
+        });
+      } catch (error) {
+        // Personal memory is advisory context. An unavailable memory backend
+        // must not block authentication or department capability bootstrap.
+        log.warn('runtime_context.personal_memory_failed', {
+          error: String(error),
+          userId,
+          companyId,
+        });
+      }
+    }
 
     if (!departmentId) {
       res.json({
@@ -1180,6 +1205,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           departmentName: null,
           personaPrompt: '',
           version: null,
+          personalMemory,
         },
       });
       return;
@@ -1301,6 +1327,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
             active ? config.updatedAt.toISOString() : null,
             managerPersonaVersion,
           ].filter((value): value is string => Boolean(value)).join('|') || null,
+          personalMemory,
           ...(capabilityBootstrap ? { capabilityBootstrap } : {}),
         },
       });

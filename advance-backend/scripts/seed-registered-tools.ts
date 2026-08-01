@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { PrismaClient } from '../src/generated/prisma';
-import { MEMORY_PUBLISHING_REGISTERED_TOOL } from '../src/application/skills/share-memory-provisioning';
+import { KNOWLEDGE_REGISTERED_TOOL } from '../src/application/skills/knowledge-provisioning';
 import { GOOGLE_WORKSPACE_PRODUCTS } from '../src/application/google/google-workspace-mcp-manifest';
 import { AIRTABLE_PRODUCTS } from '../src/application/airtable/airtable-mcp-manifest';
 
@@ -109,20 +109,7 @@ export const REGISTERED_TOOL_SEEDS: readonly RegisteredToolSeed[] = [
   { toolId: 'zohoCrm', name: 'Zoho CRM', description: 'Read and write Zoho CRM records, pipeline and lead reports.', category: 'crm', domain: 'zoho' },
   { toolId: 'zohoBooks', name: 'Zoho Books', description: 'Read and write invoices, bills and expenses; financial reports.', category: 'finance', domain: 'zoho' },
   { toolId: 'webSearch', name: 'Web Search', description: 'Search the web for current information.', category: 'knowledge', domain: 'context' },
-  { toolId: 'skillPublishing', name: 'Skill Publishing', description: 'Check sharing authority and publish explicitly shared skills to company or department scope.', category: 'knowledge', domain: 'skills', hitlRequired: true },
-  MEMORY_PUBLISHING_REGISTERED_TOOL,
-  {
-    toolId: 'memoryRecall',
-    name: 'Memory Recall',
-    description: 'Recall relevant personal, current-department, and company memory within the authenticated member boundaries.',
-    category: 'knowledge',
-    domain: 'memory',
-    guardrails: [
-      'The backend derives member, company, and selected department scope',
-      'Read access does not use configurable RBAC or approval within valid organisational boundaries',
-      'Returns facts only; no vector IDs, scores, metadata, or embeddings',
-    ],
-  },
+  KNOWLEDGE_REGISTERED_TOOL,
   {
     toolId: 'dataExport',
     name: 'Secure Data Export',

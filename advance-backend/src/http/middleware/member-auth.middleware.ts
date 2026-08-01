@@ -15,6 +15,7 @@
  *                            "scheduled_workflow" marks a machine-issued run)
  *   res.locals.email      (string | null)
  *   res.locals.channel    ("desktop" | "lark", trusted from the signed token)
+ *   res.locals.runtimeContextAudience ("private" | "shared" for Pi leases)
  */
 
 import type { Request, Response, NextFunction } from 'express';
@@ -63,6 +64,9 @@ interface MemberJwtPayload {
   channel?:  string;
   instanceId?: string;
   threadId?: string;
+  runId?: string;
+  chatId?: string;
+  contextAudience?: 'private' | 'shared';
   departmentId?: string;
   iat?:      number;
   jti?:      string;
@@ -228,6 +232,9 @@ export function createMemberAuthMiddleware(deps: MemberAuthMiddlewareDeps) {
       if (payload.aud === PI_RUNTIME_AUDIENCE) {
         res.locals['runtimeInstanceId'] = payload.instanceId;
         res.locals['runtimeThreadId'] = payload.threadId;
+        res.locals['runtimeRunId'] = payload.runId;
+        res.locals['runtimeChatId'] = payload.chatId;
+        res.locals['runtimeContextAudience'] = payload.contextAudience;
         res.locals['runtimeDepartmentId'] = payload.departmentId ?? null;
       }
       next();

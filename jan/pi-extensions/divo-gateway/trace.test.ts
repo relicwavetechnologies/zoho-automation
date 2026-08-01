@@ -19,13 +19,14 @@ afterEach(() => {
 	delete process.env.DIVO_LLM_PROXY_ACTIVE;
 });
 
-async function traceHarness(runId: string) {
+async function traceHarness(runId: string, channel?: "lark") {
 	const directory = await mkdtemp(join(tmpdir(), "divo-trace-lifecycle-"));
 	const contextPath = join(directory, "run.json");
 	await writeFile(contextPath, JSON.stringify({
 		version: 1,
 		threadId: `thread-${runId}`,
 		runId,
+		...(channel ? { channel } : {}),
 	}));
 	process.env.DIVO_RUN_CONTEXT_PATH = contextPath;
 	process.env.DIVO_BACKEND_URL = "http://localhost:8000";
@@ -119,6 +120,16 @@ describe("Divo trace terminal classification", () => {
 });
 
 describe("Divo trace correlation", () => {
+	it("marks a Lark trace so the backend does not capture personal learning twice", async () => {
+		const { batches, handlers } = await traceHarness("run-lark", "lark");
+
+		await handlers.get("agent_start")?.({ type: "agent_start" }, {});
+		handlers.get("agent_end")?.({ messages: [SUCCESS_MESSAGE] }, {});
+
+		assert.ok(batches.length > 0);
+		assert.equal(batches.every((batch) => batch.runtimeChannel === "lark"), true);
+	});
+
 	it("injects the desktop run correlation only into the governed DeepSeek request", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "divo-trace-"));
 		const contextPath = join(directory, "run.json");

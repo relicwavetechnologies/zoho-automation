@@ -356,7 +356,7 @@ export function debugReplyDecision(data: {
 /** Log supervisor.run() entry — which execution path is taken. */
 export function debugSupervisorEntry(data: {
   path: 'governed_lark';
-  hasMem0: boolean;
+  hasKnowledgeRecall: boolean;
   hasApprovalGate: boolean;
   hasMemoryContext: boolean;
   hasGroupContext: boolean;
@@ -366,7 +366,7 @@ export function debugSupervisorEntry(data: {
   append([
     separator(`SUPERVISOR ENTRY — ${ts()}`),
     `Path:                ${data.path}`,
-    `Mem0:                ${data.hasMem0}`,
+    `Knowledge recall:    ${data.hasKnowledgeRecall}`,
     `Approval gate:       ${data.hasApprovalGate}`,
     `Memory context:      ${data.hasMemoryContext}`,
     `Group context:       ${data.hasGroupContext}`,

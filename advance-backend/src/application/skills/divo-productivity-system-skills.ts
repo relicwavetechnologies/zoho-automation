@@ -202,7 +202,7 @@ function definitionFields(folderId: string, definition: DivoProductivitySystemSk
   return {
     departmentId: null,
     folderId,
-    scope: 'global',
+    scope: 'company',
     name: definition.name,
     slug: definition.slug,
     summary: definition.summary,
@@ -220,7 +220,7 @@ function matchesDefinition(
 ): boolean {
   return current.departmentId === null
     && current.folderId === folderId
-    && current.scope === 'global'
+    && current.scope === 'company'
     && current.name === definition.name
     && current.slug === definition.slug
     && current.summary === definition.summary

@@ -50,7 +50,9 @@ function makeService(row: ReturnType<typeof makeRow> | null, opts: { resolveOk?:
     resumer: { resume: async (id: string) => { calls.resumed.push(id); } } as never,
     logger,
     audit: { record: (entry: unknown) => { calls.audit.push(entry); } } as never,
-    onResolvedCard: async (messageId, decision, byName) => { calls.cards.push({ messageId, decision, byName }); },
+    onResolvedCard: async (messageId, decision, byName, request) => {
+      calls.cards.push({ messageId, decision, byName, request });
+    },
   });
   return { service, calls };
 }
@@ -140,7 +142,20 @@ describe('approval inbox — deciding', () => {
     const { service, calls } = makeService(makeRow({ decisionMessageId: 'om_123', channel: 'lark' }));
     await service.decide(APPROVER, 'approval-1', 'rejected');
 
-    assert.deepEqual(calls.cards, [{ messageId: 'om_123', decision: 'rejected', byName: 'Priya Nair' }]);
+    assert.deepEqual(calls.cards, [{
+      messageId: 'om_123',
+      decision: 'rejected',
+      byName: 'Priya Nair',
+      request: {
+        toolId: 'googleGmail',
+        action: 'send',
+        args: { to: ['boss@example.com'], subject: 'Q2' },
+        summary: 'Send email',
+        requesterName: 'aman@example.com',
+        authority: 'department_manager',
+        departmentName: 'Finance',
+      },
+    }]);
   });
 
   it('does not resume a gateway approval — the requester retries it themselves', async () => {

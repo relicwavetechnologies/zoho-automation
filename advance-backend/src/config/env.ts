@@ -37,7 +37,8 @@ const EnvSchema = z.object({
   // Optional dedicated connections. Each falls back to REDIS_URL when not set.
   //   REDIS_QUEUE_URL  → BullMQ ingestion queue only (blocking cmds, Lua scripts).
   //   REDIS_CACHE_URL  → hot-path app cache: permissions, OAuth tokens, agent defs.
-  //   REDIS_MEMORY_URL → memory system cache + nonces + knowledge-share + Cloudinary.
+  //   REDIS_MEMORY_URL → short-lived security/workflow keys. The legacy name is
+  //   retained for deployment compatibility; durable knowledge never lives here.
   REDIS_QUEUE_URL:  z.string().default(''),
   REDIS_CACHE_URL:  z.string().default(''),
   REDIS_MEMORY_URL: z.string().default(''),
@@ -96,6 +97,10 @@ const EnvSchema = z.object({
   // The controller remains private to the backend host. Only the Lark webhook
   // is exposed through the public backend URL during local ngrok validation.
   PI_LARK_CONTROLLER_URL: z.string().url().default('http://127.0.0.1:4317'),
+  // URL the host-side controller uses to validate a runtime lease against this
+  // exact backend instance. Configure an internal service URL when the public
+  // OAuth origin terminates at a different instance or deployment.
+  PI_LARK_BACKEND_URL: z.string().url().optional(),
   PI_LARK_RUNTIME_INSTANCE_ID: z.string().min(1).default('pi-local-1'),
   PI_RUNTIME_LEASE_TTL_SECONDS: positiveInt(3_600),
   PI_LARK_RUN_TIMEOUT_MS: positiveInt(1_800_000),
@@ -114,6 +119,15 @@ const EnvSchema = z.object({
   LARK_VERIFICATION_TOKEN:     z.string().optional(),   // legacy HMAC-SHA256 signature
   LARK_WEBHOOK_SIGNING_SECRET: z.string().optional(),   // newer signing secret
   LARK_WEBHOOK_MAX_SKEW_SECONDS: positiveInt(300),
+  // Must be the exact HTTPS Message Card request URL configured in the Lark
+  // Developer Console. Interactive cards fail closed when this is absent.
+  LARK_CARD_CALLBACK_URL: z.string().url().refine(
+    value => {
+      const path = new URL(value).pathname;
+      return path === '/webhooks/lark/events' || path === '/webhooks/lark/card';
+    },
+    'LARK_CARD_CALLBACK_URL must end with /webhooks/lark/events or /webhooks/lark/card',
+  ).optional(),
   // Token refresh tuning (carried from old backend .env)
   LARK_TENANT_TOKEN_REFRESH_BUFFER_SECONDS: positiveInt(180),
   LARK_TENANT_TOKEN_FETCH_MAX_RETRIES:      positiveInt(3),
@@ -142,13 +156,6 @@ const EnvSchema = z.object({
   // With it off, Divo answers from the inline excerpt alone and says so when
   // the excerpt does not cover the whole file, rather than promising a
   // retrieval that will never be possible.
-
-  // ── Qdrant vector store ───────────────────────────────────────────────────
-  QDRANT_URL:                  z.string().default('http://127.0.0.1:6333'),
-  QDRANT_API_KEY:              z.string().optional(),
-  QDRANT_COLLECTION:           z.string().default('divo_vectors'),
-  QDRANT_RETRIEVAL_COLLECTION: z.string().default('retrieval_v3'),
-  QDRANT_TIMEOUT_MS:           positiveInt(10_000),
 
   // ── Web / context search ──────────────────────────────────────────────────
   SERPER_API_KEY:                z.string().optional(),
@@ -238,12 +245,27 @@ const EnvSchema = z.object({
   /** Optional static key for machine-to-machine access to /api/executions. */
   INTERNAL_API_KEY: z.string().optional(),
 
-  // ── Document ingestion (file upload + RAG) ────────────────────────────────
-  DOC_UPLOAD_MAX_MB:          positiveInt(24),
-  DOC_EXTRACT_MAX_WORDS:      positiveInt(100_000),
-  REDIS_INGESTION_QUEUE_NAME: z.string().default('ingestion'),
-  INGESTION_WORKER_CONCURRENCY: positiveInt(2),
-  INGESTION_JOB_RETRIES:      positiveInt(3),
+  // ── Governed knowledge files ─────────────────────────────────────────────
+  KNOWLEDGE_FILE_MAX_MB: positiveInt(24),
+  KNOWLEDGE_FILE_STAGING_TTL_HOURS: positiveInt(24),
+  KNOWLEDGE_FILE_CLEANUP_INTERVAL_SECONDS: positiveInt(3_600),
+  KNOWLEDGE_FILE_DELETION_LEASE_SECONDS: positiveInt(300),
+  KNOWLEDGE_FILE_MALWARE_SCAN_MODE: z.enum(['required', 'disabled']).default('required'),
+  CLAMAV_HOST: z.string().min(1).default('127.0.0.1'),
+  CLAMAV_PORT: z.coerce.number().int().min(1).max(65_535).default(3_310),
+  CLAMAV_SCAN_TIMEOUT_SECONDS: positiveInt(45),
+  KNOWLEDGE_DOCUMENT_PARSE_TIMEOUT_SECONDS: positiveInt(300),
+  KNOWLEDGE_DOCUMENT_INDEX_CONCURRENCY: positiveInt(2),
+  KNOWLEDGE_DOCUMENT_MAX_PAGES: positiveInt(500),
+  KNOWLEDGE_DOCUMENT_MAX_OCR_PAGES: positiveInt(100),
+  KNOWLEDGE_DOCUMENT_MAX_ARCHIVE_ENTRIES: positiveInt(10_000),
+  KNOWLEDGE_DOCUMENT_MAX_ARCHIVE_UNCOMPRESSED_BYTES: positiveInt(100_000_000),
+  KNOWLEDGE_DOCUMENT_MAX_ARCHIVE_COMPRESSION_RATIO: positiveInt(200),
+  KNOWLEDGE_DOCUMENT_CHUNK_TARGET_CHARS: positiveInt(2_800),
+  KNOWLEDGE_DOCUMENT_CHUNK_MAX_CHARS: positiveInt(3_600),
+  KNOWLEDGE_DOCUMENT_CHUNK_OVERLAP_CHARS: z.coerce.number().int().min(0).default(320),
+  KNOWLEDGE_DOCUMENT_MAX_CHUNKS: positiveInt(2_000),
+  KNOWLEDGE_DOCUMENT_MAX_EXTRACTED_CHARS: positiveInt(4_000_000),
 
   // ── Manager persona learning ─────────────────────────────────────────────
   REDIS_PERSONA_LEARNING_QUEUE_NAME: z.string().default('persona-learning'),
@@ -273,21 +295,6 @@ const EnvSchema = z.object({
   MANAGER_TEACH_EVIDENCE_MAX_MB: positiveInt(5),
   MANAGER_TEACH_PERSONA_MAX_INPUT_CHARS: z.coerce.number().int().min(20_000).default(800_000),
 
-  // ── RAG retrieval tuning ──────────────────────────────────────────────────
-  RAG_GRADE_THRESHOLD:   positiveNum(3),
-  RAG_MAX_REWRITES:      positiveInt(1),
-  RAG_MAX_REFINES:       positiveInt(1),
-  RAG_FULL_READ_MAX_CHARS: positiveInt(18_000),
-
-  // ── RAG feature flags (all default on) ───────────────────────────────────
-  FILE_RAG_CHUNK_SEARCH_ENABLED:   booleanStr.default('true'),
-  FILE_RAG_FULL_READ_ENABLED:      booleanStr.default('true'),
-  FILE_RAG_GRADING_ENABLED:        booleanStr.default('true'),
-  FILE_RAG_REWRITE_ENABLED:        booleanStr.default('true'),
-  FILE_RAG_ANSWER_GRADING_ENABLED: booleanStr.default('true'),
-  FILE_RAG_MULTIMODAL_ENABLED:     booleanStr.default('true'),
-  FILE_RAG_KNOWLEDGE_SHARE_ENABLED: booleanStr.default('true'),
-
   // ── Member session auth ───────────────────────────────────────────────────
   MEMBER_JWT_SECRET: z.string().min(1).default('dev-member-secret-change-me'),
 
@@ -308,11 +315,34 @@ const EnvSchema = z.object({
   DIVO_AUTONOMOUS_WORKERS_ENABLED: booleanStr.default('true'),
   SCHEDULED_WORKFLOW_POLL_INTERVAL_MS: z.coerce.number().int().min(10_000).default(120_000),
 
-  // ── Mem0 persistent memory layer ─────────────────────────────────────────
-  MEM0_ENABLED:           booleanStr.default('false'),
-  MEM0_EXTRACTION_MODEL:  z.string().default('gpt-4o-mini'),
-  MEM0_QDRANT_COLLECTION: z.string().default('divo_memories'),
-  MEM0_MAX_RESULTS:       positiveInt(10),
+  // ── Hindsight semantic recall projection ────────────────────────────────
+  // Versioned Postgres knowledge remains authoritative. Hindsight is private
+  // backend infrastructure; Desktop/Pi never receive its URL, key, or bank ID.
+  HINDSIGHT_ENABLED:              booleanStr.default('false'),
+  HINDSIGHT_URL:                  z.string().url().default('http://127.0.0.1:8888'),
+  HINDSIGHT_API_KEY:              z.string().optional(),
+  HINDSIGHT_MAX_RESULTS:          positiveInt(12),
+  HINDSIGHT_RECALL_MAX_TOKENS:    positiveInt(1_200),
+  HINDSIGHT_RECALL_BUDGET:        z.enum(['low', 'mid', 'high']).default('mid'),
+  HINDSIGHT_REQUEST_TIMEOUT_MS:   positiveInt(10_000),
+  HINDSIGHT_RECALL_CONCURRENCY:   z.coerce.number().int().min(1).max(32).default(4),
+  // Durable knowledge outbox. Every live write projects synchronously first;
+  // this worker heals crashes and transient Hindsight/registry outages.
+  KNOWLEDGE_PROJECTION_POLL_INTERVAL_MS: z.coerce.number().int().min(1_000).default(5_000),
+  KNOWLEDGE_PROJECTION_BATCH_SIZE: z.coerce.number().int().min(1).max(200).default(20),
+  KNOWLEDGE_PROJECTION_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(10),
+  KNOWLEDGE_PROJECTION_PROCESSING_LEASE_SECONDS: positiveInt(300),
+  KNOWLEDGE_HEALTH_PENDING_AGE_WARNING_SECONDS: positiveInt(300),
+
+  // Structured personal learning. Semantic classification is model-owned;
+  // these values are auditable promotion policy, not text-matching rules.
+  KNOWLEDGE_LEARNING_ENABLED: booleanStr.default('true'),
+  REDIS_KNOWLEDGE_LEARNING_QUEUE_NAME: z.string().default('knowledge-learning'),
+  KNOWLEDGE_LEARNING_WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(20).default(1),
+  KNOWLEDGE_LEARNING_MODEL_ID: z.string().default('deepseek-v4-flash'),
+  KNOWLEDGE_LEARNING_IMMEDIATE_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.9),
+  KNOWLEDGE_LEARNING_REPEATED_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.75),
+  KNOWLEDGE_LEARNING_REPEATED_EVIDENCE_COUNT: z.coerce.number().int().min(2).max(10).default(3),
 });
 
 export type TypedEnv = z.infer<typeof EnvSchema>;
@@ -362,5 +392,47 @@ export const loadAndValidateEnv = (raw: NodeJS.ProcessEnv): TypedEnv => {
     console.error(result.error.flatten().fieldErrors);
     process.exit(1);
   }
+  const productionIssues = validateProductionEnv(result.data);
+  if (productionIssues.length > 0) {
+    console.error('Unsafe production environment:');
+    console.error(productionIssues);
+    process.exit(1);
+  }
   return result.data;
+};
+
+/** Central fail-closed deployment invariants; runtime code must not weaken these. */
+export const validateProductionEnv = (env: TypedEnv): string[] => {
+  if (env.NODE_ENV !== 'production') return [];
+  const issues: string[] = [];
+  if (env.KNOWLEDGE_FILE_MALWARE_SCAN_MODE !== 'required') {
+    issues.push('KNOWLEDGE_FILE_MALWARE_SCAN_MODE must be required in production.');
+  }
+  if (env.ADMIN_JWT_SECRET === 'dev-secret-change-me' || env.ADMIN_JWT_SECRET.length < 32) {
+    issues.push('ADMIN_JWT_SECRET must be a production secret of at least 32 characters.');
+  }
+  if (env.MEMBER_JWT_SECRET === 'dev-member-secret-change-me' || env.MEMBER_JWT_SECRET.length < 32) {
+    issues.push('MEMBER_JWT_SECRET must be a production secret of at least 32 characters.');
+  }
+  if (env.ADMIN_JWT_SECRET === env.MEMBER_JWT_SECRET) {
+    issues.push('ADMIN_JWT_SECRET and MEMBER_JWT_SECRET must be different.');
+  }
+  if (!env.LARK_ENCRYPT_KEY && !env.LARK_VERIFICATION_TOKEN && !env.LARK_WEBHOOK_SIGNING_SECRET) {
+    issues.push('At least one Lark webhook verification secret is required in production.');
+  }
+  const controllerHost = new URL(env.PI_LARK_CONTROLLER_URL).hostname.toLowerCase();
+  if (controllerHost === 'localhost' || controllerHost === '127.0.0.1' || controllerHost === '::1') {
+    issues.push('PI_LARK_CONTROLLER_URL must name the private isolated controller service in production.');
+  }
+  if (!env.HINDSIGHT_ENABLED || !env.HINDSIGHT_API_KEY) {
+    issues.push('Hindsight and its private API key are required for production semantic knowledge recall.');
+  }
+  const cloudinary = [env.CLOUDINARY_CLOUD_NAME, env.CLOUDINARY_API_KEY, env.CLOUDINARY_API_SECRET];
+  if (!cloudinary.every(Boolean)) {
+    issues.push('Private governed-file storage requires all Cloudinary credentials in production.');
+  }
+  if (!env.OPENROUTER_API_KEY) {
+    issues.push('OPENROUTER_API_KEY is required to index approved images and scanned PDFs in production.');
+  }
+  return issues;
 };

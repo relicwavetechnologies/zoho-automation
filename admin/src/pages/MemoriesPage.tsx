@@ -1,15 +1,10 @@
 import { useState } from "react"
-import { Brain, Building2, ChevronRight, Globe, Loader2, Trash2, Users } from "lucide-react"
+import { Brain, Building2, ChevronRight, Globe, Loader2, Users } from "lucide-react"
 import { MetricCard, MetricStrip } from "@/components/admin/metric-card"
 import { PageHeader } from "@/components/admin/page-header"
 import { SectionCard } from "@/components/admin/section-card"
 import { EmptyState } from "@/components/admin/empty-state"
 import { useMemoryData, type MemoryEntry } from "./memory/use-memory-data"
-
-/**
- * Presentation only. The memory subsystem itself is being reworked elsewhere —
- * nothing here reaches past `use-memory-data`.
- */
 
 function formatDate(iso?: string): string {
   if (!iso) return "—"
@@ -18,16 +13,14 @@ function formatDate(iso?: string): string {
   } catch { return iso }
 }
 
-const SCOPE_LABEL: Record<string, string> = {
-  user: "One person",
+const SCOPE_LABEL: Record<MemoryEntry["scope"], string> = {
   department: "A department",
   company: "Everyone",
 }
 
 export function MemoriesPage() {
-  const { memories, stats, loading, error, filters, setFilters, deleteMemory } = useMemoryData()
+  const { memories, stats, loading, error, filters, setFilters } = useMemoryData()
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
 
   if (loading) {
     return (
@@ -43,14 +36,14 @@ export function MemoriesPage() {
   return (
     <div className="page">
       <PageHeader
-        eyebrow="Memory"
-        title="What Divo has learned"
-        description="Facts Divo picked up from conversations and kept. They persist across sessions, which is why a wrong one is worth deleting rather than ignoring."
+        eyebrow="AI Memory"
+        title="Governed knowledge"
+        description="Canonical department and company memory. Shared changes always follow review, live RBAC, and approval policy. Personal content stays private."
       />
 
       <div className="ws-stack">
         <MetricStrip columns={3}>
-          <MetricCard label="Personal" value={String(stats?.totalUser ?? 0)} detail="Private to one person" icon={Users} />
+          <MetricCard label="Personal" value={String(stats?.totalPersonal ?? 0)} detail="Private content hidden from admins" icon={Users} />
           <MetricCard label="Department" value={String(stats?.totalDepartment ?? 0)} detail="Shared inside one team" icon={Building2} />
           <MetricCard label="Company" value={String(stats?.totalCompany ?? 0)} detail="Applies to everyone" icon={Globe} />
         </MetricStrip>
@@ -59,48 +52,33 @@ export function MemoriesPage() {
           <select
             className="select"
             value={filters.scope ?? "all"}
-            onChange={(e) => setFilters({ ...filters, scope: e.target.value === "all" ? undefined : e.target.value })}
+            onChange={(event) => setFilters({
+              ...filters,
+              scope: event.target.value === "all" ? undefined : event.target.value,
+            })}
           >
-            <option value="all">Every scope</option>
-            <option value="user">Personal</option>
+            <option value="all">Every shared scope</option>
             <option value="department">Department</option>
             <option value="company">Company</option>
           </select>
-          <input
-            className="input"
-            placeholder="Filter by user ID"
-            value={filters.userId ?? ""}
-            onChange={(e) => setFilters({ ...filters, userId: e.target.value || undefined })}
-            style={{ width: 210 }}
-          />
         </div>
 
-        <SectionCard title="Stored memories" description="Newest first. Open one to see where it came from." flush>
+        <SectionCard title="Stored memories" description="Newest first. Open one to inspect its human-readable provenance." flush>
           {error ? (
             <EmptyState title="Memory API unavailable" description={error} />
           ) : memories.length === 0 ? (
             <EmptyState
-              title="Nothing learned yet"
-              description="Memories are picked up from conversations. Someone can also add one explicitly with /remember in Lark."
+              title="No shared memories"
+              description="Department and company knowledge appears here only after the governed review and approval flow completes."
             />
           ) : (
             <div className="ws-rows">
-              {memories.map((mem) => (
+              {memories.map((memory) => (
                 <MemoryRow
-                  key={mem.id}
-                  memory={mem}
-                  expanded={expandedId === mem.id}
-                  confirmDelete={confirmDeleteId === mem.id}
-                  onToggle={() => setExpandedId(expandedId === mem.id ? null : mem.id)}
-                  onDelete={() => {
-                    if (confirmDeleteId === mem.id) {
-                      deleteMemory(mem.id)
-                      setConfirmDeleteId(null)
-                    } else {
-                      setConfirmDeleteId(mem.id)
-                    }
-                  }}
-                  onCancelDelete={() => setConfirmDeleteId(null)}
+                  key={memory.id}
+                  memory={memory}
+                  expanded={expandedId === memory.id}
+                  onToggle={() => setExpandedId(expandedId === memory.id ? null : memory.id)}
                 />
               ))}
             </div>
@@ -114,20 +92,13 @@ export function MemoriesPage() {
 function MemoryRow({
   memory,
   expanded,
-  confirmDelete,
   onToggle,
-  onDelete,
-  onCancelDelete,
 }: {
   memory: MemoryEntry
   expanded: boolean
-  confirmDelete: boolean
   onToggle: () => void
-  onDelete: () => void
-  onCancelDelete: () => void
 }) {
-  const scope = (memory.metadata?.scope as string) ?? "user"
-  const source = (memory.metadata?.source as string) ?? "auto"
+  const source = typeof memory.metadata?.source === "string" ? memory.metadata.source : "governed review"
 
   return (
     <div className="ws-row" style={{ alignItems: "flex-start" }}>
@@ -135,8 +106,7 @@ function MemoryRow({
       <div className="ws-row-main">
         <b style={{ fontWeight: 400 }}>{memory.memory}</b>
         <p>
-          {SCOPE_LABEL[scope] ?? scope} · {source === "auto" ? "learned on its own" : `added ${source}`} ·{" "}
-          {formatDate(memory.createdAt)}
+          {SCOPE_LABEL[memory.scope]} · {source} · {formatDate(memory.createdAt)}
         </p>
 
         {expanded ? (
@@ -147,7 +117,7 @@ function MemoryRow({
                 <pre>{JSON.stringify(memory.metadata, null, 2)}</pre>
               </div>
             ) : (
-              <div className="ws-sub">No source recorded for this memory.</div>
+              <div className="ws-sub">No additional provenance was recorded.</div>
             )}
             {memory.score !== undefined ? (
               <div className="ws-sub">Relevance {memory.score.toFixed(3)}</div>
@@ -161,17 +131,6 @@ function MemoryRow({
           </button>
         </div>
       </div>
-
-      {/* Two-step delete: memory is the one thing here that cannot be restored. */}
-      {!confirmDelete ? (
-        <button type="button" className="icon-btn" title="Forget this" onClick={onDelete}>
-          <Trash2 size={14} />
-        </button>
-      ) : (
-        <button type="button" className="btn" onClick={onDelete} onBlur={onCancelDelete} autoFocus>
-          Forget it
-        </button>
-      )}
     </div>
   )
 }

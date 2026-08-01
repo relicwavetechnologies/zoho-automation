@@ -18,6 +18,18 @@ import type { ResolvedManager } from './approval.types';
 export class ApprovalResolverService {
   constructor(private readonly prisma: PrismaClient) {}
 
+  /** Resolve an authenticated internal user ID to a human-facing card label. */
+  async resolveUserDisplayName(userId: string): Promise<string | null> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { name: true, email: true },
+    });
+    const name = user?.name?.trim();
+    if (name) return name;
+    const email = user?.email?.trim();
+    return email || null;
+  }
+
   /**
    * Priority:
    *   1. The active MANAGER of the department.
@@ -29,11 +41,17 @@ export class ApprovalResolverService {
   async resolveManager(
     departmentId: string,
     companyId:    string,
+    options: {
+      readonly excludeUserId?: string;
+      /** Shared knowledge uses the department's actual manager, never an implicit admin substitution. */
+      readonly allowCompanyAdminFallback?: boolean;
+    } = {},
   ): Promise<ResolvedManager | null> {
     const deptManager = await this.prisma.departmentMembership.findFirst({
       where: {
         departmentId,
         status: 'active',
+        ...(options.excludeUserId ? { userId: { not: options.excludeUserId } } : {}),
         role: {
           departmentId,
           slug: { in: ['MANAGER', 'manager'] },
@@ -51,7 +69,9 @@ export class ApprovalResolverService {
       };
     }
 
-    const admin = await this.resolveCompanyAdmin(companyId);
+    if (options.allowCompanyAdminFallback === false) return null;
+
+    const admin = await this.resolveCompanyAdmin(companyId, options);
     if (admin) return admin;
 
     // Companies migrated from the Lark-only era can have an admin who exists as
@@ -62,6 +82,7 @@ export class ApprovalResolverService {
         channel:    'lark',
         aiRole:     { contains: 'ADMIN' },
         larkOpenId: { not: null },
+        ...(options.excludeUserId ? { userId: { not: options.excludeUserId } } : {}),
       },
       orderBy: { updatedAt: 'desc' },
       select: { larkOpenId: true, displayName: true },
@@ -106,9 +127,17 @@ export class ApprovalResolverService {
   }
 
   /** Resolve one active company admin. */
-  async resolveCompanyAdmin(companyId: string): Promise<ResolvedManager | null> {
+  async resolveCompanyAdmin(
+    companyId: string,
+    options: { readonly excludeUserId?: string } = {},
+  ): Promise<ResolvedManager | null> {
     const admins = await this.prisma.adminMembership.findMany({
-      where: { companyId, isActive: true, role: { in: ['COMPANY_ADMIN', 'SUPER_ADMIN'] } },
+      where: {
+        companyId,
+        isActive: true,
+        role: { in: ['COMPANY_ADMIN', 'SUPER_ADMIN'] },
+        ...(options.excludeUserId ? { userId: { not: options.excludeUserId } } : {}),
+      },
       select: { userId: true, user: { select: { name: true, email: true } } },
       orderBy: { updatedAt: 'desc' },
     });

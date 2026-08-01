@@ -137,6 +137,7 @@ const SEARCH_SUBSTRINGS = ['search', 'resolve', 'lookup', 'query', 'rag']
 /** Divo's own capabilities — memory, persona, RAG, connections. */
 const DIVO_SUBSTRINGS = [
   'memory',
+  'knowledge',
   'persona',
   'capabilit',
   'connection',

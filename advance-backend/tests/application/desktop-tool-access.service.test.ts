@@ -45,7 +45,7 @@ function makeService(options: {
       return options.revokeCompanyMembershipOnSecondCheck && companyMembershipChecks >= 2 ? null : { role: companyRole };
     } },
     registeredTool: {
-      findMany: async () => options.registeredTools ?? [tool, { ...tool, toolId: 'memoryRecall', name: 'Memory Recall' }, { ...tool, toolId: 'runCommand', name: 'Terminal' }],
+      findMany: async () => options.registeredTools ?? [tool, { ...tool, toolId: 'knowledge', name: 'Knowledge' }, { ...tool, toolId: 'runCommand', name: 'Terminal' }],
       findFirst: async ({ where }: any) => where.toolId === 'larkTask' ? tool : null,
     },
     departmentMembership: {
@@ -101,7 +101,7 @@ function makeService(options: {
     toolActionRepo, deptToolPermRepo, deptUserOverrideRepo, permissions,
     auditService: { record: (entry: Record<string, unknown>) => audits.push(entry) } as any,
     toolRegistry: {
-      byId: (toolId: string) => (options.runtimeToolIds ?? ['larkTask', 'memoryRecall', 'runCommand']).includes(toolId) ? {} : undefined,
+      byId: (toolId: string) => (options.runtimeToolIds ?? ['larkTask', 'knowledge', 'runCommand']).includes(toolId) ? {} : undefined,
     } as any,
   });
   const service = new DesktopToolAccessService({
@@ -118,7 +118,7 @@ function makeService(options: {
       listAccessibleAitableConnections: async () => ({ ok: true as const, value: options.aitableConnections ?? [] }),
     } as any,
     toolRegistry: {
-      byId: (toolId: string) => (options.runtimeToolIds ?? ['larkTask', 'memoryRecall', 'runCommand']).includes(toolId) ? {} : undefined,
+      byId: (toolId: string) => (options.runtimeToolIds ?? ['larkTask', 'knowledge', 'runCommand']).includes(toolId) ? {} : undefined,
     } as any,
     logger: options.logger ?? { error: () => {}, warn: () => {}, info: () => {}, debug: () => {}, child() { return this; } } as any,
   });
@@ -136,13 +136,12 @@ describe('DesktopToolAccessService', () => {
       { kind: 'department', department: { id: 'outreach', name: 'Outreach' }, allowedActions: ['update'] },
     ]);
     assert.deepEqual(lark.managementScopes, [{ kind: 'department', department: { id: 'ops', name: 'Ops' } }]);
-    assert.equal(result.tools.find(entry => entry.tool.toolId === 'memoryRecall')?.origins[0].kind, 'system');
     assert.equal(result.tools.find(entry => entry.tool.toolId === 'runCommand')?.origins[0].kind, 'local');
   });
 
   it('shows Canva as needing a personal or shared connection until one is accessible', async () => {
     const canva = { ...tool, toolId: 'canvaDesign', name: 'Canva', category: 'design', domain: 'canva' };
-    const runtimeToolIds = ['larkTask', 'canvaDesign', 'memoryRecall', 'runCommand'];
+    const runtimeToolIds = ['larkTask', 'canvaDesign', 'knowledge', 'runCommand'];
     const disconnected = makeService({ registeredTools: [canva], runtimeToolIds });
     assert.equal((await disconnected.service.inventory(actor)).tools[0]?.readiness, 'connection_required');
 
@@ -154,7 +153,7 @@ describe('DesktopToolAccessService', () => {
     // Without an Airtable branch here every Airtable tool reported
     // not_applicable, so the card rendered as usable while every call failed.
     const records = { ...tool, toolId: 'airtableRecords', name: 'Airtable Records', category: 'data', domain: 'airtable' };
-    const runtimeToolIds = ['larkTask', 'airtableRecords', 'memoryRecall', 'runCommand'];
+    const runtimeToolIds = ['larkTask', 'airtableRecords', 'knowledge', 'runCommand'];
     const disconnected = makeService({ registeredTools: [records], runtimeToolIds });
     assert.equal((await disconnected.service.inventory(actor)).tools[0]?.readiness, 'connection_required');
 
@@ -221,7 +220,7 @@ describe('DesktopToolAccessService', () => {
 
   it('requires a shared Lark connection only for Lark APIs that support user tokens', async () => {
     const contacts = { ...tool, toolId: 'larkContacts', name: 'Lark Contacts' };
-    const runtimeToolIds = ['larkTask', 'larkContacts', 'memoryRecall', 'runCommand'];
+    const runtimeToolIds = ['larkTask', 'larkContacts', 'knowledge', 'runCommand'];
     const disconnected = makeService({ registeredTools: [tool, contacts], runtimeToolIds });
     const tools = (await disconnected.service.inventory(actor)).tools;
     assert.equal(tools.find(entry => entry.tool.toolId === 'larkTask')?.readiness, 'connection_required');
@@ -274,7 +273,7 @@ describe('DesktopToolAccessService', () => {
     assert.equal(writes[1].scope, 'department-member');
     assert.equal(audits[1].action, 'permission.set_dept_member_action');
     await assert.rejects(
-      () => service.setDepartmentRole(actor, 'memoryRecall', 'ops', 'role-ops', 'read', true),
+      () => service.setDepartmentRole(actor, 'runCommand', 'ops', 'role-ops', 'read', true),
       (error: unknown) => error instanceof DesktopToolAccessError && error.code === 'invalid',
     );
   });
@@ -506,7 +505,7 @@ describe('DesktopToolAccessService', () => {
     const errors: Array<{ event: string; data?: Record<string, unknown> }> = [];
     const logger = { error: (event: string, data?: Record<string, unknown>) => errors.push({ event, data }) };
     const { service } = makeService({
-      runtimeToolIds: ['memoryRecall', 'runCommand'],
+      runtimeToolIds: ['knowledge', 'runCommand'],
       registeredTools: [tool, { ...tool, toolId: 'notClassified', name: 'Unclassified' }],
       logger,
     });

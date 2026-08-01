@@ -20,7 +20,7 @@ import type { CachePort } from '../../shared/cache';
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type CloudinaryResourceType = 'image' | 'video' | 'raw' | 'auto';
-type CloudinaryDeliveryType = 'upload' | 'private' | 'authenticated';
+export type CloudinaryDeliveryType = 'upload' | 'private' | 'authenticated';
 
 export interface CloudinaryUploadResult {
   readonly publicId:         string;
@@ -211,10 +211,17 @@ export class CloudinaryAdapter {
 
   // ─── Deletion ───────────────────────────────────────────────────────────────
 
-  async deleteAsset(publicId: string, resourceType: CloudinaryResourceType = 'raw'): Promise<void> {
+  async deleteAsset(
+    publicId: string,
+    resourceType: CloudinaryResourceType = 'raw',
+    deliveryType: CloudinaryDeliveryType = 'upload',
+  ): Promise<void> {
     if (!this.configured) return;
     try {
-      await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
+      await cloudinary.uploader.destroy(publicId, {
+        resource_type: resourceType,
+        type: deliveryType,
+      });
       this.logger.info('cloudinary.delete.success', { publicId });
     } catch (err) {
       this.logger.warn('cloudinary.delete.failed', {
@@ -222,6 +229,22 @@ export class CloudinaryAdapter {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  async deleteAssetStrict(
+    publicId: string,
+    resourceType: CloudinaryResourceType = 'raw',
+    deliveryType: CloudinaryDeliveryType = 'upload',
+  ): Promise<void> {
+    this.assertConfigured();
+    const result = await cloudinary.uploader.destroy(publicId, {
+      resource_type: resourceType,
+      type: deliveryType,
+    }) as { result?: string };
+    if (result.result !== 'ok' && result.result !== 'not found') {
+      throw new Error(`Cloudinary deletion returned ${result.result ?? 'an unknown result'}.`);
+    }
+    this.logger.info('cloudinary.delete.success', { publicId });
   }
 
   /**
@@ -310,6 +333,24 @@ export class CloudinaryAdapter {
       sign_url:      true,
       type:          'upload',
       expires_at:    Math.floor(Date.now() / 1000) + expiresInSeconds,
+    });
+  }
+
+  getSignedAssetUrl(input: {
+    publicId: string;
+    resourceType: CloudinaryResourceType;
+    deliveryType: Extract<CloudinaryDeliveryType, 'private' | 'authenticated'>;
+    expiresInSeconds: number;
+    attachment?: boolean;
+  }): string {
+    this.assertConfigured();
+    return cloudinary.url(input.publicId, {
+      resource_type: input.resourceType,
+      sign_url: true,
+      secure: true,
+      type: input.deliveryType,
+      expires_at: Math.floor(Date.now() / 1000) + input.expiresInSeconds,
+      ...(input.attachment === false ? {} : { flags: 'attachment' }),
     });
   }
 

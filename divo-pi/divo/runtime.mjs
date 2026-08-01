@@ -67,14 +67,17 @@ const ABANDONED_RUN_SESSION_TTL_MS = 6 * 60 * 60_000;
  * and they are the ones who see the answer. So the recall tools are withheld
  * there outright rather than left to the model's judgement.
  *
- * The scope is what decides this, and it is a partial signal. Every run-scoped
- * session is a group turn, so recall is correctly withheld from all of them. The
- * converse does not hold: a scheduled workflow is thread-scoped and may still
- * deliver into a group chat, and such a run is given recall today. Closing that
- * needs the caller to say who will read the answer, which the runtime cannot
- * work out for itself.
+ * The backend also signs a private/shared audience into the runtime lease. The
+ * controller uses that stronger signal to mount either the private durable
+ * volume or a fresh per-run shared volume. Session scope remains a defence in
+ * depth here: every shared Lark turn is run-scoped and loses recall tools.
  */
-const DIRECT_MESSAGE_ONLY_TOOLS = ["divo_search_chats", "divo_read_chat"];
+const DIRECT_MESSAGE_ONLY_TOOLS = [
+	"divo_memory_recall",
+	"divo_memory",
+	"divo_search_chats",
+	"divo_read_chat",
+];
 
 /** The extension registering those tools and the skill teaching them share a name. */
 const DIRECT_MESSAGE_ONLY_MODULES = ["divo-chat-history"];
@@ -84,8 +87,8 @@ const DIRECT_MESSAGE_ONLY_MODULES = ["divo-chat-history"];
  *
  * Withheld at the three places that decide what Pi can call — the extension that
  * registers the tools, the skill that teaches them, and the allowlist that
- * admits them. That removes the capability, not the underlying files;
- * `buildChildEnvironment` covers the signpost, and neither is a sandbox.
+ * admits them. The controller separately puts shared runs in a fresh disposable
+ * container and volume; this runtime filtering remains defence in depth.
  */
 export function scopedManifest(isRunScoped) {
 	if (!isRunScoped) return manifest;
@@ -101,6 +104,22 @@ export function scopedManifest(isRunScoped) {
 			(name) => !DIRECT_MESSAGE_ONLY_TOOLS.includes(name),
 		),
 	};
+}
+
+/**
+ * A shared Lark turn must not receive the requester's private memory snapshot.
+ * The same sanitized value is written to disk and injected into the prompt.
+ * Shared runs already have an empty per-run volume, so read/bash cannot reach a
+ * direct-message tree; sanitizing still prevents accidental prompt injection.
+ */
+export function runtimeContextForSession(runtimeContext, isRunScoped) {
+	if (
+		!isRunScoped
+		|| !runtimeContext
+		|| typeof runtimeContext !== "object"
+		|| Array.isArray(runtimeContext)
+	) return runtimeContext;
+	return { ...runtimeContext, personalMemory: [] };
 }
 
 function ensureDirectory(directory) {
@@ -148,6 +167,33 @@ export function sweepAbandonedRunSessions(
 		}
 		removeDirectory(directory);
 		removed.push(entry.name);
+	}
+	return removed;
+}
+
+export const PENDING_ATTACHMENT_TTL_MS = 24 * 60 * 60_000;
+
+/**
+ * Attachment-only DMs keep bytes briefly so the next natural-language message
+ * can use them. They are temporary workspace inputs, not durable knowledge;
+ * only an approved governed-file mutation moves a copy to backend storage.
+ */
+export function sweepExpiredPendingAttachments(
+	inboxRoot,
+	now = Date.now(),
+	ttlMs = PENDING_ATTACHMENT_TTL_MS,
+) {
+	if (!fs.existsSync(inboxRoot)) return [];
+	const removed = [];
+	for (const entry of fs.readdirSync(inboxRoot, { withFileTypes: true })) {
+		const candidate = path.join(inboxRoot, entry.name);
+		try {
+			if (now - fs.lstatSync(candidate).mtimeMs < ttlMs) continue;
+			removeDirectory(candidate);
+			removed.push(entry.name);
+		} catch (error) {
+			if (error?.code !== 'ENOENT') throw error;
+		}
 	}
 	return removed;
 }
@@ -239,12 +285,9 @@ export function buildChildEnvironment(baseEnvironment, values) {
 		DIVO_SCRIPTS_DIR: values.scriptsDir,
 		DIVO_ARTIFACTS_DIR: values.artifactsDir,
 		DIVO_LOGS_DIR: values.logsDir,
-		// A group turn is not told where past sessions live. This removes the
-		// signpost, not the path: `read` and `bash` stay available, `HOME` still
-		// names the state root the transcripts sit under, and everything in the
-		// container runs as one uid. Containing this properly needs a process
-		// boundary — a second uid or a mount namespace hiding the durable session
-		// tree — which is not something the runtime can do to itself.
+		// The signed shared-audience lease already put a group run in a fresh
+		// disposable volume. Withholding the history directory here is a second
+		// guard, so an extension cannot discover even a misleading path.
 		...(values.isRunScoped ? {} : { DIVO_CHAT_HISTORY_DIR: values.dataDir }),
 		DIVO_HOME: values.homeDir,
 		HOME: values.homeDir,
@@ -303,6 +346,21 @@ export function resolveRuntimeThreadId(thread, runtimeThreadId = thread) {
 	return value;
 }
 
+export function buildRunCorrelationContext({
+	threadId,
+	runId,
+	channel,
+	departmentId,
+}) {
+	return {
+		version: 1,
+		threadId,
+		runId,
+		...(channel === "lark" ? { channel: "lark" } : {}),
+		...(departmentId ? { departmentId } : {}),
+	};
+}
+
 export function buildPiArguments(values) {
 	const allowed = scopedManifest(values.isRunScoped);
 	const extensionArguments = allowed.extensions.flatMap((name) => [
@@ -353,7 +411,9 @@ export function buildPiArguments(values) {
 export function startDivoPi({
 	backendUrl,
 	token,
+	runId: trustedRunId,
 	departmentId,
+	channel,
 	runtimeContext,
 	stateRoot = defaultStateRoot,
 	workspace = path.join(stateRoot, "workspace"),
@@ -393,7 +453,7 @@ export function startDivoPi({
 		throw new Error("Divo Pi dependencies are missing. Run npm ci --ignore-scripts first.");
 	}
 
-	const runId = randomUUID();
+	const runId = trustedRunId ?? randomUUID();
 	const agentDir = path.join(stateRoot, "agent");
 	const dataDir = path.join(stateRoot, "data");
 	const homeDir = path.join(stateRoot, "home");
@@ -438,6 +498,7 @@ export function startDivoPi({
 	]) {
 		ensureDirectory(directory);
 	}
+	sweepExpiredPendingAttachments(path.join(internalDir, "inbox"));
 	prepareSessionDirectories({ isRunScoped, runSessionsRoot, runId, threadDir });
 	for (const extensionName of manifest.extensions) {
 		ensureExtensionLink(agentDir, extensionName);
@@ -455,18 +516,19 @@ export function startDivoPi({
 			2,
 		)}\n`,
 	);
-	fs.writeFileSync(runtimeContextPath, `${JSON.stringify(runtimeContext, null, 2)}\n`, {
+	const sessionRuntimeContext = runtimeContextForSession(runtimeContext, isRunScoped);
+	fs.writeFileSync(runtimeContextPath, `${JSON.stringify(sessionRuntimeContext, null, 2)}\n`, {
 		mode: 0o600,
 	});
 	fs.writeFileSync(
 		runContextPath,
 		`${JSON.stringify(
-			{
-				version: 1,
+			buildRunCorrelationContext({
 				threadId: executionThreadId,
 				runId,
-				...(departmentId ? { departmentId } : {}),
-			},
+				channel,
+				departmentId,
+			}),
 			null,
 			2,
 		)}\n`,
@@ -477,6 +539,7 @@ export function startDivoPi({
 		agentDir,
 		artifactsDir,
 		backendUrl,
+		channel,
 		dataDir,
 		departmentId,
 		homeDir,

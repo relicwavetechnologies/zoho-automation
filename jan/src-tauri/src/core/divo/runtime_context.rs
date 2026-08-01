@@ -90,6 +90,8 @@ pub struct DivoRuntimeContext {
     pub version: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub departments: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub personal_memory: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability_bootstrap: Option<DivoCapabilityBootstrap>,
 }
@@ -146,6 +148,7 @@ mod tests {
             persona_prompt: "Use verified records.".to_string(),
             version: Some("2026-07-11T00:00:00.000Z".to_string()),
             departments: vec!["Finance".to_string(), "Operations".to_string()],
+            personal_memory: vec!["User prefers concise summaries.".to_string()],
             capability_bootstrap: Some(DivoCapabilityBootstrap {
                 version: 3,
                 registry_revision: Some(7),
@@ -213,6 +216,7 @@ mod tests {
             persona_prompt: String::new(),
             version: None,
             departments: vec!["Finance".to_string(), "Operations".to_string()],
+            personal_memory: vec![],
             capability_bootstrap: None,
         };
 
@@ -222,7 +226,7 @@ mod tests {
         assert_eq!(restored, context);
         let serialized = String::from_utf8(fs::read(&path).unwrap()).unwrap();
         assert!(serialized.contains("\"departments\""));
-        assert!(!serialized.contains("memory"));
+        assert!(!serialized.contains("personalMemory"));
 
         let _ = fs::remove_dir_all(dir);
     }

@@ -119,6 +119,9 @@ const OP_LABELS: Record<string, string> = {
   'teach.context.get': 'teach context',
   'teach.learning.apply': 'teach learning update',
   'connections.list': 'connection list',
+  'memory.personal.mutate': 'personal memory update',
+  'knowledge.review.open': 'knowledge review',
+  'knowledge.review.decide': 'knowledge review decision',
   // What the user did was attach an image; what Divo does is read it. "Image
   // OCR" is the implementation's name for that, and naming the technique
   // instead of the act made the log read like a stack trace.

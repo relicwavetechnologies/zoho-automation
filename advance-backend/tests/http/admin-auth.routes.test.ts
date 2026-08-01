@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Request, Response } from 'express';
 import { createAdminAuthRoutes } from '../../src/http/admin/admin-auth.routes.ts';
-import { buildShareMemorySystemSkill } from '../../src/application/skills/share-memory-system-skill.ts';
+import { buildKnowledgeManagementSystemSkill } from '../../src/application/skills/knowledge-system-skill.ts';
 
 const noopLogger = {
   info: () => {},
@@ -40,9 +40,9 @@ async function callPost(
 }
 
 describe('admin auth company signup provisioning', () => {
-  it('creates the canonical Share Memory system skill in the company transaction', async () => {
+  it('creates the canonical Manage Knowledge system skill in the company transaction', async () => {
     const companyId = '11111111-2222-4333-8444-555555555555';
-    const expectedSkill = buildShareMemorySystemSkill(companyId);
+    const expectedSkill = buildKnowledgeManagementSystemSkill(companyId);
     let capturedUpsert: any = null;
     const createdSkillSlugs: string[] = [];
     const createdSkills = new Map<string, { id: string; slug: string }>();
@@ -145,11 +145,12 @@ describe('admin auth company signup provisioning', () => {
     assert.deepEqual(capturedUpsert.create, expectedSkill);
     assert.equal(capturedUpsert.create.slug, 'share-memory');
     assert.equal(capturedUpsert.create.isSystem, true);
-    assert.deepEqual(capturedUpsert.create.toolIds, ['memoryPublishing']);
+    assert.deepEqual(capturedUpsert.create.toolIds, ['knowledge']);
     assert.match(capturedUpsert.create.markdown, /divo_memory_review/);
-    assert.match(capturedUpsert.create.markdown, /only `proposalId` and the proposed `bullets`/);
-    assert.match(capturedUpsert.create.markdown, /Never pass `departmentId` or `allowedTargets`/);
-    assert.match(capturedUpsert.create.markdown, /review surface independently checks storage availability and current canonical targets/);
+    assert.match(capturedUpsert.create.markdown, /divo_knowledge_review/);
+    assert.match(capturedUpsert.create.markdown, /different active manager/);
+    assert.match(capturedUpsert.create.markdown, /different active company administrator/);
+    assert.match(capturedUpsert.create.markdown, /Never downgrade, redirect, duplicate/);
     for (const slug of [
       'airtable-core',
       'airtable-schema-ops',

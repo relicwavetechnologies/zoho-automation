@@ -27,16 +27,15 @@ const CHROME_DEVTOOLS_MCP_REL: &str =
 const DEFAULT_PI_PROVIDER: &str = "deepseek";
 const DEFAULT_PI_MODEL: &str = "deepseek-v4-flash";
 const LEGACY_DEFAULT_PI_MODEL: &str = "deepseek-v4-pro";
-const COMPANY_EXTENSION_NAMES: [&str; 6] = [
+const COMPANY_EXTENSION_NAMES: [&str; 5] = [
     "divo-llm",
     "divo-gateway",
-    "divo-memory",
     "divo-subagents",
     "divo-artifact",
     "divo-chat-history",
 ];
 const COMPANY_TOOL_ALLOWLIST: &str =
-    "read,write,edit,bash,divo_gateway,divo_skill_view,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents,divo_artifact,divo_search_chats,divo_read_chat";
+    "read,write,edit,bash,divo_gateway,divo_skill_view,divo_skill_resolve,divo_memory_recall,divo_memory,divo_memory_review,divo_knowledge_review,divo_teach_clarify,divo_subagents,divo_artifact,divo_search_chats,divo_read_chat";
 
 /// Every company Pi process has its own lifecycle lock, but its agent-dir
 /// bootstrap is shared by the whole desktop process. Keep all mutation of that
@@ -729,7 +728,6 @@ mod tests {
             trusted_extension_paths: vec![
                 PathBuf::from("/bundle/pi-extensions/divo-llm/index.ts"),
                 PathBuf::from("/bundle/pi-extensions/divo-gateway/index.ts"),
-                PathBuf::from("/bundle/pi-extensions/divo-memory/index.ts"),
                 PathBuf::from("/bundle/pi-extensions/divo-subagents/index.ts"),
                 PathBuf::from("/bundle/pi-extensions/divo-artifact/index.ts"),
                 PathBuf::from("/bundle/pi-extensions/divo-chat-history/index.ts"),
@@ -751,10 +749,10 @@ mod tests {
         assert!(args.windows(2).any(|pair| {
             pair == [
                 "--tools",
-                "read,write,edit,bash,divo_gateway,divo_skill_view,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents,divo_artifact,divo_search_chats,divo_read_chat",
+                "read,write,edit,bash,divo_gateway,divo_skill_view,divo_skill_resolve,divo_memory_recall,divo_memory,divo_memory_review,divo_knowledge_review,divo_teach_clarify,divo_subagents,divo_artifact,divo_search_chats,divo_read_chat",
             ]
         }));
-        assert_eq!(args.iter().filter(|arg| *arg == "--extension").count(), 6);
+        assert_eq!(args.iter().filter(|arg| *arg == "--extension").count(), 5);
         assert_eq!(args.iter().filter(|arg| *arg == "--skill").count(), 2);
     }
 

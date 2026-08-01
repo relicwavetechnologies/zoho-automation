@@ -21,7 +21,7 @@ export const MAX_MEMORY_REVIEW_BULLET_LENGTH = 500;
 export const MAX_MEMORY_REVIEW_REVISION_LENGTH = 1_000;
 
 type JsonRecord = Record<string, unknown>;
-type MemoryScope = "personal" | "department" | "company";
+type MemoryScope = "department" | "company";
 
 export interface MemoryReviewTargetV1 {
 	scope: MemoryScope;
@@ -47,6 +47,7 @@ type MemoryReviewPayloadV1 = Omit<MemoryReviewRequestV1, "runCorrelation">;
 export interface MemoryReviewProposalV1 {
 	proposalId: string;
 	bullets: MemoryReviewBulletV1[];
+	requestedScope?: MemoryScope;
 }
 
 export interface MemoryReviewResponseV1 {
@@ -60,6 +61,7 @@ export interface MemoryReviewResponseV1 {
 
 export interface MemoryReviewDependencies {
 	resolveConfig: () => DivoGatewayConfig | { error: string };
+	resolveSkillId: (toolId: string, runId: string) => string | undefined;
 	callGateway: (
 		config: DivoGatewayConfig,
 		request: GatewayRequestBody,
@@ -68,6 +70,7 @@ export interface MemoryReviewDependencies {
 
 const DEFAULT_DEPENDENCIES: MemoryReviewDependencies = {
 	resolveConfig: resolveDivoGatewayConfig,
+	resolveSkillId: () => undefined,
 	callGateway: callDivoGateway,
 };
 
@@ -82,6 +85,13 @@ const MEMORY_REVIEW_PARAMS = Type.Object({
 		}),
 		{ maxItems: MAX_MEMORY_REVIEW_BULLETS },
 	),
+	requestedScope: Type.Optional(Type.Union([
+		Type.Literal("department"),
+		Type.Literal("company"),
+	], {
+		description:
+			"Use only when the user explicitly asked for team/department or company memory. Department is bound by the backend to the authenticated active department.",
+	})),
 });
 
 function asRecord(value: unknown): JsonRecord | undefined {
@@ -117,6 +127,14 @@ export function validateMemoryReviewProposal(value: unknown): MemoryReviewPropos
 		);
 	}
 	const proposalId = boundedString(record.proposalId, "proposalId", 200);
+	const requestedScope = record.requestedScope;
+	if (
+		requestedScope !== undefined &&
+		requestedScope !== "department" &&
+		requestedScope !== "company"
+	) {
+		throw new Error("requestedScope must be department or company");
+	}
 	if (!Array.isArray(record.bullets) || record.bullets.length > MAX_MEMORY_REVIEW_BULLETS) {
 		throw new Error("memory review must contain a bounded bullet list");
 	}
@@ -137,19 +155,25 @@ export function validateMemoryReviewProposal(value: unknown): MemoryReviewPropos
 		};
 	});
 
-	return { proposalId, bullets };
+	return {
+		proposalId,
+		bullets,
+		...(requestedScope ? { requestedScope } : {}),
+	};
 }
 
 function parseCanonicalTargets(value: unknown): MemoryReviewTargetV1[] {
 	if (!Array.isArray(value) || value.length < 1 || value.length > 3) {
-		throw new Error("memory review must contain one to three allowed targets");
+		throw new Error("memory authority must contain one to three targets");
 	}
 	const targetKeys = new Set<string>();
-	const allowedTargets = value.map((targetValue, index) => {
+	const allowedTargets: MemoryReviewTargetV1[] = [];
+	value.forEach((targetValue, index) => {
 		const target = asRecord(targetValue);
 		if (!target) throw new Error(`allowedTargets[${index}] must be an object`);
 		const scope = target.scope;
-		if (scope !== "personal" && scope !== "department" && scope !== "company") {
+		if (scope === "personal") return;
+		if (scope !== "department" && scope !== "company") {
 			throw new Error(`allowedTargets[${index}].scope is unsupported`);
 		}
 		const departmentId =
@@ -170,8 +194,11 @@ function parseCanonicalTargets(value: unknown): MemoryReviewTargetV1[] {
 		const key = targetKey(result);
 		if (targetKeys.has(key)) throw new Error("memory review targets must be unique");
 		targetKeys.add(key);
-		return result;
+		allowedTargets.push(result);
 	});
+	if (allowedTargets.length === 0) {
+		throw new Error("no shared memory target is available");
+	}
 	return allowedTargets;
 }
 
@@ -179,14 +206,16 @@ async function buildAuthorizedReviewRequest(
 	proposal: MemoryReviewProposalV1,
 	config: DivoGatewayConfig,
 	execution: GatewayExecutionContext,
+	skillId: string,
 	dependencies: MemoryReviewDependencies,
 ): Promise<MemoryReviewPayloadV1> {
 	const authority = await dependencies.callGateway(config, {
 		op: "tools.invoke",
 		execution,
 		payload: {
-			toolId: "memoryPublishing",
-			args: { operation: "check_authority" },
+			skillId,
+			toolId: "knowledge",
+			args: { operation: "check_targets" },
 		},
 	});
 	if (!authority.body.ok || authority.body.status !== "success") {
@@ -194,20 +223,20 @@ async function buildAuthorizedReviewRequest(
 	}
 	const data = asRecord(authority.body.data);
 	const result = asRecord(data?.result);
-	if (result?.operation !== "check_authority") {
+	if (result?.operation !== "check_targets") {
 		throw new Error("backend returned an invalid memory authority result");
 	}
-	if (result.availability === "storage_unavailable") {
-		throw new Error("backend memory storage is unavailable");
-	}
-	if (result.availability !== "available") {
-		throw new Error("backend returned an invalid memory availability result");
+	const allowedTargets = parseCanonicalTargets(result.targets).filter(target => (
+		!proposal.requestedScope || target.scope === proposal.requestedScope
+	));
+	if (allowedTargets.length === 0) {
+		throw new Error(`no ${proposal.requestedScope ?? "shared"} memory target is available`);
 	}
 	return {
 		version: 1,
 		proposalId: proposal.proposalId,
 		bullets: proposal.bullets,
-		allowedTargets: parseCanonicalTargets(result.targets),
+		allowedTargets,
 	};
 }
 
@@ -242,7 +271,7 @@ export function parseMemoryReviewResponse(
 		const target = asRecord(record.selectedTarget);
 		if (!target) throw new Error("selectedTarget must be an object or null");
 		const scope = target.scope;
-		if (scope !== "personal" && scope !== "department" && scope !== "company") {
+		if (scope !== "department" && scope !== "company") {
 			throw new Error("selected target scope is invalid");
 		}
 		const departmentId =
@@ -311,6 +340,7 @@ async function publishApprovedMemory(
 	response: MemoryReviewResponseV1,
 	config: DivoGatewayConfig,
 	execution: GatewayExecutionContext,
+	skillId: string,
 	dependencies: MemoryReviewDependencies,
 ): Promise<
 	| {
@@ -326,43 +356,116 @@ async function publishApprovedMemory(
 		.filter((bullet) => selected.has(bullet.id))
 		.map((bullet) => bullet.text);
 	const departmentId = target.scope === "department" ? target.departmentId : undefined;
-	const prepared = await dependencies.callGateway(config, {
-		op: "tools.prepare",
+	const content = { facts };
+	const proposed = await dependencies.callGateway(config, {
+		op: "tools.invoke",
 		execution,
 		...(departmentId ? { departmentId } : {}),
 		payload: {
-			toolId: "memoryPublishing",
+			skillId,
+			toolId: "knowledge",
 			args: {
-				operation: "publish",
+				operation: "propose",
+				kind: "memory",
+				action: "publish",
 				scope: target.scope,
 				...(departmentId ? { departmentId } : {}),
-				facts,
+				logicalKey: request.proposalId,
+				content,
 			},
 		},
 	});
-	if (!prepared.body.ok || prepared.body.status !== "success") {
-		return { outcome: "confirmed", ...prepared };
+	if (!proposed.body.ok || proposed.body.status !== "success") {
+		return { outcome: "confirmed", ...proposed };
 	}
-	const preparedData = asRecord(prepared.body.data);
-	const intentId = preparedData && typeof preparedData.intentId === "string" && preparedData.intentId.trim()
-		? preparedData.intentId.trim()
+	const proposalEnvelope = asRecord(proposed.body.data);
+	const proposalResult = asRecord(proposalEnvelope?.result);
+	const mutationId = typeof proposalResult?.mutationId === "string"
+		? proposalResult.mutationId
 		: undefined;
-	if (!intentId) throw new Error("backend did not bind the approved memory payload");
+	const contentHash = proposalResult?.contentHash;
+	if (!mutationId || (contentHash !== null && typeof contentHash !== "string")) {
+		throw new Error("backend did not return a durable memory proposal");
+	}
+	const reviewed = await dependencies.callGateway(config, {
+		op: "knowledge.review.decide",
+		execution,
+		payload: {
+			mutationId,
+			contentHash: contentHash ?? null,
+			decision: "approve",
+		},
+	});
+	if (!reviewed.body.ok || reviewed.body.status !== "success") {
+		return { outcome: "confirmed", ...reviewed };
+	}
 	try {
-		const committed = await dependencies.callGateway(config, {
-			op: "tools.commit",
+		const applied = await dependencies.callGateway(config, {
+			op: "tools.invoke",
 			execution,
 			...(departmentId ? { departmentId } : {}),
-			payload: { intentId },
+			payload: {
+				skillId,
+				toolId: "knowledge",
+				args: {
+					operation: "apply",
+					mutationId,
+					contentHash: contentHash ?? null,
+					kind: "memory",
+					action: "publish",
+					scope: target.scope,
+					...(departmentId ? { departmentId } : {}),
+					content,
+				},
+			},
 		});
-		return { outcome: "confirmed", ...committed };
+		return { outcome: "confirmed", ...applied };
 	} catch (error) {
 		return {
 			outcome: "indeterminate",
-			intentId,
+			intentId: mutationId,
 			error: error instanceof Error ? error.message : String(error),
 		};
 	}
+}
+
+async function openLarkMemoryReview(
+	proposal: MemoryReviewProposalV1,
+	config: DivoGatewayConfig,
+	execution: GatewayExecutionContext,
+	skillId: string,
+	dependencies: MemoryReviewDependencies,
+) {
+	const opened = await dependencies.callGateway(config, {
+		op: "knowledge.review.open",
+		execution,
+		payload: {
+			skillId,
+			requestId: proposal.proposalId,
+			kind: "memory",
+			bullets: proposal.bullets.map((bullet) => bullet.text),
+			...(proposal.requestedScope
+				? { requestedScope: proposal.requestedScope }
+				: {}),
+		},
+	});
+	const formatted = formatGatewayResponse(opened.body);
+	const data = asRecord(opened.body.data);
+	const message = typeof data?.message === "string" && data.message.trim()
+		? data.message.trim()
+		: formatted.text;
+	return {
+		content: [{ type: "text" as const, text: message }],
+		details: {
+			decision: "pending",
+			published: false,
+			httpStatus: opened.httpStatus,
+			status: opened.body.status,
+			data: opened.body.data,
+			error: opened.body.error,
+		},
+		...(!opened.body.ok ? { isError: true as const } : {}),
+	};
 }
 
 export async function executeMemoryReview(
@@ -404,6 +507,32 @@ export async function executeMemoryReview(
 		runId: runCorrelation.runId,
 		actionId: `memory-review:${randomUUID()}`,
 	};
+	const skillId = dependencies.resolveSkillId("knowledge", runCorrelation.runId);
+	if (!skillId) {
+		const message = "The exact Manage Knowledge skill is not loaded in this run.";
+		return {
+			content: [{ type: "text" as const, text: `Memory review cancelled safely: ${message}` }],
+			details: { decision: "cancel", error: message },
+		};
+	}
+	if (runCorrelation.channel === "lark") {
+		try {
+			return await openLarkMemoryReview(
+				proposal,
+				resolved,
+				execution,
+				skillId,
+				dependencies,
+			);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return {
+				content: [{ type: "text" as const, text: `Memory review was not opened: ${message}` }],
+				details: { decision: "cancel", error: message },
+				isError: true,
+			};
+		}
+	}
 
 	let request: MemoryReviewPayloadV1;
 	try {
@@ -411,6 +540,7 @@ export async function executeMemoryReview(
 		proposal,
 			resolved,
 			execution,
+			skillId,
 			dependencies,
 		);
 	} catch (error) {
@@ -455,6 +585,7 @@ export async function executeMemoryReview(
 			response,
 			resolved,
 			execution,
+			skillId,
 			dependencies,
 		);
 		if (published.outcome === "indeterminate") {
@@ -495,22 +626,30 @@ export async function executeMemoryReview(
 	}
 }
 
-export function registerMemoryReviewTool(pi: ExtensionAPI) {
+export function registerMemoryReviewTool(
+	pi: ExtensionAPI,
+	options: {
+		resolveLoadedSkillId?: (toolId: string, runId: string) => string | undefined;
+	} = {},
+) {
 	pi.registerTool({
 		name: "divo_memory_review",
 		label: "Review shared memory",
 		description:
-			"Recheck backend memory authority using the desktop-selected department, show the review card for durable proposed facts, and publish only the exact approved selection. Pass only proposalId and bullets; this tool fetches canonical targets itself.",
+			"Review durable department or company facts against the desktop-selected department and publish only the exact approved selection. When the user explicitly names team/department or company scope, pass that requestedScope. Personal preferences use the private background-learning path without review; never claim their persistence in the same reply.",
 		promptSnippet:
-			"Use divo_memory_review only after the Share Memory skill checks backend authority; it owns review and final exact publish.",
+			"Use divo_memory_review only for department or company memory after the Manage Knowledge skill checks backend authority.",
 		promptGuidelines: [
-			"Call only after the Share Memory skill performs its orchestration authority check. Pass only proposalId and bounded bullets; never pass departmentId or allowed targets.",
-			"Do not call memoryPublishing.publish directly; divo_memory_review prepares and commits the exact user-approved selection.",
+			"Call only after the Manage Knowledge skill performs its orchestration authority check. Pass proposalId, bounded bullets, and requestedScope only when the user explicitly chose department/team or company. Never pass departmentId or allowed targets.",
+			"Do not call the knowledge mutation operations directly; divo_memory_review binds the exact user-approved selection to the backend knowledge state machine.",
 			"If the result requests revision, create a new bounded proposal from the revision and call this tool again. If cancelled, save nothing.",
 		],
 		parameters: MEMORY_REVIEW_PARAMS,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			return executeMemoryReview(params, ctx);
+			return executeMemoryReview(params, ctx, {
+				...DEFAULT_DEPENDENCIES,
+				resolveSkillId: options.resolveLoadedSkillId ?? DEFAULT_DEPENDENCIES.resolveSkillId,
+			});
 		},
 	});
 }

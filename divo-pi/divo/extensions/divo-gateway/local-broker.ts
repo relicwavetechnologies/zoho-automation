@@ -187,7 +187,11 @@ export async function executeLocalBrokerRequest(
 			config,
 			request,
 			actionId,
-			{ ...active.context, ...(combinedSignal.signal ? { signal: combinedSignal.signal } : {}) },
+				{
+					...active.context,
+					...(combinedSignal.signal ? { signal: combinedSignal.signal } : {}),
+					...(correlation.channel ? { runtimeChannel: correlation.channel } : {}),
+				},
 		);
 		return {
 			version: 1,

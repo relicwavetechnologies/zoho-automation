@@ -79,9 +79,6 @@ describe('resolveToolIconComponent', () => {
     expect(resolveToolIconComponent(gatewayOp('skills.get'))).toBe(
       BicepsFlexedIcon
     )
-    expect(resolveToolIconComponent(invoke('skillPublishing'))).toBe(
-      BicepsFlexedIcon
-    )
     // Finding a skill still reads as a lookup — the magnifier wins there.
     expect(resolveToolIconComponent(gatewayOp('skills.search'))).toBe(SearchIcon)
     expect(resolveToolIconComponent(gatewayOp('skills.resolve'))).toBe(
@@ -132,8 +129,7 @@ describe('resolveToolIconComponent', () => {
   })
 
   it("marks Divo's own capabilities with the Divo mark", () => {
-    expect(resolveToolIconComponent(invoke('memoryRecall'))).toBe(DivoDexMark)
-    expect(resolveToolIconComponent(invoke('memoryPublishing'))).toBe(DivoDexMark)
+    expect(resolveToolIconComponent(invoke('knowledge'))).toBe(DivoDexMark)
     expect(resolveToolIconComponent(gatewayOp('connections.list'))).toBe(
       DivoDexMark
     )

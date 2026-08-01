@@ -195,16 +195,15 @@ export class ToolExecutor {
     });
     if (ratePreflight) return ratePreflight;
 
-    let executionGrant: { approvalId: string } | undefined;
+    let executionGrant: {
+      approvalId: string;
+      authority: 'connection_owner' | 'company_admin' | 'department_manager';
+    } | undefined;
 
     // A connection policy can require its owner even when the caller did not
     // select a department. The gate itself preserves the old no-department
     // behaviour for ordinary department-based approval rules.
-    if (
-      this.deps.approvalGate
-      && tool.id !== asToolId('memoryRecall')
-      && !isCompanyAxisPublishingInvocation(tool.id, validatedArgs)
-    ) {
+    if (this.deps.approvalGate) {
       const argsSummary = buildArgsSummary(tool.id, action, validatedArgs);
       const decision = await this.deps.approvalGate.check({
         toolId: tool.id,
@@ -303,6 +302,7 @@ export class ToolExecutor {
       correlationId: input.requestId ?? input.execution?.actionId ?? randomUUID(),
       logger: this.deps.logger.child({ toolId: tool.id }),
       clock: this.deps.clock,
+      ...(executionGrant ? { approvalGrant: executionGrant } : {}),
     };
 
     try {
@@ -409,8 +409,11 @@ export class ToolExecutor {
     });
     if (ratePreflight) return runtimeRateLimitFailure(toolId, ratePreflight, action);
 
-    let executionGrant: { approvalId: string } | undefined;
-    if (input.approvalGate && input.chatId && tool.id !== asToolId('memoryRecall')) {
+    let executionGrant: {
+      approvalId: string;
+      authority: 'connection_owner' | 'company_admin' | 'department_manager';
+    } | undefined;
+    if (input.approvalGate && input.chatId) {
       const decision = await input.approvalGate.check({
         toolId: tool.id,
         action,
@@ -479,6 +482,7 @@ export class ToolExecutor {
       correlationId: runContext.traceId ?? runContext.requestId ?? runContext.chatId ?? randomUUID(),
       logger: this.deps.logger.child({ toolId: tool.id, channel: runContext.channel }),
       clock: this.deps.clock,
+      ...(executionGrant ? { approvalGrant: executionGrant } : {}),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       ...(input.onProgress ? { onProgress: input.onProgress } : {}),
     };
@@ -721,23 +725,11 @@ export class ToolExecutor {
     }
 
     const validatedArgs = argsParse.data;
-    if (hasMismatchedMemoryDepartment(toolId, validatedArgs, departmentId)) {
-      return {
-        ok: false,
-        response: gatewayFailure(
-          'invalid_args',
-          'memoryPublishing departmentId must match the currently selected gateway department.',
-        ),
-      };
-    }
-    const publishingDepartmentId = publishingScopedDepartmentId(toolId, validatedArgs, departmentId);
-    const companyAxisPublishing = isCompanyAxisPublishingInvocation(toolId, validatedArgs);
-    // Recall scope is derived by the tool from every active membership. The
-    // generic gateway department is desktop transport context, never a recall
-    // selector, so it must not enter permission resolution or run context.
-    const effectiveDepartmentId = toolId === 'memoryRecall' || companyAxisPublishing
-      ? undefined
-      : publishingDepartmentId;
+    const effectiveDepartmentId = knowledgeScopedDepartmentId(
+      toolId,
+      validatedArgs,
+      departmentId,
+    );
 
     const basePermissionQuery = {
       companyId: asCompanyId(member.companyId),
@@ -746,39 +738,16 @@ export class ToolExecutor {
       channel: member.channel ?? 'desktop',
     } as const;
 
-    let permResult = await this.deps.permissions.resolve({
+    const permResult = await this.deps.permissions.resolve({
       ...basePermissionQuery,
       ...(effectiveDepartmentId ? { departmentId: asDepartmentId(effectiveDepartmentId) } : {}),
     });
-
-    if (
-      isPublishingAuthorityCheck(toolId, validatedArgs)
-      && publishingDepartmentId
-    ) {
-      const companyPermResult = await this.deps.permissions.resolve(basePermissionQuery);
-      if (!companyPermResult.ok) {
-        return { ok: false, response: gatewayFailure('permission_denied', companyPermResult.error.message) };
-      }
-
-      if (!permResult.ok && toolId !== 'memoryPublishing') {
-        return { ok: false, response: gatewayFailure('permission_denied', permResult.error.message) };
-      }
-
-      permResult = {
-        ok: true,
-        value: permResult.ok
-          ? mergePublishingAuthority(companyPermResult.value, permResult.value)
-          : companyPermResult.value,
-      };
-    }
 
     if (!permResult.ok) {
       return { ok: false, response: gatewayFailure('permission_denied', permResult.error.message) };
     }
 
-    const perm = toolId === 'memoryRecall'
-      ? withGatewayMemoryRecallAccess(permResult.value)
-      : permResult.value;
+    const perm = permResult.value;
 
     const permCheck = tool.permissionCheck(validatedArgs, perm);
     if (!permCheck.ok) {
@@ -881,7 +850,10 @@ export class ToolExecutor {
 
   private async releaseExecutionGrant(
     approvalGate: ApprovalGateService | undefined,
-    grant: { readonly approvalId: string },
+    grant: {
+      readonly approvalId: string;
+      readonly authority: 'connection_owner' | 'company_admin' | 'department_manager';
+    },
   ): Promise<boolean> {
     if (!approvalGate) return false;
     return approvalGate.releaseExecution(grant);
@@ -1037,80 +1009,18 @@ function larkDeliveryContextFromThreadId(threadId: string): {
   return { chatId: threadId };
 }
 
-function isPublishingAuthorityCheck(toolId: string, args: unknown): boolean {
-  return (toolId === 'skillPublishing' || toolId === 'memoryPublishing')
-    && typeof args === 'object'
-    && args !== null
-    && (args as { operation?: unknown }).operation === 'check_authority';
-}
-
-function hasMismatchedMemoryDepartment(
-  toolId: string,
-  args: unknown,
-  gatewayDepartmentId: string | undefined,
-): boolean {
-  if (toolId !== 'memoryPublishing' || typeof args !== 'object' || args === null) return false;
-  const departmentId = (args as { departmentId?: unknown }).departmentId;
-  return typeof departmentId === 'string' && departmentId !== gatewayDepartmentId;
-}
-
-function isCompanyAxisPublishingInvocation(toolId: string, args: unknown): boolean {
-  return (toolId === 'skillPublishing' || toolId === 'memoryPublishing')
-    && typeof args === 'object'
-    && args !== null
-    && (args as { operation?: unknown }).operation === 'publish'
-    && (
-      (args as { scope?: unknown }).scope === 'company'
-      || (toolId === 'memoryPublishing' && (args as { scope?: unknown }).scope === 'personal')
-    );
-}
-
-function publishingScopedDepartmentId(
+function knowledgeScopedDepartmentId(
   toolId: string,
   args: unknown,
   gatewayDepartmentId: string | undefined,
 ): string | undefined {
-  if (
-    (toolId === 'skillPublishing' || toolId === 'memoryPublishing')
-    && typeof args === 'object'
-    && args !== null
-    && typeof (args as { departmentId?: unknown }).departmentId === 'string'
-  ) {
-    return (args as { departmentId: string }).departmentId;
+  if (toolId !== 'knowledge' || typeof args !== 'object' || args === null) {
+    return gatewayDepartmentId;
   }
-
-  return gatewayDepartmentId;
-}
-
-function mergePublishingAuthority(
-  companyPerm: PermissionResult,
-  departmentPerm: PermissionResult,
-): PermissionResult {
-  const allowedActionsByTool = new Map(companyPerm.allowedActionsByTool);
-  for (const [toolId, actions] of departmentPerm.allowedActionsByTool) {
-    const mergedActions = new Set<ToolActionGroup>(allowedActionsByTool.get(toolId) ?? []);
-    for (const action of actions) mergedActions.add(action);
-    allowedActionsByTool.set(toolId, mergedActions);
-  }
-
-  return {
-    allowedToolIds: new Set(allowedActionsByTool.keys()),
-    allowedActionsByTool,
-    decisions: [...companyPerm.decisions, ...departmentPerm.decisions],
-    ...(departmentPerm.department ? { department: departmentPerm.department } : {}),
-  };
-}
-
-function withGatewayMemoryRecallAccess(perm: PermissionResult): PermissionResult {
-  const recallToolId = asToolId('memoryRecall');
-  const allowedActionsByTool = new Map(perm.allowedActionsByTool);
-  const recallActions = new Set<ToolActionGroup>(allowedActionsByTool.get(recallToolId) ?? []);
-  recallActions.add('read');
-  allowedActionsByTool.set(recallToolId, recallActions);
-
-  return {
-    ...perm,
-    allowedToolIds: new Set([...perm.allowedToolIds, recallToolId]),
-    allowedActionsByTool,
-  };
+  const operation = (args as { operation?: unknown }).operation;
+  if (operation === 'recall') return undefined;
+  if (operation !== 'propose' && operation !== 'apply') return gatewayDepartmentId;
+  if ((args as { scope?: unknown }).scope !== 'department') return undefined;
+  const requested = (args as { departmentId?: unknown }).departmentId;
+  return typeof requested === 'string' ? requested : gatewayDepartmentId;
 }

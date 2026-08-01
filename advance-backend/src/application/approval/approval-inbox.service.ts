@@ -4,6 +4,7 @@ import type { RuntimeApprovalRepository, RuntimeApprovalRow } from '../../infras
 import type { ApprovalResumerService } from './approval-resumer.service';
 import { describeToolAction, type ToolActionDescription } from './describe-tool-action';
 import { isGatewayApprovalMetadata } from './approval-origin';
+import type { ApprovalCardInput } from './approval-card-builder';
 
 /**
  * The approval inbox: the same decisions the Lark card carries, reachable by
@@ -53,7 +54,12 @@ export interface ApprovalInboxDeps {
   readonly logger: Logger;
   readonly audit?: Pick<AuditService, 'record'>;
   /** Updates the delivered Lark card in place once a decision lands elsewhere. */
-  readonly onResolvedCard?: (messageId: string, decision: 'approved' | 'rejected', byName: string) => Promise<void>;
+  readonly onResolvedCard?: (
+    messageId: string,
+    decision: 'approved' | 'rejected',
+    byName: string,
+    request: Omit<ApprovalCardInput, 'approvalId' | 'approverName'>,
+  ) => Promise<void>;
 }
 
 export class ApprovalInboxService {
@@ -117,7 +123,12 @@ export class ApprovalInboxService {
     // The card, if one was delivered, must stop offering buttons for a decision
     // that has already been made somewhere else.
     if (approval.decisionMessageId && this.deps.onResolvedCard) {
-      await this.deps.onResolvedCard(approval.decisionMessageId, decision, byName)
+      await this.deps.onResolvedCard(
+        approval.decisionMessageId,
+        decision,
+        byName,
+        resolutionCardRequest(approval),
+      )
         .catch(error => this.deps.logger.warn('approval_inbox.card_update_failed', { approvalId, error: String(error) }));
     }
 
@@ -158,6 +169,29 @@ function present(row: RuntimeApprovalRow): ApprovalInboxItem {
     deliveredVia: row.channel,
     description: describeToolAction(row.toolId, row.actionGroup, args),
     payload: args,
+  };
+}
+
+function resolutionCardRequest(
+  row: RuntimeApprovalRow,
+): Omit<ApprovalCardInput, 'approvalId' | 'approverName'> {
+  const meta = isRecord(row.metadataJson) ? row.metadataJson : {};
+  const payload = isRecord(row.payloadJson) ? row.payloadJson : {};
+  const authority = meta['approvalAuthority'];
+  return {
+    toolId: row.toolId,
+    action: row.actionGroup,
+    args: payload['args'],
+    summary: row.summary,
+    requesterName: readString(meta['requesterName'])
+      ?? readString(meta['requesterEmail'])
+      ?? 'A team member',
+    authority: authority === 'connection_owner'
+      || authority === 'company_admin'
+      || authority === 'department_manager'
+      ? authority
+      : 'department_manager',
+    departmentName: readString(meta['departmentName']) ?? 'Company-wide',
   };
 }
 

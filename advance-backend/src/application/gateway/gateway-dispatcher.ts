@@ -17,6 +17,20 @@ import type { AuditService } from '../observability/audit.service';
 import type { ManagerPersonaRuntimeService } from '../persona-learning/manager-persona-runtime.service';
 import type { ManagerTeachService } from '../persona-learning/manager-teach.service';
 import type { AutomationPlanService } from './automation-plan.service';
+import type {
+  LarkKnowledgeReviewService,
+  OpenKnowledgeReviewResult,
+} from '../knowledge/lark-knowledge-review.service';
+import type { RunContext } from '../../domain/orchestration/run-context';
+import type { KnowledgeMutationService } from '../knowledge/knowledge-mutation.service';
+import type { PersonalMemoryCommandService } from '../knowledge/personal-memory-command.service';
+import { KnowledgeMutationError } from '../knowledge/knowledge-mutation.errors';
+import type {
+  KnowledgeReviewEffectKind,
+  LarkRunEffectIdentity,
+  ReserveKnowledgeReviewEffectResult,
+  RunEffectReceiptStore,
+} from '../runtime/run-effect-receipt.store';
 import { managerTeachLearningApplySchema } from '../persona-learning/manager-teach-persona.types';
 import type {
   GatewayExecutionContext,
@@ -38,6 +52,9 @@ import {
   toolsInvokePayloadSchema,
   toolsPreflightPayloadSchema,
   toolsCommitPayloadSchema,
+  knowledgeReviewOpenPayloadSchema,
+  knowledgeReviewDecisionPayloadSchema,
+  personalMemoryCommandPayloadSchema,
   toolsListPayloadSchema,
   workResolvePayloadSchema,
   automationPlanCreatePayloadSchema,
@@ -92,6 +109,13 @@ export interface GatewayDispatcherDeps {
   readonly workResolution?: WorkResolutionService;
   readonly managerTeachService?: ManagerTeachService;
   readonly automationPlanService?: AutomationPlanService;
+  readonly larkKnowledgeReview?: Pick<LarkKnowledgeReviewService, 'openMemoryForRuntime' | 'openResourceForRuntime'>;
+  readonly knowledgeMutations?: KnowledgeMutationService;
+  readonly personalMemoryCommands?: PersonalMemoryCommandService;
+  readonly runEffectReceipts?: Pick<
+    RunEffectReceiptStore,
+    'reserveKnowledgeReview' | 'completeKnowledgeReview' | 'releaseKnowledgeReview' | 'recordPersonalMemory'
+  >;
   readonly logger: Logger;
 }
 
@@ -137,6 +161,12 @@ export class GatewayDispatcher {
         return this.handleConnectionsList(member, departmentId, request.payload);
       case 'media.image_ocr':
         return this.handleMediaImageOcr(member, departmentId, request.payload);
+      case 'memory.personal.mutate':
+        return this.handlePersonalMemoryCommand(member, request.payload, execution);
+      case 'knowledge.review.open':
+        return this.handleKnowledgeReviewOpen(member, departmentId, request.payload, execution);
+      case 'knowledge.review.decide':
+        return this.handleKnowledgeReviewDecision(member, request.payload, execution);
       case 'tools.invoke':
         return this.handleToolsInvoke(member, departmentId, request.payload, execution);
       case 'tools.prepare':
@@ -765,8 +795,18 @@ export class GatewayDispatcher {
       );
       return prepared;
     }
+    const operation = parsed.data.args['operation'];
+    // `knowledge.apply` can only consume an exact, versioned mutation whose
+    // requester review and any manager/admin approval were already recorded by
+    // the central knowledge authority. A second generic local confirmation
+    // on desktop would review the same payload again and still could not
+    // broaden access. Lark mutations use their backend-owned HITL flow instead
+    // of desktop's local confirmation intent.
+    const isReviewedKnowledgeApply = parsed.data.toolId === 'knowledge'
+      && operation === 'apply';
     const needsLocalApproval = prepared.data.action !== 'read'
-      && member.channel !== 'lark';
+      && member.channel !== 'lark'
+      && !isReviewedKnowledgeApply;
     if (needsLocalApproval) {
       if (!this.deps.localApprovalIntents) {
         const response = gatewayFailure('tool_error', 'Local approval intents are not configured');
@@ -820,6 +860,396 @@ export class GatewayDispatcher {
       execution,
     );
     return response;
+  }
+
+  private async handlePersonalMemoryCommand(
+    member: GatewayMemberContext,
+    payload: Record<string, unknown> | undefined,
+    execution: GatewayExecutionContext | undefined,
+  ): Promise<GatewayResponse> {
+    const parsed = personalMemoryCommandPayloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.errors
+        .map(error => `${error.path.join('.') || '(root)'}: ${error.message}`)
+        .join('; ');
+      return gatewayFailure('bad_request', `Invalid personal-memory command — ${issues}`);
+    }
+    if (member.authProvider === 'scheduled_workflow') {
+      return this.permissionDenied('Scheduled work cannot change personal memory.');
+    }
+    if (!this.deps.personalMemoryCommands) {
+      return gatewayFailure('tool_error', 'Personal memory commands are not configured.');
+    }
+    if (
+      member.channel === 'lark'
+      && (
+        !execution
+        || !member.runtimeChatId
+        || !member.runtimeRunId
+        || !member.runtimeThreadId
+        || execution.runId !== member.runtimeRunId
+        || execution.threadId !== member.runtimeThreadId
+      )
+    ) {
+      return this.permissionDenied(
+        'Personal-memory provenance does not match the backend-issued Pi runtime lease.',
+      );
+    }
+
+    try {
+      const result = await this.deps.personalMemoryCommands.execute({
+        companyId: member.companyId,
+        userId: member.userId,
+        companyRole: member.aiRole,
+        channel: member.channel ?? 'desktop',
+        command: parsed.data,
+        ...(execution ? { sourceRef: execution.runId } : {}),
+      });
+
+      if (member.channel === 'lark') {
+        if (!this.deps.runEffectReceipts) {
+          return gatewayFailure(
+            'tool_error',
+            'Personal memory changed, but its verified run receipt could not be recorded.',
+          );
+        }
+        try {
+          await this.deps.runEffectReceipts.recordPersonalMemory({
+            companyId: member.companyId,
+            userId: member.userId,
+            chatId: member.runtimeChatId!,
+            threadId: execution!.threadId,
+            runId: execution!.runId,
+          }, {
+            actionId: execution!.actionId,
+            action: result.action,
+            logicalKey: result.logicalKey,
+            resourceId: result.resourceId,
+            resourceVersion: result.version,
+            projection: result.projection,
+          });
+        } catch (error) {
+          this.deps.logger.error('gateway.personal_memory.receipt_failed', {
+            companyId: member.companyId,
+            userId: member.userId,
+            runId: execution!.runId,
+            error: safeGatewayMessage(error),
+          });
+          return gatewayFailure(
+            'tool_error',
+            'Personal memory changed, but its verified run receipt could not be recorded. Retry the same request before reporting completion.',
+          );
+        }
+      }
+
+      this.deps.logger.info('gateway.personal_memory.applied', {
+        companyId: member.companyId,
+        userId: member.userId,
+        action: result.action,
+        logicalKey: result.logicalKey,
+        version: result.version,
+        projection: result.projection,
+      });
+      return gatewaySuccess({
+        status: 'applied',
+        scope: 'personal',
+        ...result,
+        effect: member.channel === 'lark'
+          ? { kind: 'personal_memory_applied', runId: execution!.runId }
+          : null,
+      });
+    } catch (error) {
+      if (error instanceof KnowledgeMutationError) {
+        const status = error.code === 'permission_denied'
+          ? 'permission_denied'
+          : ['invalid_request', 'not_found', 'conflict', 'stale_version'].includes(error.code)
+            ? 'bad_request'
+            : 'tool_error';
+        return gatewayFailure(status, error.message);
+      }
+      this.deps.logger.error('gateway.personal_memory.failed', {
+        companyId: member.companyId,
+        userId: member.userId,
+        error: safeGatewayMessage(error),
+      });
+      return gatewayFailure('tool_error', 'Personal memory could not be changed safely.');
+    }
+  }
+
+  private async handleKnowledgeReviewOpen(
+    member: GatewayMemberContext,
+    departmentId: string | undefined,
+    payload: Record<string, unknown> | undefined,
+    execution: GatewayExecutionContext | undefined,
+  ): Promise<GatewayResponse> {
+    const parsed = knowledgeReviewOpenPayloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.errors
+        .map(error => `${error.path.join('.') || '(root)'}: ${error.message}`)
+        .join('; ');
+      return gatewayFailure('bad_request', `Invalid knowledge.review.open payload — ${issues}`);
+    }
+    const review = parsed.data;
+    if (review.kind === 'memory') {
+      const memoryReview = review;
+      if (memoryReview.requestedScope === 'department' && !departmentId) {
+        return this.permissionDenied(
+          'Select an authenticated department before reviewing department memory.',
+        );
+      }
+      return this.openVerifiedLarkKnowledgeReview({
+        label: 'Memory',
+        effectKind: 'memory_review_opened',
+        requestId: memoryReview.requestId,
+        skillId: memoryReview.skillId,
+        member,
+        departmentId,
+        execution,
+        open: context => this.deps.larkKnowledgeReview!.openMemoryForRuntime({
+          proposalId: memoryReview.requestId,
+          facts: memoryReview.bullets,
+          ...(memoryReview.requestedScope
+            ? { requestedScope: memoryReview.requestedScope }
+            : {}),
+          ...context,
+        }),
+        logFields: {
+          kind: 'memory',
+          factCount: memoryReview.bullets.length,
+          requestedScope: memoryReview.requestedScope ?? null,
+        },
+      });
+    }
+    const resourceReview = review;
+    if (resourceReview.scope === 'department' && !departmentId) {
+      return this.permissionDenied('Select an authenticated department before reviewing department knowledge.');
+    }
+    return this.openVerifiedLarkKnowledgeReview({
+      label: 'Knowledge',
+      effectKind: 'knowledge_review_opened',
+      requestId: resourceReview.requestId,
+      skillId: resourceReview.skillId,
+      member,
+      departmentId,
+      execution,
+      open: context => this.deps.larkKnowledgeReview!.openResourceForRuntime({
+        requestId: resourceReview.requestId,
+        kind: resourceReview.kind,
+        action: resourceReview.action,
+        scope: resourceReview.scope,
+        logicalKey: resourceReview.logicalKey,
+        ...(resourceReview.baseVersion ? { baseVersion: resourceReview.baseVersion } : {}),
+        ...(resourceReview.content !== undefined ? { content: resourceReview.content } : {}),
+        ...context,
+      }),
+      logFields: {
+        kind: resourceReview.kind,
+        action: resourceReview.action,
+        scope: resourceReview.scope,
+      },
+    });
+  }
+
+  private async openVerifiedLarkKnowledgeReview(input: {
+    readonly label: 'Memory' | 'Knowledge';
+    readonly effectKind: KnowledgeReviewEffectKind;
+    readonly requestId: string;
+    readonly skillId: string;
+    readonly member: GatewayMemberContext;
+    readonly departmentId: string | undefined;
+    readonly execution: GatewayExecutionContext | undefined;
+    readonly open: (context: {
+      readonly runContext: RunContext;
+      readonly perm: PermissionResult;
+      readonly chatId: string;
+      readonly onOpened: (receipt: {
+        readonly reviewId: string;
+        readonly cardMessageId: string;
+        readonly message: string;
+      }) => Promise<void>;
+    }) => Promise<OpenKnowledgeReviewResult>;
+    readonly logFields: Readonly<Record<string, unknown>>;
+  }): Promise<GatewayResponse> {
+    const { member, execution } = input;
+    if (
+      member.channel !== 'lark'
+      || !member.larkOpenId
+      || !member.runtimeChatId
+      || !member.runtimeRunId
+      || !member.runtimeThreadId
+    ) {
+      return this.permissionDenied(
+        `${input.label} requester review requires an authenticated Lark Pi runtime.`,
+      );
+    }
+    if (
+      !execution
+      || execution.runId !== member.runtimeRunId
+      || execution.threadId !== member.runtimeThreadId
+    ) {
+      return this.permissionDenied(
+        `${input.label} review provenance does not match the backend-issued Pi runtime lease.`,
+      );
+    }
+    if (!this.deps.larkKnowledgeReview || !this.deps.runEffectReceipts) {
+      return gatewayFailure('tool_error', `Lark ${input.label.toLowerCase()} review is not configured.`);
+    }
+
+    const permission = await this.resolvePerm(member, input.departmentId);
+    if (!permission) return this.permissionDenied('Permission resolution failed');
+    const grantedSkillIds = await this.grantedSkillIds(member);
+    const authorized = await this.deps.skillCatalog.authorizesTool({
+      companyId: member.companyId,
+      ...(input.departmentId ? { departmentId: input.departmentId } : {}),
+      permission: withGatewayDiscoveryPermissions(permission),
+      ...(grantedSkillIds ? { grantedSkillIds } : {}),
+      skillId: input.skillId,
+      toolId: 'knowledge',
+    });
+    if (!authorized) {
+      return this.permissionDenied(
+        `Skill "${input.skillId}" does not authorize ${input.label.toLowerCase()} review`,
+      );
+    }
+
+    const runContext: RunContext = {
+      companyId: asCompanyId(member.companyId),
+      userId: asUserId(member.userId),
+      companyRole: asCompanyRoleSlug(member.aiRole),
+      channel: 'lark',
+      userExternalId: member.larkOpenId,
+      chatId: member.runtimeChatId,
+      ...(input.departmentId ? { departmentId: asDepartmentId(input.departmentId) } : {}),
+    };
+    const effectIdentity: LarkRunEffectIdentity = {
+      companyId: member.companyId,
+      userId: member.userId,
+      chatId: member.runtimeChatId,
+      threadId: execution.threadId,
+      runId: execution.runId,
+    };
+    let reservation: ReserveKnowledgeReviewEffectResult;
+    try {
+      reservation = await this.deps.runEffectReceipts.reserveKnowledgeReview(effectIdentity, {
+        requestId: input.requestId,
+        effectKind: input.effectKind,
+      });
+    } catch (error) {
+      this.deps.logger.error('gateway.knowledge.review.receipt_reserve_failed', {
+        runId: execution.runId,
+        error: safeGatewayMessage(error),
+      });
+      return gatewayFailure('tool_error', `${input.label} review could not reserve a verified run receipt.`);
+    }
+    if (reservation.status === 'opened') {
+      return gatewaySuccess({
+        status: 'review_pending',
+        message: reservation.effect.message,
+        effect: { kind: input.effectKind, runId: execution.runId },
+        reused: true,
+      });
+    }
+    if (reservation.status === 'opening') {
+      return gatewayFailure('rate_limited', `A ${input.label.toLowerCase()} review is already opening for this exact run.`);
+    }
+
+    let opened: OpenKnowledgeReviewResult;
+    try {
+      opened = await input.open({
+        runContext,
+        perm: permission,
+        chatId: member.runtimeChatId,
+        onOpened: receipt => this.deps.runEffectReceipts!.completeKnowledgeReview({
+          identity: effectIdentity,
+          requestId: input.requestId,
+          ...receipt,
+        }).then(() => undefined),
+      });
+    } catch (error) {
+      await this.deps.runEffectReceipts.releaseKnowledgeReview(effectIdentity, input.requestId).catch(() => undefined);
+      this.deps.logger.error('gateway.knowledge.review.open_failed', {
+        runId: execution.runId,
+        error: safeGatewayMessage(error),
+      });
+      return gatewayFailure('tool_error', `${input.label} review could not be opened safely.`);
+    }
+    if (!opened.opened) {
+      await this.deps.runEffectReceipts.releaseKnowledgeReview(effectIdentity, input.requestId).catch(() => undefined);
+      return gatewayFailure('tool_error', opened.message);
+    }
+    this.deps.logger.info('gateway.knowledge.review.opened', {
+      skillId: input.skillId,
+      userId: member.userId,
+      companyId: member.companyId,
+      departmentId: input.departmentId ?? null,
+      effectKind: input.effectKind,
+      ...input.logFields,
+    });
+    return gatewaySuccess({
+      status: 'review_pending',
+      message: opened.message,
+      effect: { kind: input.effectKind, runId: execution.runId },
+      reused: false,
+    });
+  }
+
+  private async handleKnowledgeReviewDecision(
+    member: GatewayMemberContext,
+    payload: Record<string, unknown> | undefined,
+    execution: GatewayExecutionContext | undefined,
+  ): Promise<GatewayResponse> {
+    const parsed = knowledgeReviewDecisionPayloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.errors
+        .map(error => `${error.path.join('.') || '(root)'}: ${error.message}`)
+        .join('; ');
+      return gatewayFailure('bad_request', `Invalid knowledge.review.decide payload — ${issues}`);
+    }
+    if (member.channel !== 'desktop' || !execution) {
+      return this.permissionDenied(
+        'Requester review decisions require an authenticated interactive Desktop run.',
+      );
+    }
+    if (!this.deps.knowledgeMutations) {
+      return gatewayFailure('tool_error', 'The central knowledge authority is not configured.');
+    }
+
+    try {
+      const mutation = parsed.data.decision === 'approve'
+        ? await this.deps.knowledgeMutations.confirmRequesterReview({
+            mutationId: parsed.data.mutationId,
+            companyId: member.companyId,
+            requesterId: member.userId,
+            expectedContentHash: parsed.data.contentHash,
+          })
+        : await this.deps.knowledgeMutations.cancel({
+            mutationId: parsed.data.mutationId,
+            companyId: member.companyId,
+            requesterId: member.userId,
+          });
+      this.deps.logger.info('gateway.knowledge.review_decided', {
+        mutationId: mutation.id,
+        decision: parsed.data.decision,
+        status: mutation.status,
+        userId: member.userId,
+        companyId: member.companyId,
+        runId: execution.runId,
+      });
+      return gatewaySuccess({
+        mutationId: mutation.id,
+        contentHash: mutation.proposedContentHash,
+        decision: parsed.data.decision,
+        status: mutation.status,
+      });
+    } catch (error) {
+      return gatewayFailure(
+        error instanceof Error && (
+          error.message.includes('Only the requester')
+          || error.message.includes('does not match')
+        ) ? 'permission_denied' : 'bad_request',
+        error instanceof Error ? error.message : 'Knowledge review could not be recorded.',
+      );
+    }
   }
 
   private async handleToolsPreflight(

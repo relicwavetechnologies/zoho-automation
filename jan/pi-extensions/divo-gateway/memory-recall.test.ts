@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { DIVO_COMPANY_PERSONA_PROMPT } from "./index.ts";
+import divoGatewayExtension, { DIVO_COMPANY_PERSONA_PROMPT } from "./index.ts";
 import {
 	executeMemoryRecall,
 	parseMemoryRecallResult,
@@ -38,6 +38,7 @@ function dependencies(options: {
 			memberToken: "member-token",
 			defaultDepartmentId: "desktop-department",
 		}),
+		readRunCorrelation: async () => ({ threadId: "signed-thread", runId: "signed-run" }),
 		callGateway: async (_config, request) => {
 			options.onRequest?.(request);
 			return {
@@ -53,7 +54,20 @@ function dependencies(options: {
 }
 
 describe("memory recall extension", () => {
-	it("invokes canonical memoryRecall without a model-controlled department", async () => {
+	it("is wired into the default Divo gateway extension", () => {
+		const registered: Array<Record<string, unknown>> = [];
+		divoGatewayExtension({
+			registerTool: (tool: Record<string, unknown>) => registered.push(tool),
+			on: () => undefined,
+		} as unknown as ExtensionAPI);
+
+		assert.equal(
+			registered.filter((tool) => tool.name === "divo_memory_recall").length,
+			1,
+		);
+	});
+
+	it("invokes canonical knowledge recall without a model-controlled department", async () => {
 	let captured: unknown;
 		const result = await executeMemoryRecall(
 			{
@@ -65,9 +79,16 @@ describe("memory recall extension", () => {
 
 		assert.deepEqual(captured, {
 			op: "tools.invoke",
+			execution: {
+				version: 1,
+				threadId: "signed-thread",
+				runId: "signed-run",
+				actionId: "memory-recall",
+			},
 			payload: {
-				toolId: "memoryRecall",
+				toolId: "knowledge",
 				args: {
+					operation: "recall",
 					query: "How should I format the quarterly plan?",
 					departmentPreferences: ["Finance", "Operations"],
 				},
@@ -240,9 +261,13 @@ describe("memory recall extension", () => {
 			(parameters.properties?.departmentPreferences as { maxItems?: number }).maxItems,
 			5,
 		);
-		assert.match(String(registered[0]?.promptGuidelines), /distinct from the local memory tool/i);
+		assert.match(String(registered[0]?.promptGuidelines), /no separate local memory store/i);
 		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /must call divo_memory_recall/i);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Personal memory is local and is injected/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Personal memory is a bounded backend-recalled snapshot/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /divo_memory_recall as the canonical source/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Never substitute divo_search_chats for canonical memory/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /call divo_memory and report completion only from its verified result/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /learn safe implicit personal facts/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /backend-generated persona and catalogue provide current/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /using no skill is correct/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /LARK IS STRICTLY GOVERNED/);

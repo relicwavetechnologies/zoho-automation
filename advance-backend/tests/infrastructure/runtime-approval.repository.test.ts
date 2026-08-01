@@ -37,3 +37,44 @@ describe('RuntimeApprovalRepository.claimApprovedExecution', () => {
     });
   });
 });
+
+describe('RuntimeApprovalRepository.createOrReuseActive', () => {
+  it('serializes the PostgreSQL void lock result into a Prisma-supported scalar', async () => {
+    let lockQuery = '';
+    const prisma = {
+      $transaction: async (callback: (tx: any) => Promise<unknown>) => callback({
+        $queryRaw: async (strings: TemplateStringsArray) => {
+          lockQuery = strings.join('?');
+          return [{ lock_result: '' }];
+        },
+        runtimeApproval: {
+          findFirst: async () => ({
+            id: 'approval-1',
+            status: 'pending',
+            idempotencyKey: 'idempotency-1',
+          }),
+        },
+      }),
+    };
+    const repo = new RuntimeApprovalRepository(prisma as any);
+
+    const result = await repo.createOrReuseActive({
+      chatId: 'chat-1',
+      companyId: 'company-1',
+      toolId: 'memory.publish',
+      actionGroup: 'write',
+      kind: 'tool_action',
+      summary: 'Publish department memory',
+      payloadJson: {},
+      metadataJson: {},
+      channel: 'lark',
+      requestedBy: 'user-1',
+      idempotencyKey: 'idempotency-1',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+
+    assert.equal(result.ok, true);
+    assert.match(lockQuery, /pg_advisory_xact_lock/);
+    assert.match(lockQuery, /\)::text AS lock_result/);
+  });
+});

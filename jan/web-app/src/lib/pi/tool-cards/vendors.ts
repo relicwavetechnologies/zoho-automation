@@ -1,6 +1,5 @@
 import type { ComponentType } from 'react'
 import {
-  BicepsFlexedIcon,
   BookOpenIcon,
   CalendarClockIcon,
   DatabaseIcon,
@@ -119,11 +118,9 @@ const VENDORS: Record<string, VendorDef> = {
   // Divo's own capabilities.
   contextSearch: { appName: 'Knowledge Search', Mark: SearchIcon, family: 'divo', descriptors: MISC_DESCRIPTORS.contextSearch },
   documentRag: { appName: 'Documents', Mark: BookOpenIcon, family: 'divo', descriptors: MISC_DESCRIPTORS.documentRag },
-  memoryRecall: { appName: 'Memory', Mark: DivoDexMark, family: 'divo' },
-  memoryPublishing: { appName: 'Memory', Mark: DivoDexMark, family: 'divo' },
+  knowledge: { appName: 'Knowledge', Mark: DivoDexMark, family: 'divo' },
   dataProcessor: { appName: 'Data', Mark: TableIcon, family: 'divo', descriptors: MISC_DESCRIPTORS.dataProcessor },
   scheduledWorkflows: { appName: 'Scheduled Work', Mark: CalendarClockIcon, family: 'divo' },
-  skillPublishing: { appName: 'Skills', Mark: BicepsFlexedIcon, family: 'divo' },
   omsSiteData: { appName: 'Inventory', Mark: DatabaseIcon, family: 'divo' },
 }
 

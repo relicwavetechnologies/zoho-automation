@@ -2,6 +2,8 @@ import { createHmac, randomUUID } from 'node:crypto';
 
 export const PI_RUNTIME_AUDIENCE = 'divo-pi-runtime';
 export const PI_RUNTIME_CHANNEL = 'lark';
+export const PI_RUNTIME_CONTEXT_AUDIENCES = ['private', 'shared'] as const;
+export type PiRuntimeContextAudience = typeof PI_RUNTIME_CONTEXT_AUDIENCES[number];
 
 export interface PiRuntimeLeaseClaims {
   readonly aud: typeof PI_RUNTIME_AUDIENCE;
@@ -12,6 +14,13 @@ export interface PiRuntimeLeaseClaims {
   readonly role?: string;
   readonly instanceId: string;
   readonly threadId: string;
+  readonly runId: string;
+  readonly chatId: string;
+  /**
+   * Who can read the answer. A shared audience must never be launched with a
+   * container that mounts the member's private workspace or session history.
+   */
+  readonly contextAudience: PiRuntimeContextAudience;
   /**
    * The department this run acts in. A member can belong to several, and the
    * container otherwise falls back to whichever is listed first — which would
@@ -30,6 +39,9 @@ export interface IssuePiRuntimeLeaseInput {
   readonly role?: string;
   readonly instanceId: string;
   readonly threadId: string;
+  readonly runId: string;
+  readonly chatId: string;
+  readonly contextAudience?: PiRuntimeContextAudience;
   readonly departmentId?: string;
   readonly ttlSeconds?: number;
   readonly now?: Date;
@@ -49,6 +61,9 @@ export function issuePiRuntimeLease(
     ...(input.role ? { role: input.role } : {}),
     instanceId: input.instanceId,
     threadId: input.threadId,
+    runId: input.runId,
+    chatId: input.chatId,
+    contextAudience: input.contextAudience ?? 'private',
     ...(input.departmentId ? { departmentId: input.departmentId } : {}),
     iat: issuedAt,
     exp: issuedAt + (input.ttlSeconds ?? 300),
@@ -71,6 +86,11 @@ export function isPiRuntimeLeaseClaims(
     && value['instanceId'].length > 0
     && typeof value['threadId'] === 'string'
     && value['threadId'].length > 0
+    && typeof value['runId'] === 'string'
+    && value['runId'].length > 0
+    && typeof value['chatId'] === 'string'
+    && value['chatId'].length > 0
+    && PI_RUNTIME_CONTEXT_AUDIENCES.includes(value['contextAudience'] as PiRuntimeContextAudience)
     && typeof value['iat'] === 'number'
     && typeof value['exp'] === 'number'
     && typeof value['jti'] === 'string'

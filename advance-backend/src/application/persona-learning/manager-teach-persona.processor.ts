@@ -3,17 +3,13 @@ import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import type { Prisma, PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
-import { isSafePublishedMemoryFact } from '../memory/memory-fact-safety';
-import { recordSkillRegistryMutation } from '../skills/skill-registry-versioning';
-import { unknownSkillToolIds } from '../skills/skill-tool-validation';
-import { larkSkillEnglishOnlyError } from '../skills/lark-skill-language-policy';
+import { isSafePublishedMemoryFact } from '../knowledge/knowledge-fact-safety';
 import { ManagerPersonaRevisionService } from './manager-persona-revision.service';
 import type {
   ManagerTeachPersonaChange,
   ManagerTeachPersonaEvidenceInput,
   ManagerTeachLearningPatch,
   ManagerTeachIgnoredLearning,
-  ManagerTeachSkillChange,
   ManagerTeachPersonaTarget,
 } from './manager-teach-persona.types';
 
@@ -75,9 +71,8 @@ const TEACH_WRITE_CONTRACT = {
     rule: 'Include every readiness field. Use null, never omission or an empty string, when a nullable field genuinely does not apply.',
   },
   skillOperations: {
-    create: 'Use operation=create for a new slug. Do not include targetSkillId.',
-    merge: 'Use operation=merge and targetSkillId copied exactly from existingSkills[].id.',
-    allowed: ['create', 'merge'],
+    rule: 'Return skills: []. Shared skill creation and updates use the governed knowledge review flow, never Teach direct writes.',
+    allowed: [],
   },
   personaOperations: {
     create: 'Use operation=create with kind, scopeKey, and ruleKey for a genuinely new concept. Do not include target.',
@@ -91,7 +86,7 @@ const TEACH_WRITE_CONTRACT = {
   arrays: 'Always include skills, changes, and ignored as arrays, including [] when empty.',
   preflight: [
     'No upsert or add operations.',
-    'Every skill merge has an exact targetSkillId.',
+    'skills is empty; Teach never bypasses shared-knowledge review.',
     'Every persona merge, replace, or retire has the full exact target object.',
     'Every readiness key is present; non-applicable nullable values are null, not empty strings.',
     'unresolvedMaterialQuestions is empty before applying.',
@@ -215,6 +210,11 @@ export class ManagerTeachPersonaProcessor {
       }
       if (priorByKey.personaMutation) return this.toResult(priorByKey.personaMutation);
     }
+    if (input.patch.skills.length > 0) {
+      throw new Error(
+        'Teach cannot write shared skills directly. Submit the exact skill through the governed knowledge review flow so the requester and a different department manager approve it.',
+      );
+    }
 
     const rootSession = await this.deps.prisma.managerTeachSession.findFirst({
       where: {
@@ -265,26 +265,17 @@ export class ManagerTeachPersonaProcessor {
       loaded.nodes,
       this.deps.minConfidence,
     );
-    const acceptedSkills = validateTeachSkillChanges(
-      input.patch.skills,
-      loaded.evidence,
-      this.deps.minConfidence,
-    );
+    const acceptedSkills: never[] = [];
     const acceptedIgnored = validateIgnoredTeachLearnings(input.patch.ignored, loaded.evidence, loaded.nodes);
     if (
       acceptedPersona.length !== input.patch.changes.length
-      || acceptedSkills.length !== input.patch.skills.length
       || acceptedIgnored.length !== input.patch.ignored.length
     ) {
       const acceptedPersonaSet = new Set(acceptedPersona);
-      const acceptedSkillSet = new Set(acceptedSkills);
       const rejected = [
         ...input.patch.changes
           .filter(change => !acceptedPersonaSet.has(change))
           .map(change => `persona "${change.operation === 'create' ? change.ruleKey : change.target.ruleKey}"`),
-        ...input.patch.skills
-          .filter(skill => !acceptedSkillSet.has(skill))
-          .map(skill => `skill "${skill.slug}"`),
         ...input.patch.ignored
           .filter(ignored => !acceptedIgnored.includes(ignored))
           .map(ignored => `ignored concept "${ignored.conceptKey}"`),
@@ -423,110 +414,6 @@ export class ManagerTeachPersonaProcessor {
           rationale: string;
           priorStateJson?: Prisma.InputJsonValue;
         }> = [];
-        for (const skillChange of acceptedSkills) {
-          const existing = skillChange.operation === 'merge'
-            ? await tx.skill.findFirst({
-              where: {
-                id: skillChange.targetSkillId,
-                companyId: currentSession.companyId,
-                departmentId: currentSession.departmentId,
-                scope: 'department',
-                status: { not: 'archived' },
-              },
-            })
-            : null;
-          if (skillChange.operation === 'merge' && !existing) {
-            throw new Error(`Canonical Teach skill target is unavailable: ${skillChange.targetSkillId}`);
-          }
-          const conflictingSlug = await tx.skill.findFirst({
-            where: {
-              companyId: currentSession.companyId,
-              departmentId: currentSession.departmentId,
-              scope: 'department',
-              slug: skillChange.slug,
-              status: { not: 'archived' },
-            },
-          });
-          if (skillChange.operation === 'create' && conflictingSlug) {
-            throw new Error(`Teach skill "${skillChange.slug}" already exists; merge targetSkillId ${conflictingSlug.id}`);
-          }
-          if (existing && (existing.id !== conflictingSlug?.id || existing.slug !== skillChange.slug)) {
-            throw new Error('Teach skill merge target and slug do not identify the same canonical skill');
-          }
-          const skill = existing
-            ? await tx.skill.update({
-              where: { id: existing.id },
-              data: {
-                name: skillChange.name,
-                summary: skillChange.summary,
-                markdown: skillChange.markdown,
-                toolIds: skillChange.toolIds,
-                tags: skillChange.tags,
-                revision: { increment: 1 },
-                status: 'active',
-                updatedBy: currentSession.managerId,
-              },
-            })
-            : await tx.skill.create({
-              data: {
-                companyId: currentSession.companyId,
-                departmentId: currentSession.departmentId,
-                scope: 'department',
-                name: skillChange.name,
-                slug: skillChange.slug,
-                summary: skillChange.summary,
-                markdown: skillChange.markdown,
-                toolIds: skillChange.toolIds,
-                tags: skillChange.tags,
-                status: 'active',
-                createdBy: currentSession.managerId,
-                updatedBy: currentSession.managerId,
-              },
-            });
-          await tx.skillAccessGrant.upsert({
-            where: {
-              skillId_granteeType_granteeId: {
-                skillId: skill.id,
-                granteeType: 'department',
-                granteeId: currentSession.departmentId,
-              },
-            },
-            create: {
-              companyId: currentSession.companyId,
-              skillId: skill.id,
-              granteeType: 'department',
-              granteeId: currentSession.departmentId,
-              grantedBy: currentSession.managerId,
-            },
-            update: {},
-          });
-          await recordSkillRegistryMutation(tx, skill, 'teach');
-          appliedSkills.push({
-            id: skill.id,
-            slug: skill.slug,
-            name: skill.name,
-            revision: skill.revision,
-            outcome: existing ? 'updated' : 'created',
-          });
-          provenanceRows.push({
-            skillId: skill.id,
-            decision: existing ? 'merge' : 'create',
-            evidenceRefs: [...skillChange.evidenceRefs],
-            rationale: skillChange.rationale,
-            ...(existing ? {
-              priorStateJson: toJson({
-                revision: existing.revision,
-                name: existing.name,
-                slug: existing.slug,
-                summary: existing.summary,
-                markdown: existing.markdown,
-                toolIds: existing.toolIds,
-                tags: existing.tags,
-              }),
-            } : {}),
-          });
-        }
-
         const referencedSkillSlugs = new Set<string>();
         for (const change of acceptedPersona) {
           if (change.operation === 'create') {
@@ -542,7 +429,7 @@ export class ManagerTeachPersonaProcessor {
               slug: { in: [...referencedSkillSlugs] },
               status: 'active',
               OR: [
-                { scope: 'global', departmentId: null },
+                { scope: 'company', departmentId: null },
                 { scope: 'department', departmentId: currentSession.departmentId },
               ],
             },
@@ -980,60 +867,6 @@ export function buildBoundedTeachPersonaEvidence(
   }
 
   return { baseRevision, existingPersona, existingSkills, transcript, frames, warnings };
-}
-
-export function validateTeachSkillChanges(
-  skills: readonly ManagerTeachSkillChange[],
-  evidence: ManagerTeachPersonaEvidenceInput,
-  minConfidence: number,
-): ManagerTeachSkillChange[] {
-  const availableRefs = new Set([
-    ...evidence.transcript.map(item => item.ref),
-    ...evidence.frames.map(item => item.ref),
-  ]);
-  const seenSlugs = new Set<string>();
-  const seenTargets = new Set<string>();
-  const existingById = new Map(evidence.existingSkills.map(skill => [skill.id, skill]));
-  const existingBySlug = new Map(evidence.existingSkills.map(skill => [skill.slug, skill]));
-  const accepted: ManagerTeachSkillChange[] = [];
-  for (const skill of skills) {
-    if (skill.confidence < minConfidence) continue;
-    if (seenSlugs.has(skill.slug)) continue;
-    if (skill.evidenceRefs.some(ref => !availableRefs.has(ref))) continue;
-    if (!skill.evidenceRefs.some(ref => ref.startsWith('transcript:'))) continue;
-    if (!isSafePersonaText(skill.rationale)) continue;
-    const unknownToolIds = unknownSkillToolIds(skill.toolIds);
-    if (unknownToolIds.length > 0) {
-      throw new Error(`Teach skill contains unknown toolIds: ${unknownToolIds.join(', ')}`);
-    }
-    const languageError = larkSkillEnglishOnlyError({
-      slug: skill.slug,
-      name: skill.name,
-      summary: skill.summary,
-      markdown: skill.markdown,
-      toolIds: skill.toolIds,
-      tags: skill.tags,
-    });
-    if (languageError) throw new Error(languageError);
-    const skillText = [skill.name, skill.summary, skill.markdown].join('\n');
-    if (unsafeAuthorityPattern.test(skillText) || promptInjectionPattern.test(skillText)) continue;
-    if (skill.operation === 'merge') {
-      const target = existingById.get(skill.targetSkillId);
-      if (!target || target.slug !== skill.slug || seenTargets.has(target.id)) continue;
-      seenTargets.add(target.id);
-    } else {
-      if (existingBySlug.has(skill.slug)) continue;
-      const duplicate = evidence.existingSkills.some(existing => isLikelyDuplicate(
-        [skill.slug, skill.name, skill.summary, ...skill.tags].join(' '),
-        [existing.slug, existing.name, existing.summary, ...existing.tags].join(' '),
-        0.9,
-      ));
-      if (duplicate) continue;
-    }
-    seenSlugs.add(skill.slug);
-    accepted.push(skill);
-  }
-  return accepted;
 }
 
 export function validateTeachPersonaChanges(

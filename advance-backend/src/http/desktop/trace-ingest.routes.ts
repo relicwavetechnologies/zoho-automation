@@ -24,6 +24,7 @@ import { ExecutionRepository } from '../../infrastructure/persistence/execution.
 import { TokenUsageService } from '../../application/observability/token-usage.service';
 import { PersonaLearningService } from '../../application/persona-learning/persona-learning.service';
 import type { PersonaLearningToolSummary } from '../../application/persona-learning/persona-learning.types';
+import type { KnowledgeLearningService } from '../../application/knowledge/knowledge-learning.service';
 
 export interface TraceIngestRoutesDeps {
   prisma: PrismaClient;
@@ -32,6 +33,8 @@ export interface TraceIngestRoutesDeps {
   proxyOwnsTrace?: boolean;
   /** Optional until P1–P3 is deployed with the persona-learning worker. */
   personaLearning?: PersonaLearningService;
+  /** Personal-only learning capture. Identity comes from member auth, never Pi. */
+  knowledgeLearning?: Pick<KnowledgeLearningService, 'captureCompletedTurn'>;
 }
 
 // ─── Contract (shared shape PI emits) ───────────────────────────────────────
@@ -80,7 +83,7 @@ const eventSchema = z.discriminatedUnion('kind', [
     kind: z.literal('learning_context'),
     seq: z.number().int().nonnegative(),
     ts: z.number().optional(),
-    userMessages: z.array(z.string().max(4_000)).max(3),
+    userMessages: z.array(z.string().max(4_000)).max(12),
     assistantResponse: z.string().max(6_000).optional(),
     toolSummary: z.array(z.object({
       toolName: z.string().min(1).max(200),
@@ -95,6 +98,10 @@ const batchSchema = z.object({
   sessionId:   z.string().max(200).optional(),
   threadId:    z.string().max(200).optional(),
   agentTarget: z.string().max(200).optional(),
+  // Lark owns private-learning capture in LarkPiRuntimeService because only
+  // that boundary knows whether the source was a human-authored private turn.
+  // Trace ingest still stores the full timeline but must not learn it again.
+  runtimeChannel: z.literal('lark').optional(),
   usageAuthority: z.enum(['desktop', 'proxy']).default('desktop'),
   events:      z.array(eventSchema).min(1).max(500),
 });
@@ -121,6 +128,7 @@ export type TraceBatch = z.infer<typeof batchSchema>;
 export interface TraceIdentity {
   companyId: string;
   userId:    string;
+  companyRole: string;
 }
 
 export interface IngestResult {
@@ -141,6 +149,7 @@ export async function ingestTraceBatch(
   identity: TraceIdentity,
   batch: TraceBatch,
   personaLearning?: PersonaLearningService,
+  knowledgeLearning?: Pick<KnowledgeLearningService, 'captureCompletedTurn'>,
 ): Promise<IngestResult> {
   const executionId = await runs.findOrCreateByRequestId({
     requestId:  batch.runId,
@@ -174,14 +183,63 @@ export async function ingestTraceBatch(
   if (failed > 0) {
     log.warn('trace-ingest.partial', { runId: batch.runId, failed, total: batch.events.length });
   }
-  await capturePersonaLearningEvidence(personaLearning, log, {
-    executionId,
-    companyId: identity.companyId,
-    userId: identity.userId,
-    ...(batch.threadId ? { threadId: batch.threadId } : {}),
-    events: batch.events,
-  });
+  await Promise.all([
+    capturePersonaLearningEvidence(personaLearning, log, {
+      executionId,
+      companyId: identity.companyId,
+      userId: identity.userId,
+      ...(batch.threadId ? { threadId: batch.threadId } : {}),
+      events: batch.events,
+    }),
+    capturePersonalLearning(batch.runtimeChannel === 'lark' ? undefined : knowledgeLearning, log, {
+      executionId,
+      companyId: identity.companyId,
+      userId: identity.userId,
+      companyRole: identity.companyRole,
+      events: batch.events,
+    }),
+  ]);
   return { executionId, accepted: batch.events.length - failed, failed };
+}
+
+async function capturePersonalLearning(
+  knowledgeLearning: Pick<KnowledgeLearningService, 'captureCompletedTurn'> | undefined,
+  log: Logger,
+  input: {
+    executionId: string;
+    companyId: string;
+    userId: string;
+    companyRole: string;
+    events: readonly TraceEvent[];
+  },
+): Promise<void> {
+  if (!knowledgeLearning) return;
+  const terminalEvent = findLast(input.events, event => event.kind === 'run_end');
+  const contextEvent = findLast(input.events, event => event.kind === 'learning_context');
+  if (terminalEvent?.kind !== 'run_end' || contextEvent?.kind !== 'learning_context') return;
+  if (terminalEvent.status !== 'ok' || !contextEvent.assistantResponse) return;
+
+  const userMessages = contextEvent.userMessages.map(message => message.trim()).filter(Boolean);
+  if (userMessages.length === 0) return;
+
+  try {
+    await knowledgeLearning.captureCompletedTurn({
+      companyId: input.companyId,
+      userId: input.userId,
+      companyRole: input.companyRole,
+      channel: 'desktop',
+      userMessages,
+      assistantText: contextEvent.assistantResponse,
+      sourceId: `desktop:${input.executionId}`,
+    });
+  } catch (error) {
+    // Personal memory is advisory. A provider failure must not reject or retry
+    // an otherwise durable execution trace.
+    log.warn('trace-ingest.personal-learning.capture_failed', {
+      executionId: input.executionId,
+      error: String(error),
+    });
+  }
 }
 
 async function persistEvent(
@@ -373,7 +431,8 @@ export function createTraceIngestRoutes(deps: TraceIngestRoutesDeps): Router {
   router.post('/', async (req: Request, res: Response): Promise<void> => {
     const companyId = res.locals['companyId'] as string | undefined;
     const userId    = res.locals['userId'] as string | undefined;
-    if (!companyId || !userId) {
+    const companyRole = res.locals['aiRole'] as string | undefined;
+    if (!companyId || !userId || !companyRole) {
       res.status(401).json({ success: false, message: 'Unauthenticated' });
       return;
     }
@@ -393,7 +452,15 @@ export function createTraceIngestRoutes(deps: TraceIngestRoutesDeps): Router {
     }
 
     try {
-      const result = await ingestTraceBatch(runs, tokens, log, { companyId, userId }, parsed.data, deps.personaLearning);
+      const result = await ingestTraceBatch(
+        runs,
+        tokens,
+        log,
+        { companyId, userId, companyRole },
+        parsed.data,
+        deps.personaLearning,
+        deps.knowledgeLearning,
+      );
       res.status(202).json({ success: true, data: result });
     } catch (e) {
       log.error('trace-ingest.failed', { runId: parsed.data.runId, error: String(e) });

@@ -195,7 +195,7 @@ Never invent a schedule ID. Use the exact ID returned by create or list.
 const SKILL_FIELDS = {
   departmentId: null,
   folderId: null,
-  scope: 'global',
+  scope: 'company',
   name: 'Schedule Divo Work',
   slug: SCHEDULE_DIVO_WORK_SKILL_SLUG,
   summary: 'Create and manage durable one-time or recurring Divo work, reminders, monitoring, and reports; distinguish agent work from calendar events and use the exact governed gateway contract.',

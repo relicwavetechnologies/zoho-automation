@@ -5,7 +5,7 @@ ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 WORKDIR /app
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates openssl dumb-init ffmpeg \
+  && apt-get install -y --no-install-recommends ca-certificates openssl dumb-init ffmpeg poppler-utils \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable \
   && corepack prepare pnpm@10.33.4 --activate
