@@ -18,13 +18,20 @@ import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { CONNECTABLE, useConnectionGrants, useConnections, type LiveConnection } from './data/use-connections'
 import { ago, expiryLabel, useApprovals } from './data/use-approvals'
 import {
-  changePct, durationLabel, useMyRuns, useMyTools, useMyUsage, type MyRun,
+  changePct, durationLabel, useMyModelOptions, useMyRuns, useMyTools, useMyUsage, type MyRun,
 } from './data/use-my-activity'
 import {
   Bar, ChangePreview, DataNote, Drawer, Empty, Fade, Matrix, PageHeader, Panel, Provenance,
   ProviderMark, Seg, Skel, SkelRows, Spark, Switch, compact, listPhrase, money,
   permissionSentence, providerName, useStaged,
 } from './ui'
+
+const initialsOf = (name: string | null, email: string) =>
+  (name ?? email).split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((p) => p[0]!.toUpperCase()).join('')
+
+const COMPANY_ROLE_LABEL: Record<string, string> = {
+  SUPER_ADMIN: 'Super admin', COMPANY_ADMIN: 'Company admin', MEMBER: 'Member',
+}
 
 type ScreenProps = { persona: Persona; replay: number; toast: (m: string) => void; go: (screen: string) => void }
 
@@ -943,10 +950,11 @@ export function YouMemory({ replay, toast }: ScreenProps) {
 /* ══ Settings ══════════════════════════════════════════ */
 export function YouSettings({ persona, replay, toast }: ScreenProps) {
   const [r1] = useStaged([260], replay)
-  const [model, setModel] = useState<'flash' | 'pro'>('flash')
+  const [model, setModel] = useState<string | null>(null)
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system')
   const [notify, setNotify] = useState(true)
-  const me = persona === 'member' ? personById('u_ananya')! : personById('u_arjun')!
+  const { session } = useAdminAuth()
+  const { allowedModels, loading: modelsLoading } = useMyModelOptions()
 
   return (
     <>
@@ -958,47 +966,62 @@ export function YouSettings({ persona, replay, toast }: ScreenProps) {
               {!r1 ? <Skel w="100%" h={120} /> : (
                 <Fade>
                   <div className="profile" style={{ marginBottom: 18 }}>
-                    <div className="pic">{me.initials}</div>
+                    <div className="pic">{initialsOf(session?.name ?? null, session?.email ?? '')}</div>
                     <div>
-                      <h1 style={{ fontSize: 20 }}>{me.name}</h1>
-                      <div className="sub">{me.email}</div>
+                      <h1 style={{ fontSize: 20 }}>{session?.name ?? session?.email ?? '—'}</h1>
+                      <div className="sub">{session?.email}</div>
                     </div>
                   </div>
-                  <div className="kv"><span className="k">Role</span><span className="v">{me.deptRoleName} · Finance</span></div>
-                  <div className="kv"><span className="k">Company</span><span className="v">Acme Technologies</span></div>
-                  <div className="kv"><span className="k">Joined</span><span className="v">{me.joined}</span></div>
-                  <div className="kv"><span className="k">Signed in via</span><span className="v">Lark</span></div>
+                  <div className="kv">
+                    <span className="k">Role</span>
+                    <span className="v">{COMPANY_ROLE_LABEL[session?.role ?? ''] ?? session?.role ?? '—'}</span>
+                  </div>
+                  <div className="kv"><span className="k">Company</span><span className="v">{session?.companyName ?? '—'}</span></div>
+                  {/* Departments decide what Divo may do; the company role alone
+                      grants nothing, which is the part people get wrong. */}
+                  <div className="kv">
+                    <span className="k">{(session?.departments.length ?? 0) === 1 ? 'Department' : 'Departments'}</span>
+                    <span className="v">
+                      {session?.departments.length
+                        ? session.departments.map((d) => `${d.name} · ${d.roleName}`).join(', ')
+                        : 'None'}
+                    </span>
+                  </div>
                 </Fade>
               )}
             </div>
             <div className="ws-panel-foot">
               <CircleAlert size={13} />
-              Web sign-in does not exist yet — sessions come from Lark or a desktop handoff
+              One account across the web, Lark and the desktop — change it and it changes everywhere
             </div>
           </Panel>
 
           <Panel title="Model" description="Which model Divo uses when it works for you" source="profile">
             <div className="ws-panel-body">
-              <div className="ws-rows">
-                {[
-                  { id: 'flash' as const, name: 'Flash', hint: 'Fast — everyday tasks' },
-                  { id: 'pro' as const, name: 'Pro', hint: 'Deeper reasoning — slower and dearer' },
-                ].map((m) => (
-                  <div
-                    className="ws-row click"
-                    style={{ paddingLeft: 0, paddingRight: 0 }}
-                    key={m.id}
-                    onClick={() => { setModel(m.id); toast(`Switched to ${m.name}`) }}
-                  >
-                    <span className="ws-ic" data-tone={model === m.id ? 'ok' : undefined}>
-                      {model === m.id ? <Check size={14} /> : null}
-                    </span>
-                    <div className="ws-row-main"><b>{m.name}</b><p>{m.hint}</p></div>
-                  </div>
-                ))}
-              </div>
+              {modelsLoading ? <SkelRows n={2} icon={false} /> : allowedModels.length === 0 ? (
+                <Empty title="No model is available to you" body="An admin has switched every model off for your account." />
+              ) : (
+                <div className="ws-rows">
+                  {/* Only what the proxy will actually accept for this person.
+                      Offering a model it refuses turns a settings screen into a
+                      way to break your own next task. */}
+                  {allowedModels.map((m) => (
+                    <div
+                      className="ws-row click"
+                      style={{ paddingLeft: 0, paddingRight: 0 }}
+                      key={m.id}
+                      onClick={() => { setModel(m.id); toast(`Switched to ${m.label}`) }}
+                    >
+                      <span className="ws-ic" data-tone={model === m.id ? 'ok' : undefined}>
+                        {model === m.id ? <Check size={14} /> : null}
+                      </span>
+                      <div className="ws-row-main"><b>{m.label}</b><p>{m.id}{m.vision ? ' · reads images' : ''}</p></div>
+                    </div>
+                  ))}
+                </div>
+              )}
               <p className="ws-sub" style={{ marginTop: 14, lineHeight: 1.5 }}>
-                Your admin decides which models you may pick. If only one is allowed, this section is hidden entirely.
+                Your admin decides which models you may pick. With none set, Divo uses its default.
               </p>
             </div>
           </Panel>

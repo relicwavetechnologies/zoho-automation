@@ -145,3 +145,49 @@ export function useMyTools() {
   })
   return { inventory, loading }
 }
+
+/* ── Which models this person may pick ────────────────── */
+
+export type ModelOption = { id: string; label: string; provider: string; vision: boolean }
+
+/**
+ * The models the proxy will actually accept for the signed-in person.
+ *
+ * Intersects the catalogue with their own policy. Offering a model the proxy
+ * refuses turns a settings screen into a way to break your own next task, so
+ * the list is what is permitted rather than what exists.
+ */
+export function useMyModelOptions() {
+  const { token } = useAdminAuth()
+  const [allowedModels, setAllowed] = useState<ModelOption[]>([])
+  const [blocked, setBlocked] = useState(false)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!token) return
+    let live = true
+    void (async () => {
+      try {
+        const [mine, catalogue] = await Promise.all([
+          api.get<{ allowedModels: string[]; blocked: boolean }>(
+            '/api/desktop/auth/model-options', token, { quiet: true },
+          ),
+          // The catalogue carries the labels; the policy carries only ids.
+          api.get<ModelOption[]>('/api/admin/proxy/models', token, { quiet: true }).catch(() => []),
+        ])
+        if (!live) return
+        const byId = new Map(catalogue.map((m) => [m.id, m]))
+        setAllowed(mine.allowedModels.map((id) =>
+          byId.get(id) ?? { id, label: id, provider: 'unknown', vision: false }))
+        setBlocked(mine.blocked)
+      } catch {
+        if (live) setAllowed([])
+      } finally {
+        if (live) setLoading(false)
+      }
+    })()
+    return () => { live = false }
+  }, [token])
+
+  return { allowedModels, blocked, loading }
+}
