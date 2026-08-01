@@ -14,9 +14,6 @@ import {
 import { ToolRegistry } from '../../src/application/tools/tool-registry.ts';
 import type { Tool } from '../../src/application/tools/tool.contract.ts';
 import { createWebSearchTool } from '../../src/application/tools/families/web-search.tool.ts';
-import { createSkillPublishingTool } from '../../src/application/tools/families/skill-publishing.tool.ts';
-import { createMemoryPublishingTool } from '../../src/application/tools/families/memory-publishing.tool.ts';
-import { createMemoryRecallTool } from '../../src/application/tools/families/memory-recall.tool.ts';
 import { createMailAutomationsTool } from '../../src/application/tools/families/mail-automations.tool.ts';
 import type { CatalogSkill, SkillCatalogService } from '../../src/application/skills/skill-catalog.service.ts';
 import { ok, err } from '../../src/shared/result.ts';
@@ -82,46 +79,6 @@ function makeScopedPermissionService(
     invalidateCompany: async () => {},
     invalidateDept: async () => {},
   } as unknown as PermissionService;
-}
-
-function makeSkillPublishingPrisma() {
-  const creates: unknown[] = [];
-  const tx = {
-    skill: {
-      findFirst: async () => null,
-      create: async (args: { data: Record<string, unknown> }) => {
-        creates.push(args.data);
-        return {
-          id: 'skill-1',
-          slug: args.data.slug,
-          name: args.data.name,
-          scope: args.data.scope,
-          departmentId: args.data.departmentId,
-          companyId: args.data.companyId,
-          summary: args.data.summary,
-          markdown: args.data.markdown,
-          toolIds: args.data.toolIds,
-          tags: args.data.tags,
-          status: 'active',
-          revision: 1,
-          createdBy: args.data.createdBy,
-          updatedBy: args.data.updatedBy,
-        };
-      },
-    },
-    skillVersion: {
-      upsert: async () => ({}),
-    },
-    skillRegistryRevision: {
-      upsert: async () => ({}),
-    },
-    skillAccessGrant: {
-      upsert: async () => ({}),
-    },
-  };
-  const prisma = { ...tx, $transaction: async (fn: (store: typeof tx) => unknown) => fn(tx) };
-
-  return { prisma: prisma as never, creates };
 }
 
 function makeSkillCatalog(skills: CatalogSkill[]): SkillCatalogService {
@@ -198,19 +155,6 @@ function makeLocalApprovals(
   });
 }
 
-function makeMemoryRecallTool(
-  mem0: { searchForRecall(input: unknown): Promise<unknown> } | null,
-  memberships = [
-    { departmentId: 'dept-finance', departmentName: 'Finance' },
-    { departmentId: 'dept-sales', departmentName: 'Sales' },
-  ],
-) {
-  return createMemoryRecallTool({
-    mem0: mem0 as never,
-    departmentRepo: { listActiveMemberships: async () => ({ ok: true as const, value: memberships }) },
-  });
-}
-
 describe('ToolExecutor', () => {
   it('marks a scheduled run so tools know the runtime owns its delivery', async () => {
     // Pi runs in its container and calls back through the gateway, so this is
@@ -273,66 +217,6 @@ describe('ToolExecutor', () => {
     assert.equal(result.truncation.truncated, true);
     assert.ok(Buffer.byteLength(JSON.stringify(result), 'utf8') <= MODEL_FACING_RESULT_MAX_BYTES);
     assert.equal(result.truncation.returnedBytes, Buffer.byteLength(JSON.stringify(result), 'utf8'));
-  });
-
-  it('ignores generic department context and recalls across server-derived active memberships without RBAC or HITL', async () => {
-    const recalls: unknown[] = [];
-    let approvalChecks = 0;
-    const registry = new ToolRegistry();
-    registry.register(makeMemoryRecallTool({
-        searchForRecall: async (input: unknown) => {
-          recalls.push(input);
-          return {
-            facts: [{ scope: 'department' as const, text: 'Finance closes by the fifth business day.', department: { name: 'Finance' } }],
-            coverage: { personal: 'searched' as const, departments: { searched: 2, failed: 0 }, company: 'searched' as const },
-            status: 'available' as const,
-          };
-        },
-    }));
-    const queries: PermissionQuery[] = [];
-    const permissions = makeScopedPermissionService(() => makeDeniedPerm(), queries);
-    const executor = new ToolExecutor({
-      toolRegistry: registry,
-      permissions,
-      approvalGate: {
-        check: async () => {
-          approvalChecks++;
-          return { kind: 'pending', approvalId: 'unexpected', message: 'Unexpected approval' };
-        },
-        completeExecution: async () => true,
-        failExecution: async () => true,
-      } as never,
-      logger: noopLogger,
-      clock: { now: () => new Date(), nowMs: () => Date.now() },
-    });
-
-    const result = await executor.invoke({
-      member,
-      departmentId: 'dept-model-supplied',
-      toolId: 'memoryRecall',
-      args: { query: 'month end close' },
-    });
-
-    assert.equal(result.ok, true);
-    assert.equal(approvalChecks, 0);
-    assert.deepEqual(queries.map(query => query.departmentId), [undefined]);
-    assert.deepEqual(recalls, [{
-      query: 'month end close',
-      userId: 'user-test',
-      companyId: 'co-test',
-      departments: [
-        { id: 'dept-finance', name: 'Finance' },
-        { id: 'dept-sales', name: 'Sales' },
-      ],
-      limit: 12,
-      maxFactChars: 500,
-      maxTotalChars: 3000,
-    }]);
-    assert.deepEqual((result.data as any).result, {
-      facts: [{ scope: 'department', text: 'Finance closes by the fifth business day.', department: { name: 'Finance' } }],
-      coverage: { personal: 'searched', departments: { searched: 2, failed: 0 }, company: 'searched' },
-      status: 'available',
-    });
   });
 
   it('returns unknown_tool for missing registry entry', async () => {
@@ -518,111 +402,6 @@ describe('ToolExecutor', () => {
     assert.equal(approvalInput.runContext.replyToMessageId, 'om_root');
     assert.equal(approvalInput.runContext.replyInThread, true);
     assert.match(approvalInput.chatId, /^gateway:company:co-test:requester:user-test:/);
-  });
-
-  it('reports company and department skill-publishing authority for company admin in a department context', async () => {
-    const registry = new ToolRegistry();
-    const { prisma } = makeSkillPublishingPrisma();
-    registry.register(createSkillPublishingTool({ prisma }));
-
-    const companyPerm = makeAllowedPerm('skillPublishing', ['read', 'create']);
-    const departmentPerm: PermissionResult = {
-      ...makeDeniedPerm(),
-      department: {
-        id: asDepartmentId('dept-1'),
-        name: 'Finance',
-        roleSlug: 'MANAGER' as never,
-        zohoReadScope: 'personalized',
-      },
-    };
-    const queries: PermissionQuery[] = [];
-    const permissions = makeScopedPermissionService(
-      (query) => query.departmentId ? departmentPerm : companyPerm,
-      queries,
-    );
-
-    const executor = new ToolExecutor({
-      toolRegistry: registry,
-      permissions,
-      logger: noopLogger,
-      clock: { now: () => new Date(), nowMs: () => Date.now() },
-    });
-
-    const result = await executor.invoke({
-      member: { ...member, aiRole: 'COMPANY_ADMIN' },
-      departmentId: 'dept-1',
-      toolId: 'skillPublishing',
-      args: { operation: 'check_authority' },
-    });
-
-    assert.equal(result.ok, true);
-    assert.deepEqual((result as any).data.result, {
-      operation: 'check_authority',
-      canPublishCompany: true,
-      canPublishDepartment: true,
-      departmentId: 'dept-1',
-    });
-    assert.deepEqual(queries.map((query) => query.departmentId ? String(query.departmentId) : null), [
-      'dept-1',
-      null,
-    ]);
-  });
-
-  it('uses company permissions for company-scope skill publishing even when a department is active', async () => {
-    const registry = new ToolRegistry();
-    const { prisma, creates } = makeSkillPublishingPrisma();
-    registry.register(createSkillPublishingTool({ prisma }));
-
-    const companyPerm = makeAllowedPerm('skillPublishing', ['read', 'create']);
-    const departmentPerm: PermissionResult = {
-      ...makeDeniedPerm(),
-      department: {
-        id: asDepartmentId('dept-1'),
-        name: 'Finance',
-        roleSlug: 'MEMBER' as never,
-        zohoReadScope: 'personalized',
-      },
-    };
-    const queries: PermissionQuery[] = [];
-    let approvalChecks = 0;
-    const permissions = makeScopedPermissionService(
-      (query) => query.departmentId ? departmentPerm : companyPerm,
-      queries,
-    );
-
-    const executor = new ToolExecutor({
-      toolRegistry: registry,
-      permissions,
-      approvalGate: {
-        check: async () => {
-          approvalChecks++;
-          return { kind: 'allowed' };
-        },
-        completeExecution: async () => true,
-        failExecution: async () => true,
-      } as never,
-      logger: noopLogger,
-      clock: { now: () => new Date(), nowMs: () => Date.now() },
-    });
-
-    const result = await executor.invoke({
-      member: { ...member, aiRole: 'COMPANY_ADMIN' },
-      departmentId: 'dept-1',
-      toolId: 'skillPublishing',
-      args: {
-        operation: 'publish',
-        scope: 'company',
-        name: 'Company Finance Brief',
-        markdown: '# Company Finance Brief',
-        toolIds: ['webSearch'],
-      },
-    });
-
-    assert.equal(result.ok, true);
-    assert.equal((result as any).data.result.skill.scope, 'global');
-    assert.deepEqual(queries.map((query) => query.departmentId ? String(query.departmentId) : null), [null]);
-    assert.equal(approvalChecks, 0);
-    assert.equal((creates[0] as any).departmentId, null);
   });
 
   it('returns approval_rejected when an exact gateway action was rejected by the manager', async () => {
@@ -1457,6 +1236,81 @@ describe('LocalApprovalIntentService', () => {
     });
   });
 
+  it('renders knowledge review intents without internal target or asset IDs', async () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      ...makeFakeTool(),
+      id: asToolId('knowledge'),
+      family: 'memory',
+      actionGroups: new Set(['create']),
+      argsSchema: z.object({
+        operation: z.literal('propose'),
+        kind: z.literal('file'),
+        action: z.literal('publish'),
+        scope: z.literal('department'),
+        departmentId: z.string(),
+        logicalKey: z.string(),
+        content: z.object({
+          assetId: z.string(),
+          fileName: z.string(),
+          mimeType: z.string(),
+          sizeBytes: z.number(),
+          sha256: z.string(),
+        }),
+      }),
+      permissionCheck: () => ok('create'),
+    } as Tool<any, any>);
+    const permissions = makePermissionService(makeAllowedPerm('knowledge', ['create']));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const prepared = await makeLocalApprovals(executor).prepare({
+      member,
+      departmentId: 'dept-internal-id',
+      skillId: 'allowed-skill',
+      toolId: 'knowledge',
+      args: {
+        operation: 'propose',
+        kind: 'file',
+        action: 'publish',
+        scope: 'department',
+        departmentId: 'dept-internal-id',
+        logicalKey: 'qa-runbook',
+        content: {
+          assetId: 'asset-internal-id',
+          fileName: 'QA Runbook.pdf',
+          mimeType: 'application/pdf',
+          sizeBytes: 4096,
+          sha256: 'a'.repeat(64),
+        },
+      },
+    });
+
+    assert.deepEqual((prepared.data as any).presentation, {
+      kind: 'knowledge.file.publish',
+      provider: 'divo',
+      title: 'Review selected department file change',
+      action: 'create',
+      operation: 'propose',
+      details: {
+        target: 'Selected department',
+        resource: 'file',
+        change: 'publish',
+        logicalKey: 'qa-runbook',
+        exactContent: {
+          fileName: 'QA Runbook.pdf',
+          mimeType: 'application/pdf',
+          sizeBytes: 4096,
+          sha256: 'a'.repeat(64),
+        },
+      },
+    });
+    assert.doesNotMatch(JSON.stringify((prepared.data as any).presentation), /internal-id/);
+  });
+
   it('binds an intent to the preparing session and department', async () => {
     const registry = new ToolRegistry();
     registry.register(makeFakeTool({ permissionCheck: () => ok('create') }));
@@ -1927,6 +1781,424 @@ describe('GatewayDispatcher', () => {
     assert.equal(retiredGooglePlan.status, 'unknown_op');
   });
 
+  it('opens requester review only from a backend-authenticated Lark runtime', async () => {
+    const opened: unknown[] = [];
+    const completedEffects: unknown[] = [];
+    const perm = makeAllowedPerm('knowledge', ['create']);
+    const registry = new ToolRegistry();
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(perm),
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([{
+        id: 'share-memory-skill',
+        slug: 'share-memory',
+        name: 'Share Memory',
+        description: 'Review and share durable memory',
+        instructions: 'Review before publishing shared memory.',
+        toolIds: ['knowledge'],
+        revision: 1,
+      }]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions: makePermissionService(perm),
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      larkKnowledgeReview: {
+        openMemoryForRuntime: async input => {
+          opened.push(input);
+          await input.onOpened?.({
+            reviewId: 'review-1',
+            cardMessageId: 'om_card_1',
+            message: 'Review card sent',
+          });
+          return { opened: true, message: 'Review card sent' };
+        },
+      },
+      runEffectReceipts: {
+        reserveKnowledgeReview: async () => ({ status: 'claimed' }),
+        completeKnowledgeReview: async input => {
+          completedEffects.push(input);
+          return {} as any;
+        },
+        releaseKnowledgeReview: async () => {},
+      },
+      logger: noopLogger,
+    });
+    const larkRuntimeMember: GatewayMemberContext = {
+      ...member,
+      channel: 'lark',
+      runtimeChatId: 'oc_source_chat',
+      runtimeRunId: 'run-1',
+      runtimeThreadId: 'thread-1',
+    };
+
+    const result = await dispatcher.dispatch({
+      op: 'knowledge.review.open',
+      departmentId: 'dept-finance',
+      execution: {
+        version: 1,
+        runId: 'run-1',
+        threadId: 'thread-1',
+        actionId: 'memory-review:1',
+      },
+      payload: {
+        skillId: 'share-memory-skill',
+        requestId: 'proposal-1',
+        kind: 'memory',
+        bullets: ['The finance close completes by day five.'],
+        requestedScope: 'department',
+      },
+    }, larkRuntimeMember);
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.data, {
+      status: 'review_pending',
+      message: 'Review card sent',
+      effect: { kind: 'memory_review_opened', runId: 'run-1' },
+      reused: false,
+    });
+    assert.equal(opened.length, 1);
+    const openInput = opened[0] as Record<string, unknown>;
+    assert.deepEqual({ ...openInput, onOpened: undefined }, {
+      proposalId: 'proposal-1',
+      facts: ['The finance close completes by day five.'],
+      requestedScope: 'department',
+      runContext: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        companyRole: 'MEMBER',
+        channel: 'lark',
+        userExternalId: 'ou_test',
+        chatId: 'oc_source_chat',
+        departmentId: 'dept-finance',
+      },
+      perm,
+      chatId: 'oc_source_chat',
+      onOpened: undefined,
+    });
+    assert.deepEqual(completedEffects, [{
+      identity: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        chatId: 'oc_source_chat',
+        threadId: 'thread-1',
+        runId: 'run-1',
+      },
+      requestId: 'proposal-1',
+      reviewId: 'review-1',
+      cardMessageId: 'om_card_1',
+      message: 'Review card sent',
+    }]);
+  });
+
+  it('applies explicit personal memory synchronously and records the exact Lark run receipt', async () => {
+    const commands: unknown[] = [];
+    const receipts: unknown[] = [];
+    const registry = new ToolRegistry();
+    const perm = makeAllowedPerm('knowledge', ['create', 'update', 'delete']);
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(perm),
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions: makePermissionService(perm),
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      personalMemoryCommands: {
+        execute: async input => {
+          commands.push(input);
+          return {
+            action: 'updated',
+            logicalKey: 'communication.answers.detail',
+            resourceId: '11111111-1111-4111-8111-111111111111',
+            version: 3,
+            projection: 'completed',
+          };
+        },
+      } as any,
+      runEffectReceipts: {
+        reserveKnowledgeReview: async () => ({ status: 'claimed' }),
+        completeKnowledgeReview: async () => ({} as any),
+        releaseKnowledgeReview: async () => {},
+        recordPersonalMemory: async (identity, input) => {
+          receipts.push({ identity, input });
+          return {} as any;
+        },
+      },
+      logger: noopLogger,
+    });
+    const larkRuntimeMember: GatewayMemberContext = {
+      ...member,
+      channel: 'lark',
+      runtimeChatId: 'oc_source_chat',
+      runtimeRunId: 'run-1',
+      runtimeThreadId: 'thread-1',
+    };
+
+    const result = await dispatcher.dispatch({
+      op: 'memory.personal.mutate',
+      execution: {
+        version: 1,
+        runId: 'run-1',
+        threadId: 'thread-1',
+        actionId: 'personal-memory-1',
+      },
+      payload: {
+        action: 'set',
+        subject: 'answer detail preference',
+        logicalKey: 'communication.answers.detail',
+        facts: ['The user prefers very detailed answers.'],
+      },
+    }, larkRuntimeMember);
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.data, {
+      status: 'applied',
+      scope: 'personal',
+      action: 'updated',
+      logicalKey: 'communication.answers.detail',
+      resourceId: '11111111-1111-4111-8111-111111111111',
+      version: 3,
+      projection: 'completed',
+      effect: { kind: 'personal_memory_applied', runId: 'run-1' },
+    });
+    assert.equal(commands.length, 1);
+    assert.deepEqual(receipts, [{
+      identity: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        chatId: 'oc_source_chat',
+        threadId: 'thread-1',
+        runId: 'run-1',
+      },
+      input: {
+        actionId: 'personal-memory-1',
+        action: 'updated',
+        logicalKey: 'communication.answers.detail',
+        resourceId: '11111111-1111-4111-8111-111111111111',
+        resourceVersion: 3,
+        projection: 'completed',
+      },
+    }]);
+  });
+
+  it('rejects mismatched personal-memory run provenance before changing data', async () => {
+    let executions = 0;
+    const registry = new ToolRegistry();
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(makeAllowedPerm('knowledge', ['create'])),
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([]),
+      toolExecutor: {} as any,
+      personalMemoryCommands: {
+        execute: async () => {
+          executions++;
+          throw new Error('must not execute');
+        },
+      } as any,
+      logger: noopLogger,
+    });
+    const result = await dispatcher.dispatch({
+      op: 'memory.personal.mutate',
+      execution: { version: 1, runId: 'wrong-run', threadId: 'thread-1', actionId: 'call-1' },
+      payload: {
+        action: 'set',
+        subject: 'answer detail preference',
+        logicalKey: 'communication.answers.detail',
+        facts: ['Detailed answers.'],
+      },
+    }, {
+      ...member,
+      channel: 'lark',
+      runtimeChatId: 'chat-1',
+      runtimeRunId: 'run-1',
+      runtimeThreadId: 'thread-1',
+    });
+
+    assert.equal(result.status, 'permission_denied');
+    assert.equal(executions, 0);
+  });
+
+  it('fails closed after a durable personal write when its same-run receipt cannot be stored', async () => {
+    let executions = 0;
+    const registry = new ToolRegistry();
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(makeAllowedPerm('knowledge', ['create'])),
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([]),
+      toolExecutor: {} as any,
+      personalMemoryCommands: {
+        execute: async () => {
+          executions++;
+          return {
+            action: 'created',
+            logicalKey: 'communication.answers.detail',
+            resourceId: '11111111-1111-4111-8111-111111111111',
+            version: 1,
+            projection: 'completed',
+          };
+        },
+      } as any,
+      runEffectReceipts: {
+        reserveKnowledgeReview: async () => ({ status: 'claimed' }),
+        completeKnowledgeReview: async () => ({} as any),
+        releaseKnowledgeReview: async () => {},
+        recordPersonalMemory: async () => { throw new Error('cache unavailable'); },
+      },
+      logger: noopLogger,
+    });
+    const result = await dispatcher.dispatch({
+      op: 'memory.personal.mutate',
+      execution: { version: 1, runId: 'run-1', threadId: 'thread-1', actionId: 'call-1' },
+      payload: {
+        action: 'set',
+        subject: 'answer detail preference',
+        logicalKey: 'communication.answers.detail',
+        facts: ['Detailed answers.'],
+      },
+    }, {
+      ...member,
+      channel: 'lark',
+      runtimeChatId: 'chat-1',
+      runtimeRunId: 'run-1',
+      runtimeThreadId: 'thread-1',
+    });
+
+    assert.equal(executions, 1);
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'tool_error');
+    assert.match(result.error?.message ?? '', /memory changed.*receipt could not be recorded/i);
+  });
+
+  it('opens exact shared skill review through the backend-owned Lark card flow', async () => {
+    const opened: unknown[] = [];
+    const perm = makeAllowedPerm('knowledge', ['create']);
+    const registry = new ToolRegistry();
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(perm),
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([{
+        id: 'knowledge-skill',
+        slug: 'knowledge-review',
+        name: 'Knowledge Review',
+        description: 'Govern shared knowledge',
+        instructions: 'Review shared knowledge exactly.',
+        toolIds: ['knowledge'],
+        revision: 1,
+      }]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions: makePermissionService(perm),
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      larkKnowledgeReview: {
+        openMemoryForRuntime: async () => ({ opened: false, message: 'unexpected memory review' }),
+        openResourceForRuntime: async input => {
+          opened.push(input);
+          await input.onOpened?.({
+            reviewId: 'review-skill-1',
+            cardMessageId: 'om_skill_card',
+            message: 'Knowledge review card sent',
+          });
+          return { opened: true, message: 'Knowledge review card sent' };
+        },
+      },
+      runEffectReceipts: {
+        reserveKnowledgeReview: async () => ({ status: 'claimed' }),
+        completeKnowledgeReview: async () => ({} as any),
+        releaseKnowledgeReview: async () => {},
+      },
+      logger: noopLogger,
+    });
+    const content = {
+      name: 'Document creation',
+      slug: 'document-creation',
+      summary: 'Create documents consistently.',
+      markdown: '# Document creation\n\nRollback before Owners.',
+      toolIds: [],
+      tags: ['documents'],
+    };
+    const result = await dispatcher.dispatch({
+      op: 'knowledge.review.open',
+      departmentId: 'dept-finance',
+      execution: { version: 1, runId: 'run-1', threadId: 'thread-1', actionId: 'knowledge-review:1' },
+      payload: {
+        skillId: 'knowledge-skill',
+        requestId: 'knowledge:request-1',
+        kind: 'skill',
+        action: 'publish',
+        scope: 'department',
+        logicalKey: 'document-creation',
+        content,
+      },
+    }, {
+      ...member,
+      channel: 'lark',
+      runtimeChatId: 'oc_source_chat',
+      runtimeRunId: 'run-1',
+      runtimeThreadId: 'thread-1',
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(opened.length, 1);
+    const input = opened[0] as Record<string, unknown>;
+    assert.equal(input.kind, 'skill');
+    assert.equal(input.scope, 'department');
+    assert.deepEqual(input.content, content);
+  });
+
+  it('rejects memory review from desktop, malformed payloads, and an unbound skill', async () => {
+    let openCount = 0;
+    const registry = new ToolRegistry();
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(makeAllowedPerm('knowledge', ['create'])),
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([allowedSkill]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions: makePermissionService(),
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      larkKnowledgeReview: {
+        openMemoryForRuntime: async () => {
+          openCount++;
+          return { opened: true, message: 'unexpected' };
+        },
+      },
+      logger: noopLogger,
+    });
+    const payload = {
+      skillId: 'allowed-skill',
+      requestId: 'proposal-1',
+      kind: 'memory',
+      bullets: ['Company fact'],
+    };
+
+    const desktop = await dispatcher.dispatch({
+      op: 'knowledge.review.open',
+      payload,
+    }, member);
+    assert.equal(desktop.status, 'permission_denied');
+
+    const malformed = await dispatcher.dispatch({
+      op: 'knowledge.review.open',
+      payload: { ...payload, extra: true },
+    }, { ...member, channel: 'lark', runtimeChatId: 'oc_source_chat' });
+    assert.equal(malformed.status, 'bad_request');
+
+    const unboundSkill = await dispatcher.dispatch({
+      op: 'knowledge.review.open',
+      payload,
+    }, { ...member, channel: 'lark', runtimeChatId: 'oc_source_chat' });
+    assert.equal(unboundSkill.status, 'permission_denied');
+    assert.equal(openCount, 0);
+  });
+
   it('returns capabilities with RBAC-filtered tools and skills', async () => {
     const dispatcher = makeDispatcher();
     const result = await dispatcher.dispatch({ op: 'capabilities.get' }, member);
@@ -2079,385 +2351,6 @@ describe('GatewayDispatcher', () => {
     assert.equal(invocation.status, 'unknown_tool');
   });
 
-  it('exposes skillPublishing to department managers even without explicit RBAC rows', async () => {
-    const registry = new ToolRegistry();
-    const { prisma } = makeSkillPublishingPrisma();
-    registry.register(createSkillPublishingTool({ prisma }));
-
-    const managerPerm: PermissionResult = {
-      ...makeDeniedPerm(),
-      department: {
-        id: asDepartmentId('dept-1'),
-        name: 'Finance',
-        roleSlug: 'MANAGER' as never,
-        zohoReadScope: 'personalized',
-      },
-    };
-    const permissions = makePermissionService(managerPerm);
-    const dispatcher = new GatewayDispatcher({
-      permissions,
-      toolRegistry: registry,
-      skillCatalog: makeSkillCatalog([]),
-      toolExecutor: new ToolExecutor({
-        toolRegistry: registry,
-        permissions,
-        logger: noopLogger,
-        clock: { now: () => new Date(), nowMs: () => Date.now() },
-      }),
-      logger: noopLogger,
-    });
-
-    const listed = await dispatcher.dispatch({ op: 'tools.list', departmentId: 'dept-1' }, member);
-    assert.equal(listed.ok, true);
-    const skillPublishingTool = (listed.data as any).tools.find((tool: { id: string }) => tool.id === 'skillPublishing');
-    assert.ok(skillPublishingTool);
-    assert.deepEqual(skillPublishingTool.allowedActions, ['read', 'create']);
-
-    const capabilities = await dispatcher.dispatch({ op: 'capabilities.get', departmentId: 'dept-1' }, member);
-    assert.equal(capabilities.ok, true);
-    const capabilityTool = (capabilities.data as any).tools.find((tool: { toolId: string }) => tool.toolId === 'skillPublishing');
-    assert.ok(capabilityTool);
-    assert.deepEqual(capabilityTool.allowedActions, ['read', 'create']);
-  });
-
-  it('returns UI-safe memory authority targets across company and selected-department axes', async () => {
-    const registry = new ToolRegistry();
-    registry.register(createMemoryPublishingTool({ mem0: { rememberExplicitBatch: async () => {} } }));
-    const companyPerm = makeAllowedPerm('memoryPublishing', ['read', 'create']);
-    const departmentPerm: PermissionResult = {
-      ...makeDeniedPerm(),
-      department: {
-        id: asDepartmentId('dept-1'),
-        name: 'Finance',
-        roleSlug: 'MANAGER' as never,
-        zohoReadScope: 'personalized',
-      },
-    };
-    const permissions = makeScopedPermissionService((query) =>
-      query.departmentId ? departmentPerm : companyPerm);
-    const toolExecutor = new ToolExecutor({
-      toolRegistry: registry,
-      permissions,
-      logger: noopLogger,
-      clock: { now: () => new Date(), nowMs: () => Date.now() },
-    });
-    const dispatcher = new GatewayDispatcher({
-      permissions,
-      toolRegistry: registry,
-      skillCatalog: makeSkillCatalog([{
-        id: 'share-memory', slug: 'share-memory', name: 'Share Memory',
-        description: 'Review and publish durable facts.', instructions: 'Check memory authority.',
-        toolIds: ['memoryPublishing'], revision: 1,
-      }]),
-      toolExecutor,
-      logger: noopLogger,
-    });
-
-    const result = await dispatcher.dispatch({
-      op: 'tools.invoke',
-      departmentId: 'dept-1',
-      payload: { skillId: 'share-memory', toolId: 'memoryPublishing', args: { operation: 'check_authority' } },
-    }, { ...member, aiRole: 'COMPANY_ADMIN' });
-
-    assert.equal(result.ok, true);
-    assert.deepEqual((result.data as any).result, {
-      operation: 'check_authority',
-      availability: 'available',
-      targets: [
-        { scope: 'personal', label: 'Personal' },
-        { scope: 'department', label: 'Finance', departmentId: 'dept-1' },
-        { scope: 'company', label: 'Company' },
-      ],
-      scopeOutcomes: [
-        { scope: 'personal', status: 'allowed' },
-        { scope: 'department', status: 'allowed' },
-        { scope: 'company', status: 'allowed' },
-      ],
-    });
-  });
-
-  it('keeps Share Memory discoverable in a department without advertising create authority', async () => {
-    const registry = new ToolRegistry();
-    registry.register(createMemoryPublishingTool({ mem0: null }));
-    const departmentPerm: PermissionResult = {
-      ...makeDeniedPerm(),
-      department: {
-        id: asDepartmentId('dept-1'),
-        name: 'Finance',
-        roleSlug: 'MEMBER' as never,
-        zohoReadScope: 'personalized',
-      },
-    };
-    const permissions = makePermissionService(departmentPerm);
-    const dispatcher = new GatewayDispatcher({
-      permissions,
-      toolRegistry: registry,
-      skillCatalog: makeSkillCatalog([{
-        id: 'share-memory',
-        slug: 'share-memory',
-        name: 'Share Memory',
-        description: 'Review and publish durable facts.',
-        instructions: 'Call divo_memory_review.',
-        toolIds: ['memoryPublishing'],
-      }]),
-      toolExecutor: new ToolExecutor({
-        toolRegistry: registry,
-        permissions,
-        logger: noopLogger,
-        clock: { now: () => new Date(), nowMs: () => Date.now() },
-      }),
-      logger: noopLogger,
-    });
-
-    const listed = await dispatcher.dispatch({ op: 'tools.list', departmentId: 'dept-1' }, member);
-    assert.equal(listed.ok, true);
-    const memoryTool = (listed.data as any).tools.find((tool: { id: string }) => tool.id === 'memoryPublishing');
-    assert.ok(memoryTool);
-    assert.deepEqual(memoryTool.allowedActions, ['read']);
-
-    const skills = await dispatcher.dispatch({ op: 'skills.list', departmentId: 'dept-1' }, member);
-    assert.equal(skills.ok, true);
-    assert.equal((skills.data as any).skills.some((skill: { id: string }) => skill.id === 'share-memory'), false);
-  });
-
-  it('keeps Share Memory discoverable and reports storage unavailable when Mem0 is disabled', async () => {
-    const registry = new ToolRegistry();
-    registry.register(createMemoryPublishingTool({ mem0: null }));
-    const perm = makeAllowedPerm('memoryPublishing', ['read', 'create']);
-    const permissions = makePermissionService(perm);
-    const shareMemorySkill: CatalogSkill = {
-      id: 'share-memory',
-      slug: 'share-memory',
-      name: 'Share Memory',
-      description: 'Review and publish durable facts.',
-      instructions: 'Call divo_memory_review.',
-      toolIds: ['memoryPublishing'],
-    };
-    const skillCatalog = makeSkillCatalog([shareMemorySkill]);
-    (skillCatalog as any).listVisible = async ({ permission }: { permission: PermissionResult }) =>
-      permission.allowedToolIds.has(asToolId('memoryPublishing')) ? [shareMemorySkill] : [];
-    const dispatcher = new GatewayDispatcher({
-      permissions,
-      toolRegistry: registry,
-      skillCatalog,
-      toolExecutor: new ToolExecutor({
-        toolRegistry: registry,
-        permissions,
-        logger: noopLogger,
-        clock: { now: () => new Date(), nowMs: () => Date.now() },
-      }),
-      logger: noopLogger,
-    });
-
-    const tools = await dispatcher.dispatch({ op: 'tools.list' }, member);
-    assert.equal(tools.ok, true);
-    assert.equal((tools.data as any).tools.some((tool: { id: string }) => tool.id === 'memoryPublishing'), true);
-
-    const skills = await dispatcher.dispatch({ op: 'skills.list' }, member);
-    assert.equal(skills.ok, true);
-    assert.equal((skills.data as any).skills.some((skill: { id: string }) => skill.id === 'share-memory'), false);
-
-    const authority = await dispatcher.dispatch({
-      op: 'tools.invoke',
-      payload: { skillId: 'share-memory', toolId: 'memoryPublishing', args: { operation: 'check_authority' } },
-    }, member);
-    assert.equal(authority.ok, true);
-    assert.deepEqual((authority.data as any).result, {
-      operation: 'check_authority',
-      availability: 'storage_unavailable',
-      targets: [],
-      scopeOutcomes: [],
-    });
-  });
-
-  it('keeps memory recall discoverable and callable despite disabled configurable read permissions', async () => {
-    const recallInputs: unknown[] = [];
-    const registry = new ToolRegistry();
-    registry.register(makeMemoryRecallTool({
-        searchForRecall: async (input: unknown) => {
-          recallInputs.push(input);
-          return {
-          facts: [],
-          coverage: { personal: 'searched' as const, departments: { searched: 2, failed: 0 }, company: 'searched' as const },
-          status: 'available' as const,
-          };
-        },
-    }));
-    const permissions = makePermissionService(makeDeniedPerm());
-    const dispatcher = new GatewayDispatcher({
-      permissions,
-      toolRegistry: registry,
-      skillCatalog: makeSkillCatalog([{
-        id: 'recall-memory', slug: 'recall-memory', name: 'Recall Memory',
-        description: 'Recall scoped memory.', instructions: 'Use memoryRecall.',
-        toolIds: ['memoryRecall'], revision: 1,
-      }]),
-      toolExecutor: new ToolExecutor({
-        toolRegistry: registry,
-        permissions,
-        logger: noopLogger,
-        clock: { now: () => new Date(), nowMs: () => Date.now() },
-      }),
-      logger: noopLogger,
-    });
-
-    const listed = await dispatcher.dispatch({ op: 'tools.list' }, member);
-    assert.equal(listed.ok, true);
-    assert.deepEqual((listed.data as any).tools, [
-      {
-        id: 'memoryRecall',
-        family: 'memory',
-        description: 'Recall relevant personal, active-department, and company memory from backend-owned scope.',
-        allowedActions: ['read'],
-      },
-    ]);
-
-    const described = await dispatcher.dispatch({
-      op: 'tools.list',
-      payload: { toolId: 'memoryRecall' },
-    }, member);
-    assert.equal(described.ok, true);
-    const describedTool = (described.data as any).tools[0];
-    assert.match(describedTool.parameterDocs, /Results are capped at 12 facts/);
-    assert.equal(typeof describedTool.argsSchema, 'object');
-
-    const recalled = await dispatcher.dispatch({
-      op: 'tools.invoke',
-      // This generic gateway field is model-controlled; it must not narrow or
-      // redirect recall away from the server-derived active memberships.
-      departmentId: 'dept-model-supplied',
-      payload: { skillId: 'recall-memory', toolId: 'memoryRecall', args: { query: 'reporting convention', departmentPreferences: ['Sales'] } },
-    }, member);
-    assert.equal(recalled.ok, true);
-    assert.deepEqual((recalled.data as any).result, {
-      facts: [],
-      coverage: { personal: 'searched', departments: { searched: 2, failed: 0 }, company: 'searched' },
-      status: 'available',
-    });
-    assert.deepEqual(recallInputs, [{
-      query: 'reporting convention',
-      userId: 'user-test',
-      companyId: 'co-test',
-      departments: [
-        { id: 'dept-finance', name: 'Finance' },
-        { id: 'dept-sales', name: 'Sales' },
-      ],
-      departmentPreferences: ['Sales'],
-      limit: 12,
-      maxFactChars: 500,
-      maxTotalChars: 3000,
-    }]);
-  });
-
-  it('rechecks memory publish authority on commit and never downgrades a revoked company target', async () => {
-    const writes: unknown[] = [];
-    const registry = new ToolRegistry();
-    registry.register(createMemoryPublishingTool({
-      mem0: { rememberExplicitBatch: async (input: unknown) => { writes.push(input); } },
-    }));
-    let resolutions = 0;
-    const permissions = makeScopedPermissionService(() => {
-      resolutions++;
-      return resolutions <= 2
-        ? makeAllowedPerm('memoryPublishing', ['create'])
-        : makeDeniedPerm();
-    });
-    const memorySkill: CatalogSkill = {
-      ...allowedSkill,
-      id: 'memory-skill',
-      toolIds: ['memoryPublishing'],
-    };
-    const skillCatalog = makeSkillCatalog([memorySkill]);
-    const toolExecutor = new ToolExecutor({
-      toolRegistry: registry,
-      permissions,
-      logger: noopLogger,
-      clock: { now: () => new Date(), nowMs: () => Date.now() },
-    });
-    const dispatcher = new GatewayDispatcher({
-      permissions,
-      toolRegistry: registry,
-      skillCatalog,
-      toolExecutor,
-      localApprovalIntents: makeLocalApprovals(toolExecutor, undefined, undefined, {
-        permissions,
-        skillCatalog,
-      }),
-      logger: noopLogger,
-    });
-    const admin = { ...member, aiRole: 'COMPANY_ADMIN' };
-
-    const prepared = await dispatcher.dispatch({
-      op: 'tools.prepare',
-      payload: {
-        skillId: 'memory-skill',
-        toolId: 'memoryPublishing',
-        args: {
-          operation: 'publish',
-          scope: 'company',
-          facts: ['The fiscal year starts in April.'],
-        },
-      },
-    }, admin);
-    assert.equal(prepared.ok, true);
-
-    const committed = await dispatcher.dispatch({
-      op: 'tools.commit',
-      payload: { intentId: (prepared.data as any).intentId },
-    }, admin);
-
-    assert.equal(committed.ok, false);
-    assert.equal(committed.status, 'permission_denied');
-    assert.equal(resolutions, 4);
-    assert.equal(writes.length, 0);
-  });
-
-  it('rejects a memory department target that differs from the selected gateway department', async () => {
-    const registry = new ToolRegistry();
-    registry.register(createMemoryPublishingTool({
-      mem0: { rememberExplicitBatch: async () => {} },
-    }));
-    const permissions = makePermissionService(makeAllowedPerm('memoryPublishing', ['create']));
-    const memorySkill: CatalogSkill = {
-      ...allowedSkill,
-      id: 'memory-skill',
-      toolIds: ['memoryPublishing'],
-    };
-    const skillCatalog = makeSkillCatalog([memorySkill]);
-    const toolExecutor = new ToolExecutor({
-      toolRegistry: registry,
-      permissions,
-      logger: noopLogger,
-      clock: { now: () => new Date(), nowMs: () => Date.now() },
-    });
-    const dispatcher = new GatewayDispatcher({
-      permissions,
-      toolRegistry: registry,
-      skillCatalog,
-      toolExecutor,
-      localApprovalIntents: makeLocalApprovals(toolExecutor),
-      logger: noopLogger,
-    });
-
-    const result = await dispatcher.dispatch({
-      op: 'tools.prepare',
-      departmentId: 'dept-selected',
-      payload: {
-        skillId: 'memory-skill',
-        toolId: 'memoryPublishing',
-        args: {
-          operation: 'publish',
-          scope: 'department',
-          departmentId: 'dept-other',
-          facts: ['Fact.'],
-        },
-      },
-    }, member);
-
-    assert.equal(result.ok, false);
-    assert.equal(result.status, 'invalid_args');
-  });
-
   it('returns skills.get with permission check', async () => {
     const dispatcher = makeDispatcher();
     const allowed = await dispatcher.dispatch({
@@ -2566,6 +2459,64 @@ describe('GatewayDispatcher', () => {
       payload: { intentId: (bypass.data as any).intentId },
     }, member);
     assert.equal(committed.ok, true);
+    assert.equal(executions, 1);
+  });
+
+  it('requires local review for knowledge proposals but not a duplicate review for apply', async () => {
+    let executions = 0;
+    const registry = new ToolRegistry();
+    registry.register({
+      ...makeFakeTool(),
+      id: asToolId('knowledge'),
+      family: 'memory',
+      actionGroups: new Set(['create']),
+      argsSchema: z.discriminatedUnion('operation', [
+        z.object({ operation: z.literal('propose'), query: z.string() }),
+        z.object({ operation: z.literal('apply'), query: z.string() }),
+      ]),
+      permissionCheck: () => ok('create'),
+      execute: async () => {
+        executions++;
+        return ok({ result: 'applied' });
+      },
+    } as Tool<any, { result: string }>);
+    const permissions = makePermissionService(makeAllowedPerm('knowledge', ['create']));
+    const toolExecutor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const knowledgeSkill = { ...allowedSkill, id: 'knowledge-skill', toolIds: ['knowledge'] };
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([knowledgeSkill]),
+      toolExecutor,
+      localApprovalIntents: makeLocalApprovals(toolExecutor),
+      logger: noopLogger,
+    });
+
+    const proposal = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      payload: {
+        skillId: knowledgeSkill.id,
+        toolId: 'knowledge',
+        args: { operation: 'propose', query: 'exact proposal' },
+      },
+    }, member);
+    assert.equal(proposal.status, 'local_approval_required');
+    assert.equal(executions, 0);
+
+    const apply = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      payload: {
+        skillId: knowledgeSkill.id,
+        toolId: 'knowledge',
+        args: { operation: 'apply', query: 'exact reviewed mutation' },
+      },
+    }, member);
+    assert.equal(apply.status, 'success');
     assert.equal(executions, 1);
   });
 

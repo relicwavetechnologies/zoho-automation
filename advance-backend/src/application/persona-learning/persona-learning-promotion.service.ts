@@ -1,6 +1,6 @@
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
-import { isSafePublishedMemoryFact } from '../memory/memory-fact-safety';
+import { isSafePublishedMemoryFact } from '../knowledge/knowledge-fact-safety';
 import { ManagerPersonaRevisionService } from './manager-persona-revision.service';
 
 const MIN_NARROW_RULE_SUPPORT = 2;

@@ -302,6 +302,30 @@ describe('SkillRegistryAdminService.grantSkillAccess', () => {
     assert.equal(r.ok, false);
     assert.equal(r.ok ? '' : r.error.kind, 'not_found');
   });
+
+  it('rejects direct access changes for a governed skill', async () => {
+    let wroteGrant = false;
+    const svc = stubService({
+      skill: {
+        findFirst: async () => ({
+          id: 'sk',
+          scope: 'company',
+          departmentId: null,
+          knowledgeResourceId: 'knowledge-resource',
+        }),
+      },
+      skillAccessGrant: {
+        upsert: async () => {
+          wroteGrant = true;
+          return { grantedBy: 'admin', createdAt: new Date() };
+        },
+      },
+    });
+    const r = await svc.grantSkillAccess('co', 'sk', 'company', 'co', 'admin');
+    assert.equal(r.ok, false);
+    assert.equal(r.ok ? '' : r.error.kind, 'conflict');
+    assert.equal(wroteGrant, false);
+  });
 });
 
 describe('SkillRegistryAdminService.revokeSkillAccess', () => {
@@ -324,6 +348,25 @@ describe('SkillRegistryAdminService.revokeSkillAccess', () => {
     const r = await svc.revokeSkillAccess('co', 'nope', 'role', 'r');
     assert.equal(r.ok, false);
     assert.equal(r.ok ? '' : r.error.kind, 'not_found');
+  });
+
+  it('rejects direct access revocation for a governed skill', async () => {
+    let deletedGrant = false;
+    const svc = stubService({
+      skill: {
+        findFirst: async () => ({ id: 'sk', knowledgeResourceId: 'knowledge-resource' }),
+      },
+      skillAccessGrant: {
+        deleteMany: async () => {
+          deletedGrant = true;
+          return { count: 1 };
+        },
+      },
+    });
+    const r = await svc.revokeSkillAccess('co', 'sk', 'company', 'co');
+    assert.equal(r.ok, false);
+    assert.equal(r.ok ? '' : r.error.kind, 'conflict');
+    assert.equal(deletedGrant, false);
   });
 });
 

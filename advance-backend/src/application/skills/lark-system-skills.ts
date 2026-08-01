@@ -381,7 +381,7 @@ function definitionFields(folderId: string, definition: LarkSystemSkillDefinitio
   return {
     departmentId: null,
     folderId,
-    scope: 'global',
+    scope: 'company',
     name: definition.name,
     slug: definition.slug,
     summary: definition.summary,
@@ -414,7 +414,7 @@ function matchesDefinition(
 ): boolean {
   return current.departmentId === null
     && current.folderId === folderId
-    && current.scope === 'global'
+    && current.scope === 'company'
     && current.slug === definition.slug
     && current.name === definition.name
     && current.summary === definition.summary

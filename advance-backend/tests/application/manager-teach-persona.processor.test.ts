@@ -307,7 +307,7 @@ describe('ManagerTeachPersonaProcessor', () => {
     assert.equal(context.evidence.baseRevision, 0);
     assert.deepEqual(context.writePolicy, { minConfidence: 0.9, atomic: true });
     assert.equal(context.writeContract.schemaVersion, 2);
-    assert.deepEqual(context.writeContract.skillOperations.allowed, ['create', 'merge']);
+    assert.deepEqual(context.writeContract.skillOperations.allowed, []);
     assert.deepEqual(context.writeContract.personaOperations.allowed, ['create', 'merge', 'replace', 'retire']);
     assert.match(context.writeContract.readiness.rule, /Use null, never omission or an empty string/);
     assert.ok(context.writeContract.preflight.includes('No upsert or add operations.'));
@@ -346,7 +346,9 @@ describe('ManagerTeachPersonaProcessor', () => {
     });
     const mixedConfidencePatch = managerTeachLearningPatchSchema.parse({
       ...patch,
-      changes: [{ ...patch.changes[0], confidence: 0.85 }],
+      readiness: { ...patch.readiness, classifications: ['workflow'] },
+      skills: [],
+      changes: [{ ...patch.changes[0], confidence: 0.85, skillSlugs: [] }],
     });
     await assert.rejects(
       processor.apply({
@@ -357,30 +359,44 @@ describe('ManagerTeachPersonaProcessor', () => {
     );
     assert.equal(transactionOptions, undefined);
 
+    await assert.rejects(
+      processor.apply({
+        companyId: 'company-1', managerId: 'manager-1', departmentId: 'department-1', sessionId: 'teach-1',
+        mutationKey: 'teach-1-direct-skill-write', patch,
+      }),
+      /cannot write shared skills directly.*governed knowledge review.*different department manager/i,
+    );
+    const personaOnlyPatch = managerTeachLearningPatchSchema.parse({
+      ...patch,
+      readiness: { ...patch.readiness, classifications: ['workflow'] },
+      skills: [],
+      changes: patch.changes.map(change => ({ ...change, skillSlugs: [] })),
+    });
+
     const first = await processor.apply({
       companyId: 'company-1', managerId: 'manager-1', departmentId: 'department-1', sessionId: 'teach-1',
-      mutationKey: 'teach-1-initial-write', patch,
+      mutationKey: 'teach-1-initial-write', patch: personaOnlyPatch,
     });
     assert.equal(first.status, 'completed');
-    assert.equal(first.appliedChangeCount, 2);
+    assert.equal(first.appliedChangeCount, 1);
     assert.equal(first.appliedPersonaChangeCount, 1);
-    assert.equal(first.appliedSkillCount, 1);
+    assert.equal(first.appliedSkillCount, 0);
     assert.equal(first.remainingUndos, 1);
     assert.equal(session.status, 'completed');
     assert.equal(nodes.length, 1);
-    assert.equal(skills.length, 1);
-    assert.deepEqual(skillLinks, [{ personaNodeId: 'node-1', skillId: 'skill-1' }]);
-    assert.equal(provenance.length, 2);
-    assert.deepEqual(provenance.map(row => row.decision).sort(), ['create', 'create']);
+    assert.equal(skills.length, 0);
+    assert.deepEqual(skillLinks, []);
+    assert.equal(provenance.length, 1);
+    assert.deepEqual(provenance.map(row => row.decision), ['create']);
     assert.deepEqual(transactionOptions, { maxWait: 10_000, timeout: 30_000 });
 
     const second = await processor.apply({
       companyId: 'company-1', managerId: 'manager-1', departmentId: 'department-1', sessionId: 'teach-1',
-      mutationKey: 'teach-1-initial-write', patch,
+      mutationKey: 'teach-1-initial-write', patch: personaOnlyPatch,
     });
     assert.deepEqual(second, first);
     assert.equal(nodes.length, 1);
-    assert.equal(skills.length, 1);
+    assert.equal(skills.length, 0);
     await rm(dir, { recursive: true, force: true });
   });
 });

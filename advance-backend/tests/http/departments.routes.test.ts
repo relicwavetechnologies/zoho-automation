@@ -16,9 +16,9 @@
  *   DELETE /:id/roles/:roleId                              — delete role
  *   PUT    /:id/memberships                                — upsert membership
  *   DELETE /:id/memberships/:userId                        — remove membership
- *   POST   /:id/skills                                     — create skill
- *   PUT    /:id/skills/:skillId                            — update skill
- *   POST   /:id/skills/:skillId/archive                    — archive skill
+ *   POST   /:id/skills                                     — reject legacy direct write
+ *   PUT    /:id/skills/:skillId                            — reject legacy direct write
+ *   POST   /:id/skills/:skillId/archive                    — reject legacy direct write
  *   PUT    /:id/role-permissions/:roleId/:toolId/:ag       — update role permission
  *   PUT    /:id/user-overrides/:userId/:toolId/:ag         — update user override
  */
@@ -28,7 +28,6 @@ import assert from 'node:assert/strict';
 import type { Request, Response } from 'express';
 import { createDepartmentRoutes } from '../../src/http/admin/departments.routes.ts';
 import type { DepartmentAdminService } from '../../src/application/departments/department-admin.service.ts';
-import { SKILL_SUMMARY_MAX_CHARS } from '../../src/application/skills/skill-limits.ts';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -130,7 +129,6 @@ const fakeDeptDetail = {
 };
 
 const fakeRole = { id: 'role-1', name: 'Lead', slug: 'LEAD', zohoReadScope: 'personalized' };
-const fakeSkill = { id: 'skill-1', name: 'Negotiation', status: 'active' };
 const fakePerm  = { id: 'perm-1', toolId: 'zoho-crm', roleId: 'role-1', actionGroup: 'leads.read', allowed: true };
 
 function makeService(overrides: Partial<DepartmentAdminService> = {}): DepartmentAdminService {
@@ -147,9 +145,6 @@ function makeService(overrides: Partial<DepartmentAdminService> = {}): Departmen
     deleteRole:          async () => ({ ok: true, value: { deleted: true } }),
     upsertMembership:    async () => ({ ok: true, value: { id: 'mem-1' } }),
     removeMembership:    async () => ({ ok: true, value: { deleted: true } }),
-    createSkill:         async () => ({ ok: true, value: fakeSkill }),
-    updateSkill:         async () => ({ ok: true, value: fakeSkill }),
-    archiveSkill:        async () => ({ ok: true, value: { id: 'skill-1', status: 'archived' } }),
     updateRolePermission: async () => ({ ok: true, value: fakePerm }),
     updateUserOverride:   async () => ({ ok: true, value: { id: 'ov-1', allowed: true } }),
     backfillEmptyRolePermissions: async () => ({
@@ -462,90 +457,21 @@ describe('DELETE /:id/memberships/:userId', () => {
   });
 });
 
-// ─── POST /:id/skills ─────────────────────────────────────────────────────────
+// ─── Legacy direct skill writes ──────────────────────────────────────────────
 
-describe('POST /:id/skills', () => {
-  const validSkill = { name: 'Negotiation', markdown: '## Negotiation\nBe persuasive.' };
-
-  it('returns 201 on success', async () => {
-    const { status } = await callRoute(makeRouter(), 'POST', '/dept-1/skills', { body: validSkill });
-    assert.equal(status, 201);
-  });
-
-  it('accepts skill summaries up to the shared skill summary limit', async () => {
-    const { status } = await callRoute(makeRouter(), 'POST', '/dept-1/skills', {
-      body: {
-        ...validSkill,
-        summary: 'x'.repeat(SKILL_SUMMARY_MAX_CHARS),
-      },
-    });
-    assert.equal(status, 201);
-  });
-
-  it('returns 400 when skill summary exceeds the shared skill summary limit', async () => {
-    const { status } = await callRoute(makeRouter(), 'POST', '/dept-1/skills', {
-      body: {
-        ...validSkill,
-        summary: 'x'.repeat(SKILL_SUMMARY_MAX_CHARS + 1),
-      },
-    });
-    assert.equal(status, 400);
-  });
-
-  it('returns 400 when name is missing', async () => {
-    const { status } = await callRoute(makeRouter(), 'POST', '/dept-1/skills', {
-      body: { markdown: '## Skill' },
-    });
-    assert.equal(status, 400);
-  });
-
-  it('returns 400 when markdown is missing', async () => {
-    const { status } = await callRoute(makeRouter(), 'POST', '/dept-1/skills', {
-      body: { name: 'Skill' },
-    });
-    assert.equal(status, 400);
+describe('legacy department skill writes', () => {
+  it('fails closed so every skill mutation uses governed knowledge review', async () => {
+    for (const [method, path] of [
+      ['POST', '/dept-1/skills'],
+      ['PUT', '/dept-1/skills/skill-1'],
+      ['POST', '/dept-1/skills/skill-1/archive'],
+    ] as const) {
+      const { status, body } = await callRoute(makeRouter(), method, path, { body: {} });
+      assert.equal(status, 409);
+      assert.match((body as { message: string }).message, /governed knowledge review/i);
+    }
   });
 });
-
-// ─── PUT /:id/skills/:skillId ─────────────────────────────────────────────────
-
-describe('PUT /:id/skills/:skillId', () => {
-  it('returns 200 on success', async () => {
-    const { status } = await callRoute(makeRouter(), 'PUT', '/dept-1/skills/skill-1', {
-      body: { name: 'Updated Skill' },
-    });
-    assert.equal(status, 200);
-  });
-
-  it('returns 404 when skill not found', async () => {
-    const { status } = await callRoute(
-      makeRouter({ updateSkill: async () => ({ ok: false, error: { kind: 'not_found', message: 'missing' } }) }),
-      'PUT', '/dept-1/skills/skill-missing',
-      { body: { name: 'X' } },
-    );
-    assert.equal(status, 404);
-  });
-});
-
-// ─── POST /:id/skills/:skillId/archive ────────────────────────────────────────
-
-describe('POST /:id/skills/:skillId/archive', () => {
-  it('returns 200 with archived status', async () => {
-    const { status, body } = await callRoute(makeRouter(), 'POST', '/dept-1/skills/skill-1/archive');
-    assert.equal(status, 200);
-    assert.equal((body as any).data.status, 'archived');
-  });
-
-  it('returns 404 when skill not found', async () => {
-    const { status } = await callRoute(
-      makeRouter({ archiveSkill: async () => ({ ok: false, error: { kind: 'not_found', message: 'missing' } }) }),
-      'POST', '/dept-1/skills/skill-missing/archive',
-    );
-    assert.equal(status, 404);
-  });
-});
-
-// ─── POST /backfill-permissions ───────────────────────────────────────────────
 
 describe('POST /backfill-permissions', () => {
   it('returns 200 on success', async () => {

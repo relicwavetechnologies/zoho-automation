@@ -17,6 +17,15 @@ export interface ToolExecutionContext {
   readonly correlationId: string;
   readonly logger: Logger;
   readonly clock: Clock;
+  /**
+   * Backend-issued, single-use proof that the exact invocation was approved
+   * and atomically claimed. Tools with an approval invariant must fail closed
+   * when this proof is absent or has the wrong authority.
+   */
+  readonly approvalGrant?: {
+    readonly approvalId: string;
+    readonly authority: 'connection_owner' | 'company_admin' | 'department_manager';
+  };
   /** Parent run cancellation; tools that support abortable I/O should pass it downstream. */
   readonly abortSignal?: AbortSignal;
   /** Optional callback to push live progress updates to the user's status bubble. */

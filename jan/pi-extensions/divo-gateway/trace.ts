@@ -46,6 +46,7 @@ type TraceEvent =
 interface RunState {
 	runId: string;
 	threadId?: string;
+	runtimeChannel?: "lark";
 	proxyOwnsUsage: boolean;
 	recoveryAttempted: boolean;
 	pendingRecoveryFailure?: DivoRunTerminal;
@@ -62,10 +63,18 @@ function asRecord(value: unknown): JsonRecord | undefined {
 		: undefined;
 }
 
-async function tryReadRunCorrelation(): Promise<{ runId: string; threadId: string } | null> {
+async function tryReadRunCorrelation(): Promise<{
+	runId: string;
+	threadId: string;
+	channel?: "lark";
+} | null> {
 	try {
 		const value = await readDivoRunCorrelation();
-		return { runId: value.runId, threadId: value.threadId };
+		return {
+			runId: value.runId,
+			threadId: value.threadId,
+			...(value.channel === "lark" ? { channel: "lark" as const } : {}),
+		};
 	} catch {
 		return null;
 	}
@@ -150,10 +159,15 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 	let run: RunState | null = null;
 	const pendingArgs = new Map<string, unknown>();
 
-	const startRun = (correlation: { runId: string; threadId: string }): RunState => {
+	const startRun = (correlation: {
+		runId: string;
+		threadId: string;
+		channel?: "lark";
+	}): RunState => {
 		run = {
 			runId: correlation.runId,
 			threadId: correlation.threadId,
+			...(correlation.channel === "lark" ? { runtimeChannel: "lark" as const } : {}),
 			proxyOwnsUsage: false,
 			recoveryAttempted: false,
 			seq: 0,
@@ -197,6 +211,7 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 			body: JSON.stringify({
 				runId,
 				...(run.threadId ? { threadId: run.threadId } : {}),
+				...(run.runtimeChannel ? { runtimeChannel: run.runtimeChannel } : {}),
 				usageAuthority: run.proxyOwnsUsage ? "proxy" : "desktop",
 				events: batch,
 			}),
@@ -383,7 +398,7 @@ function buildLearningContext(
 			return record?.role === "user" ? [messageContentText(record)] : [];
 		})
 		.filter(Boolean)
-		.slice(-3)
+		.slice(-12)
 		.map(text => text.slice(0, 2_000));
 	const assistant = [...messages]
 		.reverse()

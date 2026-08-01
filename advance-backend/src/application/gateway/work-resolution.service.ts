@@ -233,32 +233,13 @@ export function withWorkDiscoveryPermissions(perm: PermissionResult): Permission
   const allowedActionsByTool = new Map(perm.allowedActionsByTool);
   const allowedToolIds = new Set(perm.allowedToolIds);
 
-  const memoryPublishingToolId = asToolId('memoryPublishing');
-  const memoryActions = new Set<ToolActionGroup>(
-    allowedActionsByTool.get(memoryPublishingToolId) ?? [],
+  const knowledgeToolId = asToolId('knowledge');
+  const knowledgeActions = new Set<ToolActionGroup>(
+    allowedActionsByTool.get(knowledgeToolId) ?? [],
   );
-  memoryActions.add('read');
-  allowedActionsByTool.set(memoryPublishingToolId, memoryActions);
-  allowedToolIds.add(memoryPublishingToolId);
-
-  const memoryRecallToolId = asToolId('memoryRecall');
-  const recallActions = new Set<ToolActionGroup>(
-    allowedActionsByTool.get(memoryRecallToolId) ?? [],
-  );
-  recallActions.add('read');
-  allowedActionsByTool.set(memoryRecallToolId, recallActions);
-  allowedToolIds.add(memoryRecallToolId);
-
-  if (perm.department?.roleSlug === 'MANAGER') {
-    const skillPublishingToolId = asToolId('skillPublishing');
-    const skillActions = new Set<ToolActionGroup>(
-      allowedActionsByTool.get(skillPublishingToolId) ?? [],
-    );
-    skillActions.add('read');
-    skillActions.add('create');
-    allowedActionsByTool.set(skillPublishingToolId, skillActions);
-    allowedToolIds.add(skillPublishingToolId);
-  }
+  knowledgeActions.add('read');
+  allowedActionsByTool.set(knowledgeToolId, knowledgeActions);
+  allowedToolIds.add(knowledgeToolId);
 
   return { ...perm, allowedToolIds, allowedActionsByTool };
 }

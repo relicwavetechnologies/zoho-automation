@@ -7,7 +7,7 @@ import type { PrismaClient } from '../../generated/prisma';
 import type { TypedEnv } from '../../config/env';
 import type { AuditService } from '../../application/observability/audit.service';
 import type { Logger } from '../../shared/logger';
-import { provisionShareMemorySystemSkill } from '../../application/skills/share-memory-system-skill';
+import { provisionKnowledgeManagementSystemSkill } from '../../application/skills/knowledge-system-skill';
 import { provisionLarkSystemSkills } from '../../application/skills/lark-system-skills';
 import { provisionGoogleWorkspaceSystemSkills } from '../../application/skills/google-workspace-system-skills';
 import { provisionScheduleDivoWorkSystemSkill } from '../../application/skills/scheduled-work-system-skill';
@@ -406,7 +406,7 @@ export const createAdminAuthRoutes = (deps: AdminAuthRouteDeps): Router => {
           select: { id: true },
         });
 
-        await provisionShareMemorySystemSkill(tx, company.id);
+        await provisionKnowledgeManagementSystemSkill(tx, company.id);
         await provisionLarkSystemSkills(tx, company.id);
         await provisionGoogleWorkspaceSystemSkills(tx, company.id);
         await provisionConnectedProviderSystemSkills(tx, company.id);

@@ -110,7 +110,7 @@ function makeDeps(overrides: Partial<AdminPermissionRouteDeps> = {}): AdminPermi
 
 describe('Admin permission routes', () => {
   describe('PUT /companies/:companyId/tools/:toolId', () => {
-    it('rejects fixed-policy memory recall tool toggles without persistence, cache invalidation, or audit', async () => {
+    it('updates the central knowledge RBAC switch with invalidation and audit', async () => {
       let writes = 0;
       const permissionService = makePermService();
       const audit: unknown[] = [];
@@ -119,21 +119,21 @@ describe('Admin permission routes', () => {
         auditService: { record: (entry: unknown) => audit.push(entry), query: async () => [] } as any,
         toolPermRepo: {
           getForCompany: async () => ok([]),
-          upsert: async () => { writes++; return ok({ companyId: 'co1', toolId: 'memoryRecall', role: 'MEMBER', enabled: false }); },
+          upsert: async () => { writes++; return ok({ companyId: 'co1', toolId: 'knowledge', role: 'MEMBER', enabled: false }); },
         },
       }));
 
       const result = await callRoute(
         router,
         'PUT',
-        '/companies/co1/tools/memoryRecall',
+        '/companies/co1/tools/knowledge',
         { role: 'MEMBER', enabled: false },
       );
 
-      assert.equal(result.status, 400);
-      assert.equal(writes, 0);
-      assert.equal((permissionService as any)._counts.company, 0);
-      assert.equal(audit.length, 0);
+      assert.equal(result.status, 200);
+      assert.equal(writes, 1);
+      assert.equal((permissionService as any)._counts.company, 1);
+      assert.equal(audit.length, 1);
     });
 
     it('returns 200 and invalidates company cache on success', async () => {

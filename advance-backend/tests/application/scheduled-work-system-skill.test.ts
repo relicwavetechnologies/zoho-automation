@@ -12,7 +12,7 @@ describe('Schedule Divo Work system skill', () => {
     const skill = buildScheduleDivoWorkSystemSkill('company-1');
 
     assert.deepEqual(skill.toolIds, ['scheduledWorkflows']);
-    assert.equal(skill.scope, 'global');
+    assert.equal(skill.scope, 'company');
     assert.equal(skill.isSystem, true);
     assert(SCHEDULE_DIVO_WORK_SKILL_ALIASES.includes('schedule something'));
     assert.match(SCHEDULE_DIVO_WORK_SKILL_MARKDOWN, /calendar event, or have Divo run some work/i);

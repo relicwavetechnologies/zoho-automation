@@ -14,18 +14,23 @@ export function buildArgsSummary(toolId: string, action: string, args: unknown):
   try {
     const a = args as Record<string, unknown>;
     if (googleWorkspaceProductByToolId(toolId)) return buildGoogleWorkspaceArgsSummary(toolId, action, a);
-    if (toolId === 'memoryPublishing' && a['operation'] === 'publish') {
+    if (toolId === 'knowledge' && a['operation'] === 'apply') {
       const scope = String(a['scope'] ?? 'unknown');
-      const target = scope === 'department' && typeof a['departmentId'] === 'string'
-        ? `${scope}:${a['departmentId']}`
-        : scope;
-      const facts = Array.isArray(a['facts'])
-        ? a['facts'].filter((fact): fact is string => typeof fact === 'string')
-        : [];
-      return [
-        `${toolId}.${action} | target=${target}`,
-        ...facts.map((fact, index) => `${index + 1}. ${fact}`),
-      ].join('\n');
+      const kind = String(a['kind'] ?? 'knowledge');
+      const content = a['content'] && typeof a['content'] === 'object' && !Array.isArray(a['content'])
+        ? a['content'] as Record<string, unknown>
+        : {};
+      if (kind === 'memory' && Array.isArray(content['facts'])) {
+        const facts = content['facts'].filter((fact): fact is string => typeof fact === 'string');
+        return [`Publish ${facts.length} reviewed ${facts.length === 1 ? 'fact' : 'facts'} to ${scope} memory`, ...facts.map((fact, index) => `${index + 1}. ${fact}`)].join('\n');
+      }
+      if (kind === 'skill' && typeof content['name'] === 'string') {
+        return `Publish reviewed procedure “${content['name']}” to ${scope}`;
+      }
+      if (kind === 'file' && typeof content['fileName'] === 'string') {
+        return `Share file “${content['fileName']}” with ${scope}`;
+      }
+      return `Apply reviewed ${kind} change to ${scope}`;
     }
     const parts: string[] = [`${toolId}.${action}`];
     // Append the most human-readable fields if present

@@ -41,6 +41,7 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
     managerPersonaRuntime: {
       getDepartmentBrief: async () => null,
     } as any,
+    memory: null,
     logger: noopLogger,
     memberJwtSecret: 'test-member-secret-32-bytes-long',
     backendPublicUrl: 'https://backend.example.com',
@@ -934,7 +935,39 @@ describe('desktop auth routes', () => {
       departmentName: 'Finance',
       personaPrompt: 'Prefer verified records.',
       version: '2026-07-11T10:00:00.000Z',
+      personalMemory: [],
     });
+  });
+
+  it('returns a bounded backend personal snapshot without requiring a selected department', async () => {
+    const calls: unknown[] = [];
+    const router = createDesktopAuthRoutes(makeDeps({
+      memory: {
+        getPersonalSnapshot: async (input: unknown) => {
+          calls.push(input);
+          return ['User prefers concise weekly summaries.'];
+        },
+      },
+    }));
+    const result = await callRoute(router, 'GET', '/runtime-context', {
+      locals: { userId: 'user-1', companyId: 'company-1' },
+    });
+
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body.data, {
+      departmentId: null,
+      departmentName: null,
+      personaPrompt: '',
+      version: null,
+      personalMemory: ['User prefers concise weekly summaries.'],
+    });
+    assert.deepEqual(calls, [{
+      userId: 'user-1',
+      companyId: 'company-1',
+      limit: 12,
+      maxFactChars: 500,
+      maxTotalChars: 2_200,
+    }]);
   });
 
   it('does not expose a persona for an inaccessible department', async () => {
@@ -1110,6 +1143,7 @@ describe('desktop auth routes', () => {
       departmentName: 'Finance',
       personaPrompt: '',
       version: null,
+      personalMemory: [],
     });
   });
 });

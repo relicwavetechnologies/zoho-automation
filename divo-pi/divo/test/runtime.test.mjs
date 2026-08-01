@@ -6,11 +6,14 @@ import { describe, it } from "node:test";
 import {
 	buildChildEnvironment,
 	buildPiArguments,
+	buildRunCorrelationContext,
 	imagePolicyFor,
 	resolveRuntimeThreadId,
 	prepareSessionDirectories,
 	resolveSessionPaths,
+	runtimeContextForSession,
 	sweepAbandonedRunSessions,
+	sweepExpiredPendingAttachments,
 } from "../runtime.mjs";
 
 const values = {
@@ -51,6 +54,21 @@ describe("Divo Pi runtime boundary", () => {
 			() => resolveRuntimeThreadId("lark-safe-hash", "x".repeat(201)),
 			/is too long/,
 		);
+	});
+
+	it("keeps the backend-issued Lark run identity in every gateway tool call", () => {
+		assert.deepEqual(buildRunCorrelationContext({
+			threadId: "oc_chat:thread:om_root",
+			runId: "backend-run-1",
+			channel: "lark",
+			departmentId: "department-1",
+		}), {
+			version: 1,
+			threadId: "oc_chat:thread:om_root",
+			runId: "backend-run-1",
+			channel: "lark",
+			departmentId: "department-1",
+		});
 	});
 
 	it("removes direct provider keys and injects only Divo authentication", () => {
@@ -178,6 +196,27 @@ describe("Abandoned run session sweep", () => {
 	});
 });
 
+describe("Pending attachment sweep", () => {
+	it("keeps a recent upload and removes an abandoned private inbox entry", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "divo-inbox-sweep-"));
+		const makeEntry = (name, ageMs) => {
+			const directory = path.join(root, name);
+			fs.mkdirSync(directory, { recursive: true });
+			fs.writeFileSync(path.join(directory, "attachment.txt"), "private");
+			const stamp = new Date(Date.now() - ageMs);
+			fs.utimesSync(directory, stamp, stamp);
+			return directory;
+		};
+		const stale = makeEntry("request-old", 25 * 60 * 60_000);
+		const recent = makeEntry("request-new", 60_000);
+
+		assert.deepEqual(sweepExpiredPendingAttachments(root), ["request-old"]);
+		assert.equal(fs.existsSync(stale), false);
+		assert.equal(fs.existsSync(recent), true);
+		fs.rmSync(root, { recursive: true, force: true });
+	});
+});
+
 describe("The run launches on the model it was given", () => {
 	// Every run used to launch on the manifest's model no matter who sent it, so
 	// an admin could grant somebody Pro or Luna and watch nothing change. These
@@ -241,9 +280,8 @@ describe("Past-chat recall is a direct-message capability", () => {
 	});
 
 	it("does not tell a group turn where past sessions live", () => {
-		// Defence in depth, not a boundary: `bash` is still allowed and `HOME` still
-		// names the state root, so this only removes the signpost. Asserted here so
-		// that stays deliberate rather than becoming a guarantee someone leans on.
+		// The controller boundary gives a shared run an empty per-run volume. This
+		// runtime filter independently removes the private-history signpost.
 		const args = buildPiArguments(groupValues);
 		assert.equal(buildChildEnvironment({}, groupValues).DIVO_CHAT_HISTORY_DIR, undefined);
 		assert.ok(args[args.indexOf("--tools") + 1].split(",").includes("bash"));
@@ -255,6 +293,8 @@ describe("Past-chat recall is a direct-message capability", () => {
 		const args = buildPiArguments(groupValues);
 		const tools = args[args.indexOf("--tools") + 1].split(",");
 		assert.ok(tools.includes("divo_gateway"));
+		assert.ok(!tools.includes("divo_memory_recall"));
+		assert.ok(!tools.includes("divo_memory"));
 		assert.ok(args.some((argument) => argument.endsWith("/divo-gateway/index.ts")));
 	});
 
@@ -263,10 +303,26 @@ describe("Past-chat recall is a direct-message capability", () => {
 		const environment = buildChildEnvironment({}, values);
 
 		const tools = args[args.indexOf("--tools") + 1].split(",");
+		assert.ok(tools.includes("divo_memory_recall"));
+		assert.ok(tools.includes("divo_memory"));
 		assert.ok(tools.includes("divo_search_chats"));
 		assert.ok(tools.includes("divo_read_chat"));
 		assert.ok(args.some((argument) => argument.endsWith("/divo-chat-history/index.ts")));
 		assert.ok(environment.DIVO_SKILL_DIRS.includes("divo-chat-history"));
+	});
+
+	it("removes private memory from the runtime context written for a group", () => {
+		const context = {
+			departmentName: "Tech Testing",
+			personalMemory: ["Private report preference"],
+			capabilityBootstrap: { version: 3 },
+		};
+		assert.deepEqual(runtimeContextForSession(context, true), {
+			departmentName: "Tech Testing",
+			personalMemory: [],
+			capabilityBootstrap: { version: 3 },
+		});
+		assert.equal(runtimeContextForSession(context, false), context);
 	});
 });
 

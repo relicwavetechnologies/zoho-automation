@@ -108,6 +108,18 @@ test("container bootstrap accepts only known session scopes", () => {
 	);
 });
 
+test("a Lark bootstrap requires the backend-issued run identity", () => {
+	assert.doesNotThrow(() => validateBootstrap({
+		...bootstrap,
+		channel: "lark",
+		runId: "backend-run-1",
+	}));
+	assert.throws(
+		() => validateBootstrap({ ...bootstrap, channel: "lark" }),
+		/runId is required for Lark/,
+	);
+});
+
 test("the container forwards the session scope it was given to Pi", () => {
 	// The one property that keeps a shared group transcript off the user's durable
 	// volume. Losing it would be silent: every run would still succeed.

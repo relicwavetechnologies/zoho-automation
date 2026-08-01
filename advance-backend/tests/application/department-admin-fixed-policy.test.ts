@@ -22,18 +22,18 @@ function makeService() {
 }
 
 describe('DepartmentAdminService fixed policy', () => {
-  it('does not seed System Memory Recall into MEMBER templates', () => {
-    assert.equal(memberTemplateGrants().some(grant => grant.toolId === 'memoryRecall'), false);
+  it('does not duplicate company-inherited knowledge grants in MEMBER templates', () => {
+    assert.equal(memberTemplateGrants().some(grant => grant.toolId === 'knowledge'), false);
   });
 
-  it('rejects legacy role and member Memory Recall rows before persistence', async () => {
+  it('allows explicit department RBAC to narrow the central knowledge capability', async () => {
     const { service, writes } = makeService();
-    const role = await service.updateRolePermission('dept-1', 'company-1', 'role-1', 'memoryRecall', 'read', true, 'actor-1');
-    const member = await service.updateUserOverride('dept-1', 'company-1', 'user-1', 'memoryRecall', 'read', true, 'actor-1');
-    assert.equal(role.ok, false);
-    assert.equal(member.ok, false);
-    assert.equal(writes().roleWrites, 0);
-    assert.equal(writes().memberWrites, 0);
+    const role = await service.updateRolePermission('dept-1', 'company-1', 'role-1', 'knowledge', 'read', true, 'actor-1');
+    const member = await service.updateUserOverride('dept-1', 'company-1', 'user-1', 'knowledge', 'read', false, 'actor-1');
+    assert.equal(role.ok, true);
+    assert.equal(member.ok, true);
+    assert.equal(writes().roleWrites, 1);
+    assert.equal(writes().memberWrites, 1);
   });
 
   // OMS was classified a fixed 'system' tool, so this write path answered

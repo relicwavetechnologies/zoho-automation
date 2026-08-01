@@ -12,6 +12,7 @@
  *   res.locals.isSuperAdmin (boolean)
  *   res.locals.canViewRawExecutionData (boolean — company and super admins)
  *   res.locals.userId       (string | null)
+ *   res.locals.adminRole    (current database-backed admin role)
  */
 
 import type { Request, Response, NextFunction } from 'express';
@@ -82,6 +83,7 @@ export function createAdminAuthMiddleware(deps: AdminAuthMiddlewareDeps) {
       res.locals['isSuperAdmin'] = true;
       res.locals['canViewRawExecutionData'] = true;
       res.locals['userId']       = null;
+      res.locals['adminRole']    = 'SUPER_ADMIN';
       return next();
     }
 
@@ -114,11 +116,26 @@ export function createAdminAuthMiddleware(deps: AdminAuthMiddlewareDeps) {
         return;
       }
 
+      const membership = await prisma.adminMembership.findFirst({
+        where: {
+          userId: session.userId,
+          role: session.role,
+          isActive: true,
+          ...(session.companyId ? { companyId: session.companyId } : {}),
+        },
+        select: { id: true },
+      });
+      if (!membership) {
+        res.status(403).json({ error: 'forbidden', message: 'Admin membership is no longer active' });
+        return;
+      }
+
       res.locals['companyId']    = session.companyId ?? '';
       res.locals['isSuperAdmin'] = session.role === 'SUPER_ADMIN';
       res.locals['canViewRawExecutionData'] =
         session.role === 'SUPER_ADMIN' || session.role === 'COMPANY_ADMIN';
       res.locals['userId']       = session.userId;
+      res.locals['adminRole']    = session.role;
     } catch (e) {
       log.error('admin-auth.session_lookup_failed', { error: String(e) });
       res.status(500).json({ error: 'internal_error' });

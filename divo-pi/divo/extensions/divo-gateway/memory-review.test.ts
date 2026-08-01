@@ -26,8 +26,11 @@ const proposal = {
 } as const;
 
 const canonicalTargets: MemoryReviewTargetV1[] = [
-	{ scope: "personal", label: "Personal" },
 	{ scope: "department", label: "Finance", departmentId: "dept-1" },
+];
+const authorityTargets = [
+	{ scope: "personal", label: "Personal" },
+	...canonicalTargets,
 ];
 
 function reviewRequest(): MemoryReviewRequestV1 {
@@ -42,8 +45,8 @@ function reviewRequest(): MemoryReviewRequestV1 {
 
 function dependencies(options: {
 	onRequest?: (request: unknown) => void;
-	targets?: MemoryReviewTargetV1[];
-	availability?: "available" | "storage_unavailable";
+	targets?: unknown[];
+	authorityError?: string;
 	commitError?: Error;
 } = {}): MemoryReviewDependencies {
 	return {
@@ -51,39 +54,99 @@ function dependencies(options: {
 			backendUrl: "http://localhost:4000",
 			memberToken: "member-token",
 		}),
+		resolveSkillId: () => "share-memory-skill",
 		callGateway: async (_config, gatewayRequest) => {
 			options.onRequest?.(gatewayRequest);
 			if (gatewayRequest.op === "tools.invoke") {
+				const args = (gatewayRequest.payload as { args?: { operation?: string } }).args;
+				if (args?.operation === "check_targets") {
+					if (options.authorityError) {
+						return {
+							httpStatus: 503,
+							body: {
+								ok: false,
+								status: "error",
+								error: { code: "upstream_failure", message: options.authorityError },
+							},
+						};
+					}
+					return {
+						httpStatus: 200,
+						body: {
+							ok: true,
+							status: "success",
+							data: {
+								result: {
+									operation: "check_targets",
+									targets: options.targets ?? authorityTargets,
+								},
+							},
+						},
+					};
+				}
+				if (args?.operation === "propose") {
+					return {
+						httpStatus: 200,
+						body: {
+							ok: true,
+							status: "success",
+							data: {
+								result: {
+									operation: "propose",
+									mutationId: "00000000-0000-4000-8000-000000000001",
+									contentHash: "a".repeat(64),
+									status: "awaiting_requester_review",
+								},
+							},
+						},
+					};
+				}
+				if (args?.operation === "apply") {
+					if (options.commitError) throw options.commitError;
+					return {
+						httpStatus: 200,
+						body: {
+							ok: true,
+							status: "success",
+							data: {
+								result: {
+									operation: "apply",
+									mutationId: "00000000-0000-4000-8000-000000000001",
+									status: "applied",
+									resourceId: "resource-1",
+									version: 1,
+									projection: "completed",
+								},
+							},
+						},
+					};
+				}
+				throw new Error(`unexpected knowledge operation: ${String(args?.operation)}`);
+			}
+			if (gatewayRequest.op === "knowledge.review.decide") {
+				return {
+					httpStatus: 200,
+					body: {
+						ok: true,
+						status: "success",
+						data: { status: "awaiting_approval" },
+					},
+				};
+			}
+			if (gatewayRequest.op === "knowledge.review.open") {
 				return {
 					httpStatus: 200,
 					body: {
 						ok: true,
 						status: "success",
 						data: {
-							result: {
-								operation: "check_authority",
-								availability: options.availability ?? "available",
-								targets: options.targets ?? canonicalTargets,
-							},
+							status: "review_pending",
+							message: "The exact facts are waiting in a Lark review card.",
 						},
 					},
 				};
 			}
-			if (gatewayRequest.op === "tools.prepare") {
-				return {
-					httpStatus: 200,
-					body: {
-						ok: true,
-						status: "success",
-						data: { requiresApproval: true, intentId: "intent-1" },
-					},
-				};
-			}
-			if (options.commitError) throw options.commitError;
-			return {
-				httpStatus: 200,
-				body: { ok: true, status: "success", data: { factCount: 1 } },
-			};
+			throw new Error(`unexpected gateway operation: ${gatewayRequest.op}`);
 		},
 	};
 }
@@ -92,6 +155,14 @@ describe("memory review protocol", () => {
 	it("validates proposal-only input and rejects model-asserted targets", () => {
 		const validated = validateMemoryReviewProposal(proposal);
 		assert.equal(validated.bullets.length, 2);
+		assert.equal(
+			validateMemoryReviewProposal({ ...proposal, requestedScope: "company" }).requestedScope,
+			"company",
+		);
+		assert.throws(
+			() => validateMemoryReviewProposal({ ...proposal, requestedScope: "personal" }),
+			/requestedScope must be department or company/,
+		);
 		assert.throws(
 			() =>
 				validateMemoryReviewProposal({
@@ -181,27 +252,53 @@ describe("memory review protocol", () => {
 				{
 					op: "tools.invoke",
 					payload: {
-						toolId: "memoryPublishing",
-						args: { operation: "check_authority" },
+						skillId: "share-memory-skill",
+						toolId: "knowledge",
+						args: { operation: "check_targets" },
 					},
 				},
 				{
-					op: "tools.prepare",
+					op: "tools.invoke",
 					departmentId: "dept-1",
 					payload: {
-						toolId: "memoryPublishing",
+						skillId: "share-memory-skill",
+						toolId: "knowledge",
 						args: {
-							operation: "publish",
+							operation: "propose",
+							kind: "memory",
+							action: "publish",
 							scope: "department",
 							departmentId: "dept-1",
-							facts: ["Acme uses net-60 payment terms."],
+							logicalKey: "proposal-1",
+							content: { facts: ["Acme uses net-60 payment terms."] },
 						},
 					},
 				},
 				{
-					op: "tools.commit",
+					op: "knowledge.review.decide",
+					payload: {
+						mutationId: "00000000-0000-4000-8000-000000000001",
+						contentHash: "a".repeat(64),
+						decision: "approve",
+					},
+				},
+				{
+					op: "tools.invoke",
 					departmentId: "dept-1",
-					payload: { intentId: "intent-1" },
+					payload: {
+						skillId: "share-memory-skill",
+						toolId: "knowledge",
+						args: {
+							operation: "apply",
+							mutationId: "00000000-0000-4000-8000-000000000001",
+							contentHash: "a".repeat(64),
+							kind: "memory",
+							action: "publish",
+							scope: "department",
+							departmentId: "dept-1",
+							content: { facts: ["Acme uses net-60 payment terms."] },
+						},
+					},
 				},
 			],
 		);
@@ -239,6 +336,49 @@ describe("memory review protocol", () => {
 		assert.match(result.content[0]?.text ?? "", /allowedTargets must not be supplied/);
 	});
 
+	it("opens the backend-owned Lark card with the loaded dynamic skill binding", async () => {
+		writeFileSync(runContextPath, JSON.stringify({
+			version: 1,
+			threadId: "thread-1",
+			runId: "run-1",
+			channel: "lark",
+		}));
+		const calls: unknown[] = [];
+		try {
+			const result = await executeMemoryReview(
+				{ ...proposal, requestedScope: "company" },
+				{ ui: { editor: async () => { throw new Error("desktop editor must not open"); } } as never },
+				dependencies({ onRequest: (call) => calls.push(call) }),
+			);
+			assert.equal(result.content[0]?.text, "The exact facts are waiting in a Lark review card.");
+			assert.deepEqual(calls, [{
+				op: "knowledge.review.open",
+				execution: {
+					version: 1,
+					threadId: "thread-1",
+					runId: "run-1",
+					actionId: (calls[0] as any).execution.actionId,
+				},
+				payload: {
+					skillId: "share-memory-skill",
+					requestId: "proposal-1",
+					kind: "memory",
+					bullets: [
+						"Finance reviews refunds over ₹10K.",
+						"Acme uses net-60 payment terms.",
+					],
+					requestedScope: "company",
+				},
+			}]);
+		} finally {
+			writeFileSync(runContextPath, JSON.stringify({
+				version: 1,
+				threadId: "thread-1",
+				runId: "run-1",
+			}));
+		}
+	});
+
 	it("does not open a card when backend storage is unavailable", async () => {
 		let editorCalls = 0;
 		const result = await executeMemoryReview(
@@ -251,11 +391,30 @@ describe("memory review protocol", () => {
 					},
 				},
 			} as never,
-			dependencies({ availability: "storage_unavailable" }),
+			dependencies({ authorityError: "memory storage is unavailable" }),
 		);
 
 		assert.equal(editorCalls, 0);
 		assert.match(result.content[0]?.text ?? "", /memory storage is unavailable/);
+	});
+
+	it("does not open a card when personal is the only backend target", async () => {
+		let editorCalls = 0;
+		const result = await executeMemoryReview(
+			proposal,
+			{
+				ui: {
+					editor: async () => {
+						editorCalls += 1;
+						return undefined;
+					},
+				},
+			} as never,
+			dependencies({ targets: [{ scope: "personal", label: "Personal" }] }),
+		);
+
+		assert.equal(editorCalls, 0);
+		assert.match(result.content[0]?.text ?? "", /no shared memory target/i);
 	});
 
 	it("rejects a model-controlled department before authority lookup", async () => {
@@ -315,7 +474,7 @@ describe("memory review protocol", () => {
 		);
 	});
 
-	it("reports commit transport failure as indeterminate and preserves intentId", async () => {
+	it("reports apply transport failure as indeterminate and preserves mutationId", async () => {
 		const result = await executeMemoryReview(
 			proposal,
 			{
@@ -325,7 +484,10 @@ describe("memory review protocol", () => {
 							version: 1,
 							proposalId: "proposal-1",
 							decision: "approve",
-							selectedTarget: { scope: "personal" },
+							selectedTarget: {
+								scope: "department",
+								departmentId: "dept-1",
+							},
 							selectedBulletIds: ["fact-1"],
 						}),
 				} as never,
@@ -340,11 +502,11 @@ describe("memory review protocol", () => {
 			version: 1,
 			proposalId: "proposal-1",
 			decision: "approve",
-			selectedTarget: { scope: "personal" },
+			selectedTarget: { scope: "department", departmentId: "dept-1" },
 			selectedBulletIds: ["fact-1"],
 			outcome: "indeterminate",
 			published: null,
-			intentId: "intent-1",
+			intentId: "00000000-0000-4000-8000-000000000001",
 			error: "connection reset",
 		});
 	});

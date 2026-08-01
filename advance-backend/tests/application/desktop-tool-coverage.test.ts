@@ -7,7 +7,7 @@ const ACTOR = { userId: 'user-manager', companyId: 'company-1', role: 'MEMBER' }
 const REGISTERED = [
   { toolId: 'airtableRecords', name: 'Airtable Records', description: '', category: 'Airtable', domain: 'airtable', hitlRequired: false },
   { toolId: 'airtableSchema', name: 'Airtable Schema', description: '', category: 'Airtable', domain: 'airtable', hitlRequired: false },
-  { toolId: 'memoryRecall', name: 'Memory Recall', description: '', category: 'Memory', domain: 'memory', hitlRequired: false },
+  { toolId: 'knowledge', name: 'Knowledge', description: '', category: 'Memory', domain: 'memory', hitlRequired: false },
 ];
 
 function makeService(options: {
@@ -125,9 +125,9 @@ describe('department tool coverage', () => {
     assert.deepEqual(forTool(result, 'airtableRecords').approvalActions, []);
   });
 
-  it('leaves fixed-policy tools out — there is nothing to configure on them', async () => {
+  it('includes the configurable knowledge capability in department coverage', async () => {
     const result = await makeService().coverage(ACTOR, 'dept-finance');
-    assert.equal(forTool(result, 'memoryRecall'), undefined);
+    assert.equal(forTool(result, 'knowledge').peopleWithAccess, 0);
   });
 
   it('lets a company admin read a department they do not manage', async () => {

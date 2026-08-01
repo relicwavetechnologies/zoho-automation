@@ -339,6 +339,8 @@ describe('member authentication uses the live company membership', () => {
       role: 'COMPANY_ADMIN',
       instanceId: 'pi-local-1',
       threadId: 'lark:chat-1',
+      runId: 'run-1',
+      chatId: 'chat-1',
     }, TEST_SECRET);
 
     assert.equal((await callGateway(memberAuth, gateway, lease)).status, 200);
@@ -382,6 +384,8 @@ describe('member authentication uses the live company membership', () => {
       companyId: 'company-1',
       instanceId: 'pi-local-1',
       threadId: 'lark:chat-1',
+      runId: 'run-1',
+      chatId: 'chat-1',
     }, TEST_SECRET);
 
     const rejected = await callGateway(memberAuth, gateway, lease);
@@ -420,6 +424,8 @@ describe('member authentication uses the live company membership', () => {
       companyId: 'company-1',
       instanceId: 'pi-local-1',
       threadId: 'lark:chat-1',
+      runId: 'run-1',
+      chatId: 'chat-1',
     }, TEST_SECRET);
 
     const allowed = await callDesktopRoute(router, '/me', lease);
@@ -428,6 +434,9 @@ describe('member authentication uses the live company membership', () => {
       channel: 'lark',
       instanceId: 'pi-local-1',
       threadId: 'lark:chat-1',
+      runId: 'run-1',
+      chatId: 'chat-1',
+      contextAudience: 'private',
       // Present but null: this lease was issued without a department, and the
       // container needs to see that rather than infer one.
       departmentId: null,

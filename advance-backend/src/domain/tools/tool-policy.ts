@@ -13,9 +13,6 @@ export function getDesktopToolPolicy(toolId: string): DesktopToolPolicy | null {
   if (toolId === 'runCommand') {
     return { kind: 'local', reason: 'Runs on this terminal and is approved locally for each command.' };
   }
-  if (toolId === 'memoryRecall') {
-    return { kind: 'system', supportedActions: ['read'], reason: 'System memory recall is available to authenticated members.' };
-  }
   // omsSiteData was classified 'system' here, which made every write path
   // reject it outright — a company admin could not grant it to a department
   // even for themselves. It is configurable now: company admins hold it
@@ -53,6 +50,15 @@ export const DEPARTMENT_GRANT_ONLY_TOOLS: readonly CanonicalToolId[] = [
   // deliberate grant rather than something that already happened by default.
   'aitableDatasheets',
   'aitableFields',
+];
+
+/**
+ * Capabilities whose company RBAC decision carries into any active department
+ * unless that department role or member has an explicit override. Knowledge
+ * scope and human-approval policy are enforced again by the knowledge core.
+ */
+export const DEPARTMENT_COMPANY_INHERITED_TOOLS: readonly CanonicalToolId[] = [
+  'knowledge',
 ];
 
 export function isDepartmentGrantOnlyTool(toolId: string): boolean {

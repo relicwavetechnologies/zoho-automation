@@ -9,12 +9,13 @@ import {
   TOOL_SUPPORTED_ACTIONS,
   type CanonicalToolId,
 } from '../../domain/tools/tool-id';
-import { unknownSkillToolIds } from '../skills/skill-tool-validation';
-import { recordSkillRegistryMutation } from '../skills/skill-registry-versioning';
-import { larkSkillEnglishOnlyError } from '../skills/lark-skill-language-policy';
 import { provisionZohoFinanceSystemSkills } from '../skills/zoho-finance-system-skills';
 import { syncSystemSkillRoutes } from '../skills/system-skill-routes';
-import { isFixedToolPolicy, isDepartmentGrantOnlyTool } from '../../domain/tools/tool-policy';
+import {
+  DEPARTMENT_COMPANY_INHERITED_TOOLS,
+  isFixedToolPolicy,
+  isDepartmentGrantOnlyTool,
+} from '../../domain/tools/tool-policy';
 
 export interface DepartmentAdminServiceDeps {
   prisma: PrismaClient;
@@ -30,6 +31,10 @@ export function memberTemplateGrants(): Array<{ toolId: string; actionGroup: str
     // Permissive by role default, but only as a ceiling — seeding it here
     // would hand it to every member of every new role matrix.
     if (isDepartmentGrantOnlyTool(toolId)) continue;
+    // Central identity capabilities inherit the live company RBAC decision.
+    // Storing duplicate role rows would obscure that single authority and make
+    // newly added actions depend on department-creation time.
+    if (DEPARTMENT_COMPANY_INHERITED_TOOLS.includes(toolId)) continue;
     if (!TOOL_DEFAULT_PERMISSIONS[toolId].MEMBER) continue;
     for (const actionGroup of TOOL_SUPPORTED_ACTIONS[toolId as CanonicalToolId]) {
       grants.push({ toolId, actionGroup });
@@ -898,152 +903,6 @@ export class DepartmentAdminService {
    * same department. `null` (root) is always allowed. Mirrors the scope rules
    * enforced by SkillRegistryAdminService.moveSkill.
    */
-  private async assertSkillFolderPlacement(
-    companyId: string,
-    departmentId: string,
-    folderId: string | null,
-  ): Promise<ServiceResult<null>> {
-    if (folderId === null) return ok(null);
-    const folder = await this.deps.prisma.skillFolder.findFirst({
-      where: { id: folderId, companyId },
-      select: { departmentId: true, status: true },
-    });
-    if (!folder || folder.status !== 'active') {
-      return fail({ kind: 'not_found', message: 'Folder not found' });
-    }
-    if (folder.departmentId !== departmentId) {
-      return fail({ kind: 'validation', message: 'Folder belongs to a different department' });
-    }
-    return ok(null);
-  }
-
-  async createSkill(
-    departmentId: string,
-    companyId: string,
-    createdBy: string,
-    input: { name: string; slug?: string | undefined; summary?: string | undefined; markdown: string; toolIds?: string[] | undefined; tags?: string[] | undefined; status?: string | undefined; folderId?: string | null | undefined },
-  ): Promise<ServiceResult<SkillView>> {
-    const check = await this.assertDepartmentInCompany(departmentId, companyId);
-    if (!check.ok) return check as ServiceResult<SkillView>;
-
-    const slug = input.slug ? normalizeSlug(input.slug) : normalizeSlug(input.name);
-    const unknownToolIds = unknownSkillToolIds(input.toolIds);
-    if (unknownToolIds.length > 0) {
-      return fail({ kind: 'validation', message: `Unknown skill toolIds: ${unknownToolIds.join(', ')}` });
-    }
-    const languageError = larkSkillEnglishOnlyError({
-      slug,
-      name: input.name,
-      summary: input.summary ?? '',
-      markdown: input.markdown,
-      toolIds: input.toolIds ?? [],
-      tags: input.tags ?? [],
-    });
-    if (languageError) return fail({ kind: 'validation', message: languageError });
-
-    const folderId = input.folderId ?? null;
-    const placement = await this.assertSkillFolderPlacement(companyId, departmentId, folderId);
-    if (!placement.ok) return placement as ServiceResult<SkillView>;
-
-    try {
-      const skill = await this.deps.prisma.skill.create({
-        data: {
-          companyId, departmentId, scope: 'department', folderId,
-          name: input.name.trim(), slug, summary: input.summary ?? '',
-          markdown: input.markdown, toolIds: input.toolIds ?? [], tags: input.tags ?? [],
-          status: input.status ?? 'active', createdBy, updatedBy: createdBy,
-        },
-      });
-      await recordSkillRegistryMutation(this.deps.prisma, skill);
-      return ok({ id: skill.id, name: skill.name, slug: skill.slug, summary: skill.summary, markdown: skill.markdown, toolIds: skill.toolIds, tags: skill.tags, status: skill.status, scope: skill.scope, departmentId: skill.departmentId, folderId: skill.folderId });
-    } catch (e) {
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-        return fail({ kind: 'conflict', message: 'A skill with this slug already exists' });
-      }
-      return fail({ kind: 'internal', message: 'Failed to create skill' });
-    }
-  }
-
-  async updateSkill(
-    departmentId: string,
-    companyId: string,
-    skillId: string,
-    updatedBy: string,
-    input: { name?: string | undefined; summary?: string | undefined; markdown?: string | undefined; toolIds?: string[] | undefined; tags?: string[] | undefined; status?: string | undefined; folderId?: string | null | undefined },
-  ): Promise<ServiceResult<SkillView>> {
-    const check = await this.assertDepartmentInCompany(departmentId, companyId);
-    if (!check.ok) return check as ServiceResult<SkillView>;
-
-    const existing = await this.deps.prisma.skill.findFirst({ where: { id: skillId, departmentId } });
-    if (!existing) return fail({ kind: 'not_found', message: 'Skill not found' });
-    const unknownToolIds = unknownSkillToolIds(input.toolIds);
-    if (unknownToolIds.length > 0) {
-      return fail({ kind: 'validation', message: `Unknown skill toolIds: ${unknownToolIds.join(', ')}` });
-    }
-    const languageError = larkSkillEnglishOnlyError({
-      slug: existing.slug,
-      name: input.name ?? existing.name,
-      summary: input.summary ?? existing.summary,
-      markdown: input.markdown ?? existing.markdown,
-      toolIds: input.toolIds ?? existing.toolIds,
-      tags: input.tags ?? existing.tags,
-    });
-    if (languageError) return fail({ kind: 'validation', message: languageError });
-
-    if (input.folderId !== undefined) {
-      const placement = await this.assertSkillFolderPlacement(companyId, departmentId, input.folderId);
-      if (!placement.ok) return placement as ServiceResult<SkillView>;
-    }
-
-    try {
-      const skill = await this.deps.prisma.skill.update({
-        where: { id: skillId },
-        data: {
-          ...(input.name     !== undefined ? { name:     input.name.trim() } : {}),
-          ...(input.summary  !== undefined ? { summary:  input.summary }     : {}),
-          ...(input.markdown !== undefined ? { markdown: input.markdown }    : {}),
-          ...(input.toolIds  !== undefined ? { toolIds:  input.toolIds }     : {}),
-          ...(input.tags     !== undefined ? { tags:     input.tags }        : {}),
-          ...(input.status   !== undefined ? { status:   input.status }      : {}),
-          ...(input.folderId !== undefined ? { folderId: input.folderId }    : {}),
-          revision: { increment: 1 },
-          updatedBy,
-        },
-      });
-      await recordSkillRegistryMutation(this.deps.prisma, skill);
-      return ok({ id: skill.id, name: skill.name, slug: skill.slug, summary: skill.summary, markdown: skill.markdown, toolIds: skill.toolIds, tags: skill.tags, status: skill.status, scope: skill.scope, departmentId: skill.departmentId, folderId: skill.folderId });
-    } catch (e) {
-      return fail({ kind: 'internal', message: 'Failed to update skill' });
-    }
-  }
-
-  async archiveSkill(
-    departmentId: string,
-    companyId: string,
-    skillId: string,
-    updatedBy?: string,
-  ): Promise<ServiceResult<{ archived: boolean }>> {
-    const check = await this.assertDepartmentInCompany(departmentId, companyId);
-    if (!check.ok) return check as ServiceResult<{ archived: boolean }>;
-
-    const existing = await this.deps.prisma.skill.findFirst({ where: { id: skillId, departmentId } });
-    if (!existing) return fail({ kind: 'not_found', message: 'Skill not found' });
-    try {
-      const skill = await this.deps.prisma.skill.update({
-        where: { id: skillId },
-        data: {
-          status: 'archived',
-          revision: { increment: 1 },
-          ...(updatedBy ? { updatedBy } : {}),
-        },
-      });
-      await recordSkillRegistryMutation(this.deps.prisma, skill, 'archive');
-      return ok({ archived: true });
-    } catch (e) {
-      return fail({ kind: 'internal', message: 'Failed to archive skill' });
-    }
-  }
-
   // ── Books module permissions ──────────────────────────────────────────────
 
   async getBookModulePermissions(

@@ -83,6 +83,7 @@ function makeMiddleware(opts: {
   sessionResult?: unknown;
   sessionThrows?: boolean;
   withApiKey?: boolean;
+  membershipActive?: boolean;
 }) {
   const prisma = {
     adminSession: {
@@ -90,6 +91,9 @@ function makeMiddleware(opts: {
         if (opts.sessionThrows) throw new Error('db error');
         return opts.sessionResult ?? null;
       },
+    },
+    adminMembership: {
+      findFirst: async () => opts.membershipActive === false ? null : { id: 'membership-1' },
     },
   };
   return createAdminAuthMiddleware({
@@ -253,6 +257,20 @@ describe('createAdminAuthMiddleware', () => {
       const mw = makeMiddleware({ sessionThrows: true });
       const { res } = await call(mw, makeReq({ authorization: `Bearer ${validToken}` }));
       assert.equal(res._status, 500);
+    });
+
+    it('revokes an existing admin session as soon as its live membership is disabled', async () => {
+      const mw = makeMiddleware({
+        membershipActive: false,
+        sessionResult: {
+          companyId: 'co-1', role: 'COMPANY_ADMIN', userId: 'u1',
+          expiresAt: new Date(Date.now() + 3_600_000),
+          revokedAt: null,
+        },
+      });
+      const { res, nextCalled } = await call(mw, makeReq({ authorization: `Bearer ${validToken}` }));
+      assert.equal(nextCalled, false);
+      assert.equal(res._status, 403);
     });
 
     it('calls next() and populates res.locals on valid session', async () => {

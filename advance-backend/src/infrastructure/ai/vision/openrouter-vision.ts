@@ -29,6 +29,7 @@ export interface VisionOcrOptions {
   readonly providerOrder?: string | undefined;
   readonly fetchImpl?: typeof fetch | undefined;
   readonly timeoutMs?: number | undefined;
+  readonly signal?: AbortSignal | undefined;
 }
 
 const OCR_PROMPT = [
@@ -97,7 +98,9 @@ export async function extractImageTextWithVision(
         max_tokens: 1200,
         temperature: 0,
       }),
-      signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
+      signal: options.signal
+        ? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeoutMs ?? 30_000)])
+        : AbortSignal.timeout(options.timeoutMs ?? 30_000),
     },
   );
 

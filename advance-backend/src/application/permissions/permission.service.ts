@@ -15,7 +15,10 @@ import {
   TOOL_SUPPORTED_ACTIONS,
   type CanonicalToolId,
 } from '../../domain/tools/tool-id';
-import { DEPARTMENT_GRANT_ONLY_TOOLS } from '../../domain/tools/tool-policy';
+import {
+  DEPARTMENT_COMPANY_INHERITED_TOOLS,
+  DEPARTMENT_GRANT_ONLY_TOOLS,
+} from '../../domain/tools/tool-policy';
 import type { PermissionDecision, PermissionSource } from '../../domain/permissions/permission-decision';
 import type { PermissionQuery, PermissionResult, DepartmentMeta } from './permission.types';
 import {
@@ -170,6 +173,12 @@ export class PermissionServiceImpl implements PermissionService {
           // LAYER 2: dept-role explicit permission
           allowed = deptRoleMap.get(key)!;
           source = 'department_role';
+        } else if (DEPARTMENT_COMPANY_INHERITED_TOOLS.includes(toolIdStr)) {
+          // Central identity capabilities remain usable inside an active
+          // department, while explicit department/user rows can still deny
+          // or narrow them. Their own service re-checks scope policy.
+          allowed = companyCeiling.allowedActionsByTool.get(toolId)?.has(action) ?? false;
+          source = 'company_default';
         } else {
           // LAYER 3: default deny — no explicit dept-role grant means not allowed.
           // Company ceiling is a clamp on allows, not an inherit source for missing rows.

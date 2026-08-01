@@ -33,7 +33,7 @@ export type ActorType =
   | 'executor'
   | 'tool'
   | 'model'
-  | 'mem0'
+  | 'memory'
   | 'synthesis';
 
 // ─── Event type literals ──────────────────────────────────────────────────────

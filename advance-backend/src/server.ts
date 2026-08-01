@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { type Express } from 'express';
 import { randomUUID } from 'node:crypto';
 import type { Container } from './composition';
 import { createHealthRoutes } from './http/health.routes';
@@ -50,26 +50,26 @@ import { LarkIngressWorker } from './application/lark-ingress/lark-ingress.worke
 import { GoogleConnectionContinuationWorker } from './application/connections/google-connection-continuation';
 import { getGmailPubSubConfig } from './config/env';
 import { PersonaLearningWorker } from './application/persona-learning/persona-learning.worker';
+import { KnowledgeLearningWorker } from './application/knowledge/knowledge-learning.worker';
 import { ManagerTeachWorker } from './application/persona-learning/manager-teach.worker';
+import { KnowledgeReviewDecisionWorker } from './application/knowledge/knowledge-review-decision.worker';
 import { createManagerTeachRoutes } from './http/desktop/manager-teach.routes';
+import { createKnowledgeFileRoutes } from './http/desktop/knowledge-files.routes';
 import { LarkFileClient } from './infrastructure/channels/lark/clients/lark-file.client';
 import { ElevenLabsTranscriptionClient } from './infrastructure/ai/transcription/elevenlabs-transcription.client';
 
 /** Where the model proxy is mounted. Named because the body parser exempts it. */
 const LLM_PROXY_MOUNT_PATH = '/api/llm';
 
-/**
- * How large a model request may be.
- *
- * Sized above what Pi can put in one: its `read` tool inlines an image up to
- * 4.5MB of base64, and a turn can carry more than one alongside the
- * conversation. Every other route keeps the 2mb limit — a request this size is
- * only ever a picture on its way to a model that can see.
- */
+/** Vision requests can contain several inlined images; other routes stay at 2 MB. */
 const LLM_PROXY_BODY_LIMIT = '24mb';
 
-export const createServer = (c: Container) => {
-  const app = express();
+export type DivoServerApplication = Express & {
+  shutdown(): Promise<void>;
+};
+
+export const createServer = (c: Container): DivoServerApplication => {
+  const app = express() as DivoServerApplication;
   const gmailPubsubConfig = getGmailPubSubConfig(c.env);
   const allowedOrigins = new Set(
     [
@@ -107,11 +107,10 @@ export const createServer = (c: Container) => {
     env:                   c.env,
     approvalGate:          c.approvalGate,
     approvalCardHandler:   c.approvalCardHandler,
-    memoryReviewService:   c.larkMemoryReviewService,
-    ...(c.mem0Service ? { mem0: c.mem0Service } : {}),
+    knowledgeReviewService: c.larkKnowledgeReviewService,
     larkOAuthService:      c.larkOAuthService,
     connectionRepo:        c.integrationConnectionRepo,
-    cache:                 c.memoryCache,
+    cache:                 c.ephemeralCache,
     serializer:            c.chatSerializer,
     chatContextService:    c.chatContextService,
     groupContextHydrator:  c.groupContextHydrator,
@@ -147,6 +146,7 @@ export const createServer = (c: Container) => {
         deps: {
           adapter: input.channelAdapter,
           piRuntime: larkPiRuntime,
+          conversationRepo: c.conversationRepo,
           channelDeliveryRepo: c.channelDeliveryRepo,
           groupContextHydrator: c.groupContextHydrator,
         },
@@ -169,9 +169,10 @@ export const createServer = (c: Container) => {
         });
       });
   };
+  let googleExchangeRecoveryTimer: NodeJS.Timeout | undefined;
   if (c.env.DIVO_AUTONOMOUS_WORKERS_ENABLED) {
     recoverGoogleExchanges();
-    const googleExchangeRecoveryTimer = setInterval(
+    googleExchangeRecoveryTimer = setInterval(
       recoverGoogleExchanges,
       60_000,
     );
@@ -203,6 +204,18 @@ export const createServer = (c: Container) => {
   });
   personaLearningWorker.start();
 
+  let knowledgeLearningWorker: KnowledgeLearningWorker | undefined;
+  if (c.env.KNOWLEDGE_LEARNING_ENABLED) {
+    knowledgeLearningWorker = new KnowledgeLearningWorker({
+      redisUrl: c.queueRedisUrl,
+      queueName: c.env.REDIS_KNOWLEDGE_LEARNING_QUEUE_NAME,
+      service: c.knowledgeLearningService,
+      logger: c.logger,
+      concurrency: c.env.KNOWLEDGE_LEARNING_WORKER_CONCURRENCY,
+    });
+    knowledgeLearningWorker.start();
+  }
+
   const managerTeachWorker = new ManagerTeachWorker({
     redisUrl: c.queueRedisUrl,
     queueName: c.env.REDIS_MANAGER_TEACH_QUEUE_NAME,
@@ -211,6 +224,41 @@ export const createServer = (c: Container) => {
     concurrency: c.env.MANAGER_TEACH_WORKER_CONCURRENCY,
   });
   managerTeachWorker.start();
+
+  const knowledgeReviewDecisionWorker = new KnowledgeReviewDecisionWorker({
+    redisUrl: c.queueRedisUrl,
+    service: c.larkKnowledgeReviewService,
+    logger: c.logger,
+  });
+  knowledgeReviewDecisionWorker.start();
+
+  const drainKnowledgeOutbox = () => {
+    void c.knowledgeProjections.drain().catch(error => {
+      c.logger.warn('knowledge.projection.drain_failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+  drainKnowledgeOutbox();
+  const knowledgeProjectionTimer = setInterval(
+    drainKnowledgeOutbox,
+    c.env.KNOWLEDGE_PROJECTION_POLL_INTERVAL_MS,
+  );
+  knowledgeProjectionTimer.unref?.();
+
+  const cleanupStagedKnowledgeFiles = () => {
+    void c.knowledgeFileService.cleanupExpired().catch(error => {
+      c.logger.warn('knowledge_file.cleanup.failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+  cleanupStagedKnowledgeFiles();
+  const knowledgeFileCleanupTimer = setInterval(
+    cleanupStagedKnowledgeFiles,
+    c.env.KNOWLEDGE_FILE_CLEANUP_INTERVAL_SECONDS * 1_000,
+  );
+  knowledgeFileCleanupTimer.unref?.();
 
   if (c.env.DIVO_AUTONOMOUS_WORKERS_ENABLED) {
     c.scheduledWorkflowService.start();
@@ -336,7 +384,12 @@ export const createServer = (c: Container) => {
   });
 
   // Routes
-  app.use('/health', createHealthRoutes(c.prisma));
+  app.use('/health', createHealthRoutes(c.prisma, {
+    ...(c.env.LARK_CARD_CALLBACK_URL
+      ? { larkCardCallbackUrl: c.env.LARK_CARD_CALLBACK_URL }
+      : {}),
+    knowledgeOperations: c.knowledgeOperations,
+  }));
 
   app.use(
     '/api/admin/auth',
@@ -369,7 +422,7 @@ export const createServer = (c: Container) => {
     createGoogleAuthRoutes({
       googleOAuthService:    c.googleOAuthService,
       connectionRepo:        c.integrationConnectionRepo,
-      cache:                 c.memoryCache,   // nonces → REDIS_MEMORY_URL
+      cache:                 c.ephemeralCache,   // nonces → REDIS_MEMORY_URL
       logger:                c.logger,
       frontendBaseUrl:       c.env.APP_BASE_URL,
     }),
@@ -411,7 +464,7 @@ export const createServer = (c: Container) => {
     createZohoAuthRoutes({
       zohoTokenService:   c.zohoTokenService,
       zohoConnectionRepo: c.zohoConnectionRepo,
-      cache:              c.memoryCache,    // nonces → REDIS_MEMORY_URL
+      cache:              c.ephemeralCache,    // nonces → REDIS_MEMORY_URL
       logger:             c.logger,
       env:                c.env,
       frontendBaseUrl:    c.env.APP_BASE_URL,
@@ -424,7 +477,7 @@ export const createServer = (c: Container) => {
     createLarkAuthRoutes({
       larkOAuthService:    c.larkOAuthService,
       connectionRepo:      c.integrationConnectionRepo,
-      cache:               c.memoryCache,   // nonces → REDIS_MEMORY_URL
+      cache:               c.ephemeralCache,   // nonces → REDIS_MEMORY_URL
       logger:              c.logger,
       appId:               c.env.LARK_APP_ID,
       appSecret:           c.env.LARK_APP_SECRET,
@@ -481,6 +534,15 @@ export const createServer = (c: Container) => {
     createGatewayRoutes({
       dispatcher: c.gatewayDispatcher,
       logger:     c.logger,
+    }),
+  );
+  app.use(
+    '/api/knowledge/files',
+    piRuntimeMemberAuth,
+    createKnowledgeFileRoutes({
+      files: c.knowledgeFileService,
+      logger: c.logger,
+      maxBytes: c.env.KNOWLEDGE_FILE_MAX_MB * 1_024 * 1_024,
     }),
   );
 
@@ -544,6 +606,7 @@ export const createServer = (c: Container) => {
       skillCatalog:           c.skillCatalog,
       skillAccessEnforcement: c.skillAccessEnforcement,
       managerPersonaRuntime:  c.managerPersonaRuntimeService,
+      ...(c.memoryService ? { memory: c.memoryService } : {}),
       logger:                 c.logger,
       env:                    c.env,
       memberJwtSecret:        c.env.MEMBER_JWT_SECRET,
@@ -577,6 +640,9 @@ export const createServer = (c: Container) => {
       logger:         c.logger,
       proxyOwnsTrace: c.env.PROXY_OWNS_TRACE,
       personaLearning: c.personaLearningService,
+      ...(c.env.KNOWLEDGE_LEARNING_ENABLED
+        ? { knowledgeLearning: c.knowledgeLearningService }
+        : {}),
     }),
   );
 
@@ -629,7 +695,12 @@ export const createServer = (c: Container) => {
   app.use(
     '/api/admin/memories',
     adminAuth,
-    createMemoryRoutes({ mem0: c.mem0Service, logger: c.logger }),
+    createMemoryRoutes({
+      prisma: c.prisma,
+      logger: c.logger,
+      operations: c.knowledgeOperations,
+      audit: c.auditService,
+    }),
   );
 
   // Company admin surface (members, directory, invites, onboarding, tool-permissions)
@@ -637,7 +708,7 @@ export const createServer = (c: Container) => {
     prisma: c.prisma,
     logger: c.logger,
     env: c.env,
-    cache: c.memoryCache,
+    cache: c.ephemeralCache,
     larkOAuthService: c.larkOAuthService,
     zohoTokenService: c.zohoTokenService,
     zohoConnectionRepo: c.zohoConnectionRepo,
@@ -696,6 +767,63 @@ export const createServer = (c: Container) => {
 
   // Error boundary
   app.use(createErrorBoundary(c.logger) as any);
+
+  let shutdownPromise: Promise<void> | undefined;
+  app.shutdown = () => {
+    shutdownPromise ??= (async () => {
+      if (googleExchangeRecoveryTimer) clearInterval(googleExchangeRecoveryTimer);
+      clearInterval(knowledgeProjectionTimer);
+      clearInterval(knowledgeFileCleanupTimer);
+      clearInterval(cloudinaryCleanupTimer);
+      clearInterval(traceRetentionTimer);
+      c.mailOpsWorker.stop();
+      c.scheduledWorkflowService.stop();
+
+      const errors: unknown[] = [];
+      const closePhase = async (
+        resources: readonly { name: string; close: () => Promise<void> }[],
+      ): Promise<void> => {
+        const settled = await Promise.allSettled(resources.map(resource => resource.close()));
+        settled.forEach((result, index) => {
+          if (result.status === 'fulfilled') return;
+          const resource = resources[index];
+          errors.push(result.reason);
+          c.logger.error('server.resource_shutdown_failed', {
+            resource: resource?.name ?? 'unknown',
+            error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+          });
+        });
+      };
+
+      // Workers must release their blocking BullMQ connections before the
+      // producer queues and shared application Redis clients are closed.
+      await closePhase([
+        { name: 'lark-ingress-worker', close: () => larkIngressWorker.stop() },
+        { name: 'google-continuation-worker', close: () => googleConnectionContinuationWorker.stop() },
+        { name: 'data-export-worker', close: () => dataExportWorker.stop() },
+        { name: 'persona-learning-worker', close: () => personaLearningWorker.stop() },
+        ...(knowledgeLearningWorker
+          ? [{ name: 'knowledge-learning-worker', close: () => knowledgeLearningWorker.stop() }]
+          : []),
+        { name: 'manager-teach-worker', close: () => managerTeachWorker.close() },
+        { name: 'knowledge-review-worker', close: () => knowledgeReviewDecisionWorker.stop() },
+      ]);
+      await closePhase([
+        { name: 'lark-ingress-queue', close: () => c.larkIngressQueue.close() },
+        { name: 'google-continuation-queue', close: () => c.googleConnectionContinuationQueue.close() },
+        { name: 'data-export-queue', close: () => c.dataExportQueue.close() },
+        { name: 'persona-learning-queue', close: () => c.personaLearningQueue.close() },
+        { name: 'knowledge-learning-queue', close: () => c.knowledgeLearningQueue.close() },
+        { name: 'manager-teach-queue', close: () => c.managerTeachQueue.close() },
+        { name: 'knowledge-review-queue', close: () => c.knowledgeReviewDecisionQueue.close() },
+      ]);
+
+      if (errors.length > 0) {
+        throw new AggregateError(errors, 'One or more server resources failed to stop cleanly.');
+      }
+    })();
+    return shutdownPromise;
+  };
 
   return app;
 };

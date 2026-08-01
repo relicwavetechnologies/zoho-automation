@@ -44,10 +44,20 @@ services:
       REDIS_CACHE_URL: redis://divo-redis-cache:6379/0
       REDIS_MEMORY_URL: redis://divo-redis-memory:6379/0
       GOOGLE_WORKSPACE_MCP_URL: http://google-workspace-mcp:8000/mcp
+      # The Docker socket is isolated in the private controller service; it is
+      # never mounted into the public backend container.
       PI_LARK_CONTROLLER_URL: http://divo-pi-controller:4317
       PI_LARK_RUNTIME_INSTANCE_ID: ${PI_LARK_RUNTIME_INSTANCE_ID:-pi-main-1}
       DIVO_AUTONOMOUS_WORKERS_ENABLED: ${DIVO_AUTONOMOUS_WORKERS_ENABLED:-false}
+      HINDSIGHT_ENABLED: "true"
+      HINDSIGHT_URL: http://divo-hindsight:8888
+      HINDSIGHT_API_KEY: ${HINDSIGHT_API_KEY:?HINDSIGHT_API_KEY is required}
+      KNOWLEDGE_FILE_MALWARE_SCAN_MODE: required
+      CLAMAV_HOST: divo-clamav
+      CLAMAV_PORT: 3310
     depends_on:
+      divo-migrate:
+        condition: service_completed_successfully
       divo-postgres:
         condition: service_healthy
       divo-redis-queue:
@@ -57,6 +67,10 @@ services:
       divo-redis-memory:
         condition: service_healthy
       google-workspace-mcp:
+        condition: service_healthy
+      divo-hindsight:
+        condition: service_healthy
+      divo-clamav:
         condition: service_healthy
       divo-pi-controller:
         condition: service_healthy
@@ -73,6 +87,75 @@ services:
       timeout: 5s
       start_period: 45s
       retries: 5
+
+  # One release gate owns schema migration. App replicas never race ad-hoc
+  # db-push operations, and they cannot start against an unversioned schema.
+  divo-migrate:
+    image: ${DIVO_BACKEND_IMAGE:?DIVO_BACKEND_IMAGE is required}
+    env_file:
+      - ${DIVO_ENV_FILE:-/dev/null}
+    command: ["pnpm", "prisma:migrate:deploy"]
+    depends_on:
+      divo-postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - divo-main-internal
+    logging: *default-logging
+
+  divo-hindsight:
+    image: ghcr.io/vectorize-io/hindsight:0.8.6
+    environment:
+      HINDSIGHT_API_DATABASE_URL: postgresql://hindsight:${HINDSIGHT_DB_PASSWORD:?HINDSIGHT_DB_PASSWORD is required}@divo-hindsight-postgres:5432/hindsight
+      HINDSIGHT_API_LLM_PROVIDER: ${HINDSIGHT_LLM_PROVIDER:-openai}
+      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_LLM_MODEL:-gpt-4o-mini}
+      HINDSIGHT_API_LLM_API_KEY: ${HINDSIGHT_LLM_API_KEY:?HINDSIGHT_LLM_API_KEY is required}
+      HINDSIGHT_API_RERANKER_PROVIDER: rrf
+      HINDSIGHT_API_WORKER_ID: divo-production-1
+      HINDSIGHT_API_TENANT_EXTENSION: hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension
+      HINDSIGHT_API_TENANT_API_KEY: ${HINDSIGHT_API_KEY:?HINDSIGHT_API_KEY is required}
+      HINDSIGHT_API_ENABLE_BANK_CONFIG_API: "false"
+      HINDSIGHT_API_DEFAULT_BANK_TEMPLATE: '{"version":"1","bank":{"retain_strategies":{"exact":{"retain_extraction_mode":"verbatim","enable_observations":false}}}}'
+    depends_on:
+      divo-hindsight-postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - divo-main-internal
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/health', timeout=3)\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 8
+
+  divo-clamav:
+    image: clamav/clamav:1.5.3
+    volumes:
+      - divo_main_clamav_signatures:/var/lib/clamav
+    restart: unless-stopped
+    networks:
+      - divo-main-internal
+    logging: *default-logging
+
+  divo-hindsight-postgres:
+    image: pgvector/pgvector:0.8.1-pg16
+    environment:
+      POSTGRES_DB: hindsight
+      POSTGRES_USER: hindsight
+      POSTGRES_PASSWORD: ${HINDSIGHT_DB_PASSWORD:?HINDSIGHT_DB_PASSWORD is required}
+    volumes:
+      - divo_main_hindsight_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - divo-main-internal
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hindsight -d hindsight"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
 
   divo-pi-controller:
     image: ${DIVO_PI_CONTROLLER_IMAGE:?DIVO_PI_CONTROLLER_IMAGE is required}
@@ -203,3 +286,5 @@ volumes:
   divo_main_redis_queue_data:
   divo_main_redis_cache_data:
   divo_main_redis_memory_data:
+  divo_main_hindsight_postgres_data:
+  divo_main_clamav_signatures:

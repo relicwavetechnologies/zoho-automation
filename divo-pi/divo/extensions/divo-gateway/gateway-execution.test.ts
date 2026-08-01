@@ -43,7 +43,10 @@ describe("gateway execution protocol", () => {
 				actionId: "tool-write",
 			},
 		};
-		const result = await executeGatewayRequest(config, original, "call-write", ctx, {
+		const result = await executeGatewayRequest(config, original, "call-write", {
+			...ctx,
+			runtimeChannel: "lark",
+		}, {
 			callGateway: async (_config, request) => {
 				requests.push(request);
 				return {
@@ -54,6 +57,9 @@ describe("gateway execution protocol", () => {
 					},
 					httpStatus: 200,
 				};
+			},
+			approveIntent: async () => {
+				throw new Error("Lark must not open desktop approval");
 			},
 		});
 

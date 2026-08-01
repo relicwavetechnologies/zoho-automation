@@ -92,6 +92,9 @@ export class SkillCatalogService {
     const result = await this.deps.repo.search({
       companyId: input.companyId,
       ...(input.departmentId ? { departmentId: input.departmentId } : {}),
+      ...(input.grantedSkillIds
+        ? { additionalGrantedSkillIds: [...input.grantedSkillIds] }
+        : {}),
       query: input.query,
       // Fetch a bounded candidate window before application-layer ranking so
       // generic terms cannot hide a stronger match that sorts later in a folder.

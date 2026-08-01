@@ -131,13 +131,14 @@ describe("Divo approval gate", () => {
 		assert.match(result?.reason ?? "", /"op": "tools\.invoke"/);
 	});
 
-	it("blocks direct memory publishing so the custom review is the only path", async () => {
+	it("blocks raw personal publishing so only the dedicated memory command can write", async () => {
 		const event = divoEvent();
 		(event.input as Record<string, unknown>).payload = {
-			toolId: "memoryPublishing",
+			toolId: "knowledge",
 			args: {
-				operation: "publish",
+				operation: "propose",
 				scope: "personal",
+				kind: "memory",
 				facts: ["A fact"],
 			},
 		};
@@ -147,15 +148,16 @@ describe("Divo approval gate", () => {
 		);
 
 		assert.equal(result?.block, true);
-		assert.match(result?.reason ?? "", /divo_memory_review/);
+		assert.match(result?.reason ?? "", /raw personal-memory proposals are disabled/i);
+		assert.match(result?.reason ?? "", /use divo_memory/i);
 	});
 
 	it("blocks generic memory recall before an alternate department can reach the gateway", async () => {
 		const event = divoEvent();
 		(event.input as Record<string, unknown>).departmentId = "dept-alternate";
 		(event.input as Record<string, unknown>).payload = {
-			toolId: "memoryRecall",
-			args: { query: "quarterly planning conventions" },
+			toolId: "knowledge",
+			args: { operation: "recall", query: "quarterly planning conventions" },
 		};
 		const result = await handleApprovalToolCall(
 			event,

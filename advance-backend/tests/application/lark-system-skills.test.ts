@@ -204,7 +204,7 @@ describe('Lark system skill provisioning', () => {
       LARK_SYSTEM_SKILLS.map((skill) => ({
         slug: skill.slug,
         folderId: expectedFolders.get(skill.slug),
-        scope: 'global',
+        scope: 'company',
         isSystem: true,
       })),
     );

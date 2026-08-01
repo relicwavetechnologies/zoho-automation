@@ -262,6 +262,55 @@ describe('ConversationRepository.appendTurn', () => {
 
     assert.ok(cache.delCalls.includes(CACHE_KEY), 'cache should be invalidated after appendTurn');
   });
+
+  it('binds a channel dedupe key and returns the existing turn on redelivery', async () => {
+    let createInput: any = null;
+    const existing = {
+      id: 'existing-msg',
+      role: 'user',
+      contentText: 'same message',
+      contentJson: null,
+      toolCallJson: null,
+      toolResultJson: null,
+      createdAt: new Date('2026-07-31T00:00:00.000Z'),
+    };
+    const db = makeDb({
+      runtimeConversation: {
+        findUnique: async () => ({ id: 'company-conv' }),
+        create: async () => ({ id: 'company-conv' }),
+        update: async () => ({ lastMessageSequence: 2 }),
+      },
+      runtimeConversationMessage: {
+        create: async (input: unknown) => {
+          createInput = input;
+          throw Object.assign(new Error('unique violation'), { code: 'P2002' });
+        },
+        findUnique: async (input: any) => {
+          assert.deepEqual(input.where.conversationId_dedupeKey, {
+            conversationId: 'company-conv',
+            dedupeKey: 'lark:om-1:user',
+          });
+          return existing;
+        },
+        deleteMany: async () => ({ count: 0 }),
+      },
+    });
+    const repo = new ConversationRepository(db as any);
+
+    const result = await repo.appendTurn(CHAT_KEY, {
+      role: 'user',
+      content: 'same message',
+      timestamp: '2026-07-31T00:00:00.000Z',
+    }, SCOPE, {
+      dedupeKey: 'lark:om-1:user',
+      sourceMessageId: 'om-1',
+    });
+
+    assert.ok(result.ok);
+    assert.equal(result.value.id, 'existing-msg');
+    assert.equal(createInput.data.dedupeKey, 'lark:om-1:user');
+    assert.equal(createInput.data.sourceMessageId, 'om-1');
+  });
 });
 
 describe('ConversationRepository.clearHistory', () => {
