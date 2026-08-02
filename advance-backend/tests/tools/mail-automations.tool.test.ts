@@ -236,6 +236,18 @@ describe('mailAutomations tool', () => {
       ...message,
       to: '=?utf-8?Q?Ana_Smith?= <ana@example.com>',
     }), true);
+    // A `=?` whose terminator lies past a space is not an encoded word.
+    // Reading it as one blanked its way across the opening quote, which both
+    // dropped the recipient that quote belonged to and left the display text
+    // behind it standing as an address.
+    assert.equal(mailRuleMatches({ to: 'ana@example.com' }, {
+      ...message,
+      to: '=?a?b? " ?= ana@example.com" <impostor@evil.example>',
+    }), false);
+    assert.equal(mailRuleMatches({ to: 'ana@example.com' }, {
+      ...message,
+      to: '=?utf-8?q?x <ana@example.com>, =?utf-8?q?y?= <bo@example.com>',
+    }), true);
   });
 
   it('keeps a stored free-text recipient rule firing while refusing to create another', () => {

@@ -713,7 +713,7 @@ At least one is required. All supplied criteria are combined with logical AND.
 | Field | Current semantics | **[audit 2026-08-02] caveat** |
 |---|---|---|
 | `from` | Exact mailbox address or exact `@domain`; case-insensitive | **Does not match subdomains** — `@stripe.com` misses `receipts@mail.stripe.com`, and most transactional senders use a bounce subdomain. (D12) |
-| `to` | Exact mailbox address or exact `@domain`, matched against `To`, `Cc`, `Bcc` and `Delivered-To` together | *[corrected 2026-08-02]* Validated exactly like `from`, so a display-name substring is rejected. Carries the same subdomain limit as `from` (D12). Rules stored before this keep their free-text substring test against `To` alone, and cannot be recreated in that shape. (D11, T7 — fixed) |
+| `to` | Exact mailbox address or exact `@domain`, matched against `To`, `Cc`, `Bcc` and `Delivered-To` together | *[corrected 2026-08-02]* Validated exactly like `from`, so a display-name substring is rejected. Carries the same subdomain limit as `from` (D12). Rules stored before this keep their free-text substring test against `To` alone, and cannot be recreated in that shape. **Sender-authored — a filter, never an identity boundary** (see §Matching limitations). (D11, T7 — fixed) |
 | `subjectContains` | Case-insensitive substring | Literal `String.includes`. `"OTP\|verification code"` and `"*invoice*"` match nothing. (T8) |
 | `bodyContains` | Case-insensitive substring of extracted bounded text | Sees the first `text/plain` part, else stripped HTML, capped at 50,000 chars. Never attachment contents. |
 | `hasAttachment` | Exact Boolean equality | *[corrected 2026-08-02]* True only for an attached file. A part saying `Content-Disposition: inline`, or carrying a `Content-ID` without saying `attachment`, no longer counts — a signature logo does not make a message "has attachment". (D10 — fixed) |
@@ -2019,8 +2019,16 @@ Never copy secret values into this handover.
 
 ### Matching limitations
 
-- `to` is still substring-based and should be reconsidered before using it as a
-  strong identity boundary.
+- *[corrected 2026-08-02]* `to` is an exact mailbox or `@domain` across
+  `To`/`Cc`/`Bcc`/`Delivered-To` (rules stored before that keep a substring test
+  against `To` alone). It is **not** an identity boundary and cannot be made
+  one: every recipient header is written by the sender and passed through
+  untouched, so anyone who can email a member can put any address in `To` and
+  fire that member's rule on their own message. `to` narrows a member's own
+  mail. The only recipient header the sender does not author is the
+  `Delivered-To` the receiving server adds; using that as a boundary would mean
+  reading it alone rather than the union, which is a decision about what `to`
+  means, not a fix.
 - Subject and body are substring-based by design.
 - Sender exactness does not independently validate DKIM/SPF/DMARC.
 - The current sender mailbox regex expects a conventional domain with a

@@ -195,15 +195,18 @@ function addressesIn(header: string): string[] {
  * One header split into its entries, with everything that is not an address
  * blanked out.
  *
- * Both halves matter, and a sender controls the header of the mail they send.
  * Three constructs sit in the display position, all of them free text and all
  * of them able to hold a comma: a quoted name, a parenthesised comment, and an
  * encoded word. Split the raw header on commas and any of them hands
  * `addressIn` a fragment with no bracketed mailbox left in it — and the
- * fragment then reads as whatever address the free text contained. An outsider
- * sending `(cfo@victim.com, x) <evil@example.tld>` to a member would otherwise
- * make that member's rule on `cfo@` fire on the outsider's own mail, and the
- * member's mailbox would forward it wherever the rule points.
+ * fragment then reads as whatever address the free text contained, so a rule
+ * fires on a message that was never sent to the mailbox it names.
+ *
+ * This buys correctness, not authority. Every recipient header is written by
+ * the sender and passed through untouched, so anyone who can email a member can
+ * put any address in `To` and fire that member's rule on their own message.
+ * `to` narrows a member's own mail; it is not evidence of anything, and no
+ * amount of parsing here would make it so.
  *
  * So each is consumed as a unit and replaced with blanks: none can ever be an
  * address, and blanks keep the entry's real mailbox where it was. Quotes and
@@ -245,14 +248,24 @@ function splitRecipients(header: string): string[] {
     }
     // An encoded word is a single token: `=?charset?encoding?text?=`. Its text
     // may hold a comma and, because `?` and `=` are legal in an address, its
-    // tail can read as one. The rare address whose local part contains `=?`
-    // loses its match here, which is the safe direction.
+    // tail can read as one.
+    //
+    // The terminator is looked for only within the token, because RFC 2047
+    // forbids whitespace inside an encoded word — and a search that ran to the
+    // end of the header would let a bare `=?` blank its way across an opening
+    // quote, which both drops whatever recipient that quote belonged to and
+    // exposes the display text behind it as an address. A `=?` with no
+    // terminator in its own token is not an encoded word and is read as the
+    // ordinary text it is.
     if (!hidden && character === '=' && header[index + 1] === '?') {
+      const whitespace = header.slice(index).search(/\s/);
+      const limit = whitespace === -1 ? header.length : index + whitespace;
       const end = header.indexOf('?=', index + 2);
-      const stop = end === -1 ? header.length : end + 2;
-      entry += ' '.repeat(stop - index);
-      index = stop - 1;
-      continue;
+      if (end !== -1 && end + 2 <= limit) {
+        entry += ' '.repeat(end + 2 - index);
+        index = end + 1;
+        continue;
+      }
     }
     if (character === ',' && !hidden) {
       entries.push(entry);
