@@ -255,6 +255,34 @@ run.completed
 
 **Status:** Recommended next implementation step.
 
+### D-014 — Web has a Lark-DM continuation thread and separate native threads
+
+**Decision:** The web app exposes one reserved `Chat` conversation for the member’s Lark DM, plus separate web-native conversations. Opening the reserved conversation loads the Lark DM context and continues from the cloud agent state. Web-native conversations never become Lark conversations.
+
+**Status:** Agreed product direction.
+
+### D-015 — Cross-surface history flows one way after import
+
+**Decision:** When the reserved web `Chat` is opened, it may import Lark turns that arrived since the last web read. Web-originated turns extend the web continuation thread only; they are not sent, mirrored, or delivered back into the Lark DM. The web renderer still consumes the same cloud-agent event shapes for both Lark-originated and web-originated runs.
+
+**Reason:** This keeps the user’s continuity without creating a bidirectional channel-sync system or surprising Lark recipients with messages typed in the web app.
+
+**Status:** Agreed product direction.
+
+### D-016 — The mirror renders the full cloud-agent event history
+
+**Decision:** The reserved web `Chat` renders the complete safe event history for Lark and web runs: user/assistant messages, streaming text, thinking/reasoning states, tool starts/progress/completions, approvals, artifacts, citations, errors, and terminal status. The renderer consumes one normalized cloud-agent event contract regardless of which surface initiated the run.
+
+New Lark and web runs must persist enough normalized event data to replay that experience. Older Lark runs may be transcript-only when their detailed events were never durably captured; the UI must label that limitation rather than inventing a trace.
+
+**Status:** Agreed product direction; event-retention policy remains open.
+
+### D-017 — Detailed event history is retained for one week
+
+**Decision:** Keep the full normalized cloud-agent event/trace detail for seven days. This includes the work timeline, tool progress, approval transitions, and other renderer-specific run events.
+
+**Status:** Agreed retention direction; transcript and attachment retention are still separate decisions.
+
 ## 5. Deep issues pinned down
 
 This section records issues found during the adversarial follow-up inspection. These are implementation constraints, not optional polish.
@@ -378,6 +406,9 @@ The repository rules require schema changes to be committed and merged before Ma
 5. “Same UX” is a behavioral parity target. Local shell, local filesystem, local MCP, local RAG, local model providers, and client-side terminal execution are not browser capabilities; they must be omitted or replaced with server-backed equivalents.
 6. Admin visual tokens and shell primitives are the browser styling source. Jan CSS and Tailwind classes are not copied wholesale.
 7. Browser chat will expose the effective conversation scope and will never treat the scope picker as permission authority.
+8. The reserved web `Chat` is a one-way continuation surface for Lark DM context; web-native conversations are separate and never sync back to Lark.
+9. Full safe cloud-agent event history is the parity target for both Lark-originated and web-originated runs.
+10. Detailed cloud-agent event history has a seven-day retention window; transcript/context retention is not automatically limited to seven days.
 
 ## 7. Required implementation sequence and proof
 
@@ -524,3 +555,6 @@ The repository rules require schema changes to be committed and merged before Ma
 | 2026-08-02 | Clarified that browser chat must preserve desktop UX behavior while adopting the existing admin visual system; pixel-level desktop styling is not a goal. |
 | 2026-08-02 | Follow-up inspection: confirmed the desktop WebSocket adapter was unmounted/unused, separated execution traces from chat events, pinned runtime/persistence/auth/attachment/approval/security issues, and added phased proof/rollback gates. |
 | 2026-08-02 | Safely removed the unreferenced `DesktopChannelAdapter`; the separate terminal bridge remains untouched because `run-command` still imports that capability and removing it would be a broader behavior change. |
+| 2026-08-02 | Product clarification: reserved web `Chat` continues the Lark DM context, imports later Lark turns one-way on open, and keeps web-originated continuation web-only; native web conversations remain separate. |
+| 2026-08-02 | Product clarification: web `Chat` must render full historical cloud-agent events, with transcript-only fallback for older Lark runs whose detailed events were not stored. |
+| 2026-08-02 | Product clarification: retain detailed cloud-agent event history for one week; keep transcript and attachment retention as separate decisions. |

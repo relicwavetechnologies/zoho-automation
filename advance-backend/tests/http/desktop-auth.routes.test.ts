@@ -790,6 +790,92 @@ describe('desktop auth routes', () => {
     }
   });
 
+  it('uses the company bound to the exchanged Lark tenant, not an arbitrary company', async () => {
+    const sessionCompanyIds: string[] = [];
+    const connectionCompanyIds: string[] = [];
+    const router = createDesktopAuthRoutes(makeDeps({
+      larkOAuthService: {
+        isConfigured: () => true,
+        getAuthorizeUrl: (state: string, input: { redirectUri: string }) =>
+          `https://accounts.larksuite.com/authorize?state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(input.redirectUri)}`,
+        exchangeCode: async () => ({
+          accessToken: 'access-token', refreshToken: 'refresh-token', tokenType: 'Bearer',
+          expiresIn: 7200, refreshTokenExpiresIn: 2_592_000,
+          larkOpenId: 'ou_relicwave_dev', larkUserId: 'u_relicwave_dev', larkName: 'Dev User',
+          larkEmail: 'dev@relicwave.example', larkEnName: null,
+          tenantKey: 'tenant-development', scope: 'auth:user.id:read', avatarUrl: null,
+        }),
+      },
+      prisma: {
+        company: { findFirst: async () => { throw new Error('must not select an arbitrary company'); } },
+        larkTenantBinding: {
+          findFirst: async ({ where }: { where: { larkTenantKey: string; isActive: boolean } }) =>
+            where.larkTenantKey === 'tenant-development' && where.isActive
+              ? { companyId: 'company-development' }
+              : null,
+        },
+        user: {
+          findFirst: async () => null,
+          create: async () => ({ id: 'user-1', email: 'dev@relicwave.example', name: 'Dev User' }),
+        },
+        adminMembership: { findFirst: async () => null, create: async () => ({}) },
+        memberSession: { create: async ({ data }: { data: { companyId: string } }) => { sessionCompanyIds.push(data.companyId); } },
+        department: { findMany: async () => [] },
+      },
+      connectionRepo: {
+        findLarkConnectionOwner: async () => ({ ok: true, value: null }),
+        upsertLarkConnection: async ({ companyId }: { companyId: string }) => {
+          connectionCompanyIds.push(companyId);
+          return { ok: true, value: {} };
+        },
+      },
+    }));
+
+    const authorize = await callRoute(router, 'GET', '/lark/authorize-url', { headers: { host: 'localhost:8000' } });
+    const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state');
+    const result = await callRoute(router, 'POST', '/lark/exchange', { body: { code: 'auth-code', state } });
+
+    assert.equal(result.status, 200);
+    assert.equal(result.body.data.session.companyId, 'company-development');
+    assert.deepEqual(sessionCompanyIds, ['company-development']);
+    assert.deepEqual(connectionCompanyIds, ['company-development']);
+  });
+
+  it('rejects an unbound Lark tenant before creating a session or connection', async () => {
+    let createdSession = false;
+    let storedConnection = false;
+    const router = createDesktopAuthRoutes(makeDeps({
+      larkOAuthService: {
+        isConfigured: () => true,
+        getAuthorizeUrl: (state: string, input: { redirectUri: string }) =>
+          `https://accounts.larksuite.com/authorize?state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(input.redirectUri)}`,
+        exchangeCode: async () => ({
+          accessToken: 'access-token', refreshToken: 'refresh-token', tokenType: 'Bearer',
+          expiresIn: 7200, refreshTokenExpiresIn: 2_592_000,
+          larkOpenId: 'ou_unknown', larkUserId: 'u_unknown', larkName: 'Unknown User',
+          larkEmail: 'unknown@example.com', larkEnName: null,
+          tenantKey: 'tenant-unknown', scope: 'auth:user.id:read', avatarUrl: null,
+        }),
+      },
+      prisma: {
+        larkTenantBinding: { findFirst: async () => null },
+        memberSession: { create: async () => { createdSession = true; } },
+      },
+      connectionRepo: {
+        upsertLarkConnection: async () => { storedConnection = true; return { ok: true, value: {} }; },
+      },
+    }));
+
+    const authorize = await callRoute(router, 'GET', '/lark/authorize-url', { headers: { host: 'localhost:8000' } });
+    const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state');
+    const result = await callRoute(router, 'POST', '/lark/exchange', { body: { code: 'auth-code', state } });
+
+    assert.equal(result.status, 403);
+    assert.match(result.body.message, /not linked to an active Divo company/);
+    assert.equal(createdSession, false);
+    assert.equal(storedConnection, false);
+  });
+
   it('does not create a separate Desktop user when Lark does not expose an email', async () => {
     let exchangedRedirectUri: string | undefined;
     let createdUser = false;
@@ -810,7 +896,7 @@ describe('desktop auth routes', () => {
         },
       },
       prisma: {
-        company: { findFirst: async () => ({ id: 'company-1' }) },
+        larkTenantBinding: { findFirst: async () => ({ companyId: 'company-1' }) },
         user: {
           findFirst: async () => null,
           findUnique: async () => null,
@@ -863,7 +949,7 @@ describe('desktop auth routes', () => {
         }),
       },
       prisma: {
-        company: { findFirst: async () => ({ id: 'company-1' }) },
+        larkTenantBinding: { findFirst: async () => ({ companyId: 'company-1' }) },
         user: {
           findFirst: async () => null,
           findUnique: async () => ({

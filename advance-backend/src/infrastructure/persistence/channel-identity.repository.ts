@@ -279,7 +279,12 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
       if (!membership) return ok(null);
 
       const deptPref = await this.db.userDepartmentPreference.findUnique({
-        where: { userId: ownerUserId },
+        where: {
+          companyId_userId: {
+            companyId: canonicalIdentity.companyId,
+            userId: ownerUserId,
+          },
+        },
         select: { activeDepartmentId: true },
       });
 
@@ -443,7 +448,7 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
         : null;
 
       const deptPref = await this.db.userDepartmentPreference.findUnique({
-        where: { userId },
+        where: { companyId_userId: { companyId, userId } },
         select: { activeDepartmentId: true },
       });
 

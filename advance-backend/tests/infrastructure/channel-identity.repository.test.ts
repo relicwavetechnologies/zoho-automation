@@ -368,6 +368,41 @@ describe('ChannelIdentityRepository.resolveByLarkTenantIdentity', () => {
     assert.ok(cache.store.has(`lark:id:v3:tenant-2:${OPEN_ID}`));
   });
 
+  it('does not carry a department preference across companies', async () => {
+    let preferenceWhere: unknown;
+    const db = makeIdentityDb({
+      larkTenantBinding: {
+        findFirst: async () => ({ companyId: 'company-development' }),
+      },
+      channelIdentity: {
+        findFirst: async () => ({
+          id: 'ci-development',
+          aiRole: 'MEMBER',
+          channel: 'lark',
+          companyId: 'company-development',
+        }),
+      },
+      integrationConnection: {
+        findMany: async () => [{ ownerUserId: 'user-1', ownerUser: { email: 'user@example.com' } }],
+      },
+      userDepartmentPreference: {
+        findUnique: async ({ where }: any) => {
+          preferenceWhere = where;
+          return null;
+        },
+      },
+    });
+    const repo = new ChannelIdentityRepository(db as any);
+
+    const result = await repo.resolveByLarkTenantIdentity(OPEN_ID, 'tenant-development');
+
+    assert.ok(result.ok && result.value);
+    assert.equal(result.value.activeDepartmentId, undefined);
+    assert.deepEqual(preferenceWhere, {
+      companyId_userId: { companyId: 'company-development', userId: 'user-1' },
+    });
+  });
+
   it('falls back to the tenant-scoped Lark user ID and keeps the canonical open ID', async () => {
     const identityQueries: Array<Record<string, unknown>> = [];
     let connectionOpenId: unknown;
