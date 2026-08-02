@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { UnrecoverableError, Worker, type Job } from 'bullmq';
 import type { PermissionService } from '../permissions/permission.service';
 import type { ChannelIdentityRepoPort } from '../../infrastructure/persistence/channel-identity.repository';
@@ -30,6 +31,12 @@ import type {
   GoogleExportAuth,
 } from './data-export.destination';
 import type { DatasetSourceRegistry } from './data-export.source-registry';
+import type { ConversationRepoPort } from '../../infrastructure/persistence/conversation.repository';
+import {
+  DATA_EXPORT_RESOURCE_TOOL,
+  DATA_EXPORT_RESOURCE_TTL_MS,
+  type DataExportResourceRecord,
+} from './data-export-continuity';
 
 export interface DataExportWorkerDeps {
   readonly redisUrl: string;
@@ -44,6 +51,7 @@ export interface DataExportWorkerDeps {
     target?: DataExportJobPayload['destination']['target'],
   ) => Promise<GoogleExportAuth>;
   readonly larkAdapter: Pick<LarkChannelAdapter, 'sendToChatId' | 'updateMessageById'>;
+  readonly conversationHistory?: Pick<ConversationRepoPort, 'appendTurn'>;
   readonly logger: Logger;
   readonly concurrency?: number;
   readonly inactivityMs?: number;
@@ -101,7 +109,19 @@ export class DataExportWorker {
         payload = { ...payload, completedExport: completion };
         await job.updateData(payload);
       }
-      await this.deliverCompletion(job, completion, progressMessageId);
+      let continuityAvailable = true;
+      try {
+        await this.recordCompletionResource(job, payload, completion);
+      } catch (error) {
+        const finalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+        if (!finalAttempt) throw error;
+        this.log.error('data_export.continuity_unavailable', {
+          jobId: job.id,
+          error: String(error),
+        });
+        continuityAvailable = false;
+      }
+      await this.deliverCompletion(job, completion, progressMessageId, continuityAvailable);
     } catch (error) {
       const finalAttempt = isUnrecoverableJobError(error)
         || job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
@@ -110,6 +130,45 @@ export class DataExportWorker {
       }
       throw error;
     }
+  }
+
+  private async recordCompletionResource(
+    job: DataExportWorkerJob,
+    payload: DataExportJobPayload,
+    completion: DataExportCompletion,
+  ): Promise<void> {
+    if (!payload.conversationKey || !this.deps.conversationHistory) return;
+    const createdAt = new Date();
+    const target = payload.destination.target;
+    const resource: DataExportResourceRecord = {
+      version: 1,
+      kind: 'data_export_resource',
+      resourceRef: randomUUID(),
+      ownerUserId: payload.userId,
+      artifactId: completion.artifactId,
+      artifactUrl: completion.artifactUrl,
+      artifactType: completion.artifactType,
+      rowCount: completion.rowCount,
+      ...(target?.connectionId ? { connectionId: target.connectionId } : {}),
+      ...(completion.artifactType === 'google_sheet'
+        ? { spreadsheetId: completion.artifactId }
+        : {}),
+      createdAt: createdAt.toISOString(),
+      expiresAt: new Date(createdAt.getTime() + DATA_EXPORT_RESOURCE_TTL_MS).toISOString(),
+    };
+    const appended = await this.deps.conversationHistory.appendTurn(
+      payload.conversationKey,
+      {
+        role: 'tool',
+        content: `Verified ${completion.artifactType} export: ${completion.artifactUrl}`,
+        timestamp: createdAt.toISOString(),
+        toolName: DATA_EXPORT_RESOURCE_TOOL,
+        toolOutcome: resource,
+      },
+      { companyId: payload.companyId, channel: 'lark' },
+      { dedupeKey: `data-export:${job.id}:resource` },
+    );
+    if (!appended.ok) throw appended.error;
   }
 
   private async runExport(
@@ -281,6 +340,7 @@ export class DataExportWorker {
     job: DataExportWorkerJob,
     completion: DataExportCompletion,
     progressMessageId: string,
+    continuityAvailable = true,
   ): Promise<void> {
     const warning = completion.sourceTruncated
       ? `\n\n⚠️ Current exports are capped at ${resolvedExportRowLimit(this.deps.maxRows).toLocaleString('en-IN')} rows. Additional source rows were not included.`
@@ -291,6 +351,9 @@ export class DataExportWorker {
         `Exported ${completion.rowCount} row${completion.rowCount === 1 ? '' : 's'} to a verified ${completion.artifactType === 'google_sheet' ? 'Google Sheet' : completion.artifactType === 'xlsx' ? 'Excel file in Google Drive' : 'CSV in Google Drive'}.`,
         `[Open export](${completion.artifactUrl})`,
         `Access: ${completion.sharedWith}${warning}`,
+        ...(continuityAvailable
+          ? []
+          : ['Divo could not save this file to the conversation. To work on it later, paste the export link into your message.']),
       ].join('\n\n'),
     });
     const updated = await this.deps.larkAdapter.updateMessageById(progressMessageId, card);

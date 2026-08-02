@@ -17,7 +17,7 @@
 | 3 — Lark export interaction | ✅ Done | Signed format/account cards, immediate callback ACK, locked choice cards, governed progress delivery, OAuth resume, and personal destination preference implemented |
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
 | 5 — Semrush and OMS convergence | 🟡 Partial | OMS and Semrush are integrated; live Semrush preview/offer passes, while artifact verification and rollback-path removal evidence remain |
-| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Governed resolution and the retry-safe existing-Sheet new-tab writer are implemented; live isolated proof and Drive-hosted XLSX resolution remain |
+| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Governed resolution, retry-safe existing-Sheet writes, and exact-thread export continuity are implemented; secure follow-up edits, live isolated proof, and Drive-hosted XLSX resolution remain |
 | 7 — routers and provider skills | 🟡 Partial | Exact pasted Sheet URLs now route to governed reference resolution before web search; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
 | 9 — realistic isolated-runtime validation | 🟡 In progress | Dev Lark received a real Zoho preview and a fresh opaque export offer; Sheet/CSV confirmation and no-account OAuth resume remain |
@@ -156,6 +156,18 @@
   Drive ownership are never changed. Oversized Sheet jobs fail before any
   workbook call. Focused sink/export verification passes 37/37 checks,
   TypeScript and diff validation pass; live isolated Lark proof remains.
+- A verified export completion now records an opaque resource in the exact
+  backend-derived Lark DM or group-thread conversation before the success card
+  is delivered. The next isolated Pi turn receives at most five unexpired
+  resources with canonical user-visible URLs and row counts; separate Google
+  connection and spreadsheet handles remain server-only. A dedicated Postgres lookup avoids the
+  ordinary 60-turn history window, so busy conversations retain the seven-day
+  continuity contract. The verified artifact is checkpointed before this
+  write, so a transient DB retry cannot create a duplicate export; if every
+  continuity attempt fails, the success card truthfully asks the user to paste
+  its link for later follow-up. Focused export/runtime verification passes 69/69 plus
+  TypeScript and diff validation. Secure edit-by-reference and live follow-up
+  proof remain.
 
 ---
 
@@ -1223,12 +1235,15 @@ Never log:
 4. Confirm pending Semrush offer `5ce39d0c-b27b-40b4-a8e4-87dac9662139`,
    verify the destination content/owner, then remove its rollback-only
    Cloudinary path only after that parity evidence passes.
-5. Run the pasted-Sheet existing-tab flow through isolated cloud Pi and verify
+5. Add the Lark-only secure edit-by-reference adapter, then run a real export
+   followed by the low-hint request “Add a Notes column to that sheet and put
+   Needs review in the first two rows.” Verify the exact workbook readback.
+6. Run the pasted-Sheet existing-tab flow through isolated cloud Pi and verify
    the produced tab in the requester's workbook; then add Drive-hosted XLSX
    metadata resolution and explicit conversion approval.
-6. Tune skills and routers once each instruction describes backend behavior
+7. Tune skills and routers once each instruction describes backend behavior
    that exists and is covered by contract tests.
-7. Execute Phase 9 through the isolated Docker runtime, deliver every
+8. Execute Phase 9 through the isolated Docker runtime, deliver every
     scenario to the configured Divo Lark DM, and iterate until the final quality
     gate passes.
 
@@ -1246,9 +1261,11 @@ Never log:
    HITL approval card routed to the relevant account/resource owner.
 
 3. **Conversational resource context**
-   Let the agent retain “this Sheet” through normal conversation context in V1;
-   do not add a separate persisted resource-memory subsystem. Backend access is
-   still revalidated at execution time.
+   Persist only backend-verified export resources in the exact Lark DM/thread
+   conversation for seven days, and inject at most the latest five. The model
+   sees an opaque reference plus the user-visible canonical URL; separate
+   server-only connection and spreadsheet handles are resolved and revalidated
+   at execution time.
 
 4. **URL-only behavior**
    When a user pastes a Sheet URL without an instruction, inspect metadata only

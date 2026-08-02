@@ -24,6 +24,13 @@ export interface ConversationMeta {
 
 export interface ConversationRepoPort {
   getHistory(chatId: string, limit?: number, scope?: ConversationScope): Promise<Result<Turn[], InfraError>>;
+  getRecentToolTurns?(
+    chatId: string,
+    toolName: string,
+    limit: number,
+    scope: ConversationScope,
+    ownerUserId?: string,
+  ): Promise<Result<Turn[], InfraError>>;
   appendTurn(
     chatId: string,
     turn: Omit<Turn, 'id'>,
@@ -114,6 +121,44 @@ export class ConversationRepository implements ConversationRepoPort {
       return ok(latestTurns(turns, limit));
     } catch (e) {
       return err(wrapInfra('prisma', 'getConversationHistory', e));
+    }
+  }
+
+  async getRecentToolTurns(
+    chatId: string,
+    toolName: string,
+    limit: number,
+    scope: ConversationScope,
+    ownerUserId?: string,
+  ): Promise<Result<Turn[], InfraError>> {
+    try {
+      const conversation = await this.db.runtimeConversation.findUnique({
+        where: { companyId_channel_channelConversationKey: conversationUniqueKey(chatId, scope) },
+        select: { id: true },
+      });
+      if (!conversation) return ok([]);
+      const rows = await this.db.runtimeConversationMessage.findMany({
+        where: {
+          conversationId: conversation.id,
+          messageKind: 'tool_result',
+          toolCallJson: { path: ['name'], equals: toolName },
+          ...(ownerUserId
+            ? { toolResultJson: { path: ['ownerUserId'], equals: ownerUserId } }
+            : {}),
+        },
+        orderBy: { sequence: 'desc' },
+        take: Math.max(1, limit),
+      });
+      return ok(rows.reverse().map(row => ({
+        id: row.id,
+        role: 'tool' as const,
+        content: row.contentText ?? '',
+        timestamp: row.createdAt.toISOString(),
+        toolName,
+        ...(row.toolResultJson !== null ? { toolOutcome: row.toolResultJson } : {}),
+      })));
+    } catch (e) {
+      return err(wrapInfra('prisma', 'getRecentToolTurns', e));
     }
   }
 

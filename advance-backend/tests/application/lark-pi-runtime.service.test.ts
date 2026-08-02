@@ -105,6 +105,83 @@ test('mints a scoped Lark lease and sends no caller-selected profile or approval
   assert.equal(claims.contextAudience, 'private');
 });
 
+test('injects verified recent exports for the exact conversation without backend handles', async () => {
+  let controllerBody: Record<string, unknown> | undefined;
+  let historyLookup: unknown;
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts,
+    conversationHistory: {
+      getHistory: async () => assert.fail('dedicated export lookup must be used'),
+      getRecentToolTurns: async (conversationKey, toolName, limit, scope, ownerUserId) => {
+        historyLookup = { conversationKey, toolName, limit, scope, ownerUserId };
+        return {
+          ok: true as const,
+          value: [{
+            id: 'turn-1',
+            role: 'tool' as const,
+            content: 'verified export',
+            timestamp: '2026-08-02T00:00:00.000Z',
+            toolName: 'dataExportResource',
+            toolOutcome: {
+              version: 1,
+              kind: 'data_export_resource',
+              resourceRef: 'resource-safe-1',
+              ownerUserId: 'user-1',
+              artifactId: 'sheet-secret-id',
+              artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-secret-id/edit',
+              artifactType: 'google_sheet',
+              rowCount: 50,
+              connectionId: 'connection-secret-id',
+              spreadsheetId: 'sheet-secret-id',
+              createdAt: '2026-08-02T00:00:00.000Z',
+              expiresAt: '2099-08-09T00:00:00.000Z',
+            },
+          }],
+        };
+      },
+      appendTurn: async () => assert.fail('non-p2p test must not append conversation turns'),
+    },
+    fetch: async (_url, init) => {
+      controllerBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ text: 'Finished' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  await service.run(runtimeInput());
+
+  assert.deepEqual(historyLookup, {
+    conversationKey: 'lark:chat-1:user-1',
+    toolName: 'dataExportResource',
+    limit: 5,
+    scope: { companyId: 'company-1', channel: 'lark' },
+    ownerUserId: 'user-1',
+  });
+  const message = String(controllerBody?.['message']);
+  assert.match(message, /RECENT DIVO EXPORTS/);
+  assert.match(message, /resource-safe-1/);
+  assert.match(message, /https:\/\/docs\.google\.com\/spreadsheets\/d\/sheet-secret-id\/edit/);
+  assert.match(message, /CURRENT USER REQUEST:\nDo the work/);
+  assert.doesNotMatch(message, /connection-secret-id|connectionId|spreadsheetId/);
+});
+
 test('binds a group run to a shared audience in the signed runtime lease', async () => {
   let controllerBody: Record<string, unknown> | undefined;
   const service = serviceCapturingBody(value => { controllerBody = value; });

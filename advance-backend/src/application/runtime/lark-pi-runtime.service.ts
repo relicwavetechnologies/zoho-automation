@@ -30,6 +30,10 @@ import {
   renderContextBlock,
   type GroupContextBlock,
 } from '../chat-context/group-context.hydrator';
+import {
+  DATA_EXPORT_RESOURCE_TOOL,
+  parseDataExportResourceRecord,
+} from '../data-export/data-export-continuity';
 
 const MAX_RUNTIME_ATTACHMENTS = 4;
 const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-flash';
@@ -208,6 +212,13 @@ export interface LarkPiRuntimeServiceDeps {
   readonly knowledgeLearning?: Pick<KnowledgeLearningService, 'captureCompletedTurn'>;
   readonly conversationHistory?: {
     getHistory(chatId: string, limit?: number, scope?: ConversationScope): Promise<Result<Turn[], InfraError>>;
+    getRecentToolTurns?(
+      chatId: string,
+      toolName: string,
+      limit: number,
+      scope: ConversationScope,
+      ownerUserId?: string,
+    ): Promise<Result<Turn[], InfraError>>;
     appendTurn(
       chatId: string,
       turn: Omit<Turn, 'id'>,
@@ -763,7 +774,11 @@ export class LarkPiRuntimeService {
 
   private async withRecalledKnowledge(input: LarkPiRuntimeInput): Promise<string> {
     const ask = input.incoming.text;
-    if (!this.deps.knowledgeRecall || !ask.trim()) return ask;
+    const exportContext = await this.recentExportContext(input);
+    const request = exportContext
+      ? `${exportContext}\n\nCURRENT USER REQUEST:\n${ask}`
+      : ask;
+    if (!this.deps.knowledgeRecall || !ask.trim()) return request;
     try {
       const recalled = await this.deps.knowledgeRecall.recall({
         query: ask.slice(0, 500),
@@ -773,13 +788,54 @@ export class LarkPiRuntimeService {
         channel: 'lark',
       });
       const context = renderRecalledKnowledge(recalled);
-      return context ? `${context}\n\nCURRENT USER REQUEST:\n${ask}` : ask;
+      return context ? `${context}\n\n${request}` : request;
     } catch (error) {
       this.log.warn('pi.knowledge-recall.unavailable', {
         correlationId: input.incoming.traceId,
         error: String(error),
       });
-      return ask;
+      return request;
+    }
+  }
+
+  private async recentExportContext(input: LarkPiRuntimeInput): Promise<string> {
+    if (!this.deps.conversationHistory) return '';
+    try {
+      const scope = { companyId: String(input.runContext.companyId), channel: 'lark' } as const;
+      const history = this.deps.conversationHistory.getRecentToolTurns
+        ? await this.deps.conversationHistory.getRecentToolTurns(
+          input.threadId,
+          DATA_EXPORT_RESOURCE_TOOL,
+          5,
+          scope,
+          String(input.runContext.userId),
+        )
+        : await this.deps.conversationHistory.getHistory(input.threadId, 60, scope);
+      if (!history.ok) throw history.error;
+      const now = Date.now();
+      const exports = history.value
+        .filter(turn => turn.role === 'tool' && turn.toolName === DATA_EXPORT_RESOURCE_TOOL)
+        .map(turn => parseDataExportResourceRecord(turn.toolOutcome))
+        .filter((resource): resource is NonNullable<typeof resource> => (
+          resource !== null
+          && resource.ownerUserId === String(input.runContext.userId)
+          && Date.parse(resource.expiresAt) > now
+        ))
+        .slice(-5);
+      if (exports.length === 0) return '';
+      return [
+        'RECENT DIVO EXPORTS — backend-verified conversation context:',
+        ...exports.map(resource => (
+          `- ${resource.resourceRef} | ${resource.artifactType} | ${resource.rowCount} rows | ${resource.artifactUrl}`
+        )),
+        'Use these only when the user refers to a recent export. Resource references never bypass backend permissions.',
+      ].join('\n');
+    } catch (error) {
+      this.log.warn('pi.data-export-context.unavailable', {
+        correlationId: input.incoming.traceId,
+        error: String(error),
+      });
+      return '';
     }
   }
 

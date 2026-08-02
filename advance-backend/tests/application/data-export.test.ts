@@ -694,6 +694,9 @@ describe('data export worker', () => {
       sendToChatId: (...args: any[]) => Promise<any>;
       updateMessageById: (...args: any[]) => Promise<any>;
     };
+    conversationHistory?: {
+      appendTurn: (...args: any[]) => Promise<any>;
+    };
     inactivityMs?: number;
     maxRows?: number;
   }) => new DataExportWorker({
@@ -727,6 +730,7 @@ describe('data export worker', () => {
     } as any,
     resolveGoogleAuth: async () => ({ accessToken: 'short-lived', readerDomain: 'emiactech.com' }),
     larkAdapter: input.larkAdapter as any,
+    ...(input.conversationHistory ? { conversationHistory: input.conversationHistory as any } : {}),
     logger: noopLogger,
     ...(input.inactivityMs === undefined ? {} : { inactivityMs: input.inactivityMs }),
     ...(input.maxRows === undefined ? {} : { maxRows: input.maxRows }),
@@ -746,8 +750,10 @@ describe('data export worker', () => {
     const edited: string[] = [];
     let trackerTarget: unknown;
     let authInput: unknown;
+    let recordedResource: unknown;
     const personalPayload: DataExportJobPayload = {
       ...payload,
+      conversationKey: 'oc_test:thread:om_thread_root',
       destination: {
         ...payload.destination,
         target: {
@@ -824,6 +830,12 @@ describe('data export worker', () => {
           return { ok: true as const, value: undefined };
         },
       },
+      conversationHistory: {
+        appendTurn: async (conversationKey, turn, scope, metadata) => {
+          recordedResource = { conversationKey, turn, scope, metadata };
+          return { ok: true as const, value: { id: 'turn-1', ...turn } };
+        },
+      },
       logger: noopLogger,
     });
     await worker.processJob({
@@ -857,6 +869,32 @@ describe('data export worker', () => {
       idempotencyKey: `dtxp_${dataExportJobId(personalPayload)}`,
       replyInThread: true,
     });
+    assert.deepEqual(recordedResource, {
+      conversationKey: 'oc_test:thread:om_thread_root',
+      turn: {
+        role: 'tool',
+        content: 'Verified google_sheet export: https://docs.google.com/spreadsheets/d/sheet-1/edit',
+        timestamp: (recordedResource as any).turn.timestamp,
+        toolName: 'dataExportResource',
+        toolOutcome: {
+          version: 1,
+          kind: 'data_export_resource',
+          resourceRef: (recordedResource as any).turn.toolOutcome.resourceRef,
+          ownerUserId: 'user-1',
+          artifactId: 'sheet-1',
+          artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+          artifactType: 'google_sheet',
+          rowCount: 2,
+          connectionId: '33333333-3333-4333-8333-333333333333',
+          spreadsheetId: 'sheet-1',
+          createdAt: (recordedResource as any).turn.toolOutcome.createdAt,
+          expiresAt: (recordedResource as any).turn.toolOutcome.expiresAt,
+        },
+      },
+      scope: { companyId: 'company-1', channel: 'lark' },
+      metadata: { dedupeKey: `data-export:${dataExportJobId(personalPayload)}:resource` },
+    });
+    assert.match((recordedResource as any).turn.toolOutcome.resourceRef, /^[0-9a-f-]{36}$/i);
   });
 
   it('delivers a persisted completion on retry without re-running the export', async () => {
@@ -892,22 +930,111 @@ describe('data export worker', () => {
           return { ok: true as const, value: undefined };
         },
       },
+      conversationHistory: {
+        appendTurn: async () => ({
+          ok: false as const,
+          error: new Error('conversation storage unavailable'),
+        }),
+      },
       logger: noopLogger,
     });
     await worker.processJob({
       id: 'persisted-job',
       data: {
         ...payload,
+        conversationKey: 'lark:chat-1:user-1',
         progressMessageId: 'om-existing-tracker',
         completedExport: completion,
       },
-      attemptsMade: 1,
+      attemptsMade: 2,
       opts: { attempts: 3 },
       updateData: async () => assert.fail('persisted completion must not be rewritten'),
       updateProgress: async () => assert.fail('completed retry must not report export progress'),
     });
     assert.match(edited, /Data export ready/i);
     assert.match(edited, /sheet-persisted/i);
+    assert.match(edited, /paste the export link/i);
+  });
+
+  it('checkpoints a verified artifact before retrying continuity persistence', async () => {
+    const registry = new DatasetSourceRegistry();
+    let sourceReads = 0;
+    registry.register({
+      kind: 'airtable_records',
+      async *read() {
+        sourceReads += 1;
+        yield { rows: [{ Name: 'One' }] };
+      },
+    });
+    let sinkWrites = 0;
+    let continuityWrites = 0;
+    let delivered = '';
+    const worker = createWorker({
+      registry,
+      sink: {
+        write: async (input: any) => {
+          sinkWrites += 1;
+          for await (const _page of input.rows) {
+            // Consume the governed source stream like a real destination sink.
+          }
+          return {
+            success: true as const,
+            artifactId: 'sheet-once',
+            artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-once/edit',
+            artifactType: 'google_sheet' as const,
+            rowCount: 1,
+            sourceTruncated: false,
+            sharedWith: 'member@gmail.com (owner)',
+            verified: true as const,
+          };
+        },
+      } as any,
+      conversationHistory: {
+        appendTurn: async (_key, turn) => {
+          continuityWrites += 1;
+          if (continuityWrites === 1) {
+            return { ok: false as const, error: new Error('temporary conversation DB failure') };
+          }
+          return { ok: true as const, value: { id: 'turn-1', ...turn } };
+        },
+      },
+      larkAdapter: {
+        sendToChatId: async () => ({ ok: true as const, value: 'om-progress' }),
+        updateMessageById: async (_messageId, content) => {
+          delivered = content;
+          return { ok: true as const, value: undefined };
+        },
+      },
+    });
+    let jobData: DataExportJobPayload = {
+      ...payload,
+      conversationKey: 'lark:chat-1:user-1',
+    };
+    const updateData = async (updated: DataExportJobPayload) => { jobData = updated; };
+
+    await assert.rejects(() => worker.processJob({
+      id: 'continuity-retry-job',
+      data: jobData,
+      attemptsMade: 0,
+      opts: { attempts: 2 },
+      updateData,
+      updateProgress: async () => undefined,
+    }), /temporary conversation DB failure/);
+    assert.equal(jobData.completedExport?.artifactId, 'sheet-once');
+
+    await worker.processJob({
+      id: 'continuity-retry-job',
+      data: jobData,
+      attemptsMade: 1,
+      opts: { attempts: 2 },
+      updateData,
+      updateProgress: async () => assert.fail('completed retry must not rerun progress'),
+    });
+
+    assert.equal(sourceReads, 1);
+    assert.equal(sinkWrites, 1);
+    assert.equal(continuityWrites, 2);
+    assert.match(delivered, /Data export ready/);
   });
 
   it('turns the original export-offer card into the progress and completion tracker', async () => {
