@@ -178,6 +178,8 @@ test('injects verified recent exports for the exact conversation without backend
   assert.match(message, /RECENT DIVO EXPORTS/);
   assert.match(message, /resource-safe-1/);
   assert.match(message, /https:\/\/docs\.google\.com\/spreadsheets\/d\/sheet-secret-id\/edit/);
+  assert.match(message, /op=call_exported_sheet and resourceRef/);
+  assert.match(message, /Do not resolve its URL, choose an account/);
   assert.match(message, /CURRENT USER REQUEST:\nDo the work/);
   assert.doesNotMatch(message, /connection-secret-id|connectionId|spreadsheetId/);
 });

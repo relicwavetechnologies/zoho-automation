@@ -17,15 +17,25 @@
 | 3 — Lark export interaction | ✅ Done | Signed format/account cards, immediate callback ACK, locked choice cards, governed progress delivery, OAuth resume, and personal destination preference implemented |
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
 | 5 — Semrush and OMS convergence | 🟡 Partial | OMS and Semrush are integrated; live Semrush preview/offer passes, while artifact verification and rollback-path removal evidence remain |
-| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Governed resolution, retry-safe existing-Sheet writes, exact-thread continuity, and secure follow-up edit routing are implemented; live isolated proof and Drive-hosted XLSX resolution remain |
+| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Governed resolution, retry-safe existing-Sheet writes, exact-thread continuity, and secure follow-up edits are live-verified; Drive-hosted XLSX resolution remains |
 | 7 — routers and provider skills | 🟡 Partial | Exact pasted Sheet URLs now route to governed reference resolution before web search; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
-| 9 — realistic isolated-runtime validation | 🟡 In progress | Dev Lark received a real Zoho preview and a fresh opaque export offer; Sheet/CSV confirmation and no-account OAuth resume remain |
+| 9 — realistic isolated-runtime validation | 🟡 In progress | Isolated Pi exported a live Semrush dataset, retained its exact-thread resource context, and securely edited/read back the same Sheet; remaining scenarios still need closure |
 
 **Immediate completion count:** 5 phases done.
 
 **Latest validation evidence (2026-08-02):**
 
+- A low-hint isolated Semrush request exported 50 rows to a verified personal
+  Google Sheet and persisted its opaque, seven-day conversation resource.
+- A later turn in the same Divo DM edited that exact workbook without receiving
+  a repeated URL or account choice. It invoked `call_exported_sheet` using only
+  the opaque resource reference, changed `Organic Positions!N2`, and read back
+  `N2:N3`; `N2` was `Reviewed now` and `N3` remained `Needs review`.
+- Resumed Pi sessions now receive the opaque follow-up contract on every turn,
+  so stale in-session skill text cannot send a verified export back through
+  generic URL/account resolution. The runtime regression assertion and the
+  complete backend suite passed with 2,558 tests, 0 failures, and 8 skips.
 - The isolated cloud-Pi harness delivered a normal Emiac Zoho Books expense
   request to the Dev Divo DM in 39.155 seconds through the production
   status/final-card path.
