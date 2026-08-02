@@ -139,7 +139,16 @@ const actionFor = (operation: Args['operation']): ToolActionGroup => {
 
 export function createMailAutomationsTool(deps: {
   repo: MailRepo;
-  pubsubReady: boolean;
+  /**
+   * Everything that has to be true for a created rule to actually run.
+   *
+   * These were two independent flags read in two different layers, and the
+   * tool could only see one of them. With Pub/Sub configured and background
+   * workers switched off — which is how a cloned environment boots — `create`
+   * cheerfully answered "Mail automation is active" for a rule that nothing
+   * would ever pick up.
+   */
+  runtime: MailOpsRuntime;
   resolveConnection(input: {
     companyId: string;
     userId: string;
@@ -247,8 +256,8 @@ export function createMailAutomationsTool(deps: {
           });
         }
 
-        if (args.operation === 'resume' && !deps.pubsubReady) {
-          return ok(mailOpsConfigurationRequired(args.operation));
+        if (args.operation === 'resume' && !mailOpsReady(deps.runtime)) {
+          return ok(mailOpsConfigurationRequired(args.operation, deps.runtime));
         }
 
         if (
@@ -282,8 +291,8 @@ export function createMailAutomationsTool(deps: {
           });
         }
 
-        if (!deps.pubsubReady) {
-          return ok(mailOpsConfigurationRequired(args.operation));
+        if (!mailOpsReady(deps.runtime)) {
+          return ok(mailOpsConfigurationRequired(args.operation, deps.runtime));
         }
 
         const connection = await deps.resolveConnection({
@@ -418,15 +427,40 @@ export function createMailAutomationsTool(deps: {
   };
 }
 
-function mailOpsConfigurationRequired(operation: Res['operation']): Res {
+/**
+ * The two boot-time conditions a mail rule depends on.
+ *
+ * `workersEnabled` mirrors `DIVO_AUTONOMOUS_WORKERS_ENABLED`, which is the
+ * interlock that stops a cloned environment acting on the real mailboxes it
+ * inherited. Nothing about a rule works while it is off, so the tool has to be
+ * able to see it.
+ */
+export interface MailOpsRuntime {
+  pubsubConfigured: boolean;
+  workersEnabled: boolean;
+}
+
+const mailOpsReady = (runtime: MailOpsRuntime): boolean =>
+  runtime.pubsubConfigured && runtime.workersEnabled;
+
+function mailOpsConfigurationRequired(
+  operation: Res['operation'],
+  runtime: MailOpsRuntime,
+): Res {
   return {
     success: false,
     operation,
     code: 'mail_ops_configuration_required',
-    message:
-      'Mail Ops real-time Gmail notifications are not configured. '
-      + 'Ask the Divo operator to finish the Google Pub/Sub setup. '
-      + 'Do not substitute Scheduler or a Gmail filter.',
+    // Named separately because the fix is different. One is a Google setup
+    // step; the other means this deployment does not run background work at
+    // all, and no amount of Google configuration will change that.
+    message: !runtime.pubsubConfigured
+      ? 'Mail Ops real-time Gmail notifications are not configured. '
+        + 'Ask the Divo operator to finish the Google Pub/Sub setup. '
+        + 'Do not substitute Scheduler or a Gmail filter.'
+      : 'This Divo environment does not run background automations, so a mail '
+        + 'rule would never fire. Ask the Divo operator to enable autonomous '
+        + 'workers. Do not substitute Scheduler or a Gmail filter.',
   };
 }
 

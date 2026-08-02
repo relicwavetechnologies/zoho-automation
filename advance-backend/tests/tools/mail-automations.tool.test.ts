@@ -17,7 +17,7 @@ describe('mailAutomations tool', () => {
   it('creates an idempotent user-owned Gmail rule for the current Lark chat', async () => {
     let createInput: any;
     const tool = createMailAutomationsTool({
-      pubsubReady: true,
+      runtime: { pubsubConfigured: true, workersEnabled: true },
       repo: {
         createRuleForMailbox: async input => {
           createInput = input;
@@ -71,7 +71,7 @@ describe('mailAutomations tool', () => {
 
   it('reports legacy invalid rules instead of presenting them as healthy', async () => {
     const tool = createMailAutomationsTool({
-      pubsubReady: true,
+      runtime: { pubsubConfigured: true, workersEnabled: true },
       repo: {
         listRulesForUser: async () => ({
           ok: true,
@@ -140,7 +140,7 @@ describe('mailAutomations tool', () => {
   it('starts deferred OAuth and ends the run contract when no owned account exists', async () => {
     let authorizationInput: any;
     const tool = createMailAutomationsTool({
-      pubsubReady: true,
+      runtime: { pubsubConfigured: true, workersEnabled: true },
       repo: {
         createRuleForMailbox: async () => {
           throw new Error('Rule must not be created before OAuth.');
@@ -193,7 +193,7 @@ describe('mailAutomations tool', () => {
   it('replaces an owned rule without creating a second rule', async () => {
     let replaced: any;
     const tool = createMailAutomationsTool({
-      pubsubReady: true,
+      runtime: { pubsubConfigured: true, workersEnabled: true },
       repo: {
         createRuleForMailbox: async () => {
           throw new Error('Update must not create another rule.');
@@ -236,7 +236,7 @@ describe('mailAutomations tool', () => {
 
   it('requires background execute access when creating a durable rule', () => {
     const tool = createMailAutomationsTool({
-      pubsubReady: true,
+      runtime: { pubsubConfigured: true, workersEnabled: true },
       repo: {} as any,
       resolveConnection: async () => ({
         status: 'unavailable',
@@ -259,7 +259,7 @@ describe('mailAutomations tool', () => {
 
   it('requires background execute access when updating or resuming a rule', () => {
     const tool = createMailAutomationsTool({
-      pubsubReady: true,
+      runtime: { pubsubConfigured: true, workersEnabled: true },
       repo: {} as any,
       resolveConnection: async () => ({
         status: 'unavailable',
@@ -286,7 +286,7 @@ describe('mailAutomations tool', () => {
   it('does not resume a rule when Pub/Sub is not configured', async () => {
     let statusCalls = 0;
     const tool = createMailAutomationsTool({
-      pubsubReady: false,
+      runtime: { pubsubConfigured: false, workersEnabled: true },
       repo: {
         setRuleStatus: async () => {
           statusCalls += 1;
@@ -314,6 +314,49 @@ describe('mailAutomations tool', () => {
       /Do not substitute Scheduler or a Gmail filter/,
     );
     assert.equal(statusCalls, 0);
+  });
+
+  it('refuses to create a rule in an environment that runs no background work', async () => {
+    // The defect this covers: Pub/Sub configured and autonomous workers off is
+    // exactly how a cloned environment boots, and `create` used to answer
+    // "Mail automation is active" for a rule nothing would ever pick up. The
+    // tool could see one flag and not the other.
+    let created = 0;
+    const tool = createMailAutomationsTool({
+      runtime: { pubsubConfigured: true, workersEnabled: false },
+      repo: {
+        createRuleForMailbox: async () => {
+          created += 1;
+          return { ok: true, value: { ruleId: 'rule-1', subscriptionId: 'mailbox-1' } };
+        },
+      } as any,
+      resolveConnection: async () => ({
+        status: 'resolved',
+        connectionId,
+        mailboxEmail: 'user@example.com',
+      }),
+    });
+
+    const result = await tool.execute({
+      operation: 'create',
+      connectionId,
+      name: 'Forward login OTP',
+      match: { subjectContains: 'OTP' },
+      destination: { type: 'email', email: 'owner@example.com' },
+    }, makeCtx('mailAutomations', ['create', 'execute']));
+
+    assert.equal(result.ok, true);
+    assert.equal(
+      result.ok && result.value.code,
+      'mail_ops_configuration_required',
+    );
+    // Named separately from the Pub/Sub case: the fix is a different one, and
+    // no amount of Google configuration would change this answer.
+    assert.match(
+      result.ok ? result.value.message ?? '' : '',
+      /does not run background automations/,
+    );
+    assert.equal(created, 0);
   });
 
   it('publishes one instruction-only router and one executable DB specialist', () => {
@@ -351,7 +394,7 @@ describe('mailAutomations tool', () => {
       ...MAIL_OPS_SYSTEM_SKILLS.map(skill => skill.markdown),
       createMailAutomationsTool({
         repo: {} as any,
-        pubsubReady: true,
+        runtime: { pubsubConfigured: true, workersEnabled: true },
         resolveConnection: async () => ({ status: 'unavailable', reason: '' }),
       }).parameterDocs ?? '',
     ];

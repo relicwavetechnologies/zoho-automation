@@ -1749,7 +1749,12 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   }
   toolRegistry.register(createMailAutomationsTool({
     repo: mailOpsRepo,
-    pubsubReady: Boolean(gmailPubsubConfig),
+    runtime: {
+      pubsubConfigured: Boolean(gmailPubsubConfig),
+      // The worker reads this flag itself; without it here the tool could not
+      // see the difference between "configured" and "will actually run".
+      workersEnabled: env.DIVO_AUTONOMOUS_WORKERS_ENABLED,
+    },
     resolveConnection: resolveMailAutomationGoogleConnection,
     beginAuthorization: beginGoogleAuthorization,
   }));
