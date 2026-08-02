@@ -171,7 +171,10 @@ export class GoogleDriveXlsxConversionWorker {
       await this.deps.delivery.completed({ jobKey: job.jobKey, completion: persisted });
       return { disposition: 'completed', completion: persisted };
     } catch (error) {
-      if (options.finalAttempt) {
+      if (
+        options.finalAttempt
+        || (error instanceof GoogleDriveXlsxConversionError && error.unrecoverable)
+      ) {
         await this.deps.delivery.failed({ jobKey: job.jobKey, content: FAILURE_MESSAGE });
       }
       throw error;

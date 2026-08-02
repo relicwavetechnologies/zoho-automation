@@ -2,6 +2,7 @@ import { Queue } from 'bullmq';
 import { sha256CanonicalJson } from '../../shared/hash';
 
 export const WORKBOOK_CONVERSION_QUEUE_NAME = 'workbook-conversion';
+export const WORKBOOK_CONVERSION_RETRY_DELAY_MS = 75_000;
 
 export interface WorkbookConversionJobPayload {
   readonly version: 1;
@@ -10,6 +11,7 @@ export interface WorkbookConversionJobPayload {
   readonly userId: string;
   readonly chatId: string;
   readonly sourceMessageId: string;
+  readonly conversationKey: string;
   readonly replyInThread: boolean;
   readonly connectionId: string;
   readonly fileId: string;
@@ -30,7 +32,7 @@ export class WorkbookConversionQueue implements WorkbookConversionQueuePort {
       connection: { url: redisUrl },
       defaultJobOptions: {
         attempts: 3,
-        backoff: { type: 'exponential', delay: 2_000 },
+        backoff: { type: 'fixed', delay: WORKBOOK_CONVERSION_RETRY_DELAY_MS },
         removeOnComplete: { count: 1_000 },
         removeOnFail: { count: 200 },
       },

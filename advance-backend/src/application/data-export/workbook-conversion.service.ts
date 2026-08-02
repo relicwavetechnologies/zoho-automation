@@ -40,6 +40,7 @@ function jobPayload(
     userId: offer.userId,
     chatId: offer.chatId,
     sourceMessageId,
+    conversationKey: offer.threadId,
     replyInThread: offer.replyInThread === true,
     connectionId: offer.connectionId,
     fileId: offer.fileId,

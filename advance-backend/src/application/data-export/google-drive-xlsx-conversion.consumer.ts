@@ -1,4 +1,4 @@
-import { Worker, type Job } from 'bullmq';
+import { UnrecoverableError, Worker, type Job } from 'bullmq';
 import type { Logger } from '../../shared/logger';
 import {
   WORKBOOK_CONVERSION_QUEUE_NAME,
@@ -8,6 +8,7 @@ import type {
   GoogleDriveXlsxConversionJob,
   GoogleDriveXlsxConversionResult,
 } from './google-drive-xlsx-conversion.worker';
+import { GoogleDriveXlsxConversionError } from './google-drive-xlsx-conversion.worker';
 
 const LOCK_DURATION_MS = 5 * 60_000;
 const STALLED_INTERVAL_MS = 60_000;
@@ -70,11 +71,19 @@ export class GoogleDriveXlsxConversionConsumer {
   async processJob(
     job: Pick<Job<WorkbookConversionJobPayload>, 'id' | 'data' | 'attemptsMade' | 'opts'>,
   ): Promise<void> {
-    const result = await this.deps.core.process(conversionJob(job), {
-      // BullMQ increments attemptsMade after the processor rejects, so the
-      // current attempt is attemptsMade + 1 while we are inside it.
-      finalAttempt: job.attemptsMade + 1 >= (job.opts.attempts ?? 1),
-    });
+    let result: GoogleDriveXlsxConversionResult;
+    try {
+      result = await this.deps.core.process(conversionJob(job), {
+        // BullMQ increments attemptsMade after the processor rejects, so the
+        // current attempt is attemptsMade + 1 while we are inside it.
+        finalAttempt: job.attemptsMade + 1 >= (job.opts.attempts ?? 1),
+      });
+    } catch (error) {
+      if (error instanceof GoogleDriveXlsxConversionError && error.unrecoverable) {
+        throw new UnrecoverableError(error.message);
+      }
+      throw error;
+    }
     if (result.disposition === 'in_progress') {
       // A concurrent owner must finish or lose its Redis lease before BullMQ
       // retries. Completing this job here would strand the request forever.

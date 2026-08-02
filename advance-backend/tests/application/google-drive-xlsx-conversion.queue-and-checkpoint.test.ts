@@ -94,6 +94,7 @@ describe('Google Drive XLSX conversion queue/checkpoint adapters', () => {
       userId: job.userId,
       chatId: 'oc_123',
       sourceMessageId: 'om_123',
+      conversationKey: 'thread_123',
       replyInThread: false,
       connectionId: job.sourceConnectionId,
       fileId: job.sourceFileId,

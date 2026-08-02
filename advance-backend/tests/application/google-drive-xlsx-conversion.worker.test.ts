@@ -173,4 +173,15 @@ describe('GoogleDriveXlsxConversionWorker', () => {
       assert.equal(calls.failures[0], 'Divo could not convert this Excel workbook. The original file was not changed. Please try again shortly.', name);
     }
   });
+
+  it('delivers an unrecoverable denial on the first attempt', async () => {
+    const { deps, calls } = createDeps({
+      identity: { resolve: async () => ({ companyId: job.companyId, userId: job.userId, active: false }) },
+    });
+    await assert.rejects(
+      new GoogleDriveXlsxConversionWorker(deps).process(job, { finalAttempt: false }),
+      { name: 'GoogleDriveXlsxConversionError' },
+    );
+    assert.equal(calls.failures.length, 1);
+  });
 });
