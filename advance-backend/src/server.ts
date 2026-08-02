@@ -602,6 +602,9 @@ export const createServer = (c: Container): DivoServerApplication => {
     '/api/mail-automations',
     createMailAutomationsRoutes({
       readRepo: c.mailOpsReadRepo,
+      // The one write on this router, and deliberately the narrowest possible
+      // one: it moves a poll schedule forward and touches nothing else.
+      requestReconciliation: input => c.mailOpsRepo.requestReconciliation(input),
       memberAuth: {
         prisma: c.prisma,
         jwtSecret: c.env.MEMBER_JWT_SECRET,

@@ -345,6 +345,84 @@ describe('MailOpsRepository', () => {
     ]);
   });
 
+  it('asks for a poll now without touching anything else about the mailbox', async () => {
+    // A mailbox that failed sits on its own retry schedule, and there was no
+    // way to say "try again now" short of editing a row. This moves the
+    // schedule and nothing else: clearing the failure code here would report a
+    // recovery that has not happened, and waking a paused mailbox would
+    // reverse somebody's decision through the wrong door.
+    let updateInput: any;
+    const repo = new MailOpsRepository({
+      mailboxSubscription: {
+        updateMany: async (input: any) => {
+          updateInput = input;
+          return { count: 2 };
+        },
+      },
+    } as any);
+    const now = new Date('2026-08-02T09:00:00.000Z');
+
+    const result = await repo.requestReconciliation({
+      companyId: 'company-1',
+      userId: 'user-1',
+      now,
+    });
+
+    assert.deepEqual(result, { ok: true, value: 2 });
+    assert.deepEqual(updateInput.data, { nextPollAt: now });
+    assert.equal(updateInput.where.status, 'active');
+    assert.equal(updateInput.where.userId, 'user-1');
+  });
+
+  it('deletes an aged event only when nothing is still trying to send it', async () => {
+    // A delivery cascades with its event, so taking an event with work still in
+    // flight would destroy the work. A 90-day-old pending delivery means
+    // something else is already wrong, and losing the evidence would be the
+    // worst possible response to it.
+    let deleteInput: any;
+    const repo = new MailOpsRepository({
+      mailEvent: {
+        deleteMany: async (input: any) => {
+          deleteInput = input;
+          return { count: 7 };
+        },
+      },
+    } as any);
+    const before = new Date('2026-05-04T00:00:00.000Z');
+
+    const result = await repo.deleteEventsBefore(before);
+
+    assert.deepEqual(result, { ok: true, value: 7 });
+    assert.deepEqual(deleteInput.where.occurredAt, { lt: before });
+    assert.deepEqual(deleteInput.where.deliveries, {
+      none: { status: { in: ['pending', 'sending'] } },
+    });
+  });
+
+  it('drops a frozen payload only from a delivery that can no longer be retried', async () => {
+    // The payload carries a second copy of the message body and exists only to
+    // let an attempt be repeated. Clearing one that is still claimable would
+    // leave a delivery that can never succeed and can never be diagnosed.
+    let updateInput: any;
+    const repo = new MailOpsRepository({
+      mailDelivery: {
+        updateMany: async (input: any) => {
+          updateInput = input;
+          return { count: 4 };
+        },
+      },
+    } as any);
+    const before = new Date('2026-07-03T00:00:00.000Z');
+
+    const result = await repo.dropTerminalPayloads(before);
+
+    assert.deepEqual(result, { ok: true, value: 4 });
+    assert.deepEqual(updateInput.where.status, {
+      in: ['delivered', 'abandoned', 'blocked'],
+    });
+    assert.deepEqual(updateInput.where.updatedAt, { lt: before });
+  });
+
   it('measures a rule ceiling on arrival time, inclusively, excluding the message itself', async () => {
     // The one query on the loss-bearing path. Measured on `firstAttemptAt` it
     // turned a post-outage drain into permanent mail loss; measured half-open

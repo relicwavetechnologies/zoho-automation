@@ -23,6 +23,8 @@ import {
   type MailboxHealth,
 } from '../../application/mail-ops/mail-ops-health';
 import { dryRunMailRule } from '../../application/mail-ops/mail-rule-dry-run';
+import type { InfraError } from '../../shared/errors';
+import type { Result } from '../../shared/result';
 
 const DEFAULT_DELIVERY_LIMIT = 25;
 const MAX_DELIVERY_LIMIT = 100;
@@ -43,6 +45,17 @@ const deliveriesQuerySchema = z.object({
 export interface MailAutomationsRouteDeps {
   readRepo: MailOpsReadRepository;
   memberAuth: MemberAuthMiddlewareDeps;
+  /**
+   * Brings this member's mailboxes forward to be polled now.
+   *
+   * Optional so the router still mounts in tests and in any composition that
+   * has no writer; the route reports plainly that it is unavailable rather
+   * than pretending it worked.
+   */
+  requestReconciliation?: (input: {
+    companyId: string;
+    userId: string;
+  }) => Promise<Result<number, InfraError>>;
   logger: Logger;
 }
 
@@ -279,6 +292,36 @@ export function createMailAutomationsRoutes(
    * when a watch never registers, every rule on that mailbox dies at once and
    * no per-rule view can say why.
    */
+  /**
+   * "Try again now."
+   *
+   * A mailbox that failed sits on its own retry schedule, and until this there
+   * was no way for the owner or an operator to ask for a pass sooner — the
+   * options were to wait out the interval or to edit a row by hand. It only
+   * moves the schedule: it does not clear a failure, because whether the
+   * failure is over is the next pass's answer, not this one's.
+   */
+  router.post('/reconcile', async (_req, res) => {
+    try {
+      if (!deps.requestReconciliation) {
+        res.status(503).json({
+          success: false,
+          error: 'Reconciliation cannot be requested in this environment.',
+        });
+        return;
+      }
+      const requested = await deps.requestReconciliation(actor(res));
+      if (!requested.ok) throw requested.error;
+      log.info('mail_ops.reconciliation_requested', {
+        companyId: res.locals['companyId'],
+        mailboxCount: requested.value,
+      });
+      res.json({ success: true, data: { mailboxCount: requested.value } });
+    } catch (error) {
+      fail(res, 'reconcile', error);
+    }
+  });
+
   router.get('/health', async (_req, res) => {
     try {
       const mailboxes = await deps.readRepo.listMailboxHealth(actor(res));

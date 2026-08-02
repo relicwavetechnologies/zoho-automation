@@ -131,6 +131,9 @@ describe('MailOpsWorker', () => {
         },
         markDeliveryFailed: async () => ({ ok: true, value: true }),
         markDeliveryAbandoned: async () => ({ ok: true, value: true }),
+      stripEventBodies: async () => ({ ok: true, value: 0 }),
+      dropTerminalPayloads: async () => ({ ok: true, value: 0 }),
+      deleteEventsBefore: async () => ({ ok: true, value: 0 }),
     };
     const worker = new MailOpsWorker({
       repo,
@@ -225,6 +228,9 @@ describe('MailOpsWorker', () => {
         markDeliveryDelivered: async () => ({ ok: true, value: true }),
         markDeliveryFailed: async () => ({ ok: true, value: true }),
         markDeliveryAbandoned: async () => ({ ok: true, value: true }),
+        stripEventBodies: async () => ({ ok: true, value: 0 }),
+        dropTerminalPayloads: async () => ({ ok: true, value: 0 }),
+        deleteEventsBefore: async () => ({ ok: true, value: 0 }),
       },
       gmail: {
         watch: async () => {
@@ -906,6 +912,9 @@ describe('MailOpsWorker', () => {
         markDeliveryDelivered: async () => ({ ok: true, value: true }),
         markDeliveryFailed: async () => ({ ok: true, value: true }),
         markDeliveryAbandoned: async () => ({ ok: true, value: true }),
+        stripEventBodies: async () => ({ ok: true, value: 0 }),
+        dropTerminalPayloads: async () => ({ ok: true, value: 0 }),
+        deleteEventsBefore: async () => ({ ok: true, value: 0 }),
       },
       gmail: {
         watch: async () => { throw new Error('Watch should not run without a topic.') },
@@ -1071,6 +1080,105 @@ describe('MailOpsWorker', () => {
     await worker.runOnce();
 
     assert.match(abandoned?.reason, /paused or archived before this message was sent/);
+  });
+
+  it('forgets message bodies, frozen payloads and old events, once an hour', async () => {
+    // Nothing was ever forgotten before this: a mailbox watched for a year held
+    // a year of message bodies in two places, for no purpose after the first
+    // hour. The sweep is also the least urgent thing the worker does, so it
+    // runs at the end of a tick and at most hourly — never in front of mail.
+    const swept: Array<[string, Date]> = [];
+    const repo = syncRepo({
+      claimNextDueMailbox: async () => ({ ok: true, value: null }),
+      stripEventBodies: async (before: Date) => {
+        swept.push(['bodies', before]);
+        return { ok: true, value: 1 };
+      },
+      dropTerminalPayloads: async (before: Date) => {
+        swept.push(['payloads', before]);
+        return { ok: true, value: 1 };
+      },
+      deleteEventsBefore: async (before: Date) => {
+        swept.push(['events', before]);
+        return { ok: true, value: 1 };
+      },
+    });
+    const worker = new MailOpsWorker({
+      repo,
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'unused',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+    // A second tick straight after must not sweep again.
+    await worker.runOnce();
+
+    assert.deepEqual(swept.map(([what]) => what), ['bodies', 'payloads', 'events']);
+    const [[, bodiesBefore], [, payloadsBefore], [, eventsBefore]] = swept as any;
+    // Bodies and payloads at 30 days, events at 90 — the event has to outlive
+    // the body because the event is what stops a re-delivery.
+    assert.equal(
+      Math.round((Date.now() - bodiesBefore.getTime()) / (24 * 60 * 60_000)),
+      30,
+    );
+    assert.equal(
+      Math.round((Date.now() - payloadsBefore.getTime()) / (24 * 60 * 60_000)),
+      30,
+    );
+    assert.equal(
+      Math.round((Date.now() - eventsBefore.getTime()) / (24 * 60 * 60_000)),
+      90,
+    );
+  });
+
+  it('keeps delivering when the retention sweep fails', async () => {
+    // A sweep that could not run is not a reason to stop sending somebody's
+    // mail. It is the least urgent thing here and must fail like it.
+    let delivered = false;
+    let deliveryClaimed = false;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        stripEventBodies: async () => { throw new Error('Retention is down.') },
+        claimNextDueDelivery: async () => {
+          if (deliveryClaimed) return { ok: true, value: null };
+          deliveryClaimed = true;
+          return {
+            ok: true,
+            value: {
+              deliveryId: 'delivery-1',
+              attempts: 1,
+              payload: {
+                companyId: 'company-1',
+                userId: 'user-1',
+                subscriptionId: 'mailbox-1',
+                connectionId: 'connection-1',
+                mailboxEmail: 'user@example.com',
+                ruleId: 'rule-1',
+                eventId: 'event-1',
+                sourceMessageId: 'message-1',
+                idempotencyKey: 'mail:key',
+                action: { type: 'deliver' },
+                destination: { type: 'lark_chat', chatId: 'oc_destination' },
+                message: event.metadata,
+              },
+            },
+          };
+        },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => { delivered = true; return 'lark-message' },
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(delivered, true);
   });
 
   it('fails a truncated pass that made no progress rather than calling it healthy', async () => {
@@ -1773,6 +1881,9 @@ describe('MailOpsWorker', () => {
         },
         markDeliveryFailed: async () => { state.failed = true; return { ok: true, value: true }; },
         markDeliveryAbandoned: async () => ({ ok: true, value: true }),
+        stripEventBodies: async () => ({ ok: true, value: 0 }),
+        dropTerminalPayloads: async () => ({ ok: true, value: 0 }),
+        deleteEventsBefore: async () => ({ ok: true, value: 0 }),
       },
       gmail: {
         createForwardDraft: async () => { state.drafts++; return 'draft-2'; },

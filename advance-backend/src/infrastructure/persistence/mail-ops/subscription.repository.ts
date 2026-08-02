@@ -371,6 +371,40 @@ export class MailboxSubscriptionRepository {
   }
 
   /**
+   * Brings every one of this member's mailboxes forward to be polled now.
+   *
+   * The safety net had no handle on it: a mailbox that failed is scheduled for
+   * its own retry, and until that lands there was no way for anybody — the
+   * owner, an operator watching it fail — to say "try again now". The only
+   * options were to wait out the interval or to edit a row by hand.
+   *
+   * It moves the schedule and nothing else. It does not clear a failure code,
+   * because whether the failure is over is the next pass's answer to give, not
+   * this one's; and it will not wake a paused mailbox, because paused is a
+   * decision somebody made and this is not the way to reverse it.
+   */
+  async requestReconciliation(input: {
+    companyId: string;
+    userId: string;
+    now?: Date;
+  }): Promise<Result<number, InfraError>> {
+    const now = input.now ?? new Date();
+    try {
+      const updated = await this.db.mailboxSubscription.updateMany({
+        where: {
+          companyId: input.companyId,
+          userId: input.userId,
+          status: 'active',
+        },
+        data: { nextPollAt: now },
+      });
+      return ok(updated.count);
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'mailOps.requestReconciliation', cause));
+    }
+  }
+
+  /**
    * Records the mailbox state the owner was last told about.
    *
    * Written after the notification is sent, never before: if delivery fails we

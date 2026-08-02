@@ -59,6 +59,7 @@ export class MailOpsRepository {
   readonly failWatchRenewal: MailboxSubscriptionRepository['failWatchRenewal'];
   readonly markSyncFailed: MailboxSubscriptionRepository['markSyncFailed'];
   readonly recordNotifiedMailboxState: MailboxSubscriptionRepository['recordNotifiedMailboxState'];
+  readonly requestReconciliation: MailboxSubscriptionRepository['requestReconciliation'];
 
   // The rules.
   readonly createRuleForMailbox: MailAutomationRuleRepository['createRuleForMailbox'];
@@ -70,6 +71,8 @@ export class MailOpsRepository {
 
   // The mail they saw.
   readonly recordEvents: MailEventRepository['recordEvents'];
+  readonly stripEventBodies: MailEventRepository['stripEventBodies'];
+  readonly deleteEventsBefore: MailEventRepository['deleteEventsBefore'];
 
   // What they sent.
   readonly reserveDelivery: MailDeliveryRepository['reserveDelivery'];
@@ -81,6 +84,7 @@ export class MailOpsRepository {
   readonly markDeliveryFailed: MailDeliveryRepository['markDeliveryFailed'];
   readonly rescheduleDelivery: MailDeliveryRepository['rescheduleDelivery'];
   readonly markDeliveryAbandoned: MailDeliveryRepository['markDeliveryAbandoned'];
+  readonly dropTerminalPayloads: MailDeliveryRepository['dropTerminalPayloads'];
 
   constructor(db: MailOpsDb) {
     this.subscriptions = new MailboxSubscriptionRepository(db);
@@ -98,6 +102,8 @@ export class MailOpsRepository {
     this.markSyncFailed = subscriptions.markSyncFailed.bind(subscriptions);
     this.recordNotifiedMailboxState =
       subscriptions.recordNotifiedMailboxState.bind(subscriptions);
+    this.requestReconciliation =
+      subscriptions.requestReconciliation.bind(subscriptions);
 
     this.createRuleForMailbox = rules.createRuleForMailbox.bind(rules);
     this.listRulesForUser = rules.listRulesForUser.bind(rules);
@@ -107,6 +113,8 @@ export class MailOpsRepository {
     this.isRuleSendable = rules.isRuleSendable.bind(rules);
 
     this.recordEvents = events.recordEvents.bind(events);
+    this.stripEventBodies = events.stripEventBodies.bind(events);
+    this.deleteEventsBefore = events.deleteEventsBefore.bind(events);
 
     this.reserveDelivery = deliveries.reserveDelivery.bind(deliveries);
     this.countRecentDeliveries = deliveries.countRecentDeliveries.bind(deliveries);
@@ -117,5 +125,6 @@ export class MailOpsRepository {
     this.markDeliveryFailed = deliveries.markDeliveryFailed.bind(deliveries);
     this.rescheduleDelivery = deliveries.rescheduleDelivery.bind(deliveries);
     this.markDeliveryAbandoned = deliveries.markDeliveryAbandoned.bind(deliveries);
+    this.dropTerminalPayloads = deliveries.dropTerminalPayloads.bind(deliveries);
   }
 }

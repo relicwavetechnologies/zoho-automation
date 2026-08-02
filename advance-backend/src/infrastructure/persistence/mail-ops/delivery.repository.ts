@@ -420,4 +420,31 @@ export class MailDeliveryRepository {
       return err(wrapInfra('prisma', 'mailOps.markDeliveryAbandoned', error));
     }
   }
+
+  /**
+   * Drops the frozen payload from deliveries that can no longer be retried.
+   *
+   * The payload holds a second copy of the message body, and it exists to let
+   * an attempt be repeated — so once a delivery is terminal it is dead weight
+   * carrying the most sensitive thing in the table. Only terminal rows are
+   * touched, and only well past the point where the retry ladder could still
+   * reach them: `claimNextDueDelivery` refuses anything that is not `pending`,
+   * but a row whose payload vanished while it was still claimable would be
+   * unrecoverable, so the age is the guard rather than the status alone.
+   */
+  async dropTerminalPayloads(before: Date): Promise<Result<number, InfraError>> {
+    try {
+      const cleared = await this.db.mailDelivery.updateMany({
+        where: {
+          status: { in: ['delivered', 'abandoned', 'blocked'] },
+          updatedAt: { lt: before },
+          payloadJson: { not: Prisma.DbNull },
+        },
+        data: { payloadJson: Prisma.DbNull },
+      });
+      return ok(cleared.count);
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'mailOps.dropTerminalPayloads', cause));
+    }
+  }
 }

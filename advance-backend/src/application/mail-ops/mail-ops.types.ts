@@ -26,6 +26,31 @@ export const MAIL_DELIVERY_RETRY_BASE_MS = 5_000;
 /** How long a Gmail watch is left before renewal. Google expires them at 7 days. */
 export const MAILBOX_WATCH_RENEWAL_INTERVAL_MS = 24 * 60 * 60_000;
 
+const DAY_MS = 24 * 60 * 60_000;
+
+/**
+ * How long a copy of somebody's mail is kept, and in what form.
+ *
+ * Three separate ages, because they answer three different questions. The
+ * message *body* is the sensitive part and the part nothing needs after the
+ * fact — a rule decided on it once, at arrival, and no screen ever shows it
+ * again — so it goes first and the event survives without it. The event itself
+ * is what stops a message being delivered twice, so it has to outlive any
+ * plausible replay: Gmail keeps about a week of history, and 90 days is far
+ * past the point where a re-delivery is possible. A delivery's frozen payload
+ * carries a second copy of the body and is needed only while the delivery can
+ * still be retried, which is minutes.
+ *
+ * Nothing was ever deleted before this. A mailbox watched for a year held a
+ * year of message bodies in Postgres, for no purpose after the first hour.
+ */
+export const MAIL_EVENT_BODY_RETENTION_MS = 30 * DAY_MS;
+export const MAIL_EVENT_RETENTION_MS = 90 * DAY_MS;
+export const MAIL_DELIVERY_PAYLOAD_RETENTION_MS = 30 * DAY_MS;
+
+/** How often the retention sweep runs. It is not urgent work. */
+export const MAIL_RETENTION_SWEEP_INTERVAL_MS = 60 * 60_000;
+
 export type MailboxSubscriptionStatus = 'active' | 'paused' | 'disconnected';
 export type MailAutomationRuleStatus = 'active' | 'paused' | 'archived';
 /**

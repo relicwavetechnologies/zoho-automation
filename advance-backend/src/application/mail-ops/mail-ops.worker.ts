@@ -11,6 +11,10 @@ import {
   type AuthorizeLarkChatDestination,
 } from './lark-chat-destination';
 import {
+  MAIL_DELIVERY_PAYLOAD_RETENTION_MS,
+  MAIL_EVENT_BODY_RETENTION_MS,
+  MAIL_EVENT_RETENTION_MS,
+  MAIL_RETENTION_SWEEP_INTERVAL_MS,
   mailDeliveryIdempotencyKey,
   type MailMessageMetadata,
   type MailRuleAction,
@@ -98,6 +102,9 @@ type MailRepo = Pick<
   | 'markDeliveryDelivered'
   | 'markDeliveryFailed'
   | 'markDeliveryAbandoned'
+  | 'stripEventBodies'
+  | 'deleteEventsBefore'
+  | 'dropTerminalPayloads'
   | 'claimNextWatchRenewal'
   | 'completeWatchRenewal'
   | 'failWatchRenewal'
@@ -107,6 +114,8 @@ export class MailOpsWorker {
   private timer?: NodeJS.Timeout;
   private running = false;
   private rerunRequested = false;
+  /** When retention last ran. Undefined means it has not run this process. */
+  private lastRetentionAt?: number;
   private readonly log: Logger;
 
   constructor(private readonly deps: {
@@ -252,9 +261,57 @@ export class MailOpsWorker {
           if (!claimed.value) break;
           await this.deliver(claimed.value);
         }
+        await this.sweepRetention();
       } while (this.rerunRequested);
     } finally {
       this.running = false;
+    }
+  }
+
+  /**
+   * Forgets what nothing needs any more.
+   *
+   * Runs at the end of a tick, after mail has moved, and at most hourly — it
+   * is the least urgent thing this worker does and must never be the reason a
+   * delivery waited. Its failures are logged and swallowed for the same
+   * reason: a retention sweep that could not run is not a reason to stop
+   * delivering somebody's mail.
+   *
+   * Nothing was ever forgotten before this. A mailbox watched for a year held
+   * a year of message bodies, in two places — the event and the frozen
+   * delivery payload — for no purpose after the first hour.
+   */
+  private async sweepRetention(now = Date.now()): Promise<void> {
+    if (
+      this.lastRetentionAt !== undefined
+      && now - this.lastRetentionAt < MAIL_RETENTION_SWEEP_INTERVAL_MS
+    ) return;
+    this.lastRetentionAt = now;
+    const at = (ageMs: number) => new Date(now - ageMs);
+    try {
+      // Bodies first, deletions after. Doing it the other way round is not
+      // wrong, only wasteful: it strips text from rows about to be removed.
+      const bodies = await this.deps.repo.stripEventBodies(
+        at(MAIL_EVENT_BODY_RETENTION_MS),
+      );
+      if (!bodies.ok) throw bodies.error;
+      const payloads = await this.deps.repo.dropTerminalPayloads(
+        at(MAIL_DELIVERY_PAYLOAD_RETENTION_MS),
+      );
+      if (!payloads.ok) throw payloads.error;
+      const events = await this.deps.repo.deleteEventsBefore(
+        at(MAIL_EVENT_RETENTION_MS),
+      );
+      if (!events.ok) throw events.error;
+      if (bodies.value + payloads.value + events.value > 0) {
+        this.log.info('mail_ops.retention_swept', {
+          bodiesStripped: bodies.value,
+          payloadsDropped: payloads.value,
+          eventsDeleted: events.value,
+        });
+      }
+    } catch (error) {
+      this.log.error('mail_ops.retention_failed', { error: errorText(error) });
     }
   }
 

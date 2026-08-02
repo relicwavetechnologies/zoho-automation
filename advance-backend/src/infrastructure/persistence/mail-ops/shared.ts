@@ -15,6 +15,7 @@ export type MailOpsDb = Pick<
   | 'mailEvent'
   | 'mailDelivery'
   | '$transaction'
+  | '$executeRaw'
 >;
 
 export const errorText = (error: unknown): string =>
