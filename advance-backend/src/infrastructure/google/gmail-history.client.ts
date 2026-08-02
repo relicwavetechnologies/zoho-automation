@@ -436,10 +436,13 @@ interface GmailMessage {
   payload?: GmailMessagePart;
 }
 
+// Header names are ASCII protocol tokens, so they fold with `toLowerCase`:
+// a locale-sensitive fold would turn `Content-ID` into `content-ıd` under a
+// Turkish locale and quietly change what this file recognises.
 function messageMetadata(message: GmailMessage): MailMessageMetadata {
   const headers = new Map(
     (message.payload?.headers ?? []).map(header => [
-      header.name?.toLocaleLowerCase() ?? '',
+      header.name?.toLowerCase() ?? '',
       header.value ?? '',
     ]),
   );
@@ -451,7 +454,7 @@ function messageMetadata(message: GmailMessage): MailMessageMetadata {
   // Gmail happened to return the trace in.
   const allValuesOf = (name: string): string =>
     (message.payload?.headers ?? [])
-      .filter(header => header.name?.toLocaleLowerCase() === name)
+      .filter(header => header.name?.toLowerCase() === name)
       .map(header => header.value?.trim())
       .filter((value): value is string => Boolean(value))
       .join(', ');
@@ -474,8 +477,8 @@ function messageMetadata(message: GmailMessage): MailMessageMetadata {
     hasAttachment: hasAttachment(message.payload),
     // Present only on mail Divo forwarded itself. Carried through so the sync
     // loop can refuse to match its own output.
-    ...(headers.get(MAILOPS_HEADER.toLocaleLowerCase())
-      ? { forwardedByRuleId: headers.get(MAILOPS_HEADER.toLocaleLowerCase())! }
+    ...(headers.get(MAILOPS_HEADER.toLowerCase())
+      ? { forwardedByRuleId: headers.get(MAILOPS_HEADER.toLowerCase())! }
       : {}),
   };
 }
@@ -516,13 +519,13 @@ function isAttachedFile(part: GmailMessagePart): boolean {
   if (!part.filename?.trim()) return false;
   const headers = new Map(
     (part.headers ?? []).map(header => [
-      header.name?.toLocaleLowerCase() ?? '',
+      header.name?.toLowerCase() ?? '',
       header.value ?? '',
     ]),
   );
   const disposition = (headers.get('content-disposition') ?? '')
     .trimStart()
-    .toLocaleLowerCase();
+    .toLowerCase();
   // A part that says `attachment` outright is one, whatever else it carries:
   // some clients stamp a `Content-ID` on every part they emit, and reading
   // that as inline would stop an attachment rule firing on real attachments.
@@ -638,7 +641,7 @@ function selectContentHeaders(rawHeaders: string): string[] {
   const selected = blocks.filter(block => {
     const separator = block.indexOf(':');
     return separator > 0
-      && allowed.has(block.slice(0, separator).trim().toLocaleLowerCase());
+      && allowed.has(block.slice(0, separator).trim().toLowerCase());
   });
   if (!selected.some(block => /^content-type:/i.test(block))) {
     selected.unshift('Content-Type: text/plain; charset=UTF-8');

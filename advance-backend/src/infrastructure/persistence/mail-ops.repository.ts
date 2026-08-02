@@ -47,7 +47,11 @@ export interface MailboxWatchClaim {
  * failure: the rule the member asked for exists, it is just not the row they
  * named.
  */
-export type MailRuleReplacement = 'replaced' | 'not_found' | 'duplicate';
+export type MailRuleReplacement =
+  | 'replaced'
+  | 'not_found'
+  | 'duplicate'
+  | 'duplicate_archived';
 
 export interface CreateMailAutomationRuleInput {
   companyId: string;
@@ -370,9 +374,16 @@ export class MailOpsRepository {
         // fork the canonicalisation exists to repair.
         const collision = await tx.mailAutomationRule.findUnique({
           where: { dedupeKey: input.dedupeKey },
-          select: { id: true },
+          // An archived rule holds its key too, and telling the member to
+          // archive one of two rules forwarding twice would be untrue: the
+          // other forwards nothing. Their way forward is a different one.
+          select: { id: true, status: true },
         });
-        if (collision && collision.id !== current.id) return 'duplicate' as const;
+        if (collision && collision.id !== current.id) {
+          return collision.status === 'archived'
+            ? 'duplicate_archived' as const
+            : 'duplicate' as const;
+        }
         // The tool's `update` takes the whole rule, so renaming one resubmits
         // its existing match and destination. That is the same rule watching
         // the same address, and moving its floor would quietly drop whatever

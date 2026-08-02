@@ -773,6 +773,38 @@ describe('MailOpsRepository', () => {
     assert.deepEqual(result, { ok: true, value: 'duplicate' });
   });
 
+  it('separates a collision with an archived rule, which forwards nothing', async () => {
+    // An archived rule keeps its key, so it can be the one collided with —
+    // and telling the member two rules would forward every message twice
+    // would be untrue. Their way forward is a different one.
+    const repo = new MailOpsRepository({
+      $transaction: async (fn: any) => fn({
+        mailAutomationRule: {
+          findFirst: async () => ({ id: 'rule-1', subscriptionId: 'mailbox-1', status: 'active' }),
+          findUnique: async () => ({ id: 'rule-2', status: 'archived' }),
+          update: async () => {
+            throw new Error('The duplicate must be caught before the write.');
+          },
+        },
+        mailboxSubscription: { update: async () => undefined },
+      }),
+    } as any);
+
+    const result = await repo.replaceRule({
+      companyId: 'company-1',
+      userId: 'user-1',
+      ruleId: 'rule-1',
+      connectionId: 'connection-1',
+      name: 'Forward OTP',
+      match: { subjectContains: 'otp' },
+      action: { type: 'forward' },
+      destination: { type: 'email', email: 'owner@example.com' },
+      dedupeKey: 'mail-rule:already-taken',
+    });
+
+    assert.deepEqual(result, { ok: true, value: 'duplicate_archived' });
+  });
+
   it('adopts a rule keyed the old way instead of forking it in two', async () => {
     // Canonicalising the key changes the identity of every rule already
     // written. Without the adoption the very first re-request would create a

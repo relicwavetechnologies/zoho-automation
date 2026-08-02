@@ -143,8 +143,19 @@ export function mailRuleMatches(
 
 const ADDRESS_PATTERN = /[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+\.[a-z]{2,}/i;
 
+/**
+ * Whether the message came from the mailbox the rule names.
+ *
+ * Through the same blanking as recipients, because `From` carries the same
+ * display position and the leftmost address in the raw header is not
+ * necessarily the sender's: `From: (receipts@stripe.com) evil@attacker.tld` is
+ * a legal header from `evil@attacker.tld`, and reading it any other way lets an
+ * outsider put their own message wherever a rule on `@stripe.com` points. A
+ * `From` holding a comma is invalid, and taking the first entry of one loses a
+ * match rather than inventing one.
+ */
 function senderMatches(fromHeader: string, criterion: string): boolean {
-  const address = addressIn(fromHeader);
+  const address = addressIn(splitRecipients(fromHeader)[0] ?? '');
   return address !== undefined && addressMatches(address, criterion);
 }
 

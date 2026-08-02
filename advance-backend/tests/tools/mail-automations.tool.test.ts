@@ -144,6 +144,35 @@ describe('mailAutomations tool', () => {
         hasAttachment: false,
       },
     ), false);
+    // The display position of `From` is as free as a recipient's, and with no
+    // angle brackets the leftmost address in the raw header is not the
+    // sender's. `From: (receipts@stripe.com) evil@attacker.tld` is a legal
+    // header from `evil@attacker.tld`.
+    const sender = (from: string): MailMessageMetadata => ({
+      from,
+      to: 'user@example.com',
+      subject: 'Account notice',
+      snippet: '',
+      bodyText: '',
+      hasAttachment: false,
+    });
+    assert.equal(mailRuleMatches(
+      { from: '@anthropic.com' },
+      sender('(notice@anthropic.com) attacker@evil.example'),
+    ), false);
+    assert.equal(mailRuleMatches(
+      { from: '@anthropic.com' },
+      sender('"notice@anthropic.com" attacker@evil.example'),
+    ), false);
+    // Honest senders, bracketed and bare, still match.
+    assert.equal(mailRuleMatches(
+      { from: '@anthropic.com' },
+      sender('Jane (Support) <notice@anthropic.com>'),
+    ), true);
+    assert.equal(
+      mailRuleMatches({ from: '@anthropic.com' }, sender('notice@anthropic.com')),
+      true,
+    );
   });
 
   it('matches a recipient across To, Cc and Delivered-To, not To alone', () => {
@@ -293,6 +322,43 @@ describe('mailAutomations tool', () => {
       mailRuleMatchSchema.safeParse({ from: '@x.example', cc: 'finance@y.example' }).success,
       false,
     );
+  });
+
+  it('tells the member which way out of a collision applies to them', async () => {
+    const toolFor = (outcome: string) => createMailAutomationsTool({
+      runtime: { pubsubConfigured: true, workersEnabled: true },
+      repo: {
+        replaceRule: async () => ({ ok: true, value: outcome }),
+        listRulesForUser: async () => ({ ok: true, value: [] }),
+      } as any,
+      resolveConnection: async () => ({
+        status: 'resolved',
+        connectionId,
+        mailboxEmail: 'user@example.com',
+      }),
+    });
+    const args = {
+      operation: 'update' as const,
+      ruleId: '22222222-2222-4222-8222-222222222222',
+      connectionId,
+      name: 'Forward OTP',
+      match: { subjectContains: 'otp' },
+      destination: { type: 'email' as const, email: 'owner@example.com' },
+    };
+    const ctx = () => makeCtx('mailAutomations', ['update', 'execute']);
+
+    const live = await toolFor('duplicate').execute(args, ctx());
+    assert.equal(live.ok, false);
+    // Two live rules on one key forward twice; the fix is to archive one.
+    assert.match(!live.ok ? live.error.message : '', /twice/);
+    assert.match(!live.ok ? live.error.message : '', /archive/i);
+
+    const archived = await toolFor('duplicate_archived').execute(args, ctx());
+    assert.equal(archived.ok, false);
+    // An archived rule forwards nothing, so saying "twice" would be untrue and
+    // archiving it again is not a way out. Recreating it is.
+    assert.doesNotMatch(!archived.ok ? archived.error.message : '', /twice/);
+    assert.match(!archived.ok ? archived.error.message : '', /Create the rule/);
   });
 
   it('gives one rule one identity however the request was written', () => {

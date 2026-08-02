@@ -504,6 +504,18 @@ export function createMailAutomationsTool(deps: {
                 'Mail automation rule was not found for the selected account.',
             }));
           }
+          if (updated.value === 'duplicate_archived') {
+            return err(new ToolError({
+              toolId: 'mailAutomations',
+              reason: 'bad_args',
+              message:
+                'An archived rule on this mailbox already holds exactly that '
+                + 'match and destination, and an archived rule keeps its place. '
+                + 'Nothing was changed. Create the rule instead, which brings '
+                + 'the archived one back, and archive this one if it is no '
+                + 'longer wanted.',
+            }));
+          }
           if (updated.value === 'duplicate') {
             return err(new ToolError({
               toolId: 'mailAutomations',
