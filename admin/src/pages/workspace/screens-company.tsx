@@ -12,14 +12,17 @@
  */
 import { Fragment, useMemo, useState } from 'react'
 import {
-  Brain, Building2, Check, ChevronRight, Clock, Info, KeyRound, Link2, Lock, Plus,
+  Brain, Building2, Check, ChevronRight, CircleAlert, Clock, Info, KeyRound, Link2, Lock, Plus,
   Search, ShieldCheck, Sparkles, Trash2, TriangleAlert, Users,
 } from 'lucide-react'
 import {
-  Bar, ClickRow, DataNote, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, Seg, Skel, SkelRows,
-  Switch, compact, money, useStaged,
+  Bar, ClickRow, DataNote, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, ProviderMark, Seg, Skel,
+  SkelRows, Switch, compact, money, useStaged,
 } from './ui'
 import type { Toast } from './ui'
+import type { Provider } from './fixtures'
+import { useConnections, type ProviderStatus } from './data/use-connections'
+import { useDataExportProfile, useTokenConnect, type AirtableAccessMode } from './data/use-company-connections'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import {
   ROLE_LABEL, ago, displayName, durationLabel, initialsOf,
@@ -636,13 +639,18 @@ export function CompanyDepartments({ replay, toast, go }: Props) {
    config list. "Who is about to break" is coverage — and it is the one that
    costs a day of failed runs when nobody looks at it. */
 
-export function CompanyConnections({ replay, go }: Props) {
+export function CompanyConnections({ replay, toast, go }: Props) {
   const { session } = useAdminAuth()
   const [r1, r2] = useStaged([280, 540], replay)
   const [open, setOpen] = useState<string | null>(null)
+  // Which provider's key dialog is open, if any.
+  const [tokenFor, setTokenFor] = useState<'airtable' | 'aitable' | null>(null)
+  const [airtableMode, setAirtableMode] = useState<AirtableAccessMode>('read_write')
   const { token, companyId } = useAdminScope()
   const { data: directoryData, isLoading: loading } = useDirectory(token, companyId)
   const directory = directoryData ?? []
+  const { byProvider, refresh: refreshConnections } = useConnections()
+  const tokenConnect = useTokenConnect()
 
   /**
    * Coverage for the two providers the directory actually reports.
@@ -741,6 +749,28 @@ export function CompanyConnections({ replay, go }: Props) {
                   </div>
                   <span className="ws-sub">Manage</span>
                 </ClickRow>
+
+                {/* Airtable and AITable are the two providers a key connects
+                    rather than a sign-in, and both routes admit company admins
+                    only — the connection they make belongs to the company, so
+                    it is not a decision one member gets to take for everybody.
+                    Neither had any path at all in this app before. */}
+                <TokenProviderRow
+                  provider="airtable"
+                  name="Airtable"
+                  blurb="A personal access token, if you would rather not sign in through Airtable's OAuth."
+                  action="Connect with a token"
+                  status={byProvider.get('airtable')}
+                  onOpen={() => setTokenFor('airtable')}
+                />
+                <TokenProviderRow
+                  provider="aitable"
+                  name="AITable"
+                  blurb="Connected with an API key. There is no sign-in flow for AITable."
+                  action="Connect with a key"
+                  status={byProvider.get('aitable')}
+                  onOpen={() => setTokenFor('aitable')}
+                />
               </div>
             </Fade>
           )}
@@ -749,6 +779,11 @@ export function CompanyConnections({ replay, go }: Props) {
             Tokens and credentials never leave the backend — this shows that a connection exists, never what is in it
           </div>
         </Panel>
+
+        {/* Handed the same status map rather than calling `useConnections`
+            itself — six provider reads twice over on one page load is a cost
+            nothing here needs to pay. */}
+        <DataExportPanel toast={toast} google={byProvider.get('google_workspace')} />
 
         <Panel title="Per-person connections">
           <div className="ws-panel-body">
@@ -762,7 +797,198 @@ export function CompanyConnections({ replay, go }: Props) {
           </div>
         </Panel>
       </div>
+
+      {/* The value is typed here, posted, and never held: neither route returns
+          the token it was given, and nothing on this page reads one back. */}
+      {tokenFor === 'airtable' ? (
+        <Prompt
+          title="Connect Airtable with a token"
+          description="Make a personal access token in Airtable with access to the bases Divo should work in. It goes straight to the backend and is never shown again."
+          label="Personal access token"
+          placeholder="pat…"
+          confirm="Connect"
+          secret
+          extra={
+            <>
+              <div className="ws-lbl">What Divo may do with it</div>
+              <div style={{ marginTop: 8 }}>
+                <Seg
+                  value={airtableMode}
+                  onChange={setAirtableMode}
+                  options={[
+                    { value: 'read_write', label: 'Read and write' },
+                    { value: 'read_only', label: 'Read only' },
+                  ]}
+                />
+              </div>
+              <p className="ws-sentence-note">
+                This caps what Divo will attempt. The token's own scopes still apply on top — the narrower of the two wins.
+              </p>
+            </>
+          }
+          onClose={() => setTokenFor(null)}
+          onConfirm={async (value) => {
+            try {
+              await tokenConnect.connectAirtable(value, { accessMode: airtableMode })
+              await refreshConnections()
+              toast('Airtable connected for the company')
+            } catch (e) {
+              toast(e instanceof Error ? e.message : 'Could not connect Airtable', 'error')
+            }
+          }}
+        />
+      ) : null}
+
+      {tokenFor === 'aitable' ? (
+        <Prompt
+          title="Connect AITable with a key"
+          description="Divo checks the key against AITable and stores which spaces it can reach. It goes straight to the backend and is never shown again."
+          label="API key"
+          placeholder="usk…"
+          confirm="Connect"
+          secret
+          onClose={() => setTokenFor(null)}
+          onConfirm={async (value) => {
+            try {
+              await tokenConnect.connectAitable(value)
+              await refreshConnections()
+              toast('AITable connected for the company')
+            } catch (e) {
+              toast(e instanceof Error ? e.message : 'Could not connect AITable', 'error')
+            }
+          }}
+        />
+      ) : null}
     </>
+  )
+}
+
+/** A provider connected by key rather than by sign-in. */
+function TokenProviderRow({ provider, name, blurb, action, status, onOpen }: {
+  provider: Provider
+  name: string
+  blurb: string
+  action: string
+  status?: ProviderStatus
+  onOpen: () => void
+}) {
+  const accounts = status?.connections ?? []
+  return (
+    <div className="ws-row" style={{ alignItems: 'flex-start' }}>
+      <ProviderMark provider={provider} />
+      <div className="ws-row-main">
+        <b>
+          {name}
+          {accounts.length ? <span className="ws-tag">{accounts.length} connected</span> : null}
+        </b>
+        <p>{status?.error ?? blurb}</p>
+        {accounts.length ? (
+          <div className="ws-attn-meta" style={{ marginTop: 7 }}>
+            {accounts.map((c) => <span key={c.connectionId}>{c.accountEmail ?? c.label}</span>)}
+          </div>
+        ) : null}
+      </div>
+      <button type="button" className="btn" onClick={onOpen}>{action}</button>
+    </div>
+  )
+}
+
+/**
+ * Which account the company's data exports are written through.
+ *
+ * A real decision rather than a setting: every export Divo produces is created
+ * by this account, so it is the one that owns the resulting Sheets and the one
+ * whose quota they count against. Choosing it in a panel that says all of that
+ * is the acknowledgement the route asks for.
+ *
+ * There is no route to clear it, only to point it somewhere else, and the panel
+ * says so rather than offering a button that would 404.
+ */
+function DataExportPanel({ toast, google }: { toast: Toast; google?: ProviderStatus }) {
+  const { profile, loading, refused, failed, saving, configure } = useDataExportProfile()
+
+  // Only connections this admin holds admin access on. Anything less and the
+  // backend refuses the write, so offering it would be a button that fails.
+  const eligible = (google?.connections ?? []).filter((c) => c.access === 'admin')
+
+  // Not an admin: the route answers 403 and there is nothing here for them.
+  if (refused) return null
+
+  return (
+    <Panel
+      title="Secure data exports"
+      description="The Google account Divo writes exports through"
+    >
+      <div className="ws-panel-body">
+        <p className="ws-sub" style={{ lineHeight: 1.6 }}>
+          Divo reads the source data outside the model's context, transforms it in a sandbox with no network, then
+          writes a Sheet or a CSV. Whoever asked for the export is fixed as its only reader.
+        </p>
+
+        {loading ? <div style={{ marginTop: 14 }}><SkelRows n={2} icon={false} /></div> : failed ? (
+          <div className="ws-ceiling" style={{ marginTop: 14 }}>
+            <TriangleAlert size={14} />
+            <div>Could not read the export account. This says nothing about whether one is set.</div>
+          </div>
+        ) : (
+          <>
+            {profile ? (
+              <div className="ws-private" style={{ marginTop: 14 }}>
+                <ShieldCheck size={15} />
+                <div>
+                  Exports are written through <b>{profile.accountEmail}</b>, shared only with whoever asked for them.
+                </div>
+              </div>
+            ) : (
+              <div className="ws-ceiling" style={{ marginTop: 14 }}>
+                <TriangleAlert size={14} />
+                <div>
+                  No export account is set, so every export Divo is asked for will fail. Choose one below.
+                </div>
+              </div>
+            )}
+
+            {eligible.length === 0 ? (
+              <p className="ws-sentence-note">
+                No Google account here is one you administer. Connect one from your own <b>Connected apps</b> page first.
+              </p>
+            ) : (
+              <div className="ws-rows" style={{ marginTop: 10 }}>
+                {eligible.map((c) => {
+                  const current = profile?.googleConnectionId === c.connectionId
+                  return (
+                    <div className="ws-row" style={{ paddingLeft: 0, paddingRight: 0 }} key={c.connectionId}>
+                      <span className="ws-ic" data-tone={current ? 'ok' : undefined}>
+                        {current ? <Check size={14} /> : <ShieldCheck size={14} />}
+                      </span>
+                      <div className="ws-row-main">
+                        <b>{c.accountEmail ?? c.label}</b>
+                        <p>{current ? 'Every export is written through this account' : 'Use this account for exports instead'}</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={current || saving}
+                        onClick={async () => {
+                          try { await configure(c.connectionId); toast(`Exports now go through ${c.accountEmail ?? c.label}`) }
+                          catch (e) { toast(e instanceof Error ? e.message : 'Could not set the export account', 'error') }
+                        }}
+                      >
+                        {current ? 'In use' : 'Use this one'}
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+      <div className="ws-panel-foot">
+        <CircleAlert size={13} />
+        An export account can be pointed somewhere else but not removed — there is no route to unset it
+      </div>
+    </Panel>
   )
 }
 
