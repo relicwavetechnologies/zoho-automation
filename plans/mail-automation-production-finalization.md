@@ -15,7 +15,7 @@ Last synced 2026-08-02. Branch `dev`, **not pushed**.
 |---|---|---|
 | **0 — Stop lying** | ✅ merged to `dev` | `8148a7b51` |
 | **1 — Visibility (backend)** | ✅ merged to `dev` | `e2c2abc62`, `54a2f0f8a` |
-| **1 — Visibility (screen)** | ⬜ next | — |
+| **1 — Visibility (screen)** | ✅ merged to `dev` | `b994c22f7` |
 | 2 — Silent death (D2, D3, D4, D14) | ⬜ | — |
 | 3 — Dead OAuth path (D5) | ⬜ | — |
 | 4 — Security and governance (S1–S5) | ⬜ | — |
@@ -36,11 +36,11 @@ Audit and doc revamp: `cb6b983b2`.
    skill registry. Committed ≠ live. New companies pick it up at creation;
    every existing company needs this script run once. This is defect P2 and it
    will keep biting until Wave 7.
-3. **`dev` does not currently typecheck** — `src/application/skills/zoho.skill.ts`
-   has six TS1005 syntax errors from another workstream's uncommitted edit.
-   Unrelated to Mail Ops, but nothing should be pushed until it parses.
-   Separately, `tests/tools/zoho-tools.test.ts` → "personalized scope filters
-   Books records after Zoho responds" fails on `dev` and predates this work.
+3. ~~**`dev` does not typecheck**~~ — ✅ resolved by the other workstream;
+   `tsc --noEmit` exits 0 in `advance-backend/`, and `admin/` typechecks and
+   builds clean. `tests/tools/zoho-tools.test.ts` → "personalized scope filters
+   Books records after Zoho responds" still fails on `dev`; it predates this
+   work and is not Mail Ops.
 
 ### What Wave 1 actually shipped
 
@@ -68,9 +68,33 @@ Design decisions made during implementation, beyond what §5 specified:
   an owner with no Lark identity is recorded, because retrying would never
   succeed.
 
+The screen (`b994c22f7`) is `/me/mail-rules` in the personal scope — a
+`YouMailRules` screen in its own `screens-you-mail.tsx` rather than appended to
+the 1,400-line `screens-you.tsx`, a `data/use-mail-automations.ts` hook, a nav
+entry, a route, and a `mailRules` `DATA_SOURCES` marker reading `live`.
+
+Two things sit above the rule list, in this order, because they are the two
+things that actually go wrong:
+
+- **Rules whose destination domain differs from the mailbox domain get their
+  own panel** (S3). Domain-to-domain is the only comparison this screen can
+  make honestly — there is no company address book to check against — so it
+  claims exactly that and no more.
+- **The mailbox banner names the failing address.** A watch that never
+  registered kills every rule on that mailbox at once, and the per-rule rows
+  underneath would each look individually fine.
+
+The screen is read-only: pause and delete still go through Divo, and the panel
+footer says so rather than offering buttons that do not exist. `tsc` exits 0
+and `npm run build` succeeds; it was not exercised in a browser because
+port 5173 is held by another session's dev server and admin OAuth callbacks are
+registered against that port.
+
 61 tests pass across the mail suite. Wave 1's endpoints return today's truth —
 they cannot yet show deliveries that were refused before a row was written,
-because DR-2 lands in Wave 2. Waves 1 and 2 are a pair.
+because DR-2 lands in Wave 2. Waves 1 and 2 are a pair, and the screen is the
+reason: it will faithfully display a rule as `working` right up until the
+moment nothing arrives, because the refusal never became a row.
 
 ---
 
@@ -267,7 +291,7 @@ Added a guard test asserting no surface claims OTP extraction, **verified by rei
 
 **Wave 1 — Visibility** *(DR-1)*
 - ✅ **Backend** *(`e2c2abc62`, `54a2f0f8a`)* — the three endpoints, the health-interpretation module, the read repository split, and the Lark notifier. See Progress above for the decisions taken during implementation.
-- ⬜ **Screen** — Mail rules view in the personal "You" scope (`admin/src/pages/workspace/screens-you.tsx`, sibling to `YouConnections`/`YouAccess`), a `data/use-mail-automations.ts` hook following the existing `use-my-activity.ts` pattern, a route, and a `DATA_SOURCES` entry. Built on the workspace's own `ui.tsx` primitives — shadcn is gone from `admin/` except `sonner`. Active external-forward rules shown prominently (S3).
+- ✅ **Screen** (`b994c22f7`) — `/me/mail-rules` in the personal "You" scope: `screens-you-mail.tsx`, `data/use-mail-automations.ts`, nav entry, route, `mailRules` `DATA_SOURCES` marker. Built on the workspace's own `ui.tsx` primitives. Rules leaving the mailbox's own domain get a dedicated panel above the list (S3), and the mailbox banner names the failing address above rules that would otherwise look fine.
 
 *Acceptance:* a user whose rule stopped firing can determine unaided that it stopped and why.
 
