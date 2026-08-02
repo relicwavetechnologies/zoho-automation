@@ -1483,7 +1483,7 @@ describe('Lark webhook card authorization', () => {
     assert.equal(receivedActor.userId, 'admin-1');
   });
 
-  it('confirms an opaque export offer without reusing the source card as its progress tracker', async () => {
+  it('locks the source export card with the selected format after queueing', async () => {
     const confirmations: unknown[] = [];
     const handler = new LarkDataExportCardHandler({
       confirmForActor: async input => {
@@ -1492,41 +1492,60 @@ describe('Lark webhook card authorization', () => {
       },
     } as any, noopLogger);
     const offerId = '11111111-1111-4111-8111-111111111111';
-    const result = await runWebhook({
-      header: {
-        event_type: 'card.action.trigger',
-        token: 'verify',
-        tenant_key: 'tenant-1',
-      },
-      event: {
-        operator: { open_id: 'ou_admin', name: 'Admin' },
-        context: { open_chat_id: 'oc_export', open_message_id: 'om_export_card' },
-        action: {
-          value: {
-            action: JSON.stringify({ kind: 'data_export_confirm', offerId, format: 'csv' }),
+    const cases = [
+      { format: 'google_sheet', title: 'Google Sheet export started' },
+      { format: 'csv', title: 'CSV export started' },
+      { format: 'xlsx', title: 'Excel export started' },
+    ] as const;
+
+    for (const testCase of cases) {
+      let adapter: any;
+      const result = await runWebhook({
+        header: {
+          event_type: 'card.action.trigger',
+          token: 'verify',
+          tenant_key: 'tenant-1',
+        },
+        event: {
+          operator: { open_id: 'ou_admin', name: 'Admin' },
+          context: { open_chat_id: 'oc_export', open_message_id: 'om_export_card' },
+          action: {
+            value: {
+              action: JSON.stringify({
+                kind: 'data_export_confirm',
+                offerId,
+                format: testCase.format,
+              }),
+            },
           },
         },
-      },
-    }, {
-      identity: {
-        userId: 'admin-1',
-        companyId: 'company-1',
-        aiRole: 'COMPANY_ADMIN',
-        channel: 'lark',
-      },
-      dataExportCardHandler: handler,
-    });
+      }, {
+        identity: {
+          userId: 'admin-1',
+          companyId: 'company-1',
+          aiRole: 'COMPANY_ADMIN',
+          channel: 'lark',
+        },
+        setupAdapter: value => { adapter = value; captureOutbound(value); },
+        dataExportCardHandler: handler,
+      });
 
-    await waitUntil(() => confirmations.length === 1, 'export confirmation completed');
-    assert.deepEqual(confirmations, [{
-      offerId,
-      companyId: 'company-1',
-      userId: 'admin-1',
-      chatId: 'oc_export',
-      destinationFormat: 'csv',
-    }]);
-    assert.equal((result.responseBody as any).toast.type, 'success');
-    assert.equal('card' in (result.responseBody as any), false);
+      assert.equal((result.responseBody as any).toast.type, 'success');
+      assert.equal('card' in (result.responseBody as any), false);
+      await waitUntil(() => adapter.__updatedMessages.length === 1, 'source export card locked');
+      assert.equal(adapter.__updatedMessages[0].messageId, 'om_export_card');
+      const card = JSON.parse(adapter.__updatedMessages[0].card).card;
+      assert.equal(card.header.title.content, testCase.title);
+      assert.match(card.body.elements[0].content, /separate Divo card/);
+      assert.equal(JSON.stringify(card).includes('"tag":"button"'), false);
+      assert.equal(adapter.__sentCards.length, 0);
+    }
+
+    assert.deepEqual(confirmations.map((value: any) => value.destinationFormat), [
+      'google_sheet',
+      'csv',
+      'xlsx',
+    ]);
   });
 
   it('acknowledges a slow export confirmation before delivering its follow-up as a new card', async () => {
@@ -1767,6 +1786,7 @@ describe('Lark webhook card authorization', () => {
 
   it('keeps the export button when confirmation is still in progress', async () => {
     let handled = false;
+    let adapter: any;
     const handler = new LarkDataExportCardHandler({
       confirmForActor: async () => {
         handled = true;
@@ -1791,15 +1811,20 @@ describe('Lark webhook card authorization', () => {
           },
         },
       },
-    }, { dataExportCardHandler: handler });
+    }, {
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
+      dataExportCardHandler: handler,
+    });
 
     assert.equal((result.responseBody as any).toast.type, 'success');
     await waitUntil(() => handled, 'in-progress confirmation checked');
     assert.equal('card' in (result.responseBody as any), false);
+    assert.equal(adapter.__updatedMessages.length, 0);
   });
 
   it('does not claim an already-confirmed export is tracking on this card', async () => {
     let handled = false;
+    let adapter: any;
     const handler = new LarkDataExportCardHandler({
       confirmForActor: async () => {
         handled = true;
@@ -1827,11 +1852,18 @@ describe('Lark webhook card authorization', () => {
           },
         },
       },
-    }, { dataExportCardHandler: handler });
+    }, {
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
+      dataExportCardHandler: handler,
+    });
 
     assert.equal((result.responseBody as any).toast.type, 'success');
     await waitUntil(() => handled, 'existing confirmation checked');
     assert.equal('card' in (result.responseBody as any), false);
+    await waitUntil(() => adapter.__updatedMessages.length === 1, 'existing export card locked');
+    const card = JSON.parse(adapter.__updatedMessages[0].card).card;
+    assert.equal(card.header.title.content, 'Data export started');
+    assert.equal(JSON.stringify(card).includes('"tag":"button"'), false);
   });
 
   it('does not confirm when Lark omits the signed source-card message ID', async () => {
@@ -2051,6 +2083,7 @@ function captureOutbound(adapter: any): void {
   adapter.__sentTextDeliveries = [];
   adapter.__sentCards = [];
   adapter.__sentCardDeliveries = [];
+  adapter.__updatedMessages = [];
   adapter.__finalReplies = [];
   adapter.__finalActions = [];
   adapter.__finalTraces = [];
@@ -2090,6 +2123,10 @@ function captureOutbound(adapter: any): void {
     adapter.__sentCards.push(card);
     adapter.__sentCardDeliveries.push({ replyToMessageId, replyInThread });
     return ok({ messageId: 'om_card' });
+  };
+  adapter.updateMessageById = async (messageId: string, card: string) => {
+    adapter.__updatedMessages.push({ messageId, card });
+    return ok(undefined);
   };
   adapter.sendFinalReply = async (
     _conversation: unknown,

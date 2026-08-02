@@ -571,6 +571,7 @@ async function deliverDeferredDataExportResponse(
   const response = asRecord(result.responseBody);
   const card = asRecord(response?.['card']);
   const cardData = card?.['type'] === 'raw' ? card['data'] : undefined;
+  const delivery = response?.['delivery'];
   const event = asRecord(cardEvent);
   const context = asRecord(event?.['context']);
   const chatId = typeof context?.['open_chat_id'] === 'string'
@@ -581,6 +582,27 @@ async function deliverDeferredDataExportResponse(
     return;
   }
   if (cardData) {
+    if (delivery === 'replace_source_card') {
+      const sourceMessageId = typeof context?.['open_message_id'] === 'string'
+        ? context['open_message_id']
+        : typeof event?.['open_message_id'] === 'string'
+          ? event['open_message_id']
+          : undefined;
+      if (!sourceMessageId) {
+        log.warn('webhook.data_export.deferred_update_missing_message');
+        return;
+      }
+      const updated = await adapter.updateMessageById(
+        sourceMessageId,
+        JSON.stringify({ msg_type: 'interactive', card: cardData }),
+      );
+      if (!updated.ok) {
+        log.warn('webhook.data_export.deferred_update_failed', {
+          error: updated.error.message,
+        });
+      }
+      return;
+    }
     const sent = await adapter.sendCardToChat(
       chatId,
       JSON.stringify({ msg_type: 'interactive', card: cardData }),
