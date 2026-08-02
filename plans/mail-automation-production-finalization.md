@@ -356,7 +356,19 @@ The closure moved out of composition for one reason: the only test covering it s
 
 **D9.** Forwards carry `X-Divo-Mailops: <ruleId>`; the marker survives into event metadata and the sync loop skips any message wearing one, whichever rule sent it. The skip runs before authorization, so a self-forward costs no permission lookup.
 
-**Wave 6 — Matching fidelity** *(D10, D11, D12, D13, T7, T8)* plus direct MIME unit tests.
+**Wave 6 — Matching fidelity** *(D10, D11, D13, T7)* — ✅ done. **D12 and T8 remain open**, both waiting on decisions rather than on work.
+
+**D10.** A filename alone no longer makes a message attachment-bearing. An inline part — a signature logo, a tracking pixel, an embedded screenshot — is one the message draws itself with, and says so through `Content-Disposition: inline` or the `Content-ID` its HTML points at. Either marker disqualifies the part. A filename with nothing contradicting it still counts, because Gmail omits the disposition on plenty of genuine attachments; the test asserts both directions.
+
+**D11.** `to` matches the union of `To`, `Cc`, `Bcc` and `Delivered-To`. Being copied is not a different event to the person receiving the mail, and `Delivered-To` is the only header that survives an alias or group expansion — the case where the address the user actually typed appears nowhere else in the message. Recipients are compared as whole mailboxes per DR-8, so `ana@example.com` no longer matches `dana@example.com`, and a display name claiming to be an address (`"ana@example.com" <impostor@evil.example>`) is read as the bracketed mailbox, the same rule `from` already followed. `MailMessageMetadata` gained optional `cc` / `bcc` / `deliveredTo`; events recorded before this carry `to` alone and match exactly as they used to.
+
+**D13 and T7.** The creation schema is `.strict()`, so `{"from":"@x.com","cc":"finance@y.com"}` is now rejected instead of being silently stripped down to `from` and reported as a success. `to` is validated as a mailbox or `@domain` like `from`, which closes the T7 workaround of smuggling a brand word into `to`. And `hasAttachment` on its own is refused: at least one of `from`, `to`, `subjectContains`, `bodyContains` is required, because "every message carrying a file, forwarded to an arbitrary address" was never what anyone meant.
+
+**Stored rules are parsed by a deliberately looser schema.** Tightening how a rule may be *written* must not stop rules already written — a stored `to` of free text keeps its substring behaviour, and a stored `hasAttachment`-only rule keeps firing. Nothing new can be created in either shape. This departs from DR-8's "flagged in the health API": flagging them `valid: false` would be a lie, since they do match mail. They are simply the last of their kind.
+
+**D12 is unchanged and still blocked on O-2**, and the skill text still states the current behaviour exactly: `@domain` matches that domain only. **T8 needed no runtime change** — Wave 0 documented literal substring semantics, and the alternative, rejecting strings that look like patterns, would refuse legitimate subjects such as `Invoice | Acme`. It stays documented rather than enforced.
+
+**Instruction layer updated in the same commit**, per DR-9: the seeded skill and `parameterDocs` previously told the model that `to` reads the `To` header only, that `hasAttachment` counts inline images, and that unknown keys are ignored. All three were true when written and all three are now false.
 
 **Wave 7 — Provisioning determinism** *(P1, P2, P3)*
 One provisioning path that runs on deploy and covers skills *and* permissions. Add the `existing > 0` guard and cache invalidation. Decide the §10 posture question first.

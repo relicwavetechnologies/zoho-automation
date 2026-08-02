@@ -11,7 +11,9 @@ import {
 import {
   mailRuleMatchSchema,
   mailRuleMatches,
+  parseMailRule,
 } from '../../src/application/mail-ops/mail-rule.matcher.ts';
+import type { MailMessageMetadata } from '../../src/application/mail-ops/mail-ops.types.ts';
 import { makeCtx } from './tool-test.helpers.ts';
 
 const connectionId = '11111111-1111-4111-8111-111111111111';
@@ -138,6 +140,86 @@ describe('mailAutomations tool', () => {
         hasAttachment: false,
       },
     ), false);
+  });
+
+  it('matches a recipient across To, Cc and Delivered-To, not To alone', () => {
+    const message = (headers: Partial<MailMessageMetadata>): MailMessageMetadata => ({
+      from: 'Payroll <payroll@example.com>',
+      to: 'everyone@example.com',
+      subject: 'March payslips',
+      snippet: '',
+      bodyText: '',
+      hasAttachment: false,
+      ...headers,
+    });
+
+    // Being copied is not a different event to the person receiving the mail.
+    assert.equal(
+      mailRuleMatches({ to: 'ana@example.com' }, message({ cc: 'Ana <ana@example.com>, bo@example.com' })),
+      true,
+    );
+    // The header that survives an alias expansion, where the address the user
+    // typed appears nowhere else in the message.
+    assert.equal(
+      mailRuleMatches({ to: 'ana@example.com' }, message({ deliveredTo: 'ana@example.com' })),
+      true,
+    );
+    // An event recorded before recipient headers were captured still matches
+    // on the one header it has.
+    assert.equal(
+      mailRuleMatches({ to: 'ana@example.com' }, message({ to: 'ana@example.com' })),
+      true,
+    );
+    assert.equal(mailRuleMatches({ to: 'ana@example.com' }, message({})), false);
+  });
+
+  it('reads a recipient as a whole mailbox rather than a substring', () => {
+    const message: MailMessageMetadata = {
+      from: 'alerts@example.com',
+      to: '"ana@example.com" <impostor@evil.example>, dana@example.com',
+      subject: 'Notice',
+      snippet: '',
+      bodyText: '',
+      hasAttachment: false,
+    };
+    // `dana@example.com` contains `ana@example.com`, and the display name
+    // claims to be it outright. Neither is the mailbox the rule named.
+    assert.equal(mailRuleMatches({ to: 'ana@example.com' }, message), false);
+    assert.equal(mailRuleMatches({ to: '@example.com' }, message), true);
+    assert.equal(mailRuleMatches({ to: 'dana@example.com' }, message), true);
+  });
+
+  it('keeps a stored free-text recipient rule firing while refusing to create another', () => {
+    const stored = parseMailRule({
+      match: { to: 'Anthropic' },
+      action: { type: 'forward' },
+      destination: { type: 'email', email: 'person@example.com' },
+    });
+    assert.equal(mailRuleMatches(stored.match, {
+      from: 'alerts@example.com',
+      to: 'Anthropic Billing <billing@anthropic.com>',
+      subject: 'Invoice',
+      snippet: '',
+      bodyText: '',
+      hasAttachment: false,
+    }), true);
+    // Tightening how a rule is written must not stop the rules already written.
+    assert.equal(mailRuleMatchSchema.safeParse({ to: 'Anthropic' }).success, false);
+  });
+
+  it('refuses a match that names no message and one that invents a field', () => {
+    // Forwards every message carrying a file, including every signature logo.
+    assert.equal(mailRuleMatchSchema.safeParse({ hasAttachment: true }).success, false);
+    assert.equal(
+      mailRuleMatchSchema.safeParse({ subjectContains: 'Invoice', hasAttachment: true }).success,
+      true,
+    );
+    // Previously stripped, leaving a rule that matched `from` alone and
+    // reported success — the narrowing the user asked for silently gone.
+    assert.equal(
+      mailRuleMatchSchema.safeParse({ from: '@x.example', cc: 'finance@y.example' }).success,
+      false,
+    );
   });
 
   it('starts deferred OAuth and ends the run contract when no owned account exists', async () => {

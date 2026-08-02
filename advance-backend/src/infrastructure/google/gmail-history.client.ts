@@ -446,6 +446,13 @@ function messageMetadata(message: GmailMessage): MailMessageMetadata {
   return {
     from: headers.get('from') ?? '',
     to: headers.get('to') ?? '',
+    // Carried so a recipient rule sees every address the message was actually
+    // sent to. `Delivered-To` is the one that survives an alias expansion.
+    ...(headers.get('cc') ? { cc: headers.get('cc')! } : {}),
+    ...(headers.get('bcc') ? { bcc: headers.get('bcc')! } : {}),
+    ...(headers.get('delivered-to')
+      ? { deliveredTo: headers.get('delivered-to')! }
+      : {}),
     subject: headers.get('subject') ?? '',
     ...(headers.get('date') ? { date: headers.get('date')! } : {}),
     snippet: message.snippet ?? '',
@@ -476,8 +483,34 @@ function extractBody(part: GmailMessagePart | undefined): string {
 
 function hasAttachment(part: GmailMessagePart | undefined): boolean {
   if (!part) return false;
-  return Boolean(part.filename?.trim())
+  return isAttachedFile(part)
     || (part.parts ?? []).some(child => hasAttachment(child));
+}
+
+/**
+ * Whether this part is a file someone attached, rather than one the message
+ * draws itself with.
+ *
+ * A signature logo, a tracking pixel and an embedded screenshot all carry a
+ * filename, so a filename alone made `hasAttachment` true for most ordinary
+ * corporate mail — a rule asking for "invoices with attachments" matched every
+ * message with a logo in the footer. What separates the two is that an inline
+ * part is referenced by the body: it says so in `Content-Disposition`, or it
+ * carries the `Content-ID` the HTML points at.
+ */
+function isAttachedFile(part: GmailMessagePart): boolean {
+  if (!part.filename?.trim()) return false;
+  const headers = new Map(
+    (part.headers ?? []).map(header => [
+      header.name?.toLocaleLowerCase() ?? '',
+      header.value ?? '',
+    ]),
+  );
+  if (headers.has('content-id')) return false;
+  return !(headers.get('content-disposition') ?? '')
+    .trimStart()
+    .toLocaleLowerCase()
+    .startsWith('inline');
 }
 
 function decodeBody(data: string): string {

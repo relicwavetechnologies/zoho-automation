@@ -282,6 +282,84 @@ describe('GmailHistoryClient forward stamping', () => {
   });
 });
 
+describe('GmailHistoryClient message metadata', () => {
+  const syncOneMessage = async (payload: unknown) => {
+    const fetchStub = (async (url: string) => {
+      if (url.includes('/history?')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            historyId: '200',
+            history: [{ id: '150', messagesAdded: [{ message: { id: 'm1' } }] }],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: 'm1', threadId: 't1', historyId: '1', internalDate: '0', payload,
+        }),
+      };
+    }) as unknown as typeof fetch;
+    const sync = await new GmailHistoryClient(fetchStub)
+      .sync({ accessToken: 'token', historyId: '100' });
+    return sync.events[0]!.metadata;
+  };
+
+  const filePart = (headers: Array<{ name: string; value: string }>) => ({
+    mimeType: 'multipart/mixed',
+    headers: [{ name: 'From', value: 'sender@example.com' }],
+    parts: [
+      { mimeType: 'text/plain', body: { data: '' } },
+      { mimeType: 'image/png', filename: 'logo.png', headers },
+    ],
+  });
+
+  it('does not call a signature logo an attachment', async () => {
+    // An inline part is one the message draws itself with. Counting it made
+    // `hasAttachment` true for most ordinary corporate mail.
+    assert.equal(
+      (await syncOneMessage(filePart([
+        { name: 'Content-Disposition', value: 'inline; filename="logo.png"' },
+      ]))).hasAttachment,
+      false,
+    );
+    assert.equal(
+      (await syncOneMessage(filePart([
+        { name: 'Content-ID', value: '<logo@example>' },
+      ]))).hasAttachment,
+      false,
+    );
+    assert.equal(
+      (await syncOneMessage(filePart([
+        { name: 'Content-Disposition', value: 'attachment; filename="logo.png"' },
+      ]))).hasAttachment,
+      true,
+    );
+    // Gmail omits the disposition on plenty of genuine attachments, so a
+    // filename with nothing contradicting it still counts.
+    assert.equal((await syncOneMessage(filePart([]))).hasAttachment, true);
+  });
+
+  it('carries every header that says where the message was sent', async () => {
+    const metadata = await syncOneMessage({
+      mimeType: 'text/plain',
+      headers: [
+        { name: 'From', value: 'payroll@example.com' },
+        { name: 'To', value: 'everyone@example.com' },
+        { name: 'Cc', value: 'ana@example.com' },
+        { name: 'Delivered-To', value: 'alias@example.com' },
+      ],
+    });
+
+    assert.equal(metadata.cc, 'ana@example.com');
+    assert.equal(metadata.deliveredTo, 'alias@example.com');
+    assert.equal(metadata.bcc, undefined);
+  });
+});
+
 describe('GmailHistoryClient stale-cursor recovery', () => {
   function recoveringGmail(totalMessages: number) {
     const queries: string[] = [];

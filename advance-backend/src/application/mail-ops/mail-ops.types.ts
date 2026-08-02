@@ -23,6 +23,16 @@ export interface NewMailEvent {
 export interface MailMessageMetadata extends Record<string, unknown> {
   from: string;
   to: string;
+  /**
+   * The other headers that say where a message was sent.
+   *
+   * Optional because events recorded before recipient matching existed carry
+   * `to` alone; a rule reading one of those falls back to `to`, which is what
+   * it used to match against anyway.
+   */
+  cc?: string;
+  bcc?: string;
+  deliveredTo?: string;
   subject: string;
   date?: string;
   snippet: string;
