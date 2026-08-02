@@ -450,6 +450,22 @@ export class MailOpsWorker {
       if (!advanced.value) {
         throw new Error('Mailbox sync claim was lost before cursor advancement.');
       }
+      // A recovery is not an ordinary sync and should not read like one in the
+      // logs: the cursor was rejected outright, which means mail was missed,
+      // and this line is the only record of how much of it came back.
+      if (sync.staleCursorRecovered) {
+        const log = sync.recoveryTruncated
+          ? this.log.error.bind(this.log)
+          : this.log.warn.bind(this.log);
+        log('mail_ops.stale_cursor_recovered', {
+          subscriptionId: claim.subscriptionId,
+          mailboxEmail: claim.mailboxEmail,
+          recoveredMessageCount: sync.recoveredMessageCount ?? 0,
+          // True means the window held more than one pass reads, so some of
+          // what the dead cursor missed is gone for good.
+          recoveryTruncated: sync.recoveryTruncated === true,
+        });
+      }
       this.log.info('mail_ops.mailbox_synced', {
         subscriptionId: claim.subscriptionId,
         eventCount: persisted.value.length,

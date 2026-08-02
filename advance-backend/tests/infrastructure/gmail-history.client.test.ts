@@ -284,3 +284,66 @@ describe('GmailHistoryClient forward stamping', () => {
     assert.equal(sync.events[0]?.metadata.forwardedByRuleId, 'rule-1');
   });
 });
+
+describe('GmailHistoryClient stale-cursor recovery', () => {
+  function recoveringGmail(totalMessages: number) {
+    const queries: string[] = [];
+    let served = 0;
+    const fetchStub = (async (url: string) => {
+      if (url.includes('/history?')) {
+        return { ok: false, status: 404, json: async () => ({ error: { message: 'Not Found' } }) };
+      }
+      if (url.includes('/profile')) {
+        return { ok: true, status: 200, json: async () => ({ historyId: '900' }) };
+      }
+      if (url.includes('/messages?')) {
+        queries.push(url);
+        const size = Math.min(100, totalMessages - served);
+        const page = Array.from({ length: Math.max(0, size) }, (_, i) => ({ id: `m${served + i}` }));
+        served += page.length;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            messages: page,
+            ...(served < totalMessages ? { nextPageToken: `p${served}` } : {}),
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: 'm', threadId: 't', historyId: '1', internalDate: '0',
+          payload: { headers: [], mimeType: 'text/plain' },
+        }),
+      };
+    }) as unknown as typeof fetch;
+    return { client: new GmailHistoryClient(fetchStub), queries };
+  }
+
+  it('sweeps the week the cursor could have missed, not one day of it', async () => {
+    // Gmail keeps roughly a week of history, so a cursor is only rejected after
+    // a gap of about that long. Looking back a single day threw the rest away
+    // with no record that it had happened.
+    const gmail = recoveringGmail(250);
+
+    const sync = await gmail.client.sync({ accessToken: 'token', historyId: 'stale' });
+
+    assert.equal(sync.staleCursorRecovered, true);
+    assert.equal(sync.recoveredMessageCount, 250);
+    assert.equal(sync.recoveryTruncated, false);
+    assert.ok(gmail.queries[0]?.includes(encodeURIComponent('newer_than:7d')));
+    // Paginated rather than one oversized request.
+    assert.equal(gmail.queries.length, 3);
+  });
+
+  it('says so when the window held more than one recovery will read', async () => {
+    const gmail = recoveringGmail(900);
+
+    const sync = await gmail.client.sync({ accessToken: 'token', historyId: 'stale' });
+
+    assert.equal(sync.recoveredMessageCount, 500);
+    assert.equal(sync.recoveryTruncated, true);
+  });
+});

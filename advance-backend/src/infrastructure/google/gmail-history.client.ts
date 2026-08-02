@@ -6,7 +6,21 @@ import type {
 
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const MAX_HISTORY_PAGES = 10;
-const MAX_RECOVERY_MESSAGES = 100;
+/**
+ * The window a stale-cursor recovery sweeps, and how much of it it will read.
+ *
+ * Gmail keeps roughly a week of history, so a cursor is only ever rejected
+ * after a gap of about that long — and the old sweep looked back one day and
+ * took at most a hundred messages. Everything older simply vanished, with no
+ * record that it had. Seven days matches what the cursor could have missed.
+ *
+ * Re-reading mail Divo already handled is harmless: an event's ID is derived
+ * from the message, and a delivery is unique per rule and event, so anything
+ * already delivered is refused a second time by the database.
+ */
+const RECOVERY_WINDOW_QUERY = 'in:inbox newer_than:7d';
+const MAX_RECOVERY_MESSAGES = 500;
+const RECOVERY_PAGE_SIZE = 100;
 /**
  * How many `format=full` message fetches run at once.
  *
@@ -36,6 +50,14 @@ export interface GmailHistorySync {
    * should come straight back rather than wait for the next reconciliation.
    */
   truncated: boolean;
+  /** How many messages a stale-cursor recovery swept back in. */
+  recoveredMessageCount?: number;
+  /**
+   * The recovery window held more mail than one pass will read, so some of
+   * what the dead cursor missed is gone for good. Reported rather than
+   * swallowed: the old code dropped the remainder and called it a clean sync.
+   */
+  recoveryTruncated?: boolean;
 }
 
 export class GmailHistoryClient {
@@ -214,25 +236,48 @@ export class GmailHistoryClient {
   private async reconcileStaleCursor(
     accessToken: string,
   ): Promise<GmailHistorySync> {
-    const query = new URLSearchParams({
-      q: 'in:inbox newer_than:1d',
-      maxResults: String(MAX_RECOVERY_MESSAGES),
-    });
-    const [profile, messages] = await Promise.all([
-      this.getJson<{ historyId?: string }>(`${GMAIL_API}/profile`, accessToken),
-      this.getJson<{ messages?: Array<{ id?: string }> }>(
-        `${GMAIL_API}/messages?${query}`,
-        accessToken,
-      ),
-    ]);
+    const profile = await this.getJson<{ historyId?: string }>(
+      `${GMAIL_API}/profile`,
+      accessToken,
+    );
     if (!profile.historyId) throw new Error('Gmail profile returned no historyId.');
-    const ids = (messages.messages ?? [])
-      .map(message => message.id)
-      .filter((id): id is string => Boolean(id));
+
+    const ids: string[] = [];
+    let pageToken: string | undefined;
+    let recoveryTruncated = false;
+    while (ids.length < MAX_RECOVERY_MESSAGES) {
+      const query = new URLSearchParams({
+        q: RECOVERY_WINDOW_QUERY,
+        maxResults: String(Math.min(
+          RECOVERY_PAGE_SIZE,
+          MAX_RECOVERY_MESSAGES - ids.length,
+        )),
+        ...(pageToken ? { pageToken } : {}),
+      });
+      const page = await this.getJson<{
+        messages?: Array<{ id?: string }>;
+        nextPageToken?: string;
+      }>(`${GMAIL_API}/messages?${query}`, accessToken);
+      for (const message of page.messages ?? []) {
+        if (message.id) ids.push(message.id);
+      }
+      pageToken = page.nextPageToken;
+      if (!pageToken) break;
+      if (ids.length >= MAX_RECOVERY_MESSAGES) {
+        // The window held more than one recovery will read. Said out loud,
+        // because the alternative — the old behaviour — was to drop the
+        // remainder and report a clean sync.
+        recoveryTruncated = true;
+        break;
+      }
+    }
+
     return {
       nextHistoryId: profile.historyId,
       events: await this.loadEvents(accessToken, ids),
       staleCursorRecovered: true,
+      recoveredMessageCount: ids.length,
+      recoveryTruncated,
       truncated: false,
     };
   }
