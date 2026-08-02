@@ -127,6 +127,7 @@ import { DataExportOfferService } from './application/data-export/data-export-of
 import { DatasetSourceRegistry } from './application/data-export/data-export.source-registry';
 import {
   AirtableDataExportSource,
+  OmsSnapshotDataExportSource,
   ZohoBooksDataExportSource,
 } from './application/data-export/data-export.sources';
 import { GoogleWorkspaceExportSink } from './application/data-export/google-workspace-export.sink';
@@ -1457,6 +1458,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       return buildCurrencyUtilities(await getExchangeRates());
     },
   ));
+  dataExportSources.register(new OmsSnapshotDataExportSource(companyOmsSiteDataService));
   const googleWorkspaceExportSink = new GoogleWorkspaceExportSink();
 
   const zohoFinanceOps = new ZohoFinanceOps(
@@ -1803,6 +1805,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   }));
   toolRegistry.register(createOmsSiteDataTool({
     service: companyOmsSiteDataService,
+    offers: dataExportOfferService,
     cloudinary: cloudinaryAdapter,
     audit: auditService,
     csvLinkTtl: env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,

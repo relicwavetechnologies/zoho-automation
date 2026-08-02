@@ -11,15 +11,35 @@ import type { AuditService } from '../../observability/audit.service';
 import { arrayToCsv } from '../shared/sandbox-runner';
 import { CompanyOmsSiteDataService } from '../../oms/company-oms-site-data.service';
 import { defaultSortDirection, excludesUnmeasuredSpamScore, OmsSiteDataServiceError, OmsSiteDataToolArgsSchema, type OmsSiteDataToolArgs } from '../../oms/oms-site-data.types';
-
-const MAX_MODEL_ROWS = 50;
+import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
+import type { DataExportOfferPayload } from '../../data-export/export-offer';
+import { createDatasetPreview, DATASET_PREVIEW_ROW_LIMIT } from '../../data-export/dataset-preview';
 
 const ResultSchema = z.object({
   status: z.enum(['complete', 'empty', 'partial', 'blocked']),
   operation: z.string(),
   retrievedAt: z.string(),
   coverage: z.record(z.unknown()),
-  rows: z.array(z.record(z.unknown())).max(MAX_MODEL_ROWS),
+  preview: z.object({
+    columns: z.array(z.string()),
+    rows: z.array(z.record(z.unknown())).max(DATASET_PREVIEW_ROW_LIMIT),
+    coverage: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('complete'), totalRows: z.number().int().nonnegative() }),
+      z.object({
+        kind: z.literal('truncated'),
+        returnedRows: z.number().int().nonnegative(),
+        knownTotal: z.number().int().nonnegative().optional(),
+        reason: z.string(),
+      }),
+      z.object({
+        kind: z.literal('provider_limited'),
+        returnedRows: z.number().int().nonnegative(),
+        reason: z.string(),
+      }),
+      z.object({ kind: z.literal('unknown'), returnedRows: z.number().int().nonnegative() }),
+    ]),
+    exportOfferId: z.string().optional(),
+  }).optional(),
   artifact: z.object({ id: z.string(), downloadUrl: z.string().url(), expiresAt: z.string() }).optional(),
   message: z.string(),
 });
@@ -28,6 +48,7 @@ type Res = z.infer<typeof ResultSchema>;
 
 export const createOmsSiteDataTool = (deps: {
   service: CompanyOmsSiteDataService;
+  offers?: Pick<DataExportOfferService, 'createAuthorizedOffer'>;
   cloudinary: CloudinaryAdapter;
   audit?: AuditService;
   csvLinkTtl?: number;
@@ -69,9 +90,27 @@ export const createOmsSiteDataTool = (deps: {
     try {
       ctx.onProgress?.('Retrieving governed OMS site inventory…');
       const data = await deps.service.execute({ companyId: ctx.runContext.companyId, args });
-      const rows = data.rows.slice(0, MAX_MODEL_ROWS);
+      const canOfferExport = deps.offers !== undefined
+        && data.rows.length > 0
+        && ctx.runContext.channel === 'lark'
+        && Boolean(ctx.runContext.chatId)
+        && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true;
+      const offer = canOfferExport
+        ? await deps.offers!.createAuthorizedOffer(exportPayloadFor(args, ctx))
+        : undefined;
+      const preview = createDatasetPreview({
+        rows: data.rows,
+        coverage: {
+          kind: 'provider_limited',
+          returnedRows: data.rows.length,
+          reason: data.status === 'partial'
+            ? 'oms_100_row_cap_without_pagination_or_total'
+            : 'oms_snapshot_without_pagination_or_total',
+        },
+        ...(offer ? { exportOfferId: offer.offerId } : {}),
+      });
       let artifact: Res['artifact'];
-      if (data.rows.length > MAX_MODEL_ROWS && deps.cloudinary.isAvailable) {
+      if (deps.offers === undefined && data.rows.length > DATASET_PREVIEW_ROW_LIMIT && deps.cloudinary.isAvailable) {
         const headers = headersFor(data.rows);
         const exported = await deps.cloudinary.uploadCsvBuffer({
           buffer: arrayToCsv(headers, data.rows),
@@ -86,9 +125,9 @@ export const createOmsSiteDataTool = (deps: {
         operation: data.operation,
         retrievedAt: new Date().toISOString(),
         coverage: data.coverage,
-        rows,
+        preview,
         ...(artifact ? { artifact } : {}),
-        message: messageFor(data.status, data.rows.length, rows.length, Boolean(artifact), args),
+        message: messageFor(data.status, data.rows.length, preview.rows.length, Boolean(artifact), Boolean(offer), args),
       };
       deps.audit?.record({
         actorId: ctx.runContext.userId,
@@ -99,8 +138,9 @@ export const createOmsSiteDataTool = (deps: {
           operation: args.operation,
           status: result.status,
           rowCount: data.rows.length,
-          returnedRowCount: rows.length,
+          returnedRowCount: preview.rows.length,
           artifactId: artifact?.id ?? null,
+          exportOfferId: offer?.offerId ?? null,
           latencyMs: Date.now() - startedAt,
           correlationId: ctx.correlationId,
         },
@@ -123,7 +163,6 @@ export const createOmsSiteDataTool = (deps: {
           operation: args.operation,
           retrievedAt: new Date().toISOString(),
           coverage: {},
-          rows: [],
           message: normalized.message,
         });
       }
@@ -152,6 +191,7 @@ function messageFor(
   rowCount: number,
   returnedRows: number,
   artifact: boolean,
+  offer: boolean,
   args: OmsSiteDataToolArgs,
 ): string {
   // Divo injects a spamScore >= 0 filter to drop the unmeasured sentinel, which
@@ -159,7 +199,7 @@ function messageFor(
   const spamNote = args.operation === 'search_sites' && excludesUnmeasuredSpamScore(args)
     ? ' Sites with no measured spam score were excluded from this request.'
     : '';
-  if (status === 'empty') return `OMS returned a valid empty JSON array; no matching sites were found.${spamNote}`;
+  if (status === 'empty') return `OMS returned a valid empty JSON array; no matching sites were found. The response remains provider-limited because OMS supplies neither pagination nor a total.${spamNote}`;
   const parts = [`Retrieved ${rowCount} site row${rowCount === 1 ? '' : 's'}.`];
 
   if (status === 'partial') {
@@ -167,16 +207,40 @@ function messageFor(
     // match the operation. Suggesting sortBy elsewhere sends the agent into a
     // schema rejection it cannot resolve.
     parts.push(partialAdviceFor(args));
-  } else if (args.operation === 'list_catalog_values') {
-    parts.push('This is under the OMS 100-row cap, so it is the complete list of distinct values for that field.');
   } else {
-    parts.push('This is under the OMS 100-row cap, so it is the complete set of matches for this request.');
+    parts.push('This response is under the OMS 100-row cap, but it is still a provider-limited snapshot rather than a claimed exhaustive dataset.');
   }
 
   parts.push(`OMS never paginates and never reports a total count.${spamNote}`);
   if (rowCount > returnedRows) parts.push(`Showing the first ${returnedRows} rows in chat.`);
-  if (artifact) parts.push('The complete normalized result is available as a temporary CSV download.');
+  if (offer) parts.push('A governed export of the returned OMS snapshot is available.');
+  if (artifact) parts.push('All rows in this provider-limited response are available as a temporary CSV download.');
   return parts.join(' ');
+}
+
+function exportPayloadFor(
+  args: OmsSiteDataToolArgs,
+  ctx: ToolExecutionContext,
+): DataExportOfferPayload {
+  return {
+    companyId: ctx.runContext.companyId,
+    userId: ctx.runContext.userId,
+    ...(ctx.runContext.departmentId ? { departmentId: ctx.runContext.departmentId } : {}),
+    source: {
+      kind: 'oms_snapshot',
+      connectionId: 'backend_managed',
+      args,
+    },
+    destination: {
+      format: 'auto',
+      title: `OMS ${args.operation.replaceAll('_', ' ')} snapshot`,
+    },
+    chatId: ctx.runContext.chatId!,
+    ...(ctx.runContext.replyToMessageId ? { replyToMessageId: ctx.runContext.replyToMessageId } : {}),
+    ...(ctx.runContext.replyInThread !== undefined ? { replyInThread: ctx.runContext.replyInThread } : {}),
+    requestId: ctx.runContext.requestId ?? ctx.correlationId,
+    ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
+  };
 }
 
 /**

@@ -10,6 +10,7 @@ import type {
   ZohoBooksPaginatedClient,
   ZohoBooksModule,
 } from '../../infrastructure/zoho/zoho-books-paginated.client';
+import type { CompanyOmsSiteDataService } from '../oms/company-oms-site-data.service';
 import {
   type CurrencyConverter,
   getModuleSchema,
@@ -23,6 +24,7 @@ import type { DataExportSource } from './data-export.types';
 
 type AirtableSource = Extract<DataExportSource, { kind: 'airtable_records' }>;
 type ZohoBooksSource = Extract<DataExportSource, { kind: 'zoho_books' }>;
+type OmsSnapshotSource = Extract<DataExportSource, { kind: 'oms_snapshot' }>;
 
 const AIRTABLE_REST_KEYS = new Set(['baseId', 'tableId', 'fieldIds']);
 const AIRTABLE_PAGE_LIMIT = 20_000;
@@ -164,6 +166,27 @@ export class ZohoBooksDataExportSource implements DataExportSourceAdapter<ZohoBo
         if (!result.hasMore || sourceTruncated) break;
       }
     }
+  }
+}
+
+export class OmsSnapshotDataExportSource implements DataExportSourceAdapter<OmsSnapshotSource> {
+  readonly kind = 'oms_snapshot' as const;
+
+  constructor(
+    private readonly service: Pick<CompanyOmsSiteDataService, 'execute'>,
+  ) {}
+
+  async *read(source: OmsSnapshotSource, context: {
+    readonly companyId: string;
+    readonly signal?: AbortSignal;
+  }): AsyncIterable<DataExportPage> {
+    context.signal?.throwIfAborted();
+    const result = await this.service.execute({
+      companyId: context.companyId,
+      args: source.args,
+    });
+    context.signal?.throwIfAborted();
+    yield { rows: result.rows };
   }
 }
 

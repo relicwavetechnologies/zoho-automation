@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { CanonicalToolId } from '../../domain/tools/tool-id';
 import type { ZohoBooksModule } from '../../infrastructure/zoho/zoho-books-paginated.client';
+import { OmsSiteDataToolArgsSchema } from '../oms/oms-site-data.types';
 
 export const DATA_EXPORT_ROW_LIMIT = 5_000;
 const ZOHO_BOOKS_SOURCE_MODULES = [
@@ -9,28 +10,43 @@ const ZOHO_BOOKS_SOURCE_MODULES = [
   'bankaccounts', 'banktransactions', 'expenses', 'items',
 ] as const satisfies readonly ZohoBooksModule[];
 
+const airtableDatasetSourceSchema = z.object({
+  kind: z.literal('airtable_records'),
+  connectionId: z.string().uuid(),
+  toolId: z.enum(['airtableBase', 'airtableRecords']),
+  nativeTool: z.enum(['list_records_for_table', 'search_records']),
+  input: z.record(z.unknown()),
+}).strict();
+const zohoBooksDatasetSourceSchema = z.object({
+  kind: z.literal('zoho_books'),
+  connectionId: z.string().uuid(),
+  module: z.enum(ZOHO_BOOKS_SOURCE_MODULES),
+  organizationId: z.string().optional(),
+  filters: z.record(z.unknown()).optional(),
+  query: z.string().optional(),
+}).strict();
+const omsSnapshotDatasetSourceSchema = z.object({
+  kind: z.literal('oms_snapshot'),
+  connectionId: z.literal('backend_managed'),
+  args: OmsSiteDataToolArgsSchema,
+}).strict();
+
+export const directDatasetSourceSchema = z.discriminatedUnion('kind', [
+  airtableDatasetSourceSchema,
+  zohoBooksDatasetSourceSchema,
+]);
+
 export const datasetSourceSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('airtable_records'),
-    connectionId: z.string().uuid(),
-    toolId: z.enum(['airtableBase', 'airtableRecords']),
-    nativeTool: z.enum(['list_records_for_table', 'search_records']),
-    input: z.record(z.unknown()),
-  }).strict(),
-  z.object({
-    kind: z.literal('zoho_books'),
-    connectionId: z.string().uuid(),
-    module: z.enum(ZOHO_BOOKS_SOURCE_MODULES),
-    organizationId: z.string().optional(),
-    filters: z.record(z.unknown()).optional(),
-    query: z.string().optional(),
-  }).strict(),
+  airtableDatasetSourceSchema,
+  zohoBooksDatasetSourceSchema,
+  omsSnapshotDatasetSourceSchema,
 ]);
 
 export type DataExportSource = z.infer<typeof datasetSourceSchema>;
 
 export function datasetSourceToolId(source: DataExportSource): CanonicalToolId {
-  return source.kind === 'airtable_records' ? source.toolId : 'zohoBooks';
+  if (source.kind === 'airtable_records') return source.toolId;
+  return source.kind === 'zoho_books' ? 'zohoBooks' : 'omsSiteData';
 }
 
 export interface DataExportTransform {

@@ -7,7 +7,7 @@ import type { ToolActionGroup } from '../../../domain/permissions/tool-action-gr
 import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
 import {
   DATA_EXPORT_ROW_LIMIT,
-  datasetSourceSchema,
+  directDatasetSourceSchema,
   datasetSourceToolId,
 } from '../../data-export/data-export.types';
 import {
@@ -17,7 +17,7 @@ import {
 } from '../../data-export/export-offer';
 
 const RecipeSchema = z.object({
-  source: datasetSourceSchema,
+  source: directDatasetSourceSchema,
   transform: dataExportTransformSchema.optional(),
   destination: dataExportDestinationSchema.extend({
     connectionId: z.string().uuid().optional(),

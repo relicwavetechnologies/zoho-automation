@@ -1,7 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createOmsSiteDataTool } from '../../src/application/tools/families/oms-site-data.tool.ts';
+import { createDataExportTool } from '../../src/application/tools/families/data-export.tool.ts';
 import { OmsSiteDataServiceError } from '../../src/application/oms/oms-site-data.types.ts';
+import { OmsSnapshotDataExportSource } from '../../src/application/data-export/data-export.sources.ts';
+import { datasetSourceToolId } from '../../src/application/data-export/data-export.types.ts';
+import { parseDataExportOfferPayload } from '../../src/application/data-export/export-offer.ts';
+import { asToolId } from '../../src/shared/ids.ts';
 import { makeAllowedPerm, makeCtx, makeDeniedPerm } from './tool-test.helpers.ts';
 
 describe('OMS Site Data tool', () => {
@@ -78,7 +83,7 @@ describe('OMS Site Data tool', () => {
     );
   });
 
-  it('bounds chat output at 50 rows and creates a private 24-hour CSV for the provider result', async () => {
+  it('keeps the legacy Cloudinary rollback path bounded at 25 rows', async () => {
     const rows = Array.from({ length: 100 }, (_, index) => ({ website: `site-${index}.com`, domainAuthority: index }));
     const uploads: unknown[] = [];
     const tool = createTool({
@@ -92,10 +97,100 @@ describe('OMS Site Data tool', () => {
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.equal(result.value.status, 'partial');
-    assert.equal(result.value.rows.length, 50);
+    assert.equal(result.value.preview?.rows.length, 25);
+    assert.equal(result.value.preview?.coverage.kind, 'provider_limited');
     assert.equal(result.value.artifact?.id, 'temp_exports/co/oms');
     assert.equal(uploads.length, 1);
     assert.match(result.value.message, /arbitrary subset/i);
+  });
+
+  it('creates one central provider-limited offer without using Cloudinary', async () => {
+    const rows = Array.from({ length: 100 }, (_, index) => ({ website: `site-${index}.com` }));
+    const offers: unknown[] = [];
+    const uploads: unknown[] = [];
+    const tool = createTool({
+      service: { execute: async () => ({ operation: 'search_sites', status: 'partial', coverage: {}, rows }) },
+      offers: {
+        createAuthorizedOffer: async (payload: unknown) => {
+          offers.push(payload);
+          return { offerId: 'offer-opaque', expiresAt: new Date('2026-08-03T00:00:00.000Z') };
+        },
+      },
+      cloudinary: {
+        isAvailable: true,
+        uploadCsvBuffer: async (input: unknown) => { uploads.push(input); return null; },
+      },
+    });
+    const ctx = makeCtx('omsSiteData', ['read'], { chatId: 'oc-chat', requestId: 'request-1' });
+    ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
+
+    const result = await tool.execute({ operation: 'search_sites', niche: 'Technology' }, ctx);
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.value.preview?.rows.length, 25);
+    assert.deepEqual(result.value.preview?.coverage, {
+      kind: 'provider_limited',
+      returnedRows: 100,
+      reason: 'oms_100_row_cap_without_pagination_or_total',
+    });
+    assert.equal(result.value.preview?.exportOfferId, 'offer-opaque');
+    assert.equal(result.value.artifact, undefined);
+    assert.equal(uploads.length, 0);
+    assert.equal(offers.length, 1);
+    const payload = parseDataExportOfferPayload(offers[0]);
+    assert.deepEqual(payload.source, {
+      kind: 'oms_snapshot',
+      connectionId: 'backend_managed',
+      args: { operation: 'search_sites', niche: 'Technology' },
+    });
+    assert.match(payload.destination.title, /snapshot/i);
+
+    const withoutExportPermission = await tool.execute(
+      { operation: 'search_sites', niche: 'Technology' },
+      makeCtx('omsSiteData', ['read'], { chatId: 'oc-chat', requestId: 'request-2' }),
+    );
+    assert.equal(withoutExportPermission.ok && withoutExportPermission.value.preview?.exportOfferId, undefined);
+    assert.equal(offers.length, 1);
+    assert.equal(uploads.length, 0);
+
+    const dataExport = createDataExportTool({ offers: {} as never });
+    assert.equal(dataExport.argsSchema.safeParse({
+      source: payload.source,
+      destination: payload.destination,
+    }).success, false, 'OMS exports must use the opaque offer, not a model-built recipe');
+  });
+
+  it('replays an OMS offer through the central snapshot source adapter', async () => {
+    const calls: unknown[] = [];
+    const adapter = new OmsSnapshotDataExportSource({
+      execute: async (input) => {
+        calls.push(input);
+        return {
+          operation: 'get_site_profiles',
+          status: 'complete',
+          coverage: {},
+          rows: [{ website: 'example.com' }],
+        };
+      },
+    } as never);
+    const pages = [];
+    for await (const page of adapter.read({
+      kind: 'oms_snapshot',
+      connectionId: 'backend_managed',
+      args: { operation: 'get_site_profiles', websites: ['example.com'] },
+    }, { companyId: 'co-1', userId: 'user-1' })) pages.push(page);
+
+    assert.deepEqual(calls, [{
+      companyId: 'co-1',
+      args: { operation: 'get_site_profiles', websites: ['example.com'] },
+    }]);
+    assert.deepEqual(pages, [{ rows: [{ website: 'example.com' }] }]);
+    assert.equal(datasetSourceToolId({
+      kind: 'oms_snapshot',
+      connectionId: 'backend_managed',
+      args: { operation: 'get_site_profiles', websites: ['example.com'] },
+    }), 'omsSiteData');
   });
 
   it('warns that an unsorted capped result is not the best sites, and names the ranking when sorted', async () => {
@@ -177,10 +272,11 @@ describe('OMS Site Data tool', () => {
     const result = await tool.execute({ operation: 'search_sites', niche: 'Technology' }, makeCtx('omsSiteData', ['read']));
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    // A small result must not read as "these are all the sites that exist".
+    // A small result must not read as an exhaustive filtered dataset.
     assert.match(result.value.message, /100-row cap/i);
     assert.match(result.value.message, /never paginates and never reports a total count/i);
-    assert.match(result.value.message, /complete set of matches for this request/i);
+    assert.match(result.value.message, /provider-limited snapshot/i);
+    assert.doesNotMatch(result.value.message, /complete set of matches/i);
   });
 
   it('returns a blocked result for the provider empty-body ambiguity', async () => {
@@ -193,12 +289,20 @@ describe('OMS Site Data tool', () => {
   });
 });
 
-function createTool(overrides: { service?: Record<string, unknown>; cloudinary?: Record<string, unknown> } = {}) {
+function createTool(overrides: {
+  service?: Record<string, unknown>;
+  offers?: Record<string, unknown>;
+  cloudinary?: Record<string, unknown>;
+} = {}) {
   const service = {
     preflight: async () => ({ configured: true }),
     execute: async () => ({ operation: 'search_sites', status: 'complete' as const, coverage: {}, rows: [{ website: 'example.com' }] }),
     ...overrides.service,
   };
   const cloudinary = { isAvailable: false, uploadCsvBuffer: async () => null, ...overrides.cloudinary };
-  return createOmsSiteDataTool({ service: service as never, cloudinary: cloudinary as never });
+  return createOmsSiteDataTool({
+    service: service as never,
+    ...(overrides.offers ? { offers: overrides.offers as never } : {}),
+    cloudinary: cloudinary as never,
+  });
 }

@@ -41,13 +41,18 @@ export function parseDataExportOfferPayload(value: unknown): DataExportOfferPayl
   const parsed = dataExportOfferPayloadSchema.parse(value);
   const source: DataExportOfferPayload['source'] = parsed.source.kind === 'airtable_records'
     ? { ...parsed.source }
-    : {
+    : parsed.source.kind === 'zoho_books' ? {
         kind: parsed.source.kind,
         connectionId: parsed.source.connectionId,
         module: parsed.source.module,
         ...(parsed.source.organizationId ? { organizationId: parsed.source.organizationId } : {}),
         ...(parsed.source.filters ? { filters: parsed.source.filters } : {}),
         ...(parsed.source.query ? { query: parsed.source.query } : {}),
+      }
+    : {
+        kind: parsed.source.kind,
+        connectionId: parsed.source.connectionId,
+        args: parsed.source.args,
       };
   const transform: DataExportOfferPayload['transform'] = parsed.transform
     ? {
