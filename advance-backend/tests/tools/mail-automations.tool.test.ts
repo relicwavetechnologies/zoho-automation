@@ -185,6 +185,40 @@ describe('mailAutomations tool', () => {
     assert.equal(authorizationInput.runContext.runtimeRunId, 'run-1');
   });
 
+  it('will not create a rule on a connection whose owner gates background execution', async () => {
+    // Approval is asked per interactive call. A rule makes calls nobody is
+    // present for, so the moment to honour an `execute` policy is the moment
+    // the rule is created — and it must use the resolved connection, since
+    // omitting connectionId is exactly how the gateway's own check was dodged.
+    let created = 0;
+    let asked: any;
+    const tool = createMailAutomationsTool({
+      runtime: { pubsubConfigured: true, workersEnabled: true },
+      repo: { createRuleForMailbox: async () => { created++; return { ok: true, value: {} }; } } as any,
+      resolveConnection: async () => ({
+        status: 'resolved',
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        mailboxEmail: 'owner@example.com',
+      }),
+      connectionApproval: async input => { asked = input; return { kind: 'required' }; },
+    });
+
+    const result = await tool.execute({
+      operation: 'create',
+      name: 'Forward invoices',
+      match: { subjectContains: 'Invoice' },
+      destination: { type: 'email', email: 'finance@example.com' },
+    }, makeCtx('mailAutomations', ['create', 'execute'], { channel: 'lark', chatId: 'oc_here' }));
+
+    assert.equal(result.ok, false);
+    assert.equal(created, 0);
+    assert.deepEqual(asked, {
+      companyId: 'co-test',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      action: 'execute',
+    });
+  });
+
   it('refuses a named Lark chat that belongs to another company', async () => {
     // destinationSchema accepted any chatId string, and the rule that a chat
     // must be discovered through governed means was prompt text only. Anything

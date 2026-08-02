@@ -628,6 +628,80 @@ describe('MailOpsWorker', () => {
     });
   });
 
+  it('charges the connection rate budget for a background delivery', async () => {
+    // A manager could throttle interactive use of a connection and a mail rule
+    // on that same connection then ran under no policy at all — the worker was
+    // built without any governance service at all.
+    let deliveryClaimed = false;
+    let consumed: any;
+    let failedWith: string | undefined;
+    let larkSends = 0;
+    const worker = new MailOpsWorker({
+      repo: {
+        claimNextWatchRenewal: async () => ({ ok: true, value: null }),
+        claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        claimNextDueDelivery: async () => {
+          if (deliveryClaimed) return { ok: true, value: null };
+          deliveryClaimed = true;
+          return {
+            ok: true,
+            value: {
+              deliveryId: 'delivery-1',
+              attempts: 1,
+              payload: {
+                companyId: 'company-1',
+                userId: 'user-1',
+                subscriptionId: 'mailbox-1',
+                connectionId: 'connection-1',
+                mailboxEmail: 'user@example.com',
+                ruleId: 'rule-1',
+                eventId: 'event-1',
+                sourceMessageId: 'message-1',
+                idempotencyKey: 'mail:idempotency',
+                action: { type: 'deliver' },
+                destination: { type: 'lark_chat', chatId: 'oc_destination' },
+                message: event.metadata,
+              },
+            },
+          };
+        },
+        markDeliveryDelivered: async () => ({ ok: true, value: true }),
+        markDeliveryFailed: async (_id: string, error: unknown) => {
+          failedWith = error instanceof Error ? error.message : String(error);
+          return { ok: true, value: true };
+        },
+        markDeliveryAbandoned: async () => ({ ok: true, value: true }),
+      },
+      gmail: {
+        watch: async () => { throw new Error('unused'); },
+        sync: async () => { throw new Error('unused'); },
+        forward: async () => { throw new Error('unused'); },
+      },
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      connectionRateLimits: {
+        consume: async (input: any) => {
+          consumed = input;
+          return { kind: 'limited', message: 'Connection budget exhausted.' };
+        },
+      },
+      deliverLark: async () => { larkSends += 1; return 'unexpected'; },
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.deepEqual(consumed, {
+      companyId: 'company-1',
+      connectionId: 'connection-1',
+      action: 'execute',
+    });
+    assert.equal(larkSends, 0);
+    // Failed, not abandoned: the budget window reopens and the mail is still
+    // sitting there.
+    assert.equal(failedWith, 'Connection budget exhausted.');
+  });
+
   it('abandons rather than retries a Lark chat owned by another company', async () => {
     // Creation is where a chat is vetted, but the rule outlives that check. A
     // room in somebody else's company is never going to become the right

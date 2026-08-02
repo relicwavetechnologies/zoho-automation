@@ -217,6 +217,19 @@ export function createMailAutomationsTool(deps: {
    * Lark channel, where a `lark_chat` destination cannot be reached anyway.
    */
   authorizeLarkChat?: AuthorizeLarkChatDestination;
+  /**
+   * The stored operating policy for the Google connection a rule will run on.
+   *
+   * Asked against the *resolved* connection, not the one named in arguments:
+   * `connectionId` is optional on `create`, and the gateway's own governance
+   * short-circuits to "not governed" when it is absent — so a connection-owner
+   * approval policy used to be bypassed by simply not naming the connection.
+   */
+  connectionApproval?(input: {
+    readonly companyId: string;
+    readonly connectionId: string;
+    readonly action: 'execute';
+  }): Promise<{ readonly kind: string; readonly message?: string }>;
 }): Tool<Args, Res> {
   return {
     id: asToolId('mailAutomations'),
@@ -399,6 +412,38 @@ export function createMailAutomationsTool(deps: {
             reason: 'unrecoverable',
             message: `${connection.reason} ${SELF_SERVICE_CONNECT_HINT}`,
           }));
+        }
+
+        // Creating a rule is not one action — it authorizes unbounded future
+        // background execution on this connection. A policy that gates
+        // `execute` has to gate the act of granting it, or the gate means
+        // nothing: approval is asked per interactive call, and a rule makes
+        // calls nobody is present for.
+        if (deps.connectionApproval) {
+          const policy = await deps.connectionApproval({
+            companyId: String(ctx.runContext.companyId),
+            connectionId: connection.connectionId,
+            action: 'execute',
+          });
+          if (policy.kind === 'required') {
+            return err(new ToolError({
+              toolId: 'mailAutomations',
+              reason: 'unrecoverable',
+              message:
+                'The owner of this Google connection requires approval before '
+                + 'it runs anything in the background, and a mail rule runs '
+                + 'with nobody present to approve it. Ask them to allow '
+                + 'background execution on this connection first.',
+            }));
+          }
+          if (policy.kind === 'unavailable') {
+            return err(new ToolError({
+              toolId: 'mailAutomations',
+              reason: 'upstream_failure',
+              message: policy.message
+                ?? 'Divo could not read the connection policy. Try again shortly.',
+            }));
+          }
         }
 
         const destination = resolveDestination(args.destination, ctx);

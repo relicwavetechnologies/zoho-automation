@@ -131,6 +131,21 @@ export class MailOpsWorker {
      */
     authorizeLarkChat?: AuthorizeLarkChatDestination;
     /**
+     * The connection's operating budget, applied to background delivery.
+     *
+     * A manager could throttle interactive use of a Google connection and a
+     * mail rule on that same connection then ran under no policy at all — the
+     * worker was constructed without any governance service, so every forward
+     * and every Lark delivery bypassed the ceiling entirely.
+     */
+    connectionRateLimits?: {
+      consume(input: {
+        readonly companyId: string;
+        readonly connectionId?: string;
+        readonly action: 'execute';
+      }): Promise<{ readonly kind: string; readonly message?: string }>;
+    };
+    /**
      * Tells the mailbox owner, once, when their rules have stopped running.
      * Optional so the worker still runs headless in tests and in environments
      * with no outbound channel configured.
@@ -485,6 +500,21 @@ export class MailOpsWorker {
           reason: authorized.reason,
         });
         return;
+      }
+      // Charged per attempt, before the send, exactly as the interactive path
+      // charges it. A rule that has exhausted its connection's budget waits for
+      // the window rather than failing permanently — the mail is still there.
+      if (this.deps.connectionRateLimits) {
+        const budget = await this.deps.connectionRateLimits.consume({
+          companyId: payload.companyId,
+          connectionId: payload.connectionId,
+          action: 'execute',
+        });
+        if (budget.kind === 'limited' || budget.kind === 'unavailable') {
+          throw new Error(
+            budget.message ?? 'The connection rate budget refused this delivery.',
+          );
+        }
       }
       let providerMessageId: string;
       if (

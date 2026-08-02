@@ -1737,6 +1737,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     resolveConnection: resolveMailAutomationGoogleConnection,
     beginAuthorization: beginGoogleAuthorization,
     authorizeLarkChat: authorizeMailOpsLarkChat,
+    connectionApproval: input => connectionRateLimits.approval(input),
   }));
   toolRegistry.register(createCanvaDesignTool({ getClient: getCanvaMcpClient }));
   for (const tool of createAirtableMcpTools({
@@ -2034,6 +2035,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
           };
     },
     authorizeLarkChat: authorizeMailOpsLarkChat,
+    connectionRateLimits,
     deliverLark: async input => {
       const sent = await larkAdapter.sendToChatId(
         input.chatId,
