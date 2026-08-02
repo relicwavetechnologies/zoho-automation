@@ -55,7 +55,8 @@ export const mailRuleMatchSchema = z.object({
  * its job for months should not break because the rules for writing a *new*
  * one got stricter:
  *
- * - `to` still accepts free text, matched as a substring (see `toMatches`).
+ * - `to` still accepts free text, matched as a substring against the `To`
+ *   header alone (see `recipientMatches`).
  * - `hasAttachment` alone still counts as a match clause.
  */
 const storedMailRuleMatchSchema = z.object({
@@ -160,18 +161,18 @@ function senderMatches(fromHeader: string, criterion: string): boolean {
  * where the address the user typed appears nowhere else in the message.
  */
 function recipientMatches(message: MailMessageMetadata, criterion: string): boolean {
-  const headers = [message.to, message.cc, message.bcc, message.deliveredTo]
-    .filter((header): header is string => Boolean(header?.trim()));
-  // A rule stored before recipients were parsed holds free text, so it keeps
-  // the substring behaviour it was created under. Nothing new can be written
-  // in that shape — `mailRuleMatchSchema` requires a mailbox or an @domain.
+  // A rule stored before recipients were parsed holds free text, and keeps
+  // exactly the behaviour it was created under: a substring test against `To`
+  // alone. Widening the loosest rule shape in the system to three more headers
+  // would be a change to a rule nobody asked to change. Nothing new can be
+  // written in that shape — `mailRuleMatchSchema` requires a mailbox or an
+  // @domain.
   if (!recipientCriterionSchema.safeParse(criterion).success) {
-    const expected = criterion.toLocaleLowerCase();
-    return headers.some(
-      header => header.toLocaleLowerCase().includes(expected),
-    );
+    return message.to.toLocaleLowerCase()
+      .includes(criterion.toLocaleLowerCase());
   }
-  return headers
+  return [message.to, message.cc, message.bcc, message.deliveredTo]
+    .filter((header): header is string => Boolean(header?.trim()))
     .flatMap(header => addressesIn(header))
     .some(address => addressMatches(address, criterion));
 }
@@ -183,9 +184,18 @@ function addressMatches(address: string, criterion: string): boolean {
     : address === expected;
 }
 
-/** Every address in one recipient header, one entry at a time. */
+/**
+ * Every address in one recipient header, one entry at a time.
+ *
+ * Quoted text comes off before the split, because a display name may legally
+ * hold a comma and splitting through one hands the second half of a name to
+ * `addressIn` with no bracketed mailbox left in it. That is enough to defeat
+ * the impersonation rule below: `"ana@example.com, VIP" <impostor@evil.tld>`
+ * would otherwise leave a fragment that reads as the address it is imitating.
+ */
 function addressesIn(header: string): string[] {
   return header
+    .replace(/"[^"]*"/g, ' ')
     .split(',')
     .map(entry => addressIn(entry))
     .filter((address): address is string => address !== undefined);

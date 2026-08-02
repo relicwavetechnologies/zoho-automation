@@ -713,10 +713,10 @@ At least one is required. All supplied criteria are combined with logical AND.
 | Field | Current semantics | **[audit 2026-08-02] caveat** |
 |---|---|---|
 | `from` | Exact mailbox address or exact `@domain`; case-insensitive | **Does not match subdomains** — `@stripe.com` misses `receipts@mail.stripe.com`, and most transactional senders use a bounce subdomain. (D12) |
-| `to` | Case-insensitive substring of the `To` header | **`To` only** — never Cc, Bcc, or Delivered-To. Also unvalidated, so a display-name substring is accepted here even though it is rejected in `from`. (D11, T7) |
+| `to` | Exact mailbox address or exact `@domain`, matched against `To`, `Cc`, `Bcc` and `Delivered-To` together | *[corrected 2026-08-02]* Validated exactly like `from`, so a display-name substring is rejected. Carries the same subdomain limit as `from` (D12). Rules stored before this keep their free-text substring test against `To` alone, and cannot be recreated in that shape. (D11, T7 — fixed) |
 | `subjectContains` | Case-insensitive substring | Literal `String.includes`. `"OTP\|verification code"` and `"*invoice*"` match nothing. (T8) |
 | `bodyContains` | Case-insensitive substring of extracted bounded text | Sees the first `text/plain` part, else stripped HTML, capped at 50,000 chars. Never attachment contents. |
-| `hasAttachment` | Exact Boolean equality | **Counts inline images.** Any part with a `filename` qualifies, so a signature logo makes a message "has attachment". (D10) |
+| `hasAttachment` | Exact Boolean equality | *[corrected 2026-08-02]* True only for an attached file. A part saying `Content-Disposition: inline`, or carrying a `Content-ID` without saying `attachment`, no longer counts — a signature logo does not make a message "has attachment". (D10 — fixed) |
 
 Valid sender examples:
 
@@ -741,11 +741,14 @@ strips unrecognized keys rather than rejecting them.
 reports success, and the narrowing the user asked for is gone. Only if *every*
 key is unknown does the `refine` fire. (D13.)
 
-**[added 2026-08-02] "At least one is required" is not a breadth check.**
-`{"hasAttachment": true}` is legal and forwards every attachment-bearing inbox
-message to an arbitrary external address — and `parameterDocs` explicitly tells
-the model not to ask for per-message approval after rule creation. Nothing in
-code or instruction text guards against an over-broad rule. (T7, S3.)
+**[corrected 2026-08-02] "At least one is required" is now a narrowing check.**
+`{"hasAttachment": true}` used to be legal and forwarded every
+attachment-bearing inbox message to an arbitrary external address. A match must
+now carry at least one of `from`, `to`, `subjectContains`, `bodyContains`, and
+an unrecognised key is rejected rather than stripped. One narrowing field can
+still be broad, and `parameterDocs` still tells the model not to ask for
+per-message approval after rule creation, so breadth remains a judgement the
+instruction layer has to make. (T7, S3 — partly fixed.)
 
 ### 8.3 Destinations
 
@@ -2048,8 +2051,9 @@ benign limits. The audit found them to be failure modes. Corrected wording:
 - **Only the INBOX label is watched.** Mail that a native Gmail filter archives,
   or that lands in Spam, is invisible to Mail Ops — notable given the skill text
   forbids substituting a native Gmail filter.
-- **`hasAttachment` counts inline images.** Any part with a `filename` qualifies,
-  so a signature logo makes a message "has attachment". (Defect D10.)
+- **[corrected 2026-08-02] `hasAttachment` counts attached files only.** An
+  inline part — a signature logo, a tracking pixel — no longer qualifies.
+  (Defect D10, fixed.)
 - Sync failures retry after a fixed five minutes; provider/rate-limit-specific
   backoff remains future work.
 - Delivery has five attempts on a 5/10/20/40-second backoff — a **~75 second**

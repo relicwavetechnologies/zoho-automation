@@ -4,6 +4,10 @@ import {
   MAILBOX_CLAIM_STALE_AFTER_MS,
   MAILBOX_RECONCILIATION_INTERVAL_MS,
   mailDeliveryIdempotencyKey,
+  mailRuleDedupeKey,
+  type MailRuleAction,
+  type MailRuleDestination,
+  type MailRuleMatch,
   type NewMailEvent,
 } from '../../application/mail-ops/mail-ops.types';
 import { wrapInfra, type InfraError } from '../../shared/errors';
@@ -49,11 +53,6 @@ export interface CreateMailAutomationRuleInput {
   connectionId: string;
   mailboxEmail: string;
   dedupeKey: string;
-  /**
-   * How this same rule would have been keyed before the key was canonicalised.
-   * Supplied so an existing rule is adopted rather than forked in two.
-   */
-  legacyDedupeKey?: string;
 }
 
 export interface PersistedMailEvent extends NewMailEvent {
@@ -147,7 +146,7 @@ export class MailOpsRepository {
           },
           select: { id: true },
         });
-        await this.adoptLegacyKeyedRule(tx, input);
+        await this.adoptRuleKeyedBeforeCanonicalisation(tx, input);
         const rule = await tx.mailAutomationRule.upsert({
           where: { dedupeKey: input.dedupeKey },
           create: {
@@ -195,7 +194,7 @@ export class MailOpsRepository {
   }
 
   /**
-   * Move a rule created under the old key onto its canonical one.
+   * Move a rule keyed before canonicalisation onto the key its content earns.
    *
    * Without this, canonicalising the key would cause on its first use the exact
    * duplicate it exists to prevent: the upsert below would find nothing, create
@@ -204,25 +203,51 @@ export class MailOpsRepository {
    * asked for again — a bulk rewrite of every row on deploy would have to be
    * right about all of them at once.
    *
+   * The old key is recomputed from the stored rule rather than from the
+   * request, because the request is the one thing that cannot reproduce it. The
+   * fork this repairs was a difference of case, so a member asking again in the
+   * other case — `otp` where the stored rule says `OTP` — would hash to a third
+   * key and match nothing. Comparing what the rules *are* is what makes the
+   * migration cover the case that caused the damage.
+   *
    * Skipped when a canonical row already exists, because then the two rules
    * genuinely are the fork this fix is about, and renaming one onto the other's
    * key would only fail the unique constraint and take the request with it. The
    * canonical one wins; the other keeps running until someone removes it.
    */
-  private async adoptLegacyKeyedRule(
+  private async adoptRuleKeyedBeforeCanonicalisation(
     tx: Prisma.TransactionClient,
     input: CreateMailAutomationRuleInput,
   ): Promise<void> {
-    if (!input.legacyDedupeKey || input.legacyDedupeKey === input.dedupeKey) {
-      return;
-    }
-    const canonical = await tx.mailAutomationRule.findUnique({
-      where: { dedupeKey: input.dedupeKey },
-      select: { id: true },
+    const candidates = await tx.mailAutomationRule.findMany({
+      // Archived rules included: recreating one is the only way to bring it
+      // back, so an archived row that is this rule must be found here or the
+      // revive below silently becomes a second rule instead.
+      where: {
+        companyId: input.companyId,
+        createdByUserId: input.createdByUserId,
+        subscription: { connectionId: input.connectionId },
+      },
+      select: {
+        id: true,
+        dedupeKey: true,
+        matchJson: true,
+        actionJson: true,
+        destinationJson: true,
+      },
     });
-    if (canonical) return;
-    await tx.mailAutomationRule.updateMany({
-      where: { companyId: input.companyId, dedupeKey: input.legacyDedupeKey },
+    if (candidates.some(rule => rule.dedupeKey === input.dedupeKey)) return;
+    const sameRule = candidates.find(rule => mailRuleDedupeKey({
+      companyId: input.companyId,
+      userId: input.createdByUserId,
+      connectionId: input.connectionId,
+      match: rule.matchJson as MailRuleMatch,
+      action: rule.actionJson as MailRuleAction,
+      destination: rule.destinationJson as MailRuleDestination,
+    }) === input.dedupeKey);
+    if (!sameRule) return;
+    await tx.mailAutomationRule.update({
+      where: { id: sameRule.id },
       data: { dedupeKey: input.dedupeKey },
     });
   }

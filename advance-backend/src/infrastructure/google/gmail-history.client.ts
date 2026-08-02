@@ -506,11 +506,14 @@ function isAttachedFile(part: GmailMessagePart): boolean {
       header.value ?? '',
     ]),
   );
-  if (headers.has('content-id')) return false;
-  return !(headers.get('content-disposition') ?? '')
+  const disposition = (headers.get('content-disposition') ?? '')
     .trimStart()
-    .toLocaleLowerCase()
-    .startsWith('inline');
+    .toLocaleLowerCase();
+  // A part that says `attachment` outright is one, whatever else it carries:
+  // some clients stamp a `Content-ID` on every part they emit, and reading
+  // that as inline would stop an attachment rule firing on real attachments.
+  if (disposition.startsWith('attachment')) return true;
+  return !disposition.startsWith('inline') && !headers.has('content-id');
 }
 
 function decodeBody(data: string): string {

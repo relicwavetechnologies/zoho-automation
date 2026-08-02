@@ -127,14 +127,10 @@ export function mailRuleDedupeKey(input: MailRuleIdentity): string {
 }
 
 /**
- * How a rule created before that fix is keyed.
- *
- * Kept so an existing rule can be recognised and adopted on the next request
- * for it, rather than being forked into a second rule that forwards the same
- * mail again — which is the very failure canonicalising the key exists to
- * prevent. Every rule migrates the first time someone asks for it again;
- * a rule nobody asks for again keeps this key and comes to no harm.
+ * A rule created before that fix carries whatever key the old serialisation
+ * produced, and there is no way to recompute it from a fresh request — the
+ * fork being repaired was a difference of case, so the request that exposes it
+ * hashes to a third value under the old rule too. `createRuleForMailbox`
+ * therefore recognises those rules by recomputing this key from what each one
+ * stores, and moves the match onto its canonical key before creating anything.
  */
-export function legacyMailRuleDedupeKey(input: MailRuleIdentity): string {
-  return `mail-rule:${sha256(JSON.stringify(input))}`;
-}

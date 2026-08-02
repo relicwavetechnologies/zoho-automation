@@ -191,6 +191,19 @@ describe('mailAutomations tool', () => {
     assert.equal(mailRuleMatches({ to: 'ana@example.com' }, message), false);
     assert.equal(mailRuleMatches({ to: '@example.com' }, message), true);
     assert.equal(mailRuleMatches({ to: 'dana@example.com' }, message), true);
+
+    // A display name may legally hold a comma, and splitting the header
+    // through one left a fragment reading as the address it imitates — enough
+    // for any sender to fire someone else's rule at will.
+    assert.equal(mailRuleMatches({ to: 'ana@example.com' }, {
+      ...message,
+      to: '"ana@example.com, VIP" <impostor@evil.example>',
+    }), false);
+    // The same comma in an honest name still resolves to the real mailbox.
+    assert.equal(mailRuleMatches({ to: 'ana@example.com' }, {
+      ...message,
+      to: '"Smith, Ana" <ana@example.com>, bo@example.com',
+    }), true);
   });
 
   it('keeps a stored free-text recipient rule firing while refusing to create another', () => {
@@ -207,6 +220,18 @@ describe('mailAutomations tool', () => {
       bodyText: '',
       hasAttachment: false,
     }), true);
+    // Still `To` alone, though. A free-text rule is the loosest shape in the
+    // system, and letting it start reading three more headers would widen a
+    // rule nobody asked to change.
+    assert.equal(mailRuleMatches(stored.match, {
+      from: 'alerts@example.com',
+      to: 'someone@example.com',
+      cc: 'Anthropic Billing <billing@anthropic.com>',
+      subject: 'Invoice',
+      snippet: '',
+      bodyText: '',
+      hasAttachment: false,
+    }), false);
     // Tightening how a rule is written must not stop the rules already written.
     assert.equal(mailRuleMatchSchema.safeParse({ to: 'Anthropic' }).success, false);
   });

@@ -341,6 +341,15 @@ describe('GmailHistoryClient message metadata', () => {
     // Gmail omits the disposition on plenty of genuine attachments, so a
     // filename with nothing contradicting it still counts.
     assert.equal((await syncOneMessage(filePart([]))).hasAttachment, true);
+    // And some clients stamp a Content-ID on every part they emit. Saying
+    // `attachment` outright settles it.
+    assert.equal(
+      (await syncOneMessage(filePart([
+        { name: 'Content-Disposition', value: 'attachment; filename="report.pdf"' },
+        { name: 'Content-ID', value: '<part1@example>' },
+      ]))).hasAttachment,
+      true,
+    );
   });
 
   it('carries every header that says where the message was sent', async () => {

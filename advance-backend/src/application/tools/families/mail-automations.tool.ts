@@ -13,10 +13,7 @@ import type {
 } from './google-workspace-mcp.tool';
 import { SELF_SERVICE_CONNECT_HINT } from './google-workspace-mcp.tool';
 import { mailRuleMatchSchema, parseMailRule } from '../../mail-ops/mail-rule.matcher';
-import {
-  legacyMailRuleDedupeKey,
-  mailRuleDedupeKey,
-} from '../../mail-ops/mail-ops.types';
+import { mailRuleDedupeKey } from '../../mail-ops/mail-ops.types';
 import type { MailRuleIdentity } from '../../mail-ops/mail-ops.types';
 import type {
   AuthorizeLarkChatDestination,
@@ -526,7 +523,6 @@ export function createMailAutomationsTool(deps: {
           action: { ...parsed.action },
           destination: { ...parsed.destination },
           dedupeKey: mailRuleDedupeKey(identity),
-          legacyDedupeKey: legacyMailRuleDedupeKey(identity),
         });
         if (!created.ok) throw created.error;
         ctx.onProgress?.('Mail automation activated.');

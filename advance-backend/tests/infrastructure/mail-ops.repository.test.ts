@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAILBOX_RECONCILIATION_INTERVAL_MS } from '../../src/application/mail-ops/mail-ops.types.ts';
+import {
+  MAILBOX_RECONCILIATION_INTERVAL_MS,
+  mailRuleDedupeKey,
+} from '../../src/application/mail-ops/mail-ops.types.ts';
 import { MailOpsRepository } from '../../src/infrastructure/persistence/mail-ops.repository.ts';
 
 const dueMailbox = {
@@ -26,6 +29,9 @@ describe('MailOpsRepository', () => {
         },
       },
       mailAutomationRule: {
+        // No rule on this mailbox predates the canonical key, so nothing is
+        // adopted and the upsert decides everything.
+        findMany: async () => [],
         updateMany: async () => ({ count: 0 }),
         upsert: async (input: any) => {
           ruleUpsert = input;
@@ -736,21 +742,33 @@ describe('MailOpsRepository', () => {
     // written. Without the adoption the very first re-request would create a
     // second rule beside the one already watching, and both would forward
     // every matching message — the exact duplicate the key exists to prevent.
-    const run = async (canonicalExists: boolean) => {
+    const identity = {
+      companyId: 'company-1',
+      userId: 'user-1',
+      connectionId: 'connection-1',
+      match: { subjectContains: 'OTP' },
+      action: { type: 'forward' as const },
+      destination: { type: 'email' as const, email: 'owner@example.com' },
+    };
+    const run = async (stored: any[]) => {
       const calls: string[] = [];
       const updates: any[] = [];
       const repo = new MailOpsRepository({
         $transaction: async (fn: any) => fn({
           mailboxSubscription: { upsert: async () => ({ id: 'mailbox-1' }) },
           mailAutomationRule: {
-            findUnique: async () => {
-              calls.push('lookup');
-              return canonicalExists ? { id: 'rule-1' } : null;
+            findMany: async () => {
+              calls.push('scan');
+              return stored;
             },
-            updateMany: async (input: any) => {
-              calls.push(input.data.dedupeKey ? 'adopt' : 'revive');
+            update: async (input: any) => {
+              calls.push('adopt');
               updates.push(input);
-              return { count: 1 };
+              return { id: input.where.id };
+            },
+            updateMany: async () => {
+              calls.push('revive');
+              return { count: 0 };
             },
             upsert: async () => {
               calls.push('upsert');
@@ -759,37 +777,58 @@ describe('MailOpsRepository', () => {
           },
         }),
       } as any);
+      // Asked for in the other case. Matching ignores case, so this is the
+      // same rule as the stored one — and it is the request the old key could
+      // never recognise, because it hashes to a third value of its own.
       const created = await repo.createRuleForMailbox({
         companyId: 'company-1',
         createdByUserId: 'user-1',
         connectionId: 'connection-1',
         mailboxEmail: 'user@example.com',
         name: 'Forward OTP',
-        match: { from: 'alerts@example.com' },
+        match: { subjectContains: 'otp' },
         action: { type: 'forward' },
         destination: { type: 'email', email: 'owner@example.com' },
-        dedupeKey: 'mail-rule:canonical',
-        legacyDedupeKey: 'mail-rule:legacy',
+        dedupeKey: mailRuleDedupeKey({ ...identity, match: { subjectContains: 'otp' } }),
       });
       assert.equal(created.ok, true);
       return { calls, updates };
     };
 
-    const adopted = await run(false);
+    const legacyRow = {
+      id: 'rule-old',
+      dedupeKey: 'mail-rule:whatever-the-old-serialisation-produced',
+      matchJson: { subjectContains: 'OTP' },
+      actionJson: { type: 'forward' },
+      destinationJson: { type: 'email', email: 'owner@example.com' },
+    };
+
+    const adopted = await run([legacyRow]);
     // Before the upsert, or the upsert would already have created the second
     // rule this is meant to prevent.
-    assert.deepEqual(adopted.calls, ['lookup', 'adopt', 'upsert', 'revive']);
-    assert.deepEqual(adopted.updates[0].where, {
-      companyId: 'company-1',
-      dedupeKey: 'mail-rule:legacy',
-    });
-    assert.equal(adopted.updates[0].data.dedupeKey, 'mail-rule:canonical');
+    assert.deepEqual(adopted.calls, ['scan', 'adopt', 'upsert', 'revive']);
+    assert.equal(adopted.updates[0].where.id, 'rule-old');
+    assert.equal(
+      adopted.updates[0].data.dedupeKey,
+      mailRuleDedupeKey({ ...identity, match: { subjectContains: 'otp' } }),
+    );
 
-    // A canonical row already exists, so the two rules genuinely are a fork.
-    // Renaming one onto the other's key would only break the unique
+    // A canonical row already exists, so these two rules genuinely are the
+    // fork. Renaming one onto the other's key would only break the unique
     // constraint and take the whole request down with it.
-    const forked = await run(true);
-    assert.deepEqual(forked.calls, ['lookup', 'upsert', 'revive']);
+    const forked = await run([legacyRow, {
+      ...legacyRow,
+      id: 'rule-new',
+      dedupeKey: mailRuleDedupeKey({ ...identity, match: { subjectContains: 'otp' } }),
+    }]);
+    assert.deepEqual(forked.calls, ['scan', 'upsert', 'revive']);
+
+    // A different rule on the same mailbox is left alone.
+    const unrelated = await run([{
+      ...legacyRow,
+      matchJson: { subjectContains: 'Invoice' },
+    }]);
+    assert.deepEqual(unrelated.calls, ['scan', 'upsert', 'revive']);
   });
 
   it('starts a revived rule watching from now, not from when it was first written', async () => {
@@ -804,6 +843,7 @@ describe('MailOpsRepository', () => {
       $transaction: async (fn: any) => fn({
         mailboxSubscription: { upsert: async () => ({ id: 'mailbox-1' }) },
         mailAutomationRule: {
+          findMany: async () => [],
           updateMany: async (input: any) => {
             calls.push('revive');
             revivals.push(input);
