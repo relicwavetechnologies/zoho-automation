@@ -1,6 +1,6 @@
 # Unified Data Movement and Spreadsheet Workflows
 
-**Status:** implementation active; Phases 0–4 are complete, and isolated-runtime validation is in progress
+**Status:** implementation active; Phases 0–5 are complete, and isolated-runtime validation is in progress
 **Date:** 2026-08-02
 **Scope:** tabular previews, proactive exports, cross-tool data movement, pasted spreadsheet URLs, and the boundary between deterministic backend exports and agent-authored container workflows
 **Related foundation:** `plans/secure-data-export-pipeline.md`
@@ -16,15 +16,27 @@
 | 2 — preview and durable offers | ✅ Done | Bounded previews, opaque 24-hour offers, fresh authorization, and idempotent confirmation implemented |
 | 3 — Lark export interaction | ✅ Done | Signed format/account cards, immediate callback ACK, locked choice cards, governed progress delivery, OAuth resume, and personal destination preference implemented |
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
-| 5 — Semrush and OMS convergence | 🟡 Partial | OMS and Semrush are integrated; live Semrush preview/offer passes, while artifact verification and rollback-path removal evidence remain |
-| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Governed Sheet editing is live-verified; strict Drive XLSX resolution and opaque Lark confirmation are implemented, while conversion execution and live validation remain |
+| 5 — Semrush and OMS convergence | ✅ Done | Both providers use bounded previews and opaque central offers; executable Cloudinary fallbacks and their stale skill contract are removed |
+| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Governed Sheet editing is live-verified; strict Drive XLSX resolution, run-bound confirmation, durable queueing, and locked Lark acknowledgement are implemented; conversion execution and live validation remain |
 | 7 — routers and provider skills | 🟡 Partial | Exact pasted Sheet URLs now route to governed reference resolution before web search; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
 | 9 — realistic isolated-runtime validation | 🟡 In progress | Isolated Pi exported a live Semrush dataset, retained its exact-thread resource context, and securely edited/read back the same Sheet; remaining scenarios still need closure |
 
-**Immediate completion count:** 5 phases done.
+**Immediate completion count:** 6 phases done.
 
 **Latest validation evidence (2026-08-02):**
+
+- Phase 5 is cut over completely: Semrush and OMS no longer accept or execute
+  a Cloudinary export dependency. Large results remain bounded in chat and can
+  leave the agent only through the central opaque-offer pipeline. The focused
+  provider/destination/worker/sink suite passed 71/71 checks. That suite also
+  proves the no-personal-account branch selects the governed company Google
+  destination, creates the Sheet there, grants the exact verified requester
+  reader access, and rejects broader sharing.
+- Drive XLSX confirmation now admits through the same authenticated Lark card
+  boundary as exports, returns an immediate acknowledgement, locks the source
+  card, and queues one deterministic run-bound conversion job. Focused receipt,
+  tool, and webhook validation passed 152/152 checks; TypeScript passes.
 
 - A low-hint isolated Semrush request exported 50 rows to a verified personal
   Google Sheet and persisted its opaque, seven-day conversation resource.
@@ -1269,20 +1281,18 @@ Never log:
    repeat as CSV, and clean up only the exact test artifacts.
 2. Run the no-eligible-account OAuth-resume case with a designated test
    identity that has neither a personal Google destination nor company fallback.
-3. Obtain live OMS parity evidence before deleting the retained rollback-only
-   Cloudinary path.
-4. Confirm pending Semrush offer `5ce39d0c-b27b-40b4-a8e4-87dac9662139`,
-   verify the destination content/owner, then remove its rollback-only
-   Cloudinary path only after that parity evidence passes.
+3. Run the remaining OMS live destination check through the already-cut-over
+   central pipeline as part of Phase 9; do not restore a provider fallback.
+4. Finish the queued Drive XLSX conversion worker, verify the new native Sheet,
+   retain its opaque conversation resource, and validate the complete Lark flow.
 5. Run a real export followed by the low-hint request “Add a Notes column to
    that sheet and put Needs review in the first two rows.” Verify the exact
    workbook readback through the implemented Lark-only secure edit-by-reference
    adapter.
-6. Run the pasted-Sheet existing-tab flow through isolated cloud Pi and verify
-   the produced tab in the requester's workbook; then add Drive-hosted XLSX
-   metadata resolution and explicit conversion approval.
-7. Tune skills and routers once each instruction describes backend behavior
-   that exists and is covered by contract tests.
+6. Run the pasted-Sheet existing-tab and Drive-XLSX-copy flows through isolated
+   cloud Pi and verify the exact produced resources in the requester's account.
+7. Complete router and provider-skill convergence against the now-cut-over
+   backend contracts.
 8. Execute Phase 9 through the isolated Docker runtime, deliver every
     scenario to the configured Divo Lark DM, and iterate until the final quality
     gate passes.
