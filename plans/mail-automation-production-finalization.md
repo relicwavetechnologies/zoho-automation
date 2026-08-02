@@ -17,6 +17,7 @@ Last synced 2026-08-02. Branch `dev`, **not pushed**.
 | **1 — Visibility (backend)** | ✅ merged to `dev` | `e2c2abc62`, `54a2f0f8a` |
 | **1 — Visibility (screen)** | ✅ merged to `dev` | `b994c22f7` |
 | **2 — Silent death (D2, D3, D4, D14, DR-2)** | ✅ merged to `dev` | `6e0d120cf`, `97be67a46`, `c4a5e2561`, `97b4d22b9` |
+| 2 — cold-review fixes (2 rounds) | ✅ merged to `dev` | `0b94131b2`, `458736c01`, `88ef5b75e`, `d4a88353e`, `9067fea78` |
 | 3 — Dead OAuth path (D5) | ⬜ | — |
 | 4 — Security and governance (S1–S5) | ⬜ | — |
 | 5–11 | ⬜ | — |
@@ -305,7 +306,11 @@ Added a guard test asserting no surface claims OTP extraction, **verified by rei
 - ✅ **D4 + DR-2** *(`c4a5e2561`)* — `authorizeRule` returns `allowed | denied | unavailable`. Denials are recorded and the sync continues; `unavailable` holds the cursor. This required splitting the source: `PermissionServiceImpl` reported an unreadable department store and genuine non-membership under the same `department_access_denied`, so a database blip was indistinguishable from a decision. New reason `permission_lookup_failed`. Refusals write an inert `blocked` delivery row carrying the human reason; **matching is checked before authorizing**, so a blocked row always means "this matched and was refused". Unparseable rules deliberately write no row — the failed clause *is* the match clause, so there is no honest per-message claim to make, and the rule already reports `broken`. Authorization resolved once per rule per sync, not once per event per rule.
 - ✅ **D14** *(`97b4d22b9`)* — `pubsubReady` replaced by a `runtime` object carrying `pubsubConfigured` **and** `workersEnabled`. Two distinct refusal messages, because an unfinished Google setup and an environment that runs no background work need different fixes.
 
-*Acceptance:* revoke the Pub/Sub publisher grant in a test project — mail still syncs within 60 minutes, health reports `watch_degraded` after three failures, owner notified once. Move a user out of a rule's department — that rule blocks with a visible row, the mailbox keeps syncing. **Not yet exercised against a live Google project**; covered by unit tests only (114 passing across the mail, permission and Gmail-client suites).
+**Cold review of Wave 2, two rounds.** Round one found four defects I had introduced, all fixed: the `permission_lookup_failed` split covered only the department axis, so a company-axis DB blip still became a permanent `blocked` row (`0b94131b2`); a truncated pass that consumed nothing still asked to be re-polled, giving a 200-Gmail-call-per-tick hot loop with the mailbox reporting healthy (`458736c01`); the `unavailable` error's message contained "permission", so `syncFailureCode`'s substring match stamped it `scope_missing` and told the member to reconnect a healthy Google account (`458736c01`); and `blocked` was derived from a 30-day count, so a recovered rule went on reporting itself refused (`88ef5b75e`, which also split `lastBlockedAt`/`blockedReason` out of the conflated `lastError`, reordered `paused` above the watch states, and made the alert card title follow `rulesCanFire`). Round two found that stopping the loop had left the branch *asserting success* — fixed in `9067fea78` by failing with `history_backlog_stalled`, plus completing the screen's error gate and dropping a serialised field nothing read.
+
+**Known and deferred:** a stalled backlog is now visible but still cannot make progress. Resuming from a stored Gmail `pageToken` is the real repair — it needs a column on `MailboxSubscription` and belongs in **Wave 10**.
+
+*Acceptance:* revoke the Pub/Sub publisher grant in a test project — mail still syncs within 60 minutes, health reports `watch_degraded` after three failures, owner notified once. Move a user out of a rule's department — that rule blocks with a visible row, the mailbox keeps syncing. **Not yet exercised against a live Google project**; covered by unit tests only (120 passing across the mail, permission and Gmail-client suites).
 
 **Wave 3 — The dead OAuth path** *(D5)* — P0, cross-cutting beyond mail
 Populate `connectionAuthorization` at Lark ingress, propagate through `ToolExecutor.buildRunContext`. Define off-Lark behaviour: either a real desktop/web connect-and-resume, or a distinguishable outcome so the tool can say "open Settings → Integrations" instead of an opaque `unrecoverable`. Stop collapsing `selection.reason` so `insufficient_access` is distinguishable from `none_accessible`. Delete or implement `continuationToolIds`. Test against real wiring.
@@ -324,7 +329,7 @@ One provisioning path that runs on deploy and covers skills *and* permissions. A
 
 **Wave 9 — Code quality** *(§3)*
 
-**Wave 10 — Retention and operations** — strip `bodyText` after 30 days, delete events after 90, drop terminal `payloadJson` after 30; operator-triggered reconciliation; metrics.
+**Wave 10 — Retention and operations** *(now also carries the stalled-backlog repair: persist the Gmail `pageToken` on `MailboxSubscription` so a truncated pass resumes where it stopped instead of failing with `history_backlog_stalled`)* — strip `bodyText` after 30 days, delete events after 90, drop terminal `payloadJson` after 30; operator-triggered reconciliation; metrics.
 
 **Wave 11 — Deferred** — `replyTemplate`, `saveAttachmentToDrive`, selectable watched labels, T9 reciprocal routing guards.
 
