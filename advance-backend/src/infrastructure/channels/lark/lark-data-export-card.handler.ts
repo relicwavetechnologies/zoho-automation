@@ -3,6 +3,7 @@ import type { GoogleConnectionAuthorizationService } from '../../../application/
 import type { Logger } from '../../../shared/logger';
 import type { LarkAuthenticatedCardActor } from './lark-approval-card.handler';
 import { buildGoogleConnectCardData } from './lark-google-connect';
+import type { WorkbookConversionConfirmationService } from '../../../application/data-export/workbook-conversion.service';
 
 interface DataExportCardAction {
   readonly kind: 'data_export_confirm';
@@ -11,7 +12,12 @@ interface DataExportCardAction {
   readonly connectionId?: string;
 }
 
-type ParsedAction = DataExportCardAction | 'invalid' | null;
+interface WorkbookConversionCardAction {
+  readonly kind: 'workbook_conversion_confirm';
+  readonly offerId: string;
+}
+
+type ParsedAction = DataExportCardAction | WorkbookConversionCardAction | 'invalid' | null;
 
 export function isDataExportCardAction(rawEvent: unknown): boolean {
   const event = asRecord(rawEvent);
@@ -26,6 +32,7 @@ export class LarkDataExportCardHandler {
     private readonly offers: Pick<DataExportOfferService, 'confirmForActor'>,
     logger: Logger,
     private readonly authorization?: Pick<GoogleConnectionAuthorizationService, 'issue'>,
+    private readonly workbookConversions?: Pick<WorkbookConversionConfirmationService, 'confirmForActor'>,
   ) {
     this.log = logger.child({ handler: 'lark-data-export-card' });
   }
@@ -51,6 +58,42 @@ export class LarkDataExportCardHandler {
     );
     if (!sourceMessageId) {
       return failure('Divo could not verify which card opened this export. Please try again.');
+    }
+
+    if (action.kind === 'workbook_conversion_confirm') {
+      if (!this.workbookConversions) {
+        return failure('Workbook conversion is temporarily unavailable. Please try again.');
+      }
+      try {
+        await this.workbookConversions.confirmForActor({
+          offerId: action.offerId,
+          companyId: actor.companyId,
+          userId: actor.userId,
+          chatId,
+          sourceMessageId,
+        });
+        return {
+          handled: true,
+          responseBody: {
+            toast: {
+              type: 'success',
+              content: 'Workbook copy accepted. Divo is creating a new Google Sheet.',
+            },
+            delivery: 'replace_source_card',
+            card: { type: 'raw', data: buildLockedWorkbookCard() },
+          },
+        };
+      } catch (error) {
+        this.log.warn('workbook_conversion_card.confirm_failed', {
+          offerId: action.offerId,
+          companyId: actor.companyId,
+          userId: actor.userId,
+          error: String(error),
+        });
+        return failure(error instanceof Error && /^This workbook conversion /.test(error.message)
+          ? error.message
+          : 'Divo could not start this workbook copy. Please try again.');
+      }
     }
 
     try {
@@ -205,6 +248,29 @@ function buildLockedExportCard(
   };
 }
 
+function buildLockedWorkbookCard(): Record<string, unknown> {
+  return {
+    schema: '2.0',
+    config: {
+      width_mode: 'fill',
+      update_multi: true,
+      enable_forward: false,
+      summary: { content: 'Google Sheet copy started' },
+    },
+    header: {
+      template: 'green',
+      title: { tag: 'plain_text', content: 'Google Sheet copy started' },
+    },
+    body: {
+      padding: '12px',
+      elements: [{
+        tag: 'markdown',
+        content: 'Divo accepted the workbook conversion. Progress and the new Google Sheet will arrive in a separate card.\n\nThe original Excel workbook will not change.',
+      }],
+    },
+  };
+}
+
 function parseAction(rawValue: unknown): ParsedAction {
   let candidate = rawValue;
   try {
@@ -224,6 +290,10 @@ function parseAction(rawValue: unknown): ParsedAction {
     return null;
   }
   const payload = asRecord(candidate);
+  if (payload?.['kind'] === 'workbook_conversion_confirm') {
+    if (Object.keys(payload).length !== 2 || !isUuid(payload['offerId'])) return 'invalid';
+    return { kind: 'workbook_conversion_confirm', offerId: payload['offerId'] };
+  }
   if (payload?.['kind'] === 'data_export_confirm') {
     const format = payload['format'];
     const connectionId = payload['connectionId'];

@@ -124,6 +124,8 @@ import { ChatMessageSerializer } from './application/channels/chat-message-seria
 // Data export and async ingress
 import { DataExportQueue } from './application/data-export/data-export.queue';
 import { DataExportOfferService } from './application/data-export/data-export-offer.service';
+import { WorkbookConversionQueue } from './application/data-export/workbook-conversion.queue';
+import { WorkbookConversionConfirmationService } from './application/data-export/workbook-conversion.service';
 import { DatasetSourceRegistry } from './application/data-export/data-export.source-registry';
 import {
   AirtableDataExportSource,
@@ -343,6 +345,7 @@ export interface Container {
   approvalResumer: ApprovalResumerService;
   approvalInbox: ApprovalInboxService;
   dataExportQueue: DataExportQueue;
+  workbookConversionQueue: WorkbookConversionQueue;
   dataExportSources: DatasetSourceRegistry;
   googleWorkspaceExportSink: GoogleWorkspaceExportSink;
   resumeDataExportAfterGoogleConnection: (input: {
@@ -1399,6 +1402,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   );
 
   const dataExportQueue = new DataExportQueue(queueRedisUrl);
+  const workbookConversionQueue = new WorkbookConversionQueue(queueRedisUrl);
   const dataExportOfferService = new DataExportOfferService({
     offers: new DataExportOfferRepository(prisma),
     queue: dataExportQueue,
@@ -2235,6 +2239,10 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     dataExportOfferService,
     logger.child({ service: 'data-export-card-handler' }),
     googleConnectionAuthorization,
+    new WorkbookConversionConfirmationService({
+      offers: runEffectReceipts,
+      queue: workbookConversionQueue,
+    }),
   );
 
   // The same decisions the Lark card carries, reachable by anyone signed in.
@@ -2373,6 +2381,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     approvalInbox,
     // Data export and async ingress
     dataExportQueue,
+    workbookConversionQueue,
     dataExportSources,
     googleWorkspaceExportSink,
     resumeDataExportAfterGoogleConnection,

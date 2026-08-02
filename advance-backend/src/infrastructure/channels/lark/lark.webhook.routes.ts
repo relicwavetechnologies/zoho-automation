@@ -277,7 +277,7 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
         res.status(200).json({
           toast: {
             type: 'success',
-            content: 'Export request received. Divo is starting it now.',
+            content: 'Request received. Divo is starting it now.',
           },
         });
         setImmediate(() => {

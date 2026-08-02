@@ -1548,6 +1548,62 @@ describe('Lark webhook card authorization', () => {
     ]);
   });
 
+  it('acknowledges and locks an authenticated workbook conversion action', async () => {
+    const confirmations: unknown[] = [];
+    const handler = new LarkDataExportCardHandler(
+      { confirmForActor: async () => ({ exportJobId: 'unused', disposition: 'queued' }) } as any,
+      noopLogger,
+      undefined,
+      {
+        confirmForActor: async input => {
+          confirmations.push(input);
+          return { disposition: 'queued', jobId: 'wbc-1' };
+        },
+      },
+    );
+    let adapter: any;
+    const offerId = '44444444-4444-4444-8444-444444444444';
+    const result = await runWebhook({
+      header: {
+        event_type: 'card.action.trigger',
+        token: 'verify',
+        tenant_key: 'tenant-1',
+      },
+      event: {
+        operator: { open_id: 'ou_admin', name: 'Admin' },
+        context: { open_chat_id: 'oc_workbook', open_message_id: 'om_workbook_card' },
+        action: {
+          value: {
+            action: JSON.stringify({ kind: 'workbook_conversion_confirm', offerId }),
+          },
+        },
+      },
+    }, {
+      identity: {
+        userId: 'admin-1',
+        companyId: 'company-1',
+        aiRole: 'COMPANY_ADMIN',
+        channel: 'lark',
+      },
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
+      dataExportCardHandler: handler,
+    });
+
+    assert.equal((result.responseBody as any).toast.content, 'Request received. Divo is starting it now.');
+    await waitUntil(() => adapter.__updatedMessages.length === 1, 'workbook card locked');
+    const card = JSON.parse(adapter.__updatedMessages[0].card).card;
+    assert.equal(card.header.title.content, 'Google Sheet copy started');
+    assert.equal(JSON.stringify(card).includes('"tag":"button"'), false);
+    assert.match(card.body.elements[0].content, /original Excel workbook will not change/i);
+    assert.deepEqual(confirmations, [{
+      offerId,
+      companyId: 'company-1',
+      userId: 'admin-1',
+      chatId: 'oc_workbook',
+      sourceMessageId: 'om_workbook_card',
+    }]);
+  });
+
   it('acknowledges a slow export confirmation before delivering its follow-up as a new card', async () => {
     let complete!: (result: { handled: boolean; responseBody?: unknown }) => void;
     const pending = new Promise<{ handled: boolean; responseBody?: unknown }>(resolve => {
@@ -1578,7 +1634,7 @@ describe('Lark webhook card authorization', () => {
     assert.deepEqual(result.responseBody, {
       toast: {
         type: 'success',
-        content: 'Export request received. Divo is starting it now.',
+        content: 'Request received. Divo is starting it now.',
       },
     });
     assert.equal(adapter.__sentCards.length, 0);
