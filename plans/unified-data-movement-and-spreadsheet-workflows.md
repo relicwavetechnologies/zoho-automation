@@ -40,6 +40,10 @@
 - Lark-facing runtime failures no longer expose Pi/controller names, internal
   codes, provider text, or tokens. Exact diagnostics remain on the internal
   error/trace path.
+- Async export-worker failures now follow the same boundary: the exact
+  exception is logged internally, while the original Lark card receives only
+  safe Divo copy. Data-export verification passed 32/32 checks plus TypeScript
+  and independent cold review.
 - Retry/error-boundary verification: controller 28/28 passed; Lark runtime and
   webhook 150/150 passed.
 - OMS snapshot convergence is integrated in `130fbd3cb` (implemented first in
