@@ -1541,6 +1541,80 @@ describe('Lark webhook card authorization', () => {
     });
   });
 
+  it('replaces the same export card with Google OAuth and a typed direct continuation', async () => {
+    let authorizationInput: unknown;
+    const handler = new LarkDataExportCardHandler({
+      confirmForActor: async () => ({
+        disposition: 'connect_required',
+        replyInThread: true,
+        replyToMessageId: 'om_thread_root',
+      }),
+    } as any, noopLogger, {
+      issue: async input => {
+        authorizationInput = input;
+        return {
+          outcome: 'issued',
+          intentId: 'intent-1',
+          authorizeUrl: 'https://accounts.google.test/auth?state=opaque',
+          expiresAt: new Date('2026-08-02T06:00:00.000Z'),
+          correlationId: 'correlation-1',
+        };
+      },
+    } as any);
+    const offerId = '11111111-1111-4111-8111-111111111111';
+    const result = await runWebhook({
+      header: {
+        event_type: 'card.action.trigger',
+        token: 'verify',
+        tenant_key: 'tenant-1',
+      },
+      event: {
+        operator: { open_id: 'ou_admin' },
+        context: { open_chat_id: 'oc_export', open_message_id: 'om_export_card' },
+        action: {
+          value: {
+            action: JSON.stringify({ kind: 'data_export_confirm', offerId, format: 'csv' }),
+          },
+        },
+      },
+    }, {
+      identity: {
+        userId: 'admin-1',
+        companyId: 'company-1',
+        aiRole: 'COMPANY_ADMIN',
+        channel: 'lark',
+      },
+      dataExportCardHandler: handler,
+    });
+
+    assert.deepEqual(authorizationInput, {
+      companyId: 'company-1',
+      userId: 'admin-1',
+      larkOpenId: 'ou_admin',
+      larkTenantKey: 'tenant-1',
+      chatId: 'oc_export',
+      chatType: 'group',
+      originalMessageId: 'om_export_card',
+      rootMessageId: 'om_thread_root',
+      replyInThread: true,
+      groupReplyMode: 'threaded',
+      originalRequest: 'Resume the confirmed data export after Google is connected.',
+      requestedToolIds: ['dataExport'],
+      continuationPayload: {
+        kind: 'data_export_confirmation',
+        offerId,
+        progressMessageId: 'om_export_card',
+        format: 'csv',
+      },
+    });
+    const card = (result.responseBody as any).card.data;
+    assert.equal(card.header.title.content, 'Connect Google Workspace');
+    assert.equal(
+      card.body.elements[1].behaviors[0].default_url,
+      'https://accounts.google.test/auth?state=opaque',
+    );
+  });
+
   it('passes only the signed actor context and selected Google connection to confirmation', async () => {
     let confirmation: unknown;
     const handler = new LarkDataExportCardHandler({

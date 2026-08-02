@@ -144,6 +144,7 @@ export const createServer = (c: Container): DivoServerApplication => {
       intentRepo: c.connectionAuthorizationRepo,
       identityRepo: c.channelIdentityRepo,
       connectionRepo: c.integrationConnectionRepo,
+      resumeDataExport: c.resumeDataExportAfterGoogleConnection,
       runPi: input => runPiAndDeliver({
         ...input,
         deps: {

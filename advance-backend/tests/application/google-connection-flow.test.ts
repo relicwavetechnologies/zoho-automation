@@ -42,6 +42,20 @@ const TARGET = {
   continuationIdempotencyKey: 'google-oauth-continuation:correlation-1',
 };
 
+const EXPORT_TARGET = {
+  ...TARGET,
+  originalMessageId: 'om_export_card',
+  originalRequest: 'Resume the confirmed data export after Google is connected.',
+  requestedToolIds: ['dataExport'],
+  continuationPayload: {
+    kind: 'data_export_confirmation' as const,
+    offerId: '11111111-1111-4111-8111-111111111111',
+    progressMessageId: 'om_export_card',
+    format: 'csv' as const,
+  },
+  connectionId: 'connection-1',
+};
+
 const claimedCallback = {
   outcome: 'claimed' as const,
   intent: TARGET,
@@ -445,6 +459,129 @@ describe('Google connection continuation', () => {
     assert.deepEqual(finishInput, [
       'intent-1',
       { runId: TARGET.continuationIdempotencyKey },
+    ]);
+  });
+
+  it('resumes a typed export confirmation directly without starting Pi', async () => {
+    let resumeInput: unknown;
+    let finishInput: unknown;
+    let piRuns = 0;
+    const worker = new GoogleConnectionContinuationWorker({
+      redisUrl: 'redis://unused',
+      queue: { enqueue: async () => '' },
+      intentRepo: {
+        findPendingContinuation: async () => ({ ok: true, value: EXPORT_TARGET }),
+        claimContinuation: async () => ({ ok: true, value: EXPORT_TARGET }),
+        finishContinuation: async (...args: unknown[]) => {
+          finishInput = args;
+          return { ok: true, value: undefined };
+        },
+        listPendingContinuationIds: async () => ({ ok: true, value: [] }),
+      } as any,
+      identityRepo: {
+        resolveByLarkTenantIdentity: async () => ({
+          ok: true,
+          value: {
+            companyId: 'company-1',
+            userId: 'user-1',
+            aiRole: 'MEMBER',
+            channel: 'lark',
+          },
+        }),
+      } as any,
+      connectionRepo: {
+        listAccessibleGoogleConnections: async () => ({
+          ok: true,
+          value: [{
+            connectionId: 'connection-1',
+            ownerType: 'user',
+            ownerUserId: 'user-1',
+          }],
+        }),
+      } as any,
+      resumeDataExport: async input => {
+        resumeInput = input;
+        return 'dtx-resumed';
+      },
+      runPi: async () => {
+        piRuns += 1;
+        return 'unexpected';
+      },
+      channelAdapter: { key: 'lark' } as any,
+      logger: noopLogger,
+    });
+
+    await worker.process({ id: 'job-export', data: { intentId: 'intent-1' } });
+
+    assert.deepEqual(resumeInput, {
+      offerId: '11111111-1111-4111-8111-111111111111',
+      companyId: 'company-1',
+      userId: 'user-1',
+      chatId: 'oc_chat',
+      progressMessageId: 'om_export_card',
+      connectionId: 'connection-1',
+      format: 'csv',
+    });
+    assert.deepEqual(finishInput, ['intent-1', { runId: 'dtx-resumed' }]);
+    assert.equal(piRuns, 0);
+  });
+
+  it('edits the export card when direct OAuth continuation cannot resume', async () => {
+    let edited: unknown;
+    let finishInput: unknown;
+    const worker = new GoogleConnectionContinuationWorker({
+      redisUrl: 'redis://unused',
+      queue: { enqueue: async () => '' },
+      intentRepo: {
+        findPendingContinuation: async () => ({ ok: true, value: EXPORT_TARGET }),
+        claimContinuation: async () => ({ ok: true, value: EXPORT_TARGET }),
+        finishContinuation: async (...args: unknown[]) => {
+          finishInput = args;
+          return { ok: true, value: undefined };
+        },
+        listPendingContinuationIds: async () => ({ ok: true, value: [] }),
+      } as any,
+      identityRepo: {
+        resolveByLarkTenantIdentity: async () => ({
+          ok: true,
+          value: {
+            companyId: 'company-1',
+            userId: 'user-1',
+            aiRole: 'MEMBER',
+            channel: 'lark',
+          },
+        }),
+      } as any,
+      connectionRepo: {
+        listAccessibleGoogleConnections: async () => ({
+          ok: true,
+          value: [{
+            connectionId: 'connection-1',
+            ownerType: 'user',
+            ownerUserId: 'user-1',
+          }],
+        }),
+      } as any,
+      resumeDataExport: async () => {
+        throw new Error('offer expired');
+      },
+      runPi: async () => assert.fail('typed export continuation must not start Pi'),
+      channelAdapter: {
+        updateMessageById: async (messageId: string, content: string) => {
+          edited = { messageId, content };
+          return { ok: true, value: undefined };
+        },
+      } as any,
+      logger: noopLogger,
+    });
+
+    await worker.process({ id: 'job-export-failed', data: { intentId: 'intent-1' } });
+
+    assert.equal((edited as any).messageId, 'om_export_card');
+    assert.match((edited as any).content, /Data export could not resume/i);
+    assert.deepEqual(finishInput, [
+      'intent-1',
+      { failureCode: 'continuation_failed' },
     ]);
   });
 

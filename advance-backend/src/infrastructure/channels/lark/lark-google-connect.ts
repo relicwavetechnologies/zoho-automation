@@ -10,7 +10,15 @@ export const buildGoogleConnectCard = (input: {
   readonly url: string;
   readonly reason: string;
 }): string => {
-  const card = {
+  const card = buildGoogleConnectCardData(input);
+
+  return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(card) });
+};
+
+export const buildGoogleConnectCardData = (input: {
+  readonly url: string;
+  readonly reason: string;
+}): Record<string, unknown> => ({
     schema: '2.0',
     config: { width_mode: 'fill', update_multi: false, enable_forward: false },
     header: {
@@ -38,7 +46,4 @@ export const buildGoogleConnectCard = (input: {
         },
       ],
     },
-  };
-
-  return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(card) });
-};
+  });

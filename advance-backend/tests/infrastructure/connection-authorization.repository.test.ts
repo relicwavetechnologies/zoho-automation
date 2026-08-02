@@ -225,6 +225,39 @@ describe('ConnectionAuthorizationRepository', () => {
     });
   });
 
+  it('round-trips a typed data-export payload only through the claimed intent', async () => {
+    const continuationPayload = {
+      kind: 'data_export_confirmation' as const,
+      offerId: '11111111-1111-4111-8111-111111111111',
+      progressMessageId: 'om_export_card',
+      format: 'google_sheet' as const,
+    };
+    let createInput: any;
+    const repo = new ConnectionAuthorizationRepository({
+      connectionAuthorizationIntent: {
+        create: async (input: any) => {
+          createInput = input;
+          return { id: 'intent-export' };
+        },
+        updateMany: async () => ({ count: 1 }),
+        findUnique: async () => storedIntent({
+          id: 'intent-export',
+          status: 'connected',
+          connectionId: 'connection-1',
+          continuationPayload,
+        }),
+      },
+    } as any);
+
+    const issued = await repo.create({ ...TARGET, continuationPayload });
+    const claimed = await repo.claimContinuation('intent-export');
+
+    assert.equal(issued.ok, true);
+    assert.deepEqual(createInput.data.continuationPayload, continuationPayload);
+    assert.ok(claimed.ok && claimed.value);
+    assert.deepEqual(claimed.value.continuationPayload, continuationPayload);
+  });
+
   it('does not start a second agent run after the continuation claim is lost', async () => {
     const repo = new ConnectionAuthorizationRepository({
       connectionAuthorizationIntent: {

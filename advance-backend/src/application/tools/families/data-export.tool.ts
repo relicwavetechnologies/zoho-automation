@@ -107,6 +107,14 @@ export function createDataExportTool(deps: {
               message: `Ask the user which Google account should own the export, then retry with its exact destinationConnectionId: ${choices}`,
             });
           }
+          if (confirmed.disposition === 'connect_required') {
+            return ok({
+              success: true,
+              exportQueued: false,
+              exportJobId: args.offerId,
+              message: 'Use the export card in Lark to connect Google. Divo will resume this exact export after authorization.',
+            });
+          }
           return ok({
             success: true,
             exportQueued: confirmed.disposition !== 'in_progress',

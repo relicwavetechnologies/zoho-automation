@@ -554,6 +554,21 @@ Card callbacks must authenticate the clicking actor and must not trust company/u
   passed, Zoho Books 23 passed, Lark runtime 30 passed, Lark webhook 134
   passed; gateway/finalization 90 passed, TypeScript and `git diff --check`
   passed.
+- Added typed export OAuth continuation data to the existing durable Google
+  authorization intent and applied the nullable JSON column to `divo_dev` with
+  Prisma `db push`; no migration file or row rewrite was created.
+- When export confirmation has no eligible destination, the signed Lark action
+  replaces the same card with Connect Google. OAuth completion revalidates the
+  current Lark identity and newly connected personal account, then invokes the
+  existing offer confirmation service directly with the opaque offer, selected
+  format, and original card ID. It does not reconstruct a prompt or start Pi;
+  ordinary Google OAuth continuations retain their existing isolated-Pi path.
+- If the direct resume cannot start after Google connects, the continuation is
+  marked failed and the same export card is edited with a visible retry message
+  rather than remaining stuck on the Connect Google state.
+- OAuth-resume focused result: offer/export 60 passed, Lark webhook 135 passed,
+  Google OAuth flow/repository 29 passed, gateway/Zoho Books 94 passed;
+  TypeScript and `git diff --check` passed.
 
 ### Phase 0 — freeze contracts and characterize current behavior
 
@@ -633,9 +648,8 @@ the signed Lark card. The card carries only the opaque offer, allowed format,
 and exact eligible connection ID; backend identity, RBAC, chat, and connection
 eligibility remain authoritative.
 
-**Still pending in Phase 3:** destination OAuth resume.
-
-- Resume cleanly after destination OAuth.
+**Phase 3D completed:** destination OAuth resumes the exact backend-owned offer
+after connection and retains the original card as the progress/final tracker.
 
 **Exit criteria**
 

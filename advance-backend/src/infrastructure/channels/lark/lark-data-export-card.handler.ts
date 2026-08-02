@@ -1,6 +1,8 @@
 import type { DataExportOfferService } from '../../../application/data-export/data-export-offer.service';
+import type { GoogleConnectionAuthorizationService } from '../../../application/connections/google-connection-authorization.service';
 import type { Logger } from '../../../shared/logger';
 import type { LarkAuthenticatedCardActor } from './lark-approval-card.handler';
+import { buildGoogleConnectCardData } from './lark-google-connect';
 
 interface DataExportCardAction {
   readonly kind: 'data_export_confirm';
@@ -17,6 +19,7 @@ export class LarkDataExportCardHandler {
   constructor(
     private readonly offers: Pick<DataExportOfferService, 'confirmForActor'>,
     logger: Logger,
+    private readonly authorization?: Pick<GoogleConnectionAuthorizationService, 'issue'>,
   ) {
     this.log = logger.child({ handler: 'lark-data-export-card' });
   }
@@ -63,6 +66,56 @@ export class LarkDataExportCardHandler {
             card: {
               type: 'raw',
               data: buildDestinationChoiceCard(action, result.connections),
+            },
+          },
+        };
+      }
+      if (result.disposition === 'connect_required') {
+        if (!this.authorization) {
+          return failure('Google connection is temporarily unavailable. Please try again.');
+        }
+        const authorization = await this.authorization.issue({
+          companyId: actor.companyId,
+          userId: actor.userId,
+          larkOpenId: actor.openId,
+          larkTenantKey: actor.tenantKey,
+          chatId,
+          chatType: result.replyInThread ? 'group' : 'p2p',
+          originalMessageId: progressMessageId,
+          ...(result.replyToMessageId
+            ? { rootMessageId: result.replyToMessageId }
+            : {}),
+          replyInThread: result.replyInThread,
+          ...(result.replyInThread ? { groupReplyMode: 'threaded' } : {}),
+          originalRequest: 'Resume the confirmed data export after Google is connected.',
+          requestedToolIds: ['dataExport'],
+          continuationPayload: {
+            kind: 'data_export_confirmation',
+            offerId: action.offerId,
+            progressMessageId,
+            ...(action.format ? { format: action.format } : {}),
+          },
+        });
+        if (authorization.outcome === 'already_pending') {
+          return {
+            handled: true,
+            responseBody: {
+              toast: {
+                type: 'info',
+                content: 'Google connection is already awaiting authorization.',
+              },
+            },
+          };
+        }
+        return {
+          handled: true,
+          responseBody: {
+            card: {
+              type: 'raw',
+              data: buildGoogleConnectCardData({
+                url: authorization.authorizeUrl,
+                reason: 'Connect a writable Google account to create this export. Divo will continue automatically.',
+              }),
             },
           },
         };

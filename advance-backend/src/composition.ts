@@ -325,6 +325,15 @@ export interface Container {
   dataExportQueue: DataExportQueue;
   dataExportSources: DatasetSourceRegistry;
   googleWorkspaceExportSink: GoogleWorkspaceExportSink;
+  resumeDataExportAfterGoogleConnection: (input: {
+    readonly offerId: string;
+    readonly companyId: string;
+    readonly userId: string;
+    readonly chatId: string;
+    readonly progressMessageId: string;
+    readonly connectionId: string;
+    readonly format?: 'google_sheet' | 'csv';
+  }) => Promise<string>;
   resolveGoogleExportAuth: (
     companyId: string,
     userId: string,
@@ -1329,6 +1338,32 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     permissions,
     resolveDestination: resolveDataExportDestination,
   });
+  const resumeDataExportAfterGoogleConnection = async (input: {
+    readonly offerId: string;
+    readonly companyId: string;
+    readonly userId: string;
+    readonly chatId: string;
+    readonly progressMessageId: string;
+    readonly connectionId: string;
+    readonly format?: 'google_sheet' | 'csv';
+  }): Promise<string> => {
+    const confirmed = await dataExportOfferService.confirmForActor({
+      offerId: input.offerId,
+      companyId: input.companyId,
+      userId: input.userId,
+      chatId: input.chatId,
+      progressMessageId: input.progressMessageId,
+      destinationConnectionId: input.connectionId,
+      ...(input.format ? { destinationFormat: input.format } : {}),
+    });
+    if (
+      confirmed.disposition === 'choose_destination'
+      || confirmed.disposition === 'connect_required'
+    ) {
+      throw new Error('The connected Google account did not resolve the pending export destination.');
+    }
+    return confirmed.exportJobId;
+  };
   const larkIngressQueue = new LarkIngressQueue(queueRedisUrl);
   const googleConnectionContinuationQueue =
     new GoogleConnectionContinuationQueue(queueRedisUrl);
@@ -2015,6 +2050,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const dataExportCardHandler = new LarkDataExportCardHandler(
     dataExportOfferService,
     logger.child({ service: 'data-export-card-handler' }),
+    googleConnectionAuthorization,
   );
 
   // The same decisions the Lark card carries, reachable by anyone signed in.
@@ -2152,6 +2188,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     dataExportQueue,
     dataExportSources,
     googleWorkspaceExportSink,
+    resumeDataExportAfterGoogleConnection,
     resolveGoogleExportAuth,
     airtableConnectionResolver: getAirtableMcpConnection,
     larkIngressQueue,

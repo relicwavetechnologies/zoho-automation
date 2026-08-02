@@ -73,6 +73,11 @@ export class DataExportOfferService {
         readonly disposition: 'choose_destination';
         readonly connections: readonly DataExportDestinationChoice[];
       }
+    | {
+        readonly disposition: 'connect_required';
+        readonly replyInThread: boolean;
+        readonly replyToMessageId?: string;
+      }
   > {
     const now = this.deps.now?.() ?? new Date();
     const loaded = await this.deps.offers.loadForConfirmation({
@@ -135,7 +140,13 @@ export class DataExportOfferService {
       return { disposition: 'choose_destination', connections: destination.connections };
     }
     if (destination.status === 'connect_required') {
-      throw new Error('Connect a writable Google account before confirming this export.');
+      return {
+        disposition: 'connect_required',
+        replyInThread: offer.payload.replyInThread === true,
+        ...(offer.payload.replyToMessageId
+          ? { replyToMessageId: offer.payload.replyToMessageId }
+          : {}),
+      };
     }
     if (destination.status === 'unavailable') throw new Error(destination.message);
 

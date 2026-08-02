@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import { sha256 } from '../../shared/hash';
 
 export const CONNECTION_AUTHORIZATION_PROVIDER = 'google_workspace' as const;
@@ -18,6 +19,24 @@ export type ConnectionContinuationStatus =
   | 'completed'
   | 'failed';
 
+const connectionContinuationPayloadSchema = z.object({
+  kind: z.literal('data_export_confirmation'),
+  offerId: z.string().uuid(),
+  progressMessageId: z.string().min(1),
+  format: z.enum(['google_sheet', 'csv']).optional(),
+}).strict();
+
+export type ConnectionContinuationPayload = z.infer<
+  typeof connectionContinuationPayloadSchema
+>;
+
+export function parseConnectionContinuationPayload(
+  value: unknown,
+): ConnectionContinuationPayload | undefined {
+  if (value === null || value === undefined) return undefined;
+  return connectionContinuationPayloadSchema.parse(value);
+}
+
 export interface ConnectionAuthorizationTarget {
   companyId: string;
   userId: string;
@@ -32,6 +51,7 @@ export interface ConnectionAuthorizationTarget {
   groupReplyMode?: string;
   originalRequest: string;
   requestedToolIds: string[];
+  continuationPayload?: ConnectionContinuationPayload;
 }
 
 export interface ConnectionAuthorizationSecrets {

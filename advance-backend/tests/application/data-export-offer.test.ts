@@ -473,6 +473,48 @@ describe('DataExportOfferService', () => {
     assert.equal(enqueueCount, 0);
   });
 
+  it('returns the trusted reply target for OAuth before claiming an export', async () => {
+    const threadedPayload: DataExportOfferPayload = {
+      ...payload,
+      replyToMessageId: 'om_thread_root',
+      replyInThread: true,
+    };
+    const offer = confirmableOffer({
+      payload: threadedPayload,
+      specHash: dataExportSpecHash(threadedPayload),
+      idempotencyKey: dataExportJobId(threadedPayload),
+    });
+    let claimCount = 0;
+    const service = new DataExportOfferService({
+      offers: {
+        create: async () => assert.fail('confirmation must not create another offer'),
+        loadForConfirmation: async () => ok({ outcome: 'found', offer }),
+        claimConfirmation: async () => {
+          claimCount += 1;
+          return ok({ outcome: 'claimed', offer });
+        },
+        markConfirmed: async () => assert.fail('unconnected exports must not be confirmed'),
+      },
+      queue: { enqueue: async () => assert.fail('unconnected exports must not queue') },
+      identityRepo: confirmationDeps.identityRepo,
+      permissions: confirmationDeps.permissions,
+      resolveDestination: async () => ({ status: 'connect_required' }),
+      now: () => NOW,
+    });
+
+    assert.deepEqual(await service.confirmForActor({
+      offerId: offer.id,
+      companyId: payload.companyId,
+      userId: payload.userId,
+      chatId: payload.chatId,
+    }), {
+      disposition: 'connect_required',
+      replyInThread: true,
+      replyToMessageId: 'om_thread_root',
+    });
+    assert.equal(claimCount, 0);
+  });
+
   it('replays an already-confirmed offer without queueing or mutating it', async () => {
     const offer = confirmableOffer({ status: 'confirmed', queueJobId: 'dtx_existing' });
     let enqueueCount = 0;

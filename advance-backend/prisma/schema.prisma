@@ -1283,11 +1283,12 @@ model IntegrationConnection {
   @@index([companyId, ownerUserId])
 }
 
-/// One browser authorization attempt plus the exact agent continuation target.
+/// One browser authorization attempt plus the exact continuation target.
 ///
 /// Only a hash of the browser state is persisted. The callback claims the row
-/// once, then a separate worker starts a fresh agent run from the stored
-/// request; no model stream stays open while the user completes OAuth.
+/// once, then a separate worker either starts a fresh agent run from the stored
+/// request or resumes a typed backend action directly. No model stream stays
+/// open while the user completes OAuth.
 model ConnectionAuthorizationIntent {
   id                         String                 @id @default(uuid())
   stateHash                  String                 @unique
@@ -1311,6 +1312,7 @@ model ConnectionAuthorizationIntent {
   groupReplyMode             String?
   originalRequest            String
   requestedToolIds           String[]               @default([])
+  continuationPayload        Json?
   status                     String                 @default("pending")
   continuationStatus         String                 @default("blocked")
   continuationIdempotencyKey String                 @unique
