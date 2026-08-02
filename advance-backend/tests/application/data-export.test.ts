@@ -458,6 +458,88 @@ describe('Google export retry recovery', () => {
     assert.equal(fileDeletes, 0);
   });
 
+  it('recovers a completed Excel artifact with the same access checks', async () => {
+    const drive = {
+      files: {
+        list: async () => ({
+          data: {
+            files: [{
+              id: 'xlsx-1',
+              mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              webViewLink: 'https://drive.google.com/file/d/xlsx-1/view',
+              appProperties: {
+                divoExportKey: 'job-xlsx',
+                divoExportState: 'complete',
+                divoExportRowCount: '25',
+                divoExportTruncated: 'false',
+                divoExportType: 'xlsx',
+              },
+            }],
+          },
+        }),
+        delete: async () => assert.fail('completed artifact must not be deleted'),
+      },
+      permissions: {
+        list: async () => ({
+          data: {
+            permissions: [
+              { type: 'user', role: 'owner', emailAddress: 'member@gmail.com' },
+            ],
+          },
+        }),
+        create: async () => assert.fail('owner exports must not create reader permissions'),
+      },
+    };
+
+    const recovered = await recoverCompletedExport(
+      drive as any,
+      'job-xlsx',
+      { kind: 'owner', email: 'member@gmail.com' },
+    );
+
+    assert.equal(recovered?.artifactType, 'xlsx');
+    assert.equal(recovered?.rowCount, 25);
+  });
+
+  it('does not recover an Excel-labelled artifact with a different Drive MIME type', async () => {
+    let deleted = false;
+    const drive = {
+      files: {
+        list: async () => ({
+          data: {
+            files: [{
+              id: 'not-xlsx',
+              mimeType: 'text/plain',
+              appProperties: {
+                divoExportKey: 'job-xlsx',
+                divoExportState: 'complete',
+                divoExportRowCount: '25',
+                divoExportTruncated: 'false',
+                divoExportType: 'xlsx',
+              },
+            }],
+          },
+        }),
+        delete: async () => {
+          deleted = true;
+        },
+      },
+      permissions: {
+        list: async () => assert.fail('invalid artifact must not be access-verified'),
+        create: async () => assert.fail('invalid artifact must not be shared'),
+      },
+    };
+
+    const recovered = await recoverCompletedExport(
+      drive as any,
+      'job-xlsx',
+      { kind: 'owner', email: 'member@gmail.com' },
+    );
+
+    assert.equal(recovered, null);
+    assert.equal(deleted, true);
+  });
+
   it('rejects a recovered artifact with access beyond the verified invoker', async () => {
     const drive = {
       files: {

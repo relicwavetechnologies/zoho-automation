@@ -812,6 +812,14 @@ export class LarkPiRuntimeService {
                   format: 'csv',
                 }),
               },
+              {
+                label: 'Excel (.xlsx)',
+                value: JSON.stringify({
+                  kind: 'data_export_confirm',
+                  offerId: exportEffect.offerId,
+                  format: 'xlsx',
+                }),
+              },
             ],
           }
         : {}),

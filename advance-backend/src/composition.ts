@@ -333,7 +333,7 @@ export interface Container {
     readonly chatId: string;
     readonly progressMessageId: string;
     readonly connectionId: string;
-    readonly format?: 'google_sheet' | 'csv';
+    readonly format?: 'google_sheet' | 'csv' | 'xlsx';
   }) => Promise<string>;
   resolveGoogleExportAuth: (
     companyId: string,
@@ -1362,7 +1362,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     readonly chatId: string;
     readonly progressMessageId: string;
     readonly connectionId: string;
-    readonly format?: 'google_sheet' | 'csv';
+    readonly format?: 'google_sheet' | 'csv' | 'xlsx';
   }): Promise<string> => {
     const confirmed = await dataExportOfferService.confirmForActor({
       offerId: input.offerId,

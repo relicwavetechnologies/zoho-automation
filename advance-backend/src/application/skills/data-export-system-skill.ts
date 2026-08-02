@@ -11,7 +11,7 @@ export const DATA_EXPORT_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = {
   summary: `Export up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} Airtable or Zoho Books rows to invoker-only Google artifacts without putting rows in model context.`,
   markdown: `# Secure Data Export
 
-Use \`dataExport\` when the user asks for all rows, a complete export, a CSV, a Google Sheet, or when a source preview reports more data.
+Use \`dataExport\` when the user asks for all rows, a complete export, a CSV, an Excel file, a Google Sheet, or when a source preview reports more data.
 
 When a source result contains \`preview.exportOfferId\`, explain briefly that more rows are available and ask whether the user wants the offered export. After an explicit confirmation, call \`dataExport\` with \`{ "offerId": "<preview.exportOfferId>" }\`. If that exact confirmation returns eligible Google account choices, ask once and retry with only the same \`offerId\` plus the chosen \`destinationConnectionId\`. Never reconstruct the source query, source connection, filters, title, company, or user from the conversation.
 
@@ -20,7 +20,7 @@ The current system cap is ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows 
 1. Resolve the exact source connection and dataset identifiers first.
 2. One call exports exactly one dataset. If an Airtable base has multiple tables and the user did not name one, list the table names and ask one concise question. Never fan out one request into separate table exports.
 3. Call \`dataExport\` with an approved Airtable or Zoho Books source.
-4. Use \`destination.format="auto"\` unless the user explicitly requests CSV or Google Sheets.
+4. Use \`destination.format="auto"\` unless the user explicitly requests CSV, Excel, or Google Sheets. Use \`xlsx\` for Excel; if the dataset exceeds 5,000 rows or 100,000 cells, explain that CSV is required.
 5. For mapping, filtering, renaming, flattening, or calculated columns, provide a row transform. It receives \`row\`, \`index\`, and \`args\`; return one object, an array of objects, or \`null\`.
 6. Never fetch source pages manually, paste bulk rows into model context, or invoke Google Drive/Sheets directly for the export.
 
@@ -34,6 +34,8 @@ The backend re-checks dataExport permission, source read permission, invoker acc
     'full export',
     'complete export',
     'download csv',
+    'excel export',
+    'xlsx export',
     'large dataset',
     'google sheet export',
     'airtable export',

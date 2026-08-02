@@ -7,7 +7,7 @@ import { buildGoogleConnectCardData } from './lark-google-connect';
 interface DataExportCardAction {
   readonly kind: 'data_export_confirm';
   readonly offerId: string;
-  readonly format?: 'google_sheet' | 'csv';
+  readonly format?: 'google_sheet' | 'csv' | 'xlsx';
   readonly connectionId?: string;
 }
 
@@ -181,7 +181,12 @@ function parseAction(rawValue: unknown): ParsedAction {
         + (format === undefined ? 0 : 1)
         + (connectionId === undefined ? 0 : 1)
       || !isUuid(payload['offerId'])
-      || (format !== undefined && format !== 'google_sheet' && format !== 'csv')
+      || (
+        format !== undefined
+        && format !== 'google_sheet'
+        && format !== 'csv'
+        && format !== 'xlsx'
+      )
       || (connectionId !== undefined && !isUuid(connectionId))
     ) return 'invalid';
     return {

@@ -23,7 +23,7 @@ const connectionContinuationPayloadSchema = z.object({
   kind: z.literal('data_export_confirmation'),
   offerId: z.string().uuid(),
   progressMessageId: z.string().min(1),
-  format: z.enum(['google_sheet', 'csv']).optional(),
+  format: z.enum(['google_sheet', 'csv', 'xlsx']).optional(),
 }).strict();
 
 export type ConnectionContinuationPayload = z.infer<

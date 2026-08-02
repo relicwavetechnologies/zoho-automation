@@ -116,7 +116,7 @@ export interface GoogleConnectionContinuationWorkerDeps {
     readonly chatId: string;
     readonly progressMessageId: string;
     readonly connectionId: string;
-    readonly format?: 'google_sheet' | 'csv';
+    readonly format?: 'google_sheet' | 'csv' | 'xlsx';
   }) => Promise<string>;
   runPi: (input: GoogleConnectionContinuationRunInput) => Promise<string | null>;
   channelAdapter: LarkChannelAdapter;

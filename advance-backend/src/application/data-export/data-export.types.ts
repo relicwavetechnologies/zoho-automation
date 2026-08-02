@@ -43,7 +43,7 @@ export interface DataExportTransform {
 }
 
 export interface DataExportDestination {
-  readonly format: 'auto' | 'google_sheet' | 'csv';
+  readonly format: 'auto' | 'google_sheet' | 'csv' | 'xlsx';
   readonly title: string;
   readonly columns?: readonly string[];
   /** Backend-resolved at confirmation time; never accepted from model input. */
@@ -64,7 +64,7 @@ export interface DataExportCompletion {
   readonly success: true;
   readonly artifactId: string;
   readonly artifactUrl: string;
-  readonly artifactType: 'google_sheet' | 'csv';
+  readonly artifactType: 'google_sheet' | 'csv' | 'xlsx';
   readonly rowCount: number;
   readonly sourceTruncated: boolean;
   readonly sharedWith: string;

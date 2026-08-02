@@ -13,7 +13,7 @@ export const dataExportTransformSchema = z.object({
 }).strict();
 
 export const dataExportDestinationSchema = z.object({
-  format: z.enum(['auto', 'google_sheet', 'csv']),
+  format: z.enum(['auto', 'google_sheet', 'csv', 'xlsx']),
   title: z.string().min(1).max(120),
   columns: z.array(z.string().min(1)).max(500).optional(),
 }).strict();

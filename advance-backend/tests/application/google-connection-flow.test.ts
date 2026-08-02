@@ -51,7 +51,7 @@ const EXPORT_TARGET = {
     kind: 'data_export_confirmation' as const,
     offerId: '11111111-1111-4111-8111-111111111111',
     progressMessageId: 'om_export_card',
-    format: 'csv' as const,
+    format: 'xlsx' as const,
   },
   connectionId: 'connection-1',
 };
@@ -520,7 +520,7 @@ describe('Google connection continuation', () => {
       chatId: 'oc_chat',
       progressMessageId: 'om_export_card',
       connectionId: 'connection-1',
-      format: 'csv',
+      format: 'xlsx',
     });
     assert.deepEqual(finishInput, ['intent-1', { runId: 'dtx-resumed' }]);
     assert.equal(piRuns, 0);

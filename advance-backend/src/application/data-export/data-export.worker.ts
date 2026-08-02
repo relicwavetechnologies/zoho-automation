@@ -287,7 +287,7 @@ export class DataExportWorker {
     const card = buildFinalCard({
       markdown: [
         '# Data export ready',
-        `Exported ${completion.rowCount} row${completion.rowCount === 1 ? '' : 's'} to a verified ${completion.artifactType === 'google_sheet' ? 'Google Sheet' : 'CSV in Google Drive'}.`,
+        `Exported ${completion.rowCount} row${completion.rowCount === 1 ? '' : 's'} to a verified ${completion.artifactType === 'google_sheet' ? 'Google Sheet' : completion.artifactType === 'xlsx' ? 'Excel file in Google Drive' : 'CSV in Google Drive'}.`,
         `[Open export](${completion.artifactUrl})`,
         `Access: ${completion.sharedWith}${warning}`,
       ].join('\n\n'),

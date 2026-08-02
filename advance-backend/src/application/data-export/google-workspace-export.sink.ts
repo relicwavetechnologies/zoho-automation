@@ -13,6 +13,10 @@ import type {
   DataExportArtifactAccess,
   GoogleExportAuth,
 } from './data-export.destination';
+import { normalizeExportCell } from './data-export-cell';
+import { writeXlsxArtifact } from './xlsx-export-file';
+
+const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 const SHEET_ROW_LIMIT = 50_000;
 const SHEET_CELL_LIMIT = 2_000_000;
@@ -40,6 +44,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
     const tempDirectory = await mkdtemp(join(tmpdir(), 'divo-export-'));
     const rowsPath = join(tempDirectory, 'rows.ndjson');
     const csvPath = join(tempDirectory, 'export.csv');
+    const xlsxPath = join(tempDirectory, 'export.xlsx');
     const rowStream = createWriteStream(rowsPath, { encoding: 'utf8' });
     const configuredColumns = input.destination.columns
       ? [...input.destination.columns]
@@ -70,13 +75,14 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
 
       const columns = [...discoveredColumns];
       const sheetEligible = input.destination.format !== 'csv'
+        && input.destination.format !== 'xlsx'
         && rowCount <= SHEET_ROW_LIMIT
         && rowCount * Math.max(1, columns.length) <= SHEET_CELL_LIMIT;
-      const format = input.destination.format === 'google_sheet'
-        ? 'google_sheet'
-        : input.destination.format === 'csv' || !sheetEligible
-          ? 'csv'
-          : 'google_sheet';
+      let format: 'google_sheet' | 'csv' | 'xlsx';
+      if (input.destination.format === 'xlsx') format = 'xlsx';
+      else if (input.destination.format === 'google_sheet') format = 'google_sheet';
+      else if (input.destination.format === 'csv' || !sheetEligible) format = 'csv';
+      else format = 'google_sheet';
       if (format === 'google_sheet' && !sheetEligible) {
         throw new Error('Dataset is too large for the requested Google Sheet; use format=auto or csv');
       }
@@ -93,7 +99,21 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
             ...(input.signal ? { signal: input.signal } : {}),
             ...(input.onProgress ? { onProgress: input.onProgress } : {}),
           })
-        : await this.createAndUploadCsv({
+        : format === 'xlsx'
+          ? await this.createAndUploadXlsx({
+              auth: input.auth,
+              access,
+              exportKey: input.exportKey,
+              title: input.destination.title,
+              rowsPath,
+              xlsxPath,
+              columns,
+              rowCount,
+              sourceTruncated: input.sourceTruncated(),
+              ...(input.signal ? { signal: input.signal } : {}),
+              ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+            })
+          : await this.createAndUploadCsv({
             auth: input.auth,
             access,
             exportKey: input.exportKey,
@@ -145,7 +165,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       let writtenRows = 0;
       for await (const row of readRows(input.rowsPath)) {
         input.signal?.throwIfAborted();
-        values.push(input.columns.map((column) => normalizeCell(row[column])));
+        values.push(input.columns.map((column) => normalizeExportCell(row[column])));
         if (values.length < SHEET_APPEND_ROWS) continue;
         await sheets.spreadsheets.values.append({
           spreadsheetId,
@@ -284,6 +304,86 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       throw error;
     }
   }
+
+  private async createAndUploadXlsx(input: {
+    readonly auth: GoogleExportAuth;
+    readonly access: DataExportArtifactAccess;
+    readonly exportKey: string;
+    readonly title: string;
+    readonly rowsPath: string;
+    readonly xlsxPath: string;
+    readonly columns: readonly string[];
+    readonly rowCount: number;
+    readonly sourceTruncated: boolean;
+    readonly signal?: AbortSignal;
+    readonly onProgress?: (progress: DataExportDestinationWriteProgress) => Promise<void>;
+  }): Promise<DataExportCompletion> {
+    await writeXlsxArtifact({
+      path: input.xlsxPath,
+      columns: input.columns,
+      rows: readRows(input.rowsPath),
+      rowCount: input.rowCount,
+      ...(input.signal ? { signal: input.signal } : {}),
+      ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+    });
+
+    const drive = google.drive({ version: 'v3', auth: oauth(input.auth.accessToken) });
+    let fileId: string | undefined;
+    let contentAndAccessVerified = false;
+    try {
+      const created = await drive.files.create({
+        ignoreDefaultVisibility: true,
+        requestBody: {
+          name: `${safeTitle(input.title)}.xlsx`,
+          mimeType: XLSX_MIME_TYPE,
+          appProperties: writingProperties(input.exportKey),
+        },
+        media: {
+          mimeType: XLSX_MIME_TYPE,
+          body: createReadStream(input.xlsxPath),
+        },
+        fields: 'id,webViewLink,size,mimeType',
+      }, requestOptions(input.signal));
+      fileId = created.data.id ?? undefined;
+      if (!fileId) throw new Error('Google Drive did not return a file ID');
+      await ensureArtifactAccess(drive, fileId, input.access, input.signal);
+      const localSize = (await stat(input.xlsxPath)).size;
+      const verified = await drive.files.get(
+        { fileId, fields: 'id,size,mimeType,webViewLink' },
+        requestOptions(input.signal),
+      );
+      if (Number(verified.data.size ?? -1) !== localSize) {
+        throw new Error('Google Drive verification failed: uploaded Excel size differs from source');
+      }
+      if (verified.data.mimeType !== XLSX_MIME_TYPE) {
+        throw new Error('Google Drive verification failed: uploaded Excel MIME type changed');
+      }
+      await verifyArtifactAccess(drive, fileId, input.access, input.signal);
+      contentAndAccessVerified = true;
+      await markCompletedExport(drive, fileId, {
+        exportKey: input.exportKey,
+        artifactType: 'xlsx',
+        rowCount: input.rowCount,
+        sourceTruncated: input.sourceTruncated,
+      }, input.signal);
+      return {
+        success: true,
+        artifactId: fileId,
+        artifactUrl: verified.data.webViewLink
+          ?? `https://drive.google.com/file/d/${encodeURIComponent(fileId)}/view`,
+        artifactType: 'xlsx',
+        rowCount: input.rowCount,
+        sourceTruncated: input.sourceTruncated,
+        sharedWith: accessLabel(input.access),
+        verified: true,
+      };
+    } catch (error) {
+      if (fileId && !contentAndAccessVerified) {
+        await drive.files.delete({ fileId }).catch(() => undefined);
+      }
+      throw error;
+    }
+  }
 }
 
 function oauth(accessToken: string) {
@@ -356,7 +456,8 @@ export async function recoverCompletedExport(
     const artifactType = completed.appProperties?.[EXPORT_TYPE_PROPERTY];
     const rowCount = Number(completed.appProperties?.[EXPORT_ROW_COUNT_PROPERTY]);
     if (
-      (artifactType === 'google_sheet' || artifactType === 'csv')
+      (artifactType === 'google_sheet' || artifactType === 'csv' || artifactType === 'xlsx')
+      && (artifactType !== 'xlsx' || completed.mimeType === XLSX_MIME_TYPE)
       && Number.isSafeInteger(rowCount)
       && rowCount >= 0
     ) {
@@ -471,7 +572,7 @@ async function markCompletedExport(
   fileId: string,
   input: {
     readonly exportKey: string;
-    readonly artifactType: 'google_sheet' | 'csv';
+    readonly artifactType: 'google_sheet' | 'csv' | 'xlsx';
     readonly rowCount: number;
     readonly sourceTruncated: boolean;
   },
@@ -511,16 +612,8 @@ async function writeLine(stream: ReturnType<typeof createWriteStream>, line: str
   if (!stream.write(`${line}\r\n`)) await once(stream, 'drain');
 }
 
-function normalizeCell(value: unknown): unknown {
-  if (value === null || value === undefined) return '';
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return typeof value === 'string' && /^[=+\-@]/.test(value) ? `'${value}` : value;
-  }
-  return JSON.stringify(value);
-}
-
 function escapeCsvCell(value: unknown): string {
-  const normalized = String(normalizeCell(value));
+  const normalized = String(normalizeExportCell(value));
   return /[",\r\n]/.test(normalized) ? `"${normalized.replace(/"/g, '""')}"` : normalized;
 }
 

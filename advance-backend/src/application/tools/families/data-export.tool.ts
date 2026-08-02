@@ -52,13 +52,14 @@ export function createDataExportTool(deps: {
     argsSchema: Schema,
     resultSchema: ResultSchema,
     description:
-      `Export up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} Airtable or Zoho Books rows through a governed, queued pipeline. Source pages and sandboxed transforms stay server-side; only a verified invoker-only Google Sheet or Drive CSV is returned.`,
+      `Export up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} Airtable or Zoho Books rows through a governed, queued pipeline. Source pages and sandboxed transforms stay server-side; only a verified invoker-only Google Sheet, Excel file, or Drive CSV is returned.`,
     parameterDocs: [
       `Use this for large tabular results. The current hard cap is ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows. If the user requests more or every row, disclose the cap and never call the result complete.`,
       'offerId: when a source preview returned preview.exportOfferId and the user explicitly confirms, call dataExport with that opaque offerId. Include destinationConnectionId only when a prior confirmation response asked the user to choose one exact eligible Google account.',
       'source.kind: airtable_records or zoho_books. Always use the exact source connection UUID.',
       'transform.script: optional JavaScript function body. It receives row, index, and args. Return an object, an array of objects, or null to filter.',
       'destination.format: auto chooses Google Sheets for manageable datasets and CSV in Google Drive for large datasets.',
+      'Use destination.format=xlsx only when the user explicitly requests Excel. Excel is limited to 5,000 rows and 100,000 cells; use CSV for wider datasets.',
       'destination.title: human-readable artifact title. destination.columns optionally fixes column order.',
       'Artifact access is fixed by the backend: a selected personal Google account owns its export; the governed company fallback grants reader access only to the verified invoker. Additional recipients, domain sharing, and public links are unsupported and must be refused.',
       'The backend re-checks requester RBAC, source access, the configured Google export account, invoker-only sharing, and artifact integrity before delivery.',

@@ -76,7 +76,7 @@ Choose the exact approved specialist returned by this router.
 - Fetch, calculate, group, join, reshape, or move data between connected
   products → \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`. Write one script, run it,
   edit and rerun it. This is the data path, whatever the row count.
-- Produce a CSV, Google Sheet, or governed complete-data artifact →
+- Produce a CSV, Excel file, Google Sheet, or governed complete-data artifact →
   \`secure-data-export\`.
 - Read or analyse a file that is already in the workspace → \`${READ_FILES_SKILL_SLUG}\`.
 

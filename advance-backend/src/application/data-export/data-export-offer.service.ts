@@ -67,7 +67,7 @@ export class DataExportOfferService {
     readonly userId: string;
     readonly chatId: string;
     readonly progressMessageId?: string;
-    readonly destinationFormat?: 'google_sheet' | 'csv';
+    readonly destinationFormat?: 'google_sheet' | 'csv' | 'xlsx';
     readonly destinationConnectionId?: string;
     readonly rememberExplicitPersonalDestination?: boolean;
   }): Promise<
@@ -186,7 +186,7 @@ export class DataExportOfferService {
     options: {
       readonly target: DataExportDestinationTarget;
       readonly progressMessageId?: string;
-      readonly destinationFormat?: 'google_sheet' | 'csv';
+      readonly destinationFormat?: 'google_sheet' | 'csv' | 'xlsx';
     },
   ): Promise<{
     readonly exportJobId: string;

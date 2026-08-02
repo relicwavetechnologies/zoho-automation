@@ -1,9 +1,28 @@
 # Unified Data Movement and Spreadsheet Workflows
 
-**Status:** implementation active; Phases 0–3 are complete, and Phase 4 destination ownership is in progress
+**Status:** implementation active; Phases 0–3 are complete, and Phase 4 code is complete pending real container-to-Lark validation
 **Date:** 2026-08-02
 **Scope:** tabular previews, proactive exports, cross-tool data movement, pasted spreadsheet URLs, and the boundary between deterministic backend exports and agent-authored container workflows
 **Related foundation:** `plans/secure-data-export-pipeline.md`
+
+---
+
+## Delivery tracker
+
+| Phase | Status | Current result |
+|---|---|---|
+| 0 — contracts and characterization | ✅ Done | Central limits, offer/resource/destination contracts, and regression coverage established |
+| 1 — exporter modularization | ✅ Done | Source registry, destination sink, queue, verification, and worker boundaries centralized |
+| 2 — preview and durable offers | ✅ Done | Bounded previews, opaque 24-hour offers, fresh authorization, and idempotent confirmation implemented |
+| 3 — Lark export interaction | ✅ Done | Signed format/account cards, same-card progress, OAuth resume, and personal destination preference implemented |
+| 4 — editable destinations and formats | 🟡 Code complete | Personal owner/company reader semantics and real Sheet/CSV/XLSX outputs implemented; real container-to-Lark XLSX run remains |
+| 5 — Semrush and OMS convergence | ⬜ Not started | Central source adapters and legacy Cloudinary path removal remain |
+| 6 — pasted Sheet/Drive URLs | ⬜ Not started | Typed URL resolver and existing-Sheet bulk write remain |
+| 7 — routers and provider skills | 🟡 Partial | Central export skill knows Excel; provider-wide routing/skill convergence remains |
+| 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
+| 9 — realistic isolated-runtime validation | ⬜ Not started | Full low-hint container → backend → Lark iteration matrix remains |
+
+**Immediate completion count:** 4 phases done; Phase 4 implementation is done but is not marked complete until the real Lark artifact is opened and verified.
 
 ---
 
@@ -678,7 +697,12 @@ the preference.
 **Completed in Phase 4:** user-owned Google resolution, signed account choice,
 execution-time connection revalidation, owner-only artifact verification, and
 the governed company-reader fallback. Explicit personal preference persistence
-is applied to the tunneled shared dev/prod database. True XLSX remains pending.
+is applied to the tunneled shared dev/prod database. True XLSX is generated
+server-side from the existing row spool, structurally reopened before upload,
+then verified by Drive size, MIME type, and access. Since the installed SheetJS
+writer retains workbook cells in memory, explicit Excel output is bounded to
+5,000 rows and 100,000 cells; larger or wider exports must use CSV. `auto`
+continues to choose only Google Sheet or CSV and never silently selects XLSX.
 
 **Exit criteria**
 
@@ -1031,18 +1055,14 @@ Never log:
 
 ## 13. Immediate next actions
 
-1. Route a compact Lark Card 2.0 confirmation action through the completed
-   `DataExportOfferService.confirmForActor` path; the callback may carry only
-   the opaque offer ID and must use the authenticated clicking actor.
-2. Preserve the original DM/group-thread reply address and edit one tracker
-   through confirmation, queued/running, final, and recoverable error states.
-3. Prove natural-language and card confirmation idempotency end to end in Lark.
-4. Add true XLSX output with structural verification.
-5. Migrate Semrush, then OMS, and delete their temporary Cloudinary export paths after parity.
-6. Add the pasted Google Sheet resolver and existing-Sheet streaming destination.
-7. Tune skills and routers once each instruction describes backend behavior
+1. Validate Sheet, CSV, and true XLSX through the isolated container-to-Lark
+   flow, including one personal-account choice and one OAuth-resume case.
+2. Open the delivered XLSX, verify its rows/access, then mark Phase 4 complete.
+3. Migrate Semrush, then OMS, and delete their temporary Cloudinary export paths after parity.
+4. Add the pasted Google Sheet resolver and existing-Sheet streaming destination.
+5. Tune skills and routers once each instruction describes backend behavior
    that exists and is covered by contract tests.
-8. Execute Phase 9 through the local isolated Docker runtime, deliver every
+6. Execute Phase 9 through the isolated Docker runtime, deliver every
     scenario to the configured Divo Lark DM, and iterate until the final quality
     gate passes.
 
@@ -1133,3 +1153,4 @@ Principal risks:
 | 2026-08-02 | Use toast-only callback responses once the worker owns the card | Avoid a callback/worker race that could replace a completed export with stale queued copy |
 | 2026-08-02 | Persist only an explicit signed-card personal destination after the export wins its queue claim | Avoid repeated account questions without letting model input, stale OAuth state, fallback policy, or a losing concurrent click rewrite preference |
 | 2026-08-02 | Treat `127.0.0.1:15432` as a tunnel to the shared dev/prod database | Prevent local-database assumptions when applying or reporting Prisma schema changes |
+| 2026-08-02 | Offer XLSX only as an explicit bounded format; keep `auto` on Sheet/CSV | SheetJS 0.18.5 has no streaming XLSX writer, so a 5,000-row/100,000-cell ceiling prevents container memory spikes while CSV remains the scalable fallback |

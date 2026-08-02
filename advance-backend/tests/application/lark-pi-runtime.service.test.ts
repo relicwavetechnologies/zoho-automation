@@ -169,6 +169,10 @@ test('turns a verified export offer receipt into explicit governed format choice
       label: 'CSV in Drive',
       value: JSON.stringify({ kind: 'data_export_confirm', offerId, format: 'csv' }),
     },
+    {
+      label: 'Excel (.xlsx)',
+      value: JSON.stringify({ kind: 'data_export_confirm', offerId, format: 'xlsx' }),
+    },
   ]);
 });
 

@@ -230,7 +230,7 @@ describe('ConnectionAuthorizationRepository', () => {
       kind: 'data_export_confirmation' as const,
       offerId: '11111111-1111-4111-8111-111111111111',
       progressMessageId: 'om_export_card',
-      format: 'google_sheet' as const,
+      format: 'xlsx' as const,
     };
     let createInput: any;
     const repo = new ConnectionAuthorizationRepository({

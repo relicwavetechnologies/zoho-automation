@@ -1638,7 +1638,7 @@ describe('Lark webhook card authorization', () => {
             action: JSON.stringify({
               kind: 'data_export_confirm',
               offerId,
-              format: 'google_sheet',
+              format: 'xlsx',
               connectionId: '33333333-3333-4333-8333-333333333333',
             }),
           },
@@ -1660,7 +1660,7 @@ describe('Lark webhook card authorization', () => {
       userId: 'admin-1',
       chatId: 'oc_export',
       progressMessageId: 'om_export_card',
-      destinationFormat: 'google_sheet',
+      destinationFormat: 'xlsx',
       destinationConnectionId: '33333333-3333-4333-8333-333333333333',
       rememberExplicitPersonalDestination: true,
     });
@@ -1816,7 +1816,7 @@ describe('Lark webhook card authorization', () => {
             action: JSON.stringify({
               kind: 'data_export_confirm',
               offerId: '11111111-1111-4111-8111-111111111111',
-              format: 'xlsx',
+              format: 'parquet',
             }),
           },
         },
