@@ -10,6 +10,11 @@ import type {
   ZohoBooksPaginatedClient,
   ZohoBooksModule,
 } from '../../infrastructure/zoho/zoho-books-paginated.client';
+import type { ZohoCrmPaginatedClient } from '../../infrastructure/zoho/zoho-crm-paginated.client';
+import {
+  getCrmModuleSchema,
+  injectCrmSyntheticFields,
+} from '../../infrastructure/zoho/zoho-crm-schema.cache';
 import type { CompanyOmsSiteDataService } from '../oms/company-oms-site-data.service';
 import type { SemrushService } from '../semrush/semrush.service';
 import {
@@ -25,6 +30,7 @@ import type { DataExportSource } from './data-export.types';
 
 type AirtableSource = Extract<DataExportSource, { kind: 'airtable_records' }>;
 type ZohoBooksSource = Extract<DataExportSource, { kind: 'zoho_books' }>;
+type ZohoCrmSource = Extract<DataExportSource, { kind: 'zoho_crm' }>;
 type OmsSnapshotSource = Extract<DataExportSource, { kind: 'oms_snapshot' }>;
 type SemrushSnapshotSource = Extract<DataExportSource, { kind: 'semrush_snapshot' }>;
 
@@ -32,6 +38,9 @@ const AIRTABLE_REST_KEYS = new Set(['baseId', 'tableId', 'fieldIds']);
 const AIRTABLE_PAGE_LIMIT = 20_000;
 const AIRTABLE_MCP_PAGE_SIZE = 1_000;
 const ZOHO_PAGE_LIMIT = 1_000;
+/** 200 records per CRM page, bounded to the central 5,000-row export ceiling. */
+const ZOHO_CRM_EXPORT_PAGE_LIMIT = 25;
+const ZOHO_CRM_EXPORT_CHUNK = 500;
 const SEMRUSH_EXPORT_PAGE_SIZE = 1_000;
 const SEMRUSH_EXPORT_PAGE_LIMIT = 10;
 
@@ -169,6 +178,53 @@ export class ZohoBooksDataExportSource implements DataExportSourceAdapter<ZohoBo
         };
         if (!result.hasMore || sourceTruncated) break;
       }
+    }
+  }
+}
+
+/**
+ * Zoho CRM as a governed export source.
+ *
+ * The CRM client owns page-token pagination beyond the 2,000-record page-based
+ * ceiling, so this adapter delegates the whole walk to `listAllRecords` rather
+ * than reimplementing the token loop, and bounds it to the central export row
+ * limit. It then yields in chunks so the sink writes incrementally instead of
+ * receiving one very wide page.
+ *
+ * Personalized scopes never reach here: the tool refuses to mint an offer when
+ * a member is restricted to their own records, because this re-fetch happens at
+ * confirmation time and has no requester identity to filter on.
+ */
+export class ZohoCrmDataExportSource implements DataExportSourceAdapter<ZohoCrmSource> {
+  readonly kind = 'zoho_crm' as const;
+
+  constructor(private readonly crmClient: ZohoCrmPaginatedClient) {}
+
+  async *read(source: ZohoCrmSource, context: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly signal?: AbortSignal;
+  }): AsyncIterable<DataExportPage> {
+    context.signal?.throwIfAborted();
+    const { items, truncated } = await this.crmClient.listAllRecords({
+      companyId: context.companyId,
+      userId: context.userId,
+      connectionId: source.connectionId,
+      module: source.module,
+      ...(source.sortBy ? { sortBy: source.sortBy } : {}),
+      ...(source.sortOrder ? { sortOrder: source.sortOrder } : {}),
+      maxPages: ZOHO_CRM_EXPORT_PAGE_LIMIT,
+    });
+    const schema = getCrmModuleSchema(source.module);
+    for (let offset = 0; offset < items.length; offset += ZOHO_CRM_EXPORT_CHUNK) {
+      context.signal?.throwIfAborted();
+      const chunk = items.slice(offset, offset + ZOHO_CRM_EXPORT_CHUNK);
+      const isLast = offset + ZOHO_CRM_EXPORT_CHUNK >= items.length;
+      yield {
+        rows: injectCrmSyntheticFields(chunk, schema),
+        ...(isLast ? {} : { hasMore: true }),
+        ...(isLast && truncated ? { sourceTruncated: true } : {}),
+      };
     }
   }
 }

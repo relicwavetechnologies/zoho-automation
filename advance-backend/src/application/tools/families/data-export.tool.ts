@@ -82,6 +82,14 @@ export function createDataExportTool(deps: {
       try {
         const source: DataExportOfferPayload['source'] = args.source.kind === 'airtable_records'
           ? { ...args.source }
+          : args.source.kind === 'zoho_crm'
+          ? {
+              kind: args.source.kind,
+              connectionId: args.source.connectionId,
+              module: args.source.module,
+              ...(args.source.sortBy ? { sortBy: args.source.sortBy } : {}),
+              ...(args.source.sortOrder ? { sortOrder: args.source.sortOrder } : {}),
+            }
           : {
               kind: args.source.kind,
               connectionId: args.source.connectionId,

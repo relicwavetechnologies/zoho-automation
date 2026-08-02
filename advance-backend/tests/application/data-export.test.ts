@@ -4,6 +4,7 @@ import { transformExportPage } from '../../src/application/data-export/data-expo
 import {
   AirtableDataExportSource,
   ZohoBooksDataExportSource,
+  ZohoCrmDataExportSource,
 } from '../../src/application/data-export/data-export.sources.ts';
 import type { DataExportJobPayload } from '../../src/application/data-export/data-export.types.ts';
 import { DatasetSourceRegistry } from '../../src/application/data-export/data-export.source-registry.ts';
@@ -171,6 +172,54 @@ describe('data export source adapters', () => {
     assert.deepEqual(pages, [1, 2]);
     assert.equal(rows.length, 2);
     assert.equal(rows[0]?.['_id'], 'inv-1');
+  });
+
+  it('flags a truncated CRM read once, on the page that ends the stream', async () => {
+    /*
+     * The sink turns the last page's `sourceTruncated` into what the member is
+     * told about coverage. Setting it on every chunk would warn about a
+     * complete export; setting it on none would present a capped export as the
+     * whole module — the silent one, and the one that misleads.
+     */
+    const adapter = new ZohoCrmDataExportSource({
+      listAllRecords: async () => ({
+        items: Array.from({ length: 1_200 }, (_, i) => ({ id: `deal-${i}` })),
+        truncated: true,
+      }),
+    } as any);
+
+    const flags: (boolean | undefined)[] = [];
+    let rows = 0;
+    for await (const page of adapter.read({
+      kind: 'zoho_crm',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      module: 'Deals',
+    }, { companyId: 'co-1', userId: 'user-1' })) {
+      flags.push(page.sourceTruncated);
+      rows += page.rows.length;
+    }
+
+    assert.equal(rows, 1_200);
+    assert.deepEqual(flags, [undefined, undefined, true]);
+  });
+
+  it('does not claim truncation when the CRM returned the whole module', async () => {
+    const adapter = new ZohoCrmDataExportSource({
+      listAllRecords: async () => ({ items: [{ id: 'deal-1' }], truncated: false }),
+    } as any);
+
+    const pages = [];
+    for await (const page of adapter.read({
+      kind: 'zoho_crm',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      module: 'Deals',
+    }, { companyId: 'co-1', userId: 'user-1' })) {
+      pages.push(page);
+    }
+
+    assert.equal(pages.length, 1);
+    assert.equal(pages[0]?.sourceTruncated, undefined);
+    assert.equal(pages[0]?.hasMore, undefined);
   });
 
   it('maps canonical date filters to Zoho provider parameters', async () => {

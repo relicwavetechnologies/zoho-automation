@@ -5,6 +5,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeAllowedPerm, makeDeniedPerm, makeCtx } from './tool-test.helpers.ts';
+import { asToolId } from '../../src/shared/ids.ts';
 
 import { createZohoCrmTool }   from '../../src/application/tools/families/zoho-crm.tool.ts';
 import { createZohoBooksTool } from '../../src/application/tools/families/zoho-books.tool.ts';
@@ -41,7 +42,6 @@ describe('zohoCrm tool', () => {
     buildDealForecast:    async () => ({ summary: '2 deals closing', totalDeals: 2, totalAmount: 50000, currency: 'INR', byStage: [], inlineDeals: [], sourceTruncated: false }),
   } as unknown as ZohoCrmOps;
 
-  const fakeCloudinary = { isAvailable: false, uploadCsvBuffer: async () => null } as any;
 
   const noClient  = async () => null;
   const yesClient = async () => fakeCrmClient;
@@ -51,7 +51,6 @@ describe('zohoCrm tool', () => {
       getClient,
       crmClient:  fakePaginatedCrmClient,
       crmOps:     fakeCrmOps,
-      cloudinary: fakeCloudinary,
     });
 
   describe('permissionCheck', () => {
@@ -126,7 +125,7 @@ describe('zohoCrm tool', () => {
           page: 1,
         }),
       } as unknown as ZohoCrmPaginatedClient;
-      const tool = createZohoCrmTool({ getClient: yesClient, crmClient: scopedClient, crmOps: fakeCrmOps, cloudinary: fakeCloudinary });
+      const tool = createZohoCrmTool({ getClient: yesClient, crmClient: scopedClient, crmOps: fakeCrmOps });
       const personalized = makeCtx('zohoCrm', ['read'], { requesterEmail: 'member@example.com' });
       (personalized.perm as any).department = { zohoReadScope: 'personalized' };
 
@@ -145,6 +144,84 @@ describe('zohoCrm tool', () => {
 
       assert.equal(r.ok, false);
       assert.equal((r as any).error.payload.reason, 'permission_denied');
+    });
+
+    /*
+     * The old path uploaded a CSV to Cloudinary and handed back a signed URL —
+     * no offer, no destination governance, no owner approval. These cover the
+     * replacement, and specifically the case where being wrong is silent: a
+     * personalized member must never be handed an offer, because the offer is
+     * re-read later by a worker that has no requester identity to filter on and
+     * would export the whole module.
+     */
+    const exportPerm = () => ({
+      allowedToolIds: new Set([asToolId('zohoCrm'), asToolId('dataExport')]) as any,
+      allowedActionsByTool: new Map([
+        [asToolId('zohoCrm'), new Set(['read'])],
+        [asToolId('dataExport'), new Set(['create'])],
+      ]) as any,
+      decisions: [],
+    });
+    const CONNECTION = '11111111-1111-4111-8111-111111111111';
+
+    it('offers a governed export of the exact module instead of uploading a CSV', async () => {
+      const offers: any[] = [];
+      const tool = createZohoCrmTool({
+        getClient: yesClient,
+        crmClient: fakePaginatedCrmClient,
+        crmOps: fakeCrmOps,
+        offers: {
+          createAuthorizedOffer: async (payload: any) => {
+            offers.push(payload);
+            return { offerId: 'offer-1' } as any;
+          },
+        } as any,
+      });
+      const exporting = makeCtx('zohoCrm', ['read'], { chatId: 'oc-1' });
+      (exporting as any).perm = exportPerm();
+
+      const r = await tool.execute(
+        { op: 'list', module: 'Deals', exportAll: true, connectionId: CONNECTION },
+        exporting,
+      );
+
+      assert.equal(r.ok, true);
+      assert.equal((r as any).value.preview.exportOfferId, 'offer-1');
+      assert.equal(offers.length, 1);
+      assert.deepEqual(offers[0].source, {
+        kind: 'zoho_crm',
+        connectionId: CONNECTION,
+        module: 'Deals',
+      });
+      // No signed link leaves the tool any more.
+      assert.equal('csvLink' in (r as any).value, false);
+    });
+
+    it('never offers an export to a member restricted to their own records', async () => {
+      let offered = false;
+      const tool = createZohoCrmTool({
+        getClient: yesClient,
+        crmClient: fakePaginatedCrmClient,
+        crmOps: fakeCrmOps,
+        offers: {
+          createAuthorizedOffer: async () => { offered = true; return { offerId: 'offer-1' } as any; },
+        } as any,
+      });
+      const personalized = makeCtx('zohoCrm', ['read'], {
+        chatId: 'oc-1',
+        requesterEmail: 'member@example.com',
+      });
+      (personalized as any).perm = exportPerm();
+      (personalized.perm as any).department = { zohoReadScope: 'personalized' };
+
+      const r = await tool.execute(
+        { op: 'list', module: 'Deals', exportAll: true, connectionId: CONNECTION },
+        personalized,
+      );
+
+      assert.equal(r.ok, true);
+      assert.equal(offered, false);
+      assert.equal((r as any).value.preview.exportOfferId, undefined);
     });
 
     it('search: ok with criteria', async () => {
@@ -218,8 +295,7 @@ describe('zohoCrm tool', () => {
         getClient: yesClient,
         crmClient: throwingPaginated,
         crmOps: fakeCrmOps,
-        cloudinary: fakeCloudinary,
-      });
+        });
       const r = await tool.execute({ op: 'search', module: 'Leads', criteria: '(Last_Name:equals:x)' }, ctx);
       assert.equal(r.ok, false);
       assert.equal((r as any).error.payload.reason, 'upstream_failure');

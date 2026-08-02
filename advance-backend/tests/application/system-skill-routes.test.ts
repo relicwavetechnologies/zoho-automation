@@ -79,8 +79,10 @@ describe('system skill routes', () => {
       assert.match(skill.markdown, /preview\.exportOfferId/);
       assert.match(skill.markdown, /opaque offer/);
       assert.match(skill.markdown, /Sheet\/CSV\/XLSX choice once/);
-      assert.match(skill.markdown, /Cloudinary/);
       assert.match(skill.markdown, /Divo/);
+      // The ad-hoc path is gone from the tools, so it is gone from the prompt
+      // too: naming a store nothing can reach only advertises it.
+      assert.doesNotMatch(skill.markdown, /cloudinary/i);
     }
   });
 

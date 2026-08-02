@@ -50,6 +50,13 @@ export function parseDataExportOfferPayload(value: unknown): DataExportOfferPayl
         ...(parsed.source.filters ? { filters: parsed.source.filters } : {}),
         ...(parsed.source.query ? { query: parsed.source.query } : {}),
       }
+    : parsed.source.kind === 'zoho_crm' ? {
+        kind: parsed.source.kind,
+        connectionId: parsed.source.connectionId,
+        module: parsed.source.module,
+        ...(parsed.source.sortBy ? { sortBy: parsed.source.sortBy } : {}),
+        ...(parsed.source.sortOrder ? { sortOrder: parsed.source.sortOrder } : {}),
+      }
     : parsed.source.kind === 'oms_snapshot' ? {
         kind: parsed.source.kind,
         connectionId: parsed.source.connectionId,

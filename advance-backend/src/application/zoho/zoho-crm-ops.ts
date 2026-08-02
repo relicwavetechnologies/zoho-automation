@@ -4,12 +4,12 @@
  * Design principles (same as ZohoFinanceOps):
  *   1. ALL filtering is done in CODE, not by the LLM.
  *   2. Pagination is exhaustive: loops pages up to 50 × 200 = 10,000 records.
- *   3. Token budget: LLM receives summary + top-N inline; full dataset → CSV.
+ *   3. Token budget: LLM receives summary + top-N inline. The full dataset
+ *      leaves only through the central governed export offer.
  *   4. No LLM calls — pure data transformation.
  */
 
 import type { ZohoCrmPaginatedClient } from '../../infrastructure/zoho/zoho-crm-paginated.client';
-import type { CloudinaryAdapter }       from '../../infrastructure/cloudinary/cloudinary.adapter';
 import type { Logger }                  from '../../shared/logger';
 import { formatAmount }                 from './zoho-format.utils';
 
@@ -45,22 +45,6 @@ function parseDate(raw: string | undefined): Date | undefined {
   return isNaN(d.getTime()) ? undefined : d;
 }
 
-function escapeCsvCell(v: unknown): string {
-  const s = String(v ?? '');
-  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
-    return `"${s.replace(/"/g, '""')}"`;
-  }
-  return s;
-}
-
-function recordsToCsv(headers: string[], rows: Array<Record<string, unknown>>): Buffer {
-  const lines: string[] = [headers.map(escapeCsvCell).join(',')];
-  for (const row of rows) {
-    lines.push(headers.map(h => escapeCsvCell(row[h])).join(','));
-  }
-  return Buffer.from(lines.join('\n'), 'utf-8');
-}
-
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface PipelineStage {
@@ -84,9 +68,6 @@ export interface PipelineSummaryResult {
   currency:         string;
   stages:           PipelineStage[];
   inlineDeals:      Array<Record<string, unknown>>;
-  csvLink?:         string;
-  csvPublicId?:     string;
-  csvExpiresAt?:    string;
   sourceTruncated:  boolean;
 }
 
@@ -102,9 +83,6 @@ export interface LeadReportResult {
   sources:          LeadSourceGroup[];
   statusBreakdown:  Record<string, number>;
   inlineLeads:      Array<Record<string, unknown>>;
-  csvLink?:         string;
-  csvPublicId?:     string;
-  csvExpiresAt?:    string;
   sourceTruncated:  boolean;
 }
 
@@ -115,9 +93,6 @@ export interface DealForecastResult {
   currency:         string;
   byStage:          Array<{ stage: string; count: number; amount: number }>;
   inlineDeals:      Array<Record<string, unknown>>;
-  csvLink?:         string;
-  csvPublicId?:     string;
-  csvExpiresAt?:    string;
   sourceTruncated:  boolean;
 }
 
@@ -126,10 +101,8 @@ export interface DealForecastResult {
 export class ZohoCrmOps {
   constructor(
     private readonly crmClient:       ZohoCrmPaginatedClient,
-    private readonly cloudinary:      CloudinaryAdapter,
     private readonly logger:          Logger,
     private readonly inlineThreshold: number = 10,
-    private readonly csvLinkTtl:      number = 86_400,
   ) {}
 
   /**
@@ -183,38 +156,6 @@ export class ZohoCrmOps {
 
     const inlineDeals = deals.slice(0, this.inlineThreshold);
 
-    let csvLink: string | undefined;
-    let csvPublicId: string | undefined;
-    let csvExpiresAt: string | undefined;
-
-    if (deals.length > this.inlineThreshold && this.cloudinary.isAvailable) {
-      try {
-        const csvRows = deals.map(d => ({
-          Deal_Name:    asString(d['Deal_Name']) ?? '',
-          Stage:        asString(d['Stage']) ?? '',
-          Amount:       readAmount(d),
-          Account_Name: readLookupName(d, 'Account_Name'),
-          Owner:        readOwnerName(d),
-          Closing_Date: asString(d['Closing_Date']) ?? '',
-        }));
-        const headers = ['Deal_Name', 'Stage', 'Amount', 'Account_Name', 'Owner', 'Closing_Date'];
-        const csvBuffer = recordsToCsv(headers, csvRows as unknown as Array<Record<string, unknown>>);
-        const exported = await this.cloudinary.uploadCsvBuffer({
-          buffer:     csvBuffer,
-          fileName:   `crm-pipeline-${new Date().toISOString().slice(0, 10)}-${input.companyId.slice(0, 8)}.csv`,
-          companyId:  input.companyId,
-          ttlSeconds: this.csvLinkTtl,
-        });
-        if (exported) {
-          csvLink = exported.signedUrl;
-          csvPublicId = exported.publicId;
-          csvExpiresAt = exported.expiresAt;
-        }
-      } catch (e) {
-        this.logger.warn('zoho.crm.pipeline_summary.csv_failed', { error: String(e) });
-      }
-    }
-
     const stageBreakdown = stages
       .map(s => `${s.stage}: ${s.count} deal(s), ${formatAmount(s.totalAmount, currency)}`)
       .join('; ');
@@ -223,7 +164,6 @@ export class ZohoCrmOps {
       ? `Pipeline: ${deals.length} deal(s) worth ${formatAmount(totalPipelineValue, currency)}. ${stageBreakdown}.`
       : 'No deals found in the CRM pipeline.';
 
-    if (csvLink) summary += ' Full dataset available as CSV.';
     if (truncated) summary += ' Pagination limit reached — additional deals may exist.';
 
     return {
@@ -234,9 +174,6 @@ export class ZohoCrmOps {
       stages,
       inlineDeals,
       sourceTruncated: truncated,
-      ...(csvLink ? { csvLink } : {}),
-      ...(csvPublicId ? { csvPublicId } : {}),
-      ...(csvExpiresAt ? { csvExpiresAt } : {}),
     };
   }
 
@@ -275,39 +212,6 @@ export class ZohoCrmOps {
     const sources = [...sourceMap.values()].sort((a, b) => b.count - a.count);
     const inlineLeads = leads.slice(0, this.inlineThreshold);
 
-    let csvLink: string | undefined;
-    let csvPublicId: string | undefined;
-    let csvExpiresAt: string | undefined;
-
-    if (leads.length > this.inlineThreshold && this.cloudinary.isAvailable) {
-      try {
-        const csvRows = leads.map(l => ({
-          Name:        `${asString(l['First_Name']) ?? ''} ${asString(l['Last_Name']) ?? ''}`.trim(),
-          Email:       asString(l['Email']) ?? '',
-          Company:     asString(l['Company']) ?? '',
-          Source:      asString(l['Lead_Source']) ?? '',
-          Status:      asString(l['Lead_Status']) ?? '',
-          Owner:       readOwnerName(l),
-          Created:     asString(l['Created_Time']) ?? '',
-        }));
-        const headers = ['Name', 'Email', 'Company', 'Source', 'Status', 'Owner', 'Created'];
-        const csvBuffer = recordsToCsv(headers, csvRows as unknown as Array<Record<string, unknown>>);
-        const exported = await this.cloudinary.uploadCsvBuffer({
-          buffer:     csvBuffer,
-          fileName:   `crm-leads-${new Date().toISOString().slice(0, 10)}-${input.companyId.slice(0, 8)}.csv`,
-          companyId:  input.companyId,
-          ttlSeconds: this.csvLinkTtl,
-        });
-        if (exported) {
-          csvLink = exported.signedUrl;
-          csvPublicId = exported.publicId;
-          csvExpiresAt = exported.expiresAt;
-        }
-      } catch (e) {
-        this.logger.warn('zoho.crm.lead_report.csv_failed', { error: String(e) });
-      }
-    }
-
     const sourceBreakdown = sources
       .slice(0, 5)
       .map(s => `${s.source}: ${s.count}`)
@@ -317,7 +221,6 @@ export class ZohoCrmOps {
       ? `Lead funnel: ${leads.length} lead(s). Top sources: ${sourceBreakdown}.`
       : 'No leads found in CRM.';
 
-    if (csvLink) summary += ' Full dataset available as CSV.';
     if (truncated) summary += ' Pagination limit reached — additional leads may exist.';
 
     return {
@@ -327,9 +230,6 @@ export class ZohoCrmOps {
       statusBreakdown,
       inlineLeads,
       sourceTruncated: truncated,
-      ...(csvLink ? { csvLink } : {}),
-      ...(csvPublicId ? { csvPublicId } : {}),
-      ...(csvExpiresAt ? { csvExpiresAt } : {}),
     };
   }
 
@@ -382,39 +282,6 @@ export class ZohoCrmOps {
     const byStage = [...stageMap.values()].sort((a, b) => b.amount - a.amount);
     const inlineDeals = filtered.slice(0, this.inlineThreshold);
 
-    let csvLink: string | undefined;
-    let csvPublicId: string | undefined;
-    let csvExpiresAt: string | undefined;
-
-    if (filtered.length > this.inlineThreshold && this.cloudinary.isAvailable) {
-      try {
-        const csvRows = filtered.map(d => ({
-          Deal_Name:    asString(d['Deal_Name']) ?? '',
-          Stage:        asString(d['Stage']) ?? '',
-          Amount:       readAmount(d),
-          Account_Name: readLookupName(d, 'Account_Name'),
-          Owner:        readOwnerName(d),
-          Closing_Date: asString(d['Closing_Date']) ?? '',
-          Probability:  asNumber(d['Probability']) ?? '',
-        }));
-        const headers = ['Deal_Name', 'Stage', 'Amount', 'Account_Name', 'Owner', 'Closing_Date', 'Probability'];
-        const csvBuffer = recordsToCsv(headers, csvRows as unknown as Array<Record<string, unknown>>);
-        const exported = await this.cloudinary.uploadCsvBuffer({
-          buffer:     csvBuffer,
-          fileName:   `crm-forecast-${new Date().toISOString().slice(0, 10)}-${input.companyId.slice(0, 8)}.csv`,
-          companyId:  input.companyId,
-          ttlSeconds: this.csvLinkTtl,
-        });
-        if (exported) {
-          csvLink = exported.signedUrl;
-          csvPublicId = exported.publicId;
-          csvExpiresAt = exported.expiresAt;
-        }
-      } catch (e) {
-        this.logger.warn('zoho.crm.deal_forecast.csv_failed', { error: String(e) });
-      }
-    }
-
     const dateRange = input.closingFrom && input.closingTo
       ? ` (${input.closingFrom} to ${input.closingTo})`
       : input.closingFrom ? ` (from ${input.closingFrom})` : input.closingTo ? ` (until ${input.closingTo})` : '';
@@ -423,7 +290,6 @@ export class ZohoCrmOps {
       ? `Deal forecast${dateRange}: ${filtered.length} deal(s) worth ${formatAmount(totalAmount, currency)}.`
       : `No deals closing${dateRange}.`;
 
-    if (csvLink) summary += ' Full dataset available as CSV.';
     if (truncated) summary += ' Pagination limit reached — additional deals may exist.';
 
     return {
@@ -434,9 +300,6 @@ export class ZohoCrmOps {
       byStage,
       inlineDeals,
       sourceTruncated: truncated,
-      ...(csvLink ? { csvLink } : {}),
-      ...(csvPublicId ? { csvPublicId } : {}),
-      ...(csvExpiresAt ? { csvExpiresAt } : {}),
     };
   }
 }

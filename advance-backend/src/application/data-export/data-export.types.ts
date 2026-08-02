@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { CanonicalToolId } from '../../domain/tools/tool-id';
 import type { ZohoBooksModule } from '../../infrastructure/zoho/zoho-books-paginated.client';
+import type { ZohoCrmModule } from '../../infrastructure/zoho/zoho-crm-paginated.client';
 import { OmsSiteDataToolArgsSchema } from '../oms/oms-site-data.types';
 import { SemrushToolArgsSchema } from '../semrush/semrush.types';
 
@@ -10,6 +11,9 @@ const ZOHO_BOOKS_SOURCE_MODULES = [
   'salesorders', 'purchaseorders', 'customerpayments', 'vendorpayments',
   'bankaccounts', 'banktransactions', 'expenses', 'items',
 ] as const satisfies readonly ZohoBooksModule[];
+const ZOHO_CRM_SOURCE_MODULES = [
+  'Leads', 'Contacts', 'Accounts', 'Deals', 'Tasks',
+] as const satisfies readonly ZohoCrmModule[];
 
 const airtableDatasetSourceSchema = z.object({
   kind: z.literal('airtable_records'),
@@ -26,6 +30,13 @@ const zohoBooksDatasetSourceSchema = z.object({
   filters: z.record(z.unknown()).optional(),
   query: z.string().optional(),
 }).strict();
+const zohoCrmDatasetSourceSchema = z.object({
+  kind: z.literal('zoho_crm'),
+  connectionId: z.string().uuid(),
+  module: z.enum(ZOHO_CRM_SOURCE_MODULES),
+  sortBy: z.string().optional(),
+  sortOrder: z.enum(['asc', 'desc']).optional(),
+}).strict();
 const omsSnapshotDatasetSourceSchema = z.object({
   kind: z.literal('oms_snapshot'),
   connectionId: z.literal('backend_managed'),
@@ -40,11 +51,13 @@ const semrushSnapshotDatasetSourceSchema = z.object({
 export const directDatasetSourceSchema = z.discriminatedUnion('kind', [
   airtableDatasetSourceSchema,
   zohoBooksDatasetSourceSchema,
+  zohoCrmDatasetSourceSchema,
 ]);
 
 export const datasetSourceSchema = z.discriminatedUnion('kind', [
   airtableDatasetSourceSchema,
   zohoBooksDatasetSourceSchema,
+  zohoCrmDatasetSourceSchema,
   omsSnapshotDatasetSourceSchema,
   semrushSnapshotDatasetSourceSchema,
 ]);
@@ -54,6 +67,7 @@ export type DataExportSource = z.infer<typeof datasetSourceSchema>;
 export function datasetSourceToolId(source: DataExportSource): CanonicalToolId {
   if (source.kind === 'airtable_records') return source.toolId;
   if (source.kind === 'zoho_books') return 'zohoBooks';
+  if (source.kind === 'zoho_crm') return 'zohoCrm';
   return source.kind === 'oms_snapshot' ? 'omsSiteData' : 'semrush';
 }
 

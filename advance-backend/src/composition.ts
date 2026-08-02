@@ -139,6 +139,7 @@ import {
   OmsSnapshotDataExportSource,
   SemrushSnapshotDataExportSource,
   ZohoBooksDataExportSource,
+  ZohoCrmDataExportSource,
 } from './application/data-export/data-export.sources';
 import { GoogleWorkspaceExportSink } from './application/data-export/google-workspace-export.sink';
 import { parseGoogleDriveXlsxReference } from './application/data-export/google-drive-xlsx-resource-reference';
@@ -1517,6 +1518,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   // ── Zoho Books paginated client + finance ops ────────────────────────────
   const zohoPaginatedBooksClient = new ZohoBooksPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
+  const zohoPaginatedCrmClient = new ZohoCrmPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
   const dataExportSources = new DatasetSourceRegistry();
   dataExportSources.register(new AirtableDataExportSource(getAirtableMcpConnection));
   dataExportSources.register(new ZohoBooksDataExportSource(
@@ -1526,6 +1528,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       return buildCurrencyUtilities(await getExchangeRates());
     },
   ));
+  dataExportSources.register(new ZohoCrmDataExportSource(zohoPaginatedCrmClient));
   dataExportSources.register(new OmsSnapshotDataExportSource(companyOmsSiteDataService));
   dataExportSources.register(new SemrushSnapshotDataExportSource(semrushService));
   const googleWorkspaceExportSink = new GoogleWorkspaceExportSink();
@@ -1536,15 +1539,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     env.ZOHO_BOOKS_CSV_INLINE_THRESHOLD,
   );
 
-  // ── Zoho CRM paginated client + CRM ops ──────────────────────────────────
-  const zohoPaginatedCrmClient = new ZohoCrmPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
-
+  // ── Zoho CRM ops (client created above, beside the export source) ────────
   const zohoCrmOps = new ZohoCrmOps(
     zohoPaginatedCrmClient,
-    cloudinaryAdapter,
     logger.child({ service: 'zoho-crm-ops' }),
     env.ZOHO_BOOKS_CSV_INLINE_THRESHOLD,
-    env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
   );
 
   // ── Skills ────────────────────────────────────────────────────────────────
@@ -1851,8 +1850,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     getClient:   getZohoCrmClient,
     crmClient:   zohoPaginatedCrmClient,
     crmOps:      zohoCrmOps,
-    cloudinary:  cloudinaryAdapter,
-    csvLinkTtl:  env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
+    offers:      dataExportOfferService,
   }));
   toolRegistry.register(createZohoBooksTool({
     getClient:       getZohoBooksClient,

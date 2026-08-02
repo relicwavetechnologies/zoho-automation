@@ -33,11 +33,16 @@ import { PermissionError, ToolError }      from '../../../shared/errors';
 import type { ToolActionGroup }            from '../../../domain/permissions/tool-action-group';
 import { asToolId }                        from '../../../shared/ids';
 import type { ZohoCrmOps }                 from '../../zoho/zoho-crm-ops';
-import type { CloudinaryAdapter }          from '../../../infrastructure/cloudinary/cloudinary.adapter';
 import { mapZohoError }                    from '../../zoho/zoho-error.utils';
-import type { ZohoCrmPaginatedClient }     from '../../../infrastructure/zoho/zoho-crm-paginated.client';
+import type { ZohoCrmPaginatedClient, ZohoCrmModule } from '../../../infrastructure/zoho/zoho-crm-paginated.client';
+import type { DataExportOfferService }     from '../../data-export/data-export-offer.service';
+import type { DataExportOfferPayload }     from '../../data-export/export-offer';
+import {
+  createDatasetPreview,
+  DATASET_PREVIEW_ROW_LIMIT,
+}                                          from '../../data-export/dataset-preview';
 import { getCrmModuleSchema, injectCrmSyntheticFields, toCrmSchemaHint } from '../../../infrastructure/zoho/zoho-crm-schema.cache';
-import { runInSandbox, arrayToCsv, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
+import { runInSandbox, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
 import { parseDateFilter } from '../../zoho/zoho-filter.utils';
 import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } from '../../../shared/zoho-personalization';
 
@@ -65,8 +70,6 @@ const Schema = z.object({
 
   script:     z.string().optional(),
   scriptArgs: z.record(z.unknown()).optional(),
-  exportCsv:  z.boolean().optional(),
-  csvColumns: z.array(z.string()).optional(),
 });
 
 type Args = z.infer<typeof Schema>;
@@ -77,15 +80,32 @@ const ResultSchema = z.object({
   recordId:        z.string().optional(),
   message:         z.string().optional(),
   report:          z.unknown().optional(),
-  csvLink:         z.string().optional(),
-  csvPublicId:     z.string().optional(),
-  csvExpiresAt:    z.string().optional(),
   truncated:       z.boolean().optional(),
   hasMore:         z.boolean().optional(),
   rowCount:        z.number().optional(),
   totalFetched:    z.number().optional(),
   moduleSchema:    z.unknown().optional(),
   sourceTruncated: z.boolean().optional(),
+  preview: z.object({
+    columns: z.array(z.string()),
+    rows: z.array(z.record(z.unknown())).max(DATASET_PREVIEW_ROW_LIMIT),
+    coverage: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('complete'), totalRows: z.number().int().nonnegative() }),
+      z.object({
+        kind: z.literal('truncated'),
+        returnedRows: z.number().int().nonnegative(),
+        knownTotal: z.number().int().nonnegative().optional(),
+        reason: z.string(),
+      }),
+      z.object({
+        kind: z.literal('provider_limited'),
+        returnedRows: z.number().int().nonnegative(),
+        reason: z.string(),
+      }),
+      z.object({ kind: z.literal('unknown'), returnedRows: z.number().int().nonnegative() }),
+    ]),
+    exportOfferId: z.string().optional(),
+  }).optional(),
 });
 
 type Res = z.infer<typeof ResultSchema>;
@@ -108,6 +128,9 @@ const readOps = new Set<Args['op']>([
 ]);
 
 const INLINE_SCRIPT_LIMIT = 50;
+
+/** The modules the governed export source can re-read at confirmation time. */
+const CRM_EXPORT_MODULES: readonly ZohoCrmModule[] = ['Leads', 'Contacts', 'Accounts', 'Deals', 'Tasks'];
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -135,8 +158,6 @@ async function executeScriptMode(
   ctx: ToolExecutionContext,
   scriptDeps: {
     crmClient:  ZohoCrmPaginatedClient;
-    cloudinary: CloudinaryAdapter;
-    csvLinkTtl?: number;
     requesterEmail?: string | undefined;
   },
 ): Promise<Result<Res, ToolError>> {
@@ -196,32 +217,6 @@ async function executeScriptMode(
 
   ctx.onProgress?.(`Analysis complete — ${sandboxResult.rowCount ?? 1} results from ${items.length} records`);
 
-  let csvLink: string | undefined;
-  let csvPublicId: string | undefined;
-  let csvExpiresAt: string | undefined;
-
-  if (args.exportCsv && resultArray && resultArray.length > 0 && scriptDeps.cloudinary.isAvailable) {
-    try {
-      const firstRow = resultArray[0] as Record<string, unknown>;
-      const columns = args.csvColumns ?? Object.keys(firstRow);
-      const csvBuffer = arrayToCsv(columns, resultArray);
-      const dateStr = new Date().toISOString().slice(0, 10);
-      const exported = await scriptDeps.cloudinary.uploadCsvBuffer({
-        buffer: csvBuffer,
-        fileName: `divo-crm-export-${dateStr}-${companyId.slice(0, 8)}.csv`,
-        companyId,
-        ttlSeconds: scriptDeps.csvLinkTtl ?? 86_400,
-      });
-      if (exported) {
-        csvLink = exported.signedUrl;
-        csvPublicId = exported.publicId;
-        csvExpiresAt = exported.expiresAt;
-      }
-    } catch (e) {
-      ctx.logger.warn('zohoCrm.script_mode.csv_failed', { error: String(e) });
-    }
-  }
-
   const inlineData = resultArray && resultArray.length > INLINE_SCRIPT_LIMIT
     ? resultArray.slice(0, INLINE_SCRIPT_LIMIT) : sandboxResult.result;
 
@@ -233,7 +228,6 @@ async function executeScriptMode(
     parts.push(`Processed into ${resultArray.length} rows.`);
     if (resultArray.length > INLINE_SCRIPT_LIMIT) parts.push(`Showing first ${INLINE_SCRIPT_LIMIT} inline.`);
   }
-  if (csvLink) parts.push('Full CSV available via download link.');
 
   return ok({
     success: true,
@@ -243,9 +237,6 @@ async function executeScriptMode(
     totalFetched: items.length,
     moduleSchema: schemaHint,
     sourceTruncated: fetchResult.truncated,
-    ...(csvLink ? { csvLink } : {}),
-    ...(csvPublicId ? { csvPublicId } : {}),
-    ...(csvExpiresAt ? { csvExpiresAt } : {}),
   });
 }
 
@@ -255,8 +246,7 @@ export const createZohoCrmTool = (deps: {
   getClient:  (companyId: string, userId: string, connectionId?: string) => Promise<ZohoCrmClientPort | null>;
   crmClient:  ZohoCrmPaginatedClient;
   crmOps:     ZohoCrmOps;
-  cloudinary: CloudinaryAdapter;
-  csvLinkTtl?: number;
+  offers?:    Pick<DataExportOfferService, 'createAuthorizedOffer'>;
 }): Tool<Args, Res> => ({
   id:           asToolId('zohoCrm'),
   family:       'zoho',
@@ -269,7 +259,7 @@ export const createZohoCrmTool = (deps: {
     'Search uses Zoho criteria syntax: (Field:operator:value) with and/or.',
     'Reports: build_pipeline_summary (deals by stage), build_lead_report (funnel by source), build_deal_forecast (closing deals).',
     'For data analysis, add a `script` parameter to the list operation — fetches ALL records and runs JS in sandbox.',
-    'Set exportCsv=true for downloadable CSV of processed results.',
+    'Large list results return a 25-row preview plus a governed export offer the member confirms in chat.',
   ].join(' '),
 
   parameterDocs: [
@@ -285,7 +275,7 @@ export const createZohoCrmTool = (deps: {
     'limit: max records to return (1-200, default 25)',
     'sortBy: field name to sort by (e.g., Created_Time, Amount)',
     'sortOrder: asc|desc',
-    'exportAll: true to exhaust all pages for CSV export',
+    'exportAll: true to exhaust all pages and offer a governed export of the full module',
     '',
     'REPORT PARAMS:',
     'build_deal_forecast: closingFrom, closingTo (ISO dates or natural: "this month", "this quarter")',
@@ -295,8 +285,6 @@ export const createZohoCrmTool = (deps: {
     '  Synthetic fields: _amount (primary amount), _date (primary date), _id, _status, _owner (resolved name)',
     '  Example: "const g={}; data.forEach(d=>{const s=d._status||\'Unknown\'; if(!g[s])g[s]={stage:s,count:0,total:0}; g[s].count++; g[s].total+=d._amount;}); return Object.values(g).sort((a,b)=>b.total-a.total)"',
     'scriptArgs: extra parameters available as `args` in the script',
-    'exportCsv: true to upload script result as CSV',
-    'csvColumns: column order for CSV (auto-detected if omitted)',
     '',
     'CRM MODULE FIELDS:',
     'Leads: First_Name, Last_Name, Email, Company, Phone, Lead_Source, Lead_Status, Annual_Revenue, Owner',
@@ -341,6 +329,49 @@ export const createZohoCrmTool = (deps: {
       ctx.logger.info('zoho_crm.scope.personalized', { requesterEmail, op: args.op });
     }
 
+    /*
+     * A governed export offer replaces the old Cloudinary CSV upload. Refused
+     * under a personalized scope: the offer is confirmed later and re-read by
+     * the worker, which has no requester identity to filter the module down to
+     * that member's own records, so offering one would export everybody's.
+     */
+    const canOfferExport = (moduleName: string): boolean =>
+      !personalizedScope
+      && deps.offers !== undefined
+      && CRM_EXPORT_MODULES.includes(moduleName as ZohoCrmModule)
+      && ctx.runContext.channel === 'lark'
+      && Boolean(ctx.runContext.chatId)
+      && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true;
+
+    const exportPayloadFor = (moduleName: ZohoCrmModule): DataExportOfferPayload => ({
+      companyId,
+      userId: ctx.runContext.userId,
+      ...(ctx.runContext.departmentId ? { departmentId: ctx.runContext.departmentId } : {}),
+      source: {
+        kind: 'zoho_crm',
+        connectionId: args.connectionId,
+        module: moduleName,
+        ...(args.sortBy ? { sortBy: args.sortBy } : {}),
+        ...(args.sortOrder ? { sortOrder: args.sortOrder } : {}),
+      },
+      destination: {
+        format: 'auto',
+        title: `Zoho CRM ${moduleName} export`,
+      },
+      chatId: ctx.runContext.chatId!,
+      ...(ctx.runContext.runtimeThreadId
+        ? { conversationKey: ctx.runContext.runtimeThreadId }
+        : {}),
+      ...(ctx.runContext.replyToMessageId
+        ? { replyToMessageId: ctx.runContext.replyToMessageId }
+        : {}),
+      ...(ctx.runContext.replyInThread !== undefined
+        ? { replyInThread: ctx.runContext.replyInThread }
+        : {}),
+      requestId: ctx.runContext.requestId ?? ctx.correlationId,
+      ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
+    });
+
     // ── Report operations ─────────────────────────────────────────────────────
     if (args.op === 'build_pipeline_summary') {
       if (personalizedScope) return err(new ToolError({ toolId: 'zohoCrm', reason: 'permission_denied', message: 'Pipeline summaries are unavailable for personalized Zoho access.' }));
@@ -351,9 +382,6 @@ export const createZohoCrmTool = (deps: {
           success: true,
           message: report.summary,
           report:  formatCrmResult(report),
-          ...(report.csvLink ? { csvLink: report.csvLink } : {}),
-          ...(report.csvPublicId ? { csvPublicId: report.csvPublicId } : {}),
-          ...(report.csvExpiresAt ? { csvExpiresAt: report.csvExpiresAt } : {}),
         });
       } catch (e) {
         return err(new ToolError({
@@ -372,9 +400,6 @@ export const createZohoCrmTool = (deps: {
           success: true,
           message: report.summary,
           report:  formatCrmResult(report),
-          ...(report.csvLink ? { csvLink: report.csvLink } : {}),
-          ...(report.csvPublicId ? { csvPublicId: report.csvPublicId } : {}),
-          ...(report.csvExpiresAt ? { csvExpiresAt: report.csvExpiresAt } : {}),
         });
       } catch (e) {
         return err(new ToolError({
@@ -400,9 +425,6 @@ export const createZohoCrmTool = (deps: {
           success: true,
           message: report.summary,
           report:  formatCrmResult(report),
-          ...(report.csvLink ? { csvLink: report.csvLink } : {}),
-          ...(report.csvPublicId ? { csvPublicId: report.csvPublicId } : {}),
-          ...(report.csvExpiresAt ? { csvExpiresAt: report.csvExpiresAt } : {}),
         });
       } catch (e) {
         return err(new ToolError({
@@ -416,8 +438,6 @@ export const createZohoCrmTool = (deps: {
     if (args.script && args.op === 'list') {
       return executeScriptMode(args, ctx, {
         crmClient:  deps.crmClient,
-        cloudinary: deps.cloudinary,
-        ...(deps.csvLinkTtl !== undefined ? { csvLinkTtl: deps.csvLinkTtl } : {}),
         ...(personalizedScope ? { requesterEmail: requesterEmail! } : {}),
       });
     }
@@ -446,34 +466,13 @@ export const createZohoCrmTool = (deps: {
             });
 
             const items = personalizedScope ? filterZohoRecordsByEmail(sourceItems, requesterEmail!) : sourceItems;
-            let csvLink: string | undefined;
-            let csvPublicId: string | undefined;
-            let csvExpiresAt: string | undefined;
+            const offer = canOfferExport(mod)
+              ? await deps.offers!.createAuthorizedOffer(exportPayloadFor(mod as ZohoCrmModule))
+              : undefined;
 
-            if (items.length > (args.limit ?? 25) && deps.cloudinary.isAvailable) {
-              try {
-                const columns = Object.keys(items[0] ?? {}).filter(k => !k.startsWith('$'));
-                const csvBuffer = arrayToCsv(columns, items);
-                const exported = await deps.cloudinary.uploadCsvBuffer({
-                  buffer: csvBuffer,
-                  fileName: `divo-crm-${mod.toLowerCase()}-${new Date().toISOString().slice(0, 10)}-${companyId.slice(0, 8)}.csv`,
-                  companyId,
-                  ttlSeconds: deps.csvLinkTtl ?? 86_400,
-                });
-                if (exported) {
-                  csvLink = exported.signedUrl;
-                  csvPublicId = exported.publicId;
-                  csvExpiresAt = exported.expiresAt;
-                }
-              } catch (e) {
-                ctx.logger.warn('zohoCrm.list.csv_failed', { error: String(e) });
-              }
-            }
-
-            const inline = items.slice(0, args.limit ?? 25);
+            const inline = items.slice(0, Math.min(args.limit ?? DATASET_PREVIEW_ROW_LIMIT, DATASET_PREVIEW_ROW_LIMIT));
             let message = `Found ${items.length} ${mod} record(s).`;
             if (items.length > inline.length) message += ` Showing ${inline.length} inline.`;
-            if (csvLink) message += ' Full dataset available as CSV.';
             if (truncated) message += ' Pagination limit reached — additional records may exist.';
 
             return ok({
@@ -481,9 +480,13 @@ export const createZohoCrmTool = (deps: {
               data: formatCrmResult(inline),
               message,
               truncated,
-              ...(csvLink ? { csvLink } : {}),
-              ...(csvPublicId ? { csvPublicId } : {}),
-              ...(csvExpiresAt ? { csvExpiresAt } : {}),
+              preview: createDatasetPreview({
+                rows: formatCrmResult(items) as Record<string, unknown>[],
+                coverage: truncated
+                  ? { kind: 'provider_limited', returnedRows: items.length, reason: 'crm_pagination_limit' }
+                  : { kind: 'complete', totalRows: items.length },
+                ...(offer ? { exportOfferId: offer.offerId } : {}),
+              }),
             });
           }
 

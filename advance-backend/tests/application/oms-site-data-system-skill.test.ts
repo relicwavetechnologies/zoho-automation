@@ -11,7 +11,9 @@ describe('OMS Site Data system skill', () => {
     assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /company administrators/i);
     assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /governed Sheet\/CSV\/XLSX choice once/i);
     assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /local Python workflow/i);
-    assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /Cloudinary artifact/i);
+    assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /temporary download link yourself/i);
+    // Naming a store the tool can no longer reach only tells the model it exists.
+    assert.doesNotMatch(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /cloudinary/i);
     assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /do not ask again about the same offer/i);
   });
 });
