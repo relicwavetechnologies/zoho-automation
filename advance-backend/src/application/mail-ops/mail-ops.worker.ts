@@ -27,6 +27,24 @@ export type RuleAuthorization =
   | { verdict: 'denied'; reason: string }
   | { verdict: 'unavailable'; reason: string };
 
+/**
+ * Raised when the permission question could not be answered.
+ *
+ * A class rather than a plain Error because `syncFailureCode` classifies by
+ * substring, and the canonical reason — "Failed to load department permission
+ * rules" — contains the word "permission". That matched the Google scope
+ * heuristic, so a Divo-side database blip stamped the mailbox `scope_missing`
+ * and sent its owner a card telling them to reconnect a healthy Google
+ * account. Exactly the kind of untrue instruction this subsystem is being
+ * cleaned of.
+ */
+class AuthorizationUnavailableError extends Error {
+  constructor(reason: string) {
+    super(`Mail rule authorization is unavailable: ${reason}`);
+    this.name = 'AuthorizationUnavailableError';
+  }
+}
+
 type MailRepo = Pick<
   MailOpsRepository,
   | 'claimNextDueMailbox'
@@ -291,9 +309,7 @@ export class MailOpsWorker {
             // Not an answer. Fail the sync so the cursor holds and the same
             // range is retried, rather than recording a refusal we cannot
             // stand behind.
-            throw new Error(
-              `Mail rule authorization is unavailable: ${authorized.reason}`,
-            );
+            throw new AuthorizationUnavailableError(authorized.reason);
           }
           if (authorized.verdict === 'denied') {
             const blocked = await this.deps.repo.recordBlockedDelivery({
@@ -345,13 +361,20 @@ export class MailOpsWorker {
           if (reserved.value.outcome === 'reserved') deliveries++;
         }
       }
+      // A partial drain is a success with work left over, so it comes back on
+      // the next tick instead of waiting out the reconciliation interval.
+      //
+      // Only when the cursor actually moved. A truncated pass that consumed no
+      // history record returns the cursor it was given — asking to be re-polled
+      // on that would re-claim the same mailbox immediately, twenty times a
+      // tick, ten Gmail page reads each, forever, with no progress and a
+      // mailbox still reporting healthy.
+      const movedForward = sync.nextHistoryId !== claim.historyId;
       const advanced = await this.deps.repo.advanceCursor(
         claim,
         sync.nextHistoryId,
         new Date(),
-        // A partial drain is a success with work left over, so it comes back
-        // on the next tick instead of waiting out the reconciliation interval.
-        { pollImmediately: sync.truncated },
+        { pollImmediately: sync.truncated && movedForward },
       );
       if (!advanced.ok) throw advanced.error;
       if (!advanced.value) {
@@ -406,9 +429,7 @@ export class MailOpsWorker {
       if (authorized.verdict === 'unavailable') {
         // Retryable: burning an attempt is fine, giving up permanently on an
         // unanswerable question is not.
-        throw new Error(
-          `Mail rule authorization is unavailable: ${authorized.reason}`,
-        );
+        throw new AuthorizationUnavailableError(authorized.reason);
       }
       if (authorized.verdict === 'denied') {
         const abandoned = await this.deps.repo.markDeliveryAbandoned(
@@ -553,6 +574,11 @@ function formatLarkDelivery(payload: PendingMailDeliveryPayload): string {
 }
 
 function syncFailureCode(error: unknown): string {
+  // Checked before the substring heuristics below, which would otherwise read
+  // "permission" in the message and blame Google's scopes.
+  if (error instanceof AuthorizationUnavailableError) {
+    return 'authorization_unavailable';
+  }
   const text = errorText(error).toLocaleLowerCase();
   if (text.includes('scope') || text.includes('permission')) return 'scope_missing';
   if (text.includes('token') || text.includes('unauthorized')) return 'connection_unavailable';

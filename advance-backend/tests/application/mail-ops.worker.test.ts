@@ -383,6 +383,34 @@ describe('MailOpsWorker', () => {
     assert.equal(blockedCalls, 0);
   });
 
+  it('does not classify its own permission outage as a Google scope problem', async () => {
+    // The failure-code classifier matches on substrings, and the canonical
+    // reason contains "permission". That landed on `scope_missing`, which the
+    // health layer turns into "Reconnect Google" — sending a member to fix an
+    // account that is working, during a Divo-side outage.
+    let failureCode: string | undefined;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        markSyncFailed: async (_claim: unknown, code: string) => {
+          failureCode = code;
+          return { ok: true, value: true };
+        },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({
+        verdict: 'unavailable',
+        reason: 'Failed to load department permission rules',
+      }),
+      deliverLark: async () => 'unused',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(failureCode, 'authorization_unavailable');
+  });
+
   it('asks about a rule once per sync, not once per message', async () => {
     let authorizationCalls = 0;
     const events = [event, { ...event, eventId: 'event-2' }];
@@ -455,6 +483,45 @@ describe('MailOpsWorker', () => {
     await worker.runOnce();
 
     assert.deepEqual(advanceOptions, { pollImmediately: true });
+  });
+
+  it('does not re-poll a truncated pass that made no progress', async () => {
+    // The client returns the cursor unchanged when it drained the page limit
+    // without consuming a single history record. Re-polling on that re-claims
+    // the same mailbox every tick — ten Gmail page reads a time, indefinitely,
+    // while the mailbox goes on reporting healthy.
+    let advanceOptions: unknown;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        advanceCursor: async (
+          _claim: unknown,
+          _historyId: string,
+          _now: Date,
+          options: unknown,
+        ) => {
+          advanceOptions = options;
+          return { ok: true, value: true };
+        },
+      }),
+      gmail: {
+        ...syncGmail,
+        sync: async () => ({
+          // Same cursor the claim carried.
+          nextHistoryId: '100',
+          events: [],
+          staleCursorRecovered: false,
+          truncated: true,
+        }),
+      },
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'unused',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.deepEqual(advanceOptions, { pollImmediately: false });
   });
 
   it('abandons a reserved delivery when current authority is revoked', async () => {
