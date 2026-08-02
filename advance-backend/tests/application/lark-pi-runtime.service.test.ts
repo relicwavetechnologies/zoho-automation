@@ -121,7 +121,7 @@ test('binds a group run to a shared audience in the signed runtime lease', async
   assert.equal(controllerBody?.['sessionScope'], 'run');
 });
 
-test('turns a verified export offer receipt into one opaque final-card action', async () => {
+test('turns a verified export offer receipt into explicit governed format choices', async () => {
   const offerId = '11111111-1111-4111-8111-111111111111';
   const service = new LarkPiRuntimeService({
     prisma: {
@@ -159,11 +159,17 @@ test('turns a verified export offer receipt into one opaque final-card action', 
 
   const result = await service.run(runtimeInput());
 
-  assert.deepEqual(result.actions, [{
-    label: 'Export all rows',
-    value: JSON.stringify({ kind: 'data_export_confirm', offerId }),
-    style: 'primary',
-  }]);
+  assert.deepEqual(result.actions, [
+    {
+      label: 'Sheet (view-only)',
+      value: JSON.stringify({ kind: 'data_export_confirm', offerId, format: 'google_sheet' }),
+      style: 'primary',
+    },
+    {
+      label: 'CSV (view-only)',
+      value: JSON.stringify({ kind: 'data_export_confirm', offerId, format: 'csv' }),
+    },
+  ]);
 });
 
 test('delivers a natural personal-preference acknowledgement and captures learning once', async () => {

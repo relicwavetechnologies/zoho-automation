@@ -48,6 +48,7 @@ export class DataExportOfferService {
     readonly userId: string;
     readonly chatId: string;
     readonly progressMessageId?: string;
+    readonly destinationFormat?: 'google_sheet' | 'csv';
   }): Promise<{
     readonly exportJobId: string;
     readonly disposition: 'queued' | 'already_confirmed' | 'in_progress';
@@ -102,13 +103,19 @@ export class DataExportOfferService {
       throw new Error('Complete Zoho exports require full company Zoho read scope.');
     }
 
-    return this.claimAndQueue(offer, now, input.progressMessageId);
+    return this.claimAndQueue(
+      offer,
+      now,
+      input.progressMessageId,
+      input.destinationFormat,
+    );
   }
 
   private async claimAndQueue(
     expected: DataExportOfferRecord,
     now: Date,
     progressMessageId?: string,
+    destinationFormat?: 'google_sheet' | 'csv',
   ): Promise<{
     readonly exportJobId: string;
     readonly disposition: 'queued' | 'already_confirmed' | 'in_progress';
@@ -139,8 +146,12 @@ export class DataExportOfferService {
       expected.specHash,
       expected.idempotencyKey,
     );
+    const claimedPayload = claimed.value.offer.payload;
     const exportJobId = await this.deps.queue.enqueue({
-      ...claimed.value.offer.payload,
+      ...claimedPayload,
+      ...(destinationFormat
+        ? { destination: { ...claimedPayload.destination, format: destinationFormat } }
+        : {}),
       ...(progressMessageId ? { progressMessageId } : {}),
     });
     const confirmed = await this.deps.offers.markConfirmed({

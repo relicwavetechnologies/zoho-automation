@@ -593,19 +593,25 @@ Card callbacks must authenticate the clicking actor and must not trust company/u
 **Phase 3A completed:**
 
 - A successful governed source result can create a backend-owned, run-scoped export-offer receipt.
-- The Lark runtime converts only that verified receipt into one Card 2.0 `Export all rows` action.
-- The button contains only the opaque `offerId`; actor, company, and chat come from the signed Lark callback.
+- The Lark runtime converts only that verified receipt into Card 2.0 Sheet and
+  CSV choices.
+- Each button contains the opaque `offerId` and one allowed format; actor,
+  company, and chat come from the signed Lark callback.
 - The callback routes directly to `DataExportOfferService.confirmForActor`, so button and natural-language confirmation share the same persisted recipe, fresh RBAC checks, and idempotent queue claim.
 - The signed callback card ID is attached only to the winning queue job; the worker edits that same card through progress and terminal delivery without posting a second tracker.
 - Callback responses use toasts only, so a delayed callback response cannot overwrite a fast worker's progress or completed card.
 - The original reply/thread address remains persisted in the recipe and controls worker progress/final delivery.
 
-**Still pending in Phase 3:** destination-choice form UX and destination OAuth resume.
+**Phase 3B completed:** the verified offer card now presents explicit Google
+Sheet and Drive CSV choices. The signed callback may alter only that output
+format before the immutable recipe is queued; both choices state the current
+governed output is view-only, and the same card remains the progress tracker.
 
-- Build one compact Card 2.0 export form.
-- Route card callbacks and natural-language confirmations to the same service.
-- Preserve original chat/thread/reply addressing.
-- Edit the acknowledgement card into progress and then the final result/error.
+**Still pending in Phase 3:** personal/company account choice and destination
+OAuth resume.
+
+- Add personal/company account choices only after the backend destination
+  resolver can validate and execute them.
 - Resume cleanly after destination OAuth.
 
 **Exit criteria**

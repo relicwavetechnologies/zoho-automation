@@ -5,6 +5,7 @@ import type { LarkAuthenticatedCardActor } from './lark-approval-card.handler';
 interface DataExportCardAction {
   readonly kind: 'data_export_confirm';
   readonly offerId: string;
+  readonly format?: 'google_sheet' | 'csv';
 }
 
 type ParsedAction = DataExportCardAction | 'invalid' | null;
@@ -49,6 +50,7 @@ export class LarkDataExportCardHandler {
         userId: actor.userId,
         chatId,
         progressMessageId,
+        ...(action.format ? { destinationFormat: action.format } : {}),
       });
       if (result.disposition === 'in_progress') {
         return {
@@ -101,11 +103,17 @@ function parseAction(rawValue: unknown): ParsedAction {
   }
   const payload = asRecord(candidate);
   if (payload?.['kind'] === 'data_export_confirm') {
+    const format = payload['format'];
     if (
-      Object.keys(payload).length !== 2
+      Object.keys(payload).length !== (format === undefined ? 2 : 3)
       || !isUuid(payload['offerId'])
+      || (format !== undefined && format !== 'google_sheet' && format !== 'csv')
     ) return 'invalid';
-    return { kind: 'data_export_confirm', offerId: payload['offerId'] };
+    return {
+      kind: 'data_export_confirm',
+      offerId: payload['offerId'],
+      ...(format ? { format } : {}),
+    };
   }
   return null;
 }

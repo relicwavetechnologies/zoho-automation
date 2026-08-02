@@ -1447,7 +1447,7 @@ describe('Lark webhook card authorization', () => {
     });
   });
 
-  it('confirms an opaque export offer with the signed actor and signed chat context', async () => {
+  it('confirms an opaque export offer and format with the signed actor and signed chat context', async () => {
     const confirmations: unknown[] = [];
     const handler = new LarkDataExportCardHandler({
       confirmForActor: async input => {
@@ -1467,7 +1467,7 @@ describe('Lark webhook card authorization', () => {
         context: { open_chat_id: 'oc_export', open_message_id: 'om_export_card' },
         action: {
           value: {
-            action: JSON.stringify({ kind: 'data_export_confirm', offerId }),
+            action: JSON.stringify({ kind: 'data_export_confirm', offerId, format: 'csv' }),
           },
         },
       },
@@ -1487,6 +1487,7 @@ describe('Lark webhook card authorization', () => {
       userId: 'admin-1',
       chatId: 'oc_export',
       progressMessageId: 'om_export_card',
+      destinationFormat: 'csv',
     }]);
     assert.equal((result.responseBody as any).toast.type, 'success');
     assert.equal('card' in (result.responseBody as any), false);
@@ -1609,6 +1610,39 @@ describe('Lark webhook card authorization', () => {
               kind: 'data_export_confirm',
               offerId: '11111111-1111-4111-8111-111111111111',
               companyId: 'company-attacker',
+            }),
+          },
+        },
+      },
+    }, { dataExportCardHandler: handler });
+
+    assert.equal(confirmations, 0);
+    assert.equal((result.responseBody as any).toast.type, 'error');
+  });
+
+  it('rejects an unsupported export format without calling confirmation', async () => {
+    let confirmations = 0;
+    const handler = new LarkDataExportCardHandler({
+      confirmForActor: async () => {
+        confirmations += 1;
+        return { exportJobId: 'job-1', disposition: 'queued' };
+      },
+    } as any, noopLogger);
+    const result = await runWebhook({
+      header: {
+        event_type: 'card.action.trigger',
+        token: 'verify',
+        tenant_key: 'tenant-1',
+      },
+      event: {
+        operator: { open_id: 'ou_admin' },
+        context: { open_chat_id: 'oc_export', open_message_id: 'om_export_card' },
+        action: {
+          value: {
+            action: JSON.stringify({
+              kind: 'data_export_confirm',
+              offerId: '11111111-1111-4111-8111-111111111111',
+              format: 'xlsx',
             }),
           },
         },

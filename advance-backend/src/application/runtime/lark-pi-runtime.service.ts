@@ -794,14 +794,25 @@ export class LarkPiRuntimeService {
       effects: effect ? [effect] : [],
       ...(exportEffect
         ? {
-            actions: [{
-              label: 'Export all rows',
-              value: JSON.stringify({
-                kind: 'data_export_confirm',
-                offerId: exportEffect.offerId,
-              }),
-              style: 'primary',
-            }],
+            actions: [
+              {
+                label: 'Sheet (view-only)',
+                value: JSON.stringify({
+                  kind: 'data_export_confirm',
+                  offerId: exportEffect.offerId,
+                  format: 'google_sheet',
+                }),
+                style: 'primary',
+              },
+              {
+                label: 'CSV (view-only)',
+                value: JSON.stringify({
+                  kind: 'data_export_confirm',
+                  offerId: exportEffect.offerId,
+                  format: 'csv',
+                }),
+              },
+            ],
           }
         : {}),
       effectVerification,

@@ -247,7 +247,7 @@ describe('DataExportOfferService', () => {
     assert.equal(enqueueCount, 0);
   });
 
-  it('reloads and queues only the immutable stored recipe after fresh actor authorization', async () => {
+  it('queues only the immutable stored recipe with the actor-selected output format', async () => {
     const offer = confirmableOffer();
     let loadInput: Parameters<DataExportOfferRepositoryPort['loadForConfirmation']>[0] | undefined;
     let permissionInput: unknown;
@@ -291,10 +291,15 @@ describe('DataExportOfferService', () => {
       userId: payload.userId,
       chatId: payload.chatId,
       progressMessageId: 'om_export_card',
+      destinationFormat: 'csv',
     });
 
     assert.deepEqual(result, { exportJobId: 'dtx_confirmed', disposition: 'queued' });
-    assert.deepEqual(queued, { ...payload, progressMessageId: 'om_export_card' });
+    assert.deepEqual(queued, {
+      ...payload,
+      destination: { ...payload.destination, format: 'csv' },
+      progressMessageId: 'om_export_card',
+    });
     assert.deepEqual(loadInput, {
       offerId: offer.id,
       companyId: payload.companyId,
