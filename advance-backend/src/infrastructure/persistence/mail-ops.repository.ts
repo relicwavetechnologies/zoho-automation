@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { Prisma, type PrismaClient } from '../../generated/prisma';
 import {
   MAILBOX_CLAIM_STALE_AFTER_MS,
+  MAILBOX_WATCH_RENEWAL_INTERVAL_MS,
+  MAIL_DELIVERY_MAX_ATTEMPTS,
+  MAIL_DELIVERY_RETRY_BASE_MS,
   MAILBOX_RECONCILIATION_INTERVAL_MS,
   mailDeliveryIdempotencyKey,
   mailRuleDedupeKey,
@@ -861,7 +864,9 @@ export class MailOpsRepository {
           data: {
             ...(!current?.historyId ? { historyId } : {}),
             watchExpirationAt: expiration,
-            nextWatchRenewalAt: new Date(now.getTime() + 24 * 60 * 60_000),
+            nextWatchRenewalAt: new Date(
+              now.getTime() + MAILBOX_WATCH_RENEWAL_INTERVAL_MS,
+            ),
             watchRegisteredAt: now,
             watchClaimToken: null,
             watchClaimedAt: null,
@@ -1148,14 +1153,14 @@ export class MailOpsRepository {
         where: {
           status: 'sending',
           startedAt: { lt: staleBefore },
-          attempts: { lt: 5 },
+          attempts: { lt: MAIL_DELIVERY_MAX_ATTEMPTS },
         },
         data: { status: 'pending', nextAttemptAt: now },
       });
       const due = await this.db.mailDelivery.findFirst({
         where: {
           status: 'pending',
-          attempts: { lt: 5 },
+          attempts: { lt: MAIL_DELIVERY_MAX_ATTEMPTS },
           OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
         },
         orderBy: [{ nextAttemptAt: 'asc' }, { id: 'asc' }],
@@ -1259,8 +1264,8 @@ export class MailOpsRepository {
     now = new Date(),
     options?: { readonly nothingWasSent?: boolean },
   ): Promise<Result<boolean, InfraError>> {
-    const abandoned = attempts >= 5;
-    const backoffMs = 5_000 * 2 ** Math.max(0, attempts - 1);
+    const abandoned = attempts >= MAIL_DELIVERY_MAX_ATTEMPTS;
+    const backoffMs = MAIL_DELIVERY_RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1);
     try {
       const updated = await this.db.mailDelivery.updateMany({
         where: { id: deliveryId, status: 'sending', attempts },

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { MailOpsWorker } from '../../src/application/mail-ops/mail-ops.worker.ts';
+import { GmailApiError } from '../../src/infrastructure/google/gmail-history.client.ts';
 
 const logger = {
   info: () => {},
@@ -329,6 +330,87 @@ describe('MailOpsWorker', () => {
     assert.equal(blocked?.ruleId, 'rule-1');
     assert.equal(blocked?.eventId, 'event-1');
     assert.match(blocked?.reason, /no longer in/);
+  });
+
+  it('classifies a provider failure by its status and reason, not its prose', async () => {
+    // `scope_missing` puts "Reconnect Google and allow Divo to read and send
+    // mail" in front of a member, so a misclassification sends somebody to fix
+    // an account that is working. This used to be decided by grepping Google's
+    // English for `scope`, `permission`, `token` and `rate` — words Google
+    // rewrites whenever it likes.
+    const codeFor = async (error: unknown): Promise<string> => {
+      let recorded = '';
+      const worker = new MailOpsWorker({
+        repo: syncRepo({
+          markSyncFailed: async (_claim: any, code: string) => {
+            recorded = code;
+            return { ok: true, value: true };
+          },
+        }),
+        gmail: { ...syncGmail, sync: async () => { throw error } },
+        resolveAccessToken: async () => 'access-token',
+        authorizeRule: async () => ({ verdict: 'allowed' }),
+        deliverLark: async () => 'lark-message',
+        logger,
+      } as any);
+      await worker.runOnce();
+      return recorded;
+    };
+
+    // A 403 is both "not allowed" and "too fast"; only the reason separates them.
+    assert.equal(
+      await codeFor(new GmailApiError(403, 'Quota exceeded.', 'rateLimitExceeded')),
+      'provider_rate_limited',
+    );
+    assert.equal(
+      await codeFor(new GmailApiError(403, 'Insufficient Permission', 'insufficientPermissions')),
+      'scope_missing',
+    );
+    assert.equal(
+      await codeFor(new GmailApiError(401, 'Invalid Credentials', 'authError')),
+      'connection_unavailable',
+    );
+    assert.equal(
+      await codeFor(new GmailApiError(429, 'Too many requests.')),
+      'provider_rate_limited',
+    );
+    // A 500 is transient and is nobody's account problem. The old heuristic
+    // filed anything whose message merely said "rate" as rate limiting.
+    assert.equal(
+      await codeFor(new GmailApiError(500, 'Backend Error')),
+      'provider_sync_failed',
+    );
+    // And a Google message that happens to contain a trigger word no longer
+    // decides anything on its own.
+    assert.equal(
+      await codeFor(new GmailApiError(500, 'Could not verify scope permission token rate.')),
+      'provider_sync_failed',
+    );
+  });
+
+  it('does not blame Google for a failure that never came from it', async () => {
+    let recorded = '';
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        markSyncFailed: async (_claim: any, code: string) => {
+          recorded = code;
+          return { ok: true, value: true };
+        },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => {
+        throw new Error('Divo could not read the stored connection permission rules.');
+      },
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'lark-message',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    // "permission" in a Divo-side error used to stamp the mailbox
+    // `scope_missing` and send its owner to reconnect a healthy account.
+    assert.equal(recorded, 'provider_sync_failed');
   });
 
   it('drops a message over the rule ceiling and records what it cost', async () => {

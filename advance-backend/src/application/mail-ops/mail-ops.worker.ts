@@ -1,7 +1,11 @@
+import { z } from 'zod';
 import type { Logger } from '../../shared/logger';
 import type { MailOpsRepository } from '../../infrastructure/persistence/mail-ops.repository';
 import type { MailboxSyncClaim } from '../../infrastructure/persistence/mail-ops.repository';
-import type { GmailHistoryClient } from '../../infrastructure/google/gmail-history.client';
+import {
+  GmailApiError,
+  type GmailHistoryClient,
+} from '../../infrastructure/google/gmail-history.client';
 import {
   larkChatDeliveryAllowed,
   type AuthorizeLarkChatDestination,
@@ -37,13 +41,18 @@ export type RuleAuthorization =
 /**
  * Raised when the permission question could not be answered.
  *
- * A class rather than a plain Error because `syncFailureCode` classifies by
- * substring, and the canonical reason — "Failed to load department permission
- * rules" — contains the word "permission". That matched the Google scope
- * heuristic, so a Divo-side database blip stamped the mailbox `scope_missing`
- * and sent its owner a card telling them to reconnect a healthy Google
- * account. Exactly the kind of untrue instruction this subsystem is being
- * cleaned of.
+ * A class rather than a plain Error so it can be told apart from a provider
+ * failure by type. Nothing about this originates at Google: the permission
+ * store was unreachable, which is Divo's problem, and the member must not be
+ * sent to reconnect a healthy account over it.
+ *
+ * It used to matter more than it does. `syncFailureCode` decided by grepping
+ * the error's prose, and this error's canonical text — "Failed to load
+ * department permission rules" — contains the word "permission", so without
+ * the type check a Divo-side database blip stamped the mailbox
+ * `scope_missing`. That heuristic is gone; the type check stays, because
+ * being explicit about which side a failure came from is worth more than the
+ * one bug it originally prevented.
  */
 class AuthorizationUnavailableError extends Error {
   constructor(reason: string) {
@@ -901,47 +910,80 @@ function readMessageMetadata(
   return value as MailMessageMetadata;
 }
 
+/**
+ * The identifying half of a stored delivery payload.
+ *
+ * Every one of these ends up in a request to Google or Lark, or in a database
+ * write, so an empty string is as bad as a missing key — `.min(1)` rather than
+ * `z.string()`. The rest of the payload (`message`, `action`, `destination`)
+ * has parsers of its own that predate this and are shared with the rule path.
+ */
+const deliveryPayloadSchema = z.object({
+  companyId: z.string().min(1),
+  userId: z.string().min(1),
+  departmentId: z.string().min(1).optional(),
+  subscriptionId: z.string().min(1),
+  connectionId: z.string().min(1),
+  mailboxEmail: z.string().min(1),
+  ruleId: z.string().min(1),
+  eventId: z.string().min(1),
+  sourceMessageId: z.string().min(1),
+  idempotencyKey: z.string().min(1),
+});
+
+/**
+ * A stored payload turned back into something the worker may act on.
+ *
+ * This is the boundary between JSON written by some earlier version of Divo and
+ * code that sends mail on somebody's behalf, so it is validated rather than
+ * asserted. It used to type-check nine keys in a loop and then
+ * `as unknown as` the whole object through, which meant the fields it had just
+ * proved were the only fields anybody had checked — everything else arrived
+ * carrying whatever the row happened to hold, under a type that swore
+ * otherwise.
+ *
+ * Zod also *drops* unknown keys rather than passing them along, so a field
+ * removed from the payload in a later version cannot ride around inside a row
+ * written before the removal.
+ */
 function readDeliveryPayload(
   value: Record<string, unknown>,
 ): PendingMailDeliveryPayload {
-  const message = value['message'];
-  const action = value['action'];
-  const destination = value['destination'];
-  for (const key of [
-    'companyId',
-    'userId',
-    'subscriptionId',
-    'connectionId',
-    'mailboxEmail',
-    'ruleId',
-    'eventId',
-    'sourceMessageId',
-    'idempotencyKey',
-  ]) {
-    if (typeof value[key] !== 'string' || !value[key]) {
-      throw new Error(`Invalid mail delivery payload field: ${key}`);
-    }
+  const identity = deliveryPayloadSchema.safeParse(value);
+  if (!identity.success) {
+    throw new Error(
+      `Invalid mail delivery payload: ${identity.error.errors
+        .map(issue => `${issue.path.join('.') || '(root)'} ${issue.message}`)
+        .join('; ')}`,
+    );
   }
+  const message = value['message'];
   if (!message || typeof message !== 'object') {
     throw new Error('Invalid mail delivery message.');
   }
-  if (
-    value['departmentId'] !== undefined
-    && typeof value['departmentId'] !== 'string'
-  ) {
-    throw new Error('Invalid mail delivery department.');
-  }
   const parsedMessage = readMessageMetadata(message as Record<string, unknown>);
   if (!parsedMessage) throw new Error('Invalid mail delivery message metadata.');
-  if (!action || typeof action !== 'object' || !destination || typeof destination !== 'object') {
+  const action = value['action'];
+  const destination = value['destination'];
+  if (
+    !action || typeof action !== 'object'
+    || !destination || typeof destination !== 'object'
+  ) {
     throw new Error('Invalid mail delivery action or destination.');
   }
+  // Through the same parser the rule path uses, so a stored payload cannot
+  // describe a pairing a rule could not have been created with.
   const parsedDelivery = parseMailRuleDelivery({
     action: action as Record<string, unknown>,
     destination: destination as Record<string, unknown>,
   });
+  const { departmentId, ...required } = identity.data;
   return {
-    ...(value as unknown as Omit<PendingMailDeliveryPayload, 'message' | 'action' | 'destination'>),
+    ...required,
+    // Spread only when present. Under `exactOptionalPropertyTypes` a key
+    // holding `undefined` is not the same as an absent key, and this object is
+    // handed to callers that test `payload.departmentId ? ... : {}`.
+    ...(departmentId !== undefined ? { departmentId } : {}),
     message: parsedMessage,
     action: parsedDelivery.action,
     destination: parsedDelivery.destination,
@@ -957,19 +999,57 @@ function formatLarkDelivery(payload: PendingMailDeliveryPayload): string {
   ].join('\n').slice(0, 20_000);
 }
 
+/** Google reasons that mean "too fast", not "not allowed". */
+const RATE_LIMIT_REASONS = new Set([
+  'ratelimitexceeded',
+  'userratelimitexceeded',
+  'quotaexceeded',
+  'dailylimitexceeded',
+  'backenderror',
+  'resource_exhausted',
+]);
+
+/**
+ * What to tell the mailbox owner went wrong.
+ *
+ * This is not a log label. `scope_missing` puts "Reconnect Google and allow
+ * Divo to read and send mail" in front of a member, so a misclassification
+ * sends somebody to reconnect a perfectly healthy account — and the previous
+ * implementation decided by grepping the provider's English prose for
+ * `scope`, `permission`, `token` and `rate`. Those are words Google rewrites
+ * whenever it feels like it, and every unrelated error containing one of them
+ * was already being filed under the wrong remedy.
+ *
+ * A `GmailApiError` carries the two things that are actually contractual: the
+ * HTTP status, and Google's machine-readable reason. `403` alone is ambiguous
+ * — it is both "insufficient permissions" and "you are going too fast" — so
+ * the reason is what separates them, and only when it is absent does the
+ * status decide alone.
+ *
+ * The substring pass survives for errors that never came from Gmail at all,
+ * such as a token refresh failing inside Divo. It is a last resort now rather
+ * than the first answer, and `scope` and `permission` are deliberately not in
+ * it: a Divo-side error saying "permission" is our problem, not Google's.
+ */
 function syncFailureCode(error: unknown): string {
-  // Checked before the substring heuristics below, which would otherwise read
-  // "permission" in the message and blame Google's scopes.
   if (error instanceof AuthorizationUnavailableError) {
     return 'authorization_unavailable';
   }
   if (error instanceof HistoryBacklogStalledError) {
     return 'history_backlog_stalled';
   }
-  const text = errorText(error).toLocaleLowerCase();
-  if (text.includes('scope') || text.includes('permission')) return 'scope_missing';
-  if (text.includes('token') || text.includes('unauthorized')) return 'connection_unavailable';
-  if (text.includes('rate') || text.includes('429')) return 'provider_rate_limited';
+  if (error instanceof GmailApiError) {
+    const reason = error.reason?.toLowerCase() ?? '';
+    if (RATE_LIMIT_REASONS.has(reason)) return 'provider_rate_limited';
+    if (error.status === 429) return 'provider_rate_limited';
+    if (error.status === 401) return 'connection_unavailable';
+    if (error.status === 403) return 'scope_missing';
+    return 'provider_sync_failed';
+  }
+  const text = errorText(error).toLowerCase();
+  if (text.includes('token') || text.includes('unauthorized')) {
+    return 'connection_unavailable';
+  }
   return 'provider_sync_failed';
 }
 

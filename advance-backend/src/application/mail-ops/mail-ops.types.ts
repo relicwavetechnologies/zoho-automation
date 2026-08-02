@@ -3,13 +3,52 @@ import { sha256 } from '../../shared/hash';
 export const MAILBOX_RECONCILIATION_INTERVAL_MS = 60 * 60_000;
 export const MAILBOX_CLAIM_STALE_AFTER_MS = 10 * 60_000;
 
+/**
+ * How many times one delivery is attempted before it is given up on.
+ *
+ * Stated once because three places have to agree on it exactly: the claim
+ * predicate that refuses to pick a delivery up again, the failure path that
+ * decides whether this attempt was the last, and the stale-claim sweep. They
+ * were three separate literal `5`s, and when they disagreed once before, rows
+ * at the ladder's end became unclaimable *and* unabandonable — stranded for
+ * the life of the table.
+ */
+export const MAIL_DELIVERY_MAX_ATTEMPTS = 5;
+
+/**
+ * The first retry gap; each further attempt doubles it.
+ *
+ * Five attempts from 5s therefore span about 75 seconds in total, which is the
+ * number quoted wherever the ladder is described.
+ */
+export const MAIL_DELIVERY_RETRY_BASE_MS = 5_000;
+
+/** How long a Gmail watch is left before renewal. Google expires them at 7 days. */
+export const MAILBOX_WATCH_RENEWAL_INTERVAL_MS = 24 * 60 * 60_000;
+
 export type MailboxSubscriptionStatus = 'active' | 'paused' | 'disconnected';
 export type MailAutomationRuleStatus = 'active' | 'paused' | 'archived';
+/**
+ * Every state a delivery row is actually written in, and no others.
+ *
+ * It used to declare `failed` and omit `blocked`, which was wrong in both
+ * directions at once. `failed` was never written by anything —
+ * `markDeliveryFailed` returns the row to `pending` with a backoff, or gives up
+ * at `abandoned` — so it read as a handled case that could not occur. `blocked`
+ * is written on every refusal and every rate-limit drop, and was missing, so
+ * the one state a member is most likely to ask about was the one the type
+ * denied existed.
+ *
+ * Nothing referenced this union, which is how it drifted. It is stated here to
+ * be the truth about the column, so the next thing that reads it starts from a
+ * true list.
+ */
 export type MailDeliveryStatus =
   | 'pending'
   | 'sending'
   | 'delivered'
-  | 'failed'
+  /** Matched, then refused — no permission, or over the rule's hourly ceiling. */
+  | 'blocked'
   | 'abandoned';
 
 export interface NewMailEvent {

@@ -491,7 +491,11 @@ export class GmailHistoryClient {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new GmailApiError(response.status, providerError(payload));
+      throw new GmailApiError(
+        response.status,
+        providerError(payload),
+        providerReason(payload),
+      );
     }
     return payload as T;
   }
@@ -501,13 +505,24 @@ export class GmailApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /**
+     * Google's machine-readable reason — `insufficientPermissions`,
+     * `rateLimitExceeded`, and so on.
+     *
+     * Carried because the HTTP status alone cannot separate the two things a
+     * `403` means, and the prose message is not a contract: it is
+     * human-facing English that Google rewrites whenever it likes. Anything
+     * deciding what to tell a member has to key off this, not off the
+     * sentence.
+     */
+    readonly reason?: string,
   ) {
     super(message);
     this.name = 'GmailApiError';
   }
 }
 
-interface GmailMessagePart {
+export interface GmailMessagePart {
   mimeType?: string;
   filename?: string;
   body?: { data?: string };
@@ -581,7 +596,7 @@ function messageMetadata(message: GmailMessage): MailMessageMetadata {
   };
 }
 
-function extractBody(part: GmailMessagePart | undefined): string {
+export function extractBody(part: GmailMessagePart | undefined): string {
   if (!part) return '';
   if (part.mimeType === 'text/plain' && part.body?.data) {
     return decodeBody(part.body.data);
@@ -596,7 +611,7 @@ function extractBody(part: GmailMessagePart | undefined): string {
   return '';
 }
 
-function hasAttachment(part: GmailMessagePart | undefined): boolean {
+export function hasAttachment(part: GmailMessagePart | undefined): boolean {
   if (!part) return false;
   return isAttachedFile(part)
     || (part.parts ?? []).some(child => hasAttachment(child));
@@ -763,4 +778,25 @@ function providerError(payload: unknown): string {
     if (typeof message === 'string' && message.trim()) return message.trim();
   }
   return 'Gmail API request failed.';
+}
+
+/**
+ * The machine-readable reason inside a Google error payload.
+ *
+ * `error.errors[0].reason` is the granular one (`rateLimitExceeded`,
+ * `insufficientPermissions`); `error.status` is the coarse gRPC-style name
+ * (`PERMISSION_DENIED`, `RESOURCE_EXHAUSTED`). Either is a stable identifier;
+ * the `message` beside them is not.
+ */
+function providerReason(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const error = (payload as Record<string, unknown>)['error'];
+  if (!error || typeof error !== 'object') return undefined;
+  const errors = (error as Record<string, unknown>)['errors'];
+  if (Array.isArray(errors) && errors.length > 0) {
+    const reason = (errors[0] as Record<string, unknown> | undefined)?.['reason'];
+    if (typeof reason === 'string' && reason.trim()) return reason.trim();
+  }
+  const status = (error as Record<string, unknown>)['status'];
+  return typeof status === 'string' && status.trim() ? status.trim() : undefined;
 }
