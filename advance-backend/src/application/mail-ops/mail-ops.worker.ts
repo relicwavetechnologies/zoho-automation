@@ -75,6 +75,7 @@ type MailRepo = Pick<
   | 'reserveDelivery'
   | 'recordBlockedDelivery'
   | 'claimNextDueDelivery'
+  | 'stageDeliveryDraft'
   | 'markDeliveryDelivered'
   | 'markDeliveryFailed'
   | 'markDeliveryAbandoned'
@@ -91,7 +92,10 @@ export class MailOpsWorker {
 
   constructor(private readonly deps: {
     repo: MailRepo;
-    gmail: Pick<GmailHistoryClient, 'sync' | 'forward' | 'watch'>;
+    gmail: Pick<
+      GmailHistoryClient,
+      'sync' | 'watch' | 'createForwardDraft' | 'sendForwardDraft' | 'forwardDraftPending'
+    >;
     resolveAccessToken(input: {
       companyId: string;
       userId: string;
@@ -490,10 +494,75 @@ export class MailOpsWorker {
     await this.reviewHealth(claim.subscriptionId);
   }
 
+  /**
+   * Forward through a draft, and never send the same one twice.
+   *
+   * Three steps, in this order, because the order is the guarantee: stage the
+   * draft, write its ID down, send it. If anything is lost after the send —
+   * the response, the process, the network — the next attempt arrives holding
+   * that ID and asks Gmail one unambiguous question. Gmail deletes a draft
+   * when it sends it, so a 404 means the mail went out and `null` comes back
+   * here; a live draft means no send ever completed and it is safe to send
+   * that same draft now.
+   *
+   * Returns the sent message ID, or `null` when a previous attempt already
+   * delivered it.
+   */
+  private async forwardThroughDraft(input: {
+    accessToken: string;
+    deliveryId: string;
+    attempts: number;
+    payload: PendingMailDeliveryPayload;
+    stagedDraftId?: string;
+  }): Promise<string | null> {
+    const { payload } = input;
+    if (payload.destination.type !== 'email') {
+      throw new Error('Mail delivery action and destination do not match.');
+    }
+
+    if (input.stagedDraftId) {
+      const pending = await this.deps.gmail.forwardDraftPending({
+        accessToken: input.accessToken,
+        draftId: input.stagedDraftId,
+      });
+      if (!pending) return null;
+      return this.deps.gmail.sendForwardDraft({
+        accessToken: input.accessToken,
+        draftId: input.stagedDraftId,
+      });
+    }
+
+    const draftId = await this.deps.gmail.createForwardDraft({
+      accessToken: input.accessToken,
+      destination: payload.destination.email,
+      mailboxEmail: payload.mailboxEmail,
+      sourceMessageId: payload.sourceMessageId,
+      source: payload.message,
+      idempotencyKey: payload.idempotencyKey,
+      ruleId: payload.ruleId,
+    });
+    // Written down before the send, or the draft is invisible to the retry and
+    // this is the old duplicate-forward bug wearing a new hat.
+    const staged = await this.deps.repo.stageDeliveryDraft({
+      deliveryId: input.deliveryId,
+      attempts: input.attempts,
+      providerDraftId: draftId,
+    });
+    if (!staged.ok) throw staged.error;
+    if (!staged.value) {
+      throw new Error('Mail delivery claim was lost before the draft was staged.');
+    }
+    return this.deps.gmail.sendForwardDraft({
+      accessToken: input.accessToken,
+      draftId,
+    });
+  }
+
   private async deliver(input: {
     deliveryId: string;
     attempts: number;
     payload: Record<string, unknown>;
+    providerDraftId?: string;
   }): Promise<void> {
     const startedAt = Date.now();
     try {
@@ -555,15 +624,30 @@ export class MailOpsWorker {
           userId: payload.userId,
           connectionId: payload.connectionId,
         });
-        providerMessageId = await this.deps.gmail.forward({
+        const forwarded = await this.forwardThroughDraft({
           accessToken,
-          destination: payload.destination.email,
-          mailboxEmail: payload.mailboxEmail,
-          sourceMessageId: payload.sourceMessageId,
-          source: payload.message,
-          idempotencyKey: payload.idempotencyKey,
-          ruleId: payload.ruleId,
+          deliveryId: input.deliveryId,
+          attempts: input.attempts,
+          payload,
+          ...(input.providerDraftId
+            ? { stagedDraftId: input.providerDraftId }
+            : {}),
         });
+        if (forwarded === null) {
+          // A previous attempt sent it and we never learned so. Nothing to do
+          // but write that down; sending again is the exact duplicate this
+          // whole path exists to prevent.
+          const settled = await this.deps.repo.markDeliveryDelivered(
+            input.deliveryId,
+          );
+          if (!settled.ok) throw settled.error;
+          this.log.info('mail_ops.delivery_confirmed_from_draft', {
+            deliveryId: input.deliveryId,
+            attempts: input.attempts,
+          });
+          return;
+        }
+        providerMessageId = forwarded;
       } else if (
         payload.action.type === 'deliver'
         && payload.destination.type === 'lark_chat'

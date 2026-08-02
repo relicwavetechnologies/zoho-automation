@@ -842,6 +842,7 @@ describe('MailOpsWorker', () => {
       | undefined;
     let failed = false;
     let forwardCalls = 0;
+    let staged: any;
     const from = 'Anthropic <no-reply-6TP4qN7hl3K2lWz3v9wSIQ@mail.anthropic.com>';
     const worker = new MailOpsWorker({
       repo: {
@@ -894,15 +895,26 @@ describe('MailOpsWorker', () => {
           return { ok: true, value: true };
         },
         markDeliveryAbandoned: async () => ({ ok: true, value: true }),
+        stageDeliveryDraft: async (input: any) => {
+          staged = input;
+          return { ok: true, value: true };
+        },
       },
       gmail: {
-        forward: async (input: any) => {
+        createForwardDraft: async (input: any) => {
           forwardCalls++;
           assert.equal(input.destination, 'owner@example.com');
           assert.equal(input.mailboxEmail, 'user@example.com');
           assert.equal(input.sourceMessageId, 'message-1');
           assert.equal(input.source.from, from);
+          return 'draft-1';
+        },
+        sendForwardDraft: async (input: any) => {
+          assert.equal(input.draftId, 'draft-1');
           return 'gmail-message-1';
+        },
+        forwardDraftPending: async () => {
+          throw new Error('A first attempt has no staged draft to ask about.');
         },
       },
       resolveAccessToken: async () => 'access-token',
@@ -917,7 +929,121 @@ describe('MailOpsWorker', () => {
 
     assert.equal(forwardCalls, 1);
     assert.equal(failed, false);
+    // The draft ID is written down before the send, or it is invisible to the
+    // retry and this is the duplicate-forward bug wearing a new hat.
+    assert.deepEqual(staged, {
+      deliveryId: 'delivery-1',
+      attempts: 1,
+      providerDraftId: 'draft-1',
+    });
     assert.deepEqual(delivered, {
+      deliveryId: 'delivery-1',
+      providerMessageId: 'gmail-message-1',
+    });
+  });
+
+  function retryHarness(input: {
+    draftPending: boolean;
+    onSend?: () => void;
+  }) {
+    let deliveryClaimed = false;
+    const state: {
+      delivered?: { deliveryId: string; providerMessageId?: string };
+      failed: boolean;
+      sends: number;
+      drafts: number;
+      askedAbout?: string;
+    } = { failed: false, sends: 0, drafts: 0 };
+    const worker = new MailOpsWorker({
+      repo: {
+        claimNextWatchRenewal: async () => ({ ok: true, value: null }),
+        claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        claimNextDueDelivery: async () => {
+          if (deliveryClaimed) return { ok: true, value: null };
+          deliveryClaimed = true;
+          return {
+            ok: true,
+            value: {
+              deliveryId: 'delivery-1',
+              attempts: 2,
+              // A previous attempt staged this and we never learned whether it
+              // also sent — the exact state the old search-based guard could
+              // not resolve.
+              providerDraftId: 'draft-1',
+              payload: {
+                companyId: 'company-1',
+                userId: 'user-1',
+                subscriptionId: 'mailbox-1',
+                connectionId: 'connection-1',
+                mailboxEmail: 'user@example.com',
+                ruleId: 'rule-1',
+                eventId: 'event-1',
+                sourceMessageId: 'message-1',
+                idempotencyKey: 'mail:idempotency',
+                action: { type: 'forward' },
+                destination: { type: 'email', email: 'owner@example.com' },
+                message: event.metadata,
+              },
+            },
+          };
+        },
+        stageDeliveryDraft: async () => {
+          throw new Error('A staged retry must not create a second draft.');
+        },
+        markDeliveryDelivered: async (deliveryId: string, providerMessageId?: string) => {
+          state.delivered = { deliveryId, ...(providerMessageId ? { providerMessageId } : {}) };
+          return { ok: true, value: true };
+        },
+        markDeliveryFailed: async () => { state.failed = true; return { ok: true, value: true }; },
+        markDeliveryAbandoned: async () => ({ ok: true, value: true }),
+      },
+      gmail: {
+        createForwardDraft: async () => { state.drafts++; return 'draft-2'; },
+        forwardDraftPending: async (arg: any) => {
+          state.askedAbout = arg.draftId;
+          return input.draftPending;
+        },
+        sendForwardDraft: async () => {
+          state.sends++;
+          input.onSend?.();
+          return 'gmail-message-1';
+        },
+      },
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => { throw new Error('unused'); },
+      logger,
+    } as any);
+    return { worker, state };
+  }
+
+  it('does not forward twice when a send succeeded but its response was lost', async () => {
+    // Gmail deletes a draft the moment it sends it, so a missing draft is proof
+    // the mail went out. The old guard searched `in:sent rfc822msgid:` — for a
+    // Message-ID Gmail commonly replaces, in an index that lags the send — and
+    // so retried a delivery that had already happened.
+    const { worker, state } = retryHarness({ draftPending: false });
+
+    await worker.runOnce();
+
+    assert.equal(state.askedAbout, 'draft-1');
+    assert.equal(state.sends, 0);
+    assert.equal(state.drafts, 0);
+    assert.equal(state.failed, false);
+    assert.deepEqual(state.delivered, { deliveryId: 'delivery-1' });
+  });
+
+  it('sends the staged draft when no send ever completed', async () => {
+    // A draft that still exists is proof nothing went out, so sending that same
+    // draft is safe — and reusing it is what keeps the retry from composing a
+    // second copy.
+    const { worker, state } = retryHarness({ draftPending: true });
+
+    await worker.runOnce();
+
+    assert.equal(state.drafts, 0);
+    assert.equal(state.sends, 1);
+    assert.deepEqual(state.delivered, {
       deliveryId: 'delivery-1',
       providerMessageId: 'gmail-message-1',
     });

@@ -122,7 +122,10 @@ describe('Gmail Pub/Sub ingestion', () => {
     assert.equal(sync.staleCursorRecovered, true);
     assert.equal(sync.nextHistoryId, '500');
     assert.deepEqual(sync.events, []);
-    assert.match(recoveryListUrl, /q=in%3Ainbox\+newer_than%3A1d/);
+    // Seven days, not one: Gmail keeps roughly a week of history, so a cursor
+    // is only ever rejected after a gap of about that long, and the old
+    // one-day sweep silently dropped everything older.
+    assert.match(recoveryListUrl, /q=in%3Ainbox\+newer_than%3A7d/);
   });
 
   it('forwards the original MIME body with HTML, inline images, and attachments', async () => {
@@ -161,19 +164,18 @@ describe('Gmail Pub/Sub ingestion', () => {
     let sentRaw: Buffer | undefined;
     const client = new GmailHistoryClient(async (url, init) => {
       const text = String(url);
-      if (text.includes('/messages?')) return json({ messages: [] });
       if (text.endsWith('/messages/source-message?format=raw')) {
         return json({ raw: originalRaw.toString('base64url') });
       }
-      if (text.endsWith('/messages/send')) {
-        const body = JSON.parse(String(init?.body)) as { raw: string };
-        sentRaw = Buffer.from(body.raw, 'base64url');
-        return json({ id: 'sent-message' });
+      if (text.endsWith('/drafts')) {
+        const body = JSON.parse(String(init?.body)) as { message: { raw: string } };
+        sentRaw = Buffer.from(body.message.raw, 'base64url');
+        return json({ id: 'draft-1' });
       }
       throw new Error(`Unexpected request: ${text}`);
     });
 
-    const sentId = await client.forward({
+    const draftId = await client.createForwardDraft({
       accessToken: 'access',
       destination: 'owner@example.com',
       mailboxEmail: 'user@example.com',
@@ -187,9 +189,10 @@ describe('Gmail Pub/Sub ingestion', () => {
         hasAttachment: true,
       },
       idempotencyKey: 'mail:idempotency',
+      ruleId: 'rule-1',
     });
 
-    assert.equal(sentId, 'sent-message');
+    assert.equal(draftId, 'draft-1');
     assert.ok(sentRaw);
     const rendered = sentRaw.toString('latin1');
     const originalBody = originalRaw.subarray(originalRaw.indexOf('\r\n\r\n') + 4);

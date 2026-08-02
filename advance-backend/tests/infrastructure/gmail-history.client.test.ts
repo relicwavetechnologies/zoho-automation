@@ -206,9 +206,6 @@ describe('GmailHistoryClient forward stamping', () => {
   it('stamps its own forwards and reads the stamp back off arriving mail', async () => {
     let sentRaw = '';
     const fetchStub = (async (url: string, init: any) => {
-      if (url.includes('/messages?')) {
-        return { ok: true, status: 200, json: async () => ({ messages: [] }) };
-      }
       if (url.includes('format=raw')) {
         return {
           ok: true,
@@ -218,14 +215,14 @@ describe('GmailHistoryClient forward stamping', () => {
           }),
         };
       }
-      if (url.includes('/messages/send')) {
-        sentRaw = Buffer.from(JSON.parse(init.body).raw, 'base64url').toString('utf8');
-        return { ok: true, status: 200, json: async () => ({ id: 'sent-1' }) };
+      if (url.endsWith('/drafts')) {
+        sentRaw = Buffer.from(JSON.parse(init.body).message.raw, 'base64url').toString('utf8');
+        return { ok: true, status: 200, json: async () => ({ id: 'draft-1' }) };
       }
       return { ok: true, status: 200, json: async () => ({}) };
     }) as unknown as typeof fetch;
 
-    const sentId = await new GmailHistoryClient(fetchStub).forward({
+    const draftId = await new GmailHistoryClient(fetchStub).createForwardDraft({
       accessToken: 'token',
       destination: 'finance@example.com',
       mailboxEmail: 'owner@example.com',
@@ -242,7 +239,7 @@ describe('GmailHistoryClient forward stamping', () => {
       ruleId: 'rule-1',
     });
 
-    assert.equal(sentId, 'sent-1');
+    assert.equal(draftId, 'draft-1');
     assert.match(sentRaw, /X-Divo-Mailops: rule-1/);
   });
 
@@ -345,5 +342,62 @@ describe('GmailHistoryClient stale-cursor recovery', () => {
 
     assert.equal(sync.recoveredMessageCount, 500);
     assert.equal(sync.recoveryTruncated, true);
+  });
+});
+
+describe('GmailHistoryClient draft send', () => {
+  function draftGmail(draftStatus: number) {
+    const calls: string[] = [];
+    const fetchStub = (async (url: string) => {
+      calls.push(url);
+      if (url.includes('/drafts/send')) {
+        return { ok: true, status: 200, json: async () => ({ id: 'sent-1' }) };
+      }
+      if (url.includes('/drafts/')) {
+        return {
+          ok: draftStatus < 400,
+          status: draftStatus,
+          json: async () => draftStatus < 400
+            ? { id: 'draft-1' }
+            : { error: { message: 'Not Found' } },
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+    return { client: new GmailHistoryClient(fetchStub), calls };
+  }
+
+  it('reports a live draft as proof no send completed', async () => {
+    const gmail = draftGmail(200);
+    assert.equal(
+      await gmail.client.forwardDraftPending({ accessToken: 't', draftId: 'draft-1' }),
+      true,
+    );
+  });
+
+  it('reads a missing draft as proof the mail went out', async () => {
+    // Gmail consumes a draft when it sends it, so 404 is the answer this whole
+    // path exists to get — and unlike the search index it replaced, it is not
+    // eventually consistent.
+    const gmail = draftGmail(404);
+    assert.equal(
+      await gmail.client.forwardDraftPending({ accessToken: 't', draftId: 'draft-1' }),
+      false,
+    );
+  });
+
+  it('does not read any other draft error as a completed send', async () => {
+    const gmail = draftGmail(500);
+    await assert.rejects(
+      gmail.client.forwardDraftPending({ accessToken: 't', draftId: 'draft-1' }),
+    );
+  });
+
+  it('sends a staged draft by ID', async () => {
+    const gmail = draftGmail(200);
+    assert.equal(
+      await gmail.client.sendForwardDraft({ accessToken: 't', draftId: 'draft-1' }),
+      'sent-1',
+    );
   });
 });

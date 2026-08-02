@@ -1504,6 +1504,11 @@ model MailDelivery {
   attempts          Int                @default(0)
   payloadJson       Json?
   providerMessageId String?
+  /// Gmail draft this forward is staged in, written before the send is
+  /// attempted. On a retry its presence answers the only question that matters
+  /// — did the previous attempt actually send? — using an identifier Divo owns,
+  /// rather than a search index that lags the send by seconds.
+  providerDraftId   String?
   lastError         String?
   ambiguous         Boolean            @default(false)
   firstAttemptAt    DateTime           @default(now())

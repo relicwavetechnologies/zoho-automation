@@ -116,7 +116,19 @@ export class GmailHistoryClient {
     return { historyId: response.historyId, expiration };
   }
 
-  async forward(input: {
+  /**
+   * Stage a forward as a Gmail draft, and hand back its ID.
+   *
+   * The caller persists that ID before anything is sent, which is the whole
+   * point: a draft is an identifier Divo owns and Gmail answers about
+   * immediately. What it replaces was a search for the `Message-ID` we had
+   * asked Gmail to use — twice unreliable, because `messages.send` commonly
+   * substitutes its own and demotes ours to `X-Google-Original-Message-ID`,
+   * and because `rfc822msgid:` reads an eventually-consistent index that was
+   * being queried seconds after the send it was meant to detect. Send
+   * succeeded, the response was lost, the retry forwarded again.
+   */
+  async createForwardDraft(input: {
     accessToken: string;
     destination: string;
     mailboxEmail: string;
@@ -126,16 +138,6 @@ export class GmailHistoryClient {
     ruleId: string;
   }): Promise<string> {
     const messageId = `<${input.idempotencyKey.replace(/[^a-z0-9.-]/gi, '')}@mailops.divo>`;
-    const query = new URLSearchParams({
-      q: `in:sent rfc822msgid:${messageId}`,
-      maxResults: '1',
-    });
-    const existing = await this.getJson<{ messages?: Array<{ id: string }> }>(
-      `${GMAIL_API}/messages?${query}`,
-      input.accessToken,
-    );
-    if (existing.messages?.[0]?.id) return existing.messages[0].id;
-
     const subject = /^fwd:/i.test(input.source.subject)
       ? input.source.subject
       : `Fwd: ${input.source.subject || '(no subject)'}`;
@@ -154,16 +156,56 @@ export class GmailHistoryClient {
       idempotencyKey: input.idempotencyKey,
       ruleId: input.ruleId,
     });
-    const sent = await this.getJson<{ id?: string }>(
-      `${GMAIL_API}/messages/send`,
+    const draft = await this.getJson<{ id?: string }>(
+      `${GMAIL_API}/drafts`,
       input.accessToken,
       {
         method: 'POST',
-        body: JSON.stringify({ raw: raw.toString('base64url') }),
+        body: JSON.stringify({ message: { raw: raw.toString('base64url') } }),
       },
     );
-    if (!sent.id) throw new Error('Gmail send returned no message ID.');
+    if (!draft.id) throw new Error('Gmail draft creation returned no draft ID.');
+    return draft.id;
+  }
+
+  /** Sends a staged draft. Gmail consumes the draft, so this is not repeatable. */
+  async sendForwardDraft(input: {
+    accessToken: string;
+    draftId: string;
+  }): Promise<string> {
+    const sent = await this.getJson<{ id?: string }>(
+      `${GMAIL_API}/drafts/send`,
+      input.accessToken,
+      {
+        method: 'POST',
+        body: JSON.stringify({ id: input.draftId }),
+      },
+    );
+    if (!sent.id) throw new Error('Gmail draft send returned no message ID.');
     return sent.id;
+  }
+
+  /**
+   * Did a previously staged draft already go out?
+   *
+   * Gmail deletes a draft when it is sent, so absence is proof of a completed
+   * send and presence is proof that no send completed. Neither answer depends
+   * on an index catching up.
+   */
+  async forwardDraftPending(input: {
+    accessToken: string;
+    draftId: string;
+  }): Promise<boolean> {
+    try {
+      await this.getJson<{ id?: string }>(
+        `${GMAIL_API}/drafts/${encodeURIComponent(input.draftId)}?format=minimal`,
+        input.accessToken,
+      );
+      return true;
+    } catch (error) {
+      if (error instanceof GmailApiError && error.status === 404) return false;
+      throw error;
+    }
   }
 
   /**

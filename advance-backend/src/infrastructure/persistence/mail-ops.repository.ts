@@ -842,7 +842,13 @@ export class MailOpsRepository {
           OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
         },
         orderBy: [{ nextAttemptAt: 'asc' }, { id: 'asc' }],
-        select: { id: true, attempts: true, nextAttemptAt: true, payloadJson: true },
+        select: {
+          id: true,
+          attempts: true,
+          nextAttemptAt: true,
+          payloadJson: true,
+          providerDraftId: true,
+        },
       });
       if (!due?.payloadJson) return ok(null);
       const claimed = await this.db.mailDelivery.updateMany({
@@ -863,9 +869,43 @@ export class MailOpsRepository {
         deliveryId: due.id,
         attempts: due.attempts + 1,
         payload: due.payloadJson as Record<string, unknown>,
+        // Present only on a retry of an attempt that got as far as staging.
+        // Whether that attempt also sent is the question the worker asks Gmail.
+        ...(due.providerDraftId ? { providerDraftId: due.providerDraftId } : {}),
       });
     } catch (cause) {
       return err(wrapInfra('prisma', 'mailOps.claimNextDueDelivery', cause));
+    }
+  }
+
+  /**
+   * Records the draft a forward is staged in, before anything is sent.
+   *
+   * `ambiguous` is set in the same write and cleared only by a confirmed
+   * outcome. Between the two, this row is honest about not knowing whether
+   * Gmail sent the message — which is the state the old search-based guard
+   * pretended it could always resolve.
+   */
+  async stageDeliveryDraft(input: {
+    deliveryId: string;
+    attempts: number;
+    providerDraftId: string;
+  }): Promise<Result<boolean, InfraError>> {
+    try {
+      const updated = await this.db.mailDelivery.updateMany({
+        where: {
+          id: input.deliveryId,
+          status: 'sending',
+          attempts: input.attempts,
+        },
+        data: {
+          providerDraftId: input.providerDraftId,
+          ambiguous: true,
+        },
+      });
+      return ok(updated.count === 1);
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'mailOps.stageDeliveryDraft', cause));
     }
   }
 
@@ -883,6 +923,9 @@ export class MailOpsRepository {
           nextAttemptAt: null,
           lastError: null,
           ambiguous: false,
+          // The draft is consumed by the send, so its ID is spent. Clearing it
+          // keeps a delivered row from looking like one still mid-flight.
+          providerDraftId: null,
           ...(providerMessageId ? { providerMessageId } : {}),
         },
       });
