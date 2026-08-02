@@ -2209,7 +2209,11 @@ defects (Wave 2), and revive the dead OAuth continuation path (Wave 3).
 ### Persistence and composition
 
 - [`schema.prisma`](../advance-backend/prisma/schema.prisma)
-- [`mail-ops.repository.ts`](../advance-backend/src/infrastructure/persistence/mail-ops.repository.ts)
+- [`mail-ops.repository.ts`](../advance-backend/src/infrastructure/persistence/mail-ops.repository.ts) — the one object callers hold. The writes themselves live per aggregate beside it:
+  - [`mail-ops/subscription.repository.ts`](../advance-backend/src/infrastructure/persistence/mail-ops/subscription.repository.ts) — the mailbox: cursor, claims, watch renewal
+  - [`mail-ops/rule.repository.ts`](../advance-backend/src/infrastructure/persistence/mail-ops/rule.repository.ts) — rules, including rule identity and the pre-canonicalisation key migration
+  - [`mail-ops/event.repository.ts`](../advance-backend/src/infrastructure/persistence/mail-ops/event.repository.ts) — the mail Divo saw
+  - [`mail-ops/delivery.repository.ts`](../advance-backend/src/infrastructure/persistence/mail-ops/delivery.repository.ts) — reservation, the retry ladder, terminal states
 - [`composition.ts`](../advance-backend/src/composition.ts)
 - [`server.ts`](../advance-backend/src/server.ts)
 - [`env.ts`](../advance-backend/src/config/env.ts)

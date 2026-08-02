@@ -262,7 +262,7 @@ That correction makes P3 considerably worse than it was written, and is why Wave
 
 **Fix:**
 
-**Status 2026-08-02: everything here is done except the repository split.**
+**Status 2026-08-02: done.**
 
 | Issue | Status |
 |---|---|
@@ -270,9 +270,9 @@ That correction makes P3 considerably worse than it was written, and is why Wave
 | Error classification by substring | ✅ `GmailApiError` carries Google's machine-readable `reason` beside the status, and classification keys off both. A `403` is genuinely ambiguous — "insufficient permissions" *and* "too fast" — so the reason separates them. The substring pass survives only for errors that never came from Gmail, and no longer looks for `scope` or `permission`: a Divo-side error saying "permission" is our problem. This one mattered because `scope_missing` puts "Reconnect Google" in front of the mailbox owner. |
 | Two phantom delivery states | ✅ half stale, half real. `ambiguous` **is** written `true` — fixed in Waves 3–5, the audit entry was out of date. `'failed'` was real: declared, never written. The union also **omitted `blocked`**, which every refusal and rate-limit drop writes — wrong in both directions at once, and nothing referenced it, which is how it drifted. |
 | `errorText` defined twice | ✅ stale. One copy in the worker; the repository's is a distinct `const` with deliberate 500-char truncation for a database column. |
-| Repository mixes four aggregates | ⏳ **the one item left.** Now ~1,340 lines. Held while a cold review of Waves 7–8 is in flight — splitting the file under review would make both jobs worse. |
+| Repository mixes four aggregates | ✅ split into `persistence/mail-ops/{subscription,rule,event,delivery}.repository.ts`. Each now declares only the models it touches, so a delivery cannot reach a subscription row by accident. `MailOpsRepository` stays as the callers' single object, its methods bound to the four — splitting the callers is a separate change from splitting the code, and doing both at once would make each harder to review. The split is what surfaced the surviving `5` below. |
 | MIME functions untested | ✅ `buildForwardMime` / `splitRawMessage` / `selectContentHeaders` covered by the byte-for-byte forward tests (see Wave 8); `extractBody` / `hasAttachment` now have direct tests, having been reachable only through a full sync. Both were exported for the purpose. No defect found in either — the tests pin behaviour that had none. |
-| Magic numbers split across files | ✅ `MAIL_DELIVERY_MAX_ATTEMPTS`, `MAIL_DELIVERY_RETRY_BASE_MS`, `MAILBOX_WATCH_RENEWAL_INTERVAL_MS`. The retry ladder's `5` was three separate literals across the claim predicate, the failure path and the stale sweep — they have disagreed before, and rows at the end of the ladder became both unclaimable and unabandonable. |
+| Magic numbers split across files | ✅ `MAIL_DELIVERY_MAX_ATTEMPTS`, `MAIL_DELIVERY_RETRY_BASE_MS`, `MAILBOX_WATCH_RENEWAL_INTERVAL_MS`. The retry ladder's `5` was three separate literals across the claim predicate, the failure path and the stale sweep — they have disagreed before, and rows at the end of the ladder became both unclaimable and unabandonable. **One survived that pass:** the stale sweep still asked for `attempts: { gte: 5 }` while the two predicates beside it read the constant — the same file, twelve lines apart. It was found by moving the code, not by the pass that claimed to have removed it, which is the argument for the split above. |
 | Mock-shaped tests over dead code | ✅ **appears resolved with D5 itself.** `runContext.connectionAuthorization` no longer exists in `run-context.ts` or `composition.ts`; `beginGoogleAuthorization` now decides on `googleOAuthService.isConfigured()`, and `tests/application/begin-google-authorization.test.ts` exercises it. Confirmed by grep, **not** by tracing the whole OAuth continuation end to end — D5 is cross-cutting and its closure should be verified on its own terms, not assumed from this. |
 
 ---
