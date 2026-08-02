@@ -6,6 +6,8 @@ export const XLSX_MAX_ROWS = 5_000;
 export const XLSX_MAX_CELLS = 100_000;
 export const XLSX_MAX_COLUMNS = 16_384;
 const XLSX_APPEND_ROWS = 500;
+const XLSX_MIN_COLUMN_WIDTH = 10;
+const XLSX_MAX_COLUMN_WIDTH = 40;
 
 export async function writeXlsxArtifact(input: {
   readonly path: string;
@@ -29,11 +31,16 @@ export async function writeXlsxArtifact(input: {
   }
 
   const sheet = XLSX.utils.aoa_to_sheet([[...input.columns]]);
+  const columnWidths = input.columns.map(column => visibleWidth(column));
   let batch: unknown[][] = [];
   let writtenRows = 0;
   for await (const row of input.rows) {
     input.signal?.throwIfAborted();
-    batch.push(input.columns.map(column => normalizeExportCell(row[column])));
+    const values = input.columns.map(column => normalizeExportCell(row[column]));
+    values.forEach((value, index) => {
+      columnWidths[index] = Math.max(columnWidths[index] ?? 0, visibleWidth(value));
+    });
+    batch.push(values);
     writtenRows += 1;
     if (batch.length < XLSX_APPEND_ROWS) continue;
     XLSX.utils.sheet_add_aoa(sheet, batch, { origin: -1 });
@@ -48,10 +55,26 @@ export async function writeXlsxArtifact(input: {
     throw new Error('Excel export verification failed: spool row count changed while writing');
   }
 
+  sheet['!cols'] = columnWidths.map(width => ({
+    wch: Math.min(XLSX_MAX_COLUMN_WIDTH, Math.max(XLSX_MIN_COLUMN_WIDTH, width + 2)),
+  }));
+  sheet['!autofilter'] = {
+    ref: XLSX.utils.encode_range({
+      s: { c: 0, r: 0 },
+      e: { c: input.columns.length - 1, r: writtenRows },
+    }),
+  };
+
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, sheet, 'Export');
   await writeWorkbook(input.path, workbook);
   verifyWorkbook(input.path, input.columns, input.rowCount);
+}
+
+function visibleWidth(value: unknown): number {
+  return String(value ?? '')
+    .split(/\r?\n/u)
+    .reduce((width, line) => Math.max(width, [...line].length), 0);
 }
 
 function writeWorkbook(path: string, workbook: XLSX.WorkBook): Promise<void> {
