@@ -246,7 +246,9 @@ Three independent mechanisms decide whether a user can use mail automation at al
 
 **P1 — Department template snapshot.** `mailAutomations` is declared `ALL_ROLES` at [tool-id.ts:168](../advance-backend/src/domain/tools/tool-id.ts:168), flowing into `memberTemplateGrants()`, which every **new department** uses to seed its two system roles. A department created *before* `mailAutomations` entered the taxonomy has no rows for it — and missing rows are denied at runtime.
 
-**P2 — The deploy does not provision Mail Ops.** The dev deploy runs `pnpm provision:google-workspace-skills`, which contains **zero** Mail Ops references. Only the manual `scripts/reconcile-capabilities.ts` provisions the mail-ops skills and `mailAutomations` permission rows.
+**P2 — The deploy does not provision Mail Ops.** ~~The dev deploy runs `pnpm provision:google-workspace-skills`, which contains **zero** Mail Ops references. Only the manual `scripts/reconcile-capabilities.ts` provisions the mail-ops skills and `mailAutomations` permission rows.~~ **[wrong, corrected 2026-08-02]** Both halves of the first sentence are true and the conclusion drawn from them is not. `scripts/reconcile-capabilities.ts` is not manual: `package.json` binds it to `prestart`, the backend image's `CMD` is `pnpm start`, and `docker-compose.dev.yml` gives `divo-dev-backend` no `command:` override. It therefore runs on **every boot of every backend container**, and Mail Ops skills and permissions are provisioned on every deploy already.
+
+That correction makes P3 considerably worse than it was written, and is why Wave 7 is a fix rather than a new deploy step: the unguarded rewrite of every custom role was not an occasional manual act, it ran at every boot; and the hard-throw on a company with no active administrator failed `prestart`, which aborts `pnpm start`, which means the container never serves and restarts into the same failure.
 
 **P3 — The Mail Ops provisioner is the only one that rewrites custom roles.** `provisionMailOpsPermissionsForExistingCompanies` grants all five actions to **every** `DepartmentRole` — including hand-configured "Intern" or "Contractor" roles — with none of the `existing > 0` guard that `backfillEmptyRolePermissions` uses precisely to protect deliberate admin configuration. It also never calls `permissions.invalidateDept`, so grants land 0–15 minutes late, and it hard-fails the whole run if any company lacks an active admin.
 
@@ -380,8 +382,17 @@ That rewrites the identity of every rule already in the database, which is why t
 
 **Instruction layer updated in the same commit**, per DR-9: the seeded skill and `parameterDocs` previously told the model that `to` reads the `To` header only, that `hasAttachment` counts inline images, and that unknown keys are ignored. All three were true when written and all three are now false.
 
-**Wave 7 — Provisioning determinism** *(P1, P2, P3)*
-One provisioning path that runs on deploy and covers skills *and* permissions. Add the `existing > 0` guard and cache invalidation. Decide the §10 posture question first.
+**Wave 7 — Provisioning determinism** *(P1, P2, P3)* — ✅ done.
+
+**P2 needed no work** and the finding was wrong; see the correction above. One provisioning path already runs on deploy and already covers skills *and* permissions — `prestart` → `capabilities:reconcile`, on every container boot. Adding a second explicit deploy step would have duplicated it.
+
+**P1 and P3 have one fix between them, and it is a scoping decision.** `createDepartment` seeds `memberTemplateGrants()` onto the two **system** roles and nothing else, so a department predating `mailAutomations` in the taxonomy is missing exactly those rows and no others. The provisioner now does for existing departments precisely what department creation does for new ones: system roles only. A custom "Intern" or "Contractor" role is deliberate configuration and is no longer written to at all — it was previously granted all five actions on every backend boot, so an admin could narrow one and watch it re-widen at the next deploy.
+
+The literal `existing > 0` guard the plan called for would have been a no-op here, and saying why matters: every role in a pre-taxonomy department already holds rows, just for other tools, so a count across all tools skips every role and the provisioner stops doing the one thing it exists for. The guard is therefore **per-tool** — a role holding any `mailAutomations` row is left alone whether that row allows or denies, because re-asserting `allowed: true` over a deliberate denial is the same defect in a shorter window.
+
+Two smaller repairs ride along. A company with no active administrator is now **skipped and reported** rather than thrown on — with `prestart` in the picture, one such company kept the backend from starting at all. And the run invalidates the permission cache for each department it actually wrote to, so a grant is visible immediately instead of within fifteen minutes; the invalidator is passed in and is best-effort, because a Redis that is not up yet must not be able to stop a boot. A second run writes nothing and invalidates nothing.
+
+**O-1 was decided rather than deferred — `execute` stays `ALL_ROLES`.** The posture note argues from "acts outside the requester's own view", and Mail Ops does not: the composite foreign keys make rule creator ≡ subscription owner ≡ connection owner a database invariant, so a rule can only ever watch the mailbox of the member who asked for it, through that member's own connection. That is what separates it from `larkBase` or `googleAppsScript`, which reach company-wide resources. What the capability *can* do that is worth watching is send a member's own mail outward — to an external address or a shared Lark chat — and that is a governance question (Wave 4, plus the ungoverned-worker gap in §8), not a role question; `ADMIN_ONLY` would not have addressed it, it would only have meant fewer people could reach an ungoverned path. Reversing this is one entry in `TOOL_DEFAULT_PERMISSIONS` plus a permission backfill.
 
 **Wave 8 — Capability** — `label` / `archive` / `markRead`; exclusions (`notFrom`, `notSubjectContains`); `activeWindow`; `rateLimitPerHour`; multi-destination; **dry run** (`POST /rules/:id/test` against stored events — largest single usability win).
 
@@ -521,7 +532,7 @@ Also correct in the companion plan doc: "30–60 minute reconciliation" → 60 m
 
 ## 10. Open decisions
 
-**O-1 — Permission posture for `execute`.** `mailAutomations` matches `scheduledWorkflows` at `ALL_ROLES`, so it is internally consistent. But every other capability that acts outside the requester's own view is `ADMIN_ONLY`, and this one grants persistent background mail-forwarding to every member of every role. Options: leave as-is (consistent with sibling), move both scheduling tools to `ADMIN_ONLY` for `execute` only, or keep the grant and rely on Wave 4 governance. **Needs a product call before Wave 7.**
+**O-1 — Permission posture for `execute`. — ✅ decided 2026-08-02: leave as-is.** `mailAutomations` matches `scheduledWorkflows` at `ALL_ROLES`, so it is internally consistent. The argument for `ADMIN_ONLY` was that every other capability holding it acts outside the requester's own view — and Mail Ops does not, because the composite foreign keys make rule creator ≡ subscription owner ≡ connection owner a database invariant. The real exposure is outbound delivery, which is a governance gap and not a role one. Full reasoning in Wave 7 above; reversing it is one taxonomy entry plus a backfill.
 
 **O-2 — D12 semantics.** Registrable-domain-plus-subdomains, or explicit `@*.domain` syntax? The first is what users expect; the second is more precise and less surprising. Either way the skill text must state it exactly.
 

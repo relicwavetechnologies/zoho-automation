@@ -18,6 +18,9 @@ import { provisionSystemSkillRoutesForExistingCompanies } from '../src/applicati
 import { provisionKnowledgeForExistingCompanies } from '../src/application/skills/knowledge-provisioning';
 import { provisionFilesAndDocumentsForExistingCompanies } from '../src/application/skills/files-and-documents-system-skills';
 import { provisionDivoLocalPythonForExistingCompanies } from '../src/application/skills/divo-local-python-system-skill';
+import { PermissionCache } from '../src/application/permissions/permission.cache';
+import { RedisCache } from '../src/infrastructure/cache/redis-cache';
+import { disconnectAllRedis, getRedisClient } from '../src/infrastructure/cache/redis.client';
 
 export async function provisionConnectedProviderSkillsForExistingCompanies(prisma: PrismaClient) {
   const totals = { companies: 0, created: 0, updated: 0, existing: 0, skipped: 0 };
@@ -32,7 +35,10 @@ export async function provisionConnectedProviderSkillsForExistingCompanies(prism
   return totals;
 }
 
-export async function reconcileCapabilities(prisma: PrismaClient) {
+export async function reconcileCapabilities(
+  prisma: PrismaClient,
+  invalidator?: (companyId: string, departmentId: string) => Promise<void>,
+) {
   const registeredTools = await seedRegisteredTools(prisma);
   const skills = {
     lark: await provisionLarkSkillsForExistingCompanies(prisma),
@@ -50,17 +56,52 @@ export async function reconcileCapabilities(prisma: PrismaClient) {
   };
   const skillRoutes = await provisionSystemSkillRoutesForExistingCompanies(prisma);
   const permissions = {
-    mailOps: await provisionMailOpsPermissionsForExistingCompanies(prisma),
+    mailOps: await provisionMailOpsPermissionsForExistingCompanies(prisma, {
+      invalidateDept: invalidator,
+    }),
   };
   return { registeredTools, skills, skillRoutes, permissions };
+}
+
+/**
+ * Drop the permission cache for a department whose grants just changed.
+ *
+ * Best-effort by design: this runs from `prestart`, and a Redis that is not up
+ * yet must not keep the backend from starting. Without it the grant is still
+ * real, just invisible to any already-running instance for up to the
+ * 15-minute cache TTL — which is what happened before this existed.
+ */
+function redisDeptInvalidator():
+  | ((companyId: string, departmentId: string) => Promise<void>)
+  | undefined {
+  const url = process.env.REDIS_CACHE_URL || process.env.REDIS_URL;
+  if (!url) return undefined;
+  const cache = new PermissionCache(new RedisCache(getRedisClient(url)));
+  return async (companyId, departmentId) => {
+    try {
+      await cache.invalidateDept(companyId, departmentId);
+    } catch (error) {
+      console.warn(
+        JSON.stringify({
+          level: 'warn',
+          event: 'capabilities.invalidate_dept_failed',
+          companyId,
+          departmentId,
+          message: String(error),
+        }),
+      );
+    }
+  };
 }
 
 async function main() {
   const prisma = new PrismaClient();
   try {
-    console.log(JSON.stringify(await reconcileCapabilities(prisma), null, 2));
+    const result = await reconcileCapabilities(prisma, redisDeptInvalidator());
+    console.log(JSON.stringify(result, null, 2));
   } finally {
     await prisma.$disconnect();
+    await disconnectAllRedis().catch(() => undefined);
   }
 }
 

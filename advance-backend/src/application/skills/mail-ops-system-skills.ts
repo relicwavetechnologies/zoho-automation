@@ -159,6 +159,38 @@ export async function provisionMailOpsSkillsForExistingCompanies(
   return totals;
 }
 
+export interface MailOpsPermissionProvisionResult {
+  companies: number;
+  /** System roles considered — the two every department is created with. */
+  roles: number;
+  created: number;
+  /** Roles left alone because someone had already decided about this tool. */
+  alreadyDecided: number;
+  /** Companies passed over rather than failed on, with the reason. */
+  skippedCompanies: Array<{ companyId: string; reason: 'no_active_administrator' }>;
+  departmentsInvalidated: number;
+}
+
+/**
+ * Give existing departments the `mailAutomations` rows a department created
+ * today would already have.
+ *
+ * Scoped to **system roles** on purpose. `createDepartment` seeds its two
+ * system roles from `memberTemplateGrants()` and nothing else, so a department
+ * predating this tool in the taxonomy is missing exactly those rows and no
+ * others. A custom "Intern" or "Contractor" role was configured by hand, and
+ * this provisioner used to grant all five actions to every one of them on every
+ * run — which, since `prestart` runs it, meant every backend boot silently
+ * re-widened roles an admin had deliberately narrowed.
+ *
+ * A role that already holds any `mailAutomations` row is left alone whether the
+ * row allows or denies: the decision has been made, and re-asserting `allowed`
+ * over a deliberate denial is the same defect in a smaller window.
+ *
+ * `invalidateDept` is best-effort. Without it the grant is real in the database
+ * immediately but invisible to a running instance until its 15-minute
+ * permission cache expires.
+ */
 export async function provisionMailOpsPermissionsForExistingCompanies(
   db: Pick<
     PrismaClient,
@@ -167,14 +199,20 @@ export async function provisionMailOpsPermissionsForExistingCompanies(
     | 'departmentRole'
     | 'departmentToolPermission'
   >,
-): Promise<{
-  companies: number;
-  roles: number;
-  created: number;
-}> {
+  options: {
+    invalidateDept?: (companyId: string, departmentId: string) => Promise<void>;
+  } = {},
+): Promise<MailOpsPermissionProvisionResult> {
   const companies = await db.company.findMany({ select: { id: true } });
-  let roles = 0;
-  let created = 0;
+  const result: MailOpsPermissionProvisionResult = {
+    companies: companies.length,
+    roles: 0,
+    created: 0,
+    alreadyDecided: 0,
+    skippedCompanies: [],
+    departmentsInvalidated: 0,
+  };
+
   for (const company of companies) {
     const actor = await db.adminMembership.findFirst({
       where: { companyId: company.id, isActive: true },
@@ -182,20 +220,43 @@ export async function provisionMailOpsPermissionsForExistingCompanies(
       orderBy: { createdAt: 'asc' },
     });
     if (!actor) {
-      throw new Error(
-        `Cannot provision Mail Ops permissions for company ${company.id}: no active administrator.`,
-      );
+      // A company between administrators is not a reason to fail the run. This
+      // used to throw, and because `prestart` runs the reconciler, one such
+      // company kept the whole backend from starting.
+      result.skippedCompanies.push({
+        companyId: company.id,
+        reason: 'no_active_administrator',
+      });
+      continue;
     }
-    const companyRoles = await db.departmentRole.findMany({
+
+    const systemRoles = await db.departmentRole.findMany({
       where: {
+        isSystem: true,
         department: { companyId: company.id, status: 'active' },
       },
       select: { id: true, departmentId: true },
     });
-    roles += companyRoles.length;
-    if (companyRoles.length === 0) continue;
-    const result = await db.departmentToolPermission.createMany({
-      data: companyRoles.flatMap(role =>
+    result.roles += systemRoles.length;
+    if (systemRoles.length === 0) continue;
+
+    const decided = new Set(
+      (
+        await db.departmentToolPermission.findMany({
+          where: {
+            toolId: 'mailAutomations',
+            roleId: { in: systemRoles.map(role => role.id) },
+          },
+          select: { roleId: true },
+        })
+      ).map(row => row.roleId),
+    );
+    const pending = systemRoles.filter(role => !decided.has(role.id));
+    result.alreadyDecided += systemRoles.length - pending.length;
+    if (pending.length === 0) continue;
+
+    const written = await db.departmentToolPermission.createMany({
+      data: pending.flatMap(role =>
         MAIL_AUTOMATION_ACTIONS.map(actionGroup => ({
           departmentId: role.departmentId,
           roleId: role.id,
@@ -207,7 +268,15 @@ export async function provisionMailOpsPermissionsForExistingCompanies(
       ),
       skipDuplicates: true,
     });
-    created += result.count;
+    result.created += written.count;
+
+    if (written.count === 0) continue;
+    for (const departmentId of new Set(pending.map(role => role.departmentId))) {
+      if (!options.invalidateDept) continue;
+      await options.invalidateDept(company.id, departmentId);
+      result.departmentsInvalidated += 1;
+    }
   }
-  return { companies: companies.length, roles, created };
+
+  return result;
 }
