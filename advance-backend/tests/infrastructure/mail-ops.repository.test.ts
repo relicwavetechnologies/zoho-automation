@@ -260,6 +260,41 @@ describe('MailOpsRepository', () => {
     );
   });
 
+  it('keeps a partially drained mailbox due immediately', async () => {
+    // A truncated pass succeeded, so it must not be scheduled like a failure —
+    // but there is known unread history left, and an hour is too long to hold
+    // it. Same treatment as an arriving signal, for the same reason.
+    let cursorUpdate: any;
+    const repo = new MailOpsRepository({
+      mailboxSubscription: {
+        updateMany: async (input: any) => {
+          cursorUpdate = input;
+          return { count: 1 };
+        },
+      },
+    } as any);
+    const now = new Date('2026-07-29T05:03:00.000Z');
+
+    const result = await repo.advanceCursor(
+      {
+        subscriptionId: 'mailbox-1',
+        companyId: 'company-1',
+        userId: 'user-1',
+        connectionId: 'connection-1',
+        mailboxEmail: 'user@example.com',
+        signalVersion: 0,
+        claimToken: 'claim-1',
+      },
+      '120',
+      now,
+      { pollImmediately: true },
+    );
+
+    assert.deepEqual(result, { ok: true, value: true });
+    assert.equal(cursorUpdate.data.historyId, '120');
+    assert.equal(cursorUpdate.data.nextPollAt, now);
+  });
+
   it('keeps the mailbox due when a Pub/Sub signal arrives during sync', async () => {
     const cursorUpdates: any[] = [];
     const repo = new MailOpsRepository({

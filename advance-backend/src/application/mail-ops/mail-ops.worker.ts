@@ -280,6 +280,10 @@ export class MailOpsWorker {
       const advanced = await this.deps.repo.advanceCursor(
         claim,
         sync.nextHistoryId,
+        new Date(),
+        // A partial drain is a success with work left over, so it comes back
+        // on the next tick instead of waiting out the reconciliation interval.
+        { pollImmediately: sync.truncated },
       );
       if (!advanced.ok) throw advanced.error;
       if (!advanced.value) {
@@ -290,6 +294,7 @@ export class MailOpsWorker {
         eventCount: persisted.value.length,
         deliveryCount: deliveries,
         staleCursorRecovered: sync.staleCursorRecovered,
+        truncated: sync.truncated,
         durationMs: Date.now() - startedAt,
       });
     } catch (error) {

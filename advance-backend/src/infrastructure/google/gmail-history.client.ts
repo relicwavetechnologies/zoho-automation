@@ -13,6 +13,12 @@ export interface GmailHistorySync {
   nextHistoryId: string;
   events: NewMailEvent[];
   staleCursorRecovered: boolean;
+  /**
+   * More history was waiting than one pass is willing to read. The cursor
+   * returned is a real position part-way through the backlog, so the caller
+   * should come straight back rather than wait for the next reconciliation.
+   */
+  truncated: boolean;
 }
 
 export class GmailHistoryClient {
@@ -34,6 +40,7 @@ export class GmailHistoryClient {
         nextHistoryId: profile.historyId,
         events: [],
         staleCursorRecovered: false,
+        truncated: false,
       };
     }
 
@@ -118,12 +125,31 @@ export class GmailHistoryClient {
     return sent.id;
   }
 
+  /**
+   * Drains history from `historyId` forward, up to a bounded number of pages.
+   *
+   * The bound used to throw. That wedged the mailbox permanently: the throw
+   * failed the sync, the cursor stayed exactly where it was, and five minutes
+   * later the same oversized range threw again — forever, on the busiest
+   * mailboxes, which are the ones the feature exists for.
+   *
+   * It now stops and reports where it got to. The subtlety is *which* cursor
+   * to report. `payload.historyId` is the mailbox's newest history ID, not the
+   * end of the page — handing that back after reading ten pages of a fifteen
+   * page backlog would silently skip the last five. So a truncated pass
+   * returns the ID of the last history record it actually consumed, and the
+   * caller comes straight back for the rest. Re-reading that one record is
+   * harmless; events and deliveries are both deduplicated.
+   */
   private async syncHistory(
     accessToken: string,
     historyId: string,
   ): Promise<GmailHistorySync> {
     const messageIds = new Set<string>();
     let nextHistoryId = historyId;
+    /** Last record we definitely consumed — the only safe truncation cursor. */
+    let lastRecordId: string | undefined;
+    let truncated = false;
     let pageToken: string | undefined;
     for (let page = 0; page < MAX_HISTORY_PAGES; page++) {
       const query = new URLSearchParams({
@@ -143,6 +169,7 @@ export class GmailHistoryClient {
       }>(`${GMAIL_API}/history?${query}`, accessToken);
       nextHistoryId = payload.historyId ?? nextHistoryId;
       for (const history of payload.history ?? []) {
+        if (history.id) lastRecordId = history.id;
         for (const added of history.messagesAdded ?? []) {
           if (added.message?.id) messageIds.add(added.message.id);
         }
@@ -150,13 +177,18 @@ export class GmailHistoryClient {
       pageToken = payload.nextPageToken;
       if (!pageToken) break;
       if (page === MAX_HISTORY_PAGES - 1) {
-        throw new Error('Gmail history exceeded the bounded page limit.');
+        truncated = true;
+        break;
       }
     }
     return {
-      nextHistoryId,
+      // A truncated pass that consumed no record at all leaves the cursor
+      // untouched rather than guessing forward — repeating a pass is
+      // recoverable, skipping mail is not.
+      nextHistoryId: truncated ? lastRecordId ?? historyId : nextHistoryId,
       events: await this.loadEvents(accessToken, [...messageIds]),
       staleCursorRecovered: false,
+      truncated,
     };
   }
 
@@ -182,6 +214,7 @@ export class GmailHistoryClient {
       nextHistoryId: profile.historyId,
       events: await this.loadEvents(accessToken, ids),
       staleCursorRecovered: true,
+      truncated: false,
     };
   }
 

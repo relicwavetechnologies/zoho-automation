@@ -410,10 +410,20 @@ export class MailOpsRepository {
     }
   }
 
+  /**
+   * Moves the mailbox cursor forward and releases the claim.
+   *
+   * `pollImmediately` exists for a partially drained backlog: the pass
+   * succeeded, so this is not a failure and must not be scheduled like one,
+   * but there is known unread history left and waiting an hour for the next
+   * reconciliation would hold it. Same path as the Pub/Sub-signal case below,
+   * for the same reason.
+   */
   async advanceCursor(
     claim: MailboxSyncClaim,
     nextHistoryId: string,
     now = new Date(),
+    options: { pollImmediately?: boolean } = {},
   ): Promise<Result<boolean, InfraError>> {
     const success = {
       historyId: nextHistoryId,
@@ -433,9 +443,9 @@ export class MailOpsRepository {
         },
         data: {
           ...success,
-          nextPollAt: new Date(
-            now.getTime() + MAILBOX_RECONCILIATION_INTERVAL_MS,
-          ),
+          nextPollAt: options.pollImmediately
+            ? now
+            : new Date(now.getTime() + MAILBOX_RECONCILIATION_INTERVAL_MS),
         },
       });
       if (advanced.count === 1) return ok(true);

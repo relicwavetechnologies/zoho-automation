@@ -239,6 +239,60 @@ describe('MailOpsWorker', () => {
     assert.equal(syncFailed, true);
   });
 
+  it('comes straight back for a backlog it could only partly drain', async () => {
+    // Without this the mailbox advances and then waits out the full
+    // reconciliation interval with known unread history sitting behind it.
+    let mailboxClaimed = false;
+    let advanceOptions: unknown;
+    const worker = new MailOpsWorker({
+      repo: {
+        claimNextWatchRenewal: async () => ({ ok: true, value: null }),
+        completeWatchRenewal: async () => ({ ok: true, value: true }),
+        failWatchRenewal: async () => ({ ok: true, value: true }),
+        claimNextDueMailbox: async () => {
+          if (mailboxClaimed) return { ok: true, value: null };
+          mailboxClaimed = true;
+          return { ok: true, value: claim };
+        },
+        recordEvents: async () => ({ ok: true, value: [] }),
+        listActiveRules: async () => ({ ok: true, value: [] }),
+        reserveDelivery: async () => ({ ok: true, value: { outcome: 'in_flight' } }),
+        advanceCursor: async (
+          _claim: unknown,
+          _historyId: string,
+          _now: Date,
+          options: unknown,
+        ) => {
+          advanceOptions = options;
+          return { ok: true, value: true };
+        },
+        markSyncFailed: async () => ({ ok: true, value: true }),
+        claimNextDueDelivery: async () => ({ ok: true, value: null }),
+        markDeliveryDelivered: async () => ({ ok: true, value: true }),
+        markDeliveryFailed: async () => ({ ok: true, value: true }),
+        markDeliveryAbandoned: async () => ({ ok: true, value: true }),
+      },
+      gmail: {
+        watch: async () => { throw new Error('Watch should not run without a topic.') },
+        sync: async () => ({
+          nextHistoryId: '120',
+          events: [],
+          staleCursorRecovered: false,
+          truncated: true,
+        }),
+        forward: async () => 'unused',
+      },
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => true,
+      deliverLark: async () => 'unused',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.deepEqual(advanceOptions, { pollImmediately: true });
+  });
+
   it('abandons a reserved delivery when current authority is revoked', async () => {
     let deliveryClaimed = false;
     let abandoned: { deliveryId: string; attempts: number; reason: string }
