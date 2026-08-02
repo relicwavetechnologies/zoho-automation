@@ -66,6 +66,7 @@ export class MailOpsRepository {
   readonly replaceRule: MailAutomationRuleRepository['replaceRule'];
   readonly setRuleStatus: MailAutomationRuleRepository['setRuleStatus'];
   readonly listActiveRules: MailAutomationRuleRepository['listActiveRules'];
+  readonly isRuleSendable: MailAutomationRuleRepository['isRuleSendable'];
 
   // The mail they saw.
   readonly recordEvents: MailEventRepository['recordEvents'];
@@ -103,6 +104,7 @@ export class MailOpsRepository {
     this.replaceRule = rules.replaceRule.bind(rules);
     this.setRuleStatus = rules.setRuleStatus.bind(rules);
     this.listActiveRules = rules.listActiveRules.bind(rules);
+    this.isRuleSendable = rules.isRuleSendable.bind(rules);
 
     this.recordEvents = events.recordEvents.bind(events);
 

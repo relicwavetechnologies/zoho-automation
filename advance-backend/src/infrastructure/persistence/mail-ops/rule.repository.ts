@@ -540,6 +540,30 @@ export class MailAutomationRuleRepository {
     }
   }
 
+  /**
+   * Is this rule still one that may send?
+   *
+   * Asked again at delivery time because reserving a delivery and sending it
+   * are two stages that can be minutes apart — a failed attempt sits on a
+   * retry ladder — and the rule's status was only ever read in the first.
+   * A member who paused a rule watched it keep forwarding, which is the one
+   * thing "pause" promises not to do.
+   */
+  async isRuleSendable(ruleId: string): Promise<Result<boolean, InfraError>> {
+    try {
+      const rule = await this.db.mailAutomationRule.findUnique({
+        where: { id: ruleId },
+        select: { status: true },
+      });
+      // A rule that no longer exists is not one that may send. Nothing deletes
+      // rows today — archiving is a status — but reading a missing row as
+      // permission would be the wrong default the day something does.
+      return ok(rule?.status === 'active');
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'mailOps.isRuleSendable', cause));
+    }
+  }
+
   async listActiveRules(
     subscriptionId: string,
   ): Promise<Result<Array<{

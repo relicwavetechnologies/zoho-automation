@@ -59,24 +59,49 @@ describe('GmailHistoryClient history draining', () => {
     assert.equal(sync.events.length, 1);
   });
 
-  it('reports the last record it read, not the mailbox head', async () => {
+  it('hands back where it stopped, and holds the cursor while it has', async () => {
     // The stub's `historyId` is 5000 — the newest record in the mailbox. Using
-    // it as the next cursor would skip every page beyond the tenth.
+    // it as the next cursor would skip every page beyond the tenth. Guessing
+    // forward to the last record read was the old answer, and it made progress
+    // only when a pass consumed something: ten pages Divo does not care about
+    // advanced nothing, so the next pass read the same ten and failed the same
+    // way, forever. Progress rides on the token instead, which is only valid
+    // against the cursor it was issued under — so the cursor stays put.
     const { client } = gmailWith([endlessPage('120')]);
 
     const sync = await client.sync({ accessToken: 'token', historyId: '100' });
 
-    assert.equal(sync.nextHistoryId, '120');
+    assert.equal(sync.truncated, true);
+    assert.equal(sync.nextPageToken, 'more');
+    assert.equal(sync.nextHistoryId, '100');
+  });
+
+  it('resumes a walk from the token it was given', async () => {
+    const { client, urls } = gmailWith([endlessPage('120')]);
+
+    await client.sync({
+      accessToken: 'token',
+      historyId: '100',
+      pageToken: 'page-11',
+    });
+
+    const first = urls.find(url => url.includes('/history?'))!;
+    assert.match(first, /pageToken=page-11/);
+    // Against the same cursor, which is the only one that token means anything
+    // under.
+    assert.match(first, /startHistoryId=100/);
   });
 
   it('leaves the cursor alone when a truncated pass consumed no record', async () => {
-    // Repeating a pass is recoverable; guessing forward loses mail.
+    // Repeating a pass is recoverable; guessing forward loses mail. This is the
+    // case that used to stall permanently — it now carries a resume point.
     const { client } = gmailWith([{ historyId: '5000', nextPageToken: 'more' }]);
 
     const sync = await client.sync({ accessToken: 'token', historyId: '100' });
 
     assert.equal(sync.truncated, true);
     assert.equal(sync.nextHistoryId, '100');
+    assert.equal(sync.nextPageToken, 'more');
   });
 
   it('uses the mailbox head once the backlog is fully drained', async () => {

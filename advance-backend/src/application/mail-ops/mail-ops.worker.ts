@@ -91,6 +91,7 @@ type MailRepo = Pick<
   | 'listActiveRules'
   | 'reserveDelivery'
   | 'recordBlockedDelivery'
+  | 'isRuleSendable'
   | 'claimNextDueDelivery'
   | 'rescheduleDelivery'
   | 'stageDeliveryDraft'
@@ -329,6 +330,10 @@ export class MailOpsWorker {
       const sync = await this.deps.gmail.sync({
         accessToken,
         ...(claim.historyId ? { historyId: claim.historyId } : {}),
+        // Where the last truncated pass stopped. Only meaningful with the
+        // cursor it was issued under, which is why the cursor is held still
+        // for as long as a token is outstanding.
+        ...(claim.historyPageToken ? { pageToken: claim.historyPageToken } : {}),
       });
       const persisted = await this.deps.repo.recordEvents(
         claim,
@@ -534,16 +539,23 @@ export class MailOpsWorker {
       // silently dropping the days in between.
       //
       // Failing it is the honest answer: the member is told, and the state is
-      // visible. Resuming from a stored page token is the real fix and needs
-      // its own column — see the finalization plan.
-      if (sync.truncated && !movedForward) {
+      // visible. It is now the last resort rather than the usual outcome — a
+      // truncated pass hands back where it stopped, and the next one resumes
+      // there instead of re-reading the same ten pages.
+      if (sync.truncated && !sync.nextPageToken) {
         throw new HistoryBacklogStalledError(claim.mailboxEmail);
       }
       const advanced = await this.deps.repo.advanceCursor(
         claim,
         sync.nextHistoryId,
         new Date(),
-        { pollImmediately: sync.truncated && movedForward },
+        {
+          pollImmediately: sync.truncated,
+          // Written on every pass, not only a truncated one: the clear is what
+          // ends a walk. Left standing after the walk finished, the next pass
+          // would resume from a token belonging to history already consumed.
+          pageToken: sync.nextPageToken ?? null,
+        },
       );
       if (!advanced.ok) throw advanced.error;
       if (!advanced.value) {
@@ -692,6 +704,28 @@ export class MailOpsWorker {
           });
           return;
         }
+      }
+      // Asked after the draft and before everything else. Reserving a delivery
+      // and sending it are two stages that can be over a minute apart once a
+      // failed attempt is on the retry ladder, and the rule's status was only
+      // ever read in the first — so pausing a rule stopped new mail matching
+      // while whatever was already reserved went out regardless. "Stop
+      // forwarding" is the whole of what pause promises.
+      const sendable = await this.deps.repo.isRuleSendable(payload.ruleId);
+      if (!sendable.ok) throw sendable.error;
+      if (!sendable.value) {
+        const abandoned = await this.deps.repo.markDeliveryAbandoned(
+          input.deliveryId,
+          input.attempts,
+          'The rule was paused or archived before this message was sent.',
+          { nothingWasSent },
+        );
+        if (!abandoned.ok) throw abandoned.error;
+        this.log.info('mail_ops.delivery_rule_stopped', {
+          deliveryId: input.deliveryId,
+          ruleId: payload.ruleId,
+        });
+        return;
       }
       const authorized = await this.deps.authorizeRule({
         companyId: payload.companyId,

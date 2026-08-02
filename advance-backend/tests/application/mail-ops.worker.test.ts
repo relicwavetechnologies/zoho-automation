@@ -112,6 +112,7 @@ describe('MailOpsWorker', () => {
         return { ok: true, value: true };
       },
       markSyncFailed: async () => ({ ok: true, value: true }),
+      isRuleSendable: async () => ({ ok: true, value: true }),
       claimNextDueDelivery: async () => {
         if (!deliveryPayload || deliveryClaimed) return { ok: true, value: null };
         deliveryClaimed = true;
@@ -219,6 +220,7 @@ describe('MailOpsWorker', () => {
           syncFailed = true;
           return { ok: true, value: true };
         },
+        isRuleSendable: async () => ({ ok: true, value: true }),
         claimNextDueDelivery: async () => ({ ok: true, value: null }),
         markDeliveryDelivered: async () => ({ ok: true, value: true }),
         markDeliveryFailed: async () => ({ ok: true, value: true }),
@@ -279,6 +281,7 @@ describe('MailOpsWorker', () => {
       advanceCursor: async () => ({ ok: true, value: true }),
       markSyncFailed: async () => ({ ok: true, value: true }),
       claimNextDueDelivery: async () => ({ ok: true, value: null }),
+      isRuleSendable: async () => ({ ok: true, value: true }),
       markDeliveryDelivered: async () => ({ ok: true, value: true }),
       markDeliveryFailed: async () => ({ ok: true, value: true }),
       markDeliveryAbandoned: async () => ({ ok: true, value: true }),
@@ -898,6 +901,7 @@ describe('MailOpsWorker', () => {
           return { ok: true, value: true };
         },
         markSyncFailed: async () => ({ ok: true, value: true }),
+        isRuleSendable: async () => ({ ok: true, value: true }),
         claimNextDueDelivery: async () => ({ ok: true, value: null }),
         markDeliveryDelivered: async () => ({ ok: true, value: true }),
         markDeliveryFailed: async () => ({ ok: true, value: true }),
@@ -906,10 +910,13 @@ describe('MailOpsWorker', () => {
       gmail: {
         watch: async () => { throw new Error('Watch should not run without a topic.') },
         sync: async () => ({
-          nextHistoryId: '120',
+          // The cursor stays where it was: the token below is only valid
+          // against the `startHistoryId` it was issued under.
+          nextHistoryId: claim.historyId,
           events: [],
           staleCursorRecovered: false,
           truncated: true,
+          nextPageToken: 'page-11',
         }),
         forward: async () => 'unused',
       },
@@ -921,7 +928,149 @@ describe('MailOpsWorker', () => {
 
     await worker.runOnce();
 
-    assert.deepEqual(advanceOptions, { pollImmediately: true });
+    // Both halves matter: come straight back, and come back to where the last
+    // pass stopped rather than to the start of the same ten pages.
+    assert.deepEqual(advanceOptions, {
+      pollImmediately: true,
+      pageToken: 'page-11',
+    });
+  });
+
+  it('resumes a truncated backlog where it stopped, not at the start of it', async () => {
+    // The page token is what carries progress; the cursor is deliberately held
+    // still while one is outstanding, because the token is only valid against
+    // the `startHistoryId` it was issued under.
+    let askedWith: any;
+    let mailboxClaimed = false;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        claimNextDueMailbox: async () => {
+          if (mailboxClaimed) return { ok: true, value: null };
+          mailboxClaimed = true;
+          return { ok: true, value: { ...claim, historyPageToken: 'page-11' } };
+        },
+        recordEvents: async () => ({ ok: true, value: [] }),
+        listActiveRules: async () => ({ ok: true, value: [] }),
+      }),
+      gmail: {
+        ...syncGmail,
+        sync: async (input: any) => {
+          askedWith = input;
+          return {
+            nextHistoryId: claim.historyId,
+            events: [],
+            staleCursorRecovered: false,
+            truncated: false,
+          };
+        },
+      },
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'unused',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(askedWith?.pageToken, 'page-11');
+    assert.equal(askedWith?.historyId, claim.historyId);
+  });
+
+  it('clears the resume token when the walk finishes', async () => {
+    // Left standing, the next pass would resume through history already
+    // consumed — and would never reach anything new.
+    let advanceOptions: any;
+    let mailboxClaimed = false;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        claimNextDueMailbox: async () => {
+          if (mailboxClaimed) return { ok: true, value: null };
+          mailboxClaimed = true;
+          return { ok: true, value: { ...claim, historyPageToken: 'page-11' } };
+        },
+        recordEvents: async () => ({ ok: true, value: [] }),
+        listActiveRules: async () => ({ ok: true, value: [] }),
+        advanceCursor: async (
+          _claim: unknown,
+          _historyId: string,
+          _now: Date,
+          options: unknown,
+        ) => {
+          advanceOptions = options;
+          return { ok: true, value: true };
+        },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'unused',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(advanceOptions?.pageToken, null);
+  });
+
+  it('does not send a delivery whose rule stopped after it was reserved', async () => {
+    // Reserving and sending are two stages that can be over a minute apart once
+    // a failed attempt is on the retry ladder. The rule's status was read only
+    // in the first, so pausing a rule stopped new mail from matching while
+    // everything already reserved went out regardless — the one thing "pause"
+    // promises not to do.
+    let abandoned: any;
+    let deliveryClaimed = false;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        isRuleSendable: async () => ({ ok: true, value: false }),
+        claimNextDueDelivery: async () => {
+          if (deliveryClaimed) return { ok: true, value: null };
+          deliveryClaimed = true;
+          return {
+            ok: true,
+            value: {
+              deliveryId: 'delivery-1',
+              attempts: 1,
+              payload: {
+                companyId: 'company-1',
+                userId: 'user-1',
+                subscriptionId: 'mailbox-1',
+                connectionId: 'connection-1',
+                mailboxEmail: 'user@example.com',
+                ruleId: 'rule-1',
+                eventId: 'event-1',
+                sourceMessageId: 'message-1',
+                idempotencyKey: 'mail:key',
+                action: { type: 'deliver' },
+                destination: { type: 'lark_chat', chatId: 'oc_destination' },
+                message: event.metadata,
+              },
+            },
+          };
+        },
+        markDeliveryAbandoned: async (
+          _id: string,
+          _attempts: number,
+          reason: string,
+          options: unknown,
+        ) => {
+          abandoned = { reason, options };
+          return { ok: true, value: true };
+        },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => {
+        throw new Error('A stopped rule should never reach an authority check.');
+      },
+      deliverLark: async () => { throw new Error('Nothing should be delivered.') },
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.match(abandoned?.reason, /paused or archived before this message was sent/);
   });
 
   it('fails a truncated pass that made no progress rather than calling it healthy', async () => {
@@ -984,6 +1133,7 @@ describe('MailOpsWorker', () => {
         }),
         advanceCursor: async () => ({ ok: true, value: true }),
         markSyncFailed: async () => ({ ok: true, value: true }),
+        isRuleSendable: async () => ({ ok: true, value: true }),
         claimNextDueDelivery: async () => {
           if (deliveryClaimed) return { ok: true, value: null };
           deliveryClaimed = true;
@@ -1129,6 +1279,7 @@ describe('MailOpsWorker', () => {
         recordBlockedDelivery: async () => ({ ok: true, value: true }),
         advanceCursor: async () => ({ ok: true, value: true }),
         markSyncFailed: async () => ({ ok: true, value: true }),
+        isRuleSendable: async () => ({ ok: true, value: true }),
         claimNextDueDelivery: async () => ({ ok: true, value: null }),
       },
       gmail: {
@@ -1190,6 +1341,7 @@ describe('MailOpsWorker', () => {
         recordBlockedDelivery: async () => ({ ok: true, value: true }),
         advanceCursor: async () => ({ ok: true, value: true }),
         markSyncFailed: async () => ({ ok: true, value: true }),
+        isRuleSendable: async () => ({ ok: true, value: true }),
         claimNextDueDelivery: async () => ({ ok: true, value: null }),
       },
       gmail: {
@@ -1225,6 +1377,7 @@ describe('MailOpsWorker', () => {
       repo: {
         claimNextWatchRenewal: async () => ({ ok: true, value: null }),
         claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        isRuleSendable: async () => ({ ok: true, value: true }),
         claimNextDueDelivery: async () => {
           if (deliveryClaimed) return { ok: true, value: null };
           deliveryClaimed = true;
@@ -1326,6 +1479,7 @@ describe('MailOpsWorker', () => {
       repo: {
         claimNextWatchRenewal: async () => ({ ok: true, value: null }),
         claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        isRuleSendable: async () => ({ ok: true, value: true }),
         claimNextDueDelivery: async () => {
           if (claims >= 5) return { ok: true, value: null };
           claims += 1;
@@ -1394,6 +1548,7 @@ describe('MailOpsWorker', () => {
       repo: {
         claimNextWatchRenewal: async () => ({ ok: true, value: null }),
         claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        isRuleSendable: async () => ({ ok: true, value: true }),
         claimNextDueDelivery: async () => {
           if (deliveryClaimed) return { ok: true, value: null };
           deliveryClaimed = true;
@@ -1468,6 +1623,7 @@ describe('MailOpsWorker', () => {
       repo: {
         claimNextWatchRenewal: async () => ({ ok: true, value: null }),
         claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        isRuleSendable: async () => ({ ok: true, value: true }),
         claimNextDueDelivery: async () => {
           if (deliveryClaimed) return { ok: true, value: null };
           deliveryClaimed = true;
@@ -1578,6 +1734,7 @@ describe('MailOpsWorker', () => {
       repo: {
         claimNextWatchRenewal: async () => ({ ok: true, value: null }),
         claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        isRuleSendable: async () => ({ ok: true, value: true }),
         claimNextDueDelivery: async () => {
           if (deliveryClaimed) return { ok: true, value: null };
           deliveryClaimed = true;
@@ -1649,6 +1806,7 @@ describe('MailOpsWorker', () => {
       repo: {
         claimNextWatchRenewal: async () => ({ ok: true, value: null }),
         claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        isRuleSendable: async () => ({ ok: true, value: true }),
         claimNextDueDelivery: async () => {
           if (deliveryClaimed) return { ok: true, value: null };
           deliveryClaimed = true;
@@ -1715,6 +1873,7 @@ describe('MailOpsWorker', () => {
       repo: {
         claimNextWatchRenewal: async () => ({ ok: true, value: null }),
         claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        isRuleSendable: async () => ({ ok: true, value: true }),
         claimNextDueDelivery: async () => {
           if (deliveryClaimed) return { ok: true, value: null };
           deliveryClaimed = true;
@@ -1785,6 +1944,7 @@ describe('MailOpsWorker', () => {
       repo: {
         claimNextWatchRenewal: async () => ({ ok: true, value: null }),
         claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        isRuleSendable: async () => ({ ok: true, value: true }),
         claimNextDueDelivery: async () => {
           if (deliveryClaimed) return { ok: true, value: null };
           deliveryClaimed = true;
@@ -1852,6 +2012,7 @@ describe('MailOpsWorker', () => {
       repo: {
         claimNextWatchRenewal: async () => ({ ok: true, value: null }),
         claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        isRuleSendable: async () => ({ ok: true, value: true }),
         claimNextDueDelivery: async () => {
           if (deliveryClaimed) return { ok: true, value: null };
           deliveryClaimed = true;
@@ -1923,6 +2084,7 @@ describe('MailOpsWorker', () => {
       repo: {
         claimNextWatchRenewal: async () => ({ ok: true, value: null }),
         claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        isRuleSendable: async () => ({ ok: true, value: true }),
         claimNextDueDelivery: async () => {
           if (deliveryClaimed) return { ok: true, value: null };
           deliveryClaimed = true;
@@ -2034,6 +2196,7 @@ describe('MailOpsWorker', () => {
           }
           return { ok: true, value: null };
         },
+        isRuleSendable: async () => ({ ok: true, value: true }),
         claimNextDueDelivery: async () => ({ ok: true, value: null }),
       },
       gmail: {},

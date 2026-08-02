@@ -1399,6 +1399,9 @@ model MailboxSubscription {
   mailboxEmail        String
   status              String                @default("active")
   historyId           String?
+  /// Where a truncated history pass stopped. Valid only against `historyId`,
+  /// which is why the cursor is held still while this is set.
+  historyPageToken    String?
   nextPollAt          DateTime              @default(now())
   watchExpirationAt   DateTime?
   nextWatchRenewalAt  DateTime              @default(now())

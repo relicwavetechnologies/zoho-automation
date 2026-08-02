@@ -21,6 +21,8 @@ export interface MailboxSyncClaim {
   connectionId: string;
   mailboxEmail: string;
   historyId?: string;
+  /** Where the last truncated pass stopped, if one did. */
+  historyPageToken?: string;
   signalVersion: number;
   claimToken: string;
 }
@@ -81,6 +83,7 @@ export class MailboxSubscriptionRepository {
           connectionId: true,
           mailboxEmail: true,
           historyId: true,
+          historyPageToken: true,
           nextPollAt: true,
           signalVersion: true,
         },
@@ -110,6 +113,9 @@ export class MailboxSubscriptionRepository {
         connectionId: due.connectionId,
         mailboxEmail: due.mailboxEmail,
         ...(due.historyId ? { historyId: due.historyId } : {}),
+        ...(due.historyPageToken
+          ? { historyPageToken: due.historyPageToken }
+          : {}),
         signalVersion: due.signalVersion,
         claimToken,
       });
@@ -131,10 +137,23 @@ export class MailboxSubscriptionRepository {
     claim: MailboxSyncClaim,
     nextHistoryId: string,
     now = new Date(),
-    options: { pollImmediately?: boolean } = {},
+    options: {
+      pollImmediately?: boolean;
+      /**
+       * The resume point for the next pass, or `null` to end the walk.
+       *
+       * Always written, because clearing it is what says a backlog finished.
+       * A token left standing would resume a walk through history already
+       * consumed.
+       */
+      pageToken?: string | null;
+    } = {},
   ): Promise<Result<boolean, InfraError>> {
     const success = {
       historyId: nextHistoryId,
+      ...(options.pageToken !== undefined
+        ? { historyPageToken: options.pageToken }
+        : {}),
       claimToken: null,
       claimedAt: null,
       lastSucceededAt: now,

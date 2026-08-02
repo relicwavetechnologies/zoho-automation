@@ -60,6 +60,13 @@ export interface GmailHistorySync {
    * should come straight back rather than wait for the next reconciliation.
    */
   truncated: boolean;
+  /**
+   * Where to resume the same history walk. Present only on a truncated pass.
+   *
+   * A page token is bound to the `startHistoryId` it was issued under, so a
+   * caller storing this must hand back the *unchanged* cursor with it.
+   */
+  nextPageToken?: string;
   /** How many messages a stale-cursor recovery swept back in. */
   recoveredMessageCount?: number;
   /**
@@ -78,6 +85,8 @@ export class GmailHistoryClient {
   async sync(input: {
     accessToken: string;
     historyId?: string;
+    /** Resume point from a previous truncated pass, with its cursor. */
+    pageToken?: string;
   }): Promise<GmailHistorySync> {
     if (!input.historyId) {
       const profile = await this.getJson<{ historyId?: string }>(
@@ -94,7 +103,11 @@ export class GmailHistoryClient {
     }
 
     try {
-      return await this.syncHistory(input.accessToken, input.historyId);
+      return await this.syncHistory(
+        input.accessToken,
+        input.historyId,
+        input.pageToken,
+      );
     } catch (error) {
       if (!(error instanceof GmailApiError) || error.status !== 404) throw error;
       return this.reconcileStaleCursor(input.accessToken);
@@ -325,13 +338,12 @@ export class GmailHistoryClient {
   private async syncHistory(
     accessToken: string,
     historyId: string,
+    resumeToken?: string,
   ): Promise<GmailHistorySync> {
     const messageIds = new Set<string>();
     let nextHistoryId = historyId;
-    /** Last record we definitely consumed — the only safe truncation cursor. */
-    let lastRecordId: string | undefined;
     let truncated = false;
-    let pageToken: string | undefined;
+    let pageToken: string | undefined = resumeToken;
     for (let page = 0; page < MAX_HISTORY_PAGES; page++) {
       const query = new URLSearchParams({
         startHistoryId: historyId,
@@ -350,7 +362,6 @@ export class GmailHistoryClient {
       }>(`${GMAIL_API}/history?${query}`, accessToken);
       nextHistoryId = payload.historyId ?? nextHistoryId;
       for (const history of payload.history ?? []) {
-        if (history.id) lastRecordId = history.id;
         for (const added of history.messagesAdded ?? []) {
           if (added.message?.id) messageIds.add(added.message.id);
         }
@@ -363,13 +374,19 @@ export class GmailHistoryClient {
       }
     }
     return {
-      // A truncated pass that consumed no record at all leaves the cursor
-      // untouched rather than guessing forward — repeating a pass is
-      // recoverable, skipping mail is not.
-      nextHistoryId: truncated ? lastRecordId ?? historyId : nextHistoryId,
+      // A truncated pass keeps the cursor exactly where it started, because the
+      // page token it hands back is only valid against that `startHistoryId`.
+      // Progress is carried by the token, not by the cursor; the cursor moves
+      // once when the whole walk finishes. This used to guess forward to the
+      // last consumed record, which made progress only when a pass consumed
+      // something — ten pages of history Divo does not care about advanced
+      // nothing, so the next pass read the same ten pages and failed the same
+      // way, forever.
+      nextHistoryId: truncated ? historyId : nextHistoryId,
       events: await this.loadEvents(accessToken, [...messageIds]),
       staleCursorRecovered: false,
       truncated,
+      ...(truncated && pageToken ? { nextPageToken: pageToken } : {}),
     };
   }
 
