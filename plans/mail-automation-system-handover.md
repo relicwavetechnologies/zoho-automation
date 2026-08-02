@@ -101,9 +101,12 @@ The original model stream is never suspended or resurrected.
 | Semantic summary/classification actions inside arrival rules | Not implemented |
 | Full MIME/attachment forwarding | **Implemented** in `c8f9b9a10` — [corrected 2026-08-02], was "not implemented by design" |
 | Shared or company-owned Gmail connections | Not implemented by design |
-| OTP extraction (claimed in seeded skill text) | **Does not exist** — no OTP code in `src/`. The whole message is forwarded. |
+| OTP extraction (claimed in seeded skill text) | **Removed from the instructions** 2026-08-02 — there is no extractor; the whole message is forwarded |
 | Connect Google card / OAuth continuation | **Dead in production** — see §0 and §6 |
 | Connection governance over background delivery | **Not wired** — see §14 |
+| Member-facing read API (rules, deliveries, mailbox health) | **Implemented** 2026-08-02 — see §15.4 |
+| Owner notification when a mailbox stops working | **Implemented** 2026-08-02, Lark only — see §15.4 |
+| Mail rules screen in the web UI | Not implemented — next |
 
 ### Source versus deployed artifact
 
@@ -1503,11 +1506,67 @@ mail_ops.delivery_delivered          # [added 2026-08-02]
 `mail_ops.mailbox_synced` includes event count, delivery count, stale-cursor
 recovery flag, and duration.
 
-> **These logs are the only trace of most failures.** `mail_ops.rule_skipped`,
-> `mail_ops.rule_permission_denied`, and `mail_ops.delivery_permission_revoked`
-> all correspond to a message Mail Ops declined to act on, and none of them
-> produce anything a user can see. The finalization plan's DR-2 replaces each
-> with a durable, readable row.
+> **These logs are still the only trace of a *declined* message.**
+> `mail_ops.rule_skipped`, `mail_ops.rule_permission_denied`, and
+> `mail_ops.delivery_permission_revoked` each correspond to a message Mail Ops
+> chose not to act on without writing a row, so nothing in §15.4 can show them.
+> The finalization plan's DR-2 replaces each with a durable, readable row in
+> Wave 2. Until then the read API reports what *was* attempted, not what was
+> silently skipped.
+
+Notification logs added 2026-08-02: `mail_ops.notified`,
+`mail_ops.notify_no_channel`, `mail_ops.notify_send_failed`,
+`mail_ops.notify_state_not_recorded`, `mail_ops.notify_failed`,
+`mail_ops.health_review_failed`.
+
+### 15.4 Member-facing read API
+
+**[added 2026-08-02]** Until this shipped, Mail Ops had no reachable state at
+all — its only HTTP surface was the Pub/Sub webhook.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/mail-automations/rules` | Owned rules with a resolved `state`, `summary`, `invalidReason`, `lastDeliveredAt`, and 30-day delivered/failing/abandoned counts |
+| `GET /api/mail-automations/rules/:ruleId/deliveries` | Recent deliveries with `status`, `attempts`, `lastError`, and the `subject`/`from` of the mail acted on |
+| `GET /api/mail-automations/health` | Per mailbox: `state`, `rulesCanFire`, `summary`, `remedy`, `failureCode`, plus a hoisted `anyMailboxBroken` |
+
+Member-authenticated, pinned to the signed-in member server-side — there is no
+`userId` parameter and no way to ask about another member. Ownership on the
+deliveries route is enforced inside the query, so "not yours" and "does not
+exist" are indistinguishable to a caller.
+
+Files: [`mail-automations.routes.ts`](../advance-backend/src/http/mail/mail-automations.routes.ts),
+[`mail-ops-read.repository.ts`](../advance-backend/src/infrastructure/persistence/mail-ops-read.repository.ts),
+[`mail-ops-health.ts`](../advance-backend/src/application/mail-ops/mail-ops-health.ts).
+
+**Mailbox states**, reported worst-first so a member gets the root cause and
+not a list of symptoms: `never_started` → `watch_failing` → `sync_failing` →
+`paused` → `healthy`. `never_started` is deliberately checked **before**
+`paused`, because a mailbox with no active rules parks itself and would
+otherwise report "paused" while concealing a watch that never registered.
+
+**Rule states:** `broken` (stored shape the matcher rejects) → `blocked`
+(mailbox cannot fire) → `paused` → `archived` → `working` → `waiting`.
+Validity is checked before status, so a paused rule still reports that it
+would not match if resumed.
+
+### 15.5 Owner notification
+
+**[added 2026-08-02]** [`mail-ops-notifier.ts`](../advance-backend/src/application/mail-ops/mail-ops-notifier.ts).
+The worker reviews mailbox health after every sync and watch outcome and sends
+the owner one Lark card when the mailbox becomes unable to run rules.
+
+- Fires on the **transition into** a broken state; stays silent while it
+  persists. Recovery is never announced but is recorded, so the next break
+  alerts again.
+- `MailboxSubscription.notifiedState` / `notifiedStateAt` persist the last
+  state the owner was told about. Deliberately not in-memory: that would
+  re-alert every mailbox on every deploy.
+- A **failed** Lark send is not recorded, so the next pass retries — a
+  duplicate alert beats never warning them. An owner with **no Lark identity**
+  is recorded, because retrying would never succeed.
+- Lark only for now. Email to the mailbox owner is deferred to the operator
+  work in the finalization plan's Wave 10.
 
 ### 15.2 Harness visibility
 
@@ -1982,9 +2041,11 @@ benign limits. The audit found them to be failure modes. Corrected wording:
 - Delivery has five attempts on a 5/10/20/40-second backoff — a **~75 second**
   total window.
 - Dead-letter tooling and an operator UI are not implemented.
-- **There is no user-visible surface of any kind.** No read API, no UI, no
-  failure notification. An abandoned delivery writes `lastError` to a column
-  nothing reads.
+- ~~**There is no user-visible surface of any kind.**~~ **[resolved
+  2026-08-02]** A member-facing read API and an owner notification now exist —
+  see §15.4 and §15.5. The web screen is still outstanding, and a message
+  declined *before* a delivery row is written remains invisible until the
+  finalization plan's Wave 2.
 
 ### Operations and policy gaps
 

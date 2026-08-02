@@ -7,6 +7,69 @@
 
 ---
 
+## Progress
+
+Last synced 2026-08-02. Branch `dev`, **not pushed**.
+
+| Wave | State | Commits |
+|---|---|---|
+| **0 — Stop lying** | ✅ merged to `dev` | `8148a7b51` |
+| **1 — Visibility (backend)** | ✅ merged to `dev` | `e2c2abc62`, `54a2f0f8a` |
+| **1 — Visibility (screen)** | ⬜ next | — |
+| 2 — Silent death (D2, D3, D4, D14) | ⬜ | — |
+| 3 — Dead OAuth path (D5) | ⬜ | — |
+| 4 — Security and governance (S1–S5) | ⬜ | — |
+| 5–11 | ⬜ | — |
+
+Audit and doc revamp: `cb6b983b2`.
+
+### Blocking before any of this is live
+
+1. **`prisma db push`** — Wave 1 added `MailboxSubscription.notifiedState` and
+   `notifiedStateAt`. Not yet applied to `divo_dev`. Run over the SSH tunnel
+   (`pnpm dev:e2e`); there is no `_prisma_migrations` table.
+2. **`scripts/reconcile-capabilities.ts`** — Wave 0 is text in the DB-seeded
+   skill registry. Committed ≠ live. New companies pick it up at creation;
+   every existing company needs this script run once. This is defect P2 and it
+   will keep biting until Wave 7.
+3. **`dev` does not currently typecheck** — `src/application/skills/zoho.skill.ts`
+   has six TS1005 syntax errors from another workstream's uncommitted edit.
+   Unrelated to Mail Ops, but nothing should be pushed until it parses.
+   Separately, `tests/tools/zoho-tools.test.ts` → "personalized scope filters
+   Books records after Zoho responds" fails on `dev` and predates this work.
+
+### What Wave 1 actually shipped
+
+Three read-only endpoints, member-authenticated and pinned to the signed-in
+member server-side (`/api/mail-automations/rules`, `/rules/:ruleId/deliveries`,
+`/health`), a pure health-interpretation module, a read-only repository split
+off from the 800-line write repository, and a Lark notifier that alerts once
+per transition into a broken state.
+
+Design decisions made during implementation, beyond what §5 specified:
+
+- **Rule state is resolved against mailbox state, server-side.** A rule whose
+  mailbox is not being watched returns `blocked` rather than `active`, so no
+  client has to join the two and none can disagree about it.
+- **`never_started` outranks `paused`.** A mailbox with no active rules parks
+  itself, which would otherwise report "paused" and conceal a watch that never
+  registered — D2's exact symptom. The ordering is explicit and tested.
+- **A failure code only produces a remedy where we can advise honestly.** An
+  unrecognised provider code returns `null` rather than an invented
+  instruction.
+- **`notifiedState` is persisted, not in-memory.** An in-memory guard would
+  re-alert every mailbox on every deploy, which is what teaches people to mute
+  the bot.
+- **Asymmetric recording:** a failed Lark send is not recorded, so it retries;
+  an owner with no Lark identity is recorded, because retrying would never
+  succeed.
+
+61 tests pass across the mail suite. Wave 1's endpoints return today's truth —
+they cannot yet show deliveries that were refused before a row was written,
+because DR-2 lands in Wave 2. Waves 1 and 2 are a pair.
+
+---
+
 ## 0. The thesis
 
 The architecture is sound. Content-addressed idempotency, optimistic claim tokens with stale reclaim, a signal-version guard so a push arriving mid-sync isn't swallowed by cursor advancement, deterministic matching with no LLM in the OTP path — all of that stays.
@@ -194,11 +257,14 @@ Three independent mechanisms decide whether a user can use mail automation at al
 
 Each wave independently shippable and verifiable. Cold-review each before commit.
 
-**Wave 0 — Stop lying** *(half a day, no behaviour change)*
-Delete every OTP claim from the instruction layer (T1). State Gmail-only (DR-7). Move the `current_lark_chat` off-Lark constraint into the skill markdown (T4). Document `valid`/`invalidReason`, `includeInactive`, and the `choose_connection` round-trip (T6). Fix skill step 3 to describe the real connection flow. Correct the handover doc per §9.
+**Wave 0 — Stop lying** ✅ *(`8148a7b51`)*
+Deleted every OTP claim (T1) while keeping the `otp` routing aliases — routing such a request to `mail-ops` is correct, only the capability description was wrong. Stated Gmail-only (DR-7). Moved the `current_lark_chat` off-Lark constraint into the skill markdown (T4). Documented `valid`/`invalidReason`, `includeInactive`, and the `choose_connection` round-trip (T6). Rewrote skill step 3, which told the model to reuse a `connectionId` the skill never surfaces. Also documented the match semantics users actually hit: AND-only, literal substring, the subdomain gap, `To`-header-only, inline-image `hasAttachment`, and silently-dropped unknown keys. Handover corrected per §9.
+Added a guard test asserting no surface claims OTP extraction, **verified by reintroducing the claim and watching it fail** — a test that cannot fail is what let D5 survive.
 
 **Wave 1 — Visibility** *(DR-1)*
-Read API — `GET /rules`, `GET /rules/:id/deliveries`, `GET /health` (watch state, `watchFailureCode`, `degradedAt`, `lastSignalAt`, `lastSucceededAt`, reconciliation records). Owner notification, deduplicated, on `degraded` or first `abandoned`. Mail Automations panel in the personal "You" section. Active external-forward rules shown prominently (S3).
+- ✅ **Backend** *(`e2c2abc62`, `54a2f0f8a`)* — the three endpoints, the health-interpretation module, the read repository split, and the Lark notifier. See Progress above for the decisions taken during implementation.
+- ⬜ **Screen** — Mail rules view in the personal "You" scope (`admin/src/pages/workspace/screens-you.tsx`, sibling to `YouConnections`/`YouAccess`), a `data/use-mail-automations.ts` hook following the existing `use-my-activity.ts` pattern, a route, and a `DATA_SOURCES` entry. Built on the workspace's own `ui.tsx` primitives — shadcn is gone from `admin/` except `sonner`. Active external-forward rules shown prominently (S3).
+
 *Acceptance:* a user whose rule stopped firing can determine unaided that it stopped and why.
 
 **Wave 2 — Silent death** *(D2, D3, D4, D14)*
