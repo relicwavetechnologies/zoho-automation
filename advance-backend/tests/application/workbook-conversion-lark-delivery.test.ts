@@ -61,12 +61,31 @@ describe('workbook conversion Lark delivery', () => {
     await fixture.delivery.failed({
       jobKey: job.jobKey,
       content: 'raw provider token and stack trace must never reach Lark',
+      retryable: false,
     });
 
     assert.equal(fixture.sent.length, 1);
     assert.equal(fixture.updated.length, 1);
     assert.match(fixture.updated[0]!.content, /could not convert this Excel workbook/i);
     assert.equal(fixture.updated[0]!.content.includes('raw provider token'), false);
+  });
+
+  it('offers the same signed conversion action when a verified Sheet needs handoff recovery', async () => {
+    const fixture = createFixture();
+    const offerId = '44444444-4444-4444-8444-444444444444';
+    const recoverableJob = { ...job, jobKey: `wbc_${offerId}` };
+    await fixture.delivery.register(recoverableJob);
+    await fixture.delivery.failed({
+      jobKey: recoverableJob.jobKey,
+      content: 'internal failure detail',
+      retryable: true,
+    });
+
+    const card = fixture.updated[0]!.content;
+    assert.match(card, /Retry handoff/);
+    assert.match(card, new RegExp(offerId));
+    assert.match(card, /no second Sheet will be created/i);
+    assert.equal(card.includes('internal failure detail'), false);
   });
 });
 

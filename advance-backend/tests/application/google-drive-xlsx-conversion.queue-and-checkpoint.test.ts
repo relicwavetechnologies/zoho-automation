@@ -11,6 +11,7 @@ import {
   GoogleDriveXlsxConversionConsumer,
   WorkbookConversionLeaseHeldError,
 } from '../../src/application/data-export/google-drive-xlsx-conversion.consumer.ts';
+import { WorkbookConversionQueue } from '../../src/application/data-export/workbook-conversion.queue.ts';
 import type {
   GoogleDriveXlsxConversionCompletion,
   GoogleDriveXlsxConversionJob,
@@ -66,6 +67,38 @@ const logger = {
 } as any;
 
 describe('Google Drive XLSX conversion queue/checkpoint adapters', () => {
+  it('revives only an exact matching failed conversion job', async () => {
+    let retries = 0;
+    const payload: WorkbookConversionJobPayload = {
+      version: 1,
+      offerId: '44444444-4444-4444-8444-444444444444',
+      companyId: job.companyId,
+      userId: job.userId,
+      chatId: 'oc_123',
+      sourceMessageId: 'om_123',
+      conversationKey: 'thread_123',
+      replyInThread: false,
+      connectionId: job.sourceConnectionId,
+      fileId: job.sourceFileId,
+    };
+    const queue = Object.create(WorkbookConversionQueue.prototype) as WorkbookConversionQueue;
+    (queue as any).queue = {
+      getJob: async () => ({
+        data: payload,
+        isFailed: async () => true,
+        retry: async () => { retries += 1; },
+      }),
+    };
+
+    assert.equal(await queue.enqueue({ ...payload, sourceMessageId: 'om_recovery_card' }), `wbc_${payload.offerId}`);
+    assert.equal(retries, 1);
+    await assert.rejects(
+      queue.enqueue({ ...payload, fileId: 'different-source' }),
+      /different request details/,
+    );
+    assert.equal(retries, 1);
+  });
+
   it('uses Redis lease then durable completion as the only retry authority', async () => {
     const fake = cache();
     const first = new GoogleDriveXlsxConversionCheckpointStore(fake.value);

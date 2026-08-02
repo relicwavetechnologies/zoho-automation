@@ -27,7 +27,7 @@ function createDeps(overrides: Partial<GoogleDriveXlsxConversionWorkerDeps> = {}
     continuity: 0,
     progress: [] as string[],
     delivered: [] as GoogleDriveXlsxConversionCompletion[],
-    failures: [] as string[],
+    failures: [] as Array<{ content: string; retryable: boolean }>,
   };
   let completion: GoogleDriveXlsxConversionCompletion | undefined;
   const deps: GoogleDriveXlsxConversionWorkerDeps = {
@@ -98,7 +98,7 @@ function createDeps(overrides: Partial<GoogleDriveXlsxConversionWorkerDeps> = {}
     delivery: {
       progress: async input => { calls.progress.push(input.content); },
       completed: async input => { calls.delivered.push(input.completion); },
-      failed: async input => { calls.failures.push(input.content); },
+      failed: async input => { calls.failures.push(input); },
     },
     ...overrides,
   };
@@ -164,6 +164,31 @@ describe('GoogleDriveXlsxConversionWorker', () => {
     assert.equal(calls.continuity, 1);
   });
 
+  it('marks a final post-checkpoint failure retryable and reuses the verified Sheet', async () => {
+    let continuityAttempts = 0;
+    const { deps, calls } = createDeps({
+      continuity: {
+        record: async () => {
+          continuityAttempts += 1;
+          if (continuityAttempts === 1) throw new Error('conversation store unavailable');
+          calls.continuity += 1;
+        },
+      },
+    });
+    const worker = new GoogleDriveXlsxConversionWorker(deps);
+    await assert.rejects(worker.process(job, { finalAttempt: true }), /conversation store unavailable/);
+    const retry = await worker.process(job, { finalAttempt: true });
+
+    assert.equal(retry.disposition, 'completed');
+    assert.equal(calls.import, 1);
+    assert.equal(calls.download, 1);
+    assert.deepEqual(calls.failures, [{
+      jobKey: job.jobKey,
+      content: 'Divo could not convert this Excel workbook. The original file was not changed. Please try again shortly.',
+      retryable: true,
+    }]);
+  });
+
   it('does not import when identity, permission, or source access is revoked and only delivers safe failure copy', async () => {
     const cases: readonly [string, Partial<GoogleDriveXlsxConversionWorkerDeps>][] = [
       ['identity', {
@@ -194,7 +219,11 @@ describe('GoogleDriveXlsxConversionWorker', () => {
       );
       assert.equal(calls.import, 0, name);
       assert.equal(calls.failures.length, 1, name);
-      assert.equal(calls.failures[0], 'Divo could not convert this Excel workbook. The original file was not changed. Please try again shortly.', name);
+      assert.deepEqual(calls.failures[0], {
+        jobKey: job.jobKey,
+        content: 'Divo could not convert this Excel workbook. The original file was not changed. Please try again shortly.',
+        retryable: false,
+      }, name);
     }
   });
 
@@ -207,5 +236,6 @@ describe('GoogleDriveXlsxConversionWorker', () => {
       { name: 'GoogleDriveXlsxConversionError' },
     );
     assert.equal(calls.failures.length, 1);
+    assert.equal(calls.failures[0]?.retryable, false);
   });
 });

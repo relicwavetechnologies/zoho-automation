@@ -6,6 +6,8 @@ const PROGRESS_DELIVERY_PREFIX = 'wbc-progress';
 
 const FAILURE_COPY =
   'Divo could not convert this Excel workbook. The original file was not changed. Please try again shortly.';
+const RECOVERY_COPY =
+  'The Google Sheet was created, but Divo could not finish sharing its link. Retry to restore the link and conversation context; no second Sheet will be created.';
 
 export interface WorkbookConversionLarkDeliveryJob {
   readonly jobKey: string;
@@ -88,10 +90,14 @@ export class WorkbookConversionLarkDelivery {
     await this.update(messageId, completionCard(input.completion), input.jobKey, 'completed');
   }
 
-  async failed(input: { readonly jobKey: string; readonly content: string }): Promise<void> {
+  async failed(input: {
+    readonly jobKey: string;
+    readonly content: string;
+    readonly retryable: boolean;
+  }): Promise<void> {
     const messageId = await this.ensureProgressMessage(input.jobKey, FAILURE_COPY);
     if (!messageId) return;
-    await this.update(messageId, failureCard(), input.jobKey, 'failed');
+    await this.update(messageId, failureCard(input.jobKey, input.retryable), input.jobKey, 'failed');
   }
 
   private async ensureProgressMessage(jobKey: string, initialContent: string): Promise<string | null> {
@@ -149,10 +155,25 @@ function completionCard(completion: GoogleDriveXlsxConversionCompletion): string
   });
 }
 
-function failureCard(): string {
+function failureCard(jobKey: string, retryable: boolean): string {
+  const offerId = retryable ? retryOfferId(jobKey) : null;
   return buildFinalCard({
-    markdown: `# Google Sheet copy could not finish\n${FAILURE_COPY}`,
+    markdown: `# Google Sheet copy could not finish\n${offerId ? RECOVERY_COPY : FAILURE_COPY}`,
+    ...(offerId ? {
+      actions: [{
+        label: 'Retry handoff',
+        value: JSON.stringify({ kind: 'workbook_conversion_confirm', offerId }),
+        style: 'primary',
+      }],
+    } : {}),
   });
+}
+
+function retryOfferId(jobKey: string): string | null {
+  const offerId = jobKey.startsWith('wbc_') ? jobKey.slice(4) : '';
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(offerId)
+    ? offerId
+    : null;
 }
 
 function deliveryKey(prefix: string, jobKey: string): string {

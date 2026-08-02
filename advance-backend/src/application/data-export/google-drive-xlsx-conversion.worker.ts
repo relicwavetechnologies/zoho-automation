@@ -138,7 +138,11 @@ export interface GoogleDriveXlsxConversionWorkerDeps {
   readonly delivery: {
     progress(input: { readonly jobKey: string; readonly content: string }): Promise<void>;
     completed(input: { readonly jobKey: string; readonly completion: GoogleDriveXlsxConversionCompletion }): Promise<void>;
-    failed(input: { readonly jobKey: string; readonly content: string }): Promise<void>;
+    failed(input: {
+      readonly jobKey: string;
+      readonly content: string;
+      readonly retryable: boolean;
+    }): Promise<void>;
   };
   readonly maxSourceBytes?: number;
 }
@@ -154,10 +158,12 @@ export class GoogleDriveXlsxConversionWorker {
     job: GoogleDriveXlsxConversionJob,
     options: { readonly finalAttempt: boolean },
   ): Promise<GoogleDriveXlsxConversionResult> {
+    let durableCompletion: GoogleDriveXlsxConversionCompletion | undefined;
     try {
       const claimed = await this.deps.checkpoints.claim(job);
       if (claimed.status === 'in_progress') return { disposition: 'in_progress' };
       if (claimed.status === 'completed') {
+        durableCompletion = claimed.completion;
         await this.deps.continuity.record({ job, completion: claimed.completion });
         await this.deps.delivery.completed({ jobKey: job.jobKey, completion: claimed.completion });
         return { disposition: 'completed', completion: claimed.completion };
@@ -178,6 +184,7 @@ export class GoogleDriveXlsxConversionWorker {
       const spreadsheetId = existing?.spreadsheetId ?? await this.importNewSheet(job);
       const completion = await this.verifyCompletion(job, spreadsheetId);
       const persisted = await this.deps.checkpoints.complete(completion);
+      durableCompletion = persisted;
       await this.deps.continuity.record({ job, completion: persisted });
       await this.deps.delivery.completed({ jobKey: job.jobKey, completion: persisted });
       return { disposition: 'completed', completion: persisted };
@@ -186,7 +193,11 @@ export class GoogleDriveXlsxConversionWorker {
         options.finalAttempt
         || (error instanceof GoogleDriveXlsxConversionError && error.unrecoverable)
       ) {
-        await this.deps.delivery.failed({ jobKey: job.jobKey, content: FAILURE_MESSAGE });
+        await this.deps.delivery.failed({
+          jobKey: job.jobKey,
+          content: FAILURE_MESSAGE,
+          retryable: durableCompletion !== undefined,
+        });
       }
       throw error;
     }

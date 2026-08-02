@@ -43,7 +43,15 @@ export class WorkbookConversionQueue implements WorkbookConversionQueuePort {
   async enqueue(payload: WorkbookConversionJobPayload): Promise<string> {
     const jobId = workbookConversionJobId(payload.offerId);
     const existing = await this.queue.getJob(jobId);
-    if (existing) return assertMatchingJob(existing.data, payload, jobId);
+    if (existing) {
+      const failed = await existing.isFailed();
+      if (failed) {
+        assertRetryMatchesJob(existing.data, payload);
+        await existing.retry();
+        return jobId;
+      }
+      return assertMatchingJob(existing.data, payload, jobId);
+    }
     const job = await this.queue.add('convert-workbook', payload, { jobId });
     const persisted = await this.queue.getJob(jobId);
     return assertMatchingJob(persisted?.data ?? job.data, payload, job.id ?? jobId);
@@ -51,6 +59,17 @@ export class WorkbookConversionQueue implements WorkbookConversionQueuePort {
 
   async close(): Promise<void> {
     await this.queue.close();
+  }
+}
+
+function assertRetryMatchesJob(
+  queued: WorkbookConversionJobPayload,
+  requested: WorkbookConversionJobPayload,
+): void {
+  const { sourceMessageId: _queuedSourceMessageId, ...queuedIdentity } = queued;
+  const { sourceMessageId: _requestedSourceMessageId, ...requestedIdentity } = requested;
+  if (sha256CanonicalJson(queuedIdentity) !== sha256CanonicalJson(requestedIdentity)) {
+    throw new Error('This workbook conversion was already queued with different request details.');
   }
 }
 
