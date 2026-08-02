@@ -736,18 +736,20 @@ describe('MailOpsRepository', () => {
     // upsert reuses the original row. Left on `createdAt`, a rule first
     // written in January and asked for again today would treat the entire
     // stale-cursor recovery window as mail it is entitled to forward.
+    const calls: string[] = [];
     const upserts: any[] = [];
     const revivals: any[] = [];
-    const repo = (matched: number) => new MailOpsRepository({
+    const repo = () => new MailOpsRepository({
       $transaction: async (fn: any) => fn({
         mailboxSubscription: { upsert: async () => ({ id: 'mailbox-1' }) },
         mailAutomationRule: {
           updateMany: async (input: any) => {
+            calls.push('revive');
             revivals.push(input);
-            return { count: matched };
+            return { count: 1 };
           },
-          findUniqueOrThrow: async () => ({ id: 'rule-1' }),
           upsert: async (input: any) => {
+            calls.push('upsert');
             upserts.push(input);
             return { id: 'rule-1' };
           },
@@ -767,32 +769,30 @@ describe('MailOpsRepository', () => {
     };
     const before = Date.now();
 
-    // A row that had stopped: the revival matched, so the upsert is never
-    // reached at all.
-    const revived = await repo(1).createRuleForMailbox(args);
-    // Nothing to revive — already active, or no such rule yet.
-    await repo(0).createRuleForMailbox(args);
+    const created = await repo().createRuleForMailbox(args);
 
-    // The status change and the floor move are one statement, so a rule can
-    // never come back to life still carrying its old floor.
-    assert.deepEqual(revivals[0].where, {
-      dedupeKey: 'mail-rule:key',
-      status: { not: 'active' },
-    });
-    assert.equal(revivals[0].data.status, 'active');
-    assert.equal(revivals[0].data.archivedAt, null);
-    assert.ok(revivals[0].data.activatedAt.getTime() >= before);
-    assert.deepEqual(revived, {
+    assert.deepEqual(created, {
       ok: true,
       value: { ruleId: 'rule-1', subscriptionId: 'mailbox-1' },
     });
-    assert.equal(upserts.length, 1);
     // The dedupe key is content-derived, so re-asking for a rule that is
-    // already running lands here. It gets its name and nothing else: moving
-    // the floor would discard backlog nobody asked to stop.
+    // already running lands on the upsert's update branch. It gets its name
+    // and nothing else: moving the floor would discard backlog nobody asked to
+    // stop, and a genuinely new row takes the column default.
     assert.deepEqual(upserts[0].update, { name: 'Forward OTP' });
-    // A genuinely new row takes the column default rather than a written value.
     assert.equal(upserts[0].create.activatedAt, undefined);
+    // Coming back to life and starting a fresh watch are one statement, so a
+    // rule cannot be revived still carrying a floor from before it stopped.
+    assert.deepEqual(revivals[0].where, { id: 'rule-1', status: { not: 'active' } });
+    assert.equal(revivals[0].data.status, 'active');
+    assert.equal(revivals[0].data.pausedAt, null);
+    assert.equal(revivals[0].data.archivedAt, null);
+    assert.ok(revivals[0].data.activatedAt.getTime() >= before);
+    // Last, so it also catches a pause that commits while this transaction is
+    // in flight. Placed before the upsert it would miss one, and the upsert no
+    // longer reactivates — the rule would end up paused while the tool told
+    // the member their automation was on.
+    assert.deepEqual(calls, ['upsert', 'revive']);
   });
 
   it('starts a replaced rule watching from now, so a new destination gets no backlog', async () => {

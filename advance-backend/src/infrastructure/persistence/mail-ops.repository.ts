@@ -142,40 +142,6 @@ export class MailOpsRepository {
           },
           select: { id: true },
         });
-        // The dedupe key is derived from the rule's own content, so "ask for
-        // the same rule again" lands on the update branch just as often as a
-        // revive does. Only a rule that was not already running starts its
-        // watch afresh: moving the floor under a live rule would silently
-        // drop whatever backlog it had not reached yet, and the member never
-        // asked for anything to stop.
-        //
-        // The revival and its floor are one statement, so a row can never come
-        // back to life carrying an old floor: whatever this matches, it locks
-        // and rewrites together. What it cannot cover is a row that is active
-        // when this runs and is paused before the upsert below — no rows
-        // matched, so nothing was locked. That resumes a rule without moving
-        // its floor, which needs a member pausing a rule in the same instant
-        // another request recreates it, and costs one pause window of mail.
-        const revived = await tx.mailAutomationRule.updateMany({
-          where: { dedupeKey: input.dedupeKey, status: { not: 'active' } },
-          data: {
-            name: input.name,
-            status: 'active',
-            pausedAt: null,
-            archivedAt: null,
-            activatedAt: new Date(),
-          },
-        });
-        if (revived.count > 0) {
-          const revivedRule = await tx.mailAutomationRule.findUniqueOrThrow({
-            where: { dedupeKey: input.dedupeKey },
-            select: { id: true },
-          });
-          return {
-            ruleId: revivedRule.id,
-            subscriptionId: subscription.id,
-          };
-        }
         const rule = await tx.mailAutomationRule.upsert({
           where: { dedupeKey: input.dedupeKey },
           create: {
@@ -189,12 +155,30 @@ export class MailOpsRepository {
             destinationJson: input.destination as Prisma.InputJsonObject,
             dedupeKey: input.dedupeKey,
           },
-          // Only reached when the rule was already active or does not exist
-          // yet, so there is nothing to revive and no floor to move — a rule
-          // that is already running keeps watching from where it was, backlog
-          // and all.
+          // Reviving is the conditional write below, not this branch. The
+          // dedupe key is derived from the rule's own content, so "ask for the
+          // same rule again" lands here just as often as a revive does, and a
+          // rule that is already running must keep watching from where it was
+          // — moving its floor would silently drop whatever backlog it had not
+          // reached, and the member never asked for anything to stop.
           update: { name: input.name },
           select: { id: true },
+        });
+        // Coming back to life and starting a fresh watch are one statement, so
+        // a rule can never be revived still carrying a floor from before it
+        // stopped. Issued after the upsert on purpose: it is the last thing
+        // this transaction does, so it also catches a pause that committed
+        // while the transaction was in flight — which the same test placed
+        // before the upsert would miss, leaving the rule paused while the tool
+        // told the member their automation was on.
+        await tx.mailAutomationRule.updateMany({
+          where: { id: rule.id, status: { not: 'active' } },
+          data: {
+            status: 'active',
+            pausedAt: null,
+            archivedAt: null,
+            activatedAt: new Date(),
+          },
         });
         return { ruleId: rule.id, subscriptionId: subscription.id };
       });
