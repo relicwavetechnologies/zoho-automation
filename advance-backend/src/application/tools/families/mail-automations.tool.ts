@@ -330,7 +330,7 @@ export function createMailAutomationsTool(deps: {
       'Use this only for arrival-triggered mail rules: "whenever/when a matching email arrives".',
       'Use googleGmail for immediate mail reading, searching, drafting, sending, or one-time forwarding.',
       'Use scheduledWorkflows for time-triggered inbox work such as a daily summary.',
-      'A rule delivers the entire message. It cannot extract a code, link, or any part of the mail, so tell the user the whole email will be sent when they ask for "just the OTP" or similar.',
+      'A rule delivers the entire message and never reads it. It cannot extract a code, link, amount, or any part of the mail. When the user asks for "just the OTP" or similar, say the whole email arrives instead and continue; do not look for another Divo path that extracts it, because none exists.',
       'Only mail arriving in the INBOX triggers a rule. Mail that a Gmail filter archives, or that lands in Spam, is never seen.',
       'create requires name, a deterministic match, and one destination. Match supports from, to, subjectContains, bodyContains, hasAttachment, notFrom, notSubjectContains, and activeWindow; at least one of from, to, subjectContains, or bodyContains is required. from, to, and notFrom must each be one exact mailbox address or an exact @domain, never a brand or display-name substring.',
       'Match fields are combined with AND. There is no OR.',

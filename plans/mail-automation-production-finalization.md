@@ -221,7 +221,7 @@ Net: a manager can throttle and require approval for interactive use of a connec
 
 Each of these is a promise in seeded prompt text that the runtime does not keep. They are defects in the product, not in the prose.
 
-**T1 — OTP extraction does not exist.** The string `otp` appears **6 times in the whole `src/` tree, all 6 in instruction text** ([mail-ops-system-skills.ts](../advance-backend/src/application/skills/mail-ops-system-skills.ts) lines 42, 55, 63, 72, 86 and [mail-automations.tool.ts:175](../advance-backend/src/application/tools/families/mail-automations.tool.ts:175)). Zero OTP code. Both delivery paths ship the entire message: `gmail.forward` re-sends the full raw MIME, and `formatLarkDelivery` emits `From / Subject / full bodyText` at up to 20,000 chars. Because the text says OTP handling "does not invoke an LLM," the model reads it as a deterministic extractor and will not push back or offer an alternative. A user asking for "just the OTP in Lark" gets the complete body of every login email posted into a chat that may include other people.
+**T1 — OTP extraction does not exist.** ✅ **closed by deletion, permanently — see O-3.** The string `otp` appears **6 times in the whole `src/` tree, all 6 in instruction text** ([mail-ops-system-skills.ts](../advance-backend/src/application/skills/mail-ops-system-skills.ts) lines 42, 55, 63, 72, 86 and [mail-automations.tool.ts:175](../advance-backend/src/application/tools/families/mail-automations.tool.ts:175)). Zero OTP code. Both delivery paths ship the entire message: `gmail.forward` re-sends the full raw MIME, and `formatLarkDelivery` emits `From / Subject / full bodyText` at up to 20,000 chars. Because the text says OTP handling "does not invoke an LLM," the model reads it as a deterministic extractor and will not push back or offer an alternative. A user asking for "just the OTP in Lark" gets the complete body of every login email posted into a chat that may include other people.
 **Fix:** either build a deterministic extractor as a real action type, or delete every OTP claim from the instruction layer. Do not ship the current middle state.
 
 **T2 — "Mail automation is active" is asserted before any watch exists.** [mail-automations.tool.ts:380-396](../advance-backend/src/application/tools/families/mail-automations.tool.ts:380) returns `status: 'active'` as a hardcoded literal immediately after the DB write. Watch registration happens later, asynchronously, and may never succeed (D2). Report a pending state until a watch is confirmed.
@@ -412,6 +412,12 @@ Two smaller repairs ride along. A company with no active administrator is now **
 
 **P2 correction applies here too:** provisioning runs on every backend boot, so none of this needs a deploy step of its own beyond the usual `prestart`.
 
+**Raw forwarding, verified 2026-08-02.** A forward is the original message nested whole inside a `multipart/mixed` wrapper: the source's body bytes are concatenated in verbatim and its `Content-Type`, `Content-Transfer-Encoding` and `Content-Language` come with them. Nothing is re-parsed, re-rendered, or re-encoded, so HTML, inline images, attachments and transfer encodings arrive as sent. That was a doc sentence with nothing asserting it — the shape of every other defect here — and it now has direct tests holding the original body to being present **byte for byte**.
+
+Writing them found one real way bytes were mangled. The original's content headers were read with `latin1` (byte-for-byte) and written back as UTF-8, so every byte above `0x7F` became two: a `Content-Type` boundary parameter or a filename holding one non-ASCII byte came out corrupted, and a corrupted boundary takes the whole part with it. The three pieces now carry their own encodings — Divo's intro as UTF-8, the original's headers as the latin1 bytes they arrived as, the body untouched.
+
+**Known ceiling, not fixed:** the source is fetched with `format=raw` and posted as JSON, so a message with large attachments is held in memory twice base64-encoded and can exceed Gmail's non-resumable draft limit. Resumable upload is the fix and belongs with Wave 10.
+
 **Wave 9 — Code quality** *(§3)*
 
 **Wave 10 — Retention and operations** *(now also carries the stalled-backlog repair: persist the Gmail `pageToken` on `MailboxSubscription` so a truncated pass resumes where it stopped instead of failing with `history_backlog_stalled`)* — strip `bodyText` after 30 days, delete events after 90, drop terminal `payloadJson` after 30; operator-triggered reconciliation; metrics.
@@ -564,7 +570,17 @@ The contradiction check for `notFrom` had to move with the matcher: `from: @mail
 
 **Input is now forgiving, separately from all of this.** `from`, `to` and `notFrom` accept `acme.com` without the `@`, `Alerts <alerts@acme.com>` pasted from a mail client, `mailto:` prefixes, `https://acme.com`, a trailing dot, and any capitalisation — every one a mechanical conversion, none a guess. A bare brand word is still refused and is **never** guessed into a domain: `Stripe` → `@stripe.com` is a guess, and the rule it builds is wrong while being reported as right. The refusal names what to write instead, and the skill tells the model to ask or to read a real message rather than retry with something invented.
 
-**O-3 — T1.** Build a deterministic OTP extractor as a real action type, or delete every OTP claim. Not shipping the middle state is non-negotiable; which side to land on is a product call.
+**O-3 — T1. — ✅ decided 2026-08-02: no extractor, ever. The Wave 0 deletion is permanent.**
+
+Mail Ops forwards the whole message. That is the product, and it is not a limitation being worked around — it is the shape of the thing. What Mail Ops is asked to be good at is *which* mail and *where it goes*: the match clause, the exclusions, the window, the destination, the dry run that tells you whether you got it right. Reading the mail is somebody else's job.
+
+An extractor was never one action type. A code, a link, a tracking number, an amount, a date — each is a different parser, each is wrong in a different way on a sender nobody tested, and each fails **silently**, delivering a confidently wrong fragment in place of a message the member could have read themselves. Multiply that by every service that changes its template without telling anyone. The subsystem's whole defect class is *promising more than the runtime delivers*; an extractor is that class as a feature.
+
+There is also a plainer reason. Forwarding the entire message is not a worse answer to "just send me the OTP" — it is a correct answer with more in it. Nobody was ever harmed by receiving the whole email.
+
+So: **`T1` is closed by deletion and stays closed.** The `otp` routing aliases remain, because routing "forward my OTP emails" to `mail-ops` is right; only the claim about what happens next was wrong, and it is gone. Every surviving mention of OTP in the tree is a code comment, an example subject string, or an explicit denial that extraction exists — verified 2026-08-02.
+
+If semantic reading of mail is ever wanted, it belongs to a different capability with a different name and its own honest description, not to a rule that people rely on to move mail deterministically with no LLM in the path (DR-6).
 
 ---
 

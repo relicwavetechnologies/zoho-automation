@@ -71,7 +71,8 @@ Use this recipe only for rules triggered by future Gmail arrivals.
 
 - **Gmail only.** There is no Outlook, Microsoft 365, or IMAP support. If the user's mail is not Gmail, say so instead of creating a rule.
 - **Only new mail that lands in the inbox** triggers a rule. Mail that a native Gmail filter archives, or that lands in Spam, is never seen.
-- **A rule delivers the whole message.** It cannot extract a code, a link, or any part of the mail. If the user asks for "just the OTP" or "just the tracking number", tell them the entire email will be forwarded or posted, and let them decide.
+- **A rule delivers the whole message. That is the design, not a shortfall.** Mail Ops is deliberately good at *which* mail and *where it goes* — sender, subject, exclusions, hours, destination — and does not read the mail at all. When the user asks for "just the OTP", "just the tracking number", or "just the amount", say plainly that the whole email arrives instead, and move on. It is a correct answer with more in it, not a worse one.
+- **Do not build a workaround for that.** There is no Divo path that extracts part of an email on arrival — not the scheduler, not a Gmail filter, not a local script. Offering one would promise something nothing delivers. Set up the forward and tell the user what they will receive.
 - **A rule can also tidy mail instead of sending it** — label it, archive it, mark it read — with \`destination.type: "organize"\`. That acts on the user's own Gmail and reaches nobody else.
 - **Delivering to a Lark chat posts the full message text into that chat**, up to 20,000 characters, plain text only — no HTML and no attachments. Warn the user before delivering personal mail such as login codes into a group chat.
 - **Email forwarding** preserves the original Gmail MIME content, including HTML, inline images, and attachments, inside a new message sent by the connected mailbox.

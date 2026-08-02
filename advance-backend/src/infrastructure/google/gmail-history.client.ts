@@ -693,13 +693,21 @@ function buildForwardMime(input: {
     intro,
     '',
     `--${boundary}`,
-    ...contentHeaders,
-    '',
     '',
   ].join('\r\n');
   const suffix = `\r\n--${boundary}--\r\n`;
+  // Three pieces with three different encodings, which is the whole point.
+  //
+  // The intro is Divo's own text and is UTF-8. The forwarded body is bytes and
+  // is never touched. The original's content headers sit between them and must
+  // be written back as the exact bytes they arrived as: they were read with
+  // `latin1`, which maps bytes 1:1, so re-encoding them as UTF-8 would turn
+  // every byte above 0x7F into two — mangling a `Content-Type` boundary
+  // parameter or a filename, and taking the whole part with it.
   return Buffer.concat([
     Buffer.from(prefix, 'utf8'),
+    Buffer.from(contentHeaders.join('\r\n'), 'latin1'),
+    Buffer.from('\r\n\r\n', 'utf8'),
     original.body,
     Buffer.from(suffix, 'utf8'),
   ]);
