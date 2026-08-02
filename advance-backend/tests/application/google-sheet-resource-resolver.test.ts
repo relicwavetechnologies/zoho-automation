@@ -6,6 +6,8 @@ import {
   type GoogleSheetResourceProbe,
 } from '../../src/application/data-export/google-sheet-resource-resolver.ts';
 import type { GoogleSheetReference } from '../../src/application/data-export/google-sheet-resource-reference.ts';
+import { GoogleDriveXlsxResourceResolver } from '../../src/application/data-export/google-drive-xlsx-resource-resolver.ts';
+import type { GoogleDriveXlsxReference } from '../../src/application/data-export/google-drive-xlsx-resource-reference.ts';
 import type { AccessibleConnection } from '../../src/application/connections/connection-registry.port.ts';
 
 const spreadsheetId = 'sheet_123-AbC';
@@ -139,5 +141,59 @@ describe('GoogleSheetResourceResolver', () => {
         { connectionId: 'second', label: 'second' },
       ],
     });
+  });
+});
+
+describe('GoogleDriveXlsxResourceResolver', () => {
+  const workbook: GoogleDriveXlsxReference = {
+    provider: 'google',
+    kind: 'excel_workbook',
+    resourceId: 'workbook-123',
+    canonicalUrl: 'https://drive.google.com/file/d/workbook-123/view',
+  };
+
+  it('verifies exact XLSX metadata and returns a confirmation-only copy plan', async () => {
+    const current = probe({
+      getDriveFile: async ({ fileId }) => ({
+        id: fileId,
+        name: 'Forecast.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        trashed: false,
+        capabilities: { canCopy: true, canDownload: true },
+      }),
+    });
+    assert.deepEqual(await new GoogleDriveXlsxResourceResolver(current.value).resolve({
+      userId: 'user-1',
+      reference: workbook,
+      accessible: [connection('personal')],
+    }), {
+      status: 'resolved',
+      resource: {
+        ...workbook,
+        connectionId: 'personal',
+        fileName: 'Forecast.xlsx',
+        requiresConfirmation: true,
+        conversion: 'new_google_sheet_copy',
+      },
+    });
+  });
+
+  it('rejects non-XLSX and copy-restricted Drive files without probing Sheets', async () => {
+    for (const [metadata, status] of [
+      [{ id: 'workbook-123', mimeType: 'application/pdf' }, 'wrong_type'],
+      [{
+        id: 'workbook-123',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        capabilities: { canCopy: true, canDownload: false },
+      }, 'copy_restricted'],
+    ] as const) {
+      const current = probe({ getDriveFile: async () => metadata });
+      assert.equal((await new GoogleDriveXlsxResourceResolver(current.value).resolve({
+        userId: 'user-1',
+        reference: workbook,
+        accessible: [connection('personal')],
+      })).status, status);
+      assert.deepEqual(current.calls, []);
+    }
   });
 });

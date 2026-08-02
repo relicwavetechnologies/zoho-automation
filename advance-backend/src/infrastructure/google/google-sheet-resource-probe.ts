@@ -23,14 +23,21 @@ export class GoogleSheetResourceProbeClient implements GoogleSheetResourceProbe 
       const response = await drive.files.get({
         fileId: input.fileId,
         supportsAllDrives: true,
-        fields: 'id,mimeType,trashed,capabilities(canEdit)',
+        fields: 'id,name,mimeType,trashed,capabilities(canEdit,canCopy,canDownload)',
       }, input.abortSignal ? { signal: input.abortSignal } : undefined);
       return {
         ...(response.data.id ? { id: response.data.id } : {}),
+        ...(response.data.name ? { name: response.data.name } : {}),
         ...(response.data.mimeType ? { mimeType: response.data.mimeType } : {}),
         ...(typeof response.data.trashed === 'boolean' ? { trashed: response.data.trashed } : {}),
         ...(response.data.capabilities
-          ? { capabilities: { canEdit: response.data.capabilities.canEdit === true } }
+          ? {
+              capabilities: {
+                canEdit: response.data.capabilities.canEdit === true,
+                canCopy: response.data.capabilities.canCopy === true,
+                canDownload: response.data.capabilities.canDownload === true,
+              },
+            }
           : {}),
       };
     } catch (error) {

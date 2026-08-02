@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { parseGoogleDriveXlsxReference } from '../../src/application/data-export/google-drive-xlsx-resource-reference.ts';
 import { parseGoogleSheetReference } from '../../src/application/data-export/google-sheet-resource-reference.ts';
 
 describe('Google Sheet reference', () => {
@@ -71,6 +72,38 @@ describe('Google Sheet reference', () => {
 
     for (const [input, reason] of cases) {
       assert.deepEqual(parseGoogleSheetReference(input), { ok: false, reason });
+    }
+  });
+});
+
+describe('Google Drive Excel reference', () => {
+  it('accepts only canonical Drive file and open links', () => {
+    for (const input of [
+      'https://drive.google.com/file/d/1Ab_c-DeF/view?usp=sharing',
+      'https://drive.google.com/open?id=1Ab_c-DeF',
+    ]) {
+      assert.deepEqual(parseGoogleDriveXlsxReference(input), {
+        ok: true,
+        reference: {
+          provider: 'google',
+          kind: 'excel_workbook',
+          resourceId: '1Ab_c-DeF',
+          canonicalUrl: 'https://drive.google.com/file/d/1Ab_c-DeF/view',
+        },
+      });
+    }
+  });
+
+  it('rejects folders, downloads, duplicate IDs, lookalikes, and malformed IDs', () => {
+    const cases = [
+      ['https://drive.google.com/drive/folders/1Ab_c-DeF', 'unsupported_path'],
+      ['https://drive.google.com/uc?id=1Ab_c-DeF&export=download', 'unsupported_path'],
+      ['https://drive.google.com/open?id=one&id=two', 'unsupported_path'],
+      ['https://drive.google.com.evil.test/file/d/1Ab_c-DeF/view', 'unsupported_host'],
+      ['https://drive.google.com/file/d/bad%20id/view', 'invalid_file_id'],
+    ] as const;
+    for (const [input, reason] of cases) {
+      assert.deepEqual(parseGoogleDriveXlsxReference(input), { ok: false, reason });
     }
   });
 });

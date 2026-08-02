@@ -132,6 +132,8 @@ import {
   ZohoBooksDataExportSource,
 } from './application/data-export/data-export.sources';
 import { GoogleWorkspaceExportSink } from './application/data-export/google-workspace-export.sink';
+import { parseGoogleDriveXlsxReference } from './application/data-export/google-drive-xlsx-resource-reference';
+import { GoogleDriveXlsxResourceResolver } from './application/data-export/google-drive-xlsx-resource-resolver';
 import { parseGoogleSheetReference } from './application/data-export/google-sheet-resource-reference';
 import { GoogleSheetResourceResolver } from './application/data-export/google-sheet-resource-resolver';
 import { GoogleSheetResourceProbeClient } from './infrastructure/google/google-sheet-resource-probe';
@@ -752,8 +754,12 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     readonly abortSignal?: AbortSignal;
   }) {
     input.abortSignal?.throwIfAborted();
-    const parsed = parseGoogleSheetReference(input.url);
-    if (!parsed.ok) return { status: 'invalid_reference' as const, reason: parsed.reason };
+    const parsedSheet = parseGoogleSheetReference(input.url);
+    const parsedWorkbook = parsedSheet.ok ? null : parseGoogleDriveXlsxReference(input.url);
+    const workbookReference = parsedWorkbook?.ok ? parsedWorkbook.reference : null;
+    if (!parsedSheet.ok && !parsedWorkbook?.ok) {
+      return { status: 'invalid_reference' as const, reason: parsedWorkbook?.reason ?? parsedSheet.reason };
+    }
     if (!googleOAuthService.isConfigured()) return { status: 'no_connection' as const };
 
     const accessible = await integrationConnectionRepo.listAccessibleGoogleConnections({
@@ -784,7 +790,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
           [GOOGLE_SCOPE.sheetsFull],
         ])
       ) {
-        throw new Error('Selected personal Google account is no longer eligible for this Sheet');
+        throw new Error('Selected personal Google account is no longer eligible for this file');
       }
       const token = await googleOAuthService.getValidAccessToken({
         companyId: input.companyId,
@@ -796,16 +802,23 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       input.abortSignal?.throwIfAborted();
       return token;
     });
-    const resolver = new GoogleSheetResourceResolver(probe);
+    const resolutionInput = {
+      userId: input.userId,
+      accessible: accessible.value.filter(connection => connection.connectionId === input.connectionId),
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+    };
+    if (parsedSheet.ok) {
+      const resolver = new GoogleSheetResourceResolver(probe);
+      if (!input.connectionId) {
+        return resolver.listEligible({ userId: input.userId, accessible: accessible.value });
+      }
+      return resolver.resolve({ ...resolutionInput, reference: parsedSheet.reference });
+    }
+    const resolver = new GoogleDriveXlsxResourceResolver(probe);
     if (!input.connectionId) {
       return resolver.listEligible({ userId: input.userId, accessible: accessible.value });
     }
-    return resolver.resolve({
-      userId: input.userId,
-      accessible: accessible.value.filter(connection => connection.connectionId === input.connectionId),
-      reference: parsed.reference,
-      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-    });
+    return resolver.resolve({ ...resolutionInput, reference: workbookReference! });
   }
 
   async function resolveMailAutomationGoogleConnection(input: {

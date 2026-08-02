@@ -16,6 +16,11 @@ import {
 } from '../../google/google-workspace-mcp-manifest';
 import type { GoogleSheetReferenceParseResult } from '../../data-export/google-sheet-resource-reference';
 import type { GoogleSheetResourceResolution } from '../../data-export/google-sheet-resource-resolver';
+import {
+  parseGoogleDriveXlsxReference,
+  type GoogleDriveXlsxReferenceParseResult,
+} from '../../data-export/google-drive-xlsx-resource-reference';
+import type { GoogleDriveXlsxResourceResolution } from '../../data-export/google-drive-xlsx-resource-resolver';
 
 const ArgsSchema = z.discriminatedUnion('op', [
   z.object({
@@ -104,9 +109,12 @@ export type ResolveGoogleSheetReference = (input: {
   readonly abortSignal?: AbortSignal;
 }) => Promise<
   GoogleSheetResourceResolution
+  | GoogleDriveXlsxResourceResolution
   | {
       readonly status: 'invalid_reference';
-      readonly reason: Exclude<GoogleSheetReferenceParseResult, { readonly ok: true }>['reason'];
+      readonly reason:
+        | Exclude<GoogleSheetReferenceParseResult, { readonly ok: true }>['reason']
+        | Exclude<GoogleDriveXlsxReferenceParseResult, { readonly ok: true }>['reason'];
     }
 >;
 
@@ -162,7 +170,7 @@ function createProductTool(
     parameterDocs: [
       'connectionId: reuse the exact run-bootstrap account when supplied. In backend-hosted channels, omit it when no account was supplied; the backend selects only one eligible account or returns safe choices. Reuse the same connectionId for describe and call.',
       product.toolId === 'googleSheets'
-        ? 'op: describe|call|resolve_reference. Use resolve_reference with url for an exact pasted Google Sheet before any web lookup; connectionId is optional until Divo returns an account choice. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required native operation whose schema is absent; input may be omitted for describe.'
+        ? 'op: describe|call|resolve_reference. Use resolve_reference with url for an exact pasted Google Sheet or Google Drive Excel workbook before any web lookup; connectionId is optional until Divo returns an account choice. Excel workbooks require explicit confirmation before Divo creates a new Google Sheet copy; the original workbook is never changed. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required native operation whose schema is absent; input may be omitted for describe.'
         : 'op: describe|call. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required native operation whose schema is absent; input may be omitted for describe.',
       `nativeTool: one of ${product.tools.join('|')}.`,
       `input: exact object accepted by the described MCP tool. ${GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance}`,
@@ -279,7 +287,7 @@ function createProductTool(
           return badArgs(product.toolId, 'Pasted Sheet reference resolution is unavailable');
         }
         try {
-          ctx.onProgress?.('Checking this Google Sheet and its writable account…');
+          ctx.onProgress?.('Checking this Google file and its writable account…');
           const resolution = await deps.resolveSheetReference({
             companyId: ctx.runContext.companyId,
             userId: ctx.runContext.userId,
@@ -295,8 +303,12 @@ function createProductTool(
             const authorization = await deps.beginAuthorization({
               toolId: product.toolId,
               reason: resolution.status === 'missing_scope'
-                ? 'Reconnect Google to grant Drive and Sheets write access for this Sheet.'
-                : 'Connect a writable personal Google account to open this Sheet.',
+                ? `Reconnect Google to grant Drive and Sheets write access for this ${
+                    parseGoogleDriveXlsxReference(args.url).ok ? 'Excel workbook' : 'Sheet'
+                  }.`
+                : `Connect a writable personal Google account to open this ${
+                    parseGoogleDriveXlsxReference(args.url).ok ? 'Excel workbook' : 'Sheet'
+                  }.`,
               runContext: ctx.runContext,
             });
             if (authorization.status !== 'unavailable') {
@@ -475,19 +487,24 @@ function progressVerb(action: ToolActionGroup): string {
 function sheetReferenceResolutionMessage(
   resolution: Awaited<ReturnType<ResolveGoogleSheetReference>>,
 ): string {
-  if (resolution.status === 'resolved') return 'Google Sheet access verified.';
+  if (resolution.status === 'resolved') {
+    return resolution.resource.kind === 'excel_workbook'
+      ? 'Excel workbook access verified. Ask the requester to confirm creating a new private Google Sheet copy. The original Excel workbook will not change.'
+      : 'Google Sheet access verified.';
+  }
   if (resolution.status === 'choose_connection') {
     return resolution.connections.length === 1
       ? 'Retry with the exact returned connectionId to verify this Google Sheet.'
-      : 'Choose which writable personal Google account Divo should use for this Sheet.';
+      : 'Choose which writable personal Google account Divo should use for this Google file.';
   }
   if (resolution.status === 'invalid_reference') return 'This is not a supported Google Sheet URL.';
   if (resolution.status === 'no_connection') return 'No writable personal Google account is connected.';
   if (resolution.status === 'missing_scope') return 'The connected Google account is missing Drive or Sheets write access.';
   if (resolution.status === 'read_only') return 'This Google Sheet is read-only for the connected personal account.';
-  if (resolution.status === 'trashed') return 'This Google Sheet is in the trash.';
-  if (resolution.status === 'wrong_type') return 'This Google Drive resource is not a Google Sheet.';
-  return 'This Google Sheet is not accessible through the connected personal account.';
+  if (resolution.status === 'copy_restricted') return 'This Excel workbook cannot be copied or downloaded by the connected personal account.';
+  if (resolution.status === 'trashed') return 'This Google file is in the trash.';
+  if (resolution.status === 'wrong_type') return 'This is not a supported Google Sheet or Excel workbook.';
+  return 'This Google file is not accessible through the connected personal account.';
 }
 
 function badArgs(toolId: string, message: string): Result<never, ToolError> {

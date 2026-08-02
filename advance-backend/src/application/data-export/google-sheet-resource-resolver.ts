@@ -10,10 +10,13 @@ export interface ResolvedGoogleSheetResource extends GoogleSheetReference {
 
 export interface GoogleDriveFileMetadata {
   readonly id?: string;
+  readonly name?: string;
   readonly mimeType?: string;
   readonly trashed?: boolean;
   readonly capabilities?: {
     readonly canEdit?: boolean;
+    readonly canCopy?: boolean;
+    readonly canDownload?: boolean;
   };
 }
 
@@ -57,6 +60,30 @@ type GoogleSheetResourceProbeFailure =
   | 'wrong_type'
   | 'read_only';
 
+export function eligibleWritableGoogleConnections(input: {
+  readonly userId: string;
+  readonly accessible: readonly AccessibleConnection[];
+}):
+  | { readonly status: 'no_connection' }
+  | { readonly status: 'missing_scope' }
+  | { readonly status: 'eligible'; readonly connections: readonly AccessibleConnection[] } {
+  const personal = input.accessible.filter(connection =>
+    connection.provider === 'google_workspace'
+    && (connection.status === undefined || connection.status === 'connected')
+    && connection.ownerType === 'user'
+    && connection.ownerUserId === input.userId
+    && connection.access !== 'read_only',
+  );
+  if (personal.length === 0) return { status: 'no_connection' };
+  const scoped = personal.filter(connection => hasGoogleScopeGroups(connection.scopes, [
+    [GOOGLE_SCOPE.driveFull],
+    [GOOGLE_SCOPE.sheetsFull],
+  ]));
+  return scoped.length === 0
+    ? { status: 'missing_scope' }
+    : { status: 'eligible', connections: scoped };
+}
+
 export class GoogleSheetResourceResolver {
   constructor(private readonly probe: GoogleSheetResourceProbe) {}
 
@@ -64,7 +91,7 @@ export class GoogleSheetResourceResolver {
     readonly userId: string;
     readonly accessible: readonly AccessibleConnection[];
   }): GoogleSheetResourceResolution {
-    const eligible = this.eligibleConnections(input);
+    const eligible = eligibleWritableGoogleConnections(input);
     if (eligible.status !== 'eligible') return eligible;
     return {
       status: 'choose_connection',
@@ -82,7 +109,7 @@ export class GoogleSheetResourceResolver {
     readonly reference: GoogleSheetReference;
     readonly abortSignal?: AbortSignal;
   }): Promise<GoogleSheetResourceResolution> {
-    const eligible = this.eligibleConnections(input);
+    const eligible = eligibleWritableGoogleConnections(input);
     if (eligible.status !== 'eligible') return eligible;
     const scoped = eligible.connections;
 
@@ -106,30 +133,6 @@ export class GoogleSheetResourceResolver {
     }
     const failure = probes.find((value): value is GoogleSheetResourceProbeFailure => typeof value === 'string');
     return { status: failure ?? 'inaccessible' };
-  }
-
-  private eligibleConnections(input: {
-    readonly userId: string;
-    readonly accessible: readonly AccessibleConnection[];
-  }):
-    | { readonly status: 'no_connection' }
-    | { readonly status: 'missing_scope' }
-    | { readonly status: 'eligible'; readonly connections: readonly AccessibleConnection[] } {
-    const personal = input.accessible.filter(connection =>
-      connection.provider === 'google_workspace'
-      && (connection.status === undefined || connection.status === 'connected')
-      && connection.ownerType === 'user'
-      && connection.ownerUserId === input.userId
-      && connection.access !== 'read_only',
-    );
-    if (personal.length === 0) return { status: 'no_connection' };
-
-    const scoped = personal.filter(connection => hasGoogleScopeGroups(connection.scopes, [
-      [GOOGLE_SCOPE.driveFull],
-      [GOOGLE_SCOPE.sheetsFull],
-    ]));
-    if (scoped.length === 0) return { status: 'missing_scope' };
-    return { status: 'eligible', connections: scoped };
   }
 
   private async probeConnection(
