@@ -75,12 +75,12 @@ Choose the exact approved specialist returned by this router.
 
 - One bounded provider lookup or preview → load that provider's specialist.
   If its result contains \`preview.exportOfferId\`, keep only that opaque offer
-  and wait for the member to choose an export; never paginate or copy rows
-  through the conversation.
-- Produce a CSV, Excel file, Google Sheet, or governed complete-data artifact
-  after an explicit offer choice → \`secure-data-export\`. Its direct recipes
-  are only for the supported Airtable and Zoho Books sources with exact
-  backend-resolved identifiers.
+  until the turn completes. In Lark, Divo's verified final-response card owns
+  the Sheet/CSV/XLSX choice and queue; do not ask again or call \`dataExport\`
+  for that offer.
+- Produce a governed complete-data artifact without a provider offer →
+  \`secure-data-export\`. Its direct recipes are only for supported Airtable
+  and Zoho Books sources with exact backend-resolved identifiers.
 - Fetch across pages to calculate, group, join, reshape, or move data between
   connected products → \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`. Write one script,
   run it, edit and rerun it.
@@ -96,6 +96,30 @@ Use the provider preview and governed export path for one source's complete
 dataset. Use the scripted workflow only when the work needs pagination for a
 calculation or transform, more than one connected product, or related writes.
 Neither route carries a record set through the conversation.
+
+Keep each opaque handle in its owning route:
+
+- \`preview.exportOfferId\` → Divo's verified Lark final-response card; never a
+  second agent question or tool call.
+- \`destinationReferenceId\` or \`resourceRef\` → \`google-sheets\` for the exact
+  resolved or recent Sheet.
+- \`exportJobId\` → status and safe retry/resume only.
+
+Never turn one of these handles into provider IDs, source rows, or Python input.
+
+Examples:
+
+- “Show me our best keywords” → research specialist and bounded preview.
+- “Put the complete keyword result in a Sheet” → preserve the preview offer,
+  finish the answer, and let Divo's Lark card own the choice and export.
+- “Combine invoices with Airtable owners and calculate totals” → relevant
+  provider specialists plus \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`.
+- A Sheet URL by itself → \`google-sheets\`, resolve metadata, then ask what the
+  member wants to do.
+- “Add a Notes column to that Sheet” after a Divo export → \`google-sheets\`
+  with its recent opaque resource reference and read-back verification.
+- No eligible Google destination → let Divo's card keep the same offer and run
+  connect-and-resume; never ask the member to repeat the request.
 
 Never treat this router as permission to process or export data. Load the specialist first.`,
     toolIds: [],
@@ -146,7 +170,7 @@ job, not this one.`,
 Choose the exact approved specialist returned by this router.
 
 - Current public facts and external verification → \`web-search\`.
-- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`. Its bounded preview may return an opaque \`preview.exportOfferId\`; preserve it and route one explicit export choice through \`data-router\`, never through provider pagination or a local workflow.
+- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`. Its bounded preview may return an opaque \`preview.exportOfferId\`; preserve it, finish the response, and let Divo's verified Lark card own the export choice and queue. Never route that offer through another agent question, tool call, provider pagination, or local workflow.
 - Approved OMS publisher/site inventory → \`divo-oms-site-inventory\`.
 
 Never substitute web results for official Semrush or OMS data.

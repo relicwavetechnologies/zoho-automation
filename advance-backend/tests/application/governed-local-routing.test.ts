@@ -92,7 +92,8 @@ describe('governed local-workflow instruction contract', () => {
     assert.doesNotMatch(dataRouter.markdown, /whatever the row count/);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /governed provider preview and export-offer path/);
     assert.doesNotMatch(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /how data of any size is processed/);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /source specialist returns `preview\.exportOfferId`/);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /source result containing `preview\.exportOfferId` already creates/);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /ask a second export question, load or call `dataExport` for that offer/i);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Use a direct Airtable or Zoho Books\s+recipe only/);
   });
 });

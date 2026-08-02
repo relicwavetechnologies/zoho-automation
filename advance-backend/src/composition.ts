@@ -1872,19 +1872,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   }));
   toolRegistry.register(createDataExportTool({
     offers: dataExportOfferService,
-    resolveDestinationReference: async input => {
-      const effect = await runEffectReceipts.getVerifiedGoogleSheetDestination(
-        input,
-        input.referenceId,
-      );
-      return effect ? {
-        kind: 'existing_google_sheet',
-        connectionId: effect.connectionId,
-        spreadsheetId: effect.spreadsheetId,
-        ...(effect.gid ? { gid: effect.gid } : {}),
-        mode: 'new_tab',
-      } : null;
-    },
   }));
   toolRegistry.register(createSemrushTool({
     service: semrushService,

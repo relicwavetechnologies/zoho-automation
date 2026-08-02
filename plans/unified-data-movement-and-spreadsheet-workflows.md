@@ -18,11 +18,11 @@
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
 | 5 — Semrush and OMS convergence | ✅ Done | Both providers use bounded previews and opaque central offers; executable Cloudinary fallbacks and their stale skill contract are removed |
 | 6 — pasted Sheet/Drive URLs | 🟡 Validation pending | Governed Sheet editing is live-verified; Drive XLSX now runs through a durable, exact-user conversion worker with separate Lark progress delivery and seven-day opaque follow-up context; one live conversion remains |
-| 7 — routers and provider skills | 🟡 Partial | Data routing separates opaque offers, Python workflows, pasted Sheets, and workspace files; Semrush and OMS now use the one-choice central offer contract, while the remaining provider skills still need convergence |
+| 7 — routers and provider skills | ✅ Done | DB-backed Data Router and provider skills preserve opaque handles; Lark's verified card exclusively owns provider-offer confirmation and queueing, while exact no-offer Airtable/Zoho exports use the central direct recipe |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
 | 9 — realistic isolated-runtime validation | 🟡 In progress | Isolated Pi exported a live Semrush dataset, retained its exact-thread resource context, and securely edited/read back the same Sheet; remaining scenarios still need closure |
 
-**Immediate completion count:** 6 phases done.
+**Immediate completion count:** 7 phases done.
 
 **Latest validation evidence (2026-08-02):**
 
@@ -74,6 +74,16 @@
   writes. Semrush and OMS now each present the governed Sheet/CSV/XLSX choice
   once and forbid provider pagination, ad-hoc files, Python, Cloudinary, and
   repeated export questions for that offer.
+- Phase 7 provider convergence is complete. These versioned system-skill
+  definitions reconcile into the database; no Pi/container filesystem skill
+  path was added. The router now keeps offer, Sheet-resource, and export-job
+  handles within their owning flows. A provider offer completes through Divo's
+  verified Lark card without a second agent question or tool call; exact
+  no-offer Airtable/Zoho exports use the central direct recipe. File authoring
+  rejects connected-provider row copying, and Python no longer advertises
+  itself for generic exports. Focused route tests cover low-hint preview,
+  full-Sheet, cross-provider computation, pasted/recent Sheet, and
+  connect-and-resume examples.
 
 - A low-hint isolated Semrush request exported 50 rows to a verified personal
   Google Sheet and persisted its opaque, seven-day conversation resource.
@@ -393,7 +403,10 @@ An `ExportOffer` is an immutable, opaque server-side record containing:
 - expiry, status, idempotency key, and audit metadata;
 - no raw result rows.
 
-The Lark card or natural-language confirmation carries only the opaque `offerId` plus the user's destination choices. On confirmation, the backend rechecks the actor, source access, destination access, RBAC, and connection health.
+Only the signed Lark card carries the opaque `offerId` plus the user's
+destination choices. The agent-callable tool rejects offer confirmation. On
+card confirmation, the backend rechecks the actor, source access, destination
+access, RBAC, and connection health.
 
 Export offers will be persisted in Postgres with a 24-hour expiry. The schema
 change must use this repository's existing Prisma `db push` workflow; do not
@@ -879,11 +892,14 @@ Card callbacks must authenticate the clicking actor and must not trust company/u
   CSV choices.
 - Each button contains the opaque `offerId` and one allowed format; actor,
   company, and chat come from the signed Lark callback.
-- The callback routes directly to `DataExportOfferService.confirmForActor`, so button and natural-language confirmation share the same persisted recipe, fresh RBAC checks, and idempotent queue claim.
+- The callback routes directly to `DataExportOfferService.confirmForActor`; the
+  agent-callable `dataExport` tool does not accept offer IDs. This keeps the
+  signed card as the only offer-confirmation path while retaining the same
+  persisted recipe, fresh RBAC checks, and idempotent queue claim.
 - The callback immediately acknowledges the click. After the durable queue
   claim succeeds, the source card is locked with the selected format and no
-  actionable buttons; direct confirmations use a separate tracker for progress
-  and terminal delivery.
+  actionable buttons, then remains the verified tracker for progress and
+  terminal delivery.
 - A failed or still-in-progress confirmation leaves the source buttons intact
   so the user can retry safely.
 - The original reply/thread address remains persisted in the recipe and controls worker progress/final delivery.
@@ -1247,7 +1263,9 @@ challenge the implementation; the primary agent owns edits and validation.
 - acknowledgement -> queued -> running -> complete in the same card;
 - cancellation and error state;
 - OAuth continuation edits/resumes the original request;
-- natural-language confirmation and card confirmation invoke identical backend behavior.
+- only the signed Lark card can confirm a provider offer; a natural-language
+  request produces or reuses the governed offer and buttons without a second
+  confirmation path through the agent.
 
 ### Final realistic behavior
 
@@ -1328,9 +1346,7 @@ Never log:
    adapter.
 6. Run the pasted-Sheet existing-tab and Drive-XLSX-copy flows through isolated
    cloud Pi and verify the exact produced resources in the requester's account.
-7. Complete router and provider-skill convergence against the now-cut-over
-   backend contracts.
-8. Execute Phase 9 through the isolated Docker runtime, deliver every
+7. Execute Phase 9 through the isolated Docker runtime, deliver every
     scenario to the configured Divo Lark DM, and iterate until the final quality
     gate passes.
 

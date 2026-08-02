@@ -858,8 +858,15 @@ function ConnectionDrawer({ provider, connection, onClose, onConnect, onReconnec
         <div className="ws-ceiling" style={{ marginBottom: 18 }}>
           <TriangleAlert size={14} />
           <div>
-            Disconnecting removes Divo's access immediately and{' '}
-            <b>revokes the {grants.length} share{grants.length === 1 ? '' : 's'} you granted</b>.
+            {/* The count only appears once the grants have actually been read.
+                While that read is in flight, or refused, `grants` is empty for
+                reasons that have nothing to do with how many shares exist —
+                and "revokes the 0 shares you granted" is a promise about
+                somebody's access made from no evidence. */}
+            Disconnecting removes Divo's access immediately{' '}
+            {manage.data
+              ? <>and <b>revokes the {grants.length} share{grants.length === 1 ? '' : 's'} you granted</b>. </>
+              : <>and revokes <b>every share you granted</b>. </>}
             Anything running against it will stop.
           </div>
         </div>

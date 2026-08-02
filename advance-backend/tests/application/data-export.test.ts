@@ -1334,7 +1334,6 @@ describe('data export access contract', () => {
   const tool = createDataExportTool({
     offers: {
       submitAuthorized: async () => 'unused',
-      confirmForActor: async () => ({ exportJobId: 'unused', disposition: 'queued' }),
     },
   });
   const base = {
@@ -1355,78 +1354,15 @@ describe('data export access contract', () => {
     assert.equal(tool.argsSchema.safeParse({ ...base, recipients: ['other@emiactech.com'] }).success, false);
   });
 
-  it('accepts only an opaque offer ID for confirmation', () => {
+  it('rejects provider offer confirmation from the agent-callable tool', () => {
     const offerId = '11111111-1111-4111-8111-111111111111';
-    assert.equal(tool.argsSchema.safeParse({ offerId }).success, true);
+    assert.equal(tool.argsSchema.safeParse({ offerId }).success, false);
     assert.equal(tool.argsSchema.safeParse({ offerId, ...base }).success, false);
     assert.equal(tool.argsSchema.safeParse({ offerId, companyId: 'company-other' }).success, false);
     assert.equal(tool.argsSchema.safeParse({
       offerId,
       destinationReferenceId: '22222222-2222-4222-8222-222222222222',
-    }).success, true);
-    assert.equal(tool.argsSchema.safeParse({
-      offerId,
-      destinationConnectionId: '33333333-3333-4333-8333-333333333333',
-      destinationReferenceId: '22222222-2222-4222-8222-222222222222',
     }).success, false);
-  });
-
-  it('resolves an existing Sheet only under the exact trusted Lark run', async () => {
-    const offerId = '11111111-1111-4111-8111-111111111111';
-    const referenceId = '22222222-2222-4222-8222-222222222222';
-    let resolutionInput: unknown;
-    let confirmationInput: unknown;
-    const confirmationTool = createDataExportTool({
-      offers: {
-        submitAuthorized: async () => assert.fail('opaque confirmation must not submit a caller recipe'),
-        confirmForActor: async input => {
-          confirmationInput = input;
-          return { exportJobId: 'dtx_existing_sheet', disposition: 'queued' };
-        },
-      },
-      resolveDestinationReference: async input => {
-        resolutionInput = input;
-        return {
-          kind: 'existing_google_sheet',
-          connectionId: '33333333-3333-4333-8333-333333333333',
-          spreadsheetId: 'sheet_1',
-          gid: '42',
-          mode: 'new_tab',
-        };
-      },
-    });
-
-    const result = await confirmationTool.execute(
-      { offerId, destinationReferenceId: referenceId },
-      makeCtx('dataExport', ['create'], {
-        chatId: 'oc_chat',
-        runtimeRunId: 'run-1',
-        runtimeThreadId: 'thread-1',
-      }),
-    );
-
-    assert.equal(result.ok, true);
-    assert.deepEqual(resolutionInput, {
-      companyId: 'co-test',
-      userId: 'user-test',
-      chatId: 'oc_chat',
-      threadId: 'thread-1',
-      runId: 'run-1',
-      referenceId,
-    });
-    assert.deepEqual(confirmationInput, {
-      offerId,
-      companyId: 'co-test',
-      userId: 'user-test',
-      chatId: 'oc_chat',
-      destinationTarget: {
-        kind: 'existing_google_sheet',
-        connectionId: '33333333-3333-4333-8333-333333333333',
-        spreadsheetId: 'sheet_1',
-        gid: '42',
-        mode: 'new_tab',
-      },
-    });
   });
 
   it('pins a direct recipe to the backend-derived Lark reply address', async () => {
@@ -1437,7 +1373,6 @@ describe('data export access contract', () => {
           submitted = input;
           return 'dtx_recipe';
         },
-        confirmForActor: async () => assert.fail('direct recipe must not confirm an offer'),
       },
     });
 
@@ -1463,58 +1398,4 @@ describe('data export access contract', () => {
     });
   });
 
-  it('derives confirmation identity and conversation from the trusted run context', async () => {
-    const offerId = '11111111-1111-4111-8111-111111111111';
-    let confirmationInput: unknown;
-    const confirmationTool = createDataExportTool({
-      offers: {
-        submitAuthorized: async () => assert.fail('opaque confirmation must not submit a caller recipe'),
-        confirmForActor: async (input) => {
-          confirmationInput = input;
-          return { exportJobId: 'dtx_confirmed', disposition: 'queued' };
-        },
-      },
-    });
-
-    const result = await confirmationTool.execute(
-      { offerId },
-      makeCtx('dataExport', ['create'], { chatId: 'oc_chat' }),
-    );
-
-    assert.equal(result.ok, true);
-    assert.deepEqual(confirmationInput, {
-      offerId,
-      companyId: 'co-test',
-      userId: 'user-test',
-      chatId: 'oc_chat',
-    });
-    if (result.ok) {
-      assert.equal(result.value.exportJobId, 'dtx_confirmed');
-      assert.equal(result.value.exportQueued, true);
-    }
-  });
-
-  it('does not claim a concurrent in-progress confirmation is already queued', async () => {
-    const confirmationTool = createDataExportTool({
-      offers: {
-        submitAuthorized: async () => assert.fail('opaque confirmation must not submit a caller recipe'),
-        confirmForActor: async () => ({
-          exportJobId: 'dtx_pending',
-          disposition: 'in_progress',
-        }),
-      },
-    });
-
-    const result = await confirmationTool.execute(
-      { offerId: '11111111-1111-4111-8111-111111111111' },
-      makeCtx('dataExport', ['create'], { chatId: 'oc_chat' }),
-    );
-
-    assert.equal(result.ok, true);
-    if (result.ok) {
-      assert.equal(result.value.exportQueued, false);
-      assert.match(result.value.message, /confirmation is already in progress/i);
-      assert.match(result.value.message, /confirm it again/i);
-    }
-  });
 });

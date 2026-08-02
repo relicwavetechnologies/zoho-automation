@@ -9,7 +9,6 @@ import {
   DATA_EXPORT_ROW_LIMIT,
   directDatasetSourceSchema,
   datasetSourceToolId,
-  type DataExportDestinationTarget,
 } from '../../data-export/data-export.types';
 import {
   dataExportDestinationSchema,
@@ -25,16 +24,7 @@ const RecipeSchema = z.object({
   }).strict(),
 }).strict();
 
-const ConfirmOfferSchema = z.object({
-  offerId: z.string().uuid(),
-  destinationConnectionId: z.string().uuid().optional(),
-  destinationReferenceId: z.string().uuid().optional(),
-}).strict().refine(
-  value => !(value.destinationConnectionId && value.destinationReferenceId),
-  { message: 'Choose either a destination account or an existing Sheet reference, not both.' },
-);
-
-const Schema = z.union([RecipeSchema, ConfirmOfferSchema]);
+const Schema = RecipeSchema;
 
 type Args = z.infer<typeof Schema>;
 
@@ -48,15 +38,7 @@ const ResultSchema = z.object({
 type Res = z.infer<typeof ResultSchema>;
 
 export function createDataExportTool(deps: {
-  readonly offers: Pick<DataExportOfferService, 'submitAuthorized' | 'confirmForActor'>;
-  readonly resolveDestinationReference?: (input: {
-    readonly companyId: string;
-    readonly userId: string;
-    readonly chatId: string;
-    readonly threadId: string;
-    readonly runId: string;
-    readonly referenceId: string;
-  }) => Promise<Extract<DataExportDestinationTarget, { readonly kind: 'existing_google_sheet' }> | null>;
+  readonly offers: Pick<DataExportOfferService, 'submitAuthorized'>;
 }): Tool<Args, Res> {
   return {
     id: asToolId('dataExport'),
@@ -65,11 +47,10 @@ export function createDataExportTool(deps: {
     argsSchema: Schema,
     resultSchema: ResultSchema,
     description:
-      `Export up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} Airtable or Zoho Books rows through a governed, queued pipeline. Source pages and sandboxed transforms stay server-side; only a verified invoker-only Google Sheet, Excel file, or Drive CSV is returned.`,
+      `Directly export up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} Airtable or Zoho Books rows through Divo's governed, queued pipeline. Provider offers are confirmed only by Divo's verified Lark card and are outside this schema. Source pages and sandboxed transforms stay server-side; only a verified invoker-only Google Sheet, Excel file, or Drive CSV is returned.`,
     parameterDocs: [
       `Use this for large tabular results. The current hard cap is ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows. If the user requests more or every row, disclose the cap and never call the result complete.`,
-      'offerId: when a source preview returned preview.exportOfferId and the user explicitly confirms, call dataExport with that opaque offerId. Include destinationConnectionId only when a prior confirmation response asked the user to choose one exact eligible Google account.',
-      'destinationReferenceId: when the user selected a pasted existing Google Sheet in this same Lark run, reuse only the exact opaque reference returned by googleSheets.resolve_reference.',
+      'Provider offer confirmation is not part of this agent-callable schema. When a source preview returns preview.exportOfferId, finish the answer; Divo\'s verified Lark card owns format, eligible-account selection, queueing, and connect-and-resume.',
       'source.kind: airtable_records or zoho_books. Always use the exact source connection UUID.',
       'transform.script: optional JavaScript function body. It receives row, index, and args. Return an object, an array of objects, or null to filter.',
       'destination.format: auto chooses Google Sheets for manageable datasets and CSV in Google Drive for large datasets.',
@@ -83,11 +64,9 @@ export function createDataExportTool(deps: {
       if (!perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')) {
         return err(new PermissionError({ toolId: 'dataExport', action: 'create', reason: 'not_allowed' }));
       }
-      if ('source' in args) {
-        const sourceToolId = datasetSourceToolId(args.source);
-        if (!perm.allowedActionsByTool.get(asToolId(sourceToolId))?.has('read')) {
-          return err(new PermissionError({ toolId: sourceToolId, action: 'read', reason: 'not_allowed' }));
-        }
+      const sourceToolId = datasetSourceToolId(args.source);
+      if (!perm.allowedActionsByTool.get(asToolId(sourceToolId))?.has('read')) {
+        return err(new PermissionError({ toolId: sourceToolId, action: 'read', reason: 'not_allowed' }));
       }
       return ok('create' as ToolActionGroup);
     },
@@ -101,71 +80,6 @@ export function createDataExportTool(deps: {
         }));
       }
       try {
-        if ('offerId' in args) {
-          let destinationTarget: Extract<
-            DataExportDestinationTarget,
-            { readonly kind: 'existing_google_sheet' }
-          > | undefined;
-          if (args.destinationReferenceId) {
-            if (
-              !deps.resolveDestinationReference
-              || !ctx.runContext.runtimeRunId
-              || !ctx.runContext.runtimeThreadId
-            ) {
-              throw new Error('This existing Sheet reference is not bound to the current Divo run.');
-            }
-            destinationTarget = await deps.resolveDestinationReference({
-              companyId: ctx.runContext.companyId,
-              userId: ctx.runContext.userId,
-              chatId: ctx.runContext.chatId,
-              threadId: ctx.runContext.runtimeThreadId,
-              runId: ctx.runContext.runtimeRunId,
-              referenceId: args.destinationReferenceId,
-            }) ?? undefined;
-            if (!destinationTarget) {
-              throw new Error('This existing Sheet reference expired or belongs to another Divo run.');
-            }
-          }
-          const confirmed = await deps.offers.confirmForActor({
-            offerId: args.offerId,
-            companyId: ctx.runContext.companyId,
-            userId: ctx.runContext.userId,
-            chatId: ctx.runContext.chatId,
-            ...(args.destinationConnectionId
-              ? { destinationConnectionId: args.destinationConnectionId }
-              : {}),
-            ...(destinationTarget ? { destinationTarget } : {}),
-          });
-          if (confirmed.disposition === 'choose_destination') {
-            const choices = confirmed.connections
-              .map(connection => `${connection.accountEmail ?? connection.label} — ${connection.connectionId}`)
-              .join('; ');
-            return ok({
-              success: true,
-              exportQueued: false,
-              exportJobId: args.offerId,
-              message: `Ask the user which Google account should own the export, then retry with its exact destinationConnectionId: ${choices}`,
-            });
-          }
-          if (confirmed.disposition === 'connect_required') {
-            return ok({
-              success: true,
-              exportQueued: false,
-              exportJobId: args.offerId,
-              message: 'Use the export card in Lark to connect Google. Divo will resume this exact export after authorization.',
-            });
-          }
-          return ok({
-            success: true,
-            exportQueued: confirmed.disposition !== 'in_progress',
-            exportJobId: confirmed.exportJobId,
-            message: confirmed.disposition === 'in_progress'
-              ? 'This data export confirmation is already in progress. If no progress update appears within a minute, confirm it again.'
-              : confirmed.disposition === 'already_confirmed'
-                ? 'This data export was already confirmed. Its existing job will deliver the result to the original Divo conversation.'
-                : `Data export confirmed with the current ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')}-row cap. The result will be delivered to the original Divo conversation.`,
-          });
-        }
         const source: DataExportOfferPayload['source'] = args.source.kind === 'airtable_records'
           ? { ...args.source }
           : {
