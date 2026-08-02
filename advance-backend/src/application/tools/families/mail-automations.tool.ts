@@ -14,6 +14,10 @@ import type {
 import { SELF_SERVICE_CONNECT_HINT } from './google-workspace-mcp.tool';
 import { mailRuleMatchSchema, parseMailRule } from '../../mail-ops/mail-rule.matcher';
 import { mailRuleDedupeKey } from '../../mail-ops/mail-ops.types';
+import type {
+  AuthorizeLarkChatDestination,
+  LarkChatDestinationVerdict,
+} from '../../mail-ops/lark-chat-destination';
 
 const destinationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('email'), email: z.string().email() }).strict(),
@@ -150,6 +154,25 @@ export function mailOpsConnectionUnavailableMessage(
     + 'and send access. Connect Google to continue.';
 }
 
+/**
+ * Why a chat was refused, in terms the member can act on — except for the one
+ * case that is not theirs to act on, which says so rather than sending them
+ * off to fix a room in a company they cannot see.
+ */
+function larkChatRefusalMessage(verdict: LarkChatDestinationVerdict): string {
+  if (verdict.status === 'other_company') {
+    return 'That Lark chat belongs to a different company, so Divo will not '
+      + 'deliver mail into it. Choose a chat in your own workspace.';
+  }
+  if (verdict.status === 'unavailable') {
+    return `Divo could not check that Lark chat right now (${verdict.reason}). `
+      + 'Try again shortly.';
+  }
+  return 'Divo has never seen that Lark chat, so it cannot confirm the chat '
+    + 'belongs to your company. Add Divo to the chat and send one message '
+    + 'there, or create the rule from inside the chat itself.';
+}
+
 type MailRepo = Pick<
   MailOpsRepository,
   | 'createRuleForMailbox'
@@ -188,6 +211,12 @@ export function createMailAutomationsTool(deps: {
     abortSignal?: AbortSignal;
   }): Promise<MailAutomationConnectionResolution>;
   beginAuthorization?: BeginGoogleWorkspaceAuthorization;
+  /**
+   * Grounds a named Lark chat against the company that would deliver into it.
+   * Optional so the tool still constructs in tests and in deployments with no
+   * Lark channel, where a `lark_chat` destination cannot be reached anyway.
+   */
+  authorizeLarkChat?: AuthorizeLarkChatDestination;
 }): Tool<Args, Res> {
   return {
     id: asToolId('mailAutomations'),
@@ -373,6 +402,22 @@ export function createMailAutomationsTool(deps: {
         }
 
         const destination = resolveDestination(args.destination, ctx);
+        // A named chat is grounded here, in code, once — not on every delivery,
+        // and not by asking the model nicely in prompt text, which is all that
+        // stood between a rule and any room the bot could reach.
+        if (args.destination.type === 'lark_chat' && deps.authorizeLarkChat) {
+          const verdict = await deps.authorizeLarkChat({
+            companyId: String(ctx.runContext.companyId),
+            chatId: args.destination.chatId,
+          });
+          if (verdict.status !== 'allowed') {
+            return err(new ToolError({
+              toolId: 'mailAutomations',
+              reason: verdict.status === 'unavailable' ? 'upstream_failure' : 'bad_args',
+              message: larkChatRefusalMessage(verdict),
+            }));
+          }
+        }
         const action = destination.type === 'email'
           ? { type: 'forward' as const }
           : { type: 'deliver' as const };

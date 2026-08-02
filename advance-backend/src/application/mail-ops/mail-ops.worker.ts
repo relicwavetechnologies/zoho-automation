@@ -3,6 +3,10 @@ import type { MailOpsRepository } from '../../infrastructure/persistence/mail-op
 import type { MailboxSyncClaim } from '../../infrastructure/persistence/mail-ops.repository';
 import type { GmailHistoryClient } from '../../infrastructure/google/gmail-history.client';
 import {
+  larkChatDeliveryAllowed,
+  type AuthorizeLarkChatDestination,
+} from './lark-chat-destination';
+import {
   mailDeliveryIdempotencyKey,
   type MailMessageMetadata,
   type PendingMailDeliveryPayload,
@@ -117,6 +121,15 @@ export class MailOpsWorker {
       text: string;
       idempotencyKey: string;
     }): Promise<string>;
+    /**
+     * Last check before a company's mail leaves for a Lark room.
+     *
+     * Creation is where a chat is really vetted; this exists because the rule
+     * outlives that check. It refuses only a room positively known to belong to
+     * another company — it cannot demand a room record, because the commonest
+     * destination of all, the member's own DM with Divo, never has one.
+     */
+    authorizeLarkChat?: AuthorizeLarkChatDestination;
     /**
      * Tells the mailbox owner, once, when their rules have stopped running.
      * Optional so the worker still runs headless in tests and in environments
@@ -495,8 +508,31 @@ export class MailOpsWorker {
         payload.action.type === 'deliver'
         && payload.destination.type === 'lark_chat'
       ) {
+        const chat = payload.destination.chatId;
+        if (this.deps.authorizeLarkChat) {
+          const verdict = await this.deps.authorizeLarkChat({
+            companyId: payload.companyId,
+            chatId: chat,
+          });
+          if (!larkChatDeliveryAllowed(verdict)) {
+            // Never going to become right, so retrying only means this
+            // company's mail knocks on another company's door five times.
+            const abandoned = await this.deps.repo.markDeliveryAbandoned(
+              input.deliveryId,
+              input.attempts,
+              'The destination Lark chat belongs to a different company.',
+            );
+            if (!abandoned.ok) throw abandoned.error;
+            this.log.error('mail_ops.delivery_cross_company_chat', {
+              deliveryId: input.deliveryId,
+              companyId: payload.companyId,
+              chatId: chat,
+            });
+            return;
+          }
+        }
         providerMessageId = await this.deps.deliverLark({
-          chatId: payload.destination.chatId,
+          chatId: chat,
           idempotencyKey: payload.idempotencyKey,
           text: formatLarkDelivery(payload),
         });

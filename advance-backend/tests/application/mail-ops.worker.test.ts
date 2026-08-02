@@ -628,6 +628,80 @@ describe('MailOpsWorker', () => {
     });
   });
 
+  it('abandons rather than retries a Lark chat owned by another company', async () => {
+    // Creation is where a chat is vetted, but the rule outlives that check. A
+    // room in somebody else's company is never going to become the right
+    // destination, so retrying it five times just knocks on their door five
+    // times.
+    let deliveryClaimed = false;
+    let abandoned: { deliveryId: string; attempts: number; reason: string } | undefined;
+    let larkSends = 0;
+    const worker = new MailOpsWorker({
+      repo: {
+        claimNextWatchRenewal: async () => ({ ok: true, value: null }),
+        claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        claimNextDueDelivery: async () => {
+          if (deliveryClaimed) return { ok: true, value: null };
+          deliveryClaimed = true;
+          return {
+            ok: true,
+            value: {
+              deliveryId: 'delivery-1',
+              attempts: 1,
+              payload: {
+                companyId: 'company-1',
+                userId: 'user-1',
+                subscriptionId: 'mailbox-1',
+                connectionId: 'connection-1',
+                mailboxEmail: 'user@example.com',
+                ruleId: 'rule-1',
+                eventId: 'event-1',
+                sourceMessageId: 'message-1',
+                idempotencyKey: 'mail:idempotency',
+                action: { type: 'deliver' },
+                destination: { type: 'lark_chat', chatId: 'oc_other_company' },
+                message: event.metadata,
+              },
+            },
+          };
+        },
+        markDeliveryDelivered: async () => ({ ok: true, value: true }),
+        markDeliveryFailed: async () => ({ ok: true, value: true }),
+        markDeliveryAbandoned: async (
+          deliveryId: string,
+          attempts: number,
+          reason: string,
+        ) => {
+          abandoned = { deliveryId, attempts, reason };
+          return { ok: true, value: true };
+        },
+      },
+      gmail: {
+        watch: async () => { throw new Error('unused'); },
+        sync: async () => { throw new Error('unused'); },
+        forward: async () => { throw new Error('unused'); },
+      },
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      authorizeLarkChat: async input => {
+        assert.equal(input.companyId, 'company-1');
+        assert.equal(input.chatId, 'oc_other_company');
+        return { status: 'other_company' };
+      },
+      deliverLark: async () => { larkSends += 1; return 'unexpected'; },
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(larkSends, 0);
+    assert.deepEqual(abandoned, {
+      deliveryId: 'delivery-1',
+      attempts: 1,
+      reason: 'The destination Lark chat belongs to a different company.',
+    });
+  });
+
   it('forwards a real display-name sender without revalidating it as a rule', async () => {
     let deliveryClaimed = false;
     let delivered: { deliveryId: string; providerMessageId: string }

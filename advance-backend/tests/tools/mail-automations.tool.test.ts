@@ -185,6 +185,91 @@ describe('mailAutomations tool', () => {
     assert.equal(authorizationInput.runContext.runtimeRunId, 'run-1');
   });
 
+  it('refuses a named Lark chat that belongs to another company', async () => {
+    // destinationSchema accepted any chatId string, and the rule that a chat
+    // must be discovered through governed means was prompt text only. Anything
+    // the bot could post to was a legal destination.
+    let created = 0;
+    const tool = createMailAutomationsTool({
+      runtime: { pubsubConfigured: true, workersEnabled: true },
+      repo: { createRuleForMailbox: async () => { created++; return { ok: true, value: {} }; } } as any,
+      resolveConnection: async () => ({
+        status: 'resolved',
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        mailboxEmail: 'owner@example.com',
+      }),
+      authorizeLarkChat: async () => ({ status: 'other_company' }),
+    });
+
+    const result = await tool.execute({
+      operation: 'create',
+      name: 'Forward invoices',
+      match: { subjectContains: 'Invoice' },
+      destination: { type: 'lark_chat', chatId: 'oc_someone_elses' },
+    }, makeCtx('mailAutomations', ['create', 'execute'], { channel: 'lark', chatId: 'oc_here' }));
+
+    assert.equal(result.ok, false);
+    assert.match(!result.ok ? result.error.message : '', /different company/);
+    assert.equal(created, 0);
+  });
+
+  it('tells a member how to ground a chat Divo has never seen', async () => {
+    const tool = createMailAutomationsTool({
+      runtime: { pubsubConfigured: true, workersEnabled: true },
+      repo: {} as any,
+      resolveConnection: async () => ({
+        status: 'resolved',
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        mailboxEmail: 'owner@example.com',
+      }),
+      authorizeLarkChat: async () => ({ status: 'unknown_chat' }),
+    });
+
+    const result = await tool.execute({
+      operation: 'create',
+      name: 'Forward invoices',
+      match: { subjectContains: 'Invoice' },
+      destination: { type: 'lark_chat', chatId: 'oc_unknown' },
+    }, makeCtx('mailAutomations', ['create', 'execute'], { channel: 'lark', chatId: 'oc_here' }));
+
+    assert.equal(result.ok, false);
+    assert.match(!result.ok ? result.error.message : '', /Add Divo to the chat/);
+  });
+
+  it('does not re-ground the conversation the request already came from', async () => {
+    // current_lark_chat resolves to the chat on the signed run context, which
+    // arrived on a real inbound event for this company. Demanding a room record
+    // for it would break every DM, which never has one.
+    let checked = 0;
+    let created: any;
+    const tool = createMailAutomationsTool({
+      runtime: { pubsubConfigured: true, workersEnabled: true },
+      repo: {
+        createRuleForMailbox: async (input: any) => {
+          created = input;
+          return { ok: true, value: { ruleId: 'rule-1', status: 'active', createdAt: new Date() } };
+        },
+      } as any,
+      resolveConnection: async () => ({
+        status: 'resolved',
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        mailboxEmail: 'owner@example.com',
+      }),
+      authorizeLarkChat: async () => { checked++; return { status: 'unknown_chat' }; },
+    });
+
+    const result = await tool.execute({
+      operation: 'create',
+      name: 'Forward invoices',
+      match: { subjectContains: 'Invoice' },
+      destination: { type: 'current_lark_chat' },
+    }, makeCtx('mailAutomations', ['create', 'execute'], { channel: 'lark', chatId: 'oc_here' }));
+
+    assert.equal(result.ok, true);
+    assert.equal(checked, 0);
+    assert.equal(created.destination.chatId, 'oc_here');
+  });
+
   it('names the actual remedy for each way a Google account can be unusable', () => {
     // One shared sentence used to send a member with a scope-limited account to
     // connect an account they already had, and a member with no account to

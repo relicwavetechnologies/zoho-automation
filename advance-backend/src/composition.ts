@@ -150,6 +150,7 @@ import {
   GoogleConnectionAuthorizationService,
 } from './application/connections/google-connection-authorization.service';
 import { RunOriginStore } from './application/connections/run-origin.store';
+import { createLarkChatDestinationAuthorizer } from './application/mail-ops/lark-chat-destination';
 import {
   createBeginGoogleAuthorization,
   type DeliverGoogleConnectCard,
@@ -452,6 +453,12 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const conversationRepo      = new ConversationRepository(prisma, cache);
   const channelIdentityRepo   = new ChannelIdentityRepository(prisma, cache);
   const larkChatContextRepo   = new LarkChatContextRepository(prisma);
+  // Grounds a mail rule's Lark destination in a room Divo has actually been in
+  // for this company. Until now nothing checked at all: the "use governed chat
+  // discovery" rule lived only in prompt text, so any room the bot could reach
+  // was a legal destination — including, where one Lark install serves two Divo
+  // companies, the other company's rooms.
+  const authorizeMailOpsLarkChat = createLarkChatDestinationAuthorizer(larkChatContextRepo);
   const ingressReceiptRepo    = new IngressReceiptRepository(prisma);
   const connectionAuthorizationRepo = new ConnectionAuthorizationRepository(
     prisma,
@@ -1729,6 +1736,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     },
     resolveConnection: resolveMailAutomationGoogleConnection,
     beginAuthorization: beginGoogleAuthorization,
+    authorizeLarkChat: authorizeMailOpsLarkChat,
   }));
   toolRegistry.register(createCanvaDesignTool({ getClient: getCanvaMcpClient }));
   for (const tool of createAirtableMcpTools({
@@ -2025,6 +2033,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
             reason: 'You no longer have permission to run mail automations.',
           };
     },
+    authorizeLarkChat: authorizeMailOpsLarkChat,
     deliverLark: async input => {
       const sent = await larkAdapter.sendToChatId(
         input.chatId,
