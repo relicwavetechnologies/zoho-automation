@@ -13,6 +13,8 @@ export const DATA_EXPORT_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = {
 
 Use \`dataExport\` when the user asks for all rows, a complete export, a CSV, a Google Sheet, or when a source preview reports more data.
 
+When a source result contains \`preview.exportOfferId\`, explain briefly that more rows are available and ask whether the user wants the offered export. After an explicit confirmation, call \`dataExport\` with only \`{ "offerId": "<preview.exportOfferId>" }\`. Never reconstruct the source query, connection, filters, destination, company, or user from the conversation, and never combine \`offerId\` with other arguments.
+
 The current system cap is ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows per export. If the user asks for more or for every row, state this limit clearly. Never claim that a capped artifact is complete; the completion card will say when additional source rows were omitted.
 
 1. Resolve the exact source connection and dataset identifiers first.

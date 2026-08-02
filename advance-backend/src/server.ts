@@ -109,6 +109,7 @@ export const createServer = (c: Container): DivoServerApplication => {
     appBaseUrl:            c.env.APP_BASE_URL,
     approvalGate:          c.approvalGate,
     approvalCardHandler:   c.approvalCardHandler,
+    dataExportCardHandler: c.dataExportCardHandler,
     knowledgeReviewService: c.larkKnowledgeReviewService,
     larkOAuthService:      c.larkOAuthService,
     connectionRepo:        c.integrationConnectionRepo,

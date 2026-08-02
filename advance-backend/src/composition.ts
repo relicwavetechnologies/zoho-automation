@@ -14,6 +14,7 @@ import { ApprovalResumerService } from './application/approval/approval-resumer.
 import { AutomationPlanService } from './application/gateway/automation-plan.service';
 import { AutomationPlanExecutor } from './application/gateway/automation-plan.executor';
 import { LarkApprovalCardHandler } from './infrastructure/channels/lark/lark-approval-card.handler';
+import { LarkDataExportCardHandler } from './infrastructure/channels/lark/lark-data-export-card.handler';
 import { ConsoleLogger } from './shared/logger';
 import { createPinoLogger } from './shared/pino-logger';
 import { systemClock } from './shared/clock';
@@ -122,12 +123,14 @@ import { ChatMessageSerializer } from './application/channels/chat-message-seria
 
 // Data export and async ingress
 import { DataExportQueue } from './application/data-export/data-export.queue';
-import { DataExportSourceRegistry } from './application/data-export/data-export.types';
+import { DataExportOfferService } from './application/data-export/data-export-offer.service';
+import { DatasetSourceRegistry } from './application/data-export/data-export.source-registry';
 import {
   AirtableDataExportSource,
   ZohoBooksDataExportSource,
 } from './application/data-export/data-export.sources';
 import { GoogleWorkspaceExportSink } from './application/data-export/google-workspace-export.sink';
+import { DataExportOfferRepository } from './infrastructure/persistence/data-export-offer.repository';
 import { parseDataExportProfile, DATA_EXPORT_CAPABILITY_ID } from './application/data-export/data-export.profile';
 import { LarkIngressQueue } from './application/lark-ingress/lark-ingress.queue';
 import {
@@ -309,10 +312,11 @@ export interface Container {
   // HITL approval
   approvalGate: ApprovalGateService;
   approvalCardHandler: LarkApprovalCardHandler;
+  dataExportCardHandler: LarkDataExportCardHandler;
   approvalResumer: ApprovalResumerService;
   approvalInbox: ApprovalInboxService;
   dataExportQueue: DataExportQueue;
-  dataExportSources: DataExportSourceRegistry;
+  dataExportSources: DatasetSourceRegistry;
   googleWorkspaceExportSink: GoogleWorkspaceExportSink;
   resolveGoogleExportAuth: (companyId: string) => Promise<{
     readonly accessToken: string;
@@ -1244,6 +1248,12 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   );
 
   const dataExportQueue = new DataExportQueue(queueRedisUrl);
+  const dataExportOfferService = new DataExportOfferService({
+    offers: new DataExportOfferRepository(prisma),
+    queue: dataExportQueue,
+    identityRepo: channelIdentityRepo,
+    permissions,
+  });
   const larkIngressQueue = new LarkIngressQueue(queueRedisUrl);
   const googleConnectionContinuationQueue =
     new GoogleConnectionContinuationQueue(queueRedisUrl);
@@ -1307,7 +1317,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   // ── Zoho Books paginated client + finance ops ────────────────────────────
   const zohoPaginatedBooksClient = new ZohoBooksPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
-  const dataExportSources = new DataExportSourceRegistry();
+  const dataExportSources = new DatasetSourceRegistry();
   dataExportSources.register(new AirtableDataExportSource(getAirtableMcpConnection));
   dataExportSources.register(new ZohoBooksDataExportSource(
     zohoPaginatedBooksClient,
@@ -1636,6 +1646,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     booksClient:     zohoPaginatedBooksClient,
     financeOps:      zohoFinanceOps,
     exportQueue:     dataExportQueue,
+    offers:          dataExportOfferService,
     inlineThreshold: env.ZOHO_BOOKS_CSV_INLINE_THRESHOLD,
   }));
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
@@ -1647,7 +1658,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     files: knowledgeFileService,
     documents: knowledgeDocumentSearch,
   }));
-  toolRegistry.register(createDataExportTool({ queue: dataExportQueue }));
+  toolRegistry.register(createDataExportTool({ offers: dataExportOfferService }));
   toolRegistry.register(createSemrushTool({
     service: semrushService,
     cloudinary: cloudinaryAdapter,
@@ -1927,6 +1938,10 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger.child({ service: 'approval-card-handler' }),
     auditService,
   );
+  const dataExportCardHandler = new LarkDataExportCardHandler(
+    dataExportOfferService,
+    logger.child({ service: 'data-export-card-handler' }),
+  );
 
   // The same decisions the Lark card carries, reachable by anyone signed in.
   // `onResolvedCard` is what stops a delivered card from still offering buttons
@@ -2056,6 +2071,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   // HITL approval
   approvalGate,
     approvalCardHandler,
+    dataExportCardHandler,
     approvalResumer,
     approvalInbox,
     // Data export and async ingress

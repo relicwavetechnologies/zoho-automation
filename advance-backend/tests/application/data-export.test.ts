@@ -5,10 +5,8 @@ import {
   AirtableDataExportSource,
   ZohoBooksDataExportSource,
 } from '../../src/application/data-export/data-export.sources.ts';
-import {
-  DataExportSourceRegistry,
-  type DataExportJobPayload,
-} from '../../src/application/data-export/data-export.types.ts';
+import type { DataExportJobPayload } from '../../src/application/data-export/data-export.types.ts';
+import { DatasetSourceRegistry } from '../../src/application/data-export/data-export.source-registry.ts';
 import { DataExportWorker } from '../../src/application/data-export/data-export.worker.ts';
 import {
   dataExportJobId,
@@ -20,9 +18,10 @@ import {
 } from '../../src/application/data-export/data-export.profile.ts';
 import { GOOGLE_SCOPE } from '../../src/domain/google/google-workspace-scope.ts';
 import { asToolId } from '../../src/shared/ids.ts';
-import { noopLogger } from '../tools/tool-test.helpers.ts';
+import { makeCtx, noopLogger } from '../tools/tool-test.helpers.ts';
 import { createDataExportTool } from '../../src/application/tools/families/data-export.tool.ts';
 import { recoverCompletedExport } from '../../src/application/data-export/google-workspace-export.sink.ts';
+import type { DataExportDestinationSink } from '../../src/application/data-export/data-export.destination.ts';
 import { ZohoBooksPaginatedClient } from '../../src/infrastructure/zoho/zoho-books-paginated.client.ts';
 
 describe('data export sandbox', () => {
@@ -291,6 +290,43 @@ describe('data export source adapters', () => {
   });
 });
 
+describe('data export source registry', () => {
+  it('dispatches by source kind and rejects an unregistered source', () => {
+    const registry = new DatasetSourceRegistry();
+    const airtable = {
+      kind: 'airtable_records' as const,
+      async *read() { yield { rows: [] }; },
+    };
+    const zohoBooks = {
+      kind: 'zoho_books' as const,
+      async *read() { yield { rows: [] }; },
+    };
+    registry.register(airtable);
+    registry.register(zohoBooks);
+
+    assert.equal(registry.resolve({
+      kind: 'airtable_records',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      toolId: 'airtableRecords',
+      nativeTool: 'list_records_for_table',
+      input: {},
+    }), airtable);
+    assert.equal(registry.resolve({
+      kind: 'zoho_books',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      module: 'invoices',
+    }), zohoBooks);
+    assert.throws(
+      () => new DatasetSourceRegistry().resolve({
+        kind: 'zoho_books',
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        module: 'invoices',
+      }),
+      /unsupported data export source/i,
+    );
+  });
+});
+
 describe('data export queue identity', () => {
   const base: DataExportJobPayload = {
     companyId: 'company-1',
@@ -313,6 +349,14 @@ describe('data export queue identity', () => {
     };
     assert.equal(dataExportJobId(base), dataExportJobId(second));
     assert.notEqual(dataExportSpecHash(base), dataExportSpecHash(second));
+    assert.notEqual(
+      dataExportSpecHash(base),
+      dataExportSpecHash({
+        ...base,
+        replyToMessageId: 'om_thread_root',
+        replyInThread: true,
+      }),
+    );
     assert.notEqual(dataExportJobId(base), dataExportJobId({ ...base, requestId: 'om_next' }));
   });
 });
@@ -413,6 +457,45 @@ describe('Google export retry recovery', () => {
     assert.equal(permissionCreates, 0);
     assert.equal(fileDeletes, 0);
   });
+
+  it('rejects a recovered artifact with access beyond the verified invoker', async () => {
+    const drive = {
+      files: {
+        list: async () => ({
+          data: {
+            files: [{
+              id: 'file-1',
+              webViewLink: 'https://drive.google.com/file/d/file-1/view',
+              appProperties: {
+                divoExportKey: 'job-1',
+                divoExportState: 'complete',
+                divoExportRowCount: '10',
+                divoExportTruncated: 'false',
+                divoExportType: 'csv',
+              },
+            }],
+          },
+        }),
+        delete: async () => assert.fail('completed artifact must not be deleted'),
+      },
+      permissions: {
+        list: async () => ({
+          data: {
+            permissions: [
+              { type: 'user', role: 'owner', emailAddress: 'divo@emiactech.com' },
+              { type: 'user', role: 'reader', emailAddress: 'abhishek@emiactech.com' },
+              { type: 'domain', role: 'reader', domain: 'emiactech.com' },
+            ],
+          },
+        }),
+        create: async () => assert.fail('verified invoker access already exists'),
+      },
+    };
+    await assert.rejects(
+      () => recoverCompletedExport(drive as any, 'job-1', 'abhishek@emiactech.com'),
+      /access beyond the invoker/i,
+    );
+  });
 });
 
 describe('data export worker', () => {
@@ -429,11 +512,13 @@ describe('data export worker', () => {
     transform: { script: 'return { name: row.Name, rowNumber: index + 1 }' },
     destination: { format: 'auto', title: 'Orders' },
     chatId: 'oc_test',
+    replyToMessageId: 'om_thread_root',
+    replyInThread: true,
     requestId: 'om_test',
   };
   const createWorker = (input: {
-    registry: DataExportSourceRegistry;
-    sink: { write: (input: any) => Promise<any> };
+    registry: DatasetSourceRegistry;
+    sink: DataExportDestinationSink;
     larkAdapter: {
       sendToChatId: (...args: any[]) => Promise<any>;
       updateMessageById: (...args: any[]) => Promise<any>;
@@ -443,7 +528,7 @@ describe('data export worker', () => {
   }) => new DataExportWorker({
     redisUrl: 'redis://unused',
     sources: input.registry,
-    sink: input.sink as any,
+    sink: input.sink,
     identityRepo: {
       resolveByUserId: async () => ({
         ok: true as const,
@@ -477,7 +562,7 @@ describe('data export worker', () => {
   });
 
   it('shares only with the verified invoker, then persists before delivery', async () => {
-    const registry = new DataExportSourceRegistry();
+    const registry = new DatasetSourceRegistry();
     registry.register({
       kind: 'airtable_records',
       async *read() {
@@ -488,6 +573,7 @@ describe('data export worker', () => {
     const progress: unknown[] = [];
     const delivered: string[] = [];
     const edited: string[] = [];
+    let trackerTarget: unknown;
     const worker = new DataExportWorker({
       redisUrl: 'redis://unused',
       sources: registry,
@@ -539,7 +625,8 @@ describe('data export worker', () => {
       } as any,
       resolveGoogleAuth: async () => ({ accessToken: 'short-lived', readerDomain: 'emiactech.com' }),
       larkAdapter: {
-        sendToChatId: async (_chatId, content) => {
+        sendToChatId: async (chatId, content, replyToMessageId, idempotencyKey, replyInThread) => {
+          trackerTarget = { chatId, replyToMessageId, idempotencyKey, replyInThread };
           delivered.push(content);
           return { ok: true as const, value: 'om-delivered' };
         },
@@ -567,12 +654,118 @@ describe('data export worker', () => {
     ]);
     assert.match(delivered[0] ?? '', /Data export in progress/i);
     assert.match(edited.at(-1) ?? '', /Open export|Data export ready/i);
+    assert.deepEqual(trackerTarget, {
+      chatId: 'oc_test',
+      replyToMessageId: 'om_thread_root',
+      idempotencyKey: `dtxp_${dataExportJobId(payload)}`,
+      replyInThread: true,
+    });
+  });
+
+  it('delivers a persisted completion on retry without re-running the export', async () => {
+    const completion = {
+      success: true as const,
+      artifactId: 'sheet-persisted',
+      artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-persisted/edit',
+      artifactType: 'google_sheet' as const,
+      rowCount: 2,
+      sourceTruncated: false,
+      sharedWith: 'abhishek@emiactech.com (reader)',
+      verified: true as const,
+    };
+    let edited = '';
+    const worker = new DataExportWorker({
+      redisUrl: 'redis://unused',
+      sources: {
+        register: () => assert.fail('registry must not be mutated'),
+        resolve: () => assert.fail('source must not be resolved'),
+      } as any,
+      sink: { write: async () => assert.fail('sink must not run') } as any,
+      identityRepo: {
+        resolveByUserId: async () => assert.fail('identity must not be resolved'),
+      } as any,
+      permissions: {
+        resolve: async () => assert.fail('permissions must not be resolved'),
+      } as any,
+      resolveGoogleAuth: async () => assert.fail('Google auth must not be resolved'),
+      larkAdapter: {
+        sendToChatId: async () => assert.fail('existing tracker must be reused'),
+        updateMessageById: async (_messageId, content) => {
+          edited = content;
+          return { ok: true as const, value: undefined };
+        },
+      },
+      logger: noopLogger,
+    });
+    await worker.processJob({
+      id: 'persisted-job',
+      data: {
+        ...payload,
+        progressMessageId: 'om-existing-tracker',
+        completedExport: completion,
+      },
+      attemptsMade: 1,
+      opts: { attempts: 3 },
+      updateData: async () => assert.fail('persisted completion must not be rewritten'),
+      updateProgress: async () => assert.fail('completed retry must not report export progress'),
+    });
+    assert.match(edited, /Data export ready/i);
+    assert.match(edited, /sheet-persisted/i);
+  });
+
+  it('turns the original export-offer card into the progress and completion tracker', async () => {
+    const registry = new DatasetSourceRegistry();
+    registry.register({
+      kind: 'airtable_records',
+      async *read() {
+        yield { rows: [{ Name: 'One' }] };
+      },
+    });
+    const edits: string[] = [];
+    const worker = createWorker({
+      registry,
+      sink: {
+        write: async (input) => {
+          for await (const _page of input.rows) { /* consume source */ }
+          return {
+            success: true,
+            artifactId: 'sheet-1',
+            artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+            artifactType: 'google_sheet',
+            rowCount: 1,
+            sourceTruncated: false,
+            sharedWith: 'abhishek@emiactech.com (reader)',
+            verified: true,
+          };
+        },
+      },
+      larkAdapter: {
+        sendToChatId: async () => assert.fail('the offer card must be reused'),
+        updateMessageById: async (messageId, card) => {
+          assert.equal(messageId, 'om_export_card');
+          edits.push(card);
+          return { ok: true as const, value: undefined };
+        },
+      },
+    });
+
+    await worker.processJob({
+      id: dataExportJobId(payload),
+      data: { ...payload, progressMessageId: 'om_export_card' },
+      attemptsMade: 0,
+      opts: { attempts: 1 },
+      updateData: async () => undefined,
+      updateProgress: async () => undefined,
+    });
+
+    assert.match(edits[0] ?? '', /Data export in progress/i);
+    assert.match(edits.at(-1) ?? '', /Data export ready/i);
   });
 
   it('fails before reading the source when the invoker email is outside the configured domain', async () => {
     let sourceRead = false;
     let failureDelivered = false;
-    const registry = new DataExportSourceRegistry();
+    const registry = new DatasetSourceRegistry();
     registry.register({
       kind: 'airtable_records',
       async *read() {
@@ -636,7 +829,7 @@ describe('data export worker', () => {
 
   it('keeps a progressing export alive beyond the inactivity window and aborts a stalled source', async () => {
     const { transform: _transform, ...untransformedPayload } = payload;
-    const progressing = new DataExportSourceRegistry();
+    const progressing = new DatasetSourceRegistry();
     progressing.register({
       kind: 'airtable_records',
       async *read() {
@@ -679,7 +872,7 @@ describe('data export worker', () => {
     });
 
     let failureCard = '';
-    const stalled = new DataExportSourceRegistry();
+    const stalled = new DatasetSourceRegistry();
     stalled.register({
       kind: 'airtable_records',
       async *read(_source, context) {
@@ -715,7 +908,7 @@ describe('data export worker', () => {
   });
 
   it('never sends a second terminal card when the tracker edit fails', async () => {
-    const registry = new DataExportSourceRegistry();
+    const registry = new DatasetSourceRegistry();
     registry.register({
       kind: 'airtable_records',
       async *read() {
@@ -764,7 +957,7 @@ describe('data export worker', () => {
 
   it('applies one central source/output row cap and marks the artifact truncated', async () => {
     const { transform: _transform, ...untransformedPayload } = payload;
-    const registry = new DataExportSourceRegistry();
+    const registry = new DatasetSourceRegistry();
     registry.register({
       kind: 'airtable_records',
       async *read() {
@@ -814,7 +1007,10 @@ describe('data export worker', () => {
 
 describe('data export access contract', () => {
   const tool = createDataExportTool({
-    queue: { enqueue: async () => 'unused' },
+    offers: {
+      submitAuthorized: async () => 'unused',
+      confirmForActor: async () => ({ exportJobId: 'unused', disposition: 'queued' }),
+    },
   });
   const base = {
     source: {
@@ -832,5 +1028,101 @@ describe('data export access contract', () => {
       destination: { ...base.destination, access: 'company' },
     }).success, false);
     assert.equal(tool.argsSchema.safeParse({ ...base, recipients: ['other@emiactech.com'] }).success, false);
+  });
+
+  it('accepts only an opaque offer ID for confirmation', () => {
+    const offerId = '11111111-1111-4111-8111-111111111111';
+    assert.equal(tool.argsSchema.safeParse({ offerId }).success, true);
+    assert.equal(tool.argsSchema.safeParse({ offerId, ...base }).success, false);
+    assert.equal(tool.argsSchema.safeParse({ offerId, companyId: 'company-other' }).success, false);
+  });
+
+  it('pins a direct recipe to the backend-derived Lark reply address', async () => {
+    let submitted: unknown;
+    const recipeTool = createDataExportTool({
+      offers: {
+        submitAuthorized: async (input) => {
+          submitted = input;
+          return 'dtx_recipe';
+        },
+        confirmForActor: async () => assert.fail('direct recipe must not confirm an offer'),
+      },
+    });
+
+    const result = await recipeTool.execute(
+      base,
+      makeCtx('dataExport', ['create'], {
+        chatId: 'oc_group',
+        replyToMessageId: 'om_thread_root',
+        replyInThread: true,
+      }),
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(submitted, {
+      companyId: 'co-test',
+      userId: 'user-test',
+      source: base.source,
+      destination: base.destination,
+      chatId: 'oc_group',
+      replyToMessageId: 'om_thread_root',
+      replyInThread: true,
+      requestId: 'test-corr',
+    });
+  });
+
+  it('derives confirmation identity and conversation from the trusted run context', async () => {
+    const offerId = '11111111-1111-4111-8111-111111111111';
+    let confirmationInput: unknown;
+    const confirmationTool = createDataExportTool({
+      offers: {
+        submitAuthorized: async () => assert.fail('opaque confirmation must not submit a caller recipe'),
+        confirmForActor: async (input) => {
+          confirmationInput = input;
+          return { exportJobId: 'dtx_confirmed', disposition: 'queued' };
+        },
+      },
+    });
+
+    const result = await confirmationTool.execute(
+      { offerId },
+      makeCtx('dataExport', ['create'], { chatId: 'oc_chat' }),
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(confirmationInput, {
+      offerId,
+      companyId: 'co-test',
+      userId: 'user-test',
+      chatId: 'oc_chat',
+    });
+    if (result.ok) {
+      assert.equal(result.value.exportJobId, 'dtx_confirmed');
+      assert.equal(result.value.exportQueued, true);
+    }
+  });
+
+  it('does not claim a concurrent in-progress confirmation is already queued', async () => {
+    const confirmationTool = createDataExportTool({
+      offers: {
+        submitAuthorized: async () => assert.fail('opaque confirmation must not submit a caller recipe'),
+        confirmForActor: async () => ({
+          exportJobId: 'dtx_pending',
+          disposition: 'in_progress',
+        }),
+      },
+    });
+
+    const result = await confirmationTool.execute(
+      { offerId: '11111111-1111-4111-8111-111111111111' },
+      makeCtx('dataExport', ['create'], { chatId: 'oc_chat' }),
+    );
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.value.exportQueued, false);
+      assert.match(result.value.message, /confirmation is already in progress/i);
+      assert.match(result.value.message, /confirm it again/i);
+    }
   });
 });

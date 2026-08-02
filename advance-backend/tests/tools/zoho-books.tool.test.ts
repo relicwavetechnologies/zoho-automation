@@ -83,11 +83,13 @@ function makeTool(overrides: {
   simpleClient?: ZohoBooksClientPort | null;
   booksClient?:  ZohoBooksPaginatedClient;
   financeOps?:   ZohoFinanceOps;
+  offers?: Parameters<typeof createZohoBooksTool>[0]['offers'];
 } = {}) {
   return createZohoBooksTool({
     getClient:       async () => overrides.simpleClient ?? fakeSimpleClient,
     booksClient:     overrides.booksClient ?? makeBooksClient(),
     financeOps:      overrides.financeOps ?? (fakeFinanceOps as ZohoFinanceOps),
+    ...(overrides.offers ? { offers: overrides.offers } : {}),
     inlineThreshold: 25,
   });
 }
@@ -146,7 +148,7 @@ describe('zohoBooks expanded execution', () => {
     assert.equal(captures.listInput.filters.status, 'partially_paid');
     assert.equal(captures.allInput, undefined);
 
-    const items = (result as any).value.data.items as any[];
+    const items = (result as any).value.preview.rows as any[];
     assert.equal(items[0].total, '120.50');
     assert.equal(items[0].totalFormatted, '₹120.50');
     assert.equal(items[0].date, '2026-05-01');
@@ -245,7 +247,7 @@ describe('zohoBooks expanded execution', () => {
 
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    const item = (result.value.data as any).items[0];
+    const item = result.value.preview!.rows[0] as any;
     assert.equal(item.currency_code, undefined);
     assert.equal(item.amountFormatted, undefined);
     assert.match(result.value.message ?? '', /currency unavailable/i);
@@ -282,7 +284,7 @@ describe('zohoBooks expanded execution', () => {
     assert.equal(captures.listInput.perPage, 25);
     assert.equal(captures.allInput, undefined);
     if (!result.ok) return;
-    assert.equal((result.value.data as any).items.length, 5);
+    assert.equal(result.value.preview?.rows.length, 5);
     assert.equal(result.value.suggestExport, false);
     assert.doesNotMatch(result.value.message ?? '', /exportAll/);
   });
@@ -314,13 +316,172 @@ describe('zohoBooks expanded execution', () => {
 
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    const item = (result.value.data as any).items[0];
+    const item = result.value.preview!.rows[0] as any;
     assert.equal(item.invoice_number, 'INV-1');
     assert.equal(item.totalFormatted, '₹100.00');
     assert.equal(item.line_items, undefined);
     assert.equal(item.unwanted_blob, undefined);
     assert.equal((result.value.report as any).items, undefined);
     assert.ok(JSON.stringify(result.value).length < 5_000);
+  });
+
+  it('returns one persisted opaque offer for a default list overflow without queueing', async () => {
+    let offeredPayload: any;
+    const booksClient = {
+      listRecords: async () => ({
+        organizationId: 'org-1',
+        items: Array.from({ length: 25 }, (_, index) => ({
+          invoice_id: `inv-${index}`,
+          invoice_number: `INV-${index}`,
+          total: index + 1,
+          currency_code: 'INR',
+        })),
+        hasMore: true,
+        page: 1,
+      }),
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({
+      booksClient,
+      offers: {
+        createAuthorizedOffer: async (input) => {
+          offeredPayload = input;
+          return {
+            offerId: 'offer-opaque',
+            expiresAt: new Date('2026-08-03T00:00:00.000Z'),
+          };
+        },
+      },
+    });
+    const offerCtx = makeCtx('zohoBooks', ['read'], {
+      chatId: 'oc_test',
+      replyToMessageId: 'om_thread_root',
+      replyInThread: true,
+      requestId: 'om_preview',
+    });
+    offerCtx.perm.allowedToolIds.add(asToolId('dataExport'));
+    offerCtx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
+
+    const result = await tool.execute({
+      op: 'list_invoices',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      dateFrom: '2026-07-01',
+      dateTo: '2026-07-31',
+      status: 'partially paid',
+    }, offerCtx);
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.value.preview?.rows.length, 25);
+    assert.equal(result.value.preview?.coverage.kind, 'truncated');
+    assert.equal(result.value.preview?.exportOfferId, 'offer-opaque');
+    assert.equal(result.value.data, undefined);
+    assert.equal(offeredPayload.source.kind, 'zoho_books');
+    assert.equal(offeredPayload.source.module, 'invoices');
+    assert.equal(offeredPayload.source.connectionId, '11111111-1111-4111-8111-111111111111');
+    assert.deepEqual(offeredPayload.source.filters, {
+      date_start: '2026-07-01',
+      date_end: '2026-07-31',
+      status: 'partially_paid',
+    });
+    assert.equal(offeredPayload.replyToMessageId, 'om_thread_root');
+    assert.equal(offeredPayload.replyInThread, true);
+    assert.equal('rows' in offeredPayload, false);
+  });
+
+  it('does not create an offer when any offer guard is missing', async () => {
+    const booksClient = {
+      listRecords: async () => ({
+        organizationId: 'org-1',
+        items: Array.from({ length: 25 }, (_, index) => ({
+          invoice_id: `inv-${index}`,
+          invoice_number: `INV-${index}`,
+          customer_email: 'member@example.com',
+          total: index + 1,
+          currency_code: 'INR',
+        })),
+        hasMore: true,
+        page: 1,
+      }),
+    } as unknown as ZohoBooksPaginatedClient;
+    let offerCalls = 0;
+    const offers = {
+      createAuthorizedOffer: async () => {
+        offerCalls += 1;
+        return { offerId: 'unexpected', expiresAt: new Date() };
+      },
+    };
+    const cases = [
+      {
+        name: 'explicit limit',
+        args: { limit: 5 },
+        chatId: 'oc_test',
+        allowExport: true,
+        offersEnabled: true,
+      },
+      {
+        name: 'personalized scope',
+        args: {},
+        chatId: 'oc_test',
+        allowExport: true,
+        offersEnabled: true,
+        personalized: true,
+      },
+      {
+        name: 'missing dataExport permission',
+        args: {},
+        chatId: 'oc_test',
+        allowExport: false,
+        offersEnabled: true,
+      },
+      {
+        name: 'missing Lark chat',
+        args: {},
+        allowExport: true,
+        offersEnabled: true,
+      },
+      {
+        name: 'missing offer service',
+        args: {},
+        chatId: 'oc_test',
+        allowExport: true,
+        offersEnabled: false,
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const before = offerCalls;
+      const tool = makeTool({
+        booksClient,
+        ...(testCase.offersEnabled ? { offers } : {}),
+      });
+      const guardedCtx = makeCtx('zohoBooks', ['read'], {
+        ...(testCase.chatId ? { chatId: testCase.chatId } : {}),
+        requestId: `om_${testCase.name}`,
+        ...(testCase.personalized ? { requesterEmail: 'member@example.com' } : {}),
+      });
+      if (testCase.allowExport) {
+        guardedCtx.perm.allowedToolIds.add(asToolId('dataExport'));
+        guardedCtx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
+      }
+      if (testCase.personalized) {
+        (guardedCtx.perm as any).department = {
+          id: 'dept-1',
+          name: 'Finance',
+          roleSlug: 'MEMBER',
+          zohoReadScope: 'personalized',
+        };
+      }
+
+      const result = await tool.execute({
+        op: 'list_invoices',
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        ...testCase.args,
+      }, guardedCtx);
+
+      assert.equal(result.ok, true, testCase.name);
+      assert.equal(result.ok && result.value.preview?.exportOfferId, undefined, testCase.name);
+      assert.equal(offerCalls, before, testCase.name);
+    }
   });
 
   it('returns mapped Zoho error messages from upstream failures', async () => {

@@ -15,6 +15,7 @@ const logger = {
 } as any;
 const runEffectReceipts = {
   getVerifiedKnowledgeEffect: async () => null,
+  getVerifiedDataExportOffer: async () => null,
 };
 
 function runtimeInput() {
@@ -118,6 +119,51 @@ test('binds a group run to a shared audience in the signed runtime lease', async
   const claims = JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString('utf8'));
   assert.equal(claims.contextAudience, 'shared');
   assert.equal(controllerBody?.['sessionScope'], 'run');
+});
+
+test('turns a verified export offer receipt into one opaque final-card action', async () => {
+  const offerId = '11111111-1111-4111-8111-111111111111';
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts: {
+      getVerifiedKnowledgeEffect: async () => null,
+      getVerifiedDataExportOffer: async identity => ({
+        version: 1,
+        kind: 'data_export_offer',
+        status: 'offered',
+        effectKind: 'data_export_offered',
+        ...identity,
+        offerId,
+        createdAt: '2026-08-02T00:00:00.000Z',
+      }),
+    },
+    fetch: async () => new Response(JSON.stringify({ text: 'I found more rows.' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  const result = await service.run(runtimeInput());
+
+  assert.deepEqual(result.actions, [{
+    label: 'Export all rows',
+    value: JSON.stringify({ kind: 'data_export_confirm', offerId }),
+    style: 'primary',
+  }]);
 });
 
 test('delivers a natural personal-preference acknowledgement and captures learning once', async () => {
@@ -270,7 +316,10 @@ test('allows a verified explicit personal save and does not enqueue duplicate im
     instanceId: 'pi-local-1',
     leaseTtlSeconds: 3_600,
     runTimeoutMs: 30_000,
-    runEffectReceipts: { getVerifiedKnowledgeEffect: async () => effect },
+    runEffectReceipts: {
+      getVerifiedKnowledgeEffect: async () => effect,
+      getVerifiedDataExportOffer: async () => null,
+    },
     knowledgeLearning: {
       captureCompletedTurn: async () => { learningCaptures++; },
     },

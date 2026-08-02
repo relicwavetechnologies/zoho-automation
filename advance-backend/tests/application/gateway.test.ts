@@ -2417,6 +2417,104 @@ describe('GatewayDispatcher', () => {
     assert.deepEqual((result.data as { result: { result: string } }).result, { result: 'echo:gateway' });
   });
 
+  it('records a trusted export offer against the exact Lark runtime lease', async () => {
+    const offerId = '11111111-1111-4111-8111-111111111111';
+    const receipts: unknown[] = [];
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      resultSchema: z.object({
+        result: z.string(),
+        preview: z.object({ exportOfferId: z.string().uuid() }),
+      }) as any,
+      execute: async () => ok({ result: '25 rows', preview: { exportOfferId: offerId } }) as any,
+    }));
+    const permissions = makePermissionService();
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([allowedSkill]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      runEffectReceipts: {
+        reserveKnowledgeReview: async () => ({ status: 'claimed' }),
+        completeKnowledgeReview: async () => ({} as any),
+        releaseKnowledgeReview: async () => {},
+        recordPersonalMemory: async () => ({} as any),
+        recordDataExportOffer: async (identity, input) => {
+          receipts.push({ identity, input });
+          return {} as any;
+        },
+      },
+      logger: noopLogger,
+    });
+
+    const result = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      execution: {
+        version: 1,
+        runId: 'run-1',
+        threadId: 'thread-1',
+        actionId: 'call-1',
+      },
+      payload: { toolId: 'fakeTool', args: { query: 'large dataset' } },
+    }, {
+      ...member,
+      channel: 'lark',
+      runtimeChatId: 'chat-1',
+      runtimeRunId: 'run-1',
+      runtimeThreadId: 'thread-1',
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(receipts, [{
+      identity: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        chatId: 'chat-1',
+        threadId: 'thread-1',
+        runId: 'run-1',
+      },
+      input: { offerId },
+    }]);
+  });
+
+  it('does not expose a Lark export offer without matching runtime provenance', async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      resultSchema: z.object({ preview: z.object({ exportOfferId: z.string().uuid() }) }) as any,
+      execute: async () => ok({
+        preview: { exportOfferId: '11111111-1111-4111-8111-111111111111' },
+      }) as any,
+    }));
+    const permissions = makePermissionService();
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([allowedSkill]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      runEffectReceipts: {} as any,
+      logger: noopLogger,
+    });
+
+    const result = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      payload: { toolId: 'fakeTool', args: { query: 'large dataset' } },
+    }, { ...member, channel: 'lark' });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'tool_error');
+    assert.equal(result.data, undefined);
+  });
+
   it('returns a bound write intent from invoke and executes it only after commit', async () => {
     let executions = 0;
     const registry = new ToolRegistry();

@@ -53,6 +53,15 @@ export interface AppliedPersonalMemoryEffect extends LarkRunEffectIdentity {
   readonly appliedAt: string;
 }
 
+export interface OfferedDataExportEffect extends LarkRunEffectIdentity {
+  readonly version: 1;
+  readonly kind: 'data_export_offer';
+  readonly status: 'offered';
+  readonly effectKind: 'data_export_offered';
+  readonly offerId: string;
+  readonly createdAt: string;
+}
+
 export type VerifiedKnowledgeEffect = OpenedKnowledgeReviewEffect | AppliedPersonalMemoryEffect;
 
 export type ReserveKnowledgeReviewEffectResult =
@@ -188,6 +197,58 @@ export class RunEffectReceiptStore {
     return effect;
   }
 
+  async recordDataExportOffer(
+    identity: LarkRunEffectIdentity,
+    input: { readonly offerId: string },
+  ): Promise<OfferedDataExportEffect> {
+    if (!isUuid(input.offerId)) throw new Error('Data export offer ID is invalid.');
+    const effect: OfferedDataExportEffect = {
+      version: 1,
+      kind: 'data_export_offer',
+      status: 'offered',
+      effectKind: 'data_export_offered',
+      ...identity,
+      offerId: input.offerId,
+      createdAt: new Date().toISOString(),
+    };
+    const stored = await this.cache.setNx(
+      runEffectIndexKey(identity, effect.effectKind),
+      effect,
+      RUN_EFFECT_TTL_SECONDS,
+    );
+    if (!stored.ok) throw stored.error;
+    if (stored.value) return effect;
+
+    const existing = await this.getVerifiedDataExportOffer(identity);
+    if (!existing) throw new Error('Data export offer receipt disappeared.');
+    if (existing.offerId !== input.offerId) {
+      throw new Error('This run is already bound to a different data export offer.');
+    }
+    return existing;
+  }
+
+  async getVerifiedDataExportOffer(
+    identity: LarkRunEffectIdentity,
+  ): Promise<OfferedDataExportEffect | null> {
+    const result = await this.cache.get<OfferedDataExportEffect>(
+      runEffectIndexKey(identity, 'data_export_offered'),
+    );
+    if (!result.ok) throw result.error;
+    const effect = result.value;
+    if (!effect) return null;
+    if (
+      effect.version !== 1
+      || effect.kind !== 'data_export_offer'
+      || effect.status !== 'offered'
+      || effect.effectKind !== 'data_export_offered'
+      || !isUuid(effect.offerId)
+    ) {
+      throw new Error('Data export offer effect index is invalid.');
+    }
+    assertSameIdentity(effect, identity);
+    return effect;
+  }
+
   async getVerifiedMemoryEffect(
     identity: LarkRunEffectIdentity,
   ): Promise<VerifiedKnowledgeEffect | null> {
@@ -267,7 +328,7 @@ function runEffectKey(identity: LarkRunEffectIdentity, requestId: string): strin
 
 function runEffectIndexKey(
   identity: LarkRunEffectIdentity,
-  effectKind: KnowledgeReviewEffectKind | 'personal_memory_applied',
+  effectKind: KnowledgeReviewEffectKind | 'personal_memory_applied' | 'data_export_offered',
 ): string {
   return `${runEffectPrefix(identity)}latest:${effectKind}`;
 }
@@ -290,7 +351,7 @@ function sha256(value: string): string {
 }
 
 function assertSameIdentity(
-  effect: KnowledgeReviewRunEffect | AppliedPersonalMemoryEffect,
+  effect: KnowledgeReviewRunEffect | AppliedPersonalMemoryEffect | OfferedDataExportEffect,
   identity: LarkRunEffectIdentity,
 ): void {
   for (const key of ['companyId', 'userId', 'chatId', 'threadId', 'runId'] as const) {
@@ -298,4 +359,8 @@ function assertSameIdentity(
       throw new Error(`Knowledge review effect ${key} does not match this runtime.`);
     }
   }
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }

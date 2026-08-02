@@ -21,6 +21,8 @@ export function dataExportSpecHash(payload: DataExportJobPayload): string {
     transform: payload.transform,
     destination: payload.destination,
     chatId: payload.chatId,
+    replyToMessageId: payload.replyToMessageId,
+    replyInThread: payload.replyInThread,
     requestId: payload.requestId,
   });
 }

@@ -20,20 +20,22 @@ import {
 import type {
   DataExportCompletion,
   DataExportJobPayload,
-  DataExportSource,
-  DataExportSourceRegistry,
 } from './data-export.types';
-import { DATA_EXPORT_ROW_LIMIT } from './data-export.types';
+import {
+  DATA_EXPORT_ROW_LIMIT,
+  datasetSourceToolId,
+} from './data-export.types';
 import type {
+  DataExportDestinationSink,
   GoogleExportAuth,
-  GoogleWorkspaceExportSink,
-} from './google-workspace-export.sink';
+} from './data-export.destination';
+import type { DatasetSourceRegistry } from './data-export.source-registry';
 
 export interface DataExportWorkerDeps {
   readonly redisUrl: string;
   readonly queueName?: string;
-  readonly sources: DataExportSourceRegistry;
-  readonly sink: GoogleWorkspaceExportSink;
+  readonly sources: DatasetSourceRegistry;
+  readonly sink: DataExportDestinationSink;
   readonly identityRepo: Pick<ChannelIdentityRepoPort, 'resolveByUserId'>;
   readonly permissions: PermissionService;
   readonly resolveGoogleAuth: (companyId: string) => Promise<GoogleExportAuth>;
@@ -86,6 +88,8 @@ export class DataExportWorker {
         progressMessageId = await this.createProgressTracker(job);
         payload = { ...payload, progressMessageId };
         await job.updateData(payload);
+      } else if (!payload.completedExport) {
+        await this.initializeProgressTracker(progressMessageId);
       }
       const completion = payload.completedExport
         ?? await this.runExport(job, payload, progressMessageId);
@@ -130,7 +134,7 @@ export class DataExportWorker {
     if (!permission.value.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')) {
       throw new UnrecoverableError('Data export permission was revoked before the job started');
     }
-    const sourceToolId = toolIdForSource(payload.source);
+    const sourceToolId = datasetSourceToolId(payload.source);
     if (!permission.value.allowedActionsByTool.get(asToolId(sourceToolId))?.has('read')) {
       throw new UnrecoverableError(`${sourceToolId} read permission was revoked before the export started`);
     }
@@ -307,11 +311,22 @@ export class DataExportWorker {
       buildFinalCard({
         markdown: '# Data export in progress\nPreparing the governed export. Only you will receive reader access.',
       }),
-      undefined,
+      job.data.replyToMessageId,
       deliveryKey('dtxp', job),
+      job.data.replyInThread,
     );
     if (!sent.ok) throw sent.error;
     return sent.value;
+  }
+
+  private async initializeProgressTracker(messageId: string): Promise<void> {
+    const updated = await this.deps.larkAdapter.updateMessageById(
+      messageId,
+      buildFinalCard({
+        markdown: '# Data export in progress\nPreparing the governed export. Only you will receive reader access.',
+      }),
+    );
+    if (!updated.ok) throw updated.error;
   }
 
   private async updateProgressTracker(
@@ -341,10 +356,6 @@ export class DataExportWorker {
       });
     }
   }
-}
-
-function toolIdForSource(source: DataExportSource): 'airtableBase' | 'airtableRecords' | 'zohoBooks' {
-  return source.kind === 'airtable_records' ? source.toolId : 'zohoBooks';
 }
 
 function deliveryKey(prefix: string, job: DataExportWorkerJob): string {

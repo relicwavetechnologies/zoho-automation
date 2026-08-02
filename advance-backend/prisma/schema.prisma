@@ -109,6 +109,14 @@ enum KnowledgeLearningJobStatus {
   failed
 }
 
+enum DataExportOfferStatus {
+  pending
+  confirming
+  confirmed
+  expired
+  cancelled
+}
+
 // Manager-persona learning is deliberately isolated from personal memory.
 // These rows are evidence/candidates only in P1–P3; no active department
 // persona is written by this pipeline until the promotion phase exists.
@@ -238,6 +246,7 @@ model User {
   managerPersonaNodes                ManagerPersonaNode[]            @relation("ManagerPersonaNodeManager")
   managerTeachSessions               ManagerTeachSession[]           @relation("ManagerTeachSessionManager")
   connectionAuthorizationIntents     ConnectionAuthorizationIntent[]
+  dataExportOffers                   DataExportOffer[]
   mailboxSubscriptions               MailboxSubscription[]
   mailAutomationRules                MailAutomationRule[]
   knowledgeResourcesOwned            KnowledgeResource[]             @relation("KnowledgeResourceOwner")
@@ -305,6 +314,7 @@ model Company {
   managerPersonaNodes             ManagerPersonaNode[]
   managerTeachSessions            ManagerTeachSession[]
   connectionAuthorizationIntents  ConnectionAuthorizationIntent[]
+  dataExportOffers                DataExportOffer[]
   mailboxSubscriptions            MailboxSubscription[]
   mailAutomationRules             MailAutomationRule[]
   mailEvents                      MailEvent[]
@@ -824,6 +834,7 @@ model Department {
   managerPersonaNodes            ManagerPersonaNode[]
   managerTeachSessions           ManagerTeachSession[]
   connectionAuthorizationIntents ConnectionAuthorizationIntent[]
+  dataExportOffers               DataExportOffer[]
   mailAutomationRules            MailAutomationRule[]
   knowledgeResources             KnowledgeResource[]
   knowledgeMutations             KnowledgeMutation[]
@@ -1323,6 +1334,35 @@ model ConnectionAuthorizationIntent {
   @@index([status, expiresAt])
   @@index([continuationStatus, continuationQueuedAt])
   @@index([connectionId])
+}
+
+/// Immutable, expiring server-owned recipe behind one export confirmation.
+/// It stores identifiers and normalized tool input only; dataset rows and
+/// provider credentials never belong in this record.
+model DataExportOffer {
+  id                 String                @id @default(uuid())
+  companyId          String
+  company            Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId             String
+  user               User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  departmentId       String?
+  department         Department?            @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
+  sourceKind         String
+  sourceConnectionId String
+  payloadJson        Json
+  specHash           String
+  idempotencyKey     String
+  status             DataExportOfferStatus @default(pending)
+  queueJobId         String?
+  expiresAt          DateTime
+  confirmedAt        DateTime?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  @@unique([companyId, idempotencyKey])
+  @@index([companyId, userId, status, expiresAt])
+  @@index([status, expiresAt])
+  @@index([companyId, sourceConnectionId])
 }
 
 /// One Pub/Sub-triggered history cursor and lease per connected Gmail mailbox.

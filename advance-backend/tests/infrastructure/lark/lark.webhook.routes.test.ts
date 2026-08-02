@@ -13,6 +13,7 @@ import {
 import { LarkPiRuntimeError } from '../../../src/application/runtime/lark-pi-runtime.service.ts';
 import { LarkChannelAdapter } from '../../../src/infrastructure/channels/lark/lark.adapter.ts';
 import { BusyLaneNotices } from '../../../src/infrastructure/channels/lark/lark-busy-notice.ts';
+import { LarkDataExportCardHandler } from '../../../src/infrastructure/channels/lark/lark-data-export-card.handler.ts';
 import { ChatMessageSerializer } from '../../../src/application/channels/chat-message-serializer.ts';
 import { ElevenLabsTranscriptionClient } from '../../../src/infrastructure/ai/transcription/elevenlabs-transcription.client.ts';
 import { err, ok } from '../../../src/shared/result.ts';
@@ -162,6 +163,9 @@ async function runWebhook(body: unknown, options: {
     isKnowledgeReviewAction(cardEvent: unknown): boolean;
     handle(cardEvent: unknown, actor: unknown): Promise<{ responseBody: Record<string, unknown> }>;
   };
+  dataExportCardHandler?: {
+    handle(cardEvent: unknown, actor: unknown): Promise<{ handled: boolean; responseBody?: unknown }>;
+  };
   acceptReceipt?: () => Promise<{
     ok: boolean;
     value?: { receiptId: string; isNew: boolean };
@@ -295,7 +299,10 @@ async function runWebhook(body: unknown, options: {
         if (options.engineRun) {
           const result = await options.engineRun(input) as any;
           if (result?.ok === false) throw result.error;
-          return { text: result?.value?.finalReply?.text ?? result?.text ?? 'done' };
+          return {
+            text: result?.value?.finalReply?.text ?? result?.text ?? 'done',
+            ...(result?.actions ? { actions: result.actions } : {}),
+          };
         }
         return { text: 'done' };
       },
@@ -523,6 +530,9 @@ async function runWebhook(body: unknown, options: {
     ...(options.knowledgeReviewService
       ? { knowledgeReviewService: options.knowledgeReviewService as any }
       : {}),
+    ...(options.dataExportCardHandler
+      ? { dataExportCardHandler: options.dataExportCardHandler as any }
+      : {}),
   } as any;
   const router = createLarkWebhookRoutes(routeDeps);
 
@@ -683,6 +693,22 @@ describe('Lark webhook admission', () => {
     assert.equal(typeof accepted?.fields['ackMs'], 'number');
     assert.ok(started);
     assert.equal(typeof completed?.fields['runMs'], 'number');
+  });
+
+  it('delivers verified runtime actions on the final Lark card', async () => {
+    const actions = [{
+      label: 'Export all rows',
+      value: JSON.stringify({
+        kind: 'data_export_confirm',
+        offerId: '11111111-1111-4111-8111-111111111111',
+      }),
+      style: 'primary',
+    }];
+    const result = await runWebhook(makeEvent({ chatType: 'p2p' }), {
+      engineRun: async () => ({ text: 'I found more rows.', actions }),
+    });
+
+    assert.deepEqual((result.routeDeps.adapter as any).__finalActions, [actions]);
   });
 
   it('ACKs and passively queues an unmentioned group message without running the engine', async () => {
@@ -1421,6 +1447,178 @@ describe('Lark webhook card authorization', () => {
     });
   });
 
+  it('confirms an opaque export offer with the signed actor and signed chat context', async () => {
+    const confirmations: unknown[] = [];
+    const handler = new LarkDataExportCardHandler({
+      confirmForActor: async input => {
+        confirmations.push(input);
+        return { exportJobId: 'job-1', disposition: 'queued' };
+      },
+    } as any, noopLogger);
+    const offerId = '11111111-1111-4111-8111-111111111111';
+    const result = await runWebhook({
+      header: {
+        event_type: 'card.action.trigger',
+        token: 'verify',
+        tenant_key: 'tenant-1',
+      },
+      event: {
+        operator: { open_id: 'ou_admin', name: 'Admin' },
+        context: { open_chat_id: 'oc_export', open_message_id: 'om_export_card' },
+        action: {
+          value: {
+            action: JSON.stringify({ kind: 'data_export_confirm', offerId }),
+          },
+        },
+      },
+    }, {
+      identity: {
+        userId: 'admin-1',
+        companyId: 'company-1',
+        aiRole: 'COMPANY_ADMIN',
+        channel: 'lark',
+      },
+      dataExportCardHandler: handler,
+    });
+
+    assert.deepEqual(confirmations, [{
+      offerId,
+      companyId: 'company-1',
+      userId: 'admin-1',
+      chatId: 'oc_export',
+      progressMessageId: 'om_export_card',
+    }]);
+    assert.equal((result.responseBody as any).toast.type, 'success');
+    assert.equal('card' in (result.responseBody as any), false);
+  });
+
+  it('keeps the export button when confirmation is still in progress', async () => {
+    const handler = new LarkDataExportCardHandler({
+      confirmForActor: async () => ({ exportJobId: 'job-1', disposition: 'in_progress' }),
+    } as any, noopLogger);
+    const result = await runWebhook({
+      header: {
+        event_type: 'card.action.trigger',
+        token: 'verify',
+        tenant_key: 'tenant-1',
+      },
+      event: {
+        operator: { open_id: 'ou_admin' },
+        context: { open_chat_id: 'oc_export', open_message_id: 'om_export_card' },
+        action: {
+          value: {
+            action: JSON.stringify({
+              kind: 'data_export_confirm',
+              offerId: '11111111-1111-4111-8111-111111111111',
+            }),
+          },
+        },
+      },
+    }, { dataExportCardHandler: handler });
+
+    assert.equal((result.responseBody as any).toast.type, 'info');
+    assert.equal('card' in (result.responseBody as any), false);
+  });
+
+  it('does not claim an already-confirmed export is tracking on this card', async () => {
+    const handler = new LarkDataExportCardHandler({
+      confirmForActor: async () => ({
+        exportJobId: 'job-existing',
+        disposition: 'already_confirmed',
+      }),
+    } as any, noopLogger);
+    const result = await runWebhook({
+      header: {
+        event_type: 'card.action.trigger',
+        token: 'verify',
+        tenant_key: 'tenant-1',
+      },
+      event: {
+        operator: { open_id: 'ou_admin' },
+        context: { open_chat_id: 'oc_export', open_message_id: 'om_export_card' },
+        action: {
+          value: {
+            action: JSON.stringify({
+              kind: 'data_export_confirm',
+              offerId: '11111111-1111-4111-8111-111111111111',
+            }),
+          },
+        },
+      },
+    }, { dataExportCardHandler: handler });
+
+    assert.match((result.responseBody as any).toast.content, /existing job/i);
+    assert.match((result.responseBody as any).toast.content, /original Divo conversation/i);
+    assert.doesNotMatch((result.responseBody as any).toast.content, /this card/i);
+    assert.equal('card' in (result.responseBody as any), false);
+  });
+
+  it('does not confirm when Lark omits the signed source-card message ID', async () => {
+    let confirmations = 0;
+    const handler = new LarkDataExportCardHandler({
+      confirmForActor: async () => {
+        confirmations++;
+        return { exportJobId: 'job-1', disposition: 'queued' };
+      },
+    } as any, noopLogger);
+    const result = await runWebhook({
+      header: {
+        event_type: 'card.action.trigger',
+        token: 'verify',
+        tenant_key: 'tenant-1',
+      },
+      event: {
+        operator: { open_id: 'ou_admin' },
+        context: { open_chat_id: 'oc_export' },
+        action: {
+          value: {
+            action: JSON.stringify({
+              kind: 'data_export_confirm',
+              offerId: '11111111-1111-4111-8111-111111111111',
+            }),
+          },
+        },
+      },
+    }, { dataExportCardHandler: handler });
+
+    assert.equal(confirmations, 0);
+    assert.equal((result.responseBody as any).toast.type, 'error');
+    assert.match((result.responseBody as any).toast.content, /which card/i);
+  });
+
+  it('rejects a tampered export action without calling confirmation', async () => {
+    let confirmations = 0;
+    const handler = new LarkDataExportCardHandler({
+      confirmForActor: async () => {
+        confirmations++;
+        return { exportJobId: 'job-1', disposition: 'queued' };
+      },
+    } as any, noopLogger);
+    const result = await runWebhook({
+      header: {
+        event_type: 'card.action.trigger',
+        token: 'verify',
+        tenant_key: 'tenant-1',
+      },
+      event: {
+        operator: { open_id: 'ou_admin' },
+        context: { open_chat_id: 'oc_export' },
+        action: {
+          value: {
+            action: JSON.stringify({
+              kind: 'data_export_confirm',
+              offerId: '11111111-1111-4111-8111-111111111111',
+              companyId: 'company-attacker',
+            }),
+          },
+        },
+      },
+    }, { dataExportCardHandler: handler });
+
+    assert.equal(confirmations, 0);
+    assert.equal((result.responseBody as any).toast.type, 'error');
+  });
+
 
   it('treats old group-mode card actions as informational', async () => {
     const result = await runWebhook({
@@ -1535,6 +1733,7 @@ function captureOutbound(adapter: any): void {
   adapter.__sentCards = [];
   adapter.__sentCardDeliveries = [];
   adapter.__finalReplies = [];
+  adapter.__finalActions = [];
   adapter.__finalTraces = [];
   adapter.__statusUpdates = [];
   adapter.__outboundOrder = [];
@@ -1575,10 +1774,11 @@ function captureOutbound(adapter: any): void {
   };
   adapter.sendFinalReply = async (
     _conversation: unknown,
-    reply: { text: string; executionTrace?: string },
+    reply: { text: string; executionTrace?: string; actions?: unknown },
   ) => {
     adapter.__finalReplies.push(reply.text);
     adapter.__finalTraces.push(reply.executionTrace);
+    adapter.__finalActions.push(reply.actions);
     adapter.__outboundOrder.push('final');
     return ok({ messageId: 'om_reply' });
   };

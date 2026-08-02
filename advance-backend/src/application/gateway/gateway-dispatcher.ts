@@ -114,7 +114,7 @@ export interface GatewayDispatcherDeps {
   readonly personalMemoryCommands?: PersonalMemoryCommandService;
   readonly runEffectReceipts?: Pick<
     RunEffectReceiptStore,
-    'reserveKnowledgeReview' | 'completeKnowledgeReview' | 'releaseKnowledgeReview' | 'recordPersonalMemory'
+    'reserveKnowledgeReview' | 'completeKnowledgeReview' | 'releaseKnowledgeReview' | 'recordPersonalMemory' | 'recordDataExportOffer'
   >;
   readonly logger: Logger;
 }
@@ -859,6 +859,43 @@ export class GatewayDispatcher {
       response,
       execution,
     );
+    const exportOfferId = dataExportOfferIdFrom(response);
+    if (exportOfferId && member.channel === 'lark') {
+      if (
+        !this.deps.runEffectReceipts
+        || !execution
+        || !member.runtimeChatId
+        || !member.runtimeRunId
+        || !member.runtimeThreadId
+        || execution.runId !== member.runtimeRunId
+        || execution.threadId !== member.runtimeThreadId
+      ) {
+        return gatewayFailure(
+          'tool_error',
+          'The export offer was created, but its verified Lark action could not be bound to this run. Retry the same request.',
+        );
+      }
+      try {
+        await this.deps.runEffectReceipts.recordDataExportOffer({
+          companyId: member.companyId,
+          userId: member.userId,
+          chatId: member.runtimeChatId,
+          threadId: execution.threadId,
+          runId: execution.runId,
+        }, { offerId: exportOfferId });
+      } catch (error) {
+        this.deps.logger.error('gateway.data_export_offer.receipt_failed', {
+          companyId: member.companyId,
+          userId: member.userId,
+          runId: execution.runId,
+          error: safeGatewayMessage(error),
+        });
+        return gatewayFailure(
+          'tool_error',
+          'The export offer was created, but its verified Lark action could not be recorded. Retry the same request.',
+        );
+      }
+    }
     return response;
   }
 
@@ -1543,6 +1580,22 @@ export class GatewayDispatcher {
       },
     });
   }
+}
+
+function dataExportOfferIdFrom(response: GatewayResponse): string | null {
+  if (!response.ok || !isRecord(response.data)) return null;
+  const result = response.data['result'];
+  if (!isRecord(result) || !isRecord(result['preview'])) return null;
+  const offerId = result['preview']['exportOfferId'];
+  return typeof offerId === 'string' && isUuid(offerId) ? offerId : null;
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function safeGatewayMessage(error: unknown): string {

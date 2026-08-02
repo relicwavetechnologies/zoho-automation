@@ -5,10 +5,13 @@ import { join } from 'node:path';
 import { once } from 'node:events';
 import { createInterface } from 'node:readline';
 import { google } from 'googleapis';
+import type { DataExportCompletion } from './data-export.types';
 import type {
-  DataExportCompletion,
-  DataExportDestination,
-} from './data-export.types';
+  DataExportDestinationSink,
+  DataExportDestinationWriteInput,
+  DataExportDestinationWriteProgress,
+  GoogleExportAuth,
+} from './data-export.destination';
 
 const SHEET_ROW_LIMIT = 50_000;
 const SHEET_CELL_LIMIT = 2_000_000;
@@ -21,27 +24,8 @@ const EXPORT_ROW_COUNT_PROPERTY = 'divoExportRowCount';
 const EXPORT_TRUNCATED_PROPERTY = 'divoExportTruncated';
 const EXPORT_TYPE_PROPERTY = 'divoExportType';
 
-export interface GoogleExportProgress {
-  readonly stage: 'writing';
-  readonly rowsProcessed: number;
-}
-
-export interface GoogleExportAuth {
-  readonly accessToken: string;
-  readonly readerDomain: string;
-}
-
-export class GoogleWorkspaceExportSink {
-  async write(input: {
-    readonly auth: GoogleExportAuth;
-    readonly readerEmail: string;
-    readonly exportKey: string;
-    readonly destination: DataExportDestination;
-    readonly rows: AsyncIterable<readonly Record<string, unknown>[]>;
-    readonly sourceTruncated: () => boolean;
-    readonly signal?: AbortSignal;
-    readonly onProgress?: (progress: GoogleExportProgress) => Promise<void>;
-  }): Promise<DataExportCompletion> {
+export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
+  async write(input: DataExportDestinationWriteInput): Promise<DataExportCompletion> {
     const drive = google.drive({ version: 'v3', auth: oauth(input.auth.accessToken) });
     const recovered = await recoverCompletedExport(
       drive,
@@ -136,7 +120,7 @@ export class GoogleWorkspaceExportSink {
     readonly rowCount: number;
     readonly sourceTruncated: boolean;
     readonly signal?: AbortSignal;
-    readonly onProgress?: (progress: GoogleExportProgress) => Promise<void>;
+    readonly onProgress?: (progress: DataExportDestinationWriteProgress) => Promise<void>;
   }): Promise<DataExportCompletion> {
     const auth = oauth(input.auth.accessToken);
     const sheets = google.sheets({ version: 'v4', auth });
@@ -225,7 +209,7 @@ export class GoogleWorkspaceExportSink {
     readonly rowCount: number;
     readonly sourceTruncated: boolean;
     readonly signal?: AbortSignal;
-    readonly onProgress?: (progress: GoogleExportProgress) => Promise<void>;
+    readonly onProgress?: (progress: DataExportDestinationWriteProgress) => Promise<void>;
   }): Promise<DataExportCompletion> {
     const csvStream = createWriteStream(input.csvPath, { encoding: 'utf8' });
     try {

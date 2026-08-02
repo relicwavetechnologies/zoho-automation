@@ -138,6 +138,25 @@ describe('run effect receipt store', () => {
       null,
     );
   });
+
+  it('attests one export offer to the exact run and rejects ambiguity', async () => {
+    const fixture = createStore();
+    const offerId = '11111111-1111-4111-8111-111111111111';
+    const effect = await fixture.store.recordDataExportOffer(identity, { offerId });
+
+    assert.deepEqual(await fixture.store.recordDataExportOffer(identity, { offerId }), effect);
+    assert.deepEqual(await fixture.store.getVerifiedDataExportOffer(identity), effect);
+    assert.equal(
+      await fixture.store.getVerifiedDataExportOffer({ ...identity, chatId: 'chat-2' }),
+      null,
+    );
+    await assert.rejects(
+      fixture.store.recordDataExportOffer(identity, {
+        offerId: '22222222-2222-4222-8222-222222222222',
+      }),
+      /different data export offer/i,
+    );
+  });
 });
 
 function createStore() {

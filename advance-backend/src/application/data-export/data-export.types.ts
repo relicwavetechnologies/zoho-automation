@@ -67,6 +67,8 @@ export interface DataExportJobPayload {
   readonly transform?: DataExportTransform;
   readonly destination: DataExportDestination;
   readonly chatId: string;
+  readonly replyToMessageId?: string;
+  readonly replyInThread?: boolean;
   readonly requestId: string;
   readonly traceId?: string;
   readonly progressMessageId?: string;
@@ -89,20 +91,3 @@ export interface DataExportSourceAdapter<Source extends DataExportSource = DataE
   readonly kind: Source['kind'];
   read(source: Source, context: DataExportSourceContext): AsyncIterable<DataExportPage>;
 }
-
-export class DatasetSourceRegistry {
-  private readonly adapters = new Map<DataExportSource['kind'], DataExportSourceAdapter>();
-
-  register<Source extends DataExportSource>(adapter: DataExportSourceAdapter<Source>): void {
-    this.adapters.set(adapter.kind, adapter as DataExportSourceAdapter);
-  }
-
-  resolve(source: DataExportSource): DataExportSourceAdapter {
-    const adapter = this.adapters.get(source.kind);
-    if (!adapter) throw new Error(`Unsupported data export source: ${source.kind}`);
-    return adapter;
-  }
-}
-
-/** @deprecated Use DatasetSourceRegistry. Kept for existing export wiring. */
-export class DataExportSourceRegistry extends DatasetSourceRegistry {}

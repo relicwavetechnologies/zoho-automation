@@ -3,6 +3,7 @@ import { SCHEDULED_SESSION_AUTH_PROVIDER } from '../scheduling/scheduled-runtime
 import type { Logger } from '../../shared/logger';
 import type { ConversationHandle } from '../channels/channel.adapter';
 import type { IncomingMessage } from '../../domain/channel/incoming-message';
+import type { InteractiveAction } from '../../domain/channel/outbound';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import { issuePiRuntimeLease } from './pi-runtime-lease';
 import type { KnowledgeLearningService } from '../knowledge/knowledge-learning.service';
@@ -16,6 +17,7 @@ import type {
 } from '../knowledge/knowledge-recall.service';
 import type {
   LarkRunEffectIdentity,
+  OfferedDataExportEffect,
   RunEffectReceiptStore,
   VerifiedKnowledgeEffect,
 } from './run-effect-receipt.store';
@@ -185,7 +187,10 @@ export interface LarkPiRuntimeServiceDeps {
   readonly instanceId: string;
   readonly leaseTtlSeconds: number;
   readonly runTimeoutMs: number;
-  readonly runEffectReceipts?: Pick<RunEffectReceiptStore, 'getVerifiedKnowledgeEffect'>;
+  readonly runEffectReceipts?: Pick<
+    RunEffectReceiptStore,
+    'getVerifiedKnowledgeEffect' | 'getVerifiedDataExportOffer'
+  >;
   readonly knowledgeLearning?: Pick<KnowledgeLearningService, 'captureCompletedTurn'>;
   readonly conversationHistory?: {
     getHistory(chatId: string, limit?: number, scope?: ConversationScope): Promise<Result<Turn[], InfraError>>;
@@ -203,6 +208,7 @@ export interface LarkPiRuntimeServiceDeps {
 export interface LarkPiRuntimeResult {
   readonly text: string;
   readonly effects?: readonly VerifiedKnowledgeEffect[];
+  readonly actions?: readonly InteractiveAction[];
   readonly effectVerification?: 'verified' | 'unavailable';
 }
 
@@ -724,6 +730,7 @@ export class LarkPiRuntimeService {
       runId: input.incoming.traceId,
     };
     let effect: VerifiedKnowledgeEffect | null = null;
+    let exportEffect: OfferedDataExportEffect | null = null;
     let effectVerification: 'verified' | 'unavailable' = 'verified';
     if (this.deps.runEffectReceipts) {
       try {
@@ -732,6 +739,17 @@ export class LarkPiRuntimeService {
         effectVerification = 'unavailable';
         this.log.error('pi.run_effect.lookup_failed', {
           correlationId: input.incoming.traceId,
+          effectKind: 'knowledge',
+          error: String(error),
+        });
+      }
+      try {
+        exportEffect = await this.deps.runEffectReceipts.getVerifiedDataExportOffer(identity);
+      } catch (error) {
+        effectVerification = 'unavailable';
+        this.log.error('pi.run_effect.lookup_failed', {
+          correlationId: input.incoming.traceId,
+          effectKind: 'data_export_offer',
           error: String(error),
         });
       }
@@ -774,6 +792,18 @@ export class LarkPiRuntimeService {
     return {
       text: assistantText,
       effects: effect ? [effect] : [],
+      ...(exportEffect
+        ? {
+            actions: [{
+              label: 'Export all rows',
+              value: JSON.stringify({
+                kind: 'data_export_confirm',
+                offerId: exportEffect.offerId,
+              }),
+              style: 'primary',
+            }],
+          }
+        : {}),
       effectVerification,
     };
   }

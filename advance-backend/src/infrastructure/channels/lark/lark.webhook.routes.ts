@@ -23,6 +23,7 @@ import type {
   LarkApprovalCardHandler,
   LarkAuthenticatedCardActor,
 } from './lark-approval-card.handler';
+import type { LarkDataExportCardHandler } from './lark-data-export-card.handler';
 import type { LarkKnowledgeReviewService } from '../../../application/knowledge/lark-knowledge-review.service';
 import type { ChatMessageSerializer } from '../../../application/channels/chat-message-serializer';
 import type { LaneLeaseHolder } from '../../../application/channels/lane-lease.holder';
@@ -86,6 +87,7 @@ import type {
   ChannelPlanStepStatus,
   ChannelRunState,
   FinalReply,
+  InteractiveAction,
 } from '../../../domain/channel/outbound';
 import {
   isUntaggedGroupMessage,
@@ -147,6 +149,7 @@ export interface LarkWebhookDeps {
   env: TypedEnv;
   approvalGate?: ApprovalGateService;
   approvalCardHandler?: LarkApprovalCardHandler;
+  dataExportCardHandler?: LarkDataExportCardHandler;
   knowledgeReviewService?: LarkKnowledgeReviewService;
   larkOAuthService?: LarkOAuthService;
   connectionRepo?: IntegrationConnectionRepository;
@@ -301,6 +304,13 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
               },
             });
             return;
+          }
+          if (deps.dataExportCardHandler) {
+            const result = await deps.dataExportCardHandler.handle(cardEvent, actor);
+            if (result.handled) {
+              res.status(200).json(result.responseBody ?? { ok: true });
+              return;
+            }
           }
           if (deps.approvalCardHandler) {
             const result = await deps.approvalCardHandler.handle(cardEvent, actor);
@@ -1474,6 +1484,7 @@ export async function runPiAndDeliver(input: {
   };
 
   let text: string;
+  let actions: readonly InteractiveAction[] | undefined;
   let runtimeFailure: unknown;
   try {
     await publishStatus();
@@ -1496,6 +1507,7 @@ export async function runPiAndDeliver(input: {
       onProgress: reportProgress,
     });
     text = result.text;
+    actions = result.actions;
   } catch (error) {
     runtimeFailure = error;
     if (runtimeSignal.aborted) {
@@ -1558,6 +1570,7 @@ export async function runPiAndDeliver(input: {
     kind: 'final',
     text,
     format: 'markdown',
+    ...(actions?.length ? { actions } : {}),
     ...(transcript ? { executionTrace: transcript } : {}),
   });
   if (!delivered.ok) {

@@ -55,8 +55,13 @@ import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } fro
 import type { DataExportQueue } from '../../data-export/data-export.queue';
 import {
   DATA_EXPORT_ROW_LIMIT,
-  type DataExportJobPayload,
 } from '../../data-export/data-export.types';
+import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
+import type { DataExportOfferPayload } from '../../data-export/export-offer';
+import {
+  createDatasetPreview,
+  DATASET_PREVIEW_ROW_LIMIT,
+} from '../../data-export/dataset-preview';
 
 // ─── Args schema ──────────────────────────────────────────────────────────────
 
@@ -131,6 +136,26 @@ const ResultSchema = z.object({
   sourceTruncated: z.boolean().optional(),
   exportQueued: z.boolean().optional(),
   exportJobId: z.string().optional(),
+  preview: z.object({
+    columns: z.array(z.string()),
+    rows: z.array(z.record(z.unknown())).max(DATASET_PREVIEW_ROW_LIMIT),
+    coverage: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('complete'), totalRows: z.number().int().nonnegative() }),
+      z.object({
+        kind: z.literal('truncated'),
+        returnedRows: z.number().int().nonnegative(),
+        knownTotal: z.number().int().nonnegative().optional(),
+        reason: z.string(),
+      }),
+      z.object({
+        kind: z.literal('provider_limited'),
+        returnedRows: z.number().int().nonnegative(),
+        reason: z.string(),
+      }),
+      z.object({ kind: z.literal('unknown'), returnedRows: z.number().int().nonnegative() }),
+    ]),
+    exportOfferId: z.string().optional(),
+  }).optional(),
 });
 
 type Res = z.infer<typeof ResultSchema>;
@@ -484,6 +509,7 @@ export const createZohoBooksTool = (deps: {
   /** Finance ops service for deep report operations. */
   financeOps:   ZohoFinanceOps;
   exportQueue?: Pick<DataExportQueue, 'enqueue'>;
+  offers?: Pick<DataExportOfferService, 'createAuthorizedOffer'>;
   inlineThreshold?: number;
 }): Tool<Args, Res> => ({
   id:           asToolId('zohoBooks'),
@@ -603,6 +629,36 @@ export const createZohoBooksTool = (deps: {
 
     const scopeFilter: Record<string, unknown> = personalizedScope ? { email: requesterEmail! } : {};
 
+    const exportPayloadFor = (moduleName: ZohoBooksModule): DataExportOfferPayload => ({
+      companyId,
+      userId,
+      ...(ctx.runContext.departmentId ? { departmentId: ctx.runContext.departmentId } : {}),
+      source: {
+        kind: 'zoho_books',
+        connectionId: args.connectionId,
+        module: moduleName,
+        ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+        filters: {
+          ...dateParams(args),
+          ...(args.status ? { status: normalizeStatus(args.status) } : {}),
+        },
+        ...(args.searchQuery ? { query: args.searchQuery } : {}),
+      },
+      destination: {
+        format: 'auto',
+        title: `Zoho Books ${moduleName} export`,
+      },
+      chatId: ctx.runContext.chatId!,
+      ...(ctx.runContext.replyToMessageId
+        ? { replyToMessageId: ctx.runContext.replyToMessageId }
+        : {}),
+      ...(ctx.runContext.replyInThread !== undefined
+        ? { replyInThread: ctx.runContext.replyInThread }
+        : {}),
+      requestId: ctx.runContext.requestId ?? ctx.correlationId,
+      ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
+    });
+
     const exportModule = listOpToModule[args.op];
     if (args.exportAll && exportModule) {
       if (!ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')) {
@@ -631,29 +687,7 @@ export const createZohoBooksTool = (deps: {
           message: `Governed Zoho exports of up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows require an exact connection UUID and a Lark chat for delivery`,
         }));
       }
-      const payload: DataExportJobPayload = {
-        companyId,
-        userId,
-        ...(ctx.runContext.departmentId ? { departmentId: ctx.runContext.departmentId } : {}),
-        source: {
-          kind: 'zoho_books',
-          connectionId: args.connectionId,
-          module: exportModule,
-          ...(args.organizationId ? { organizationId: args.organizationId } : {}),
-          filters: {
-            ...dateParams(args),
-            ...(args.status ? { status: normalizeStatus(args.status) } : {}),
-          },
-          ...(args.searchQuery ? { query: args.searchQuery } : {}),
-        },
-        destination: {
-          format: 'auto',
-          title: `Zoho Books ${exportModule} export`,
-        },
-        chatId: ctx.runContext.chatId,
-        requestId: ctx.runContext.requestId ?? ctx.correlationId,
-        ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
-      };
+      const payload = exportPayloadFor(exportModule);
       const exportJobId = await deps.exportQueue.enqueue(payload);
       return ok({
         success: true,
@@ -718,6 +752,12 @@ export const createZohoBooksTool = (deps: {
         columns: readonly ZohoListCsvColumn<Record<string, unknown>>[];
       },
     ) => {
+      const canOfferExport = args.limit === undefined
+        && !personalizedScope
+        && deps.offers !== undefined
+        && ctx.runContext.channel === 'lark'
+        && Boolean(ctx.runContext.chatId)
+        && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true;
       const result = await handleZohoList({
         companyId,
         ...connectionContext,
@@ -726,8 +766,11 @@ export const createZohoBooksTool = (deps: {
         ...(args.organizationId ? { organizationId: args.organizationId } : {}),
         filters: { ...scopeFilter, ...options.filters },
         ...(options.query ? { query: options.query } : {}),
-        offerExportOnOverflow: args.limit === undefined,
-        inlineThreshold: args.limit ?? deps.inlineThreshold ?? 25,
+        offerExportOnOverflow: canOfferExport,
+        inlineThreshold: Math.min(
+          args.limit ?? deps.inlineThreshold ?? DATASET_PREVIEW_ROW_LIMIT,
+          DATASET_PREVIEW_ROW_LIMIT,
+        ),
         ...(personalizedScope
           ? { postFilter: (items: readonly Record<string, unknown>[]) =>
               filterZohoRecordsByEmail(items, requesterEmail!) }
@@ -736,17 +779,20 @@ export const createZohoBooksTool = (deps: {
         booksClient: deps.booksClient,
       });
       const modelItems = projectListItems(result.items, options.columns);
+      const formattedItems = formatZohoResult(modelItems) as Record<string, unknown>[];
+      const offer = result.suggestExport && canOfferExport
+        ? await deps.offers!.createAuthorizedOffer(exportPayloadFor(moduleName))
+        : undefined;
+      const preview = createDatasetPreview({
+        rows: formattedItems,
+        coverage: result.coverage,
+        ...(offer ? { exportOfferId: offer.offerId } : {}),
+      });
 
       return {
         success: true,
         message: result.summary,
-        data: formatZohoResult({
-          items: modelItems,
-          totalCount: result.totalCount,
-          truncated: result.truncated,
-          hasMore: result.hasMore,
-          suggestExport: result.suggestExport,
-        }),
+        preview,
         report: {
           totalCount: result.totalCount,
           summary: result.summary,
