@@ -9,15 +9,92 @@ import {
   type MailRuleWeekday,
 } from './mail-ops.types';
 
+/**
+ * Domains too broad to be anybody's intent.
+ *
+ * A criterion of `@com` or `@co.uk` used to be harmless because it matched
+ * nothing — no mailbox lives directly at a public suffix. Now that `@domain`
+ * covers subdomains it would match half the internet instead, so the shapes
+ * that were previously inert have to be refused outright.
+ *
+ * Deliberately not a public-suffix list. A real one is thousands of entries
+ * that drift, and carrying a stale copy would refuse legitimate domains as
+ * confidently as it refuses these. This covers what someone can actually type
+ * by mistake: a bare TLD, and the handful of two-label registries where a
+ * company's own domain has three labels and the two-label form is not
+ * registrable by anyone.
+ */
+const PUBLIC_SUFFIXES = new Set([
+  'co.uk', 'org.uk', 'ac.uk', 'gov.uk', 'me.uk', 'net.uk',
+  'co.in', 'net.in', 'org.in', 'gov.in', 'ac.in',
+  'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au',
+  'co.jp', 'or.jp', 'ne.jp', 'ac.jp',
+  'co.nz', 'com.br', 'com.cn', 'com.mx', 'com.sg', 'co.za', 'com.tr',
+]);
+
+const isTooBroadADomain = (domain: string): boolean =>
+  !domain.includes('.') || PUBLIC_SUFFIXES.has(domain);
+
+/**
+ * The shapes people actually type, turned into the one shape a rule stores.
+ *
+ * Nobody writing a rule knows this tool's grammar, and refusing `stripe.com`
+ * because it is missing an `@` teaches them nothing — they wrote a domain, they
+ * meant a domain, and the difference is punctuation. Every conversion here is
+ * mechanical: an address inside angle brackets, a `mailto:`, a pasted URL, a
+ * trailing dot, a capital letter. None of them is a guess about intent.
+ *
+ * What is deliberately *not* normalised is a brand word. `Stripe` does not
+ * become `@stripe.com`, because that is a guess, and the rule it would build is
+ * both wrong and confidently reported as right — which is the failure this
+ * whole subsystem exists to stop. A bare word is still refused, and the
+ * refusal says what to write instead.
+ */
+export function normalizeMailboxCriterion(raw: string): string {
+  let value = raw.trim();
+  // `Alerts <alerts@example.com>` — the display-name form of every mail client
+  // in existence, and what somebody pastes when they copy a sender.
+  const bracketed = value.match(/<\s*([^<>]+)\s*>/)?.[1];
+  if (bracketed !== undefined) value = bracketed.trim();
+  value = value.replace(/^mailto:/i, '').trim();
+  // A trailing dot is a fully-qualified name written out; it is never part of
+  // an address and would fail validation on its own.
+  value = value.replace(/\.+$/, '');
+  if (!value.includes('@')) {
+    // Only with no `@` can `/` or `?` be a URL rather than a legal — if odd —
+    // local part, so the URL cleanup is confined to this branch.
+    value = value
+      .replace(/^https?:\/\//i, '')
+      .replace(/[/?#].*$/, '')
+      .replace(/\.+$/, '');
+    // A domain written without its `@`. Requiring a dot is what keeps a bare
+    // brand word out: `stripe.com` is a domain, `Stripe` is a wish.
+    if (value.includes('.')) value = `@${value}`;
+  }
+  return value.toLowerCase();
+}
+
+// `transform().pipe()` rather than `preprocess`, which widens the schema's
+// input to `unknown` and takes the tool's argument type with it.
 const mailboxCriterionSchema = (subject: 'Sender' | 'Recipient') =>
-  z.string().trim().min(1).refine(
-    value =>
-      z.string().email().safeParse(value).success
-      || (
-        value.startsWith('@')
-        && z.string().email().safeParse(`mailbox${value}`).success
-      ),
-    `${subject} must be one exact email address or an @domain.`,
+  z.string().transform(normalizeMailboxCriterion).pipe(
+    z.string().min(1).refine(
+      value =>
+        z.string().email().safeParse(value).success
+        || (
+          value.startsWith('@')
+          && z.string().email().safeParse(`mailbox${value}`).success
+        ),
+      `${subject} must be one mailbox address such as alerts@acme.com, or a `
+        + 'domain such as acme.com. A company or brand name on its own cannot '
+        + 'be matched — find the real sending address first.',
+    ).refine(
+    value => !value.startsWith('@')
+      || !isTooBroadADomain(value.slice(1).toLowerCase()),
+      `${subject} names a whole registry rather than an organisation, and `
+        + 'because a domain now covers its subdomains that would match almost '
+        + 'any sender. Name the organisation, such as acme.co.uk.',
+    ),
   );
 
 const senderCriterionSchema = mailboxCriterionSchema('Sender');
@@ -111,14 +188,22 @@ export const mailRuleMatchSchema = z.object({
  * Whether a `notFrom` criterion covers everything a `from` criterion admits.
  *
  * Both shapes are exact — an address or an `@domain` — so this is decidable
- * rather than a guess: `@stripe.com` covers `billing@stripe.com`, and nothing
- * covers a broader criterion than itself.
+ * rather than a guess. It has to read `@domain` the same way the matcher does,
+ * or the two disagree in the worst direction: `from: @mail.acme.com` with
+ * `notFrom: @acme.com` now cancels out completely, and a check still using the
+ * old exact reading would accept that rule and let it match nothing forever,
+ * which is the failure the check exists to prevent.
  */
 function excludes(exclusion: string, inclusion: string): boolean {
   const wide = exclusion.trim().toLowerCase();
   const narrow = inclusion.trim().toLowerCase();
   if (wide === narrow) return true;
-  return wide.startsWith('@') && !narrow.startsWith('@') && narrow.endsWith(wide);
+  if (!wide.startsWith('@')) return false;
+  const excluded = wide.slice(1);
+  const admitted = narrow.startsWith('@')
+    ? narrow.slice(1)
+    : narrow.slice(narrow.lastIndexOf('@') + 1);
+  return domainCovers(excluded, admitted);
 }
 
 /**
@@ -455,11 +540,37 @@ function recipientMatches(message: MailMessageMetadata, criterion: string): bool
     .some(address => addressMatches(address, criterion));
 }
 
+/**
+ * Whether one address satisfies one criterion. **`@domain` covers subdomains.**
+ *
+ * It used to mean that domain and nothing else, which is the more precise
+ * reading and was the wrong one. Nearly every service that sends transactional
+ * mail sends it from a subdomain — a bounce or delivery domain the recipient
+ * has no reason to know about — so a member asking for mail from a company, and
+ * a model writing the obvious `@company.com`, produced a rule that was created,
+ * reported as active, and never fired once. A rule that silently matches
+ * nothing is the exact failure this whole subsystem is being cleaned of, and it
+ * cost far more than the precision was worth.
+ *
+ * What is given up is the ability to say "this domain and not its subdomains".
+ * There is no syntax for it, because nobody has asked for one and the silent
+ * dead rule is the failure that was actually happening. Adding `@*.domain`
+ * later would not disturb this reading.
+ *
+ * Matching is on label boundaries, never on string suffix. `endsWith` would
+ * make `@example.com` match `billing@notexample.com`, handing anyone who can
+ * register a lookalike domain a rule that was never meant for them.
+ */
 function addressMatches(address: string, criterion: string): boolean {
   const expected = criterion.trim().toLowerCase();
-  return expected.startsWith('@')
-    ? address.endsWith(expected)
-    : address === expected;
+  if (!expected.startsWith('@')) return address === expected;
+  const domain = address.slice(address.lastIndexOf('@') + 1);
+  return domainCovers(expected.slice(1), domain);
+}
+
+/** Whether `criterion` is `domain` itself or one of its parents. */
+function domainCovers(criterion: string, domain: string): boolean {
+  return domain === criterion || domain.endsWith(`.${criterion}`);
 }
 
 /** Every address in one recipient header, one entry at a time. */

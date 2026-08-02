@@ -113,9 +113,11 @@ describe('mailAutomations tool', () => {
 
     assert.equal(result.ok, true);
     assert.equal(result.ok && result.value.rules?.[0]?.valid, false);
+    // The reason has to reach the member, and has to name what to write —
+    // "invalid" alone leaves them with a dead rule and no next step.
     assert.match(
       result.ok ? result.value.rules?.[0]?.invalidReason ?? '' : '',
-      /exact email address or an @domain/,
+      /one mailbox address such as alerts@acme\.com, or a domain such as acme\.com/,
     );
   });
 
@@ -932,7 +934,12 @@ describe('mailAutomations tool', () => {
     // Constraints a user hits in practice must be stated where the model reads.
     assert.match(mailOps.markdown, /Gmail only/i);
     assert.match(mailOps.markdown, /delivers the whole message/i);
-    assert.match(mailOps.markdown, /does \*\*not\*\* match \\?`?alerts@mail\.example\.com/i);
+    // The subdomain rule, stated in the direction the runtime now works. It
+    // was pinned here in the opposite direction, which is exactly why this
+    // assertion is worth having: the instruction layer and the matcher have to
+    // move together or the model confidently describes behaviour that is gone.
+    assert.match(mailOps.markdown, /every subdomain of it/i);
+    assert.match(mailOps.markdown, /never matches a lookalike/i);
     assert.match(mailOps.markdown, /invalidReason/);
     assert.match(mailOps.markdown, /includeInactive/);
     assert.match(mailOps.markdown, /google_workspace_connection_selection_required/);

@@ -107,6 +107,120 @@ describe('exclusions', () => {
   });
 });
 
+describe('taking what people actually type', () => {
+  const criterion = (raw: string): string | undefined => {
+    const parsed = mailRuleMatchSchema.safeParse({ from: raw });
+    return parsed.success ? parsed.data.from : undefined;
+  };
+
+  it('accepts a domain written without the @', () => {
+    // The commonest thing anyone types. Refusing it over punctuation teaches
+    // nobody anything.
+    assert.equal(criterion('stripe.com'), '@stripe.com');
+    assert.equal(criterion('@stripe.com'), '@stripe.com');
+  });
+
+  it('accepts a sender copied out of a mail client', () => {
+    assert.equal(criterion('Alerts <alerts@stripe.com>'), 'alerts@stripe.com');
+    assert.equal(criterion('<alerts@stripe.com>'), 'alerts@stripe.com');
+    assert.equal(criterion('mailto:alerts@stripe.com'), 'alerts@stripe.com');
+  });
+
+  it('accepts a pasted URL and a fully-qualified trailing dot', () => {
+    assert.equal(criterion('https://stripe.com/invoices'), '@stripe.com');
+    assert.equal(criterion('stripe.com.'), '@stripe.com');
+  });
+
+  it('folds case, so one rule cannot become two', () => {
+    assert.equal(criterion('  Alerts@Stripe.COM '), 'alerts@stripe.com');
+  });
+
+  it('still refuses a brand name rather than guessing a domain for it', () => {
+    // `Stripe` → `@stripe.com` would be a guess, and the rule it builds is
+    // wrong while being reported as right. That is the failure this whole
+    // subsystem exists to stop, so the refusal has to say what to write.
+    assert.equal(criterion('Stripe'), undefined);
+    assert.equal(criterion('the finance team'), undefined);
+    const refusal = mailRuleMatchSchema.safeParse({ from: 'Stripe' });
+    assert.match(
+      refusal.success ? '' : refusal.error.errors[0]!.message,
+      /brand name on its own cannot be matched/i,
+    );
+  });
+});
+
+describe('@domain covers subdomains', () => {
+  it('catches the sending subdomain a service actually mails from', () => {
+    // The rule that used to be created, reported active, and never fire once.
+    const match: MailRuleMatch = { from: '@stripe.com' };
+    assert.equal(matches(match, { from: 'receipts@stripe.com' }), true);
+    assert.equal(matches(match, { from: 'receipts@mail.stripe.com' }), true);
+    assert.equal(matches(match, { from: 'x@a.b.stripe.com' }), true);
+  });
+
+  it('matches on label boundaries, never on string suffix', () => {
+    // A plain `endsWith` hands anyone who registers a lookalike a rule that
+    // was never meant for them.
+    const match: MailRuleMatch = { from: '@example.com' };
+    assert.equal(matches(match, { from: 'billing@notexample.com' }), false);
+    assert.equal(matches(match, { from: 'billing@example.com.evil.tld' }), false);
+  });
+
+  it('reads a recipient criterion the same way', () => {
+    assert.equal(
+      matches(
+        { to: '@company.com' },
+        { to: 'team@eu.company.com' },
+      ),
+      true,
+    );
+  });
+
+  it('excludes a subdomain when the exclusion names the parent', () => {
+    const match: MailRuleMatch = {
+      subjectContains: 'Invoice',
+      notFrom: '@spam.example',
+    };
+    assert.equal(matches(match, { from: 'x@bulk.spam.example' }), false);
+  });
+
+  it('refuses a bare registry, which subdomains would make enormous', () => {
+    for (const domain of ['@com', '@co.uk', '@com.au']) {
+      assert.equal(
+        mailRuleMatchSchema.safeParse({ from: domain }).success,
+        false,
+        domain,
+      );
+    }
+    assert.equal(
+      mailRuleMatchSchema.safeParse({ from: '@acme.co.uk' }).success,
+      true,
+    );
+  });
+
+  it('sees a contradiction that only exists once subdomains count', () => {
+    // `from: @mail.acme.com` with `notFrom: @acme.com` cancels out completely
+    // now. A contradiction check still using the old exact reading would accept
+    // the rule and let it match nothing forever.
+    assert.equal(
+      mailRuleMatchSchema.safeParse({
+        from: '@mail.acme.com',
+        notFrom: '@acme.com',
+      }).success,
+      false,
+    );
+    // Still legitimate in the other direction: exclude one subdomain from a
+    // rule watching the parent.
+    assert.equal(
+      mailRuleMatchSchema.safeParse({
+        from: '@acme.com',
+        notFrom: '@bounces.acme.com',
+      }).success,
+      true,
+    );
+  });
+});
+
 describe('activeWindow', () => {
   const officeHours = {
     subjectContains: 'Invoice',
