@@ -302,9 +302,12 @@ export class DataExportWorker {
     error: unknown,
     progressMessageId?: string,
   ): Promise<void> {
-    const reason = error instanceof Error ? error.message : String(error);
+    this.log.error('data_export.failure_delivered', {
+      jobId: job.id,
+      error: String(error),
+    });
     const card = buildFinalCard({
-      markdown: `# Data export failed\nThe governed export could not finish.\n\n${reason.slice(0, 300)}`,
+      markdown: '# Data export could not finish\nDivo could not complete this export. Your source data was not changed. Please try again shortly.',
     });
     if (progressMessageId) {
       const updated = await this.deps.larkAdapter.updateMessageById(progressMessageId, card);

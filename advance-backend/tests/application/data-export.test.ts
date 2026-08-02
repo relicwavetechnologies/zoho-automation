@@ -1003,7 +1003,7 @@ describe('data export worker', () => {
       larkAdapter: {
         sendToChatId: async () => ({ ok: true as const, value: 'om-progress' }),
         updateMessageById: async (_messageId, content) => {
-          failureDelivered = /Data export failed/i.test(content);
+          failureDelivered = /Data export could not finish/i.test(content);
           return { ok: true as const, value: undefined };
         },
       },
@@ -1101,7 +1101,8 @@ describe('data export worker', () => {
       }),
       /no progress/i,
     );
-    assert.match(failureCard, /Data export failed/i);
+    assert.match(failureCard, /Data export could not finish/i);
+    assert.doesNotMatch(failureCard, /no progress/i, 'internal worker errors must not reach Lark');
   });
 
   it('never sends a second terminal card when the tracker edit fails', async () => {
