@@ -705,6 +705,21 @@ Archived rules cannot be resumed — `resume` on one returns the misleading
 - **`pause` requires the `execute` action group**, because `actionFor` maps it
   to `update`. Revoke `execute` and a user can no longer stop their own live
   rules. (Defect S4.)
+- **[added 2026-08-02] A rule's identity is canonical, and old keys migrate one
+  at a time.** `mailRuleDedupeKey` folds case on the match clause and a
+  destination email (never a Lark `chatId`) and is derived from a fixed
+  sequence, so asking for the same rule as `otp` and as `OTP` no longer forks it
+  into two that both forward. Rules written before that carry a key no request
+  can reproduce, so `create` recognises them by recomputing the canonical key
+  from what each stored rule holds and moves the match onto it before creating
+  anything. Rules that had *already* forked are not merged.
+- **[added 2026-08-02] `update` can now refuse with two new answers.**
+  `replaceRule` returns `duplicate` when the edit would land on a rule the
+  member already holds live on that mailbox — reported rather than left to raise
+  a unique violation they can do nothing about — and `duplicate_archived` when
+  the rule it collides with is archived, where the remedy is to recreate that
+  rule rather than archive anything. Both are recognised by recomputed identity,
+  not by stored key, for the same reason as `create`.
 
 ### 8.2 Match fields
 

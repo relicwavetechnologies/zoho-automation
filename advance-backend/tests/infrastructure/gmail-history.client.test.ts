@@ -408,6 +408,21 @@ describe('GmailHistoryClient message metadata', () => {
     });
 
     assert.equal(mailRuleMatches({ to: 'alias@example.com' }, metadata), true);
+
+    // Ending the poisoned instance in a backslash is the one-character
+    // variant: the escape would eat the separator and carry the open quote
+    // across it.
+    const escaped = await syncOneMessage({
+      mimeType: 'text/plain',
+      headers: [
+        { name: 'From', value: 'sender@evil.example' },
+        { name: 'To', value: 'member@example.com' },
+        { name: 'Delivered-To', value: '"poison\\' },
+        { name: 'Delivered-To', value: 'alias@example.com' },
+      ],
+    });
+
+    assert.equal(mailRuleMatches({ to: 'alias@example.com' }, escaped), true);
   });
 
   it('keeps a folded value in one piece, boundary or no boundary', async () => {

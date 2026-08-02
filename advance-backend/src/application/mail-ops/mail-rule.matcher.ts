@@ -274,7 +274,10 @@ function splitRecipients(header: string): string[] {
       commentDepth = 0;
       continue;
     }
-    if (hidden && character === '\\') {
+    // Not the separator itself, or an instance ending in a backslash would
+    // swallow it and carry its open quote into the next instance — the one
+    // thing the separator exists to stop.
+    if (hidden && character === '\\' && header[index + 1] !== '\n') {
       index += 1;
       entry += ' ';
       continue;
