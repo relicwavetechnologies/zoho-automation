@@ -78,6 +78,10 @@ Choose the exact approved specialist returned by this router.
   edit and rerun it. This is the data path, whatever the row count.
 - Produce a CSV, Excel file, Google Sheet, or governed complete-data artifact →
   \`secure-data-export\`.
+- An exact pasted \`https://docs.google.com/spreadsheets/d/...\` URL →
+  \`google-sheets\` before any generic web search. Resolve the reference first;
+  a URL alone proves only metadata/access, so ask what the member wants to do
+  next. Never claim existing-Sheet bulk write, append, or import is available.
 - Read or analyse a file that is already in the workspace → \`${READ_FILES_SKILL_SLUG}\`.
 
 Size does not change the route. A source that paginates past what fits in
@@ -228,6 +232,7 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
     targetSlugs: [
       DIVO_LOCAL_PYTHON_SKILL_SLUG,
       DATA_EXPORT_SYSTEM_SKILL.slug,
+      'google-sheets',
       READ_FILES_SKILL_SLUG,
     ],
   },

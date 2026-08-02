@@ -28,7 +28,7 @@ const GOOGLE_SKILL_ALIASES: Record<GoogleWorkspaceProductDefinition['service'], 
   drive: ['google files', 'cloud files', 'shared drive'],
   calendar: ['google events', 'schedule', 'availability'],
   docs: ['google document', 'word processor'],
-  sheets: ['google sheet', 'spreadsheet', 'workbook', 'cells', 'dropdown', 'data validation', 'freeze header'],
+  sheets: ['google sheet', 'google sheet url', 'docs.google.com/spreadsheets', 'spreadsheet', 'workbook', 'cells', 'dropdown', 'data validation', 'freeze header'],
   slides: ['google presentation', 'slide deck'],
   forms: ['google form', 'survey'],
   tasks: ['google to-do', 'task list'],
@@ -332,6 +332,35 @@ A create/edit task is complete only when the final content is verified and the r
       return `
 
 ## Google Sheets workflow
+
+## Pasted Google Sheet URL
+
+Before generic web search or a native Sheets operation, route an exact pasted
+\`https://docs.google.com/spreadsheets/d/...\` URL through Divo's governed
+reference resolver. Do not fetch it as a public web page or derive an ID from
+the URL yourself:
+
+\`\`\`json
+{
+  "toolId": "googleSheets",
+  "args": {
+    "op": "resolve_reference",
+    "url": "<exact pasted Google Sheet URL>",
+    "connectionId": "<optional exact returned connection UUID>"
+  }
+}
+\`\`\`
+
+Omit \`connectionId\` until Divo asks for an account choice. If it returns
+choices, ask once, then retry the same URL with the selected exact connection.
+On a resolved response, carry \`data.resource.resourceId\` and
+\`data.resource.connectionId\` as opaque returned handles; never reconstruct
+them or move Sheet rows through model context.
+
+A URL-only request resolves metadata and access only. Confirm that Divo can
+open the Sheet, then ask what the member wants to do next. Existing-Sheet bulk
+write, append, and import are not available yet; never claim that this
+resolution wrote or prepared bulk rows.
 
 For a new structured spreadsheet, use this order:
 

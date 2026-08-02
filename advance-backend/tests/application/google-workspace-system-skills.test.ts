@@ -38,6 +38,18 @@ describe('Google Workspace system skills', () => {
     assert.match(sheets.markdown, /frozen_row_count/);
     assert.match(sheets.markdown, /connectionId.*inside the Google tool's `args`/s);
     assert(sheets.aliases.includes('dropdown'));
+    assert(sheets.aliases.includes('google sheet url'));
+  });
+
+  it('resolves pasted Sheet URLs before web search without claiming a bulk write', () => {
+    const sheets = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find((skill) => skill.slug === 'google-sheets')!;
+
+    assert.match(sheets.markdown, /Before generic web search or a native Sheets operation/);
+    assert.match(sheets.markdown, /"op": "resolve_reference"/);
+    assert.match(sheets.markdown, /"url": "<exact pasted Google Sheet URL>"/);
+    assert.match(sheets.markdown, /data\.resource\.resourceId.*data\.resource\.connectionId/s);
+    assert.match(sheets.markdown, /URL-only request resolves metadata and access only/);
+    assert.match(sheets.markdown, /Existing-Sheet bulk\s+write, append, and import are not available yet/);
   });
 
   it('gives the six upgraded products complete Divo-native workflows', () => {

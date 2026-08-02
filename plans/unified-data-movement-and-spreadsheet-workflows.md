@@ -18,7 +18,7 @@
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
 | 5 — Semrush and OMS convergence | 🟡 Partial | OMS and Semrush are integrated; live Semrush preview/offer passes, while artifact verification and rollback-path removal evidence remain |
 | 6 — pasted Sheet/Drive URLs | 🟡 In progress | Strict parsing, live personal-account access probes, and governed `googleSheets` reference resolution are wired; thread binding and existing-Sheet bulk write remain |
-| 7 — routers and provider skills | 🟡 Partial | Central export skill knows Excel; provider-wide routing/skill convergence remains |
+| 7 — routers and provider skills | 🟡 Partial | Exact pasted Sheet URLs now route to governed reference resolution before web search; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
 | 9 — realistic isolated-runtime validation | 🟡 In progress | Dev Lark received a real Zoho preview and a fresh opaque export offer; Sheet/CSV confirmation and no-account OAuth resume remain |
 
@@ -115,6 +115,12 @@
   errors. Parser, resolver, probe, and governed-tool tests pass 28/28;
   TypeScript and diff validation pass. Thread binding and existing-Sheet writes
   remain deliberately unclaimed.
+- Phase 7 now routes exact pasted Google Sheet URLs to the Google Sheets
+  specialist before generic web search. The backend skill and both packaged Pi
+  gateway copies teach the exact governed `resolve_reference` call, preserve
+  returned resource/connection handles, keep URL-only requests metadata-only,
+  and explicitly avoid claiming the still-unbuilt existing-Sheet bulk path.
+  Focused route/skill tests pass 13/13; TypeScript and diff validation pass.
 
 ---
 
