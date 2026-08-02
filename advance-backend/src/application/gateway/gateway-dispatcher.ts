@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { ToolRegistry } from '../tools/tool-registry';
 import type { PermissionService } from '../permissions/permission.service';
 import type { PermissionResult } from '../permissions/permission.types';
@@ -114,7 +115,7 @@ export interface GatewayDispatcherDeps {
   readonly personalMemoryCommands?: PersonalMemoryCommandService;
   readonly runEffectReceipts?: Pick<
     RunEffectReceiptStore,
-    'reserveKnowledgeReview' | 'completeKnowledgeReview' | 'releaseKnowledgeReview' | 'recordPersonalMemory' | 'recordDataExportOffer'
+    'reserveKnowledgeReview' | 'completeKnowledgeReview' | 'releaseKnowledgeReview' | 'recordPersonalMemory' | 'recordDataExportOffer' | 'recordGoogleSheetDestination'
   >;
   readonly logger: Logger;
 }
@@ -859,6 +860,58 @@ export class GatewayDispatcher {
       response,
       execution,
     );
+    const sheetDestination = googleSheetDestinationFrom(
+      parsed.data.toolId,
+      parsed.data.args,
+      response,
+    );
+    if (sheetDestination && member.channel === 'lark') {
+      if (
+        !this.deps.runEffectReceipts
+        || !execution
+        || !member.runtimeChatId
+        || !member.runtimeRunId
+        || !member.runtimeThreadId
+        || execution.runId !== member.runtimeRunId
+        || execution.threadId !== member.runtimeThreadId
+      ) {
+        return gatewayFailure(
+          'tool_error',
+          'Divo opened the Sheet, but could not bind it safely to this request. Retry the same link.',
+        );
+      }
+      const referenceId = randomUUID();
+      try {
+        await this.deps.runEffectReceipts.recordGoogleSheetDestination({
+          companyId: member.companyId,
+          userId: member.userId,
+          chatId: member.runtimeChatId,
+          threadId: execution.threadId,
+          runId: execution.runId,
+        }, { referenceId, ...sheetDestination });
+      } catch (error) {
+        this.deps.logger.error('gateway.google_sheet_destination.receipt_failed', {
+          companyId: member.companyId,
+          userId: member.userId,
+          runId: execution.runId,
+          error: safeGatewayMessage(error),
+        });
+        return gatewayFailure(
+          'tool_error',
+          'Divo opened the Sheet, but could not save its secure reference. Retry the same link.',
+        );
+      }
+      return gatewaySuccess({
+        toolId: 'googleSheets',
+        action: 'read',
+        result: {
+          success: true,
+          nativeTool: 'resolve_sheet_reference',
+          data: { status: 'resolved', destinationReferenceId: referenceId },
+          message: 'Divo can open this Google Sheet. Keep the destination reference for a later governed export.',
+        },
+      });
+    }
     const exportOfferId = dataExportOfferIdFrom(response);
     if (exportOfferId && member.channel === 'lark') {
       if (
@@ -1588,6 +1641,31 @@ function dataExportOfferIdFrom(response: GatewayResponse): string | null {
   if (!isRecord(result) || !isRecord(result['preview'])) return null;
   const offerId = result['preview']['exportOfferId'];
   return typeof offerId === 'string' && isUuid(offerId) ? offerId : null;
+}
+
+function googleSheetDestinationFrom(
+  toolId: string,
+  args: Record<string, unknown>,
+  response: GatewayResponse,
+): { readonly connectionId: string; readonly spreadsheetId: string; readonly gid?: string } | null {
+  if (toolId !== 'googleSheets' || args['op'] !== 'resolve_reference' || !response.ok) return null;
+  if (!isRecord(response.data) || !isRecord(response.data['result'])) return null;
+  const result = response.data['result'];
+  if (result['success'] !== true || !isRecord(result['data'])) return null;
+  const resolution = result['data'];
+  if (resolution['status'] !== 'resolved' || !isRecord(resolution['resource'])) return null;
+  const resource = resolution['resource'];
+  if (
+    resource['provider'] !== 'google'
+    || resource['kind'] !== 'spreadsheet'
+    || typeof resource['connectionId'] !== 'string'
+    || typeof resource['resourceId'] !== 'string'
+  ) return null;
+  return {
+    connectionId: resource['connectionId'],
+    spreadsheetId: resource['resourceId'],
+    ...(typeof resource['subresourceId'] === 'string' ? { gid: resource['subresourceId'] } : {}),
+  };
 }
 
 function isUuid(value: string): boolean {

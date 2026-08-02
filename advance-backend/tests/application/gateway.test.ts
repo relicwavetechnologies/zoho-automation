@@ -2487,6 +2487,94 @@ describe('GatewayDispatcher', () => {
     }]);
   });
 
+  it('replaces a resolved Lark Sheet target with a run-bound opaque reference', async () => {
+    const receipts: unknown[] = [];
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      id: asToolId('googleSheets'),
+      argsSchema: z.object({ op: z.literal('resolve_reference'), url: z.string() }),
+      resultSchema: z.object({}).passthrough(),
+      permissionCheck: () => ok('read'),
+      execute: async () => ok({
+        success: true,
+        nativeTool: 'resolve_sheet_reference',
+        data: {
+          status: 'resolved',
+          resource: {
+            provider: 'google',
+            kind: 'spreadsheet',
+            resourceId: 'sheet_1',
+            subresourceId: '42',
+            connectionId: '11111111-1111-4111-8111-111111111111',
+          },
+        },
+      }),
+    } as any));
+    const permissions = makePermissionService(makeAllowedPerm('googleSheets', ['read']));
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([allowedSkill]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      runEffectReceipts: {
+        recordGoogleSheetDestination: async (identity, input) => {
+          receipts.push({ identity, input });
+          return {} as any;
+        },
+      } as any,
+      logger: noopLogger,
+    });
+
+    const result = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      execution: {
+        version: 1,
+        runId: 'run-1',
+        threadId: 'thread-1',
+        actionId: 'sheet-reference-1',
+      },
+      payload: {
+        toolId: 'googleSheets',
+        args: {
+          op: 'resolve_reference',
+          url: 'https://docs.google.com/spreadsheets/d/sheet_1/edit#gid=42',
+        },
+      },
+    }, {
+      ...member,
+      channel: 'lark',
+      runtimeChatId: 'chat-1',
+      runtimeRunId: 'run-1',
+      runtimeThreadId: 'thread-1',
+    });
+
+    assert.equal(result.ok, true);
+    const destinationReferenceId = (result.data as any).result.data.destinationReferenceId;
+    assert.match(destinationReferenceId, /^[0-9a-f-]{36}$/i);
+    assert.equal(JSON.stringify(result.data).includes('sheet_1'), false);
+    assert.equal(JSON.stringify(result.data).includes('11111111-1111-4111-8111-111111111111'), false);
+    assert.deepEqual(receipts, [{
+      identity: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        chatId: 'chat-1',
+        threadId: 'thread-1',
+        runId: 'run-1',
+      },
+      input: {
+        referenceId: destinationReferenceId,
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        spreadsheetId: 'sheet_1',
+        gid: '42',
+      },
+    }]);
+  });
+
   it('does not expose a Lark export offer without matching runtime provenance', async () => {
     const registry = new ToolRegistry();
     registry.register(makeFakeTool({

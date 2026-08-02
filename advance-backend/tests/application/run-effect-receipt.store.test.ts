@@ -157,6 +157,37 @@ describe('run effect receipt store', () => {
       /different data export offer/i,
     );
   });
+
+  it('seals a Google Sheet destination to one opaque reference and exact run identity', async () => {
+    const fixture = createStore();
+    const referenceId = '33333333-3333-4333-8333-333333333333';
+    const effect = await fixture.store.recordGoogleSheetDestination(identity, {
+      referenceId,
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      spreadsheetId: 'sheet_1',
+      gid: '42',
+    });
+
+    assert.deepEqual(
+      await fixture.store.getVerifiedGoogleSheetDestination(identity, referenceId),
+      effect,
+    );
+    assert.equal(
+      await fixture.store.getVerifiedGoogleSheetDestination(
+        { ...identity, threadId: 'thread-2' },
+        referenceId,
+      ),
+      null,
+    );
+    await assert.rejects(
+      fixture.store.recordGoogleSheetDestination(identity, {
+        referenceId,
+        connectionId: '22222222-2222-4222-8222-222222222222',
+        spreadsheetId: 'sheet_2',
+      }),
+      /different Google Sheet destination/i,
+    );
+  });
 });
 
 function createStore() {

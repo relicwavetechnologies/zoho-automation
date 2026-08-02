@@ -17,7 +17,7 @@
 | 3 — Lark export interaction | ✅ Done | Signed format/account cards, immediate callback ACK, locked choice cards, governed progress delivery, OAuth resume, and personal destination preference implemented |
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
 | 5 — Semrush and OMS convergence | 🟡 Partial | OMS and Semrush are integrated; live Semrush preview/offer passes, while artifact verification and rollback-path removal evidence remain |
-| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Strict parsing, live personal-account access probes, and governed `googleSheets` reference resolution are wired; thread binding and existing-Sheet bulk write remain |
+| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Strict parsing, live personal-account access probes, governed resolution, and opaque run/thread-bound destination receipts are wired; existing-Sheet bulk write remains |
 | 7 — routers and provider skills | 🟡 Partial | Exact pasted Sheet URLs now route to governed reference resolution before web search; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
 | 9 — realistic isolated-runtime validation | 🟡 In progress | Dev Lark received a real Zoho preview and a fresh opaque export offer; Sheet/CSV confirmation and no-account OAuth resume remain |
@@ -131,6 +131,12 @@
   returned resource/connection handles, keep URL-only requests metadata-only,
   and explicitly avoid claiming the still-unbuilt existing-Sheet bulk path.
   Focused route/skill tests pass 13/13; TypeScript and diff validation pass.
+- A successful Lark Sheet resolution now seals the exact personal connection,
+  spreadsheet, and optional tab ID in the existing Redis run-effect store for
+  15 minutes. Pi receives only a random `destinationReferenceId`; the backend
+  rejects reuse across company, user, chat, thread, or run. This adds no schema
+  migration and creates no second signing authority. Existing-Sheet writing is
+  still deliberately unclaimed until the worker consumes this receipt.
 
 ---
 
@@ -855,14 +861,17 @@ the full exported range.
 - Resolve an exact personal Google connection and validate metadata plus write
   access server-side. Company/Divo connections remain read-only for user-owned
   Sheet work and are never selected merely because they can view the file.
-- Store a thread-scoped opaque Sheet reference in the existing
-  `RuntimeConversation.refsJson`; store no OAuth material and revalidate access
-  before every consequential read or write. No Prisma migration is required.
+- Store the exact connection/Sheet target in the existing Redis
+  `RunEffectReceiptStore`, bound to company, user, chat, thread, and backend run;
+  return only its short-lived random reference to Pi. Store no OAuth material
+  and revalidate access before every consequential read or write. No Prisma
+  migration is required.
 - Keep small direct reads/edits in the governed Google tool. For large imports,
   add an internal `existing_google_sheet` destination to the central queue and
-  sink; V1 writes a new named tab or appends in bounded batches, then verifies
-  the header, final row, and count. It does not clear or overwrite an existing
-  tab.
+  sink; V1 writes a new uniquely named tab in bounded batches, then verifies
+  the header, final row, and count. It does not clear, overwrite, or append to
+  an existing tab. Append remains deferred until it has its own retry-safe
+  idempotency marker.
 - Add Drive XLSX metadata resolution and explicit conversion approval.
 - Return clear unsupported behavior for OneDrive/Excel Online and Lark Base until their connectors are ready.
 

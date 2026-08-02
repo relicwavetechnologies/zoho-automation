@@ -62,6 +62,17 @@ export interface OfferedDataExportEffect extends LarkRunEffectIdentity {
   readonly createdAt: string;
 }
 
+export interface GoogleSheetDestinationEffect extends LarkRunEffectIdentity {
+  readonly version: 1;
+  readonly kind: 'google_sheet_destination';
+  readonly status: 'resolved';
+  readonly referenceId: string;
+  readonly connectionId: string;
+  readonly spreadsheetId: string;
+  readonly gid?: string;
+  readonly createdAt: string;
+}
+
 export type VerifiedKnowledgeEffect = OpenedKnowledgeReviewEffect | AppliedPersonalMemoryEffect;
 
 export type ReserveKnowledgeReviewEffectResult =
@@ -249,6 +260,75 @@ export class RunEffectReceiptStore {
     return effect;
   }
 
+  async recordGoogleSheetDestination(
+    identity: LarkRunEffectIdentity,
+    input: {
+      readonly referenceId: string;
+      readonly connectionId: string;
+      readonly spreadsheetId: string;
+      readonly gid?: string;
+    },
+  ): Promise<GoogleSheetDestinationEffect> {
+    if (!isUuid(input.referenceId) || !isUuid(input.connectionId)) {
+      throw new Error('Google Sheet destination reference is invalid.');
+    }
+    if (!isSpreadsheetId(input.spreadsheetId) || !isSheetGid(input.gid)) {
+      throw new Error('Google Sheet destination is invalid.');
+    }
+    const effect: GoogleSheetDestinationEffect = {
+      version: 1,
+      kind: 'google_sheet_destination',
+      status: 'resolved',
+      ...identity,
+      ...input,
+      createdAt: new Date().toISOString(),
+    };
+    const stored = await this.cache.setNx(
+      googleSheetDestinationKey(identity, input.referenceId),
+      effect,
+      RUN_EFFECT_TTL_SECONDS,
+    );
+    if (!stored.ok) throw stored.error;
+    if (stored.value) return effect;
+
+    const existing = await this.getVerifiedGoogleSheetDestination(identity, input.referenceId);
+    if (!existing) throw new Error('Google Sheet destination receipt disappeared.');
+    if (
+      existing.connectionId !== input.connectionId
+      || existing.spreadsheetId !== input.spreadsheetId
+      || existing.gid !== input.gid
+    ) {
+      throw new Error('This reference is already bound to a different Google Sheet destination.');
+    }
+    return existing;
+  }
+
+  async getVerifiedGoogleSheetDestination(
+    identity: LarkRunEffectIdentity,
+    referenceId: string,
+  ): Promise<GoogleSheetDestinationEffect | null> {
+    if (!isUuid(referenceId)) throw new Error('Google Sheet destination reference is invalid.');
+    const result = await this.cache.get<GoogleSheetDestinationEffect>(
+      googleSheetDestinationKey(identity, referenceId),
+    );
+    if (!result.ok) throw result.error;
+    const effect = result.value;
+    if (!effect) return null;
+    if (
+      effect.version !== 1
+      || effect.kind !== 'google_sheet_destination'
+      || effect.status !== 'resolved'
+      || effect.referenceId !== referenceId
+      || !isUuid(effect.connectionId)
+      || !isSpreadsheetId(effect.spreadsheetId)
+      || !isSheetGid(effect.gid)
+    ) {
+      throw new Error('Google Sheet destination receipt is invalid.');
+    }
+    assertSameIdentity(effect, identity);
+    return effect;
+  }
+
   async getVerifiedMemoryEffect(
     identity: LarkRunEffectIdentity,
   ): Promise<VerifiedKnowledgeEffect | null> {
@@ -326,6 +406,10 @@ function runEffectKey(identity: LarkRunEffectIdentity, requestId: string): strin
   return `${runEffectPrefix(identity)}request:${sha256(requestId)}`;
 }
 
+function googleSheetDestinationKey(identity: LarkRunEffectIdentity, referenceId: string): string {
+  return `${runEffectPrefix(identity)}google-sheet:${sha256(referenceId)}`;
+}
+
 function runEffectIndexKey(
   identity: LarkRunEffectIdentity,
   effectKind: KnowledgeReviewEffectKind | 'personal_memory_applied' | 'data_export_offered',
@@ -351,7 +435,7 @@ function sha256(value: string): string {
 }
 
 function assertSameIdentity(
-  effect: KnowledgeReviewRunEffect | AppliedPersonalMemoryEffect | OfferedDataExportEffect,
+  effect: KnowledgeReviewRunEffect | AppliedPersonalMemoryEffect | OfferedDataExportEffect | GoogleSheetDestinationEffect,
   identity: LarkRunEffectIdentity,
 ): void {
   for (const key of ['companyId', 'userId', 'chatId', 'threadId', 'runId'] as const) {
@@ -363,4 +447,13 @@ function assertSameIdentity(
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function isSpreadsheetId(value: string): boolean {
+  return /^[A-Za-z0-9_-]{1,256}$/.test(value);
+}
+
+function isSheetGid(value: string | undefined): boolean {
+  return value === undefined
+    || (/^(?:0|[1-9][0-9]{0,19})$/.test(value) && Number.isSafeInteger(Number(value)));
 }
