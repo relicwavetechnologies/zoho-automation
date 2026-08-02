@@ -451,7 +451,13 @@ describe('Google connection continuation', () => {
     assert.equal(piInput.incoming.raw.connectionId, 'connection-1');
     assert.equal(piInput.runContext.departmentId, 'department-current');
     assert.equal(piInput.runContext.requestId, TARGET.continuationIdempotencyKey);
-    assert.deepEqual(piInput.runContext.continuationToolIds, ['mailAutomations']);
+    // The tool IDs stay on the incoming message as a record of what triggered
+    // this continuation. They used to be copied onto the run context too, with
+    // a comment promising an RBAC intersection that no code performed — every
+    // tool call in the fresh run resolves permissions the ordinary way, so the
+    // field granted nothing and guarded nothing.
+    assert.deepEqual(piInput.incoming.raw.requestedToolIds, ['mailAutomations']);
+    assert.equal('continuationToolIds' in piInput.runContext, false);
     assert.equal(piInput.conversation.chatId, 'oc_chat');
     assert.equal(piInput.conversation.replyToMessageId, 'om_original');
     assert.equal(piInput.conversation.replyInThread, true);

@@ -364,7 +364,6 @@ function buildContinuationInput(
     chatId: intent.chatId,
     replyToMessageId: intent.originalMessageId,
     replyInThread: intent.replyInThread,
-    continuationToolIds: intent.requestedToolIds,
     ...(identity.activeDepartmentId
       ? { departmentId: asDepartmentId(identity.activeDepartmentId) }
       : {}),

@@ -81,10 +81,4 @@ export interface RunContext {
    * ingress (a desktop session, for instance).
    */
   readonly runtimeRunId?: string;
-  /**
-   * Backend-issued tool IDs that triggered a deferred OAuth continuation.
-   * The fresh run intersects these with current RBAC before treating them as
-   * resolved; callers and model arguments cannot grant tool access here.
-   */
-  readonly continuationToolIds?: ReadonlyArray<string>;
 }
