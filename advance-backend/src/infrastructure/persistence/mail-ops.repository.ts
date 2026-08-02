@@ -108,6 +108,17 @@ export class MailOpsRepository {
           },
           select: { id: true },
         });
+        // The dedupe key is derived from the rule's own content, so "ask for
+        // the same rule again" lands on the update branch just as often as a
+        // revive does. Only a rule that was not already running starts its
+        // watch afresh: moving the floor under a live rule would silently
+        // drop whatever backlog it had not reached yet, and the member never
+        // asked for anything to stop.
+        const existing = await tx.mailAutomationRule.findUnique({
+          where: { dedupeKey: input.dedupeKey },
+          select: { status: true },
+        });
+        const reviving = existing !== null && existing.status !== 'active';
         const rule = await tx.mailAutomationRule.upsert({
           where: { dedupeKey: input.dedupeKey },
           create: {
@@ -131,7 +142,7 @@ export class MailOpsRepository {
             // rule watches from now, not from whenever the original row was
             // first written, or its first pass ships the whole recovery
             // window.
-            activatedAt: new Date(),
+            ...(reviving ? { activatedAt: new Date() } : {}),
           },
           select: { id: true },
         });
@@ -957,6 +968,7 @@ export class MailOpsRepository {
     cause: unknown,
     attempts: number,
     now = new Date(),
+    options?: { readonly nothingWasSent?: boolean },
   ): Promise<Result<boolean, InfraError>> {
     const abandoned = attempts >= 5;
     const backoffMs = 5_000 * 2 ** Math.max(0, attempts - 1);
@@ -967,6 +979,12 @@ export class MailOpsRepository {
           status: abandoned ? 'abandoned' : 'pending',
           lastError: errorText(cause),
           nextAttemptAt: abandoned ? null : new Date(now.getTime() + backoffMs),
+          // Only on the last rung, and only when the caller proved it. While
+          // the row is still retryable the next attempt re-probes and answers
+          // the question properly; once it is abandoned nothing ever will, so
+          // this is the last chance to stop telling the member their mail
+          // might be in somebody's inbox when it provably is not.
+          ...(abandoned && options?.nothingWasSent ? { ambiguous: false } : {}),
         },
       });
       return ok(updated.count === 1);

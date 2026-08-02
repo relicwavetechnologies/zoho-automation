@@ -385,6 +385,7 @@ model MailAutomationRule {
   activeWindowJson Json?     // W8
   rateLimitPerHour Int?      @default(60) // W8
   lastFiredAt      DateTime?              // W1
+  activatedAt      DateTime  @default(now()) // W5 — D7, the watch floor
 }
 
 model MailDelivery {
@@ -409,6 +410,8 @@ model MailboxReconciliation {   // W5, new
 ```
 
 **Note:** rev 1 proposed `MailAutomationRule.createdChannel` to fix the `channel:'lark'` resolve. Dropped — per C-A that argument is inert. Remove the literal instead.
+
+`activatedAt` deploy note: the column lands `NOT NULL DEFAULT now()`, so on the deploy every existing rule's watch floor becomes deploy time and any mail already sitting unprocessed behind a stale cursor is skipped once. That is the intended direction — the alternative is backfilling `createdAt`, which is the very value that cannot be trusted for a revived or replaced row — but it means a deploy should not be run while a mailbox is knowingly far behind.
 
 Deployment constraint: `divo_dev` has no `_prisma_migrations` table — schema changes go through `db push` over the SSH tunnel (`pnpm dev:e2e`). An empty untracked `prisma/migrations/20260729_cloud_google_mail_ops_foundation/` directory exists on disk and should be deleted; separately, `ci.yml` now runs `prisma db execute` against a migration SQL file, so the "db push only" rule is no longer strictly true and needs restating.
 

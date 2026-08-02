@@ -26,6 +26,7 @@ describe('MailOpsRepository', () => {
         },
       },
       mailAutomationRule: {
+        findUnique: async () => null,
         upsert: async (input: any) => {
           ruleUpsert = input;
           return { id: 'rule-1' };
@@ -662,26 +663,58 @@ describe('MailOpsRepository', () => {
     assert.equal(updates[1].data.ambiguous, undefined);
   });
 
+  it('clears the unconfirmed warning on the last rung of the ladder, not before', async () => {
+    // While the row is still retryable the next attempt re-probes and answers
+    // the question properly. Clearing it early would be a lie the retry could
+    // not take back: the send is staged, so nothing re-marks it ambiguous.
+    const updates: any[] = [];
+    const repo = new MailOpsRepository({
+      mailDelivery: {
+        updateMany: async (input: any) => {
+          updates.push(input);
+          return { count: 1 };
+        },
+      },
+    } as any);
+    const now = new Date('2026-08-02T05:00:00.000Z');
+
+    await repo.markDeliveryFailed('delivery-1', new Error('x'), 2, now, {
+      nothingWasSent: true,
+    });
+    await repo.markDeliveryFailed('delivery-2', new Error('x'), 5, now, {
+      nothingWasSent: true,
+    });
+    await repo.markDeliveryFailed('delivery-3', new Error('x'), 5, now, {
+      nothingWasSent: false,
+    });
+
+    assert.equal(updates[0].data.status, 'pending');
+    assert.equal(updates[0].data.ambiguous, undefined);
+    assert.equal(updates[1].data.status, 'abandoned');
+    assert.equal(updates[1].data.ambiguous, false);
+    assert.equal(updates[2].data.status, 'abandoned');
+    assert.equal(updates[2].data.ambiguous, undefined);
+  });
+
   it('starts a revived rule watching from now, not from when it was first written', async () => {
     // Recreating an archived rule is the only way to bring one back, and the
     // upsert reuses the original row. Left on `createdAt`, a rule first
     // written in January and asked for again today would treat the entire
     // stale-cursor recovery window as mail it is entitled to forward.
-    let ruleUpsert: any;
-    const repo = new MailOpsRepository({
+    const upserts: any[] = [];
+    const repo = (existing: { status: string } | null) => new MailOpsRepository({
       $transaction: async (fn: any) => fn({
         mailboxSubscription: { upsert: async () => ({ id: 'mailbox-1' }) },
         mailAutomationRule: {
+          findUnique: async () => existing,
           upsert: async (input: any) => {
-            ruleUpsert = input;
+            upserts.push(input);
             return { id: 'rule-1' };
           },
         },
       }),
     } as any);
-    const before = Date.now();
-
-    await repo.createRuleForMailbox({
+    const args = {
       companyId: 'company-1',
       createdByUserId: 'user-1',
       connectionId: 'connection-1',
@@ -691,11 +724,23 @@ describe('MailOpsRepository', () => {
       action: { type: 'forward' },
       destination: { type: 'email', email: 'owner@example.com' },
       dedupeKey: 'mail-rule:key',
-    });
+    };
+    const before = Date.now();
 
-    // Only on the revive branch: a genuinely new row takes the column default.
-    assert.equal(ruleUpsert.create.activatedAt, undefined);
-    assert.ok(ruleUpsert.update.activatedAt.getTime() >= before);
+    await repo({ status: 'archived' }).createRuleForMailbox(args);
+    await repo({ status: 'paused' }).createRuleForMailbox(args);
+    await repo(null).createRuleForMailbox(args);
+    // The dedupe key is content-derived, so re-asking for a rule that is
+    // already running lands here too. Moving its floor would silently discard
+    // whatever backlog it had not reached yet — a stale cursor is exactly when
+    // a member re-asks — and nobody asked for anything to stop.
+    await repo({ status: 'active' }).createRuleForMailbox(args);
+
+    assert.ok(upserts[0].update.activatedAt.getTime() >= before);
+    assert.ok(upserts[1].update.activatedAt.getTime() >= before);
+    // A genuinely new row takes the column default rather than a written value.
+    assert.equal(upserts[2].create.activatedAt, undefined);
+    assert.equal(upserts[3].update.activatedAt, undefined);
   });
 
   it('starts a replaced rule watching from now, so a new destination gets no backlog', async () => {

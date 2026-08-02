@@ -588,6 +588,10 @@ export class MailOpsWorker {
     providerDraftId?: string;
   }): Promise<void> {
     const startedAt = Date.now();
+    // Set once the probe says the draft is still sitting there unsent, and
+    // cleared the moment anything might have gone out. Declared out here
+    // because the failure path is the other place that needs the answer.
+    let nothingWasSent = false;
     try {
       const payload = readDeliveryPayload(input.payload);
       this.log.info('mail_ops.delivery_attempt_started', {
@@ -601,11 +605,6 @@ export class MailOpsWorker {
       // send that already succeeded, and deciding it was refused — or dropping
       // it for any other reason — would file a lie about mail that is already
       // in somebody's inbox, and leave the row permanently `ambiguous`.
-      // Set once the probe says the draft is still sitting there unsent. It
-      // stays true only until something is actually sent, so a terminal
-      // decision taken before that point can retire the `ambiguous` warning
-      // instead of leaving the member to wonder forever.
-      let nothingWasSent = false;
       if (input.providerDraftId) {
         const pending = await this.deps.gmail.forwardDraftPending({
           accessToken: await this.deps.resolveAccessToken({
@@ -695,6 +694,9 @@ export class MailOpsWorker {
           userId: payload.userId,
           connectionId: payload.connectionId,
         });
+        // Past this line something may have gone out, so the probe's answer
+        // stops being true and must not be spent on anything downstream.
+        nothingWasSent = false;
         // The staged draft was already proved live at the top of this method,
         // so it is safe to send rather than compose a second copy.
         providerMessageId = await this.forwardThroughDraft({
@@ -733,6 +735,7 @@ export class MailOpsWorker {
             return;
           }
         }
+        nothingWasSent = false;
         providerMessageId = await this.deps.deliverLark({
           chatId: chat,
           idempotencyKey: payload.idempotencyKey,
@@ -758,6 +761,13 @@ export class MailOpsWorker {
         input.deliveryId,
         error,
         input.attempts,
+        new Date(),
+        // A throw between the probe and the send — an unreadable permission
+        // store, an access token that would not resolve — is the last rung of
+        // the ladder often enough to matter: five attempts is about seventy-
+        // five seconds. Abandoning is terminal, so the proof has to be spent
+        // here or it is lost.
+        { nothingWasSent },
       );
       if (!failed.ok) throw failed.error;
       this.log.warn('mail_ops.delivery_failed', {
