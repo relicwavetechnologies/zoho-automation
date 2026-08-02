@@ -354,10 +354,12 @@ the URL yourself:
 Omit \`connectionId\` on the first call. If Divo returns one eligible account,
 retry immediately with its exact connection ID. If it returns several, ask
 once, then retry the same URL with the selected exact connection.
-On a resolved response, retain only the returned
-\`data.destinationReferenceId\`. It is an opaque, short-lived handle bound to
-this exact user, chat, thread, and run. Never reconstruct Google IDs or move
-Sheet rows through model context.
+In a Lark runtime, a resolved response returns only
+\`data.destinationReferenceId\`; retain that opaque, short-lived handle bound
+to the exact user, chat, thread, and run. In Desktop, retain the governed
+\`data.resource.resourceId\` and \`data.resource.connectionId\` handles already
+returned by Divo. Never reconstruct Google IDs or move Sheet rows through
+model context.
 
 A URL-only request resolves metadata and access only. Confirm that Divo can
 open the Sheet, then ask what the member wants to do next. Existing-Sheet bulk

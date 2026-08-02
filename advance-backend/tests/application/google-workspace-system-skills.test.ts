@@ -48,7 +48,8 @@ describe('Google Workspace system skills', () => {
     assert.match(sheets.markdown, /"op": "resolve_reference"/);
     assert.match(sheets.markdown, /"url": "<exact pasted Google Sheet URL>"/);
     assert.match(sheets.markdown, /data\.destinationReferenceId/);
-    assert.doesNotMatch(sheets.markdown, /data\.resource\.resourceId/);
+    assert.match(sheets.markdown, /In a Lark runtime/);
+    assert.match(sheets.markdown, /In Desktop.*data\.resource\.resourceId.*data\.resource\.connectionId/s);
     assert.match(sheets.markdown, /one eligible account.*retry immediately/s);
     assert.match(sheets.markdown, /returns several, ask\s+once/s);
     assert.match(sheets.markdown, /URL-only request resolves metadata and access only/);

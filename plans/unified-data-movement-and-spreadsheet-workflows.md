@@ -137,6 +137,9 @@
   rejects reuse across company, user, chat, thread, or run. This adds no schema
   migration and creates no second signing authority. Existing-Sheet writing is
   still deliberately unclaimed until the worker consumes this receipt.
+- Fresh review confirmed the Lark receipt boundary and caught a channel-neutral
+  skill ambiguity: the backend skill now explicitly distinguishes Lark's
+  opaque destination reference from Desktop's governed raw resource handles.
 
 ---
 
