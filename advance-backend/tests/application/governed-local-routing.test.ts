@@ -77,6 +77,8 @@ describe('governed local-workflow instruction contract', () => {
 
   it('routes exact whole-account finance aggregates through complete governed sources', () => {
     assert.match(zohoBooksReadAnalysisSkill.instructions, /Exact whole-account or potentially large aggregate -> use the scripted workflow/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /omit the limit argument unless the user explicitly requested a numeric maximum/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /When a list result is truncated, do not retry with a larger limit/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /Number\(_balance_inr\) > 0/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /reconcile it: every source page accounted for/);
   });

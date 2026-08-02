@@ -374,6 +374,9 @@ describe('zohoBooks expanded execution', () => {
     assert.equal(result.value.preview?.rows.length, 25);
     assert.equal(result.value.preview?.coverage.kind, 'truncated');
     assert.equal(result.value.preview?.exportOfferId, 'offer-opaque');
+    assert.match(result.value.message ?? '', /Showing 25 invoices/);
+    assert.equal((result.value.report as any).returnedCount, 25);
+    assert.equal((result.value.report as any).totalCount, undefined);
     assert.equal(result.value.data, undefined);
     assert.equal(offeredPayload.source.kind, 'zoho_books');
     assert.equal(offeredPayload.source.module, 'invoices');

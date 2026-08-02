@@ -383,6 +383,7 @@ describe('ToolExecutor', () => {
         channel: 'lark',
         larkOpenId: 'ou-requester',
         larkTenantKey: 'tenant-1',
+        runtimeChatId: 'oc_runtime_chat',
       },
       toolId: 'fakeTool',
       args: { query: 'send it' },
@@ -398,7 +399,7 @@ describe('ToolExecutor', () => {
     assert.equal(result.status, 'approval_required');
     assert.equal(approvalInput.runContext.tenantId, 'tenant-1');
     assert.equal(approvalInput.runContext.userExternalId, 'ou-requester');
-    assert.equal(approvalInput.runContext.chatId, 'oc_chat');
+    assert.equal(approvalInput.runContext.chatId, 'oc_runtime_chat');
     assert.equal(approvalInput.runContext.replyToMessageId, 'om_root');
     assert.equal(approvalInput.runContext.replyInThread, true);
     assert.match(approvalInput.chatId, /^gateway:company:co-test:requester:user-test:/);

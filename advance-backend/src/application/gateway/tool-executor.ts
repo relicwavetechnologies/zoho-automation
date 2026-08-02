@@ -808,7 +808,7 @@ export class ToolExecutor {
         ? { deliveryMode: 'scheduled_runtime_delivery' as const }
         : {}),
       ...(requestId ? { traceId: requestId, requestId } : {}),
-      chatId: larkDelivery?.chatId ?? execution?.threadId ?? `gateway:${member.sessionId}`,
+      chatId: member.runtimeChatId ?? larkDelivery?.chatId ?? execution?.threadId ?? `gateway:${member.sessionId}`,
       ...(larkDelivery?.replyToMessageId
         ? { replyToMessageId: larkDelivery.replyToMessageId }
         : {}),

@@ -279,9 +279,11 @@ const summarizeRecords = (
   moduleLabel: string,
   amountKeys: string[],
   items: readonly Record<string, unknown>[],
+  truncated = false,
 ): string => {
   if (items.length === 0) return `No ${moduleLabel.toLowerCase()} matched the current criteria.`;
-  if (amountKeys.length === 0) return `Found ${items.length} ${moduleLabel.toLowerCase()}.`;
+  const countLabel = truncated ? `Showing ${items.length}` : `Found ${items.length}`;
+  if (amountKeys.length === 0) return `${countLabel} ${moduleLabel.toLowerCase()}.`;
 
   const totals = new Map<string, number>();
   for (const item of items) {
@@ -295,8 +297,8 @@ const summarizeRecords = (
       : `${formatAmount(total, currency)} (${currency})`)
     .join(', ');
   return totalText
-    ? `Found ${items.length} ${moduleLabel.toLowerCase()}: ${totalText}.`
-    : `Found ${items.length} ${moduleLabel.toLowerCase()}.`;
+    ? `${countLabel} ${moduleLabel.toLowerCase()}: ${totalText}.`
+    : `${countLabel} ${moduleLabel.toLowerCase()}.`;
 };
 
 const commonColumns = {
@@ -786,7 +788,12 @@ export const createZohoBooksTool = (deps: {
           ? { postFilter: (items: readonly Record<string, unknown>[]) =>
               filterZohoRecordsByEmail(items, requesterEmail!) }
           : {}),
-        summarize: (items) => summarizeRecords(moduleLabel, options.amountKeys ?? [], items),
+        summarize: (items, meta) => summarizeRecords(
+          moduleLabel,
+          options.amountKeys ?? [],
+          items,
+          meta.truncated,
+        ),
         booksClient: deps.booksClient,
       });
       const modelItems = projectListItems(result.items, options.columns);
@@ -805,7 +812,8 @@ export const createZohoBooksTool = (deps: {
         message: result.summary,
         preview,
         report: {
-          totalCount: result.totalCount,
+          returnedCount: result.items.length,
+          ...(result.totalCount !== undefined ? { totalCount: result.totalCount } : {}),
           summary: result.summary,
           truncated: result.truncated,
           hasMore: result.hasMore,

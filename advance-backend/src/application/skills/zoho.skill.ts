@@ -85,6 +85,8 @@ export const zohoBooksReadAnalysisSkill: Skill = {
 
 READ ROUTING:
 - Bounded lookup or preview -> use the matching zohoBooks read operation with narrow filters.
+- For a list request, omit the limit argument unless the user explicitly requested a numeric maximum. The backend keeps the model preview bounded and may attach governed export actions when additional rows exist.
+- When a list result is truncated, do not retry with a larger limit, fetch source pages manually, or switch to a scripted workflow merely to enumerate the remaining rows. Summarize the bounded preview; when preview.exportOfferId is present, tell the user more rows are available and let the Lark export actions own the complete dataset path.
 - Latest/recent bounded invoices -> use zohoBooks op="list_invoices" with the requested limit; it is already sorted by invoice date newest-first. Do not scan or sort thousands of rows.
 - Human invoice number -> use zohoBooks op="get_invoice" with that exact number, or list_invoices with searchQuery and accept only an exact normalized invoice_number match before using its invoice_id. Never substitute a fuzzy result.
 - Exact whole-account or potentially large aggregate -> use the scripted workflow: fetch pages through divo-local, write them to a file, and aggregate over that file. Do not start with zohoBooks script mode; it is capped at 4,000 records, and pulling pages into context to add them up is how totals silently come out short.

@@ -14,7 +14,7 @@ export interface ZohoListCsvColumn<T extends Record<string, unknown>> {
 
 export interface ListHandlerResult<T extends Record<string, unknown> = Record<string, unknown>> {
   readonly items: T[];
-  readonly totalCount: number;
+  readonly totalCount?: number;
   readonly summary: string;
   readonly truncated: boolean;
   readonly hasMore: boolean;
@@ -76,7 +76,7 @@ export async function handleZohoList<T extends Record<string, unknown> = Record<
     : { kind: 'complete', totalRows: visible.length };
   return {
     items: visible,
-    totalCount: firstItems.length,
+    ...(!firstPage.hasMore ? { totalCount: firstItems.length } : {}),
     summary,
     truncated: hasOverflow,
     hasMore: firstPage.hasMore,

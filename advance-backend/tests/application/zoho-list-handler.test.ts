@@ -30,6 +30,7 @@ describe('handleZohoList', () => {
     assert.equal(result.suggestExport, true);
     assert.equal(result.truncated, true);
     assert.equal(result.hasMore, true);
+    assert.equal(result.totalCount, undefined);
     assert.match(result.summary, /prepare the remaining data as an export/i);
     assert.deepEqual(result.coverage, {
       kind: 'truncated',
@@ -56,6 +57,7 @@ describe('handleZohoList', () => {
     });
     assert.equal(result.suggestExport, false);
     assert.equal(result.truncated, false);
+    assert.equal(result.totalCount, 1);
     assert.equal(result.summary, '1 bills.');
     assert.deepEqual(result.coverage, { kind: 'complete', totalRows: 1 });
   });
