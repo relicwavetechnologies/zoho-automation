@@ -17,7 +17,7 @@
 | 3 — Lark export interaction | ✅ Done | Signed format/account cards, immediate callback ACK, locked choice cards, governed progress delivery, OAuth resume, and personal destination preference implemented |
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
 | 5 — Semrush and OMS convergence | 🟡 Partial | OMS and Semrush are integrated; live Semrush preview/offer passes, while artifact verification and rollback-path removal evidence remain |
-| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Strict typed Google Sheet URL parsing is complete; access resolution, thread binding, and existing-Sheet bulk write remain |
+| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Strict URL parsing and the personal-account access resolver core are complete; runtime probes, thread binding, and existing-Sheet bulk write remain |
 | 7 — routers and provider skills | 🟡 Partial | Central export skill knows Excel; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
 | 9 — realistic isolated-runtime validation | 🟡 In progress | Dev Lark received a real Zoho preview and a fresh opaque export offer; Sheet/CSV confirmation and no-account OAuth resume remain |
@@ -96,6 +96,13 @@
   Drive/Docs URLs, credentials, non-default ports, malformed IDs, unsupported
   paths, and invalid, duplicate, conflicting, or unsafe `gid` values without
   making a provider call. Focused parser tests pass 3/3 and TypeScript passes.
+- Phase 6B now has a provider-neutral access-resolution core. It considers only
+  the requester's active, writable, user-owned Google connections with full
+  Drive and Sheets scopes; company/granted/read-only accounts cannot be chosen.
+  Injected probes distinguish inaccessible, trashed, wrong-type, and read-only
+  Sheets, and multiple valid personal accounts produce an explicit choice.
+  Parser/resolver tests pass 6/6 and TypeScript passes. Composition and live
+  Drive/Sheets probe adapters remain intentionally unwired in this slice.
 
 ---
 
