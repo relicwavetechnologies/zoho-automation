@@ -14,10 +14,10 @@
 | 0 — contracts and characterization | ✅ Done | Central limits, offer/resource/destination contracts, and regression coverage established |
 | 1 — exporter modularization | ✅ Done | Source registry, destination sink, queue, verification, and worker boundaries centralized |
 | 2 — preview and durable offers | ✅ Done | Bounded previews, opaque 24-hour offers, fresh authorization, and idempotent confirmation implemented |
-| 3 — Lark export interaction | ✅ Done | Signed format/account cards, same-card progress, OAuth resume, and personal destination preference implemented |
+| 3 — Lark export interaction | ✅ Done | Signed format/account cards, immediate callback ACK, locked choice cards, governed progress delivery, OAuth resume, and personal destination preference implemented |
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
 | 5 — Semrush and OMS convergence | 🟡 Partial | OMS and Semrush are integrated; live Semrush preview/offer passes, while artifact verification and rollback-path removal evidence remain |
-| 6 — pasted Sheet/Drive URLs | ⬜ Not started | Typed URL resolver and existing-Sheet bulk write remain |
+| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Strict typed Google Sheet URL parsing is complete; access resolution, thread binding, and existing-Sheet bulk write remain |
 | 7 — routers and provider skills | 🟡 Partial | Central export skill knows Excel; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
 | 9 — realistic isolated-runtime validation | 🟡 In progress | Dev Lark received a real Zoho preview and a fresh opaque export offer; Sheet/CSV confirmation and no-account OAuth resume remain |
@@ -91,6 +91,11 @@
   the independent cold review returned `ship` with no findings.
 - A truncated provider page is now described as a preview; an unknown full
   count is no longer exposed as `totalCount`.
+- Phase 6A now parses only exact HTTPS `docs.google.com/spreadsheets/d/...`
+  references into canonical typed handles. It rejects lookalike hosts, generic
+  Drive/Docs URLs, credentials, non-default ports, malformed IDs, unsupported
+  paths, and invalid, duplicate, conflicting, or unsafe `gid` values without
+  making a provider call. Focused parser tests pass 3/3 and TypeScript passes.
 
 ---
 
@@ -721,8 +726,12 @@ Card callbacks must authenticate the clicking actor and must not trust company/u
 - Each button contains the opaque `offerId` and one allowed format; actor,
   company, and chat come from the signed Lark callback.
 - The callback routes directly to `DataExportOfferService.confirmForActor`, so button and natural-language confirmation share the same persisted recipe, fresh RBAC checks, and idempotent queue claim.
-- The signed callback card ID is attached only to the winning queue job; the worker edits that same card through progress and terminal delivery without posting a second tracker.
-- Callback responses use toasts only, so a delayed callback response cannot overwrite a fast worker's progress or completed card.
+- The callback immediately acknowledges the click. After the durable queue
+  claim succeeds, the source card is locked with the selected format and no
+  actionable buttons; direct confirmations use a separate tracker for progress
+  and terminal delivery.
+- A failed or still-in-progress confirmation leaves the source buttons intact
+  so the user can retry safely.
 - The original reply/thread address remains persisted in the recipe and controls worker progress/final delivery.
 
 **Phase 3B completed:** the verified offer card now presents explicit Google
@@ -748,7 +757,8 @@ the preference.
 **Exit criteria**
 
 - The callback actor is reauthenticated.
-- Confirmation edits the same Lark message through queued/running/final states.
+- A queued confirmation locks the source choice card and reports progress and
+  terminal delivery through its tracker message.
 - Group-thread and DM delivery behave correctly.
 - A user never needs to resend the original query after connecting an account.
 
