@@ -18,7 +18,6 @@ export function useCompanyScope(): string | undefined {
  * useCompanyScope() in a page to derive it from the session.
  */
 
-export const usd = (n: number) => (n < 1 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`)
 export const compact = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}K` : String(Math.round(n)))
 
 const scoped = (path: string, params: Record<string, string | number | undefined>): string => {

@@ -292,8 +292,6 @@ export const PEOPLE: Person[] = [
   },
 ]
 
-export const personById = (id: string) => PEOPLE.find((p) => p.id === id)
-
 /** Resolve a person's effective permissions the way the backend does: role grant, then override. */
 export function resolveGrants(person: Person): GrantMap {
   const base = ROLE_GRANTS[person.deptRole] ?? ROLE_GRANTS.MEMBER

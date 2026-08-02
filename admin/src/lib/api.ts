@@ -108,20 +108,6 @@ export const api = {
     request<T>(path, { method: "GET" }, token, opts),
 };
 
-export type CompanyMemberRole = "MEMBER" | "COMPANY_ADMIN";
-
-export const companyMembersApi = {
-  updateRole: (
-    userId: string,
-    input: { role: CompanyMemberRole; companyId?: string },
-    token?: string,
-  ) => api.put<{ userId: string; companyId: string; role: CompanyMemberRole }>(
-    `/api/admin/company/members/${userId}/role`,
-    input,
-    token,
-  ),
-};
-
 export type CreateAgentInput = {
   name: string;
   description?: string;
@@ -133,23 +119,6 @@ export type CreateAgentInput = {
   provider?: string | null;
 };
 
-export type UpdateAgentInput = Partial<
-  CreateAgentInput & { isActive: boolean; parentId: string | null }
->;
-
-export type ModelCatalogEntry = {
-  provider: "openai" | "google";
-  modelId: string;
-  label: string;
-  description: string;
-  speed: "fast" | "medium" | "slow";
-  cost: "low" | "medium" | "high";
-  maxContextTokens: number;
-  outputReserveTokens?: number;
-  preview?: boolean;
-  supportsThinking?: boolean;
-};
-
 export const agentsApi = {
   /**
    * The governed tool catalogue. Named for its historical client, but it is not
@@ -157,70 +126,6 @@ export const agentsApi = {
    */
   toolRegistry: <T = any>(token?: string) =>
     api.get<T[]>("/api/admin/tool-registry", token),
-};
-
-
-export type ConnectOpenAiInput = {
-  tier?: "free" | "pro";
-  label?: string;
-};
-
-export type OpenAiConnectStart = {
-  companyId: string;
-  gatewayUrl: string;
-  authUrl: string;
-  sessionId: string;
-  dedicatedAccountId: string;
-};
-
-export type CompleteOpenAiInput = {
-  dedicatedAccountId: string;
-  callbackUrl: string;
-};
-
-export type OpenAiConnectComplete = {
-  companyId: string;
-  connected: boolean;
-  status: string;
-  gatewayUrl: string;
-  dedicatedAccountId: string;
-  tier?: string | null;
-  updatedAt: string;
-};
-
-export type OpenAiTestResult = {
-  ok: boolean;
-  status: number;
-  latencyMs: number;
-  response: unknown;
-};
-
-export type AiModelTarget = {
-  id: string;
-  targetKey: string;
-  provider: "openai" | "google" | string;
-  modelId: string;
-  thinkingLevel?: string | null;
-  fastProvider?: string | null;
-  fastModelId?: string | null;
-  fastThinkingLevel?: string | null;
-  xtremeProvider?: string | null;
-  xtremeModelId?: string | null;
-  xtremeThinkingLevel?: string | null;
-  updatedBy?: string;
-  updatedAt?: string;
-};
-
-export type UpdateAiModelTargetInput = {
-  provider: "openai" | "google";
-  modelId: string;
-  thinkingLevel?: string | null;
-  fastProvider?: string | null;
-  fastModelId?: string | null;
-  fastThinkingLevel?: string | null;
-  xtremeProvider?: string | null;
-  xtremeModelId?: string | null;
-  xtremeThinkingLevel?: string | null;
 };
 
 

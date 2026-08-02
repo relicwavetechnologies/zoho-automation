@@ -27,7 +27,7 @@ import {
   type CeilingAction, type CeilingTool, type Run,
 } from './data/use-company'
 import { useCompanyDaily, useCompanyScope, useDirectory, useSpendByModel, useSpendMembers } from '@/cursor/use-spend'
-import { useProxyStatus, useSaveProxyKey, type KeyScope } from '@/cursor/use-proxy'
+import { KEY_PROVIDERS, useProxyStatus, useSaveProxyKey, type KeyScope } from '@/cursor/use-proxy'
 import { useProxyPolicies, useSaveProxyPolicy } from '@/cursor/use-proxy-policy'
 
 /** The cursor hooks take a token and a company; every screen here needs both. */
@@ -1267,10 +1267,11 @@ export function CompanyGuardrails({ replay, toast }: Props) {
   const [keyScope, setKeyScope] = useState<KeyScope>('company')
   const saveDeepseek = useSaveProxyKey(token, 'deepseek', companyId)
   const saveOpenai = useSaveProxyKey(token, 'openai', companyId)
-  const keys = [
-    { id: 'deepseek' as const, provider: 'DeepSeek', status: deepseek },
-    { id: 'openai' as const, provider: 'OpenAI', status: openai },
-  ]
+  // The catalogue owns the provider list and its one-line hints; this screen
+  // had grown its own copy with the labels and none of the hints, which is two
+  // places to add the next provider and one place to forget.
+  const statusOf = { deepseek, openai }
+  const keys = KEY_PROVIDERS.map((p) => ({ ...p, status: statusOf[p.id] }))
 
   const toggleBlocked = async (userId: string, name: string, nowBlocked: boolean) => {
     if (!policiesKnown) return
@@ -1307,14 +1308,14 @@ export function CompanyGuardrails({ replay, toast }: Props) {
           {!r1 ? <SkelRows n={2} /> : (
             <Fade>
               <div className="ws-rows">
-                {keys.map(({ id, provider, status }) => (
-                  <div className="ws-row" key={provider}>
+                {keys.map(({ id, label, hint, status }) => (
+                  <div className="ws-row" key={id}>
                     <span className="ws-ic" data-tone={status?.keyError ? 'err' : status?.configured ? 'ok' : undefined}>
                       <KeyRound size={14} />
                     </span>
                     <div className="ws-row-main">
                       <b>
-                        {provider}
+                        {label}
                         {status?.scope === 'platform' ? <span className="ws-tag">Platform</span> : null}
                       </b>
                       <p>
@@ -1324,7 +1325,7 @@ export function CompanyGuardrails({ replay, toast }: Props) {
                           ? 'Stored but unreadable — the encryption secret has changed, so every call will fail'
                           : status?.configured
                             ? `${status.scope === 'platform' ? 'Platform' : 'Company'} key · ${status.keyMasked ?? status.keyLast4 ?? '····'} · ${status.upstream}`
-                            : 'Not configured'}
+                            : `Not configured — ${hint}`}
                       </p>
                     </div>
                     <button type="button" className="btn" onClick={() => setKeyFor(id)}>
