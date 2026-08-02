@@ -59,6 +59,70 @@ describe('writeXlsxArtifact', () => {
     }), /cell safety ceiling/i);
     assert.equal(rowsRead, 0);
   });
+
+  it('separates Semrush trend values into a typed worksheet', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'divo-xlsx-semrush-test-'));
+    const path = join(directory, 'organic.xlsx');
+    try {
+      await writeXlsxArtifact({
+        path,
+        title: 'Semrush organic positions — example.com',
+        source: {
+          kind: 'semrush_snapshot',
+          connectionId: 'backend_managed',
+          args: { operation: 'organic_positions', domain: 'example.com', database: 'in' },
+        },
+        columns: [
+          'Keyword', 'Position', 'Search Volume', 'Url', 'Trends',
+          'SERP Features by Keyword', 'SERP Features by Position',
+        ],
+        rows: rows([{
+          Keyword: 'example keyword',
+          Position: '6',
+          'Search Volume': '1000',
+          Url: 'https://example.com/page',
+          Trends: '0.81,1.00,0.42',
+          'SERP Features by Keyword': '1,7,9',
+          'SERP Features by Position': '',
+        }]),
+        rowCount: 1,
+      });
+
+      const workbook = XLSX.readFile(path, { cellStyles: true });
+      assert.deepEqual(workbook.SheetNames, ['Overview', 'Organic Positions', 'Trends']);
+      const positions = workbook.Sheets['Organic Positions'];
+      const trends = workbook.Sheets.Trends;
+      assert.ok(positions);
+      assert.ok(trends);
+      assert.deepEqual(XLSX.utils.sheet_to_json(positions, { header: 1, raw: true, defval: '' }), [
+        [
+          'Keyword', 'Position', 'Search Volume', 'Url',
+          'SERP Features by Keyword', 'SERP Features by Position',
+        ],
+        ['example keyword', 6, 1000, 'https://example.com/page', '1,7,9', ''],
+      ]);
+      const trendRows = XLSX.utils.sheet_to_json<unknown[]>(trends, {
+        header: 1,
+        raw: true,
+        defval: '',
+      });
+      assert.deepEqual(trendRows[0], [
+        'Keyword', 'Url',
+        'Trend Period 01', 'Trend Period 02', 'Trend Period 03', 'Trend Period 04',
+        'Trend Period 05', 'Trend Period 06', 'Trend Period 07', 'Trend Period 08',
+        'Trend Period 09', 'Trend Period 10', 'Trend Period 11', 'Trend Period 12',
+      ]);
+      assert.deepEqual(trendRows[1], [
+        'example keyword', 'https://example.com/page', 0.81, 1, 0.42,
+        '', '', '', '', '', '', '', '', '',
+      ]);
+      assert.equal(positions.B2?.t, 'n');
+      assert.equal(positions.B2?.z, '#,##0');
+      assert.equal(trends.C2?.z, '0.00');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 async function* rows(

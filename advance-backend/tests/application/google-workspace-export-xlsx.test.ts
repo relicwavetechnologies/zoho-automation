@@ -90,3 +90,78 @@ it('recovers a verified XLSX when the completion metadata response is lost', asy
   assert.equal(recovered.artifactId, 'xlsx-1');
   assert.equal(recovered.verified, true);
 });
+
+it('expands Semrush trends into explicit CSV columns', async t => {
+  let uploaded = '';
+  const drive = {
+    files: {
+      list: async () => ({ data: { files: [] } }),
+      create: async (input: any) => {
+        assert.equal(input.requestBody.name, 'Semrush organic positions — example.com.csv');
+        for await (const chunk of input.media.body) uploaded += String(chunk);
+        return { data: { id: 'csv-1' } };
+      },
+      get: async () => ({
+        data: {
+          id: 'csv-1',
+          size: String(Buffer.byteLength(uploaded)),
+          webViewLink: 'https://drive.google.com/file/d/csv-1/view',
+        },
+      }),
+      update: async () => ({ data: { id: 'csv-1' } }),
+      delete: async () => assert.fail('successful export must not be deleted'),
+    },
+    permissions: {
+      list: async () => ({
+        data: {
+          permissions: [
+            { type: 'user', role: 'owner', emailAddress: 'member@gmail.com' },
+          ],
+        },
+      }),
+      create: async () => assert.fail('owner export must not create a reader permission'),
+    },
+  };
+  t.mock.method(google, 'drive', () => drive as any);
+
+  const sink = new GoogleWorkspaceExportSink();
+  const result = await sink.write({
+    auth: { accessToken: 'token', ownerEmail: 'member@gmail.com' },
+    readerEmail: 'member@gmail.com',
+    exportKey: 'job-csv',
+    source: {
+      kind: 'semrush_snapshot',
+      connectionId: 'backend_managed',
+      args: { operation: 'organic_positions', domain: 'example.com', database: 'in' },
+    },
+    destination: {
+      format: 'csv',
+      title: 'Semrush organic positions — example.com',
+    },
+    rows: (async function* () {
+      yield [{
+        Keyword: 'example keyword',
+        Position: '6',
+        Trends: '0.81,1.00,0.42',
+        'SERP Features by Keyword': '1,7,9',
+      }];
+    })(),
+    sourceTruncated: () => false,
+  });
+
+  assert.equal(result.artifactType, 'csv');
+  const lines = uploaded.trim().split(/\r?\n/u);
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0], [
+    'Keyword', 'Position',
+    'Trend Period 01', 'Trend Period 02', 'Trend Period 03', 'Trend Period 04',
+    'Trend Period 05', 'Trend Period 06', 'Trend Period 07', 'Trend Period 08',
+    'Trend Period 09', 'Trend Period 10', 'Trend Period 11', 'Trend Period 12',
+    'SERP Features by Keyword',
+  ].join(','));
+  assert.equal(lines[1], [
+    'example keyword', '6', '0.81', '1', '0.42',
+    '', '', '', '', '', '', '', '', '', '"1,7,9"',
+  ].join(','));
+  assert.doesNotMatch(lines[0] ?? '', /(^|,)Trends(,|$)/u);
+});

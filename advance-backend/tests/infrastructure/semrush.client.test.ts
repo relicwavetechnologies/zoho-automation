@@ -53,7 +53,7 @@ describe('SemrushClient', () => {
     assert.equal(calls[0]?.searchParams.get('display_limit'), '2');
     assert.equal(
       calls[0]?.searchParams.get('export_columns'),
-      'Ph,Po,Pp,Pd,Nq,Cp,Ur,Tr,Tc,Co,Nr,Td',
+      'Ph,Po,Pp,Pd,Nq,Cp,Ur,Tr,Tc,Co,Nr,Td,Fk,Fp',
     );
   });
 

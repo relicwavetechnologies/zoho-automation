@@ -55,7 +55,7 @@ export class SemrushClient {
       display_offset: String(offset),
       // Keep the full official domain_organic default field set. A narrower
       // projection silently drops ranking movement and competition evidence.
-      export_columns: 'Ph,Po,Pp,Pd,Nq,Cp,Ur,Tr,Tc,Co,Nr,Td',
+      export_columns: 'Ph,Po,Pp,Pd,Nq,Cp,Ur,Tr,Tc,Co,Nr,Td,Fk,Fp',
     }).toString();
     let text: string;
     try {

@@ -4,7 +4,7 @@ import { google } from 'googleapis';
 import { GoogleWorkspaceExportSink } from '../../src/application/data-export/google-workspace-export.sink.ts';
 
 it('creates a typed and presentation-ready Semrush organic positions sheet', async t => {
-  const appendedValues: unknown[][][] = [];
+  const appendedValues: Array<{ range: string; values: unknown[][] }> = [];
   const overviewValues: unknown[][][] = [];
   const batchRequests: Record<string, unknown>[][] = [];
   const drive = {
@@ -38,12 +38,20 @@ it('creates a typed and presentation-ready Semrush organic positions sheet', asy
       batchUpdate: async (input: any) => {
         batchRequests.push(input.requestBody.requests);
         return batchRequests.length === 1
-          ? { data: { replies: [{}, { addSheet: { properties: { sheetId: 8 } } }] } }
+          ? {
+              data: {
+                replies: [
+                  {},
+                  { addSheet: { properties: { sheetId: 8 } } },
+                  { addSheet: { properties: { sheetId: 9 } } },
+                ],
+              },
+            }
           : { data: {} };
       },
       values: {
         append: async (input: any) => {
-          appendedValues.push(input.requestBody.values);
+          appendedValues.push({ range: input.range, values: input.requestBody.values });
           return { data: {} };
         },
         update: async (input: any) => {
@@ -51,13 +59,25 @@ it('creates a typed and presentation-ready Semrush organic positions sheet', asy
           return { data: {} };
         },
         get: async (input: any) => {
+          if (input.range === "'Trends'!1:1") {
+            return {
+              data: {
+                values: [[
+                  'Keyword', 'Url',
+                  'Trend Period 01', 'Trend Period 02', 'Trend Period 03', 'Trend Period 04',
+                  'Trend Period 05', 'Trend Period 06', 'Trend Period 07', 'Trend Period 08',
+                  'Trend Period 09', 'Trend Period 10', 'Trend Period 11', 'Trend Period 12',
+                ]],
+              },
+            };
+          }
           assert.equal(input.range, "'Organic Positions'!1:1");
           return {
             data: {
               values: [[
                 'Keyword', 'Position', 'Previous Position', 'Position Difference',
                 'Search Volume', 'CPC', 'Url', 'Traffic (%)', 'Traffic Cost (%)',
-                'Competition', 'Number of Results', 'Trends',
+                'Competition', 'Number of Results',
               ]],
             },
           };
@@ -107,17 +127,34 @@ it('creates a typed and presentation-ready Semrush organic positions sheet', asy
 
   assert.equal(result.artifactType, 'google_sheet');
   assert.equal(result.rowCount, 1);
-  assert.deepEqual(appendedValues, [[
+  assert.deepEqual(appendedValues[0], {
+    range: 'Sheet1!A1',
+    values: [
     [
       'Keyword', 'Position', 'Previous Position', 'Position Difference',
       'Search Volume', 'CPC', 'Url', 'Traffic (%)', 'Traffic Cost (%)',
-      'Competition', 'Number of Results', 'Trends',
+      'Competition', 'Number of Results',
     ],
     [
       'example keyword', 6, 9, 3, 1000, 0.73, 'https://example.com/page',
-      12.5, 1.25, 0.34, 125000, '0.81,0.75,0.70',
+      12.5, 1.25, 0.34, 125000,
     ],
-  ]]);
+  ] });
+  assert.deepEqual(appendedValues[1], {
+    range: "'Trends'!A1",
+    values: [
+      [
+        'Keyword', 'Url',
+        'Trend Period 01', 'Trend Period 02', 'Trend Period 03', 'Trend Period 04',
+        'Trend Period 05', 'Trend Period 06', 'Trend Period 07', 'Trend Period 08',
+        'Trend Period 09', 'Trend Period 10', 'Trend Period 11', 'Trend Period 12',
+      ],
+      [
+        'example keyword', 'https://example.com/page', 0.81, 0.75, 0.7,
+        '', '', '', '', '', '', '', '', '',
+      ],
+    ],
+  });
   assert.equal(overviewValues.length, 1);
   assert.deepEqual(overviewValues[0]?.slice(0, 8).map(row => row[0]), [
     'Semrush organic positions — example.com',
@@ -132,6 +169,7 @@ it('creates a typed and presentation-ready Semrush organic positions sheet', asy
   assert.equal(overviewValues[0]?.find(row => row[0] === 'Subject')?.[1], 'example.com');
   assert.equal(overviewValues[0]?.find(row => row[0] === 'Rows exported')?.[1], 1);
   assert.match(String(overviewValues[0]?.find(row => row[0] === 'Metric note')?.[1]), /currency-neutral/i);
+  assert.match(String(overviewValues[0]?.find(row => row[0] === 'Trend note')?.[1]), /provider order/i);
   assert.doesNotMatch(JSON.stringify(overviewValues), /[$₹€£]/);
 
   const allFormattingRequests = batchRequests.flat();

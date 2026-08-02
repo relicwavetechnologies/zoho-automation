@@ -14,6 +14,10 @@ import type {
   GoogleExportAuth,
 } from './data-export.destination';
 import { normalizeExportCell } from './data-export-cell';
+import {
+  buildDataExportPresentation,
+  type DataExportPresentation,
+} from './data-export-presentation';
 import { writeXlsxArtifact } from './xlsx-export-file';
 
 const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -105,6 +109,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
               auth: input.auth,
               access,
               exportKey: input.exportKey,
+              ...(input.source ? { source: input.source } : {}),
               title: input.destination.title,
               rowsPath,
               xlsxPath,
@@ -118,6 +123,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
             auth: input.auth,
             access,
             exportKey: input.exportKey,
+            ...(input.source ? { source: input.source } : {}),
             title: input.destination.title,
             rowsPath,
             csvPath,
@@ -149,6 +155,13 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
     const auth = oauth(input.auth.accessToken);
     const sheets = google.sheets({ version: 'v4', auth });
     const drive = google.drive({ version: 'v3', auth });
+    const presentation = buildDataExportPresentation({
+      title: input.title,
+      columns: input.columns,
+      ...(input.source ? { source: input.source } : {}),
+      rowCount: input.rowCount,
+      sourceTruncated: input.sourceTruncated,
+    });
     let spreadsheetId: string | undefined;
     try {
       const created = await drive.files.create({
@@ -163,15 +176,11 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       spreadsheetId = created.data.id ?? undefined;
       if (!spreadsheetId) throw new Error('Google Sheets did not return a spreadsheet ID');
 
-      let values: unknown[][] = [[...input.columns]];
+      let values: unknown[][] = [[...presentation.mainColumns]];
       let writtenRows = 0;
       for await (const row of readRows(input.rowsPath)) {
         input.signal?.throwIfAborted();
-        values.push(input.columns.map((column) => normalizeSheetCell(
-          row[column],
-          column,
-          input.source,
-        )));
+        values.push([...presentation.mainRow(row)]);
         if (values.length < SHEET_APPEND_ROWS) continue;
         await sheets.spreadsheets.values.append({
           spreadsheetId,
@@ -195,23 +204,53 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         writtenRows += values.length - (writtenRows === 0 ? 1 : 0);
         await input.onProgress?.({ stage: 'writing', rowsProcessed: writtenRows });
       }
-      const dataSheetTitle = await formatSheet({
+      const formatted = await formatSheet({
         sheets,
         spreadsheetId,
-        title: input.title,
-        columns: input.columns,
+        presentation,
         rowCount: input.rowCount,
-        sourceTruncated: input.sourceTruncated,
-        ...(input.source ? { source: input.source } : {}),
         ...(input.signal ? { signal: input.signal } : {}),
       });
+      if (formatted.trendsSheetTitle && presentation.trends) {
+        let trendValues: unknown[][] = [[...presentation.trends.columns]];
+        for await (const row of readRows(input.rowsPath)) {
+          trendValues.push([...presentation.trendRow(row)]);
+          if (trendValues.length < SHEET_APPEND_ROWS) continue;
+          await sheets.spreadsheets.values.append({
+            spreadsheetId,
+            range: `'${formatted.trendsSheetTitle}'!A1`,
+            valueInputOption: 'RAW',
+            insertDataOption: 'INSERT_ROWS',
+            requestBody: { values: trendValues },
+          }, requestOptions(input.signal));
+          trendValues = [];
+        }
+        if (trendValues.length > 0) {
+          await sheets.spreadsheets.values.append({
+            spreadsheetId,
+            range: `'${formatted.trendsSheetTitle}'!A1`,
+            valueInputOption: 'RAW',
+            insertDataOption: 'INSERT_ROWS',
+            requestBody: { values: trendValues },
+          }, requestOptions(input.signal));
+        }
+      }
       await ensureArtifactAccess(drive, spreadsheetId, input.access, input.signal);
       const verified = await sheets.spreadsheets.values.get({
         spreadsheetId,
-        range: `'${dataSheetTitle.replaceAll("'", "''")}'!1:1`,
+        range: `'${formatted.dataSheetTitle.replaceAll("'", "''")}'!1:1`,
       }, requestOptions(input.signal));
-      if ((verified.data.values?.[0]?.length ?? 0) !== input.columns.length) {
+      if ((verified.data.values?.[0]?.length ?? 0) !== presentation.mainColumns.length) {
         throw new Error('Google Sheet verification failed: header width differs from export');
+      }
+      if (formatted.trendsSheetTitle && presentation.trends) {
+        const verifiedTrends = await sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range: `'${formatted.trendsSheetTitle.replaceAll("'", "''")}'!1:1`,
+        }, requestOptions(input.signal));
+        if ((verifiedTrends.data.values?.[0]?.length ?? 0) !== presentation.trends.columns.length) {
+          throw new Error('Google Sheet verification failed: trend header width differs from export');
+        }
       }
       await verifyArtifactAccess(drive, spreadsheetId, input.access, input.signal);
       await markCompletedExport(drive, spreadsheetId, {
@@ -240,6 +279,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
     readonly auth: GoogleExportAuth;
     readonly access: DataExportArtifactAccess;
     readonly exportKey: string;
+    readonly source?: DataExportSource;
     readonly title: string;
     readonly rowsPath: string;
     readonly csvPath: string;
@@ -249,15 +289,22 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
     readonly signal?: AbortSignal;
     readonly onProgress?: (progress: DataExportDestinationWriteProgress) => Promise<void>;
   }): Promise<DataExportCompletion> {
+    const presentation = buildDataExportPresentation({
+      title: input.title,
+      columns: input.columns,
+      ...(input.source ? { source: input.source } : {}),
+      rowCount: input.rowCount,
+      sourceTruncated: input.sourceTruncated,
+    });
     const csvStream = createWriteStream(input.csvPath, { encoding: 'utf8' });
     try {
-      await writeLine(csvStream, input.columns.map(escapeCsvCell).join(','));
+      await writeLine(csvStream, presentation.flatColumns.map(escapeCsvCell).join(','));
       let writtenRows = 0;
       for await (const row of readRows(input.rowsPath)) {
         input.signal?.throwIfAborted();
         await writeLine(
           csvStream,
-          input.columns.map((column) => escapeCsvCell(row[column])).join(','),
+          presentation.flatRow(row).map(escapeCsvCell).join(','),
         );
         writtenRows += 1;
         if (writtenRows % 1_000 === 0) {
@@ -325,6 +372,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
     readonly auth: GoogleExportAuth;
     readonly access: DataExportArtifactAccess;
     readonly exportKey: string;
+    readonly source?: DataExportSource;
     readonly title: string;
     readonly rowsPath: string;
     readonly xlsxPath: string;
@@ -336,7 +384,10 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
   }): Promise<DataExportCompletion> {
     await writeXlsxArtifact({
       path: input.xlsxPath,
+      title: input.title,
       columns: input.columns,
+      ...(input.source ? { source: input.source } : {}),
+      sourceTruncated: input.sourceTruncated,
       rows: readRows(input.rowsPath),
       rowCount: input.rowCount,
       ...(input.signal ? { signal: input.signal } : {}),
@@ -405,22 +456,23 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
 async function formatSheet(input: {
   readonly sheets: ReturnType<typeof google.sheets>;
   readonly spreadsheetId: string;
-  readonly title: string;
-  readonly columns: readonly string[];
+  readonly presentation: DataExportPresentation;
   readonly rowCount: number;
-  readonly sourceTruncated: boolean;
-  readonly source?: DataExportSource;
   readonly signal?: AbortSignal;
-}): Promise<string> {
+}): Promise<{ readonly dataSheetTitle: string; readonly trendsSheetTitle?: string }> {
   const metadata = await input.sheets.spreadsheets.get({
     spreadsheetId: input.spreadsheetId,
     fields: 'sheets(properties(sheetId,title,index))',
   }, requestOptions(input.signal));
   const dataSheet = metadata.data.sheets?.[0]?.properties;
-  if (dataSheet?.sheetId === undefined) {
+  if (typeof dataSheet?.sheetId !== 'number') {
     throw new Error('Google Sheet formatting failed: default worksheet is missing');
   }
-  const presentation = sheetPresentation(input);
+  const presentation = input.presentation;
+  const overviewReplyIndex = presentation.overviewRows ? 1 : undefined;
+  const trendsReplyIndex = presentation.trends
+    ? 1 + (presentation.overviewRows ? 1 : 0)
+    : undefined;
   const structure = await input.sheets.spreadsheets.batchUpdate({
     spreadsheetId: input.spreadsheetId,
     requestBody: {
@@ -441,13 +493,27 @@ async function formatSheet(input: {
         ...(presentation.overviewRows
           ? [{ addSheet: { properties: { title: 'Overview', index: 0 } } }]
           : []),
+        ...(presentation.trends
+          ? [{
+              addSheet: {
+                properties: {
+                  title: presentation.trends.title,
+                  index: presentation.overviewRows ? 2 : 1,
+                  gridProperties: { frozenRowCount: 1, hideGridlines: true },
+                },
+              },
+            }]
+          : []),
       ],
     },
   }, requestOptions(input.signal));
-  const overviewSheetId = presentation.overviewRows
-    ? structure.data.replies?.[1]?.addSheet?.properties?.sheetId
+  const overviewSheetId = overviewReplyIndex !== undefined
+    ? structure.data.replies?.[overviewReplyIndex]?.addSheet?.properties?.sheetId
     : undefined;
-  if (presentation.overviewRows && overviewSheetId === undefined) {
+  const trendsSheetId = trendsReplyIndex !== undefined
+    ? structure.data.replies?.[trendsReplyIndex]?.addSheet?.properties?.sheetId
+    : undefined;
+  if (presentation.overviewRows && typeof overviewSheetId !== 'number') {
     throw new Error('Google Sheet formatting failed: overview worksheet was not created');
   }
   if (presentation.overviewRows) {
@@ -455,95 +521,28 @@ async function formatSheet(input: {
       spreadsheetId: input.spreadsheetId,
       range: "'Overview'!A1:B20",
       valueInputOption: 'RAW',
-      requestBody: { values: presentation.overviewRows },
+      requestBody: { values: presentation.overviewRows.map(row => [...row]) },
     }, requestOptions(input.signal));
   }
-
-  const requests: Record<string, unknown>[] = [];
-  if (input.columns.length > 0) {
-    requests.push(
-      {
-        setBasicFilter: {
-          filter: {
-            range: {
-              sheetId: dataSheet.sheetId,
-              startRowIndex: 0,
-              endRowIndex: input.rowCount + 1,
-              startColumnIndex: 0,
-              endColumnIndex: input.columns.length,
-            },
-          },
-        },
-      },
-      {
-        repeatCell: {
-          range: {
-            sheetId: dataSheet.sheetId,
-            startRowIndex: 0,
-            endRowIndex: 1,
-            startColumnIndex: 0,
-            endColumnIndex: input.columns.length,
-          },
-          cell: {
-            userEnteredFormat: {
-              backgroundColor: { red: 0.075, green: 0.19, blue: 0.42 },
-              textFormat: { foregroundColor: { red: 1, green: 1, blue: 1 }, bold: true },
-              verticalAlignment: 'MIDDLE',
-              wrapStrategy: 'WRAP',
-            },
-          },
-          fields: 'userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)',
-        },
-      },
-      {
-        updateDimensionProperties: {
-          range: {
-            sheetId: dataSheet.sheetId,
-            dimension: 'ROWS',
-            startIndex: 0,
-            endIndex: 1,
-          },
-          properties: { pixelSize: 34 },
-          fields: 'pixelSize',
-        },
-      },
-    );
-    for (const [index, column] of input.columns.entries()) {
-      requests.push({
-        updateDimensionProperties: {
-          range: {
-            sheetId: dataSheet.sheetId,
-            dimension: 'COLUMNS',
-            startIndex: index,
-            endIndex: index + 1,
-          },
-          properties: { pixelSize: presentation.columnWidths[column] ?? 140 },
-          fields: 'pixelSize',
-        },
-      });
-      const pattern = presentation.numberFormats[column];
-      if (!pattern || input.rowCount === 0) continue;
-      requests.push({
-        repeatCell: {
-          range: {
-            sheetId: dataSheet.sheetId,
-            startRowIndex: 1,
-            endRowIndex: input.rowCount + 1,
-            startColumnIndex: index,
-            endColumnIndex: index + 1,
-          },
-          cell: {
-            userEnteredFormat: {
-              numberFormat: { type: 'NUMBER', pattern },
-              horizontalAlignment: 'RIGHT',
-            },
-          },
-          fields: 'userEnteredFormat(numberFormat,horizontalAlignment)',
-        },
-      });
-    }
+  if (presentation.trends && typeof trendsSheetId !== 'number') {
+    throw new Error('Google Sheet formatting failed: trends worksheet was not created');
   }
-  if (overviewSheetId !== undefined && presentation.overviewRows) {
+
+  const requests = tableFormatRequests({
+    sheetId: dataSheet.sheetId,
+    columns: presentation.mainColumns,
+    rowCount: input.rowCount,
+    presentation,
+  });
+  if (typeof trendsSheetId === 'number' && presentation.trends) {
+    requests.push(...tableFormatRequests({
+      sheetId: trendsSheetId,
+      columns: presentation.trends.columns,
+      rowCount: input.rowCount,
+      presentation,
+    }));
+  }
+  if (typeof overviewSheetId === 'number' && presentation.overviewRows) {
     requests.push(
       {
         updateSheetProperties: {
@@ -627,99 +626,101 @@ async function formatSheet(input: {
       requestBody: { requests },
     }, requestOptions(input.signal));
   }
-  return presentation.dataSheetTitle;
-}
-
-function sheetPresentation(input: {
-  readonly title: string;
-  readonly source?: DataExportSource;
-  readonly rowCount: number;
-  readonly sourceTruncated: boolean;
-}): {
-  readonly dataSheetTitle: string;
-  readonly overviewRows?: unknown[][];
-  readonly numberFormats: Record<string, string>;
-  readonly columnWidths: Record<string, number>;
-} {
-  if (input.source?.kind !== 'semrush_snapshot') {
-    return {
-      dataSheetTitle: 'Export',
-      numberFormats: {},
-      columnWidths: {},
-    };
-  }
-  const args = input.source.args;
-  const subject = 'domain' in args
-    ? args.domain
-    : 'targets' in args
-      ? args.targets.join(', ')
-      : args.operation === 'keyword_research'
-        ? args.keywords.join(', ')
-        : 'Semrush report';
-  const dataSheetTitle = args.operation === 'organic_positions'
-    ? 'Organic Positions'
-    : 'Semrush Data';
   return {
-    dataSheetTitle,
-    overviewRows: [
-      [input.title],
-      ['Source', 'Semrush API'],
-      ['Report', args.operation.replaceAll('_', ' ')],
-      ['Subject', subject],
-      ['Database', 'database' in args ? args.database ?? 'in' : 'Not applicable'],
-      ['Retrieved at', new Date().toISOString()],
-      ['Rows exported', input.rowCount],
-      ['Completeness', input.sourceTruncated
-        ? 'Partial — Divo export safety cap reached'
-        : 'Complete for this query'],
-      ['Metric note', 'CPC is kept currency-neutral because this report does not identify a currency.'],
-    ],
-    numberFormats: {
-      Position: '#,##0',
-      'Previous Position': '#,##0',
-      'Position Difference': '#,##0;[Red]-#,##0',
-      'Search Volume': '#,##0',
-      CPC: '0.00',
-      'Traffic (%)': '0.00"%"',
-      'Traffic Cost (%)': '0.00"%"',
-      Competition: '0.00',
-      'Number of Results': '#,##0',
-    },
-    columnWidths: {
-      Keyword: 240,
-      Position: 90,
-      'Previous Position': 120,
-      'Position Difference': 130,
-      'Search Volume': 120,
-      CPC: 90,
-      Url: 380,
-      'Traffic (%)': 110,
-      'Traffic Cost (%)': 130,
-      Competition: 105,
-      'Number of Results': 135,
-      Trends: 220,
-    },
+    dataSheetTitle: presentation.dataSheetTitle,
+    ...(presentation.trends ? { trendsSheetTitle: presentation.trends.title } : {}),
   };
 }
 
-function normalizeSheetCell(
-  value: unknown,
-  column: string,
-  source: DataExportSource | undefined,
-): unknown {
-  if (
-    source?.kind === 'semrush_snapshot'
-    && typeof value === 'string'
-    && [
-      'Position', 'Previous Position', 'Position Difference', 'Search Volume',
-      'CPC', 'Traffic (%)', 'Traffic Cost (%)', 'Competition', 'Number of Results',
-    ].includes(column)
-    && value.trim() !== ''
-  ) {
-    const numeric = Number(value);
-    if (Number.isFinite(numeric)) return numeric;
+function tableFormatRequests(input: {
+  readonly sheetId: number;
+  readonly columns: readonly string[];
+  readonly rowCount: number;
+  readonly presentation: DataExportPresentation;
+}): Record<string, unknown>[] {
+  if (input.columns.length === 0) return [];
+  const requests: Record<string, unknown>[] = [
+    {
+      setBasicFilter: {
+        filter: {
+          range: {
+            sheetId: input.sheetId,
+            startRowIndex: 0,
+            endRowIndex: input.rowCount + 1,
+            startColumnIndex: 0,
+            endColumnIndex: input.columns.length,
+          },
+        },
+      },
+    },
+    {
+      repeatCell: {
+        range: {
+          sheetId: input.sheetId,
+          startRowIndex: 0,
+          endRowIndex: 1,
+          startColumnIndex: 0,
+          endColumnIndex: input.columns.length,
+        },
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: { red: 0.075, green: 0.19, blue: 0.42 },
+            textFormat: { foregroundColor: { red: 1, green: 1, blue: 1 }, bold: true },
+            verticalAlignment: 'MIDDLE',
+            wrapStrategy: 'WRAP',
+          },
+        },
+        fields: 'userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)',
+      },
+    },
+    {
+      updateDimensionProperties: {
+        range: {
+          sheetId: input.sheetId,
+          dimension: 'ROWS',
+          startIndex: 0,
+          endIndex: 1,
+        },
+        properties: { pixelSize: 34 },
+        fields: 'pixelSize',
+      },
+    },
+  ];
+  for (const [index, column] of input.columns.entries()) {
+    requests.push({
+      updateDimensionProperties: {
+        range: {
+          sheetId: input.sheetId,
+          dimension: 'COLUMNS',
+          startIndex: index,
+          endIndex: index + 1,
+        },
+        properties: { pixelSize: input.presentation.columnWidths[column] ?? 140 },
+        fields: 'pixelSize',
+      },
+    });
+    const pattern = input.presentation.numberFormats[column];
+    if (!pattern || input.rowCount === 0) continue;
+    requests.push({
+      repeatCell: {
+        range: {
+          sheetId: input.sheetId,
+          startRowIndex: 1,
+          endRowIndex: input.rowCount + 1,
+          startColumnIndex: index,
+          endColumnIndex: index + 1,
+        },
+        cell: {
+          userEnteredFormat: {
+            numberFormat: { type: 'NUMBER', pattern },
+            horizontalAlignment: 'RIGHT',
+          },
+        },
+        fields: 'userEnteredFormat(numberFormat,horizontalAlignment)',
+      },
+    });
   }
-  return normalizeExportCell(value);
+  return requests;
 }
 
 function oauth(accessToken: string) {
