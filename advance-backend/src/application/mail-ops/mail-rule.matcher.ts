@@ -184,21 +184,57 @@ function addressMatches(address: string, criterion: string): boolean {
     : address === expected;
 }
 
-/**
- * Every address in one recipient header, one entry at a time.
- *
- * Quoted text comes off before the split, because a display name may legally
- * hold a comma and splitting through one hands the second half of a name to
- * `addressIn` with no bracketed mailbox left in it. That is enough to defeat
- * the impersonation rule below: `"ana@example.com, VIP" <impostor@evil.tld>`
- * would otherwise leave a fragment that reads as the address it is imitating.
- */
+/** Every address in one recipient header, one entry at a time. */
 function addressesIn(header: string): string[] {
-  return header
-    .replace(/"[^"]*"/g, ' ')
-    .split(',')
+  return splitRecipients(header)
     .map(entry => addressIn(entry))
     .filter((address): address is string => address !== undefined);
+}
+
+/**
+ * One header split into its entries, with every display name blanked out.
+ *
+ * Both halves matter, and a sender controls the header of the mail they send.
+ * A display name may legally hold a comma, so splitting the raw header hands
+ * `addressIn` a fragment with no bracketed mailbox left in it, and the fragment
+ * reads as whatever address the name contained. And a name is quoted text, so
+ * a name may also hold an escaped quote — meaning a scanner that ends a name at
+ * the first `"` it meets can be walked straight out of the quotes and into the
+ * same trick. Either way an outsider sending
+ * `"cfo@victim.com, x" <evil@example.tld>` would make a rule on `cfo@` fire on
+ * their own mail, and the member's mailbox would forward it wherever the rule
+ * points.
+ *
+ * A name is therefore consumed as a unit and replaced with blanks: it can never
+ * be an address, and blanks keep the entry's real mailbox where it was. An
+ * unbalanced quote swallows the rest of the header, which loses a match rather
+ * than inventing one.
+ */
+function splitRecipients(header: string): string[] {
+  const entries: string[] = [];
+  let entry = '';
+  let quoted = false;
+  for (let index = 0; index < header.length; index += 1) {
+    const character = header[index]!;
+    if (quoted && character === '\\') {
+      index += 1;
+      entry += ' ';
+      continue;
+    }
+    if (character === '"') {
+      quoted = !quoted;
+      entry += ' ';
+      continue;
+    }
+    if (character === ',' && !quoted) {
+      entries.push(entry);
+      entry = '';
+      continue;
+    }
+    entry += quoted ? ' ' : character;
+  }
+  entries.push(entry);
+  return entries;
 }
 
 /**

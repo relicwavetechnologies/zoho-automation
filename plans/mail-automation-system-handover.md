@@ -1104,7 +1104,10 @@ SPF/DKIM/DMARC verifier. It trusts the `From` header Gmail exposes.
 
 ### 11.2 Other matching
 
-- `to`, subject, and body are case-insensitive substring comparisons.
+- *[corrected 2026-08-02]* Subject and body are case-insensitive substring
+  comparisons. `to` is an exact mailbox or `@domain` matched across `To`,
+  `Cc`, `Bcc` and `Delivered-To`; rules stored before that keep a substring
+  test against `To` alone.
 - `hasAttachment` is exact.
 - All specified fields must match.
 - Matching is deterministic and does not invoke an LLM.

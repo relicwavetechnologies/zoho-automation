@@ -199,6 +199,12 @@ describe('mailAutomations tool', () => {
       ...message,
       to: '"ana@example.com, VIP" <impostor@evil.example>',
     }), false);
+    // A name is quoted text and may hold an escaped quote, so ending it at the
+    // first `"` walks straight back out of the quotes and into the same trick.
+    assert.equal(mailRuleMatches({ to: 'ana@example.com' }, {
+      ...message,
+      to: '"a \\" ana@example.com, VIP" <impostor@evil.example>',
+    }), false);
     // The same comma in an honest name still resolves to the real mailbox.
     assert.equal(mailRuleMatches({ to: 'ana@example.com' }, {
       ...message,

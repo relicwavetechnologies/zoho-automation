@@ -127,6 +127,13 @@ export class MailOpsRepository {
     input: CreateMailAutomationRuleInput,
   ): Promise<Result<{ ruleId: string; subscriptionId: string }, InfraError>> {
     try {
+      // Ahead of the transaction, not inside it. Postgres aborts a transaction
+      // outright on a unique violation, so a swallowed collision there would
+      // leave every later statement failing on a dead transaction — the create
+      // would report failure for a rule that exists and is watching. On its
+      // own it is an idempotent key rename: safe to have committed even if the
+      // create that follows does not.
+      await this.adoptRuleKeyedBeforeCanonicalisation(input);
       const created = await this.db.$transaction(async tx => {
         const subscription = await tx.mailboxSubscription.upsert({
           where: { connectionId: input.connectionId },
@@ -146,7 +153,6 @@ export class MailOpsRepository {
           },
           select: { id: true },
         });
-        await this.adoptRuleKeyedBeforeCanonicalisation(tx, input);
         const rule = await tx.mailAutomationRule.upsert({
           where: { dedupeKey: input.dedupeKey },
           create: {
@@ -216,10 +222,9 @@ export class MailOpsRepository {
    * canonical one wins; the other keeps running until someone removes it.
    */
   private async adoptRuleKeyedBeforeCanonicalisation(
-    tx: Prisma.TransactionClient,
     input: CreateMailAutomationRuleInput,
   ): Promise<void> {
-    const candidates = await tx.mailAutomationRule.findMany({
+    const candidates = await this.db.mailAutomationRule.findMany({
       // Archived rules included: recreating one is the only way to bring it
       // back, so an archived row that is this rule must be found here or the
       // revive below silently becomes a second rule instead.
@@ -257,14 +262,14 @@ export class MailOpsRepository {
     const adopted = sameRule.find(rule => rule.status === 'active')
       ?? sameRule[0]!;
     try {
-      await tx.mailAutomationRule.update({
+      await this.db.mailAutomationRule.update({
         where: { id: adopted.id },
         data: { dedupeKey: input.dedupeKey },
       });
     } catch (cause) {
-      // Another transaction claimed the canonical key between the scan and
-      // here. That rule is this rule, so the create below finds it and there
-      // is nothing left to migrate — failing the member's request over a race
+      // Another request claimed the canonical key between the scan and here.
+      // That rule is this rule, so the create below finds it and there is
+      // nothing left to migrate — failing the member's request over a race
       // that already reached the right answer would be the worse outcome.
       if (
         cause instanceof Prisma.PrismaClientKnownRequestError

@@ -29,9 +29,6 @@ describe('MailOpsRepository', () => {
         },
       },
       mailAutomationRule: {
-        // No rule on this mailbox predates the canonical key, so nothing is
-        // adopted and the upsert decides everything.
-        findMany: async () => [],
         updateMany: async () => ({ count: 0 }),
         upsert: async (input: any) => {
           ruleUpsert = input;
@@ -40,6 +37,9 @@ describe('MailOpsRepository', () => {
       },
     };
     const repo = new MailOpsRepository({
+      // No rule on this mailbox predates the canonical key, so nothing is
+      // adopted and the upsert decides everything.
+      mailAutomationRule: { findMany: async () => [] },
       $transaction: async (fn: any) => fn(tx),
     } as any);
 
@@ -753,19 +753,26 @@ describe('MailOpsRepository', () => {
     const run = async (stored: any[]) => {
       const calls: string[] = [];
       const updates: any[] = [];
+      // The adoption runs on the client, not the transaction: Postgres aborts
+      // a transaction outright on a unique violation, so a collision swallowed
+      // inside one would leave every later statement failing on a dead
+      // transaction and report failure for a rule that exists and is watching.
+      const rules = {
+        findMany: async () => {
+          calls.push('scan');
+          return stored;
+        },
+        update: async (input: any) => {
+          calls.push('adopt');
+          updates.push(input);
+          return { id: input.where.id };
+        },
+      };
       const repo = new MailOpsRepository({
+        mailAutomationRule: rules,
         $transaction: async (fn: any) => fn({
           mailboxSubscription: { upsert: async () => ({ id: 'mailbox-1' }) },
           mailAutomationRule: {
-            findMany: async () => {
-              calls.push('scan');
-              return stored;
-            },
-            update: async (input: any) => {
-              calls.push('adopt');
-              updates.push(input);
-              return { id: input.where.id };
-            },
             updateMany: async () => {
               calls.push('revive');
               return { count: 0 };
@@ -849,10 +856,10 @@ describe('MailOpsRepository', () => {
     const upserts: any[] = [];
     const revivals: any[] = [];
     const repo = () => new MailOpsRepository({
+      mailAutomationRule: { findMany: async () => [] },
       $transaction: async (fn: any) => fn({
         mailboxSubscription: { upsert: async () => ({ id: 'mailbox-1' }) },
         mailAutomationRule: {
-          findMany: async () => [],
           updateMany: async (input: any) => {
             calls.push('revive');
             revivals.push(input);
