@@ -38,6 +38,45 @@ jobs:
       - name: Require the main branch
         run: test "${GITHUB_REF}" = refs/heads/main
 
+      - name: Validate isolated Pi runtime URL
+        env:
+          PRODUCTION_ENV_FILE: ${{ secrets.PRODUCTION_ENV_FILE }}
+        run: |
+          node <<'NODE'
+          const values = new Map();
+          for (const rawLine of (process.env.PRODUCTION_ENV_FILE ?? '').split(/\r?\n/)) {
+            const line = rawLine.trim();
+            if (!line || line.startsWith('#')) continue;
+            const match = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+            if (!match) continue;
+            let value = match[2].trim();
+            if ((value.startsWith('"') && value.endsWith('"')) ||
+                (value.startsWith("'") && value.endsWith("'"))) {
+              value = value.slice(1, -1);
+            }
+            values.set(match[1], value);
+          }
+
+          const runtimeUrl = values.get('PI_LARK_BACKEND_URL') || values.get('BACKEND_PUBLIC_URL');
+          let parsed;
+          try {
+            parsed = new URL(runtimeUrl);
+          } catch {
+            throw new Error('PI_LARK_BACKEND_URL (or BACKEND_PUBLIC_URL) must be a valid URL');
+          }
+
+          const hostname = parsed.hostname.toLowerCase();
+          const isolatedHost = !hostname.includes('.') && !hostname.includes(':');
+          const localHost = hostname === 'localhost' || hostname === '127.0.0.1' ||
+            hostname === '::1' || hostname === '[::1]' || hostname === '0.0.0.0' ||
+            hostname.endsWith('.localhost') || hostname.endsWith('.local') || hostname.endsWith('.internal');
+          if (parsed.protocol !== 'https:' || isolatedHost || localHost) {
+            throw new Error(
+              'PI_LARK_BACKEND_URL must be a public HTTPS URL reachable from isolated per-user Docker networks',
+            );
+          }
+          NODE
+
   build-and-push:
     name: build-and-push
     runs-on: ubuntu-latest
@@ -199,7 +238,7 @@ jobs:
 
           printf '%s' "${PRODUCTION_ENV_FILE}" | SSHPASS="${VPS_PASSWORD}" sshpass -e \
             ssh -o StrictHostKeyChecking=yes "${VPS_USER}@${DIVO_MAIN_HOST}" \
-            "test \"\$(id -u)\" = 0 && install -d -m 700 -o deploy -g deploy '${DEPLOY_DIR}' && cat > '${DEPLOY_DIR}/.env.production.local' && chown deploy:deploy '${DEPLOY_DIR}/.env.production.local' && chmod 600 '${DEPLOY_DIR}/.env.production.local'"
+            "test \"\$(id -u)\" = 0 && install -d -m 700 -o deploy -g deploy '${DEPLOY_DIR}' && if test -s '${DEPLOY_DIR}/.env.production.local'; then cp -p '${DEPLOY_DIR}/.env.production.local' '${DEPLOY_DIR}/.release-rollback.env.production.local'; fi && cat > '${DEPLOY_DIR}/.env.production.local' && chown deploy:deploy '${DEPLOY_DIR}/.env.production.local' && chmod 600 '${DEPLOY_DIR}/.env.production.local'"
 
           SSHPASS="${VPS_PASSWORD}" sshpass -e scp -o StrictHostKeyChecking=yes \
             infra/production/nginx/app.http.conf \
@@ -235,7 +274,7 @@ jobs:
       - name: Upload main configuration
         run: |
           ssh -i ~/.ssh/id_ed25519 "${DIVO_MAIN_USER}@${DIVO_MAIN_HOST}" \
-            "install -d -m 700 '${DEPLOY_DIR}'"
+            "install -d -m 700 '${DEPLOY_DIR}' && if test -s '${DEPLOY_DIR}/docker-compose.yml'; then cp -p '${DEPLOY_DIR}/docker-compose.yml' '${DEPLOY_DIR}/.release-rollback.docker-compose.yml'; fi"
           scp -i ~/.ssh/id_ed25519 docker-compose.yml \
             "${DIVO_MAIN_USER}@${DIVO_MAIN_HOST}:${DEPLOY_DIR}/docker-compose.yml"
 
@@ -254,6 +293,26 @@ jobs:
 
           cd "${DEPLOY_DIR}"
           export DIVO_ENV_FILE=.env.production.local
+
+          if curl -fsS --max-time 10 http://127.0.0.1:13002/health >/dev/null; then
+            backend_image="$(docker inspect --format='{{.Config.Image}}' divo-main-divo-backend-1)"
+            admin_image="$(docker inspect --format='{{.Config.Image}}' divo-main-divo-admin-1)"
+            pi_image="$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' divo-main-divo-pi-controller-1 | sed -n 's/^DIVO_PI_IMAGE=//p')"
+            pi_controller_image="$(docker inspect --format='{{.Config.Image}}' divo-main-divo-pi-controller-1)"
+
+            if [[ -n "${backend_image}" && -n "${admin_image}" && -n "${pi_image}" && -n "${pi_controller_image}" ]]; then
+              umask 077
+              {
+                printf 'DIVO_BACKEND_IMAGE=%q\n' "${backend_image}"
+                printf 'DIVO_ADMIN_IMAGE=%q\n' "${admin_image}"
+                printf 'DIVO_PI_IMAGE=%q\n' "${pi_image}"
+                printf 'DIVO_PI_CONTROLLER_IMAGE=%q\n' "${pi_controller_image}"
+              } > .release-rollback.images.env
+            fi
+          else
+            echo "Current release is not healthy; preserving the existing rollback image snapshot."
+          fi
+
           export DIVO_BACKEND_IMAGE="${BACKEND_IMAGE}"
           export DIVO_ADMIN_IMAGE="${ADMIN_IMAGE}"
           export DIVO_PI_IMAGE="${PI_IMAGE}"
@@ -328,6 +387,47 @@ jobs:
             sleep 5
           done
 
+          docker compose --env-file .env.production.local ps
+          docker compose --env-file .env.production.local logs --tail=160 \
+            divo-backend divo-admin google-workspace-mcp divo-pi-controller
+          exit 1
+          REMOTE
+
+      - name: Roll back main release after failure
+        if: ${{ failure() }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "${DIVO_MAIN_USER}@${DIVO_MAIN_HOST}" \
+            "DEPLOY_DIR='${DEPLOY_DIR}' DIVO_MAIN_DOMAIN='${DIVO_MAIN_DOMAIN}' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          cd "${DEPLOY_DIR}"
+          test -s .release-rollback.images.env
+          test -s .release-rollback.docker-compose.yml
+          test -s .release-rollback.env.production.local
+
+          cp -p .release-rollback.docker-compose.yml docker-compose.yml
+          cp -p .release-rollback.env.production.local .env.production.local
+          # This file is written only by the deployment step above from docker inspect output.
+          source .release-rollback.images.env
+          export DIVO_ENV_FILE=.env.production.local
+          export DIVO_BACKEND_IMAGE DIVO_ADMIN_IMAGE DIVO_PI_IMAGE DIVO_PI_CONTROLLER_IMAGE
+
+          docker compose --env-file .env.production.local up -d --no-build --remove-orphans
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS --max-time 10 http://127.0.0.1:13002/health >/dev/null \
+              && curl -fsS --max-time 10 http://127.0.0.1:18082/ >/dev/null \
+              && curl -fsS --max-time 15 --resolve "${DIVO_MAIN_DOMAIN}:443:127.0.0.1" "https://${DIVO_MAIN_DOMAIN}/" >/dev/null \
+              && docker compose --env-file .env.production.local exec -T divo-backend \
+                 node -e "fetch('http://divo-pi-controller:4317/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
+              echo "Rollback succeeded. The rejected release remains failed in CI."
+              docker compose --env-file .env.production.local ps
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo "Rollback did not restore a healthy release."
           docker compose --env-file .env.production.local ps
           docker compose --env-file .env.production.local logs --tail=160 \
             divo-backend divo-admin google-workspace-mcp divo-pi-controller
