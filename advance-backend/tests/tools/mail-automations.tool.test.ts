@@ -194,6 +194,19 @@ describe('mailAutomations tool', () => {
       { from: 'notice@anthropic.com' },
       sender('Doe, John <notice@anthropic.com> <attacker@evil.example>'),
     ), false);
+    // With no brackets the address must be a token, not sit inside one. This
+    // holds no mailbox at all — `?` and `=` are legal in a local part, so
+    // reading one out of the middle let text that is not an address satisfy
+    // the rule.
+    assert.equal(mailRuleMatches(
+      { from: '@anthropic.com' },
+      sender('=?utf-8?q?notice@anthropic.com?x, <attacker@evil.example>'),
+    ), false);
+    // And two bare addresses side by side name no single sender.
+    assert.equal(mailRuleMatches(
+      { from: '@anthropic.com' },
+      sender('notice@anthropic.com attacker@evil.example'),
+    ), false);
   });
 
   it('matches a recipient across To, Cc and Delivered-To, not To alone', () => {

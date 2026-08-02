@@ -470,7 +470,10 @@ function messageMetadata(message: GmailMessage): MailMessageMetadata {
   const bcc = allValuesOf('bcc');
   const deliveredTo = allValuesOf('delivered-to');
   return {
-    from: headers.get('from') ?? '',
+    // Through the same flattening as the recipient headers: `from` is parsed
+    // the same way, so a folded display name would be discarded the same way
+    // and the rule would silently stop firing.
+    from: sanitizeHeader(headers.get('from') ?? ''),
     // Carried so a recipient rule sees every address the message was actually
     // sent to, not just the one the sender addressed it to.
     to,

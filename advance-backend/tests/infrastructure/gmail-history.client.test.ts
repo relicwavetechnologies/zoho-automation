@@ -424,6 +424,18 @@ describe('GmailHistoryClient message metadata', () => {
 
     assert.equal(mailRuleMatches({ to: 'ana@example.com' }, metadata), true);
   });
+
+  it('folds the sender header in one piece too, since it is parsed the same way', async () => {
+    const metadata = await syncOneMessage({
+      mimeType: 'text/plain',
+      headers: [
+        { name: 'From', value: '"Doe,\r\n John" <j@example.com>' },
+        { name: 'To', value: 'member@example.com' },
+      ],
+    });
+
+    assert.equal(mailRuleMatches({ from: 'j@example.com' }, metadata), true);
+  });
 });
 
 describe('GmailHistoryClient stale-cursor recovery', () => {

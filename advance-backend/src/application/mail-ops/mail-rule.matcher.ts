@@ -150,6 +150,7 @@ export function mailRuleMatches(
 }
 
 const ADDRESS_PATTERN = /[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+\.[a-z]{2,}/i;
+const WHOLE_ADDRESS_PATTERN = new RegExp(`^${ADDRESS_PATTERN.source}$`, 'i');
 
 /**
  * Whether the message came from the mailbox the rule names.
@@ -340,7 +341,19 @@ function splitRecipients(header: string): string[] {
  */
 function addressIn(entry: string): string | undefined {
   const bracketedMailbox = entry.match(/<\s*([^<>]+)\s*>/)?.[1];
-  return (bracketedMailbox ?? entry)
-    .match(ADDRESS_PATTERN)?.[0]
-    ?.toLowerCase();
+  if (bracketedMailbox !== undefined) {
+    return bracketedMailbox.match(ADDRESS_PATTERN)?.[0]?.toLowerCase();
+  }
+  // With no brackets the address has to *be* a token, not sit inside one.
+  // Reading it out of the middle of one is how text that is not an address at
+  // all comes to satisfy a rule: `=?utf-8?q?receipts@stripe.com?x` holds no
+  // mailbox — `?` and `=` are simply legal in a local part — and two bare
+  // addresses side by side name no single sender. Neither is an answer, and
+  // saying so loses a match rather than inventing one.
+  const addresses = entry
+    .trim()
+    .split(/\s+/)
+    .map(token => token.replace(/^[;:,<>]+/, '').replace(/[;:,<>.]+$/, ''))
+    .filter(token => WHOLE_ADDRESS_PATTERN.test(token));
+  return addresses.length === 1 ? addresses[0]!.toLowerCase() : undefined;
 }
