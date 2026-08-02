@@ -232,6 +232,9 @@ function exportPayloadFor(
       title: semrushExportTitle(args),
     },
     chatId: ctx.runContext.chatId!,
+    ...(ctx.runContext.runtimeThreadId
+      ? { conversationKey: ctx.runContext.runtimeThreadId }
+      : {}),
     ...(ctx.runContext.replyToMessageId ? { replyToMessageId: ctx.runContext.replyToMessageId } : {}),
     ...(ctx.runContext.replyInThread !== undefined ? { replyInThread: ctx.runContext.replyInThread } : {}),
     requestId: ctx.runContext.runtimeRunId

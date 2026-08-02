@@ -650,6 +650,9 @@ export const createZohoBooksTool = (deps: {
         title: `Zoho Books ${moduleName} export`,
       },
       chatId: ctx.runContext.chatId!,
+      ...(ctx.runContext.runtimeThreadId
+        ? { conversationKey: ctx.runContext.runtimeThreadId }
+        : {}),
       ...(ctx.runContext.replyToMessageId
         ? { replyToMessageId: ctx.runContext.replyToMessageId }
         : {}),

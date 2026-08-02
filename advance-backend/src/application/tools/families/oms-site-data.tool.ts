@@ -244,6 +244,9 @@ function exportPayloadFor(
       title: `OMS ${args.operation.replaceAll('_', ' ')} snapshot`,
     },
     chatId: ctx.runContext.chatId!,
+    ...(ctx.runContext.runtimeThreadId
+      ? { conversationKey: ctx.runContext.runtimeThreadId }
+      : {}),
     ...(ctx.runContext.replyToMessageId ? { replyToMessageId: ctx.runContext.replyToMessageId } : {}),
     ...(ctx.runContext.replyInThread !== undefined ? { replyInThread: ctx.runContext.replyInThread } : {}),
     requestId: ctx.runContext.requestId ?? ctx.correlationId,

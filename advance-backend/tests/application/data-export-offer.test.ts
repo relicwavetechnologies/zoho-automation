@@ -28,6 +28,7 @@ const payload: DataExportOfferPayload = {
   },
   destination: { format: 'google_sheet', title: 'Open invoices' },
   chatId: 'oc_chat',
+  conversationKey: 'oc_chat:thread:om_root',
   requestId: 'request-1',
 };
 

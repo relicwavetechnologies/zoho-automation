@@ -110,6 +110,8 @@ export interface DataExportJobPayload {
   readonly transform?: DataExportTransform;
   readonly destination: DataExportDestination;
   readonly chatId: string;
+  /** Backend-derived Pi conversation identity; absent only on legacy offers. */
+  readonly conversationKey?: string;
   readonly replyToMessageId?: string;
   readonly replyInThread?: boolean;
   readonly requestId: string;

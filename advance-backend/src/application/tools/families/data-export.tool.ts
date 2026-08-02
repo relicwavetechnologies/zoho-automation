@@ -195,6 +195,9 @@ export function createDataExportTool(deps: {
           ...(transform ? { transform } : {}),
           destination,
           chatId: ctx.runContext.chatId,
+          ...(ctx.runContext.runtimeThreadId
+            ? { conversationKey: ctx.runContext.runtimeThreadId }
+            : {}),
           ...(ctx.runContext.replyToMessageId
             ? { replyToMessageId: ctx.runContext.replyToMessageId }
             : {}),
