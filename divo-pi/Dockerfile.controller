@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
-FROM docker:28.2.2-cli AS docker-cli
+FROM docker:28.2.2-cli@sha256:280d9e6dbdeece0237d9ead6e5fbd59141ab1bce1ee7987760448809b8ea27aa AS docker-cli
 
-FROM node:22.22.0-bookworm-slim
+FROM node:22.22.0-bookworm-slim@sha256:dd9d21971ec4395903fa6143c2b9267d048ae01ca6d3ea96f16cb30df6187d94
 
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends ca-certificates dumb-init \

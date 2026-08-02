@@ -280,9 +280,7 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
           push: true
-          tags: |
-            ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}:dev-${{ github.sha }}
-            ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}:dev-latest
+          tags: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}:dev-${{ github.sha }}
           labels: com.divo.environment=development
           build-args: ${{ matrix.build-args }}
           cache-from: type=gha,scope=${{ matrix.component }}
@@ -296,6 +294,42 @@ jobs:
             echo "- Digest: \`${{ steps.build.outputs.digest }}\`"
             echo "- Build cache and timing details are attached in the Docker build summary."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke published Pi image
+        if: matrix.component == 'pi' || matrix.component == 'pi-controller'
+        env:
+          IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}@${{ steps.build.outputs.digest }}
+        run: |
+          docker pull "${IMAGE}"
+          if [[ "${{ matrix.component }}" == "pi" ]]; then
+            docker run --rm --network none --entrypoint npm "${IMAGE}" run divo:test
+            docker run --rm --network none --tmpfs /data:rw,uid=10001,gid=10001 \
+              --entrypoint /app/node_modules/.bin/tsx "${IMAGE}" \
+              packages/coding-agent/src/cli.ts --version
+          else
+            name="divo-controller-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            prefix="divo-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            trap 'docker rm -f "${name}" >/dev/null 2>&1 || true' EXIT
+            docker run -d --name "${name}" --network none \
+              -e DIVO_PI_RESOURCE_PREFIX="${prefix}" \
+              -v /var/run/docker.sock:/var/run/docker.sock "${IMAGE}"
+            for attempt in $(seq 1 20); do
+              if docker exec "${name}" node -e \
+                "fetch('http://127.0.0.1:4317/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
+                exit 0
+              fi
+              [[ "$(docker inspect --format '{{.State.Running}}' "${name}")" == true ]] || break
+              sleep 0.25
+            done
+            docker logs "${name}"
+            exit 1
+          fi
+
+      - name: Promote ${{ matrix.component }} development alias
+        env:
+          IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}@${{ steps.build.outputs.digest }}
+          LATEST: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}:dev-latest
+        run: docker buildx imagetools create --tag "${LATEST}" "${IMAGE}"
 
   deploy-development:
     name: deploy-development
@@ -314,6 +348,33 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve development images by digest
+        env:
+          IMAGE_PREFIX: ghcr.io/relicwavetechnologies/zoho-automation
+          RELEASE_TAG: dev-${{ github.sha }}
+        run: |
+          resolve() {
+            local component="$1" variable="$2" image digest
+            image="${IMAGE_PREFIX}/${component}:${RELEASE_TAG}"
+            digest="$(docker buildx imagetools inspect "${image}" --format '{{.Manifest.Digest}}')"
+            test -n "${digest}"
+            printf '%s=%s@%s\n' "${variable}" "${IMAGE_PREFIX}/${component}" "${digest}" >> "${GITHUB_ENV}"
+          }
+          resolve backend BACKEND_IMAGE
+          resolve admin ADMIN_IMAGE
+          resolve pi PI_IMAGE
+          resolve pi-controller PI_CONTROLLER_IMAGE
 
       - name: Start deployment timer
         run: echo "DEPLOY_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
@@ -365,10 +426,6 @@ jobs:
 
       - name: Pull images, migrate, and restart
         env:
-          BACKEND_IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/backend:dev-${{ github.sha }}
-          ADMIN_IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/admin:dev-${{ github.sha }}
-          PI_IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/pi:dev-${{ github.sha }}
-          PI_CONTROLLER_IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/pi-controller:dev-${{ github.sha }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           printf '%s' "${GHCR_TOKEN}" | ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
@@ -421,11 +478,6 @@ jobs:
              docker compose --env-file .env.development.local up -d --no-build --remove-orphans"
 
       - name: Smoke test the local stack and HTTPS route
-        env:
-          BACKEND_IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/backend:dev-${{ github.sha }}
-          ADMIN_IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/admin:dev-${{ github.sha }}
-          PI_IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/pi:dev-${{ github.sha }}
-          PI_CONTROLLER_IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/pi-controller:dev-${{ github.sha }}
         run: |
           ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
             "DIVO_DEV_DOMAIN='${DIVO_DEV_DOMAIN}' DEPLOY_DIR='${DEPLOY_DIR}' DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' DIVO_DEV_PI_IMAGE='${PI_IMAGE}' DIVO_DEV_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' bash -s" <<'REMOTE'
