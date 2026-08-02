@@ -17,7 +17,7 @@
 | 3 — Lark export interaction | ✅ Done | Signed format/account cards, immediate callback ACK, locked choice cards, governed progress delivery, OAuth resume, and personal destination preference implemented |
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
 | 5 — Semrush and OMS convergence | ✅ Done | Both providers use bounded previews and opaque central offers; executable Cloudinary fallbacks and their stale skill contract are removed |
-| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Governed Sheet editing is live-verified; strict Drive XLSX resolution, run-bound confirmation, durable queueing, and locked Lark acknowledgement are implemented; conversion execution and live validation remain |
+| 6 — pasted Sheet/Drive URLs | 🟡 Validation pending | Governed Sheet editing is live-verified; Drive XLSX now runs through a durable, exact-user conversion worker with separate Lark progress delivery and seven-day opaque follow-up context; one live conversion remains |
 | 7 — routers and provider skills | 🟡 Partial | Data routing now separates opaque provider offers, multi-page/multi-product Python workflows, pasted Sheets, and workspace files; provider-specific skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
 | 9 — realistic isolated-runtime validation | 🟡 In progress | Isolated Pi exported a live Semrush dataset, retained its exact-thread resource context, and securely edited/read back the same Sheet; remaining scenarios still need closure |
@@ -41,8 +41,11 @@
   revalidates the requester, permissions, personal Google ownership/scopes,
   and exact XLSX metadata; streams a byte-capped import into a new native
   Sheet; verifies MIME, owner, and canonical URL; and exposes no source-mutating
-  operation. Its focused suite passed 3/3 checks. Concrete BullMQ, Drive,
-  checkpoint, continuity, and Lark-delivery adapters remain the blocker.
+  operation. Concrete BullMQ, Redis checkpoint, Google Drive, continuity, and
+  separate Lark-delivery adapters are now wired into server startup and ordered
+  shutdown. The combined workbook, webhook, and TypeScript gate passed 136/136
+  checks; the local backend reloaded healthy. One real Lark-confirmed workbook
+  conversion and resource follow-up remain before Phase 6 is closed.
 - Phase 7's central routing boundary is aligned with the backend: one-source
   provider previews retain only opaque export offers, while Python is reserved
   for cross-page computation, transformations, multi-product work, or related
@@ -1294,8 +1297,8 @@ Never log:
    identity that has neither a personal Google destination nor company fallback.
 3. Run the remaining OMS live destination check through the already-cut-over
    central pipeline as part of Phase 9; do not restore a provider fallback.
-4. Finish the queued Drive XLSX conversion worker, verify the new native Sheet,
-   retain its opaque conversation resource, and validate the complete Lark flow.
+4. Run one live Drive XLSX confirmation, verify the new native Sheet owner and
+   unchanged source, then use its retained opaque resource in a follow-up edit.
 5. Run a real export followed by the low-hint request “Add a Notes column to
    that sheet and put Needs review in the first two rows.” Verify the exact
    workbook readback through the implemented Lark-only secure edit-by-reference
