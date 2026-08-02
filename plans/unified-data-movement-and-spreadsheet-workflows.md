@@ -794,10 +794,21 @@ the full exported range.
 
 **Goal:** let the user paste a Sheet and immediately work on it safely.
 
-- Implement strict URL parsing into `ResourceReference`.
-- Resolve an exact connection and validate access through provider metadata.
-- Add thread-scoped validated resource handles.
-- Support direct bounded edits and queued bulk imports into existing Sheets.
+- Start with a strict parser for
+  `https://docs.google.com/spreadsheets/d/<spreadsheetId>` plus optional numeric
+  `gid`; reject lookalike hosts, malformed IDs, and generic Drive URLs before
+  any provider call.
+- Resolve an exact personal Google connection and validate metadata plus write
+  access server-side. Company/Divo connections remain read-only for user-owned
+  Sheet work and are never selected merely because they can view the file.
+- Store a thread-scoped opaque Sheet reference in the existing
+  `RuntimeConversation.refsJson`; store no OAuth material and revalidate access
+  before every consequential read or write. No Prisma migration is required.
+- Keep small direct reads/edits in the governed Google tool. For large imports,
+  add an internal `existing_google_sheet` destination to the central queue and
+  sink; V1 writes a new named tab or appends in bounded batches, then verifies
+  the header, final row, and count. It does not clear or overwrite an existing
+  tab.
 - Add Drive XLSX metadata resolution and explicit conversion approval.
 - Return clear unsupported behavior for OneDrive/Excel Online and Lark Base until their connectors are ready.
 
@@ -806,8 +817,12 @@ the full exported range.
 - Valid Google Sheet URLs resolve without the model guessing IDs.
 - Lookalike/unsupported URLs are never fetched.
 - Missing connection, wrong account, insufficient scopes, no write access, and inaccessible resource are distinct states.
+- Multiple writable personal accounts require one explicit choice; no account
+  uses the existing OAuth-and-resume path.
 - Large writes stream through the destination sink.
 - Important writes are read-back verified.
+- Destructive Sheet operations remain a separate HITL path; URL resolution
+  itself grants no authority.
 
 ### Phase 7 — tune routers and provider skills
 
