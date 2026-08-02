@@ -65,6 +65,12 @@ export interface ClaimedMailDelivery {
   deliveryId: string;
   attempts: number;
   payload: Record<string, unknown>;
+  /**
+   * The draft staged by a previous attempt, when there was one. The whole
+   * exactly-once guarantee reads this: without it the worker cannot ask Gmail
+   * whether the last attempt's send completed.
+   */
+  providerDraftId?: string;
 }
 
 export interface MailAutomationRuleSummary {
@@ -81,6 +87,31 @@ export interface MailAutomationRuleSummary {
 
 const errorText = (error: unknown): string =>
   (error instanceof Error ? error.message : String(error)).slice(0, 500);
+
+/**
+ * Is this stored rule clause the same one the caller is submitting?
+ *
+ * Key order is not meaning here — both sides are small JSON objects that have
+ * been round-tripped through Postgres and Zod — so the comparison sorts keys
+ * before comparing. Answering "different" when they are in fact the same is
+ * the safe direction: it only restarts a rule's watch.
+ */
+function sameRuleClause(stored: unknown, submitted: unknown): boolean {
+  return stableJson(stored) === stableJson(submitted);
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, inner) => {
+    if (inner === null || typeof inner !== 'object' || Array.isArray(inner)) {
+      return inner;
+    }
+    return Object.fromEntries(
+      Object.entries(inner as Record<string, unknown>).sort(
+        ([a], [b]) => (a < b ? -1 : a > b ? 1 : 0),
+      ),
+    );
+  });
+}
 
 export class MailOpsRepository {
   constructor(private readonly db: MailOpsDb) {}
@@ -114,11 +145,15 @@ export class MailOpsRepository {
         // watch afresh: moving the floor under a live rule would silently
         // drop whatever backlog it had not reached yet, and the member never
         // asked for anything to stop.
-        const existing = await tx.mailAutomationRule.findUnique({
-          where: { dedupeKey: input.dedupeKey },
-          select: { status: true },
+        //
+        // Written as its own conditional update rather than a read followed by
+        // a decision, so the status it tests is the one the row actually holds
+        // under the write lock. The upsert below then revives the row without
+        // touching the floor either way.
+        await tx.mailAutomationRule.updateMany({
+          where: { dedupeKey: input.dedupeKey, status: { not: 'active' } },
+          data: { activatedAt: new Date() },
         });
-        const reviving = existing !== null && existing.status !== 'active';
         const rule = await tx.mailAutomationRule.upsert({
           where: { dedupeKey: input.dedupeKey },
           create: {
@@ -141,8 +176,8 @@ export class MailOpsRepository {
             // branch routinely revives a row created months ago. The revived
             // rule watches from now, not from whenever the original row was
             // first written, or its first pass ships the whole recovery
-            // window.
-            ...(reviving ? { activatedAt: new Date() } : {}),
+            // window. Moved by the conditional update above, which is the only
+            // place that can read the row's status and act on it atomically.
           },
           select: { id: true },
         });
@@ -217,9 +252,26 @@ export class MailOpsRepository {
             status: { not: 'archived' },
             subscription: { connectionId: input.connectionId },
           },
-          select: { id: true, subscriptionId: true },
+          select: {
+            id: true,
+            subscriptionId: true,
+            status: true,
+            matchJson: true,
+            actionJson: true,
+            destinationJson: true,
+          },
         });
         if (!current) return false;
+        // The tool's `update` takes the whole rule, so renaming one resubmits
+        // its existing match and destination. That is the same rule watching
+        // the same address, and moving its floor would quietly drop whatever
+        // backlog it had not reached — a stalled cursor is exactly when
+        // somebody tidies up a rule's name. The floor moves when the rule
+        // stopped, or when what it watches or where it sends actually changed.
+        const restarting = current.status !== 'active'
+          || !sameRuleClause(current.matchJson, input.match)
+          || !sameRuleClause(current.actionJson, input.action)
+          || !sameRuleClause(current.destinationJson, input.destination);
         await tx.mailAutomationRule.update({
           where: { id: current.id },
           data: {
@@ -231,10 +283,10 @@ export class MailOpsRepository {
             status: 'active',
             pausedAt: null,
             version: { increment: 1 },
-            // A replace can move the destination. The mail that arrived while
-            // the old destination was in force was never addressed to the new
-            // one, so this version of the rule starts watching now.
-            activatedAt: new Date(),
+            // A replace can move the destination or widen the match. Mail that
+            // arrived under the old ones was never this version of the rule's
+            // to send, so it starts watching now.
+            ...(restarting ? { activatedAt: new Date() } : {}),
           },
         });
         await tx.mailboxSubscription.update({

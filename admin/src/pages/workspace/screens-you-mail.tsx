@@ -338,9 +338,11 @@ function RuleDrawer({ rule, onClose }: { rule: MailRule; onClose: () => void }) 
                     </p>
                   </div>
                   <div className="ws-row-act">
-                    {/* Sent but unconfirmed. Retrying could duplicate the mail,
-                        so Divo stopped — a person has to decide, and can only
-                        do that if the row says so. */}
+                    {/* A send whose outcome was never established. The worker
+                        does retry these — it asks Gmail whether the staged
+                        draft survived — so the tag stands only while the
+                        question is genuinely open, and comes down once
+                        something answers it either way. */}
                     {delivery.ambiguous
                       ? <span className="ws-tag" data-tone="warn">Unconfirmed</span>
                       : null}

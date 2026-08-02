@@ -21,7 +21,7 @@ Last synced 2026-08-02. Branch `dev`, **not pushed**.
 | **3 — Dead OAuth path (D5)** | ✅ merged to `dev` | `04d39a7f0`, `e1f923a66`, `45d6b79c9`, `f20d7935c` |
 | **4 — Security and governance (S1–S5)** | ✅ merged to `dev` | `cb7dcca3a`, `505c8032e`, `c9cb95da1`, `654475e2d` |
 | **5 — Send correctness (D1, D6–D9)** | ✅ merged to `dev` | `6f0a2e010`, `a67dfc89a`, `6639e23a1`, `1a243b23f`, `5a4c71dcc` |
-| 3–5 — cold-review fixes | ✅ merged to `dev` | `cdb1049fb`, `a4ca91b83`, `033caa57d`, `4103e8067` |
+| 3–5 — cold-review fixes | ✅ merged to `dev` | `cdb1049fb`, `a4ca91b83`, `033caa57d`, `4103e8067`, `0b73456d6`, `cd89879c9` |
 | 6–11 | ⬜ | — |
 
 Audit and doc revamp: `cb6b983b2`.
@@ -346,7 +346,7 @@ The closure moved out of composition for one reason: the only test covering it s
 
 **Wave 5 — Send correctness** *(D1, D6–D9)* — ✅ done
 
-**D1.** A forward is staged as a Gmail draft, its ID persisted, and only then sent. On a retry the draft is resolved **before** authorization or the budget charge — everything after that point assumes nothing has been sent, and for a retry that assumption can be false (`4103e8067`). On retry the draft's presence answers the one question that matters, with no search index involved: Gmail consumes a draft when it sends it, so a 404 proves the mail went out and a live draft proves no send completed — and that same draft is then sent, which is also what stops a retry composing a second copy. `ambiguous` finally means something: set at staging, cleared only by a confirmed outcome. The `rfc822msgid:` search path is deleted. Schema: `MailDelivery.providerDraftId`, pushed to `divo_dev`, re-diff empty.
+**D1.** A forward is staged as a Gmail draft, its ID persisted, and only then sent. On a retry the draft is resolved **before** authorization or the budget charge — everything after that point assumes nothing has been sent, and for a retry that assumption can be false (`4103e8067`). On retry the draft's presence answers the one question that matters, with no search index involved: Gmail consumes a draft when it sends it, so a 404 proves the mail went out and a live draft proves no send completed — and that same draft is then sent, which is also what stops a retry composing a second copy. `ambiguous` finally means something: set at staging, and cleared only by an answer — a confirmed send, or a probe that proved no send happened. The second case matters because abandoning is terminal: a delivery refused by permission, or one that ran out the retry ladder before it ever reached the send, would otherwise carry "may already be in somebody's inbox" forever with nothing left to resolve it (`0b73456d6`, `cd89879c9`). The proof is dropped the instant a send is attempted, so it can never claim a completed send never happened. The `rfc822msgid:` search path is deleted. Schema: `MailDelivery.providerDraftId`, pushed to `divo_dev`, re-diff empty.
 
 **D6.** Message fetches run six at a time. A 404 message is skipped — deleted between the history record and the fetch, undeliverable by anyone, and failing on it wedged the cursor exactly like the old page cap. Every other per-message failure still aborts the batch.
 
