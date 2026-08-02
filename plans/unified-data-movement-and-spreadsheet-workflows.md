@@ -20,7 +20,7 @@
 | 6 — pasted Sheet/Drive URLs | ⬜ Not started | Typed URL resolver and existing-Sheet bulk write remain |
 | 7 — routers and provider skills | 🟡 Partial | Central export skill knows Excel; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
-| 9 — realistic isolated-runtime validation | 🟡 In progress | Fresh isolated run reached governed Zoho account selection; XLSX completion and Lark delivery remain |
+| 9 — realistic isolated-runtime validation | 🟡 In progress | Isolated Pi and Dev Divo card delivery are verified; the realistic export matrix remains |
 
 **Immediate completion count:** 4 phases done; Phase 4 implementation is done but is not marked complete until the real Lark artifact is opened and verified.
 
@@ -32,10 +32,11 @@
 - A fresh, low-hint isolated request now passes signed runtime admission and
   reaches governed Zoho Books account selection. It correctly asks the user to
   choose between the two accessible Books organizations instead of guessing.
-- Real Lark delivery is currently blocked by local configuration, not the
-  runtime: the configured local backend bot is a different Lark application
-  from the bot in the Abhishek–Divo DM. Load the Divo application's credentials
-  and restart the local backend before judging status/final-card delivery.
+- Dev Divo delivery is verified in chat
+  `oc_0454e4b0ffbecd8d63d7fc66c372a5c4`. The earlier failure used a DM belonging
+  to another Divo application; the development credentials were valid.
+- A low-hint isolated run created and repeatedly updated one status card, then
+  finalized it with `DIVO DEV DELIVERY LIVE` in 15.1 seconds.
 - No Sheet/CSV/XLSX artifact has been claimed as end-to-end verified yet.
 
 ---
@@ -1069,17 +1070,14 @@ Never log:
 
 ## 13. Immediate next actions
 
-1. Load the Divo Lark application's credentials into the local backend, restart
-   it, then continue the existing Abhishek–Divo DM validation. Do not substitute
-   another bot or chat ID just to make delivery green.
-2. Validate Sheet, CSV, and true XLSX through the isolated container-to-Lark
+1. Validate Sheet, CSV, and true XLSX through the isolated container-to-Lark
    flow, including one personal-account choice and one OAuth-resume case.
-3. Open the delivered XLSX, verify its rows/access, then mark Phase 4 complete.
-4. Migrate Semrush, then OMS, and delete their temporary Cloudinary export paths after parity.
-5. Add the pasted Google Sheet resolver and existing-Sheet streaming destination.
-6. Tune skills and routers once each instruction describes backend behavior
+2. Open the delivered XLSX, verify its rows/access, then mark Phase 4 complete.
+3. Migrate Semrush, then OMS, and delete their temporary Cloudinary export paths after parity.
+4. Add the pasted Google Sheet resolver and existing-Sheet streaming destination.
+5. Tune skills and routers once each instruction describes backend behavior
    that exists and is covered by contract tests.
-7. Execute Phase 9 through the isolated Docker runtime, deliver every
+6. Execute Phase 9 through the isolated Docker runtime, deliver every
     scenario to the configured Divo Lark DM, and iterate until the final quality
     gate passes.
 
