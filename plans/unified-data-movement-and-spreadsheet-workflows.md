@@ -18,7 +18,7 @@
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
 | 5 — Semrush and OMS convergence | ✅ Done | Both providers use bounded previews and opaque central offers; executable Cloudinary fallbacks and their stale skill contract are removed |
 | 6 — pasted Sheet/Drive URLs | 🟡 Validation pending | Governed Sheet editing is live-verified; Drive XLSX now runs through a durable, exact-user conversion worker with separate Lark progress delivery and seven-day opaque follow-up context; one live conversion remains |
-| 7 — routers and provider skills | 🟡 Partial | Data routing now separates opaque provider offers, multi-page/multi-product Python workflows, pasted Sheets, and workspace files; provider-specific skill convergence remains |
+| 7 — routers and provider skills | 🟡 Partial | Data routing separates opaque offers, Python workflows, pasted Sheets, and workspace files; Semrush and OMS now use the one-choice central offer contract, while the remaining provider skills still need convergence |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
 | 9 — realistic isolated-runtime validation | 🟡 In progress | Isolated Pi exported a live Semrush dataset, retained its exact-thread resource context, and securely edited/read back the same Sheet; remaining scenarios still need closure |
 
@@ -46,11 +46,18 @@
   shutdown. The combined workbook, webhook, and TypeScript gate passed 136/136
   checks; the local backend reloaded healthy. One real Lark-confirmed workbook
   conversion and resource follow-up remain before Phase 6 is closed.
+- A fresh post-integration review found and closed the final-attempt recovery
+  hole: if the native Sheet is already verified but continuity or Lark delivery
+  fails, the separate tracker now offers a same-offer handoff retry. BullMQ
+  revives only the matching failed job, and the durable checkpoint guarantees
+  that recovery cannot import a second Sheet. The focused recovery, delivery,
+  queue, and provider-routing gate passes 21/21 checks; TypeScript passes.
 - Phase 7's central routing boundary is aligned with the backend: one-source
   provider previews retain only opaque export offers, while Python is reserved
   for cross-page computation, transformations, multi-product work, or related
-  writes. Its focused routing suite passed 10/10 checks, and independent review
-  found no P0-P2 issue.
+  writes. Semrush and OMS now each present the governed Sheet/CSV/XLSX choice
+  once and forbid provider pagination, ad-hoc files, Python, Cloudinary, and
+  repeated export questions for that offer.
 
 - A low-hint isolated Semrush request exported 50 rows to a verified personal
   Google Sheet and persisted its opaque, seven-day conversation resource.

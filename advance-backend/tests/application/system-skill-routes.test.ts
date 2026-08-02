@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { DIVO_SEMRUSH_SYSTEM_SKILL } from '../../src/application/skills/semrush-system-skill.ts';
 import { DATA_EXPORT_SYSTEM_SKILL } from '../../src/application/skills/data-export-system-skill.ts';
 import {
+  ROUTING_SYSTEM_SKILLS,
   SYSTEM_SKILL_ROUTE_SEEDS,
   unroutedSeededSystemSkillSlugs,
 } from '../../src/application/skills/system-skill-routes.ts';
@@ -16,6 +17,14 @@ describe('system skill routes', () => {
     const research = SYSTEM_SKILL_ROUTE_SEEDS.find(seed => seed.routerSlug === 'research-router');
     assert.ok(research);
     assert.ok(research.targetSlugs.includes(DIVO_SEMRUSH_SYSTEM_SKILL.slug));
+  });
+
+  it('keeps Semrush complete-data exports on the governed offer route', () => {
+    const research = ROUTING_SYSTEM_SKILLS.find(skill => skill.slug === 'research-router');
+    assert.ok(research);
+    assert.match(research.markdown, /preview\.exportOfferId/);
+    assert.match(research.markdown, /through `data-router`/);
+    assert.match(research.markdown, /never through provider pagination or a local workflow/);
   });
 
   it('routes pasted Google Sheets through the data router', () => {

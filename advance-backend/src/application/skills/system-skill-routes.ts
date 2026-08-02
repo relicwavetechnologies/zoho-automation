@@ -143,7 +143,7 @@ job, not this one.`,
 Choose the exact approved specialist returned by this router.
 
 - Current public facts and external verification → \`web-search\`.
-- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`.
+- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`. Its bounded preview may return an opaque \`preview.exportOfferId\`; preserve it and route one explicit export choice through \`data-router\`, never through provider pagination or a local workflow.
 - Approved OMS publisher/site inventory → \`divo-oms-site-inventory\`.
 
 Never substitute web results for official Semrush or OMS data.

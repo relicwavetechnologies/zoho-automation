@@ -9,5 +9,9 @@ describe('Semrush system skill', () => {
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Do not call Semrush.*directly/i);
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /partial/i);
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Do not manually follow `nextPage`/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /preserve only that opaque offer/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /present its governed Sheet\/CSV\/XLSX choice once/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Do not.*create or upload a CSV\/XLSX\/Sheet.*run Python or a local workflow.*use Cloudinary.*ask again about the same offer/i);
+    assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /legacy rollback/i);
   });
 });
