@@ -351,8 +351,9 @@ the URL yourself:
 }
 \`\`\`
 
-Omit \`connectionId\` until Divo asks for an account choice. If it returns
-choices, ask once, then retry the same URL with the selected exact connection.
+Omit \`connectionId\` on the first call. If Divo returns one eligible account,
+retry immediately with its exact connection ID. If it returns several, ask
+once, then retry the same URL with the selected exact connection.
 On a resolved response, carry \`data.resource.resourceId\` and
 \`data.resource.connectionId\` as opaque returned handles; never reconstruct
 them or move Sheet rows through model context.

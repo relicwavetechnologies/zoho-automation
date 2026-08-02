@@ -118,7 +118,8 @@
 - Fresh review found that an omitted account could previously reach live
   metadata probes before per-connection policy saw an exact ID. The first
   resolve call now performs no Google request: it returns eligible personal
-  account choices, and a live probe runs only after retry with one exact
+  account choices; one choice is retried automatically, while several ask the
+  member once. A live probe runs only after retry with one exact
   backend-returned `connectionId`. Missing scopes enter signed OAuth
   re-consent, missing backend OAuth configuration stays a clean connection
   state, and cancellation reaches both Google metadata requests. The corrected
