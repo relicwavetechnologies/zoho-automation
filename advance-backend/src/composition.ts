@@ -150,6 +150,7 @@ import {
 import { MailOpsWorker } from './application/mail-ops/mail-ops.worker';
 import { GmailHistoryClient } from './infrastructure/google/gmail-history.client';
 import { MailOpsRepository } from './infrastructure/persistence/mail-ops.repository';
+import { MailOpsReadRepository } from './infrastructure/persistence/mail-ops-read.repository';
 import {
   buildGoogleConnectCard,
   googleConnectFallbackText,
@@ -296,6 +297,7 @@ export interface Container {
   googleConnectionContinuationQueue: GoogleConnectionContinuationQueue;
   connectionAuthorizationRepo: ConnectionAuthorizationRepository;
   mailOpsRepo: MailOpsRepository;
+  mailOpsReadRepo: MailOpsReadRepository;
   mailOpsWorker: MailOpsWorker;
   canvaMcpOAuthService: CanvaMcpOAuthService;
   airtableMcpOAuthService: AirtableMcpOAuthService;
@@ -444,6 +446,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '',
   );
   const mailOpsRepo = new MailOpsRepository(prisma);
+  const mailOpsReadRepo = new MailOpsReadRepository(prisma);
 
   // ── Permission service ─────────────────────────────────────────────────
   const permissions = new PermissionServiceImpl({
@@ -2175,6 +2178,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     googleConnectionContinuationQueue,
     connectionAuthorizationRepo,
     mailOpsRepo,
+    mailOpsReadRepo,
     mailOpsWorker,
     canvaMcpOAuthService,
     airtableMcpOAuthService,

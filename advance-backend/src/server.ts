@@ -22,6 +22,7 @@ import { createExecutionRoutes } from './http/executions/execution.routes';
 import { createAdminAuthMiddleware } from './http/middleware/admin-auth.middleware';
 import { createMemberAuthMiddleware, MEMBER_SESSION_TTL_MINUTES } from './http/middleware/member-auth.middleware';
 import { createDesktopToolsRoutes } from './http/desktop/desktop-tools.routes';
+import { createMailAutomationsRoutes } from './http/mail/mail-automations.routes';
 import { createDesktopDepartmentRoutes } from './http/desktop/desktop-departments.routes';
 import { createDesktopApprovalRoutes } from './http/desktop/desktop-approvals.routes';
 import { createDesktopActivityRoutes, createDesktopTeamActivityRoutes } from './http/desktop/desktop-activity.routes';
@@ -592,6 +593,22 @@ export const createServer = (c: Container): DivoServerApplication => {
   // `divo_desktop_json_request` helper prefixes onto every tool path. Moving it
   // to /api/desktop takes GET /api/desktop/auth/tools off the air, and the
   // desktop reads that 401 as an expired session.
+  // Read-only view of a member's own mail rules and mailbox health. Mounted
+  // beside the other personal endpoints because it answers the same question
+  // they do — what is Divo doing on my behalf, and is it working.
+  app.use(
+    '/api/mail-automations',
+    createMailAutomationsRoutes({
+      readRepo: c.mailOpsReadRepo,
+      memberAuth: {
+        prisma: c.prisma,
+        jwtSecret: c.env.MEMBER_JWT_SECRET,
+        logger: c.logger,
+      },
+      logger: c.logger,
+    }),
+  );
+
   app.use(
     '/api/desktop/auth',
     createDesktopToolsRoutes({
