@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { once } from 'node:events';
 import { createInterface } from 'node:readline';
 import { google } from 'googleapis';
-import type { DataExportCompletion } from './data-export.types';
+import type { DataExportCompletion, DataExportSource } from './data-export.types';
 import type {
   DataExportDestinationSink,
   DataExportDestinationWriteInput,
@@ -91,6 +91,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
             auth: input.auth,
             access,
             exportKey: input.exportKey,
+            ...(input.source ? { source: input.source } : {}),
             title: input.destination.title,
             columns,
             rowsPath,
@@ -136,6 +137,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
     readonly auth: GoogleExportAuth;
     readonly access: DataExportArtifactAccess;
     readonly exportKey: string;
+    readonly source?: DataExportSource;
     readonly title: string;
     readonly columns: readonly string[];
     readonly rowsPath: string;
@@ -165,7 +167,11 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       let writtenRows = 0;
       for await (const row of readRows(input.rowsPath)) {
         input.signal?.throwIfAborted();
-        values.push(input.columns.map((column) => normalizeExportCell(row[column])));
+        values.push(input.columns.map((column) => normalizeSheetCell(
+          row[column],
+          column,
+          input.source,
+        )));
         if (values.length < SHEET_APPEND_ROWS) continue;
         await sheets.spreadsheets.values.append({
           spreadsheetId,
@@ -189,10 +195,20 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         writtenRows += values.length - (writtenRows === 0 ? 1 : 0);
         await input.onProgress?.({ stage: 'writing', rowsProcessed: writtenRows });
       }
+      const dataSheetTitle = await formatSheet({
+        sheets,
+        spreadsheetId,
+        title: input.title,
+        columns: input.columns,
+        rowCount: input.rowCount,
+        sourceTruncated: input.sourceTruncated,
+        ...(input.source ? { source: input.source } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
       await ensureArtifactAccess(drive, spreadsheetId, input.access, input.signal);
       const verified = await sheets.spreadsheets.values.get({
         spreadsheetId,
-        range: 'Sheet1!1:1',
+        range: `'${dataSheetTitle.replaceAll("'", "''")}'!1:1`,
       }, requestOptions(input.signal));
       if ((verified.data.values?.[0]?.length ?? 0) !== input.columns.length) {
         throw new Error('Google Sheet verification failed: header width differs from export');
@@ -384,6 +400,314 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       throw error;
     }
   }
+}
+
+async function formatSheet(input: {
+  readonly sheets: ReturnType<typeof google.sheets>;
+  readonly spreadsheetId: string;
+  readonly title: string;
+  readonly columns: readonly string[];
+  readonly rowCount: number;
+  readonly sourceTruncated: boolean;
+  readonly source?: DataExportSource;
+  readonly signal?: AbortSignal;
+}): Promise<string> {
+  const metadata = await input.sheets.spreadsheets.get({
+    spreadsheetId: input.spreadsheetId,
+    fields: 'sheets(properties(sheetId,title,index))',
+  }, requestOptions(input.signal));
+  const dataSheet = metadata.data.sheets?.[0]?.properties;
+  if (dataSheet?.sheetId === undefined) {
+    throw new Error('Google Sheet formatting failed: default worksheet is missing');
+  }
+  const presentation = sheetPresentation(input);
+  const structure = await input.sheets.spreadsheets.batchUpdate({
+    spreadsheetId: input.spreadsheetId,
+    requestBody: {
+      requests: [
+        {
+          updateSheetProperties: {
+            properties: {
+              sheetId: dataSheet.sheetId,
+              title: presentation.dataSheetTitle,
+              gridProperties: {
+                frozenRowCount: 1,
+                hideGridlines: true,
+              },
+            },
+            fields: 'title,gridProperties.frozenRowCount,gridProperties.hideGridlines',
+          },
+        },
+        ...(presentation.overviewRows
+          ? [{ addSheet: { properties: { title: 'Overview', index: 0 } } }]
+          : []),
+      ],
+    },
+  }, requestOptions(input.signal));
+  const overviewSheetId = presentation.overviewRows
+    ? structure.data.replies?.[1]?.addSheet?.properties?.sheetId
+    : undefined;
+  if (presentation.overviewRows && overviewSheetId === undefined) {
+    throw new Error('Google Sheet formatting failed: overview worksheet was not created');
+  }
+  if (presentation.overviewRows) {
+    await input.sheets.spreadsheets.values.update({
+      spreadsheetId: input.spreadsheetId,
+      range: "'Overview'!A1:B20",
+      valueInputOption: 'RAW',
+      requestBody: { values: presentation.overviewRows },
+    }, requestOptions(input.signal));
+  }
+
+  const requests: Record<string, unknown>[] = [];
+  if (input.columns.length > 0) {
+    requests.push(
+      {
+        setBasicFilter: {
+          filter: {
+            range: {
+              sheetId: dataSheet.sheetId,
+              startRowIndex: 0,
+              endRowIndex: input.rowCount + 1,
+              startColumnIndex: 0,
+              endColumnIndex: input.columns.length,
+            },
+          },
+        },
+      },
+      {
+        repeatCell: {
+          range: {
+            sheetId: dataSheet.sheetId,
+            startRowIndex: 0,
+            endRowIndex: 1,
+            startColumnIndex: 0,
+            endColumnIndex: input.columns.length,
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: { red: 0.075, green: 0.19, blue: 0.42 },
+              textFormat: { foregroundColor: { red: 1, green: 1, blue: 1 }, bold: true },
+              verticalAlignment: 'MIDDLE',
+              wrapStrategy: 'WRAP',
+            },
+          },
+          fields: 'userEnteredFormat(backgroundColor,textFormat,verticalAlignment,wrapStrategy)',
+        },
+      },
+      {
+        updateDimensionProperties: {
+          range: {
+            sheetId: dataSheet.sheetId,
+            dimension: 'ROWS',
+            startIndex: 0,
+            endIndex: 1,
+          },
+          properties: { pixelSize: 34 },
+          fields: 'pixelSize',
+        },
+      },
+    );
+    for (const [index, column] of input.columns.entries()) {
+      requests.push({
+        updateDimensionProperties: {
+          range: {
+            sheetId: dataSheet.sheetId,
+            dimension: 'COLUMNS',
+            startIndex: index,
+            endIndex: index + 1,
+          },
+          properties: { pixelSize: presentation.columnWidths[column] ?? 140 },
+          fields: 'pixelSize',
+        },
+      });
+      const pattern = presentation.numberFormats[column];
+      if (!pattern || input.rowCount === 0) continue;
+      requests.push({
+        repeatCell: {
+          range: {
+            sheetId: dataSheet.sheetId,
+            startRowIndex: 1,
+            endRowIndex: input.rowCount + 1,
+            startColumnIndex: index,
+            endColumnIndex: index + 1,
+          },
+          cell: {
+            userEnteredFormat: {
+              numberFormat: { type: 'NUMBER', pattern },
+              horizontalAlignment: 'RIGHT',
+            },
+          },
+          fields: 'userEnteredFormat(numberFormat,horizontalAlignment)',
+        },
+      });
+    }
+  }
+  if (overviewSheetId !== undefined && presentation.overviewRows) {
+    requests.push(
+      {
+        updateSheetProperties: {
+          properties: {
+            sheetId: overviewSheetId,
+            gridProperties: { hideGridlines: true },
+          },
+          fields: 'gridProperties.hideGridlines',
+        },
+      },
+      {
+        mergeCells: {
+          range: {
+            sheetId: overviewSheetId,
+            startRowIndex: 0,
+            endRowIndex: 1,
+            startColumnIndex: 0,
+            endColumnIndex: 2,
+          },
+          mergeType: 'MERGE_ALL',
+        },
+      },
+      {
+        repeatCell: {
+          range: {
+            sheetId: overviewSheetId,
+            startRowIndex: 0,
+            endRowIndex: 1,
+            startColumnIndex: 0,
+            endColumnIndex: 2,
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: { red: 0.075, green: 0.19, blue: 0.42 },
+              textFormat: {
+                foregroundColor: { red: 1, green: 1, blue: 1 },
+                bold: true,
+                fontSize: 14,
+              },
+              verticalAlignment: 'MIDDLE',
+            },
+          },
+          fields: 'userEnteredFormat(backgroundColor,textFormat,verticalAlignment)',
+        },
+      },
+      {
+        repeatCell: {
+          range: {
+            sheetId: overviewSheetId,
+            startRowIndex: 1,
+            endRowIndex: presentation.overviewRows.length,
+            startColumnIndex: 0,
+            endColumnIndex: 1,
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: { red: 0.91, green: 0.94, blue: 0.99 },
+              textFormat: { bold: true },
+            },
+          },
+          fields: 'userEnteredFormat(backgroundColor,textFormat)',
+        },
+      },
+      ...[180, 440].map((pixelSize, index) => ({
+        updateDimensionProperties: {
+          range: {
+            sheetId: overviewSheetId,
+            dimension: 'COLUMNS',
+            startIndex: index,
+            endIndex: index + 1,
+          },
+          properties: { pixelSize },
+          fields: 'pixelSize',
+        },
+      })),
+    );
+  }
+  if (requests.length > 0) {
+    await input.sheets.spreadsheets.batchUpdate({
+      spreadsheetId: input.spreadsheetId,
+      requestBody: { requests },
+    }, requestOptions(input.signal));
+  }
+  return presentation.dataSheetTitle;
+}
+
+function sheetPresentation(input: {
+  readonly title: string;
+  readonly source?: DataExportSource;
+  readonly rowCount: number;
+  readonly sourceTruncated: boolean;
+}): {
+  readonly dataSheetTitle: string;
+  readonly overviewRows?: unknown[][];
+  readonly numberFormats: Record<string, string>;
+  readonly columnWidths: Record<string, number>;
+} {
+  if (input.source?.kind !== 'semrush_snapshot') {
+    return {
+      dataSheetTitle: 'Export',
+      numberFormats: {},
+      columnWidths: {},
+    };
+  }
+  const args = input.source.args;
+  const subject = 'domain' in args
+    ? args.domain
+    : 'targets' in args
+      ? args.targets.join(', ')
+      : args.operation === 'keyword_research'
+        ? args.keywords.join(', ')
+        : 'Semrush report';
+  const dataSheetTitle = args.operation === 'organic_positions'
+    ? 'Organic Positions'
+    : 'Semrush Data';
+  return {
+    dataSheetTitle,
+    overviewRows: [
+      [input.title],
+      ['Source', 'Semrush API'],
+      ['Report', args.operation.replaceAll('_', ' ')],
+      ['Subject', subject],
+      ['Database', 'database' in args ? args.database ?? 'in' : 'Not applicable'],
+      ['Retrieved at', new Date().toISOString()],
+      ['Rows exported', input.rowCount],
+      ['Completeness', input.sourceTruncated
+        ? 'Partial — Divo export safety cap reached'
+        : 'Complete for this query'],
+      ['Metric note', 'CPC is kept currency-neutral because this report does not identify a currency.'],
+    ],
+    numberFormats: {
+      Position: '#,##0',
+      'Search Volume': '#,##0',
+      CPC: '0.00',
+      'Traffic (%)': '0.00"%"',
+      'Traffic Cost (%)': '0.00"%"',
+    },
+    columnWidths: {
+      Keyword: 240,
+      Position: 90,
+      'Search Volume': 120,
+      CPC: 90,
+      Url: 380,
+      'Traffic (%)': 110,
+      'Traffic Cost (%)': 130,
+    },
+  };
+}
+
+function normalizeSheetCell(
+  value: unknown,
+  column: string,
+  source: DataExportSource | undefined,
+): unknown {
+  if (
+    source?.kind === 'semrush_snapshot'
+    && typeof value === 'string'
+    && ['Position', 'Search Volume', 'CPC', 'Traffic (%)', 'Traffic Cost (%)'].includes(column)
+    && value.trim() !== ''
+  ) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return normalizeExportCell(value);
 }
 
 function oauth(accessToken: string) {

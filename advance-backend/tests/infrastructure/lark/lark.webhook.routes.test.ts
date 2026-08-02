@@ -1483,7 +1483,7 @@ describe('Lark webhook card authorization', () => {
     assert.equal(receivedActor.userId, 'admin-1');
   });
 
-  it('confirms an opaque export offer and format with the signed actor and signed chat context', async () => {
+  it('confirms an opaque export offer without reusing the source card as its progress tracker', async () => {
     const confirmations: unknown[] = [];
     const handler = new LarkDataExportCardHandler({
       confirmForActor: async input => {
@@ -1517,19 +1517,71 @@ describe('Lark webhook card authorization', () => {
       dataExportCardHandler: handler,
     });
 
+    await waitUntil(() => confirmations.length === 1, 'export confirmation completed');
     assert.deepEqual(confirmations, [{
       offerId,
       companyId: 'company-1',
       userId: 'admin-1',
       chatId: 'oc_export',
-      progressMessageId: 'om_export_card',
       destinationFormat: 'csv',
     }]);
     assert.equal((result.responseBody as any).toast.type, 'success');
     assert.equal('card' in (result.responseBody as any), false);
   });
 
-  it('replaces the export card with eligible Google account choices before queueing', async () => {
+  it('acknowledges a slow export confirmation before delivering its follow-up as a new card', async () => {
+    let complete!: (result: { handled: boolean; responseBody?: unknown }) => void;
+    const pending = new Promise<{ handled: boolean; responseBody?: unknown }>(resolve => {
+      complete = resolve;
+    });
+    let adapter: any;
+    const offerId = '11111111-1111-4111-8111-111111111111';
+    const result = await runWebhook({
+      header: {
+        event_type: 'card.action.trigger',
+        token: 'verify',
+        tenant_key: 'tenant-1',
+      },
+      event: {
+        operator: { open_id: 'ou_admin', name: 'Admin' },
+        context: { open_chat_id: 'oc_export', open_message_id: 'om_export_card' },
+        action: {
+          value: {
+            action: JSON.stringify({ kind: 'data_export_confirm', offerId }),
+          },
+        },
+      },
+    }, {
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
+      dataExportCardHandler: { handle: async () => pending },
+    });
+
+    assert.deepEqual(result.responseBody, {
+      toast: {
+        type: 'success',
+        content: 'Export request received. Divo is starting it now.',
+      },
+    });
+    assert.equal(adapter.__sentCards.length, 0);
+
+    complete({
+      handled: true,
+      responseBody: {
+        card: {
+          type: 'raw',
+          data: { schema: '2.0', body: { elements: [] } },
+        },
+      },
+    });
+    await waitUntil(() => adapter.__sentCards.length === 1, 'deferred export card delivered');
+    assert.deepEqual(JSON.parse(adapter.__sentCards[0]), {
+      msg_type: 'interactive',
+      card: { schema: '2.0', body: { elements: [] } },
+    });
+  });
+
+  it('sends eligible Google account choices as a new card before queueing', async () => {
+    let adapter: any;
     const handler = new LarkDataExportCardHandler({
       confirmForActor: async () => ({
         disposition: 'choose_destination',
@@ -1563,9 +1615,14 @@ describe('Lark webhook card authorization', () => {
           },
         },
       },
-    }, { dataExportCardHandler: handler });
+    }, {
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
+      dataExportCardHandler: handler,
+    });
 
-    const card = (result.responseBody as any).card.data;
+    assert.equal((result.responseBody as any).toast.type, 'success');
+    await waitUntil(() => adapter.__sentCards.length === 1, 'account choice card delivered');
+    const card = JSON.parse(adapter.__sentCards[0]).card;
     assert.equal(card.header.title.content, 'Choose a Google account');
     assert.equal(card.body.elements[1].columns.length, 2);
     const callback = JSON.parse(card.body.elements[1].columns[1].elements[0].behaviors[0].value.action);
@@ -1577,8 +1634,9 @@ describe('Lark webhook card authorization', () => {
     });
   });
 
-  it('replaces the same export card with Google OAuth and a typed direct continuation', async () => {
+  it('sends Google OAuth as a new card with a typed direct continuation', async () => {
     let authorizationInput: unknown;
+    let adapter: any;
     const handler = new LarkDataExportCardHandler({
       confirmForActor: async () => ({
         disposition: 'connect_required',
@@ -1620,9 +1678,11 @@ describe('Lark webhook card authorization', () => {
         aiRole: 'COMPANY_ADMIN',
         channel: 'lark',
       },
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
       dataExportCardHandler: handler,
     });
 
+    await waitUntil(() => authorizationInput !== undefined, 'Google authorization issued');
     assert.deepEqual(authorizationInput, {
       companyId: 'company-1',
       userId: 'admin-1',
@@ -1643,7 +1703,9 @@ describe('Lark webhook card authorization', () => {
         format: 'csv',
       },
     });
-    const card = (result.responseBody as any).card.data;
+    assert.equal((result.responseBody as any).toast.type, 'success');
+    await waitUntil(() => adapter.__sentCards.length === 1, 'Google connect card delivered');
+    const card = JSON.parse(adapter.__sentCards[0]).card;
     assert.equal(card.header.title.content, 'Connect Google Workspace');
     assert.equal(
       card.body.elements[1].behaviors[0].default_url,
@@ -1690,12 +1752,12 @@ describe('Lark webhook card authorization', () => {
       dataExportCardHandler: handler,
     });
 
+    await waitUntil(() => confirmation !== undefined, 'selected destination confirmed');
     assert.deepEqual(confirmation, {
       offerId,
       companyId: 'company-1',
       userId: 'admin-1',
       chatId: 'oc_export',
-      progressMessageId: 'om_export_card',
       destinationFormat: 'xlsx',
       destinationConnectionId: '33333333-3333-4333-8333-333333333333',
       rememberExplicitPersonalDestination: true,
@@ -1704,8 +1766,12 @@ describe('Lark webhook card authorization', () => {
   });
 
   it('keeps the export button when confirmation is still in progress', async () => {
+    let handled = false;
     const handler = new LarkDataExportCardHandler({
-      confirmForActor: async () => ({ exportJobId: 'job-1', disposition: 'in_progress' }),
+      confirmForActor: async () => {
+        handled = true;
+        return { exportJobId: 'job-1', disposition: 'in_progress' };
+      },
     } as any, noopLogger);
     const result = await runWebhook({
       header: {
@@ -1727,16 +1793,21 @@ describe('Lark webhook card authorization', () => {
       },
     }, { dataExportCardHandler: handler });
 
-    assert.equal((result.responseBody as any).toast.type, 'info');
+    assert.equal((result.responseBody as any).toast.type, 'success');
+    await waitUntil(() => handled, 'in-progress confirmation checked');
     assert.equal('card' in (result.responseBody as any), false);
   });
 
   it('does not claim an already-confirmed export is tracking on this card', async () => {
+    let handled = false;
     const handler = new LarkDataExportCardHandler({
-      confirmForActor: async () => ({
-        exportJobId: 'job-existing',
-        disposition: 'already_confirmed',
-      }),
+      confirmForActor: async () => {
+        handled = true;
+        return {
+          exportJobId: 'job-existing',
+          disposition: 'already_confirmed',
+        };
+      },
     } as any, noopLogger);
     const result = await runWebhook({
       header: {
@@ -1758,14 +1829,14 @@ describe('Lark webhook card authorization', () => {
       },
     }, { dataExportCardHandler: handler });
 
-    assert.match((result.responseBody as any).toast.content, /existing job/i);
-    assert.match((result.responseBody as any).toast.content, /original Divo conversation/i);
-    assert.doesNotMatch((result.responseBody as any).toast.content, /this card/i);
+    assert.equal((result.responseBody as any).toast.type, 'success');
+    await waitUntil(() => handled, 'existing confirmation checked');
     assert.equal('card' in (result.responseBody as any), false);
   });
 
   it('does not confirm when Lark omits the signed source-card message ID', async () => {
     let confirmations = 0;
+    let adapter: any;
     const handler = new LarkDataExportCardHandler({
       confirmForActor: async () => {
         confirmations++;
@@ -1790,11 +1861,15 @@ describe('Lark webhook card authorization', () => {
           },
         },
       },
-    }, { dataExportCardHandler: handler });
+    }, {
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
+      dataExportCardHandler: handler,
+    });
 
+    assert.equal((result.responseBody as any).toast.type, 'success');
+    await waitUntil(() => noticesSent(adapter).length === 1, 'invalid card failure delivered');
     assert.equal(confirmations, 0);
-    assert.equal((result.responseBody as any).toast.type, 'error');
-    assert.match((result.responseBody as any).toast.content, /which card/i);
+    assert.match(noticesSent(adapter)[0]!, /which card/i);
   });
 
   it('rejects a tampered export action without calling confirmation', async () => {

@@ -229,14 +229,27 @@ function exportPayloadFor(
     },
     destination: {
       format: 'auto',
-      title: `Semrush ${args.operation.replaceAll('_', ' ')} export`,
+      title: semrushExportTitle(args),
     },
     chatId: ctx.runContext.chatId!,
     ...(ctx.runContext.replyToMessageId ? { replyToMessageId: ctx.runContext.replyToMessageId } : {}),
     ...(ctx.runContext.replyInThread !== undefined ? { replyInThread: ctx.runContext.replyInThread } : {}),
-    requestId: ctx.runContext.requestId ?? ctx.correlationId,
+    requestId: ctx.runContext.runtimeRunId
+      ?? ctx.runContext.requestId
+      ?? ctx.correlationId,
     ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
   };
+}
+
+function semrushExportTitle(args: SemrushToolArgs): string {
+  const subject = 'domain' in args
+    ? args.domain
+    : 'targets' in args
+      ? args.targets.join(', ')
+      : args.operation === 'keyword_research'
+        ? `${args.keywords.length} keywords`
+        : 'report';
+  return `Semrush ${args.operation.replaceAll('_', ' ')} — ${subject}`;
 }
 
 function toToolError(error: unknown): ToolError {

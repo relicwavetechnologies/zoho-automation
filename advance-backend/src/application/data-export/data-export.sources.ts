@@ -32,6 +32,8 @@ const AIRTABLE_REST_KEYS = new Set(['baseId', 'tableId', 'fieldIds']);
 const AIRTABLE_PAGE_LIMIT = 20_000;
 const AIRTABLE_MCP_PAGE_SIZE = 1_000;
 const ZOHO_PAGE_LIMIT = 1_000;
+const SEMRUSH_EXPORT_PAGE_SIZE = 1_000;
+const SEMRUSH_EXPORT_PAGE_LIMIT = 10;
 
 export class AirtableDataExportSource implements DataExportSourceAdapter<AirtableSource> {
   readonly kind = 'airtable_records' as const;
@@ -202,13 +204,40 @@ export class SemrushSnapshotDataExportSource implements DataExportSourceAdapter<
   async *read(source: SemrushSnapshotSource, context: {
     readonly signal?: AbortSignal;
   }): AsyncIterable<DataExportPage> {
-    context.signal?.throwIfAborted();
-    const result = await this.service.execute(source.args);
-    context.signal?.throwIfAborted();
-    yield {
-      rows: result.rows,
-      ...(result.status === 'partial' ? { sourceTruncated: true } : {}),
-    };
+    if (source.args.operation !== 'organic_positions') {
+      context.signal?.throwIfAborted();
+      const result = await this.service.execute(source.args);
+      context.signal?.throwIfAborted();
+      yield {
+        rows: result.rows,
+        ...(result.status === 'partial' ? { sourceTruncated: true } : {}),
+      };
+      return;
+    }
+
+    let offset = source.args.offset ?? 0;
+    for (let page = 0; page < SEMRUSH_EXPORT_PAGE_LIMIT; page += 1) {
+      context.signal?.throwIfAborted();
+      const result = await this.service.execute({
+        ...source.args,
+        limit: SEMRUSH_EXPORT_PAGE_SIZE,
+        offset,
+      });
+      context.signal?.throwIfAborted();
+      const nextOffset = result.status === 'partial'
+        ? Number(result.nextPage)
+        : NaN;
+      const hasMore = Number.isInteger(nextOffset) && nextOffset > offset;
+      const sourceTruncated = result.status === 'partial'
+        && (!hasMore || page === SEMRUSH_EXPORT_PAGE_LIMIT - 1);
+      yield {
+        rows: result.rows,
+        ...(hasMore ? { hasMore: true } : {}),
+        ...(sourceTruncated ? { sourceTruncated: true } : {}),
+      };
+      if (!hasMore || sourceTruncated) return;
+      offset = nextOffset;
+    }
   }
 }
 

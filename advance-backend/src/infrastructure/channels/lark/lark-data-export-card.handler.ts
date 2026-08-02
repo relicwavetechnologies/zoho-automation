@@ -13,6 +13,12 @@ interface DataExportCardAction {
 
 type ParsedAction = DataExportCardAction | 'invalid' | null;
 
+export function isDataExportCardAction(rawEvent: unknown): boolean {
+  const event = asRecord(rawEvent);
+  const action = parseAction(asRecord(event?.['action'])?.['value']);
+  return typeof action === 'object' && action !== null;
+}
+
 export class LarkDataExportCardHandler {
   private readonly log: Logger;
 
@@ -40,10 +46,10 @@ export class LarkDataExportCardHandler {
     if (!chatId) {
       return failure('Divo could not verify which conversation opened this export. Please try again.');
     }
-    const progressMessageId = asNonEmptyString(
+    const sourceMessageId = asNonEmptyString(
       context?.['open_message_id'] ?? event?.['open_message_id'],
     );
-    if (!progressMessageId) {
+    if (!sourceMessageId) {
       return failure('Divo could not verify which card opened this export. Please try again.');
     }
 
@@ -53,7 +59,6 @@ export class LarkDataExportCardHandler {
         companyId: actor.companyId,
         userId: actor.userId,
         chatId,
-        progressMessageId,
         ...(action.format ? { destinationFormat: action.format } : {}),
         ...(action.connectionId
           ? {
@@ -84,7 +89,7 @@ export class LarkDataExportCardHandler {
           larkTenantKey: actor.tenantKey,
           chatId,
           chatType: result.replyInThread ? 'group' : 'p2p',
-          originalMessageId: progressMessageId,
+          originalMessageId: sourceMessageId,
           ...(result.replyToMessageId
             ? { rootMessageId: result.replyToMessageId }
             : {}),
@@ -95,7 +100,7 @@ export class LarkDataExportCardHandler {
           continuationPayload: {
             kind: 'data_export_confirmation',
             offerId: action.offerId,
-            progressMessageId,
+            progressMessageId: sourceMessageId,
             ...(action.format ? { format: action.format } : {}),
           },
         });

@@ -45,21 +45,37 @@ export class SemrushClient {
 
   private async organicPositions(apiKey: string, domain: string, database: string, limit: number, offset: number): Promise<SemrushFetchedData> {
     const url = new URL(V3_API_URL);
+    const providerLimit = Math.min(limit + 1, 1_000);
     url.search = new URLSearchParams({
       key: apiKey,
       type: 'domain_organic',
       domain,
       database,
-      display_limit: String(limit),
+      display_limit: String(providerLimit),
       display_offset: String(offset),
       export_columns: 'Ph,Po,Nq,Cp,Ur,Tr,Tc',
     }).toString();
-    const text = await this.text(url, {});
-    const rows = readSemrushRows(text).slice(0, limit);
-    // v3's tabular response does not include a reliable total count. A full
-    // requested page is therefore deliberately reported as partial rather
-    // than pretending the result set is exhausted.
-    const hasPossibleNextPage = rows.length === limit;
+    let text: string;
+    try {
+      text = await this.text(url, {});
+    } catch (error) {
+      if (error instanceof SemrushServiceError && error.code === 'no_more_rows' && offset > 0) {
+        return {
+          operation: 'organic_positions',
+          status: 'empty',
+          coverage: { domain, database, apiVersion: 'v3', offset, limit },
+          rows: [],
+        };
+      }
+      throw error;
+    }
+    const providerRows = readSemrushRows(text);
+    const rows = providerRows.slice(0, limit);
+    // Ask for one look-ahead row whenever the provider's 1,000-row ceiling
+    // allows it. Equality with the user's limit alone is not proof that a next
+    // page exists; Semrush rejects an offset exactly at end-of-data.
+    const hasPossibleNextPage = providerRows.length > limit
+      || (limit === 1_000 && providerRows.length === limit);
     return {
       operation: 'organic_positions',
       status: rows.length ? (hasPossibleNextPage ? 'partial' : 'complete') : 'empty',
@@ -204,6 +220,7 @@ export class SemrushClient {
       if (response.ok) return response;
       const body = (await response.text()).slice(0, 500);
       if (/ERROR 132|API UNITS BALANCE IS ZERO/i.test(body)) throw new SemrushServiceError('provider_insufficient_units', 'Semrush reports insufficient API units.');
+      if (/ERROR 605\b/i.test(body)) throw new SemrushServiceError('no_more_rows', 'Semrush has no rows at this offset.');
       if (response.status === 401 || /ERROR (?:70|110|120|121|122)\b|INVALID IMPORT KEY|WRONG (?:KEY|FORMAT)/i.test(body)) {
         throw new SemrushServiceError('provider_auth_failed', 'Semrush rejected the configured API key.');
       }

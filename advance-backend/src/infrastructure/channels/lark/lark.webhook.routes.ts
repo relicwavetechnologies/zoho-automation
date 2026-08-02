@@ -23,7 +23,10 @@ import type {
   LarkApprovalCardHandler,
   LarkAuthenticatedCardActor,
 } from './lark-approval-card.handler';
-import type { LarkDataExportCardHandler } from './lark-data-export-card.handler';
+import {
+  isDataExportCardAction,
+  type LarkDataExportCardHandler,
+} from './lark-data-export-card.handler';
 import type { LarkKnowledgeReviewService } from '../../../application/knowledge/lark-knowledge-review.service';
 import type { ChatMessageSerializer } from '../../../application/channels/chat-message-serializer';
 import type { LaneLeaseHolder } from '../../../application/channels/lane-lease.holder';
@@ -270,6 +273,26 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
     const isCard10Click = !headerType && !!topLevelAction && typeof topLevelAction === 'object';
     if (isCard20Click || isCard10Click) {
       const cardEvent = isCard20Click ? (event['event'] as unknown) : event;
+      if (deps.dataExportCardHandler && isDataExportCardAction(cardEvent)) {
+        res.status(200).json({
+          toast: {
+            type: 'success',
+            content: 'Export request received. Divo is starting it now.',
+          },
+        });
+        setImmediate(() => {
+          void processDeferredDataExportAction({
+            cardEvent,
+            envelope: event,
+            eventHeader,
+            handler: deps.dataExportCardHandler!,
+            identityRepo: deps.channelIdentityRepo,
+            adapter: deps.adapter,
+            log,
+          });
+        });
+        return;
+      }
       void (async () => {
         try {
           const actor = await resolveAuthenticatedCardActor(
@@ -486,6 +509,97 @@ function createLarkRequestLog(
     requesterOpenId: incoming.userExternalId,
     legacyLaneKey: `lark:${String(incoming.chatId)}`,
   });
+}
+
+async function processDeferredDataExportAction(input: {
+  readonly cardEvent: unknown;
+  readonly envelope: Record<string, unknown>;
+  readonly eventHeader: Record<string, unknown> | undefined;
+  readonly handler: LarkDataExportCardHandler;
+  readonly identityRepo: ChannelIdentityRepoPort;
+  readonly adapter: LarkChannelAdapter;
+  readonly log: Logger;
+}): Promise<void> {
+  try {
+    const actor = await resolveAuthenticatedCardActor(
+      input.cardEvent,
+      input.envelope,
+      input.eventHeader,
+      input.identityRepo,
+    );
+    const result = actor
+      ? await input.handler.handle(input.cardEvent, actor)
+      : {
+          handled: true,
+          responseBody: {
+            toast: { type: 'error', content: 'Divo could not verify this Lark action.' },
+          },
+        };
+    await deliverDeferredDataExportResponse(
+      result,
+      input.cardEvent,
+      input.adapter,
+      input.log,
+    );
+  } catch (error) {
+    input.log.error('webhook.data_export.deferred_failed', { error: String(error) });
+    await deliverDeferredDataExportResponse({
+      handled: true,
+      responseBody: {
+        toast: {
+          type: 'error',
+          content: 'Divo could not start this export. Please try again.',
+        },
+      },
+    }, input.cardEvent, input.adapter, input.log);
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+async function deliverDeferredDataExportResponse(
+  result: { handled: boolean; responseBody?: unknown },
+  cardEvent: unknown,
+  adapter: LarkChannelAdapter,
+  log: Logger,
+): Promise<void> {
+  if (!result.handled) return;
+  const response = asRecord(result.responseBody);
+  const card = asRecord(response?.['card']);
+  const cardData = card?.['type'] === 'raw' ? card['data'] : undefined;
+  const event = asRecord(cardEvent);
+  const context = asRecord(event?.['context']);
+  const chatId = typeof context?.['open_chat_id'] === 'string'
+    ? context['open_chat_id']
+    : undefined;
+  if (!chatId) {
+    log.warn('webhook.data_export.deferred_delivery_missing_chat');
+    return;
+  }
+  if (cardData) {
+    const sent = await adapter.sendCardToChat(
+      chatId,
+      JSON.stringify({ msg_type: 'interactive', card: cardData }),
+    );
+    if (!sent.ok) {
+      log.warn('webhook.data_export.deferred_card_failed', {
+        error: sent.error.message,
+      });
+    }
+    return;
+  }
+  const toast = asRecord(response?.['toast']);
+  if (toast?.['type'] !== 'error' || typeof toast['content'] !== 'string') return;
+  const sent = await adapter.sendToChatId(chatId, toast['content']);
+  if (!sent.ok) {
+    log.warn('webhook.data_export.deferred_error_failed', {
+      error: sent.error.message,
+    });
+  }
 }
 
 /**

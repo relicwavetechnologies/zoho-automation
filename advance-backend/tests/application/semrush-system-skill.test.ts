@@ -8,5 +8,6 @@ describe('Semrush system skill', () => {
     assert.ok(DIVO_SEMRUSH_SYSTEM_SKILL.aliases.includes('semrush'));
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Do not call Semrush.*directly/i);
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /partial/i);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Do not manually follow `nextPage`/);
   });
 });

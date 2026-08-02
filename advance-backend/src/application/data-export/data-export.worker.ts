@@ -235,6 +235,7 @@ export class DataExportWorker {
         auth: googleAuth,
         readerEmail,
         exportKey: String(job.id ?? dataExportJobId(payload)),
+        source: payload.source,
         destination: payload.destination,
         rows: transformedPages,
         sourceTruncated: () => sourceTruncated,

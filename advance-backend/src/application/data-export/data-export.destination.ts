@@ -1,6 +1,7 @@
 import type {
   DataExportCompletion,
   DataExportDestination,
+  DataExportSource,
 } from './data-export.types';
 
 export type GoogleExportAuth =
@@ -26,6 +27,7 @@ export interface DataExportDestinationWriteInput {
   readonly auth: GoogleExportAuth;
   readonly readerEmail: string;
   readonly exportKey: string;
+  readonly source?: DataExportSource;
   readonly destination: DataExportDestination;
   readonly rows: AsyncIterable<readonly Record<string, unknown>[]>;
   readonly sourceTruncated: () => boolean;

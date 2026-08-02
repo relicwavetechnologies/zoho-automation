@@ -123,6 +123,7 @@ export class SemrushServiceError extends Error {
       | 'rate_limited'
       | 'provider_auth_failed'
       | 'provider_insufficient_units'
+      | 'no_more_rows'
       | 'provider_failure'
       | 'timeout',
     message: string,

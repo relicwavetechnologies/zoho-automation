@@ -23,9 +23,9 @@ Use this skill for read-only Semrush SEO research available through Divo's backe
 4. Treat result states precisely:
    - \`complete\`: the returned official data covered this request.
    - \`empty\`: the request was valid but Semrush had no matching coverage.
-   - \`partial\`: Semrush has another available page. State that limitation and use the next-page value if more data is needed.
+   - \`partial\`: Semrush has another available page. State that limitation for the chat preview.
    - \`blocked\` or an invocation error: explain whether configuration, permission, unsupported capability, or provider availability prevented the lookup. Never invent the missing data.
-5. Summarize useful evidence in chat; the structured preview contains at most 25 rows. When \`preview.exportOfferId\` is present, tell the user a governed Sheet/CSV/XLSX export is available instead of reproducing rows. Confirmation reruns the same Semrush query, so describe it as a current export rather than an immutable copy of the preview. A temporary CSV may still appear only on the retained legacy rollback path.
+5. Summarize useful evidence in chat; the structured preview contains at most 25 rows. When \`preview.exportOfferId\` is present, tell the user a governed Sheet/CSV/XLSX export is available instead of reproducing rows. Do not manually follow \`nextPage\` after an export offer is present: the governed export source owns provider pagination and doing it in the agent creates conflicting offers. Confirmation retrieves current Semrush data, so describe it as a current export rather than an immutable copy of the preview. A temporary CSV may still appear only on the retained legacy rollback path.
 
 ## Supported official operations
 

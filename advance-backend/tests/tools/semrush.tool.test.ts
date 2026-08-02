@@ -78,7 +78,11 @@ describe('semrush tool', () => {
         uploadCsvBuffer: async (input: unknown) => { uploads.push(input); return null; },
       },
     });
-    const ctx = makeCtx('semrush', ['read'], { chatId: 'oc-chat', requestId: 'request-1' });
+    const ctx = makeCtx('semrush', ['read'], {
+      chatId: 'oc-chat',
+      requestId: 'request-1',
+      runtimeRunId: 'runtime-run-1',
+    });
     ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
 
     const result = await tool.execute(
@@ -105,7 +109,8 @@ describe('semrush tool', () => {
       connectionId: 'backend_managed',
       args: { operation: 'organic_positions', domain: 'example.com', database: 'in', limit: 1_000 },
     });
-    assert.match(payload.destination.title, /export/i);
+    assert.equal(payload.requestId, 'runtime-run-1');
+    assert.equal(payload.destination.title, 'Semrush organic positions — example.com');
     assert.match(result.value.message, /reruns this Semrush query/i);
 
     const withoutExportPermission = await tool.execute(
@@ -167,12 +172,13 @@ describe('semrush tool', () => {
     const adapter = new SemrushSnapshotDataExportSource({
       execute: async (args) => {
         calls.push(args);
+        const offset = args.operation === 'organic_positions' ? args.offset ?? 0 : 0;
         return {
           operation: 'organic_positions',
-          status: 'partial',
+          status: offset === 0 ? 'partial' : 'complete',
           coverage: {},
-          rows: [{ keyword: 'payments' }],
-          nextPage: '100',
+          rows: [{ keyword: offset === 0 ? 'payments' : 'settlements' }],
+          ...(offset === 0 ? { nextPage: '1000' } : {}),
         };
       },
     } as never);
@@ -184,8 +190,14 @@ describe('semrush tool', () => {
     const pages = [];
     for await (const page of adapter.read(source, { companyId: 'co-1', userId: 'user-1' })) pages.push(page);
 
-    assert.deepEqual(calls, [{ operation: 'organic_positions', domain: 'example.com' }]);
-    assert.deepEqual(pages, [{ rows: [{ keyword: 'payments' }], sourceTruncated: true }]);
+    assert.deepEqual(calls, [
+      { operation: 'organic_positions', domain: 'example.com', limit: 1_000, offset: 0 },
+      { operation: 'organic_positions', domain: 'example.com', limit: 1_000, offset: 1_000 },
+    ]);
+    assert.deepEqual(pages, [
+      { rows: [{ keyword: 'payments' }], hasMore: true },
+      { rows: [{ keyword: 'settlements' }] },
+    ]);
     assert.equal(datasetSourceToolId(source), 'semrush');
   });
 
