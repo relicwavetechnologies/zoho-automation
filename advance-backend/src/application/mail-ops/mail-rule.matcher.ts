@@ -123,12 +123,20 @@ export function parseMailRuleDelivery(input: {
   return { action, destination };
 }
 
+/**
+ * Case is folded with `toLowerCase`, never `toLocaleLowerCase`.
+ *
+ * A rule's identity folds case the same way and is stored, so a
+ * locale-sensitive fold here would let the two disagree: under a Turkish
+ * locale `INVOICE` and `invoice` would be one rule by identity and two rules
+ * by what they match.
+ */
 export function mailRuleMatches(
   match: MailRuleMatch,
   message: MailMessageMetadata,
 ): boolean {
   const includes = (actual: string, expected: string): boolean =>
-    actual.toLocaleLowerCase().includes(expected.toLocaleLowerCase());
+    actual.toLowerCase().includes(expected.toLowerCase());
   return (
     (!match.from || senderMatches(message.from, match.from))
     && (!match.to || recipientMatches(message, match.to))
@@ -150,13 +158,28 @@ const ADDRESS_PATTERN = /[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+\.[a-z]{2,}/i;
  * display position and the leftmost address in the raw header is not
  * necessarily the sender's: `From: (receipts@stripe.com) evil@attacker.tld` is
  * a legal header from `evil@attacker.tld`, and reading it any other way lets an
- * outsider put their own message wherever a rule on `@stripe.com` points. A
- * `From` holding a comma is invalid, and taking the first entry of one loses a
- * match rather than inventing one.
+ * outsider put their own message wherever a rule on `@stripe.com` points.
  */
 function senderMatches(fromHeader: string, criterion: string): boolean {
-  const address = addressIn(splitRecipients(fromHeader)[0] ?? '');
+  const address = senderAddress(fromHeader);
   return address !== undefined && addressMatches(address, criterion);
+}
+
+function senderAddress(fromHeader: string): string | undefined {
+  const entries = splitRecipients(fromHeader);
+  const first = addressIn(entries[0] ?? '');
+  if (first) return first;
+  // `From: Doe, John <j@example.com>` — an unquoted comma in a display name.
+  // Invalid, and still emitted by enough mailers to matter; splitting it
+  // leaves a first entry holding a surname and nothing else, which would stop
+  // a rule the member is actively watching with nothing to show why. Recovered
+  // only when exactly one entry holds a bracketed mailbox, so the recovery
+  // cannot pick between candidates or read anything out of display text.
+  const bracketed = entries
+    .map(entry => entry.match(/<\s*([^<>]+)\s*>/)?.[1])
+    .filter((mailbox): mailbox is string => mailbox !== undefined);
+  if (bracketed.length !== 1) return undefined;
+  return bracketed[0]!.match(ADDRESS_PATTERN)?.[0]?.toLowerCase();
 }
 
 /**
@@ -179,8 +202,8 @@ function recipientMatches(message: MailMessageMetadata, criterion: string): bool
   // written in that shape — `mailRuleMatchSchema` requires a mailbox or an
   // @domain.
   if (!recipientCriterionSchema.safeParse(criterion).success) {
-    return message.to.toLocaleLowerCase()
-      .includes(criterion.toLocaleLowerCase());
+    return message.to.toLowerCase()
+      .includes(criterion.toLowerCase());
   }
   return [message.to, message.cc, message.bcc, message.deliveredTo]
     .filter((header): header is string => Boolean(header?.trim()))
@@ -189,7 +212,7 @@ function recipientMatches(message: MailMessageMetadata, criterion: string): bool
 }
 
 function addressMatches(address: string, criterion: string): boolean {
-  const expected = criterion.trim().toLocaleLowerCase();
+  const expected = criterion.trim().toLowerCase();
   return expected.startsWith('@')
     ? address.endsWith(expected)
     : address === expected;
@@ -285,7 +308,13 @@ function splitRecipients(header: string): string[] {
     }
     entry += hidden ? ' ' : character;
   }
-  entries.push(entry);
+  // The header ran out mid-name. Escapes are honoured inside a quote, which is
+  // exactly how one can be walked back out of: `"a\\"victim@bank.example"
+  // <evil@attacker.tld>` closes its quote on the escaped backslash, leaves the
+  // imitation standing and hides the real mailbox in the quote that never
+  // ends. The entry that was still being read is not an entry, so it is
+  // dropped whole. Earlier ones parsed cleanly and are kept.
+  entries.push(quoted || commentDepth > 0 ? '' : entry);
   return entries;
 }
 
@@ -300,5 +329,5 @@ function addressIn(entry: string): string | undefined {
   const bracketedMailbox = entry.match(/<\s*([^<>]+)\s*>/)?.[1];
   return (bracketedMailbox ?? entry)
     .match(ADDRESS_PATTERN)?.[0]
-    ?.toLocaleLowerCase();
+    ?.toLowerCase();
 }

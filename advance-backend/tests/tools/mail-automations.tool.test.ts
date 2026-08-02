@@ -173,6 +173,20 @@ describe('mailAutomations tool', () => {
       mailRuleMatches({ from: '@anthropic.com' }, sender('notice@anthropic.com')),
       true,
     );
+    // Escapes are honoured inside a quote, which is how one can be walked back
+    // out of: the `\\` is consumed as an escaped backslash, the next quote
+    // closes the name, and the real mailbox is left inside a quote that never
+    // ends. A header that ran out mid-name is not a header.
+    assert.equal(mailRuleMatches(
+      { from: '@anthropic.com' },
+      sender('"a\\\\"notice@anthropic.com" <attacker@evil.example>'),
+    ), false);
+    // An unquoted comma in a display name is invalid and still emitted. One
+    // bracketed mailbox and no ambiguity, so the rule keeps firing.
+    assert.equal(mailRuleMatches(
+      { from: 'notice@anthropic.com' },
+      sender('Doe, John <notice@anthropic.com>'),
+    ), true);
   });
 
   it('matches a recipient across To, Cc and Delivered-To, not To alone', () => {
@@ -276,6 +290,16 @@ describe('mailAutomations tool', () => {
     assert.equal(mailRuleMatches({ to: 'ana@example.com' }, {
       ...message,
       to: '=?utf-8?q?x <ana@example.com>, =?utf-8?q?y?= <bo@example.com>',
+    }), true);
+    // Same escaped-backslash walk-out on the recipient side.
+    assert.equal(mailRuleMatches({ to: 'ana@example.com' }, {
+      ...message,
+      to: '"a\\\\"ana@example.com" <impostor@evil.example>',
+    }), false);
+    // Dropping the entry that ran out must not drop the ones that parsed.
+    assert.equal(mailRuleMatches({ to: 'ana@example.com' }, {
+      ...message,
+      to: 'ana@example.com, "unterminated <bo@example.com>',
     }), true);
   });
 
