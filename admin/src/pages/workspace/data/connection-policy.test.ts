@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
 import {
-  defaultGovernancePolicy, samePolicy, scopeLabel, setActionPolicy,
+  defaultGovernancePolicy, samePolicy, scopeLabel, setActionPolicy, sharedGrants,
   type ConnectionGovernancePolicy,
 } from './connection-policy'
 
@@ -80,6 +80,37 @@ describe('samePolicy', () => {
   it('sees an action switched on', () => {
     const enforced = setActionPolicy(defaultGovernancePolicy(), 'send', { mode: 'enforced' })
     assert.equal(samePolicy(defaultGovernancePolicy(), enforced), false)
+  })
+})
+
+describe('sharedGrants', () => {
+  const owner = { granteeType: 'user', granteeId: 'u-owner' }
+  const colleague = { granteeType: 'user', granteeId: 'u-other' }
+  const finance = { granteeType: 'department', granteeId: 'd-finance' }
+
+  it('drops the grant the owner holds on their own connection', () => {
+    // Connecting an account writes this row on top of ownership. Shown, it put
+    // the owner on screen twice — once as "You · Owner" and once as themselves
+    // "shared by you" — with a Revoke button beside the second.
+    assert.deepEqual(sharedGrants([owner, colleague], 'u-owner'), [colleague])
+  })
+
+  it('keeps grants to everybody else', () => {
+    assert.deepEqual(sharedGrants([owner, colleague, finance], 'u-owner'), [colleague, finance])
+  })
+
+  it('keeps a department grant that happens to share the owner id', () => {
+    // Ids come from different tables, so matching on id alone would hide a
+    // real department grant on a collision.
+    const dept = { granteeType: 'department', granteeId: 'u-owner' }
+    assert.deepEqual(sharedGrants([dept], 'u-owner'), [dept])
+  })
+
+  it('keeps the creator grant on a company-owned connection', () => {
+    // Same initial grant, but the creator is not the owner — their access
+    // really does come from it, and revoking it really does remove it.
+    assert.deepEqual(sharedGrants([colleague], null), [colleague])
+    assert.deepEqual(sharedGrants([colleague], undefined), [colleague])
   })
 })
 

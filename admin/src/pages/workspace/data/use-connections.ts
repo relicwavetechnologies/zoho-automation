@@ -18,7 +18,7 @@ import type { ConnectionGovernance, ConnectionGovernancePolicy } from './connect
 // Re-exported so a screen reaches for one module rather than two to render a
 // connection. The policy logic lives apart because it is pure and tested.
 export {
-  CONNECTION_ACTIONS, defaultGovernancePolicy, samePolicy, scopeLabel, setActionPolicy,
+  CONNECTION_ACTIONS, defaultGovernancePolicy, samePolicy, scopeLabel, setActionPolicy, sharedGrants,
 } from './connection-policy'
 export type {
   ConnectionAction, ConnectionActionPolicy, ConnectionApprovalMode,
@@ -120,10 +120,30 @@ export type ProviderStatus = {
 
 type StatusResponse = { connected: boolean; connections: LiveConnection[] }
 
+/**
+ * Whether a failed status read says anything about the provider.
+ *
+ * 503 is this deployment answering that it has no Canva app configured, and
+ * 401/403 is the session — both are facts, and repeating the request will
+ * return the same one. Everything else is the request breaking: the backend
+ * restarting, a database tunnel dropping, a network blip. Those say nothing
+ * about the connection and must not be rendered as though they did.
+ */
+const isTransient = (error: unknown): boolean =>
+  !(error instanceof ApiError) || (error.status !== 503 && error.status !== 401 && error.status !== 403)
+
 export function useConnections() {
   const { token } = useAdminAuth()
   const [statuses, setStatuses] = useState<ProviderStatus[]>([])
   const [loading, setLoading] = useState(true)
+  /**
+   * Every provider failed for a reason that is not about any provider.
+   *
+   * Kept apart from the per-provider `error` so the page can say the one true
+   * thing — Divo is unreachable — instead of six rows each claiming its own
+   * integration is broken.
+   */
+  const [unreachable, setUnreachable] = useState(false)
   const [connecting, setConnecting] = useState<Provider | null>(null)
   const alive = useRef(true)
 
@@ -140,38 +160,72 @@ export function useConnections() {
     return () => { alive.current = false }
   }, [])
 
+  /**
+   * One pass over every provider.
+   *
+   * `all` is safe only because the mapper never rejects: each provider catches
+   * its own failure and returns a row saying so, plus whether that failure was
+   * about the provider at all. A provider this deployment has no app for
+   * answers 503, and that must not take the other five down with it.
+   */
+  const readAll = useCallback(async (activeToken: string) => Promise.all(
+    CONNECTABLE.map(async (provider): Promise<ProviderStatus & { transient: boolean }> => {
+      try {
+        const data = await api.get<StatusResponse>(
+          `/api/desktop/auth/${SEGMENT[provider]}/status`,
+          activeToken,
+          { quiet: true },
+        )
+        return { provider, connected: data.connected, connections: data.connections ?? [], transient: false }
+      } catch (e) {
+        return {
+          provider,
+          connected: false,
+          connections: [],
+          error: e instanceof ApiError && e.status === 503
+            ? 'Not configured on this deployment'
+            : 'Could not read this connection',
+          transient: isTransient(e),
+        }
+      }
+    }),
+  ), [])
+
+  /**
+   * Reads every provider, and does not mistake a bad minute for six bad
+   * integrations.
+   *
+   * The old version wrote whatever came back straight to the screen, so a
+   * backend restart or a dropped database tunnel — both of which happen — put
+   * "Could not read this connection" under all six providers and wiped the
+   * accounts that were on screen a second earlier. Six rows each blaming their
+   * own integration, for one thing that had nothing to do with any of them.
+   *
+   * Retrying is the shared client's job, not this hook's — doing it here too
+   * would mean six attempts per provider against a backend that is already
+   * known to be down. What is left here is the reading of the result: if every
+   * provider failed for a reason that is not about providers, nothing already
+   * on screen is thrown away, and the page is told once that Divo is
+   * unreachable.
+   */
   const load = useCallback(async () => {
     if (!token) return
-    // `all` is safe here only because the mapper below never rejects: each
-    // provider catches its own failure and returns a row saying so. A provider
-    // that is not configured on this deployment answers 503, and that must not
-    // take the other five down with it.
-    const results = await Promise.all(
-      CONNECTABLE.map(async (provider): Promise<ProviderStatus> => {
-        try {
-          const data = await api.get<StatusResponse>(
-            `/api/desktop/auth/${SEGMENT[provider]}/status`,
-            token,
-            { quiet: true },
-          )
-          return { provider, connected: data.connected, connections: data.connections ?? [] }
-        } catch (e) {
-          return {
-            provider,
-            connected: false,
-            connections: [],
-            error: e instanceof ApiError && e.status === 503
-              ? 'Not configured on this deployment'
-              : 'Could not read this connection',
-          }
-        }
-      }),
-    )
-    if (alive.current) {
+    const results = await readAll(token)
+    const allBroken = results.every((row) => row.error && row.transient)
+
+    if (!alive.current) return
+    if (allBroken) {
+      setUnreachable(true)
+      // Only claim nothing is connected when nothing has ever been read. With
+      // earlier data in hand, keeping it is the honest move: those accounts
+      // did not disappear, the request to list them failed.
+      setStatuses((prev) => (prev.length ? prev : results))
+    } else {
+      setUnreachable(false)
       setStatuses(results)
-      setLoading(false)
     }
-  }, [token])
+    setLoading(false)
+  }, [token, readAll])
 
   useEffect(() => { void load() }, [load])
 
@@ -265,7 +319,7 @@ export function useConnections() {
     [statuses],
   )
 
-  return { statuses, byProvider, loading, connecting, connect, disconnect, refresh: load }
+  return { statuses, byProvider, loading, unreachable, connecting, connect, disconnect, refresh: load }
 }
 
 export type ConnectionGrant = {

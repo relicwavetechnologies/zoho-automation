@@ -102,6 +102,33 @@ export const samePolicy = (a: ConnectionGovernancePolicy, b: ConnectionGovernanc
   })
 
 /**
+ * The grants worth showing somebody, which is not all of them.
+ *
+ * Connecting an account writes a `user` grant to whoever connected it, on top
+ * of their being the owner. It is bookkeeping: access resolution already gives
+ * the owner `admin` from ownership alone — `bestAccess([...directOwnerAccess,
+ * ...grantAccess])` — so the row grants nothing that ownership has not already
+ * given.
+ *
+ * Rendering it put the owner on screen twice, once as "You · Owner" and once as
+ * themselves "shared by you", with a Revoke button next to the second. That
+ * button is the real problem: it offers to take away access that would survive
+ * it, so pressing it looks like it did something and did nothing.
+ *
+ * Only the owner's own grant is dropped. A company-owned connection writes the
+ * same initial grant to whoever created it, and that person is *not* the owner
+ * — their access really does come from the grant, and revoking it really does
+ * remove it.
+ */
+export function sharedGrants<T extends { granteeType: string; granteeId: string }>(
+  grants: T[],
+  ownerId: string | null | undefined,
+): T[] {
+  if (!ownerId) return grants
+  return grants.filter((grant) => !(grant.granteeType === 'user' && grant.granteeId === ownerId))
+}
+
+/**
  * A granted scope, as something a person can read.
  *
  * Deliberately generic rather than a per-provider lookup table: Google hands

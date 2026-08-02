@@ -18,7 +18,7 @@ import {
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useTheme } from '@/lib/use-theme'
 import {
-  CONNECTABLE, CONNECTION_ACTIONS, LABELLED, samePolicy, scopeLabel, setActionPolicy,
+  CONNECTABLE, CONNECTION_ACTIONS, LABELLED, samePolicy, scopeLabel, setActionPolicy, sharedGrants,
   useConnectionManage, useConnections,
   type AccessLevel, type ConnectionAction, type ConnectionApprovalMode, type ConnectionGovernance,
   type ConnectionGovernancePolicy, type ConnectionGrant, type GranteeType, type LiveConnection,
@@ -256,7 +256,7 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
   const [open, setOpen] = useState<{ provider: Provider; connectionId?: string } | null>(null)
   // Which provider is waiting on a name before its sign-in window opens.
   const [naming, setNaming] = useState<Provider | null>(null)
-  const { byProvider, loading, connecting, connect, disconnect } = useConnections()
+  const { byProvider, loading, unreachable, connecting, connect, disconnect, refresh } = useConnections()
 
   /**
    * Adding an account, with a name where a name is worth having.
@@ -291,6 +291,23 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
             Your admin can see that a connection exists and how it is used — never the tokens, and never your mail or files.
           </div>
         </div>
+
+        {/* Said once, at the top, instead of under every provider. When each
+            row carried its own "Could not read this connection", a backend
+            restart looked like six broken integrations — and the one thing a
+            person could actually do about it, wait and retry, was nowhere on
+            the page. */}
+        {unreachable ? (
+          <div className="ws-ceiling">
+            <TriangleAlert size={14} />
+            <div style={{ flex: 1 }}>
+              <b>Divo could not be reached just now.</b>{' '}
+              Nothing here has changed — this is the connection to Divo, not your connected accounts.
+              {byProvider.size > 0 ? ' What you can see below is the last thing it told us.' : ''}
+            </div>
+            <button type="button" className="btn" onClick={() => void refresh()}>Try again</button>
+          </div>
+        ) : null}
 
         <Panel title="Your connections" source="connections">
           {!ready ? <SkelRows n={4} /> : (
@@ -806,8 +823,12 @@ function ConnectionDrawer({ provider, connection, onClose, onConnect, onReconnec
   const [reconnecting, setReconnecting] = useState(false)
   const [busy, setBusy] = useState(false)
   const manage = useConnectionManage(provider, connection?.connectionId)
-  const grants = manage.data?.grants ?? []
   const owner = manage.data?.connection.ownerUser ?? null
+  // Connecting an account also writes a grant to whoever connected it, which
+  // is bookkeeping rather than access — ownership already gives them admin. It
+  // showed the owner twice, the second time with a Revoke button that would
+  // have taken away nothing.
+  const grants = sharedGrants(manage.data?.grants ?? [], owner?.id)
   // Whether the reader is the person who connected the account, which changes
   // how the approval rules read — "me" rather than "whoever connected it".
   const isOwner = owner !== null && owner.id === session?.userId

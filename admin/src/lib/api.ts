@@ -55,6 +55,33 @@ type RequestOptions = {
   raw?: boolean;
 };
 
+/**
+ * Statuses worth asking again about.
+ *
+ * Not 503: this backend uses it to mean "no app is configured for that
+ * provider on this deployment", which is a settled answer, and retrying it
+ * would add two round trips to every unconfigured integration on a page that
+ * checks six of them. 500/502/504 and a `fetch` that throws outright are the
+ * shapes of a backend restarting or a database tunnel dropping.
+ */
+const RETRYABLE = new Set([500, 502, 504]);
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Reads are retried; writes are not.
+ *
+ * Every screen in this app was one failed GET away from asserting something
+ * false — six providers each reporting "could not read this connection" for
+ * one dropped tunnel, a permission grid rendering empty, a team looking like
+ * it has nobody in it. The hooks each caught their own failure and rendered it
+ * as a fact about the world, and fixing that hook by hook would have left the
+ * next one to be written with the same hole.
+ *
+ * A GET is safe to repeat by definition. A POST, PUT or DELETE is not — a
+ * request that timed out may well have been applied — so those still fail on
+ * the first attempt and the caller decides.
+ */
 const request = async <T>(
   path: string,
   init: RequestInit = {},
@@ -67,10 +94,19 @@ const request = async <T>(
     headers.set("Authorization", `Bearer ${token}`);
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers,
-  });
+  const retries = (init.method ?? "GET") === "GET" ? 2 : 0;
+  let response: Response;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers });
+      if (response.ok || !RETRYABLE.has(response.status) || attempt >= retries) break;
+    } catch (networkError) {
+      // The backend is not answering at all. Worth one more ask before this
+      // becomes a sentence on somebody's screen.
+      if (attempt >= retries) throw networkError;
+    }
+    await wait(300 * (attempt + 1));
+  }
 
   if (!response.ok) {
     const errorMsg = await extractErrorMessage(response);

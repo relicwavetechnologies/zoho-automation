@@ -920,3 +920,8 @@
   padding: 4px 9px; border-radius: 6px; border: 1px solid var(--cur-hairline);
   background: var(--cur-canvas); font-size: 11.5px; color: var(--cur-body); line-height: 1.5;
 }
+
+/* A notice you can act on. Additive rather than a change to `.ws-ceiling`,
+   which a dozen read-only notices already use and should keep looking the
+   way they do — without this the button stretches to the banner's height. */
+.cur .ws-ceiling > .btn { align-self: center; flex-shrink: 0; margin-left: auto; }
