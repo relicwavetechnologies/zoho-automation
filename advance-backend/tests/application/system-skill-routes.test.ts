@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { DIVO_SEMRUSH_SYSTEM_SKILL } from '../../src/application/skills/semrush-system-skill.ts';
+import { DATA_EXPORT_SYSTEM_SKILL } from '../../src/application/skills/data-export-system-skill.ts';
 import {
   SYSTEM_SKILL_ROUTE_SEEDS,
   unroutedSeededSystemSkillSlugs,
@@ -21,6 +22,15 @@ describe('system skill routes', () => {
     const data = SYSTEM_SKILL_ROUTE_SEEDS.find(seed => seed.routerSlug === 'data-router');
     assert.ok(data);
     assert.ok(data.targetSlugs.includes('google-sheets'));
+  });
+
+  it('keeps provider previews, offers, scripts, Sheets, and attached files on distinct data routes', () => {
+    const data = SYSTEM_SKILL_ROUTE_SEEDS.find(seed => seed.routerSlug === 'data-router');
+    assert.ok(data);
+    assert.ok(data.targetSlugs.includes(DATA_EXPORT_SYSTEM_SKILL.slug));
+    assert.ok(data.targetSlugs.includes('divo-python-automation'));
+    assert.ok(data.targetSlugs.includes('google-sheets'));
+    assert.ok(data.targetSlugs.includes('read-understand-files'));
   });
 
   it('keeps each router target list non-empty, unique, and free of self-links', () => {

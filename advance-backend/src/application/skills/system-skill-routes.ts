@@ -20,7 +20,7 @@ import { DIVO_SEMRUSH_SYSTEM_SKILL } from './semrush-system-skill';
 import { KNOWLEDGE_MANAGEMENT_SKILL_SLUG } from './knowledge-system-skill';
 import { ZOHO_FINANCE_SYSTEM_SKILLS } from './zoho-finance-system-skills';
 
-const ROUTING_SYSTEM_SKILLS = [
+export const ROUTING_SYSTEM_SKILLS = [
   {
     slug: 'airtable-router',
     name: 'Airtable Router',
@@ -73,20 +73,27 @@ AITable and Airtable are different products. Never route an Airtable request her
 
 Choose the exact approved specialist returned by this router.
 
-- Fetch, calculate, group, join, reshape, or move data between connected
-  products → \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`. Write one script, run it,
-  edit and rerun it. This is the data path, whatever the row count.
-- Produce a CSV, Excel file, Google Sheet, or governed complete-data artifact →
-  \`secure-data-export\`.
+- One bounded provider lookup or preview → load that provider's specialist.
+  If its result contains \`preview.exportOfferId\`, keep only that opaque offer
+  and wait for the member to choose an export; never paginate or copy rows
+  through the conversation.
+- Produce a CSV, Excel file, Google Sheet, or governed complete-data artifact
+  after an explicit offer choice → \`secure-data-export\`. Its direct recipes
+  are only for the supported Airtable and Zoho Books sources with exact
+  backend-resolved identifiers.
+- Fetch across pages to calculate, group, join, reshape, or move data between
+  connected products → \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`. Write one script,
+  run it, edit and rerun it.
 - An exact pasted \`https://docs.google.com/spreadsheets/d/...\` URL →
   \`google-sheets\` before any generic web search. Resolve the reference first;
   a URL alone proves only metadata/access, so ask what the member wants to do
   next. Never claim existing-Sheet bulk write, append, or import is available.
 - Read or analyse a file that is already in the workspace → \`${READ_FILES_SKILL_SLUG}\`.
 
-Size does not change the route. A source that paginates past what fits in
-context is written to a file and queried there, inside the scripted workflow —
-never carried through the conversation.
+Use the provider preview and governed export path for one source's complete
+dataset. Use the scripted workflow only when the work needs pagination for a
+calculation or transform, more than one connected product, or related writes.
+Neither route carries a record set through the conversation.
 
 Never treat this router as permission to process or export data. Load the specialist first.`,
     toolIds: [],
