@@ -185,7 +185,7 @@ export function assessRule(
   rule: Pick<
     MailRuleActivity,
     'status' | 'match' | 'action' | 'destination' | 'lastDeliveredAt'
-    | 'abandonedCount' | 'lastError'
+    | 'abandonedCount' | 'blockedCount' | 'lastError'
   >,
   mailbox: Pick<MailboxHealth, 'rulesCanFire' | 'state'> | undefined,
 ): MailRuleHealth {
@@ -212,6 +212,21 @@ export function assessRule(
 
   if (rule.status === 'paused') {
     return { state: 'paused', summary: 'Paused.', invalidReason: null };
+  }
+
+  // Ahead of the mailbox check: this rule is refused on its own terms, and
+  // fixing the mailbox would not change it. Reported before "waiting", which
+  // is what a refused rule looked like for as long as refusals went unrecorded.
+  if (rule.blockedCount > 0) {
+    return {
+      state: 'blocked',
+      summary:
+        `${rule.blockedCount} matching message`
+        + `${rule.blockedCount === 1 ? ' was' : 's were'} not sent because `
+        + 'Divo is no longer allowed to act on this rule. '
+        + (rule.lastError ?? ''),
+      invalidReason: null,
+    };
   }
 
   if (mailbox && !mailbox.rulesCanFire) {

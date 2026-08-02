@@ -50,6 +50,8 @@ export type MailRule = {
   deliveredCount: number
   failingCount: number
   abandonedCount: number
+  /** Matched the rule, then was refused. Recorded rather than dropped. */
+  blockedCount: number
   lastError: string | null
   lastErrorAt: string | null
 }

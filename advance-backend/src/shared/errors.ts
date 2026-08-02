@@ -14,7 +14,17 @@ export type PermissionDeniedReason =
   | 'unknown_role'
   | 'unknown_tool'
   | 'department_ceiling_exceeded'
-  | 'department_access_denied';
+  | 'department_access_denied'
+  /**
+   * The permission question could not be answered — a store was unreachable,
+   * not a decision that access is absent.
+   *
+   * Separated from `department_access_denied` because callers act on the
+   * difference: a denial is durable and should be recorded and explained to a
+   * person, while a lookup failure should be retried. Conflating them turned a
+   * transient database blip into a permanent-looking refusal.
+   */
+  | 'permission_lookup_failed';
 
 export class PermissionError extends Error {
   readonly kind = 'permission' as const;

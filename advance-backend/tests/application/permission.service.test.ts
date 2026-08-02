@@ -408,7 +408,11 @@ describe('PermissionService', () => {
       }));
       const result = await svc.resolve(baseQuery({ companyRole: 'MEMBER' as any, departmentId: DEPT_ID as any }));
       assert.ok(!result.ok);
-      assert.equal(result.error.payload.reason, 'department_access_denied');
+      // Not `department_access_denied`. Callers act on the difference: a
+      // denial is durable and gets recorded and explained to a person, while
+      // an unreadable store should be retried. Reporting this one as a denial
+      // turned a database blip into a permanent-looking refusal.
+      assert.equal(result.error.payload.reason, 'permission_lookup_failed');
     });
 
     it('dept-role explicit allow → allowed when under company ceiling', async () => {

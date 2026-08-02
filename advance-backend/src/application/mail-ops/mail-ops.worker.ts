@@ -16,6 +16,17 @@ import {
 const MAILBOX_BATCH_SIZE = 20;
 const DELIVERY_BATCH_SIZE = 50;
 
+/**
+ * Whether a rule may act right now.
+ *
+ * `denied` carries the sentence a person will read on their rules screen —
+ * "your access changed" is only useful if it says which access.
+ */
+export type RuleAuthorization =
+  | { verdict: 'allowed' }
+  | { verdict: 'denied'; reason: string }
+  | { verdict: 'unavailable'; reason: string };
+
 type MailRepo = Pick<
   MailOpsRepository,
   | 'claimNextDueMailbox'
@@ -24,6 +35,7 @@ type MailRepo = Pick<
   | 'markSyncFailed'
   | 'listActiveRules'
   | 'reserveDelivery'
+  | 'recordBlockedDelivery'
   | 'claimNextDueDelivery'
   | 'markDeliveryDelivered'
   | 'markDeliveryFailed'
@@ -47,12 +59,25 @@ export class MailOpsWorker {
       userId: string;
       connectionId: string;
     }): Promise<string>;
+    /**
+     * Three answers, not two.
+     *
+     * `denied` is a decision about this rule and nothing else: record it, move
+     * on, keep syncing. `unavailable` means the question could not be answered
+     * — the permission store was unreachable — and must be retried rather than
+     * turned into a refusal.
+     *
+     * It used to be a boolean, and the denial path threw. That throw escaped
+     * the per-rule loop into the method-level catch, failed the sync, and left
+     * the cursor where it was. One person moving teams stalled every rule on
+     * their mailbox, indefinitely, five minutes at a time.
+     */
     authorizeRule(input: {
       companyId: string;
       userId: string;
       connectionId: string;
       departmentId?: string;
-    }): Promise<boolean>;
+    }): Promise<RuleAuthorization>;
     deliverLark(input: {
       chatId: string;
       text: string;
@@ -210,6 +235,27 @@ export class MailOpsWorker {
       const rules = await this.deps.repo.listActiveRules(claim.subscriptionId);
       if (!rules.ok) throw rules.error;
 
+      // Resolved at most once per rule per sync rather than once per event per
+      // rule. The old placement ran N events × M rules permission lookups for
+      // an answer that cannot change mid-pass.
+      const authorizations = new Map<string, RuleAuthorization>();
+      const authorizationFor = async (
+        rawRule: { ruleId: string; departmentId?: string },
+      ): Promise<RuleAuthorization> => {
+        const cached = authorizations.get(rawRule.ruleId);
+        if (cached) return cached;
+        const resolved = await this.deps.authorizeRule({
+          companyId: claim.companyId,
+          userId: claim.userId,
+          connectionId: claim.connectionId,
+          ...(rawRule.departmentId
+            ? { departmentId: rawRule.departmentId }
+            : {}),
+        });
+        authorizations.set(rawRule.ruleId, resolved);
+        return resolved;
+      };
+
       let deliveries = 0;
       for (const event of persisted.value) {
         const message = readMessageMetadata(event.metadata);
@@ -221,31 +267,52 @@ export class MailOpsWorker {
           continue;
         }
         for (const rawRule of rules.value) {
-          const authorized = await this.deps.authorizeRule({
-            companyId: claim.companyId,
-            userId: claim.userId,
-            connectionId: claim.connectionId,
-            ...(rawRule.departmentId
-              ? { departmentId: rawRule.departmentId }
-              : {}),
-          });
-          if (!authorized) {
-            this.log.warn('mail_ops.rule_permission_denied', {
-              ruleId: rawRule.ruleId,
-            });
-            continue;
-          }
           let rule;
           try {
             rule = parseMailRule(rawRule);
           } catch (error) {
+            // No blocked row here on purpose. The clause that failed to parse
+            // is the match clause, so there is no honest way to say whether
+            // this message would have matched. The rule itself already reports
+            // `broken` with the reason, which is the truthful place for it.
             this.log.warn('mail_ops.rule_skipped', {
               ruleId: rawRule.ruleId,
               error: errorText(error),
             });
             continue;
           }
+          // Matching before authorizing, so a recorded refusal always means
+          // "this message matched your rule and was refused" rather than
+          // covering every message the rule would have ignored anyway.
           if (!mailRuleMatches(rule.match, message)) continue;
+
+          const authorized = await authorizationFor(rawRule);
+          if (authorized.verdict === 'unavailable') {
+            // Not an answer. Fail the sync so the cursor holds and the same
+            // range is retried, rather than recording a refusal we cannot
+            // stand behind.
+            throw new Error(
+              `Mail rule authorization is unavailable: ${authorized.reason}`,
+            );
+          }
+          if (authorized.verdict === 'denied') {
+            const blocked = await this.deps.repo.recordBlockedDelivery({
+              companyId: claim.companyId,
+              subscriptionId: claim.subscriptionId,
+              ruleId: rawRule.ruleId,
+              eventId: event.eventId,
+              reason: authorized.reason,
+              message,
+            });
+            if (!blocked.ok) throw blocked.error;
+            this.log.warn('mail_ops.rule_permission_denied', {
+              ruleId: rawRule.ruleId,
+              eventId: event.eventId,
+              reason: authorized.reason,
+            });
+            continue;
+          }
+
           const idempotencyKey = mailDeliveryIdempotencyKey(
             rawRule.ruleId,
             event.eventId,
@@ -336,15 +403,23 @@ export class MailOpsWorker {
           ? { departmentId: payload.departmentId }
           : {}),
       });
-      if (!authorized) {
+      if (authorized.verdict === 'unavailable') {
+        // Retryable: burning an attempt is fine, giving up permanently on an
+        // unanswerable question is not.
+        throw new Error(
+          `Mail rule authorization is unavailable: ${authorized.reason}`,
+        );
+      }
+      if (authorized.verdict === 'denied') {
         const abandoned = await this.deps.repo.markDeliveryAbandoned(
           input.deliveryId,
           input.attempts,
-          'Mail automation execute access or Google connection was revoked.',
+          authorized.reason,
         );
         if (!abandoned.ok) throw abandoned.error;
         this.log.warn('mail_ops.delivery_permission_revoked', {
           deliveryId: input.deliveryId,
+          reason: authorized.reason,
         });
         return;
       }

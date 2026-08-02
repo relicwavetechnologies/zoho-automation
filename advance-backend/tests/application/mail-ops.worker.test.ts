@@ -146,7 +146,7 @@ describe('MailOpsWorker', () => {
         },
       },
       resolveAccessToken: async () => 'access-token',
-      authorizeRule: async () => true,
+      authorizeRule: async () => ({ verdict: 'allowed' }),
       deliverLark: async input => {
         operations.push('lark-delivery');
         assert.equal(input.chatId, 'oc_destination');
@@ -227,7 +227,7 @@ describe('MailOpsWorker', () => {
         forward: async () => 'unused',
       },
       resolveAccessToken: async () => 'access-token',
-      authorizeRule: async () => true,
+      authorizeRule: async () => ({ verdict: 'allowed' }),
       deliverLark: async () => 'unused',
       logger,
     } as any);
@@ -236,6 +236,171 @@ describe('MailOpsWorker', () => {
 
     assert.equal(cursorAdvanced, false);
     assert.equal(syncFailed, true);
+  });
+
+  /** Repo stub with only the bits a sync-path test touches. */
+  function syncRepo(overrides: Record<string, unknown> = {}) {
+    let mailboxClaimed = false;
+    return {
+      claimNextWatchRenewal: async () => ({ ok: true, value: null }),
+      completeWatchRenewal: async () => ({ ok: true, value: true }),
+      failWatchRenewal: async () => ({ ok: true, value: true }),
+      claimNextDueMailbox: async () => {
+        if (mailboxClaimed) return { ok: true, value: null };
+        mailboxClaimed = true;
+        return { ok: true, value: claim };
+      },
+      recordEvents: async () => ({ ok: true, value: [event] }),
+      listActiveRules: async () => ({
+        ok: true,
+        value: [{
+          ruleId: 'rule-1',
+          departmentId: 'department-1',
+          match: { from: 'alerts@example.com' },
+          action: { type: 'deliver' },
+          destination: { type: 'lark_chat', chatId: 'oc_destination' },
+        }],
+      }),
+      reserveDelivery: async () => ({
+        ok: true,
+        value: { outcome: 'reserved', deliveryId: 'delivery-1' },
+      }),
+      recordBlockedDelivery: async () => ({ ok: true, value: true }),
+      advanceCursor: async () => ({ ok: true, value: true }),
+      markSyncFailed: async () => ({ ok: true, value: true }),
+      claimNextDueDelivery: async () => ({ ok: true, value: null }),
+      markDeliveryDelivered: async () => ({ ok: true, value: true }),
+      markDeliveryFailed: async () => ({ ok: true, value: true }),
+      markDeliveryAbandoned: async () => ({ ok: true, value: true }),
+      ...overrides,
+    };
+  }
+
+  const syncGmail = {
+    watch: async () => { throw new Error('Watch should not run without a topic.') },
+    sync: async () => ({
+      nextHistoryId: '101',
+      events: [event],
+      staleCursorRecovered: false,
+      truncated: false,
+    }),
+    forward: async () => 'unused',
+  };
+
+  it('keeps syncing when one rule is refused, and records the refusal', async () => {
+    // The failure this replaces: the denial threw, escaped the per-rule loop,
+    // failed the whole sync, and left the cursor unmoved — so one person
+    // changing department stalled every rule on their mailbox indefinitely.
+    let blocked: any;
+    let syncFailed = false;
+    let cursorAdvanced = false;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        recordBlockedDelivery: async (input: any) => {
+          blocked = input;
+          return { ok: true, value: true };
+        },
+        markSyncFailed: async () => { syncFailed = true; return { ok: true, value: true } },
+        advanceCursor: async () => { cursorAdvanced = true; return { ok: true, value: true } },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({
+        verdict: 'denied',
+        reason: 'This rule is tied to a team you are no longer in.',
+      }),
+      deliverLark: async () => { throw new Error('Nothing should be delivered.') },
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(syncFailed, false);
+    assert.equal(cursorAdvanced, true);
+    assert.equal(blocked?.ruleId, 'rule-1');
+    assert.equal(blocked?.eventId, 'event-1');
+    assert.match(blocked?.reason, /no longer in/);
+  });
+
+  it('does not record a refusal against mail the rule never matched', async () => {
+    // A blocked row must mean "this matched and was refused". Recording every
+    // message a denied rule ignored anyway would be noise dressed as evidence.
+    let blockedCalls = 0;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        listActiveRules: async () => ({
+          ok: true,
+          value: [{
+            ruleId: 'rule-1',
+            match: { from: 'someone-else@example.com' },
+            action: { type: 'deliver' },
+            destination: { type: 'lark_chat', chatId: 'oc_destination' },
+          }],
+        }),
+        recordBlockedDelivery: async () => {
+          blockedCalls++;
+          return { ok: true, value: true };
+        },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'denied', reason: 'no access' }),
+      deliverLark: async () => 'unused',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(blockedCalls, 0);
+  });
+
+  it('holds the cursor when the permission store cannot answer', async () => {
+    // An unreachable store is not a decision. Recording a refusal we cannot
+    // stand behind would be permanent; retrying the same range is not.
+    let syncFailed = false;
+    let cursorAdvanced = false;
+    let blockedCalls = 0;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        recordBlockedDelivery: async () => { blockedCalls++; return { ok: true, value: true } },
+        markSyncFailed: async () => { syncFailed = true; return { ok: true, value: true } },
+        advanceCursor: async () => { cursorAdvanced = true; return { ok: true, value: true } },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({
+        verdict: 'unavailable',
+        reason: 'permission store unreachable',
+      }),
+      deliverLark: async () => 'unused',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(syncFailed, true);
+    assert.equal(cursorAdvanced, false);
+    assert.equal(blockedCalls, 0);
+  });
+
+  it('asks about a rule once per sync, not once per message', async () => {
+    let authorizationCalls = 0;
+    const events = [event, { ...event, eventId: 'event-2' }];
+    const worker = new MailOpsWorker({
+      repo: syncRepo({ recordEvents: async () => ({ ok: true, value: events }) }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => {
+        authorizationCalls++;
+        return { verdict: 'allowed' };
+      },
+      deliverLark: async () => 'unused',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(authorizationCalls, 1);
   });
 
   it('comes straight back for a backlog it could only partly drain', async () => {
@@ -282,7 +447,7 @@ describe('MailOpsWorker', () => {
         forward: async () => 'unused',
       },
       resolveAccessToken: async () => 'access-token',
-      authorizeRule: async () => true,
+      authorizeRule: async () => ({ verdict: 'allowed' }),
       deliverLark: async () => 'unused',
       logger,
     } as any);
@@ -370,7 +535,10 @@ describe('MailOpsWorker', () => {
       authorizeRule: async input => {
         assert.equal(input.departmentId, 'department-1');
         assert.equal(input.connectionId, 'connection-1');
-        return false;
+        return {
+          verdict: 'denied',
+          reason: 'Your Google connection no longer allows Divo to send mail.',
+        };
       },
       deliverLark: async () => {
         providerCalls += 1;
@@ -385,7 +553,9 @@ describe('MailOpsWorker', () => {
     assert.deepEqual(abandoned, {
       deliveryId: 'delivery-1',
       attempts: 2,
-      reason: 'Mail automation execute access or Google connection was revoked.',
+      // The refusal's own words reach the row, so the screen can explain it
+      // rather than showing one generic sentence for every cause.
+      reason: 'Your Google connection no longer allows Divo to send mail.',
     });
   });
 
@@ -459,7 +629,7 @@ describe('MailOpsWorker', () => {
         },
       },
       resolveAccessToken: async () => 'access-token',
-      authorizeRule: async () => true,
+      authorizeRule: async () => ({ verdict: 'allowed' }),
       deliverLark: async () => {
         throw new Error('Lark delivery should not run.');
       },
@@ -500,7 +670,7 @@ describe('MailOpsWorker', () => {
       },
       gmail: {},
       resolveAccessToken: async () => 'unused',
-      authorizeRule: async () => true,
+      authorizeRule: async () => ({ verdict: 'allowed' }),
       deliverLark: async () => 'unused',
       logger,
     } as any);

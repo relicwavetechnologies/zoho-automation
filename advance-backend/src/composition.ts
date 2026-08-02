@@ -1957,6 +1957,16 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
         refreshToken: connection.value.refreshToken,
       });
     },
+    /**
+     * Answers whether one rule may act, and never throws for a denial.
+     *
+     * It used to throw on any permission error. Inside the worker's per-rule
+     * loop that throw escaped to the method-level catch, failed the sync, and
+     * left the cursor unmoved — so one person changing department stalled
+     * every rule on their mailbox, retrying the same range every five minutes
+     * forever. Denials are answers now; only genuinely unanswerable questions
+     * are reported as unavailable, and those are the ones worth retrying.
+     */
     authorizeRule: async input => {
       const connection = await integrationConnectionRepo
         .findAccessibleGoogleConnection({
@@ -1965,22 +1975,44 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
           connectionId: input.connectionId,
           minimumAccess: 'read_write',
         });
-      if (!connection.ok) throw connection.error;
+      if (!connection.ok) {
+        return {
+          verdict: 'unavailable',
+          reason: connection.error.message,
+        };
+      }
       if (
         connection.value?.ownerType !== 'user'
         || connection.value.ownerUserId !== input.userId
         || !connection.value.refreshToken
-        || !hasGoogleScopeGroups(connection.value.scopes, [
-          [GOOGLE_SCOPE.gmailModify],
-          [GOOGLE_SCOPE.gmailSend],
-        ])
-      ) return false;
+      ) {
+        return {
+          verdict: 'denied',
+          reason: 'The Google account behind this rule is no longer connected to you.',
+        };
+      }
+      if (!hasGoogleScopeGroups(connection.value.scopes, [
+        [GOOGLE_SCOPE.gmailModify],
+        [GOOGLE_SCOPE.gmailSend],
+      ])) {
+        return {
+          verdict: 'denied',
+          reason: 'Your Google connection no longer allows Divo to read and send mail. Reconnect it to resume.',
+        };
+      }
       const identity = await channelIdentityRepo.resolveByUserId(
         input.userId,
         input.companyId,
       );
-      if (!identity.ok) throw identity.error;
-      if (!identity.value) return false;
+      if (!identity.ok) {
+        return { verdict: 'unavailable', reason: identity.error.message };
+      }
+      if (!identity.value) {
+        return {
+          verdict: 'denied',
+          reason: 'Divo can no longer identify you in this company.',
+        };
+      }
       const resolved = await permissions.resolve({
         companyId: asCompanyId(input.companyId),
         userId: asUserId(input.userId),
@@ -1990,10 +2022,28 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
           : {}),
         channel: 'lark',
       });
-      if (!resolved.ok) throw resolved.error;
-      return resolved.value.allowedActionsByTool
+      if (!resolved.ok) {
+        // The one distinction that matters: a store that could not be read is
+        // retried, a decision is recorded.
+        if (resolved.error.payload.reason === 'permission_lookup_failed') {
+          return { verdict: 'unavailable', reason: resolved.error.message };
+        }
+        return {
+          verdict: 'denied',
+          reason: input.departmentId
+            ? 'This rule is tied to a team you are no longer in, so Divo will not act on it.'
+            : 'Your access to mail automations was removed.',
+        };
+      }
+      const allowed = resolved.value.allowedActionsByTool
         .get(asToolId('mailAutomations'))
         ?.has('execute') ?? false;
+      return allowed
+        ? { verdict: 'allowed' }
+        : {
+            verdict: 'denied',
+            reason: 'You no longer have permission to run mail automations.',
+          };
     },
     deliverLark: async input => {
       const sent = await larkAdapter.sendToChatId(

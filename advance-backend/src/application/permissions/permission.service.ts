@@ -109,7 +109,7 @@ export class PermissionServiceImpl implements PermissionService {
       const membershipResult = await this.deps.deptRepo.getMembership(userId, companyId, departmentId);
       if (!membershipResult.ok) {
         return err(new PermissionError({
-          reason: 'department_access_denied',
+          reason: 'permission_lookup_failed',
           message: `Failed to read department membership: ${membershipResult.error.message}`,
         }));
       }
@@ -133,7 +133,7 @@ export class PermissionServiceImpl implements PermissionService {
 
     if (!deptRolePermsResult.ok || !userOverridesResult.ok) {
       return err(new PermissionError({
-        reason: 'department_access_denied',
+        reason: 'permission_lookup_failed',
         message: 'Failed to load department permission rules',
       }));
     }

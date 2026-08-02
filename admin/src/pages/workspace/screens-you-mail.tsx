@@ -293,6 +293,7 @@ function RuleDrawer({ rule, onClose }: { rule: MailRule; onClose: () => void }) 
           <div><span>Delivered</span><b>{rule.deliveredCount} in the last 30 days</b></div>
           <div><span>In flight</span><b>{rule.failingCount}</b></div>
           <div><span>Given up on</span><b>{rule.abandonedCount}</b></div>
+          <div><span>Refused</span><b>{rule.blockedCount}</b></div>
           <div><span>Last delivery</span><b>{rule.lastDeliveredAt ? onDate(rule.lastDeliveredAt) : 'Never'}</b></div>
         </div>
 
@@ -349,11 +350,14 @@ const DELIVERY_LABEL: Record<string, string> = {
   pending: 'Waiting',
   sending: 'Sending',
   abandoned: 'Gave up',
+  // Matched, then refused. This row exists so a refusal stops being invisible.
+  blocked: 'Not allowed',
 }
 
 const DELIVERY_TONE: Record<string, string> = {
   delivered: 'b-ok',
   abandoned: 'b-err',
+  blocked: 'b-err',
 }
 
 const onDate = (iso: string): string =>

@@ -755,6 +755,56 @@ export class MailOpsRepository {
     }
   }
 
+  /**
+   * Records that a matching message was refused, durably.
+   *
+   * Until now a refusal was a log line and nothing else, which is why the
+   * production numbers showed events accumulating while deliveries stopped
+   * dead: from the outside it was indistinguishable from mail that simply
+   * never matched. A `blocked` row is inert — `claimNextDueDelivery` only ever
+   * picks up `pending` — so this can never turn into a send.
+   *
+   * Idempotent on the same `(rule, event)` key as a real delivery, and it
+   * deliberately loses to one: if a delivery already exists for this pair, the
+   * refusal came second and the existing row is the truth.
+   */
+  async recordBlockedDelivery(input: {
+    companyId: string;
+    subscriptionId: string;
+    ruleId: string;
+    eventId: string;
+    reason: string;
+    message: Record<string, unknown>;
+  }): Promise<Result<boolean, InfraError>> {
+    const idempotencyKey = mailDeliveryIdempotencyKey(
+      input.ruleId,
+      input.eventId,
+    );
+    try {
+      await this.db.mailDelivery.create({
+        data: {
+          companyId: input.companyId,
+          subscriptionId: input.subscriptionId,
+          ruleId: input.ruleId,
+          eventId: input.eventId,
+          idempotencyKey,
+          status: 'blocked',
+          attempts: 0,
+          nextAttemptAt: null,
+          lastError: input.reason.slice(0, 500),
+          // Only the message, never an action or destination: this row exists
+          // to name the mail that was refused, not to describe a send.
+          payloadJson: { message: input.message } as Prisma.InputJsonObject,
+        },
+        select: { id: true },
+      });
+      return ok(true);
+    } catch (cause) {
+      if ((cause as { code?: string }).code === 'P2002') return ok(false);
+      return err(wrapInfra('prisma', 'mailOps.recordBlockedDelivery', cause));
+    }
+  }
+
   async claimNextDueDelivery(
     now = new Date(),
   ): Promise<Result<ClaimedMailDelivery | null, InfraError>> {

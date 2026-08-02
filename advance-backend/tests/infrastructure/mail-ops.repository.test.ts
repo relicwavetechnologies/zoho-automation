@@ -387,6 +387,61 @@ describe('MailOpsRepository', () => {
     assert.equal(update.data.watchClaimToken, null);
   });
 
+  it('records a refusal as an inert row the delivery loop will never claim', async () => {
+    let created: any;
+    const repo = new MailOpsRepository({
+      mailDelivery: {
+        create: async (input: any) => {
+          created = input;
+          return { id: 'delivery-1' };
+        },
+      },
+    } as any);
+
+    const result = await repo.recordBlockedDelivery({
+      companyId: 'company-1',
+      subscriptionId: 'mailbox-1',
+      ruleId: 'rule-1',
+      eventId: 'event-1',
+      reason: 'You are no longer in that team.',
+      message: { subject: 'Invoice', from: 'billing@acme.com' },
+    });
+
+    assert.deepEqual(result, { ok: true, value: true });
+    assert.equal(created.data.status, 'blocked');
+    // Only `pending` is ever claimed, and a null next attempt keeps it out of
+    // the due query regardless — a refusal must not become a send.
+    assert.equal(created.data.nextAttemptAt, null);
+    assert.equal(created.data.attempts, 0);
+    assert.match(created.data.lastError, /no longer in that team/);
+    // The message rides along so the row can name the mail it refused; no
+    // action or destination, because nothing was going to be sent.
+    assert.deepEqual(created.data.payloadJson, {
+      message: { subject: 'Invoice', from: 'billing@acme.com' },
+    });
+  });
+
+  it('lets a real delivery win over a refusal for the same rule and event', async () => {
+    const repo = new MailOpsRepository({
+      mailDelivery: {
+        create: async () => {
+          throw Object.assign(new Error('duplicate'), { code: 'P2002' });
+        },
+      },
+    } as any);
+
+    const result = await repo.recordBlockedDelivery({
+      companyId: 'company-1',
+      subscriptionId: 'mailbox-1',
+      ruleId: 'rule-1',
+      eventId: 'event-1',
+      reason: 'denied',
+      message: {},
+    });
+
+    assert.deepEqual(result, { ok: true, value: false });
+  });
+
   it('treats a duplicate delivered rule-event pair as already complete', async () => {
     let createInput: any;
     const repo = new MailOpsRepository({

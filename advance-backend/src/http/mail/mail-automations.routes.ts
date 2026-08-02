@@ -119,6 +119,7 @@ export function createMailAutomationsRoutes(
               deliveredCount: rule.deliveredCount,
               failingCount: rule.failingCount,
               abandonedCount: rule.abandonedCount,
+              blockedCount: rule.blockedCount,
               lastError: rule.lastError,
               lastErrorAt: rule.lastErrorAt?.toISOString() ?? null,
             };

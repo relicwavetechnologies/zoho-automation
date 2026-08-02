@@ -52,6 +52,8 @@ export interface MailRuleActivity {
   deliveredCount: number;
   failingCount: number;
   abandonedCount: number;
+  /** Matched, then refused. Recorded rather than dropped, so it can be shown. */
+  blockedCount: number;
   /** Most recent terminal failure, so the UI can say why without a second call. */
   lastError: string | null;
   lastErrorAt: Date | null;
@@ -153,7 +155,7 @@ export class MailOpsReadRepository {
         this.db.mailDelivery.findMany({
           where: {
             ruleId: { in: ruleIds },
-            status: 'abandoned',
+            status: { in: ['abandoned', 'blocked'] },
             lastError: { not: null },
           },
           orderBy: [{ updatedAt: 'desc' }],
@@ -197,6 +199,7 @@ export class MailOpsReadRepository {
           failingCount:
             (byStatus?.get('pending') ?? 0) + (byStatus?.get('sending') ?? 0),
           abandonedCount: byStatus?.get('abandoned') ?? 0,
+          blockedCount: byStatus?.get('blocked') ?? 0,
           lastError: failure?.lastError ?? null,
           lastErrorAt: failure?.at ?? null,
         };

@@ -41,6 +41,7 @@ const VALID_RULE = {
   destination: { type: 'email', email: 'person@acme.com' },
   lastDeliveredAt: null,
   abandonedCount: 0,
+  blockedCount: 0,
   lastError: null,
 };
 
@@ -168,6 +169,20 @@ describe('rule health', () => {
   it('distinguishes a rule waiting for mail from one its mailbox cannot fire', () => {
     assert.equal(assessRule(VALID_RULE, healthy).state, 'waiting');
     assert.equal(assessRule(VALID_RULE, dead).state, 'blocked');
+  });
+
+  it('reports a refused rule as blocked rather than waiting', () => {
+    // Before refusals were recorded, this rule looked identical to one that
+    // had simply never matched anything — which is the whole reason nobody
+    // could tell why deliveries stopped.
+    const health = assessRule(
+      { ...VALID_RULE, blockedCount: 2, lastError: 'You are no longer in that team.' },
+      healthy,
+    );
+
+    assert.equal(health.state, 'blocked');
+    assert.match(health.summary, /2 matching messages were not sent/);
+    assert.match(health.summary, /no longer in that team/);
   });
 
   it('says a working rule is working, and still surfaces failed deliveries', () => {
