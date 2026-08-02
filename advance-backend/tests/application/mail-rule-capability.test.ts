@@ -149,6 +149,40 @@ describe('taking what people actually type', () => {
   });
 });
 
+describe('a legacy free-text `to` keeps working', () => {
+  // Before the recipient criterion was validated, `to` was any non-empty
+  // string, so these shapes are really in the database. Normalising the
+  // criterion made some of them start *passing* validation, and matching the
+  // raw string after that compared a bare domain to a whole mailbox and
+  // matched nothing — the rule still reported `valid: true` and quietly
+  // stopped firing.
+  const stored = (to: string): MailRuleMatch => parseMailRule({
+    match: { to },
+    action: { type: 'forward' },
+    destination: { type: 'email', email: 'archive@company.com' },
+  }).match;
+
+  const arriving = { to: 'Finance <finance@acme.com>' };
+
+  it('matches a stored bare domain', () => {
+    assert.equal(matches(stored('acme.com'), arriving), true);
+  });
+
+  it('matches a stored display-name form', () => {
+    assert.equal(matches(stored('Alerts <finance@acme.com>'), arriving), true);
+  });
+
+  it('keeps the substring reading for text that is not an address at all', () => {
+    assert.equal(matches(stored('finance'), arriving), true);
+    assert.equal(matches(stored('payroll'), arriving), false);
+  });
+
+  it('still matches a criterion already in canonical form', () => {
+    assert.equal(matches(stored('@acme.com'), arriving), true);
+    assert.equal(matches(stored('finance@acme.com'), arriving), true);
+  });
+});
+
 describe('@domain covers subdomains', () => {
   it('catches the sending subdomain a service actually mails from', () => {
     // The rule that used to be created, reported active, and never fire once.

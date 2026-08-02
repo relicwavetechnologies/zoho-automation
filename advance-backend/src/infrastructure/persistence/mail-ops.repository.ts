@@ -125,6 +125,24 @@ function sameRuleClause(stored: unknown, submitted: unknown): boolean {
   return stableJson(stored) === stableJson(submitted);
 }
 
+/**
+ * An action with its hourly ceiling removed, for deciding whether a rule
+ * restarted.
+ *
+ * The ceiling is how fast a rule may send, not what it watches or where it
+ * sends — the same reasoning that keeps it out of `mailRuleDedupeKey`. Left in
+ * the comparison, changing it counted as the rule becoming a different rule:
+ * `activatedAt` moved to now and every message the rule had not reached yet
+ * became mail it was no longer entitled to act on. So did *omitting* it, which
+ * an `update` that only renames the rule does — the member asks for a rename
+ * and silently loses their backlog and their cap together.
+ */
+function withoutRateLimit(action: unknown): unknown {
+  if (!action || typeof action !== 'object' || Array.isArray(action)) return action;
+  const { rateLimitPerHour: _ignored, ...rest } = action as Record<string, unknown>;
+  return rest;
+}
+
 function stableJson(value: unknown): string {
   return JSON.stringify(value, (key, inner) => {
     // Except a Lark chat ID, which the rule's identity also leaves alone: two
@@ -456,7 +474,10 @@ export class MailOpsRepository {
         // stopped, or when what it watches or where it sends actually changed.
         const restarting = current.status !== 'active'
           || !sameRuleClause(current.matchJson, input.match)
-          || !sameRuleClause(current.actionJson, input.action)
+          || !sameRuleClause(
+            withoutRateLimit(current.actionJson),
+            withoutRateLimit(input.action),
+          )
           || !sameRuleClause(current.destinationJson, input.destination);
         await tx.mailAutomationRule.update({
           where: { id: current.id },
@@ -1061,13 +1082,28 @@ export class MailOpsRepository {
   async countRecentDeliveries(input: {
     ruleId: string;
     since: Date;
+    until: Date;
   }): Promise<Result<number, InfraError>> {
     try {
       return ok(await this.db.mailDelivery.count({
         where: {
           ruleId: input.ruleId,
-          firstAttemptAt: { gte: input.since },
           status: { notIn: ['blocked', 'abandoned'] },
+          // The hour is measured on the mail's own arrival time, through the
+          // event, and not on when Divo got round to reserving the delivery.
+          //
+          // Counting `firstAttemptAt` gave the right answer only while Divo was
+          // keeping up. Drain a backlog after an outage and every row reserved
+          // in that pass carries the same `firstAttemptAt` of *now*, so a
+          // hundred messages that arrived at a genuine seventeen an hour all
+          // land in one window and everything past the ceiling is dropped —
+          // mail the rule never came close to exceeding its limit on. An
+          // outage would turn a rate limit into permanent loss.
+          //
+          // Both ends are bounded for the same reason: without an upper bound a
+          // drain also counts deliveries for mail that arrived *after* the
+          // message being judged.
+          event: { occurredAt: { gte: input.since, lt: input.until } },
         },
       }));
     } catch (cause) {

@@ -452,6 +452,7 @@ export class MailOpsWorker {
             const recent = await this.deps.repo.countRecentDeliveries({
               ruleId: rawRule.ruleId,
               since: new Date(event.occurredAt.getTime() - 60 * 60_000),
+              until: event.occurredAt,
             });
             if (!recent.ok) throw recent.error;
             if (recent.value >= ceiling) {

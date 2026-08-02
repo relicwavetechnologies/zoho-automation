@@ -530,14 +530,22 @@ function recipientMatches(message: MailMessageMetadata, criterion: string): bool
   // would be a change to a rule nobody asked to change. Nothing new can be
   // written in that shape — `mailRuleMatchSchema` requires a mailbox or an
   // @domain.
-  if (!recipientCriterionSchema.safeParse(criterion).success) {
+  // Parsed once, and the *parsed* value is what gets matched. Reading the
+  // schema for the branch and then matching the raw string was a way to lose
+  // every legacy rule at once: the schema normalises, so a stored `acme.com`
+  // now passes validation — it did not before — and then `addressMatches` was
+  // handed `acme.com`, which has no `@`, so it compared it to a whole mailbox
+  // and matched nothing. The rule kept reporting `valid: true` and quietly
+  // stopped firing, which is precisely the failure this wave exists to remove.
+  const parsed = recipientCriterionSchema.safeParse(criterion);
+  if (!parsed.success) {
     return message.to.toLowerCase()
       .includes(criterion.toLowerCase());
   }
   return [message.to, message.cc, message.bcc, message.deliveredTo]
     .filter((header): header is string => Boolean(header?.trim()))
     .flatMap(header => addressesIn(header))
-    .some(address => addressMatches(address, criterion));
+    .some(address => addressMatches(address, parsed.data));
 }
 
 /**

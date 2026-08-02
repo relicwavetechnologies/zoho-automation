@@ -455,6 +455,49 @@ describe('MailOpsWorker', () => {
     assert.match(blocked?.reason, /limit of 5 per hour/);
   });
 
+  it('bounds the ceiling window at both ends, by arrival and not by attempt', async () => {
+    // Counting when a delivery was *reserved* gives the right answer only
+    // while Divo is keeping up. Drain a backlog after an outage and every row
+    // carries the same reservation time, so a hundred messages that arrived at
+    // a genuine seventeen an hour all land in one window and everything past
+    // the ceiling is dropped — mail the rule never came close to exceeding its
+    // limit on. An outage would turn a rate limit into permanent loss.
+    let asked: any;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        listActiveRules: async () => ({
+          ok: true,
+          value: [{
+            ruleId: 'rule-1',
+            activatedAt: RULE_ACTIVATED_AT,
+            match: { from: 'alerts@example.com' },
+            action: { type: 'deliver', rateLimitPerHour: 5 },
+            destination: { type: 'lark_chat', chatId: 'oc_destination' },
+          }],
+        }),
+        countRecentDeliveries: async (input: any) => {
+          asked = input;
+          return { ok: true, value: 0 };
+        },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'lark-message',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(
+      asked?.since?.toISOString(),
+      new Date(event.occurredAt.getTime() - 60 * 60_000).toISOString(),
+    );
+    // Without the upper bound a drain also counts deliveries for mail that
+    // arrived after the message being judged.
+    assert.equal(asked?.until?.toISOString(), event.occurredAt.toISOString());
+  });
+
   it('counts the ceiling against the hour the mail arrived in', async () => {
     // Not the hour Divo got round to it. A backlog drained late must decide the
     // same way it would have decided live, or the ceiling silently becomes a

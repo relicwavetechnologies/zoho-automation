@@ -357,6 +357,7 @@ export function createMailAutomationsTool(deps: {
       'list hides paused and archived rules unless includeInactive is true.',
       'list, pause, resume, and archive operate only on rules owned by the authenticated user. Never invent ruleId.',
       'update replaces the complete deterministic match and destination for one rule; include the ruleId, connectionId, and name returned by list. update also resumes a paused rule.',
+      'update replaces rateLimitPerHour too rather than merging it, so a rule that had a cap loses it unless you re-send it. Read the current value from that rule\'s action.rateLimitPerHour in list and carry it forward unless the user asked to change or remove it.',
       'archive is final: an archived rule cannot be resumed.',
     ].join('\n'),
 

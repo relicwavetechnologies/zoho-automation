@@ -1082,6 +1082,22 @@ describe('MailOpsRepository', () => {
       ...stored,
       matchJson: { from: 'Alerts@Example.com' },
     }).replaceRule(args);
+    // Nor is the hourly ceiling, which is how fast the rule may send and not
+    // what it watches or where it sends. `update` replaces the whole rule, so
+    // a plain rename arrives carrying no ceiling at all — and treating that as
+    // a different rule cost the member their backlog on top of their cap.
+    await repo({
+      ...stored,
+      actionJson: { type: 'forward', rateLimitPerHour: 20 },
+    }).replaceRule({ ...args, name: 'OTP forwarding' });
+    // Changing the ceiling deliberately is equally not a restart.
+    await repo({
+      ...stored,
+      actionJson: { type: 'forward', rateLimitPerHour: 20 },
+    }).replaceRule({
+      ...args,
+      action: { type: 'forward' as const, rateLimitPerHour: 5 },
+    });
 
     assert.ok(updates[0].data.activatedAt.getTime() >= before);
     assert.ok(updates[1].data.activatedAt.getTime() >= before);
@@ -1089,6 +1105,13 @@ describe('MailOpsRepository', () => {
     assert.equal(updates[3].data.activatedAt, undefined);
     assert.equal(updates[4].data.activatedAt, undefined);
     assert.equal(updates[5].data.activatedAt, undefined);
+    assert.equal(updates[6].data.activatedAt, undefined);
+    assert.equal(updates[7].data.activatedAt, undefined);
+    // The new ceiling is still written — replaced, not merged.
+    assert.deepEqual(updates[7].data.actionJson, {
+      type: 'forward',
+      rateLimitPerHour: 5,
+    });
     // The rest of the replace still happens either way.
     assert.equal(updates[3].data.name, 'OTP forwarding');
     assert.deepEqual(updates[3].data.version, { increment: 1 });
