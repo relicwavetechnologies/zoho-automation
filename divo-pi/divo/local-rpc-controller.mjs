@@ -1187,24 +1187,57 @@ function terminalRunError(terminal) {
 	return error;
 }
 
-function issuedGatewayAction(messages) {
-	if (!Array.isArray(messages)) return false;
+const MUTATING_GATEWAY_ACTIONS = new Set(["create", "update", "delete", "send", "execute"]);
+const KNOWN_GATEWAY_ACTIONS = new Set(["read", ...MUTATING_GATEWAY_ACTIONS]);
+
+function gatewayActionState(messages) {
+	if (!Array.isArray(messages)) return "none";
 	const lastUserIndex = messages.findLastIndex((message) => message?.role === "user");
 	const currentRun = messages.slice(lastUserIndex + 1);
-	return currentRun.some(
-		(message) =>
-			message?.role === "assistant"
-			&& Array.isArray(message.content)
-			&& message.content.some(
-				(content) =>
-					content?.type === "toolCall"
-					&& content.name === "divo_gateway"
-					&& (
-						content.arguments?.op === "tools.invoke"
-						|| content.arguments?.op === "teach.learning.apply"
-					),
-			),
+	const calls = currentRun.flatMap((message) =>
+		message?.role === "assistant" && Array.isArray(message.content)
+			? message.content.filter((content) =>
+				content?.type === "toolCall"
+				&& content.name === "divo_gateway"
+				&& ["tools.invoke", "teach.learning.apply"].includes(content.arguments?.op))
+			: [],
 	);
+	if (calls.length === 0) return "none";
+	const actions = [];
+	for (const call of calls) {
+		const result = currentRun.find((message) =>
+			message?.role === "toolResult"
+			&& message.toolCallId === call.id
+			&& message.toolName === "divo_gateway",
+		);
+		const action = result?.details?.data?.action;
+		if (
+			result?.isError !== false
+			|| typeof action !== "string"
+			|| !KNOWN_GATEWAY_ACTIONS.has(action)
+		) return "unsafe";
+		actions.push(action);
+	}
+	if (!actions.some((action) => MUTATING_GATEWAY_ACTIONS.has(action))) return "read_only";
+	return actions.at(-1) === "read" ? "mutation_then_read" : "completed_mutation";
+}
+
+function completedGatewayFallback(completion, readAfterMutation) {
+	const text = readAfterMutation
+		? "Divo completed the requested company action, and a subsequent read also succeeded. The final summary was interrupted, so Divo did not repeat the action."
+		: "Divo completed the requested company action. The final summary was interrupted, so Divo did not repeat the action.";
+	return {
+		...completion,
+		messages: [
+			...(Array.isArray(completion?.messages) ? completion.messages : []),
+			{
+				role: "assistant",
+				stopReason: "stop",
+				usage: { input: 0, output: 1 },
+				content: [{ type: "text", text }],
+			},
+		],
+	};
 }
 
 async function waitForRpcIdle(rpc, {
@@ -1246,7 +1279,11 @@ export async function promptWithTransientRetries({
 		if (!isTransientDivoRunFailure(completion?.messages) || retry >= maxRetries) {
 			throw terminalRunError(terminal);
 		}
-		if (issuedGatewayAction(completion?.messages)) {
+		const actionState = gatewayActionState(completion?.messages);
+		if (actionState === "mutation_then_read" || actionState === "completed_mutation") {
+			return completedGatewayFallback(completion, actionState === "mutation_then_read");
+		}
+		if (actionState === "unsafe") {
 			throw terminalRunError({
 				summary:
 					"The model provider failed after a company action was issued. Divo stopped instead of retrying and risking a duplicate action.",

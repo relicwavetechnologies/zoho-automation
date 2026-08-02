@@ -39,6 +39,8 @@ describe('Google Workspace system skills', () => {
     assert.match(sheets.markdown, /connectionId.*inside the Google tool's `args`/s);
     assert(sheets.aliases.includes('dropdown'));
     assert(sheets.aliases.includes('google sheet url'));
+    assert(sheets.aliases.includes('drive.google.com/file'));
+    assert(sheets.aliases.includes('convert excel to google sheet'));
   });
 
   it('resolves pasted Sheet URLs into an opaque governed read/write handle', () => {
@@ -46,7 +48,7 @@ describe('Google Workspace system skills', () => {
 
     assert.match(sheets.markdown, /Before generic web search or a native Sheets operation/);
     assert.match(sheets.markdown, /"op": "resolve_reference"/);
-    assert.match(sheets.markdown, /"url": "<exact pasted Google Sheet URL>"/);
+    assert.match(sheets.markdown, /"url": "<exact pasted Google Sheet or Drive workbook URL>"/);
     assert.match(sheets.markdown, /data\.destinationReferenceId/);
     assert.match(sheets.markdown, /"op": "call_resolved_sheet"/);
     assert.match(sheets.markdown, /without\s+extracting a spreadsheet ID from the URL/s);
@@ -59,6 +61,10 @@ describe('Google Workspace system skills', () => {
     assert.match(sheets.markdown, /"op": "call_exported_sheet"/);
     assert.match(sheets.markdown, /never supply a\s+connection or spreadsheet ID/s);
     assert.match(sheets.markdown, /read the exact changed range back/);
+    assert.match(sheets.markdown, /drive\.google\.com\/file\/d/);
+    assert.match(sheets.markdown, /request a download URL/);
+    assert.match(sheets.markdown, /import_to_google_sheets` directly/);
+    assert.match(sheets.markdown, /backend delivers the\s+confirmation card and owns conversion/s);
   });
 
   it('gives the six upgraded products complete Divo-native workflows', () => {

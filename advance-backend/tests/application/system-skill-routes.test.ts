@@ -27,10 +27,15 @@ describe('system skill routes', () => {
     assert.match(research.markdown, /never through provider pagination or a local workflow/);
   });
 
-  it('routes pasted Google Sheets through the data router', () => {
+  it('routes pasted Google Sheets and Drive Excel workbooks through the data router', () => {
     const data = SYSTEM_SKILL_ROUTE_SEEDS.find(seed => seed.routerSlug === 'data-router');
     assert.ok(data);
     assert.ok(data.targetSlugs.includes('google-sheets'));
+    const router = ROUTING_SYSTEM_SKILLS.find(skill => skill.slug === 'data-router')!;
+    assert.match(router.markdown, /drive\.google\.com\/file\/d/);
+    assert.match(router.markdown, /before Google Drive/);
+    assert.match(router.markdown, /never request a download URL or import it directly/);
+    assert.ok(router.aliases.includes('convert excel to google sheet'));
   });
 
   it('keeps provider previews, offers, scripts, Sheets, and attached files on distinct data routes', () => {

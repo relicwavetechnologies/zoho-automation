@@ -26,6 +26,22 @@
 
 **Latest validation evidence (2026-08-02):**
 
+- The apparent Google access failure was not an OAuth or account-selection
+  failure. Both `abhishek@emiactech.com` and `divo@emiactech.com` were healthy;
+  the failed probe used a spreadsheet ID reconstructed from a screenshot rather
+  than the export's real opaque resource. The governed follow-up path now gives
+  matching recent-export context precedence over stale session narration.
+- The real 50-row export was reopened from its opaque `resourceRef` with no raw
+  spreadsheet ID or account hint. Isolated Divo read `Organic Positions!A1:O3`,
+  wrote `Review status` / `Pending` to `O1:O2`, and read the range back to verify
+  both cells. A later read-only turn confirmed the edit through the production
+  Lark status/final-card path in 29.283 seconds.
+- If the model provider fails after a successful governed action, controller
+  recovery now distinguishes explicit read-only calls from completed or
+  read-after-mutation runs. Reads may retry; completed mutations return safe,
+  truthful Divo completion copy without repeating the side effect; missing,
+  failed, or unknown action results stop safely. Controller validation passes
+  32/32.
 - Phase 5 is cut over completely: Semrush and OMS no longer accept or execute
   a Cloudinary export dependency. Large results remain bounded in chat and can
   leave the agent only through the central opaque-offer pipeline. The focused

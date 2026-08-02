@@ -41,6 +41,24 @@ describe("Divo normal-session routing policy", () => {
 		assert.doesNotMatch(ROUTER_SKILL, /before planning every meaningful company task/i);
 		assert.doesNotMatch(ROUTER_SKILL, /For every meaningful .*call `divo_skill_resolve`/i);
 		assert.doesNotMatch(ROUTER_SKILL, /resolve\/fetch the backend `research` skill/i);
+		assert.match(ROUTER_SKILL, /drive\.google\.com\/file\/d/);
+		assert.match(ROUTER_SKILL, /Never derive a Google ID, request a download URL, or call `import_to_google_sheets` directly/i);
+		assert.match(ROUTER_SKILL, /backend delivers the confirmation card and owns creation/i);
+	});
+
+	it("always routes a pasted Drive Excel workbook through the Sheets resolver", () => {
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /drive\.google\.com\/file\/d/);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /load the exact Google Sheets skill/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /googleSheets with op resolve_reference/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Never route it through Google Drive download, copy, or import operations/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /backend owns confirmation and conversion/i);
+	});
+
+	it("prefers a backend-verified recent Sheet export over stale session history", () => {
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /RECENT DIVO EXPORTS lists a google_sheet/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /overrides stale session claims/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /googleSheets with op call_exported_sheet and its resourceRef/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /do not search Drive, resolve the URL, choose an account, or ask which file/i);
 	});
 
 	it("marks raw skill operations as inspection paths rather than normal routing", () => {

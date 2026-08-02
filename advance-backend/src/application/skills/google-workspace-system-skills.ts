@@ -28,7 +28,7 @@ const GOOGLE_SKILL_ALIASES: Record<GoogleWorkspaceProductDefinition['service'], 
   drive: ['google files', 'cloud files', 'shared drive'],
   calendar: ['google events', 'schedule', 'availability'],
   docs: ['google document', 'word processor'],
-  sheets: ['google sheet', 'google sheet url', 'docs.google.com/spreadsheets', 'spreadsheet', 'workbook', 'cells', 'dropdown', 'data validation', 'freeze header'],
+  sheets: ['google sheet', 'google sheet url', 'docs.google.com/spreadsheets', 'drive.google.com/file', 'excel workbook url', 'convert excel to google sheet', 'spreadsheet', 'workbook', 'cells', 'dropdown', 'data validation', 'freeze header'],
   slides: ['google presentation', 'slide deck'],
   forms: ['google form', 'survey'],
   tasks: ['google to-do', 'task list'],
@@ -333,19 +333,21 @@ A create/edit task is complete only when the final content is verified and the r
 
 ## Google Sheets workflow
 
-## Pasted Google Sheet URL
+## Pasted Google Sheet or Excel workbook URL
 
 Before generic web search or a native Sheets operation, route an exact pasted
-\`https://docs.google.com/spreadsheets/d/...\` URL through Divo's governed
-reference resolver. Do not fetch it as a public web page or derive an ID from
-the URL yourself:
+\`https://docs.google.com/spreadsheets/d/...\` Sheet URL or
+\`https://drive.google.com/file/d/...\` Excel workbook URL through Divo's
+governed reference resolver. Do not fetch it as a public web page, derive an ID
+from the URL yourself, request a download URL, or call
+\`import_to_google_sheets\` directly:
 
 \`\`\`json
 {
   "toolId": "googleSheets",
   "args": {
     "op": "resolve_reference",
-    "url": "<exact pasted Google Sheet URL>",
+    "url": "<exact pasted Google Sheet or Drive workbook URL>",
     "connectionId": "<optional exact returned connection UUID>"
   }
 }
@@ -378,6 +380,11 @@ model context.
 
 A URL-only request resolves metadata and access only. Confirm that Divo can
 open the Sheet, then ask what the member wants to do next.
+
+For an Excel workbook, \`resolve_reference\` prepares Divo's native confirmation
+to create a new Google Sheet copy. The original workbook stays unchanged. In
+Lark, stop after the successful resolver call: the backend delivers the
+confirmation card and owns conversion after the member clicks it.
 
 When RECENT DIVO EXPORTS identifies a Google Sheet, use its opaque reference
 for every read or edit in Lark. Never copy an ID from its URL and never supply a

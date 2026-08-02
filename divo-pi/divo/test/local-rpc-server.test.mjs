@@ -260,6 +260,170 @@ test("a transient failure after a completed gateway action is not retried", asyn
 	);
 });
 
+test("a transient failure after a mutation and later read returns a truthful safe completion", async () => {
+	let prompts = 0;
+	const rpc = {
+		waitFor: () => Promise.resolve({
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "Update the sheet" }] },
+				{
+					role: "assistant",
+					content: [{
+						type: "toolCall",
+						id: "write-1",
+						name: "divo_gateway",
+						arguments: { op: "tools.invoke" },
+					}],
+				},
+				{
+					role: "toolResult",
+					toolCallId: "write-1",
+					toolName: "divo_gateway",
+					isError: false,
+					details: { data: { action: "update" } },
+				},
+				{
+					role: "assistant",
+					content: [{
+						type: "toolCall",
+						id: "read-1",
+						name: "divo_gateway",
+						arguments: { op: "tools.invoke" },
+					}],
+				},
+				{
+					role: "toolResult",
+					toolCallId: "read-1",
+					toolName: "divo_gateway",
+					isError: false,
+					details: { data: { action: "read" } },
+				},
+				{
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "502: Upstream unreachable",
+					content: [],
+				},
+			],
+		}),
+		send: async () => {
+			prompts += 1;
+		},
+	};
+
+	const completion = await promptWithTransientRetries({
+		rpc,
+		message: "Original request",
+		retryDelayMs: 0,
+	});
+
+	assert.equal(prompts, 1);
+	assert.match(collectRunAssistantText(completion.messages), /subsequent read also succeeded/i);
+	assert.match(collectRunAssistantText(completion.messages), /did not repeat/i);
+});
+
+test("a transient failure after read-only gateway calls may retry", async () => {
+	const completions = [
+		{
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "Read the sheet" }] },
+				{
+					role: "assistant",
+					content: [{
+						type: "toolCall",
+						id: "read-1",
+						name: "divo_gateway",
+						arguments: { op: "tools.invoke" },
+					}],
+				},
+				{
+					role: "toolResult",
+					toolCallId: "read-1",
+					toolName: "divo_gateway",
+					isError: false,
+					details: { data: { action: "read" } },
+				},
+				{
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "502: Upstream unreachable",
+					content: [],
+				},
+			],
+		},
+		{
+			messages: [{
+				role: "assistant",
+				stopReason: "stop",
+				usage: { input: 10, output: 5 },
+				content: [{ type: "text", text: "Recovered read" }],
+			}],
+		},
+	];
+	const rpc = {
+		waitFor: () => Promise.resolve(completions.shift()),
+		send: async (command) => (
+			command.type === "get_state"
+				? { isStreaming: false, isCompacting: false }
+				: undefined
+		),
+	};
+
+	const completion = await promptWithTransientRetries({
+		rpc,
+		message: "Original request",
+		retryDelayMs: 0,
+	});
+
+	assert.equal(collectRunAssistantText(completion.messages), "Recovered read");
+});
+
+test("a transient failure after an unknown gateway action is not retried", async () => {
+	let prompts = 0;
+	const rpc = {
+		waitFor: () => Promise.resolve({
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "Approve the request" }] },
+				{
+					role: "assistant",
+					content: [{
+						type: "toolCall",
+						id: "unknown-1",
+						name: "divo_gateway",
+						arguments: { op: "tools.invoke" },
+					}],
+				},
+				{
+					role: "toolResult",
+					toolCallId: "unknown-1",
+					toolName: "divo_gateway",
+					isError: false,
+					details: { data: { action: "approve" } },
+				},
+				{
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "502: Upstream unreachable",
+					content: [],
+				},
+			],
+		}),
+		send: async () => {
+			prompts += 1;
+		},
+	};
+
+	await assert.rejects(
+		promptWithTransientRetries({
+			rpc,
+			message: "Original request",
+			retryDelayMs: 0,
+		}),
+		/failed after a company action was issued/,
+	);
+	assert.equal(prompts, 1);
+});
+
 test("a transient failure after an issued gateway action is not retried without its result", async () => {
 	let prompts = 0;
 	const rpc = {

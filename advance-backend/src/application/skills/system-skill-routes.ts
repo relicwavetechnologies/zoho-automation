@@ -84,10 +84,12 @@ Choose the exact approved specialist returned by this router.
 - Fetch across pages to calculate, group, join, reshape, or move data between
   connected products → \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`. Write one script,
   run it, edit and rerun it.
-- An exact pasted \`https://docs.google.com/spreadsheets/d/...\` URL →
-  \`google-sheets\` before any generic web search. Resolve the reference first;
-  a URL alone proves only metadata/access, so ask what the member wants to do
-  next. Never claim existing-Sheet bulk write, append, or import is available.
+- An exact pasted \`https://docs.google.com/spreadsheets/d/...\` Sheet URL or
+  \`https://drive.google.com/file/d/...\` Excel workbook URL → \`google-sheets\`
+  before Google Drive or generic web search. Resolve the reference first. A
+  Sheet URL alone proves only metadata/access, so ask what the member wants to
+  do next. A resolved Excel workbook prepares the Lark confirmation for a new
+  Google Sheet copy; never request a download URL or import it directly.
 - Read or analyse a file that is already in the workspace → \`${READ_FILES_SKILL_SLUG}\`.
 
 Use the provider preview and governed export path for one source's complete
@@ -101,6 +103,7 @@ Never treat this router as permission to process or export data. Load the specia
     aliases: [
       'data processing', 'calculate data', 'analyze rows', 'export data', 'csv export',
       'move data', 'transfer records', 'sync between tools', 'python workflow',
+      'excel workbook url', 'drive.google.com/file', 'convert excel to google sheet',
     ],
     sortOrder: 5,
   },
