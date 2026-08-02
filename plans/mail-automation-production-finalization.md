@@ -262,16 +262,18 @@ That correction makes P3 considerably worse than it was written, and is why Wave
 
 **Fix:**
 
-| Issue | Location | Why |
-|---|---|---|
-| Validation defeated by a cast | [mail-ops.worker.ts:393-438](../advance-backend/src/application/mail-ops/mail-ops.worker.ts:393) | `readDeliveryPayload` type-checks keys in a loop, then `as unknown as` and spreads unvalidated fields through. Replace with Zod. |
-| Error classification by substring | [mail-ops.worker.ts:449-455](../advance-backend/src/application/mail-ops/mail-ops.worker.ts:449) | Greps the error *message* for `'scope'`/`'token'`/`'rate'` when `GmailApiError.status` exists. A Google copy change reclassifies everything. |
-| Two phantom delivery states | schema + types | `ambiguous` is only ever written `false`; `'failed'` is declared in the status union and **never written by any code path**. Both read as handled cases that do not exist. |
-| `errorText` defined twice | worker:457, repository:82 | Different truncation behaviour in each copy. |
-| Repository mixes four aggregates | 825 lines | Split along subscription / rule / event / delivery. |
-| MIME functions untested | `extractBody`, `hasAttachment`, `buildForwardMime`, `splitRawMessage`, `selectContentHeaders` | Highest-risk pure logic in the module; only one indirect integration test. |
-| Magic numbers split across files | worker:16-17, repository:729/790 | Some are exported constants, some inline literals. |
-| Mock-shaped tests over dead code | [mail-automations.tool.test.ts:155](../advance-backend/tests/tools/mail-automations.tool.test.ts:155) | See D5. Any test that stubs the seam where the bug lives cannot detect the bug. |
+**Status 2026-08-02: everything here is done except the repository split.**
+
+| Issue | Status |
+|---|---|
+| Validation defeated by a cast | ✅ `readDeliveryPayload` is a Zod schema. It also **drops** unknown keys now, so a field removed in a later version cannot ride out of a row written before the removal. |
+| Error classification by substring | ✅ `GmailApiError` carries Google's machine-readable `reason` beside the status, and classification keys off both. A `403` is genuinely ambiguous — "insufficient permissions" *and* "too fast" — so the reason separates them. The substring pass survives only for errors that never came from Gmail, and no longer looks for `scope` or `permission`: a Divo-side error saying "permission" is our problem. This one mattered because `scope_missing` puts "Reconnect Google" in front of the mailbox owner. |
+| Two phantom delivery states | ✅ half stale, half real. `ambiguous` **is** written `true` — fixed in Waves 3–5, the audit entry was out of date. `'failed'` was real: declared, never written. The union also **omitted `blocked`**, which every refusal and rate-limit drop writes — wrong in both directions at once, and nothing referenced it, which is how it drifted. |
+| `errorText` defined twice | ✅ stale. One copy in the worker; the repository's is a distinct `const` with deliberate 500-char truncation for a database column. |
+| Repository mixes four aggregates | ⏳ **the one item left.** Now ~1,340 lines. Held while a cold review of Waves 7–8 is in flight — splitting the file under review would make both jobs worse. |
+| MIME functions untested | ✅ `buildForwardMime` / `splitRawMessage` / `selectContentHeaders` covered by the byte-for-byte forward tests (see Wave 8); `extractBody` / `hasAttachment` now have direct tests, having been reachable only through a full sync. Both were exported for the purpose. No defect found in either — the tests pin behaviour that had none. |
+| Magic numbers split across files | ✅ `MAIL_DELIVERY_MAX_ATTEMPTS`, `MAIL_DELIVERY_RETRY_BASE_MS`, `MAILBOX_WATCH_RENEWAL_INTERVAL_MS`. The retry ladder's `5` was three separate literals across the claim predicate, the failure path and the stale sweep — they have disagreed before, and rows at the end of the ladder became both unclaimable and unabandonable. |
+| Mock-shaped tests over dead code | ✅ **appears resolved with D5 itself.** `runContext.connectionAuthorization` no longer exists in `run-context.ts` or `composition.ts`; `beginGoogleAuthorization` now decides on `googleOAuthService.isConfigured()`, and `tests/application/begin-google-authorization.test.ts` exercises it. Confirmed by grep, **not** by tracing the whole OAuth continuation end to end — D5 is cross-cutting and its closure should be verified on its own terms, not assumed from this. |
 
 ---
 
