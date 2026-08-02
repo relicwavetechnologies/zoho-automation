@@ -49,6 +49,11 @@ export function parseDataExportOfferPayload(value: unknown): DataExportOfferPayl
         ...(parsed.source.filters ? { filters: parsed.source.filters } : {}),
         ...(parsed.source.query ? { query: parsed.source.query } : {}),
       }
+    : parsed.source.kind === 'oms_snapshot' ? {
+        kind: parsed.source.kind,
+        connectionId: parsed.source.connectionId,
+        args: parsed.source.args,
+      }
     : {
         kind: parsed.source.kind,
         connectionId: parsed.source.connectionId,

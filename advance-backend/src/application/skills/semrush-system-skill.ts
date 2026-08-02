@@ -25,7 +25,7 @@ Use this skill for read-only Semrush SEO research available through Divo's backe
    - \`empty\`: the request was valid but Semrush had no matching coverage.
    - \`partial\`: Semrush has another available page. State that limitation and use the next-page value if more data is needed.
    - \`blocked\` or an invocation error: explain whether configuration, permission, unsupported capability, or provider availability prevented the lookup. Never invent the missing data.
-5. Summarize evidence in chat. If Divo returns a temporary CSV artifact, identify it as a temporary export and do not reproduce hundreds of rows in chat.
+5. Summarize useful evidence in chat; the structured preview contains at most 25 rows. When \`preview.exportOfferId\` is present, tell the user a governed Sheet/CSV/XLSX export is available instead of reproducing rows. Confirmation reruns the same Semrush query, so describe it as a current export rather than an immutable copy of the preview. A temporary CSV may still appear only on the retained legacy rollback path.
 
 ## Supported official operations
 

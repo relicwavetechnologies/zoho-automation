@@ -10,10 +10,12 @@ import type { CloudinaryAdapter } from '../../../infrastructure/cloudinary/cloud
 import type { AuditService } from '../../observability/audit.service';
 import { arrayToCsv } from '../shared/sandbox-runner';
 import { SemrushService } from '../../semrush/semrush.service';
-import { SemrushServiceError, SemrushToolArgsSchema, type SemrushToolArgs } from '../../semrush/semrush.types';
+import { SemrushServiceError, SemrushToolArgsSchema, type SemrushFetchedData, type SemrushToolArgs } from '../../semrush/semrush.types';
 import type { ApiKeyExhaustionNotifierPort } from '../../governance/api-key-exhaustion.notifier';
+import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
+import type { DataExportOfferPayload } from '../../data-export/export-offer';
+import { createDatasetPreview, DATASET_PREVIEW_ROW_LIMIT, type DatasetCoverage } from '../../data-export/dataset-preview';
 
-const MAX_MODEL_ROWS = 200;
 const MAX_TASK_ROWS = 1_000;
 
 const ResultSchema = z.object({
@@ -21,7 +23,26 @@ const ResultSchema = z.object({
   operation: z.string(),
   retrievedAt: z.string(),
   coverage: z.record(z.unknown()),
-  rows: z.array(z.record(z.unknown())).max(MAX_MODEL_ROWS),
+  preview: z.object({
+    columns: z.array(z.string()),
+    rows: z.array(z.record(z.unknown())).max(DATASET_PREVIEW_ROW_LIMIT),
+    coverage: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('complete'), totalRows: z.number().int().nonnegative() }),
+      z.object({
+        kind: z.literal('truncated'),
+        returnedRows: z.number().int().nonnegative(),
+        knownTotal: z.number().int().nonnegative().optional(),
+        reason: z.string(),
+      }),
+      z.object({
+        kind: z.literal('provider_limited'),
+        returnedRows: z.number().int().nonnegative(),
+        reason: z.string(),
+      }),
+      z.object({ kind: z.literal('unknown'), returnedRows: z.number().int().nonnegative() }),
+    ]),
+    exportOfferId: z.string().optional(),
+  }).optional(),
   nextPage: z.string().optional(),
   artifact: z.object({ id: z.string(), downloadUrl: z.string().url(), expiresAt: z.string() }).optional(),
   message: z.string(),
@@ -31,6 +52,7 @@ type Res = z.infer<typeof ResultSchema>;
 
 export const createSemrushTool = (deps: {
   service: SemrushService;
+  offers?: Pick<DataExportOfferService, 'createAuthorizedOffer'>;
   cloudinary: CloudinaryAdapter;
   audit?: AuditService;
   csvLinkTtl?: number;
@@ -45,7 +67,7 @@ export const createSemrushTool = (deps: {
   parameterDocs: [
     'operation: domain_overview, organic_positions, organic_position_trend, keyword_research, domain_comparison, keyword_gap, or backlinks_comparison.',
     'domain_overview: { domain, database? }. One-row snapshot of rank, organic/paid keywords, traffic and cost.',
-    'organic_positions: { domain, database?, limit?, offset? }. limit is 1–1000; Divo returns at most 200 rows in chat and creates a temporary CSV for larger results.',
+    'organic_positions: { domain, database?, limit?, offset? }. limit is 1–1000; Divo returns at most 25 preview rows in chat and can offer a governed export.',
     'organic_position_trend: { domain, database?, limit? }. Monthly history, newest month first; limit is months (default 24). Use it for "is this domain growing", never for current position.',
     'keyword_research: { keywords[1–25], database? }. Volume, CPC, competition and 12-month trend per keyword, batched into one request. Semrush omits keywords it has no data for, so compare coverage.requestedKeywords with returnedKeywords before saying a keyword has no volume.',
     'domain_comparison: { targets[2–5], database?, limit? }. Keywords the targets have in common, with each domain position in its own column.',
@@ -72,9 +94,29 @@ export const createSemrushTool = (deps: {
       ctx.onProgress?.('Retrieving Semrush data…');
       const data = await deps.service.execute(args);
       const allRows = data.rows.slice(0, MAX_TASK_ROWS);
-      const rows = allRows.slice(0, MAX_MODEL_ROWS);
+      const canOfferExport = deps.offers !== undefined
+        && allRows.length > 0
+        && ctx.runContext.channel === 'lark'
+        && Boolean(ctx.runContext.chatId)
+        && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true;
+      let offer: Awaited<ReturnType<DataExportOfferService['createAuthorizedOffer']>> | undefined;
+      if (canOfferExport) {
+        try {
+          offer = await deps.offers!.createAuthorizedOffer(exportPayloadFor(args, ctx));
+        } catch (error) {
+          ctx.logger.warn('semrush.export_offer.create_failed', {
+            error: String(error),
+            correlationId: ctx.correlationId,
+          });
+        }
+      }
+      const preview = createDatasetPreview({
+        rows: allRows,
+        coverage: previewCoverageFor(data, allRows.length),
+        ...(offer ? { exportOfferId: offer.offerId } : {}),
+      });
       let artifact: Res['artifact'];
-      if (allRows.length > MAX_MODEL_ROWS && deps.cloudinary.isAvailable) {
+      if (deps.offers === undefined && allRows.length > DATASET_PREVIEW_ROW_LIMIT && deps.cloudinary.isAvailable) {
         const headers = headersFor(allRows);
         const exported = await deps.cloudinary.uploadCsvBuffer({
           buffer: arrayToCsv(headers, allRows),
@@ -89,10 +131,16 @@ export const createSemrushTool = (deps: {
         operation: data.operation,
         retrievedAt: new Date().toISOString(),
         coverage: data.coverage,
-        rows,
+        preview,
         ...(data.nextPage ? { nextPage: data.nextPage } : {}),
         ...(artifact ? { artifact } : {}),
-        message: messageFor({ rowCount: allRows.length, returnedRows: rows.length, artifact: Boolean(artifact), status: data.status }),
+        message: messageFor({
+          rowCount: allRows.length,
+          returnedRows: preview.rows.length,
+          artifact: Boolean(artifact),
+          offer: Boolean(offer),
+          status: data.status,
+        }),
       };
       deps.audit?.record({
         actorId: ctx.runContext.userId,
@@ -103,8 +151,9 @@ export const createSemrushTool = (deps: {
           operation: args.operation,
           status: result.status,
           rowCount: allRows.length,
-          returnedRowCount: rows.length,
+          returnedRowCount: preview.rows.length,
           artifactId: artifact?.id ?? null,
+          exportOfferId: offer?.offerId ?? null,
           latencyMs: Date.now() - startedAt,
           correlationId: ctx.correlationId,
         },
@@ -135,7 +184,6 @@ export const createSemrushTool = (deps: {
           operation: args.operation,
           retrievedAt: new Date().toISOString(),
           coverage: {},
-          rows: [],
           message: normalized.message,
         });
       }
@@ -148,12 +196,47 @@ function headersFor(rows: Array<Record<string, unknown>>): string[] {
   return [...new Set(rows.flatMap(row => Object.keys(row)))].slice(0, 60);
 }
 
-function messageFor(input: { rowCount: number; returnedRows: number; artifact: boolean; status: Res['status'] }): string {
+function messageFor(input: { rowCount: number; returnedRows: number; artifact: boolean; offer: boolean; status: Res['status'] }): string {
   if (input.status === 'empty') return 'Semrush returned no matching data for this request.';
   const parts = [`Retrieved ${input.rowCount} row${input.rowCount === 1 ? '' : 's'}.`];
   if (input.rowCount > input.returnedRows) parts.push(`Showing the first ${input.returnedRows} rows in chat.`);
+  if (input.offer) parts.push('A governed export is available. It reruns this Semrush query when the user confirms, so current provider data may differ from this preview.');
   if (input.artifact) parts.push('The complete normalized result is available as a temporary CSV download.');
   return parts.join(' ');
+}
+
+function previewCoverageFor(data: SemrushFetchedData, rowCount: number): DatasetCoverage {
+  if (data.status === 'complete' || data.status === 'empty') {
+    return { kind: 'complete', totalRows: rowCount };
+  }
+  return data.nextPage
+    ? { kind: 'truncated', returnedRows: rowCount, reason: 'semrush_next_page_available' }
+    : { kind: 'provider_limited', returnedRows: rowCount, reason: 'semrush_requested_limit_without_pagination_or_total' };
+}
+
+function exportPayloadFor(
+  args: SemrushToolArgs,
+  ctx: ToolExecutionContext,
+): DataExportOfferPayload {
+  return {
+    companyId: ctx.runContext.companyId,
+    userId: ctx.runContext.userId,
+    ...(ctx.runContext.departmentId ? { departmentId: ctx.runContext.departmentId } : {}),
+    source: {
+      kind: 'semrush_snapshot',
+      connectionId: 'backend_managed',
+      args,
+    },
+    destination: {
+      format: 'auto',
+      title: `Semrush ${args.operation.replaceAll('_', ' ')} export`,
+    },
+    chatId: ctx.runContext.chatId!,
+    ...(ctx.runContext.replyToMessageId ? { replyToMessageId: ctx.runContext.replyToMessageId } : {}),
+    ...(ctx.runContext.replyInThread !== undefined ? { replyInThread: ctx.runContext.replyInThread } : {}),
+    requestId: ctx.runContext.requestId ?? ctx.correlationId,
+    ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
+  };
 }
 
 function toToolError(error: unknown): ToolError {

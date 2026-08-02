@@ -161,6 +161,34 @@ describe('OMS Site Data tool', () => {
     }).success, false, 'OMS exports must use the opaque offer, not a model-built recipe');
   });
 
+  it('keeps the successful preview when optional offer persistence fails', async () => {
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'get_site_profiles',
+          status: 'complete',
+          coverage: {},
+          rows: [{ website: 'example.com' }],
+        }),
+      },
+      offers: {
+        createAuthorizedOffer: async () => { throw new Error('database unavailable'); },
+      },
+    });
+    const ctx = makeCtx('omsSiteData', ['read'], { chatId: 'oc-chat', requestId: 'request-3' });
+    ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
+
+    const result = await tool.execute(
+      { operation: 'get_site_profiles', websites: ['example.com'] },
+      ctx,
+    );
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(result.value.preview?.rows, [{ website: 'example.com' }]);
+    assert.equal(result.value.preview?.exportOfferId, undefined);
+  });
+
   it('replays an OMS offer through the central snapshot source adapter', async () => {
     const calls: unknown[] = [];
     const adapter = new OmsSnapshotDataExportSource({

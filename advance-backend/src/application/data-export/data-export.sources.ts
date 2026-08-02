@@ -11,6 +11,7 @@ import type {
   ZohoBooksModule,
 } from '../../infrastructure/zoho/zoho-books-paginated.client';
 import type { CompanyOmsSiteDataService } from '../oms/company-oms-site-data.service';
+import type { SemrushService } from '../semrush/semrush.service';
 import {
   type CurrencyConverter,
   getModuleSchema,
@@ -25,6 +26,7 @@ import type { DataExportSource } from './data-export.types';
 type AirtableSource = Extract<DataExportSource, { kind: 'airtable_records' }>;
 type ZohoBooksSource = Extract<DataExportSource, { kind: 'zoho_books' }>;
 type OmsSnapshotSource = Extract<DataExportSource, { kind: 'oms_snapshot' }>;
+type SemrushSnapshotSource = Extract<DataExportSource, { kind: 'semrush_snapshot' }>;
 
 const AIRTABLE_REST_KEYS = new Set(['baseId', 'tableId', 'fieldIds']);
 const AIRTABLE_PAGE_LIMIT = 20_000;
@@ -187,6 +189,26 @@ export class OmsSnapshotDataExportSource implements DataExportSourceAdapter<OmsS
     });
     context.signal?.throwIfAborted();
     yield { rows: result.rows };
+  }
+}
+
+export class SemrushSnapshotDataExportSource implements DataExportSourceAdapter<SemrushSnapshotSource> {
+  readonly kind = 'semrush_snapshot' as const;
+
+  constructor(
+    private readonly service: Pick<SemrushService, 'execute'>,
+  ) {}
+
+  async *read(source: SemrushSnapshotSource, context: {
+    readonly signal?: AbortSignal;
+  }): AsyncIterable<DataExportPage> {
+    context.signal?.throwIfAborted();
+    const result = await this.service.execute(source.args);
+    context.signal?.throwIfAborted();
+    yield {
+      rows: result.rows,
+      ...(result.status === 'partial' ? { sourceTruncated: true } : {}),
+    };
   }
 }
 

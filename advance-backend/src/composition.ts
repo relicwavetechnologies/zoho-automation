@@ -128,6 +128,7 @@ import { DatasetSourceRegistry } from './application/data-export/data-export.sou
 import {
   AirtableDataExportSource,
   OmsSnapshotDataExportSource,
+  SemrushSnapshotDataExportSource,
   ZohoBooksDataExportSource,
 } from './application/data-export/data-export.sources';
 import { GoogleWorkspaceExportSink } from './application/data-export/google-workspace-export.sink';
@@ -1427,6 +1428,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     },
   ));
   dataExportSources.register(new OmsSnapshotDataExportSource(companyOmsSiteDataService));
+  dataExportSources.register(new SemrushSnapshotDataExportSource(semrushService));
   const googleWorkspaceExportSink = new GoogleWorkspaceExportSink();
 
   const zohoFinanceOps = new ZohoFinanceOps(
@@ -1766,6 +1768,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   toolRegistry.register(createDataExportTool({ offers: dataExportOfferService }));
   toolRegistry.register(createSemrushTool({
     service: semrushService,
+    offers: dataExportOfferService,
     cloudinary: cloudinaryAdapter,
     audit: auditService,
     csvLinkTtl: env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,

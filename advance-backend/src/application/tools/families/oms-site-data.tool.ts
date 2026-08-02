@@ -95,9 +95,17 @@ export const createOmsSiteDataTool = (deps: {
         && ctx.runContext.channel === 'lark'
         && Boolean(ctx.runContext.chatId)
         && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true;
-      const offer = canOfferExport
-        ? await deps.offers!.createAuthorizedOffer(exportPayloadFor(args, ctx))
-        : undefined;
+      let offer: Awaited<ReturnType<DataExportOfferService['createAuthorizedOffer']>> | undefined;
+      if (canOfferExport) {
+        try {
+          offer = await deps.offers!.createAuthorizedOffer(exportPayloadFor(args, ctx));
+        } catch (error) {
+          ctx.logger.warn('oms.export_offer.create_failed', {
+            error: String(error),
+            correlationId: ctx.correlationId,
+          });
+        }
+      }
       const preview = createDatasetPreview({
         rows: data.rows,
         coverage: {

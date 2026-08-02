@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { CanonicalToolId } from '../../domain/tools/tool-id';
 import type { ZohoBooksModule } from '../../infrastructure/zoho/zoho-books-paginated.client';
 import { OmsSiteDataToolArgsSchema } from '../oms/oms-site-data.types';
+import { SemrushToolArgsSchema } from '../semrush/semrush.types';
 
 export const DATA_EXPORT_ROW_LIMIT = 5_000;
 const ZOHO_BOOKS_SOURCE_MODULES = [
@@ -30,6 +31,11 @@ const omsSnapshotDatasetSourceSchema = z.object({
   connectionId: z.literal('backend_managed'),
   args: OmsSiteDataToolArgsSchema,
 }).strict();
+const semrushSnapshotDatasetSourceSchema = z.object({
+  kind: z.literal('semrush_snapshot'),
+  connectionId: z.literal('backend_managed'),
+  args: SemrushToolArgsSchema,
+}).strict();
 
 export const directDatasetSourceSchema = z.discriminatedUnion('kind', [
   airtableDatasetSourceSchema,
@@ -40,13 +46,15 @@ export const datasetSourceSchema = z.discriminatedUnion('kind', [
   airtableDatasetSourceSchema,
   zohoBooksDatasetSourceSchema,
   omsSnapshotDatasetSourceSchema,
+  semrushSnapshotDatasetSourceSchema,
 ]);
 
 export type DataExportSource = z.infer<typeof datasetSourceSchema>;
 
 export function datasetSourceToolId(source: DataExportSource): CanonicalToolId {
   if (source.kind === 'airtable_records') return source.toolId;
-  return source.kind === 'zoho_books' ? 'zohoBooks' : 'omsSiteData';
+  if (source.kind === 'zoho_books') return 'zohoBooks';
+  return source.kind === 'oms_snapshot' ? 'omsSiteData' : 'semrush';
 }
 
 export interface DataExportTransform {
