@@ -321,6 +321,7 @@ model Company {
   mailAutomationRules             MailAutomationRule[]
   mailEvents                      MailEvent[]
   mailDeliveries                  MailDelivery[]
+  mailboxReconciliations          MailboxReconciliation[]
   knowledgeResources              KnowledgeResource[]
   knowledgeMutations              KnowledgeMutation[]
   knowledgeFileAssets             KnowledgeFileAsset[]
@@ -1433,6 +1434,7 @@ model MailboxSubscription {
   updatedAt           DateTime              @updatedAt
   rules               MailAutomationRule[]
   events              MailEvent[]
+  reconciliations     MailboxReconciliation[]
 
   @@unique([connectionId, companyId, userId])
   @@unique([id, companyId])
@@ -1478,6 +1480,28 @@ model MailAutomationRule {
 }
 
 /// A deduplicated new-message event discovered from Gmail history.
+/// One stale-cursor recovery: what Divo had to fall back to, and what it cost.
+///
+/// A recovery means the mailbox cursor was rejected outright by Gmail, so mail
+/// was missed and swept back in by date rather than by history. `truncated`
+/// marks the case where the window held more than one pass reads, which is the
+/// only place in the system where mail is knowingly lost — a log line was the
+/// sole record of it, and log lines are not something anybody can query a month
+/// later when asked what happened.
+model MailboxReconciliation {
+  id             String              @id @default(uuid())
+  companyId      String
+  company        Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  subscriptionId String
+  subscription   MailboxSubscription @relation(fields: [subscriptionId, companyId], references: [id, companyId], onDelete: Cascade)
+  recoveredCount Int                 @default(0)
+  truncated      Boolean             @default(false)
+  occurredAt     DateTime            @default(now())
+
+  @@index([companyId, occurredAt])
+  @@index([subscriptionId, occurredAt])
+}
+
 model MailEvent {
   id                String              @id @default(uuid())
   companyId         String

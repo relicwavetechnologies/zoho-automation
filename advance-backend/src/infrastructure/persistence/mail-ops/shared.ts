@@ -11,6 +11,7 @@ import type { PrismaClient } from '../../../generated/prisma';
 export type MailOpsDb = Pick<
   PrismaClient,
   | 'mailboxSubscription'
+  | 'mailboxReconciliation'
   | 'mailAutomationRule'
   | 'mailEvent'
   | 'mailDelivery'

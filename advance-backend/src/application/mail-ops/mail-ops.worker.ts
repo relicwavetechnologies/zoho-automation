@@ -4,6 +4,7 @@ import type { MailOpsRepository } from '../../infrastructure/persistence/mail-op
 import type { MailboxSyncClaim } from '../../infrastructure/persistence/mail-ops.repository';
 import {
   GmailApiError,
+  MailTooLargeError,
   type GmailHistoryClient,
 } from '../../infrastructure/google/gmail-history.client';
 import {
@@ -81,6 +82,22 @@ class HistoryBacklogStalledError extends Error {
   }
 }
 
+/**
+ * What one wake-up of the worker did.
+ *
+ * Counters rather than a metrics client, because there is no metrics backend
+ * to send them to yet and a log line somebody can grep is worth more than an
+ * abstraction over a thing that does not exist.
+ */
+interface TickCounters {
+  watchesRenewed: number;
+  mailboxesSynced: number;
+  mailboxesFailed: number;
+  deliveriesAttempted: number;
+  deliveriesSent: number;
+  deliveriesFailed: number;
+}
+
 /** The rule's own hourly ceiling, where it has one. `organize` never does. */
 const ruleRateLimit = (action: MailRuleAction): number | undefined =>
   action.type === 'organize' ? undefined : action.rateLimitPerHour;
@@ -92,6 +109,7 @@ type MailRepo = Pick<
   | 'recordEvents'
   | 'advanceCursor'
   | 'markSyncFailed'
+  | 'recordReconciliation'
   | 'listActiveRules'
   | 'reserveDelivery'
   | 'recordBlockedDelivery'
@@ -234,6 +252,18 @@ export class MailOpsWorker {
   async runOnce(): Promise<void> {
     if (this.running) return;
     this.running = true;
+    // Counted over the whole call, including a re-run, because the question a
+    // tick summary answers is "did that wake-up move any mail" — and a rerun
+    // is the same wake-up still working.
+    const tick = {
+      watchesRenewed: 0,
+      mailboxesSynced: 0,
+      mailboxesFailed: 0,
+      deliveriesAttempted: 0,
+      deliveriesSent: 0,
+      deliveriesFailed: 0,
+    };
+    const startedAt = Date.now();
     try {
       do {
         this.rerunRequested = false;
@@ -242,6 +272,7 @@ export class MailOpsWorker {
             const claimed = await this.deps.repo.claimNextWatchRenewal();
             if (!claimed.ok) throw claimed.error;
             if (!claimed.value) break;
+            tick.watchesRenewed += 1;
             await this.renewWatch(claimed.value);
           }
         }
@@ -253,16 +284,29 @@ export class MailOpsWorker {
           const claimed = await this.deps.repo.claimNextDueMailbox();
           if (!claimed.ok) throw claimed.error;
           if (!claimed.value) break;
-          await this.syncMailbox(claimed.value);
+          tick.mailboxesSynced += 1;
+          await this.syncMailbox(claimed.value, tick);
         }
         for (let count = 0; count < DELIVERY_BATCH_SIZE; count++) {
           const claimed = await this.deps.repo.claimNextDueDelivery();
           if (!claimed.ok) throw claimed.error;
           if (!claimed.value) break;
-          await this.deliver(claimed.value);
+          tick.deliveriesAttempted += 1;
+          await this.deliver(claimed.value, tick);
         }
         await this.sweepRetention();
       } while (this.rerunRequested);
+      // Emitted only when something happened. A worker that wakes every ten
+      // seconds and finds nothing would otherwise bury the ticks that matter
+      // under eight thousand a day that say nothing.
+      if (
+        tick.mailboxesSynced + tick.deliveriesAttempted + tick.watchesRenewed > 0
+      ) {
+        this.log.info('mail_ops.tick_summary', {
+          ...tick,
+          durationMs: Date.now() - startedAt,
+        });
+      }
     } finally {
       this.running = false;
     }
@@ -376,6 +420,7 @@ export class MailOpsWorker {
 
   private async syncMailbox(
     claim: MailboxSyncClaim,
+    tick?: TickCounters,
   ): Promise<void> {
     const startedAt = Date.now();
     try {
@@ -622,6 +667,24 @@ export class MailOpsWorker {
       // logs: the cursor was rejected outright, which means mail was missed,
       // and this line is the only record of how much of it came back.
       if (sync.staleCursorRecovered) {
+        // Durable as well as logged. `recoveryTruncated` marks the only place
+        // in this system where mail is knowingly lost, and a log line is not
+        // something anybody can query a month later when they are asked what
+        // happened to a message. Best effort: this is evidence about a sync,
+        // not part of one, and failing the pass over a failed audit insert
+        // would turn a recovered mailbox back into a stopped one.
+        const recorded = await this.deps.repo.recordReconciliation({
+          companyId: claim.companyId,
+          subscriptionId: claim.subscriptionId,
+          recoveredCount: sync.recoveredMessageCount ?? 0,
+          truncated: sync.recoveryTruncated === true,
+        });
+        if (!recorded.ok) {
+          this.log.error('mail_ops.reconciliation_audit_failed', {
+            subscriptionId: claim.subscriptionId,
+            error: errorText(recorded.error),
+          });
+        }
         const log = sync.recoveryTruncated
           ? this.log.error.bind(this.log)
           : this.log.warn.bind(this.log);
@@ -650,6 +713,14 @@ export class MailOpsWorker {
         new Date(Date.now() + 5 * 60_000),
       );
       if (!failed.ok) throw failed.error;
+      if (tick) {
+        tick.mailboxesFailed += 1;
+        // A mailbox that failed did not sync, however the tick counted it on
+        // the way in. A summary reporting twenty synced and three failed out
+        // of twenty is the kind of arithmetic nobody checks and everybody
+        // misreads.
+        tick.mailboxesSynced = Math.max(0, tick.mailboxesSynced - 1);
+      }
       this.log.warn('mail_ops.mailbox_sync_failed', {
         subscriptionId: claim.subscriptionId,
         error: errorText(error),
@@ -716,12 +787,15 @@ export class MailOpsWorker {
     });
   }
 
-  private async deliver(input: {
-    deliveryId: string;
-    attempts: number;
-    payload: Record<string, unknown>;
-    providerDraftId?: string;
-  }): Promise<void> {
+  private async deliver(
+    input: {
+      deliveryId: string;
+      attempts: number;
+      payload: Record<string, unknown>;
+      providerDraftId?: string;
+    },
+    tick?: TickCounters,
+  ): Promise<void> {
     const startedAt = Date.now();
     // Set once the probe says the draft is still sitting there unsent, and
     // cleared the moment anything might have gone out. Declared out here
@@ -936,6 +1010,7 @@ export class MailOpsWorker {
         providerMessageId,
       );
       if (!delivered.ok) throw delivered.error;
+      if (tick) tick.deliveriesSent += 1;
       this.log.info('mail_ops.delivery_delivered', {
         deliveryId: input.deliveryId,
         action: payload.action.type,
@@ -944,6 +1019,27 @@ export class MailOpsWorker {
         durationMs: Date.now() - startedAt,
       });
     } catch (error) {
+      // Too big for Gmail is the one send failure retrying cannot fix. Left on
+      // the ladder it burned five attempts and ended abandoned anyway, with
+      // `lastError` reading like a transient provider fault — so the member saw
+      // a rule that had worked all week stop for one message, and nothing said
+      // the message was the reason. Abandoned once, in words, instead.
+      if (error instanceof MailTooLargeError) {
+        const abandoned = await this.deps.repo.markDeliveryAbandoned(
+          input.deliveryId,
+          input.attempts,
+          error.message,
+          // The draft is built before anything is staged, so a message refused
+          // for its size never reached Gmail at all.
+          { nothingWasSent: true },
+        );
+        if (!abandoned.ok) throw abandoned.error;
+        this.log.warn('mail_ops.delivery_too_large', {
+          deliveryId: input.deliveryId,
+          bytes: error.bytes,
+        });
+        return;
+      }
       const failed = await this.deps.repo.markDeliveryFailed(
         input.deliveryId,
         error,
@@ -957,6 +1053,7 @@ export class MailOpsWorker {
         { nothingWasSent },
       );
       if (!failed.ok) throw failed.error;
+      if (tick) tick.deliveriesFailed += 1;
       this.log.warn('mail_ops.delivery_failed', {
         deliveryId: input.deliveryId,
         attempts: input.attempts,

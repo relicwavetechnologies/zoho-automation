@@ -60,6 +60,7 @@ export class MailOpsRepository {
   readonly markSyncFailed: MailboxSubscriptionRepository['markSyncFailed'];
   readonly recordNotifiedMailboxState: MailboxSubscriptionRepository['recordNotifiedMailboxState'];
   readonly requestReconciliation: MailboxSubscriptionRepository['requestReconciliation'];
+  readonly recordReconciliation: MailboxSubscriptionRepository['recordReconciliation'];
 
   // The rules.
   readonly createRuleForMailbox: MailAutomationRuleRepository['createRuleForMailbox'];
@@ -104,6 +105,8 @@ export class MailOpsRepository {
       subscriptions.recordNotifiedMailboxState.bind(subscriptions);
     this.requestReconciliation =
       subscriptions.requestReconciliation.bind(subscriptions);
+    this.recordReconciliation =
+      subscriptions.recordReconciliation.bind(subscriptions);
 
     this.createRuleForMailbox = rules.createRuleForMailbox.bind(rules);
     this.listRulesForUser = rules.listRulesForUser.bind(rules);

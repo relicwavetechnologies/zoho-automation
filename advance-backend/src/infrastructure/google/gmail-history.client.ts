@@ -5,6 +5,26 @@ import type {
 } from '../../application/mail-ops/mail-ops.types';
 
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1/users/me';
+/** The media-upload host. A different origin, not a path on the one above. */
+const GMAIL_UPLOAD_API = 'https://gmail.googleapis.com/upload/gmail/v1/users/me';
+/**
+ * Above this many raw bytes, a draft goes through the upload endpoint.
+ *
+ * The ordinary endpoint takes the whole message base64-encoded inside a JSON
+ * body, which inflates it by a third and is capped around 5 MB — so a forward
+ * of a 4 MB attachment failed outright, and the member saw a rule that had
+ * worked all week stop for one message with a provider error. Set at 3 MiB so
+ * the encoded body stays comfortably under that cap rather than at it.
+ */
+const GMAIL_JSON_DRAFT_LIMIT_BYTES = 3 * 1024 * 1024;
+/**
+ * What Gmail itself will carry. Nothing can make a larger message send.
+ *
+ * Refused here, by name, rather than left to become a provider error five
+ * retries later: the mail is too big for Gmail and no amount of trying changes
+ * that, so the honest answer is to say so once and stop.
+ */
+const GMAIL_MAX_MESSAGE_BYTES = 25 * 1024 * 1024;
 const MAX_HISTORY_PAGES = 10;
 /**
  * The window a stale-cursor recovery sweeps, and how much of it it will read.
@@ -179,16 +199,58 @@ export class GmailHistoryClient {
       idempotencyKey: input.idempotencyKey,
       ruleId: input.ruleId,
     });
-    const draft = await this.getJson<{ id?: string }>(
-      `${GMAIL_API}/drafts`,
-      input.accessToken,
-      {
-        method: 'POST',
-        body: JSON.stringify({ message: { raw: raw.toString('base64url') } }),
-      },
-    );
+    if (raw.length > GMAIL_MAX_MESSAGE_BYTES) {
+      throw new MailTooLargeError(raw.length, GMAIL_MAX_MESSAGE_BYTES);
+    }
+    const draft = raw.length > GMAIL_JSON_DRAFT_LIMIT_BYTES
+      ? await this.createDraftFromRaw(raw, input.accessToken)
+      : await this.getJson<{ id?: string }>(
+        `${GMAIL_API}/drafts`,
+        input.accessToken,
+        {
+          method: 'POST',
+          body: JSON.stringify({ message: { raw: raw.toString('base64url') } }),
+        },
+      );
     if (!draft.id) throw new Error('Gmail draft creation returned no draft ID.');
     return draft.id;
+  }
+
+  /**
+   * Stages a draft by uploading its MIME bytes directly.
+   *
+   * One request, not a resumable session: `uploadType=media` carries a whole
+   * message up to Gmail's own size cap, and nothing bigger can be sent at all,
+   * so there is no range a resumable upload would reach that this does not.
+   * The bytes go up as `message/rfc822` rather than base64 inside JSON, which
+   * is what removes the ceiling — the encoding was the limit, not the size.
+   */
+  private async createDraftFromRaw(
+    raw: Buffer,
+    accessToken: string,
+  ): Promise<{ id?: string }> {
+    const response = await this.request(
+      `${GMAIL_UPLOAD_API}/drafts?uploadType=media`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'message/rfc822',
+        },
+        // A Buffer is a Uint8Array, which every fetch implementation accepts
+        // as a body. Cast because the DOM typings here do not say so.
+        body: raw as unknown as NonNullable<RequestInit['body']>,
+      },
+    );
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new GmailApiError(
+        response.status,
+        providerError(payload),
+        providerReason(payload),
+      );
+    }
+    return payload as { id?: string };
   }
 
   /** Sends a staged draft. Gmail consumes the draft, so this is not repeatable. */
@@ -515,6 +577,23 @@ export class GmailHistoryClient {
       );
     }
     return payload as T;
+  }
+}
+
+/**
+ * The forward is larger than Gmail will carry.
+ *
+ * Its own type because it is the one send failure that retrying cannot fix.
+ * Everything else in this client is worth another attempt; this is worth
+ * telling the member about and stopping.
+ */
+export class MailTooLargeError extends Error {
+  constructor(readonly bytes: number, readonly limit: number) {
+    super(
+      `This message is ${Math.round(bytes / 1024 / 1024)} MB, and Gmail will `
+        + `not send anything over ${Math.round(limit / 1024 / 1024)} MB.`,
+    );
+    this.name = 'MailTooLargeError';
   }
 }
 

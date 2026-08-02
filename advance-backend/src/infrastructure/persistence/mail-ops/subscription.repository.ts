@@ -11,7 +11,7 @@ import { errorText } from './shared';
 
 type MailboxSubscriptionDb = Pick<
   PrismaClient,
-  'mailboxSubscription' | '$transaction'
+  'mailboxSubscription' | 'mailboxReconciliation' | '$transaction'
 >;
 
 export interface MailboxSyncClaim {
@@ -401,6 +401,41 @@ export class MailboxSubscriptionRepository {
       return ok(updated.count);
     } catch (cause) {
       return err(wrapInfra('prisma', 'mailOps.requestReconciliation', cause));
+    }
+  }
+
+  /**
+   * Records that a mailbox's cursor was rejected and had to be recovered.
+   *
+   * A recovery means mail was missed and swept back in by date rather than by
+   * history, and `truncated` marks the case where the window held more than one
+   * pass reads — the only place in this system where mail is knowingly lost.
+   * A log line was the sole record of that, and a log line is not something
+   * anybody can query a month later when asked what happened to a message.
+   *
+   * Best effort by design: this is evidence about a sync, not part of one, and
+   * failing a mailbox's whole pass because the audit insert failed would turn a
+   * recovered mailbox into a stopped one.
+   */
+  async recordReconciliation(input: {
+    companyId: string;
+    subscriptionId: string;
+    recoveredCount: number;
+    truncated: boolean;
+  }): Promise<Result<boolean, InfraError>> {
+    try {
+      await this.db.mailboxReconciliation.create({
+        data: {
+          companyId: input.companyId,
+          subscriptionId: input.subscriptionId,
+          recoveredCount: input.recoveredCount,
+          truncated: input.truncated,
+        },
+        select: { id: true },
+      });
+      return ok(true);
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'mailOps.recordReconciliation', cause));
     }
   }
 

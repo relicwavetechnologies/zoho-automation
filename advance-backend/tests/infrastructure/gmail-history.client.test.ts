@@ -269,6 +269,82 @@ describe('GmailHistoryClient forward stamping', () => {
     assert.match(sentRaw, /X-Divo-Mailops: rule-1/);
   });
 
+  /** A forward whose source MIME is `bytes` long, staged through the client. */
+  const stageForward = async (bytes: number) => {
+    const calls: Array<{ url: string; contentType?: string; body: unknown }> = [];
+    const fetchStub = (async (url: string, init: any) => {
+      if (url.includes('format=raw')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            raw: Buffer.concat([
+              Buffer.from('Subject: Original\r\n\r\n'),
+              Buffer.alloc(bytes, 0x61),
+            ]).toString('base64url'),
+          }),
+        };
+      }
+      calls.push({
+        url,
+        contentType: init?.headers?.['Content-Type'],
+        body: init?.body,
+      });
+      return { ok: true, status: 200, json: async () => ({ id: 'draft-1' }) };
+    }) as unknown as typeof fetch;
+
+    const draftId = await new GmailHistoryClient(fetchStub).createForwardDraft({
+      accessToken: 'token',
+      destination: 'finance@example.com',
+      mailboxEmail: 'owner@example.com',
+      sourceMessageId: 'm1',
+      source: {
+        from: 'a@b.test',
+        to: 'owner@example.com',
+        subject: 'Original',
+        snippet: '',
+        bodyText: '',
+        hasAttachment: true,
+      },
+      idempotencyKey: 'mail:idempotency',
+      ruleId: 'rule-1',
+    });
+    return { draftId, calls };
+  };
+
+  it('uploads a large forward as bytes instead of base64 inside JSON', async () => {
+    // The ordinary endpoint takes the whole message base64-encoded in a JSON
+    // body, which inflates it by a third and is capped around 5 MB — so a
+    // forward carrying a 4 MB attachment failed outright, and the member saw a
+    // rule that had worked all week stop for one message. The encoding was the
+    // ceiling, not the size.
+    const { draftId, calls } = await stageForward(4 * 1024 * 1024);
+
+    assert.equal(draftId, 'draft-1');
+    assert.match(calls[0]!.url, /\/upload\/gmail\/v1\/users\/me\/drafts\?uploadType=media/);
+    assert.equal(calls[0]!.contentType, 'message/rfc822');
+    assert.ok(Buffer.isBuffer(calls[0]!.body));
+  });
+
+  it('leaves an ordinary forward on the ordinary endpoint', async () => {
+    // The upload path is for the messages that need it. Sending everything
+    // that way would change the shape of every forward to fix a minority.
+    const { calls } = await stageForward(1024);
+
+    assert.match(calls[0]!.url, /gmail\/v1\/users\/me\/drafts$/);
+    assert.equal(calls[0]!.contentType, 'application/json');
+  });
+
+  it('refuses a message larger than Gmail will ever carry, by name', async () => {
+    // No amount of retrying makes this send. Left to become a provider error,
+    // it burned five attempts and ended abandoned with a `lastError` reading
+    // like a transient fault — nothing said the message was the reason.
+    await assert.rejects(
+      stageForward(26 * 1024 * 1024),
+      /Gmail will not send anything over 25 MB/,
+    );
+  });
+
   it('carries the stamp into event metadata so the loop can be broken', async () => {
     const fetchStub = (async (url: string) => {
       if (url.includes('/history?')) {

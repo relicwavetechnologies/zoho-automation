@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { MailOpsWorker } from '../../src/application/mail-ops/mail-ops.worker.ts';
-import { GmailApiError } from '../../src/infrastructure/google/gmail-history.client.ts';
+import { GmailApiError, MailTooLargeError } from '../../src/infrastructure/google/gmail-history.client.ts';
 
 const logger = {
   info: () => {},
@@ -134,6 +134,7 @@ describe('MailOpsWorker', () => {
       stripEventBodies: async () => ({ ok: true, value: 0 }),
       dropTerminalPayloads: async () => ({ ok: true, value: 0 }),
       deleteEventsBefore: async () => ({ ok: true, value: 0 }),
+      recordReconciliation: async () => ({ ok: true, value: true }),
     };
     const worker = new MailOpsWorker({
       repo,
@@ -231,6 +232,7 @@ describe('MailOpsWorker', () => {
         stripEventBodies: async () => ({ ok: true, value: 0 }),
         dropTerminalPayloads: async () => ({ ok: true, value: 0 }),
         deleteEventsBefore: async () => ({ ok: true, value: 0 }),
+        recordReconciliation: async () => ({ ok: true, value: true }),
       },
       gmail: {
         watch: async () => {
@@ -915,6 +917,7 @@ describe('MailOpsWorker', () => {
         stripEventBodies: async () => ({ ok: true, value: 0 }),
         dropTerminalPayloads: async () => ({ ok: true, value: 0 }),
         deleteEventsBefore: async () => ({ ok: true, value: 0 }),
+        recordReconciliation: async () => ({ ok: true, value: true }),
       },
       gmail: {
         watch: async () => { throw new Error('Watch should not run without a topic.') },
@@ -1179,6 +1182,160 @@ describe('MailOpsWorker', () => {
     await worker.runOnce();
 
     assert.equal(delivered, true);
+  });
+
+  it('records a stale-cursor recovery durably, not only in a log line', async () => {
+    // `truncated` marks the only place in this system where mail is knowingly
+    // lost, and a log line is not something anybody can query a month later
+    // when they are asked what happened to a message.
+    let audited: any;
+    let mailboxClaimed = false;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        claimNextDueMailbox: async () => {
+          if (mailboxClaimed) return { ok: true, value: null };
+          mailboxClaimed = true;
+          return { ok: true, value: claim };
+        },
+        recordEvents: async () => ({ ok: true, value: [] }),
+        listActiveRules: async () => ({ ok: true, value: [] }),
+        recordReconciliation: async (input: any) => {
+          audited = input;
+          return { ok: true, value: true };
+        },
+      }),
+      gmail: {
+        ...syncGmail,
+        sync: async () => ({
+          nextHistoryId: '999',
+          events: [],
+          staleCursorRecovered: true,
+          recoveredMessageCount: 42,
+          recoveryTruncated: true,
+          truncated: false,
+        }),
+      },
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'unused',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(audited?.subscriptionId, 'mailbox-1');
+    assert.equal(audited?.recoveredCount, 42);
+    assert.equal(audited?.truncated, true);
+  });
+
+  it('still advances a recovered mailbox when the audit insert fails', async () => {
+    // The audit is evidence about a sync, not part of one. Failing the pass
+    // over it would turn a recovered mailbox back into a stopped one.
+    let advanced = false;
+    let mailboxClaimed = false;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        claimNextDueMailbox: async () => {
+          if (mailboxClaimed) return { ok: true, value: null };
+          mailboxClaimed = true;
+          return { ok: true, value: claim };
+        },
+        recordEvents: async () => ({ ok: true, value: [] }),
+        listActiveRules: async () => ({ ok: true, value: [] }),
+        recordReconciliation: async () => ({
+          ok: false,
+          error: new Error('The audit table is unreachable.'),
+        }),
+        advanceCursor: async () => { advanced = true; return { ok: true, value: true } },
+      }),
+      gmail: {
+        ...syncGmail,
+        sync: async () => ({
+          nextHistoryId: '999',
+          events: [],
+          staleCursorRecovered: true,
+          recoveredMessageCount: 1,
+          truncated: false,
+        }),
+      },
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'unused',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(advanced, true);
+  });
+
+  it('abandons an oversized forward once instead of retrying it five times', async () => {
+    // Too big for Gmail is the one send failure retrying cannot fix. On the
+    // ladder it burned five attempts and ended abandoned anyway, with a
+    // `lastError` that read like a transient provider fault — so a member saw
+    // a rule stop for one message and nothing said the message was the reason.
+    let abandoned: any;
+    let failed = false;
+    let deliveryClaimed = false;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        claimNextDueDelivery: async () => {
+          if (deliveryClaimed) return { ok: true, value: null };
+          deliveryClaimed = true;
+          return {
+            ok: true,
+            value: {
+              deliveryId: 'delivery-1',
+              attempts: 1,
+              payload: {
+                companyId: 'company-1',
+                userId: 'user-1',
+                subscriptionId: 'mailbox-1',
+                connectionId: 'connection-1',
+                mailboxEmail: 'user@example.com',
+                ruleId: 'rule-1',
+                eventId: 'event-1',
+                sourceMessageId: 'message-1',
+                idempotencyKey: 'mail:key',
+                action: { type: 'forward' },
+                destination: { type: 'email', email: 'owner@example.com' },
+                message: event.metadata,
+              },
+            },
+          };
+        },
+        markDeliveryFailed: async () => { failed = true; return { ok: true, value: true } },
+        markDeliveryAbandoned: async (
+          _id: string,
+          _attempts: number,
+          reason: string,
+          options: unknown,
+        ) => {
+          abandoned = { reason, options };
+          return { ok: true, value: true };
+        },
+      }),
+      gmail: {
+        ...syncGmail,
+        createForwardDraft: async () => {
+          throw new MailTooLargeError(26 * 1024 * 1024, 25 * 1024 * 1024);
+        },
+      },
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'unused',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(failed, false);
+    assert.match(abandoned?.reason, /Gmail will not send anything over 25 MB/);
+    // The draft is built before anything is staged, so a message refused for
+    // its size never reached Gmail — the member should not be told it might
+    // be sitting in somebody's inbox.
+    assert.deepEqual(abandoned?.options, { nothingWasSent: true });
   });
 
   it('fails a truncated pass that made no progress rather than calling it healthy', async () => {
@@ -1884,6 +2041,7 @@ describe('MailOpsWorker', () => {
         stripEventBodies: async () => ({ ok: true, value: 0 }),
         dropTerminalPayloads: async () => ({ ok: true, value: 0 }),
         deleteEventsBefore: async () => ({ ok: true, value: 0 }),
+        recordReconciliation: async () => ({ ok: true, value: true }),
       },
       gmail: {
         createForwardDraft: async () => { state.drafts++; return 'draft-2'; },
