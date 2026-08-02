@@ -19,6 +19,7 @@ import type {
 import type {
   LarkRunEffectIdentity,
   OfferedDataExportEffect,
+  OfferedWorkbookConversionEffect,
   RunEffectReceiptStore,
   VerifiedKnowledgeEffect,
 } from './run-effect-receipt.store';
@@ -207,7 +208,7 @@ export interface LarkPiRuntimeServiceDeps {
   readonly runTimeoutMs: number;
   readonly runEffectReceipts?: Pick<
     RunEffectReceiptStore,
-    'getVerifiedKnowledgeEffect' | 'getVerifiedDataExportOffer'
+    'getVerifiedKnowledgeEffect' | 'getVerifiedDataExportOffer' | 'getVerifiedWorkbookConversionOffer'
   >;
   readonly knowledgeLearning?: Pick<KnowledgeLearningService, 'captureCompletedTurn'>;
   readonly conversationHistory?: {
@@ -859,6 +860,7 @@ export class LarkPiRuntimeService {
     };
     let effect: VerifiedKnowledgeEffect | null = null;
     let exportEffect: OfferedDataExportEffect | null = null;
+    let workbookEffect: OfferedWorkbookConversionEffect | null = null;
     let effectVerification: 'verified' | 'unavailable' = 'verified';
     if (this.deps.runEffectReceipts) {
       try {
@@ -878,6 +880,16 @@ export class LarkPiRuntimeService {
         this.log.error('pi.run_effect.lookup_failed', {
           correlationId: input.incoming.traceId,
           effectKind: 'data_export_offer',
+          error: String(error),
+        });
+      }
+      try {
+        workbookEffect = await this.deps.runEffectReceipts.getVerifiedWorkbookConversionOffer(identity);
+      } catch (error) {
+        effectVerification = 'unavailable';
+        this.log.error('pi.run_effect.lookup_failed', {
+          correlationId: input.incoming.traceId,
+          effectKind: 'workbook_conversion_offer',
           error: String(error),
         });
       }
@@ -920,10 +932,10 @@ export class LarkPiRuntimeService {
     return {
       text: assistantText,
       effects: effect ? [effect] : [],
-      ...(exportEffect
+      ...(exportEffect || workbookEffect
         ? {
             actions: [
-              {
+              ...(exportEffect ? [{
                 label: 'Google Sheet',
                 value: JSON.stringify({
                   kind: 'data_export_confirm',
@@ -931,7 +943,7 @@ export class LarkPiRuntimeService {
                   format: 'google_sheet',
                 }),
                 style: 'primary',
-              },
+              } as const,
               {
                 label: 'CSV in Drive',
                 value: JSON.stringify({
@@ -939,7 +951,7 @@ export class LarkPiRuntimeService {
                   offerId: exportEffect.offerId,
                   format: 'csv',
                 }),
-              },
+              } as const,
               {
                 label: 'Excel (.xlsx)',
                 value: JSON.stringify({
@@ -947,7 +959,15 @@ export class LarkPiRuntimeService {
                   offerId: exportEffect.offerId,
                   format: 'xlsx',
                 }),
-              },
+              } as const] : []),
+              ...(workbookEffect ? [{
+                label: 'Create Google Sheet copy',
+                value: JSON.stringify({
+                  kind: 'workbook_conversion_confirm',
+                  offerId: workbookEffect.offerId,
+                }),
+                style: 'primary',
+              } as const] : []),
             ],
           }
         : {}),

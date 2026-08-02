@@ -128,7 +128,7 @@ export interface GatewayDispatcherDeps {
   }) => Promise<unknown>;
   readonly runEffectReceipts?: Pick<
     RunEffectReceiptStore,
-    'reserveKnowledgeReview' | 'completeKnowledgeReview' | 'releaseKnowledgeReview' | 'recordPersonalMemory' | 'recordDataExportOffer' | 'recordGoogleSheetDestination' | 'getVerifiedGoogleSheetDestination'
+    'reserveKnowledgeReview' | 'completeKnowledgeReview' | 'releaseKnowledgeReview' | 'recordPersonalMemory' | 'recordDataExportOffer' | 'recordGoogleSheetDestination' | 'getVerifiedGoogleSheetDestination' | 'recordWorkbookConversionOffer'
   >;
   readonly logger: Logger;
 }
@@ -1058,6 +1058,63 @@ export class GatewayDispatcher {
       effectiveArgs,
       response,
     );
+    const workbookConversion = googleDriveWorkbookConversionFrom(
+      parsed.data.toolId,
+      effectiveArgs,
+      response,
+    );
+    if (workbookConversion && member.channel === 'lark') {
+      if (
+        !this.deps.runEffectReceipts
+        || !execution
+        || !member.runtimeChatId
+        || !member.runtimeRunId
+        || !member.runtimeThreadId
+        || execution.runId !== member.runtimeRunId
+        || execution.threadId !== member.runtimeThreadId
+      ) {
+        return gatewayFailure(
+          'tool_error',
+          'Divo verified the workbook, but could not bind its confirmation safely to this request. Retry the same link.',
+        );
+      }
+      const offerId = randomUUID();
+      try {
+        await this.deps.runEffectReceipts.recordWorkbookConversionOffer({
+          companyId: member.companyId,
+          userId: member.userId,
+          chatId: member.runtimeChatId,
+          threadId: execution.threadId,
+          runId: execution.runId,
+        }, { offerId, ...workbookConversion });
+      } catch (error) {
+        this.deps.logger.error('gateway.workbook_conversion.receipt_failed', {
+          companyId: member.companyId,
+          userId: member.userId,
+          runId: execution.runId,
+          error: safeGatewayMessage(error),
+        });
+        return gatewayFailure(
+          'tool_error',
+          'Divo verified the workbook, but could not prepare its confirmation. Retry the same link.',
+        );
+      }
+      return gatewaySuccess({
+        toolId: 'googleSheets',
+        action: 'read',
+        result: {
+          success: true,
+          nativeTool: 'resolve_sheet_reference',
+          data: {
+            status: 'resolved',
+            conversionOfferId: offerId,
+            requiresConfirmation: true,
+            originalWorkbookWillChange: false,
+          },
+          message: 'Divo can create a new private Google Sheet copy after the requester confirms. The original Excel workbook will not change.',
+        },
+      });
+    }
     if (sheetDestination && member.channel === 'lark') {
       if (
         !this.deps.runEffectReceipts
@@ -1900,6 +1957,38 @@ function googleSheetDestinationFrom(
     connectionId: resource['connectionId'],
     spreadsheetId: resource['resourceId'],
     ...(typeof resource['subresourceId'] === 'string' ? { gid: resource['subresourceId'] } : {}),
+  };
+}
+
+function googleDriveWorkbookConversionFrom(
+  toolId: string,
+  args: Record<string, unknown>,
+  response: GatewayResponse,
+): {
+  readonly connectionId: string;
+  readonly fileId: string;
+  readonly fileName?: string;
+} | null {
+  if (toolId !== 'googleSheets' || args['op'] !== 'resolve_reference' || !response.ok) return null;
+  if (!isRecord(response.data) || !isRecord(response.data['result'])) return null;
+  const result = response.data['result'];
+  if (result['success'] !== true || !isRecord(result['data'])) return null;
+  const resolution = result['data'];
+  if (resolution['status'] !== 'resolved' || !isRecord(resolution['resource'])) return null;
+  const resource = resolution['resource'];
+  if (
+    resource['provider'] !== 'google'
+    || resource['kind'] !== 'excel_workbook'
+    || resource['conversion'] !== 'new_google_sheet_copy'
+    || resource['requiresConfirmation'] !== true
+    || typeof resource['connectionId'] !== 'string'
+    || !isUuid(resource['connectionId'])
+    || typeof resource['resourceId'] !== 'string'
+  ) return null;
+  return {
+    connectionId: resource['connectionId'],
+    fileId: resource['resourceId'],
+    ...(typeof resource['fileName'] === 'string' ? { fileName: resource['fileName'] } : {}),
   };
 }
 

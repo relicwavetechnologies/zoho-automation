@@ -17,7 +17,7 @@
 | 3 — Lark export interaction | ✅ Done | Signed format/account cards, immediate callback ACK, locked choice cards, governed progress delivery, OAuth resume, and personal destination preference implemented |
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
 | 5 — Semrush and OMS convergence | 🟡 Partial | OMS and Semrush are integrated; live Semrush preview/offer passes, while artifact verification and rollback-path removal evidence remain |
-| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Governed resolution, retry-safe existing-Sheet writes, exact-thread continuity, and secure follow-up edits are live-verified; Drive-hosted XLSX resolution remains |
+| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Governed Sheet editing is live-verified; strict Drive XLSX resolution and opaque Lark confirmation are implemented, while conversion execution and live validation remain |
 | 7 — routers and provider skills | 🟡 Partial | Exact pasted Sheet URLs now route to governed reference resolution before web search; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
 | 9 — realistic isolated-runtime validation | 🟡 In progress | Isolated Pi exported a live Semrush dataset, retained its exact-thread resource context, and securely edited/read back the same Sheet; remaining scenarios still need closure |
@@ -39,6 +39,12 @@
   the Google connection or spreadsheet ID. The repaired run completed in
   108.743 seconds; the pre-fix run took 148.888 seconds and made two failed
   handle calls before extracting the ID from the URL.
+- Strict Google Drive XLSX links now resolve through the same governed Google
+  tool. Divo verifies exact MIME/type/trash/copy/download access under the
+  requester's writable personal account, redacts provider handles from Pi, and
+  exposes one opaque Lark action that states a new private Google Sheet copy
+  requires confirmation and the original workbook will not change. Durable
+  conversion execution and isolated-runtime validation are the remaining work.
 - Resumed Pi sessions now receive the opaque follow-up contract on every turn,
   so stale in-session skill text cannot send a verified export back through
   generic URL/account resolution. The runtime regression assertion and the

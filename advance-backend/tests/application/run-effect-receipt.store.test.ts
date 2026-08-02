@@ -188,6 +188,30 @@ describe('run effect receipt store', () => {
       /different Google Sheet destination/i,
     );
   });
+
+  it('binds one workbook conversion offer to the exact run and card actor', async () => {
+    const fixture = createStore();
+    const effect = await fixture.store.recordWorkbookConversionOffer(identity, {
+      offerId: '44444444-4444-4444-8444-444444444444',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      fileId: 'xlsx_file_1',
+      fileName: 'Forecast.xlsx',
+    });
+
+    assert.deepEqual(await fixture.store.getVerifiedWorkbookConversionOffer(identity), effect);
+    assert.deepEqual(await fixture.store.getWorkbookConversionOfferForActor({
+      offerId: effect.offerId,
+      companyId: identity.companyId,
+      userId: identity.userId,
+      chatId: identity.chatId,
+    }), effect);
+    assert.equal(await fixture.store.getWorkbookConversionOfferForActor({
+      offerId: effect.offerId,
+      companyId: identity.companyId,
+      userId: 'other-user',
+      chatId: identity.chatId,
+    }), null);
+  });
 });
 
 function createStore() {

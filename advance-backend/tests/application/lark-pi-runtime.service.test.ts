@@ -16,6 +16,7 @@ const logger = {
 const runEffectReceipts = {
   getVerifiedKnowledgeEffect: async () => null,
   getVerifiedDataExportOffer: async () => null,
+  getVerifiedWorkbookConversionOffer: async () => null,
 };
 
 function runtimeInput() {
@@ -253,6 +254,57 @@ test('turns a verified export offer receipt into explicit governed format choice
       value: JSON.stringify({ kind: 'data_export_confirm', offerId, format: 'xlsx' }),
     },
   ]);
+});
+
+test('turns a verified workbook receipt into one explicit copy confirmation', async () => {
+  const offerId = '44444444-4444-4444-8444-444444444444';
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts: {
+      getVerifiedKnowledgeEffect: async () => null,
+      getVerifiedDataExportOffer: async () => null,
+      getVerifiedWorkbookConversionOffer: async identity => ({
+        version: 1,
+        kind: 'workbook_conversion_offer',
+        status: 'offered',
+        effectKind: 'workbook_conversion_offered',
+        ...identity,
+        offerId,
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        fileId: 'xlsx_file_1',
+        fileName: 'Forecast.xlsx',
+        createdAt: '2026-08-02T00:00:00.000Z',
+      }),
+    },
+    fetch: async () => new Response(JSON.stringify({
+      text: 'I can make a Google Sheets copy. The original workbook will stay unchanged.',
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  const result = await service.run(runtimeInput());
+
+  assert.deepEqual(result.actions, [{
+    label: 'Create Google Sheet copy',
+    value: JSON.stringify({ kind: 'workbook_conversion_confirm', offerId }),
+    style: 'primary',
+  }]);
 });
 
 test('delivers a natural personal-preference acknowledgement and captures learning once', async () => {

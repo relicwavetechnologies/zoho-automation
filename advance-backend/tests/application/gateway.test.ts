@@ -2644,6 +2644,98 @@ describe('GatewayDispatcher', () => {
     assert.equal(JSON.stringify(update.data).includes('11111111-1111-4111-8111-111111111111'), false);
   });
 
+  it('replaces a resolved Drive workbook with an opaque confirmation offer', async () => {
+    const receipts: unknown[] = [];
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      id: asToolId('googleSheets'),
+      actionGroups: new Set(['read']),
+      argsSchema: z.object({ op: z.literal('resolve_reference'), url: z.string() }),
+      resultSchema: z.object({}).passthrough(),
+      permissionCheck: () => ok('read'),
+      execute: async () => ok({
+        success: true,
+        nativeTool: 'resolve_sheet_reference',
+        data: {
+          status: 'resolved',
+          resource: {
+            provider: 'google',
+            kind: 'excel_workbook',
+            resourceId: 'xlsx_file_1',
+            connectionId: '11111111-1111-4111-8111-111111111111',
+            fileName: 'Forecast.xlsx',
+            requiresConfirmation: true,
+            conversion: 'new_google_sheet_copy',
+          },
+        },
+      }),
+    } as any));
+    const permissions = makePermissionService(makeAllowedPerm('googleSheets', ['read']));
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([allowedSkill]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      runEffectReceipts: {
+        recordWorkbookConversionOffer: async (identity, input) => {
+          receipts.push({ identity, input });
+          return {} as any;
+        },
+      } as any,
+      logger: noopLogger,
+    });
+
+    const result = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      execution: {
+        version: 1,
+        runId: 'run-1',
+        threadId: 'thread-1',
+        actionId: 'workbook-reference-1',
+      },
+      payload: {
+        toolId: 'googleSheets',
+        args: {
+          op: 'resolve_reference',
+          url: 'https://drive.google.com/file/d/xlsx_file_1/view',
+        },
+      },
+    }, {
+      ...member,
+      channel: 'lark',
+      runtimeChatId: 'chat-1',
+      runtimeRunId: 'run-1',
+      runtimeThreadId: 'thread-1',
+    });
+
+    assert.equal(result.ok, true);
+    const safe = JSON.stringify(result.data);
+    assert.equal(safe.includes('xlsx_file_1'), false);
+    assert.equal(safe.includes('11111111-1111-4111-8111-111111111111'), false);
+    const conversionOfferId = (result.data as any).result.data.conversionOfferId;
+    assert.match(conversionOfferId, /^[0-9a-f-]{36}$/i);
+    assert.deepEqual(receipts, [{
+      identity: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        chatId: 'chat-1',
+        threadId: 'thread-1',
+        runId: 'run-1',
+      },
+      input: {
+        offerId: conversionOfferId,
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        fileId: 'xlsx_file_1',
+        fileName: 'Forecast.xlsx',
+      },
+    }]);
+  });
+
   it('materializes an exported Sheet reference only inside the governed Google call', async () => {
     const resourceRef = '22222222-2222-4222-8222-222222222222';
     const connectionId = '11111111-1111-4111-8111-111111111111';
