@@ -346,6 +346,33 @@ describe('mailAutomations tool', () => {
     assert.match(mailOps.markdown, /Ask whether subject narrowing is wanted/i);
   });
 
+  it('never claims a capability the runtime does not implement', () => {
+    const surfaces = [
+      ...MAIL_OPS_SYSTEM_SKILLS.map(skill => skill.markdown),
+      createMailAutomationsTool({
+        repo: {} as any,
+        pubsubReady: true,
+        resolveConnection: async () => ({ status: 'unavailable', reason: '' }),
+      }).parameterDocs ?? '',
+    ];
+
+    for (const surface of surfaces) {
+      // No extractor exists: every action forwards or posts the whole message.
+      assert.doesNotMatch(surface, /otp extraction/i);
+      assert.doesNotMatch(surface, /extract(s|ing)? (the )?(otp|code)/i);
+    }
+
+    const mailOps = MAIL_OPS_SYSTEM_SKILLS.find(skill => skill.slug === 'mail-ops')!;
+    // Constraints a user hits in practice must be stated where the model reads.
+    assert.match(mailOps.markdown, /Gmail only/i);
+    assert.match(mailOps.markdown, /delivers the whole message/i);
+    assert.match(mailOps.markdown, /does \*\*not\*\* match \\?`?alerts@mail\.example\.com/i);
+    assert.match(mailOps.markdown, /invalidReason/);
+    assert.match(mailOps.markdown, /includeInactive/);
+    assert.match(mailOps.markdown, /google_workspace_connection_selection_required/);
+    assert.match(mailOps.markdown, /rejected on desktop and web/i);
+  });
+
   it('grants every Mail Ops action to every existing department role once', async () => {
     let createManyInput: any;
     const result = await provisionMailOpsPermissionsForExistingCompanies({
