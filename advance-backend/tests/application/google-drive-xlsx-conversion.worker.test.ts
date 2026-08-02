@@ -11,6 +11,8 @@ const job = {
   jobKey: 'conversion_offer_123',
   companyId: 'company-1',
   userId: 'user-1',
+  departmentId: '22222222-2222-4222-8222-222222222222',
+  conversationKey: 'thread-1',
   sourceConnectionId: '11111111-1111-4111-8111-111111111111',
   sourceFileId: 'source_xlsx_123',
   sourceTitle: 'Quarterly budget.xlsx',

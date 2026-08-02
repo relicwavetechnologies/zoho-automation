@@ -14,6 +14,8 @@ export interface GoogleDriveXlsxConversionJob {
   readonly jobKey: string;
   readonly companyId: string;
   readonly userId: string;
+  readonly departmentId?: string;
+  readonly conversationKey: string;
   readonly sourceConnectionId: string;
   readonly sourceFileId: string;
   readonly sourceTitle: string;

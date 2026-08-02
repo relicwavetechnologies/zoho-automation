@@ -148,6 +148,8 @@ function jobFingerprint(input: GoogleDriveXlsxConversionJob): string {
     jobKey: input.jobKey,
     companyId: input.companyId,
     userId: input.userId,
+    departmentId: input.departmentId,
+    conversationKey: input.conversationKey,
     sourceConnectionId: input.sourceConnectionId,
     sourceFileId: input.sourceFileId,
     sourceTitle: input.sourceTitle,

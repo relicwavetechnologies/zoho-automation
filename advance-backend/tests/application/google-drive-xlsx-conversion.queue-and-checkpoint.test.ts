@@ -21,6 +21,8 @@ const job: GoogleDriveXlsxConversionJob = {
   jobKey: 'offer_123',
   companyId: 'company-1',
   userId: 'user-1',
+  departmentId: '22222222-2222-4222-8222-222222222222',
+  conversationKey: 'thread-1',
   sourceConnectionId: '11111111-1111-4111-8111-111111111111',
   sourceFileId: 'source_xlsx_123',
   sourceTitle: 'Budget.xlsx',
@@ -92,6 +94,7 @@ describe('Google Drive XLSX conversion queue/checkpoint adapters', () => {
       offerId: 'offer_123',
       companyId: job.companyId,
       userId: job.userId,
+      departmentId: job.departmentId,
       chatId: 'oc_123',
       sourceMessageId: 'om_123',
       conversationKey: 'thread_123',
@@ -113,7 +116,7 @@ describe('Google Drive XLSX conversion queue/checkpoint adapters', () => {
     });
     await consumer.processJob({ id: 'wbc_offer_123', data: queued, attemptsMade: 2, opts: { attempts: 3 } } as any);
     assert.deepEqual(finalAttempts, [true]);
-    assert.deepEqual(coreJobs, [{ ...job, jobKey: 'wbc_offer_123' }]);
+    assert.deepEqual(coreJobs, [{ ...job, jobKey: 'wbc_offer_123', conversationKey: 'thread_123' }]);
 
     const held = new GoogleDriveXlsxConversionConsumer({
       redisUrl: 'redis://unused',

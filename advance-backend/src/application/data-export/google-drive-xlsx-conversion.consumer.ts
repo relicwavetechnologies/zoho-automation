@@ -100,6 +100,8 @@ function conversionJob(
     jobKey: job.id,
     companyId: job.data.companyId,
     userId: job.data.userId,
+    ...(job.data.departmentId ? { departmentId: job.data.departmentId } : {}),
+    conversationKey: job.data.conversationKey,
     sourceConnectionId: job.data.connectionId,
     sourceFileId: job.data.fileId,
     sourceTitle: job.data.fileName?.trim() || 'Excel workbook',
