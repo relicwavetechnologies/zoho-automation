@@ -662,6 +662,7 @@ export const createServer = (c: Container): DivoServerApplication => {
       env:                    c.env,
       memberJwtSecret:        c.env.MEMBER_JWT_SECRET,
       backendPublicUrl:       c.env.BACKEND_PUBLIC_URL,
+      appBaseUrl:             c.env.APP_BASE_URL,
       sessionTtlMinutes:      MEMBER_SESSION_TTL_MINUTES,
     }),
   );

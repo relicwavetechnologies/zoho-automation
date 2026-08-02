@@ -155,6 +155,43 @@ export function useConnections() {
   useEffect(() => { void load() }, [load])
 
   /**
+   * The popup says when it is done, rather than this guessing.
+   *
+   * Polling `popup.closed` was the only signal, and it only ever worked for
+   * the providers whose callback closed itself — Canva and Airtable answered
+   * with bare text and no `window.close()`, so their popup sat open, the poll
+   * never resolved and the list never refreshed. The callback now posts back
+   * to this origin the moment the connection is written.
+   *
+   * The message is a nudge, not data: it carries only which provider finished,
+   * and the refetch re-reads `/status` from the backend. Anything arriving
+   * from another origin is ignored outright.
+   */
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return
+      const data = event.data as { source?: string; ok?: boolean } | null
+      if (data?.source !== 'divo-connection' || !data.ok) return
+      void load()
+    }
+    window.addEventListener('message', onMessage)
+    return () => window.removeEventListener('message', onMessage)
+  }, [load])
+
+  /**
+   * Coming back to the tab is also a reason to re-read.
+   *
+   * Covers the cases the message cannot: a popup blocked into a full tab, a
+   * consent finished in a different window, or a browser that tore the opener
+   * link down. Cheap — six small reads, only when the tab regains focus.
+   */
+  useEffect(() => {
+    const onFocus = () => { void load() }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [load])
+
+  /**
    * Runs the provider's OAuth hop in a popup and refetches when it closes.
    *
    * Watching for the close rather than polling a nonce: the connect routes park

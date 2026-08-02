@@ -55,6 +55,8 @@ export interface DesktopAuthRoutesDeps {
   env:                    TypedEnv;
   memberJwtSecret:        string;
   backendPublicUrl:       string;
+  /** Where the web app lives — the only origin a callback will postMessage to. */
+  appBaseUrl:             string;
   sessionTtlMinutes:      number;
 }
 
@@ -310,6 +312,50 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       });
     }
     return `${resolved.origin}${callbackPath}`;
+  };
+
+  /**
+   * The page a connection OAuth popup lands on.
+   *
+   * It tells the opener directly rather than leaving it to guess. The web app
+   * used to detect success by polling `popup.closed` and refetching when the
+   * window went away — which only worked at all for the providers whose
+   * callback closed itself. Canva and Airtable answered with bare text and no
+   * `window.close()`, so their popup sat open forever, the poll never
+   * resolved, and the list never refreshed no matter how long you waited.
+   *
+   * `postMessage` is targeted at the app origin, never `*`, and carries no
+   * secret — just which provider finished. The listener re-reads `/status`
+   * from the backend, so the message is a nudge, not a source of truth.
+   *
+   * `window.close()` runs immediately. The visible copy is the fallback for
+   * the desktop app, which has no opener to notify and where the human closes
+   * the window themselves.
+   */
+  const connectionCallbackPage = (provider: string, headline: string, detail: string): string => {
+    const appOrigin = (() => {
+      try { return new URL(deps.appBaseUrl).origin; } catch { return ''; }
+    })();
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${headline}</title></head>
+<body style="background:#111217;color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:grid;place-items:center;min-height:100vh;margin:0">
+  <main style="width:min(420px,calc(100vw - 48px));text-align:center">
+    <h1 style="font-size:19px;margin:0 0 8px">${headline}</h1>
+    <p style="font-size:14px;line-height:1.6;color:#a1a1aa;margin:0">${detail}</p>
+  </main>
+  <script>
+    (function () {
+      try {
+        if (window.opener && ${JSON.stringify(appOrigin)}) {
+          window.opener.postMessage(
+            { source: 'divo-connection', provider: ${JSON.stringify(provider)}, ok: true },
+            ${JSON.stringify(appOrigin)}
+          );
+        }
+      } catch (e) { /* opener gone or cross-origin: the poll fallback covers it */ }
+      window.close();
+    })();
+  </script>
+</body></html>`;
   };
 
   const buildConnectionManagePayload = async (
@@ -748,13 +794,21 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       });
 
       const tenantKey = tokenBundle.tenantKey ?? '';
-
-      const company = await deps.prisma.company.findFirst();
-      if (!company) {
-        res.status(500).json({ success: false, message: 'No company configured' });
+      const tenantBinding = tenantKey
+        ? await deps.prisma.larkTenantBinding.findFirst({
+          where: { larkTenantKey: tenantKey, isActive: true },
+          select: { companyId: true },
+        })
+        : null;
+      if (!tenantBinding) {
+        log.warn('lark.exchange.unbound_tenant', { tenantKey: tenantKey || null });
+        res.status(403).json({
+          success: false,
+          message: 'This Lark tenant is not linked to an active Divo company.',
+        });
         return;
       }
-      const companyId = company.id;
+      const companyId = tenantBinding.companyId;
 
       let email = (tokenBundle.larkEmail?.trim()) || null;
 
@@ -1640,11 +1694,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
 
       log.info('google.callback.success', { userId: payload.userId });
 
-      res.send(`<!DOCTYPE html><html><body>
-<h2>Google connected successfully!</h2>
-<p>You can close this window and return to Divo Desktop.</p>
-<script>setTimeout(()=>window.close(),3000);</script>
-</body></html>`);
+      res.send(connectionCallbackPage(
+        'google_workspace',
+        'Google connected',
+        'You can close this window and return to Divo.',
+      ));
     } catch (e) {
       log.error('google.callback.error', { error: String(e) });
       res.send(`<html><body><h2>Google connection failed</h2><p>${String(e)}</p></body></html>`);
@@ -2012,7 +2066,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         userId: payload.userId,
         connectionId: connection.value.id,
       });
-      res.type('text/plain').send('Canva connected successfully. You can close this window and return to Divo Desktop.');
+      res.send(connectionCallbackPage(
+        'canva',
+        'Canva connected',
+        'You can close this window and return to Divo.',
+      ));
     } catch (e) {
       log.error('canva.callback.error', { error: String(e) });
       res.status(500).type('text/plain').send('Canva connection failed. Return to Divo and try again.');
@@ -2279,7 +2337,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         userId: payload.userId,
         connectionId: connection.value.id,
       });
-      res.type('text/plain').send('Airtable connected successfully. You can close this window and return to Divo Desktop.');
+      res.send(connectionCallbackPage(
+        'airtable',
+        'Airtable connected',
+        'You can close this window and return to Divo.',
+      ));
     } catch (e) {
       log.error('airtable.callback.error', { error: String(e) });
       res.status(500).type('text/plain').send('Airtable connection failed. Return to Divo and try again.');
@@ -2912,11 +2974,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         companyId: payload.companyId,
         connectionId: integrationResult.value.id,
       });
-      res.send(`<!DOCTYPE html><html><body>
-<h2>Zoho connected successfully!</h2>
-<p>You can close this window and return to Divo Desktop.</p>
-<script>setTimeout(()=>window.close(),3000);</script>
-</body></html>`);
+      res.send(connectionCallbackPage(
+        'zoho',
+        'Zoho connected',
+        'You can close this window and return to Divo.',
+      ));
     } catch (e) {
       log.error('zoho.callback.error', { error: String(e) });
       res.send(`<html><body><h2>Zoho connection failed</h2><p>${String(e)}</p></body></html>`);
