@@ -18,7 +18,7 @@
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
 | 5 — Semrush and OMS convergence | ✅ Done | Both providers use bounded previews and opaque central offers; executable Cloudinary fallbacks and their stale skill contract are removed |
 | 6 — pasted Sheet/Drive URLs | 🟡 In progress | Governed Sheet editing is live-verified; strict Drive XLSX resolution, run-bound confirmation, durable queueing, and locked Lark acknowledgement are implemented; conversion execution and live validation remain |
-| 7 — routers and provider skills | 🟡 Partial | Exact pasted Sheet URLs now route to governed reference resolution before web search; provider-wide routing/skill convergence remains |
+| 7 — routers and provider skills | 🟡 Partial | Data routing now separates opaque provider offers, multi-page/multi-product Python workflows, pasted Sheets, and workspace files; provider-specific skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
 | 9 — realistic isolated-runtime validation | 🟡 In progress | Isolated Pi exported a live Semrush dataset, retained its exact-thread resource context, and securely edited/read back the same Sheet; remaining scenarios still need closure |
 
@@ -37,6 +37,17 @@
   boundary as exports, returns an immediate acknowledgement, locks the source
   card, and queues one deterministic run-bound conversion job. Focused receipt,
   tool, and webhook validation passed 152/152 checks; TypeScript passes.
+- Phase 6 now also has a verified adapter-injected conversion core. It
+  revalidates the requester, permissions, personal Google ownership/scopes,
+  and exact XLSX metadata; streams a byte-capped import into a new native
+  Sheet; verifies MIME, owner, and canonical URL; and exposes no source-mutating
+  operation. Its focused suite passed 3/3 checks. Concrete BullMQ, Drive,
+  checkpoint, continuity, and Lark-delivery adapters remain the blocker.
+- Phase 7's central routing boundary is aligned with the backend: one-source
+  provider previews retain only opaque export offers, while Python is reserved
+  for cross-page computation, transformations, multi-product work, or related
+  writes. Its focused routing suite passed 10/10 checks, and independent review
+  found no P0-P2 issue.
 
 - A low-hint isolated Semrush request exported 50 rows to a verified personal
   Google Sheet and persisted its opaque, seven-day conversation resource.
