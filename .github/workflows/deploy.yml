@@ -360,6 +360,8 @@ jobs:
           fi
 
           docker compose --env-file .env.production.local up -d --no-build --remove-orphans
+          docker compose --env-file .env.production.local up -d --wait --no-build \
+            --force-recreate --no-deps divo-pi-controller divo-backend divo-admin
           REMOTE
 
       - name: Smoke test main
@@ -372,7 +374,11 @@ jobs:
           export DIVO_ENV_FILE=.env.production.local
 
           for attempt in $(seq 1 30); do
-            if curl -fsS --max-time 10 http://127.0.0.1:13002/health >/dev/null \
+            if test "$(docker inspect --format='{{.Config.Image}}' divo-main-divo-backend-1)" = "${DIVO_BACKEND_IMAGE}" \
+              && test "$(docker inspect --format='{{.Config.Image}}' divo-main-divo-admin-1)" = "${DIVO_ADMIN_IMAGE}" \
+              && test "$(docker inspect --format='{{.Config.Image}}' divo-main-divo-pi-controller-1)" = "${DIVO_PI_CONTROLLER_IMAGE}" \
+              && test "$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' divo-main-divo-pi-controller-1 | sed -n 's/^DIVO_PI_IMAGE=//p')" = "${DIVO_PI_IMAGE}" \
+              && curl -fsS --max-time 10 http://127.0.0.1:13002/health >/dev/null \
               && curl -fsS --max-time 10 http://127.0.0.1:18082/ >/dev/null \
               && curl -fsS --max-time 15 --resolve "${DIVO_MAIN_DOMAIN}:443:127.0.0.1" "https://${DIVO_MAIN_DOMAIN}/" >/dev/null \
               && DIVO_BACKEND_IMAGE="${DIVO_BACKEND_IMAGE}" \
