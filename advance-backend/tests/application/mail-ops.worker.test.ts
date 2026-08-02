@@ -1090,19 +1090,19 @@ describe('MailOpsWorker', () => {
     // a year of message bodies in two places, for no purpose after the first
     // hour. The sweep is also the least urgent thing the worker does, so it
     // runs at the end of a tick and at most hourly — never in front of mail.
-    const swept: Array<[string, Date]> = [];
+    const swept: Array<[string, Date, number]> = [];
     const repo = syncRepo({
       claimNextDueMailbox: async () => ({ ok: true, value: null }),
-      stripEventBodies: async (before: Date) => {
-        swept.push(['bodies', before]);
+      stripEventBodies: async (before: Date, limit: number) => {
+        swept.push(['bodies', before, limit]);
         return { ok: true, value: 1 };
       },
-      dropTerminalPayloads: async (before: Date) => {
-        swept.push(['payloads', before]);
+      dropTerminalPayloads: async (before: Date, limit: number) => {
+        swept.push(['payloads', before, limit]);
         return { ok: true, value: 1 };
       },
-      deleteEventsBefore: async (before: Date) => {
-        swept.push(['events', before]);
+      deleteEventsBefore: async (before: Date, limit: number) => {
+        swept.push(['events', before, limit]);
         return { ok: true, value: 1 };
       },
     });
@@ -1120,7 +1120,10 @@ describe('MailOpsWorker', () => {
     await worker.runOnce();
 
     assert.deepEqual(swept.map(([what]) => what), ['bodies', 'payloads', 'events']);
-    const [[, bodiesBefore], [, payloadsBefore], [, eventsBefore]] = swept as any;
+    const [[, bodiesBefore, limit], [, payloadsBefore], [, eventsBefore]] = swept as any;
+    // Bounded. The first sweep after this ships meets everything ever recorded,
+    // and it is awaited inside the tick.
+    assert.equal(limit, 1000);
     // Bodies and payloads at 30 days, events at 90 — the event has to outlive
     // the body because the event is what stops a re-delivery.
     assert.equal(
@@ -1135,6 +1138,58 @@ describe('MailOpsWorker', () => {
       Math.round((Date.now() - eventsBefore.getTime()) / (24 * 60 * 60_000)),
       90,
     );
+  });
+
+  it('keeps sweeping in batches while a batch comes back full, and stops when it does not', async () => {
+    // Unbounded, the first sweep after this ships is one statement over
+    // everything ever recorded — awaited inside a tick that is re-entrancy
+    // guarded, so it blocks every delivery for as long as it runs. Worse, a
+    // statement big enough to hit a timeout fails, is retried identically an
+    // hour later, and never once makes progress.
+    let calls = 0;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        stripEventBodies: async (_before: Date, limit: number) => {
+          calls += 1;
+          // Two full batches, then a short one: nothing left.
+          return { ok: true, value: calls <= 2 ? limit : 3 };
+        },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'unused',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(calls, 3);
+  });
+
+  it('never runs more than the batch ceiling in one sweep', async () => {
+    // The stop condition is "a batch came back short". A backlog that never
+    // goes short would otherwise keep the tick for as long as there is history.
+    let calls = 0;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        stripEventBodies: async (_before: Date, limit: number) => {
+          calls += 1;
+          return { ok: true, value: limit };
+        },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'unused',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(calls, 10);
   });
 
   it('keeps delivering when the retention sweep fails', async () => {

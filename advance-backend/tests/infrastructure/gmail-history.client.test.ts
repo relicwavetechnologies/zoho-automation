@@ -116,6 +116,81 @@ describe('GmailHistoryClient history draining', () => {
     assert.equal(sync.nextHistoryId, '5000');
   });
 
+  it('starts the walk over when Gmail refuses the resume token', async () => {
+    // A token days old — the mailbox was paused, or the process was down — is
+    // refused with a 4xx that is not a 404, and nothing clears a token on a
+    // failed pass. Every later pass would resend the same dead token and fail
+    // identically, forever: the permanent wedge this mechanism exists to
+    // remove, one step along. Restarting is safe only because the cursor never
+    // moved while the token was outstanding.
+    const urls: string[] = [];
+    let refused = false;
+    const fetchStub = (async (url: string) => {
+      if (url.includes('/history?')) {
+        urls.push(url);
+        if (url.includes('pageToken=dead') && !refused) {
+          refused = true;
+          return {
+            ok: false,
+            status: 400,
+            json: async () => ({
+              error: { code: 400, message: 'Invalid pageToken', status: 'INVALID_ARGUMENT' },
+            }),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            historyId: '5000',
+            history: [{ id: '120', messagesAdded: [] }],
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    const sync = await new GmailHistoryClient(fetchStub).sync({
+      accessToken: 'token',
+      historyId: '100',
+      pageToken: 'dead',
+    });
+
+    assert.equal(sync.truncated, false);
+    assert.equal(sync.nextHistoryId, '5000');
+    // Once with the dead token, once without — from the same cursor, which is
+    // still the true position precisely because it never moved.
+    assert.equal(urls.length, 2);
+    assert.match(urls[1]!, /startHistoryId=100/);
+    assert.equal(urls[1]!.includes('pageToken'), false);
+  });
+
+  it('does not retry a failure that has nothing to do with the token', async () => {
+    // Restarting the walk is a repair for one specific cause. Applying it to
+    // every 4xx would silently retry things that should surface.
+    let calls = 0;
+    const fetchStub = (async (url: string) => {
+      if (url.includes('/history?')) {
+        calls += 1;
+        return {
+          ok: false,
+          status: 403,
+          json: async () => ({
+            error: { code: 403, message: 'Insufficient Permission',
+              errors: [{ reason: 'insufficientPermissions' }] },
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    await assert.rejects(
+      new GmailHistoryClient(fetchStub).sync({ accessToken: 'token', historyId: '100' }),
+      /Insufficient Permission/,
+    );
+    assert.equal(calls, 1);
+  });
+
   it('reads no more than the bounded number of pages', async () => {
     const { client, urls } = gmailWith([endlessPage('120')]);
 

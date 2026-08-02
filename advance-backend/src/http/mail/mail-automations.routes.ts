@@ -273,6 +273,10 @@ export function createMailAutomationsRoutes(
           // runtime would decline: mail older than the rule is never acted on.
           // Folding them in would read as a promise to go back for it.
           predatingCount: outcome.predatingCount,
+          // Messages this rule needs a body to judge, whose body retention has
+          // taken. Neither matches nor non-matches — a caller folding them into
+          // either number reports a certainty nobody has.
+          bodyUnavailableCount: outcome.bodyUnavailableCount,
           matched: outcome.matched.map(hit => ({
             eventId: hit.eventId,
             occurredAt: hit.occurredAt.toISOString(),

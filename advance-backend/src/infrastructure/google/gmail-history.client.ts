@@ -129,8 +129,23 @@ export class GmailHistoryClient {
         input.pageToken,
       );
     } catch (error) {
-      if (!(error instanceof GmailApiError) || error.status !== 404) throw error;
-      return this.reconcileStaleCursor(input.accessToken);
+      if (!(error instanceof GmailApiError)) throw error;
+      if (error.status === 404) return this.reconcileStaleCursor(input.accessToken);
+      // A resume token Gmail will not honour — days old because the mailbox was
+      // paused, disconnected or simply down — is refused with a 4xx that is not
+      // a 404, and nothing clears the token on a failed pass. Every later pass
+      // then resends the same dead token and fails identically, forever: the
+      // permanent wedge this whole page-token mechanism was written to remove,
+      // moved one step along.
+      //
+      // Starting the walk over is provably safe, and only because of the
+      // invariant above it: the cursor never moved while a token was
+      // outstanding, so `historyId` is still the true position, and both events
+      // and deliveries are deduplicated, so re-reading costs nothing.
+      if (input.pageToken && error.status >= 400 && error.status < 500) {
+        return this.syncHistory(input.accessToken, input.historyId);
+      }
+      throw error;
     }
   }
 
@@ -389,13 +404,17 @@ export class GmailHistoryClient {
    * later the same oversized range threw again — forever, on the busiest
    * mailboxes, which are the ones the feature exists for.
    *
-   * It now stops and reports where it got to. The subtlety is *which* cursor
-   * to report. `payload.historyId` is the mailbox's newest history ID, not the
-   * end of the page — handing that back after reading ten pages of a fifteen
-   * page backlog would silently skip the last five. So a truncated pass
-   * returns the ID of the last history record it actually consumed, and the
-   * caller comes straight back for the rest. Re-reading that one record is
-   * harmless; events and deliveries are both deduplicated.
+   * It now stops and reports where it got to — as a page token, not as a
+   * cursor. `payload.historyId` is the mailbox's newest history ID, not the end
+   * of the page, so handing that back after reading ten pages of a fifteen page
+   * backlog would silently skip the last five; and guessing forward to the last
+   * record consumed, which is what this used to do, made progress only when a
+   * pass consumed something at all.
+   *
+   * So a truncated pass returns Gmail's own `nextPageToken` and leaves the
+   * cursor exactly where it started, because a page token is only valid against
+   * the `startHistoryId` it was issued under. The cursor moves once, when the
+   * walk finishes and the token is cleared.
    */
   private async syncHistory(
     accessToken: string,

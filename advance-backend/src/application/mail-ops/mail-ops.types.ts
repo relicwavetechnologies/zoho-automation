@@ -51,6 +51,24 @@ export const MAIL_DELIVERY_PAYLOAD_RETENTION_MS = 30 * DAY_MS;
 /** How often the retention sweep runs. It is not urgent work. */
 export const MAIL_RETENTION_SWEEP_INTERVAL_MS = 60 * 60_000;
 
+/**
+ * How much one retention sweep may do, and in what size pieces.
+ *
+ * Bounded because the first sweep after this ships meets everything ever
+ * recorded — a mailbox watched for a year, in one `DELETE`. The sweep is
+ * awaited inside the worker's tick and the tick is re-entrancy-guarded, so an
+ * unbounded statement would block every delivery for as long as it ran, which
+ * is precisely the guarantee the sweep is documented to keep. Worse, a
+ * statement large enough to hit a timeout would fail, be retried identically an
+ * hour later, and never once make progress.
+ *
+ * A batch always completes, so a backlog drains a piece per hour instead of
+ * never. 10,000 rows an hour clears a year of ordinary mailbox history in days,
+ * and nothing waits on it.
+ */
+export const MAIL_RETENTION_BATCH_SIZE = 1_000;
+export const MAIL_RETENTION_MAX_BATCHES = 10;
+
 export type MailboxSubscriptionStatus = 'active' | 'paused' | 'disconnected';
 export type MailAutomationRuleStatus = 'active' | 'paused' | 'archived';
 /**

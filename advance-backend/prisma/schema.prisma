@@ -1520,6 +1520,9 @@ model MailEvent {
   @@unique([id, companyId, subscriptionId])
   @@index([companyId, createdAt])
   @@index([subscriptionId, historyId])
+  /// Retention sweeps by arrival age, hourly, forever. Without this every
+  /// sweep is a sequential scan of the table it exists to keep small.
+  @@index([occurredAt])
 }
 
 /// Durable, idempotent execution of one rule against one discovered event.
@@ -1554,6 +1557,8 @@ model MailDelivery {
   @@unique([ruleId, eventId])
   @@index([companyId, status, nextAttemptAt])
   @@index([eventId])
+  /// Same reason: the payload sweep selects terminal rows by age.
+  @@index([status, updatedAt])
 }
 
 /// Connection-scoped operating controls. Access grants answer who may use a

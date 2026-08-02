@@ -95,13 +95,23 @@ export class MailEventRepository {
    * that works until the day something changes underneath it is not worth the
    * brevity.
    */
-  async stripEventBodies(before: Date): Promise<Result<number, InfraError>> {
+  async stripEventBodies(
+    before: Date,
+    limit: number,
+  ): Promise<Result<number, InfraError>> {
     try {
+      // Bounded by an id subquery rather than run across the whole table. The
+      // first sweep meets every event ever recorded, and this statement is
+      // awaited inside the worker's tick.
       return ok(await this.db.$executeRaw`
         UPDATE "MailEvent"
         SET "metadataJson" = "metadataJson" - 'bodyText'
-        WHERE "occurredAt" < ${before}
-          AND "metadataJson" ->> 'bodyText' IS NOT NULL
+        WHERE "id" IN (
+          SELECT "id" FROM "MailEvent"
+          WHERE "occurredAt" < ${before}
+            AND "metadataJson" ->> 'bodyText' IS NOT NULL
+          LIMIT ${limit}
+        )
       `);
     } catch (cause) {
       return err(wrapInfra('prisma', 'mailOps.stripEventBodies', cause));
@@ -118,13 +128,26 @@ export class MailEventRepository {
    * wrong — a 90-day-old pending delivery is well past the retry ladder — and
    * losing the evidence would be the worst possible response to it.
    */
-  async deleteEventsBefore(before: Date): Promise<Result<number, InfraError>> {
+  async deleteEventsBefore(
+    before: Date,
+    limit: number,
+  ): Promise<Result<number, InfraError>> {
     try {
-      const deleted = await this.db.mailEvent.deleteMany({
+      // Selected then deleted by id, because `deleteMany` cannot be bounded and
+      // this one cascades: an unbounded delete here takes every matching event
+      // *and* every delivery hanging off it, in one statement, while the
+      // worker's tick waits on it.
+      const doomed = await this.db.mailEvent.findMany({
         where: {
           occurredAt: { lt: before },
           deliveries: { none: { status: { in: ['pending', 'sending'] } } },
         },
+        select: { id: true },
+        take: limit,
+      });
+      if (doomed.length === 0) return ok(0);
+      const deleted = await this.db.mailEvent.deleteMany({
+        where: { id: { in: doomed.map(row => row.id) } },
       });
       return ok(deleted.count);
     } catch (cause) {

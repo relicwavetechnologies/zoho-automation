@@ -379,48 +379,84 @@ describe('MailOpsRepository', () => {
     // flight would destroy the work. A 90-day-old pending delivery means
     // something else is already wrong, and losing the evidence would be the
     // worst possible response to it.
+    let findInput: any;
     let deleteInput: any;
     const repo = new MailOpsRepository({
       mailEvent: {
+        findMany: async (input: any) => {
+          findInput = input;
+          return [{ id: 'event-1' }, { id: 'event-2' }];
+        },
         deleteMany: async (input: any) => {
           deleteInput = input;
-          return { count: 7 };
+          return { count: 2 };
         },
       },
     } as any);
     const before = new Date('2026-05-04T00:00:00.000Z');
 
-    const result = await repo.deleteEventsBefore(before);
+    const result = await repo.deleteEventsBefore(before, 1000);
 
-    assert.deepEqual(result, { ok: true, value: 7 });
-    assert.deepEqual(deleteInput.where.occurredAt, { lt: before });
-    assert.deepEqual(deleteInput.where.deliveries, {
+    assert.deepEqual(result, { ok: true, value: 2 });
+    assert.deepEqual(findInput.where.occurredAt, { lt: before });
+    assert.deepEqual(findInput.where.deliveries, {
       none: { status: { in: ['pending', 'sending'] } },
     });
+    // Selected then deleted by id, because `deleteMany` cannot be bounded and
+    // this delete cascades to every delivery hanging off each event — while the
+    // worker's tick is waiting on it.
+    assert.equal(findInput.take, 1000);
+    assert.deepEqual(deleteInput.where.id, { in: ['event-1', 'event-2'] });
+  });
+
+  it('does not issue a delete when an aged-event sweep finds nothing', () => {
+    // A caught-up system pays one cheap select an hour, not a delete with an
+    // empty id list.
+    return (async () => {
+      let deletes = 0;
+      const repo = new MailOpsRepository({
+        mailEvent: {
+          findMany: async () => [],
+          deleteMany: async () => { deletes += 1; return { count: 0 } },
+        },
+      } as any);
+
+      const result = await repo.deleteEventsBefore(new Date(), 1000);
+
+      assert.deepEqual(result, { ok: true, value: 0 });
+      assert.equal(deletes, 0);
+    })();
   });
 
   it('drops a frozen payload only from a delivery that can no longer be retried', async () => {
     // The payload carries a second copy of the message body and exists only to
     // let an attempt be repeated. Clearing one that is still claimable would
     // leave a delivery that can never succeed and can never be diagnosed.
+    let findInput: any;
     let updateInput: any;
     const repo = new MailOpsRepository({
       mailDelivery: {
+        findMany: async (input: any) => {
+          findInput = input;
+          return [{ id: 'delivery-1' }];
+        },
         updateMany: async (input: any) => {
           updateInput = input;
-          return { count: 4 };
+          return { count: 1 };
         },
       },
     } as any);
     const before = new Date('2026-07-03T00:00:00.000Z');
 
-    const result = await repo.dropTerminalPayloads(before);
+    const result = await repo.dropTerminalPayloads(before, 500);
 
-    assert.deepEqual(result, { ok: true, value: 4 });
-    assert.deepEqual(updateInput.where.status, {
+    assert.deepEqual(result, { ok: true, value: 1 });
+    assert.deepEqual(findInput.where.status, {
       in: ['delivered', 'abandoned', 'blocked'],
     });
-    assert.deepEqual(updateInput.where.updatedAt, { lt: before });
+    assert.deepEqual(findInput.where.updatedAt, { lt: before });
+    assert.equal(findInput.take, 500);
+    assert.deepEqual(updateInput.where.id, { in: ['delivery-1'] });
   });
 
   it('measures a rule ceiling on arrival time, inclusively, excluding the message itself', async () => {

@@ -487,6 +487,68 @@ describe('dry run', () => {
     activatedAt: new Date('2026-08-01T00:00:00.000Z'),
   };
 
+  it('still matches a message whose body retention has taken', () => {
+    // Retention strips `bodyText` at 30 days and leaves the event standing.
+    // Requiring the field made a stripped event unreadable, so it dropped out
+    // of matching entirely while still being counted as considered — a
+    // subject-only rule against a subject that plainly matches reported zero,
+    // and the member rewrote a rule that was correct.
+    const { bodyText: _stripped, ...withoutBody } = message({ subject: 'Invoice 42' });
+
+    const outcome = dryRunMailRule({
+      rule,
+      events: [{
+        eventId: 'event-stripped',
+        occurredAt: new Date('2026-08-04T10:00:00.000Z'),
+        metadata: withoutBody,
+      }],
+    });
+
+    assert.equal(outcome.status, 'ran');
+    if (outcome.status !== 'ran') return;
+    assert.equal(outcome.matched.length, 1);
+    assert.equal(outcome.consideredCount, 1);
+    assert.equal(outcome.bodyUnavailableCount, 0);
+  });
+
+  it('will not guess a body rule against a message whose body is gone', () => {
+    // Neither a match nor a non-match. Counting it as "matched none" answers a
+    // question nobody can answer any more, which is the failure this dry run
+    // exists to remove rather than reproduce.
+    const { bodyText: _stripped, ...withoutBody } = message({ subject: 'Invoice 42' });
+
+    const outcome = dryRunMailRule({
+      rule: { ...rule, match: { bodyContains: 'overdue' } },
+      events: [{
+        eventId: 'event-stripped',
+        occurredAt: new Date('2026-08-04T10:00:00.000Z'),
+        metadata: withoutBody,
+      }],
+    });
+
+    assert.equal(outcome.status, 'ran');
+    if (outcome.status !== 'ran') return;
+    assert.equal(outcome.matched.length, 0);
+    assert.equal(outcome.bodyUnavailableCount, 1);
+  });
+
+  it('does not count metadata it could not read as something it considered', () => {
+    // "We looked at 200 messages and your rule caught none" is a false sentence
+    // when nothing could read them.
+    const outcome = dryRunMailRule({
+      rule,
+      events: [{
+        eventId: 'event-broken',
+        occurredAt: new Date('2026-08-04T10:00:00.000Z'),
+        metadata: { nothing: 'usable' },
+      }],
+    });
+
+    assert.equal(outcome.status, 'ran');
+    if (outcome.status !== 'ran') return;
+    assert.equal(outcome.consideredCount, 0);
+  });
+
   it('reports what would have matched and sends nothing', () => {
     const outcome = dryRunMailRule({
       rule,

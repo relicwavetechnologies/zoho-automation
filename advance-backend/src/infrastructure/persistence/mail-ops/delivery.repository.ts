@@ -432,14 +432,25 @@ export class MailDeliveryRepository {
    * but a row whose payload vanished while it was still claimable would be
    * unrecoverable, so the age is the guard rather than the status alone.
    */
-  async dropTerminalPayloads(before: Date): Promise<Result<number, InfraError>> {
+  async dropTerminalPayloads(
+    before: Date,
+    limit: number,
+  ): Promise<Result<number, InfraError>> {
     try {
-      const cleared = await this.db.mailDelivery.updateMany({
+      // Bounded for the same reason as the event sweeps: the first pass meets
+      // everything ever delivered, and the worker's tick is waiting on it.
+      const doomed = await this.db.mailDelivery.findMany({
         where: {
           status: { in: ['delivered', 'abandoned', 'blocked'] },
           updatedAt: { lt: before },
           payloadJson: { not: Prisma.DbNull },
         },
+        select: { id: true },
+        take: limit,
+      });
+      if (doomed.length === 0) return ok(0);
+      const cleared = await this.db.mailDelivery.updateMany({
+        where: { id: { in: doomed.map(row => row.id) } },
         data: { payloadJson: Prisma.DbNull },
       });
       return ok(cleared.count);

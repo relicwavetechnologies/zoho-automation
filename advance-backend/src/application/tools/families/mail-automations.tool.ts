@@ -150,6 +150,7 @@ const resultSchema = z.object({
     consideredCount: z.number(),
     matchedCount: z.number(),
     predatingCount: z.number(),
+    bodyUnavailableCount: z.number(),
     matched: z.array(z.object({
       occurredAt: z.string(),
       from: z.string(),
@@ -466,6 +467,7 @@ export function createMailAutomationsTool(deps: {
               consideredCount: outcome.consideredCount,
               matchedCount: outcome.matched.length,
               predatingCount: outcome.predatingCount,
+              bodyUnavailableCount: outcome.bodyUnavailableCount,
               matched: outcome.matched.map(hit => ({
                 occurredAt: hit.occurredAt.toISOString(),
                 from: hit.from,
@@ -473,7 +475,11 @@ export function createMailAutomationsTool(deps: {
                 predatesRule: hit.predatesRule,
               })),
             },
-            message: dryRunSummary(outcome.consideredCount, outcome.matched.length),
+            message: dryRunSummary(
+              outcome.consideredCount,
+              outcome.matched.length,
+              outcome.bodyUnavailableCount,
+            ),
           });
         }
 
@@ -802,18 +808,30 @@ function resolveAction(
   };
 }
 
-function dryRunSummary(considered: number, matched: number): string {
+function dryRunSummary(
+  considered: number,
+  matched: number,
+  bodyUnavailable = 0,
+): string {
   if (considered === 0) {
     return 'Divo has no recorded mail for this mailbox yet, so there was '
       + 'nothing to test the rule against. That is not evidence the rule is '
       + 'wrong — only that nothing has arrived since the mailbox was connected.';
   }
+  // Said before the count, because it changes what the count means. A rule that
+  // reads the body cannot be judged against mail whose body Divo no longer
+  // keeps, and reporting "matched none" for those would answer a question
+  // nobody can answer.
+  const caveat = bodyUnavailable > 0
+    ? ` ${bodyUnavailable} of them are older than 30 days, so Divo no longer `
+      + 'keeps their text and could not check this rule against them either way.'
+    : '';
   if (matched === 0) {
     return `This rule matched none of the last ${considered} messages Divo `
-      + 'recorded for the mailbox.';
+      + `recorded for the mailbox.${caveat}`;
   }
   return `This rule matched ${matched} of the last ${considered} messages Divo `
-    + 'recorded for the mailbox. Nothing was sent.';
+    + `recorded for the mailbox. Nothing was sent.${caveat}`;
 }
 
 function storedRuleValidity(input: {

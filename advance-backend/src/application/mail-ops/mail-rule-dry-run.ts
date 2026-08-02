@@ -48,6 +48,18 @@ export type MailRuleDryRun =
        * caller never presents them as future behaviour.
        */
       predatingCount: number;
+      /**
+       * Replayed messages whose body Divo no longer holds, where this rule
+       * needs the body to decide.
+       *
+       * Retention strips `bodyText` at 30 days. For a rule matching on the
+       * body, those messages cannot be judged either way — and counting them
+       * as non-matches would answer "your rule caught nothing" when the truth
+       * is "we cannot tell any more". A caller that ignores this reports the
+       * first sentence; the dry run exists so nobody has to guess which one
+       * they are being told.
+       */
+      bodyUnavailableCount: number;
     }
   | { status: 'rule_invalid'; reason: string };
 
@@ -74,13 +86,25 @@ export function dryRunMailRule(input: {
   }
 
   const matched: MailRuleDryRunHit[] = [];
+  let considered = 0;
+  let bodyUnavailable = 0;
+  const needsBody = match.bodyContains !== undefined;
   for (const event of input.events) {
     const message = readMessage(event.metadata);
     // Metadata Divo cannot read is not evidence either way, and inventing a
     // verdict for it would make the dry run less trustworthy than the silence
-    // it exists to replace.
+    // it exists to replace. It is not counted as considered either: saying
+    // "we looked at 200 messages" about messages nothing could read is the
+    // same lie in a different place.
     if (!message) continue;
+    considered += 1;
     if (message.forwardedByRuleId) continue;
+    // A body-matching rule against a message whose body retention has taken is
+    // unanswerable. Reported, not guessed.
+    if (needsBody && typeof event.metadata['bodyText'] !== 'string') {
+      bodyUnavailable += 1;
+      continue;
+    }
     if (!mailRuleMatches(match, message, event.occurredAt)) continue;
     matched.push({
       eventId: event.eventId,
@@ -93,9 +117,10 @@ export function dryRunMailRule(input: {
 
   return {
     status: 'ran',
-    consideredCount: input.events.length,
+    consideredCount: considered,
     matched,
     predatingCount: matched.filter(hit => hit.predatesRule).length,
+    bodyUnavailableCount: bodyUnavailable,
   };
 }
 
@@ -107,8 +132,15 @@ function readMessage(
     || typeof value['to'] !== 'string'
     || typeof value['subject'] !== 'string'
     || typeof value['snippet'] !== 'string'
-    || typeof value['bodyText'] !== 'string'
     || typeof value['hasAttachment'] !== 'boolean'
   ) return null;
-  return value as MailMessageMetadata;
+  // `bodyText` is the one field that legitimately goes missing: retention
+  // strips it at 30 days and leaves the event standing. Requiring it made a
+  // stripped event unreadable, which quietly dropped it out of matching
+  // altogether — so a rule tested against older mail matched nothing, and the
+  // member was told the rule was wrong when the body was simply gone.
+  return {
+    ...value,
+    bodyText: typeof value['bodyText'] === 'string' ? value['bodyText'] : '',
+  } as MailMessageMetadata;
 }

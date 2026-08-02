@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import type { Logger } from '../../shared/logger';
+import type { InfraError } from '../../shared/errors';
+import type { Result } from '../../shared/result';
 import type { MailOpsRepository } from '../../infrastructure/persistence/mail-ops.repository';
 import type { MailboxSyncClaim } from '../../infrastructure/persistence/mail-ops.repository';
 import {
@@ -15,6 +17,8 @@ import {
   MAIL_DELIVERY_PAYLOAD_RETENTION_MS,
   MAIL_EVENT_BODY_RETENTION_MS,
   MAIL_EVENT_RETENTION_MS,
+  MAIL_RETENTION_BATCH_SIZE,
+  MAIL_RETENTION_MAX_BATCHES,
   MAIL_RETENTION_SWEEP_INTERVAL_MS,
   mailDeliveryIdempotencyKey,
   type MailMessageMetadata,
@@ -332,26 +336,46 @@ export class MailOpsWorker {
     ) return;
     this.lastRetentionAt = now;
     const at = (ageMs: number) => new Date(now - ageMs);
+    /**
+     * Runs one sweep in batches until it clears or the ceiling is reached.
+     *
+     * Stops the moment a batch comes back short, which is what "nothing left"
+     * looks like — so a caught-up system pays one cheap query per hour rather
+     * than ten.
+     */
+    const inBatches = async (
+      sweep: (before: Date, limit: number) => Promise<Result<number, InfraError>>,
+      before: Date,
+    ): Promise<number> => {
+      let total = 0;
+      for (let batch = 0; batch < MAIL_RETENTION_MAX_BATCHES; batch++) {
+        const done = await sweep(before, MAIL_RETENTION_BATCH_SIZE);
+        if (!done.ok) throw done.error;
+        total += done.value;
+        if (done.value < MAIL_RETENTION_BATCH_SIZE) break;
+      }
+      return total;
+    };
     try {
       // Bodies first, deletions after. Doing it the other way round is not
       // wrong, only wasteful: it strips text from rows about to be removed.
-      const bodies = await this.deps.repo.stripEventBodies(
+      const bodies = await inBatches(
+        this.deps.repo.stripEventBodies,
         at(MAIL_EVENT_BODY_RETENTION_MS),
       );
-      if (!bodies.ok) throw bodies.error;
-      const payloads = await this.deps.repo.dropTerminalPayloads(
+      const payloads = await inBatches(
+        this.deps.repo.dropTerminalPayloads,
         at(MAIL_DELIVERY_PAYLOAD_RETENTION_MS),
       );
-      if (!payloads.ok) throw payloads.error;
-      const events = await this.deps.repo.deleteEventsBefore(
+      const events = await inBatches(
+        this.deps.repo.deleteEventsBefore,
         at(MAIL_EVENT_RETENTION_MS),
       );
-      if (!events.ok) throw events.error;
-      if (bodies.value + payloads.value + events.value > 0) {
+      if (bodies + payloads + events > 0) {
         this.log.info('mail_ops.retention_swept', {
-          bodiesStripped: bodies.value,
-          payloadsDropped: payloads.value,
-          eventsDeleted: events.value,
+          bodiesStripped: bodies,
+          payloadsDropped: payloads,
+          eventsDeleted: events,
         });
       }
     } catch (error) {
@@ -624,10 +648,6 @@ export class MailOpsWorker {
           if (reserved.value.outcome === 'reserved') deliveries++;
         }
       }
-      // A partial drain is a success with work left over, so it comes back on
-      // the next tick instead of waiting out the reconciliation interval.
-      const movedForward = sync.nextHistoryId !== claim.historyId;
-
       // Truncated *and* stationary is not a success. The client hit the page
       // limit without consuming a single history record — pages of label
       // changes with no INBOX arrival among them — so it returned the cursor
@@ -1103,10 +1123,17 @@ function readMessageMetadata(
     || typeof value['to'] !== 'string'
     || typeof value['subject'] !== 'string'
     || typeof value['snippet'] !== 'string'
-    || typeof value['bodyText'] !== 'string'
     || typeof value['hasAttachment'] !== 'boolean'
   ) return null;
-  return value as MailMessageMetadata;
+  // `bodyText` is the one field that legitimately goes missing: retention
+  // strips it at 30 days and leaves the event standing. Requiring it made a
+  // stripped event unreadable, which quietly dropped it out of matching
+  // altogether — so a rule tested against older mail matched nothing, and the
+  // member was told the rule was wrong when the body was simply gone.
+  return {
+    ...value,
+    bodyText: typeof value['bodyText'] === 'string' ? value['bodyText'] : '',
+  } as MailMessageMetadata;
 }
 
 /**
