@@ -26,6 +26,20 @@ This document was written against `b8eb000dc`. As of **2026-08-02** `dev` is
 Sections below have been corrected for those changes. Corrections are marked
 **[corrected 2026-08-02]** inline.
 
+**Waves 0–2 have since landed on `dev`, and they change behaviour this document
+describes.** Anything below about watch gating, history page limits, permission
+denial, or readiness is now the *old* system. In brief:
+
+| Was | Is now | Commit |
+|---|---|---|
+| `claimNextDueMailbox` required a registered watch and cursor when Pub/Sub was on | Reconciliation is unconditional; push is only the fast path | `97be67a46` |
+| Watch failure ⇒ mailbox dead | Watch failure ⇒ up to an hour late. `watch_delayed`, escalating to `watch_degraded` after 3 consecutive failures (new `watchFailureCount` column) | `97be67a46` |
+| >10 history pages threw, wedging the mailbox forever | Returns what it drained, reports the **last consumed record** as the cursor, and asks to be polled again | `6e0d120cf` |
+| `authorizeRule` returned a boolean and threw on any permission error | Returns `allowed \| denied \| unavailable`. Denials never stall the sync; only unanswerable questions hold the cursor | `c4a5e2561` |
+| A refused rule left no trace | Writes an inert `blocked` delivery row with the reason. Matching is checked before authorizing | `c4a5e2561` |
+| `department_access_denied` covered both real denials and unreadable stores | New `permission_lookup_failed` reason for the latter | `c4a5e2561` |
+| `pubsubReady` alone gated `create` | `runtime.pubsubConfigured && runtime.workersEnabled` | `97b4d22b9` |
+
 A full audit — code, prompt layer, permissions, and security — found defects
 that this document previously described as intended behaviour. **Do not treat a
 description here as an endorsement.** The defect register, decision records, and
