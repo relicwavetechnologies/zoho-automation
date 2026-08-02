@@ -13,21 +13,52 @@ import type {
 } from './google-workspace-mcp.tool';
 import { SELF_SERVICE_CONNECT_HINT } from './google-workspace-mcp.tool';
 import { mailRuleMatchSchema, parseMailRule } from '../../mail-ops/mail-rule.matcher';
+import {
+  dryRunMailRule,
+  type MailRuleDryRunEvent,
+} from '../../mail-ops/mail-rule-dry-run';
 import { mailRuleDedupeKey } from '../../mail-ops/mail-ops.types';
-import type { MailRuleIdentity } from '../../mail-ops/mail-ops.types';
+import type { MailRuleAction, MailRuleIdentity } from '../../mail-ops/mail-ops.types';
 import type {
   AuthorizeLarkChatDestination,
   LarkChatDestinationVerdict,
 } from '../../mail-ops/lark-chat-destination';
 
-const destinationSchema = z.discriminatedUnion('type', [
+const destinationSchema = z.union([
   z.object({ type: z.literal('email'), email: z.string().email() }).strict(),
   z.object({ type: z.literal('current_lark_chat') }).strict(),
   z.object({
     type: z.literal('lark_chat'),
     chatId: z.string().trim().min(1),
   }).strict(),
+  /**
+   * Filing mail where it already is. No address, because nothing leaves the
+   * mailbox — this is the destination a rule has when the answer to "where does
+   * it go" is "nowhere, it stays here and gets tidied".
+   */
+  z.object({
+    type: z.literal('organize'),
+    label: z.string().trim().min(1).max(225).optional(),
+    archive: z.boolean().optional(),
+    markRead: z.boolean().optional(),
+  }).strict().refine(
+    value => value.label !== undefined
+      || value.archive === true
+      || value.markRead === true,
+    {
+      message: 'Say what to do with the message: label, archive, or markRead.',
+    },
+  ),
 ]);
+
+/**
+ * How many messages an hour this rule may send.
+ *
+ * Only meaningful when something is being sent, which is why it sits beside the
+ * destination rather than inside the match: an `organize` rule has no ceiling
+ * because filing a member's own mail floods nobody.
+ */
+const rateLimitPerHourSchema = z.number().int().min(1).max(1000).optional();
 
 export const mailAutomationsArgsSchema = z.discriminatedUnion('operation', [
   z.object({
@@ -36,10 +67,16 @@ export const mailAutomationsArgsSchema = z.discriminatedUnion('operation', [
     name: z.string().trim().min(1).max(120),
     match: mailRuleMatchSchema,
     destination: destinationSchema,
+    rateLimitPerHour: rateLimitPerHourSchema,
   }).strict(),
   z.object({
     operation: z.literal('list'),
     includeInactive: z.boolean().optional(),
+  }).strict(),
+  z.object({
+    operation: z.literal('test'),
+    ruleId: z.string().uuid(),
+    limit: z.number().int().min(1).max(100).optional(),
   }).strict(),
   z.object({
     operation: z.literal('update'),
@@ -48,6 +85,7 @@ export const mailAutomationsArgsSchema = z.discriminatedUnion('operation', [
     name: z.string().trim().min(1).max(120),
     match: mailRuleMatchSchema,
     destination: destinationSchema,
+    rateLimitPerHour: rateLimitPerHourSchema,
   }).strict(),
   z.object({
     operation: z.literal('pause'),
@@ -84,6 +122,7 @@ const resultSchema = z.object({
   operation: z.enum([
     'create',
     'list',
+    'test',
     'update',
     'pause',
     'resume',
@@ -104,6 +143,20 @@ const resultSchema = z.object({
   })).optional(),
   rule: ruleSummarySchema.optional(),
   rules: z.array(ruleSummarySchema).optional(),
+  dryRun: z.object({
+    ruleId: z.string(),
+    name: z.string(),
+    mailboxEmail: z.string(),
+    consideredCount: z.number(),
+    matchedCount: z.number(),
+    predatingCount: z.number(),
+    matched: z.array(z.object({
+      occurredAt: z.string(),
+      from: z.string(),
+      subject: z.string(),
+      predatesRule: z.boolean(),
+    })),
+  }).optional(),
   message: z.string().optional(),
 });
 
@@ -184,7 +237,12 @@ type MailRepo = Pick<
 
 const actionFor = (operation: Args['operation']): ToolActionGroup => {
   switch (operation) {
-    case 'list': return 'read';
+    case 'list':
+    // A dry run reads stored mail and stored rules and writes nothing, so it
+    // is `read`. Gating it behind `update` would mean the member who most
+    // needs to check a rule — one whose edit rights were just taken away —
+    // is the one who cannot.
+    case 'test': return 'read';
     case 'create': return 'create';
     case 'update':
     case 'pause':
@@ -231,6 +289,27 @@ export function createMailAutomationsTool(deps: {
     readonly connectionId: string;
     readonly action: 'execute';
   }): Promise<{ readonly kind: string; readonly message?: string }>;
+  /**
+   * Loads one rule and the recent mail on its mailbox, for `test`.
+   *
+   * Reaches the read repository rather than the write one, which is the whole
+   * reason it is a separate dependency: a dry run must not be able to touch a
+   * lease, a cursor, or a status even by accident.
+   */
+  dryRun?(input: {
+    companyId: string;
+    userId: string;
+    ruleId: string;
+    limit: number;
+  }): Promise<Result<
+    (Parameters<typeof dryRunMailRule>[0]['rule'] & {
+      ruleId: string;
+      name: string;
+      mailboxEmail: string;
+      events: MailRuleDryRunEvent[];
+    }) | null,
+    Error
+  >>;
 }): Tool<Args, Res> {
   return {
     id: asToolId('mailAutomations'),
@@ -253,8 +332,10 @@ export function createMailAutomationsTool(deps: {
       'Use scheduledWorkflows for time-triggered inbox work such as a daily summary.',
       'A rule delivers the entire message. It cannot extract a code, link, or any part of the mail, so tell the user the whole email will be sent when they ask for "just the OTP" or similar.',
       'Only mail arriving in the INBOX triggers a rule. Mail that a Gmail filter archives, or that lands in Spam, is never seen.',
-      'create requires name, a deterministic match, and one destination. Match supports from, to, subjectContains, bodyContains, and hasAttachment; at least one of from, to, subjectContains, or bodyContains is required. from and to must each be one exact mailbox address or an exact @domain, never a brand or display-name substring.',
-      'Match fields are combined with AND. There is no OR and no negation.',
+      'create requires name, a deterministic match, and one destination. Match supports from, to, subjectContains, bodyContains, hasAttachment, notFrom, notSubjectContains, and activeWindow; at least one of from, to, subjectContains, or bodyContains is required. from, to, and notFrom must each be one exact mailbox address or an exact @domain, never a brand or display-name substring.',
+      'Match fields are combined with AND. There is no OR.',
+      'notFrom and notSubjectContains exclude. They only narrow a rule that already has a positive match field; a rule of exclusions alone is rejected. An exclusion that cancels its own match, such as from=@acme.com with notFrom=@acme.com, is also rejected.',
+      'activeWindow limits a rule to part of the week: {days?, start, end, timeZone}. start and end are 24-hour HH:MM local times, the window is half-open (09:00-18:00 includes 09:00 and excludes 18:00), and an end at or before start means overnight. timeZone is a required IANA name such as Asia/Kolkata. Ask the user which timezone if it is not obvious; never guess. It is judged on when the mail arrived, not when Divo processed it.',
       'subjectContains and bodyContains are literal case-insensitive substring tests: regex, wildcards, and | alternation never match.',
       '@domain does not match subdomains, so @example.com misses alerts@mail.example.com. Verify the real sending address before relying on it.',
       'to matches the To, Cc, Bcc, and Delivered-To headers together, so mail the user was copied on counts. There is no separate cc field.',
@@ -264,6 +345,9 @@ export function createMailAutomationsTool(deps: {
       'Email forwarding preserves the original Gmail MIME content, including HTML, inline images, and attachments, inside a new message sent by the connected mailbox.',
       'destination=current_lark_chat delivers to the current Lark conversation; it is invalid outside Lark and is rejected on desktop and web.',
       'destination=lark_chat requires an exact chatId returned by governed Lark chat discovery. Never invent it. Lark delivery posts up to 20,000 characters of plain text with no HTML and no attachments.',
+      'destination=organize sends nothing. It files the message in the user\'s own Gmail: label applies a Gmail label and creates it if missing, archive removes it from the inbox, markRead marks it read. Set at least one. Use this for "label these", "auto-archive these", "keep these out of my inbox" — never for anything that has to reach another person.',
+      'rateLimitPerHour caps how many messages one rule may send in a rolling hour, 1-1000. It applies to email and Lark destinations only. Over the cap the message is dropped and recorded, not queued, so nothing is delivered late in a burst. Offer it when a rule could match a busy sender or a mailing list.',
+      'test replays a rule against mail Divo already recorded for that mailbox and reports what it would have matched. It sends nothing and changes nothing. Use it before telling the user a new or edited rule is right, and when they ask why a rule is quiet. An empty result on a new mailbox means Divo has no recorded mail yet, not that the rule is wrong.',
       'connectionId is optional only when exactly one eligible user-owned Google account exists. If several exist the tool returns google_workspace_connection_selection_required with a connections list; that is a normal step, not a failure. Retry with one exact returned connectionId.',
       'No LLM runs for matching or delivery. Do not request per-message approval after the user creates the rule.',
       'list returns valid for every rule, plus invalidReason when valid is false, meaning that rule matches no mail and needs repair. Report those instead of presenting them as working.',
@@ -331,6 +415,61 @@ export function createMailAutomationsTool(deps: {
                 ...validity,
               };
             }),
+          });
+        }
+
+        if (args.operation === 'test') {
+          if (!deps.dryRun) {
+            return err(new ToolError({
+              toolId: 'mailAutomations',
+              reason: 'unrecoverable',
+              message: 'Testing a mail rule is not available in this Divo '
+                + 'environment.',
+            }));
+          }
+          const loaded = await deps.dryRun({
+            companyId: String(ctx.runContext.companyId),
+            userId: String(ctx.runContext.userId),
+            ruleId: args.ruleId,
+            limit: args.limit ?? 50,
+          });
+          if (!loaded.ok) throw loaded.error;
+          if (loaded.value === null) {
+            return err(new ToolError({
+              toolId: 'mailAutomations',
+              reason: 'bad_args',
+              message: 'Mail automation rule was not found in your account.',
+            }));
+          }
+          const outcome = dryRunMailRule({
+            rule: loaded.value,
+            events: loaded.value.events,
+          });
+          if (outcome.status === 'rule_invalid') {
+            return ok({
+              success: false,
+              operation: 'test',
+              message: `This rule cannot run as written: ${outcome.reason}`,
+            });
+          }
+          return ok({
+            success: true,
+            operation: 'test',
+            dryRun: {
+              ruleId: loaded.value.ruleId,
+              name: loaded.value.name,
+              mailboxEmail: loaded.value.mailboxEmail,
+              consideredCount: outcome.consideredCount,
+              matchedCount: outcome.matched.length,
+              predatingCount: outcome.predatingCount,
+              matched: outcome.matched.map(hit => ({
+                occurredAt: hit.occurredAt.toISOString(),
+                from: hit.from,
+                subject: hit.subject,
+                predatesRule: hit.predatesRule,
+              })),
+            },
+            message: dryRunSummary(outcome.consideredCount, outcome.matched.length),
           });
         }
 
@@ -467,9 +606,7 @@ export function createMailAutomationsTool(deps: {
             }));
           }
         }
-        const action = destination.type === 'email'
-          ? { type: 'forward' as const }
-          : { type: 'deliver' as const };
+        const action = resolveAction(args.destination, args.rateLimitPerHour);
         const parsed = parseMailRule({
           match: args.match,
           action,
@@ -618,8 +755,12 @@ function mailOpsConfigurationRequired(
 function resolveDestination(
   input: z.infer<typeof destinationSchema>,
   ctx: ToolExecutionContext,
-): { type: 'email'; email: string } | { type: 'lark_chat'; chatId: string } {
+):
+  | { type: 'email'; email: string }
+  | { type: 'lark_chat'; chatId: string }
+  | { type: 'none' } {
   if (input.type === 'email') return input;
+  if (input.type === 'organize') return { type: 'none' };
   if (input.type === 'lark_chat') {
     return { type: 'lark_chat', chatId: input.chatId };
   }
@@ -629,6 +770,46 @@ function resolveDestination(
     );
   }
   return { type: 'lark_chat', chatId: ctx.runContext.chatId };
+}
+
+/**
+ * What the rule does, derived from where the member said the mail goes.
+ *
+ * The tool takes one `destination` and the stored rule carries an action and a
+ * destination separately, because the runtime dispatches on the action. Keeping
+ * the derivation here means a member never has to state both and never has to
+ * get the pairing right — an impossible combination cannot be expressed.
+ */
+function resolveAction(
+  input: z.infer<typeof destinationSchema>,
+  rateLimitPerHour: number | undefined,
+): MailRuleAction {
+  if (input.type === 'organize') {
+    return {
+      type: 'organize',
+      ...(input.label !== undefined ? { label: input.label } : {}),
+      ...(input.archive !== undefined ? { archive: input.archive } : {}),
+      ...(input.markRead !== undefined ? { markRead: input.markRead } : {}),
+    };
+  }
+  return {
+    type: input.type === 'email' ? 'forward' : 'deliver',
+    ...(rateLimitPerHour !== undefined ? { rateLimitPerHour } : {}),
+  };
+}
+
+function dryRunSummary(considered: number, matched: number): string {
+  if (considered === 0) {
+    return 'Divo has no recorded mail for this mailbox yet, so there was '
+      + 'nothing to test the rule against. That is not evidence the rule is '
+      + 'wrong — only that nothing has arrived since the mailbox was connected.';
+  }
+  if (matched === 0) {
+    return `This rule matched none of the last ${considered} messages Divo `
+      + 'recorded for the mailbox.';
+  }
+  return `This rule matched ${matched} of the last ${considered} messages Divo `
+    + 'recorded for the mailbox. Nothing was sent.';
 }
 
 function storedRuleValidity(input: {

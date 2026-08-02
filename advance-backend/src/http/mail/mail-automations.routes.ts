@@ -16,14 +16,21 @@ import type { Logger } from '../../shared/logger';
 import { createMemberAuthMiddleware } from '../middleware/member-auth.middleware';
 import type { MemberAuthMiddlewareDeps } from '../middleware/member-auth.middleware';
 import type { MailOpsReadRepository } from '../../infrastructure/persistence/mail-ops-read.repository';
+import { DEFAULT_DRY_RUN_EVENTS } from '../../infrastructure/persistence/mail-ops-read.repository';
 import {
   assessMailbox,
   assessRule,
   type MailboxHealth,
 } from '../../application/mail-ops/mail-ops-health';
+import { dryRunMailRule } from '../../application/mail-ops/mail-rule-dry-run';
 
 const DEFAULT_DELIVERY_LIMIT = 25;
 const MAX_DELIVERY_LIMIT = 100;
+const MAX_DRY_RUN_EVENTS = 200;
+
+const dryRunBodySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(MAX_DRY_RUN_EVENTS).optional(),
+});
 
 const listQuerySchema = z.object({
   includeInactive: z.enum(['true', 'false']).optional(),
@@ -184,6 +191,86 @@ export function createMailAutomationsRoutes(
       });
     } catch (error) {
       fail(res, 'deliveries', error);
+    }
+  });
+
+  /**
+   * What this rule would do, without doing any of it.
+   *
+   * A POST because it is an action the member takes, not a resource — but it
+   * writes nothing, sends nothing, and touches no Gmail API. The whole run is
+   * the stored match replayed over stored events.
+   */
+  router.post('/rules/:ruleId/test', async (req, res) => {
+    const ruleId = z.string().uuid().safeParse(req.params['ruleId']);
+    if (!ruleId.success) {
+      res.status(400).json({ success: false, message: 'Invalid rule ID.' });
+      return;
+    }
+    const body = dryRunBodySchema.safeParse(req.body ?? {});
+    if (!body.success) {
+      res.status(400).json({
+        success: false,
+        message: `limit must be between 1 and ${MAX_DRY_RUN_EVENTS}.`,
+      });
+      return;
+    }
+    try {
+      const loaded = await deps.readRepo.loadRuleForDryRun({
+        ...actor(res),
+        ruleId: ruleId.data,
+        limit: body.data.limit ?? DEFAULT_DRY_RUN_EVENTS,
+      });
+      if (!loaded.ok) throw loaded.error;
+      if (loaded.value === null) {
+        res.status(404).json({
+          success: false,
+          message: 'That mail rule was not found in your account.',
+        });
+        return;
+      }
+
+      const outcome = dryRunMailRule({
+        rule: loaded.value,
+        events: loaded.value.events,
+      });
+      if (outcome.status === 'rule_invalid') {
+        res.json({
+          success: true,
+          data: {
+            ruleId: loaded.value.ruleId,
+            name: loaded.value.name,
+            valid: false,
+            invalidReason: outcome.reason,
+          },
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        data: {
+          ruleId: loaded.value.ruleId,
+          name: loaded.value.name,
+          valid: true,
+          mailboxEmail: loaded.value.mailboxEmail,
+          consideredCount: outcome.consideredCount,
+          matchedCount: outcome.matched.length,
+          // Named apart from `matchedCount` because these are matches the
+          // runtime would decline: mail older than the rule is never acted on.
+          // Folding them in would read as a promise to go back for it.
+          predatingCount: outcome.predatingCount,
+          matched: outcome.matched.map(hit => ({
+            eventId: hit.eventId,
+            occurredAt: hit.occurredAt.toISOString(),
+            from: hit.from,
+            subject: hit.subject,
+            predatesRule: hit.predatesRule,
+          })),
+        },
+      });
+    } catch (error) {
+      fail(res, 'test', error);
     }
   });
 

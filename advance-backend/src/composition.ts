@@ -1819,6 +1819,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     beginAuthorization: beginGoogleAuthorization,
     authorizeLarkChat: authorizeMailOpsLarkChat,
     connectionApproval: input => connectionRateLimits.approval(input),
+    // The read repository, not `mailOpsRepo`: a dry run must not be able to
+    // touch a lease, a cursor, or a rule status even by accident.
+    dryRun: input => mailOpsReadRepo.loadRuleForDryRun(input),
   }));
   toolRegistry.register(createCanvaDesignTool({ getClient: getCanvaMcpClient }));
   for (const tool of createAirtableMcpTools({

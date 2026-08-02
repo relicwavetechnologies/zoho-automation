@@ -331,6 +331,163 @@ describe('MailOpsWorker', () => {
     assert.match(blocked?.reason, /no longer in/);
   });
 
+  it('drops a message over the rule ceiling and records what it cost', async () => {
+    // Dropped, not deferred. Deferring holds the flood back for an hour and
+    // then releases all of it at once, which is the outcome a ceiling exists to
+    // prevent — so the drop has to be visible instead.
+    let blocked: any;
+    let reserved = 0;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        listActiveRules: async () => ({
+          ok: true,
+          value: [{
+            ruleId: 'rule-1',
+            activatedAt: RULE_ACTIVATED_AT,
+            match: { from: 'alerts@example.com' },
+            action: { type: 'deliver', rateLimitPerHour: 5 },
+            destination: { type: 'lark_chat', chatId: 'oc_destination' },
+          }],
+        }),
+        countRecentDeliveries: async () => ({ ok: true, value: 5 }),
+        recordBlockedDelivery: async (input: any) => {
+          blocked = input;
+          return { ok: true, value: true };
+        },
+        reserveDelivery: async () => {
+          reserved += 1;
+          return { ok: true, value: { outcome: 'reserved', deliveryId: 'd' } };
+        },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => { throw new Error('Nothing should be delivered.') },
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(reserved, 0);
+    assert.equal(blocked?.ruleId, 'rule-1');
+    assert.match(blocked?.reason, /limit of 5 per hour/);
+  });
+
+  it('counts the ceiling against the hour the mail arrived in', async () => {
+    // Not the hour Divo got round to it. A backlog drained late must decide the
+    // same way it would have decided live, or the ceiling silently becomes a
+    // function of how far behind the worker is.
+    let since: Date | undefined;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        listActiveRules: async () => ({
+          ok: true,
+          value: [{
+            ruleId: 'rule-1',
+            activatedAt: RULE_ACTIVATED_AT,
+            match: { from: 'alerts@example.com' },
+            action: { type: 'deliver', rateLimitPerHour: 5 },
+            destination: { type: 'lark_chat', chatId: 'oc_destination' },
+          }],
+        }),
+        countRecentDeliveries: async (input: any) => {
+          since = input.since;
+          return { ok: true, value: 0 };
+        },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'lark-message',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(
+      since?.toISOString(),
+      new Date(event.occurredAt.getTime() - 60 * 60_000).toISOString(),
+    );
+  });
+
+  it('never asks about a ceiling a rule does not have', async () => {
+    let counted = 0;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        countRecentDeliveries: async () => {
+          counted += 1;
+          return { ok: true, value: 0 };
+        },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'lark-message',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(counted, 0);
+  });
+
+  it('labels and archives in place, sending nothing', async () => {
+    const modified: any[] = [];
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        claimNextDueDelivery: (() => {
+          let handed = false;
+          return async () => {
+            if (handed) return { ok: true, value: null };
+            handed = true;
+            return {
+              ok: true,
+              value: {
+                deliveryId: 'delivery-1',
+                attempts: 1,
+                payload: {
+                  companyId: 'company-1',
+                  userId: 'user-1',
+                  subscriptionId: 'mailbox-1',
+                  connectionId: 'connection-1',
+                  mailboxEmail: 'user@example.com',
+                  ruleId: 'rule-1',
+                  eventId: 'event-1',
+                  sourceMessageId: 'message-1',
+                  idempotencyKey: 'mail:key',
+                  action: { type: 'organize', label: 'Receipts', archive: true, markRead: true },
+                  destination: { type: 'none' },
+                  message: event.metadata,
+                },
+              },
+            };
+          };
+        })(),
+        claimNextDueMailbox: async () => ({ ok: true, value: null }),
+      }),
+      gmail: {
+        ...syncGmail,
+        resolveLabelId: async () => 'Label_7',
+        organizeMessage: async (input: any) => {
+          modified.push(input);
+          return 'message-1';
+        },
+      },
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => { throw new Error('Nothing should be delivered.') },
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(modified.length, 1);
+    assert.equal(modified[0].messageId, 'message-1');
+    assert.deepEqual(modified[0].addLabelIds, ['Label_7']);
+    // Archiving is removing INBOX, which is what archiving is in Gmail.
+    assert.deepEqual(modified[0].removeLabelIds, ['INBOX', 'UNREAD']);
+  });
+
   it('does not record a refusal against mail the rule never matched', async () => {
     // A blocked row must mean "this matched and was refused". Recording every
     // message a denied rule ignored anyway would be noise dressed as evidence.

@@ -72,6 +72,7 @@ Use this recipe only for rules triggered by future Gmail arrivals.
 - **Gmail only.** There is no Outlook, Microsoft 365, or IMAP support. If the user's mail is not Gmail, say so instead of creating a rule.
 - **Only new mail that lands in the inbox** triggers a rule. Mail that a native Gmail filter archives, or that lands in Spam, is never seen.
 - **A rule delivers the whole message.** It cannot extract a code, a link, or any part of the mail. If the user asks for "just the OTP" or "just the tracking number", tell them the entire email will be forwarded or posted, and let them decide.
+- **A rule can also tidy mail instead of sending it** — label it, archive it, mark it read — with \`destination.type: "organize"\`. That acts on the user's own Gmail and reaches nobody else.
 - **Delivering to a Lark chat posts the full message text into that chat**, up to 20,000 characters, plain text only — no HTML and no attachments. Warn the user before delivering personal mail such as login codes into a group chat.
 - **Email forwarding** preserves the original Gmail MIME content, including HTML, inline images, and attachments, inside a new message sent by the connected mailbox.
 
@@ -86,7 +87,10 @@ Use this recipe only for rules triggered by future Gmail arrivals.
 - Create: \`{"operation":"create","connectionId":"<UUID when needed>","name":"<short label>","match":{"from":"alerts@example.com","subjectContains":"OTP"},"destination":{"type":"email","email":"person@company.com"}}\`. For every sender at a domain, use \`{"from":"@example.com"}\`.
 - Deliver to this Lark conversation: destination \`{"type":"current_lark_chat"}\`.
 - Deliver to another grounded chat: destination \`{"type":"lark_chat","chatId":"<exact listed ID>"}\`.
+- Tidy without sending: destination \`{"type":"organize","label":"Receipts","archive":true,"markRead":false}\`. At least one of \`label\`, \`archive\`, \`markRead\` must be set. A missing label is created in the user's Gmail. No address is involved and nothing leaves the mailbox.
+- Cap a busy rule: add \`"rateLimitPerHour": 20\` beside the destination. Email and Lark only. Over the cap a message is **dropped and recorded**, not queued — say that plainly, because a user asking for a cap usually assumes the rest arrives later.
 - List: \`{"operation":"list","includeInactive":false}\`. Use \`"includeInactive":true\` whenever the user asks about paused or archived rules, or asks why a rule stopped working — the default hides everything that is not active.
+- Test: \`{"operation":"test","ruleId":"<exact ruleId>"}\`. Replays the rule against mail Divo already recorded for that mailbox and reports what it would have matched. **Sends nothing.** Run it after creating or editing any rule that is not obviously narrow, and whenever the user asks why a rule is quiet. \`consideredCount: 0\` means Divo has recorded no mail for that mailbox yet — report that, do not report it as "the rule matches nothing".
 - Update: replace the complete match and destination using the exact \`ruleId\`
   and \`connectionId\` returned by list. \`name\` is required too, so carry the existing name forward unless the user asked to rename it. Update also resumes a paused rule.
 - Pause/resume/archive: include the exact \`ruleId\` returned by create or list. Archive is final — an archived rule cannot be resumed.
@@ -97,14 +101,16 @@ Every \`list\` row carries \`valid\`. When \`valid\` is \`false\` the row also c
 
 ## Match semantics
 
-- Every supplied field is combined with AND. There is no OR and no negation.
+- Every supplied field is combined with AND. There is no OR.
 - \`subjectContains\` and \`bodyContains\` are plain case-insensitive substring tests. Regular expressions, wildcards, and \`|\` alternation do not work — \`"OTP|code"\` matches the literal text \`OTP|code\` and will never fire.
 - \`@domain\` matches that exact domain only, not its subdomains: \`@example.com\` does **not** match \`alerts@mail.example.com\`. Many services send from a subdomain, so when the user names a company, prefer inspecting one real message with \`google-gmail\` to read the true sending address.
 - \`to\` takes one exact mailbox address or one \`@domain\`, exactly like \`from\`, and matches the \`To\`, \`Cc\`, \`Bcc\` and \`Delivered-To\` headers together. Mail the user was copied on counts. There is no separate \`cc\` field and none is needed.
 - \`hasAttachment\` is true only for a file someone attached. Inline images — signature logos, tracking pixels, embedded screenshots — do not count.
+- \`notFrom\` and \`notSubjectContains\` exclude. \`notFrom\` takes an exact address or \`@domain\` like \`from\`; \`notSubjectContains\` is a plain substring. Both are narrowing-only: a rule made of exclusions alone is rejected, because "everything except X" is the broadest rule the system can express and is never what someone writing an exclusion means. An exclusion that cancels its own match — \`from: "@acme.com"\` with \`notFrom: "@acme.com"\` — is rejected too.
+- \`activeWindow\` limits a rule to part of the week: \`{"days":["mon","tue","wed","thu","fri"],"start":"09:00","end":"18:00","timeZone":"Asia/Kolkata"}\`. Times are 24-hour local wall clock and the window is half-open — 09:00 is inside, 18:00 is not. An \`end\` at or before \`start\` means overnight, and an overnight window belongs to the day it opened on. \`days\` may be omitted for every day. **\`timeZone\` is required and there is no default** — ask the user which timezone rather than assuming one. The window is judged on when the mail arrived, not when Divo got to it.
 - Only the listed fields exist, and any other key is rejected outright. If the user wants narrowing this tool cannot express, say so rather than creating a broader rule.
 
-At least one of \`from\`, \`to\`, \`subjectContains\` or \`bodyContains\` is required; \`{"hasAttachment":true}\` on its own is rejected, because it forwards every message carrying a file. Even one narrowing field can still be broad — confirm the scope before creating a rule that matches widely.
+At least one of \`from\`, \`to\`, \`subjectContains\` or \`bodyContains\` is required; \`{"hasAttachment":true}\` on its own is rejected, because it forwards every message carrying a file. \`hasAttachment\`, \`notFrom\`, \`notSubjectContains\` and \`activeWindow\` only narrow a rule that already has one of the four. Even one narrowing field can still be broad — confirm the scope before creating a rule that matches widely, and prefer running \`test\` over guessing.
 
 Matching and delivery do not invoke an LLM and do not need per-message approval. Do not claim success until create returns an active rule ID, and describe the result as active only for the rule itself — the mailbox watch is registered in the background shortly afterwards. Do not use this tool for a daily summary or other timed work; load \`schedule-divo-work\` instead.
 If \`mailAutomations\` returns \`mail_ops_configuration_required\`, stop and report the operator setup requirement. Never substitute Scheduler, a polling loop, or a native Gmail filter for an arrival-triggered Mail Ops rule.`,

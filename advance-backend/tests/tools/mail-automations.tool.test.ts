@@ -939,7 +939,7 @@ describe('mailAutomations tool', () => {
     assert.match(mailOps.markdown, /rejected on desktop and web/i);
   });
 
-  it('grants every Mail Ops action to every existing department role once', async () => {
+  it('grants all five Mail Ops actions to a system role that has none', async () => {
     let createManyInput: any;
     const result = await provisionMailOpsPermissionsForExistingCompanies({
       company: {
@@ -955,6 +955,7 @@ describe('mailAutomations tool', () => {
         ],
       },
       departmentToolPermission: {
+        findMany: async () => [],
         createMany: async (input: any) => {
           createManyInput = input;
           return { count: 10 };
@@ -962,7 +963,9 @@ describe('mailAutomations tool', () => {
       },
     } as any);
 
-    assert.deepEqual(result, { companies: 1, roles: 2, created: 10 });
+    assert.equal(result.companies, 1);
+    assert.equal(result.roles, 2);
+    assert.equal(result.created, 10);
     assert.equal(createManyInput.skipDuplicates, true);
     assert.deepEqual(
       createManyInput.data

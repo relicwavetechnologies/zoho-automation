@@ -192,7 +192,16 @@ export class MailOpsRepository {
           // rule that is already running must keep watching from where it was
           // — moving its floor would silently drop whatever backlog it had not
           // reached, and the member never asked for anything to stop.
-          update: { name: input.name },
+          // `actionJson` alongside the name, and only because of
+          // `rateLimitPerHour`. Every other field of the action is part of the
+          // dedupe key, so landing here proves they already agree — the ceiling
+          // is the one thing that can differ, and writing it is what makes
+          // "create the same rule but slower" mean anything. Without this the
+          // tool reported the new ceiling and the rule kept the old one.
+          update: {
+            name: input.name,
+            actionJson: input.action as Prisma.InputJsonObject,
+          },
           select: { id: true },
         });
         // Coming back to life and starting a fresh watch are one statement, so
@@ -1029,6 +1038,35 @@ export class MailOpsRepository {
       return ok({ outcome: 'in_flight' });
     } catch (cause) {
       return err(wrapInfra('prisma', 'mailOps.reserveDelivery', cause));
+    }
+  }
+
+  /**
+   * How many messages this rule has already sent, or is about to, in the window.
+   *
+   * `blocked` and `abandoned` rows are excluded because neither is a message
+   * anybody received: counting a refusal against the ceiling would mean a rule
+   * that hit its limit once could never recover, since the refusals it then
+   * recorded would keep it at the limit forever.
+   *
+   * Counted from `firstAttemptAt`, which is stamped when the delivery is
+   * reserved. A retry an hour later does not consume a second slot — the mail
+   * only leaves once.
+   */
+  async countRecentDeliveries(input: {
+    ruleId: string;
+    since: Date;
+  }): Promise<Result<number, InfraError>> {
+    try {
+      return ok(await this.db.mailDelivery.count({
+        where: {
+          ruleId: input.ruleId,
+          firstAttemptAt: { gte: input.since },
+          status: { notIn: ['blocked', 'abandoned'] },
+        },
+      }));
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'mailOps.countRecentDeliveries', cause));
     }
   }
 

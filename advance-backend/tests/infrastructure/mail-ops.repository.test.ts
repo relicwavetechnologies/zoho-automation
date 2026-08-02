@@ -1000,10 +1000,14 @@ describe('MailOpsRepository', () => {
       value: { ruleId: 'rule-1', subscriptionId: 'mailbox-1' },
     });
     // The dedupe key is content-derived, so re-asking for a rule that is
-    // already running lands on the upsert's update branch. It gets its name
-    // and nothing else: moving the floor would discard backlog nobody asked to
-    // stop, and a genuinely new row takes the column default.
-    assert.deepEqual(upserts[0].update, { name: 'Forward OTP' });
+    // already running lands on the upsert's update branch. It gets its name and
+    // its action and nothing else: the action can differ only in
+    // `rateLimitPerHour`, which is the one field left out of the key, and
+    // moving the floor would discard backlog nobody asked to stop.
+    assert.deepEqual(upserts[0].update, {
+      name: 'Forward OTP',
+      actionJson: { type: 'forward' },
+    });
     assert.equal(upserts[0].create.activatedAt, undefined);
     // Coming back to life and starting a fresh watch are one statement, so a
     // rule cannot be revived still carrying a floor from before it stopped.

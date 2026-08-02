@@ -48,21 +48,76 @@ export interface MailMessageMetadata extends Record<string, unknown> {
   forwardedByRuleId?: string;
 }
 
+export const MAIL_RULE_WEEKDAYS = [
+  'mon',
+  'tue',
+  'wed',
+  'thu',
+  'fri',
+  'sat',
+  'sun',
+] as const;
+
+export type MailRuleWeekday = (typeof MAIL_RULE_WEEKDAYS)[number];
+
+/**
+ * The stretch of the week a rule is awake for, in somebody's actual timezone.
+ *
+ * `start` and `end` are `HH:MM` local wall-clock times and the window is
+ * half-open — `09:00`–`18:00` includes mail arriving at 09:00 and excludes mail
+ * arriving at 18:00. An `end` at or before `start` wraps past midnight, which is
+ * the only way to express an overnight window and the shape people reach for
+ * first ("only outside office hours").
+ *
+ * `timeZone` is required and is an IANA name. There is no server-local default
+ * on purpose: a window is a claim about the member's day, and resolving it
+ * against whatever timezone a container happens to boot in would be wrong for
+ * everyone except by accident.
+ */
+export interface MailRuleActiveWindow {
+  /** Omitted means every day. */
+  days?: readonly MailRuleWeekday[];
+  start: string;
+  end: string;
+  timeZone: string;
+}
+
 export interface MailRuleMatch {
   from?: string;
   to?: string;
   subjectContains?: string;
   bodyContains?: string;
   hasAttachment?: boolean;
+  notFrom?: string;
+  notSubjectContains?: string;
+  activeWindow?: MailRuleActiveWindow;
 }
 
+/**
+ * `rateLimitPerHour` is a ceiling on how many messages one rule may send in a
+ * rolling hour, counted per rule and not per connection — the connection budget
+ * already exists and protects Google, while this protects whoever is on the
+ * other end of the destination.
+ *
+ * `organize` carries no ceiling because it sends nothing: labelling and
+ * archiving act on the member's own mailbox, where a burst is the correct
+ * response to a burst.
+ */
 export type MailRuleAction =
-  | { type: 'forward' }
-  | { type: 'deliver' };
+  | { type: 'forward'; rateLimitPerHour?: number }
+  | { type: 'deliver'; rateLimitPerHour?: number }
+  | {
+      type: 'organize';
+      label?: string;
+      archive?: boolean;
+      markRead?: boolean;
+    };
 
 export type MailRuleDestination =
   | { type: 'email'; email: string }
-  | { type: 'lark_chat'; chatId: string };
+  | { type: 'lark_chat'; chatId: string }
+  /** An `organize` rule acts on the message where it already is. */
+  | { type: 'none' };
 
 export interface PendingMailDeliveryPayload {
   companyId: string;
@@ -111,6 +166,14 @@ export interface MailRuleIdentity {
  * `toLowerCase`, not `toLocaleLowerCase`, because this value is stored: a
  * locale-sensitive fold would make a rule's identity depend on the environment
  * of whichever process last wrote it. Turkish alone would map `I` to `ı`.
+ *
+ * `rateLimitPerHour` is deliberately **not** part of the identity. Two rules
+ * alike but for their ceiling are one rule with two opinions about how fast it
+ * may go, and treating them as two would leave both running and forwarding
+ * everything twice. The consequence is that re-creating a rule with a different
+ * ceiling has to *apply* it, which is why `createRuleForMailbox` writes
+ * `actionJson` on the update branch — the action can differ from the stored one
+ * in that field alone, so writing it means exactly "adopt the new ceiling".
  */
 export function mailRuleDedupeKey(input: MailRuleIdentity): string {
   return `mail-rule:${sha256(JSON.stringify([
@@ -122,10 +185,41 @@ export function mailRuleDedupeKey(input: MailRuleIdentity): string {
     input.match.subjectContains?.toLowerCase() ?? null,
     input.match.bodyContains?.toLowerCase() ?? null,
     input.match.hasAttachment ?? null,
+    input.match.notFrom?.toLowerCase() ?? null,
+    input.match.notSubjectContains?.toLowerCase() ?? null,
+    activeWindowIdentity(input.match.activeWindow),
     input.action.type,
+    input.action.type === 'organize' ? input.action.label?.toLowerCase() ?? null : null,
+    input.action.type === 'organize' ? input.action.archive ?? null : null,
+    input.action.type === 'organize' ? input.action.markRead ?? null : null,
     input.destination.type,
     input.destination.type === 'email'
       ? input.destination.email.toLowerCase()
-      : input.destination.chatId,
+      : input.destination.type === 'lark_chat'
+        ? input.destination.chatId
+        : null,
   ]))}`;
+}
+
+/**
+ * A window reduced to a fixed sequence, so that the same window written two
+ * ways is one rule.
+ *
+ * Days are sorted into week order rather than the order they were typed, and an
+ * absent `days` is spelled as the full week — "every day" and "mon…sun" are the
+ * same window, and a member who lists all seven should not get a second rule.
+ * The timezone is a case-sensitive IANA name (`Europe/Paris`, not
+ * `europe/paris`) and is left exactly as given.
+ */
+function activeWindowIdentity(
+  window: MailRuleActiveWindow | undefined,
+): unknown {
+  if (!window) return null;
+  const days = window.days?.length ? window.days : MAIL_RULE_WEEKDAYS;
+  return [
+    MAIL_RULE_WEEKDAYS.filter(day => days.includes(day)),
+    window.start,
+    window.end,
+    window.timeZone,
+  ];
 }

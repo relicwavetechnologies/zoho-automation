@@ -9,6 +9,7 @@ import {
 import {
   mailDeliveryIdempotencyKey,
   type MailMessageMetadata,
+  type MailRuleAction,
   type PendingMailDeliveryPayload,
 } from './mail-ops.types';
 import {
@@ -67,9 +68,14 @@ class HistoryBacklogStalledError extends Error {
   }
 }
 
+/** The rule's own hourly ceiling, where it has one. `organize` never does. */
+const ruleRateLimit = (action: MailRuleAction): number | undefined =>
+  action.type === 'organize' ? undefined : action.rateLimitPerHour;
+
 type MailRepo = Pick<
   MailOpsRepository,
   | 'claimNextDueMailbox'
+  | 'countRecentDeliveries'
   | 'recordEvents'
   | 'advanceCursor'
   | 'markSyncFailed'
@@ -97,7 +103,13 @@ export class MailOpsWorker {
     repo: MailRepo;
     gmail: Pick<
       GmailHistoryClient,
-      'sync' | 'watch' | 'createForwardDraft' | 'sendForwardDraft' | 'forwardDraftPending'
+      | 'sync'
+      | 'watch'
+      | 'createForwardDraft'
+      | 'sendForwardDraft'
+      | 'forwardDraftPending'
+      | 'organizeMessage'
+      | 'resolveLabelId'
     >;
     resolveAccessToken(input: {
       companyId: string;
@@ -392,7 +404,7 @@ export class MailOpsWorker {
           // Matching before authorizing, so a recorded refusal always means
           // "this message matched your rule and was refused" rather than
           // covering every message the rule would have ignored anyway.
-          if (!mailRuleMatches(rule.match, message)) continue;
+          if (!mailRuleMatches(rule.match, message, event.occurredAt)) continue;
 
           const authorized = await authorizationFor(rawRule);
           if (authorized.verdict === 'unavailable') {
@@ -417,6 +429,40 @@ export class MailOpsWorker {
               reason: authorized.reason,
             });
             continue;
+          }
+
+          // The rule's own ceiling, distinct from the connection budget above
+          // it: that one protects Google from Divo, this one protects whoever
+          // is on the other end of the destination from a mailing list nobody
+          // expected. Over the ceiling the message is *dropped*, not deferred —
+          // deferring would hold the flood back for an hour and then release
+          // all of it at once, which is the outcome a ceiling exists to
+          // prevent. The drop is recorded, so the member can see what it cost.
+          const ceiling = ruleRateLimit(rule.action);
+          if (ceiling !== undefined) {
+            const recent = await this.deps.repo.countRecentDeliveries({
+              ruleId: rawRule.ruleId,
+              since: new Date(event.occurredAt.getTime() - 60 * 60_000),
+            });
+            if (!recent.ok) throw recent.error;
+            if (recent.value >= ceiling) {
+              const blocked = await this.deps.repo.recordBlockedDelivery({
+                companyId: claim.companyId,
+                subscriptionId: claim.subscriptionId,
+                ruleId: rawRule.ruleId,
+                eventId: event.eventId,
+                reason: `This rule's limit of ${ceiling} per hour was already `
+                  + 'reached, so this message was not sent.',
+                message,
+              });
+              if (!blocked.ok) throw blocked.error;
+              this.log.warn('mail_ops.rule_rate_limited', {
+                ruleId: rawRule.ruleId,
+                eventId: event.eventId,
+                ceiling,
+              });
+              continue;
+            }
           }
 
           const idempotencyKey = mailDeliveryIdempotencyKey(
@@ -740,6 +786,36 @@ export class MailOpsWorker {
           chatId: chat,
           idempotencyKey: payload.idempotencyKey,
           text: formatLarkDelivery(payload),
+        });
+      } else if (payload.action.type === 'organize') {
+        const accessToken = await this.deps.resolveAccessToken({
+          companyId: payload.companyId,
+          userId: payload.userId,
+          connectionId: payload.connectionId,
+        });
+        // Resolved per delivery rather than stored on the rule, because a label
+        // ID is Gmail's and the member can delete the label at any time. Storing
+        // one would leave the rule pointing at an ID that no longer exists, and
+        // failing on it forever; resolving by name recreates it instead.
+        const addLabelIds = payload.action.label
+          ? [await this.deps.gmail.resolveLabelId({
+              accessToken,
+              name: payload.action.label,
+            })]
+          : [];
+        // Archiving is removing INBOX, which is what archiving *is* in Gmail.
+        const removeLabelIds = [
+          ...(payload.action.archive ? ['INBOX'] : []),
+          ...(payload.action.markRead ? ['UNREAD'] : []),
+        ];
+        // No `nothingWasSent = false` here, and no probe above it: modify is
+        // idempotent, so a retry that repeats it changes nothing. Nothing is
+        // sent by an organize rule at all — the claim stays true.
+        providerMessageId = await this.deps.gmail.organizeMessage({
+          accessToken,
+          messageId: payload.sourceMessageId,
+          addLabelIds,
+          removeLabelIds,
         });
       } else {
         throw new Error('Mail delivery action and destination do not match.');

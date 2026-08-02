@@ -1,9 +1,12 @@
 import { z } from 'zod';
-import type {
-  MailMessageMetadata,
-  MailRuleAction,
-  MailRuleDestination,
-  MailRuleMatch,
+import {
+  MAIL_RULE_WEEKDAYS,
+  type MailMessageMetadata,
+  type MailRuleAction,
+  type MailRuleActiveWindow,
+  type MailRuleDestination,
+  type MailRuleMatch,
+  type MailRuleWeekday,
 } from './mail-ops.types';
 
 const mailboxCriterionSchema = (subject: 'Sender' | 'Recipient') =>
@@ -23,6 +26,38 @@ const recipientCriterionSchema = mailboxCriterionSchema('Recipient');
 /** Fields that narrow a rule to a recognisable slice of someone's mail. */
 const NARROWING_FIELDS = ['from', 'to', 'subjectContains', 'bodyContains'] as const;
 
+const CLOCK_TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+const clockTimeSchema = z.string().trim().regex(
+  CLOCK_TIME,
+  'Times are 24-hour HH:MM, for example 09:00 or 18:30.',
+);
+
+/**
+ * A timezone is checked by trying to use it, because that is the only thing
+ * that answers the question this rule actually depends on: whether *this*
+ * runtime can resolve the name. A hardcoded list would drift from the ICU data
+ * underneath it and start accepting names the matcher then cannot evaluate.
+ */
+const timeZoneSchema = z.string().trim().min(1).refine(value => {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}, 'timeZone must be an IANA timezone name such as Asia/Kolkata.');
+
+const activeWindowSchema = z.object({
+  days: z.array(z.enum(MAIL_RULE_WEEKDAYS)).min(1).optional(),
+  start: clockTimeSchema,
+  end: clockTimeSchema,
+  timeZone: timeZoneSchema,
+}).strict().refine(value => value.start !== value.end, {
+  message: 'A window that starts and ends at the same time says nothing. Use '
+    + 'different times, or leave activeWindow out to watch around the clock.',
+});
+
 /**
  * What a newly submitted match may say.
  *
@@ -38,14 +73,53 @@ export const mailRuleMatchSchema = z.object({
   subjectContains: z.string().trim().min(1).optional(),
   bodyContains: z.string().trim().min(1).optional(),
   hasAttachment: z.boolean().optional(),
+  notFrom: senderCriterionSchema.optional(),
+  notSubjectContains: z.string().trim().min(1).optional(),
+  activeWindow: activeWindowSchema.optional(),
 }).strict().refine(
+  // Exclusions are not narrowing. `notFrom` alone describes every message
+  // except one sender's, which is the broadest rule the system can express and
+  // the opposite of what someone writing an exclusion means by it.
   value => NARROWING_FIELDS.some(field => value[field] !== undefined),
   {
     message: 'A rule needs at least one of from, to, subjectContains or '
-      + 'bodyContains. hasAttachment on its own forwards every message that '
-      + 'carries a file.',
+      + 'bodyContains. hasAttachment, notFrom, notSubjectContains and '
+      + 'activeWindow only narrow a rule that already has one of those.',
+  },
+).refine(
+  // A rule that can never match is worth refusing at the point somebody writes
+  // it, not leaving to be discovered by its silence weeks later.
+  value => !(value.from && value.notFrom && excludes(value.notFrom, value.from)),
+  {
+    message: 'notFrom cancels out from, so this rule could never match. Drop '
+      + 'one of them.',
+  },
+).refine(
+  value => !(
+    value.subjectContains
+    && value.notSubjectContains
+    && value.subjectContains.toLowerCase()
+      .includes(value.notSubjectContains.toLowerCase())
+  ),
+  {
+    message: 'Every subject containing subjectContains also contains '
+      + 'notSubjectContains, so this rule could never match.',
   },
 );
+
+/**
+ * Whether a `notFrom` criterion covers everything a `from` criterion admits.
+ *
+ * Both shapes are exact — an address or an `@domain` — so this is decidable
+ * rather than a guess: `@stripe.com` covers `billing@stripe.com`, and nothing
+ * covers a broader criterion than itself.
+ */
+function excludes(exclusion: string, inclusion: string): boolean {
+  const wide = exclusion.trim().toLowerCase();
+  const narrow = inclusion.trim().toLowerCase();
+  if (wide === narrow) return true;
+  return wide.startsWith('@') && !narrow.startsWith('@') && narrow.endsWith(wide);
+}
 
 /**
  * What a match already in the database may say.
@@ -65,18 +139,44 @@ const storedMailRuleMatchSchema = z.object({
   subjectContains: z.string().trim().min(1).optional(),
   bodyContains: z.string().trim().min(1).optional(),
   hasAttachment: z.boolean().optional(),
+  notFrom: senderCriterionSchema.optional(),
+  notSubjectContains: z.string().trim().min(1).optional(),
+  // Not loosened for stored rules, unlike `to`. A window whose timezone this
+  // runtime cannot resolve has no answer to "is it inside the window right
+  // now", and the two ways of inventing one are both wrong: matching always
+  // sends mail the member excluded, and matching never stops the rule with
+  // nothing said. Failing to parse routes it to the mechanism that exists for
+  // exactly this — the rule reports itself broken, with the reason.
+  activeWindow: activeWindowSchema.optional(),
 }).refine(value => Object.keys(value).length > 0, {
   message: 'At least one deterministic mail match is required.',
 });
 
-const ActionSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('forward') }),
-  z.object({ type: z.literal('deliver') }),
+const rateLimitSchema = z.number().int().min(1).max(1000).optional();
+
+const organizeActionSchema = z.object({
+  type: z.literal('organize'),
+  label: z.string().trim().min(1).max(225).optional(),
+  archive: z.boolean().optional(),
+  markRead: z.boolean().optional(),
+}).refine(
+  value => value.label !== undefined || value.archive === true || value.markRead === true,
+  {
+    message: 'An organize rule must label, archive, or mark read. Setting them '
+      + 'all to false describes a rule that does nothing.',
+  },
+);
+
+const ActionSchema = z.union([
+  z.object({ type: z.literal('forward'), rateLimitPerHour: rateLimitSchema }),
+  z.object({ type: z.literal('deliver'), rateLimitPerHour: rateLimitSchema }),
+  organizeActionSchema,
 ]);
 
 const DestinationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('email'), email: z.string().email() }),
   z.object({ type: z.literal('lark_chat'), chatId: z.string().trim().min(1) }),
+  z.object({ type: z.literal('none') }),
 ]);
 
 export function parseMailRule(input: {
@@ -101,6 +201,22 @@ export function parseMailRule(input: {
     ...(parsedMatch.hasAttachment !== undefined
       ? { hasAttachment: parsedMatch.hasAttachment }
       : {}),
+    ...(parsedMatch.notFrom ? { notFrom: parsedMatch.notFrom } : {}),
+    ...(parsedMatch.notSubjectContains
+      ? { notSubjectContains: parsedMatch.notSubjectContains }
+      : {}),
+    ...(parsedMatch.activeWindow
+      ? {
+          activeWindow: {
+            ...(parsedMatch.activeWindow.days
+              ? { days: parsedMatch.activeWindow.days }
+              : {}),
+            start: parsedMatch.activeWindow.start,
+            end: parsedMatch.activeWindow.end,
+            timeZone: parsedMatch.activeWindow.timeZone,
+          },
+        }
+      : {}),
   };
   return { match, ...parseMailRuleDelivery(input) };
 }
@@ -112,13 +228,41 @@ export function parseMailRuleDelivery(input: {
   action: MailRuleAction;
   destination: MailRuleDestination;
 } {
-  const action = ActionSchema.parse(input.action);
+  const parsedAction = ActionSchema.parse(input.action);
+  // Rebuilt field by field rather than passed through, because an optional key
+  // present and holding `undefined` is not the same thing as absent — it would
+  // reach `JSON.stringify` in the dedupe key as a key that is there.
+  const action: MailRuleAction = parsedAction.type === 'organize'
+    ? {
+        type: 'organize',
+        ...(parsedAction.label !== undefined ? { label: parsedAction.label } : {}),
+        ...(parsedAction.archive !== undefined
+          ? { archive: parsedAction.archive }
+          : {}),
+        ...(parsedAction.markRead !== undefined
+          ? { markRead: parsedAction.markRead }
+          : {}),
+      }
+    : {
+        type: parsedAction.type,
+        ...(parsedAction.rateLimitPerHour !== undefined
+          ? { rateLimitPerHour: parsedAction.rateLimitPerHour }
+          : {}),
+      };
   const destination = DestinationSchema.parse(input.destination);
   if (action.type === 'forward' && destination.type !== 'email') {
     throw new Error('Forward rules require an email destination.');
   }
   if (action.type === 'deliver' && destination.type !== 'lark_chat') {
     throw new Error('Delivery rules require a Lark chat destination.');
+  }
+  // An `organize` rule never leaves the mailbox, so a destination on one is not
+  // a harmless extra field — it is a rule whose author believed mail was being
+  // sent somewhere. Refusing it is the only way that belief gets corrected.
+  if (action.type === 'organize' && destination.type !== 'none') {
+    throw new Error(
+      'Organize rules act on the message in place and take no destination.',
+    );
   }
   return { action, destination };
 }
@@ -134,6 +278,15 @@ export function parseMailRuleDelivery(input: {
 export function mailRuleMatches(
   match: MailRuleMatch,
   message: MailMessageMetadata,
+  /**
+   * When the message arrived, for `activeWindow`.
+   *
+   * The arrival time, not the time the rule is evaluated. A backlog drained an
+   * hour late must decide the same way it would have decided live, or a rule
+   * saying "only during office hours" quietly becomes "only when Divo happened
+   * to catch up during office hours".
+   */
+  occurredAt: Date,
 ): boolean {
   const includes = (actual: string, expected: string): boolean =>
     actual.toLowerCase().includes(expected.toLowerCase());
@@ -146,7 +299,97 @@ export function mailRuleMatches(
       match.hasAttachment === undefined
       || message.hasAttachment === match.hasAttachment
     )
+    && (!match.notFrom || senderIsNot(message.from, match.notFrom))
+    && (
+      !match.notSubjectContains
+      || !includes(message.subject, match.notSubjectContains)
+    )
+    && (!match.activeWindow || withinActiveWindow(match.activeWindow, occurredAt))
   );
+}
+
+/**
+ * Whether the message provably did *not* come from the excluded mailbox.
+ *
+ * A `From` header nothing can be read out of is not evidence that the sender is
+ * someone else, so it fails the exclusion and the rule does not fire. That is
+ * the same direction every other decision in this file leans: an unreadable
+ * header loses a match rather than inventing one. The cost is a rule with an
+ * exclusion skipping mail from a malformed sender it would otherwise have
+ * forwarded; the alternative is forwarding mail the member explicitly asked to
+ * keep out, because its `From` was malformed enough to hide behind.
+ */
+function senderIsNot(fromHeader: string, criterion: string): boolean {
+  const address = senderAddress(fromHeader);
+  return address !== undefined && !addressMatches(address, criterion);
+}
+
+/**
+ * Whether a message arriving at this instant falls inside the rule's window.
+ *
+ * Wall-clock in the rule's own timezone, resolved through `Intl` rather than by
+ * arithmetic on a UTC offset — an offset is not a timezone, and a rule written
+ * in March against a fixed offset would be an hour wrong from the last Sunday
+ * of the month onward, every year, for half the world.
+ */
+function withinActiveWindow(window: MailRuleActiveWindow, at: Date): boolean {
+  const local = localWallClock(window.timeZone, at);
+  const start = clockMinutes(window.start);
+  const end = clockMinutes(window.end);
+  // `end` before `start` is an overnight window: 22:00–02:00 is four hours
+  // spanning midnight, not a twenty-hour window with a hole in it.
+  const wraps = end < start;
+  const inside = wraps
+    ? local.minutes >= start || local.minutes < end
+    : local.minutes >= start && local.minutes < end;
+  if (!inside) return false;
+  if (!window.days?.length) return true;
+  // A wrapped window belongs to the day it opened on, so mail arriving at 01:00
+  // on Saturday is inside a Friday 22:00–02:00 window. Reading the calendar day
+  // instead would make every overnight window ask for the wrong day at exactly
+  // the hours it exists for.
+  const index = MAIL_RULE_WEEKDAYS.indexOf(local.weekday);
+  const openedOn = wraps && local.minutes < end
+    ? MAIL_RULE_WEEKDAYS[(index + 6) % 7]!
+    : local.weekday;
+  return window.days.includes(openedOn);
+}
+
+const WEEKDAY_BY_LABEL = new Map<string, MailRuleWeekday>([
+  ['mon', 'mon'], ['tue', 'tue'], ['wed', 'wed'], ['thu', 'thu'],
+  ['fri', 'fri'], ['sat', 'sat'], ['sun', 'sun'],
+]);
+
+function localWallClock(
+  timeZone: string,
+  at: Date,
+): { weekday: MailRuleWeekday; minutes: number } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(at);
+  const value = (type: string): string =>
+    parts.find(part => part.type === type)?.value ?? '';
+  const weekday = WEEKDAY_BY_LABEL.get(value('weekday').slice(0, 3).toLowerCase());
+  if (!weekday) {
+    // `en-US` short weekdays are the three-letter forms this map is built from,
+    // and the timezone was proved resolvable when the rule was parsed. Reaching
+    // here means the runtime disagrees with both, and guessing a day would put
+    // mail somewhere on the strength of a guess.
+    throw new Error(`Could not resolve the local weekday in ${timeZone}.`);
+  }
+  return {
+    weekday,
+    minutes: Number(value('hour')) * 60 + Number(value('minute')),
+  };
+}
+
+function clockMinutes(value: string): number {
+  const [hours, minutes] = value.split(':');
+  return Number(hours) * 60 + Number(minutes);
 }
 
 const ADDRESS_PATTERN = /[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+\.[a-z]{2,}/i;

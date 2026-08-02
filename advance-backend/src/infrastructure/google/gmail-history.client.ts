@@ -196,6 +196,94 @@ export class GmailHistoryClient {
   }
 
   /**
+   * Applies an `organize` rule to the message where it sits.
+   *
+   * Unlike a forward there is no draft dance here, because Gmail's `modify` is
+   * idempotent by construction: adding a label already present and removing one
+   * already gone are both no-ops that return the same message. A retry after a
+   * lost response therefore cannot do anything twice, which is why this needs
+   * none of the staging the send path is built around.
+   *
+   * Returns the message ID so the delivery row records what it acted on.
+   */
+  async organizeMessage(input: {
+    accessToken: string;
+    messageId: string;
+    addLabelIds?: readonly string[];
+    removeLabelIds?: readonly string[];
+  }): Promise<string> {
+    const modified = await this.getJson<{ id?: string }>(
+      `${GMAIL_API}/messages/${encodeURIComponent(input.messageId)}/modify`,
+      input.accessToken,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          addLabelIds: [...(input.addLabelIds ?? [])],
+          removeLabelIds: [...(input.removeLabelIds ?? [])],
+        }),
+      },
+    );
+    if (!modified.id) throw new Error('Gmail modify returned no message ID.');
+    return modified.id;
+  }
+
+  /**
+   * The ID of a user label, created if the member does not have it yet.
+   *
+   * Names are compared case-insensitively because Gmail treats `Receipts` and
+   * `receipts` as the same label and refuses to create the second — so a
+   * case-sensitive lookup would find nothing, try to create it, and fail
+   * permanently on a label that was there all along. Nesting is by `/`, which is
+   * Gmail's own convention and needs nothing special here.
+   *
+   * System labels are matched too: a rule naming `Starred` should star the mail
+   * rather than create a user label that shadows the name.
+   */
+  async resolveLabelId(input: {
+    accessToken: string;
+    name: string;
+  }): Promise<string> {
+    const wanted = input.name.trim().toLowerCase();
+    const existing = await this.getJson<{
+      labels?: Array<{ id?: string; name?: string }>;
+    }>(`${GMAIL_API}/labels`, input.accessToken);
+    const found = (existing.labels ?? []).find(
+      label => label.name?.trim().toLowerCase() === wanted,
+    );
+    if (found?.id) return found.id;
+
+    try {
+      const created = await this.getJson<{ id?: string }>(
+        `${GMAIL_API}/labels`,
+        input.accessToken,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            name: input.name.trim(),
+            labelListVisibility: 'labelShow',
+            messageListVisibility: 'show',
+          }),
+        },
+      );
+      if (!created.id) throw new Error('Gmail label creation returned no ID.');
+      return created.id;
+    } catch (error) {
+      // Two deliveries for the same new label race here, and the loser must not
+      // fail: the label it wanted now exists, put there by the winner.
+      if (error instanceof GmailApiError && error.status === 409) {
+        const after = await this.getJson<{
+          labels?: Array<{ id?: string; name?: string }>;
+        }>(`${GMAIL_API}/labels`, input.accessToken);
+        const settled = (after.labels ?? []).find(
+          label => label.name?.trim().toLowerCase() === wanted,
+        );
+        if (settled?.id) return settled.id;
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Did a previously staged draft already go out?
    *
    * Gmail deletes a draft when it is sent, so absence is proof of a completed

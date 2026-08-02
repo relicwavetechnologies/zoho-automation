@@ -18,8 +18,11 @@ import { err, ok, type Result } from '../../shared/result';
 
 type MailOpsReadDb = Pick<
   PrismaClient,
-  'mailboxSubscription' | 'mailAutomationRule' | 'mailDelivery'
+  'mailboxSubscription' | 'mailAutomationRule' | 'mailDelivery' | 'mailEvent'
 >;
+
+/** How much recorded mail a dry run replays when the caller does not say. */
+export const DEFAULT_DRY_RUN_EVENTS = 50;
 
 /** How far back the per-rule delivery counters look. */
 export const RULE_ACTIVITY_WINDOW_DAYS = 30;
@@ -294,6 +297,88 @@ export class MailOpsReadRepository {
       return err(
         wrapInfra('prisma', 'mailOpsRead.listDeliveriesForRule', cause),
       );
+    }
+  }
+
+  /**
+   * One rule and the recent mail on its mailbox, for a dry run.
+   *
+   * The events are the mailbox's, not the rule's: the point is to replay the
+   * rule over mail it may never have touched, so filtering to what it already
+   * delivered would answer a question nobody asked. Newest first, because a
+   * member checking a rule wants to know about this morning.
+   *
+   * `null` means the rule is not this member's, or does not exist — the query
+   * pins ownership, so the two are deliberately indistinguishable.
+   */
+  async loadRuleForDryRun(input: {
+    companyId: string;
+    userId: string;
+    ruleId: string;
+    limit: number;
+  }): Promise<Result<{
+    ruleId: string;
+    name: string;
+    status: string;
+    mailboxEmail: string;
+    match: Record<string, unknown>;
+    action: Record<string, unknown>;
+    destination: Record<string, unknown>;
+    activatedAt: Date;
+    events: Array<{
+      eventId: string;
+      occurredAt: Date;
+      metadata: Record<string, unknown>;
+    }>;
+  } | null, InfraError>> {
+    try {
+      const rule = await this.db.mailAutomationRule.findFirst({
+        where: {
+          id: input.ruleId,
+          companyId: input.companyId,
+          createdByUserId: input.userId,
+        },
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          subscriptionId: true,
+          matchJson: true,
+          actionJson: true,
+          destinationJson: true,
+          activatedAt: true,
+          subscription: { select: { mailboxEmail: true } },
+        },
+      });
+      if (!rule) return ok(null);
+
+      const events = await this.db.mailEvent.findMany({
+        where: {
+          subscriptionId: rule.subscriptionId,
+          companyId: input.companyId,
+        },
+        orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+        take: input.limit,
+        select: { id: true, occurredAt: true, metadataJson: true },
+      });
+
+      return ok({
+        ruleId: rule.id,
+        name: rule.name,
+        status: rule.status,
+        mailboxEmail: rule.subscription.mailboxEmail,
+        match: (rule.matchJson ?? {}) as Record<string, unknown>,
+        action: (rule.actionJson ?? {}) as Record<string, unknown>,
+        destination: (rule.destinationJson ?? {}) as Record<string, unknown>,
+        activatedAt: rule.activatedAt,
+        events: events.map(event => ({
+          eventId: event.id,
+          occurredAt: event.occurredAt,
+          metadata: (event.metadataJson ?? {}) as Record<string, unknown>,
+        })),
+      });
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'mailOpsRead.loadRuleForDryRun', cause));
     }
   }
 
