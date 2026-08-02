@@ -409,6 +409,21 @@ describe('GmailHistoryClient message metadata', () => {
 
     assert.equal(mailRuleMatches({ to: 'alias@example.com' }, metadata), true);
   });
+
+  it('keeps a folded value in one piece, boundary or no boundary', async () => {
+    // The boundary above must be one only this client can create. A value
+    // folded inside a quoted name would otherwise reset the parse mid-name and
+    // discard an honest recipient, and the rule would silently stop firing.
+    const metadata = await syncOneMessage({
+      mimeType: 'text/plain',
+      headers: [
+        { name: 'From', value: 'sender@example.com' },
+        { name: 'To', value: '"Smith,\r\n Ana" <ana@example.com>' },
+      ],
+    });
+
+    assert.equal(mailRuleMatches({ to: 'ana@example.com' }, metadata), true);
+  });
 });
 
 describe('GmailHistoryClient stale-cursor recovery', () => {

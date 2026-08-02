@@ -455,12 +455,15 @@ function messageMetadata(message: GmailMessage): MailMessageMetadata {
   const allValuesOf = (name: string): string =>
     (message.payload?.headers ?? [])
       .filter(header => header.name?.toLowerCase() === name)
-      .map(header => header.value?.trim())
+      // Any newline inside a value goes first, so the separator below is one
+      // only this client can create. A folded value would otherwise reset the
+      // matcher's parse mid-name and discard the entry: `"Smith,\r\n Ana"
+      // <ana@example.com>` is one honest recipient, and losing it is a rule
+      // that silently stops firing.
+      .map(header => header.value?.replace(/[\r\n]+/g, ' ').trim())
       .filter((value): value is string => Boolean(value))
       // Newline, not comma: the matcher treats it as a hard boundary, so one
-      // instance leaving a quote or comment open cannot swallow the next. A
-      // header value from the API is already unfolded, so it holds none of its
-      // own.
+      // instance leaving a quote or comment open cannot swallow the next.
       .join('\n');
   const to = allValuesOf('to');
   const cc = allValuesOf('cc');

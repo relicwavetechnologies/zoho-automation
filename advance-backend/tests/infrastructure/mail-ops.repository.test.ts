@@ -913,6 +913,15 @@ describe('MailOpsRepository', () => {
       { ...legacyRow, id: 'rule-live', status: 'active' },
     ]);
     assert.equal(bothStates.updates[0].where.id, 'rule-live');
+
+    // A paused rule is one the member intends to resume. Adopting the archived
+    // twin instead revives it and leaves the paused one on the old key — two
+    // live rules on two keys, which the unique constraint cannot catch.
+    const pausedTwin = await run([
+      { ...legacyRow, id: 'rule-archived', status: 'archived' },
+      { ...legacyRow, id: 'rule-paused', status: 'paused' },
+    ]);
+    assert.equal(pausedTwin.updates[0].where.id, 'rule-paused');
   });
 
   it('starts a revived rule watching from now, not from when it was first written', async () => {

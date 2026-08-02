@@ -123,7 +123,11 @@ function sameRuleClause(stored: unknown, submitted: unknown): boolean {
 }
 
 function stableJson(value: unknown): string {
-  return JSON.stringify(value, (_key, inner) => {
+  return JSON.stringify(value, (key, inner) => {
+    // Except a Lark chat ID, which the rule's identity also leaves alone: two
+    // chats whose IDs differ only in case are two chats, and calling that no
+    // change would deliver the old destination's backlog into the new one.
+    if (key === 'chatId') return inner;
     if (typeof inner === 'string') return inner.toLowerCase();
     if (inner === null || typeof inner !== 'object' || Array.isArray(inner)) {
       return inner;
@@ -276,7 +280,11 @@ export class MailOpsRepository {
     // repairs, because the create below revives whatever it lands on: adopting
     // the archived twin would bring a second rule back to life beside the one
     // already forwarding, which is the outcome the whole exercise is against.
-    const adopted = sameRule.find(rule => rule.status === 'active')
+    // Anything not archived, not only `active`: a paused rule is one the member
+    // intends to resume, and leaving it on the old key while an archived twin
+    // is adopted and revived hands them two live rules on two keys, which the
+    // unique constraint cannot catch and which forwards every message twice.
+    const adopted = sameRule.find(rule => rule.status !== 'archived')
       ?? sameRule[0]!;
     try {
       await this.db.mailAutomationRule.update({
