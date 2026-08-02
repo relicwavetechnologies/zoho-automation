@@ -17,9 +17,10 @@ describe('GoogleSheetResourceProbeClient', () => {
           return {
             data: {
               id: 'sheet-1',
+              name: 'Quarterly planning',
               mimeType: 'application/vnd.google-apps.spreadsheet',
               trashed: false,
-              capabilities: { canEdit: true },
+              capabilities: { canEdit: true, canCopy: true, canDownload: true },
             },
           };
         },
@@ -45,9 +46,10 @@ describe('GoogleSheetResourceProbeClient', () => {
       connectionId: 'connection-1', fileId: 'sheet-1', abortSignal: controller.signal,
     }), {
       id: 'sheet-1',
+      name: 'Quarterly planning',
       mimeType: 'application/vnd.google-apps.spreadsheet',
       trashed: false,
-      capabilities: { canEdit: true },
+      capabilities: { canEdit: true, canCopy: true, canDownload: true },
     });
     assert.deepEqual(await probe.getSpreadsheet({
       connectionId: 'connection-1', spreadsheetId: 'sheet-1', abortSignal: controller.signal,
@@ -58,7 +60,7 @@ describe('GoogleSheetResourceProbeClient', () => {
     assert.deepEqual(driveCalls, [{
       fileId: 'sheet-1',
       supportsAllDrives: true,
-      fields: 'id,mimeType,trashed,capabilities(canEdit)',
+      fields: 'id,name,mimeType,trashed,capabilities(canEdit,canCopy,canDownload)',
     }]);
     assert.deepEqual(sheetsCalls, [{ spreadsheetId: 'sheet-1', fields: 'spreadsheetId' }]);
     assert.deepEqual(requestSignals, [controller.signal, controller.signal]);
