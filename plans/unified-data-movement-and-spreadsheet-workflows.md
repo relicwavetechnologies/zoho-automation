@@ -651,6 +651,13 @@ eligibility remain authoritative.
 **Phase 3D completed:** destination OAuth resumes the exact backend-owned offer
 after connection and retains the original card as the progress/final tracker.
 
+**Phase 3E completed:** when a user explicitly selects one of several personal
+Google accounts on the signed Lark card, that eligible choice is remembered at
+the user/company scope after the export wins the queue claim. Future exports
+reuse it only while it remains writable and correctly owned; stale preferences
+are ignored, and OAuth continuation or automatic/company choices do not mutate
+the preference.
+
 **Exit criteria**
 
 - The callback actor is reauthenticated.
@@ -670,8 +677,8 @@ after connection and retains the original card as the progress/final tracker.
 
 **Completed in Phase 4:** user-owned Google resolution, signed account choice,
 execution-time connection revalidation, owner-only artifact verification, and
-the governed company-reader fallback. Preference persistence and true XLSX
-remain pending.
+the governed company-reader fallback. Explicit personal preference persistence
+is applied to the tunneled shared dev/prod database. True XLSX remains pending.
 
 **Exit criteria**
 
@@ -1030,7 +1037,7 @@ Never log:
 2. Preserve the original DM/group-thread reply address and edit one tracker
    through confirmation, queued/running, final, and recoverable error states.
 3. Prove natural-language and card confirmation idempotency end to end in Lark.
-4. Fix editable destination ownership and add true XLSX.
+4. Add true XLSX output with structural verification.
 5. Migrate Semrush, then OMS, and delete their temporary Cloudinary export paths after parity.
 6. Add the pasted Google Sheet resolver and existing-Sheet streaming destination.
 7. Tune skills and routers once each instruction describes backend behavior
@@ -1124,3 +1131,5 @@ Principal risks:
 | 2026-08-02 | Keep export card payloads opaque and reauthenticate callback actor/chat | Prevent card tampering or forwarded clicks from choosing identity, tenant, source, destination, or delivery target |
 | 2026-08-02 | Bind the signed Card 2.0 `open_message_id` to the winning queue job | Let the worker edit the original offer card without adding mutable card identity to the stored export recipe |
 | 2026-08-02 | Use toast-only callback responses once the worker owns the card | Avoid a callback/worker race that could replace a completed export with stale queued copy |
+| 2026-08-02 | Persist only an explicit signed-card personal destination after the export wins its queue claim | Avoid repeated account questions without letting model input, stale OAuth state, fallback policy, or a losing concurrent click rewrite preference |
+| 2026-08-02 | Treat `127.0.0.1:15432` as a tunnel to the shared dev/prod database | Prevent local-database assumptions when applying or reporting Prisma schema changes |

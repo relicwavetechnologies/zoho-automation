@@ -56,7 +56,10 @@ export class LarkDataExportCardHandler {
         progressMessageId,
         ...(action.format ? { destinationFormat: action.format } : {}),
         ...(action.connectionId
-          ? { destinationConnectionId: action.connectionId }
+          ? {
+              destinationConnectionId: action.connectionId,
+              rememberExplicitPersonalDestination: true,
+            }
           : {}),
       });
       if (result.disposition === 'choose_destination') {

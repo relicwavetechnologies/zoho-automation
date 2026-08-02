@@ -131,6 +131,7 @@ import {
 } from './application/data-export/data-export.sources';
 import { GoogleWorkspaceExportSink } from './application/data-export/google-workspace-export.sink';
 import { DataExportOfferRepository } from './infrastructure/persistence/data-export-offer.repository';
+import { DataExportDestinationPreferenceRepository } from './infrastructure/persistence/data-export-destination-preference.repository';
 import {
   getDataExportProfile,
   parseDataExportProfile,
@@ -828,19 +829,24 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     };
   }
 
+  const dataExportDestinationPreferenceRepo =
+    new DataExportDestinationPreferenceRepository(prisma);
+
   async function resolveDataExportDestination(input: {
     readonly companyId: string;
     readonly userId: string;
     readonly connectionId?: string;
   }) {
-    const [accessible, configured] = await Promise.all([
+    const [accessible, configured, preferred] = await Promise.all([
       integrationConnectionRepo.listAccessibleGoogleConnections({
         companyId: input.companyId,
         userId: input.userId,
       }),
       getDataExportProfile(prisma, input.companyId),
+      dataExportDestinationPreferenceRepo.findConnectionId(input),
     ]);
     if (!accessible.ok) throw accessible.error;
+    if (!preferred.ok) throw preferred.error;
     return selectDataExportDestination({
       userId: input.userId,
       accessible: accessible.value,
@@ -848,6 +854,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
         ? { companyFallback: { connectionId: configured.profile.googleConnectionId } }
         : {}),
       ...(input.connectionId ? { connectionId: input.connectionId } : {}),
+      ...(preferred.value ? { preferredConnectionId: preferred.value } : {}),
     });
   }
 
@@ -1337,6 +1344,16 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     identityRepo: channelIdentityRepo,
     permissions,
     resolveDestination: resolveDataExportDestination,
+    rememberDestination: async input => {
+      const saved = await dataExportDestinationPreferenceRepo.save(input);
+      if (!saved.ok) {
+        logger.warn('Could not remember the selected data export destination', {
+          companyId: input.companyId,
+          userId: input.userId,
+          error: saved.error.message,
+        });
+      }
+    },
   });
   const resumeDataExportAfterGoogleConnection = async (input: {
     readonly offerId: string;

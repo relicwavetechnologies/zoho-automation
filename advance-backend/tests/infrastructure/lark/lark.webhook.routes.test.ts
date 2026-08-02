@@ -1662,6 +1662,7 @@ describe('Lark webhook card authorization', () => {
       progressMessageId: 'om_export_card',
       destinationFormat: 'google_sheet',
       destinationConnectionId: '33333333-3333-4333-8333-333333333333',
+      rememberExplicitPersonalDestination: true,
     });
     assert.equal((result.responseBody as any).toast.type, 'success');
   });

@@ -247,6 +247,7 @@ model User {
   managerTeachSessions               ManagerTeachSession[]           @relation("ManagerTeachSessionManager")
   connectionAuthorizationIntents     ConnectionAuthorizationIntent[]
   dataExportOffers                   DataExportOffer[]
+  dataExportDestinationPreferences   DataExportDestinationPreference[]
   mailboxSubscriptions               MailboxSubscription[]
   mailAutomationRules                MailAutomationRule[]
   knowledgeResourcesOwned            KnowledgeResource[]             @relation("KnowledgeResourceOwner")
@@ -315,6 +316,7 @@ model Company {
   managerTeachSessions            ManagerTeachSession[]
   connectionAuthorizationIntents  ConnectionAuthorizationIntent[]
   dataExportOffers                DataExportOffer[]
+  dataExportDestinationPreferences DataExportDestinationPreference[]
   mailboxSubscriptions            MailboxSubscription[]
   mailAutomationRules             MailAutomationRule[]
   mailEvents                      MailEvent[]
@@ -1365,6 +1367,22 @@ model DataExportOffer {
   @@index([companyId, userId, status, expiresAt])
   @@index([status, expiresAt])
   @@index([companyId, sourceConnectionId])
+}
+
+/// Explicit personal Google destination chosen by one user inside one company.
+/// Eligibility is always revalidated; a stale connection ID is harmless state.
+model DataExportDestinationPreference {
+  id           String   @id @default(uuid())
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connectionId String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([companyId, userId])
+  @@index([userId, companyId])
 }
 
 /// One Pub/Sub-triggered history cursor and lease per connected Gmail mailbox.

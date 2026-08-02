@@ -27,6 +27,7 @@ export function selectDataExportDestination(input: {
     readonly connectionId: string;
   };
   readonly connectionId?: string;
+  readonly preferredConnectionId?: string;
 }): DataExportDestinationResolution {
   const personal = input.accessible.filter(connection =>
     connection.ownerType === 'user'
@@ -63,6 +64,16 @@ export function selectDataExportDestination(input: {
     return {
       status: 'unavailable',
       message: 'The selected Google export account is unavailable or no longer writable.',
+    };
+  }
+
+  const preferred = personal.find(connection =>
+    connection.connectionId === input.preferredConnectionId,
+  );
+  if (preferred) {
+    return {
+      status: 'selected',
+      target: { kind: 'user_google', connectionId: preferred.connectionId },
     };
   }
 

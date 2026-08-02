@@ -35,6 +35,11 @@ export class DataExportOfferService {
     readonly identityRepo: Pick<ChannelIdentityRepoPort, 'resolveByUserId'>;
     readonly permissions: Pick<PermissionService, 'resolve'>;
     readonly resolveDestination: ResolveDataExportDestination;
+    readonly rememberDestination?: (input: {
+      readonly companyId: string;
+      readonly userId: string;
+      readonly connectionId: string;
+    }) => Promise<void>;
     readonly now?: () => Date;
   }) {}
 
@@ -64,6 +69,7 @@ export class DataExportOfferService {
     readonly progressMessageId?: string;
     readonly destinationFormat?: 'google_sheet' | 'csv';
     readonly destinationConnectionId?: string;
+    readonly rememberExplicitPersonalDestination?: boolean;
   }): Promise<
     | {
         readonly exportJobId: string;
@@ -150,7 +156,7 @@ export class DataExportOfferService {
     }
     if (destination.status === 'unavailable') throw new Error(destination.message);
 
-    return this.claimAndQueue(offer, now, {
+    const result = await this.claimAndQueue(offer, now, {
       target: destination.target,
       ...(input.progressMessageId
         ? { progressMessageId: input.progressMessageId }
@@ -159,6 +165,19 @@ export class DataExportOfferService {
         ? { destinationFormat: input.destinationFormat }
         : {}),
     });
+    if (
+      result.disposition === 'queued'
+      && input.rememberExplicitPersonalDestination === true
+      && destination.target.kind === 'user_google'
+      && destination.target.connectionId === input.destinationConnectionId
+    ) {
+      await this.deps.rememberDestination?.({
+        companyId: input.companyId,
+        userId: input.userId,
+        connectionId: destination.target.connectionId,
+      });
+    }
+    return result;
   }
 
   private async claimAndQueue(

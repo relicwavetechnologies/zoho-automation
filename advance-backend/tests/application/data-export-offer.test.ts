@@ -317,6 +317,7 @@ describe('DataExportOfferService', () => {
     let destinationInput: unknown;
     let queued: DataExportOfferPayload | undefined;
     let confirmationInput: unknown;
+    let rememberedDestination: unknown;
     const service = new DataExportOfferService({
       offers: {
         create: async () => assert.fail('confirmation must not create another offer'),
@@ -356,6 +357,9 @@ describe('DataExportOfferService', () => {
           },
         };
       },
+      rememberDestination: async input => {
+        rememberedDestination = input;
+      },
       now: () => NOW,
     });
 
@@ -367,6 +371,7 @@ describe('DataExportOfferService', () => {
       progressMessageId: 'om_export_card',
       destinationFormat: 'csv',
       destinationConnectionId: '33333333-3333-4333-8333-333333333333',
+      rememberExplicitPersonalDestination: true,
     });
 
     assert.deepEqual(result, { exportJobId: 'dtx_confirmed', disposition: 'queued' });
@@ -407,6 +412,44 @@ describe('DataExportOfferService', () => {
       queueJobId: 'dtx_confirmed',
       confirmedAt: NOW,
     });
+    assert.deepEqual(rememberedDestination, {
+      companyId: payload.companyId,
+      userId: payload.userId,
+      connectionId: '33333333-3333-4333-8333-333333333333',
+    });
+  });
+
+  it('does not remember an explicit destination when another confirmation already won', async () => {
+    const offer = confirmableOffer();
+    let rememberCount = 0;
+    const service = new DataExportOfferService({
+      offers: {
+        create: async () => assert.fail('confirmation must not create another offer'),
+        loadForConfirmation: async () => ok({ outcome: 'found', offer }),
+        claimConfirmation: async () => ok({
+          outcome: 'already_confirmed',
+          offer: { ...offer, status: 'confirmed', queueJobId: 'dtx_existing' },
+          queueJobId: 'dtx_existing',
+        }),
+        markConfirmed: async () => assert.fail('already confirmed offer must not be updated'),
+      },
+      queue: { enqueue: async () => assert.fail('already confirmed offer must not queue') },
+      ...confirmationDeps,
+      rememberDestination: async () => {
+        rememberCount += 1;
+      },
+      now: () => NOW,
+    });
+
+    assert.deepEqual(await service.confirmForActor({
+      offerId: offer.id,
+      companyId: payload.companyId,
+      userId: payload.userId,
+      chatId: payload.chatId,
+      destinationConnectionId: '33333333-3333-4333-8333-333333333333',
+      rememberExplicitPersonalDestination: true,
+    }), { exportJobId: 'dtx_existing', disposition: 'already_confirmed' });
+    assert.equal(rememberCount, 0);
   });
 
   it('asks the actor to choose among writable Google accounts before claiming', async () => {
