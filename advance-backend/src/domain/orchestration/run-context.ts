@@ -81,4 +81,6 @@ export interface RunContext {
    * ingress (a desktop session, for instance).
    */
   readonly runtimeRunId?: string;
+  /** Exact signed Pi thread used to bind short-lived run effects. */
+  readonly runtimeThreadId?: string;
 }

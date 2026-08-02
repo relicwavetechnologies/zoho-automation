@@ -9,6 +9,7 @@ import {
   DATA_EXPORT_ROW_LIMIT,
   directDatasetSourceSchema,
   datasetSourceToolId,
+  type DataExportDestinationTarget,
 } from '../../data-export/data-export.types';
 import {
   dataExportDestinationSchema,
@@ -27,7 +28,11 @@ const RecipeSchema = z.object({
 const ConfirmOfferSchema = z.object({
   offerId: z.string().uuid(),
   destinationConnectionId: z.string().uuid().optional(),
-}).strict();
+  destinationReferenceId: z.string().uuid().optional(),
+}).strict().refine(
+  value => !(value.destinationConnectionId && value.destinationReferenceId),
+  { message: 'Choose either a destination account or an existing Sheet reference, not both.' },
+);
 
 const Schema = z.union([RecipeSchema, ConfirmOfferSchema]);
 
@@ -44,6 +49,14 @@ type Res = z.infer<typeof ResultSchema>;
 
 export function createDataExportTool(deps: {
   readonly offers: Pick<DataExportOfferService, 'submitAuthorized' | 'confirmForActor'>;
+  readonly resolveDestinationReference?: (input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly chatId: string;
+    readonly threadId: string;
+    readonly runId: string;
+    readonly referenceId: string;
+  }) => Promise<Extract<DataExportDestinationTarget, { readonly kind: 'existing_google_sheet' }> | null>;
 }): Tool<Args, Res> {
   return {
     id: asToolId('dataExport'),
@@ -56,6 +69,7 @@ export function createDataExportTool(deps: {
     parameterDocs: [
       `Use this for large tabular results. The current hard cap is ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows. If the user requests more or every row, disclose the cap and never call the result complete.`,
       'offerId: when a source preview returned preview.exportOfferId and the user explicitly confirms, call dataExport with that opaque offerId. Include destinationConnectionId only when a prior confirmation response asked the user to choose one exact eligible Google account.',
+      'destinationReferenceId: when the user selected a pasted existing Google Sheet in this same Lark run, reuse only the exact opaque reference returned by googleSheets.resolve_reference.',
       'source.kind: airtable_records or zoho_books. Always use the exact source connection UUID.',
       'transform.script: optional JavaScript function body. It receives row, index, and args. Return an object, an array of objects, or null to filter.',
       'destination.format: auto chooses Google Sheets for manageable datasets and CSV in Google Drive for large datasets.',
@@ -88,6 +102,30 @@ export function createDataExportTool(deps: {
       }
       try {
         if ('offerId' in args) {
+          let destinationTarget: Extract<
+            DataExportDestinationTarget,
+            { readonly kind: 'existing_google_sheet' }
+          > | undefined;
+          if (args.destinationReferenceId) {
+            if (
+              !deps.resolveDestinationReference
+              || !ctx.runContext.runtimeRunId
+              || !ctx.runContext.runtimeThreadId
+            ) {
+              throw new Error('This existing Sheet reference is not bound to the current Divo run.');
+            }
+            destinationTarget = await deps.resolveDestinationReference({
+              companyId: ctx.runContext.companyId,
+              userId: ctx.runContext.userId,
+              chatId: ctx.runContext.chatId,
+              threadId: ctx.runContext.runtimeThreadId,
+              runId: ctx.runContext.runtimeRunId,
+              referenceId: args.destinationReferenceId,
+            }) ?? undefined;
+            if (!destinationTarget) {
+              throw new Error('This existing Sheet reference expired or belongs to another Divo run.');
+            }
+          }
           const confirmed = await deps.offers.confirmForActor({
             offerId: args.offerId,
             companyId: ctx.runContext.companyId,
@@ -96,6 +134,7 @@ export function createDataExportTool(deps: {
             ...(args.destinationConnectionId
               ? { destinationConnectionId: args.destinationConnectionId }
               : {}),
+            ...(destinationTarget ? { destinationTarget } : {}),
           });
           if (confirmed.disposition === 'choose_destination') {
             const choices = confirmed.connections

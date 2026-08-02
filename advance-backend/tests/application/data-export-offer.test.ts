@@ -452,6 +452,54 @@ describe('DataExportOfferService', () => {
     assert.equal(rememberCount, 0);
   });
 
+  it('queues a trusted existing Sheet target without running account selection', async () => {
+    const offer = confirmableOffer();
+    let queued: DataExportJobPayload | undefined;
+    let destinationResolutionCount = 0;
+    const destinationTarget = {
+      kind: 'existing_google_sheet' as const,
+      connectionId: '33333333-3333-4333-8333-333333333333',
+      spreadsheetId: 'sheet_1',
+      gid: '42',
+      mode: 'new_tab' as const,
+    };
+    const service = new DataExportOfferService({
+      offers: {
+        create: async () => assert.fail('confirmation must not create another offer'),
+        loadForConfirmation: async () => ok({ outcome: 'found', offer }),
+        claimConfirmation: async () => ok({ outcome: 'claimed', offer }),
+        markConfirmed: async () => ok(true),
+      },
+      queue: {
+        enqueue: async input => {
+          queued = input;
+          return 'dtx_existing_sheet';
+        },
+      },
+      identityRepo: confirmationDeps.identityRepo,
+      permissions: confirmationDeps.permissions,
+      resolveDestination: async () => {
+        destinationResolutionCount += 1;
+        return { status: 'connect_required' };
+      },
+      now: () => NOW,
+    });
+
+    assert.deepEqual(await service.confirmForActor({
+      offerId: offer.id,
+      companyId: payload.companyId,
+      userId: payload.userId,
+      chatId: payload.chatId,
+      destinationTarget,
+    }), { exportJobId: 'dtx_existing_sheet', disposition: 'queued' });
+    assert.equal(destinationResolutionCount, 0);
+    assert.deepEqual(queued?.destination, {
+      ...payload.destination,
+      format: 'google_sheet',
+      target: destinationTarget,
+    });
+  });
+
   it('asks the actor to choose among writable Google accounts before claiming', async () => {
     const offer = confirmableOffer();
     let claimCount = 0;

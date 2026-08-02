@@ -1233,6 +1233,73 @@ describe('data export access contract', () => {
     assert.equal(tool.argsSchema.safeParse({ offerId }).success, true);
     assert.equal(tool.argsSchema.safeParse({ offerId, ...base }).success, false);
     assert.equal(tool.argsSchema.safeParse({ offerId, companyId: 'company-other' }).success, false);
+    assert.equal(tool.argsSchema.safeParse({
+      offerId,
+      destinationReferenceId: '22222222-2222-4222-8222-222222222222',
+    }).success, true);
+    assert.equal(tool.argsSchema.safeParse({
+      offerId,
+      destinationConnectionId: '33333333-3333-4333-8333-333333333333',
+      destinationReferenceId: '22222222-2222-4222-8222-222222222222',
+    }).success, false);
+  });
+
+  it('resolves an existing Sheet only under the exact trusted Lark run', async () => {
+    const offerId = '11111111-1111-4111-8111-111111111111';
+    const referenceId = '22222222-2222-4222-8222-222222222222';
+    let resolutionInput: unknown;
+    let confirmationInput: unknown;
+    const confirmationTool = createDataExportTool({
+      offers: {
+        submitAuthorized: async () => assert.fail('opaque confirmation must not submit a caller recipe'),
+        confirmForActor: async input => {
+          confirmationInput = input;
+          return { exportJobId: 'dtx_existing_sheet', disposition: 'queued' };
+        },
+      },
+      resolveDestinationReference: async input => {
+        resolutionInput = input;
+        return {
+          kind: 'existing_google_sheet',
+          connectionId: '33333333-3333-4333-8333-333333333333',
+          spreadsheetId: 'sheet_1',
+          gid: '42',
+          mode: 'new_tab',
+        };
+      },
+    });
+
+    const result = await confirmationTool.execute(
+      { offerId, destinationReferenceId: referenceId },
+      makeCtx('dataExport', ['create'], {
+        chatId: 'oc_chat',
+        runtimeRunId: 'run-1',
+        runtimeThreadId: 'thread-1',
+      }),
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(resolutionInput, {
+      companyId: 'co-test',
+      userId: 'user-test',
+      chatId: 'oc_chat',
+      threadId: 'thread-1',
+      runId: 'run-1',
+      referenceId,
+    });
+    assert.deepEqual(confirmationInput, {
+      offerId,
+      companyId: 'co-test',
+      userId: 'user-test',
+      chatId: 'oc_chat',
+      destinationTarget: {
+        kind: 'existing_google_sheet',
+        connectionId: '33333333-3333-4333-8333-333333333333',
+        spreadsheetId: 'sheet_1',
+        gid: '42',
+        mode: 'new_tab',
+      },
+    });
   });
 
   it('pins a direct recipe to the backend-derived Lark reply address', async () => {

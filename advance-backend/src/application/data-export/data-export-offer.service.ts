@@ -69,6 +69,7 @@ export class DataExportOfferService {
     readonly progressMessageId?: string;
     readonly destinationFormat?: 'google_sheet' | 'csv' | 'xlsx';
     readonly destinationConnectionId?: string;
+    readonly destinationTarget?: DataExportDestinationTarget;
     readonly rememberExplicitPersonalDestination?: boolean;
   }): Promise<
     | {
@@ -135,13 +136,15 @@ export class DataExportOfferService {
       throw new Error('Complete Zoho exports require full company Zoho read scope.');
     }
 
-    const destination = await this.deps.resolveDestination({
-      companyId: input.companyId,
-      userId: input.userId,
-      ...(input.destinationConnectionId
-        ? { connectionId: input.destinationConnectionId }
-        : {}),
-    });
+    const destination = input.destinationTarget
+      ? { status: 'selected' as const, target: input.destinationTarget }
+      : await this.deps.resolveDestination({
+          companyId: input.companyId,
+          userId: input.userId,
+          ...(input.destinationConnectionId
+            ? { connectionId: input.destinationConnectionId }
+            : {}),
+        });
     if (destination.status === 'choose_connection') {
       return { disposition: 'choose_destination', connections: destination.connections };
     }
@@ -161,7 +164,9 @@ export class DataExportOfferService {
       ...(input.progressMessageId
         ? { progressMessageId: input.progressMessageId }
         : {}),
-      ...(input.destinationFormat
+      ...(input.destinationTarget?.kind === 'existing_google_sheet'
+        ? { destinationFormat: 'google_sheet' as const }
+        : input.destinationFormat
         ? { destinationFormat: input.destinationFormat }
         : {}),
     });

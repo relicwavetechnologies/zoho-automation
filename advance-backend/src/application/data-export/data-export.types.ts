@@ -82,6 +82,13 @@ export type DataExportDestinationTarget =
   | {
       readonly kind: 'company_google';
       readonly connectionId: string;
+    }
+  | {
+      readonly kind: 'existing_google_sheet';
+      readonly connectionId: string;
+      readonly spreadsheetId: string;
+      readonly gid?: string;
+      readonly mode: 'new_tab';
     };
 
 export interface DataExportCompletion {
