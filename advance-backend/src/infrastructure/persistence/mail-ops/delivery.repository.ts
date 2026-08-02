@@ -101,12 +101,18 @@ export class MailDeliveryRepository {
     ruleId: string;
     since: Date;
     until: Date;
+    exceptEventId: string;
   }): Promise<Result<number, InfraError>> {
     try {
       return ok(await this.db.mailDelivery.count({
         where: {
           ruleId: input.ruleId,
           status: { notIn: ['blocked', 'abandoned'] },
+          // The message being judged never counts against its own ceiling. It
+          // is excluded by identity rather than by keeping the window open
+          // above it, because a retry of an event that already has a row would
+          // otherwise count itself and refuse to make progress.
+          eventId: { not: input.exceptEventId },
           // The hour is measured on the mail's own arrival time, through the
           // event, and not on when Divo got round to reserving the delivery.
           //
@@ -121,7 +127,14 @@ export class MailDeliveryRepository {
           // Both ends are bounded for the same reason: without an upper bound a
           // drain also counts deliveries for mail that arrived *after* the
           // message being judged.
-          event: { occurredAt: { gte: input.since, lt: input.until } },
+          //
+          // Inclusive at the top. Gmail's `internalDate` is milliseconds but
+          // routinely carries only second precision, so a mailing-list burst —
+          // the case a ceiling is for — arrives as a group sharing one
+          // `occurredAt`. Excluded from each other's windows, fifty such
+          // messages each saw an empty hour and all fifty went out under a
+          // limit of five.
+          event: { occurredAt: { gte: input.since, lte: input.until } },
         },
       }));
     } catch (cause) {

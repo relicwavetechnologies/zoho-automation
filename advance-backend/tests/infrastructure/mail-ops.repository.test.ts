@@ -301,6 +301,90 @@ describe('MailOpsRepository', () => {
     assert.equal(result.value[0]?.eventId, 'event-1');
   });
 
+  it('reads a recorded batch back in arrival order', async () => {
+    // The worker's rate ceiling counts what arrived before the message being
+    // judged, so a batch walked newest-first shows every message an empty hour
+    // and waves the whole backlog through. Postgres promises nothing without
+    // this, and the natural order of the `IN (...)` lookup is by message ID.
+    let findManyInput: any;
+    const tx = {
+      mailEvent: {
+        createMany: async () => ({ count: 0 }),
+        findMany: async (input: any) => {
+          findManyInput = input;
+          return [];
+        },
+      },
+    };
+    const repo = new MailOpsRepository({
+      $transaction: async (fn: any) => fn(tx),
+    } as any);
+
+    await repo.recordEvents(
+      {
+        subscriptionId: 'mailbox-1',
+        companyId: 'company-1',
+        userId: 'user-1',
+        connectionId: 'connection-1',
+        mailboxEmail: 'user@example.com',
+        historyId: '100',
+        signalVersion: 0,
+        claimToken: 'claim-1',
+      },
+      [{
+        providerMessageId: 'gmail-1',
+        historyId: '101',
+        metadata: {},
+        occurredAt: new Date('2026-07-29T05:02:00.000Z'),
+      }],
+    );
+
+    assert.deepEqual(findManyInput.orderBy, [
+      { occurredAt: 'asc' },
+      { id: 'asc' },
+    ]);
+  });
+
+  it('measures a rule ceiling on arrival time, inclusively, excluding the message itself', async () => {
+    // The one query on the loss-bearing path. Measured on `firstAttemptAt` it
+    // turned a post-outage drain into permanent mail loss; measured half-open
+    // it stopped counting a same-second burst against itself, which is the case
+    // a ceiling exists for. Neither is visible from the worker, which only sees
+    // the number that comes back.
+    let countInput: any;
+    const repo = new MailOpsRepository({
+      mailDelivery: {
+        count: async (input: any) => {
+          countInput = input;
+          return 3;
+        },
+      },
+    } as any);
+
+    const since = new Date('2026-07-29T04:00:00.000Z');
+    const until = new Date('2026-07-29T05:00:00.000Z');
+    const result = await repo.countRecentDeliveries({
+      ruleId: 'rule-1',
+      since,
+      until,
+      exceptEventId: 'event-1',
+    });
+
+    assert.deepEqual(result, { ok: true, value: 3 });
+    assert.equal(countInput.where.ruleId, 'rule-1');
+    // A refusal is not a message anybody received. Counted, a rule that hit its
+    // limit once could never recover.
+    assert.deepEqual(countInput.where.status, {
+      notIn: ['blocked', 'abandoned'],
+    });
+    assert.deepEqual(countInput.where.eventId, { not: 'event-1' });
+    // Through the event, so a retry an hour later still falls in the hour the
+    // mail arrived in.
+    assert.deepEqual(countInput.where.event, {
+      occurredAt: { gte: since, lte: until },
+    });
+  });
+
   it('advances the cursor only after downstream event work succeeds', async () => {
     let cursorUpdate: any;
     const repo = new MailOpsRepository({

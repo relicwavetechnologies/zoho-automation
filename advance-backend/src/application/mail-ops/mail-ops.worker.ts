@@ -360,7 +360,16 @@ export class MailOpsWorker {
       };
 
       let deliveries = 0;
-      for (const event of persisted.value) {
+      // Sorted here as well as in the query, because this loop is what depends
+      // on it: a rule's hourly ceiling counts what arrived *before* the message
+      // being judged, so out of order every message in a recovered backlog sees
+      // an empty window and the ceiling stops existing. Making the loop
+      // establish its own precondition means a future change to how events come
+      // back cannot quietly uncap every rate-limited rule.
+      const inArrivalOrder = [...persisted.value].sort(
+        (a, b) => a.occurredAt.getTime() - b.occurredAt.getTime(),
+      );
+      for (const event of inArrivalOrder) {
         const message = readMessageMetadata(event.metadata);
         if (!message) {
           this.log.warn('mail_ops.event_metadata_invalid', {
@@ -453,6 +462,7 @@ export class MailOpsWorker {
               ruleId: rawRule.ruleId,
               since: new Date(event.occurredAt.getTime() - 60 * 60_000),
               until: event.occurredAt,
+              exceptEventId: event.eventId,
             });
             if (!recent.ok) throw recent.error;
             if (recent.value >= ceiling) {
@@ -1001,6 +1011,20 @@ function formatLarkDelivery(payload: PendingMailDeliveryPayload): string {
 }
 
 /** Google reasons that mean "too fast", not "not allowed". */
+/**
+ * The reasons that genuinely mean "the member has not granted us this".
+ *
+ * `forbidden` is deliberately absent: Google uses it for any refusal it has no
+ * better word for, and on this API that is overwhelmingly a Pub/Sub topic
+ * permission Divo owns and the member cannot touch.
+ */
+const SCOPE_REASONS = new Set([
+  'insufficientpermissions',
+  'insufficientscope',
+  'access_token_scope_insufficient',
+  'accesstokenscopeinsufficient',
+]);
+
 const RATE_LIMIT_REASONS = new Set([
   'ratelimitexceeded',
   'userratelimitexceeded',
@@ -1044,7 +1068,16 @@ function syncFailureCode(error: unknown): string {
     if (RATE_LIMIT_REASONS.has(reason)) return 'provider_rate_limited';
     if (error.status === 429) return 'provider_rate_limited';
     if (error.status === 401) return 'connection_unavailable';
-    if (error.status === 403) return 'scope_missing';
+    // Named reasons only, never every remaining `403`. Gmail's commonest 403
+    // on `users.watch` is not about the member's grant at all: it is
+    // `forbidden`, "User not authorized to perform this action", raised when
+    // the *Divo-owned* Pub/Sub topic is missing its publisher binding for
+    // `gmail-api-push@system.gserviceaccount.com`. Filed as `scope_missing`
+    // that tells every affected member to reconnect a healthy Google account,
+    // which fixes nothing and hides the one thing that would — an operator
+    // repairing the topic. A 403 with no reason is left unnamed for the same
+    // rule the remedy table states: a wrong instruction is worse than none.
+    if (error.status === 403 && SCOPE_REASONS.has(reason)) return 'scope_missing';
     return 'provider_sync_failed';
   }
   const text = errorText(error).toLowerCase();

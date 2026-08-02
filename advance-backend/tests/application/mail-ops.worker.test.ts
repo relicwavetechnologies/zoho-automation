@@ -366,6 +366,25 @@ describe('MailOpsWorker', () => {
       await codeFor(new GmailApiError(403, 'Insufficient Permission', 'insufficientPermissions')),
       'scope_missing',
     );
+    // Gmail's commonest 403 on `users.watch` is not about the member's grant
+    // at all: the Pub/Sub topic Divo owns is missing its publisher binding.
+    // Telling every affected member to reconnect a healthy account fixes
+    // nothing and hides the operator who could actually fix it.
+    assert.equal(
+      await codeFor(new GmailApiError(
+        403,
+        'Error sending test message to Cloud PubSub projects/divo/topics/gmail:'
+          + ' User not authorized to perform this action.',
+        'forbidden',
+      )),
+      'provider_sync_failed',
+    );
+    // A 403 carrying no reason names nothing rather than guessing: the remedy
+    // table's own rule is that a wrong instruction is worse than none.
+    assert.equal(
+      await codeFor(new GmailApiError(403, 'Forbidden')),
+      'provider_sync_failed',
+    );
     assert.equal(
       await codeFor(new GmailApiError(401, 'Invalid Credentials', 'authError')),
       'connection_unavailable',
@@ -496,6 +515,166 @@ describe('MailOpsWorker', () => {
     // Without the upper bound a drain also counts deliveries for mail that
     // arrived after the message being judged.
     assert.equal(asked?.until?.toISOString(), event.occurredAt.toISOString());
+  });
+
+  it('holds the ceiling however the backlog comes back from the database', async () => {
+    // The window counts what arrived *before* the message being judged, so the
+    // whole ceiling rests on the batch being walked oldest-first. `recordEvents`
+    // reads with an `IN (...)` on `(subscriptionId, providerMessageId)`, whose
+    // natural order is by message ID — not arrival. Handed the same backlog
+    // newest-first, every message saw an empty hour and the entire flood went
+    // out under a limit of two.
+    const arrivals = [0, 15, 30, 45].map(minutes => ({
+      ...event,
+      eventId: `event-${minutes}`,
+      providerMessageId: `message-${minutes}`,
+      occurredAt: new Date(event.occurredAt.getTime() + minutes * 60_000),
+    }));
+    const reserved: Array<{ eventId: string; occurredAt: Date }> = [];
+    let blocked = 0;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        // Newest first, which the database is entitled to do.
+        recordEvents: async () => ({ ok: true, value: [...arrivals].reverse() }),
+        listActiveRules: async () => ({
+          ok: true,
+          value: [{
+            ruleId: 'rule-1',
+            activatedAt: RULE_ACTIVATED_AT,
+            match: { from: 'alerts@example.com' },
+            action: { type: 'deliver', rateLimitPerHour: 2 },
+            destination: { type: 'lark_chat', chatId: 'oc_destination' },
+          }],
+        }),
+        // What the real query answers: deliveries whose mail arrived in the
+        // window, this message excepted.
+        countRecentDeliveries: async (input: any) => ({
+          ok: true,
+          value: reserved.filter(row => row.eventId !== input.exceptEventId
+            && row.occurredAt >= input.since
+            && row.occurredAt <= input.until).length,
+        }),
+        reserveDelivery: async (
+          _company: string,
+          _subscription: string,
+          _rule: string,
+          eventId: string,
+        ) => {
+          const occurredAt = arrivals.find(a => a.eventId === eventId)!.occurredAt;
+          reserved.push({ eventId, occurredAt });
+          return { ok: true, value: { outcome: 'reserved', deliveryId: eventId } };
+        },
+        recordBlockedDelivery: async () => {
+          blocked += 1;
+          return { ok: true, value: true };
+        },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'lark-message',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(reserved.length, 2);
+    assert.equal(blocked, 2);
+    // And the two that got through are the two that arrived first, not whichever
+    // two the database happened to hand back first.
+    assert.deepEqual(reserved.map(row => row.eventId), ['event-0', 'event-15']);
+  });
+
+  it('counts a burst that shares one arrival instant against itself', async () => {
+    // Gmail's `internalDate` is milliseconds but routinely carries only second
+    // precision, so a mailing-list blast arrives as a group with one identical
+    // `occurredAt` — the exact case a ceiling is for. Excluded from each other's
+    // windows by a half-open upper bound, all of them saw an empty hour.
+    const burst = ['a', 'b', 'c', 'd'].map(id => ({
+      ...event,
+      eventId: `event-${id}`,
+      providerMessageId: `message-${id}`,
+    }));
+    const reserved: string[] = [];
+    let blocked = 0;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        recordEvents: async () => ({ ok: true, value: burst }),
+        listActiveRules: async () => ({
+          ok: true,
+          value: [{
+            ruleId: 'rule-1',
+            activatedAt: RULE_ACTIVATED_AT,
+            match: { from: 'alerts@example.com' },
+            action: { type: 'deliver', rateLimitPerHour: 2 },
+            destination: { type: 'lark_chat', chatId: 'oc_destination' },
+          }],
+        }),
+        countRecentDeliveries: async (input: any) => ({
+          ok: true,
+          value: reserved.filter(id => id !== input.exceptEventId
+            && event.occurredAt >= input.since
+            && event.occurredAt <= input.until).length,
+        }),
+        reserveDelivery: async (
+          _company: string,
+          _subscription: string,
+          _rule: string,
+          eventId: string,
+        ) => {
+          reserved.push(eventId);
+          return { ok: true, value: { outcome: 'reserved', deliveryId: eventId } };
+        },
+        recordBlockedDelivery: async () => {
+          blocked += 1;
+          return { ok: true, value: true };
+        },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'lark-message',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(reserved.length, 2);
+    assert.equal(blocked, 2);
+  });
+
+  it('never counts a message against its own ceiling', async () => {
+    // A retry reaches the ceiling check with a delivery row already written for
+    // this event. Counting itself would refuse a message the rule is entitled
+    // to send, permanently, on every subsequent pass.
+    let asked: any;
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        listActiveRules: async () => ({
+          ok: true,
+          value: [{
+            ruleId: 'rule-1',
+            activatedAt: RULE_ACTIVATED_AT,
+            match: { from: 'alerts@example.com' },
+            action: { type: 'deliver', rateLimitPerHour: 5 },
+            destination: { type: 'lark_chat', chatId: 'oc_destination' },
+          }],
+        }),
+        countRecentDeliveries: async (input: any) => {
+          asked = input;
+          return { ok: true, value: 0 };
+        },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'lark-message',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(asked?.exceptEventId, 'event-1');
   });
 
   it('counts the ceiling against the hour the mail arrived in', async () => {

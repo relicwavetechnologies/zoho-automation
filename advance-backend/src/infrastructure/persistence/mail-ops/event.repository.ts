@@ -52,6 +52,15 @@ export class MailEventRepository {
             metadataJson: true,
             occurredAt: true,
           },
+          // Oldest first. A rule's hourly ceiling counts the deliveries whose
+          // mail arrived before the message being judged, so processing a
+          // batch newest-first would show every message an empty window and
+          // wave the whole backlog through. Postgres promises no order without
+          // this, and the natural order for an `IN (...)` lookup on
+          // `(subscriptionId, providerMessageId)` is by message ID — which is
+          // not arrival order. The worker sorts as well; this makes the
+          // ordering the query's own answer rather than a coincidence.
+          orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
         });
         return rows.map(row => ({
           eventId: row.id,

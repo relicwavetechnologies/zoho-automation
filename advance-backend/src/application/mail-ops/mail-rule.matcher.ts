@@ -524,11 +524,21 @@ function senderAddress(fromHeader: string): string | undefined {
  * where the address the user typed appears nowhere else in the message.
  */
 function recipientMatches(message: MailMessageMetadata, criterion: string): boolean {
-  // A rule stored before recipients were parsed holds free text, and keeps
-  // exactly the behaviour it was created under: a substring test against `To`
-  // alone. Widening the loosest rule shape in the system to three more headers
-  // would be a change to a rule nobody asked to change. Nothing new can be
-  // written in that shape — `mailRuleMatchSchema` requires a mailbox or an
+  // A rule stored before recipients were parsed holds free text, and which of
+  // the two readings it gets depends on whether that text is an address at all.
+  //
+  // Text that normalises to one — a bare `acme.com` becoming `@acme.com` — is
+  // matched as the address it is, across all four recipient headers and
+  // covering subdomains. That *is* wider than the `To`-substring test such a
+  // rule was created under, and deliberately: the member wrote a domain and
+  // meant mail addressed to that domain, which is the same event to them
+  // whether their address landed in `To` or in `Cc`. The narrow reading was
+  // never a promise anybody made them; it was an artefact of nothing parsing
+  // the header.
+  //
+  // Text that is not an address keeps the old substring test against `To`
+  // alone, because there is no address to widen it to. Nothing new can be
+  // written in either shape — `mailRuleMatchSchema` requires a mailbox or an
   // @domain.
   // Parsed once, and the *parsed* value is what gets matched. Reading the
   // schema for the branch and then matching the raw string was a way to lose

@@ -1303,21 +1303,22 @@ The subject is prefixed with `Fwd:` unless already prefixed.
 
 Provider-level idempotency, **as currently built**:
 
-1. build a deterministic RFC822 `Message-ID` from the delivery idempotency key;
-2. search the user's Sent mailbox for that `Message-ID`;
-3. return the existing Gmail message ID if found;
-4. otherwise send.
+1. `drafts.create` stages the forward without sending it;
+2. `providerDraftId` and `ambiguous: true` are persisted in one write;
+3. `drafts.send` sends it, and the draft ceases to exist;
+4. on a retry, the delivery's stored `providerDraftId` is looked up: a draft
+   still there means the previous attempt never sent, and a draft that is gone
+   means it did. Either way the answer is Gmail's, not a guess.
 
-> **[audit 2026-08-02] This mechanism is unsound and is scheduled for
-> replacement.** Gmail's `messages.send` does not reliably preserve a
-> client-supplied `Message-ID` — it commonly generates its own and demotes the
-> supplied value to `X-Google-Original-Message-ID`. And `rfc822msgid:` queries an
-> eventually-consistent **search index**, while the first retry fires 5 seconds
-> after a failure. A send whose response is lost can therefore be forwarded
-> twice. `MailDelivery.ambiguous` exists for this case and is only ever written
-> `false`. Replacement is `drafts.create` → persist `providerDraftId` →
-> `drafts.send`, so a missing draft proves the send completed. See defect D1 in
-> the finalization plan.
+> **[audit 2026-08-02, resolved]** What this replaced was a deterministic
+> RFC822 `Message-ID` written into the forward and then searched for in the
+> Sent mailbox. It was unsound twice over: Gmail's `messages.send` does not
+> reliably preserve a client-supplied `Message-ID` — it commonly generates its
+> own and demotes the supplied value to `X-Google-Original-Message-ID` — and
+> `rfc822msgid:` reads an eventually-consistent **search index**, while the
+> first retry fires 5 seconds after a failure. A send whose response was lost
+> could therefore be forwarded twice. No `rfc822msgid:` query remains anywhere
+> in `src/`. See defect D1 in the finalization plan.
 
 ### 12.6 Lark delivery
 
@@ -1430,10 +1431,12 @@ Important fields:
 - safe error;
 - attempt, start, delivery, and retry timestamps;
 - **[added 2026-08-02]** `firstAttemptAt`;
-- **[added 2026-08-02]** `ambiguous Boolean @default(false)` — intended to mark a
-  send whose outcome is unknown. **No code ever writes `true`**; the only write
-  in the codebase is `ambiguous: false` on success. The case it exists for is
-  exactly defect D1, and it was never implemented.
+- **[added 2026-08-02, corrected 2026-08-02]** `ambiguous Boolean @default(false)`
+  — marks a send whose outcome is unknown. It **is** written `true`, by
+  `stageDeliveryDraft` in the same statement that records the draft, and cleared
+  only by a confirmed outcome. An earlier revision of this file said no code
+  ever writes it; that was true when D1 was still open and stopped being true
+  when the draft-staging path landed.
 
 Important invariants:
 
