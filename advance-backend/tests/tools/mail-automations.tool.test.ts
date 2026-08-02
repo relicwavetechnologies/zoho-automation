@@ -185,6 +185,40 @@ describe('mailAutomations tool', () => {
     assert.equal(authorizationInput.runContext.runtimeRunId, 'run-1');
   });
 
+  it('lets a member stop a rule they are no longer allowed to edit', async () => {
+    // pause shares the update action group with editing, so revoking update to
+    // stop members rewriting rules also took away the ability to stop a live
+    // one. Anyone who can archive a rule can certainly pause it.
+    const tool = createMailAutomationsTool({
+      runtime: { pubsubConfigured: true, workersEnabled: true },
+      repo: {} as any,
+      resolveConnection: async () => ({ status: 'unavailable', reason: 'unused' }),
+    });
+
+    const deleteOnly = {
+      allowedActionsByTool: new Map([
+        ['mailAutomations', new Set(['read', 'delete'])],
+      ]),
+    } as any;
+
+    assert.equal(
+      tool.permissionCheck({ operation: 'pause', ruleId: 'r' } as any, deleteOnly).ok,
+      true,
+    );
+    // Editing still needs update: this is not a general widening.
+    assert.equal(
+      tool.permissionCheck({
+        operation: 'update',
+        ruleId: 'r',
+        connectionId: 'c',
+        name: 'n',
+        match: {},
+        destination: { type: 'current_lark_chat' },
+      } as any, deleteOnly).ok,
+      false,
+    );
+  });
+
   it('will not create a rule on a connection whose owner gates background execution', async () => {
     // Approval is asked per interactive call. A rule makes calls nobody is
     // present for, so the moment to honour an `execute` policy is the moment

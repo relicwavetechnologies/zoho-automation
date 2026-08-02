@@ -1957,6 +1957,14 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
      * are reported as unavailable, and those are the ones worth retrying.
      */
     authorizeRule: async input => {
+      // `minimumAccess` reads like a live control here and is not one: a
+      // connection's owner is always granted `admin`, and the ownership check
+      // just below means a Mail Ops rule can only ever exist on a connection
+      // the requester owns. So the read_write floor cannot currently reject
+      // anything. It is kept because it becomes real the moment rules are
+      // allowed on shared connections — but nobody should read it as the thing
+      // stopping a downgraded share from forwarding mail today. The ownership
+      // and scope checks below are what actually stop that.
       const connection = await integrationConnectionRepo
         .findAccessibleGoogleConnection({
           companyId: input.companyId,

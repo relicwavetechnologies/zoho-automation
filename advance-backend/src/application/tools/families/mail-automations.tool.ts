@@ -277,18 +277,21 @@ export function createMailAutomationsTool(deps: {
       permission: PermissionResult,
     ): Result<ToolActionGroup, PermissionError> {
       const action = actionFor(args.operation);
-      const allowed = permission.allowedActionsByTool
-        .get(asToolId('mailAutomations'))
-        ?.has(action) ?? false;
+      const grantedActions = permission.allowedActionsByTool
+        .get(asToolId('mailAutomations'));
+      // Stopping a rule must never be harder than deleting it. `pause` shares
+      // the `update` action group with editing, so a department that revoked
+      // `update` to stop members rewriting rules also took away their ability
+      // to stop a live one — de-escalation gated on the capability being
+      // withdrawn.
+      const allowed = args.operation === 'pause'
+        ? (grantedActions?.has('update') ?? false)
+          || (grantedActions?.has('delete') ?? false)
+        : grantedActions?.has(action) ?? false;
       const needsExecute = args.operation === 'create'
         || args.operation === 'update'
         || args.operation === 'resume';
-      const canExecute = !needsExecute
-        || (
-          permission.allowedActionsByTool
-            .get(asToolId('mailAutomations'))
-            ?.has('execute') ?? false
-        );
+      const canExecute = !needsExecute || (grantedActions?.has('execute') ?? false);
       return allowed && canExecute
         ? ok(action)
         : err(new PermissionError({
