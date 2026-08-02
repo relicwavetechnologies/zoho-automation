@@ -89,6 +89,7 @@ describe('Google Drive XLSX conversion queue/checkpoint adapters', () => {
   it('maps the authoritative deterministic queue job into the core and retries a held lease instead of completing it', async () => {
     const finalAttempts: boolean[] = [];
     const coreJobs: GoogleDriveXlsxConversionJob[] = [];
+    const deliveries: unknown[] = [];
     const queued: WorkbookConversionJobPayload = {
       version: 1,
       offerId: 'offer_123',
@@ -106,6 +107,7 @@ describe('Google Drive XLSX conversion queue/checkpoint adapters', () => {
     const consumer = new GoogleDriveXlsxConversionConsumer({
       redisUrl: 'redis://unused',
       logger,
+      delivery: { register: async input => { deliveries.push(input); } },
       core: {
         process: async (coreJob, options) => {
           coreJobs.push(coreJob);
@@ -116,11 +118,18 @@ describe('Google Drive XLSX conversion queue/checkpoint adapters', () => {
     });
     await consumer.processJob({ id: 'wbc_offer_123', data: queued, attemptsMade: 2, opts: { attempts: 3 } } as any);
     assert.deepEqual(finalAttempts, [true]);
+    assert.deepEqual(deliveries, [{
+      jobKey: 'wbc_offer_123',
+      chatId: 'oc_123',
+      sourceMessageId: 'om_123',
+      replyInThread: false,
+    }]);
     assert.deepEqual(coreJobs, [{ ...job, jobKey: 'wbc_offer_123', conversationKey: 'thread_123' }]);
 
     const held = new GoogleDriveXlsxConversionConsumer({
       redisUrl: 'redis://unused',
       logger,
+      delivery: { register: async () => undefined },
       core: { process: async () => ({ disposition: 'in_progress' }) },
     });
     await assert.rejects(

@@ -28,6 +28,14 @@ export class GoogleDriveXlsxConversionConsumer {
     readonly redisUrl: string;
     readonly queueName?: string;
     readonly core: WorkbookConversionCore;
+    readonly delivery: {
+      register(input: {
+        readonly jobKey: string;
+        readonly chatId: string;
+        readonly sourceMessageId: string;
+        readonly replyInThread: boolean;
+      }): Promise<void>;
+    };
     readonly logger: Logger;
     readonly concurrency?: number;
   }) {
@@ -71,9 +79,16 @@ export class GoogleDriveXlsxConversionConsumer {
   async processJob(
     job: Pick<Job<WorkbookConversionJobPayload>, 'id' | 'data' | 'attemptsMade' | 'opts'>,
   ): Promise<void> {
+    const coreJob = conversionJob(job);
+    await this.deps.delivery.register({
+      jobKey: coreJob.jobKey,
+      chatId: job.data.chatId,
+      sourceMessageId: job.data.sourceMessageId,
+      replyInThread: job.data.replyInThread,
+    });
     let result: GoogleDriveXlsxConversionResult;
     try {
-      result = await this.deps.core.process(conversionJob(job), {
+      result = await this.deps.core.process(coreJob, {
         // BullMQ increments attemptsMade after the processor rejects, so the
         // current attempt is attemptsMade + 1 while we are inside it.
         finalAttempt: job.attemptsMade + 1 >= (job.opts.attempts ?? 1),
