@@ -2551,12 +2551,27 @@ async function resolveAuthenticatedCardActor(
 ): Promise<(LarkAuthenticatedCardActor & { activeDepartmentId?: string }) | null> {
   const card = toRecord(cardEvent);
   const operator = toRecord(card?.['operator']);
+  const operatorId = toRecord(operator?.['operator_id']);
   const envelopeEvent = toRecord(envelope['event']);
+  const envelopeOperator = toRecord(envelopeEvent?.['operator']);
+  const envelopeOperatorId = toRecord(envelopeOperator?.['operator_id']);
   const openId = firstNonEmptyString(
     operator?.['open_id'],
+    operatorId?.['open_id'],
     card?.['open_id'],
+    envelopeOperator?.['open_id'],
+    envelopeOperatorId?.['open_id'],
     envelopeEvent?.['open_id'],
     envelope['open_id'],
+  );
+  const larkUserId = firstNonEmptyString(
+    operator?.['user_id'],
+    operatorId?.['user_id'],
+    card?.['user_id'],
+    envelopeOperator?.['user_id'],
+    envelopeOperatorId?.['user_id'],
+    envelopeEvent?.['user_id'],
+    envelope['user_id'],
   );
   const tenantKey = firstNonEmptyString(
     header?.['tenant_key'],
@@ -2564,10 +2579,12 @@ async function resolveAuthenticatedCardActor(
     envelopeEvent?.['tenant_key'],
     envelope['tenant_key'],
   );
-  if (!openId || !tenantKey) return null;
+  if ((!openId && !larkUserId) || !tenantKey) return null;
 
-  const resolved = await identityRepo.resolveByLarkTenantIdentity(openId, tenantKey);
+  const resolved = await identityRepo.resolveByLarkTenantIdentity(openId, tenantKey, larkUserId);
   if (!resolved.ok || !resolved.value) return null;
+  const canonicalOpenId = resolved.value.larkOpenId ?? openId;
+  if (!canonicalOpenId) return null;
   const displayName = firstNonEmptyString(
     operator?.['name'],
     card?.['user_name'],
@@ -2576,7 +2593,7 @@ async function resolveAuthenticatedCardActor(
 
   return {
     tenantKey,
-    openId,
+    openId: canonicalOpenId,
     userId: resolved.value.userId,
     companyId: resolved.value.companyId,
     aiRole: resolved.value.aiRole,

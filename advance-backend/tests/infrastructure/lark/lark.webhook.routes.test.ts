@@ -30,6 +30,7 @@ interface LarkTestIdentity {
   companyId: string;
   aiRole: string;
   channel: 'lark';
+  larkOpenId?: string;
   activeDepartmentId?: string;
   displayName?: string;
   email?: string;
@@ -229,7 +230,7 @@ async function runWebhook(body: unknown, options: {
   const pendingAttachmentInputs: unknown[] = [];
   const piSessionContexts: unknown[] = [];
   const serializerKeys: string[] = [];
-  const identityLookups: Array<{ openId: string; tenantKey: string }> = [];
+  const identityLookups: Array<{ openId?: string; userId?: string; tenantKey: string }> = [];
   const invalidatedIdentities: string[] = [];
   const revokedLarkUsers: Array<{ companyId: string; userId: string }> = [];
   const departmentPreferenceUpdates: unknown[] = [];
@@ -312,10 +313,10 @@ async function runWebhook(body: unknown, options: {
       },
     } as any,
     channelIdentityRepo: {
-      resolveByLarkTenantIdentity: async (openId: string, tenantKey: string) => {
-        identityLookups.push({ openId, tenantKey });
+      resolveByLarkTenantIdentity: async (openId: string | undefined, tenantKey: string, userId?: string) => {
+        identityLookups.push({ ...(openId ? { openId } : {}), ...(userId ? { userId } : {}), tenantKey });
         const resolved = typeof options.identity === 'function'
-          ? options.identity(openId)
+          ? options.identity(openId ?? '')
           : options.identity;
         if (options.unknownUser) return ok(null);
         return ok(resolved ?? {
@@ -1445,6 +1446,41 @@ describe('Lark webhook card authorization', () => {
       aiRole: 'COMPANY_ADMIN',
       displayName: 'Admin',
     });
+  });
+
+  it('resolves Card 2.0 operator IDs through the tenant-scoped user ID fallback', async () => {
+    let receivedActor: any;
+    const result = await runWebhook({
+      header: {
+        event_type: 'card.action.trigger',
+        token: 'verify',
+        tenant_key: 'tenant-1',
+      },
+      event: {
+        operator: { operator_id: { user_id: 'user-1' }, name: 'Admin' },
+        action: { value: { action: 'memory_review_approve', memoryId: 'mem-1' } },
+      },
+    }, {
+      identity: {
+        userId: 'admin-1',
+        companyId: 'company-1',
+        aiRole: 'COMPANY_ADMIN',
+        channel: 'lark',
+        larkOpenId: 'ou_admin',
+      },
+      knowledgeReviewService: {
+        isKnowledgeReviewAction: () => true,
+        handle: async (_event, actor) => {
+          receivedActor = actor;
+          return { responseBody: { ok: true } };
+        },
+      },
+    });
+
+    assert.deepEqual(result.identityLookups, [{ userId: 'user-1', tenantKey: 'tenant-1' }]);
+    assert.equal(result.responseBody?.ok, true);
+    assert.equal(receivedActor.openId, 'ou_admin');
+    assert.equal(receivedActor.userId, 'admin-1');
   });
 
   it('confirms an opaque export offer and format with the signed actor and signed chat context', async () => {

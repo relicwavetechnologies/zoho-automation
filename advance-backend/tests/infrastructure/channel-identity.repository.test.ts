@@ -368,6 +368,47 @@ describe('ChannelIdentityRepository.resolveByLarkTenantIdentity', () => {
     assert.ok(cache.store.has(`lark:id:v3:tenant-2:${OPEN_ID}`));
   });
 
+  it('falls back to the tenant-scoped Lark user ID and keeps the canonical open ID', async () => {
+    const identityQueries: Array<Record<string, unknown>> = [];
+    let connectionOpenId: unknown;
+    const db = makeIdentityDb({
+      larkTenantBinding: {
+        findFirst: async () => ({ companyId: 'company-1' }),
+      },
+      channelIdentity: {
+        findFirst: async ({ where }: any) => {
+          identityQueries.push(where);
+          return where.larkUserId === 'user-1'
+            ? {
+                id: 'ci-1',
+                aiRole: 'MEMBER',
+                channel: 'lark',
+                companyId: 'company-1',
+                larkOpenId: OPEN_ID,
+              }
+            : null;
+        },
+      },
+      integrationConnection: {
+        findMany: async ({ where }: any) => {
+          connectionOpenId = where.externalAccountId;
+          return [{ ownerUserId: 'member-1', ownerUser: { email: 'user@example.com' } }];
+        },
+      },
+    });
+    const repo = new ChannelIdentityRepository(db as any);
+
+    const result = await repo.resolveByLarkTenantIdentity('ou_callback_variant', 'tenant-1', 'user-1');
+
+    assert.ok(result.ok && result.value);
+    assert.equal(result.value.larkOpenId, OPEN_ID);
+    assert.equal(connectionOpenId, OPEN_ID);
+    assert.deepEqual(identityQueries.map(where => Object.keys(where).sort()), [
+      ['channel', 'companyId', 'externalTenantId', 'larkOpenId'],
+      ['channel', 'companyId', 'externalTenantId', 'larkUserId'],
+    ]);
+  });
+
   it('scopes first-touch login preparation to the same tenant', async () => {
     let where: Record<string, unknown> | undefined;
     const db = makeDb({

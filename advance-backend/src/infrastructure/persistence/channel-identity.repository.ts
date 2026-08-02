@@ -80,8 +80,9 @@ export interface ChannelIdentityRepoPort {
   resolveByLarkOpenId(larkOpenId: string): Promise<Result<ResolvedUserIdentity | null, InfraError>>;
   /** Resolves webhook identities within one authenticated Lark installation. */
   resolveByLarkTenantIdentity(
-    larkOpenId: string,
+    larkOpenId: string | undefined,
     tenantKey: string,
+    larkUserId?: string,
   ): Promise<Result<ResolvedUserIdentity | null, InfraError>>;
   /** Resolves the company installation without treating a room speaker as an authenticated user. */
   resolveLarkTenantCompanyId(
@@ -145,10 +146,11 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
   }
 
   async resolveByLarkTenantIdentity(
-    larkOpenId: string,
+    larkOpenId: string | undefined,
     tenantKey: string,
+    larkUserId?: string,
   ): Promise<Result<ResolvedUserIdentity | null, InfraError>> {
-    return this.resolveLarkIdentity(larkOpenId, tenantKey);
+    return this.resolveLarkIdentity(larkOpenId, tenantKey, larkUserId);
   }
 
   async resolveLarkTenantCompanyId(
@@ -166,9 +168,11 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
   }
 
   private async resolveLarkIdentity(
-    larkOpenId: string,
+    larkOpenId: string | undefined,
     tenantKey?: string,
+    larkUserId?: string,
   ): Promise<Result<ResolvedUserIdentity | null, InfraError>> {
+    if (!larkOpenId && !larkUserId) return ok(null);
     let boundCompanyId: string | undefined;
     if (tenantKey) {
       try {
@@ -184,7 +188,7 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
     }
 
     // Cache read — only non-null identities are cached (null = user may register soon).
-    if (this.cache) {
+    if (this.cache && larkOpenId && !larkUserId) {
       const cached = await this.cache.get<ResolvedUserIdentity>(identityCacheKey(larkOpenId, tenantKey));
       if (cached.ok && cached.value !== null) {
         if (boundCompanyId && cached.value.companyId !== boundCompanyId) return ok(null);
@@ -203,22 +207,36 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
     }
 
     try {
+      const identityWhere = {
+        channel: 'lark',
+        ...(tenantKey ? { externalTenantId: tenantKey } : {}),
+        ...(boundCompanyId ? { companyId: boundCompanyId } : {}),
+      };
+      const initialIdentityFilter = larkOpenId
+        ? { larkOpenId }
+        : { larkUserId: larkUserId! };
       const ci = await this.db.channelIdentity.findFirst({
         where: {
-          channel: 'lark',
-          larkOpenId,
-          ...(tenantKey ? { externalTenantId: tenantKey } : {}),
-          ...(boundCompanyId ? { companyId: boundCompanyId } : {}),
+          ...identityWhere,
+          ...initialIdentityFilter,
         },
-        select: { id: true, aiRole: true, channel: true, companyId: true, displayName: true, email: true },
+        select: { id: true, aiRole: true, channel: true, companyId: true, displayName: true, email: true, larkOpenId: true, larkUserId: true },
       });
-      if (!ci) return ok(null);
+      const exactIdentity = ci && (!larkUserId || ci.larkUserId === larkUserId) ? ci : null;
+      const canonicalIdentity = exactIdentity ?? (larkUserId
+        ? await this.db.channelIdentity.findFirst({
+            where: { ...identityWhere, larkUserId },
+            select: { id: true, aiRole: true, channel: true, companyId: true, displayName: true, email: true, larkOpenId: true, larkUserId: true },
+          })
+        : null);
+      const canonicalOpenId = canonicalIdentity?.larkOpenId ?? larkOpenId;
+      if (!canonicalIdentity || !canonicalOpenId) return ok(null);
 
       const connections = await this.db.integrationConnection.findMany({
         where: {
-          companyId: ci.companyId,
+          companyId: canonicalIdentity.companyId,
           provider: 'lark',
-          externalAccountId: larkOpenId,
+          externalAccountId: canonicalOpenId,
           ...(tenantKey ? {
             tokenMetadata: {
               path: ['larkTenantKey'],
@@ -236,7 +254,7 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
         orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
       });
 
-      const identityEmail = ci.email?.trim().toLowerCase();
+      const identityEmail = canonicalIdentity.email?.trim().toLowerCase();
       const emailMatchedOwner = identityEmail
         ? connections.find(connection => connection.ownerUser?.email.trim().toLowerCase() === identityEmail)
         : undefined;
@@ -252,7 +270,7 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
       const membership = await this.db.adminMembership.findFirst({
         where: {
           userId: ownerUserId,
-          companyId: ci.companyId,
+          companyId: canonicalIdentity.companyId,
           isActive: true,
         },
         select: { role: true },
@@ -267,17 +285,17 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
 
       const resolved: ResolvedUserIdentity = {
         userId: ownerUserId,
-        companyId: ci.companyId,
+        companyId: canonicalIdentity.companyId,
         aiRole: membership.role,
-        channel: ci.channel,
-        larkOpenId,
-        ...(ci.displayName ? { displayName: ci.displayName } : {}),
-        ...(ci.email ? { email: ci.email } : {}),
+        channel: canonicalIdentity.channel,
+        larkOpenId: canonicalOpenId,
+        ...(canonicalIdentity.displayName ? { displayName: canonicalIdentity.displayName } : {}),
+        ...(canonicalIdentity.email ? { email: canonicalIdentity.email } : {}),
         ...(deptPref?.activeDepartmentId ? { activeDepartmentId: deptPref.activeDepartmentId } : {}),
       };
       // Populate cache — fire-and-forget.
       if (this.cache) {
-        void this.cache.set(identityCacheKey(larkOpenId, tenantKey), resolved, LARK_IDENTITY_TTL);
+        void this.cache.set(identityCacheKey(canonicalOpenId, tenantKey), resolved, LARK_IDENTITY_TTL);
       }
       return ok(resolved);
     } catch (e) {
