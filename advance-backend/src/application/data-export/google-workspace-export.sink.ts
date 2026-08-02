@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { createInterface } from 'node:readline';
+import { createHash } from 'node:crypto';
 import { google } from 'googleapis';
 import type { DataExportCompletion, DataExportSource } from './data-export.types';
 import type {
@@ -35,15 +36,20 @@ const EXPORT_TYPE_PROPERTY = 'divoExportType';
 
 export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
   async write(input: DataExportDestinationWriteInput): Promise<DataExportCompletion> {
-    const drive = google.drive({ version: 'v3', auth: oauth(input.auth.accessToken) });
+    const existingSheet = input.destination.target?.kind === 'existing_google_sheet'
+      ? input.destination.target
+      : undefined;
     const access = artifactAccess(input.auth, input.readerEmail);
-    const recovered = await recoverCompletedExport(
-      drive,
-      input.exportKey,
-      access,
-      input.signal,
-    );
-    if (recovered) return recovered;
+    if (!existingSheet) {
+      const drive = google.drive({ version: 'v3', auth: oauth(input.auth.accessToken) });
+      const recovered = await recoverCompletedExport(
+        drive,
+        input.exportKey,
+        access,
+        input.signal,
+      );
+      if (recovered) return recovered;
+    }
 
     const tempDirectory = await mkdtemp(join(tmpdir(), 'divo-export-'));
     const rowsPath = join(tempDirectory, 'rows.ndjson');
@@ -83,14 +89,29 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         && rowCount <= SHEET_ROW_LIMIT
         && rowCount * Math.max(1, columns.length) <= SHEET_CELL_LIMIT;
       let format: 'google_sheet' | 'csv' | 'xlsx';
-      if (input.destination.format === 'xlsx') format = 'xlsx';
+      if (existingSheet) format = 'google_sheet';
+      else if (input.destination.format === 'xlsx') format = 'xlsx';
       else if (input.destination.format === 'google_sheet') format = 'google_sheet';
       else if (input.destination.format === 'csv' || !sheetEligible) format = 'csv';
       else format = 'google_sheet';
       if (format === 'google_sheet' && !sheetEligible) {
         throw new Error('Dataset is too large for the requested Google Sheet; use format=auto or csv');
       }
-      return format === 'google_sheet'
+      return existingSheet
+        ? await this.writeExistingSheet({
+            auth: input.auth,
+            target: existingSheet,
+            exportKey: input.exportKey,
+            ...(input.source ? { source: input.source } : {}),
+            title: input.destination.title,
+            columns,
+            rowsPath,
+            rowCount,
+            sourceTruncated: input.sourceTruncated(),
+            ...(input.signal ? { signal: input.signal } : {}),
+            ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+          })
+        : format === 'google_sheet'
         ? await this.createSheet({
             auth: input.auth,
             access,
@@ -137,6 +158,114 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       if (!rowStream.closed) rowStream.destroy();
       await rm(tempDirectory, { recursive: true, force: true });
     }
+  }
+
+  private async writeExistingSheet(input: {
+    readonly auth: GoogleExportAuth;
+    readonly target: Extract<
+      NonNullable<DataExportDestinationWriteInput['destination']['target']>,
+      { readonly kind: 'existing_google_sheet' }
+    >;
+    readonly exportKey: string;
+    readonly source?: DataExportSource;
+    readonly title: string;
+    readonly columns: readonly string[];
+    readonly rowsPath: string;
+    readonly rowCount: number;
+    readonly sourceTruncated: boolean;
+    readonly signal?: AbortSignal;
+    readonly onProgress?: (progress: DataExportDestinationWriteProgress) => Promise<void>;
+  }): Promise<DataExportCompletion> {
+    if (!('ownerEmail' in input.auth)) {
+      throw new Error('An existing Google Sheet requires the requester-owned Google account');
+    }
+    const auth = oauth(input.auth.accessToken);
+    const drive = google.drive({ version: 'v3', auth });
+    const sheets = google.sheets({ version: 'v4', auth });
+    const file = await drive.files.get({
+      fileId: input.target.spreadsheetId,
+      fields: 'id,mimeType,trashed,capabilities(canEdit)',
+    }, requestOptions(input.signal));
+    if (
+      file.data.id !== input.target.spreadsheetId
+      || file.data.mimeType !== 'application/vnd.google-apps.spreadsheet'
+      || file.data.trashed === true
+      || file.data.capabilities?.canEdit !== true
+    ) {
+      throw new Error('The selected Google Sheet is no longer an editable spreadsheet');
+    }
+
+    const presentation = buildDataExportPresentation({
+      title: input.title,
+      columns: input.columns,
+      ...(input.source ? { source: input.source } : {}),
+      rowCount: input.rowCount,
+      sourceTruncated: input.sourceTruncated,
+    });
+    const tabTitle = existingSheetTabTitle(input.title, input.exportKey);
+    const metadata = await sheets.spreadsheets.get({
+      spreadsheetId: input.target.spreadsheetId,
+      fields: 'sheets(properties(sheetId,title))',
+    }, requestOptions(input.signal));
+    const prior = metadata.data.sheets?.find(sheet => sheet.properties?.title === tabTitle)?.properties;
+    let sheetId = prior?.sheetId;
+    let existingValues: readonly (readonly unknown[])[] = [];
+    if (typeof sheetId === 'number') {
+      const existing = await sheets.spreadsheets.values.get({
+        spreadsheetId: input.target.spreadsheetId,
+        range: quoteSheetTitle(tabTitle),
+      }, requestOptions(input.signal));
+      existingValues = existing.data.values ?? [];
+    } else {
+      const created = await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: input.target.spreadsheetId,
+        requestBody: { requests: [{ addSheet: { properties: { title: tabTitle } } }] },
+      }, requestOptions(input.signal));
+      sheetId = created.data.replies?.[0]?.addSheet?.properties?.sheetId ?? undefined;
+      if (typeof sheetId !== 'number') {
+        throw new Error('Google Sheets did not return the new export tab ID');
+      }
+    }
+
+    const writtenRows = await appendMissingExistingSheetRows({
+      sheets,
+      spreadsheetId: input.target.spreadsheetId,
+      tabTitle,
+      presentation,
+      rowsPath: input.rowsPath,
+      existingValues,
+      ...(input.signal ? { signal: input.signal } : {}),
+      ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+    });
+    if (writtenRows !== input.rowCount) {
+      throw new Error('Google Sheet write count differs from the export row count');
+    }
+    const requests = tableFormatRequests({
+      sheetId,
+      columns: presentation.flatColumns,
+      rowCount: input.rowCount,
+      presentation,
+    });
+    requests.push({
+      updateSheetProperties: {
+        properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+        fields: 'gridProperties.frozenRowCount',
+      },
+    });
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: input.target.spreadsheetId,
+      requestBody: { requests },
+    }, requestOptions(input.signal));
+    await verifyExistingSheetTab({
+      sheets,
+      spreadsheetId: input.target.spreadsheetId,
+      tabTitle,
+      presentation,
+      rowsPath: input.rowsPath,
+      rowCount: input.rowCount,
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    return existingSheetCompletion(input, sheetId);
   }
 
   private async createSheet(input: {
@@ -721,6 +850,158 @@ function tableFormatRequests(input: {
     });
   }
   return requests;
+}
+
+async function appendMissingExistingSheetRows(input: {
+  readonly sheets: ReturnType<typeof google.sheets>;
+  readonly spreadsheetId: string;
+  readonly tabTitle: string;
+  readonly presentation: DataExportPresentation;
+  readonly rowsPath: string;
+  readonly existingValues: readonly (readonly unknown[])[];
+  readonly signal?: AbortSignal;
+  readonly onProgress?: (progress: DataExportDestinationWriteProgress) => Promise<void>;
+}): Promise<number> {
+  if (
+    input.existingValues.length > 0
+    && !sameSheetRow(input.existingValues[0], input.presentation.flatColumns)
+  ) {
+    throw new Error('Google Sheet retry stopped: the Divo export tab header was changed');
+  }
+  const existingRowCount = Math.max(0, input.existingValues.length - 1);
+  let pending: unknown[][] = input.existingValues.length === 0
+    ? [[...input.presentation.flatColumns]]
+    : [];
+  let sourceRowCount = 0;
+  for await (const row of readRows(input.rowsPath)) {
+    input.signal?.throwIfAborted();
+    const flatRow = [...input.presentation.flatRow(row)];
+    if (sourceRowCount < existingRowCount) {
+      if (!sameSheetRow(input.existingValues[sourceRowCount + 1], flatRow)) {
+        throw new Error('Google Sheet retry stopped: the Divo export tab rows were changed');
+      }
+    } else {
+      pending.push(flatRow);
+    }
+    sourceRowCount += 1;
+    if (pending.length < SHEET_APPEND_ROWS) continue;
+    await appendExistingSheetValues(
+      input.sheets,
+      input.spreadsheetId,
+      input.tabTitle,
+      pending,
+      input.signal,
+    );
+    pending = [];
+    await input.onProgress?.({ stage: 'writing', rowsProcessed: sourceRowCount });
+  }
+  if (existingRowCount > sourceRowCount) {
+    throw new Error('Google Sheet retry stopped: the Divo export tab has unexpected extra rows');
+  }
+  if (pending.length > 0) {
+    await appendExistingSheetValues(
+      input.sheets,
+      input.spreadsheetId,
+      input.tabTitle,
+      pending,
+      input.signal,
+    );
+    await input.onProgress?.({ stage: 'writing', rowsProcessed: sourceRowCount });
+  }
+  return sourceRowCount;
+}
+
+async function appendExistingSheetValues(
+  sheets: ReturnType<typeof google.sheets>,
+  spreadsheetId: string,
+  tabTitle: string,
+  values: readonly (readonly unknown[])[],
+  signal?: AbortSignal,
+): Promise<void> {
+  await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range: `${quoteSheetTitle(tabTitle)}!A1`,
+    valueInputOption: 'RAW',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: values.map(row => [...row]) },
+  }, requestOptions(signal));
+}
+
+async function verifyExistingSheetTab(input: {
+  readonly sheets: ReturnType<typeof google.sheets>;
+  readonly spreadsheetId: string;
+  readonly tabTitle: string;
+  readonly presentation: DataExportPresentation;
+  readonly rowsPath: string;
+  readonly rowCount: number;
+  readonly signal?: AbortSignal;
+}): Promise<void> {
+  const header = await input.sheets.spreadsheets.values.get({
+    spreadsheetId: input.spreadsheetId,
+    range: `${quoteSheetTitle(input.tabTitle)}!1:1`,
+  }, requestOptions(input.signal));
+  if (!sameSheetRow(header.data.values?.[0], input.presentation.flatColumns)) {
+    throw new Error('Google Sheet verification failed: export tab header differs from source');
+  }
+  if (input.rowCount === 0) return;
+
+  let expectedLast: readonly unknown[] | undefined;
+  for await (const row of readRows(input.rowsPath)) {
+    expectedLast = input.presentation.flatRow(row);
+  }
+  if (!expectedLast) throw new Error('Google Sheet verification failed: final source row is missing');
+  const finalRowNumber = input.rowCount + 1;
+  const finalRow = await input.sheets.spreadsheets.values.get({
+    spreadsheetId: input.spreadsheetId,
+    range: `${quoteSheetTitle(input.tabTitle)}!${finalRowNumber}:${finalRowNumber}`,
+  }, requestOptions(input.signal));
+  if (!sameSheetRow(finalRow.data.values?.[0], expectedLast)) {
+    throw new Error('Google Sheet verification failed: final export row differs from source');
+  }
+}
+
+function existingSheetCompletion(
+  input: {
+    readonly auth: GoogleExportAuth;
+    readonly target: { readonly spreadsheetId: string };
+    readonly rowCount: number;
+    readonly sourceTruncated: boolean;
+  },
+  sheetId: number,
+): DataExportCompletion {
+  if (!('ownerEmail' in input.auth)) {
+    throw new Error('An existing Google Sheet requires a verified owner');
+  }
+  return {
+    success: true,
+    artifactId: input.target.spreadsheetId,
+    artifactUrl: `https://docs.google.com/spreadsheets/d/${encodeURIComponent(input.target.spreadsheetId)}/edit#gid=${sheetId}`,
+    artifactType: 'google_sheet',
+    rowCount: input.rowCount,
+    sourceTruncated: input.sourceTruncated,
+    sharedWith: `${input.auth.ownerEmail} (owner)`,
+    verified: true,
+  };
+}
+
+function existingSheetTabTitle(title: string, exportKey: string): string {
+  const suffix = createHash('sha256').update(exportKey).digest('hex').slice(0, 16);
+  const base = safeTitle(title).replace(/[\[\]]+/g, '-').slice(0, 80).trim();
+  return `${base || 'Divo export'} · ${suffix}`;
+}
+
+function quoteSheetTitle(title: string): string {
+  return `'${title.replaceAll("'", "''")}'`;
+}
+
+function sameSheetRow(actual: readonly unknown[] | undefined, expected: readonly unknown[]): boolean {
+  return JSON.stringify(trimTrailingEmpty(actual ?? [])) === JSON.stringify(trimTrailingEmpty(expected));
+}
+
+function trimTrailingEmpty(values: readonly unknown[]): unknown[] {
+  const normalized = values.map(normalizeExportCell);
+  while (normalized.at(-1) === '') normalized.pop();
+  return normalized;
 }
 
 function oauth(accessToken: string) {

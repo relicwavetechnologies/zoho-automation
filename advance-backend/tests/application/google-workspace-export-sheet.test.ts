@@ -185,3 +185,220 @@ it('creates a typed and presentation-ready Semrush organic positions sheet', asy
   assert.ok(numberPatterns.includes('0.00'));
   assert.ok(numberPatterns.includes('0.00"%"'));
 });
+
+it('writes an existing editable Sheet only through one verified new tab', async t => {
+  const appended: Array<{ range: string; values: unknown[][] }> = [];
+  const batchRequests: Record<string, unknown>[][] = [];
+  let tabTitle = '';
+  let tabCreated = false;
+  let failFormatting = true;
+  const drive = {
+    files: {
+      get: async (input: any) => {
+        assert.equal(input.fileId, 'existing_sheet');
+        return {
+          data: {
+            id: 'existing_sheet',
+            mimeType: 'application/vnd.google-apps.spreadsheet',
+            trashed: false,
+            capabilities: { canEdit: true },
+          },
+        };
+      },
+      list: async () => assert.fail('existing Sheet writes must not run artifact recovery'),
+      create: async () => assert.fail('existing Sheet writes must not create a Drive file'),
+      update: async () => assert.fail('existing Sheet writes must not mutate Drive metadata'),
+      delete: async () => assert.fail('existing Sheet writes must never delete the workbook'),
+    },
+    permissions: {
+      list: async () => assert.fail('existing Sheet writes must not inspect or alter sharing'),
+      create: async () => assert.fail('existing Sheet writes must not alter sharing'),
+    },
+  };
+  const sheets = {
+    spreadsheets: {
+      get: async () => ({
+        data: {
+          sheets: [
+            { properties: { sheetId: 1, title: 'User data' } },
+            ...(tabCreated ? [{ properties: { sheetId: 27, title: tabTitle } }] : []),
+          ],
+        },
+      }),
+      batchUpdate: async (input: any) => {
+        batchRequests.push(input.requestBody.requests);
+        if ('addSheet' in input.requestBody.requests[0]) {
+          tabTitle = input.requestBody.requests[0].addSheet.properties.title;
+          tabCreated = true;
+          return { data: { replies: [{ addSheet: { properties: { sheetId: 27 } } }] } };
+        }
+        if (failFormatting) {
+          failFormatting = false;
+          throw new Error('temporary formatting failure');
+        }
+        return { data: {} };
+      },
+      values: {
+        append: async (input: any) => {
+          appended.push({ range: input.range, values: input.requestBody.values });
+          return { data: { updates: { updatedRows: input.requestBody.values.length } } };
+        },
+        get: async (input: any) => {
+          if (!input.range.includes('!')) return { data: { values: appended[0]?.values ?? [] } };
+          if (input.range.endsWith('!1:1')) return { data: { values: [['Name', 'Count']] } };
+          assert.ok(input.range.endsWith('!3:3'));
+          return { data: { values: [['Two', 2]] } };
+        },
+      },
+    },
+  };
+  t.mock.method(google, 'drive', () => drive as any);
+  t.mock.method(google, 'sheets', () => sheets as any);
+
+  const write = () => new GoogleWorkspaceExportSink().write({
+    auth: { accessToken: 'token', ownerEmail: 'member@gmail.com' },
+    readerEmail: 'member@gmail.com',
+    exportKey: 'existing-sheet-job',
+    destination: {
+      format: 'google_sheet',
+      title: 'Customer counts',
+      target: {
+        kind: 'existing_google_sheet',
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        spreadsheetId: 'existing_sheet',
+        gid: '1',
+        mode: 'new_tab',
+      },
+    },
+    rows: (async function* () {
+      yield [{ Name: 'One', Count: 1 }, { Name: 'Two', Count: 2 }];
+    })(),
+    sourceTruncated: () => false,
+  });
+  await assert.rejects(write(), /temporary formatting failure/);
+  const result = await write();
+
+  assert.match(tabTitle, /^Customer counts · [0-9a-f]{16}$/);
+  assert.ok(tabTitle.length <= 100);
+  assert.deepEqual(appended, [{
+    range: `'${tabTitle}'!A1`,
+    values: [['Name', 'Count'], ['One', 1], ['Two', 2]],
+  }]);
+  assert.equal(batchRequests.length, 3);
+  assert.ok(batchRequests[2]?.some(request => 'setBasicFilter' in request));
+  assert.equal(result.artifactId, 'existing_sheet');
+  assert.equal(result.artifactUrl, 'https://docs.google.com/spreadsheets/d/existing_sheet/edit#gid=27');
+  assert.equal(result.rowCount, 2);
+  assert.equal(result.verified, true);
+});
+
+it('resumes a partially written Divo tab without creating another tab', async t => {
+  let tabTitle = '';
+  let tabCreated = false;
+  let addSheetCalls = 0;
+  let appendCalls = 0;
+  let failNextBatch = true;
+  const storedValues: unknown[][] = [];
+  t.mock.method(google, 'drive', () => ({
+    files: {
+      get: async () => ({
+        data: {
+          id: 'existing_sheet',
+          mimeType: 'application/vnd.google-apps.spreadsheet',
+          trashed: false,
+          capabilities: { canEdit: true },
+        },
+      }),
+    },
+  }) as any);
+  t.mock.method(google, 'sheets', () => ({
+    spreadsheets: {
+      get: async () => ({
+        data: {
+          sheets: tabCreated ? [{ properties: { sheetId: 27, title: tabTitle } }] : [],
+        },
+      }),
+      batchUpdate: async (input: any) => {
+        if ('addSheet' in input.requestBody.requests[0]) {
+          addSheetCalls += 1;
+          tabTitle = input.requestBody.requests[0].addSheet.properties.title;
+          tabCreated = true;
+          return { data: { replies: [{ addSheet: { properties: { sheetId: 27 } } }] } };
+        }
+        return { data: {} };
+      },
+      values: {
+        append: async (input: any) => {
+          appendCalls += 1;
+          if (appendCalls === 2 && failNextBatch) {
+            failNextBatch = false;
+            throw new Error('temporary append failure');
+          }
+          storedValues.push(...input.requestBody.values);
+          return { data: {} };
+        },
+        get: async (input: any) => {
+          if (!input.range.includes('!')) return { data: { values: storedValues } };
+          if (input.range.endsWith('!1:1')) return { data: { values: [storedValues[0]] } };
+          return { data: { values: [storedValues.at(-1)] } };
+        },
+      },
+    },
+  }) as any);
+
+  const write = () => new GoogleWorkspaceExportSink().write({
+    auth: { accessToken: 'token', ownerEmail: 'member@gmail.com' },
+    readerEmail: 'member@gmail.com',
+    exportKey: 'partial-existing-sheet-job',
+    destination: {
+      format: 'google_sheet',
+      title: 'Resumable rows',
+      target: {
+        kind: 'existing_google_sheet',
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        spreadsheetId: 'existing_sheet',
+        mode: 'new_tab',
+      },
+    },
+    rows: (async function* () {
+      yield Array.from({ length: 501 }, (_, index) => ({ Index: index + 1 }));
+    })(),
+    sourceTruncated: () => false,
+  });
+
+  await assert.rejects(write(), /temporary append failure/);
+  const recovered = await write();
+  assert.equal(addSheetCalls, 1);
+  assert.equal(storedValues.length, 502);
+  assert.deepEqual(storedValues.at(-1), [501]);
+  assert.equal(recovered.rowCount, 501);
+  assert.equal(recovered.verified, true);
+});
+
+it('rejects an oversized existing-Sheet export before touching the workbook', async t => {
+  t.mock.method(google, 'drive', () => assert.fail('oversized data must fail before Drive access') as any);
+  t.mock.method(google, 'sheets', () => assert.fail('oversized data must fail before Sheets access') as any);
+
+  await assert.rejects(
+    new GoogleWorkspaceExportSink().write({
+      auth: { accessToken: 'token', ownerEmail: 'member@gmail.com' },
+      readerEmail: 'member@gmail.com',
+      exportKey: 'oversized-existing-sheet-job',
+      destination: {
+        format: 'google_sheet',
+        title: 'Too many rows',
+        target: {
+          kind: 'existing_google_sheet',
+          connectionId: '11111111-1111-4111-8111-111111111111',
+          spreadsheetId: 'existing_sheet',
+          mode: 'new_tab',
+        },
+      },
+      rows: (async function* () {
+        for (let index = 0; index < 50_001; index += 1) yield [{ index }];
+      })(),
+      sourceTruncated: () => false,
+    }),
+    /Dataset is too large for the requested Google Sheet/,
+  );
+});

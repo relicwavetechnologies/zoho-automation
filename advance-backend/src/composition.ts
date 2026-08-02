@@ -911,7 +911,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     userId: string,
     target?: DataExportDestinationTarget,
   ): Promise<GoogleExportAuth> {
-    if (target?.kind === 'user_google') {
+    if (target?.kind === 'user_google' || target?.kind === 'existing_google_sheet') {
       const resolved = await integrationConnectionRepo.findAccessibleGoogleConnection({
         companyId,
         userId,

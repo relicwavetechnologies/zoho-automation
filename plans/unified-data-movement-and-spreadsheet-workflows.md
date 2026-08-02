@@ -17,7 +17,7 @@
 | 3 — Lark export interaction | ✅ Done | Signed format/account cards, immediate callback ACK, locked choice cards, governed progress delivery, OAuth resume, and personal destination preference implemented |
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
 | 5 — Semrush and OMS convergence | 🟡 Partial | OMS and Semrush are integrated; live Semrush preview/offer passes, while artifact verification and rollback-path removal evidence remain |
-| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Governed resolution now seals and consumes an opaque run/thread-bound target into the export queue; the existing-Sheet new-tab writer remains |
+| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Governed resolution and the retry-safe existing-Sheet new-tab writer are implemented; live isolated proof and Drive-hosted XLSX resolution remain |
 | 7 — routers and provider skills | 🟡 Partial | Exact pasted Sheet URLs now route to governed reference resolution before web search; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
 | 9 — realistic isolated-runtime validation | 🟡 In progress | Dev Lark received a real Zoho preview and a fresh opaque export offer; Sheet/CSV confirmation and no-account OAuth resume remain |
@@ -145,7 +145,17 @@
   new-tab target into the queued job. The model cannot submit connection,
   spreadsheet, or tab IDs, and existing export cards retain their established
   authority-safe payload. Offer/tool verification passes 55/55 checks plus
-  TypeScript and diff validation. The worker/sink is not yet claimed as usable.
+  TypeScript and diff validation.
+- The Google destination sink now revalidates that sealed target with the exact
+  requester-owned account, confirms the Drive file is an editable non-trashed
+  Google Sheet, and writes only a deterministic new Divo tab in 500-row
+  batches. It freezes the header, applies table formatting and filters, then
+  verifies the header and final row. Retries compare the complete written row
+  prefix and append only missing batches, so a crash cannot create a second
+  tab or duplicate rows. Existing user tabs, workbook metadata, sharing, and
+  Drive ownership are never changed. Oversized Sheet jobs fail before any
+  workbook call. Focused sink/export verification passes 37/37 checks,
+  TypeScript and diff validation pass; live isolated Lark proof remains.
 
 ---
 
@@ -1213,7 +1223,9 @@ Never log:
 4. Confirm pending Semrush offer `5ce39d0c-b27b-40b4-a8e4-87dac9662139`,
    verify the destination content/owner, then remove its rollback-only
    Cloudinary path only after that parity evidence passes.
-5. Add the pasted Google Sheet resolver and existing-Sheet streaming destination.
+5. Run the pasted-Sheet existing-tab flow through isolated cloud Pi and verify
+   the produced tab in the requester's workbook; then add Drive-hosted XLSX
+   metadata resolution and explicit conversion approval.
 6. Tune skills and routers once each instruction describes backend behavior
    that exists and is covered by contract tests.
 7. Execute Phase 9 through the isolated Docker runtime, deliver every
@@ -1272,7 +1284,8 @@ Principal risks:
 1. destination ownership and sharing semantics are product/security decisions, not merely code changes;
 2. the confirmed Prisma `db push` schema change must be applied and verified
    against the correct development database without destructive drift;
-3. existing-Sheet partial writes require careful checkpoint and idempotency design;
+3. existing-Sheet retries are prefix-verified and idempotent in focused tests,
+   but still require live provider evidence under interruption;
 4. Semrush cost/pagination and OMS provider caps require source-specific truthfulness;
 5. skill changes made before backend contracts exist would recreate fragmentation in prompt form;
 6. a large folder rename/refactor could destabilize a working worker, hence the incremental modularization requirement.
