@@ -9,6 +9,7 @@ export interface WorkbookConversionJobPayload {
   readonly offerId: string;
   readonly companyId: string;
   readonly userId: string;
+  readonly departmentId?: string;
   readonly chatId: string;
   readonly sourceMessageId: string;
   readonly conversationKey: string;

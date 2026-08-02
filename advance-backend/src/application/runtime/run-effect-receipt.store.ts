@@ -83,6 +83,7 @@ export interface OfferedWorkbookConversionEffect extends LarkRunEffectIdentity {
   readonly connectionId: string;
   readonly fileId: string;
   readonly fileName?: string;
+  readonly departmentId?: string;
   readonly replyInThread?: boolean;
   readonly createdAt: string;
 }
@@ -281,10 +282,16 @@ export class RunEffectReceiptStore {
       readonly connectionId: string;
       readonly fileId: string;
       readonly fileName?: string;
+      readonly departmentId?: string;
       readonly replyInThread?: boolean;
     },
   ): Promise<OfferedWorkbookConversionEffect> {
-    if (!isUuid(input.offerId) || !isUuid(input.connectionId) || !isSpreadsheetId(input.fileId)) {
+    if (
+      !isUuid(input.offerId)
+      || !isUuid(input.connectionId)
+      || !isSpreadsheetId(input.fileId)
+      || (input.departmentId !== undefined && !isUuid(input.departmentId))
+    ) {
       throw new Error('Workbook conversion offer is invalid.');
     }
     const effect: OfferedWorkbookConversionEffect = {
@@ -564,6 +571,7 @@ function assertWorkbookConversionEffect(effect: OfferedWorkbookConversionEffect)
     || !isUuid(effect.offerId)
     || !isUuid(effect.connectionId)
     || !isSpreadsheetId(effect.fileId)
+    || (effect.departmentId !== undefined && !isUuid(effect.departmentId))
   ) {
     throw new Error('Workbook conversion offer receipt is invalid.');
   }

@@ -1086,7 +1086,11 @@ export class GatewayDispatcher {
           chatId: member.runtimeChatId,
           threadId: execution.threadId,
           runId: execution.runId,
-        }, { offerId, ...workbookConversion });
+        }, {
+          offerId,
+          ...workbookConversion,
+          ...(departmentId ? { departmentId } : {}),
+        });
       } catch (error) {
         this.deps.logger.error('gateway.workbook_conversion.receipt_failed', {
           companyId: member.companyId,

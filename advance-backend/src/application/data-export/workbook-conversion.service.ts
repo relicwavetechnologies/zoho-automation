@@ -38,6 +38,7 @@ function jobPayload(
     offerId: offer.offerId,
     companyId: offer.companyId,
     userId: offer.userId,
+    ...(offer.departmentId ? { departmentId: offer.departmentId } : {}),
     chatId: offer.chatId,
     sourceMessageId,
     conversationKey: offer.threadId,

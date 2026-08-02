@@ -20,6 +20,7 @@ describe('workbook conversion confirmation', () => {
           offerId: '44444444-4444-4444-8444-444444444444',
           companyId: 'company-1',
           userId: 'user-1',
+          departmentId: '22222222-2222-4222-8222-222222222222',
           chatId: 'oc-1',
           threadId: 'thread-1',
           runId: 'run-1',
@@ -47,6 +48,7 @@ describe('workbook conversion confirmation', () => {
     });
 
     assert.equal(queued?.conversationKey, 'thread-1');
+    assert.equal(queued?.departmentId, '22222222-2222-4222-8222-222222222222');
     assert.equal(queued?.sourceMessageId, 'om-card');
     assert.ok(
       WORKBOOK_CONVERSION_RETRY_DELAY_MS > GOOGLE_DRIVE_XLSX_CONVERSION_LEASE_TTL_SECONDS * 1_000,
