@@ -227,7 +227,10 @@ import { createKnowledgeTool } from './application/tools/families/knowledge.tool
 import { createDataExportTool } from './application/tools/families/data-export.tool';
 import { createRunCommandTool } from './application/tools/families/run-command.tool';
 import { createScheduledWorkflowsTool } from './application/tools/families/scheduled-workflows.tool';
-import { createMailAutomationsTool } from './application/tools/families/mail-automations.tool';
+import {
+  createMailAutomationsTool,
+  mailOpsConnectionUnavailableMessage,
+} from './application/tools/families/mail-automations.tool';
 import { createSemrushTool } from './application/tools/families/semrush.tool';
 import { createOmsSiteDataTool } from './application/tools/families/oms-site-data.tool';
 import { ScheduledLarkDmChannelAdapter } from './infrastructure/channels/lark/scheduled-lark-dm.adapter';
@@ -780,9 +783,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     if (selection.status === 'unavailable') {
       return {
         status: 'unavailable' as const,
-        reason:
-          'Mail Ops needs a user-owned Google account with Gmail read, watch, '
-          + 'and send access. Connect or reconnect Google to continue.',
+        connectionState: selection.reason,
+        reason: mailOpsConnectionUnavailableMessage(selection.reason),
       };
     }
     if (!selection.connection.accountEmail) {

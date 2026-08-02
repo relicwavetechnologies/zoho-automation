@@ -372,6 +372,28 @@ describe('Google Workspace MCP product tools', () => {
     assert.match(result.ok ? result.value.message ?? '' : '', /fresh run automatically/);
   });
 
+  it('points a member at Connected apps when no card can be sent', async () => {
+    // Off Lark there is no conversation to deliver a Connect card into, so the
+    // tool used to return the bare connection problem — accurate, and useless.
+    const gmail = createGoogleWorkspaceMcpTools({
+      getConnection: async () => ({
+        status: 'unavailable',
+        reason: 'none_accessible',
+        accessible: [],
+      }),
+    }).find((tool) => tool.id === 'googleGmail')!;
+
+    const result = await gmail.execute({
+      op: 'call',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      nativeTool: 'search_gmail_messages',
+      input: { query: 'newer_than:1d OTP' },
+    }, makeCtx('googleGmail', ['read'], {}));
+
+    assert.equal(result.ok, false);
+    assert.match(!result.ok ? result.error.message : '', /Connected apps/);
+  });
+
   it('classifies destructive and executable native actions without a fallback switch', () => {
     assert.equal(googleWorkspaceActionFor('manage_event', { action: 'delete' }), 'delete');
     assert.equal(googleWorkspaceActionFor('manage_drive_access', { action: 'grant' }), 'create');

@@ -11,6 +11,7 @@ import type {
   BeginGoogleWorkspaceAuthorization,
   GoogleWorkspaceMcpConnectionChoice,
 } from './google-workspace-mcp.tool';
+import { SELF_SERVICE_CONNECT_HINT } from './google-workspace-mcp.tool';
 import { mailRuleMatchSchema, parseMailRule } from '../../mail-ops/mail-rule.matcher';
 import { mailRuleDedupeKey } from '../../mail-ops/mail-ops.types';
 
@@ -116,7 +117,38 @@ export type MailAutomationConnectionResolution =
   | {
       status: 'unavailable';
       reason: string;
+      /**
+       * Which of the three unavailable states this is. Carried separately from
+       * the sentence so a caller can behave differently without matching on
+       * prose — an account that exists but lacks a scope is not the same
+       * problem as no account at all.
+       */
+      connectionState?: 'none_accessible' | 'insufficient_access' | 'requested_not_accessible';
     };
+
+/**
+ * Three different problems with three different remedies.
+ *
+ * They used to share one sentence — "Connect or reconnect Google to continue" —
+ * which sent a member with a scope-limited account off to connect an account
+ * they already had, and a member with no account off to grant scopes on one
+ * that did not exist.
+ */
+export function mailOpsConnectionUnavailableMessage(
+  state: 'none_accessible' | 'insufficient_access' | 'requested_not_accessible',
+): string {
+  if (state === 'insufficient_access') {
+    return 'Your Google account is connected but Divo cannot read, watch, and '
+      + 'send mail with it — it is shared read-only or missing Gmail scopes. '
+      + 'Reconnect it and grant the full Gmail access.';
+  }
+  if (state === 'requested_not_accessible') {
+    return 'That connectionId is not a Google account you own, so Mail Ops '
+      + 'cannot use it. Name one of your own connected accounts.';
+  }
+  return 'Mail Ops needs a Google account you own, with Gmail read, watch, '
+    + 'and send access. Connect Google to continue.';
+}
 
 type MailRepo = Pick<
   MailOpsRepository,
@@ -329,10 +361,14 @@ export function createMailAutomationsTool(deps: {
               });
             }
           }
+          // No card is coming: either this run has no conversation to send one
+          // into (a desktop session), or delivery failed. Either way the member
+          // can still do it themselves, and saying so is the difference between
+          // a dead end and an instruction.
           return err(new ToolError({
             toolId: 'mailAutomations',
             reason: 'unrecoverable',
-            message: connection.reason,
+            message: `${connection.reason} ${SELF_SERVICE_CONNECT_HINT}`,
           }));
         }
 

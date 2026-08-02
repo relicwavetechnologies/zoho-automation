@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createMailAutomationsTool } from '../../src/application/tools/families/mail-automations.tool.ts';
+import {
+  createMailAutomationsTool,
+  mailOpsConnectionUnavailableMessage,
+} from '../../src/application/tools/families/mail-automations.tool.ts';
 import {
   MAIL_OPS_SYSTEM_SKILLS,
   provisionMailOpsPermissionsForExistingCompanies,
@@ -180,6 +183,50 @@ describe('mailAutomations tool', () => {
     // in begin-google-authorization.test.ts — this test used to hand-build the
     // precondition production never supplied, and stayed green over dead code.
     assert.equal(authorizationInput.runContext.runtimeRunId, 'run-1');
+  });
+
+  it('names the actual remedy for each way a Google account can be unusable', () => {
+    // One shared sentence used to send a member with a scope-limited account to
+    // connect an account they already had, and a member with no account to
+    // grant scopes on one that did not exist.
+    const noAccount = mailOpsConnectionUnavailableMessage('none_accessible');
+    const scopeLimited = mailOpsConnectionUnavailableMessage('insufficient_access');
+    const wrongAccount = mailOpsConnectionUnavailableMessage('requested_not_accessible');
+
+    assert.notEqual(noAccount, scopeLimited);
+    assert.notEqual(noAccount, wrongAccount);
+    assert.notEqual(scopeLimited, wrongAccount);
+    assert.match(scopeLimited, /Reconnect/);
+    assert.match(noAccount, /Connect Google/);
+    assert.match(wrongAccount, /connectionId/);
+  });
+
+  it('tells an off-Lark member how to connect Google themselves', async () => {
+    // No beginAuthorization means no card can be sent — a desktop run has no
+    // conversation to put one in. Returning only the connection problem read as
+    // a dead end; the member can connect Google perfectly well on their own.
+    const tool = createMailAutomationsTool({
+      runtime: { pubsubConfigured: true, workersEnabled: true },
+      repo: {} as any,
+      resolveConnection: async () => ({
+        status: 'unavailable',
+        connectionState: 'none_accessible',
+        reason: 'Mail Ops needs a Google account you own.',
+      }),
+    });
+
+    const result = await tool.execute({
+      operation: 'create',
+      name: 'Forward invoices',
+      match: { subjectContains: 'Invoice' },
+      destination: { type: 'email', email: 'finance@example.com' },
+    }, makeCtx('mailAutomations', ['create', 'execute'], { channel: 'desktop' }));
+
+    assert.equal(result.ok, false);
+    assert.match(
+      !result.ok ? result.error.message : '',
+      /Connected apps/,
+    );
   });
 
   it('replaces an owned rule without creating a second rule', async () => {

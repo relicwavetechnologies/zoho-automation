@@ -102,6 +102,18 @@ export type BeginGoogleWorkspaceAuthorization = (input: {
   | { readonly status: 'unavailable' }
 >;
 
+/**
+ * What to say when no Connect card can reach the member.
+ *
+ * A run outside Lark has no conversation to deliver a card into, and card
+ * delivery can fail inside one. The old behaviour was to return the connection
+ * problem on its own, which reads as "you are stuck" — the member is perfectly
+ * able to connect Google themselves, and this names where.
+ */
+export const SELF_SERVICE_CONNECT_HINT =
+  'Divo could not send a Connect card here. Tell the user to open Connected '
+  + 'apps in Divo and connect Google there, then ask again; do not retry.';
+
 export function createGoogleWorkspaceMcpTools(deps: {
   readonly getConnection: ResolveGoogleWorkspaceMcpConnection;
   readonly beginAuthorization?: BeginGoogleWorkspaceAuthorization;
@@ -278,10 +290,13 @@ function createProductTool(
             });
           }
         }
+        // No card is coming — off Lark there is no conversation to send one
+        // into, and delivery can fail inside one. Naming the self-service route
+        // turns a dead end into something the member can act on.
         return err(new ToolError({
           toolId: product.toolId,
           reason: 'unrecoverable',
-          message: reason,
+          message: `${reason} ${SELF_SERVICE_CONNECT_HINT}`,
         }));
       }
       const connection = connectionResolution.connection;
