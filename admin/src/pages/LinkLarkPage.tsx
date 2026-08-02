@@ -45,7 +45,7 @@ export function LinkLarkPage() {
     void (async () => {
       try {
         const result = await api.post<{ linked: boolean; replaying: boolean }>(
-          '/api/lark/auth/link', { state }, token, { quiet: true },
+          '/api/lark/auth/link', { state }, token, { quiet: true, raw: true },
         )
         setOutcome({ kind: 'linked', replaying: result.replaying })
       } catch (e) {

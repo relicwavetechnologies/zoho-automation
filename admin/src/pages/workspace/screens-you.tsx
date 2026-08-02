@@ -8,7 +8,7 @@
 import { useMemo, useState } from 'react'
 import {
   Activity, ArrowUpRight, Ban, BookOpen, Brain, Check, CircleAlert, Clock, ExternalLink,
-  Eye, Gauge, Link2, Lock, MessageSquare, Plus, ShieldCheck, Sparkles, Trash2, TriangleAlert, X,
+  ChevronRight, Eye, Gauge, Link2, Lock, MessageSquare, Plus, Search, ShieldCheck, Sparkles, Trash2, TriangleAlert, X,
 } from 'lucide-react'
 import {
   CONNECTORS, MEMORIES, SKILLS, toolById,
@@ -16,7 +16,10 @@ import {
 } from './fixtures'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useTheme } from '@/lib/use-theme'
-import { CONNECTABLE, useConnectionGrants, useConnections, type LiveConnection } from './data/use-connections'
+import {
+  CONNECTABLE, useConnectionManage, useConnections,
+  type AccessLevel, type GranteeType, type LiveConnection, type ManageCandidates,
+} from './data/use-connections'
 import { ago, expiryLabel, useApprovals } from './data/use-approvals'
 import {
   changePct, durationLabel, useMyModelOptions, useMyRuns, useMyTools, useMyUsage, type MyRun,
@@ -244,7 +247,9 @@ function RunList({ runs }: { runs: MyRun[] }) {
    order: what will Divo see, who else can use it, how do I take it back. */
 export function YouConnections({ replay, toast, go }: ScreenProps) {
   const [r1] = useStaged([320], replay)
-  const [open, setOpen] = useState<Provider | null>(null)
+  // Which account's drawer is open — the provider alone is no longer enough
+  // now that a provider can hold several.
+  const [open, setOpen] = useState<{ provider: Provider; connectionId?: string } | null>(null)
   const { byProvider, loading, connecting, connect, disconnect } = useConnections()
 
   // Two gates, not one. `r1` is the staged reveal that keeps the page from
@@ -271,42 +276,75 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
         <Panel title="Your connections" source="connections">
           {!ready ? <SkelRows n={4} /> : (
             <Fade>
-              <div className="ws-rows">
+              <div className="ws-conns">
                 {CONNECTORS.map((def) => {
                   const status = byProvider.get(def.provider)
-                  const conn = status?.connections[0]
-                  const state = conn ? 'connected' : def.memberCanConnect ? 'available' : 'admin'
+                  const accounts = status?.connections ?? []
+                  const canAdd = def.memberCanConnect
+
+                  /*
+                   * Provider is a group, accounts are its rows.
+                   *
+                   * A provider can hold several accounts — Google keys one per
+                   * Google user id — and the first attempt at this rendered a
+                   * full-width "Add another X account" row after every single
+                   * provider. Five of those in a flat list drowned the accounts
+                   * they belonged to. The add action belongs to the provider,
+                   * so it sits in the provider's own header, once.
+                   */
                   return (
-                    <ClickRow key={def.provider} onOpen={() => setOpen(def.provider)}>
-                      <ProviderMark provider={def.provider} />
-                      <div className="ws-row-main">
-                        <b>
-                          {def.name}
-                          {conn?.ownerType === 'company' ? <span className="ws-tag">Company</span> : null}
-                        </b>
-                        <p>
-                          {status?.error
-                            ? status.error
-                            : conn
-                              ? `${conn.accountEmail ?? conn.label} · last used ${since(conn.lastUsedAt)}`
-                              : def.blurb}
-                        </p>
-                      </div>
-                      <div className="ws-row-act">
-                        {state === 'connected' ? <span className="badge b-ok"><span className="dot" />Connected</span> : null}
-                        {state === 'available' ? (
+                    <div className="ws-conn-group" key={def.provider}>
+                      <div className="ws-conn-h">
+                        <ProviderMark provider={def.provider} />
+                        <div className="ws-conn-h-main">
+                          <b>{def.name}</b>
+                          <p>
+                            {status?.error
+                              ? status.error
+                              : accounts.length === 0
+                                ? def.blurb
+                                : `${accounts.length} account${accounts.length === 1 ? '' : 's'}`}
+                          </p>
+                        </div>
+                        {canAdd ? (
                           <button
                             type="button"
                             className="btn"
                             disabled={connecting !== null}
-                            onClick={(e) => { e.stopPropagation(); void connect(def.provider) }}
+                            onClick={() => void connect(def.provider)}
                           >
-                            {connecting === def.provider ? 'Waiting…' : 'Connect'}
+                            {connecting === def.provider
+                              ? 'Waiting…'
+                              : accounts.length === 0 ? 'Connect' : <><Plus size={13} />Add account</>}
                           </button>
+                        ) : accounts.length === 0 ? (
+                          <span className="ws-tag"><Lock size={11} />Admin connects this</span>
                         ) : null}
-                        {state === 'admin' ? <span className="ws-tag"><Lock size={11} />Admin connects this</span> : null}
                       </div>
-                    </ClickRow>
+
+                      {accounts.length > 0 ? (
+                        <div className="ws-conn-accounts">
+                          {accounts.map((conn) => (
+                            <ClickRow
+                              key={conn.connectionId}
+                              onOpen={() => setOpen({ provider: def.provider, connectionId: conn.connectionId })}
+                            >
+                              <div className="ws-row-main">
+                                <b>
+                                  {conn.accountEmail ?? conn.label}
+                                  {conn.ownerType === 'company' ? <span className="ws-tag">Company</span> : null}
+                                </b>
+                                <p>Last used {since(conn.lastUsedAt)}</p>
+                              </div>
+                              <div className="ws-row-act">
+                                <span className="ws-sub">Manage</span>
+                                <ChevronRight size={14} className="muted" />
+                              </div>
+                            </ClickRow>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
                   )
                 })}
               </div>
@@ -347,13 +385,13 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
 
       {open ? (
         <ConnectionDrawer
-          provider={open}
-          connection={byProvider.get(open)?.connections[0]}
+          provider={open.provider}
+          connection={byProvider.get(open.provider)?.connections.find((c) => c.connectionId === open.connectionId)}
           onClose={() => setOpen(null)}
-          onConnect={() => { void connect(open) }}
+          onConnect={() => { void connect(open.provider) }}
           onDisconnect={async (connectionId) => {
-            await disconnect(open, connectionId)
-            toast(`${providerName(open)} disconnected`)
+            await disconnect(open.provider, connectionId)
+            toast(`${providerName(open.provider)} disconnected`)
             setOpen(null)
           }}
           toast={toast}
@@ -379,6 +417,133 @@ function since(iso?: string | null): string {
 const onDate = (iso?: string | null): string =>
   iso ? new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
 
+/**
+ * Granting somebody else the use of your connection.
+ *
+ * Four kinds of grantee, because that is what the backend stores: a person, a
+ * department, a role, or the whole company. They are genuinely different
+ * decisions — "Ananya" is a person leaving next month, "Finance" is whoever is
+ * in Finance at the time — so the type is picked first and the search is scoped
+ * to it rather than mixing all four into one list.
+ *
+ * The access levels come from the route, never from a constant here. Zoho
+ * collapses to read-only when its own scopes are read-only, and offering
+ * "Read/write" in that case would be a choice the backend then refuses.
+ */
+function GrantAccess({ candidates, accessLevels, busy, onGrant }: {
+  candidates: ManageCandidates
+  accessLevels: AccessLevel[]
+  busy: boolean
+  onGrant: (type: GranteeType, id: string, access: string, label: string) => Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const [type, setType] = useState<GranteeType>('user')
+  const [query, setQuery] = useState('')
+  const [picked, setPicked] = useState<{ id: string; label: string } | null>(null)
+  const [access, setAccess] = useState(accessLevels[0]?.value ?? 'read_only')
+
+  const options = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const match = (label: string, detail?: string) =>
+      !q || label.toLowerCase().includes(q) || (detail ?? '').toLowerCase().includes(q)
+    if (type === 'user') {
+      return candidates.users
+        .filter((u) => match(u.name ?? u.email, u.email))
+        .map((u) => ({ id: u.id, label: u.name ?? u.email, detail: u.email }))
+    }
+    if (type === 'department') {
+      return candidates.departments.filter((d) => match(d.name)).map((d) => ({ id: d.id, label: d.name, detail: d.slug }))
+    }
+    if (type === 'role') {
+      return candidates.roles
+        .filter((r) => match(r.name, r.department))
+        .map((r) => ({ id: r.id, label: r.name, detail: r.department ?? 'Company role' }))
+    }
+    // The company is a single target, so there is nothing to search.
+    return candidates.company ? [{ id: candidates.company.id, label: candidates.company.name, detail: 'Everyone' }] : []
+  }, [type, query, candidates])
+
+  if (!open) {
+    return (
+      <div style={{ marginTop: 14 }}>
+        <button type="button" className="ws-linkish" onClick={() => setOpen(true)}>
+          <Plus size={13} />Share with someone
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="ws-panel" style={{ marginTop: 14 }}>
+      <div className="ws-panel-body">
+        <div className="ws-lbl">Share with</div>
+        <div style={{ marginTop: 8 }}>
+          <Seg
+            value={type}
+            onChange={(v) => { setType(v as GranteeType); setPicked(null); setQuery('') }}
+            options={[
+              { value: 'user', label: 'A person' },
+              { value: 'department', label: 'A team' },
+              { value: 'role', label: 'A role' },
+              { value: 'company', label: 'Everyone' },
+            ]}
+          />
+        </div>
+
+        {type !== 'company' ? (
+          <div className="search" style={{ marginTop: 12 }}>
+            <Search size={14} />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search`} />
+          </div>
+        ) : null}
+
+        <div className="ws-rows" style={{ marginTop: 8, maxHeight: 210, overflowY: 'auto' }}>
+          {options.length === 0 ? (
+            <div className="ws-panel-body ws-sub">Nothing matches.</div>
+          ) : options.map((o) => (
+            <ClickRow
+              key={o.id}
+              style={{ paddingLeft: 0, paddingRight: 0 }}
+              onOpen={() => setPicked({ id: o.id, label: o.label })}
+            >
+              <div className="ws-row-main"><b>{o.label}</b><p>{o.detail}</p></div>
+              {picked?.id === o.id ? <Check size={14} /> : null}
+            </ClickRow>
+          ))}
+        </div>
+
+        <div className="ws-lbl" style={{ marginTop: 18 }}>They may</div>
+        <div style={{ marginTop: 8 }}>
+          <Seg
+            value={access}
+            onChange={setAccess}
+            options={accessLevels.map((a) => ({ value: a.value, label: a.label }))}
+          />
+        </div>
+        <p className="ws-sentence-note">
+          {accessLevels.find((a) => a.value === access)?.description}
+        </p>
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+          <button type="button" className="btn" onClick={() => { setOpen(false); setPicked(null) }}>Cancel</button>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={!picked || busy}
+            onClick={async () => {
+              if (!picked) return
+              await onGrant(type, picked.id, access, picked.label)
+              setOpen(false); setPicked(null); setQuery('')
+            }}
+          >
+            {busy ? 'Sharing…' : 'Share'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ConnectionDrawer({ provider, connection, onClose, onConnect, onDisconnect, toast }: {
   provider: Provider
   connection?: LiveConnection
@@ -390,7 +555,8 @@ function ConnectionDrawer({ provider, connection, onClose, onConnect, onDisconne
   const def = CONNECTORS.find((c) => c.provider === provider)!
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
-  const grants = useConnectionGrants(provider, connection?.connectionId)
+  const manage = useConnectionManage(provider, connection?.connectionId)
+  const grants = manage.data?.grants ?? []
 
   return (
     <Drawer
@@ -461,23 +627,70 @@ function ConnectionDrawer({ provider, connection, onClose, onConnect, onDisconne
 
       {connection ? (
         <>
-          <div className="ws-lbl" style={{ marginTop: 26 }}>Who else can use it</div>
-          {grants.length === 0 ? (
-            <div className="ws-private" style={{ marginTop: 12 }}>
-              <ShieldCheck size={15} />
-              <div>Only you. Nobody else in your company can act through this connection.</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 26 }}>
+            <span className="ws-lbl">Who else can use it</span>
+            {manage.saving ? <span className="ws-sub">Saving…</span> : null}
+          </div>
+
+          {/* Sharing is a real editor, not a read-out. The routes to grant and
+              revoke have always existed and the desktop has always used them;
+              this screen listed the grants and offered no way to change them,
+              so the only way to share your own connection was to open the
+              desktop app. */}
+          {manage.loading ? <SkelRows n={2} icon={false} /> : manage.refused ? (
+            <div className="ws-ceiling" style={{ marginTop: 12 }}>
+              <Lock size={14} />
+              <div>Only whoever owns this connection, or a company admin, can change who uses it.</div>
+            </div>
+          ) : manage.error ? (
+            <div className="ws-ceiling" style={{ marginTop: 12 }}>
+              <TriangleAlert size={14} />
+              <div>{manage.error}</div>
             </div>
           ) : (
-            <div className="ws-rows" style={{ marginTop: 8 }}>
-              {grants.map((grant) => (
-                <div className="ws-row" style={{ paddingLeft: 0, paddingRight: 0 }} key={grant.id}>
-                  <div className="ws-row-main">
-                    <b>{grant.granteeLabel}</b>
-                    <p>{grant.granteeDetail ?? grant.granteeType} · {grant.access.replace('_', ' ')}</p>
-                  </div>
+            <>
+              {grants.length === 0 ? (
+                <div className="ws-private" style={{ marginTop: 12 }}>
+                  <ShieldCheck size={15} />
+                  <div>Only you. Nobody else in your company can act through this connection.</div>
                 </div>
-              ))}
-            </div>
+              ) : (
+                <div className="ws-rows" style={{ marginTop: 8 }}>
+                  {grants.map((grant) => (
+                    <div className="ws-row" style={{ paddingLeft: 0, paddingRight: 0 }} key={grant.id}>
+                      <div className="ws-row-main">
+                        <b>{grant.granteeLabel}</b>
+                        <p>{grant.granteeDetail ?? grant.granteeType} · {grant.access.replace(/_/g, ' ')}</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={manage.saving}
+                        title={`Stop ${grant.granteeLabel} acting through this connection`}
+                        onClick={async () => {
+                          try { await manage.revoke(grant.id); toast(`${grant.granteeLabel} can no longer use it`) }
+                          catch { toast('Could not revoke that access', 'error') }
+                        }}
+                      >
+                        <Trash2 size={14} />Revoke
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {manage.data ? (
+                <GrantAccess
+                  candidates={manage.data.candidates}
+                  accessLevels={manage.data.accessLevels}
+                  busy={manage.saving}
+                  onGrant={async (type, id, access, label) => {
+                    try { await manage.grant(type, id, access); toast(`${label} can now use it`) }
+                    catch { toast('Could not share this connection', 'error') }
+                  }}
+                />
+              ) : null}
+            </>
           )}
 
           <div className="ws-lbl" style={{ marginTop: 26 }}>Details</div>

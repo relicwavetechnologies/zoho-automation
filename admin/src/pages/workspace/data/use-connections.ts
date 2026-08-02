@@ -215,36 +215,98 @@ export type ConnectionGrant = {
   grantedAt: string
 }
 
+export type GranteeType = ConnectionGrant['granteeType']
+
+export type ManageCandidates = {
+  users: { id: string; name: string | null; email: string; role: string }[]
+  departments: { id: string; name: string; slug: string }[]
+  roles: { id: string; name: string; kind: string; department?: string }[]
+  company: { id: string; name: string } | null
+}
+
+export type AccessLevel = { value: string; label: string; description: string }
+
+export type ConnectionManage = {
+  connection: {
+    connectionId: string
+    label: string
+    accountEmail: string | null
+    accountName: string | null
+    ownerType: string
+    access: string
+    scopes: string[]
+    readOnlyEnforced?: boolean
+    connectedAt: string
+  }
+  grants: ConnectionGrant[]
+  candidates: ManageCandidates
+  accessLevels: AccessLevel[]
+}
+
 /**
- * Who else can act through one connection.
+ * Everything needed to decide who else may act through one connection.
  *
- * A separate call from the status list because it is a separate authority: the
- * manage route refuses anyone who does not own or administer the connection, so
- * a 403 here is a normal answer and resolves to "no shares you can see" rather
- * than an error. Merging it into the list would make every page load ask six
- * questions it usually does not need answered.
+ * One call rather than several: the route returns the grants, the people,
+ * departments and roles they could be given to, and the access levels this
+ * provider actually supports — Zoho collapses to read-only when its scopes say
+ * so, and inventing that list on the client would offer a level the backend
+ * then refuses.
+ *
+ * A 403 is a normal answer, not a failure: the route admits only the owner, an
+ * admin grantee, or a company admin. It resolves to `refused` so the drawer can
+ * say who may do this instead of rendering an empty sharing panel that looks
+ * like nobody has access.
  */
-export function useConnectionGrants(provider: Provider, connectionId?: string): ConnectionGrant[] {
+export function useConnectionManage(provider: Provider, connectionId?: string) {
   const { token } = useAdminAuth()
-  const [grants, setGrants] = useState<ConnectionGrant[]>([])
+  const [data, setData] = useState<ConnectionManage | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [refused, setRefused] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
 
-  useEffect(() => {
-    if (!token || !connectionId) { setGrants([]); return }
-    let live = true
-    void (async () => {
-      try {
-        const data = await api.get<{ grants: ConnectionGrant[] }>(
-          `/api/desktop/auth/${SEGMENT[provider]}/connections/${connectionId}/manage`,
-          token,
-          { quiet: true },
-        )
-        if (live) setGrants(data.grants ?? [])
-      } catch {
-        if (live) setGrants([])
-      }
-    })()
-    return () => { live = false }
-  }, [token, provider, connectionId])
+  const base = `/api/desktop/auth/${SEGMENT[provider]}/connections/${connectionId ?? ''}`
 
-  return grants
+  const load = useCallback(async () => {
+    if (!token || !connectionId) { setLoading(false); return }
+    setLoading(true)
+    try {
+      const payload = await api.get<ConnectionManage>(`${base}/manage`, token, { quiet: true })
+      setData(payload)
+      setRefused(false)
+      setError(null)
+    } catch (e) {
+      setData(null)
+      setRefused(e instanceof ApiError && (e.status === 403 || e.status === 401))
+      setError(e instanceof ApiError && e.status === 403 ? null : 'Could not read who can use this connection.')
+    } finally {
+      setLoading(false)
+    }
+  }, [token, base, connectionId])
+
+  useEffect(() => { void load() }, [load])
+
+  const grant = useCallback(async (granteeType: GranteeType, granteeId: string, access: string) => {
+    if (!token || !connectionId) return
+    setSaving(true)
+    try {
+      await api.post(`${base}/grants`, { granteeType, granteeId, access }, token)
+      await load()
+    } finally {
+      setSaving(false)
+    }
+  }, [token, base, connectionId, load])
+
+  const revoke = useCallback(async (grantId: string) => {
+    if (!token || !connectionId) return
+    setSaving(true)
+    try {
+      await api.delete(`${base}/grants/${grantId}`, {}, token)
+      await load()
+    } finally {
+      setSaving(false)
+    }
+  }, [token, base, connectionId, load])
+
+  return { data, loading, refused, error, saving, grant, revoke, refresh: load }
 }
