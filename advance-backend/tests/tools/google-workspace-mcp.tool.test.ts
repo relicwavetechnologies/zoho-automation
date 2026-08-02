@@ -104,6 +104,31 @@ describe('Google Workspace MCP product tools', () => {
     ]);
   });
 
+  it('starts Google re-consent when a Sheet connection lacks full write scopes', async () => {
+    const authorizationReasons: string[] = [];
+    const sheets = createGoogleWorkspaceMcpTools({
+      getConnection: async () => ({ status: 'unavailable' as const }),
+      resolveSheetReference: async () => ({ status: 'missing_scope' }),
+      beginAuthorization: async request => {
+        authorizationReasons.push(request.reason);
+        return { status: 'sent', intentId: 'intent-2' };
+      },
+    }).find((tool) => tool.id === 'googleSheets')!;
+    const parsed = sheets.argsSchema.safeParse({
+      op: 'resolve_reference',
+      url: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+    });
+    assert.equal(parsed.success, true);
+    if (!parsed.success) return;
+
+    const result = await sheets.execute(parsed.data, makeCtx('googleSheets', ['read']));
+
+    assert.equal(result.ok && result.value.success, false);
+    assert.deepEqual(authorizationReasons, [
+      'Reconnect Google to grant Drive and Sheets write access for this Sheet.',
+    ]);
+  });
+
   it('describes a reviewed operation through the selected connection', async () => {
     const connectionRequests: unknown[] = [];
     const client: GoogleWorkspaceMcpPort = {

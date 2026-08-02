@@ -7,11 +7,13 @@ describe('GoogleSheetResourceProbeClient', () => {
   it('uses one request-bound token and probes the exact Drive and Sheets metadata', async t => {
     const driveCalls: unknown[] = [];
     const sheetsCalls: unknown[] = [];
+    const requestSignals: unknown[] = [];
     let tokenCalls = 0;
     t.mock.method(google, 'drive', () => ({
       files: {
-        get: async (input: unknown) => {
+        get: async (input: unknown, options: { signal?: AbortSignal } | undefined) => {
           driveCalls.push(input);
+          requestSignals.push(options?.signal);
           return {
             data: {
               id: 'sheet-1',
@@ -25,8 +27,9 @@ describe('GoogleSheetResourceProbeClient', () => {
     }) as any);
     t.mock.method(google, 'sheets', () => ({
       spreadsheets: {
-        get: async (input: unknown) => {
+        get: async (input: unknown, options: { signal?: AbortSignal } | undefined) => {
           sheetsCalls.push(input);
+          requestSignals.push(options?.signal);
           return { data: { spreadsheetId: 'sheet-1' } };
         },
       },
@@ -36,14 +39,19 @@ describe('GoogleSheetResourceProbeClient', () => {
       tokenCalls += 1;
       return 'access-token';
     });
+    const controller = new AbortController();
 
-    assert.deepEqual(await probe.getDriveFile({ connectionId: 'connection-1', fileId: 'sheet-1' }), {
+    assert.deepEqual(await probe.getDriveFile({
+      connectionId: 'connection-1', fileId: 'sheet-1', abortSignal: controller.signal,
+    }), {
       id: 'sheet-1',
       mimeType: 'application/vnd.google-apps.spreadsheet',
       trashed: false,
       capabilities: { canEdit: true },
     });
-    assert.deepEqual(await probe.getSpreadsheet({ connectionId: 'connection-1', spreadsheetId: 'sheet-1' }), {
+    assert.deepEqual(await probe.getSpreadsheet({
+      connectionId: 'connection-1', spreadsheetId: 'sheet-1', abortSignal: controller.signal,
+    }), {
       spreadsheetId: 'sheet-1',
     });
     assert.equal(tokenCalls, 1);
@@ -53,6 +61,7 @@ describe('GoogleSheetResourceProbeClient', () => {
       fields: 'id,mimeType,trashed,capabilities(canEdit)',
     }]);
     assert.deepEqual(sheetsCalls, [{ spreadsheetId: 'sheet-1', fields: 'spreadsheetId' }]);
+    assert.deepEqual(requestSignals, [controller.signal, controller.signal]);
   });
 
   it('maps only provider 403/404 to inaccessible and propagates other failures', async t => {

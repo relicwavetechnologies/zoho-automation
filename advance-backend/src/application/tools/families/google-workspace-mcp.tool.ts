@@ -288,13 +288,15 @@ function createProductTool(
             ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
           });
           if (
-            resolution.status === 'no_connection'
+            (resolution.status === 'no_connection' || resolution.status === 'missing_scope')
             && !args.connectionId
             && deps.beginAuthorization
           ) {
             const authorization = await deps.beginAuthorization({
               toolId: product.toolId,
-              reason: 'Connect a writable personal Google account to open this Sheet.',
+              reason: resolution.status === 'missing_scope'
+                ? 'Reconnect Google to grant Drive and Sheets write access for this Sheet.'
+                : 'Connect a writable personal Google account to open this Sheet.',
               runContext: ctx.runContext,
             });
             if (authorization.status !== 'unavailable') {
@@ -475,7 +477,9 @@ function sheetReferenceResolutionMessage(
 ): string {
   if (resolution.status === 'resolved') return 'Google Sheet access verified.';
   if (resolution.status === 'choose_connection') {
-    return 'Choose which writable personal Google account Divo should use for this Sheet.';
+    return resolution.connections.length === 1
+      ? 'Retry with the exact returned connectionId to verify this Google Sheet.'
+      : 'Choose which writable personal Google account Divo should use for this Sheet.';
   }
   if (resolution.status === 'invalid_reference') return 'This is not a supported Google Sheet URL.';
   if (resolution.status === 'no_connection') return 'No writable personal Google account is connected.';

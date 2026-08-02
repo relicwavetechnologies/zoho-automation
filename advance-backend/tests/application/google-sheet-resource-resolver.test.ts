@@ -75,6 +75,19 @@ describe('GoogleSheetResourceResolver', () => {
       accessible: [connection('readonly-scope', { scopes: [GOOGLE_SCOPE.sheetsFull] })],
     }), { status: 'missing_scope' });
     assert.deepEqual(first.calls, []);
+
+    assert.deepEqual(resolver.listEligible({
+      userId: 'user-1',
+      accessible: [connection('personal', { accountEmail: 'user@example.com' })],
+    }), {
+      status: 'choose_connection',
+      connections: [{
+        connectionId: 'personal',
+        label: 'personal',
+        accountEmail: 'user@example.com',
+      }],
+    });
+    assert.deepEqual(first.calls, []);
   });
 
   it('returns distinct Drive access outcomes before querying Sheets', async () => {

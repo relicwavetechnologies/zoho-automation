@@ -16,6 +16,7 @@ export class GoogleSheetResourceProbeClient implements GoogleSheetResourceProbe 
   async getDriveFile(input: {
     readonly connectionId: string;
     readonly fileId: string;
+    readonly abortSignal?: AbortSignal;
   }): Promise<GoogleDriveFileMetadata | null> {
     const drive = google.drive({ version: 'v3', auth: await this.auth(input.connectionId) });
     try {
@@ -23,7 +24,7 @@ export class GoogleSheetResourceProbeClient implements GoogleSheetResourceProbe 
         fileId: input.fileId,
         supportsAllDrives: true,
         fields: 'id,mimeType,trashed,capabilities(canEdit)',
-      });
+      }, input.abortSignal ? { signal: input.abortSignal } : undefined);
       return {
         ...(response.data.id ? { id: response.data.id } : {}),
         ...(response.data.mimeType ? { mimeType: response.data.mimeType } : {}),
@@ -41,13 +42,14 @@ export class GoogleSheetResourceProbeClient implements GoogleSheetResourceProbe 
   async getSpreadsheet(input: {
     readonly connectionId: string;
     readonly spreadsheetId: string;
+    readonly abortSignal?: AbortSignal;
   }): Promise<GoogleSheetsMetadata | null> {
     const sheets = google.sheets({ version: 'v4', auth: await this.auth(input.connectionId) });
     try {
       const response = await sheets.spreadsheets.get({
         spreadsheetId: input.spreadsheetId,
         fields: 'spreadsheetId',
-      });
+      }, input.abortSignal ? { signal: input.abortSignal } : undefined);
       return response.data.spreadsheetId ? { spreadsheetId: response.data.spreadsheetId } : {};
     } catch (error) {
       if (isInaccessible(error)) return null;

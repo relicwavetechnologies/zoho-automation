@@ -754,6 +754,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     input.abortSignal?.throwIfAborted();
     const parsed = parseGoogleSheetReference(input.url);
     if (!parsed.ok) return { status: 'invalid_reference' as const, reason: parsed.reason };
+    if (!googleOAuthService.isConfigured()) return { status: 'no_connection' as const };
 
     const accessible = await integrationConnectionRepo.listAccessibleGoogleConnections({
       companyId: input.companyId,
@@ -796,12 +797,14 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       return token;
     });
     const resolver = new GoogleSheetResourceResolver(probe);
+    if (!input.connectionId) {
+      return resolver.listEligible({ userId: input.userId, accessible: accessible.value });
+    }
     return resolver.resolve({
       userId: input.userId,
-      accessible: input.connectionId
-        ? accessible.value.filter(connection => connection.connectionId === input.connectionId)
-        : accessible.value,
+      accessible: accessible.value.filter(connection => connection.connectionId === input.connectionId),
       reference: parsed.reference,
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     });
   }
 

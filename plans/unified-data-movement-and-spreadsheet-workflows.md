@@ -115,6 +115,15 @@
   errors. Parser, resolver, probe, and governed-tool tests pass 28/28;
   TypeScript and diff validation pass. Thread binding and existing-Sheet writes
   remain deliberately unclaimed.
+- Fresh review found that an omitted account could previously reach live
+  metadata probes before per-connection policy saw an exact ID. The first
+  resolve call now performs no Google request: it returns eligible personal
+  account choices, and a live probe runs only after retry with one exact
+  backend-returned `connectionId`. Missing scopes enter signed OAuth
+  re-consent, missing backend OAuth configuration stays a clean connection
+  state, and cancellation reaches both Google metadata requests. The corrected
+  parser/resolver/probe/tool suite passes 29/29; TypeScript and diff validation
+  pass.
 - Phase 7 now routes exact pasted Google Sheet URLs to the Google Sheets
   specialist before generic web search. The backend skill and both packaged Pi
   gateway copies teach the exact governed `resolve_reference` call, preserve
