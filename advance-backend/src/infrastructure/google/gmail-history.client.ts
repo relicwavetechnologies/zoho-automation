@@ -22,6 +22,16 @@ const RECOVERY_WINDOW_QUERY = 'in:inbox newer_than:7d';
 const MAX_RECOVERY_MESSAGES = 500;
 const RECOVERY_PAGE_SIZE = 100;
 /**
+ * A hard stop on recovery pages, independent of how many messages they yield.
+ *
+ * A filtered `messages.list` can return a page holding nothing while still
+ * handing back a next-page token — the same provider behaviour the history
+ * pass already has to survive. Counting only messages meant a run of empty
+ * pages advanced nothing and the loop kept asking, holding the mailbox claim
+ * for as long as Gmail cared to keep issuing tokens.
+ */
+const MAX_RECOVERY_PAGES = 20;
+/**
  * How many `format=full` message fetches run at once.
  *
  * One history pass can name a thousand messages, and firing a thousand
@@ -287,7 +297,8 @@ export class GmailHistoryClient {
     const ids: string[] = [];
     let pageToken: string | undefined;
     let recoveryTruncated = false;
-    while (ids.length < MAX_RECOVERY_MESSAGES) {
+    for (let page = 0; page < MAX_RECOVERY_PAGES; page++) {
+      if (ids.length >= MAX_RECOVERY_MESSAGES) break;
       const query = new URLSearchParams({
         q: RECOVERY_WINDOW_QUERY,
         maxResults: String(Math.min(
@@ -296,19 +307,20 @@ export class GmailHistoryClient {
         )),
         ...(pageToken ? { pageToken } : {}),
       });
-      const page = await this.getJson<{
+      const payload = await this.getJson<{
         messages?: Array<{ id?: string }>;
         nextPageToken?: string;
       }>(`${GMAIL_API}/messages?${query}`, accessToken);
-      for (const message of page.messages ?? []) {
+      for (const message of payload.messages ?? []) {
         if (message.id) ids.push(message.id);
       }
-      pageToken = page.nextPageToken;
+      pageToken = payload.nextPageToken;
       if (!pageToken) break;
-      if (ids.length >= MAX_RECOVERY_MESSAGES) {
-        // The window held more than one recovery will read. Said out loud,
-        // because the alternative — the old behaviour — was to drop the
-        // remainder and report a clean sync.
+      // More was waiting than this pass will read, whether that bound was the
+      // message count or the page count. Said out loud, because the
+      // alternative — the old behaviour — was to drop the remainder and report
+      // a clean sync.
+      if (ids.length >= MAX_RECOVERY_MESSAGES || page === MAX_RECOVERY_PAGES - 1) {
         recoveryTruncated = true;
         break;
       }

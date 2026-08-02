@@ -335,6 +335,35 @@ describe('GmailHistoryClient stale-cursor recovery', () => {
     assert.equal(gmail.queries.length, 3);
   });
 
+  it('stops asking when the window keeps handing back empty pages', async () => {
+    // A filtered messages.list can return nothing while still issuing a
+    // next-page token — the same provider behaviour the history pass has to
+    // survive. Counting only messages meant those pages advanced nothing and
+    // the loop kept asking, holding the mailbox claim indefinitely.
+    let calls = 0;
+    const fetchStub = (async (url: string) => {
+      if (url.includes('/history?')) {
+        return { ok: false, status: 404, json: async () => ({ error: { message: 'Not Found' } }) };
+      }
+      if (url.includes('/profile')) {
+        return { ok: true, status: 200, json: async () => ({ historyId: '900' }) };
+      }
+      calls++;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ messages: [], nextPageToken: `p${calls}` }),
+      };
+    }) as unknown as typeof fetch;
+
+    const sync = await new GmailHistoryClient(fetchStub)
+      .sync({ accessToken: 'token', historyId: 'stale' });
+
+    assert.equal(calls, 20);
+    assert.equal(sync.recoveredMessageCount, 0);
+    assert.equal(sync.recoveryTruncated, true);
+  });
+
   it('says so when the window held more than one recovery will read', async () => {
     const gmail = recoveringGmail(900);
 
