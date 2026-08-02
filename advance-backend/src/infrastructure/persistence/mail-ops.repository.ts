@@ -282,9 +282,23 @@ export class MailOpsRepository {
     }
   }
 
+  /**
+   * Claims the next mailbox due for reconciliation.
+   *
+   * This used to require a registered watch and a history cursor whenever
+   * Pub/Sub was configured, which inverted the safety net: a mailbox whose
+   * watch failed permanently — classically a Pub/Sub topic missing its
+   * publisher grant — was excluded from the very poll that exists to cover a
+   * missing watch. Its rules were 100% dead while the tool still called them
+   * active.
+   *
+   * Both conditions are gone. Push stays the fast path; reconciliation is now
+   * unconditional. A null cursor is already handled — `sync()` bootstraps from
+   * the Gmail profile — so the first pass on such a mailbox sets a cursor and
+   * the next one starts delivering.
+   */
   async claimNextDueMailbox(
     now = new Date(),
-    requireRegisteredWatch = false,
   ): Promise<Result<MailboxSyncClaim | null, InfraError>> {
     const staleBefore = new Date(
       now.getTime() - MAILBOX_CLAIM_STALE_AFTER_MS,
@@ -294,12 +308,6 @@ export class MailOpsRepository {
         where: {
           status: 'active',
           nextPollAt: { lte: now },
-          ...(requireRegisteredWatch
-            ? {
-                historyId: { not: null },
-                watchRegisteredAt: { not: null },
-              }
-            : {}),
           OR: [
             { claimToken: null },
             { claimedAt: null },
@@ -575,6 +583,7 @@ export class MailOpsRepository {
             watchClaimToken: null,
             watchClaimedAt: null,
             watchFailureCode: null,
+            watchFailureCount: 0,
           },
         });
         return updated.count;
@@ -602,6 +611,7 @@ export class MailOpsRepository {
           watchClaimedAt: null,
           nextWatchRenewalAt: new Date(now.getTime() + 15 * 60_000),
           watchFailureCode: failureCode.slice(0, 120),
+          watchFailureCount: { increment: 1 },
         },
       });
       return ok(updated.count === 1);

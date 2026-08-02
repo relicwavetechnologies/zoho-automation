@@ -167,10 +167,7 @@ export function YouMailRules({ replay }: ScreenProps) {
                     <span className="ws-sub">
                       {mailbox.activeRuleCount} active rule{mailbox.activeRuleCount === 1 ? '' : 's'}
                     </span>
-                    <span className={`badge ${mailbox.rulesCanFire ? 'b-ok' : 'b-err'}`}>
-                      {mailbox.rulesCanFire ? <span className="dot" /> : null}
-                      {mailbox.rulesCanFire ? 'Watching' : 'Not watching'}
-                    </span>
+                    {mailboxBadge(mailbox)}
                   </div>
                 </div>
               ))}
@@ -193,6 +190,24 @@ export function YouMailRules({ replay }: ScreenProps) {
       {open ? <RuleDrawer rule={open} onClose={() => setOpen(null)} /> : null}
     </>
   )
+}
+
+/**
+ * Three outcomes, not two.
+ *
+ * "Watching" and "Not watching" hid the case that actually happens most: the
+ * instant notification stops but the hourly check keeps delivering. Calling
+ * that "Not watching" would send someone reconnecting an account that is
+ * working, and calling it "Watching" would leave them puzzled about mail
+ * arriving an hour late.
+ */
+function mailboxBadge(mailbox: MailboxHealth) {
+  if (mailbox.state === 'watch_delayed' || mailbox.state === 'watch_degraded') {
+    return <span className="badge">Delayed</span>
+  }
+  return mailbox.rulesCanFire
+    ? <span className="badge b-ok"><span className="dot" />Watching</span>
+    : <span className="badge b-err">Not watching</span>
 }
 
 /**

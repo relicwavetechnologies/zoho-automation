@@ -108,10 +108,11 @@ export class MailOpsWorker {
           }
         }
         for (let count = 0; count < MAILBOX_BATCH_SIZE; count++) {
-          const claimed = await this.deps.repo.claimNextDueMailbox(
-            new Date(),
-            Boolean(this.deps.pubsubTopicName),
-          );
+          // Unconditional, whether or not Pub/Sub is configured and whether or
+          // not this mailbox's watch ever registered. Reconciliation is the
+          // safety net for a missing watch; gating it on the watch removed the
+          // net exactly when it was needed.
+          const claimed = await this.deps.repo.claimNextDueMailbox();
           if (!claimed.ok) throw claimed.error;
           if (!claimed.value) break;
           await this.syncMailbox(claimed.value);

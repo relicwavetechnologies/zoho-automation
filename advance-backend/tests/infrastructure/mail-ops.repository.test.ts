@@ -164,13 +164,17 @@ describe('MailOpsRepository', () => {
     } as any);
     const now = new Date('2026-07-29T05:01:00.000Z');
 
-    const result = await repo.claimNextDueMailbox(now, true);
+    const result = await repo.claimNextDueMailbox(now);
 
     assert.ok(result.ok && result.value);
     assert.equal(result.value.subscriptionId, 'mailbox-1');
     assert.equal(result.value.historyId, '100');
-    assert.deepEqual(findInput.where.historyId, { not: null });
-    assert.deepEqual(findInput.where.watchRegisteredAt, { not: null });
+    // Reconciliation is the safety net for a missing watch. Requiring a
+    // registered watch here removed the net exactly when it was needed: a
+    // mailbox whose watch failed permanently was excluded from the poll that
+    // would otherwise have kept its rules running.
+    assert.equal(findInput.where.historyId, undefined);
+    assert.equal(findInput.where.watchRegisteredAt, undefined);
     assert.equal(updateInput.where.id, 'mailbox-1');
     assert.equal(updateInput.where.nextPollAt, dueMailbox.nextPollAt);
     assert.equal(updateInput.data.claimToken, result.value.claimToken);

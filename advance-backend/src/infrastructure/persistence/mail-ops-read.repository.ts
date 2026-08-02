@@ -25,9 +25,13 @@ type MailOpsReadDb = Pick<
 export const RULE_ACTIVITY_WINDOW_DAYS = 30;
 
 /**
- * A watch that has never registered is not a delayed watch — the mailbox is
- * excluded from sync entirely, so its rules are dead. Three consecutive
- * failures is the point at which we stop calling it transient.
+ * When a failing watch stops being a delay and starts being a fault.
+ *
+ * Reconciliation now runs whether or not the watch is healthy, so a failing
+ * watch costs latency — up to the reconciliation interval — rather than
+ * delivery. Alerting on the first failure would train people to ignore the
+ * alert; three consecutive failures is the point at which it is not going to
+ * fix itself.
  */
 export const WATCH_FAILURES_BEFORE_DEGRADED = 3;
 
@@ -80,6 +84,8 @@ export interface MailboxHealthRecord {
   watchRegisteredAt: Date | null;
   watchExpirationAt: Date | null;
   watchFailureCode: string | null;
+  /** Consecutive failures, reset by a successful registration. */
+  watchFailureCount: number;
   lastSignalAt: Date | null;
   lastSyncAt: Date | null;
   lastSucceededAt: Date | null;
@@ -308,6 +314,7 @@ export class MailOpsReadRepository {
           watchRegisteredAt: true,
           watchExpirationAt: true,
           watchFailureCode: true,
+          watchFailureCount: true,
           lastSignalAt: true,
           lastSyncAt: true,
           lastSucceededAt: true,
@@ -330,6 +337,7 @@ export class MailOpsReadRepository {
         watchRegisteredAt: subscription.watchRegisteredAt,
         watchExpirationAt: subscription.watchExpirationAt,
         watchFailureCode: subscription.watchFailureCode,
+        watchFailureCount: subscription.watchFailureCount,
         lastSignalAt: subscription.lastSignalAt,
         lastSyncAt: subscription.lastSyncAt,
         lastSucceededAt: subscription.lastSucceededAt,

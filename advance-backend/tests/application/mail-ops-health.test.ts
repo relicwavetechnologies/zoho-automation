@@ -21,6 +21,7 @@ function mailbox(
     watchRegisteredAt: AT,
     watchExpirationAt: new Date('2026-08-09T10:00:00.000Z'),
     watchFailureCode: null,
+    watchFailureCount: 0,
     lastSignalAt: AT,
     lastSyncAt: AT,
     lastSucceededAt: AT,
@@ -44,19 +45,23 @@ const VALID_RULE = {
 };
 
 describe('mailbox health', () => {
-  it('reports a mailbox whose watch never registered as never started', () => {
-    const health = assessMailbox(mailbox({ watchRegisteredAt: null }));
+  it('reports a mailbox that has never worked at all as never started', () => {
+    const health = assessMailbox(mailbox({
+      watchRegisteredAt: null,
+      lastSucceededAt: null,
+    }));
 
     assert.equal(health.state, 'never_started');
     assert.equal(health.rulesCanFire, false);
     assert.match(health.summary, /never been able to start watching/);
   });
 
-  it('does not let a paused-looking mailbox hide a watch that never started', () => {
+  it('does not let a paused-looking mailbox hide a mailbox that never worked', () => {
     // A mailbox with no active rules parks itself, which would otherwise
     // report 'paused' and conceal that it never worked in the first place.
     const health = assessMailbox(mailbox({
       watchRegisteredAt: null,
+      lastSucceededAt: null,
       status: 'paused',
       activeRuleCount: 0,
     }));
@@ -64,15 +69,45 @@ describe('mailbox health', () => {
     assert.equal(health.state, 'never_started');
   });
 
-  it('separates a watch that stopped renewing from a sync that is failing', () => {
-    assert.equal(
-      assessMailbox(mailbox({ watchFailureCode: 'scope_missing' })).state,
-      'watch_failing',
-    );
-    assert.equal(
-      assessMailbox(mailbox({ failureCode: 'connection_unavailable' })).state,
-      'sync_failing',
-    );
+  it('calls a missing watch late rather than dead once sync has worked', () => {
+    // Reconciliation no longer depends on a registered watch, so this mailbox
+    // is delivering — an hour behind, but delivering. Reporting it as an
+    // outage would send someone chasing a fault that is not happening.
+    const health = assessMailbox(mailbox({ watchRegisteredAt: null }));
+
+    assert.equal(health.state, 'watch_delayed');
+    assert.equal(health.rulesCanFire, true);
+  });
+
+  it('escalates a watch that keeps failing, and only then offers a remedy', () => {
+    const delayed = assessMailbox(mailbox({
+      watchFailureCode: 'scope_missing',
+      watchFailureCount: 2,
+    }));
+    const degraded = assessMailbox(mailbox({
+      watchFailureCode: 'scope_missing',
+      watchFailureCount: 3,
+    }));
+
+    assert.equal(delayed.state, 'watch_delayed');
+    assert.equal(delayed.remedy, null);
+    assert.equal(degraded.state, 'watch_degraded');
+    assert.match(degraded.remedy ?? '', /Reconnect Google/);
+    // Neither stops mail — that is the whole point of dropping the watch gate.
+    assert.equal(degraded.rulesCanFire, true);
+  });
+
+  it('puts a failing sync ahead of any watch problem', () => {
+    // Sync failure is the one that actually stops mail; a broken watch only
+    // delays it. Reporting the lesser fault would bury the real one.
+    const health = assessMailbox(mailbox({
+      watchFailureCode: 'scope_missing',
+      watchFailureCount: 9,
+      failureCode: 'connection_unavailable',
+    }));
+
+    assert.equal(health.state, 'sync_failing');
+    assert.equal(health.rulesCanFire, false);
   });
 
   it('gives a remedy only for failures it can honestly advise on', () => {
@@ -155,17 +190,25 @@ describe('rule health', () => {
 
 describe('notification gating', () => {
   it('notifies once on the way into a broken state, not while it stays broken', () => {
-    assert.equal(shouldNotifyMailbox('healthy', 'watch_failing'), true);
-    assert.equal(shouldNotifyMailbox('watch_failing', 'watch_failing'), false);
+    assert.equal(shouldNotifyMailbox('healthy', 'watch_degraded'), true);
+    assert.equal(shouldNotifyMailbox('watch_degraded', 'watch_degraded'), false);
   });
 
   it('notifies again when a broken mailbox breaks a different way', () => {
-    assert.equal(shouldNotifyMailbox('watch_failing', 'sync_failing'), true);
+    assert.equal(shouldNotifyMailbox('watch_degraded', 'sync_failing'), true);
   });
 
   it('never notifies for recovery or for a deliberate pause', () => {
     assert.equal(shouldNotifyMailbox('sync_failing', 'healthy'), false);
     assert.equal(shouldNotifyMailbox('healthy', 'paused'), false);
+  });
+
+  it('stays quiet about a watch that is merely late', () => {
+    // Rules still fire in this state and Divo is already retrying. An alert
+    // for a fault that is usually gone in fifteen minutes is how a channel
+    // gets muted — and then the real ones go unread too.
+    assert.equal(shouldNotifyMailbox('healthy', 'watch_delayed'), false);
+    assert.equal(shouldNotifyMailbox(null, 'watch_delayed'), false);
   });
 
   it('notifies on a first sighting that is already broken', () => {

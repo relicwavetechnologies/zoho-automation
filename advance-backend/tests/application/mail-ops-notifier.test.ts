@@ -25,6 +25,7 @@ function record(
     watchRegisteredAt: new Date('2026-08-01T00:00:00.000Z'),
     watchExpirationAt: null,
     watchFailureCode: null,
+    watchFailureCount: 0,
     lastSignalAt: null,
     lastSyncAt: null,
     lastSucceededAt: null,
@@ -91,7 +92,7 @@ describe('mail ops mailbox notifier', () => {
 
   it('alerts again when a broken mailbox breaks a different way', async () => {
     const { notifier, sent } = harness(
-      record({ failureCode: 'scope_missing', notifiedState: 'watch_failing' }),
+      record({ failureCode: 'scope_missing', notifiedState: 'watch_degraded' }),
     );
 
     assert.equal((await notifier.review('sub-1')).notified, true);

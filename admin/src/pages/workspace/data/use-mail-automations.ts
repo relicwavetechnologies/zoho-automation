@@ -21,9 +21,14 @@ const BASE = '/api/mail-automations'
 export type MailRuleState =
   | 'broken' | 'blocked' | 'paused' | 'archived' | 'working' | 'waiting'
 
-/** `never_started` outranks `paused`: a parked mailbox must not hide a dead watch. */
+/**
+ * Worst first. `watch_delayed` and `watch_degraded` both still deliver — Divo
+ * falls back to an hourly check when instant notifications stop — so they are
+ * a latency fault, not an outage, and `rulesCanFire` stays true for them.
+ */
 export type MailboxState =
-  | 'never_started' | 'watch_failing' | 'sync_failing' | 'paused' | 'healthy'
+  | 'never_started' | 'sync_failing' | 'watch_degraded' | 'watch_delayed'
+  | 'paused' | 'healthy'
 
 export type MailRule = {
   ruleId: string

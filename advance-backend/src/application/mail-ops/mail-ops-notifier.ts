@@ -138,8 +138,9 @@ export class MailOpsMailboxNotifier {
 function readState(value: string | null): MailboxState | null {
   const states: MailboxState[] = [
     'never_started',
-    'watch_failing',
     'sync_failing',
+    'watch_degraded',
+    'watch_delayed',
     'paused',
     'healthy',
   ];

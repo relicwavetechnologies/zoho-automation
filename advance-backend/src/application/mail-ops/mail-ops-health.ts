@@ -10,9 +10,10 @@
  * Deliberately pure: no clock of its own, no I/O.
  */
 import { parseMailRule } from './mail-rule.matcher';
-import type {
-  MailRuleActivity,
-  MailboxHealthRecord,
+import {
+  WATCH_FAILURES_BEFORE_DEGRADED,
+  type MailRuleActivity,
+  type MailboxHealthRecord,
 } from '../../infrastructure/persistence/mail-ops-read.repository';
 
 /**
@@ -21,12 +22,17 @@ import type {
  * root cause and not a list of symptoms.
  */
 export type MailboxState =
-  /** Watch never registered, so the mailbox is excluded from sync entirely. */
+  /** Nothing has ever worked here: no watch, and no successful sync either. */
   | 'never_started'
-  /** Watch registered once but is now failing to renew. */
-  | 'watch_failing'
-  /** Sync itself is failing — usually the Google connection. */
+  /** Sync itself is failing — usually the Google connection. Rules cannot fire. */
   | 'sync_failing'
+  /** The watch has failed enough times to stop calling it transient. */
+  | 'watch_degraded'
+  /**
+   * The watch is not working but reconciliation is. Rules still fire, up to
+   * the reconciliation interval late. Not worth waking anyone for.
+   */
+  | 'watch_delayed'
   /** No active rules, so the subscription was parked. */
   | 'paused'
   /** Registered, syncing, and has at least one active rule. */
@@ -61,9 +67,15 @@ export function assessMailbox(record: MailboxHealthRecord): MailboxHealth {
     failureCode: record.watchFailureCode ?? record.failureCode,
   };
 
-  // Checked before `paused`: a mailbox that never started is broken whether or
-  // not anyone has since paused its rules, and saying "paused" would hide it.
-  if (!record.watchRegisteredAt) {
+  // Checked before `paused`: a mailbox that has never worked at all is broken
+  // whether or not anyone has since paused its rules, and saying "paused"
+  // would hide it.
+  //
+  // The test is both signals, not just the watch. Reconciliation no longer
+  // depends on a registered watch, so a mailbox with no watch but a successful
+  // sync behind it is late, not dead — and calling that "never started" would
+  // send someone chasing an outage that is not happening.
+  if (!record.watchRegisteredAt && !record.lastSucceededAt) {
     return {
       ...base,
       state: 'never_started',
@@ -76,17 +88,8 @@ export function assessMailbox(record: MailboxHealthRecord): MailboxHealth {
     };
   }
 
-  if (record.watchFailureCode) {
-    return {
-      ...base,
-      state: 'watch_failing',
-      rulesCanFire: false,
-      summary:
-        `Divo has stopped receiving new mail notifications for ${record.mailboxEmail}.`,
-      remedy: remedyForFailure(record.watchFailureCode),
-    };
-  }
-
+  // Sync failure outranks any watch problem: this is the one that actually
+  // stops mail, where a broken watch only slows it down.
   if (record.failureCode) {
     return {
       ...base,
@@ -94,6 +97,27 @@ export function assessMailbox(record: MailboxHealthRecord): MailboxHealth {
       rulesCanFire: false,
       summary: `Divo cannot read new mail in ${record.mailboxEmail} right now.`,
       remedy: remedyForFailure(record.failureCode),
+    };
+  }
+
+  if (record.watchFailureCode || !record.watchRegisteredAt) {
+    const degraded = record.watchFailureCount >= WATCH_FAILURES_BEFORE_DEGRADED;
+    return {
+      ...base,
+      state: degraded ? 'watch_degraded' : 'watch_delayed',
+      // True in both cases. Reconciliation is running, so the rules work —
+      // this is a latency fault, and reporting it as an outage would be the
+      // same class of lie the rest of this wave is removing.
+      rulesCanFire: true,
+      summary: degraded
+        ? `Divo has stopped receiving instant mail notifications for ${record.mailboxEmail}. `
+          + 'Rules still run, but up to an hour after the mail arrives.'
+        : `Instant mail notifications for ${record.mailboxEmail} are not working. `
+          + 'Rules still run on the hourly check while Divo retries.',
+      remedy: degraded
+        ? remedyForFailure(record.watchFailureCode)
+          ?? 'This needs a Divo operator — the mail service is refusing the notification setup.'
+        : null,
     };
   }
 
@@ -235,16 +259,29 @@ function validationFailure(rule: {
 }
 
 /**
+ * States that are worth interrupting someone over.
+ *
+ * `watch_delayed` is deliberately absent. Rules still fire in that state, just
+ * late, and Divo is already retrying — telling someone about a fault that is
+ * probably gone in fifteen minutes is how an alert channel gets muted.
+ */
+const NOTIFIABLE: ReadonlySet<MailboxState> = new Set<MailboxState>([
+  'never_started',
+  'sync_failing',
+  'watch_degraded',
+]);
+
+/**
  * Whether a mailbox transition is worth interrupting someone over.
  *
- * Only the transition into an unable-to-fire state notifies. Staying broken
- * does not re-notify, because an alert that repeats every ten seconds is the
- * same as no alert.
+ * Only the transition into a notifiable state notifies. Staying broken does
+ * not re-notify, because an alert that repeats every ten seconds is the same
+ * as no alert.
  */
 export function shouldNotifyMailbox(
   previous: MailboxState | null,
   current: MailboxState,
 ): boolean {
-  if (current === 'healthy' || current === 'paused') return false;
+  if (!NOTIFIABLE.has(current)) return false;
   return previous !== current;
 }

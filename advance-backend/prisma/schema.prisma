@@ -1406,6 +1406,10 @@ model MailboxSubscription {
   watchClaimToken     String?
   watchClaimedAt      DateTime?
   watchFailureCode    String?
+  /// Consecutive failed watch registrations. Reconciliation covers a missing
+  /// watch, so one failure is a delay rather than an outage; this is what
+  /// separates "late" from "give up waiting and tell the owner".
+  watchFailureCount   Int                   @default(0)
   signalVersion       Int                   @default(0)
   lastSignalAt        DateTime?
   lastSignalHistoryId String?

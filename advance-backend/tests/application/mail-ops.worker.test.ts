@@ -44,7 +44,7 @@ describe('MailOpsWorker', () => {
     let mailboxClaimed = false;
     let deliveryPayload: Record<string, unknown> | undefined;
     let deliveryClaimed = false;
-    let requiredRegisteredWatch = false;
+    let claimArgs: unknown[] = [];
     const repo = {
       claimNextWatchRenewal: async () => {
         if (watchClaimed) return { ok: true, value: null };
@@ -66,11 +66,8 @@ describe('MailOpsWorker', () => {
         return { ok: true, value: true };
       },
       failWatchRenewal: async () => ({ ok: true, value: true }),
-      claimNextDueMailbox: async (
-        _now: Date,
-        requireRegisteredWatch: boolean,
-      ) => {
-        requiredRegisteredWatch = requireRegisteredWatch;
+      claimNextDueMailbox: async (...args: unknown[]) => {
+        claimArgs = args;
         if (mailboxClaimed) return { ok: true, value: null };
         mailboxClaimed = true;
         return { ok: true, value: claim };
@@ -162,7 +159,9 @@ describe('MailOpsWorker', () => {
 
     await worker.runOnce();
 
-    assert.equal(requiredRegisteredWatch, true);
+    // Claimed with no watch precondition even though Pub/Sub is configured:
+    // reconciliation is the safety net for a watch that never registers.
+    assert.deepEqual(claimArgs, []);
     assert.deepEqual(operations, [
       'watch',
       'watch-complete',
