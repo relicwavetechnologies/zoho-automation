@@ -540,7 +540,7 @@ test('preserves controller capacity errors and never invokes a fallback', async 
     service.run(runtimeInput()),
     (error) => error instanceof LarkPiRuntimeError
       && error.code === 'capacity_full'
-      && error.userMessage === 'All Pi slots are busy. Please retry.',
+      && error.userMessage === 'Divo is at full capacity right now. Please try again shortly.',
   );
 });
 
@@ -577,7 +577,45 @@ test('preserves capacity errors from the streamed controller protocol', async ()
     service.run(runtimeInput()),
     (error) => error instanceof LarkPiRuntimeError
       && error.code === 'capacity_full'
-      && error.userMessage === 'All Pi slots are busy. Please retry.',
+      && error.userMessage === 'Divo is at full capacity right now. Please try again shortly.',
+  );
+});
+
+test('a streamed provider failure keeps diagnostics internal', async () => {
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    fetch: async () => new Response(`${JSON.stringify({
+      type: 'error',
+      error: {
+        code: 'model_continuation_failed',
+        message: 'Assistant error: Connection error. upstream-token=secret',
+      },
+    })}\n`, {
+      status: 200,
+      headers: { 'content-type': 'application/x-ndjson; charset=utf-8' },
+    }),
+  });
+
+  await assert.rejects(
+    service.run(runtimeInput()),
+    (error) => error instanceof LarkPiRuntimeError
+      && error.code === 'model_continuation_failed'
+      && error.message.includes('upstream-token=secret')
+      && error.userMessage === 'Divo hit a temporary problem while finishing this request. Please try again.',
   );
 });
 

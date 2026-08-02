@@ -16,15 +16,35 @@
 | 2 — preview and durable offers | ✅ Done | Bounded previews, opaque 24-hour offers, fresh authorization, and idempotent confirmation implemented |
 | 3 — Lark export interaction | ✅ Done | Signed format/account cards, same-card progress, OAuth resume, and personal destination preference implemented |
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
-| 5 — Semrush and OMS convergence | ⬜ Not started | Central source adapters and legacy Cloudinary path removal remain |
+| 5 — Semrush and OMS convergence | 🟡 In review | OMS central snapshot migration is implemented in isolated commit `6bec8626`; Semrush and live OMS parity/removal evidence remain |
 | 6 — pasted Sheet/Drive URLs | ⬜ Not started | Typed URL resolver and existing-Sheet bulk write remain |
 | 7 — routers and provider skills | 🟡 Partial | Central export skill knows Excel; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
-| 9 — realistic isolated-runtime validation | 🟡 In progress | Isolated Pi and Dev Divo card delivery are verified; the realistic export matrix remains |
+| 9 — realistic isolated-runtime validation | 🟡 In progress | Dev Lark received a real Zoho preview and a fresh opaque export offer; Sheet/CSV confirmation and no-account OAuth resume remain |
 
 **Immediate completion count:** 5 phases done.
 
 **Latest validation evidence (2026-08-02):**
+
+- The isolated cloud-Pi harness delivered a normal Emiac Zoho Books expense
+  request to the Dev Divo DM in 39.155 seconds through the production
+  status/final-card path.
+- The low-hint request “Show me all expenses from the Emiac Zoho Books
+  account” delivered a bounded 10-row preview in 27.503 seconds and persisted
+  pending opaque offer `2158efa5-2776-4289-986e-c00d9e71d1f3`; no bulk rows
+  were stored in the offer.
+- Cloud controller retry classification now covers Pi's transient provider
+  transport failures, including `terminated` and `Connection error`. Retries
+  remain bounded, and any issued direct gateway action prevents a blind
+  continuation retry even when its result was lost.
+- Lark-facing runtime failures no longer expose Pi/controller names, internal
+  codes, provider text, or tokens. Exact diagnostics remain on the internal
+  error/trace path.
+- Retry/error-boundary verification: controller 28/28 passed; Lark runtime and
+  webhook 150/150 passed.
+- OMS snapshot convergence is complete in isolated commit `6bec8626` with
+  14/14 OMS and 46/46 combined OMS/export checks plus TypeScript and diff
+  validation. It is not merged pending independent review and live parity.
 
 - Rebuilt `divo-pi-local:phase0` after detecting that the local image predated
   several committed runtime/extension changes. The controller will replace the
@@ -1087,13 +1107,17 @@ Never log:
 
 ## 13. Immediate next actions
 
-1. Validate Google Sheet and CSV through the isolated container-to-Lark flow,
-   plus the no-eligible-account OAuth-resume case.
-2. Migrate Semrush, then OMS, and delete their temporary Cloudinary export paths after parity.
-3. Add the pasted Google Sheet resolver and existing-Sheet streaming destination.
-4. Tune skills and routers once each instruction describes backend behavior
+1. Confirm the live pending Zoho offer as Google Sheet, verify content/owner,
+   repeat as CSV, and clean up only the exact test artifacts.
+2. Run the no-eligible-account OAuth-resume case with a designated test
+   identity that has neither a personal Google destination nor company fallback.
+3. Review and integrate isolated OMS commit `6bec8626`, then obtain live parity
+   evidence before deleting the retained rollback-only Cloudinary path.
+4. Migrate Semrush through the same central source/offer pipeline.
+5. Add the pasted Google Sheet resolver and existing-Sheet streaming destination.
+6. Tune skills and routers once each instruction describes backend behavior
    that exists and is covered by contract tests.
-5. Execute Phase 9 through the isolated Docker runtime, deliver every
+7. Execute Phase 9 through the isolated Docker runtime, deliver every
     scenario to the configured Divo Lark DM, and iterate until the final quality
     gate passes.
 

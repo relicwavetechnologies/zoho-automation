@@ -1187,29 +1187,23 @@ function terminalRunError(terminal) {
 	return error;
 }
 
-function completedGatewayAction(messages) {
+function issuedGatewayAction(messages) {
 	if (!Array.isArray(messages)) return false;
 	const lastUserIndex = messages.findLastIndex((message) => message?.role === "user");
 	const currentRun = messages.slice(lastUserIndex + 1);
-	const actionIds = new Set();
-	for (const message of currentRun) {
-		if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-		for (const content of message.content) {
-			if (
-				content?.type === "toolCall"
-				&& content.name === "divo_gateway"
-				&& (content.arguments?.op === "tools.invoke" || content.arguments?.op === "teach.learning.apply")
-				&& typeof content.id === "string"
-			) {
-				actionIds.add(content.id);
-			}
-		}
-	}
 	return currentRun.some(
 		(message) =>
-			message?.role === "toolResult"
-			&& actionIds.has(message.toolCallId)
-			&& message.isError !== true,
+			message?.role === "assistant"
+			&& Array.isArray(message.content)
+			&& message.content.some(
+				(content) =>
+					content?.type === "toolCall"
+					&& content.name === "divo_gateway"
+					&& (
+						content.arguments?.op === "tools.invoke"
+						|| content.arguments?.op === "teach.learning.apply"
+					),
+			),
 	);
 }
 
@@ -1252,10 +1246,10 @@ export async function promptWithTransientRetries({
 		if (!isTransientDivoRunFailure(completion?.messages) || retry >= maxRetries) {
 			throw terminalRunError(terminal);
 		}
-		if (completedGatewayAction(completion?.messages)) {
+		if (issuedGatewayAction(completion?.messages)) {
 			throw terminalRunError({
 				summary:
-					"The model provider failed after a company action completed. Divo stopped instead of retrying and risking a duplicate action.",
+					"The model provider failed after a company action was issued. Divo stopped instead of retrying and risking a duplicate action.",
 			});
 		}
 		const attempt = retry + 1;

@@ -1398,7 +1398,7 @@ describe('Lark webhook admission', () => {
       assert.equal(firstError, undefined);
       assert.match(
         String((first.routeDeps.adapter as any).__finalReplies[0]),
-        /No fallback agent was run/i,
+        /Divo hit a temporary problem/i,
       );
       assert.equal(calls, 2);
       assert.deepEqual(unhandled, []);

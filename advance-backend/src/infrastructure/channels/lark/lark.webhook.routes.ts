@@ -1517,7 +1517,7 @@ export async function runPiAndDeliver(input: {
       const code = error instanceof LarkPiRuntimeError ? error.code : 'run_failed';
       text = error instanceof LarkPiRuntimeError
         ? divoFacingRuntimeMessage(error.userMessage)
-        : 'Divo could not complete this request (run_failed). No fallback agent was run.';
+        : 'Divo hit a temporary problem while finishing this request. Please try again.';
       log.error('webhook.pi.failed', {
         code,
         error: String(error),

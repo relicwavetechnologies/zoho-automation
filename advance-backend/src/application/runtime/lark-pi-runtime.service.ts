@@ -178,6 +178,19 @@ export class LarkPiRuntimeError extends Error {
   }
 }
 
+const GENERIC_RUNTIME_FAILURE_MESSAGE =
+  'Divo hit a temporary problem while finishing this request. Please try again.';
+
+function controllerFailureMessage(code: string): string {
+  if (code === 'capacity_full') {
+    return 'Divo is at full capacity right now. Please try again shortly.';
+  }
+  if (code === 'user_busy') {
+    return 'Divo is finishing your previous request. This one will start automatically.';
+  }
+  return GENERIC_RUNTIME_FAILURE_MESSAGE;
+}
+
 export interface LarkPiRuntimeServiceDeps {
   readonly prisma: PrismaClient;
   readonly logger: Logger;
@@ -611,7 +624,7 @@ export class LarkPiRuntimeService {
       });
       throw new LarkPiRuntimeError(
         'controller_unreachable',
-        'Pi could not start this request (controller_unreachable). No fallback agent was run.',
+        'Divo is temporarily unavailable. Please try again shortly.',
         String(error),
       );
     }
@@ -633,15 +646,13 @@ export class LarkPiRuntimeService {
       const controllerMessage = typeof body?.error?.message === 'string'
         ? body.error.message
         : undefined;
-      const userMessage = code === 'capacity_full' || code === 'user_busy'
-        ? controllerMessage ?? 'Your Pi agent is busy. Please try again shortly.'
-        : `Pi could not complete this request (${code}). No fallback agent was run.`;
+      const userMessage = controllerFailureMessage(code);
       throw new LarkPiRuntimeError(code, userMessage, controllerMessage);
     }
     if (typeof body?.text !== 'string' || !body.text.trim()) {
       throw new LarkPiRuntimeError(
         'empty_runtime_response',
-        'Pi completed without a usable answer (empty_runtime_response). No fallback agent was run.',
+        GENERIC_RUNTIME_FAILURE_MESSAGE,
       );
     }
     await this.consumePendingAttachments(pendingRows.map(row => row.id));
@@ -925,7 +936,7 @@ export class LarkPiRuntimeService {
           : undefined;
         throw new LarkPiRuntimeError(
           code,
-          `Divo could not securely open "${attachment.name}" (${code}).`,
+          `Divo could not securely open "${attachment.name}". Please send it again.`,
           detail,
         );
       }
@@ -941,7 +952,7 @@ export class LarkPiRuntimeService {
     if (!response.body) {
       throw new LarkPiRuntimeError(
         'empty_controller_stream',
-        'Pi completed without a usable answer (empty_controller_stream). No fallback agent was run.',
+        GENERIC_RUNTIME_FAILURE_MESSAGE,
       );
     }
 
@@ -959,7 +970,7 @@ export class LarkPiRuntimeService {
       } catch {
         throw new LarkPiRuntimeError(
           'invalid_controller_stream',
-          'Pi could not complete this request (invalid_controller_stream). No fallback agent was run.',
+          GENERIC_RUNTIME_FAILURE_MESSAGE,
         );
       }
       if (!event || typeof event !== 'object') return;
@@ -1005,15 +1016,13 @@ export class LarkPiRuntimeService {
     await consume(buffer);
 
     if (streamError) {
-      const userMessage = streamError.code === 'capacity_full' || streamError.code === 'user_busy'
-        ? streamError.message ?? 'Your Pi agent is busy. Please try again shortly.'
-        : `Pi could not complete this request (${streamError.code}). No fallback agent was run.`;
+      const userMessage = controllerFailureMessage(streamError.code);
       throw new LarkPiRuntimeError(streamError.code, userMessage, streamError.message);
     }
     if (!text) {
       throw new LarkPiRuntimeError(
         'empty_runtime_response',
-        'Pi completed without a usable answer (empty_runtime_response). No fallback agent was run.',
+        GENERIC_RUNTIME_FAILURE_MESSAGE,
       );
     }
     return { text };
