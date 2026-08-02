@@ -18,7 +18,7 @@ import {
   KeyRound, Link2, Lock, Search, ShieldCheck, Sparkles, TriangleAlert, Users, Wrench,
 } from 'lucide-react'
 import {
-  Bar, Empty, Fade, NoAccess, PageHeader, Panel, Seg, Skel, SkelRows, Spark,
+  Bar, ClickRow, Empty, Fade, NoAccess, PageHeader, Panel, Seg, Skel, SkelRows, Spark,
   Switch, compact, money, useStaged,
 } from './ui'
 import type { Toast } from './ui'
@@ -476,7 +476,7 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
               <Fade>
                 <div className="ws-rows">
                   {runs.data.map((r) => (
-                    <div className="ws-row click" key={r.id} onClick={() => go(`co-run:${r.id}`)}>
+                    <ClickRow key={r.id} onOpen={() => go(`co-run:${r.id}`)}>
                       <div className="ws-row-main">
                         <b>{r.latestSummary ?? 'No summary recorded'}</b>
                         <p>{ago(r.startedAt)} · {CHANNEL_WORD[r.channel] ?? r.channel}</p>
@@ -485,7 +485,7 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
                         <span className="ws-sub">{r.costUsd === null ? 'unattributed' : money(r.costUsd)}</span>
                         <RunStatusBadge status={r.status} />
                       </div>
-                    </div>
+                    </ClickRow>
                   ))}
                 </div>
               </Fade>
@@ -500,14 +500,14 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
             <Fade>
               <div className="ws-rows">
                 {person?.departmentNames.length ? person.departmentNames.map((d) => (
-                  <div className="ws-row click" key={d} onClick={() => go('co-departments')}>
+                  <ClickRow key={d} onOpen={() => go('co-departments')}>
                     <span className="ws-ic"><Building2 size={14} /></span>
                     <div className="ws-row-main">
                       <b>{d}</b>
                       <p>Their role in this department decides what Divo may do for them</p>
                     </div>
                     <span className="ws-sub">Open</span>
-                  </div>
+                  </ClickRow>
                 )) : (
                   <div style={{ padding: 18 }}>
                     <Empty
@@ -757,7 +757,7 @@ export function CompanyDepartmentDetail({ replay, go }: Props) {
                   const spend = spendByUser.get(m.userId)
                   const exceptions = overridesByUser.get(m.userId) ?? 0
                   return (
-                    <div className="ws-row click" key={m.userId} onClick={() => go(`co-person:${m.userId}`)}>
+                    <ClickRow key={m.userId} onOpen={() => go(`co-person:${m.userId}`)}>
                       <span className="avatar">{initialsOf(m.name, m.email)}</span>
                       <div className="ws-row-main">
                         <b>
@@ -775,7 +775,7 @@ export function CompanyDepartmentDetail({ replay, go }: Props) {
                         <span className="ws-sub">{money(spend?.spendUsd ?? 0)}</span>
                         <span className="ws-sub">{spend?.runs ?? 0} tasks</span>
                       </div>
-                    </div>
+                    </ClickRow>
                   )
                 })}
               </div>

@@ -16,7 +16,7 @@ import {
   Search, ShieldCheck, Sparkles, Trash2, TriangleAlert, Users,
 } from 'lucide-react'
 import {
-  Bar, DataNote, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, Seg, Skel, SkelRows,
+  Bar, ClickRow, DataNote, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, Seg, Skel, SkelRows,
   Switch, compact, money, useStaged,
 } from './ui'
 import type { Toast } from './ui'
@@ -27,7 +27,7 @@ import {
   type CeilingAction, type CeilingTool, type Run,
 } from './data/use-company'
 import { useCompanyDaily, useCompanyScope, useDirectory, useSpendByModel, useSpendMembers } from '@/cursor/use-spend'
-import { useProxyStatus, useSaveProxyKey } from '@/cursor/use-proxy'
+import { useProxyStatus, useSaveProxyKey, type KeyScope } from '@/cursor/use-proxy'
 import { useProxyPolicies, useSaveProxyPolicy } from '@/cursor/use-proxy-policy'
 
 /** The cursor hooks take a token and a company; every screen here needs both. */
@@ -127,11 +127,27 @@ export function CompanyHome({ replay, go }: Props) {
   const { token, companyId } = useAdminScope()
   const { data: overview } = useOverview(30)
   const daily = useCompanyDaily(token, 14, companyId).data
-  const memberSpend = useSpendMembers(token, 30, companyId).data
-  const directory = useDirectory(token, companyId).data ?? []
-  const { data: departments } = useCompanyDepartments()
+  const spendQuery = useSpendMembers(token, 30, companyId)
+  const memberSpend = spendQuery.data
+  const directoryQuery = useDirectory(token, companyId)
+  const directory = directoryQuery.data ?? []
+  const departmentsQuery = useCompanyDepartments()
+  const { data: departments } = departmentsQuery
   const { spend: deptSpend } = useDepartmentSpend(departments, 30)
   const { data: audit } = useAuditLog(6)
+
+  /**
+   * "Nothing needs you" is a claim about the whole company, and it is only
+   * true if all three of these were actually read. Departments carry the
+   * no-manager warning, member spend carries the over-budget one, and the
+   * directory carries the unlinked-Lark one — so any of them failing turns an
+   * unknown into a clean bill of health, which is the one answer an admin will
+   * act on by doing nothing.
+   */
+  const attentionKnown =
+    !departmentsQuery.loading && !departmentsQuery.error &&
+    !spendQuery.isPending && !spendQuery.isError &&
+    !directoryQuery.isPending && !directoryQuery.isError
 
   const days = (daily?.series ?? []).map((point) => ({ label: shortDate(point.date), v: point.spendUsd }))
   const last7 = sum(days.slice(-7).map((d) => d.v))
@@ -187,7 +203,13 @@ export function CompanyHome({ replay, go }: Props) {
       />
       <div className="ws-stack">
         <Panel title="Needs you">
-          {!r1 ? <SkelRows n={3} icon={false} /> : attention.length === 0 ? (
+          {!r1 ? <SkelRows n={3} icon={false} /> : attention.length === 0 && !attentionKnown ? (
+            <Empty
+              icon={TriangleAlert}
+              title="Could not check"
+              body="Departments, spend or the directory did not load, so this cannot tell you whether anything needs you."
+            />
+          ) : attention.length === 0 ? (
             <Empty icon={ShieldCheck} title="Nothing needs you" body="Every department has a manager and nobody is near their limit." />
           ) : (
             <Fade>
@@ -278,7 +300,7 @@ export function CompanyHome({ replay, go }: Props) {
                     const spent = deptSpend[d.id]?.spendUsd ?? 0
                     const share = totalDeptSpend > 0 ? (spent / totalDeptSpend) * 100 : 0
                     return (
-                      <div className="ws-row click" key={d.id} onClick={() => go('co-departments')}>
+                      <ClickRow key={d.id} onOpen={() => go('co-departments')}>
                         <span className="ws-ic" data-tone={d.managerCount ? undefined : 'warn'}><Building2 size={14} /></span>
                         <div className="ws-row-main">
                           <b>{d.name}</b>
@@ -288,7 +310,7 @@ export function CompanyHome({ replay, go }: Props) {
                           </div>
                         </div>
                         <span className="ws-sub">{money(spent)}</span>
-                      </div>
+                      </ClickRow>
                     )
                   })}
                 </div>
@@ -512,7 +534,7 @@ export function CompanyPeople({ replay, go }: Props) {
               {list.map((p) => {
                 const spend = spendByUser.get(p.userId)
                 return (
-                  <div className="ws-row click" key={p.userId} onClick={() => go(`co-person:${p.userId}`)}>
+                  <ClickRow key={p.userId} onOpen={() => go(`co-person:${p.userId}`)}>
                     <span className="avatar">{initialsOf(p.name, p.email)}</span>
                     <div className="ws-row-main">
                       <b>
@@ -531,7 +553,7 @@ export function CompanyPeople({ replay, go }: Props) {
                       <span className="ws-sub">{money(spend?.spend30d ?? 0)}</span>
                       <span className="ws-sub">{spend?.runs ?? 0} tasks</span>
                     </div>
-                  </div>
+                  </ClickRow>
                 )
               })}
             </div>
@@ -566,7 +588,7 @@ export function CompanyDepartments({ replay, toast, go }: Props) {
           <Fade>
             <div className="ws-rows">
               {active.map((d) => (
-                <div className="ws-row click" key={d.id} onClick={() => go(`co-department:${d.id}`)}>
+                <ClickRow key={d.id} onOpen={() => go(`co-department:${d.id}`)}>
                   <span className="ws-ic" data-tone={d.managerCount ? undefined : 'warn'}><Building2 size={14} /></span>
                   <div className="ws-row-main">
                     <b>
@@ -581,7 +603,7 @@ export function CompanyDepartments({ replay, toast, go }: Props) {
                     </p>
                   </div>
                   <span className="ws-sub">{money(spend[d.id]?.spendUsd ?? 0)}</span>
-                </div>
+                </ClickRow>
               ))}
             </div>
           </Fade>
@@ -711,14 +733,14 @@ export function CompanyConnections({ replay, go }: Props) {
           {!r2 ? <SkelRows n={2} /> : (
             <Fade>
               <div className="ws-rows">
-                <div className="ws-row click" onClick={() => go('co-web-search')}>
+                <ClickRow onOpen={() => go('co-web-search')}>
                   <span className="ws-ic"><Search size={14} /></span>
                   <div className="ws-row-main">
                     <b>Web search</b>
                     <p>A company-wide search key with its own credit budget — the one shared connection that exists today</p>
                   </div>
                   <span className="ws-sub">Manage</span>
-                </div>
+                </ClickRow>
               </div>
             </Fade>
           )}
@@ -1068,7 +1090,7 @@ export function CompanyAiOps({ replay, go }: Props) {
                     <Fragment key={day}>
                       <div className="ws-day">{day}</div>
                       {list.filter((r) => onDay(r.startedAt) === day).map((r) => (
-                        <div className="ws-row click" key={r.id} onClick={() => go(`co-run:${r.id}`)}>
+                        <ClickRow key={r.id} onOpen={() => go(`co-run:${r.id}`)}>
                           <span className="avatar">{initialsOf(r.userName, r.userName ?? '?')}</span>
                           <div className="ws-row-main">
                             <b>
@@ -1091,7 +1113,7 @@ export function CompanyAiOps({ replay, go }: Props) {
                             <span className="ws-sub">{r.costUsd === null ? 'unattributed' : money(r.costUsd)}</span>
                             <RunBadge status={r.status} />
                           </div>
-                        </div>
+                        </ClickRow>
                       ))}
                     </Fragment>
                   ))}
@@ -1188,7 +1210,9 @@ export function CompanyAiOps({ replay, go }: Props) {
             <Panel title="By channel">
               {!r2 ? <div className="ws-panel-body"><Skel w="100%" h={72} /></div> : (
                 <Fade>
-                  <div className="ws-metrics" style={{ gridTemplateColumns: '1fr 1fr' }}>
+                  {/* `data-n` exists in the stylesheet for exactly this; an
+                      inline override was a second way to say the same thing. */}
+                  <div className="ws-metrics" data-n="2">
                     <div className="ws-metric">
                       <div className="k">Desktop</div>
                       <div className="v">{money(sum((desktopSpend?.series ?? []).map((p) => p.spendUsd)))}</div>
@@ -1239,6 +1263,8 @@ export function CompanyGuardrails({ replay, toast }: Props) {
 
   const policyFor = (userId: string) => policies.find((p) => p.userId === userId)
   const [keyFor, setKeyFor] = useState<'deepseek' | 'openai' | null>(null)
+  const isSuperAdmin = session?.role === 'SUPER_ADMIN'
+  const [keyScope, setKeyScope] = useState<KeyScope>('company')
   const saveDeepseek = useSaveProxyKey(token, 'deepseek', companyId)
   const saveOpenai = useSaveProxyKey(token, 'openai', companyId)
   const keys = [
@@ -1381,15 +1407,42 @@ export function CompanyGuardrails({ replay, toast }: Props) {
           placeholder="sk-…"
           confirm="Save key"
           secret
-          onClose={() => setKeyFor(null)}
+          /*
+           * The scope choice appears only for a super-admin, because only a
+           * super-admin may take it — the route rejects `platform` from anyone
+           * else. It was previously hardcoded to `company`, so the one person
+           * who can set a platform key had no way to do it from here, while the
+           * panel above happily displayed platform keys with a tag. Showing the
+           * state and withholding the control is the worse half of both.
+           */
+          extra={isSuperAdmin ? (
+            <>
+              <div className="ws-lbl">Applies to</div>
+              <div style={{ marginTop: 8 }}>
+                <Seg
+                  value={keyScope}
+                  onChange={(v) => setKeyScope(v as KeyScope)}
+                  options={[
+                    { value: 'company', label: session?.companyName ?? 'This company' },
+                    { value: 'platform', label: 'Every company' },
+                  ]}
+                />
+              </div>
+              <p className="ws-sentence-note">
+                {keyScope === 'platform'
+                  ? 'Every company without its own key will bill to this one.'
+                  : 'Used by this company only, and it overrides any platform key.'}
+              </p>
+            </>
+          ) : undefined}
+          onClose={() => { setKeyFor(null); setKeyScope('company') }}
           onConfirm={async (key) => {
             try {
-              // Company scope only: a platform-wide key is super-admin and set
-              // elsewhere, so offering the choice here would present an option
-              // most admins cannot use.
               const save = keyFor === 'deepseek' ? saveDeepseek : saveOpenai
-              await save.mutateAsync({ key, keyScope: 'company' })
-              toast('Key saved')
+              // Never send `platform` from a non-super-admin: the control is
+              // hidden for them, and the route would refuse it anyway.
+              await save.mutateAsync({ key, keyScope: isSuperAdmin ? keyScope : 'company' })
+              toast(keyScope === 'platform' && isSuperAdmin ? 'Platform key saved' : 'Key saved')
             } catch {
               toast('Could not save that key', 'error')
             }

@@ -129,6 +129,44 @@ export function DataNote({ source }: { source: keyof typeof DATA_SOURCES }) {
   )
 }
 
+/**
+ * A row you can open.
+ *
+ * Sixteen of these across the workspace were a plain `div` carrying an
+ * `onClick` — reachable with a mouse and by nothing else. A keyboard or a
+ * screen reader had no way in, and the rows are the primary navigation on the
+ * people, department, run and skill lists, so "no way in" meant those screens
+ * were a dead end.
+ *
+ * Not a `<button>`: these hold an avatar, a title, a paragraph and sometimes a
+ * nested control, and a button may only contain phrasing content. This is the
+ * same shape the skills tree settled on — announce the role, take focus, and
+ * answer both Enter and Space the way a real button does.
+ */
+export function ClickRow({ onOpen, children, ...rest }: {
+  onOpen: () => void
+  children: ReactNode
+  className?: string
+  style?: React.CSSProperties
+  title?: string
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      className={`ws-row click${rest.className ? ` ${rest.className}` : ''}`}
+      style={rest.style}
+      title={rest.title}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen() }
+      }}
+    >
+      {children}
+    </div>
+  )
+}
+
 export const Empty = ({ icon: Icon = Inbox, title, body, action }: {
   icon?: LucideIcon; title: string; body?: string; action?: ReactNode
 }) => (
@@ -187,7 +225,7 @@ export const isRefusal = (error: unknown): boolean =>
  * The confirm stays disabled until the field has something in it, so the
  * failure mode is "nothing happens" rather than a 400 from the backend.
  */
-export function Prompt({ title, description, label, placeholder, confirm, secret, initial, onConfirm, onClose }: {
+export function Prompt({ title, description, label, placeholder, confirm, secret, initial, extra, onConfirm, onClose }: {
   title: string
   description?: string
   label: string
@@ -200,6 +238,14 @@ export function Prompt({ title, description, label, placeholder, confirm, secret
    * editing rather than a hint. Never combine with `secret`.
    */
   initial?: string
+  /**
+   * Rendered under the field, before the buttons.
+   *
+   * For the case where one value is not the whole decision — a provider key
+   * also has to say which scope it applies to. Kept as a slot rather than
+   * growing this into a form builder: two fields is a drawer's job.
+   */
+  extra?: ReactNode
   onConfirm: (value: string) => Promise<void> | void
   onClose: () => void
 }) {
@@ -241,6 +287,7 @@ export function Prompt({ title, description, label, placeholder, confirm, secret
               onKeyDown={(e) => { if (e.key === 'Enter') void submit() }}
               style={{ width: '100%', marginTop: 8 }}
             />
+            {extra ? <div style={{ marginTop: 18 }}>{extra}</div> : null}
           </div>
           <div className="ws-modal-f">
             <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>

@@ -22,7 +22,7 @@ import {
   changePct, durationLabel, useMyModelOptions, useMyRuns, useMyTools, useMyUsage, type MyRun,
 } from './data/use-my-activity'
 import {
-  Bar, DataNote, Drawer, Empty, Fade, PageHeader, Panel,
+  Bar, ClickRow, DataNote, Drawer, Empty, Fade, PageHeader, Panel,
   ProviderMark, Seg, Skel, SkelRows, Spark, Switch, compact, listPhrase, money,
   providerName, useStaged,
 } from './ui'
@@ -175,14 +175,14 @@ export function YouHome({ persona, replay, toast, go }: ScreenProps) {
                     )
                   })}
                   {CONNECTABLE.length - connected.length > 0 ? (
-                    <div className="ws-row click" onClick={() => go('connections')}>
+                    <ClickRow onOpen={() => go('connections')}>
                       <span className="ws-ic"><Plus size={14} /></span>
                       <div className="ws-row-main">
                         <b className="muted" style={{ fontWeight: 400 }}>
                           {CONNECTABLE.length - connected.length} more you can connect
                         </b>
                       </div>
-                    </div>
+                    </ClickRow>
                   ) : null}
                 </div>
               </Fade>
@@ -277,7 +277,7 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
                   const conn = status?.connections[0]
                   const state = conn ? 'connected' : def.memberCanConnect ? 'available' : 'admin'
                   return (
-                    <div className="ws-row click" key={def.provider} onClick={() => setOpen(def.provider)}>
+                    <ClickRow key={def.provider} onOpen={() => setOpen(def.provider)}>
                       <ProviderMark provider={def.provider} />
                       <div className="ws-row-main">
                         <b>
@@ -306,7 +306,7 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
                         ) : null}
                         {state === 'admin' ? <span className="ws-tag"><Lock size={11} />Admin connects this</span> : null}
                       </div>
-                    </div>
+                    </ClickRow>
                   )
                 })}
               </div>
@@ -330,7 +330,7 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
 
         <Panel>
           <div className="ws-rows">
-            <div className="ws-row click" onClick={() => go('connect-flow')}>
+            <ClickRow onOpen={() => go('connect-flow')}>
               <span className="ws-ic"><MessageSquare size={14} /></span>
               <div className="ws-row-main">
                 <b>Connecting from a Lark chat</b>
@@ -340,7 +340,7 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
                 </p>
               </div>
               <button type="button" className="btn">See the flow</button>
-            </div>
+            </ClickRow>
           </div>
         </Panel>
       </div>

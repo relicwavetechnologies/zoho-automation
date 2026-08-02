@@ -20,7 +20,7 @@ import {
   TriangleAlert, UserPlus, Users,
 } from 'lucide-react'
 import {
-  Bar, DataNote, Drawer, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, Seg, Skel, SkelRows,
+  Bar, ClickRow, DataNote, Drawer, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, Seg, Skel, SkelRows,
   Switch, listPhrase, money, useStaged,
 } from './ui'
 import type { Toast } from './ui'
@@ -262,14 +262,14 @@ export function TeamHome({ replay, go }: Props) {
                   {people.slice(0, 4).map((p) => {
                     const spend = spendByUser.get(p.userId)
                     return (
-                      <div className="ws-row click" key={p.userId} onClick={() => go('people')}>
+                      <ClickRow key={p.userId} onOpen={() => go('people')}>
                         <span className="avatar">{initialsOf(p.name, p.email)}</span>
                         <div className="ws-row-main">
                           <b>{displayName(p.name, p.email)}</b>
                           <p>{p.roleName ?? 'Member'}{spend && spend.runs === 0 ? ' · never used Divo' : ''}</p>
                         </div>
                         <span className="ws-sub">{spend?.runs ?? 0} tasks</span>
-                      </div>
+                      </ClickRow>
                     )
                   })}
                 </div>
@@ -377,7 +377,7 @@ export function TeamPeople({ replay, toast }: Props) {
                 const count = exceptionsFor(p.userId)
                 const spend = spendByUser.get(p.userId)
                 return (
-                  <div className="ws-row click" key={p.userId} onClick={() => setOpen(p.userId)}>
+                  <ClickRow key={p.userId} onOpen={() => setOpen(p.userId)}>
                     <span className="avatar">{initialsOf(p.name, p.email)}</span>
                     <div className="ws-row-main">
                       <b>
@@ -391,7 +391,7 @@ export function TeamPeople({ replay, toast }: Props) {
                       <span className="ws-sub">{spend?.runs ?? 0} tasks</span>
                       <span className="ws-sub">{money(spend?.spendUsd ?? 0)}</span>
                     </div>
-                  </div>
+                  </ClickRow>
                 )
               })}
             </div>
@@ -738,11 +738,11 @@ function PersonDrawer({ userId, onClose, toast, matrix, people }: {
               <header><div className="ws-panel-t"><h2>Match whose access?</h2></div></header>
               <div className="ws-rows">
                 {people.filter((p) => p.userId !== userId && p.roleSlug !== 'MANAGER').map((p) => (
-                  <div className="ws-row click" key={p.userId} onClick={() => applyCopy(p.userId)}>
+                  <ClickRow key={p.userId} onOpen={() => applyCopy(p.userId)}>
                     <span className="avatar">{initialsOf(p.name, p.email)}</span>
                     <div className="ws-row-main"><b>{displayName(p.name, p.email)}</b><p>{p.roleName ?? 'Member'}</p></div>
                     <ArrowRight size={14} className="muted" />
-                  </div>
+                  </ClickRow>
                 ))}
               </div>
             </div>
