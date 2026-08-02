@@ -1020,20 +1020,41 @@ function formatLarkDelivery(payload: PendingMailDeliveryPayload): string {
 const SCOPE_REASONS = new Set([
   'insufficientpermissions',
   'insufficientscope',
-  'access_token_scope_insufficient',
   'accesstokenscopeinsufficient',
 ]);
 
 /** Google reasons that mean "too fast", not "not allowed". */
 const RATE_LIMIT_REASONS = new Set([
   'ratelimitexceeded',
-  'rate_limit_exceeded',
   'userratelimitexceeded',
   'quotaexceeded',
   'dailylimitexceeded',
-  'backenderror',
-  'resource_exhausted',
+  'resourceexhausted',
 ]);
+
+/**
+ * Google is having a problem of its own. Nobody did anything wrong and nothing
+ * needs doing.
+ *
+ * `backendError` used to sit in the set above, which meant a Gmail 500 told
+ * the member "Google is rate-limiting this mailbox". The advice that followed
+ * was right — keep waiting — but the sentence was false, and a member who
+ * reads it goes looking for a quota they have not exceeded.
+ */
+const UNAVAILABLE_REASONS = new Set(['backenderror', 'internal', 'unavailable']);
+
+/**
+ * The same reason written every way Google writes it.
+ *
+ * The legacy `errors[]` channel says `insufficientPermissions`; the newer
+ * `details[].ErrorInfo` channel says `ACCESS_TOKEN_SCOPE_INSUFFICIENT`; OAuth
+ * says `insufficient_scope`. Folding case alone left the sets carrying two
+ * spellings of one reason and still missing the third — a set entry that can
+ * never match is a claim to handle something the code does not.
+ */
+function normalizeReason(reason: string | undefined): string {
+  return (reason ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
 
 /**
  * What to tell the mailbox owner went wrong.
@@ -1065,9 +1086,12 @@ function syncFailureCode(error: unknown): string {
     return 'history_backlog_stalled';
   }
   if (error instanceof GmailApiError) {
-    const reason = error.reason?.toLowerCase() ?? '';
+    const reason = normalizeReason(error.reason);
     if (RATE_LIMIT_REASONS.has(reason)) return 'provider_rate_limited';
     if (error.status === 429) return 'provider_rate_limited';
+    if (UNAVAILABLE_REASONS.has(reason) || error.status >= 500) {
+      return 'provider_unavailable';
+    }
     if (error.status === 401) return 'connection_unavailable';
     // Named reasons only, never every remaining `403`. Gmail's commonest 403
     // on `users.watch` is not about the member's grant at all: it is

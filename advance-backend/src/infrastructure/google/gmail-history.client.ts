@@ -787,6 +787,11 @@ function providerError(payload: unknown): string {
  * `insufficientPermissions`); `error.status` is the coarse gRPC-style name
  * (`PERMISSION_DENIED`, `RESOURCE_EXHAUSTED`). Either is a stable identifier;
  * the `message` beside them is not.
+ *
+ * Read most precise first: `details[].ErrorInfo.reason`, then the legacy
+ * `errors[0].reason`, then `error.status`. The first two disagree on exactly
+ * the case that matters — a lost scope arrives as `forbidden` in the legacy
+ * channel and `ACCESS_TOKEN_SCOPE_INSUFFICIENT` in the new one.
  */
 function providerReason(payload: unknown): string | undefined {
   if (!payload || typeof payload !== 'object') return undefined;

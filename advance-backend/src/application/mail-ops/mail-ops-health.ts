@@ -161,6 +161,12 @@ function remedyForFailure(code: string | null): string | null {
       return 'Your Google connection is no longer valid. Reconnect it to resume.';
     case 'provider_rate_limited':
       return 'Google is rate-limiting this mailbox. Divo keeps retrying — no action needed yet.';
+    case 'provider_unavailable':
+      // Distinct from the line above because it is a different sentence, not a
+      // different instruction. Both end in "wait", but telling somebody they
+      // are being rate-limited when Google simply failed sends them looking
+      // for a quota they have not exceeded.
+      return 'Google is having trouble responding. Divo keeps retrying — no action needed yet.';
     case 'history_backlog_stalled':
       // Deliberately not addressed to the member: there is nothing in their
       // account to fix, and saying otherwise would send them looking.

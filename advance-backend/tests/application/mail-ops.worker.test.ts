@@ -393,17 +393,43 @@ describe('MailOpsWorker', () => {
       await codeFor(new GmailApiError(429, 'Too many requests.')),
       'provider_rate_limited',
     );
-    // A 500 is transient and is nobody's account problem. The old heuristic
-    // filed anything whose message merely said "rate" as rate limiting.
+    // One reason, three spellings, depending on which channel Google answers
+    // through. Folding case alone matched one of them and left set entries
+    // that could never fire — a claim to handle something the code did not.
+    for (const spelling of [
+      'insufficientPermissions',
+      'ACCESS_TOKEN_SCOPE_INSUFFICIENT',
+      'accessTokenScopeInsufficient',
+      'insufficient_scope',
+    ]) {
+      assert.equal(
+        await codeFor(new GmailApiError(403, 'Insufficient Permission', spelling)),
+        'scope_missing',
+        `${spelling} should be recognised as a missing scope`,
+      );
+    }
     assert.equal(
-      await codeFor(new GmailApiError(500, 'Backend Error')),
-      'provider_sync_failed',
+      await codeFor(new GmailApiError(403, 'Quota exceeded.', 'USER_RATE_LIMIT_EXCEEDED')),
+      'provider_rate_limited',
+    );
+    // A 500 is transient and is nobody's account problem — but it is not a
+    // rate limit either. `backendError` used to sit in the rate-limit set, so
+    // a Gmail outage told the member "Google is rate-limiting this mailbox",
+    // sending them to look for a quota they had not exceeded. The advice that
+    // followed was right; the sentence was false.
+    assert.equal(
+      await codeFor(new GmailApiError(500, 'Backend Error', 'backendError')),
+      'provider_unavailable',
+    );
+    assert.equal(
+      await codeFor(new GmailApiError(503, 'Service unavailable.')),
+      'provider_unavailable',
     );
     // And a Google message that happens to contain a trigger word no longer
     // decides anything on its own.
     assert.equal(
       await codeFor(new GmailApiError(500, 'Could not verify scope permission token rate.')),
-      'provider_sync_failed',
+      'provider_unavailable',
     );
   });
 
