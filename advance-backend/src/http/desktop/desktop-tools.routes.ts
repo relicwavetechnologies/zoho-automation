@@ -269,5 +269,11 @@ export function createDesktopToolsRoutes(deps: DesktopToolsRouteDeps): Router {
     try { res.json(await service.setDepartmentMember(actor(res), req.params.toolId!, req.params.departmentId!, req.params.userId!, req.params.actionGroup!, parsed.data.allowed)); } catch (error) { respondError(res, error); }
   });
 
+  // Returns one person to their role. Distinct from PUT { allowed: false },
+  // which is an explicit deny that keeps outranking the role.
+  router.delete('/tools/:toolId/departments/:departmentId/members/:userId/actions/:actionGroup', memberAuth, async (req: Request, res: Response) => {
+    try { res.json(await service.clearDepartmentMember(actor(res), req.params.toolId!, req.params.departmentId!, req.params.userId!, req.params.actionGroup!)); } catch (error) { respondError(res, error); }
+  });
+
   return router;
 }

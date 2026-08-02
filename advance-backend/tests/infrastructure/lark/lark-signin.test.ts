@@ -6,7 +6,7 @@ import {
   SIGN_IN_LINK_TTL_MINUTES,
   SIGN_IN_WORKSPACE_NOT_CONNECTED,
   SIGN_IN_DIRECTORY_UNAVAILABLE,
-  SIGN_IN_NOT_CONFIGURED,
+  SIGN_IN_UNAVAILABLE,
   SIGN_IN_MISSING_EMAIL,
 } from '../../../src/infrastructure/channels/lark/lark-signin.ts';
 
@@ -74,9 +74,12 @@ describe('terminal first-touch notices', () => {
     assert.match(SIGN_IN_DIRECTORY_UNAVAILABLE, /my side|not yours/i);
   });
 
-  it('distinguishes unconfigured sign-in from an unknown user', () => {
-    assert.notEqual(SIGN_IN_NOT_CONFIGURED, SIGN_IN_WORKSPACE_NOT_CONNECTED);
-    assert.match(SIGN_IN_NOT_CONFIGURED, /isn't configured/i);
+  it('blames itself when the sign-in link cannot be made', () => {
+    assert.notEqual(SIGN_IN_UNAVAILABLE, SIGN_IN_WORKSPACE_NOT_CONNECTED);
+    // Sign-in no longer depends on Lark OAuth, so this must not send anyone
+    // off to check credentials that have nothing to do with it.
+    assert.doesNotMatch(SIGN_IN_UNAVAILABLE, /configur|admin/i);
+    assert.match(SIGN_IN_UNAVAILABLE, /my side|again/i);
   });
 
   it('says what is missing when a profile has no email', () => {
@@ -87,7 +90,7 @@ describe('terminal first-touch notices', () => {
     for (const notice of [
       SIGN_IN_WORKSPACE_NOT_CONNECTED,
       SIGN_IN_DIRECTORY_UNAVAILABLE,
-      SIGN_IN_NOT_CONFIGURED,
+      SIGN_IN_UNAVAILABLE,
       SIGN_IN_MISSING_EMAIL,
     ]) {
       assert.ok(notice.trim().length > 40, 'a notice that says nothing is still silence');

@@ -52,16 +52,21 @@ import type { ZohoBooksPaginatedClient, ZohoBooksModule } from '../../../infrast
 import { getModuleSchema, injectSyntheticFields, toSchemaHint } from '../../../infrastructure/zoho/zoho-books-schema.cache';
 import { runInSandbox, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
 import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } from '../../../shared/zoho-personalization';
-import type { DataExportQueue } from '../../data-export/data-export.queue';
 import {
   DATA_EXPORT_ROW_LIMIT,
-  type DataExportJobPayload,
 } from '../../data-export/data-export.types';
+import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
+import type { DataExportOfferPayload } from '../../data-export/export-offer';
+import {
+  createDatasetPreview,
+  DATASET_PREVIEW_ROW_LIMIT,
+} from '../../data-export/dataset-preview';
 
 // ─── Args schema ──────────────────────────────────────────────────────────────
 
 const Schema = z.object({
   connectionId: z.string().uuid(),
+  destinationConnectionId: z.string().uuid().optional(),
   op: z.enum([
     // CRUD
     'list_invoices',
@@ -131,6 +136,26 @@ const ResultSchema = z.object({
   sourceTruncated: z.boolean().optional(),
   exportQueued: z.boolean().optional(),
   exportJobId: z.string().optional(),
+  preview: z.object({
+    columns: z.array(z.string()),
+    rows: z.array(z.record(z.unknown())).max(DATASET_PREVIEW_ROW_LIMIT),
+    coverage: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('complete'), totalRows: z.number().int().nonnegative() }),
+      z.object({
+        kind: z.literal('truncated'),
+        returnedRows: z.number().int().nonnegative(),
+        knownTotal: z.number().int().nonnegative().optional(),
+        reason: z.string(),
+      }),
+      z.object({
+        kind: z.literal('provider_limited'),
+        returnedRows: z.number().int().nonnegative(),
+        reason: z.string(),
+      }),
+      z.object({ kind: z.literal('unknown'), returnedRows: z.number().int().nonnegative() }),
+    ]),
+    exportOfferId: z.string().optional(),
+  }).optional(),
 });
 
 type Res = z.infer<typeof ResultSchema>;
@@ -254,9 +279,11 @@ const summarizeRecords = (
   moduleLabel: string,
   amountKeys: string[],
   items: readonly Record<string, unknown>[],
+  truncated = false,
 ): string => {
   if (items.length === 0) return `No ${moduleLabel.toLowerCase()} matched the current criteria.`;
-  if (amountKeys.length === 0) return `Found ${items.length} ${moduleLabel.toLowerCase()}.`;
+  const countLabel = truncated ? `Showing ${items.length}` : `Found ${items.length}`;
+  if (amountKeys.length === 0) return `${countLabel} ${moduleLabel.toLowerCase()}.`;
 
   const totals = new Map<string, number>();
   for (const item of items) {
@@ -270,8 +297,8 @@ const summarizeRecords = (
       : `${formatAmount(total, currency)} (${currency})`)
     .join(', ');
   return totalText
-    ? `Found ${items.length} ${moduleLabel.toLowerCase()}: ${totalText}.`
-    : `Found ${items.length} ${moduleLabel.toLowerCase()}.`;
+    ? `${countLabel} ${moduleLabel.toLowerCase()}: ${totalText}.`
+    : `${countLabel} ${moduleLabel.toLowerCase()}.`;
 };
 
 const commonColumns = {
@@ -483,7 +510,7 @@ export const createZohoBooksTool = (deps: {
   booksClient:  ZohoBooksPaginatedClient;
   /** Finance ops service for deep report operations. */
   financeOps:   ZohoFinanceOps;
-  exportQueue?: Pick<DataExportQueue, 'enqueue'>;
+  offers?: Pick<DataExportOfferService, 'createAuthorizedOffer' | 'submitAuthorized'>;
   inlineThreshold?: number;
 }): Tool<Args, Res> => ({
   id:           asToolId('zohoBooks'),
@@ -499,7 +526,7 @@ export const createZohoBooksTool = (deps: {
     'For an exact aggregate that may require more than 4000 records, page through this tool inside a scripted workflow, write the rows to a file, and aggregate over that file.',
     'Use populated _amount_inr/_balance_inr for INR calculations; never infer an original currency when _currency is UNKNOWN.',
     `Set exportAll=true for a governed Google export capped at ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows. If the user asks for more or every row, disclose the cap and never call the result complete.`,
-    'Export example: {"op":"list_invoices","dateFrom":"2026-07-01","dateTo":"2026-07-31","exportAll":true,"connectionId":"<exact UUID>"}. Keep every field top-level.',
+    'Export example: {"op":"list_invoices","dateFrom":"2026-07-01","dateTo":"2026-07-31","exportAll":true,"connectionId":"<exact Zoho UUID>"}. If Divo returns eligible Google destination choices, retry with the same arguments plus destinationConnectionId="<chosen Google UUID>". Keep every field top-level.',
   ].join(' '),
 
   parameterDocs: [
@@ -603,6 +630,39 @@ export const createZohoBooksTool = (deps: {
 
     const scopeFilter: Record<string, unknown> = personalizedScope ? { email: requesterEmail! } : {};
 
+    const exportPayloadFor = (moduleName: ZohoBooksModule): DataExportOfferPayload => ({
+      companyId,
+      userId,
+      ...(ctx.runContext.departmentId ? { departmentId: ctx.runContext.departmentId } : {}),
+      source: {
+        kind: 'zoho_books',
+        connectionId: args.connectionId,
+        module: moduleName,
+        ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+        filters: {
+          ...dateParams(args),
+          ...(args.status ? { status: normalizeStatus(args.status) } : {}),
+        },
+        ...(args.searchQuery ? { query: args.searchQuery } : {}),
+      },
+      destination: {
+        format: 'auto',
+        title: `Zoho Books ${moduleName} export`,
+      },
+      chatId: ctx.runContext.chatId!,
+      ...(ctx.runContext.runtimeThreadId
+        ? { conversationKey: ctx.runContext.runtimeThreadId }
+        : {}),
+      ...(ctx.runContext.replyToMessageId
+        ? { replyToMessageId: ctx.runContext.replyToMessageId }
+        : {}),
+      ...(ctx.runContext.replyInThread !== undefined
+        ? { replyInThread: ctx.runContext.replyInThread }
+        : {}),
+      requestId: ctx.runContext.requestId ?? ctx.correlationId,
+      ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
+    });
+
     const exportModule = listOpToModule[args.op];
     if (args.exportAll && exportModule) {
       if (!ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')) {
@@ -620,7 +680,7 @@ export const createZohoBooksTool = (deps: {
         }));
       }
       if (
-        !deps.exportQueue
+        !deps.offers
         || ctx.runContext.channel !== 'lark'
         || !ctx.runContext.chatId
         || !args.connectionId
@@ -631,36 +691,26 @@ export const createZohoBooksTool = (deps: {
           message: `Governed Zoho exports of up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows require an exact connection UUID and a Lark chat for delivery`,
         }));
       }
-      const payload: DataExportJobPayload = {
-        companyId,
-        userId,
-        ...(ctx.runContext.departmentId ? { departmentId: ctx.runContext.departmentId } : {}),
-        source: {
-          kind: 'zoho_books',
-          connectionId: args.connectionId,
-          module: exportModule,
-          ...(args.organizationId ? { organizationId: args.organizationId } : {}),
-          filters: {
-            ...dateParams(args),
-            ...(args.status ? { status: normalizeStatus(args.status) } : {}),
-          },
-          ...(args.searchQuery ? { query: args.searchQuery } : {}),
-        },
-        destination: {
-          format: 'auto',
-          title: `Zoho Books ${exportModule} export`,
-        },
-        chatId: ctx.runContext.chatId,
-        requestId: ctx.runContext.requestId ?? ctx.correlationId,
-        ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
-      };
-      const exportJobId = await deps.exportQueue.enqueue(payload);
-      return ok({
-        success: true,
-        exportQueued: true,
-        exportJobId,
-        message: `Zoho Books export queued through dataExport with the current ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')}-row cap. I will deliver the verified invoker-only Google reader link to this Lark chat. If more rows exist, they will be omitted and the result will not be described as complete.`,
-      });
+      try {
+        const payload = exportPayloadFor(exportModule);
+        const exportJobId = await deps.offers.submitAuthorized(
+          payload,
+          args.destinationConnectionId,
+        );
+        return ok({
+          success: true,
+          exportQueued: true,
+          exportJobId,
+          message: `Zoho Books export queued through dataExport with the current ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')}-row cap. I will deliver the verified private Google artifact to this Lark chat. If more rows exist, they will be omitted and the result will not be described as complete.`,
+        });
+      } catch (cause) {
+        return err(new ToolError({
+          toolId: 'dataExport',
+          reason: 'upstream_failure',
+          cause,
+          message: `Could not queue Zoho Books export: ${cause instanceof Error ? cause.message : String(cause)}`,
+        }));
+      }
     }
 
     // ── Script mode (auto-escalate list ops to exhaustive fetch + sandbox) ──
@@ -718,6 +768,12 @@ export const createZohoBooksTool = (deps: {
         columns: readonly ZohoListCsvColumn<Record<string, unknown>>[];
       },
     ) => {
+      const canOfferExport = args.limit === undefined
+        && !personalizedScope
+        && deps.offers !== undefined
+        && ctx.runContext.channel === 'lark'
+        && Boolean(ctx.runContext.chatId)
+        && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true;
       const result = await handleZohoList({
         companyId,
         ...connectionContext,
@@ -726,29 +782,41 @@ export const createZohoBooksTool = (deps: {
         ...(args.organizationId ? { organizationId: args.organizationId } : {}),
         filters: { ...scopeFilter, ...options.filters },
         ...(options.query ? { query: options.query } : {}),
-        offerExportOnOverflow: args.limit === undefined,
-        inlineThreshold: args.limit ?? deps.inlineThreshold ?? 25,
+        offerExportOnOverflow: canOfferExport,
+        inlineThreshold: Math.min(
+          args.limit ?? deps.inlineThreshold ?? DATASET_PREVIEW_ROW_LIMIT,
+          DATASET_PREVIEW_ROW_LIMIT,
+        ),
         ...(personalizedScope
           ? { postFilter: (items: readonly Record<string, unknown>[]) =>
               filterZohoRecordsByEmail(items, requesterEmail!) }
           : {}),
-        summarize: (items) => summarizeRecords(moduleLabel, options.amountKeys ?? [], items),
+        summarize: (items, meta) => summarizeRecords(
+          moduleLabel,
+          options.amountKeys ?? [],
+          items,
+          meta.truncated,
+        ),
         booksClient: deps.booksClient,
       });
       const modelItems = projectListItems(result.items, options.columns);
+      const formattedItems = formatZohoResult(modelItems) as Record<string, unknown>[];
+      const offer = result.suggestExport && canOfferExport
+        ? await deps.offers!.createAuthorizedOffer(exportPayloadFor(moduleName))
+        : undefined;
+      const preview = createDatasetPreview({
+        rows: formattedItems,
+        coverage: result.coverage,
+        ...(offer ? { exportOfferId: offer.offerId } : {}),
+      });
 
       return {
         success: true,
         message: result.summary,
-        data: formatZohoResult({
-          items: modelItems,
-          totalCount: result.totalCount,
-          truncated: result.truncated,
-          hasMore: result.hasMore,
-          suggestExport: result.suggestExport,
-        }),
+        preview,
         report: {
-          totalCount: result.totalCount,
+          returnedCount: result.items.length,
+          ...(result.totalCount !== undefined ? { totalCount: result.totalCount } : {}),
           summary: result.summary,
           truncated: result.truncated,
           hasMore: result.hasMore,

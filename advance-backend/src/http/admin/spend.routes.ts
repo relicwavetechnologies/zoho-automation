@@ -18,7 +18,10 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { Prisma, type PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
-import { costUsd } from '../../application/observability/pricing';
+import {
+  costByDay, fillSeries, priceSum, startOfToday,
+  type DailyModelRow, type TokenSum,
+} from '../../application/observability/token-cost';
 
 export interface SpendRoutesDeps {
   prisma: PrismaClient;
@@ -68,37 +71,8 @@ const qChannel = (req: Request): string | undefined => {
   const value = typeof req.query.channel === 'string' ? req.query.channel : undefined;
   return value && ['desktop', 'lark', 'web'].includes(value) ? value : undefined;
 };
-const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
 const startOfMonth = () => { const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d; };
 
-// ─── Pricing helpers ────────────────────────────────────────────────────────
-type TokenSum = { actualInputTokens: number | null; cacheReadInputTokens: number | null; actualOutputTokens: number | null };
-const priceSum = (modelId: string, s: TokenSum | undefined): number =>
-  costUsd(modelId, {
-    cacheMissIn: s?.actualInputTokens ?? 0,
-    cacheHitIn: s?.cacheReadInputTokens ?? 0,
-    output: s?.actualOutputTokens ?? 0,
-  });
-
-type DailyModelRow = { day: Date; model: string; miss: number; hit: number; out: number };
-function costByDay(rows: DailyModelRow[]): Map<string, number> {
-  const m = new Map<string, number>();
-  for (const r of rows) {
-    const key = new Date(r.day).toISOString().slice(0, 10);
-    const c = costUsd(r.model, { cacheMissIn: Number(r.miss), cacheHitIn: Number(r.hit), output: Number(r.out) });
-    m.set(key, (m.get(key) ?? 0) + c);
-  }
-  return m;
-}
-function fillSeries(byDay: Map<string, number>, days: number): { date: string; spendUsd: number }[] {
-  const out: { date: string; spendUsd: number }[] = [];
-  const today = startOfToday();
-  for (let i = days - 1; i >= 0; i -= 1) {
-    const key = new Date(today.getTime() - i * 86_400_000).toISOString().slice(0, 10);
-    out.push({ date: key, spendUsd: byDay.get(key) ?? 0 });
-  }
-  return out;
-}
 
 export function createSpendRoutes(deps: SpendRoutesDeps): Router {
   const router = Router();

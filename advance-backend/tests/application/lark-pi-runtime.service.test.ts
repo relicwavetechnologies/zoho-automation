@@ -15,6 +15,8 @@ const logger = {
 } as any;
 const runEffectReceipts = {
   getVerifiedKnowledgeEffect: async () => null,
+  getVerifiedDataExportOffer: async () => null,
+  getVerifiedWorkbookConversionOffer: async () => null,
 };
 
 function runtimeInput() {
@@ -84,9 +86,12 @@ test('mints a scoped Lark lease and sends no caller-selected profile or approval
   assert.equal(controllerBody?.['message'], 'Do the work');
   assert.equal('profile' in (controllerBody ?? {}), false);
   assert.equal('approve' in (controllerBody ?? {}), false);
-  assert.equal((sessionQuery?.['where'] as Record<string, unknown>)?.['channel'], 'lark');
+  // Identity-bound, not channel-bound. Sign-in happens once in the web app now,
+  // and the session it creates is stamped `desktop` — pinning `channel: 'lark'`
+  // here would make that session invisible and force Lark to mint its own.
   assert.equal((sessionQuery?.['where'] as Record<string, unknown>)?.['larkTenantKey'], 'tenant-1');
   assert.equal((sessionQuery?.['where'] as Record<string, unknown>)?.['larkOpenId'], 'ou-user-1');
+  assert.equal('channel' in ((sessionQuery?.['where'] as Record<string, unknown>) ?? {}), false);
 
   const token = String(controllerBody?.['runtimeLease']);
   const claims = JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString('utf8'));
@@ -99,6 +104,85 @@ test('mints a scoped Lark lease and sends no caller-selected profile or approval
   assert.equal(claims.runId, 'trace-1');
   assert.equal(claims.chatId, 'chat-1');
   assert.equal(claims.contextAudience, 'private');
+});
+
+test('injects verified recent exports for the exact conversation without backend handles', async () => {
+  let controllerBody: Record<string, unknown> | undefined;
+  let historyLookup: unknown;
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts,
+    conversationHistory: {
+      getHistory: async () => assert.fail('dedicated export lookup must be used'),
+      getRecentToolTurns: async (conversationKey, toolName, limit, scope, ownerUserId) => {
+        historyLookup = { conversationKey, toolName, limit, scope, ownerUserId };
+        return {
+          ok: true as const,
+          value: [{
+            id: 'turn-1',
+            role: 'tool' as const,
+            content: 'verified export',
+            timestamp: '2026-08-02T00:00:00.000Z',
+            toolName: 'dataExportResource',
+            toolOutcome: {
+              version: 1,
+              kind: 'data_export_resource',
+              resourceRef: 'resource-safe-1',
+              ownerUserId: 'user-1',
+              artifactId: 'sheet-secret-id',
+              artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-secret-id/edit',
+              artifactType: 'google_sheet',
+              rowCount: 50,
+              connectionId: 'connection-secret-id',
+              spreadsheetId: 'sheet-secret-id',
+              createdAt: '2026-08-02T00:00:00.000Z',
+              expiresAt: '2099-08-09T00:00:00.000Z',
+            },
+          }],
+        };
+      },
+      appendTurn: async () => assert.fail('non-p2p test must not append conversation turns'),
+    },
+    fetch: async (_url, init) => {
+      controllerBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ text: 'Finished' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  await service.run(runtimeInput());
+
+  assert.deepEqual(historyLookup, {
+    conversationKey: 'lark:chat-1:user-1',
+    toolName: 'dataExportResource',
+    limit: 5,
+    scope: { companyId: 'company-1', channel: 'lark' },
+    ownerUserId: 'user-1',
+  });
+  const message = String(controllerBody?.['message']);
+  assert.match(message, /RECENT DIVO EXPORTS/);
+  assert.match(message, /resource-safe-1/);
+  assert.match(message, /https:\/\/docs\.google\.com\/spreadsheets\/d\/sheet-secret-id\/edit/);
+  assert.match(message, /op=call_exported_sheet and resourceRef/);
+  assert.match(message, /Do not resolve its URL, choose an account/);
+  assert.match(message, /CURRENT USER REQUEST:\nDo the work/);
+  assert.doesNotMatch(message, /connection-secret-id|connectionId|spreadsheetId/);
 });
 
 test('binds a group run to a shared audience in the signed runtime lease', async () => {
@@ -115,6 +199,112 @@ test('binds a group run to a shared audience in the signed runtime lease', async
   const claims = JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString('utf8'));
   assert.equal(claims.contextAudience, 'shared');
   assert.equal(controllerBody?.['sessionScope'], 'run');
+});
+
+test('turns a verified export offer receipt into explicit governed format choices', async () => {
+  const offerId = '11111111-1111-4111-8111-111111111111';
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts: {
+      getVerifiedKnowledgeEffect: async () => null,
+      getVerifiedDataExportOffer: async identity => ({
+        version: 1,
+        kind: 'data_export_offer',
+        status: 'offered',
+        effectKind: 'data_export_offered',
+        ...identity,
+        offerId,
+        createdAt: '2026-08-02T00:00:00.000Z',
+      }),
+    },
+    fetch: async () => new Response(JSON.stringify({ text: 'I found more rows.' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  const result = await service.run(runtimeInput());
+
+  assert.deepEqual(result.actions, [
+    {
+      label: 'Google Sheet',
+      value: JSON.stringify({ kind: 'data_export_confirm', offerId, format: 'google_sheet' }),
+      style: 'primary',
+    },
+    {
+      label: 'CSV in Drive',
+      value: JSON.stringify({ kind: 'data_export_confirm', offerId, format: 'csv' }),
+    },
+    {
+      label: 'Excel (.xlsx)',
+      value: JSON.stringify({ kind: 'data_export_confirm', offerId, format: 'xlsx' }),
+    },
+  ]);
+});
+
+test('turns a verified workbook receipt into one explicit copy confirmation', async () => {
+  const offerId = '44444444-4444-4444-8444-444444444444';
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts: {
+      getVerifiedKnowledgeEffect: async () => null,
+      getVerifiedDataExportOffer: async () => null,
+      getVerifiedWorkbookConversionOffer: async identity => ({
+        version: 1,
+        kind: 'workbook_conversion_offer',
+        status: 'offered',
+        effectKind: 'workbook_conversion_offered',
+        ...identity,
+        offerId,
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        fileId: 'xlsx_file_1',
+        fileName: 'Forecast.xlsx',
+        createdAt: '2026-08-02T00:00:00.000Z',
+      }),
+    },
+    fetch: async () => new Response(JSON.stringify({
+      text: 'I can make a Google Sheets copy. The original workbook will stay unchanged.',
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  const result = await service.run(runtimeInput());
+
+  assert.deepEqual(result.actions, [{
+    label: 'Create Google Sheet copy',
+    value: JSON.stringify({ kind: 'workbook_conversion_confirm', offerId }),
+    style: 'primary',
+  }]);
 });
 
 test('delivers a natural personal-preference acknowledgement and captures learning once', async () => {
@@ -267,7 +457,10 @@ test('allows a verified explicit personal save and does not enqueue duplicate im
     instanceId: 'pi-local-1',
     leaseTtlSeconds: 3_600,
     runTimeoutMs: 30_000,
-    runEffectReceipts: { getVerifiedKnowledgeEffect: async () => effect },
+    runEffectReceipts: {
+      getVerifiedKnowledgeEffect: async () => effect,
+      getVerifiedDataExportOffer: async () => null,
+    },
     knowledgeLearning: {
       captureCompletedTurn: async () => { learningCaptures++; },
     },
@@ -478,7 +671,7 @@ test('preserves controller capacity errors and never invokes a fallback', async 
     service.run(runtimeInput()),
     (error) => error instanceof LarkPiRuntimeError
       && error.code === 'capacity_full'
-      && error.userMessage === 'All Pi slots are busy. Please retry.',
+      && error.userMessage === 'Divo is at full capacity right now. Please try again shortly.',
   );
 });
 
@@ -515,7 +708,45 @@ test('preserves capacity errors from the streamed controller protocol', async ()
     service.run(runtimeInput()),
     (error) => error instanceof LarkPiRuntimeError
       && error.code === 'capacity_full'
-      && error.userMessage === 'All Pi slots are busy. Please retry.',
+      && error.userMessage === 'Divo is at full capacity right now. Please try again shortly.',
+  );
+});
+
+test('a streamed provider failure keeps diagnostics internal', async () => {
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    fetch: async () => new Response(`${JSON.stringify({
+      type: 'error',
+      error: {
+        code: 'model_continuation_failed',
+        message: 'Assistant error: Connection error. upstream-token=secret',
+      },
+    })}\n`, {
+      status: 200,
+      headers: { 'content-type': 'application/x-ndjson; charset=utf-8' },
+    }),
+  });
+
+  await assert.rejects(
+    service.run(runtimeInput()),
+    (error) => error instanceof LarkPiRuntimeError
+      && error.code === 'model_continuation_failed'
+      && error.message.includes('upstream-token=secret')
+      && error.userMessage === 'Divo hit a temporary problem while finishing this request. Please try again.',
   );
 });
 
@@ -1130,10 +1361,7 @@ test('a caller-issued session is used verbatim, not the member\'s own sign-in', 
   assert.equal(where['revokedAt'], null);
 });
 
-// Every Lark run used to launch on the model pinned in the container manifest,
-// so granting somebody Pro or Luna changed nothing they could see. The run
-// request is where the grant finally becomes the model that answers.
-test('the run asks for the best model the member is granted', async () => {
+test('the run asks for the Flash model pinned to the Lark channel', async () => {
   let runBody: Record<string, unknown> | undefined;
   const service = new LarkPiRuntimeService({
     prisma: {
@@ -1151,43 +1379,6 @@ test('the run asks for the best model the member is granted', async () => {
     instanceId: 'pi-local-1',
     leaseTtlSeconds: 3_600,
     runTimeoutMs: 30_000,
-    allowedModelsFor: async () => ['deepseek-v4-flash', 'gpt-5.6-luna'],
-    fetch: (async (_url: string, init?: RequestInit) => {
-      runBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
-      return new Response(JSON.stringify({ text: 'ok' }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    }) as any,
-  });
-
-  await service.run(runtimeInput());
-
-  assert.equal(runBody?.['model'], 'gpt-5.6-luna');
-  assert.equal(runBody?.['provider'], 'openai');
-});
-
-// Not knowing the grant is a reason to be careful, not a reason to fail a turn
-// the member could otherwise have had answered.
-test('a grant lookup that throws still runs, on the default model', async () => {
-  let runBody: Record<string, unknown> | undefined;
-  const service = new LarkPiRuntimeService({
-    prisma: {
-      memberSession: {
-        findFirst: async () => ({
-          sessionId: 'session-1',
-          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
-        }),
-      },
-    } as any,
-    logger,
-    memberJwtSecret: 'test-secret',
-    backendUrl: 'https://backend.example',
-    controllerUrl: 'http://127.0.0.1:4317',
-    instanceId: 'pi-local-1',
-    leaseTtlSeconds: 3_600,
-    runTimeoutMs: 30_000,
-    allowedModelsFor: async () => { throw new Error('policy store is down'); },
     fetch: (async (_url: string, init?: RequestInit) => {
       runBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
       return new Response(JSON.stringify({ text: 'ok' }), {
@@ -1201,4 +1392,103 @@ test('a grant lookup that throws still runs, on the default model', async () => 
 
   assert.equal(runBody?.['model'], 'deepseek-v4-flash');
   assert.equal(runBody?.['provider'], 'deepseek');
+});
+
+function larkIngressInput(overrides: Record<string, unknown> = {}) {
+  const base = runtimeInput();
+  return {
+    ...base,
+    incoming: {
+      ...base.incoming,
+      channel: 'lark',
+      messageId: 'om_request',
+      chatType: 'group',
+      tenantKey: 'tenant-1',
+      userExternalId: 'ou-user-1',
+      rootMessageId: 'om_root',
+      groupReplyMode: 'threaded',
+      ...overrides,
+    },
+    conversation: { ...base.conversation, replyInThread: true },
+  } as any;
+}
+
+function originRecordingService(
+  runOrigins: { remember: (runId: string, origin: unknown) => Promise<boolean> },
+) {
+  return new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317/',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts,
+    runOrigins,
+    fetch: async () => new Response(JSON.stringify({ text: 'Finished' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+}
+
+// The run is the only moment the inbound Lark request still exists. A tool that
+// later needs Google OAuth has to send a card back into this conversation and
+// re-run this ask, and for a long time nothing recorded either, so the card was
+// never sent at all.
+test('records where a Lark run came from so a deferred authorization can resume it', async () => {
+  const written: Array<{ runId: string; origin: any }> = [];
+  const service = originRecordingService({
+    remember: async (runId, origin) => { written.push({ runId, origin: origin as any }); return true; },
+  });
+
+  await service.run(larkIngressInput());
+
+  assert.equal(written.length, 1);
+  assert.equal(written[0]!.runId, 'trace-1');
+  assert.deepEqual(written[0]!.origin, {
+    version: 1,
+    companyId: 'company-1',
+    userId: 'user-1',
+    larkOpenId: 'ou-user-1',
+    larkTenantKey: 'tenant-1',
+    chatId: 'chat-1',
+    chatType: 'group',
+    originalMessageId: 'om_request',
+    rootMessageId: 'om_root',
+    replyInThread: true,
+    groupReplyMode: 'threaded',
+    originalRequest: 'Do the work',
+  });
+});
+
+test('records nothing for a run with no tenant identity to authorize against', async () => {
+  const written: unknown[] = [];
+  const service = originRecordingService({
+    remember: async (_runId, origin) => { written.push(origin); return true; },
+  });
+
+  // A scheduled run reaches the same code path without a real Lark event
+  // behind it. There is no conversation to continue in, so inventing an origin
+  // would only produce a Connect card nobody asked for.
+  await service.run(larkIngressInput({ tenantKey: undefined }));
+
+  assert.deepEqual(written, []);
+});
+
+test('a run survives an unwritable origin, losing only the Connect card', async () => {
+  const service = originRecordingService({
+    remember: async () => { throw new Error('redis down'); },
+  });
+
+  assert.equal((await service.run(larkIngressInput())).text, 'Finished');
 });

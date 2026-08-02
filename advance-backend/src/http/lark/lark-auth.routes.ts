@@ -17,7 +17,7 @@
  *   - Returns a simple HTML success page the user can close
  */
 
-import { Router, type Request, type Response } from 'express';
+import { Router, type Request, type RequestHandler, type Response } from 'express';
 import { SCHEDULED_SESSION_AUTH_PROVIDER } from '../../application/scheduling/scheduled-runtime-session';
 import { randomBytes } from 'node:crypto';
 import { Client as LarkSdkClient, LoggerLevel } from '@larksuiteoapi/node-sdk';
@@ -141,9 +141,136 @@ export function createLarkAuthRoutes(deps: {
   channelIdentityRepo?:  ChannelIdentityRepository;
   /** Test seam; production uses the installed Lark app. */
   sendConfirmationDm?: typeof sendLarkDm;
+  /**
+   * Guards `POST /link` only. That route is the one place here that acts on
+   * behalf of a signed-in person rather than on an opaque OAuth state, so it
+   * needs a real session and everything else deliberately does not.
+   */
+  memberAuth?: RequestHandler;
 }): Router {
   const router = Router();
   const log    = deps.logger.child({ router: 'lark-auth' });
+
+  // ── 0. Attach a Lark identity to the session the web app just created ──────
+  //
+  // The sign-in card in Lark now opens the web login rather than Lark's OAuth
+  // consent screen: one place to sign in, one session, and Lark maps an
+  // identity instead of minting anything. This is the hop that does the
+  // mapping, and it is deliberately narrow — it reads a one-time nonce the
+  // webhook stored, checks that the person who signed in is the person the
+  // card was addressed to, and stamps their existing session. It grants
+  // nothing, takes no OAuth tokens, and cannot create a session.
+  router.post('/link', ...(deps.memberAuth ? [deps.memberAuth] : []), async (req: Request, res: Response) => {
+    const userId    = res.locals['userId']    as string | undefined;
+    const companyId = res.locals['companyId'] as string | undefined;
+    const sessionId = res.locals['sessionId'] as string | undefined;
+    if (!userId || !companyId || !sessionId) {
+      res.status(401).json({ error: 'not_signed_in' });
+      return;
+    }
+
+    const state = typeof req.body?.state === 'string' ? decodeState(req.body.state) : null;
+    if (!state) {
+      res.status(400).json({ error: 'invalid_link' });
+      return;
+    }
+
+    const stored = await deps.cache.get<{
+      companyId: string;
+      userId: string;
+      larkOpenId: string;
+      tenantKey: string;
+      pendingEvent?: Record<string, unknown>;
+    }>(larkOAuthNonceKey(state.nonce));
+
+    if (
+      !stored.ok
+      || !stored.value
+      || stored.value.companyId  !== state.companyId
+      || stored.value.userId     !== state.userId
+      || stored.value.larkOpenId !== state.larkOpenId
+      || stored.value.tenantKey  !== state.tenantKey
+    ) {
+      // Ten minutes old, already used, or tampered with. All three mean the
+      // same thing to the reader: start again from Lark.
+      res.status(410).json({ error: 'link_expired' });
+      return;
+    }
+
+    // The decision that makes this safe. The card names one person; if someone
+    // else signs in and follows it, attaching their session to that Lark
+    // identity would hand them the wrong inbox.
+    if (state.userId !== userId || state.companyId !== companyId) {
+      log.warn('lark.auth.link.wrong_account', {
+        companyId, signedInUserId: userId, cardUserId: state.userId,
+      });
+      res.status(403).json({ error: 'different_account' });
+      return;
+    }
+
+    if (!deps.channelIdentityRepo) {
+      res.status(503).json({ error: 'lark_identity_validation_unavailable' });
+      return;
+    }
+
+    // Re-read the mapping rather than trusting a ten-minute-old nonce: a
+    // membership can be revoked between the card being sent and being clicked.
+    const identity = await deps.channelIdentityRepo.prepareLarkLogin(state.larkOpenId, state.tenantKey);
+    if (
+      !identity.ok
+      || identity.value?.status !== 'ready'
+      || identity.value.companyId !== companyId
+      || identity.value.userId   !== userId
+    ) {
+      log.warn('lark.auth.link.mapping_gone', { companyId, userId });
+      res.status(403).json({ error: 'lark_identity_mismatch' });
+      return;
+    }
+
+    await deps.cache.del(larkOAuthNonceKey(state.nonce));
+
+    // One Lark identity resolves to one session. Detaching it from the others
+    // first keeps the runtime lookup unambiguous; it does not sign anyone out,
+    // it only stops an older session answering for this Lark account.
+    await deps.prisma.memberSession.updateMany({
+      where: {
+        companyId,
+        larkOpenId: state.larkOpenId,
+        larkTenantKey: state.tenantKey,
+        revokedAt: null,
+        sessionId: { not: sessionId },
+        authProvider: { not: SCHEDULED_SESSION_AUTH_PROVIDER },
+      },
+      data: { larkOpenId: null, larkTenantKey: null, larkUserId: null },
+    });
+
+    await deps.prisma.memberSession.update({
+      where: { sessionId },
+      data: {
+        larkTenantKey: state.tenantKey,
+        larkOpenId:    state.larkOpenId,
+        role:          identity.value.aiRole,
+      },
+    });
+
+    void deps.channelIdentityRepo.invalidateIdentityCache(state.larkOpenId);
+
+    log.info('lark.auth.link.attached', { companyId, userId, larkOpenId: state.larkOpenId });
+
+    // Answer what they asked before signing in. Not awaited — the browser is
+    // waiting on this response and an agent run is far slower than a page load.
+    const pendingEvent = stored.value.pendingEvent;
+    if (pendingEvent && deps.onLinked) {
+      void deps.onLinked(pendingEvent).catch(e =>
+        log.warn('lark.auth.link.replay_failed', { error: String(e), companyId }));
+    }
+
+    res.json({
+      linked: true,
+      /** Whether the reply to their original message is already on its way. */
+      replaying: Boolean(pendingEvent && deps.onLinked),
+    });
+  });
 
   // ── 1. Generate authorize URL ──────────────────────────────────────────────
   //
@@ -326,11 +453,14 @@ export function createLarkAuthRoutes(deps: {
       const memberSessionExpiresAt = new Date(
         Date.now() + deps.memberSessionTtlMinutes * 60_000,
       );
+      // Matched on Lark identity, not on `channel` — the counterpart to the
+      // runtime lookup. Keeping `channel: 'lark'` here would mean a session the
+      // person created by signing into the web app never renews, and this call
+      // would quietly create a second row alongside it every time.
       const renewed = await deps.prisma.memberSession.updateMany({
         where: {
           userId: state.userId,
           companyId: state.companyId,
-          channel: 'lark',
           larkTenantKey: state.tenantKey,
           larkOpenId: resolvedOpenId,
           revokedAt: null,

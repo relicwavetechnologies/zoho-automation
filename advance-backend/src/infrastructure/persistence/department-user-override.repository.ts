@@ -14,6 +14,7 @@ export interface DeptUserOverrideRow {
 export interface DeptUserOverrideRepoPort {
   getForUser(departmentId: string, userId: string): Promise<Result<DeptUserOverrideRow[], InfraError>>;
   upsert(departmentId: string, userId: string, toolId: string, actionGroup: string, allowed: boolean, updatedBy: string): Promise<Result<DeptUserOverrideRow, InfraError>>;
+  remove(departmentId: string, userId: string, toolId: string, actionGroup: string): Promise<Result<null, InfraError>>;
 }
 
 export class DeptUserOverrideRepository implements DeptUserOverrideRepoPort {
@@ -56,6 +57,31 @@ export class DeptUserOverrideRepository implements DeptUserOverrideRepoPort {
       return ok({ departmentId: row.departmentId, userId: row.userId, toolId: row.toolId, actionGroup: row.actionGroup, allowed: row.allowed });
     } catch (e) {
       return err(wrapInfra('prisma', 'upsertDeptUserToolOverride', e));
+    }
+  }
+
+  /**
+   * Drops the exception so the person inherits their role again.
+   *
+   * `allowed: false` is an explicit deny that outranks the role, so this is the
+   * only way back to inheriting — without it an exception can be flipped but
+   * never lifted. `deleteMany` rather than `delete` because removing an
+   * exception that is already gone is the state the caller asked for, not an
+   * error.
+   */
+  async remove(
+    departmentId: string,
+    userId: string,
+    toolId: string,
+    actionGroup: string,
+  ): Promise<Result<null, InfraError>> {
+    try {
+      await this.db.departmentUserToolOverride.deleteMany({
+        where: { departmentId, userId, toolId, actionGroup },
+      });
+      return ok(null);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'removeDeptUserToolOverride', e));
     }
   }
 }

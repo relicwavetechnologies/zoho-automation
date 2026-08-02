@@ -28,7 +28,15 @@ describe('handleZohoList', () => {
     });
     assert.deepEqual(result.items, [{ id: '1' }, { id: '2' }]);
     assert.equal(result.suggestExport, true);
-    assert.match(result.summary, /dataExport pipeline/i);
+    assert.equal(result.truncated, true);
+    assert.equal(result.hasMore, true);
+    assert.equal(result.totalCount, undefined);
+    assert.match(result.summary, /prepare the remaining data as an export/i);
+    assert.deepEqual(result.coverage, {
+      kind: 'truncated',
+      returnedRows: 2,
+      reason: 'source_has_more',
+    });
     assert.equal(listAllCalled, false);
   });
 
@@ -48,6 +56,9 @@ describe('handleZohoList', () => {
       } as any,
     });
     assert.equal(result.suggestExport, false);
+    assert.equal(result.truncated, false);
+    assert.equal(result.totalCount, 1);
     assert.equal(result.summary, '1 bills.');
+    assert.deepEqual(result.coverage, { kind: 'complete', totalRows: 1 });
   });
 });

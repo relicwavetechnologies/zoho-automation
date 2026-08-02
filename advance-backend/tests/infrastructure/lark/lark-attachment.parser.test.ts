@@ -46,6 +46,32 @@ describe('parseLarkAttachments', () => {
     assert.equal(result[0]!.mimeType, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
   });
 
+  it('routes uploaded audio files through voice transcription metadata', () => {
+    const event = makeEvent('file', { file_key: 'fk_audio', file_name: 'standup.MP3' });
+    assert.deepEqual(parseLarkAttachments(event), [{
+      type: 'audio',
+      source: 'file',
+      key: 'fk_audio',
+      fileName: 'standup.MP3',
+      mimeType: 'audio/mpeg',
+      messageId: 'om_test_123',
+      durationMs: null,
+    }]);
+  });
+
+  it('marks native audio as a duration-checked voice note', () => {
+    const event = makeEvent('audio', { file_key: 'fk_voice', duration: 4_000 });
+    assert.deepEqual(parseLarkAttachments(event), [{
+      type: 'audio',
+      source: 'voice-note',
+      key: 'fk_voice',
+      fileName: 'voice-note.ogg',
+      mimeType: 'audio/ogg',
+      messageId: 'om_test_123',
+      durationMs: 4_000,
+    }]);
+  });
+
   it('parses images inside post message', () => {
     const event = makeEvent('post', {
       content: [

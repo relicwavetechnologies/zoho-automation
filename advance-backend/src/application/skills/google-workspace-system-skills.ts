@@ -28,7 +28,7 @@ const GOOGLE_SKILL_ALIASES: Record<GoogleWorkspaceProductDefinition['service'], 
   drive: ['google files', 'cloud files', 'shared drive'],
   calendar: ['google events', 'schedule', 'availability'],
   docs: ['google document', 'word processor'],
-  sheets: ['google sheet', 'spreadsheet', 'workbook', 'cells', 'dropdown', 'data validation', 'freeze header'],
+  sheets: ['google sheet', 'google sheet url', 'docs.google.com/spreadsheets', 'drive.google.com/file', 'excel workbook url', 'convert excel to google sheet', 'spreadsheet', 'workbook', 'cells', 'dropdown', 'data validation', 'freeze header'],
   slides: ['google presentation', 'slide deck'],
   forms: ['google form', 'survey'],
   tasks: ['google to-do', 'task list'],
@@ -332,6 +332,82 @@ A create/edit task is complete only when the final content is verified and the r
       return `
 
 ## Google Sheets workflow
+
+## Pasted Google Sheet or Excel workbook URL
+
+Before generic web search or a native Sheets operation, route an exact pasted
+\`https://docs.google.com/spreadsheets/d/...\` Sheet URL or
+\`https://drive.google.com/file/d/...\` Excel workbook URL through Divo's
+governed reference resolver. Do not fetch it as a public web page, derive an ID
+from the URL yourself, request a download URL, or call
+\`import_to_google_sheets\` directly:
+
+\`\`\`json
+{
+  "toolId": "googleSheets",
+  "args": {
+    "op": "resolve_reference",
+    "url": "<exact pasted Google Sheet or Drive workbook URL>",
+    "connectionId": "<optional exact returned connection UUID>"
+  }
+}
+\`\`\`
+
+Omit \`connectionId\` on the first call. If Divo returns one eligible account,
+retry immediately with its exact connection ID. If it returns several, ask
+once, then retry the same URL with the selected exact connection.
+In a Lark runtime, a resolved response returns only
+\`data.destinationReferenceId\`; retain that opaque, short-lived handle bound
+to the exact user, chat, thread, and run. Use it for reads or edits without
+extracting a spreadsheet ID from the URL:
+
+\`\`\`json
+{
+  "toolId": "googleSheets",
+  "args": {
+    "op": "call_resolved_sheet",
+    "destinationReferenceId": "<opaque resolved reference>",
+    "nativeTool": "read_sheet_values",
+    "input": { "range_name": "Sheet1!A1:Z100" }
+  }
+}
+\`\`\`
+
+In Desktop, retain the governed
+\`data.resource.resourceId\` and \`data.resource.connectionId\` handles already
+returned by Divo. Never reconstruct Google IDs or move Sheet rows through
+model context.
+
+A URL-only request resolves metadata and access only. Confirm that Divo can
+open the Sheet, then ask what the member wants to do next.
+
+For an Excel workbook, \`resolve_reference\` prepares Divo's native confirmation
+to create a new Google Sheet copy. The original workbook stays unchanged. In
+Lark, stop after the successful resolver call: the backend delivers the
+confirmation card and owns conversion after the member clicks it.
+
+When RECENT DIVO EXPORTS identifies a Google Sheet, use its opaque reference
+for every read or edit in Lark. Never copy an ID from its URL and never supply a
+connection or spreadsheet ID:
+
+\`\`\`json
+{
+  "toolId": "googleSheets",
+  "args": {
+    "op": "call_exported_sheet",
+    "resourceRef": "<opaque recent-export reference>",
+    "nativeTool": "read_sheet_values",
+    "input": { "range": "Sheet1!A1:Z100" }
+  }
+}
+\`\`\`
+
+For follow-up edits, inspect workbook metadata or the exact header range first,
+perform the narrow requested native operation through \`call_exported_sheet\`,
+then read the exact changed range back through the same opaque reference. Divo
+revalidates the original Google account and workbook on every call. CSV and
+Excel exports are not editable through this reference; ask the member to use a
+Google Sheet destination instead.
 
 For a new structured spreadsheet, use this order:
 

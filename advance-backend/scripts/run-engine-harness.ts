@@ -664,6 +664,9 @@ async function main() {
 
   const env = loadAndValidateEnv({
     ...process.env,
+    ...(options.freshContext
+      ? { HINDSIGHT_ENABLED: 'false', KNOWLEDGE_LEARNING_ENABLED: 'false' }
+      : {}),
     // Build the same fully composed runtime used by the webhook while still
     // allowing the harness to target an explicitly selected backend.
     PI_LARK_BACKEND_URL: options.backendUrl,
@@ -689,8 +692,8 @@ async function main() {
   const expectedModelId = options.model ? HARNESS_MODEL_IDS[options.model] : undefined;
   if (expectedModelId && activeModelId !== expectedModelId) {
     throw new Error(
-      `--model ${options.model} expects ${expectedModelId}, but this member's active model is ${activeModelId}. `
-      + 'The harness follows the backend grant and does not override it; update the member policy or omit --model.',
+      `--model ${options.model} expects ${expectedModelId}, but Lark is pinned to ${activeModelId}. `
+      + 'Update the channel pin or omit --model.',
     );
   }
   console.log(`identity: ${identity.displayName ?? identity.email ?? userOpenId} (${userOpenId})`);

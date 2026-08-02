@@ -292,8 +292,6 @@ export const PEOPLE: Person[] = [
   },
 ]
 
-export const personById = (id: string) => PEOPLE.find((p) => p.id === id)
-
 /** Resolve a person's effective permissions the way the backend does: role grant, then override. */
 export function resolveGrants(person: Person): GrantMap {
   const base = ROLE_GRANTS[person.deptRole] ?? ROLE_GRANTS.MEMBER
@@ -373,37 +371,6 @@ export const CONNECTORS: ConnectionDef[] = [
   },
 ]
 
-export type Connection = {
-  id: string
-  provider: Provider
-  status: ConnStatus
-  label: string
-  account?: string
-  ownerType: 'user' | 'company'
-  ownerName?: string
-  connectedAt?: string
-  lastUsed?: string
-  sharedWith: { label: string; detail: string; access: 'read_only' | 'read_write' | 'admin' }[]
-}
-
-export const MY_CONNECTIONS: Connection[] = [
-  {
-    id: 'c_google', provider: 'google_workspace', status: 'connected', label: 'Google Workspace',
-    account: 'ananya@acme.co', ownerType: 'user', connectedAt: '14 Jun 2026', lastUsed: '12 minutes ago',
-    sharedWith: [{ label: 'Finance', detail: '6 people', access: 'read_only' }],
-  },
-  {
-    id: 'c_lark', provider: 'lark', status: 'connected', label: 'Lark',
-    account: 'ananya@acme.co', ownerType: 'user', connectedAt: '2 Apr 2026', lastUsed: '4 minutes ago',
-    sharedWith: [],
-  },
-  {
-    id: 'c_zoho', provider: 'zoho', status: 'connected', label: 'Zoho (company)',
-    account: 'finance@acme.co', ownerType: 'company', ownerName: 'Arjun Shah',
-    connectedAt: '9 Jan 2026', lastUsed: '2 hours ago',
-    sharedWith: [{ label: 'Finance', detail: 'Read only', access: 'read_only' }],
-  },
-]
 
 /* ── Approvals ───────────────────────────────────────── */
 export type Approval = {
@@ -418,31 +385,6 @@ export type Approval = {
   expiresIn: string
 }
 
-export const AWAITING_ME: Approval[] = [
-  {
-    id: 'a1', toolId: 'googleGmail', action: 'send',
-    summary: 'Send the Q3 vendor reminder to 14 suppliers',
-    detail: 'Rohan asked Divo to chase unpaid invoices. The draft is ready and goes out from rohan@acme.co.',
-    requestedBy: 'Rohan Iyer', requestedByInitials: 'RI', requestedAt: '9 minutes ago', expiresIn: 'in 51 min',
-  },
-  {
-    id: 'a2', toolId: 'zohoBooks', action: 'update',
-    summary: 'Mark 6 invoices as written off',
-    detail: 'Total value ₹2,14,800. Divo matched these against the aged-debt sheet Priya shared.',
-    requestedBy: 'Priya Nair', requestedByInitials: 'PN', requestedAt: '40 minutes ago', expiresIn: 'in 20 min',
-  },
-]
-
-export const REQUESTED_BY_ME: Approval[] = [
-  {
-    id: 'a3', toolId: 'googleDrive', action: 'delete',
-    summary: 'Clear 42 duplicate export files',
-    detail: 'Waiting on Arjun Shah.',
-    requestedBy: 'You', requestedByInitials: 'AM', requestedAt: '2 hours ago', expiresIn: 'expired',
-  },
-]
-
-/* ── Skills ──────────────────────────────────────────── */
 export type Skill = {
   id: string
   name: string
@@ -499,50 +441,6 @@ export const MEMORIES: Memory[] = [
 ]
 
 /* ── Usage ───────────────────────────────────────────── */
-export const MY_USAGE = {
-  runs30d: 214,
-  runsPrev: 168,
-  spend30d: 18.42,
-  spendToday: 0.94,
-  tokensIn: 4_182_000,
-  tokensOut: 291_400,
-  cacheSavingsPct: 71,
-  budgetUsd: 40,
-  daily: [3, 5, 2, 8, 11, 6, 4, 9, 14, 7, 5, 12, 16, 9, 6, 11, 8, 4, 13, 17, 10, 7, 9, 15, 11, 6, 8, 12, 14, 9],
-  byModel: [
-    { model: 'deepseek-v4-flash', label: 'Flash', calls: 812, costUsd: 6.11 },
-    { model: 'deepseek-v4-pro', label: 'Pro', calls: 143, costUsd: 12.31 },
-  ],
-}
-
-export const TEAM_USAGE = {
-  spend30d: 102.21,
-  runs30d: 1171,
-  activePeople: 5,
-  totalPeople: 6,
-  topSpender: 'Rohan Iyer',
-}
-
-/* ── Activity ────────────────────────────────────────── */
-export type Run = {
-  id: string
-  summary: string
-  channel: 'lark' | 'desktop'
-  status: 'completed' | 'failed' | 'running'
-  when: string
-  duration: string | null
-  costUsd: number
-  tools: string[]
-}
-
-export const MY_RUNS: Run[] = [
-  { id: 'r1', summary: 'Reconciled the March vendor ledger', channel: 'lark', status: 'running', when: '4 min ago', duration: null, costUsd: 0.21, tools: ['zohoBooks', 'googleSheets'] },
-  { id: 'r2', summary: 'Drafted 14 supplier reminders', channel: 'desktop', status: 'completed', when: '2 hours ago', duration: '3m 41s', costUsd: 0.38, tools: ['zohoBooks', 'googleGmail'] },
-  { id: 'r3', summary: 'Summarised the audit thread', channel: 'lark', status: 'running', when: 'Yesterday', duration: null, costUsd: 0.09, tools: ['larkMessaging'] },
-  { id: 'r4', summary: 'Built the Q2 expense breakdown', channel: 'desktop', status: 'completed', when: 'Yesterday', duration: '6m 02s', costUsd: 0.71, tools: ['googleSheets', 'googleDrive'] },
-  { id: 'r5', summary: 'Looked up three supplier GST numbers', channel: 'desktop', status: 'failed', when: '2 days ago', duration: '0m 22s', costUsd: 0.02, tools: ['webSearch'] },
-]
-
 /* ── Data honesty ────────────────────────────────────
    Which panels run on something real. Rendered in the UI as a small marker so
    this mock cannot imply more is built than actually is. */
@@ -560,31 +458,27 @@ export type DataState = 'live' | 'not-wired' | 'needs-endpoint' | 'needs-backend
 
 export const DATA_SOURCES: Record<string, { state: DataState; note: string }> = {
   connections: { state: 'live', note: 'GET /api/desktop/auth/{provider}/status — real today' },
-  /**
-   * Mounted at the real /connections path while still on fixtures — the only
-   * screen in the signed-in app where that is true. The endpoints behind it
-   * exist; nothing calls them yet.
-   */
-  companyConnections: { state: 'not-wired', note: 'The provider endpoints exist. This screen still renders fixtures — wire it before anyone trusts these rows.' },
   connectionCoverage: { state: 'needs-backend', note: 'No route reports per-provider coverage or expiry across a company. Token expiry is stored but never evaluated.' },
-  connectionManage: { state: 'live', note: 'GET /{provider}/connections/:id/manage — real today' },
   approvals: { state: 'live', note: 'GET /api/desktop/approvals — real today' },
   permissions: { state: 'live', note: 'GET /api/desktop/auth/tools/:toolId/manage — real today' },
   teamPeople: { state: 'live', note: 'GET /api/desktop/departments/:id/manage — real today' },
-  skills: { state: 'live', note: 'gateway op skills.list — real today' },
-  profile: { state: 'live', note: 'GET /api/desktop/auth/me + /model-options — real today' },
-  myUsage: { state: 'needs-endpoint', note: 'Only totals exist (/auth/usage, unused). Per-day and cost need a member-scoped route.' },
-  myRuns: { state: 'needs-endpoint', note: 'Runs are admin-only today. Data exists and is indexed by userId; the route does not.' },
-  teamUsage: { state: 'needs-backend', note: 'No spend or execution route accepts a departmentId. Team aggregation is net-new.' },
-  memory: { state: 'needs-endpoint', note: 'Memory is admin-only. A member cannot list or delete their own memories today.' },
-  accessRequest: { state: 'needs-backend', note: 'No access-request model exists. RuntimeApproval is per-tool-call, not a standing grant.' },
+  skills: { state: 'not-wired', note: 'The gateway serves skills.list. These panels still render fixtures — wire them before anyone trusts these rows.' },
+  skillRegistry: { state: 'live', note: 'GET /api/admin/skill-registry/* — real today, including the grants' },
+  profile: { state: 'live', note: 'GET /api/desktop/auth/me + /auth/model-options — real today' },
+  myUsage: { state: 'live', note: 'GET /api/desktop/me/usage — real today' },
+  myRuns: { state: 'live', note: 'GET /api/desktop/me/runs — real today' },
+  /** The admin-side run list is a different route, so it is a different key. */
+  companyRuns: { state: 'live', note: 'GET /api/admin/executions — real today' },
+  teamUsage: { state: 'live', note: 'GET /api/desktop/departments/:id/usage — real today' },
   /**
-   * Removing a per-user override is impossible today. DepartmentUserToolOverride has
-   * only findMany + upsert in the entire codebase — no delete. So `allowed: false`
-   * (an explicit deny that still outranks the role) is the closest the backend can
-   * get, and it is NOT the same as falling back to the role. Needs a DELETE route.
+   * Both things are true — no member-facing route exists, *and* the rows on
+   * screen are invented. Only the second one can mislead somebody: "Needs an
+   * endpoint" reads as a missing feature, while the person is looking at five
+   * fabricated statements about what Divo remembers of them. The marker that
+   * protects the reader wins.
    */
-  overrideRemoval: { state: 'needs-backend', note: 'The override table has no delete — an exception can be flipped, never lifted.' },
+  memory: { state: 'not-wired', note: 'These rows are invented. Memory is admin-only — no route lets a member list or delete their own memories, so nothing here was read from anywhere.' },
+  overrideRemoval: { state: 'live', note: 'DELETE /tools/:toolId/departments/:id/members/:userId/actions/:action — real today' },
   /**
    * The Pi artifact extension exists but is switched off, and runtime.test.mjs
    * asserts it stays off. Its mime map is markdown-only, the file never leaves
@@ -595,27 +489,8 @@ export const DATA_SOURCES: Record<string, { state: DataState; note: string }> = 
   artifacts: { state: 'needs-backend', note: 'divo_artifact is disabled, markdown-only, and never leaves the container.' },
   artifactSharing: { state: 'needs-backend', note: 'An artifact has no owner or grants today — it is only a file path.' },
   artifactHistory: { state: 'needs-backend', note: 'No versioned storage; the workspace file is overwritten in place.' },
-  artifactLive: { state: 'needs-backend', note: 'No event fires when the agent writes a file, so an open viewer cannot update.' },
   reconnect: { state: 'needs-backend', note: 'Token expiry is stored but never evaluated — there is no needs_reauth state to read.' },
+  mailRules: { state: 'live', note: 'GET /api/mail-automations/rules + /health — real today. Read-only: pausing or deleting a rule is still done by asking Divo.' },
 }
 
 /* ── Scopes per persona ──────────────────────────────── */
-export const SCOPES: Record<Persona, Scope[]> = {
-  member: [{ id: 'you', kind: 'you', label: 'Ananya Mehta', detail: 'Your workspace' }],
-  manager: [
-    { id: 'you', kind: 'you', label: 'Arjun Shah', detail: 'Your workspace' },
-    { id: 'team-finance', kind: 'team', label: 'Finance', detail: '6 people · you lead', departmentId: 'd_finance' },
-  ],
-  admin: [
-    { id: 'you', kind: 'you', label: 'Dev Kapoor', detail: 'Your workspace' },
-    { id: 'team-finance', kind: 'team', label: 'Finance', detail: '6 people', departmentId: 'd_finance' },
-    { id: 'team-ops', kind: 'team', label: 'Operations', detail: '11 people', departmentId: 'd_ops' },
-    { id: 'company', kind: 'company', label: 'Acme Technologies', detail: '48 people · whole company' },
-  ],
-}
-
-export const VIEWER: Record<Persona, { name: string; email: string; initials: string; role: string }> = {
-  member: { name: 'Ananya Mehta', email: 'ananya@acme.co', initials: 'AM', role: 'Member · Finance' },
-  manager: { name: 'Arjun Shah', email: 'arjun@acme.co', initials: 'AS', role: 'Manager · Finance' },
-  admin: { name: 'Dev Kapoor', email: 'dev@acme.co', initials: 'DK', role: 'Company admin' },
-}

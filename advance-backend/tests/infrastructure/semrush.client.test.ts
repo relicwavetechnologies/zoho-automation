@@ -33,9 +33,13 @@ describe('SemrushClient', () => {
   });
 
   it('parses a bounded official v3 organic response and exposes a continuation', async () => {
+    const calls: URL[] = [];
     const client = new SemrushClient({
       timeoutMs: 1_000,
-      fetchImpl: async () => new Response('Ph;Po;Nq\nupi gateway;3;1000\npayment api;5;900\n', { status: 200 }),
+      fetchImpl: async (url) => {
+        calls.push(new URL(String(url)));
+        return new Response('Ph;Po;Nq\nupi gateway;3;1000\npayment api;5;900\n', { status: 200 });
+      },
     });
     const result = await client.fetch({
       apiKey: 'secret-key',
@@ -46,6 +50,37 @@ describe('SemrushClient', () => {
     assert.equal(JSON.stringify(result).includes('secret-key'), false);
     assert.equal(result.status, 'partial');
     assert.equal(result.nextPage, '1');
+    assert.equal(calls[0]?.searchParams.get('display_limit'), '2');
+    assert.equal(
+      calls[0]?.searchParams.get('export_columns'),
+      'Ph,Po,Pp,Pd,Nq,Cp,Ur,Tr,Tc,Co,Nr,Td,Fk,Fp',
+    );
+  });
+
+  it('does not invent a continuation when the provider returns no look-ahead row', async () => {
+    const client = new SemrushClient({
+      timeoutMs: 1_000,
+      fetchImpl: async () => new Response('Ph;Po;Nq\nupi gateway;3;1000\n', { status: 200 }),
+    });
+    const result = await client.fetch({
+      apiKey: 'secret-key',
+      args: { operation: 'organic_positions', domain: 'decentro.tech', database: 'in', limit: 1, offset: 0 },
+    });
+    assert.equal(result.status, 'complete');
+    assert.equal(result.nextPage, undefined);
+  });
+
+  it('treats Semrush end-of-data offset rejection as clean exhaustion', async () => {
+    const client = new SemrushClient({
+      timeoutMs: 1_000,
+      fetchImpl: async () => new Response('ERROR 605 :: Invalid display_offset parameter', { status: 400 }),
+    });
+    const result = await client.fetch({
+      apiKey: 'secret-key',
+      args: { operation: 'organic_positions', domain: 'decentro.tech', database: 'in', limit: 1_000, offset: 1_000 },
+    });
+    assert.equal(result.status, 'empty');
+    assert.deepEqual(result.rows, []);
   });
 
   it('returns empty for a valid v3 table without result rows', async () => {

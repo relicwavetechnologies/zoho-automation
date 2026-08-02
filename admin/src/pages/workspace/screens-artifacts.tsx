@@ -31,8 +31,9 @@ import {
   Link2, ListChecks, Lock, MessageSquare, Pencil, Share2, ShieldCheck, Sparkles, TriangleAlert, Users,
 } from 'lucide-react'
 import { DataNote, Empty, Fade, PageHeader, Panel, Seg, SkelRows, useStaged } from './ui'
+import type { Toast } from './ui'
 
-type Props = { replay: number; toast: (m: string) => void; go: (s: string) => void }
+type Props = { replay: number; toast: Toast; go: (s: string) => void }
 
 type ArtifactKind = 'deck' | 'todo' | 'research' | 'doc'
 
@@ -101,7 +102,21 @@ export function Artifacts({ replay, toast }: Props) {
                   {ARTIFACTS.map((a) => {
                     const Icon = KIND_META[a.kind].icon
                     return (
-                      <button type="button" className="ws-art-card" key={a.id} onClick={() => setOpen(a.id)}>
+                      // A <button> may only contain phrasing content, and this
+                      // card is a thumbnail over a title and a caption. Same
+                      // pattern the skills tree uses: a div that announces
+                      // itself as a button and answers both Enter and Space,
+                      // which is what a real button does.
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        className="ws-art-card"
+                        key={a.id}
+                        onClick={() => setOpen(a.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(a.id) }
+                        }}
+                      >
                         <div className="ws-art-thumb" data-kind={a.kind}>
                           {a.kind === 'deck' ? <DeckThumb /> : <Icon size={26} />}
                           {a.live ? (
@@ -115,7 +130,7 @@ export function Artifacts({ replay, toast }: Props) {
                             {a.shared ? ` · ${a.shared}` : ' · only you'}
                           </p>
                         </div>
-                      </button>
+                      </div>
                     )
                   })}
                 </div>
@@ -198,7 +213,7 @@ const DeckThumb = () => (
 /* ══ Viewer ════════════════════════════════════════════
    The screen the whole idea rests on. An artifact is not a download — it is a
    live surface the agent keeps writing to while you watch. */
-function ArtifactViewer({ artifact, onBack, toast }: { artifact: Artifact; onBack: () => void; toast: (m: string) => void }) {
+function ArtifactViewer({ artifact, onBack, toast }: { artifact: Artifact; onBack: () => void; toast: Toast }) {
   const [slide, setSlide] = useState(0)
   const [editing, setEditing] = useState(Boolean(artifact.live))
   const [revision, setRevision] = useState(artifact.live ? 6 : 4)
@@ -423,7 +438,7 @@ const TODOS = [
   ] },
 ]
 
-function TodoRender({ toast }: { toast: (m: string) => void }) {
+function TodoRender({ toast }: { toast: Toast }) {
   const [done, setDone] = useState<string[]>(['Reconcile the vendor ledger'])
   return (
     <div className="ws-todo">

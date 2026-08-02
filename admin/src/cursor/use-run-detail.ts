@@ -71,11 +71,20 @@ export interface RunDetailView {
   statusLabel: string
   channel: string
   entrypoint: string
+  latestSummary: string | null
   userId: string | null
   userName: string | null
   turns: RunTurnView[]
   totals: { turns: number; tokens: number; costUsd: number }
   composition: { missPct: number; hitPct: number; outPct: number }
+  /**
+   * Cache hits as a share of *input only*.
+   *
+   * Distinct from `composition.hitPct`, which is a share of the whole bar
+   * including output. "How much of the input came from cache" is the figure
+   * that explains the cost, and reading it off the three-way bar understates it.
+   */
+  cacheOfInputPct: number
   durationLabel: string
   ended: boolean
 }
@@ -185,6 +194,7 @@ export function reconstructRun(detail: RunDetailDto, events: EventDto[]): RunDet
     statusLabel: st.label,
     channel: detail.channel,
     entrypoint: detail.entrypoint,
+    latestSummary: detail.latestSummary,
     userId: detail.userId,
     userName: detail.userName ?? null,
     turns,
@@ -194,6 +204,7 @@ export function reconstructRun(detail: RunDetailDto, events: EventDto[]): RunDet
       hitPct: Math.round((hit / compTotal) * 100),
       outPct: Math.round((out / compTotal) * 100),
     },
+    cacheOfInputPct: miss + hit > 0 ? Math.round((hit / (miss + hit)) * 100) : 0,
     durationLabel: detail.durationMs != null ? `${(detail.durationMs / 1000).toFixed(1)}s` : "—",
     ended,
   }

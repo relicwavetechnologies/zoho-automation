@@ -11,6 +11,7 @@ import type { AuditService } from '../observability/audit.service';
 import type { PermissionService } from '../permissions/permission.service';
 import { ManagerApprovalConfigSchema, type ManagerApprovalConfig } from '../approval/approval.types';
 import { getDesktopToolPolicy } from '../../domain/tools/tool-policy';
+import { TOOL_SUPPORTED_ACTIONS, type CanonicalToolId } from '../../domain/tools/tool-id';
 
 export type DesktopDepartmentActor = {
   userId: string;
@@ -28,6 +29,62 @@ export class DesktopDepartmentManagementError extends Error {
 export type DepartmentManagementSnapshot = Pick<DeptDetail, 'department' | 'roles' | 'memberships'>;
 
 export type DepartmentManagerApprovalPolicy = Pick<ManagerApprovalConfig, 'enabled' | 'requiredActions'>;
+
+/**
+ * The whole gate, expressed the one way the desktop can edit it.
+ *
+ * A policy may gate an action three ways: an exact `requiredActions` entry, a
+ * broad `requiredActionGroups` verb, or a legacy `requiredToolIds` tool, which
+ * the runtime reads as every non-read action on that tool. `setManagerApproval`
+ * deliberately retires the two broad forms on write, so the visible policy
+ * becomes the effective one — but the read returned `requiredActions` alone,
+ * and the two disagreed until somebody saved.
+ *
+ * Live consequence, not a hypothetical: Finance runs with
+ * `requiredToolIds: ['zohoCrm','zohoBooks']` and an empty `requiredActions`, so
+ * its manager saw "Nothing is gated" while Divo was in fact stopping to ask
+ * about every write to both. Worse, the screen sends the complete next state,
+ * so their first toggle — of anything at all — would have written those two
+ * gates away without naming them.
+ *
+ * Expanding here rather than at the enforcement point on purpose: the gate in
+ * approval-policy.ts still reads all three forms from the raw JSON, so nothing
+ * about what Divo actually stops for changes. This only makes the screen honest,
+ * and turns the next save into a faithful migration of what was already true.
+ */
+type RequiredActionEntry = ManagerApprovalConfig['requiredActions'][number];
+
+function expandLegacySelectors(
+  config: Pick<ManagerApprovalConfig, 'requiredActions' | 'requiredActionGroups' | 'requiredToolIds'>,
+): RequiredActionEntry[] {
+  const byTool = new Map<string, Set<string>>();
+  const add = (toolId: string, action: string) => {
+    const actions = byTool.get(toolId) ?? new Set<string>();
+    actions.add(action);
+    byTool.set(toolId, actions);
+  };
+
+  for (const entry of config.requiredActions) for (const action of entry.actions) add(entry.toolId, action);
+
+  // A legacy tool id gates every non-read action on that tool, which is exactly
+  // how approval-policy.ts reads it.
+  for (const toolId of config.requiredToolIds) {
+    const supported = TOOL_SUPPORTED_ACTIONS[toolId as CanonicalToolId];
+    if (!supported) continue;
+    for (const action of supported) if (action !== 'read') add(toolId, action);
+  }
+
+  // A broad action group gates that verb on every tool that supports it.
+  for (const action of config.requiredActionGroups) {
+    if (action === 'read') continue;
+    for (const [toolId, supported] of Object.entries(TOOL_SUPPORTED_ACTIONS)) {
+      if (supported.includes(action)) add(toolId, action);
+    }
+  }
+
+  return [...byTool].map(([toolId, actions]) => ({ toolId, actions: [...actions] }));
+}
+
 
 type DepartmentManagerServiceDeps = {
   prisma: PrismaClient;
@@ -215,7 +272,10 @@ export class DesktopDepartmentManagementService {
     if (!config) throw new DesktopDepartmentManagementError('not_found', 'Department approval configuration is not available');
     const parsed = ManagerApprovalConfigSchema.safeParse(config.managerApprovalJson ?? {});
     if (!parsed.success) throw new DesktopDepartmentManagementError('invalid', 'Department approval configuration is invalid');
-    return { enabled: parsed.data.enabled, requiredActions: parsed.data.requiredActions };
+    return {
+      enabled: parsed.data.enabled,
+      requiredActions: expandLegacySelectors(parsed.data),
+    };
   }
 
   async setManagerApprovalPolicy(

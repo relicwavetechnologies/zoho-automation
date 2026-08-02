@@ -543,6 +543,35 @@ export class DesktopToolAccessService {
     if (!result.ok) throw new DesktopToolAccessError(result.reason === 'invalid' ? 'invalid' : 'internal');
     return this.snapshot(actor, toolId, { kind: 'department', departmentId });
   }
+
+  /**
+   * Removes one person's exception, returning them to their role.
+   *
+   * Guarded exactly like setting one: lifting an exception is as much a
+   * permission change as imposing it, and on a deny it *widens* access.
+   */
+  async clearDepartmentMember(actor: Actor, toolId: string, departmentId: string, userId: string, actionGroup: string) {
+    const liveRole = await this.liveCompanyRole(actor);
+    if (!liveRole) throw new DesktopToolAccessError('forbidden');
+    if (!await this.canGovernDepartment(actor, liveRole, departmentId)) throw new DesktopToolAccessError('forbidden');
+    if (!await this.requireRegisteredConfigurable(toolId)) throw new DesktopToolAccessError('invalid');
+    const target = await this.deps.prisma.departmentMembership.findFirst({ where: { departmentId, userId, status: 'active', department: { companyId: actor.companyId, status: 'active' } }, select: { id: true } });
+    if (!target) throw new DesktopToolAccessError('forbidden');
+    const result = await this.deps.permissionWrites.clearDepartmentMemberAction({
+      companyId: actor.companyId, departmentId, actorId: actor.userId, userId, toolId, actionGroup,
+      revalidate: async () => {
+        const role = await this.liveCompanyRole(actor);
+        return Boolean(role)
+          && await this.canGovernDepartment(actor, role!, departmentId)
+          && Boolean(await this.deps.prisma.departmentMembership.findFirst({
+            where: { departmentId, userId, status: 'active', department: { companyId: actor.companyId, status: 'active' } },
+            select: { id: true },
+          }));
+      },
+    });
+    if (!result.ok) throw new DesktopToolAccessError(result.reason === 'invalid' ? 'invalid' : 'internal');
+    return this.snapshot(actor, toolId, { kind: 'department', departmentId });
+  }
 }
 
 function groupBy<T>(items: readonly T[], key: (item: T) => string): Map<string, T[]> {

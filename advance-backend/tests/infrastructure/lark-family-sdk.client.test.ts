@@ -128,6 +128,35 @@ describe('Lark family clients through the official SDK boundary', () => {
     });
   });
 
+  it('reads an interactive message card before a surgical card update', async () => {
+    const card = {
+      schema: '2.0',
+      body: { elements: [{ tag: 'markdown', content: 'Keep me' }] },
+    };
+    const { sdkClient, requests } = sdkStub(() => ({
+      items: [{
+        chat_id: 'oc_export',
+        msg_type: 'interactive',
+        body: { content: JSON.stringify(card) },
+      }],
+    }));
+    const client = new LarkMessagingClient({
+      appId: 'app',
+      appSecret: 'secret',
+      logger: noopLogger,
+      sdkClient,
+    });
+
+    assert.deepEqual(await client.getInteractiveMessageCard('om_export'), {
+      chatId: 'oc_export',
+      card,
+    });
+    assert.deepEqual(requests[0], {
+      method: 'GET',
+      url: '/open-apis/im/v1/messages/om_export',
+    });
+  });
+
   it('maps task records while preserving the documented SDK request', async () => {
     const { sdkClient, requests } = sdkStub(() => ({ task: { guid: 'task-1', summary: 'Ship SDK', completed: true } }));
     const task = await new LarkTaskClient(deps(sdkClient)).getTask('task-1');

@@ -27,10 +27,66 @@ const extractErrorMessage = async (response: Response): Promise<string> => {
   }
 };
 
+/**
+ * Thrown instead of a bare Error so a caller can tell "wrong password" (401)
+ * from "no workspace" (403) from "the server fell over" without parsing prose.
+ */
+export class ApiError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+type RequestOptions = {
+  /**
+   * Suppress the error toast. Sign-in renders its failure inline, next to the
+   * field that caused it — a toast on top of that is the same news twice.
+   */
+  quiet?: boolean;
+  /**
+   * Return the parsed body instead of `body.data`.
+   *
+   * Most routes answer `{ success, data }`, but the approvals router returns
+   * its payload bare. Unwrapping that would hand back `undefined`, which reads
+   * downstream as "no approvals" rather than as a bug — so the exception is
+   * declared at the call site rather than guessed at here.
+   */
+  raw?: boolean;
+};
+
+/**
+ * Statuses worth asking again about.
+ *
+ * Not 503: this backend uses it to mean "no app is configured for that
+ * provider on this deployment", which is a settled answer, and retrying it
+ * would add two round trips to every unconfigured integration on a page that
+ * checks six of them. 500/502/504 and a `fetch` that throws outright are the
+ * shapes of a backend restarting or a database tunnel dropping.
+ */
+const RETRYABLE = new Set([500, 502, 504]);
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Reads are retried; writes are not.
+ *
+ * Every screen in this app was one failed GET away from asserting something
+ * false — six providers each reporting "could not read this connection" for
+ * one dropped tunnel, a permission grid rendering empty, a team looking like
+ * it has nobody in it. The hooks each caught their own failure and rendered it
+ * as a fact about the world, and fixing that hook by hook would have left the
+ * next one to be written with the same hole.
+ *
+ * A GET is safe to repeat by definition. A POST, PUT or DELETE is not — a
+ * request that timed out may well have been applied — so those still fail on
+ * the first attempt and the caller decides.
+ */
 const request = async <T>(
   path: string,
   init: RequestInit = {},
   token?: string,
+  opts: RequestOptions = {},
 ): Promise<T> => {
   const headers = new Headers(init.headers);
   headers.set("Content-Type", "application/json");
@@ -38,48 +94,54 @@ const request = async <T>(
     headers.set("Authorization", `Bearer ${token}`);
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers,
-  });
+  const retries = (init.method ?? "GET") === "GET" ? 2 : 0;
+  let response: Response;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers });
+      if (response.ok || !RETRYABLE.has(response.status) || attempt >= retries) break;
+    } catch (networkError) {
+      // The backend is not answering at all. Worth one more ask before this
+      // becomes a sentence on somebody's screen.
+      if (attempt >= retries) throw networkError;
+    }
+    await wait(300 * (attempt + 1));
+  }
 
   if (!response.ok) {
     const errorMsg = await extractErrorMessage(response);
-    toast.error(`Error ${response.status}`, { description: errorMsg });
-    throw new Error(errorMsg);
+    if (!opts.quiet) {
+      // A refusal is not an error the person can fix by retrying, and
+      // "Error 403" tells them nothing about which it is. Name the two cases.
+      if (response.status === 403) {
+        toast.error("You do not have access to that", { description: errorMsg });
+      } else if (response.status === 401) {
+        toast.error("Your session has expired", { description: "Sign in again to continue." });
+      } else {
+        toast.error(`Error ${response.status}`, { description: errorMsg });
+      }
+    }
+    throw new ApiError(response.status, errorMsg);
   }
 
   const body = (await response.json()) as ApiResponse<T>;
-  return body.data;
+  return opts.raw ? (body as unknown as T) : body.data;
 };
 
 export const api = {
-  post: <T>(path: string, payload: unknown, token?: string) =>
-    request<T>(path, { method: "POST", body: JSON.stringify(payload) }, token),
-  put: <T>(path: string, payload: unknown, token?: string) =>
-    request<T>(path, { method: "PUT", body: JSON.stringify(payload) }, token),
-  delete: <T>(path: string, payload: unknown, token?: string) =>
+  post: <T>(path: string, payload: unknown, token?: string, opts?: RequestOptions) =>
+    request<T>(path, { method: "POST", body: JSON.stringify(payload) }, token, opts),
+  put: <T>(path: string, payload: unknown, token?: string, opts?: RequestOptions) =>
+    request<T>(path, { method: "PUT", body: JSON.stringify(payload) }, token, opts),
+  delete: <T>(path: string, payload: unknown, token?: string, opts?: RequestOptions) =>
     request<T>(
       path,
       { method: "DELETE", body: JSON.stringify(payload) },
       token,
+      opts,
     ),
-  get: <T>(path: string, token?: string) =>
-    request<T>(path, { method: "GET" }, token),
-};
-
-export type CompanyMemberRole = "MEMBER" | "COMPANY_ADMIN";
-
-export const companyMembersApi = {
-  updateRole: (
-    userId: string,
-    input: { role: CompanyMemberRole; companyId?: string },
-    token?: string,
-  ) => api.put<{ userId: string; companyId: string; role: CompanyMemberRole }>(
-    `/api/admin/company/members/${userId}/role`,
-    input,
-    token,
-  ),
+  get: <T>(path: string, token?: string, opts?: RequestOptions) =>
+    request<T>(path, { method: "GET" }, token, opts),
 };
 
 export type CreateAgentInput = {
@@ -93,23 +155,6 @@ export type CreateAgentInput = {
   provider?: string | null;
 };
 
-export type UpdateAgentInput = Partial<
-  CreateAgentInput & { isActive: boolean; parentId: string | null }
->;
-
-export type ModelCatalogEntry = {
-  provider: "openai" | "google";
-  modelId: string;
-  label: string;
-  description: string;
-  speed: "fast" | "medium" | "slow";
-  cost: "low" | "medium" | "high";
-  maxContextTokens: number;
-  outputReserveTokens?: number;
-  preview?: boolean;
-  supportsThinking?: boolean;
-};
-
 export const agentsApi = {
   /**
    * The governed tool catalogue. Named for its historical client, but it is not
@@ -117,70 +162,6 @@ export const agentsApi = {
    */
   toolRegistry: <T = any>(token?: string) =>
     api.get<T[]>("/api/admin/tool-registry", token),
-};
-
-
-export type ConnectOpenAiInput = {
-  tier?: "free" | "pro";
-  label?: string;
-};
-
-export type OpenAiConnectStart = {
-  companyId: string;
-  gatewayUrl: string;
-  authUrl: string;
-  sessionId: string;
-  dedicatedAccountId: string;
-};
-
-export type CompleteOpenAiInput = {
-  dedicatedAccountId: string;
-  callbackUrl: string;
-};
-
-export type OpenAiConnectComplete = {
-  companyId: string;
-  connected: boolean;
-  status: string;
-  gatewayUrl: string;
-  dedicatedAccountId: string;
-  tier?: string | null;
-  updatedAt: string;
-};
-
-export type OpenAiTestResult = {
-  ok: boolean;
-  status: number;
-  latencyMs: number;
-  response: unknown;
-};
-
-export type AiModelTarget = {
-  id: string;
-  targetKey: string;
-  provider: "openai" | "google" | string;
-  modelId: string;
-  thinkingLevel?: string | null;
-  fastProvider?: string | null;
-  fastModelId?: string | null;
-  fastThinkingLevel?: string | null;
-  xtremeProvider?: string | null;
-  xtremeModelId?: string | null;
-  xtremeThinkingLevel?: string | null;
-  updatedBy?: string;
-  updatedAt?: string;
-};
-
-export type UpdateAiModelTargetInput = {
-  provider: "openai" | "google";
-  modelId: string;
-  thinkingLevel?: string | null;
-  fastProvider?: string | null;
-  fastModelId?: string | null;
-  fastThinkingLevel?: string | null;
-  xtremeProvider?: string | null;
-  xtremeModelId?: string | null;
-  xtremeThinkingLevel?: string | null;
 };
 
 

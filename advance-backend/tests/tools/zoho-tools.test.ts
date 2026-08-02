@@ -367,7 +367,7 @@ describe('zohoBooks tool', () => {
 
       assert.equal(r.ok, true);
       assert.deepEqual(
-        (r as any).value.data.items.map((record: { id: string }) => record.id),
+        (r as any).value.preview.rows.map((record: { id: string }) => record.id),
         ['inv-owned'],
       );
     });

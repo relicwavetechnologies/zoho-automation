@@ -109,6 +109,14 @@ enum KnowledgeLearningJobStatus {
   failed
 }
 
+enum DataExportOfferStatus {
+  pending
+  confirming
+  confirmed
+  expired
+  cancelled
+}
+
 // Manager-persona learning is deliberately isolated from personal memory.
 // These rows are evidence/candidates only in P1–P3; no active department
 // persona is written by this pipeline until the promotion phase exists.
@@ -238,6 +246,8 @@ model User {
   managerPersonaNodes                ManagerPersonaNode[]            @relation("ManagerPersonaNodeManager")
   managerTeachSessions               ManagerTeachSession[]           @relation("ManagerTeachSessionManager")
   connectionAuthorizationIntents     ConnectionAuthorizationIntent[]
+  dataExportOffers                   DataExportOffer[]
+  dataExportDestinationPreferences   DataExportDestinationPreference[]
   mailboxSubscriptions               MailboxSubscription[]
   mailAutomationRules                MailAutomationRule[]
   knowledgeResourcesOwned            KnowledgeResource[]             @relation("KnowledgeResourceOwner")
@@ -305,10 +315,13 @@ model Company {
   managerPersonaNodes             ManagerPersonaNode[]
   managerTeachSessions            ManagerTeachSession[]
   connectionAuthorizationIntents  ConnectionAuthorizationIntent[]
+  dataExportOffers                DataExportOffer[]
+  dataExportDestinationPreferences DataExportDestinationPreference[]
   mailboxSubscriptions            MailboxSubscription[]
   mailAutomationRules             MailAutomationRule[]
   mailEvents                      MailEvent[]
   mailDeliveries                  MailDelivery[]
+  mailboxReconciliations          MailboxReconciliation[]
   knowledgeResources              KnowledgeResource[]
   knowledgeMutations              KnowledgeMutation[]
   knowledgeFileAssets             KnowledgeFileAsset[]
@@ -824,6 +837,7 @@ model Department {
   managerPersonaNodes            ManagerPersonaNode[]
   managerTeachSessions           ManagerTeachSession[]
   connectionAuthorizationIntents ConnectionAuthorizationIntent[]
+  dataExportOffers               DataExportOffer[]
   mailAutomationRules            MailAutomationRule[]
   knowledgeResources             KnowledgeResource[]
   knowledgeMutations             KnowledgeMutation[]
@@ -1272,11 +1286,12 @@ model IntegrationConnection {
   @@index([companyId, ownerUserId])
 }
 
-/// One browser authorization attempt plus the exact agent continuation target.
+/// One browser authorization attempt plus the exact continuation target.
 ///
 /// Only a hash of the browser state is persisted. The callback claims the row
-/// once, then a separate worker starts a fresh agent run from the stored
-/// request; no model stream stays open while the user completes OAuth.
+/// once, then a separate worker either starts a fresh agent run from the stored
+/// request or resumes a typed backend action directly. No model stream stays
+/// open while the user completes OAuth.
 model ConnectionAuthorizationIntent {
   id                         String                 @id @default(uuid())
   stateHash                  String                 @unique
@@ -1300,6 +1315,7 @@ model ConnectionAuthorizationIntent {
   groupReplyMode             String?
   originalRequest            String
   requestedToolIds           String[]               @default([])
+  continuationPayload        Json?
   status                     String                 @default("pending")
   continuationStatus         String                 @default("blocked")
   continuationIdempotencyKey String                 @unique
@@ -1325,6 +1341,51 @@ model ConnectionAuthorizationIntent {
   @@index([connectionId])
 }
 
+/// Immutable, expiring server-owned recipe behind one export confirmation.
+/// It stores identifiers and normalized tool input only; dataset rows and
+/// provider credentials never belong in this record.
+model DataExportOffer {
+  id                 String                @id @default(uuid())
+  companyId          String
+  company            Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId             String
+  user               User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  departmentId       String?
+  department         Department?            @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
+  sourceKind         String
+  sourceConnectionId String
+  payloadJson        Json
+  specHash           String
+  idempotencyKey     String
+  status             DataExportOfferStatus @default(pending)
+  queueJobId         String?
+  expiresAt          DateTime
+  confirmedAt        DateTime?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  @@unique([companyId, idempotencyKey])
+  @@index([companyId, userId, status, expiresAt])
+  @@index([status, expiresAt])
+  @@index([companyId, sourceConnectionId])
+}
+
+/// Explicit personal Google destination chosen by one user inside one company.
+/// Eligibility is always revalidated; a stale connection ID is harmless state.
+model DataExportDestinationPreference {
+  id           String   @id @default(uuid())
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connectionId String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([companyId, userId])
+  @@index([userId, companyId])
+}
+
 /// One Pub/Sub-triggered history cursor and lease per connected Gmail mailbox.
 /// Rules share this subscription so provider sync cost is per mailbox.
 model MailboxSubscription {
@@ -1339,6 +1400,9 @@ model MailboxSubscription {
   mailboxEmail        String
   status              String                @default("active")
   historyId           String?
+  /// Where a truncated history pass stopped. Valid only against `historyId`,
+  /// which is why the cursor is held still while this is set.
+  historyPageToken    String?
   nextPollAt          DateTime              @default(now())
   watchExpirationAt   DateTime?
   nextWatchRenewalAt  DateTime              @default(now())
@@ -1346,12 +1410,21 @@ model MailboxSubscription {
   watchClaimToken     String?
   watchClaimedAt      DateTime?
   watchFailureCode    String?
+  /// Consecutive failed watch registrations. Reconciliation covers a missing
+  /// watch, so one failure is a delay rather than an outage; this is what
+  /// separates "late" from "give up waiting and tell the owner".
+  watchFailureCount   Int                   @default(0)
   signalVersion       Int                   @default(0)
   lastSignalAt        DateTime?
   lastSignalHistoryId String?
   lastSignalMessageId String?
   claimToken          String?
   claimedAt           DateTime?
+  /// Last mailbox state the owner was told about. Notification fires on the
+  /// transition into a broken state, not while it stays broken, so this must
+  /// survive a restart — an in-memory guard would re-alert on every deploy.
+  notifiedState       String?
+  notifiedStateAt     DateTime?
   lastSyncAt          DateTime?
   lastSucceededAt     DateTime?
   lastFailedAt        DateTime?
@@ -1361,6 +1434,7 @@ model MailboxSubscription {
   updatedAt           DateTime              @updatedAt
   rules               MailAutomationRule[]
   events              MailEvent[]
+  reconciliations     MailboxReconciliation[]
 
   @@unique([connectionId, companyId, userId])
   @@unique([id, companyId])
@@ -1390,6 +1464,12 @@ model MailAutomationRule {
   version         Int                 @default(1)
   pausedAt        DateTime?
   archivedAt      DateTime?
+  /// When this rule most recently started watching for mail. Distinct from
+  /// `createdAt`, which a revive or a replace leaves untouched: the rule row
+  /// outlives its own archival, so `createdAt` can predate the current
+  /// destination by months and is not a safe floor for "mail this rule is
+  /// entitled to act on".
+  activatedAt     DateTime            @default(now())
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
   deliveries      MailDelivery[]
@@ -1400,6 +1480,28 @@ model MailAutomationRule {
 }
 
 /// A deduplicated new-message event discovered from Gmail history.
+/// One stale-cursor recovery: what Divo had to fall back to, and what it cost.
+///
+/// A recovery means the mailbox cursor was rejected outright by Gmail, so mail
+/// was missed and swept back in by date rather than by history. `truncated`
+/// marks the case where the window held more than one pass reads, which is the
+/// only place in the system where mail is knowingly lost — a log line was the
+/// sole record of it, and log lines are not something anybody can query a month
+/// later when asked what happened.
+model MailboxReconciliation {
+  id             String              @id @default(uuid())
+  companyId      String
+  company        Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  subscriptionId String
+  subscription   MailboxSubscription @relation(fields: [subscriptionId, companyId], references: [id, companyId], onDelete: Cascade)
+  recoveredCount Int                 @default(0)
+  truncated      Boolean             @default(false)
+  occurredAt     DateTime            @default(now())
+
+  @@index([companyId, occurredAt])
+  @@index([subscriptionId, occurredAt])
+}
+
 model MailEvent {
   id                String              @id @default(uuid())
   companyId         String
@@ -1418,6 +1520,9 @@ model MailEvent {
   @@unique([id, companyId, subscriptionId])
   @@index([companyId, createdAt])
   @@index([subscriptionId, historyId])
+  /// Retention sweeps by arrival age, hourly, forever. Without this every
+  /// sweep is a sequential scan of the table it exists to keep small.
+  @@index([occurredAt])
 }
 
 /// Durable, idempotent execution of one rule against one discovered event.
@@ -1435,6 +1540,11 @@ model MailDelivery {
   attempts          Int                @default(0)
   payloadJson       Json?
   providerMessageId String?
+  /// Gmail draft this forward is staged in, written before the send is
+  /// attempted. On a retry its presence answers the only question that matters
+  /// — did the previous attempt actually send? — using an identifier Divo owns,
+  /// rather than a search index that lags the send by seconds.
+  providerDraftId   String?
   lastError         String?
   ambiguous         Boolean            @default(false)
   firstAttemptAt    DateTime           @default(now())
@@ -1447,6 +1557,8 @@ model MailDelivery {
   @@unique([ruleId, eventId])
   @@index([companyId, status, nextAttemptAt])
   @@index([eventId])
+  /// Same reason: the payload sweep selects terminal rows by age.
+  @@index([status, updatedAt])
 }
 
 /// Connection-scoped operating controls. Access grants answer who may use a

@@ -3,12 +3,60 @@
 > Comprehensive handover for the cloud Google connection flow and Gmail
 > arrival automation system known as **Mail Ops**.
 >
-> **Prepared:** 2026-07-29  
+> **Prepared:** 2026-07-29 · **Revised:** 2026-08-02 after a full end-to-end audit  
 > **Repository:** `relicwavetechnologies/zoho-automation`  
 > **Backend:** `advance-backend/`  
 > **Development URL:** `https://app-dev.103.172.92.187.sslip.io/`  
-> **Deployed Mail Ops artifact:** `b8eb000dc9cb3504eb1b921546afc5ef2717ebf2`  
+> **Deployed Mail Ops artifact:** `b8eb000dc9cb3504eb1b921546afc5ef2717ebf2` (as of 2026-07-29)  
 > **Deployment run:** [GitHub Actions 30451397036](https://github.com/relicwavetechnologies/zoho-automation/actions/runs/30451397036)
+
+---
+
+## 0. Revision notice — read before trusting any section
+
+This document was written against `b8eb000dc`. As of **2026-08-02** `dev` is
+**102 commits ahead**, three of which changed Mail Ops behaviour:
+
+| Commit | Effect |
+|---|---|
+| `6b9d65751` | stored-rule validity surfaced in `list`; gateway direct-mutation path |
+| `c8f9b9a10` | full raw-MIME forwarding; 5/10/20/40s backoff; push→worker `wake()` |
+| `e115a9a09` | `src/application/orchestration/tools/` → `src/application/tools/` |
+
+Sections below have been corrected for those changes. Corrections are marked
+**[corrected 2026-08-02]** inline.
+
+**Waves 0–2 have since landed on `dev`, and they change behaviour this document
+describes.** Anything below about watch gating, history page limits, permission
+denial, or readiness is now the *old* system. In brief:
+
+| Was | Is now | Commit |
+|---|---|---|
+| `claimNextDueMailbox` required a registered watch and cursor when Pub/Sub was on | Reconciliation is unconditional; push is only the fast path | `97be67a46` |
+| Watch failure ⇒ mailbox dead | Watch failure ⇒ up to an hour late. `watch_delayed`, escalating to `watch_degraded` after 3 consecutive failures (new `watchFailureCount` column) | `97be67a46` |
+| >10 history pages threw, wedging the mailbox forever | Returns what it drained, reports the **last consumed record** as the cursor, and asks to be polled again | `6e0d120cf` |
+| `authorizeRule` returned a boolean and threw on any permission error | Returns `allowed \| denied \| unavailable`. Denials never stall the sync; only unanswerable questions hold the cursor | `c4a5e2561` |
+| A refused rule left no trace | Writes an inert `blocked` delivery row with the reason. Matching is checked before authorizing | `c4a5e2561` |
+| `department_access_denied` covered both real denials and unreadable stores | New `permission_lookup_failed` reason for the latter | `c4a5e2561` |
+| `pubsubReady` alone gated `create` | `runtime.pubsubConfigured && runtime.workersEnabled` | `97b4d22b9` |
+
+A full audit — code, prompt layer, permissions, and security — found defects
+that this document previously described as intended behaviour. **Do not treat a
+description here as an endorsement.** The defect register, decision records, and
+wave plan live in
+[`mail-automation-production-finalization.md`](mail-automation-production-finalization.md),
+which is authoritative for *what should change*. This document remains
+authoritative for *how the system is built*.
+
+Headline findings that contradict this document's original framing:
+
+- The seeded skill promises **OTP extraction**; no OTP code exists anywhere.
+- `create` reports **"Mail automation is active"** before any Gmail watch exists,
+  and a mailbox whose watch never registers is excluded from the reconciliation
+  poll meant to cover exactly that (§10.2, §10.7).
+- The **OAuth continuation path is dead in production** — `runContext.connectionAuthorization`
+  is never populated, so the Connect Google card described in §6 is never sent.
+- **Connection governance does not reach background deliveries at all** (§14).
 
 ---
 
@@ -65,8 +113,14 @@ The original model stream is never suspended or resurrected.
 | CI, typecheck, full tests, Docker build, deploy, HTTPS smoke test | Passed |
 | A fresh real Gmail arrival observed after the `b8eb000dc` deployment | Still needs explicit verification |
 | Semantic summary/classification actions inside arrival rules | Not implemented |
-| Full MIME/attachment forwarding | Not implemented by design |
+| Full MIME/attachment forwarding | **Implemented** in `c8f9b9a10` — [corrected 2026-08-02], was "not implemented by design" |
 | Shared or company-owned Gmail connections | Not implemented by design |
+| OTP extraction (claimed in seeded skill text) | **Removed from the instructions** 2026-08-02 — there is no extractor; the whole message is forwarded |
+| Connect Google card / OAuth continuation | **Dead in production** — see §0 and §6 |
+| Connection governance over background delivery | **Not wired** — see §14 |
+| Member-facing read API (rules, deliveries, mailbox health) | **Implemented** 2026-08-02 — see §15.4 |
+| Owner notification when a mailbox stops working | **Implemented** 2026-08-02, Lark only — see §15.4 |
+| Mail rules screen in the web UI | Not implemented — next |
 
 ### Source versus deployed artifact
 
@@ -77,11 +131,9 @@ b8eb000dc9cb3504eb1b921546afc5ef2717ebf2
 fix mail ops push ingestion and sender matching
 ```
 
-The `dev` branch subsequently advanced to:
-
-```text
-0ed7c3f48 fix(orchestration): soften skill routing gate
-```
+**[corrected 2026-08-02]** As of 2026-08-02, `dev` is **102 commits ahead** of
+`b8eb000dc` (the previously named `0ed7c3f48` is now 100 commits behind head).
+Three of those commits changed Mail Ops — see §0.
 
 Therefore, do not assume the deployed backend exactly equals the current
 `dev` branch head. The deployment evidence in this document refers specifically
@@ -322,6 +374,49 @@ use Scheduler.
 
 ## 6. Google OAuth and continuation implementation
 
+> ## ⚠ [audit 2026-08-02] This entire flow is dead in production.
+>
+> Everything described in this section is implemented and unit-tested, and
+> **none of it runs.** `RunContext.connectionAuthorization` appears in the whole
+> `src/` tree exactly twice: declared at
+> [`run-context.ts:78`](../advance-backend/src/domain/orchestration/run-context.ts:78)
+> and read at [`composition.ts:609`](../advance-backend/src/composition.ts:609).
+> **It is never written.** Neither the Lark ingress path nor
+> `ToolExecutor.buildRunContext` — whose own comment calls itself *"the run
+> context every tool actually sees"* — assigns it.
+>
+> `beginGoogleAuthorization` therefore short-circuits to `unavailable` on every
+> production call, and the consequence chain is total:
+>
+> 1. `mailAutomations` can never return `google_workspace_authorization_pending`;
+>    it falls through to an `unrecoverable` ToolError.
+> 2. No `ConnectionAuthorizationIntent` is ever created for it — the only live
+>    intent producer in production is the data-export card handler, hard-coded
+>    to `['dataExport']`.
+> 3. No continuation run is ever scheduled, so §6.3's state machines never start.
+>
+> **This is not mail-specific.** Every `google-<product>` skill instructs the
+> model that only `google_workspace_authorization_pending` proves the Connect
+> card was sent — a code that cannot be returned. Meanwhile the `mail-ops` skill
+> tells the model the card *was* sent and to end the run and wait.
+>
+> **Why tests did not catch it:** the covering test stubs `beginAuthorization`
+> to return `{status:'sent'}` and hand-builds `connectionAuthorization` into the
+> context, then asserts the tool forwards the field it was handed. The mock
+> supplies the exact precondition production never supplies.
+>
+> Also dead: `RunContext.continuationToolIds` is written at
+> `google-connection-continuation.ts:367` and read nowhere, while its doc comment
+> describes an RBAC intersection that does not happen.
+>
+> **Off-Lark, the flow is broken by construction three separate ways** — card
+> delivery is `larkAdapter.sendCardToChat`, the intent shape requires
+> `larkOpenId`/`larkTenantKey`/`chatId`/`chatType`, and the continuation worker
+> builds `channel: 'lark'` and throws unless `chatType` is `p2p`/`group`. A
+> desktop user gets a generic `unrecoverable` error and their request is lost.
+>
+> See defect D5, Wave 3. **P0, and cross-cutting beyond Mail Ops.**
+
 ### 6.1 Main files
 
 - [`connection-authorization-intent.ts`](../advance-backend/src/application/connections/connection-authorization-intent.ts)
@@ -431,9 +526,31 @@ The seed definitions are in:
 
 [`mail-ops-system-skills.ts`](../advance-backend/src/application/skills/mail-ops-system-skills.ts)
 
-They are provisioned into the DB by:
+**[corrected 2026-08-02]** They are **not** provisioned by
+`provision-google-workspace-skills.ts` — that script contains zero Mail Ops
+references. Mail Ops is provisioned by two different paths:
 
-[`provision-google-workspace-skills.ts`](../advance-backend/scripts/provision-google-workspace-skills.ts)
+| Path | What it provisions | When it runs |
+|---|---|---|
+| [`admin-auth.routes.ts`](../advance-backend/src/http/admin/admin-auth.routes.ts) `:420` | `mail-ops` + `google-workspace-router` **skills** | at company creation |
+| [`reconcile-capabilities.ts`](../advance-backend/scripts/reconcile-capabilities.ts) `:46`, `:53` | skills **and** `mailAutomations` permission rows | *[corrected 2026-08-02]* **on every backend boot** — `package.json` binds it to `prestart`, the image `CMD` is `pnpm start`, and the compose service has no `command:` override |
+| `memberTemplateGrants()` in [`department-admin.service.ts`](../advance-backend/src/application/departments/department-admin.service.ts) `:27` | `mailAutomations` permission rows for the two system roles | at **department** creation |
+
+> **[corrected 2026-08-02] The operational trap was the opposite of what was
+> written here.** The claim was that provisioning depended on an operator
+> remembering to run `reconcile-capabilities.ts`. It runs on every boot, and the
+> real problem was what it did when it ran: it granted all five actions to
+> **every** `DepartmentRole` including hand-configured ones, so an admin could
+> narrow a custom role and watch it re-widen at the next deploy — and it *threw*
+> on any company without an active administrator, which failed `prestart` and so
+> kept the backend from serving at all.
+>
+> Fixed in Wave 7. It now writes only to the two system roles, exactly as
+> department creation does; skips any role already holding a `mailAutomations`
+> row, allowed or denied; skips and reports a company between administrators
+> instead of throwing; and invalidates the permission cache for each department
+> it wrote to, so a grant is visible immediately rather than within fifteen
+> minutes. A second run writes nothing. See P1–P3 in the finalization plan.
 
 ### 7.2 `google-workspace-router`
 
@@ -490,7 +607,7 @@ Company-wide availability does not bypass user ownership:
 
 Main file:
 
-[`mail-automations.tool.ts`](../advance-backend/src/application/orchestration/tools/families/mail-automations.tool.ts)
+[`mail-automations.tool.ts`](../advance-backend/src/application/tools/families/mail-automations.tool.ts)
 
 The tool is registered as `mailAutomations`. Its registry family is currently
 `scheduling`, but Mail Ops is not implemented as a `ScheduledWorkflow`; the
@@ -531,7 +648,17 @@ List returns owned rule summaries with:
 - name and status;
 - mailbox email and connection ID;
 - full match, action, and destination;
-- creation timestamp.
+- creation timestamp;
+- **[added 2026-08-02]** `valid: boolean`, and `invalidReason: string` when a
+  stored rule no longer parses under the current schema. Shipped in `6b9d65751`.
+  This is the only user-reachable signal that a rule has stopped matching — and
+  **no skill or `parameterDocs` text tells the model to read it**. Wave 0 fixes
+  that.
+
+`includeInactive` defaults to `false`, so paused and archived rules are hidden
+unless it is set. The seeded skill only ever shows the model
+`"includeInactive": false`, so "what rules do I have, including paused ones?"
+currently gets an incomplete answer.
 
 #### Update
 
@@ -568,19 +695,81 @@ Update is a complete replacement, not a partial patch:
 { "operation": "archive", "ruleId": "<UUID>" }
 ```
 
-Archived rules cannot be resumed.
+Archived rules cannot be resumed — `resume` on one returns the misleading
+*"Mail automation rule was not found in your account."*
+
+**[added 2026-08-02] Three undocumented behaviours here, all user-visible:**
+
+- **Pausing the last active rule pauses the whole mailbox subscription**, which
+  stops watch renewal *and* sync claims. Resuming after longer than Gmail's
+  ~1 week history retention both loses the intervening mail and replays up to a
+  day of old mail through the resumed rule. (Defect D8.)
+- **`create` silently resurrects an archived rule.** `mailRuleDedupeKey` hashes
+  companyId + userId + connectionId + match + action + destination — **not
+  `name`**. Re-creating an identical rule un-archives the old one, renames it,
+  and returns the same `ruleId`, which the model reports as brand new. It is
+  also the only way to undo an archive.
+- **`update` silently resumes a paused rule** — `replaceRule` unconditionally
+  sets `status: 'active'`.
+- **`pause` requires the `execute` action group**, because `actionFor` maps it
+  to `update`. Revoke `execute` and a user can no longer stop their own live
+  rules. (Defect S4.)
+- **[added 2026-08-02] A rule's identity is canonical, and old keys migrate one
+  at a time.** `mailRuleDedupeKey` folds case on the match clause and a
+  destination email (never a Lark `chatId`) and is derived from a fixed
+  sequence, so asking for the same rule as `otp` and as `OTP` no longer forks it
+  into two that both forward. Rules written before that carry a key no request
+  can reproduce, so `create` recognises them by recomputing the canonical key
+  from what each stored rule holds and moves the match onto it before creating
+  anything. Rules that had *already* forked are not merged.
+- **[added 2026-08-02] `update` can now refuse with two new answers.**
+  `replaceRule` returns `duplicate` when the edit would land on a rule the
+  member already holds live on that mailbox — reported rather than left to raise
+  a unique violation they can do nothing about — and `duplicate_archived` when
+  the rule it collides with is archived, where the remedy is to recreate that
+  rule rather than archive anything. Both are recognised by recomputed identity,
+  not by stored key, for the same reason as `create`.
+
+**[added 2026-08-02] Two more destinations and one more operation (Wave 8).**
+
+`destination: {"type":"organize","label":"Receipts","archive":true,"markRead":false}`
+files the message in the member's own Gmail and **sends nothing**. At least one
+of `label`, `archive`, `markRead` must be set; a missing label is created.
+Archiving is removing `INBOX`. A destination address on an `organize` rule is
+refused rather than ignored, because a stray one means its author believed mail
+was going somewhere.
+
+`rateLimitPerHour` sits beside the destination (1–1000) and applies to `email`
+and `lark_chat` only. Over the ceiling a message is **dropped and recorded as
+`blocked`, not queued** — the rest does not arrive later. It is not part of a
+rule's identity, so re-creating a rule with a new ceiling updates the existing
+rule rather than forking it.
+
+`{"operation":"test","ruleId":"<uuid>","limit":50}` — and `POST
+/api/mail-automations/rules/:ruleId/test` — replay the rule over mail Divo has
+already recorded and report what it would have matched. Nothing is sent, no
+Gmail API is touched, and it reads through `MailOpsReadRepository` so it cannot
+reach a lease or a cursor. Gated on `read`, deliberately: the member whose edit
+rights were just withdrawn is the one most likely to need it. `predatingCount`
+counts hits older than the rule's `activatedAt` — real matches the runtime will
+never act on, kept separate so they cannot read as a promised backfill. A
+`consideredCount` of 0 means the mailbox has no recorded mail yet, which is not
+the same answer as "this rule matches nothing".
 
 ### 8.2 Match fields
 
 At least one is required. All supplied criteria are combined with logical AND.
 
-| Field | Current semantics |
-|---|---|
-| `from` | Exact mailbox address or exact `@domain`; case-insensitive |
-| `to` | Case-insensitive substring of the `To` header |
-| `subjectContains` | Case-insensitive substring |
-| `bodyContains` | Case-insensitive substring of extracted bounded text |
-| `hasAttachment` | Exact Boolean equality |
+| Field | Current semantics | **[audit 2026-08-02] caveat** |
+|---|---|---|
+| `from` | Mailbox address, or a domain **covering its subdomains**; case-insensitive | *[corrected 2026-08-02]* `@stripe.com` now matches `receipts@mail.stripe.com`. It used to mean that domain only, which made the commonest rule anyone writes fire never. Compared on label boundaries, so it does **not** match `billing@notstripe.com`. A bare registry (`@com`, `@co.uk`) is refused. "This domain but not its subdomains" is no longer expressible. Input is normalised: `stripe.com`, `Alerts <a@stripe.com>`, `mailto:`, `https://`, a trailing dot and any case are all accepted; a bare brand word is refused and never guessed into a domain. (D12 — fixed) |
+| `to` | Exact mailbox address or exact `@domain`, matched against `To`, `Cc`, `Bcc` and `Delivered-To` together | *[corrected 2026-08-02]* Validated exactly like `from`, so a display-name substring is rejected. Reads a domain the same way `from` now does, subdomains included (D12 — fixed). A stored `to` that already held a mailbox or `@domain` takes these semantics in full, so it stops matching lookalike addresses and starts matching Cc — the one change on deploy worth telling members about. Only a free-text `to` is frozen, keeping its substring test against `To` alone, and it cannot be recreated in that shape. **Sender-authored — a filter, never an identity boundary** (see §Matching limitations). (D11, T7 — fixed) |
+| `subjectContains` | Case-insensitive substring | Literal `String.includes`. `"OTP\|verification code"` and `"*invoice*"` match nothing. (T8) |
+| `bodyContains` | Case-insensitive substring of extracted bounded text | Sees the first `text/plain` part, else stripped HTML, capped at 50,000 chars. Never attachment contents. |
+| `hasAttachment` | Exact Boolean equality | *[corrected 2026-08-02]* True only for an attached file. A part saying `Content-Disposition: inline`, or carrying a `Content-ID` without saying `attachment`, no longer counts — a signature logo does not make a message "has attachment". (D10 — fixed) |
+| `notFrom` | *[added 2026-08-02]* Exact mailbox or `@domain`, excluded | Narrowing-only: rejected unless the rule also has `from`, `to`, `subjectContains` or `bodyContains`. Rejected when it cancels its own `from`. A `From` header that cannot be parsed **fails** the exclusion, so the rule does not fire — an unreadable header is not evidence the sender is someone else. (Wave 8) |
+| `notSubjectContains` | *[added 2026-08-02]* Case-insensitive substring, excluded | Narrowing-only. Rejected when every subject satisfying `subjectContains` would also contain it. Tests the subject only, never the body. (Wave 8) |
+| `activeWindow` | *[added 2026-08-02]* `{days?, start, end, timeZone}` in local wall clock | Narrowing-only. `timeZone` is a **required** IANA name with no default. Half-open: `09:00`–`18:00` includes 09:00, excludes 18:00. An `end` at or before `start` is overnight and belongs to the day it opened on. Judged on **arrival time**, not processing time. Unlike `to`, it is *not* loosened for stored rules — an unresolvable timezone fails to parse and the rule reports itself broken. (Wave 8) |
 
 Valid sender examples:
 
@@ -597,6 +786,23 @@ Invalid:
 ```json
 { "from": "Anthropic" }
 ```
+
+**[corrected 2026-08-02] Unknown match keys are rejected.** They used to be
+stripped: `mailRuleMatchSchema` was a plain `z.object`, so
+`{"from":"@x.com","cc":"finance@y.com"}` created a rule matching **only**
+`from`, reported success, and the narrowing the user asked for was gone. The
+creation schema is `.strict()` now. A rule already stored is parsed by a looser
+schema that does not add keys it never had, so nothing in the database changed.
+(D13 — fixed.)
+
+**[corrected 2026-08-02] "At least one is required" is now a narrowing check.**
+`{"hasAttachment": true}` used to be legal and forwarded every
+attachment-bearing inbox message to an arbitrary external address. A match must
+now carry at least one of `from`, `to`, `subjectContains`, `bodyContains`, and
+an unrecognised key is rejected rather than stripped. One narrowing field can
+still be broad, and `parameterDocs` still tells the model not to ask for
+per-message approval after rule creation, so breadth remains a judgement the
+instruction layer has to make. (T7, S3 — partly fixed.)
 
 ### 8.3 Destinations
 
@@ -704,6 +910,23 @@ GOOGLE_PUBSUB_SUBSCRIPTION
 GOOGLE_PUBSUB_PUSH_AUDIENCE
 GOOGLE_PUBSUB_PUSH_SERVICE_ACCOUNT
 ```
+
+**[corrected 2026-08-02] These four are not a sufficient readiness checklist.**
+A fifth, independent flag decides whether anything actually runs:
+
+```text
+DIVO_AUTONOMOUS_WORKERS_ENABLED   # default: true
+```
+
+`MailOpsWorker.start()` is called only when it is true
+([`server.ts:177`](../advance-backend/src/server.ts:177)), and the Pub/Sub push
+route's `wakeMailOps()` is gated on it too
+([`server.ts:454`](../advance-backend/src/server.ts:454)). The `mailAutomations`
+tool's own readiness gate reads `pubsubReady`, derived from the four variables
+above — **not** from this flag. With Pub/Sub configured and autonomous workers
+disabled, rule creation returns *"Mail automation is active"* and nothing ever
+polls, syncs, or delivers. It defaults to `true`, so this is a foot-gun rather
+than a live incident. See defect D14.
 
 Parsing is implemented by
 [`getGmailPubSubConfig`](../advance-backend/src/config/env.ts). Partial
@@ -887,6 +1110,18 @@ MAILBOX_RECONCILIATION_INTERVAL_MS = 60 * 60_000
 This is a safety net, not normal ingestion. Pub/Sub should normally set
 `nextPollAt` to now.
 
+> **[audit 2026-08-02] The safety net does not cover the case it exists for.**
+> When Pub/Sub is configured, `claimNextDueMailbox` is called with
+> `requireRegisteredWatch = true`, which adds `watchRegisteredAt != null` **and**
+> `historyId != null` to the claim predicate. A mailbox whose `users.watch` never
+> succeeds — most commonly because the Pub/Sub topic is missing its publisher
+> grant to `gmail-api-push@system.gserviceaccount.com` — therefore never gets
+> `watchRegisteredAt` set, retries watch registration every 15 minutes forever,
+> and is **excluded from this hourly reconciliation**. Its rules are 100% dead
+> and the tool still reports them as active. Fix: drop both conditions from the
+> claim predicate; a null `historyId` is already handled because `sync()`
+> bootstraps the baseline from `users/me/profile`. See defect D2.
+
 ---
 
 ## 11. Rule matching
@@ -922,7 +1157,10 @@ SPF/DKIM/DMARC verifier. It trusts the `From` header Gmail exposes.
 
 ### 11.2 Other matching
 
-- `to`, subject, and body are case-insensitive substring comparisons.
+- *[corrected 2026-08-02]* Subject and body are case-insensitive substring
+  comparisons. `to` is an exact mailbox or `@domain` matched across `To`,
+  `Cc`, `Bcc` and `Delivered-To`; rules stored before that keep a substring
+  test against `To` alone.
 - `hasAttachment` is exact.
 - All specified fields must match.
 - Matching is deterministic and does not invoke an LLM.
@@ -943,7 +1181,14 @@ After the fix, such a stored rule fails parsing. The worker logs
 `active`; there is no automatic data rewrite because the exact intended domain
 or mailbox cannot be inferred safely.
 
-At the last read-only production inspection, two active test rules existed:
+**[corrected 2026-08-02]** Such a rule is no longer invisible. `6b9d65751` added
+`storedRuleValidity`, so `list` returns `valid: false` plus an `invalidReason`
+of the form *"Update this rule before it can match new mail: …"*. The DB row is
+still not rewritten. The remaining gap is that no instruction tells the model to
+read those fields — Wave 0.
+
+**[dated 2026-07-29 — re-verify before acting]** At the last read-only
+production inspection, two active test rules existed:
 
 - one valid rule with `from: alerts@example.com` and subject containing `OTP`;
 - one legacy invalid rule with `from: anthropic`.
@@ -990,10 +1235,18 @@ Rules:
 
 - stale `sending` claims older than ten minutes return to `pending`;
 - at most five delivery attempts;
-- exponential backoff starts at 30 seconds;
-- backoff is capped at one hour;
+- **[corrected 2026-08-02]** backoff is `5_000 * 2^(attempts-1)` — a
+  **5 / 10 / 20 / 40 second** sequence across the five-attempt budget. There is
+  no cap logic. (Previously stated as "starts at 30 seconds, capped at one hour".)
 - attempt five becomes `abandoned`;
 - authority revocation becomes immediately `abandoned`.
+
+**[added 2026-08-02]** The status union in `mail-ops.types.ts` also declares
+`'failed'`. **No code path ever writes it** — `markDeliveryFailed` writes
+`'abandoned'` or `'pending'`. Treat it as reserved/unused.
+
+**Total retry window is ~75 seconds.** A provider outage or 429 lasting two
+minutes permanently abandons the forward, with no user notification.
 
 ### 12.4 Delivery-time authorization
 
@@ -1014,9 +1267,17 @@ Revoked work is not sent and is not retried.
 Email forwarding uses Gmail `messages.send` through the same user's Google
 connection.
 
-The outgoing message is new bounded plain text:
+**[corrected 2026-08-02]** Forwarding preserves the original MIME. The source is
+fetched with `?format=raw` and its content entity is embedded **verbatim** inside
+a new `multipart/mixed` message. Part one is a short header summary; part two is
+the original content, carrying its own `Content-Type`, `Content-Transfer-Encoding`
+and `Content-Language`, so `multipart/related` structure and CID references
+survive.
 
 ```text
+--boundary
+Content-Type: text/plain; charset=UTF-8
+
 Forwarded by Divo Mail Ops
 
 From: <original From>
@@ -1024,24 +1285,40 @@ To: <original To>
 Date: <original Date, if present>
 Subject: <original Subject>
 
-<bounded extracted text body or snippet>
+--boundary
+<original content headers>
+
+<original body bytes, unmodified>
+--boundary--
 ```
+
+So HTML layout, inline images, and attachments **are** retransmitted. The
+original envelope and authentication headers are **not** reused — only
+`content-type`, `content-transfer-encoding`, and `content-language` pass the
+allowlist; any other top-level header (including a top-level
+`Content-Disposition`) is dropped. The message is sent `From:` the connected
+mailbox.
 
 The subject is prefixed with `Fwd:` unless already prefixed.
 
-Provider-level idempotency:
+Provider-level idempotency, **as currently built**:
 
-1. build a deterministic RFC822 `Message-ID` from the delivery idempotency key;
-2. search the user's Sent mailbox for that `Message-ID`;
-3. return the existing Gmail message ID if found;
-4. otherwise send.
+1. `drafts.create` stages the forward without sending it;
+2. `providerDraftId` and `ambiguous: true` are persisted in one write;
+3. `drafts.send` sends it, and the draft ceases to exist;
+4. on a retry, the delivery's stored `providerDraftId` is looked up: a draft
+   still there means the previous attempt never sent, and a draft that is gone
+   means it did. Either way the answer is Gmail's, not a guess.
 
-V1 does not retransmit:
-
-- original MIME;
-- original HTML layout;
-- inline images;
-- attachments.
+> **[audit 2026-08-02, resolved]** What this replaced was a deterministic
+> RFC822 `Message-ID` written into the forward and then searched for in the
+> Sent mailbox. It was unsound twice over: Gmail's `messages.send` does not
+> reliably preserve a client-supplied `Message-ID` — it commonly generates its
+> own and demotes the supplied value to `X-Google-Original-Message-ID` — and
+> `rfc822msgid:` reads an eventually-consistent **search index**, while the
+> first retry fires 5 seconds after a failure. A send whose response was lost
+> could therefore be forwarded twice. No `rfc822msgid:` query remains anywhere
+> in `src/`. See defect D1 in the finalization plan.
 
 ### 12.6 Lark delivery
 
@@ -1152,7 +1429,14 @@ Important fields:
 - frozen delivery payload;
 - provider message ID;
 - safe error;
-- attempt, start, delivery, and retry timestamps.
+- attempt, start, delivery, and retry timestamps;
+- **[added 2026-08-02]** `firstAttemptAt`;
+- **[added 2026-08-02, corrected 2026-08-02]** `ambiguous Boolean @default(false)`
+  — marks a send whose outcome is unknown. It **is** written `true`, by
+  `stageDeliveryDraft` in the same statement that records the draft, and cleared
+  only by a confirmed outcome. An earlier revision of this file said no code
+  ever writes it; that was true when D1 was still open and stopped being true
+  when the draft-staging path landed.
 
 Important invariants:
 
@@ -1160,6 +1444,11 @@ Important invariants:
 unique(ruleId, eventId)
 unique(idempotencyKey)
 ```
+
+**[added 2026-08-02]** The delivery payload is a **frozen snapshot**, and
+`deliver` never re-reads `MailAutomationRule.status`. Pausing a rule therefore
+does **not** stop deliveries already reserved for it — the status filter runs
+only at reservation time, in `listActiveRules`.
 
 ---
 
@@ -1187,11 +1476,67 @@ unique(idempotencyKey)
 ### Important boundaries
 
 - Exact `From` matching is not a standalone SPF/DKIM/DMARC validator.
-- `to` remains substring-based.
+- *[corrected 2026-08-02]* `to` is an exact mailbox or `@domain`, matched
+  against `To`, `Cc`, `Bcc` and `Delivered-To` together. Rules stored before
+  that keep a substring test against `To` alone and cannot be recreated.
+- `@domain` matching is `address.endsWith('@domain')`, so it does **not** match
+  subdomains: `@stripe.com` misses `receipts@mail.stripe.com`.
 - Body extraction is basic text/HTML processing, not a full MIME renderer.
 - Stored mail metadata includes body text and therefore needs an explicit
   retention/deletion policy.
-- Lark chat IDs must be grounded by governed discovery.
+
+### Gaps found in the 2026-08-02 audit — treat as open security work
+
+These were previously stated as properties. They are not enforced.
+
+- **Lark chat IDs are not grounded in code.** "Must be grounded by governed
+  discovery" exists only as **prompt text**. `destinationSchema` accepts any
+  `chatId` string, nothing validates it against the creator's accessible chats,
+  and `deliverLark` uses the **app-level** Lark client built from
+  `LARK_APP_ID`/`LARK_APP_SECRET` with no `companyId` or `tenantKey` check —
+  despite `LarkTenantBinding` existing for that mapping. If one Lark installation
+  serves more than one Divo company, a rule in company A can deliver into company
+  B's chat. (Defect S1.)
+- **Connection governance does not reach background delivery.** `MailOpsWorker`
+  is constructed with no `ConnectionRateLimitService` and no
+  `ApprovalGateService`. Every forward and Lark delivery bypasses per-action rate
+  ceilings and approval modes. Because `connectionId` is *optional* on `create`,
+  omitting it also bypasses governance on the interactive path. And approval
+  gates on the tool action — `create` — never on `execute`, so a department that
+  gates `execute` does not gate the act of authorizing unlimited future
+  background execution. (Defect S2.)
+- **The forward destination is unbounded and never re-validated.** Any email
+  address is accepted, the full original MIME is sent from the user's own
+  mailbox, and `{"from":"@company.com"}` is a legal match. Only *matching* is
+  LLM-free; *creation* is not, so this is reachable by indirect prompt injection
+  into an earlier tool result. (Defect S3.)
+- **De-escalation requires the capability being revoked.** `pause` maps to the
+  `update` action, which requires `execute`. Revoke `execute` and a user can no
+  longer stop their own live rules. (Defect S4.)
+- **The owner-access downgrade check is dead code.** Connection owners are
+  hardcoded to `admin` access and rules can only exist on owner-owned
+  connections, so the `read_write → read_only` check can never fire for any rule
+  that can exist. (Defect S5.)
+- **"DB uniqueness and provider Message-ID search provide idempotency"** is half
+  true. The DB uniqueness holds. The Message-ID search does not — see §12.5.
+
+### What genuinely holds
+
+Verified against `dev` on 2026-08-02 and depended on by other work:
+
+- **Cross-user mailbox access is closed at the database layer.** Composite FKs
+  make rule creator ≡ subscription owner ≡ connection owner an invariant, and
+  company-owned connections can never carry a subscription. This is why the
+  worker authorizing against the subscription's `userId` is safe.
+- Push JWT verification (RS256, `kid`, JWKS, issuer, exact audience, exact
+  service account, `email_verified`, ±60s tolerance) and the exact-subscription
+  check.
+- `204` returned only after durable mailbox admission.
+- Exact sender mailbox-or-`@domain` matching, validated at write **and**
+  re-validated at read.
+- Cursor advances only after events persist and every reservation succeeds; a
+  `signalVersion` change during sync keeps the mailbox immediately due.
+- Header CR/LF stripping before outgoing mail construction.
 
 ---
 
@@ -1231,10 +1576,75 @@ mail_ops.mailbox_synced
 mail_ops.mailbox_sync_failed
 mail_ops.delivery_permission_revoked
 mail_ops.delivery_failed
+mail_ops.wake_failed                 # [added 2026-08-02]
+mail_ops.delivery_attempt_started    # [added 2026-08-02]
+mail_ops.delivery_delivered          # [added 2026-08-02]
 ```
 
 `mail_ops.mailbox_synced` includes event count, delivery count, stale-cursor
 recovery flag, and duration.
+
+> **These logs are still the only trace of a *declined* message.**
+> `mail_ops.rule_skipped`, `mail_ops.rule_permission_denied`, and
+> `mail_ops.delivery_permission_revoked` each correspond to a message Mail Ops
+> chose not to act on without writing a row, so nothing in §15.4 can show them.
+> The finalization plan's DR-2 replaces each with a durable, readable row in
+> Wave 2. Until then the read API reports what *was* attempted, not what was
+> silently skipped.
+
+Notification logs added 2026-08-02: `mail_ops.notified`,
+`mail_ops.notify_no_channel`, `mail_ops.notify_send_failed`,
+`mail_ops.notify_state_not_recorded`, `mail_ops.notify_failed`,
+`mail_ops.health_review_failed`.
+
+### 15.4 Member-facing read API
+
+**[added 2026-08-02]** Until this shipped, Mail Ops had no reachable state at
+all — its only HTTP surface was the Pub/Sub webhook.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/mail-automations/rules` | Owned rules with a resolved `state`, `summary`, `invalidReason`, `lastDeliveredAt`, and 30-day delivered/failing/abandoned counts |
+| `GET /api/mail-automations/rules/:ruleId/deliveries` | Recent deliveries with `status`, `attempts`, `lastError`, and the `subject`/`from` of the mail acted on |
+| `GET /api/mail-automations/health` | Per mailbox: `state`, `rulesCanFire`, `summary`, `remedy`, `failureCode`, plus a hoisted `anyMailboxBroken` |
+
+Member-authenticated, pinned to the signed-in member server-side — there is no
+`userId` parameter and no way to ask about another member. Ownership on the
+deliveries route is enforced inside the query, so "not yours" and "does not
+exist" are indistinguishable to a caller.
+
+Files: [`mail-automations.routes.ts`](../advance-backend/src/http/mail/mail-automations.routes.ts),
+[`mail-ops-read.repository.ts`](../advance-backend/src/infrastructure/persistence/mail-ops-read.repository.ts),
+[`mail-ops-health.ts`](../advance-backend/src/application/mail-ops/mail-ops-health.ts).
+
+**Mailbox states**, reported worst-first so a member gets the root cause and
+not a list of symptoms: `never_started` → `watch_failing` → `sync_failing` →
+`paused` → `healthy`. `never_started` is deliberately checked **before**
+`paused`, because a mailbox with no active rules parks itself and would
+otherwise report "paused" while concealing a watch that never registered.
+
+**Rule states:** `broken` (stored shape the matcher rejects) → `blocked`
+(mailbox cannot fire) → `paused` → `archived` → `working` → `waiting`.
+Validity is checked before status, so a paused rule still reports that it
+would not match if resumed.
+
+### 15.5 Owner notification
+
+**[added 2026-08-02]** [`mail-ops-notifier.ts`](../advance-backend/src/application/mail-ops/mail-ops-notifier.ts).
+The worker reviews mailbox health after every sync and watch outcome and sends
+the owner one Lark card when the mailbox becomes unable to run rules.
+
+- Fires on the **transition into** a broken state; stays silent while it
+  persists. Recovery is never announced but is recorded, so the next break
+  alerts again.
+- `MailboxSubscription.notifiedState` / `notifiedStateAt` persist the last
+  state the owner was told about. Deliberately not in-memory: that would
+  re-alert every mailbox on every deploy.
+- A **failed** Lark send is not recorded, so the next pass retries — a
+  duplicate alert beats never warning them. An owner with **no Lark identity**
+  is recorded, because retrying would never succeed.
+- Lark only for now. Email to the mailbox owner is deferred to the operator
+  work in the finalization plan's Wave 10.
 
 ### 15.2 Harness visibility
 
@@ -1391,7 +1801,7 @@ pnpm exec node --import tsx --test \
 Result:
 
 ```text
-17 passed, 0 failed
+19 passed, 0 failed   # [corrected 2026-08-02] was 17 before 6b9d65751 and c8f9b9a10
 ```
 
 Executed:
@@ -1404,7 +1814,7 @@ pnpm exec node --import tsx --test \
 Result:
 
 ```text
-3 passed, 0 failed
+5 passed, 0 failed    # [corrected 2026-08-02] was 3
 ```
 
 Executed:
@@ -1463,7 +1873,7 @@ Successful jobs:
 - `prisma db push --skip-generate`;
 - registered-tool seeding;
 - Google Workspace skill provisioning;
-- dynamic-agent seeding;
+- [corrected 2026-08-02] no dynamic-agent seeding step exists in ci.yml;
 - container restart;
 - backend/admin/local HTTPS smoke test.
 
@@ -1635,7 +2045,7 @@ The workflow:
 8. runs `pnpm prisma db push --skip-generate`;
 9. seeds registered tools;
 10. provisions Google Workspace system skills and permissions;
-11. seeds dynamic agents;
+11. [corrected 2026-08-02] runs `prisma db execute` for a one-off migration SQL file, then `prisma db push --skip-generate`, then `seed-registered-tools.ts`, then `pnpm provision:google-workspace-skills` (which does NOT cover Mail Ops — see §7.1);
 12. restarts the complete stack;
 13. smoke-tests backend, admin, and public HTTPS.
 
@@ -1665,8 +2075,16 @@ Never copy secret values into this handover.
 
 ### Matching limitations
 
-- `to` is still substring-based and should be reconsidered before using it as a
-  strong identity boundary.
+- *[corrected 2026-08-02]* `to` is an exact mailbox or `@domain` across
+  `To`/`Cc`/`Bcc`/`Delivered-To` (rules stored before that keep a substring test
+  against `To` alone). It is **not** an identity boundary and cannot be made
+  one: every recipient header is written by the sender and passed through
+  untouched, so anyone who can email a member can put any address in `To` and
+  fire that member's rule on their own message. `to` narrows a member's own
+  mail. The only recipient header the sender does not author is the
+  `Delivered-To` the receiving server adds; using that as a boundary would mean
+  reading it alone rather than the union, which is a decision about what `to`
+  means, not a fix.
 - Subject and body are substring-based by design.
 - Sender exactness does not independently validate DKIM/SPF/DMARC.
 - The current sender mailbox regex expects a conventional domain with a
@@ -1675,15 +2093,46 @@ Never copy secret values into this handover.
 
 ### Ingestion and delivery limitations
 
-- Gmail history is bounded to ten pages per sync.
-- Stale-cursor reconciliation searches only the last day and at most 100
-  messages.
+**[corrected 2026-08-02]** Several entries below were written as bounded,
+benign limits. The audit found them to be failure modes. Corrected wording:
+
+- **Gmail history exceeding ten pages is a hard failure, not a silent
+  truncation.** If a `nextPageToken` still exists on page 10 the client
+  **throws**, the cursor is not advanced, and retry is scheduled 5 minutes later
+  — which throws again. A mailbox that falls ~1000 history records behind wedges
+  **permanently**. (Defect D3.)
+- **Stale-cursor reconciliation searches only the last day, capped at 100
+  messages** — so mail older than that window is **silently lost with no
+  record**, and conversely those ≤100 messages are treated as new events, so a
+  broad rule can burst-forward up to a day of mail in one tick. (Defect D7.)
+- **Pausing the last active rule pauses the whole mailbox subscription**, which
+  stops watch renewal *and* sync claims. Watch expiry self-heals on resume; the
+  history cursor does not. Pause beyond Gmail's ~1 week history retention and
+  resuming both loses the intervening days and replays up to a day of old mail.
+  (Defect D8.)
+- **Message fetches are unbounded.** `loadEvents` runs `Promise.all` over every
+  discovered ID — up to 1000 concurrent `format=full` requests. (Defect D6.)
 - Body text is capped at 50,000 characters.
-- Lark delivery is capped at 20,000 characters.
-- Sync failures currently retry after a fixed five minutes; more specific
-  provider/rate-limit backoff remains future work.
-- Delivery has five attempts with capped exponential backoff.
+- Lark delivery is capped at 20,000 characters, plain text only — **no HTML, no
+  attachments.** The instructions describe MIME fidelity for the email
+  destination and say nothing about the Lark destination, inviting an assumption
+  of parity.
+- **Only the INBOX label is watched.** Mail that a native Gmail filter archives,
+  or that lands in Spam, is invisible to Mail Ops — notable given the skill text
+  forbids substituting a native Gmail filter.
+- **[corrected 2026-08-02] `hasAttachment` counts attached files only.** An
+  inline part — a signature logo, a tracking pixel — no longer qualifies.
+  (Defect D10, fixed.)
+- Sync failures retry after a fixed five minutes; provider/rate-limit-specific
+  backoff remains future work.
+- Delivery has five attempts on a 5/10/20/40-second backoff — a **~75 second**
+  total window.
 - Dead-letter tooling and an operator UI are not implemented.
+- ~~**There is no user-visible surface of any kind.**~~ **[resolved
+  2026-08-02]** A member-facing read API and an owner notification now exist —
+  see §15.4 and §15.5. The web screen is still outstanding, and a message
+  declined *before* a delivery row is written remains invisible until the
+  finalization plan's Wave 2.
 
 ### Operations and policy gaps
 
@@ -1695,29 +2144,39 @@ Never copy secret values into this handover.
 - A final post-deploy real Gmail arrival proof for `b8eb000dc` remains pending.
 - The subsequent `dev` head must be deliberately redeployed if its orchestration
   change is required in the environment.
+- **[added 2026-08-02]** Mail Ops provisioning is not deterministic — see §7.1.
+- **[added 2026-08-02]** An empty untracked
+  `advance-backend/prisma/migrations/20260729_cloud_google_mail_ops_foundation/`
+  directory exists on disk, contradicting the stated `db push`-only protocol.
+  Separately, `ci.yml` now runs `prisma db execute` against a migration SQL file,
+  so "this workstream creates no migration folders" needs restating.
 
 ---
 
 ## 21. Recommended next work, in order
 
-1. **Repair the legacy Anthropic rule.** List rules, replace loose
-   `"anthropic"` with an exact mailbox or `@anthropic.com`, and add the user's
-   desired subject narrowing.
-2. **Run one controlled real Gmail arrival test.** Capture the Pub/Sub,
-   subscription, event, rule, delivery, and destination evidence.
-3. **Run an idempotency test.** Replay/duplicate the notification and verify one
-   event and one delivery.
-4. **Run a non-match test.** Prove exact sender/domain and subject AND behavior.
-5. **Add operator metrics.** Watch renewal failures, last signal/sync, event
-   count, delivery status, retries, and latency.
-6. **Define retention.** Decide how long body metadata, events, and delivery
-   payloads are kept.
-7. **Add legacy-rule health visibility.** Surface invalid active rules instead
-   of only logging `mail_ops.rule_skipped`.
-8. **Decide `to` semantics.** Prefer exact mailbox/domain parsing if recipient
-   filtering becomes common.
-9. **Add an operator reconciliation action.** Keep it governed and backend-owned.
-10. **Only then consider semantic actions or non-Gmail providers.**
+**[superseded 2026-08-02]** This list predates the full audit. The authoritative
+ordering is the wave plan in
+[`mail-automation-production-finalization.md`](mail-automation-production-finalization.md) §5.
+Retained here for provenance, with status:
+
+| # | Original item | Status |
+|---|---|---|
+| 1 | Repair the legacy `"anthropic"` rule | **Still open.** Observation is from 2026-07-29; re-inspect before acting. |
+| 2 | One controlled real Gmail arrival test | **Still open** — now Wave 2 acceptance. |
+| 3 | Idempotency test | **Reframed.** The mechanism itself is unsound (§12.5). Test the draft-based replacement, not the current one. |
+| 4 | Non-match test | **Partly done.** Unknown keys (D13), whole-mailbox recipients and inline attachments are covered by unit tests. Subdomains (D12) still open, pending O-2. |
+| 5 | Operator metrics | **Still open** — Wave 10. Preceded by the user-facing read API in Wave 1. |
+| 6 | Define retention | **Still open** — Wave 10. |
+| 7 | Legacy-rule health visibility | **Done.** Shipped in `6b9d65751`; `list` returns `valid` / `invalidReason`. No instruction tells the model to read it — that is now a Wave 0 item. |
+| 8 | Decide `to` semantics | **Done.** Wave 6 (D11): exact mailbox or `@domain`, matched across `To`/`Cc`/`Bcc`/`Delivered-To`. |
+| 9 | Operator reconciliation action | **Still open** — Wave 10. |
+| 10 | Semantic actions / non-Gmail | **Still deferred** — Wave 11 and out of scope respectively. |
+
+Items the original list could not have known about, now ahead of all of the
+above: stop the instruction layer claiming capabilities that do not exist
+(Wave 0), build any user-visible surface at all (Wave 1), fix the silent-death
+defects (Wave 2), and revive the dead OAuth continuation path (Wave 3).
 
 ---
 
@@ -1736,7 +2195,7 @@ Never copy secret values into this handover.
 
 - [`mail-ops-system-skills.ts`](../advance-backend/src/application/skills/mail-ops-system-skills.ts)
 - [`provision-google-workspace-skills.ts`](../advance-backend/scripts/provision-google-workspace-skills.ts)
-- [`mail-automations.tool.ts`](../advance-backend/src/application/orchestration/tools/families/mail-automations.tool.ts)
+- [`mail-automations.tool.ts`](../advance-backend/src/application/tools/families/mail-automations.tool.ts)
 
 ### Mail Ops domain and worker
 
@@ -1753,7 +2212,11 @@ Never copy secret values into this handover.
 ### Persistence and composition
 
 - [`schema.prisma`](../advance-backend/prisma/schema.prisma)
-- [`mail-ops.repository.ts`](../advance-backend/src/infrastructure/persistence/mail-ops.repository.ts)
+- [`mail-ops.repository.ts`](../advance-backend/src/infrastructure/persistence/mail-ops.repository.ts) — the one object callers hold. The writes themselves live per aggregate beside it:
+  - [`mail-ops/subscription.repository.ts`](../advance-backend/src/infrastructure/persistence/mail-ops/subscription.repository.ts) — the mailbox: cursor, claims, watch renewal
+  - [`mail-ops/rule.repository.ts`](../advance-backend/src/infrastructure/persistence/mail-ops/rule.repository.ts) — rules, including rule identity and the pre-canonicalisation key migration
+  - [`mail-ops/event.repository.ts`](../advance-backend/src/infrastructure/persistence/mail-ops/event.repository.ts) — the mail Divo saw
+  - [`mail-ops/delivery.repository.ts`](../advance-backend/src/infrastructure/persistence/mail-ops/delivery.repository.ts) — reservation, the retry ladder, terminal states
 - [`composition.ts`](../advance-backend/src/composition.ts)
 - [`server.ts`](../advance-backend/src/server.ts)
 - [`env.ts`](../advance-backend/src/config/env.ts)

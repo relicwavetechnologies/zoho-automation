@@ -5,10 +5,8 @@ import {
   AirtableDataExportSource,
   ZohoBooksDataExportSource,
 } from '../../src/application/data-export/data-export.sources.ts';
-import {
-  DataExportSourceRegistry,
-  type DataExportJobPayload,
-} from '../../src/application/data-export/data-export.types.ts';
+import type { DataExportJobPayload } from '../../src/application/data-export/data-export.types.ts';
+import { DatasetSourceRegistry } from '../../src/application/data-export/data-export.source-registry.ts';
 import { DataExportWorker } from '../../src/application/data-export/data-export.worker.ts';
 import {
   dataExportJobId,
@@ -20,9 +18,10 @@ import {
 } from '../../src/application/data-export/data-export.profile.ts';
 import { GOOGLE_SCOPE } from '../../src/domain/google/google-workspace-scope.ts';
 import { asToolId } from '../../src/shared/ids.ts';
-import { noopLogger } from '../tools/tool-test.helpers.ts';
+import { makeCtx, noopLogger } from '../tools/tool-test.helpers.ts';
 import { createDataExportTool } from '../../src/application/tools/families/data-export.tool.ts';
 import { recoverCompletedExport } from '../../src/application/data-export/google-workspace-export.sink.ts';
+import type { DataExportDestinationSink } from '../../src/application/data-export/data-export.destination.ts';
 import { ZohoBooksPaginatedClient } from '../../src/infrastructure/zoho/zoho-books-paginated.client.ts';
 
 describe('data export sandbox', () => {
@@ -291,6 +290,43 @@ describe('data export source adapters', () => {
   });
 });
 
+describe('data export source registry', () => {
+  it('dispatches by source kind and rejects an unregistered source', () => {
+    const registry = new DatasetSourceRegistry();
+    const airtable = {
+      kind: 'airtable_records' as const,
+      async *read() { yield { rows: [] }; },
+    };
+    const zohoBooks = {
+      kind: 'zoho_books' as const,
+      async *read() { yield { rows: [] }; },
+    };
+    registry.register(airtable);
+    registry.register(zohoBooks);
+
+    assert.equal(registry.resolve({
+      kind: 'airtable_records',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      toolId: 'airtableRecords',
+      nativeTool: 'list_records_for_table',
+      input: {},
+    }), airtable);
+    assert.equal(registry.resolve({
+      kind: 'zoho_books',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      module: 'invoices',
+    }), zohoBooks);
+    assert.throws(
+      () => new DatasetSourceRegistry().resolve({
+        kind: 'zoho_books',
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        module: 'invoices',
+      }),
+      /unsupported data export source/i,
+    );
+  });
+});
+
 describe('data export queue identity', () => {
   const base: DataExportJobPayload = {
     companyId: 'company-1',
@@ -313,6 +349,14 @@ describe('data export queue identity', () => {
     };
     assert.equal(dataExportJobId(base), dataExportJobId(second));
     assert.notEqual(dataExportSpecHash(base), dataExportSpecHash(second));
+    assert.notEqual(
+      dataExportSpecHash(base),
+      dataExportSpecHash({
+        ...base,
+        replyToMessageId: 'om_thread_root',
+        replyInThread: true,
+      }),
+    );
     assert.notEqual(dataExportJobId(base), dataExportJobId({ ...base, requestId: 'om_next' }));
   });
 });
@@ -406,12 +450,222 @@ describe('Google export retry recovery', () => {
     const recovered = await recoverCompletedExport(
       drive as any,
       'job-1',
-      'abhishek@emiactech.com',
+      { kind: 'reader', email: 'abhishek@emiactech.com' },
     );
     assert.equal(recovered?.artifactId, 'file-1');
     assert.equal(recovered?.rowCount, 87_044);
     assert.equal(permissionCreates, 0);
     assert.equal(fileDeletes, 0);
+  });
+
+  it('recovers a completed Excel artifact with the same access checks', async () => {
+    const drive = {
+      files: {
+        list: async () => ({
+          data: {
+            files: [{
+              id: 'xlsx-1',
+              mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              webViewLink: 'https://drive.google.com/file/d/xlsx-1/view',
+              appProperties: {
+                divoExportKey: 'job-xlsx',
+                divoExportState: 'complete',
+                divoExportRowCount: '25',
+                divoExportTruncated: 'false',
+                divoExportType: 'xlsx',
+              },
+            }],
+          },
+        }),
+        delete: async () => assert.fail('completed artifact must not be deleted'),
+      },
+      permissions: {
+        list: async () => ({
+          data: {
+            permissions: [
+              { type: 'user', role: 'owner', emailAddress: 'member@gmail.com' },
+            ],
+          },
+        }),
+        create: async () => assert.fail('owner exports must not create reader permissions'),
+      },
+    };
+
+    const recovered = await recoverCompletedExport(
+      drive as any,
+      'job-xlsx',
+      { kind: 'owner', email: 'member@gmail.com' },
+    );
+
+    assert.equal(recovered?.artifactType, 'xlsx');
+    assert.equal(recovered?.rowCount, 25);
+  });
+
+  it('does not recover an Excel-labelled artifact with a different Drive MIME type', async () => {
+    let deleted = false;
+    const drive = {
+      files: {
+        list: async () => ({
+          data: {
+            files: [{
+              id: 'not-xlsx',
+              mimeType: 'text/plain',
+              appProperties: {
+                divoExportKey: 'job-xlsx',
+                divoExportState: 'complete',
+                divoExportRowCount: '25',
+                divoExportTruncated: 'false',
+                divoExportType: 'xlsx',
+              },
+            }],
+          },
+        }),
+        delete: async () => {
+          deleted = true;
+        },
+      },
+      permissions: {
+        list: async () => assert.fail('invalid artifact must not be access-verified'),
+        create: async () => assert.fail('invalid artifact must not be shared'),
+      },
+    };
+
+    const recovered = await recoverCompletedExport(
+      drive as any,
+      'job-xlsx',
+      { kind: 'owner', email: 'member@gmail.com' },
+    );
+
+    assert.equal(recovered, null);
+    assert.equal(deleted, true);
+  });
+
+  it('rejects a recovered artifact with access beyond the verified invoker', async () => {
+    const drive = {
+      files: {
+        list: async () => ({
+          data: {
+            files: [{
+              id: 'file-1',
+              webViewLink: 'https://drive.google.com/file/d/file-1/view',
+              appProperties: {
+                divoExportKey: 'job-1',
+                divoExportState: 'complete',
+                divoExportRowCount: '10',
+                divoExportTruncated: 'false',
+                divoExportType: 'csv',
+              },
+            }],
+          },
+        }),
+        delete: async () => assert.fail('completed artifact must not be deleted'),
+      },
+      permissions: {
+        list: async () => ({
+          data: {
+            permissions: [
+              { type: 'user', role: 'owner', emailAddress: 'divo@emiactech.com' },
+              { type: 'user', role: 'reader', emailAddress: 'abhishek@emiactech.com' },
+              { type: 'domain', role: 'reader', domain: 'emiactech.com' },
+            ],
+          },
+        }),
+        create: async () => assert.fail('verified invoker access already exists'),
+      },
+    };
+    await assert.rejects(
+      () => recoverCompletedExport(
+        drive as any,
+        'job-1',
+        { kind: 'reader', email: 'abhishek@emiactech.com' },
+      ),
+      /access beyond the invoker/i,
+    );
+  });
+
+  it('recovers a personal-account artifact only when that account is the sole owner', async () => {
+    let permissionCreates = 0;
+    const drive = {
+      files: {
+        list: async () => ({
+          data: {
+            files: [{
+              id: 'file-personal',
+              appProperties: {
+                divoExportKey: 'job-personal',
+                divoExportState: 'complete',
+                divoExportRowCount: '4',
+                divoExportTruncated: 'false',
+                divoExportType: 'google_sheet',
+              },
+            }],
+          },
+        }),
+        delete: async () => assert.fail('completed artifact must not be deleted'),
+      },
+      permissions: {
+        list: async () => ({
+          data: {
+            permissions: [
+              { type: 'user', role: 'owner', emailAddress: 'member@gmail.com' },
+            ],
+          },
+        }),
+        create: async () => { permissionCreates += 1; },
+      },
+    };
+
+    const recovered = await recoverCompletedExport(
+      drive as any,
+      'job-personal',
+      { kind: 'owner', email: 'member@gmail.com' },
+    );
+
+    assert.equal(recovered?.artifactId, 'file-personal');
+    assert.equal(recovered?.sharedWith, 'member@gmail.com (owner)');
+    assert.equal(permissionCreates, 0);
+  });
+
+  it('rejects a personal-account artifact that was shared beyond its owner', async () => {
+    const drive = {
+      files: {
+        list: async () => ({
+          data: {
+            files: [{
+              id: 'file-personal',
+              appProperties: {
+                divoExportKey: 'job-personal',
+                divoExportState: 'complete',
+                divoExportRowCount: '4',
+                divoExportTruncated: 'false',
+                divoExportType: 'google_sheet',
+              },
+            }],
+          },
+        }),
+        delete: async () => assert.fail('completed artifact must not be deleted'),
+      },
+      permissions: {
+        list: async () => ({
+          data: {
+            permissions: [
+              { type: 'user', role: 'owner', emailAddress: 'member@gmail.com' },
+              { type: 'user', role: 'reader', emailAddress: 'other@gmail.com' },
+            ],
+          },
+        }),
+        create: async () => assert.fail('owner exports must not create reader permissions'),
+      },
+    };
+
+    await assert.rejects(
+      () => recoverCompletedExport(
+        drive as any,
+        'job-personal',
+        { kind: 'owner', email: 'member@gmail.com' },
+      ),
+      /access beyond its owner/i,
+    );
   });
 });
 
@@ -429,21 +683,26 @@ describe('data export worker', () => {
     transform: { script: 'return { name: row.Name, rowNumber: index + 1 }' },
     destination: { format: 'auto', title: 'Orders' },
     chatId: 'oc_test',
+    replyToMessageId: 'om_thread_root',
+    replyInThread: true,
     requestId: 'om_test',
   };
   const createWorker = (input: {
-    registry: DataExportSourceRegistry;
-    sink: { write: (input: any) => Promise<any> };
+    registry: DatasetSourceRegistry;
+    sink: DataExportDestinationSink;
     larkAdapter: {
       sendToChatId: (...args: any[]) => Promise<any>;
       updateMessageById: (...args: any[]) => Promise<any>;
+    };
+    conversationHistory?: {
+      appendTurn: (...args: any[]) => Promise<any>;
     };
     inactivityMs?: number;
     maxRows?: number;
   }) => new DataExportWorker({
     redisUrl: 'redis://unused',
     sources: input.registry,
-    sink: input.sink as any,
+    sink: input.sink,
     identityRepo: {
       resolveByUserId: async () => ({
         ok: true as const,
@@ -471,13 +730,14 @@ describe('data export worker', () => {
     } as any,
     resolveGoogleAuth: async () => ({ accessToken: 'short-lived', readerDomain: 'emiactech.com' }),
     larkAdapter: input.larkAdapter as any,
+    ...(input.conversationHistory ? { conversationHistory: input.conversationHistory as any } : {}),
     logger: noopLogger,
     ...(input.inactivityMs === undefined ? {} : { inactivityMs: input.inactivityMs }),
     ...(input.maxRows === undefined ? {} : { maxRows: input.maxRows }),
   });
 
-  it('shares only with the verified invoker, then persists before delivery', async () => {
-    const registry = new DataExportSourceRegistry();
+  it('revalidates the selected personal Google destination before writing', async () => {
+    const registry = new DatasetSourceRegistry();
     registry.register({
       kind: 'airtable_records',
       async *read() {
@@ -488,12 +748,30 @@ describe('data export worker', () => {
     const progress: unknown[] = [];
     const delivered: string[] = [];
     const edited: string[] = [];
+    let trackerTarget: unknown;
+    let authInput: unknown;
+    let recordedResource: unknown;
+    const personalPayload: DataExportJobPayload = {
+      ...payload,
+      conversationKey: 'oc_test:thread:om_thread_root',
+      destination: {
+        ...payload.destination,
+        target: {
+          kind: 'user_google',
+          connectionId: '33333333-3333-4333-8333-333333333333',
+        },
+      },
+    };
     const worker = new DataExportWorker({
       redisUrl: 'redis://unused',
       sources: registry,
       sink: {
         write: async (input: any) => {
           assert.equal(input.readerEmail, 'abhishek@emiactech.com');
+          assert.deepEqual(input.auth, {
+            accessToken: 'personal-token',
+            ownerEmail: 'member@gmail.com',
+          });
           const rows = [];
           for await (const page of input.rows) rows.push(...page);
           assert.deepEqual(rows, [
@@ -507,7 +785,7 @@ describe('data export worker', () => {
             artifactType: 'google_sheet' as const,
             rowCount: 2,
             sourceTruncated: false,
-            sharedWith: 'abhishek@emiactech.com (reader)',
+            sharedWith: 'member@gmail.com (owner)',
             verified: true as const,
           };
         },
@@ -537,9 +815,13 @@ describe('data export worker', () => {
           },
         }),
       } as any,
-      resolveGoogleAuth: async () => ({ accessToken: 'short-lived', readerDomain: 'emiactech.com' }),
+      resolveGoogleAuth: async (companyId, userId, target) => {
+        authInput = { companyId, userId, target };
+        return { accessToken: 'personal-token', ownerEmail: 'member@gmail.com' };
+      },
       larkAdapter: {
-        sendToChatId: async (_chatId, content) => {
+        sendToChatId: async (chatId, content, replyToMessageId, idempotencyKey, replyInThread) => {
+          trackerTarget = { chatId, replyToMessageId, idempotencyKey, replyInThread };
           delivered.push(content);
           return { ok: true as const, value: 'om-delivered' };
         },
@@ -548,11 +830,17 @@ describe('data export worker', () => {
           return { ok: true as const, value: undefined };
         },
       },
+      conversationHistory: {
+        appendTurn: async (conversationKey, turn, scope, metadata) => {
+          recordedResource = { conversationKey, turn, scope, metadata };
+          return { ok: true as const, value: { id: 'turn-1', ...turn } };
+        },
+      },
       logger: noopLogger,
     });
     await worker.processJob({
-      id: dataExportJobId(payload),
-      data: payload,
+      id: dataExportJobId(personalPayload),
+      data: personalPayload,
       attemptsMade: 0,
       opts: { attempts: 3 },
       updateData: async (updated) => { updates.push(updated); },
@@ -567,12 +855,241 @@ describe('data export worker', () => {
     ]);
     assert.match(delivered[0] ?? '', /Data export in progress/i);
     assert.match(edited.at(-1) ?? '', /Open export|Data export ready/i);
+    assert.deepEqual(authInput, {
+      companyId: 'company-1',
+      userId: 'user-1',
+      target: {
+        kind: 'user_google',
+        connectionId: '33333333-3333-4333-8333-333333333333',
+      },
+    });
+    assert.deepEqual(trackerTarget, {
+      chatId: 'oc_test',
+      replyToMessageId: 'om_thread_root',
+      idempotencyKey: `dtxp_${dataExportJobId(personalPayload)}`,
+      replyInThread: true,
+    });
+    assert.deepEqual(recordedResource, {
+      conversationKey: 'oc_test:thread:om_thread_root',
+      turn: {
+        role: 'tool',
+        content: 'Verified google_sheet export: https://docs.google.com/spreadsheets/d/sheet-1/edit',
+        timestamp: (recordedResource as any).turn.timestamp,
+        toolName: 'dataExportResource',
+        toolOutcome: {
+          version: 1,
+          kind: 'data_export_resource',
+          resourceRef: (recordedResource as any).turn.toolOutcome.resourceRef,
+          ownerUserId: 'user-1',
+          artifactId: 'sheet-1',
+          artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+          artifactType: 'google_sheet',
+          rowCount: 2,
+          connectionId: '33333333-3333-4333-8333-333333333333',
+          spreadsheetId: 'sheet-1',
+          createdAt: (recordedResource as any).turn.toolOutcome.createdAt,
+          expiresAt: (recordedResource as any).turn.toolOutcome.expiresAt,
+        },
+      },
+      scope: { companyId: 'company-1', channel: 'lark' },
+      metadata: { dedupeKey: `data-export:${dataExportJobId(personalPayload)}:resource` },
+    });
+    assert.match((recordedResource as any).turn.toolOutcome.resourceRef, /^[0-9a-f-]{36}$/i);
+  });
+
+  it('delivers a persisted completion on retry without re-running the export', async () => {
+    const completion = {
+      success: true as const,
+      artifactId: 'sheet-persisted',
+      artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-persisted/edit',
+      artifactType: 'google_sheet' as const,
+      rowCount: 2,
+      sourceTruncated: false,
+      sharedWith: 'abhishek@emiactech.com (reader)',
+      verified: true as const,
+    };
+    let edited = '';
+    const worker = new DataExportWorker({
+      redisUrl: 'redis://unused',
+      sources: {
+        register: () => assert.fail('registry must not be mutated'),
+        resolve: () => assert.fail('source must not be resolved'),
+      } as any,
+      sink: { write: async () => assert.fail('sink must not run') } as any,
+      identityRepo: {
+        resolveByUserId: async () => assert.fail('identity must not be resolved'),
+      } as any,
+      permissions: {
+        resolve: async () => assert.fail('permissions must not be resolved'),
+      } as any,
+      resolveGoogleAuth: async () => assert.fail('Google auth must not be resolved'),
+      larkAdapter: {
+        sendToChatId: async () => assert.fail('existing tracker must be reused'),
+        updateMessageById: async (_messageId, content) => {
+          edited = content;
+          return { ok: true as const, value: undefined };
+        },
+      },
+      conversationHistory: {
+        appendTurn: async () => ({
+          ok: false as const,
+          error: new Error('conversation storage unavailable'),
+        }),
+      },
+      logger: noopLogger,
+    });
+    await worker.processJob({
+      id: 'persisted-job',
+      data: {
+        ...payload,
+        conversationKey: 'lark:chat-1:user-1',
+        progressMessageId: 'om-existing-tracker',
+        completedExport: completion,
+      },
+      attemptsMade: 2,
+      opts: { attempts: 3 },
+      updateData: async () => assert.fail('persisted completion must not be rewritten'),
+      updateProgress: async () => assert.fail('completed retry must not report export progress'),
+    });
+    assert.match(edited, /Data export ready/i);
+    assert.match(edited, /sheet-persisted/i);
+    assert.match(edited, /paste the export link/i);
+  });
+
+  it('checkpoints a verified artifact before retrying continuity persistence', async () => {
+    const registry = new DatasetSourceRegistry();
+    let sourceReads = 0;
+    registry.register({
+      kind: 'airtable_records',
+      async *read() {
+        sourceReads += 1;
+        yield { rows: [{ Name: 'One' }] };
+      },
+    });
+    let sinkWrites = 0;
+    let continuityWrites = 0;
+    let delivered = '';
+    const worker = createWorker({
+      registry,
+      sink: {
+        write: async (input: any) => {
+          sinkWrites += 1;
+          for await (const _page of input.rows) {
+            // Consume the governed source stream like a real destination sink.
+          }
+          return {
+            success: true as const,
+            artifactId: 'sheet-once',
+            artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-once/edit',
+            artifactType: 'google_sheet' as const,
+            rowCount: 1,
+            sourceTruncated: false,
+            sharedWith: 'member@gmail.com (owner)',
+            verified: true as const,
+          };
+        },
+      } as any,
+      conversationHistory: {
+        appendTurn: async (_key, turn) => {
+          continuityWrites += 1;
+          if (continuityWrites === 1) {
+            return { ok: false as const, error: new Error('temporary conversation DB failure') };
+          }
+          return { ok: true as const, value: { id: 'turn-1', ...turn } };
+        },
+      },
+      larkAdapter: {
+        sendToChatId: async () => ({ ok: true as const, value: 'om-progress' }),
+        updateMessageById: async (_messageId, content) => {
+          delivered = content;
+          return { ok: true as const, value: undefined };
+        },
+      },
+    });
+    let jobData: DataExportJobPayload = {
+      ...payload,
+      conversationKey: 'lark:chat-1:user-1',
+    };
+    const updateData = async (updated: DataExportJobPayload) => { jobData = updated; };
+
+    await assert.rejects(() => worker.processJob({
+      id: 'continuity-retry-job',
+      data: jobData,
+      attemptsMade: 0,
+      opts: { attempts: 2 },
+      updateData,
+      updateProgress: async () => undefined,
+    }), /temporary conversation DB failure/);
+    assert.equal(jobData.completedExport?.artifactId, 'sheet-once');
+
+    await worker.processJob({
+      id: 'continuity-retry-job',
+      data: jobData,
+      attemptsMade: 1,
+      opts: { attempts: 2 },
+      updateData,
+      updateProgress: async () => assert.fail('completed retry must not rerun progress'),
+    });
+
+    assert.equal(sourceReads, 1);
+    assert.equal(sinkWrites, 1);
+    assert.equal(continuityWrites, 2);
+    assert.match(delivered, /Data export ready/);
+  });
+
+  it('turns the original export-offer card into the progress and completion tracker', async () => {
+    const registry = new DatasetSourceRegistry();
+    registry.register({
+      kind: 'airtable_records',
+      async *read() {
+        yield { rows: [{ Name: 'One' }] };
+      },
+    });
+    const edits: string[] = [];
+    const worker = createWorker({
+      registry,
+      sink: {
+        write: async (input) => {
+          for await (const _page of input.rows) { /* consume source */ }
+          return {
+            success: true,
+            artifactId: 'sheet-1',
+            artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+            artifactType: 'google_sheet',
+            rowCount: 1,
+            sourceTruncated: false,
+            sharedWith: 'abhishek@emiactech.com (reader)',
+            verified: true,
+          };
+        },
+      },
+      larkAdapter: {
+        sendToChatId: async () => assert.fail('the offer card must be reused'),
+        updateMessageById: async (messageId, card) => {
+          assert.equal(messageId, 'om_export_card');
+          edits.push(card);
+          return { ok: true as const, value: undefined };
+        },
+      },
+    });
+
+    await worker.processJob({
+      id: dataExportJobId(payload),
+      data: { ...payload, progressMessageId: 'om_export_card' },
+      attemptsMade: 0,
+      opts: { attempts: 1 },
+      updateData: async () => undefined,
+      updateProgress: async () => undefined,
+    });
+
+    assert.match(edits[0] ?? '', /Data export in progress/i);
+    assert.match(edits.at(-1) ?? '', /Data export ready/i);
   });
 
   it('fails before reading the source when the invoker email is outside the configured domain', async () => {
     let sourceRead = false;
     let failureDelivered = false;
-    const registry = new DataExportSourceRegistry();
+    const registry = new DatasetSourceRegistry();
     registry.register({
       kind: 'airtable_records',
       async *read() {
@@ -613,7 +1130,7 @@ describe('data export worker', () => {
       larkAdapter: {
         sendToChatId: async () => ({ ok: true as const, value: 'om-progress' }),
         updateMessageById: async (_messageId, content) => {
-          failureDelivered = /Data export failed/i.test(content);
+          failureDelivered = /Data export could not finish/i.test(content);
           return { ok: true as const, value: undefined };
         },
       },
@@ -636,7 +1153,7 @@ describe('data export worker', () => {
 
   it('keeps a progressing export alive beyond the inactivity window and aborts a stalled source', async () => {
     const { transform: _transform, ...untransformedPayload } = payload;
-    const progressing = new DataExportSourceRegistry();
+    const progressing = new DatasetSourceRegistry();
     progressing.register({
       kind: 'airtable_records',
       async *read() {
@@ -679,7 +1196,7 @@ describe('data export worker', () => {
     });
 
     let failureCard = '';
-    const stalled = new DataExportSourceRegistry();
+    const stalled = new DatasetSourceRegistry();
     stalled.register({
       kind: 'airtable_records',
       async *read(_source, context) {
@@ -711,11 +1228,12 @@ describe('data export worker', () => {
       }),
       /no progress/i,
     );
-    assert.match(failureCard, /Data export failed/i);
+    assert.match(failureCard, /Data export could not finish/i);
+    assert.doesNotMatch(failureCard, /no progress/i, 'internal worker errors must not reach Lark');
   });
 
   it('never sends a second terminal card when the tracker edit fails', async () => {
-    const registry = new DataExportSourceRegistry();
+    const registry = new DatasetSourceRegistry();
     registry.register({
       kind: 'airtable_records',
       async *read() {
@@ -764,7 +1282,7 @@ describe('data export worker', () => {
 
   it('applies one central source/output row cap and marks the artifact truncated', async () => {
     const { transform: _transform, ...untransformedPayload } = payload;
-    const registry = new DataExportSourceRegistry();
+    const registry = new DatasetSourceRegistry();
     registry.register({
       kind: 'airtable_records',
       async *read() {
@@ -814,7 +1332,9 @@ describe('data export worker', () => {
 
 describe('data export access contract', () => {
   const tool = createDataExportTool({
-    queue: { enqueue: async () => 'unused' },
+    offers: {
+      submitAuthorized: async () => 'unused',
+    },
   });
   const base = {
     source: {
@@ -833,4 +1353,49 @@ describe('data export access contract', () => {
     }).success, false);
     assert.equal(tool.argsSchema.safeParse({ ...base, recipients: ['other@emiactech.com'] }).success, false);
   });
+
+  it('rejects provider offer confirmation from the agent-callable tool', () => {
+    const offerId = '11111111-1111-4111-8111-111111111111';
+    assert.equal(tool.argsSchema.safeParse({ offerId }).success, false);
+    assert.equal(tool.argsSchema.safeParse({ offerId, ...base }).success, false);
+    assert.equal(tool.argsSchema.safeParse({ offerId, companyId: 'company-other' }).success, false);
+    assert.equal(tool.argsSchema.safeParse({
+      offerId,
+      destinationReferenceId: '22222222-2222-4222-8222-222222222222',
+    }).success, false);
+  });
+
+  it('pins a direct recipe to the backend-derived Lark reply address', async () => {
+    let submitted: unknown;
+    const recipeTool = createDataExportTool({
+      offers: {
+        submitAuthorized: async (input) => {
+          submitted = input;
+          return 'dtx_recipe';
+        },
+      },
+    });
+
+    const result = await recipeTool.execute(
+      base,
+      makeCtx('dataExport', ['create'], {
+        chatId: 'oc_group',
+        replyToMessageId: 'om_thread_root',
+        replyInThread: true,
+      }),
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(submitted, {
+      companyId: 'co-test',
+      userId: 'user-test',
+      source: base.source,
+      destination: base.destination,
+      chatId: 'oc_group',
+      replyToMessageId: 'om_thread_root',
+      replyInThread: true,
+      requestId: 'test-corr',
+    });
+  });
+
 });

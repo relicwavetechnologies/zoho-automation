@@ -20,10 +20,12 @@ import { createZohoAuthRoutes } from './http/zoho/zoho-auth.routes';
 import { createLarkAuthRoutes } from './http/lark/lark-auth.routes';
 import { createExecutionRoutes } from './http/executions/execution.routes';
 import { createAdminAuthMiddleware } from './http/middleware/admin-auth.middleware';
-import { createMemberAuthMiddleware } from './http/middleware/member-auth.middleware';
+import { createMemberAuthMiddleware, MEMBER_SESSION_TTL_MINUTES } from './http/middleware/member-auth.middleware';
 import { createDesktopToolsRoutes } from './http/desktop/desktop-tools.routes';
+import { createMailAutomationsRoutes } from './http/mail/mail-automations.routes';
 import { createDesktopDepartmentRoutes } from './http/desktop/desktop-departments.routes';
 import { createDesktopApprovalRoutes } from './http/desktop/desktop-approvals.routes';
+import { createDesktopActivityRoutes, createDesktopTeamActivityRoutes } from './http/desktop/desktop-activity.routes';
 import { createDepartmentRoutes } from './http/admin/departments.routes';
 import { createSkillRegistryRoutes } from './http/admin/skill-registry.routes';
 import { createMemoryRoutes } from './http/admin/memory.routes';
@@ -105,8 +107,10 @@ export const createServer = (c: Container): DivoServerApplication => {
     ingressQueue:          c.larkIngressQueue,
     logger:                c.logger,
     env:                   c.env,
+    appBaseUrl:            c.env.APP_BASE_URL,
     approvalGate:          c.approvalGate,
     approvalCardHandler:   c.approvalCardHandler,
+    dataExportCardHandler: c.dataExportCardHandler,
     knowledgeReviewService: c.larkKnowledgeReviewService,
     larkOAuthService:      c.larkOAuthService,
     connectionRepo:        c.integrationConnectionRepo,
@@ -141,6 +145,7 @@ export const createServer = (c: Container): DivoServerApplication => {
       intentRepo: c.connectionAuthorizationRepo,
       identityRepo: c.channelIdentityRepo,
       connectionRepo: c.integrationConnectionRepo,
+      resumeDataExport: c.resumeDataExportAfterGoogleConnection,
       runPi: input => runPiAndDeliver({
         ...input,
         deps: {
@@ -188,9 +193,11 @@ export const createServer = (c: Container): DivoServerApplication => {
     permissions: c.permissions,
     resolveGoogleAuth: c.resolveGoogleExportAuth,
     larkAdapter: c.larkAdapter,
+    conversationHistory: c.conversationRepo,
     logger: c.logger,
   });
   dataExportWorker.start();
+  c.workbookConversionWorker.start();
 
   // Manager persona promotion remains independent from memory, skills, RBAC,
   // and runtime prompt delivery. P5 adds a separate read-only delivery path.
@@ -471,6 +478,14 @@ export const createServer = (c: Container): DivoServerApplication => {
     }),
   );
 
+  // Shared by every route that acts for a signed-in person, including the
+  // Lark identity link below — one session type, one middleware.
+  const memberAuth = createMemberAuthMiddleware({
+    prisma:    c.prisma,
+    jwtSecret: c.env.MEMBER_JWT_SECRET,
+    logger:    c.logger,
+  });
+
   // Lark user OAuth connect + callback
   app.use(
     '/api/lark/auth',
@@ -483,8 +498,9 @@ export const createServer = (c: Container): DivoServerApplication => {
       appSecret:           c.env.LARK_APP_SECRET,
       apiBase:             c.env.LARK_API_BASE_URL,
       prisma:              c.prisma,
-      memberSessionTtlMinutes: 7 * 24 * 60,
+      memberSessionTtlMinutes: MEMBER_SESSION_TTL_MINUTES,
       channelIdentityRepo: c.channelIdentityRepo,
+      memberAuth,
       // Shares the webhook's deps so the replayed turn runs through exactly the
       // same lane, lease, and delivery path as any other message.
       onLinked:            pendingEvent =>
@@ -496,6 +512,9 @@ export const createServer = (c: Container): DivoServerApplication => {
   const adminAuth = createAdminAuthMiddleware({
     prisma:          c.prisma,
     jwtSecret:       c.env.ADMIN_JWT_SECRET,
+    // The web app signs in once and holds one session. Admin routes accept it
+    // only when the person's live membership says COMPANY_ADMIN or SUPER_ADMIN.
+    memberJwtSecret: c.env.MEMBER_JWT_SECRET,
     ...(c.env.INTERNAL_API_KEY !== undefined ? { internalApiKey: c.env.INTERNAL_API_KEY } : {}),
     logger:          c.logger,
   });
@@ -517,11 +536,6 @@ export const createServer = (c: Container): DivoServerApplication => {
   );
 
   // ── File management routes (member auth) ─────────────────────────────────
-  const memberAuth = createMemberAuthMiddleware({
-    prisma:    c.prisma,
-    jwtSecret: c.env.MEMBER_JWT_SECRET,
-    logger:    c.logger,
-  });
   const piRuntimeMemberAuth = createMemberAuthMiddleware({
     prisma:    c.prisma,
     jwtSecret: c.env.MEMBER_JWT_SECRET,
@@ -555,10 +569,51 @@ export const createServer = (c: Container): DivoServerApplication => {
       inbox:           c.approvalInbox,
     }),
   );
+
+  // A member's own usage and runs. Pinned to the signed-in user inside the
+  // router; there is no userId parameter to get wrong.
+  app.use(
+    '/api/desktop/me',
+    createDesktopActivityRoutes({
+      prisma:          c.prisma,
+      memberJwtSecret: c.env.MEMBER_JWT_SECRET,
+      logger:          c.logger,
+    }),
+  );
+  // A manager's view of their own department's cost. Separate mount because the
+  // path is department-scoped rather than /me, and its authority check is the
+  // department one rather than "this is you".
+  app.use(
+    '/api/desktop',
+    createDesktopTeamActivityRoutes({
+      prisma:          c.prisma,
+      memberJwtSecret: c.env.MEMBER_JWT_SECRET,
+      logger:          c.logger,
+    }),
+  );
   // Mounted under /auth because that is the base the desktop's
   // `divo_desktop_json_request` helper prefixes onto every tool path. Moving it
   // to /api/desktop takes GET /api/desktop/auth/tools off the air, and the
   // desktop reads that 401 as an expired session.
+  // Read-only view of a member's own mail rules and mailbox health. Mounted
+  // beside the other personal endpoints because it answers the same question
+  // they do — what is Divo doing on my behalf, and is it working.
+  app.use(
+    '/api/mail-automations',
+    createMailAutomationsRoutes({
+      readRepo: c.mailOpsReadRepo,
+      // The one write on this router, and deliberately the narrowest possible
+      // one: it moves a poll schedule forward and touches nothing else.
+      requestReconciliation: input => c.mailOpsRepo.requestReconciliation(input),
+      memberAuth: {
+        prisma: c.prisma,
+        jwtSecret: c.env.MEMBER_JWT_SECRET,
+        logger: c.logger,
+      },
+      logger: c.logger,
+    }),
+  );
+
   app.use(
     '/api/desktop/auth',
     createDesktopToolsRoutes({
@@ -611,7 +666,8 @@ export const createServer = (c: Container): DivoServerApplication => {
       env:                    c.env,
       memberJwtSecret:        c.env.MEMBER_JWT_SECRET,
       backendPublicUrl:       c.env.BACKEND_PUBLIC_URL,
-      sessionTtlMinutes:      480,
+      appBaseUrl:             c.env.APP_BASE_URL,
+      sessionTtlMinutes:      MEMBER_SESSION_TTL_MINUTES,
     }),
   );
 
@@ -801,6 +857,7 @@ export const createServer = (c: Container): DivoServerApplication => {
         { name: 'lark-ingress-worker', close: () => larkIngressWorker.stop() },
         { name: 'google-continuation-worker', close: () => googleConnectionContinuationWorker.stop() },
         { name: 'data-export-worker', close: () => dataExportWorker.stop() },
+        { name: 'workbook-conversion-worker', close: () => c.workbookConversionWorker.stop() },
         { name: 'persona-learning-worker', close: () => personaLearningWorker.stop() },
         ...(knowledgeLearningWorker
           ? [{ name: 'knowledge-learning-worker', close: () => knowledgeLearningWorker.stop() }]
@@ -812,6 +869,7 @@ export const createServer = (c: Container): DivoServerApplication => {
         { name: 'lark-ingress-queue', close: () => c.larkIngressQueue.close() },
         { name: 'google-continuation-queue', close: () => c.googleConnectionContinuationQueue.close() },
         { name: 'data-export-queue', close: () => c.dataExportQueue.close() },
+        { name: 'workbook-conversion-queue', close: () => c.workbookConversionQueue.close() },
         { name: 'persona-learning-queue', close: () => c.personaLearningQueue.close() },
         { name: 'knowledge-learning-queue', close: () => c.knowledgeLearningQueue.close() },
         { name: 'manager-teach-queue', close: () => c.managerTeachQueue.close() },

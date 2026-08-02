@@ -49,12 +49,6 @@ export interface ProxyStatus {
 
 /** Derived, human-facing status the header pill + key card render from. */
 export type ProxyState = "not_configured" | "active" | "paused" | "disabled"
-export function proxyState(s: ProxyStatus | undefined): ProxyState {
-  if (!s) return "disabled"
-  if (!s.enabled) return "disabled"
-  if (!s.configured) return "not_configured"
-  return s.status === "disabled" ? "paused" : "active"
-}
 
 const scoped = (path: string, companyId?: string, provider?: KeyProvider): string => {
   const params = new URLSearchParams()
@@ -105,19 +99,6 @@ export function useSaveProxyKey(token: string | null, provider: KeyProvider, com
   })
 }
 
-export function useRemoveProxyKey(token: string | null, provider: KeyProvider, companyId?: string) {
-  const scope = getAdminQueryScope(token)
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: ({ keyScope }: { keyScope: KeyScope }) =>
-      api.delete<ProxyStatus>("/api/admin/proxy/key", { provider, scope: keyScope, companyId }, token!),
-    onSuccess: (data) => {
-      qc.setQueryData(statusKey(scope, provider, companyId), data)
-      void qc.invalidateQueries({ queryKey: statusKey(scope, provider, companyId) })
-    },
-  })
-}
-
 // ─── Proxy health metrics ─────────────────────────────────────────────────────
 export interface ProxyMetrics {
   requests24h: number
@@ -126,21 +107,6 @@ export interface ProxyMetrics {
   avgLatencyMs: number
   tokensPerMin: number
   lastUsedAt: string | null
-}
-
-export function useProxyMetrics(token: string | null, companyId?: string, channel?: string) {
-  const scope = getAdminQueryScope(token)
-  return useQuery({
-    queryKey: ["admin", scope, "proxy-metrics", companyId ?? "", channel ?? "all"] as const,
-    enabled: Boolean(token),
-    refetchInterval: 15_000,
-    queryFn: () => {
-      const params = new URLSearchParams()
-      if (companyId) params.set("companyId", companyId)
-      if (channel) params.set("channel", channel)
-      return api.get<ProxyMetrics>(`/api/admin/proxy/metrics${params.size ? `?${params}` : ""}`, token!)
-    },
-  })
 }
 
 // ─── Live audit feed ──────────────────────────────────────────────────────────

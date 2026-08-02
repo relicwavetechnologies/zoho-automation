@@ -6,24 +6,23 @@
  * person who is both an individual and a lead is never left guessing whether
  * "Connections" means theirs or their team's.
  *
- * Company-scope items route to the existing, live admin pages. You and Team
- * route to the Workspace screens, which are still on fixtures — every one of
- * them marks itself in the UI, so nothing here implies more is wired than is.
+ * Every scope now runs on real endpoints. A few panels are still fixtures —
+ * /me/skills, /me/memory and /me/artifacts — and each marks itself in the UI
+ * rather than relying on a note here that goes stale the moment one is wired.
  *
- * Scope availability: an admin session is only ever issued to SUPER_ADMIN or
- * COMPANY_ADMIN today (admin-auth.routes.ts), so Company is present for
- * everyone who can sign in. Team has no data source yet — `/me` reports
- * departments but the admin session does not carry managed departments — so it
- * is shown as a preview until that lands.
+ * Scope availability: one member session serves everybody, so Team appears for
+ * whoever actually manages a department and Company for admins. Nothing is
+ * shown as a preview any more.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity, Bell, Brain, Building2, Check, ChevronsUpDown, Diamond, FileClock, FileStack,
-  Gauge, Grid2X2, KeyRound, Library, Link2, LogOut, Moon, Search, Settings, ShieldCheck,
+  Gauge, Grid2X2, KeyRound, Library, Link2, LogOut, Mail, Moon, Search, Settings, ShieldCheck,
   Sun, Users, UserSquare, type LucideIcon,
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
+import { useManagedDepartments } from '@/pages/workspace/data/use-team'
 import { RoleProvider } from '@/cursor/role-context'
 import { useTheme } from '@/lib/use-theme'
 import '@/styles/workspace.css'
@@ -46,6 +45,7 @@ const NAV: Record<ScopeKind, NavGroup[]> = {
         { to: '/me/artifacts', label: 'Things Divo made', icon: FileStack },
         { to: '/me/connections', label: 'Connected apps', icon: Link2 },
         { to: '/me/access', label: 'What Divo can do', icon: KeyRound },
+        { to: '/me/mail-rules', label: 'Mail rules', icon: Mail },
         { to: '/me/skills', label: 'Skills', icon: Library },
         { to: '/me/memory', label: 'Memory', icon: Brain },
       ],
@@ -107,8 +107,20 @@ const scopeOfPath = (pathname: string): ScopeKind =>
 
 const HOME: Record<ScopeKind, string> = { you: '/me', team: '/team', company: '/home' }
 
+/** Two letters from a name, falling back to the email's local part. */
+const initialsOf = (name?: string | null, email?: string | null): string => {
+  const source = name?.trim() || email?.split('@')[0] || ''
+  const parts = source.split(/[\s._-]+/).filter(Boolean)
+  if (parts.length === 0) return '·'
+  const letters = parts.length === 1 ? parts[0].slice(0, 2) : parts[0][0] + parts[parts.length - 1][0]
+  return letters.toUpperCase()
+}
+
+const roleLabel = (role?: string): string =>
+  role === 'SUPER_ADMIN' ? 'Super admin' : role === 'COMPANY_ADMIN' ? 'Company admin' : 'Member'
+
 export function WorkspaceShell() {
-  const { session, logout } = useAdminAuth()
+  const { session, scopes, logout } = useAdminAuth()
   const location = useLocation()
   const navigate = useNavigate()
   const { resolved, setTheme } = useTheme()
@@ -124,18 +136,11 @@ export function WorkspaceShell() {
   const scope = scopeOfPath(location.pathname)
   const groups = NAV[scope]
 
-  const isAdmin = session?.role === 'SUPER_ADMIN' || session?.role === 'COMPANY_ADMIN'
-  const company = session?.companyName ?? (session?.role === 'SUPER_ADMIN' ? 'All workspaces' : 'Your company')
-
-  const scopes = useMemo(
-    () => [
-      { kind: 'you' as const, label: 'You', detail: session?.role === 'SUPER_ADMIN' ? 'Super admin' : 'Your workspace' },
-      { kind: 'team' as const, label: 'Your team', detail: 'Preview · needs department data' },
-      ...(isAdmin ? [{ kind: 'company' as const, label: company, detail: 'Whole company' }] : []),
-    ],
-    [company, isAdmin, session?.role],
-  )
-
+  // Scopes come from the session now — a Team scope appears only when this
+  // person actually leads a department, and Company only when their live
+  // membership is admin. The old list showed all three to everyone and labelled
+  // Team a "preview", which meant the switcher advertised a place to go that
+  // had no data and no right to any.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setPalette((v) => !v) }
@@ -153,7 +158,14 @@ export function WorkspaceShell() {
     return () => window.removeEventListener('mousedown', onDown)
   }, [scopeOpen])
 
-  const active = scopes.find((s) => s.kind === scope) ?? scopes[0]
+  // Which team the Team scope is about. A person can lead several, and every
+  // Team entry in this menu points at the same `/team` — the department is
+  // carried in the remembered selection instead, so the label has to follow it
+  // rather than always naming the first.
+  const managed = useManagedDepartments()
+  const active = scopes.find((s) => (
+    s.kind === scope && (s.kind !== 'team' || s.departmentId === managed.department?.id)
+  )) ?? scopes.find((s) => s.kind === scope) ?? scopes[0]
   const ScopeIcon = scope === 'you' ? UserSquare : scope === 'team' ? Users : Building2
 
   return (
@@ -186,16 +198,25 @@ export function WorkspaceShell() {
               <div className="ws-scope-menu">
                 {scopes.map((s) => {
                   const Icon = s.kind === 'you' ? UserSquare : s.kind === 'team' ? Users : Building2
+                  // Keyed by department too. Two led departments produce two
+                  // Team scopes, and keying on `kind` alone gave React duplicate
+                  // keys and the reader two identical-looking rows.
+                  const current = s.kind === scope
+                    && (s.kind !== 'team' || s.departmentId === managed.department?.id)
                   return (
                     <button
                       type="button"
-                      key={s.kind}
+                      key={`${s.kind}:${s.departmentId ?? ''}`}
                       className="ws-scope-opt"
-                      onClick={() => { setScopeOpen(false); navigate(HOME[s.kind]) }}
+                      onClick={() => {
+                        setScopeOpen(false)
+                        if (s.kind === 'team' && s.departmentId) managed.select(s.departmentId)
+                        navigate(HOME[s.kind])
+                      }}
                     >
                       <span className="ws-scope-ic"><Icon size={13} /></span>
                       <span className="ws-scope-txt"><b>{s.label}</b><span>{s.detail}</span></span>
-                      {s.kind === scope ? <Check size={14} className="ck" /> : null}
+                      {current ? <Check size={14} className="ck" /> : null}
                     </button>
                   )
                 })}
@@ -223,11 +244,13 @@ export function WorkspaceShell() {
           </nav>
 
           <div className="sidebar-foot">
+            {/* The person, not their rank. Members sign in here now, and
+                "Company admin" was printed for everyone regardless. */}
             <button type="button" className="ws-acct" onClick={() => logout()}>
-              <span className="avatar">{(session?.role === 'SUPER_ADMIN' ? 'SA' : 'CA')}</span>
+              <span className="avatar">{initialsOf(session?.name, session?.email)}</span>
               <span className="ws-acct-txt">
-                <b>{session?.role === 'SUPER_ADMIN' ? 'Super admin' : 'Company admin'}</b>
-                <span>{company}</span>
+                <b>{session?.name ?? session?.email ?? 'Signed in'}</b>
+                <span>{roleLabel(session?.role)}</span>
               </span>
               <LogOut size={14} className="muted" />
             </button>

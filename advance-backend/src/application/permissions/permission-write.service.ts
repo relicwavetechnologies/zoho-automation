@@ -82,4 +82,29 @@ export class PermissionWriteService {
     });
     return { ok: true };
   }
+
+  /**
+   * Returns one person to whatever their role grants.
+   *
+   * Audited under its own action rather than as `set_dept_member_action` with
+   * some sentinel value: "the exception was removed" and "the exception now
+   * says deny" are different decisions and a reader of the log needs to tell
+   * them apart.
+   */
+  async clearDepartmentMemberAction(input: {
+    companyId: string; departmentId: string; actorId: string; userId: string; toolId: string; actionGroup: string; revalidate?: BeforePersist;
+  }): Promise<PermissionWriteResult> {
+    if (!this.valid(input.toolId, input.actionGroup)) return { ok: false, reason: 'invalid' };
+    if (!await this.canPersist(input.revalidate)) return { ok: false, reason: 'invalid' };
+    const result = await this.deps.deptUserOverrideRepo.remove(
+      input.departmentId, input.userId, input.toolId, input.actionGroup,
+    );
+    if (!result.ok) return { ok: false, reason: 'failed' };
+    await this.deps.permissions.invalidateDept(input.companyId, input.departmentId);
+    this.deps.auditService.record({
+      actorId: input.actorId, companyId: input.companyId, action: 'permission.clear_dept_member_action', outcome: 'success',
+      metadata: { departmentId: input.departmentId, userId: input.userId, toolId: input.toolId, actionGroup: input.actionGroup },
+    });
+    return { ok: true };
+  }
 }

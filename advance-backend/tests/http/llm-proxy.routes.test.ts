@@ -137,9 +137,13 @@ describe('LLM proxy model forwarding', () => {
     // and pricing — so it must be canonicalised for the upstream call too.
     // Forwarding the raw name authorises one model and then calls another, and
     // DeepSeek has since retired the alias and rejects it outright.
+    //
+    // Both retired aliases now resolve to V4 Flash: `chat` was its non-thinking
+    // mode and `reasoner` its thinking mode, so neither was ever a distinct
+    // model to price separately.
     const { body } = await forward('deepseek-reasoner');
 
-    assert.equal(body['model'], 'deepseek-v4-pro');
+    assert.equal(body['model'], 'deepseek-v4-flash');
   });
 
   it('leaves an already-canonical model unchanged', async () => {

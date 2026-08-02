@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { z } from 'zod';
 import type { Prisma, PrismaClient } from '../../generated/prisma';
 import type { LarkOAuthService } from '../../infrastructure/lark/lark-oauth.service';
@@ -23,6 +24,7 @@ import type { MemoryService } from '../../application/knowledge/semantic-memory.
 import { buildDesktopCapabilityBootstrap, isFinanceDepartment } from '../../application/desktop/desktop-capability-bootstrap';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
+import { PROXY_MODEL_SPECS, RUNTIME_MODEL_PREFERENCE } from '../../application/observability/pricing';
 import {
   connectionGovernancePolicySchema,
   defaultConnectionGovernancePolicy,
@@ -53,6 +55,8 @@ export interface DesktopAuthRoutesDeps {
   env:                    TypedEnv;
   memberJwtSecret:        string;
   backendPublicUrl:       string;
+  /** Where the web app lives — the only origin a callback will postMessage to. */
+  appBaseUrl:             string;
   sessionTtlMinutes:      number;
 }
 
@@ -67,6 +71,26 @@ interface StatePayload {
   redirectUri?: string;
   exp?: number;
 }
+
+const require = createRequire(__filename);
+const bcrypt = require('bcryptjs') as {
+  compare(input: string, hashed: string): Promise<boolean>;
+};
+
+/**
+ * A Lark-provisioned user is created with an HMAC digest in `password` rather
+ * than a bcrypt hash, because that account has no password to speak of
+ * (see the `lark.exchange.user_created` path below). bcryptjs is not obliged to
+ * fail cleanly on a hash it cannot parse, so the shape is checked here instead
+ * of relying on `compare` to return false for it.
+ */
+const isBcryptHash = (value: string): boolean => /^\$2[aby]?\$\d{2}\$/.test(value);
+
+const loginSchema = z.object({
+  email:     z.string().email(),
+  password:  z.string().min(1),
+  companyId: z.string().uuid().optional(),
+});
 
 const DESKTOP_PROTOCOL = 'cursorr';
 const HANDOFF_TTL_MS   = 5 * 60 * 1000;
@@ -288,6 +312,50 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       });
     }
     return `${resolved.origin}${callbackPath}`;
+  };
+
+  /**
+   * The page a connection OAuth popup lands on.
+   *
+   * It tells the opener directly rather than leaving it to guess. The web app
+   * used to detect success by polling `popup.closed` and refetching when the
+   * window went away — which only worked at all for the providers whose
+   * callback closed itself. Canva and Airtable answered with bare text and no
+   * `window.close()`, so their popup sat open forever, the poll never
+   * resolved, and the list never refreshed no matter how long you waited.
+   *
+   * `postMessage` is targeted at the app origin, never `*`, and carries no
+   * secret — just which provider finished. The listener re-reads `/status`
+   * from the backend, so the message is a nudge, not a source of truth.
+   *
+   * `window.close()` runs immediately. The visible copy is the fallback for
+   * the desktop app, which has no opener to notify and where the human closes
+   * the window themselves.
+   */
+  const connectionCallbackPage = (provider: string, headline: string, detail: string): string => {
+    const appOrigin = (() => {
+      try { return new URL(deps.appBaseUrl).origin; } catch { return ''; }
+    })();
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${headline}</title></head>
+<body style="background:#111217;color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:grid;place-items:center;min-height:100vh;margin:0">
+  <main style="width:min(420px,calc(100vw - 48px));text-align:center">
+    <h1 style="font-size:19px;margin:0 0 8px">${headline}</h1>
+    <p style="font-size:14px;line-height:1.6;color:#a1a1aa;margin:0">${detail}</p>
+  </main>
+  <script>
+    (function () {
+      try {
+        if (window.opener && ${JSON.stringify(appOrigin)}) {
+          window.opener.postMessage(
+            { source: 'divo-connection', provider: ${JSON.stringify(provider)}, ok: true },
+            ${JSON.stringify(appOrigin)}
+          );
+        }
+      } catch (e) { /* opener gone or cross-origin: the poll fallback covers it */ }
+      window.close();
+    })();
+  </script>
+</body></html>`;
   };
 
   const buildConnectionManagePayload = async (
@@ -676,7 +744,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     <main style="width:min(420px,calc(100vw - 48px));border:1px solid rgba(255,255,255,.12);border-radius:18px;background:#181a22;padding:28px;box-shadow:0 24px 80px rgba(0,0,0,.45);text-align:center">
       <div style="width:44px;height:44px;border-radius:14px;background:linear-gradient(135deg,#2563eb,#7c3aed);display:grid;place-items:center;margin:0 auto 16px;font-weight:800">D</div>
       <h1 style="font-size:20px;line-height:1.25;margin:0 0 8px">Authentication complete</h1>
-      <p style="font-size:14px;line-height:1.6;color:#a1a1aa;margin:0 0 18px">Return to Divo Desktop. This tab can be closed.</p>
+      <p style="font-size:14px;line-height:1.6;color:#a1a1aa;margin:0 0 18px">Return to Divo. This tab can be closed.</p>
       <button onclick="window.close()" style="border:1px solid rgba(255,255,255,.16);border-radius:10px;background:#f4f4f5;color:#111217;padding:10px 14px;font-weight:650;cursor:pointer">Close window</button>
       <p style="font-size:12px;color:#71717a;margin:18px 0 0">If it does not close automatically, close it manually.</p>
     </main>
@@ -726,13 +794,21 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       });
 
       const tenantKey = tokenBundle.tenantKey ?? '';
-
-      const company = await deps.prisma.company.findFirst();
-      if (!company) {
-        res.status(500).json({ success: false, message: 'No company configured' });
+      const tenantBinding = tenantKey
+        ? await deps.prisma.larkTenantBinding.findFirst({
+          where: { larkTenantKey: tenantKey, isActive: true },
+          select: { companyId: true },
+        })
+        : null;
+      if (!tenantBinding) {
+        log.warn('lark.exchange.unbound_tenant', { tenantKey: tenantKey || null });
+        res.status(403).json({
+          success: false,
+          message: 'This Lark tenant is not linked to an active Divo company.',
+        });
         return;
       }
-      const companyId = company.id;
+      const companyId = tenantBinding.companyId;
 
       let email = (tokenBundle.larkEmail?.trim()) || null;
 
@@ -867,6 +943,92 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     }
   });
 
+  // ── Password sign-in (no auth — the credential is the body) ──────────────
+
+  /**
+   * The fallback half of the single sign-in page. Lark OAuth is the primary
+   * route and the only one that produces a session Lark chat can use; this
+   * exists for super admins outside the customer's Lark tenant and for members
+   * who set a password when they accepted an email invite.
+   *
+   * A session minted here carries no Lark identity, so it deliberately does not
+   * satisfy the runtime lookup — that person's chat stays dark until they link
+   * Lark once, which is the honest outcome rather than a half-working one.
+   */
+  router.post('/login', async (req: Request, res: Response) => {
+    try {
+      const parsed = loginSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ success: false, message: 'email and password are required' });
+        return;
+      }
+      const payload = parsed.data;
+
+      const user = await deps.prisma.user.findUnique({ where: { email: payload.email } });
+      // One failure message for "no such account" and "wrong password" alike, so
+      // this route cannot be used to enumerate who has a Divo account.
+      const invalid = () => res.status(401).json({ success: false, message: 'Invalid email or password' });
+
+      if (!user || !isBcryptHash(user.password) || !(await bcrypt.compare(payload.password, user.password))) {
+        log.warn('desktop.login.rejected', { email: payload.email });
+        invalid();
+        return;
+      }
+
+      const membership = await deps.prisma.adminMembership.findFirst({
+        where: {
+          userId:   user.id,
+          isActive: true,
+          ...(payload.companyId ? { companyId: payload.companyId } : {}),
+        },
+        orderBy: { updatedAt: 'desc' },
+        select: { companyId: true, role: true },
+      });
+      // A super admin's membership can carry no company at all, and a session
+      // has to belong to one — so this is "no workspace", not a bad password.
+      const companyId = membership?.companyId;
+      if (!membership || !companyId) {
+        // Credentials were right, so this is not an enumeration risk — and the
+        // person needs to know the account is real but has no active workspace.
+        res.status(403).json({ success: false, message: 'This account has no active workspace membership' });
+        return;
+      }
+
+      const session = await issueDesktopSession(deps, user.id, companyId, membership.role, {
+        authProvider: 'password',
+      });
+
+      const departments = await deps.prisma.department.findMany({
+        where:  { companyId, memberships: { some: { userId: user.id } } },
+        select: { id: true, name: true },
+      });
+
+      log.info('desktop.login.ok', { userId: user.id, companyId });
+
+      res.json({
+        success: true,
+        data: {
+          token: session.token,
+          session: {
+            ...session,
+            authProvider: 'password',
+            email: user.email,
+            name:  user.name ?? user.email,
+            // No Lark identity on a password session. The client reads this to
+            // tell the person their chat will not work until they link Lark.
+            larkTenantKey: null,
+            larkOpenId:    null,
+            departments,
+          },
+        },
+        message: 'Session issued',
+      });
+    } catch (e) {
+      log.error('desktop.login.error', { error: String(e) });
+      res.status(500).json({ success: false, message: 'Sign-in failed' });
+    }
+  });
+
   // ── Handoff exchange (no auth — code is credential) ──────────────────────
 
   router.post('/exchange', async (req: Request, res: Response) => {
@@ -947,10 +1109,29 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         where: { id: userId },
         select: { id: true, email: true, name: true },
       });
-      const departments = await deps.prisma.department.findMany({
-        where: { companyId, memberships: { some: { userId } } },
-        select: { id: true, name: true },
+      const company = await deps.prisma.company.findUnique({
+        where: { id: companyId },
+        select: { name: true },
       });
+      // The department role travels with the membership, because it is what
+      // decides whether this person sees a Team scope at all. Company role is
+      // the ceiling; leading a department is a separate axis, and the web shell
+      // cannot derive one from the other.
+      const memberships = await deps.prisma.departmentMembership.findMany({
+        where:  { userId, status: 'active', department: { companyId } },
+        select: {
+          department: { select: { id: true, name: true } },
+          role:       { select: { slug: true, name: true } },
+        },
+      });
+      const departments = memberships.map(m => ({
+        id:       m.department.id,
+        name:     m.department.name,
+        roleSlug: m.role.slug,
+        roleName: m.role.name,
+        // Slug is the stable identifier; DepartmentRole.name is user-editable.
+        isManager: m.role.slug === 'MANAGER',
+      }));
       const larkConnections = await deps.connectionRepo.listAccessibleLarkConnections({ userId, companyId });
       const googleConnections = await deps.connectionRepo.listAccessibleGoogleConnections({ userId, companyId });
 
@@ -958,6 +1139,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         success: true,
         data: {
           userId, companyId,
+          companyName: company?.name ?? null,
           role: res.locals['aiRole'],
           runtime: res.locals['channel'] === 'lark'
             ? {
@@ -1018,9 +1200,22 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       });
       const allowedModels =
         policy && policy.allowedModels.length > 0 ? policy.allowedModels : ['deepseek-v4-flash'];
+      // Labels travel with the ids, in runtime preference order.
+      //
+      // The web UI used to read these from GET /api/admin/proxy/models, which
+      // sits behind adminAuth — so for a plain member it 403'd and the settings
+      // screen listed raw ids like `deepseek-v4-flash` instead of "Flash". The
+      // catalogue is static, so serving the member-visible fields here costs
+      // nothing and removes the admin round-trip entirely. Pricing stays out:
+      // a member has no business reading per-million rates.
+      const catalogue = RUNTIME_MODEL_PREFERENCE
+        .filter((id) => allowedModels.includes(id))
+        .map((id) => PROXY_MODEL_SPECS.find((spec) => spec.id === id))
+        .filter((spec): spec is (typeof PROXY_MODEL_SPECS)[number] => Boolean(spec))
+        .map((spec) => ({ id: spec.id, label: spec.label, provider: spec.provider, vision: spec.vision }));
       res.json({
         success: true,
-        data: { allowedModels, blocked: policy?.blocked ?? false },
+        data: { allowedModels, models: catalogue, blocked: policy?.blocked ?? false },
       });
     } catch (e) {
       res.status(500).json({ success: false, message: String(e) });
@@ -1499,11 +1694,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
 
       log.info('google.callback.success', { userId: payload.userId });
 
-      res.send(`<!DOCTYPE html><html><body>
-<h2>Google connected successfully!</h2>
-<p>You can close this window and return to Divo Desktop.</p>
-<script>setTimeout(()=>window.close(),3000);</script>
-</body></html>`);
+      res.send(connectionCallbackPage(
+        'google_workspace',
+        'Google connected',
+        'You can close this window and return to Divo.',
+      ));
     } catch (e) {
       log.error('google.callback.error', { error: String(e) });
       res.send(`<html><body><h2>Google connection failed</h2><p>${String(e)}</p></body></html>`);
@@ -1871,7 +2066,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         userId: payload.userId,
         connectionId: connection.value.id,
       });
-      res.type('text/plain').send('Canva connected successfully. You can close this window and return to Divo Desktop.');
+      res.send(connectionCallbackPage(
+        'canva',
+        'Canva connected',
+        'You can close this window and return to Divo.',
+      ));
     } catch (e) {
       log.error('canva.callback.error', { error: String(e) });
       res.status(500).type('text/plain').send('Canva connection failed. Return to Divo and try again.');
@@ -2138,7 +2337,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         userId: payload.userId,
         connectionId: connection.value.id,
       });
-      res.type('text/plain').send('Airtable connected successfully. You can close this window and return to Divo Desktop.');
+      res.send(connectionCallbackPage(
+        'airtable',
+        'Airtable connected',
+        'You can close this window and return to Divo.',
+      ));
     } catch (e) {
       log.error('airtable.callback.error', { error: String(e) });
       res.status(500).type('text/plain').send('Airtable connection failed. Return to Divo and try again.');
@@ -2771,11 +2974,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         companyId: payload.companyId,
         connectionId: integrationResult.value.id,
       });
-      res.send(`<!DOCTYPE html><html><body>
-<h2>Zoho connected successfully!</h2>
-<p>You can close this window and return to Divo Desktop.</p>
-<script>setTimeout(()=>window.close(),3000);</script>
-</body></html>`);
+      res.send(connectionCallbackPage(
+        'zoho',
+        'Zoho connected',
+        'You can close this window and return to Divo.',
+      ));
     } catch (e) {
       log.error('zoho.callback.error', { error: String(e) });
       res.send(`<html><body><h2>Zoho connection failed</h2><p>${String(e)}</p></body></html>`);

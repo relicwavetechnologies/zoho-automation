@@ -18,7 +18,6 @@ export function useCompanyScope(): string | undefined {
  * useCompanyScope() in a page to derive it from the session.
  */
 
-export const usd = (n: number) => (n < 1 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`)
 export const compact = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}K` : String(Math.round(n)))
 
 const scoped = (path: string, params: Record<string, string | number | undefined>): string => {
@@ -29,12 +28,29 @@ const scoped = (path: string, params: Record<string, string | number | undefined
 }
 
 // ─── Directory (identity) ─────────────────────────────────────────────────────
+/**
+ * The whole directory row, not a slice of it.
+ *
+ * It was declared as the five fields one page happened to read, which meant the
+ * next screen that needed `larkLinked` had to either widen this or build a
+ * second hook over the same route. The route returns all of this; the type says
+ * so now.
+ */
 export interface DirectoryMember {
   userId: string
   name: string | null
   email: string
-  companyRole: string | null
+  companyRole: string
+  /** No Lark identity means Divo in Lark cannot recognise them. */
+  larkLinked: boolean
+  googleConnected: boolean
+  larkOpenId: string | null
+  larkDisplayName: string | null
+  departmentCount: number
+  managerDepartmentCount: number
   departmentNames: string[]
+  createdAt: string
+  updatedAt: string
 }
 
 export function useDirectory(token: string | null, companyId?: string) {

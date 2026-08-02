@@ -109,7 +109,7 @@ export class PermissionServiceImpl implements PermissionService {
       const membershipResult = await this.deps.deptRepo.getMembership(userId, companyId, departmentId);
       if (!membershipResult.ok) {
         return err(new PermissionError({
-          reason: 'department_access_denied',
+          reason: 'permission_lookup_failed',
           message: `Failed to read department membership: ${membershipResult.error.message}`,
         }));
       }
@@ -133,7 +133,7 @@ export class PermissionServiceImpl implements PermissionService {
 
     if (!deptRolePermsResult.ok || !userOverridesResult.ok) {
       return err(new PermissionError({
-        reason: 'department_access_denied',
+        reason: 'permission_lookup_failed',
         message: 'Failed to load department permission rules',
       }));
     }
@@ -296,8 +296,11 @@ export class PermissionServiceImpl implements PermissionService {
     // Validate that this role exists in the company
     const slugsResult = await this.deps.companyRoleRepo.getValidSlugs(companyId);
     if (!slugsResult.ok) {
+      // Not `unknown_role`: the role list could not be read, which says
+      // nothing about whether the role exists. Callers retry this and record
+      // a genuine denial, so mislabelling it turns an outage into a refusal.
       return err(new PermissionError({
-        reason: 'unknown_role',
+        reason: 'permission_lookup_failed',
         message: `Failed to load valid roles: ${slugsResult.error.message}`,
       }));
     }
@@ -318,8 +321,10 @@ export class PermissionServiceImpl implements PermissionService {
     ]);
 
     if (!toolPermResult.ok || !actionPermResult.ok) {
+      // Same distinction as above, on the company axis. `not_allowed` here
+      // read as a decision that access is absent.
       return err(new PermissionError({
-        reason: 'not_allowed',
+        reason: 'permission_lookup_failed',
         message: 'Failed to load company permission rules',
       }));
     }

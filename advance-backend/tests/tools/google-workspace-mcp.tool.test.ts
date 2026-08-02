@@ -31,6 +31,104 @@ describe('Google Workspace MCP product tools', () => {
     assert.equal(result.ok, false);
   });
 
+  it('resolves a pasted Sheet through the backend-owned resource resolver', async () => {
+    const requests: unknown[] = [];
+    let connectionLookups = 0;
+    const sheets = createGoogleWorkspaceMcpTools({
+      getConnection: async () => {
+        connectionLookups += 1;
+        return { status: 'unavailable' as const };
+      },
+      resolveSheetReference: async request => {
+        requests.push(request);
+        return {
+          status: 'resolved',
+          resource: {
+            provider: 'google',
+            kind: 'spreadsheet',
+            resourceId: 'sheet-1',
+            connectionId: '11111111-1111-4111-8111-111111111111',
+            canonicalUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+          },
+        };
+      },
+    }).find((tool) => tool.id === 'googleSheets')!;
+    const parsed = sheets.argsSchema.safeParse({
+      op: 'resolve_reference',
+      url: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+    });
+    assert.equal(parsed.success, true);
+    if (!parsed.success) return;
+
+    const permission = sheets.permissionCheck(parsed.data, makeAllowedPerm('googleSheets', ['read']));
+    assert.equal(permission.ok && permission.value, 'read');
+    const result = await sheets.execute(parsed.data, makeCtx('googleSheets', ['read']));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && result.value.success, true);
+    assert.equal(connectionLookups, 0);
+    assert.deepEqual(requests, [{
+      companyId: 'co-test',
+      userId: 'user-test',
+      url: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+    }]);
+  });
+
+  it('starts resumable Google authorization when no personal account can open a pasted Sheet', async () => {
+    const authorizationReasons: string[] = [];
+    const sheets = createGoogleWorkspaceMcpTools({
+      getConnection: async () => ({ status: 'unavailable' as const }),
+      resolveSheetReference: async () => ({ status: 'no_connection' }),
+      beginAuthorization: async request => {
+        authorizationReasons.push(request.reason);
+        return { status: 'sent', intentId: 'intent-1' };
+      },
+    }).find((tool) => tool.id === 'googleSheets')!;
+    const parsed = sheets.argsSchema.safeParse({
+      op: 'resolve_reference',
+      url: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+    });
+    assert.equal(parsed.success, true);
+    if (!parsed.success) return;
+
+    const result = await sheets.execute(parsed.data, makeCtx('googleSheets', ['read']));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && result.value.success, false);
+    assert.deepEqual(result.ok && result.value.data, {
+      code: 'google_workspace_authorization_pending',
+      intentId: 'intent-1',
+    });
+    assert.deepEqual(authorizationReasons, [
+      'Connect a writable personal Google account to open this Sheet.',
+    ]);
+  });
+
+  it('starts Google re-consent when a Sheet connection lacks full write scopes', async () => {
+    const authorizationReasons: string[] = [];
+    const sheets = createGoogleWorkspaceMcpTools({
+      getConnection: async () => ({ status: 'unavailable' as const }),
+      resolveSheetReference: async () => ({ status: 'missing_scope' }),
+      beginAuthorization: async request => {
+        authorizationReasons.push(request.reason);
+        return { status: 'sent', intentId: 'intent-2' };
+      },
+    }).find((tool) => tool.id === 'googleSheets')!;
+    const parsed = sheets.argsSchema.safeParse({
+      op: 'resolve_reference',
+      url: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+    });
+    assert.equal(parsed.success, true);
+    if (!parsed.success) return;
+
+    const result = await sheets.execute(parsed.data, makeCtx('googleSheets', ['read']));
+
+    assert.equal(result.ok && result.value.success, false);
+    assert.deepEqual(authorizationReasons, [
+      'Reconnect Google to grant Drive and Sheets write access for this Sheet.',
+    ]);
+  });
+
   it('describes a reviewed operation through the selected connection', async () => {
     const connectionRequests: unknown[] = [];
     const client: GoogleWorkspaceMcpPort = {
@@ -355,28 +453,43 @@ describe('Google Workspace MCP product tools', () => {
         return { status: 'sent', intentId: 'intent-1' };
       },
     }).find((tool) => tool.id === 'googleGmail')!;
-    const connectionAuthorization = {
-      larkOpenId: 'ou_user',
-      larkTenantKey: 'tenant-1',
-      chatId: 'oc_chat',
-      chatType: 'p2p',
-      originalMessageId: 'om_request',
-      replyInThread: false,
-      originalRequest: 'Find my latest OTP email',
-    };
+    const result = await gmail.execute({
+      op: 'call',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      nativeTool: 'search_gmail_messages',
+      input: { query: 'newer_than:1d OTP' },
+    }, makeCtx('googleGmail', ['read'], { runtimeRunId: 'run-1' }));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && (result.value.data as any).code, 'google_workspace_authorization_pending');
+    assert.equal(authorizationInput.toolId, 'googleGmail');
+    // See the note in mail-automations.tool.test.ts: the tool forwards the live
+    // run context, and whether an authorization can start from it is proved
+    // against the real closure in begin-google-authorization.test.ts.
+    assert.equal(authorizationInput.runContext.runtimeRunId, 'run-1');
+    assert.match(result.ok ? result.value.message ?? '' : '', /fresh run automatically/);
+  });
+
+  it('points a member at Connected apps when no card can be sent', async () => {
+    // Off Lark there is no conversation to deliver a Connect card into, so the
+    // tool used to return the bare connection problem — accurate, and useless.
+    const gmail = createGoogleWorkspaceMcpTools({
+      getConnection: async () => ({
+        status: 'unavailable',
+        reason: 'none_accessible',
+        accessible: [],
+      }),
+    }).find((tool) => tool.id === 'googleGmail')!;
 
     const result = await gmail.execute({
       op: 'call',
       connectionId: '11111111-1111-4111-8111-111111111111',
       nativeTool: 'search_gmail_messages',
       input: { query: 'newer_than:1d OTP' },
-    }, makeCtx('googleGmail', ['read'], { connectionAuthorization }));
+    }, makeCtx('googleGmail', ['read'], {}));
 
-    assert.equal(result.ok, true);
-    assert.equal(result.ok && (result.value.data as any).code, 'google_workspace_authorization_pending');
-    assert.equal(authorizationInput.toolId, 'googleGmail');
-    assert.deepEqual(authorizationInput.runContext.connectionAuthorization, connectionAuthorization);
-    assert.match(result.ok ? result.value.message ?? '' : '', /fresh run automatically/);
+    assert.equal(result.ok, false);
+    assert.match(!result.ok ? result.error.message : '', /Connected apps/);
   });
 
   it('classifies destructive and executable native actions without a fallback switch', () => {

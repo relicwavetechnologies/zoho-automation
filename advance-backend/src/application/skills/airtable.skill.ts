@@ -34,7 +34,8 @@ const AIRTABLE_READ_CRAFT = `READING AND FILTERING:
 - list_records_for_table takes a structured filter object, not a formula string: an operator ("and"/"or") plus operands, each with its own comparison operator (=, !=, <, >, <=, >=, contains, doesNotContain, isAnyOf, isNoneOf, hasAnyOf, hasAllOf, isWithin, isEmpty, isNotEmpty). Build the filter tree; never hand-write or URL-encode a formula.
 - Match the operator to the field type: single select and single collaborator use =, !=, isAnyOf, isNoneOf; multiple selects and multiple collaborators use hasAnyOf, hasAllOf, =, doesNotContain; linked records use hasAnyOf, hasAllOf, =, isNoneOf, contains, doesNotContain.
 - Always pass fieldIds with only the fields the answer needs. Pulling every field on a wide table wastes the run's context for no benefit.
-- Paginate with cursor: pass the previous response's nextCursor until it is absent. Do not claim a total until pagination is exhausted, and say so plainly when you stopped early.
+- Continue with nextCursor only for a bounded answer or a scripted calculation that genuinely needs more pages. For a complete one-table CSV, Excel, or Google Sheet, load secure-data-export with the exact backend-resolved connection, base, table, operation, and filters; never carry pages through the conversation or build a local export.
+- Do not claim a total until the selected route has exhausted its source, and say so plainly when a bounded answer stopped early.
 - Prefer sort plus a small page over fetching everything when the member asked for a top-N answer.`;
 
 export const airtableCoreSkill: Skill = {
@@ -45,7 +46,7 @@ export const airtableCoreSkill: Skill = {
   instructions: `${AIRTABLE_CONNECTION_METHOD}
 
 ROLE:
-- This is the Airtable data router and the default Airtable skill.
+- This is Divo's Airtable record specialist.
 - Use it for reading, searching, reporting on, and editing records and record comments.
 - If the member asks to change the SHAPE of a base — new table, new field, field type change, deleting a table — fetch and follow skill airtable-schema-ops instead.
 - If the member asks about interfaces, pages, forms, or automations, fetch and follow skill airtable-automation-ops.
@@ -60,6 +61,11 @@ ANALYSIS:
 - Airtable returns raw rows; it does not aggregate. For totals, grouping, ratios, or cross-table joins, pull the needed rows with narrow fieldIds in a scripted workflow, write them to a file, and compute over that file.
 - Each Airtable row arrives with its fields nested. Flatten once when writing the file, then read plain column names; deciding row-by-row whether to reach for row.fields or row.cellValuesByFieldId is where these scripts go wrong.
 - Never estimate a number you did not compute, and never present a partial page as a complete total.
+
+EXPORTS:
+- A plain complete export from one Airtable table belongs to secure-data-export, not this skill's pagination loop or the Python workflow.
+- Use Python only when the request also needs calculation, transformation, joins, more than one connected product, or related destination writes.
+- Keep backend-returned export job IDs for status and safe resume only; never expose connection IDs, provider IDs, or bulk rows in the final answer.
 
 OUTPUT:
 - Answer in business language: what the records say, which ones matter, and the concrete next step.

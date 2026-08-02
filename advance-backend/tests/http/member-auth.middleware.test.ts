@@ -398,7 +398,8 @@ describe('member authentication uses the live company membership', () => {
       memberSession: { findUnique: async () => sessionFixture() },
       adminMembership: { findFirst: async () => ({ role: 'COMPANY_ADMIN' }) },
       user: { findUnique: async () => ({ id: 'user-1', email: 'member@example.com', name: 'Member' }) },
-      department: { findMany: async () => [] },
+      company: { findUnique: async () => ({ name: 'Acme' }) },
+      departmentMembership: { findMany: async () => [] },
     };
     const connectionRepo = {
       listAccessibleLarkConnections: async () => ({ ok: true, value: [] }),
@@ -458,5 +459,104 @@ describe('member authentication uses the live company membership', () => {
     );
     assert.equal(rejected.status, 403);
     assert.equal(rejected.body.error, 'Pi runtime lease is not allowed for this route');
+  });
+});
+
+describe('member session renewal', () => {
+  const TTL_MINUTES = 7 * 24 * 60;
+  const ttlMs = TTL_MINUTES * 60_000;
+
+  /** A session with `remaining` left on the clock, and a spy on its renewal. */
+  function harness(remainingMs: number) {
+    const renewals: Array<{ sessionId: string; expiresAt: Date }> = [];
+    const prisma = {
+      memberSession: {
+        findUnique: async () => ({
+          ...sessionFixture(),
+          expiresAt: new Date(Date.now() + remainingMs),
+        }),
+        update: async ({ where, data }: any) => {
+          renewals.push({ sessionId: where.sessionId, expiresAt: data.expiresAt });
+          return {};
+        },
+      },
+      adminMembership: { findFirst: async () => ({ role: 'MEMBER' }) },
+    };
+    return { prisma, renewals };
+  }
+
+  async function run(
+    middleware: ReturnType<typeof createMemberAuthMiddleware>,
+    token: string,
+  ): Promise<number> {
+    return new Promise((resolve) => {
+      let status = 200;
+      const req = { headers: { authorization: `Bearer ${token}` }, path: '/me', method: 'GET' } as unknown as Request;
+      const res = {
+        locals: {},
+        status: (s: number) => { status = s; return res; },
+        json: () => { resolve(status); return res; },
+      } as unknown as Response;
+      void middleware(req, res, () => resolve(status));
+    });
+  }
+
+  const token = buildJwt({ sessionId: 'session-1', userId: 'user-1', companyId: 'company-1' });
+
+  it('leaves a fresh session alone', async () => {
+    const { prisma, renewals } = harness(ttlMs * 0.9);
+    await run(createMemberAuthMiddleware({ prisma, jwtSecret: TEST_SECRET, logger: noopLogger, sessionTtlMinutes: TTL_MINUTES } as any), token);
+    // Renewing on every request would be a database write per call for nothing.
+    assert.equal(renewals.length, 0);
+  });
+
+  it('extends a session past halfway, so an active person is never logged out', async () => {
+    const { prisma, renewals } = harness(ttlMs * 0.2);
+    await run(createMemberAuthMiddleware({ prisma, jwtSecret: TEST_SECRET, logger: noopLogger, sessionTtlMinutes: TTL_MINUTES } as any), token);
+    await new Promise(r => setImmediate(r));
+
+    assert.equal(renewals.length, 1);
+    assert.equal(renewals[0]?.sessionId, 'session-1');
+    const extendedBy = renewals[0]!.expiresAt.getTime() - Date.now();
+    assert.ok(extendedBy > ttlMs * 0.99, `expected a full term, got ${extendedBy}ms`);
+  });
+
+  it('does not let a Pi runtime lease keep its owner signed in', async () => {
+    const { prisma, renewals } = harness(ttlMs * 0.2);
+    const lease = issuePiRuntimeLease({
+      sessionId: 'session-1',
+      userId: 'user-1',
+      companyId: 'company-1',
+      role: 'MEMBER',
+      instanceId: 'pi-1',
+      threadId: 'lark:chat-1:user-1',
+      ttlSeconds: 3_600,
+    }, TEST_SECRET);
+
+    await run(createMemberAuthMiddleware({
+      prisma,
+      jwtSecret: TEST_SECRET,
+      logger: noopLogger,
+      sessionTtlMinutes: TTL_MINUTES,
+      allowPiRuntimeLease: () => true,
+    } as any), lease);
+    await new Promise(r => setImmediate(r));
+
+    // The token is held by a container. A long-running agent must not be able
+    // to hold its owner's sign-in open on its own — only their traffic renews.
+    assert.equal(renewals.length, 0);
+  });
+
+  it('serves the request even when renewal fails', async () => {
+    const { prisma } = harness(ttlMs * 0.2);
+    // Throws synchronously, which a trailing .catch() alone would not contain.
+    prisma.memberSession.update = (() => { throw new Error('db down'); }) as any;
+
+    const status = await run(
+      createMemberAuthMiddleware({ prisma, jwtSecret: TEST_SECRET, logger: noopLogger, sessionTtlMinutes: TTL_MINUTES } as any),
+      token,
+    );
+
+    assert.equal(status, 200);
   });
 });

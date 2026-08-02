@@ -15,6 +15,7 @@ import {
   ACTION_GROUPS, DATA_SOURCES, SOURCE_LABEL, ceilingAllows, resolveGrants, toolById,
   type ActionGroup, type GrantMap, type Person, type PermissionSource, type Provider,
 } from './fixtures'
+import { ApiError } from '@/lib/api'
 
 /* ── Staged loading ───────────────────────────────────
    Regions light up in reading order rather than all at once. The delays are
@@ -32,6 +33,16 @@ export function useStaged(steps: number[], replayKey: number) {
   }, [replayKey, steps.join(',')])
   return ready
 }
+
+/**
+ * How a screen reports the outcome of a write.
+ *
+ * The tone is optional and defaults to success, because most messages are one.
+ * It exists because every screen used to report failures through the success
+ * channel: "Could not save that key" arrived in green with a checkmark, which
+ * is a completed action as far as anyone reading it is concerned.
+ */
+export type Toast = (message: string, tone?: 'ok' | 'error') => void
 
 export const Skel = ({ w, h = 11, circle }: { w?: number | string; h?: number; circle?: boolean }) => (
   <div
@@ -118,6 +129,44 @@ export function DataNote({ source }: { source: keyof typeof DATA_SOURCES }) {
   )
 }
 
+/**
+ * A row you can open.
+ *
+ * Sixteen of these across the workspace were a plain `div` carrying an
+ * `onClick` — reachable with a mouse and by nothing else. A keyboard or a
+ * screen reader had no way in, and the rows are the primary navigation on the
+ * people, department, run and skill lists, so "no way in" meant those screens
+ * were a dead end.
+ *
+ * Not a `<button>`: these hold an avatar, a title, a paragraph and sometimes a
+ * nested control, and a button may only contain phrasing content. This is the
+ * same shape the skills tree settled on — announce the role, take focus, and
+ * answer both Enter and Space the way a real button does.
+ */
+export function ClickRow({ onOpen, children, ...rest }: {
+  onOpen: () => void
+  children: ReactNode
+  className?: string
+  style?: React.CSSProperties
+  title?: string
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      className={`ws-row click${rest.className ? ` ${rest.className}` : ''}`}
+      style={rest.style}
+      title={rest.title}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen() }
+      }}
+    >
+      {children}
+    </div>
+  )
+}
+
 export const Empty = ({ icon: Icon = Inbox, title, body, action }: {
   icon?: LucideIcon; title: string; body?: string; action?: ReactNode
 }) => (
@@ -128,6 +177,187 @@ export const Empty = ({ icon: Icon = Inbox, title, body, action }: {
     {action ? <div style={{ marginTop: 14 }}>{action}</div> : null}
   </div>
 )
+
+/**
+ * What a refusal looks like.
+ *
+ * A 403 is an answer, not a failure — somebody asked a question they are not
+ * allowed to ask, and the useful reply names who *is* allowed rather than
+ * saying "error". Everything that can be refused renders this instead of an
+ * empty panel, so a person never has to guess whether Divo is broken or they
+ * simply lack the access.
+ */
+export function NoAccess({ what, who, action }: {
+  /** The thing being refused, in the reader's words: "this department". */
+  what: string
+  /** Who may see it, so the reader knows what to do next. */
+  who: string
+  action?: ReactNode
+}) {
+  return (
+    <div className="ws-empty">
+      <div className="ic"><Lock size={17} /></div>
+      <b>You do not have access to {what}</b>
+      <p>{who}</p>
+      {action ? <div style={{ marginTop: 14 }}>{action}</div> : null}
+    </div>
+  )
+}
+
+/**
+ * Turns a failed request into either a refusal or a genuine error.
+ *
+ * Worth keeping apart: "you may not see this" needs a person to ask someone,
+ * "this broke" needs a retry. Collapsing them into one message sends people
+ * to the wrong place.
+ */
+export const isRefusal = (error: unknown): boolean =>
+  error instanceof ApiError && (error.status === 403 || error.status === 401)
+
+/**
+ * A small ask-then-do dialog.
+ *
+ * Creating a role or a department is one field and a confirm, and routing that
+ * through a full drawer made it feel heavier than the decision is. Reuses the
+ * modal and scrim primitives already in the stylesheet so it is not a third
+ * kind of overlay.
+ *
+ * The confirm stays disabled until the field has something in it, so the
+ * failure mode is "nothing happens" rather than a 400 from the backend.
+ */
+export function Prompt({ title, description, label, placeholder, confirm, secret, initial, extra, optional, onConfirm, onClose }: {
+  title: string
+  description?: string
+  label: string
+  placeholder?: string
+  confirm: string
+  /**
+   * Lets the field be left empty.
+   *
+   * For the case where the value is a nicety rather than the decision —
+   * naming a second Canva account, where the backend has a default and the
+   * person is only overriding it. Without this the dialog would insist on a
+   * name to do something that does not need one.
+   */
+  optional?: boolean
+  /** Masks the field and stops the browser offering to remember it. */
+  secret?: boolean
+  /**
+   * Seeds the field — for renames, where the current value is what you are
+   * editing rather than a hint. Never combine with `secret`.
+   */
+  initial?: string
+  /**
+   * Rendered under the field, before the buttons.
+   *
+   * For the case where one value is not the whole decision — a provider key
+   * also has to say which scope it applies to. Kept as a slot rather than
+   * growing this into a form builder: two fields is a drawer's job.
+   */
+  extra?: ReactNode
+  onConfirm: (value: string) => Promise<void> | void
+  onClose: () => void
+}) {
+  const [value, setValue] = useState(initial ?? '')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const submit = async () => {
+    if ((!value.trim() && !optional) || busy) return
+    setBusy(true)
+    try { await onConfirm(value.trim()); onClose() } finally { setBusy(false) }
+  }
+
+  return (
+    <>
+      <div className="ws-scrim" onClick={onClose} />
+      <div className="ws-modal-wrap">
+        <div className="ws-modal" role="dialog" aria-label={title}>
+          <div className="ws-modal-h">
+            <h2>{title}</h2>
+            {description ? <p>{description}</p> : null}
+          </div>
+          <div className="ws-modal-b">
+            <div className="ws-lbl">{label}</div>
+            <input
+              className="input"
+              autoFocus
+              type={secret ? 'password' : 'text'}
+              autoComplete={secret ? 'off' : undefined}
+              spellCheck={secret ? false : undefined}
+              value={value}
+              placeholder={placeholder}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void submit() }}
+              style={{ width: '100%', marginTop: 8 }}
+            />
+            {extra ? <div style={{ marginTop: 18 }}>{extra}</div> : null}
+          </div>
+          <div className="ws-modal-f">
+            <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+            <button type="button" className="btn primary" onClick={() => void submit()} disabled={busy || (!value.trim() && !optional)}>
+              {busy ? 'Working…' : confirm}
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
+/**
+ * Ask before something irreversible, and say what it actually does.
+ *
+ * The pair to `Prompt`: same overlay, no field. The `body` is where the honesty
+ * goes — "sub-folders are archived too" is the sentence that stops a person
+ * finding out afterwards.
+ */
+export function Confirm({ title, body, confirm, onConfirm, onClose }: {
+  title: string
+  body?: string
+  confirm: string
+  onConfirm: () => Promise<void> | void
+  onClose: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const submit = async () => {
+    if (busy) return
+    setBusy(true)
+    try { await onConfirm(); onClose() } finally { setBusy(false) }
+  }
+
+  return (
+    <>
+      <div className="ws-scrim" onClick={onClose} />
+      <div className="ws-modal-wrap">
+        <div className="ws-modal" role="dialog" aria-label={title}>
+          <div className="ws-modal-h">
+            <h2>{title}</h2>
+            {body ? <p>{body}</p> : null}
+          </div>
+          <div className="ws-modal-f">
+            <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+            <button type="button" className="btn primary" onClick={() => void submit()} disabled={busy}>
+              {busy ? 'Working…' : confirm}
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
 
 export const Switch = ({ on, onToggle, label }: { on: boolean; onToggle: () => void; label: string }) => (
   <button type="button" className="ws-switch" data-on={on} aria-label={label} aria-pressed={on} onClick={onToggle}>
@@ -164,13 +394,6 @@ export const Spark = ({ data }: { data: number[] }) => {
   )
 }
 
-/* ── Provenance ───────────────────────────────────────
-   The backend already tells us WHY a permission resolved. Showing it is the
-   difference between a matrix people fear and one they can reason about. */
-export const Provenance = ({ source }: { source: PermissionSource }) => (
-  <span className="ws-prov" data-src={source}>{SOURCE_LABEL[source]}</span>
-)
-
 /* ── Drawer ──────────────────────────────────────────── */
 export function Drawer({ title, subtitle, onClose, children, footer }: {
   title: string; subtitle?: string; onClose: () => void; children: ReactNode; footer?: ReactNode
@@ -201,29 +424,6 @@ export function Drawer({ title, subtitle, onClose, children, footer }: {
 /* ── Permission language ──────────────────────────────
    Managers do not think in grants, they think in sentences about people.
    This turns a resolved GrantMap into prose before any matrix is offered. */
-export function permissionSentence(person: Person): { can: string[]; cannot: string[] } {
-  const grants = resolveGrants(person)
-  const can: string[] = []
-  for (const [toolId, actions] of Object.entries(grants)) {
-    const tool = toolById(toolId)
-    if (!tool) continue
-    for (const [action, grant] of Object.entries(actions)) {
-      if (!grant?.allowed) continue
-      const phrase = tool.verb[action as ActionGroup]
-      if (phrase) can.push(phrase)
-    }
-  }
-  const cannot: string[] = []
-  for (const tool of TOOLS_WITH_VERBS) {
-    const held = grants[tool.id]
-    for (const action of tool.actions) {
-      if (held?.[action]?.allowed) continue
-      const phrase = tool.verb[action]
-      if (phrase && SENSITIVE.has(`${tool.id}:${action}`)) cannot.push(phrase)
-    }
-  }
-  return { can: dedupe(can), cannot: dedupe(cannot) }
-}
 
 const dedupe = (xs: string[]) => Array.from(new Set(xs))
 const SENSITIVE = new Set([
@@ -246,106 +446,9 @@ export const listPhrase = (items: string[], max = 4) => {
    whether the company ceiling forbids it. The third is the one that bites —
    a department grant is silently clamped in the backend, so a locked cell
    explains itself rather than just failing later. */
-export function Matrix({ grants, onToggle, readOnly, tools }: {
-  grants: GrantMap
-  onToggle?: (toolId: string, action: ActionGroup) => void
-  readOnly?: boolean
-  tools: typeof TOOLS
-}) {
-  return (
-    <div style={{ overflowX: 'auto' }}>
-      <table className="ws-matrix">
-        <thead>
-          <tr>
-            <th>Tool</th>
-            {ACTION_GROUPS.map((a) => <th key={a} className="act">{a}</th>)}
-          </tr>
-        </thead>
-        <tbody>
-          {tools.map((tool) => (
-            <tr key={tool.id}>
-              <td>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                  <span style={{ fontWeight: 500 }}>{tool.name}</span>
-                  <span className="ws-sub">{tool.family}</span>
-                </div>
-              </td>
-              {ACTION_GROUPS.map((action) => {
-                const supported = tool.actions.includes(action)
-                if (!supported) return <td key={action} className="act"><span className="ws-cell-na">·</span></td>
-                const grant = grants[tool.id]?.[action]
-                const on = Boolean(grant?.allowed)
-                const locked = !ceilingAllows(tool.id, action)
-                return (
-                  <td key={action} className="act">
-                    <button
-                      type="button"
-                      className="ws-cell"
-                      data-on={on}
-                      data-src={grant?.source}
-                      data-locked={locked || readOnly}
-                      disabled={locked || readOnly}
-                      title={
-                        locked
-                          ? `Company policy blocks ${action} on ${tool.name} for this role`
-                          : grant
-                            ? `${on ? 'Allowed' : 'Blocked'} — ${SOURCE_LABEL[grant.source]}`
-                            : 'Not granted'
-                      }
-                      onClick={() => onToggle?.(tool.id, action)}
-                    >
-                      {locked ? <Lock size={11} /> : on ? <Check size={13} /> : null}
-                    </button>
-                  </td>
-                )
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
 
 /** A pending permission edit, shown as a diff before it is applied. */
 export type PendingChange = { toolId: string; action: ActionGroup; next: boolean; blocked?: boolean }
-
-export function ChangePreview({ person, changes, onApply, onCancel }: {
-  person: Person; changes: PendingChange[]; onApply: () => void; onCancel: () => void
-}) {
-  if (changes.length === 0) return null
-  return (
-    <div className="ws-diff">
-      <div className="ws-diff-h">
-        <ChevronRight size={14} />
-        {changes.length} change{changes.length > 1 ? 's' : ''} for {person.name.split(' ')[0]}, not saved yet
-      </div>
-      <div className="ws-diff-l">
-        {changes.map((c) => {
-          const tool = toolById(c.toolId)
-          const kind = c.blocked ? 'blocked' : c.next ? 'add' : 'remove'
-          return (
-            <div className="ws-diff-i" key={`${c.toolId}:${c.action}`} data-k={kind}>
-              <span className="sg">{c.blocked ? '!' : c.next ? '+' : '−'}</span>
-              <span>
-                {c.next ? 'Can' : 'Can no longer'} <b>{tool?.verb[c.action] ?? `${c.action} ${tool?.name}`}</b>
-              </span>
-              {c.blocked ? <small>blocked by company policy</small> : null}
-            </div>
-          )
-        })}
-      </div>
-      <div className="ws-diff-f">
-        <button type="button" className="btn" onClick={onCancel}>Discard</button>
-        <button type="button" className="btn primary" onClick={onApply}>Apply {changes.length}</button>
-      </div>
-    </div>
-  )
-}
-
-export const Ceiling = ({ children }: { children: ReactNode }) => (
-  <div className="ws-ceiling"><AlertTriangle size={14} />{<div>{children}</div>}</div>
-)
 
 /* ── Provider glyphs ─────────────────────────────────
    Wordmark initials rather than logos — no brand assets to license, and it
@@ -367,25 +470,5 @@ export const ProviderMark = ({ provider }: { provider: Provider }) => (
 
 export const providerName = (p: Provider) => PROVIDER_META[p].name
 
-export function useToast() {
-  const [message, setMessage] = useState<string | null>(null)
-  const timer = useRef<number | null>(null)
-  const show = (m: string) => {
-    setMessage(m)
-    if (timer.current) window.clearTimeout(timer.current)
-    timer.current = window.setTimeout(() => setMessage(null), 2600)
-  }
-  useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current) }, [])
-  return { message, show }
-}
-
 export const money = (n: number) => `$${n.toFixed(2)}`
 export const compact = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
-
-export function useDelta(current: number, previous: number) {
-  return useMemo(() => {
-    if (previous === 0) return null
-    const pct = Math.round(((current - previous) / previous) * 100)
-    return { pct, up: pct >= 0 }
-  }, [current, previous])
-}

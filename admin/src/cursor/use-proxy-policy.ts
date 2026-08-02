@@ -13,24 +13,6 @@ import { getAdminQueryScope } from "@/lib/query-client"
  * Pro must be explicitly granted here.
  */
 
-/**
- * Which model actually answers for this member.
- *
- * The grant is a set, so something has to break the tie, and the backend breaks
- * it by preference order — the catalogue endpoint returns the models in exactly
- * that order, best first. Mirroring the rule here rather than the list keeps the
- * panel from describing a choice the backend does not make.
- */
-export function activeModel<T extends { id: string }>(
-  catalogue: readonly T[] | undefined,
-  allowedModels: readonly string[],
-): T | undefined {
-  if (!catalogue || catalogue.length === 0) return undefined
-  // The last entry is the least-privileged model, which is what a member with no
-  // usable grant falls back to — the same rule the backend applies.
-  return catalogue.find((model) => allowedModels.includes(model.id)) ?? catalogue[catalogue.length - 1]
-}
-
 export interface ProxyPolicy {
   userId: string
   blocked: boolean
@@ -44,7 +26,15 @@ export interface ProxyPolicyInput {
   blocked: boolean
   monthlyBudgetUsd: number | null
   rateLimitRpm: number | null
-  allowedModels: string[]
+  /**
+   * Optional, and it must stay optional.
+   *
+   * The route rejects an empty array — "at least one model must be allowed" —
+   * and most members have no stored policy at all, so there is no list to
+   * echo back. Omitting the field leaves the backend on its default; sending
+   * `[]` fails the write with a message about a field nobody touched.
+   */
+  allowedModels?: string[]
 }
 
 const scoped = (path: string, companyId?: string): string =>

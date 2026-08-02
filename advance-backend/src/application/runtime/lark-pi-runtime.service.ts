@@ -3,8 +3,10 @@ import { SCHEDULED_SESSION_AUTH_PROVIDER } from '../scheduling/scheduled-runtime
 import type { Logger } from '../../shared/logger';
 import type { ConversationHandle } from '../channels/channel.adapter';
 import type { IncomingMessage } from '../../domain/channel/incoming-message';
+import type { InteractiveAction } from '../../domain/channel/outbound';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import { issuePiRuntimeLease } from './pi-runtime-lease';
+import type { RunOrigin, RunOriginStore } from '../connections/run-origin.store';
 import type { KnowledgeLearningService } from '../knowledge/knowledge-learning.service';
 import type { Turn } from '../../domain/conversation/turn';
 import type { ConversationScope } from '../../domain/conversation/conversation-scope';
@@ -16,12 +18,12 @@ import type {
 } from '../knowledge/knowledge-recall.service';
 import type {
   LarkRunEffectIdentity,
+  OfferedDataExportEffect,
+  OfferedWorkbookConversionEffect,
   RunEffectReceiptStore,
   VerifiedKnowledgeEffect,
 } from './run-effect-receipt.store';
 import {
-  DEFAULT_MODEL,
-  bestGrantedModel,
   providerOf,
   type ProxyModel,
 } from '../observability/pricing';
@@ -29,8 +31,13 @@ import {
   renderContextBlock,
   type GroupContextBlock,
 } from '../chat-context/group-context.hydrator';
+import {
+  DATA_EXPORT_RESOURCE_TOOL,
+  parseDataExportResourceRecord,
+} from '../data-export/data-export-continuity';
 
 const MAX_RUNTIME_ATTACHMENTS = 4;
+const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-flash';
 
 function asyncIterableBody(source: AsyncIterable<Uint8Array>): ReadableStream<Uint8Array> {
   const iterator = source[Symbol.asyncIterator]();
@@ -177,6 +184,19 @@ export class LarkPiRuntimeError extends Error {
   }
 }
 
+const GENERIC_RUNTIME_FAILURE_MESSAGE =
+  'Divo hit a temporary problem while finishing this request. Please try again.';
+
+function controllerFailureMessage(code: string): string {
+  if (code === 'capacity_full') {
+    return 'Divo is at full capacity right now. Please try again shortly.';
+  }
+  if (code === 'user_busy') {
+    return 'Divo is finishing your previous request. This one will start automatically.';
+  }
+  return GENERIC_RUNTIME_FAILURE_MESSAGE;
+}
+
 export interface LarkPiRuntimeServiceDeps {
   readonly prisma: PrismaClient;
   readonly logger: Logger;
@@ -186,10 +206,20 @@ export interface LarkPiRuntimeServiceDeps {
   readonly instanceId: string;
   readonly leaseTtlSeconds: number;
   readonly runTimeoutMs: number;
-  readonly runEffectReceipts?: Pick<RunEffectReceiptStore, 'getVerifiedKnowledgeEffect'>;
+  readonly runEffectReceipts?: Pick<
+    RunEffectReceiptStore,
+    'getVerifiedKnowledgeEffect' | 'getVerifiedDataExportOffer' | 'getVerifiedWorkbookConversionOffer'
+  >;
   readonly knowledgeLearning?: Pick<KnowledgeLearningService, 'captureCompletedTurn'>;
   readonly conversationHistory?: {
     getHistory(chatId: string, limit?: number, scope?: ConversationScope): Promise<Result<Turn[], InfraError>>;
+    getRecentToolTurns?(
+      chatId: string,
+      toolName: string,
+      limit: number,
+      scope: ConversationScope,
+      ownerUserId?: string,
+    ): Promise<Result<Turn[], InfraError>>;
     appendTurn(
       chatId: string,
       turn: Omit<Turn, 'id'>,
@@ -198,14 +228,14 @@ export interface LarkPiRuntimeServiceDeps {
     ): Promise<Result<Turn, InfraError>>;
   };
   readonly knowledgeRecall?: Pick<KnowledgeRecallService, 'recall'>;
+  readonly runOrigins?: Pick<RunOriginStore, 'remember'>;
   readonly fetch?: typeof globalThis.fetch;
-  /** The member's model grant. Absent means every run takes the default. */
-  readonly allowedModelsFor?: (userId: string) => Promise<readonly string[]>;
 }
 
 export interface LarkPiRuntimeResult {
   readonly text: string;
   readonly effects?: readonly VerifiedKnowledgeEffect[];
+  readonly actions?: readonly InteractiveAction[];
   readonly effectVerification?: 'verified' | 'unavailable';
 }
 
@@ -347,10 +377,15 @@ export class LarkPiRuntimeService {
     // scheduler then revokes underneath it. Prefer a real sign-in, and fall
     // back to a machine row only when there is none, which is precisely the
     // scheduled run looking up its own.
+    // Deliberately not filtered by `channel`. The security binding is the pair
+    // below — this Lark tenant plus this Lark open id resolve to this User, and
+    // that is what proves the person in the chat is the account. `channel` only
+    // records which surface happened to create the row, and pinning it here is
+    // what used to force Lark to mint sessions of its own. A web sign-in via
+    // Lark OAuth stamps the same identity, so it is equally valid for this run.
     const where = {
       userId: String(runContext.userId),
       companyId: String(runContext.companyId),
-      channel: 'lark',
       larkTenantKey: String(runContext.tenantId),
       larkOpenId: String(runContext.userExternalId),
       revokedAt: null,
@@ -374,17 +409,11 @@ export class LarkPiRuntimeService {
   }
 
   /**
-   * The model this member's run should ask for. A grant lookup failure falls
-   * back to the conservative default instead of failing the whole user turn.
+   * Lark is intentionally pinned independently of member proxy grants. Grants
+   * authorize proxy use; they do not choose the channel's runtime model.
    */
-  async modelFor(userId: string): Promise<ProxyModel> {
-    if (!this.deps.allowedModelsFor) return DEFAULT_MODEL;
-    try {
-      return bestGrantedModel(await this.deps.allowedModelsFor(userId));
-    } catch (error) {
-      this.log.warn('pi.model.resolve_failed', { userId, error: String(error) });
-      return DEFAULT_MODEL;
-    }
+  async modelFor(_userId: string): Promise<ProxyModel> {
+    return LARK_RUNTIME_MODEL;
   }
 
   /**
@@ -491,6 +520,63 @@ export class LarkPiRuntimeService {
     }, this.deps.memberJwtSecret);
   }
 
+  /**
+   * Keep the inbound request reachable for as long as this run can call back.
+   *
+   * A tool that discovers it needs Google OAuth has to send a card into this
+   * conversation and re-run this ask afterwards, and by then the Lark event is
+   * gone. Recording it here — at the one place a run gains the ability to call
+   * the gateway — is what makes that continuation possible at all.
+   *
+   * Best effort by design: losing the origin costs the member a Connect card,
+   * which is not worth failing their request over. It is logged rather than
+   * swallowed, because a run that silently cannot be continued is exactly the
+   * kind of quiet dead end this path already suffered once.
+   */
+  private async rememberRunOrigin(input: LarkPiRuntimeInput): Promise<void> {
+    const { incoming } = input;
+    if (!this.deps.runOrigins) return;
+    // Every one of these is required to issue an authorization intent. A run
+    // without them (a scheduled run, say) has no conversation to continue in.
+    if (incoming.channel !== 'lark') return;
+    if (!incoming.tenantKey || !incoming.userExternalId) return;
+
+    const origin: RunOrigin = {
+      version: 1,
+      companyId: String(input.runContext.companyId),
+      userId: String(input.runContext.userId),
+      larkOpenId: incoming.userExternalId,
+      larkTenantKey: incoming.tenantKey,
+      chatId: String(incoming.chatId),
+      chatType: incoming.chatType,
+      originalMessageId: String(incoming.messageId),
+      ...(incoming.rootMessageId
+        ? { rootMessageId: String(incoming.rootMessageId) }
+        : {}),
+      replyInThread: input.conversation.replyInThread ?? false,
+      ...(incoming.groupReplyMode ? { groupReplyMode: incoming.groupReplyMode } : {}),
+      originalRequest: incoming.text,
+    };
+
+    try {
+      const remembered = await this.deps.runOrigins.remember(
+        String(incoming.traceId),
+        origin,
+      );
+      if (!remembered) {
+        this.log.warn('pi.run_origin.not_retained', {
+          correlationId: incoming.traceId,
+          reason: 'request_too_long',
+        });
+      }
+    } catch (error) {
+      this.log.warn('pi.run_origin.write_failed', {
+        correlationId: incoming.traceId,
+        error: String(error),
+      });
+    }
+  }
+
   async run(input: LarkPiRuntimeInput): Promise<LarkPiRuntimeResult> {
     const session = await this.findActiveSession(input.runContext, input.sessionId);
     if (!session) {
@@ -501,6 +587,7 @@ export class LarkPiRuntimeService {
     }
 
     const runtimeLease = this.issueRuntimeLease(input, session);
+    await this.rememberRunOrigin(input);
 
     const timeoutSignal = AbortSignal.timeout(this.deps.runTimeoutMs);
     const signal = input.abortSignal
@@ -609,7 +696,7 @@ export class LarkPiRuntimeService {
       });
       throw new LarkPiRuntimeError(
         'controller_unreachable',
-        'Pi could not start this request (controller_unreachable). No fallback agent was run.',
+        'Divo is temporarily unavailable. Please try again shortly.',
         String(error),
       );
     }
@@ -631,15 +718,13 @@ export class LarkPiRuntimeService {
       const controllerMessage = typeof body?.error?.message === 'string'
         ? body.error.message
         : undefined;
-      const userMessage = code === 'capacity_full' || code === 'user_busy'
-        ? controllerMessage ?? 'Your Pi agent is busy. Please try again shortly.'
-        : `Pi could not complete this request (${code}). No fallback agent was run.`;
+      const userMessage = controllerFailureMessage(code);
       throw new LarkPiRuntimeError(code, userMessage, controllerMessage);
     }
     if (typeof body?.text !== 'string' || !body.text.trim()) {
       throw new LarkPiRuntimeError(
         'empty_runtime_response',
-        'Pi completed without a usable answer (empty_runtime_response). No fallback agent was run.',
+        GENERIC_RUNTIME_FAILURE_MESSAGE,
       );
     }
     await this.consumePendingAttachments(pendingRows.map(row => row.id));
@@ -690,7 +775,11 @@ export class LarkPiRuntimeService {
 
   private async withRecalledKnowledge(input: LarkPiRuntimeInput): Promise<string> {
     const ask = input.incoming.text;
-    if (!this.deps.knowledgeRecall || !ask.trim()) return ask;
+    const exportContext = await this.recentExportContext(input);
+    const request = exportContext
+      ? `${exportContext}\n\nCURRENT USER REQUEST:\n${ask}`
+      : ask;
+    if (!this.deps.knowledgeRecall || !ask.trim()) return request;
     try {
       const recalled = await this.deps.knowledgeRecall.recall({
         query: ask.slice(0, 500),
@@ -700,13 +789,57 @@ export class LarkPiRuntimeService {
         channel: 'lark',
       });
       const context = renderRecalledKnowledge(recalled);
-      return context ? `${context}\n\nCURRENT USER REQUEST:\n${ask}` : ask;
+      return context ? `${context}\n\n${request}` : request;
     } catch (error) {
       this.log.warn('pi.knowledge-recall.unavailable', {
         correlationId: input.incoming.traceId,
         error: String(error),
       });
-      return ask;
+      return request;
+    }
+  }
+
+  private async recentExportContext(input: LarkPiRuntimeInput): Promise<string> {
+    if (!this.deps.conversationHistory) return '';
+    try {
+      const scope = { companyId: String(input.runContext.companyId), channel: 'lark' } as const;
+      const history = this.deps.conversationHistory.getRecentToolTurns
+        ? await this.deps.conversationHistory.getRecentToolTurns(
+          input.threadId,
+          DATA_EXPORT_RESOURCE_TOOL,
+          5,
+          scope,
+          String(input.runContext.userId),
+        )
+        : await this.deps.conversationHistory.getHistory(input.threadId, 60, scope);
+      if (!history.ok) throw history.error;
+      const now = Date.now();
+      const exports = history.value
+        .filter(turn => turn.role === 'tool' && turn.toolName === DATA_EXPORT_RESOURCE_TOOL)
+        .map(turn => parseDataExportResourceRecord(turn.toolOutcome))
+        .filter((resource): resource is NonNullable<typeof resource> => (
+          resource !== null
+          && resource.ownerUserId === String(input.runContext.userId)
+          && Date.parse(resource.expiresAt) > now
+        ))
+        .slice(-5);
+      if (exports.length === 0) return '';
+      return [
+        'RECENT DIVO EXPORTS — backend-verified conversation context:',
+        ...exports.map(resource => (
+          `- ${resource.resourceRef} | ${resource.artifactType} | ${
+            resource.rowCount === undefined ? 'row count not inspected' : `${resource.rowCount} rows`
+          } | ${resource.artifactUrl}`
+        )),
+        'Use these only when the user refers to a recent export. Resource references never bypass backend permissions.',
+        'For a google_sheet follow-up, invoke googleSheets with op=call_exported_sheet and resourceRef from this list. Do not resolve its URL, choose an account, or supply connection/spreadsheet IDs.',
+      ].join('\n');
+    } catch (error) {
+      this.log.warn('pi.data-export-context.unavailable', {
+        correlationId: input.incoming.traceId,
+        error: String(error),
+      });
+      return '';
     }
   }
 
@@ -728,6 +861,8 @@ export class LarkPiRuntimeService {
       runId: input.incoming.traceId,
     };
     let effect: VerifiedKnowledgeEffect | null = null;
+    let exportEffect: OfferedDataExportEffect | null = null;
+    let workbookEffect: OfferedWorkbookConversionEffect | null = null;
     let effectVerification: 'verified' | 'unavailable' = 'verified';
     if (this.deps.runEffectReceipts) {
       try {
@@ -736,6 +871,27 @@ export class LarkPiRuntimeService {
         effectVerification = 'unavailable';
         this.log.error('pi.run_effect.lookup_failed', {
           correlationId: input.incoming.traceId,
+          effectKind: 'knowledge',
+          error: String(error),
+        });
+      }
+      try {
+        exportEffect = await this.deps.runEffectReceipts.getVerifiedDataExportOffer(identity);
+      } catch (error) {
+        effectVerification = 'unavailable';
+        this.log.error('pi.run_effect.lookup_failed', {
+          correlationId: input.incoming.traceId,
+          effectKind: 'data_export_offer',
+          error: String(error),
+        });
+      }
+      try {
+        workbookEffect = await this.deps.runEffectReceipts.getVerifiedWorkbookConversionOffer(identity);
+      } catch (error) {
+        effectVerification = 'unavailable';
+        this.log.error('pi.run_effect.lookup_failed', {
+          correlationId: input.incoming.traceId,
+          effectKind: 'workbook_conversion_offer',
           error: String(error),
         });
       }
@@ -778,6 +934,45 @@ export class LarkPiRuntimeService {
     return {
       text: assistantText,
       effects: effect ? [effect] : [],
+      ...(exportEffect || workbookEffect
+        ? {
+            actions: [
+              ...(exportEffect ? [{
+                label: 'Google Sheet',
+                value: JSON.stringify({
+                  kind: 'data_export_confirm',
+                  offerId: exportEffect.offerId,
+                  format: 'google_sheet',
+                }),
+                style: 'primary',
+              } as const,
+              {
+                label: 'CSV in Drive',
+                value: JSON.stringify({
+                  kind: 'data_export_confirm',
+                  offerId: exportEffect.offerId,
+                  format: 'csv',
+                }),
+              } as const,
+              {
+                label: 'Excel (.xlsx)',
+                value: JSON.stringify({
+                  kind: 'data_export_confirm',
+                  offerId: exportEffect.offerId,
+                  format: 'xlsx',
+                }),
+              } as const] : []),
+              ...(workbookEffect ? [{
+                label: 'Create Google Sheet copy',
+                value: JSON.stringify({
+                  kind: 'workbook_conversion_confirm',
+                  offerId: workbookEffect.offerId,
+                }),
+                style: 'primary',
+              } as const] : []),
+            ],
+          }
+        : {}),
       effectVerification,
     };
   }
@@ -880,7 +1075,7 @@ export class LarkPiRuntimeService {
           : undefined;
         throw new LarkPiRuntimeError(
           code,
-          `Divo could not securely open "${attachment.name}" (${code}).`,
+          `Divo could not securely open "${attachment.name}". Please send it again.`,
           detail,
         );
       }
@@ -896,7 +1091,7 @@ export class LarkPiRuntimeService {
     if (!response.body) {
       throw new LarkPiRuntimeError(
         'empty_controller_stream',
-        'Pi completed without a usable answer (empty_controller_stream). No fallback agent was run.',
+        GENERIC_RUNTIME_FAILURE_MESSAGE,
       );
     }
 
@@ -914,7 +1109,7 @@ export class LarkPiRuntimeService {
       } catch {
         throw new LarkPiRuntimeError(
           'invalid_controller_stream',
-          'Pi could not complete this request (invalid_controller_stream). No fallback agent was run.',
+          GENERIC_RUNTIME_FAILURE_MESSAGE,
         );
       }
       if (!event || typeof event !== 'object') return;
@@ -960,15 +1155,13 @@ export class LarkPiRuntimeService {
     await consume(buffer);
 
     if (streamError) {
-      const userMessage = streamError.code === 'capacity_full' || streamError.code === 'user_busy'
-        ? streamError.message ?? 'Your Pi agent is busy. Please try again shortly.'
-        : `Pi could not complete this request (${streamError.code}). No fallback agent was run.`;
+      const userMessage = controllerFailureMessage(streamError.code);
       throw new LarkPiRuntimeError(streamError.code, userMessage, streamError.message);
     }
     if (!text) {
       throw new LarkPiRuntimeError(
         'empty_runtime_response',
-        'Pi completed without a usable answer (empty_runtime_response). No fallback agent was run.',
+        GENERIC_RUNTIME_FAILURE_MESSAGE,
       );
     }
     return { text };

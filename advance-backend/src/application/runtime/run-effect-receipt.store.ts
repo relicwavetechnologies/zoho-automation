@@ -3,6 +3,7 @@ import type { CachePort } from '../../shared/cache';
 
 const RUN_EFFECT_TTL_SECONDS = 15 * 60;
 const RUN_EFFECT_PREFIX = 'pi:run-effect:v2:';
+const WORKBOOK_CONVERSION_PREFIX = 'pi:workbook-conversion:v1:';
 
 export interface LarkRunEffectIdentity {
   readonly companyId: string;
@@ -51,6 +52,40 @@ export interface AppliedPersonalMemoryEffect extends LarkRunEffectIdentity {
   readonly resourceVersion: number;
   readonly projection: 'completed' | 'queued';
   readonly appliedAt: string;
+}
+
+export interface OfferedDataExportEffect extends LarkRunEffectIdentity {
+  readonly version: 1;
+  readonly kind: 'data_export_offer';
+  readonly status: 'offered';
+  readonly effectKind: 'data_export_offered';
+  readonly offerId: string;
+  readonly createdAt: string;
+}
+
+export interface GoogleSheetDestinationEffect extends LarkRunEffectIdentity {
+  readonly version: 1;
+  readonly kind: 'google_sheet_destination';
+  readonly status: 'resolved';
+  readonly referenceId: string;
+  readonly connectionId: string;
+  readonly spreadsheetId: string;
+  readonly gid?: string;
+  readonly createdAt: string;
+}
+
+export interface OfferedWorkbookConversionEffect extends LarkRunEffectIdentity {
+  readonly version: 1;
+  readonly kind: 'workbook_conversion_offer';
+  readonly status: 'offered';
+  readonly effectKind: 'workbook_conversion_offered';
+  readonly offerId: string;
+  readonly connectionId: string;
+  readonly fileId: string;
+  readonly fileName?: string;
+  readonly departmentId?: string;
+  readonly replyInThread?: boolean;
+  readonly createdAt: string;
 }
 
 export type VerifiedKnowledgeEffect = OpenedKnowledgeReviewEffect | AppliedPersonalMemoryEffect;
@@ -188,6 +223,216 @@ export class RunEffectReceiptStore {
     return effect;
   }
 
+  async recordDataExportOffer(
+    identity: LarkRunEffectIdentity,
+    input: { readonly offerId: string },
+  ): Promise<OfferedDataExportEffect> {
+    if (!isUuid(input.offerId)) throw new Error('Data export offer ID is invalid.');
+    const effect: OfferedDataExportEffect = {
+      version: 1,
+      kind: 'data_export_offer',
+      status: 'offered',
+      effectKind: 'data_export_offered',
+      ...identity,
+      offerId: input.offerId,
+      createdAt: new Date().toISOString(),
+    };
+    const stored = await this.cache.setNx(
+      runEffectIndexKey(identity, effect.effectKind),
+      effect,
+      RUN_EFFECT_TTL_SECONDS,
+    );
+    if (!stored.ok) throw stored.error;
+    if (stored.value) return effect;
+
+    const existing = await this.getVerifiedDataExportOffer(identity);
+    if (!existing) throw new Error('Data export offer receipt disappeared.');
+    if (existing.offerId !== input.offerId) {
+      throw new Error('This run is already bound to a different data export offer.');
+    }
+    return existing;
+  }
+
+  async getVerifiedDataExportOffer(
+    identity: LarkRunEffectIdentity,
+  ): Promise<OfferedDataExportEffect | null> {
+    const result = await this.cache.get<OfferedDataExportEffect>(
+      runEffectIndexKey(identity, 'data_export_offered'),
+    );
+    if (!result.ok) throw result.error;
+    const effect = result.value;
+    if (!effect) return null;
+    if (
+      effect.version !== 1
+      || effect.kind !== 'data_export_offer'
+      || effect.status !== 'offered'
+      || effect.effectKind !== 'data_export_offered'
+      || !isUuid(effect.offerId)
+    ) {
+      throw new Error('Data export offer effect index is invalid.');
+    }
+    assertSameIdentity(effect, identity);
+    return effect;
+  }
+
+  async recordWorkbookConversionOffer(
+    identity: LarkRunEffectIdentity,
+    input: {
+      readonly offerId: string;
+      readonly connectionId: string;
+      readonly fileId: string;
+      readonly fileName?: string;
+      readonly departmentId?: string;
+      readonly replyInThread?: boolean;
+    },
+  ): Promise<OfferedWorkbookConversionEffect> {
+    if (
+      !isUuid(input.offerId)
+      || !isUuid(input.connectionId)
+      || !isSpreadsheetId(input.fileId)
+      || (input.departmentId !== undefined && !isUuid(input.departmentId))
+    ) {
+      throw new Error('Workbook conversion offer is invalid.');
+    }
+    const effect: OfferedWorkbookConversionEffect = {
+      version: 1,
+      kind: 'workbook_conversion_offer',
+      status: 'offered',
+      effectKind: 'workbook_conversion_offered',
+      ...identity,
+      ...input,
+      createdAt: new Date().toISOString(),
+    };
+    const storedOffer = await this.cache.set(
+      workbookConversionKey(input.offerId),
+      effect,
+      RUN_EFFECT_TTL_SECONDS,
+    );
+    if (!storedOffer.ok) throw storedOffer.error;
+    const storedIndex = await this.cache.setNx(
+      runEffectIndexKey(identity, effect.effectKind),
+      effect,
+      RUN_EFFECT_TTL_SECONDS,
+    );
+    if (!storedIndex.ok) {
+      await this.cache.del(workbookConversionKey(input.offerId));
+      throw storedIndex.error;
+    }
+    if (storedIndex.value) return effect;
+
+    const existing = await this.getVerifiedWorkbookConversionOffer(identity);
+    if (!existing) throw new Error('Workbook conversion offer receipt disappeared.');
+    if (existing.offerId !== input.offerId) {
+      await this.cache.del(workbookConversionKey(input.offerId));
+      throw new Error('This run is already bound to a different workbook conversion offer.');
+    }
+    return existing;
+  }
+
+  async getVerifiedWorkbookConversionOffer(
+    identity: LarkRunEffectIdentity,
+  ): Promise<OfferedWorkbookConversionEffect | null> {
+    const result = await this.cache.get<OfferedWorkbookConversionEffect>(
+      runEffectIndexKey(identity, 'workbook_conversion_offered'),
+    );
+    if (!result.ok) throw result.error;
+    const effect = result.value;
+    if (!effect) return null;
+    assertWorkbookConversionEffect(effect);
+    assertSameIdentity(effect, identity);
+    return effect;
+  }
+
+  async getWorkbookConversionOfferForActor(input: {
+    readonly offerId: string;
+    readonly companyId: string;
+    readonly userId: string;
+    readonly chatId: string;
+  }): Promise<OfferedWorkbookConversionEffect | null> {
+    if (!isUuid(input.offerId)) return null;
+    const result = await this.cache.get<OfferedWorkbookConversionEffect>(
+      workbookConversionKey(input.offerId),
+    );
+    if (!result.ok) throw result.error;
+    const effect = result.value;
+    if (!effect) return null;
+    assertWorkbookConversionEffect(effect);
+    return effect.companyId === input.companyId
+      && effect.userId === input.userId
+      && effect.chatId === input.chatId
+      ? effect
+      : null;
+  }
+
+  async recordGoogleSheetDestination(
+    identity: LarkRunEffectIdentity,
+    input: {
+      readonly referenceId: string;
+      readonly connectionId: string;
+      readonly spreadsheetId: string;
+      readonly gid?: string;
+    },
+  ): Promise<GoogleSheetDestinationEffect> {
+    if (!isUuid(input.referenceId) || !isUuid(input.connectionId)) {
+      throw new Error('Google Sheet destination reference is invalid.');
+    }
+    if (!isSpreadsheetId(input.spreadsheetId) || !isSheetGid(input.gid)) {
+      throw new Error('Google Sheet destination is invalid.');
+    }
+    const effect: GoogleSheetDestinationEffect = {
+      version: 1,
+      kind: 'google_sheet_destination',
+      status: 'resolved',
+      ...identity,
+      ...input,
+      createdAt: new Date().toISOString(),
+    };
+    const stored = await this.cache.setNx(
+      googleSheetDestinationKey(identity, input.referenceId),
+      effect,
+      RUN_EFFECT_TTL_SECONDS,
+    );
+    if (!stored.ok) throw stored.error;
+    if (stored.value) return effect;
+
+    const existing = await this.getVerifiedGoogleSheetDestination(identity, input.referenceId);
+    if (!existing) throw new Error('Google Sheet destination receipt disappeared.');
+    if (
+      existing.connectionId !== input.connectionId
+      || existing.spreadsheetId !== input.spreadsheetId
+      || existing.gid !== input.gid
+    ) {
+      throw new Error('This reference is already bound to a different Google Sheet destination.');
+    }
+    return existing;
+  }
+
+  async getVerifiedGoogleSheetDestination(
+    identity: LarkRunEffectIdentity,
+    referenceId: string,
+  ): Promise<GoogleSheetDestinationEffect | null> {
+    if (!isUuid(referenceId)) throw new Error('Google Sheet destination reference is invalid.');
+    const result = await this.cache.get<GoogleSheetDestinationEffect>(
+      googleSheetDestinationKey(identity, referenceId),
+    );
+    if (!result.ok) throw result.error;
+    const effect = result.value;
+    if (!effect) return null;
+    if (
+      effect.version !== 1
+      || effect.kind !== 'google_sheet_destination'
+      || effect.status !== 'resolved'
+      || effect.referenceId !== referenceId
+      || !isUuid(effect.connectionId)
+      || !isSpreadsheetId(effect.spreadsheetId)
+      || !isSheetGid(effect.gid)
+    ) {
+      throw new Error('Google Sheet destination receipt is invalid.');
+    }
+    assertSameIdentity(effect, identity);
+    return effect;
+  }
+
   async getVerifiedMemoryEffect(
     identity: LarkRunEffectIdentity,
   ): Promise<VerifiedKnowledgeEffect | null> {
@@ -265,9 +510,21 @@ function runEffectKey(identity: LarkRunEffectIdentity, requestId: string): strin
   return `${runEffectPrefix(identity)}request:${sha256(requestId)}`;
 }
 
+function googleSheetDestinationKey(identity: LarkRunEffectIdentity, referenceId: string): string {
+  return `${runEffectPrefix(identity)}google-sheet:${sha256(referenceId)}`;
+}
+
+function workbookConversionKey(offerId: string): string {
+  return `${WORKBOOK_CONVERSION_PREFIX}${sha256(offerId)}`;
+}
+
 function runEffectIndexKey(
   identity: LarkRunEffectIdentity,
-  effectKind: KnowledgeReviewEffectKind | 'personal_memory_applied',
+  effectKind:
+    | KnowledgeReviewEffectKind
+    | 'personal_memory_applied'
+    | 'data_export_offered'
+    | 'workbook_conversion_offered',
 ): string {
   return `${runEffectPrefix(identity)}latest:${effectKind}`;
 }
@@ -290,7 +547,12 @@ function sha256(value: string): string {
 }
 
 function assertSameIdentity(
-  effect: KnowledgeReviewRunEffect | AppliedPersonalMemoryEffect,
+  effect:
+    | KnowledgeReviewRunEffect
+    | AppliedPersonalMemoryEffect
+    | OfferedDataExportEffect
+    | GoogleSheetDestinationEffect
+    | OfferedWorkbookConversionEffect,
   identity: LarkRunEffectIdentity,
 ): void {
   for (const key of ['companyId', 'userId', 'chatId', 'threadId', 'runId'] as const) {
@@ -298,4 +560,32 @@ function assertSameIdentity(
       throw new Error(`Knowledge review effect ${key} does not match this runtime.`);
     }
   }
+}
+
+function assertWorkbookConversionEffect(effect: OfferedWorkbookConversionEffect): void {
+  if (
+    effect.version !== 1
+    || effect.kind !== 'workbook_conversion_offer'
+    || effect.status !== 'offered'
+    || effect.effectKind !== 'workbook_conversion_offered'
+    || !isUuid(effect.offerId)
+    || !isUuid(effect.connectionId)
+    || !isSpreadsheetId(effect.fileId)
+    || (effect.departmentId !== undefined && !isUuid(effect.departmentId))
+  ) {
+    throw new Error('Workbook conversion offer receipt is invalid.');
+  }
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function isSpreadsheetId(value: string): boolean {
+  return /^[A-Za-z0-9_-]{1,256}$/.test(value);
+}
+
+function isSheetGid(value: string | undefined): boolean {
+  return value === undefined
+    || (/^(?:0|[1-9][0-9]{0,19})$/.test(value) && Number.isSafeInteger(Number(value)));
 }

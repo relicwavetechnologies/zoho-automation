@@ -226,6 +226,50 @@ describe('ConversationRepository.getHistory', () => {
   });
 });
 
+describe('ConversationRepository.getToolTurnByResourceRef', () => {
+  it('binds an opaque resource to the exact company conversation and owner', async () => {
+    let messageQuery: any;
+    const db = makeDb({
+      runtimeConversation: {
+        findUnique: async () => ({ id: 'company-conv' }),
+      },
+      runtimeConversationMessage: {
+        findFirst: async (input: unknown) => {
+          messageQuery = input;
+          return {
+            id: 'resource-turn',
+            role: 'tool',
+            contentText: 'verified export',
+            toolResultJson: { resourceRef: 'resource-1', ownerUserId: 'user-1' },
+            createdAt: new Date('2026-08-02T00:00:00.000Z'),
+          };
+        },
+      },
+    });
+    const repo = new ConversationRepository(db as any);
+
+    const result = await repo.getToolTurnByResourceRef(
+      CHAT_KEY,
+      'dataExportResource',
+      'resource-1',
+      'user-1',
+      SCOPE,
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok ? result.value?.id : null, 'resource-turn');
+    assert.deepEqual(messageQuery.where, {
+      conversationId: 'company-conv',
+      messageKind: 'tool_result',
+      AND: [
+        { toolCallJson: { path: ['name'], equals: 'dataExportResource' } },
+        { toolResultJson: { path: ['resourceRef'], equals: 'resource-1' } },
+        { toolResultJson: { path: ['ownerUserId'], equals: 'user-1' } },
+      ],
+    });
+  });
+});
+
 describe('ConversationRepository.appendTurn', () => {
   it('writes and invalidates only the scoped company conversation', async () => {
     let lookup: any = null;

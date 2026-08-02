@@ -9,6 +9,8 @@
  *   - message_type = 'sticker' → skip
  */
 
+import { larkAudioMimeType } from './lark-media-support';
+
 export interface LarkAttachment {
   type:       'file' | 'image';
   key:        string;
@@ -20,6 +22,7 @@ export interface LarkAttachment {
 
 export interface LarkAudioAttachment {
   type:       'audio';
+  source:     'voice-note' | 'file';
   key:        string;
   fileName:   string;
   mimeType:   string;
@@ -84,7 +87,13 @@ export function parseLarkAttachments(raw: unknown): LarkMessageAttachment[] {
     const fileName = (parsed['file_name'] as string | undefined) ?? 'file';
     if (fileKey && !seenKeys.has(fileKey)) {
       seenKeys.add(fileKey);
-      results.push({ type: 'file', key: fileKey, fileName, mimeType: mimeForFile(fileName), messageId });
+      const audioMimeType = larkAudioMimeType(fileName);
+      results.push(audioMimeType
+        ? {
+            type: 'audio', source: 'file', key: fileKey, fileName,
+            mimeType: audioMimeType, messageId, durationMs: null,
+          }
+        : { type: 'file', key: fileKey, fileName, mimeType: mimeForFile(fileName), messageId });
     }
   } else if (messageType === 'audio') {
     const fileKey = (parsed['file_key'] as string | undefined) ?? '';
@@ -93,6 +102,7 @@ export function parseLarkAttachments(raw: unknown): LarkMessageAttachment[] {
       seenKeys.add(fileKey);
       results.push({
         type: 'audio',
+        source: 'voice-note',
         key: fileKey,
         fileName: 'voice-note.ogg',
         mimeType: 'audio/ogg',

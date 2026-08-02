@@ -138,6 +138,80 @@ describe('run effect receipt store', () => {
       null,
     );
   });
+
+  it('attests one export offer to the exact run and rejects ambiguity', async () => {
+    const fixture = createStore();
+    const offerId = '11111111-1111-4111-8111-111111111111';
+    const effect = await fixture.store.recordDataExportOffer(identity, { offerId });
+
+    assert.deepEqual(await fixture.store.recordDataExportOffer(identity, { offerId }), effect);
+    assert.deepEqual(await fixture.store.getVerifiedDataExportOffer(identity), effect);
+    assert.equal(
+      await fixture.store.getVerifiedDataExportOffer({ ...identity, chatId: 'chat-2' }),
+      null,
+    );
+    await assert.rejects(
+      fixture.store.recordDataExportOffer(identity, {
+        offerId: '22222222-2222-4222-8222-222222222222',
+      }),
+      /different data export offer/i,
+    );
+  });
+
+  it('seals a Google Sheet destination to one opaque reference and exact run identity', async () => {
+    const fixture = createStore();
+    const referenceId = '33333333-3333-4333-8333-333333333333';
+    const effect = await fixture.store.recordGoogleSheetDestination(identity, {
+      referenceId,
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      spreadsheetId: 'sheet_1',
+      gid: '42',
+    });
+
+    assert.deepEqual(
+      await fixture.store.getVerifiedGoogleSheetDestination(identity, referenceId),
+      effect,
+    );
+    assert.equal(
+      await fixture.store.getVerifiedGoogleSheetDestination(
+        { ...identity, threadId: 'thread-2' },
+        referenceId,
+      ),
+      null,
+    );
+    await assert.rejects(
+      fixture.store.recordGoogleSheetDestination(identity, {
+        referenceId,
+        connectionId: '22222222-2222-4222-8222-222222222222',
+        spreadsheetId: 'sheet_2',
+      }),
+      /different Google Sheet destination/i,
+    );
+  });
+
+  it('binds one workbook conversion offer to the exact run and card actor', async () => {
+    const fixture = createStore();
+    const effect = await fixture.store.recordWorkbookConversionOffer(identity, {
+      offerId: '44444444-4444-4444-8444-444444444444',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      fileId: 'xlsx_file_1',
+      fileName: 'Forecast.xlsx',
+    });
+
+    assert.deepEqual(await fixture.store.getVerifiedWorkbookConversionOffer(identity), effect);
+    assert.deepEqual(await fixture.store.getWorkbookConversionOfferForActor({
+      offerId: effect.offerId,
+      companyId: identity.companyId,
+      userId: identity.userId,
+      chatId: identity.chatId,
+    }), effect);
+    assert.equal(await fixture.store.getWorkbookConversionOfferForActor({
+      offerId: effect.offerId,
+      companyId: identity.companyId,
+      userId: 'other-user',
+      chatId: identity.chatId,
+    }), null);
+  });
 });
 
 function createStore() {

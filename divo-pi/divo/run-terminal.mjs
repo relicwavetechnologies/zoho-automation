@@ -53,7 +53,7 @@ export function isTransientDivoRunFailure(messages) {
 	const last = asRecord(Array.isArray(messages) ? messages.at(-1) : undefined);
 	if (!last || last.role !== "assistant" || last.stopReason !== "error") return false;
 	const message = typeof last.errorMessage === "string" ? last.errorMessage : "";
-	return /\b(?:408|425|429|5\d{2})\b|upstream unreachable|bad gateway|service unavailable|temporar(?:y|ily) unavailable|timed? ?out|fetch failed|econn(?:reset|refused)|socket hang up|connection (?:reset|closed)|rate limit/i.test(
+	return /\b(?:408|425|429|5\d{2})\b|upstream unreachable|bad gateway|service unavailable|temporar(?:y|ily) unavailable|network error|connection (?:error|reset|closed|refused|lost)|other side closed|upstream connect|reset before headers|timed? ?out|fetch failed|econn(?:reset|refused)|socket hang up|rate limit|terminated|websocket (?:closed|error)|ended without|stream ended before message_stop|http2 request did not get a response/i.test(
 		message,
 	);
 }

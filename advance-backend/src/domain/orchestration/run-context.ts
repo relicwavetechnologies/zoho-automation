@@ -71,25 +71,16 @@ export interface RunContext {
    */
   readonly deliveryMode?: 'scheduled_runtime_delivery';
   /**
-   * Backend-derived Lark request data used only to create a deferred OAuth
-   * continuation. Tools must never accept these identity or reply fields from
-   * model arguments.
+   * The backend-issued runtime run this call belongs to.
+   *
+   * A deferred OAuth continuation needs the inbound Lark request that started
+   * the run — who asked, in which chat, replying to which message — and none of
+   * that survives the trip through the container. This ID is the key the
+   * backend uses to look that origin back up; it is never accepted from model
+   * arguments, and is absent for any run that did not come from a channel
+   * ingress (a desktop session, for instance).
    */
-  readonly connectionAuthorization?: {
-    readonly larkOpenId: string;
-    readonly larkTenantKey: string;
-    readonly chatId: string;
-    readonly chatType: string;
-    readonly originalMessageId: string;
-    readonly rootMessageId?: string;
-    readonly replyInThread: boolean;
-    readonly groupReplyMode?: string;
-    readonly originalRequest: string;
-  };
-  /**
-   * Backend-issued tool IDs that triggered a deferred OAuth continuation.
-   * The fresh run intersects these with current RBAC before treating them as
-   * resolved; callers and model arguments cannot grant tool access here.
-   */
-  readonly continuationToolIds?: ReadonlyArray<string>;
+  readonly runtimeRunId?: string;
+  /** Exact signed Pi thread used to bind short-lived run effects. */
+  readonly runtimeThreadId?: string;
 }

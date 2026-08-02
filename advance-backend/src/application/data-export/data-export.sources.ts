@@ -10,6 +10,8 @@ import type {
   ZohoBooksPaginatedClient,
   ZohoBooksModule,
 } from '../../infrastructure/zoho/zoho-books-paginated.client';
+import type { CompanyOmsSiteDataService } from '../oms/company-oms-site-data.service';
+import type { SemrushService } from '../semrush/semrush.service';
 import {
   type CurrencyConverter,
   getModuleSchema,
@@ -23,11 +25,15 @@ import type { DataExportSource } from './data-export.types';
 
 type AirtableSource = Extract<DataExportSource, { kind: 'airtable_records' }>;
 type ZohoBooksSource = Extract<DataExportSource, { kind: 'zoho_books' }>;
+type OmsSnapshotSource = Extract<DataExportSource, { kind: 'oms_snapshot' }>;
+type SemrushSnapshotSource = Extract<DataExportSource, { kind: 'semrush_snapshot' }>;
 
 const AIRTABLE_REST_KEYS = new Set(['baseId', 'tableId', 'fieldIds']);
 const AIRTABLE_PAGE_LIMIT = 20_000;
 const AIRTABLE_MCP_PAGE_SIZE = 1_000;
 const ZOHO_PAGE_LIMIT = 1_000;
+const SEMRUSH_EXPORT_PAGE_SIZE = 1_000;
+const SEMRUSH_EXPORT_PAGE_LIMIT = 10;
 
 export class AirtableDataExportSource implements DataExportSourceAdapter<AirtableSource> {
   readonly kind = 'airtable_records' as const;
@@ -163,6 +169,74 @@ export class ZohoBooksDataExportSource implements DataExportSourceAdapter<ZohoBo
         };
         if (!result.hasMore || sourceTruncated) break;
       }
+    }
+  }
+}
+
+export class OmsSnapshotDataExportSource implements DataExportSourceAdapter<OmsSnapshotSource> {
+  readonly kind = 'oms_snapshot' as const;
+
+  constructor(
+    private readonly service: Pick<CompanyOmsSiteDataService, 'execute'>,
+  ) {}
+
+  async *read(source: OmsSnapshotSource, context: {
+    readonly companyId: string;
+    readonly signal?: AbortSignal;
+  }): AsyncIterable<DataExportPage> {
+    context.signal?.throwIfAborted();
+    const result = await this.service.execute({
+      companyId: context.companyId,
+      args: source.args,
+    });
+    context.signal?.throwIfAborted();
+    yield { rows: result.rows };
+  }
+}
+
+export class SemrushSnapshotDataExportSource implements DataExportSourceAdapter<SemrushSnapshotSource> {
+  readonly kind = 'semrush_snapshot' as const;
+
+  constructor(
+    private readonly service: Pick<SemrushService, 'execute'>,
+  ) {}
+
+  async *read(source: SemrushSnapshotSource, context: {
+    readonly signal?: AbortSignal;
+  }): AsyncIterable<DataExportPage> {
+    if (source.args.operation !== 'organic_positions') {
+      context.signal?.throwIfAborted();
+      const result = await this.service.execute(source.args);
+      context.signal?.throwIfAborted();
+      yield {
+        rows: result.rows,
+        ...(result.status === 'partial' ? { sourceTruncated: true } : {}),
+      };
+      return;
+    }
+
+    let offset = source.args.offset ?? 0;
+    for (let page = 0; page < SEMRUSH_EXPORT_PAGE_LIMIT; page += 1) {
+      context.signal?.throwIfAborted();
+      const result = await this.service.execute({
+        ...source.args,
+        limit: SEMRUSH_EXPORT_PAGE_SIZE,
+        offset,
+      });
+      context.signal?.throwIfAborted();
+      const nextOffset = result.status === 'partial'
+        ? Number(result.nextPage)
+        : NaN;
+      const hasMore = Number.isInteger(nextOffset) && nextOffset > offset;
+      const sourceTruncated = result.status === 'partial'
+        && (!hasMore || page === SEMRUSH_EXPORT_PAGE_LIMIT - 1);
+      yield {
+        rows: result.rows,
+        ...(hasMore ? { hasMore: true } : {}),
+        ...(sourceTruncated ? { sourceTruncated: true } : {}),
+      };
+      if (!hasMore || sourceTruncated) return;
+      offset = nextOffset;
     }
   }
 }

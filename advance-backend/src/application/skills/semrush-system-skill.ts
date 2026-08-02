@@ -23,9 +23,9 @@ Use this skill for read-only Semrush SEO research available through Divo's backe
 4. Treat result states precisely:
    - \`complete\`: the returned official data covered this request.
    - \`empty\`: the request was valid but Semrush had no matching coverage.
-   - \`partial\`: Semrush has another available page. State that limitation and use the next-page value if more data is needed.
+   - \`partial\`: Semrush has another available page. State that limitation for the chat preview.
    - \`blocked\` or an invocation error: explain whether configuration, permission, unsupported capability, or provider availability prevented the lookup. Never invent the missing data.
-5. Summarize evidence in chat. If Divo returns a temporary CSV artifact, identify it as a temporary export and do not reproduce hundreds of rows in chat.
+5. Summarize useful evidence in chat; the structured preview contains at most 25 rows. When \`preview.exportOfferId\` is present, preserve only that opaque offer and present its governed Sheet/CSV/XLSX choice once instead of reproducing rows. A complete-data request still uses that preview-and-offer path. Do not manually follow \`nextPage\`, create or upload a CSV/XLSX/Sheet, run Python or a local workflow, use Cloudinary, or ask again about the same offer after the member chooses or declines it: the central governed export owns provider pagination, artifact creation, and the one explicit choice. Confirmation retrieves current Semrush data, so describe it as a current export rather than an immutable copy of the preview.
 
 ## Supported official operations
 

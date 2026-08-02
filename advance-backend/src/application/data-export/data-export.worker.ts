@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { UnrecoverableError, Worker, type Job } from 'bullmq';
 import type { PermissionService } from '../permissions/permission.service';
 import type { ChannelIdentityRepoPort } from '../../infrastructure/persistence/channel-identity.repository';
@@ -20,24 +21,37 @@ import {
 import type {
   DataExportCompletion,
   DataExportJobPayload,
-  DataExportSource,
-  DataExportSourceRegistry,
 } from './data-export.types';
-import { DATA_EXPORT_ROW_LIMIT } from './data-export.types';
+import {
+  DATA_EXPORT_ROW_LIMIT,
+  datasetSourceToolId,
+} from './data-export.types';
 import type {
+  DataExportDestinationSink,
   GoogleExportAuth,
-  GoogleWorkspaceExportSink,
-} from './google-workspace-export.sink';
+} from './data-export.destination';
+import type { DatasetSourceRegistry } from './data-export.source-registry';
+import type { ConversationRepoPort } from '../../infrastructure/persistence/conversation.repository';
+import {
+  DATA_EXPORT_RESOURCE_TOOL,
+  DATA_EXPORT_RESOURCE_TTL_MS,
+  type DataExportResourceRecord,
+} from './data-export-continuity';
 
 export interface DataExportWorkerDeps {
   readonly redisUrl: string;
   readonly queueName?: string;
-  readonly sources: DataExportSourceRegistry;
-  readonly sink: GoogleWorkspaceExportSink;
+  readonly sources: DatasetSourceRegistry;
+  readonly sink: DataExportDestinationSink;
   readonly identityRepo: Pick<ChannelIdentityRepoPort, 'resolveByUserId'>;
   readonly permissions: PermissionService;
-  readonly resolveGoogleAuth: (companyId: string) => Promise<GoogleExportAuth>;
+  readonly resolveGoogleAuth: (
+    companyId: string,
+    userId: string,
+    target?: DataExportJobPayload['destination']['target'],
+  ) => Promise<GoogleExportAuth>;
   readonly larkAdapter: Pick<LarkChannelAdapter, 'sendToChatId' | 'updateMessageById'>;
+  readonly conversationHistory?: Pick<ConversationRepoPort, 'appendTurn'>;
   readonly logger: Logger;
   readonly concurrency?: number;
   readonly inactivityMs?: number;
@@ -86,6 +100,8 @@ export class DataExportWorker {
         progressMessageId = await this.createProgressTracker(job);
         payload = { ...payload, progressMessageId };
         await job.updateData(payload);
+      } else if (!payload.completedExport) {
+        await this.initializeProgressTracker(progressMessageId);
       }
       const completion = payload.completedExport
         ?? await this.runExport(job, payload, progressMessageId);
@@ -93,7 +109,19 @@ export class DataExportWorker {
         payload = { ...payload, completedExport: completion };
         await job.updateData(payload);
       }
-      await this.deliverCompletion(job, completion, progressMessageId);
+      let continuityAvailable = true;
+      try {
+        await this.recordCompletionResource(job, payload, completion);
+      } catch (error) {
+        const finalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+        if (!finalAttempt) throw error;
+        this.log.error('data_export.continuity_unavailable', {
+          jobId: job.id,
+          error: String(error),
+        });
+        continuityAvailable = false;
+      }
+      await this.deliverCompletion(job, completion, progressMessageId, continuityAvailable);
     } catch (error) {
       const finalAttempt = isUnrecoverableJobError(error)
         || job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
@@ -102,6 +130,45 @@ export class DataExportWorker {
       }
       throw error;
     }
+  }
+
+  private async recordCompletionResource(
+    job: DataExportWorkerJob,
+    payload: DataExportJobPayload,
+    completion: DataExportCompletion,
+  ): Promise<void> {
+    if (!payload.conversationKey || !this.deps.conversationHistory) return;
+    const createdAt = new Date();
+    const target = payload.destination.target;
+    const resource: DataExportResourceRecord = {
+      version: 1,
+      kind: 'data_export_resource',
+      resourceRef: randomUUID(),
+      ownerUserId: payload.userId,
+      artifactId: completion.artifactId,
+      artifactUrl: completion.artifactUrl,
+      artifactType: completion.artifactType,
+      rowCount: completion.rowCount,
+      ...(target?.connectionId ? { connectionId: target.connectionId } : {}),
+      ...(completion.artifactType === 'google_sheet'
+        ? { spreadsheetId: completion.artifactId }
+        : {}),
+      createdAt: createdAt.toISOString(),
+      expiresAt: new Date(createdAt.getTime() + DATA_EXPORT_RESOURCE_TTL_MS).toISOString(),
+    };
+    const appended = await this.deps.conversationHistory.appendTurn(
+      payload.conversationKey,
+      {
+        role: 'tool',
+        content: `Verified ${completion.artifactType} export: ${completion.artifactUrl}`,
+        timestamp: createdAt.toISOString(),
+        toolName: DATA_EXPORT_RESOURCE_TOOL,
+        toolOutcome: resource,
+      },
+      { companyId: payload.companyId, channel: 'lark' },
+      { dedupeKey: `data-export:${job.id}:resource` },
+    );
+    if (!appended.ok) throw appended.error;
   }
 
   private async runExport(
@@ -130,7 +197,7 @@ export class DataExportWorker {
     if (!permission.value.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')) {
       throw new UnrecoverableError('Data export permission was revoked before the job started');
     }
-    const sourceToolId = toolIdForSource(payload.source);
+    const sourceToolId = datasetSourceToolId(payload.source);
     if (!permission.value.allowedActionsByTool.get(asToolId(sourceToolId))?.has('read')) {
       throw new UnrecoverableError(`${sourceToolId} read permission was revoked before the export started`);
     }
@@ -141,8 +208,15 @@ export class DataExportWorker {
       throw new UnrecoverableError('Complete Zoho exports require full company Zoho read scope');
     }
 
-    const googleAuth = await this.deps.resolveGoogleAuth(payload.companyId);
-    if (readerEmail.split('@')[1] !== googleAuth.readerDomain.toLowerCase()) {
+    const googleAuth = await this.deps.resolveGoogleAuth(
+      payload.companyId,
+      payload.userId,
+      payload.destination.target,
+    );
+    if (
+      'readerDomain' in googleAuth
+      && readerEmail.split('@')[1] !== googleAuth.readerDomain.toLowerCase()
+    ) {
       throw new UnrecoverableError(
         `Data export can only share with a verified ${googleAuth.readerDomain} invoker`,
       );
@@ -213,12 +287,14 @@ export class DataExportWorker {
       requestId: payload.requestId,
       source: payload.source.kind,
       destination: payload.destination.format,
+      destinationOwner: payload.destination.target?.kind ?? 'legacy_company_google',
     });
     try {
       const completion = await this.deps.sink.write({
         auth: googleAuth,
         readerEmail,
         exportKey: String(job.id ?? dataExportJobId(payload)),
+        source: payload.source,
         destination: payload.destination,
         rows: transformedPages,
         sourceTruncated: () => sourceTruncated,
@@ -264,6 +340,7 @@ export class DataExportWorker {
     job: DataExportWorkerJob,
     completion: DataExportCompletion,
     progressMessageId: string,
+    continuityAvailable = true,
   ): Promise<void> {
     const warning = completion.sourceTruncated
       ? `\n\n⚠️ Current exports are capped at ${resolvedExportRowLimit(this.deps.maxRows).toLocaleString('en-IN')} rows. Additional source rows were not included.`
@@ -271,9 +348,12 @@ export class DataExportWorker {
     const card = buildFinalCard({
       markdown: [
         '# Data export ready',
-        `Exported ${completion.rowCount} row${completion.rowCount === 1 ? '' : 's'} to a verified ${completion.artifactType === 'google_sheet' ? 'Google Sheet' : 'CSV in Google Drive'}.`,
+        `Exported ${completion.rowCount} row${completion.rowCount === 1 ? '' : 's'} to a verified ${completion.artifactType === 'google_sheet' ? 'Google Sheet' : completion.artifactType === 'xlsx' ? 'Excel file in Google Drive' : 'CSV in Google Drive'}.`,
         `[Open export](${completion.artifactUrl})`,
         `Access: ${completion.sharedWith}${warning}`,
+        ...(continuityAvailable
+          ? []
+          : ['Divo could not save this file to the conversation. To work on it later, paste the export link into your message.']),
       ].join('\n\n'),
     });
     const updated = await this.deps.larkAdapter.updateMessageById(progressMessageId, card);
@@ -286,9 +366,12 @@ export class DataExportWorker {
     error: unknown,
     progressMessageId?: string,
   ): Promise<void> {
-    const reason = error instanceof Error ? error.message : String(error);
+    this.log.error('data_export.failure_delivered', {
+      jobId: job.id,
+      error: String(error),
+    });
     const card = buildFinalCard({
-      markdown: `# Data export failed\nThe governed export could not finish.\n\n${reason.slice(0, 300)}`,
+      markdown: '# Data export could not finish\nDivo could not complete this export. Your source data was not changed. Please try again shortly.',
     });
     if (progressMessageId) {
       const updated = await this.deps.larkAdapter.updateMessageById(progressMessageId, card);
@@ -305,13 +388,24 @@ export class DataExportWorker {
     const sent = await this.deps.larkAdapter.sendToChatId(
       job.data.chatId,
       buildFinalCard({
-        markdown: '# Data export in progress\nPreparing the governed export. Only you will receive reader access.',
+        markdown: '# Data export in progress\nPreparing the governed export in your resolved Google destination.',
       }),
-      undefined,
+      job.data.replyToMessageId,
       deliveryKey('dtxp', job),
+      job.data.replyInThread,
     );
     if (!sent.ok) throw sent.error;
     return sent.value;
+  }
+
+  private async initializeProgressTracker(messageId: string): Promise<void> {
+    const updated = await this.deps.larkAdapter.updateMessageById(
+      messageId,
+      buildFinalCard({
+        markdown: '# Data export in progress\nPreparing the governed export in your resolved Google destination.',
+      }),
+    );
+    if (!updated.ok) throw updated.error;
   }
 
   private async updateProgressTracker(
@@ -331,7 +425,7 @@ export class DataExportWorker {
     const updated = await this.deps.larkAdapter.updateMessageById(
       messageId,
       buildFinalCard({
-        markdown: `# Data export in progress\n${detail}\n\nOnly you will receive reader access.`,
+        markdown: `# Data export in progress\n${detail}\n\nThe file stays private to your resolved Google destination.`,
       }),
     );
     if (!updated.ok) {
@@ -341,10 +435,6 @@ export class DataExportWorker {
       });
     }
   }
-}
-
-function toolIdForSource(source: DataExportSource): 'airtableBase' | 'airtableRecords' | 'zohoBooks' {
-  return source.kind === 'airtable_records' ? source.toolId : 'zohoBooks';
 }
 
 function deliveryKey(prefix: string, job: DataExportWorkerJob): string {

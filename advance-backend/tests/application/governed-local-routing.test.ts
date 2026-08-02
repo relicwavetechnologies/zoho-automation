@@ -8,6 +8,8 @@ import {
 import { GOOGLE_WORKSPACE_SYSTEM_SKILLS } from '../../src/application/skills/google-workspace-system-skills';
 import { LARK_SYSTEM_SKILLS } from '../../src/application/skills/lark-system-skills';
 import { DIVO_LOCAL_PYTHON_SYSTEM_SKILL } from '../../src/application/skills/divo-local-python-system-skill';
+import { DATA_EXPORT_SYSTEM_SKILL } from '../../src/application/skills/data-export-system-skill';
+import { ROUTING_SYSTEM_SKILLS } from '../../src/application/skills/system-skill-routes';
 import { DIVO_PRESENTATIONS_SYSTEM_SKILL } from '../../src/application/skills/divo-presentations-system-skill';
 import {
   financeOpsCoreSkill,
@@ -77,7 +79,21 @@ describe('governed local-workflow instruction contract', () => {
 
   it('routes exact whole-account finance aggregates through complete governed sources', () => {
     assert.match(zohoBooksReadAnalysisSkill.instructions, /Exact whole-account or potentially large aggregate -> use the scripted workflow/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /omit the limit argument unless the user explicitly requested a numeric maximum/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /When a list result is truncated, do not retry with a larger limit/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /Number\(_balance_inr\) > 0/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /reconcile it: every source page accounted for/);
+  });
+
+  it('keeps one-source export offers out of the local Python path', () => {
+    const dataRouter = ROUTING_SYSTEM_SKILLS.find(skill => skill.slug === 'data-router')!;
+    assert.match(dataRouter.markdown, /preview\.exportOfferId/);
+    assert.match(dataRouter.markdown, /more than one connected product/);
+    assert.doesNotMatch(dataRouter.markdown, /whatever the row count/);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /governed provider preview and export-offer path/);
+    assert.doesNotMatch(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /how data of any size is processed/);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /source result containing `preview\.exportOfferId` already creates/);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /ask a second export question, load or call `dataExport` for that offer/i);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Use a direct Airtable or Zoho Books\s+recipe only/);
   });
 });

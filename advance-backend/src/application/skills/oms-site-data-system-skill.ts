@@ -31,14 +31,14 @@ Use this skill only for the company-approved OMS website inventory capability.
 4. Never invent raw OMS columns, filters, operators, SQL, request bodies, headers, endpoint URLs, cookies, or credentials. The backend owns those provider details and validates every request.
 5. Preflight the exact call before retrieval when configuration is uncertain. It checks the company connection and operation bounds without fetching site data.
 6. Report result states honestly:
-   - \`complete\`: the webhook returned fewer than its 100-row cap, so it is the complete set of matches for those filters.
+   - \`complete\`: the webhook returned fewer than its 100-row cap. The central preview still labels OMS coverage \`provider_limited\` because the provider supplies neither pagination nor a total; describe it as the returned snapshot, not an exhaustive dataset.
    - \`partial\`: the webhook returned exactly 100 rows, which is its cap. OMS reports no total, so this cannot be distinguished from a result that genuinely has 100 matches: say completeness cannot be confirmed rather than asserting rows are missing. OMS sorts before it truncates, so with \`sortBy\` set this is a true top-100 ranking; without \`sortBy\` it is an arbitrary subset and must never be described as the best sites.
    - \`empty\`: OMS returned a valid JSON empty array.
    - \`blocked\`: connection setup, the company kill switch, or OMS's ambiguous empty-body behavior prevented a reliable answer. Do not call it “no results.”
 7. OMS never paginates and never returns a total count. Never state or imply how many sites exist in total, and never claim a shortlist is exhaustive beyond what the row cap allows.
 8. Site rows are per listing, not per domain, so the same website can appear more than once with different niche, price, or link attributes. Report the rows as returned rather than merging them.
 9. Authority values are source data and are occasionally out of range, including values above 100. Pass them through as stored and do not silently correct them.
-10. Summarize only the useful evidence in chat. If Divo returns a temporary CSV, identify it as a private, company-scoped 24-hour export rather than pasting all rows.
+10. Summarize only the useful evidence in chat. The preview contains at most 25 rows. When it contains \`preview.exportOfferId\`, preserve only that opaque offer and present its governed Sheet/CSV/XLSX choice once instead of reproducing rows. Do not create a CSV, Excel file, local Python workflow, Cloudinary artifact, or temporary download link yourself, and do not ask again about the same offer after the member chooses or declines it: the central governed export owns artifact creation and the one explicit choice. The exported OMS snapshot may not be exhaustive.
 
 OMS access is read-only and available only to active company administrators in this rollout.`,
   toolIds: ['omsSiteData'],

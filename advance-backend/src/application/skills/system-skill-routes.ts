@@ -20,7 +20,7 @@ import { DIVO_SEMRUSH_SYSTEM_SKILL } from './semrush-system-skill';
 import { KNOWLEDGE_MANAGEMENT_SKILL_SLUG } from './knowledge-system-skill';
 import { ZOHO_FINANCE_SYSTEM_SKILLS } from './zoho-finance-system-skills';
 
-const ROUTING_SYSTEM_SKILLS = [
+export const ROUTING_SYSTEM_SKILLS = [
   {
     slug: 'airtable-router',
     name: 'Airtable Router',
@@ -73,16 +73,53 @@ AITable and Airtable are different products. Never route an Airtable request her
 
 Choose the exact approved specialist returned by this router.
 
-- Fetch, calculate, group, join, reshape, or move data between connected
-  products → \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`. Write one script, run it,
-  edit and rerun it. This is the data path, whatever the row count.
-- Produce a CSV, Google Sheet, or governed complete-data artifact →
-  \`secure-data-export\`.
+- One bounded provider lookup or preview → load that provider's specialist.
+  If its result contains \`preview.exportOfferId\`, keep only that opaque offer
+  until the turn completes. In Lark, Divo's verified final-response card owns
+  the Sheet/CSV/XLSX choice and queue; do not ask again or call \`dataExport\`
+  for that offer.
+- Produce a governed complete-data artifact without a provider offer →
+  \`secure-data-export\`. Its direct recipes are only for supported Airtable
+  and Zoho Books sources with exact backend-resolved identifiers.
+- Fetch across pages to calculate, group, join, reshape, or move data between
+  connected products → \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`. Write one script,
+  run it, edit and rerun it.
+- An exact pasted \`https://docs.google.com/spreadsheets/d/...\` Sheet URL or
+  \`https://drive.google.com/file/d/...\` Excel workbook URL → \`google-sheets\`
+  before Google Drive or generic web search. Resolve the reference first. A
+  Sheet URL alone proves only metadata/access, so ask what the member wants to
+  do next. A resolved Excel workbook prepares the Lark confirmation for a new
+  Google Sheet copy; never request a download URL or import it directly.
 - Read or analyse a file that is already in the workspace → \`${READ_FILES_SKILL_SLUG}\`.
 
-Size does not change the route. A source that paginates past what fits in
-context is written to a file and queried there, inside the scripted workflow —
-never carried through the conversation.
+Use the provider preview and governed export path for one source's complete
+dataset. Use the scripted workflow only when the work needs pagination for a
+calculation or transform, more than one connected product, or related writes.
+Neither route carries a record set through the conversation.
+
+Keep each opaque handle in its owning route:
+
+- \`preview.exportOfferId\` → Divo's verified Lark final-response card; never a
+  second agent question or tool call.
+- \`destinationReferenceId\` or \`resourceRef\` → \`google-sheets\` for the exact
+  resolved or recent Sheet.
+- \`exportJobId\` → status and safe retry/resume only.
+
+Never turn one of these handles into provider IDs, source rows, or Python input.
+
+Examples:
+
+- “Show me our best keywords” → research specialist and bounded preview.
+- “Put the complete keyword result in a Sheet” → preserve the preview offer,
+  finish the answer, and let Divo's Lark card own the choice and export.
+- “Combine invoices with Airtable owners and calculate totals” → relevant
+  provider specialists plus \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`.
+- A Sheet URL by itself → \`google-sheets\`, resolve metadata, then ask what the
+  member wants to do.
+- “Add a Notes column to that Sheet” after a Divo export → \`google-sheets\`
+  with its recent opaque resource reference and read-back verification.
+- No eligible Google destination → let Divo's card keep the same offer and run
+  connect-and-resume; never ask the member to repeat the request.
 
 Never treat this router as permission to process or export data. Load the specialist first.`,
     toolIds: [],
@@ -90,6 +127,7 @@ Never treat this router as permission to process or export data. Load the specia
     aliases: [
       'data processing', 'calculate data', 'analyze rows', 'export data', 'csv export',
       'move data', 'transfer records', 'sync between tools', 'python workflow',
+      'excel workbook url', 'drive.google.com/file', 'convert excel to google sheet',
     ],
     sortOrder: 5,
   },
@@ -132,7 +170,7 @@ job, not this one.`,
 Choose the exact approved specialist returned by this router.
 
 - Current public facts and external verification → \`web-search\`.
-- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`.
+- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`. Its bounded preview may return an opaque \`preview.exportOfferId\`; preserve it, finish the response, and let Divo's verified Lark card own the export choice and queue. Never route that offer through another agent question, tool call, provider pagination, or local workflow.
 - Approved OMS publisher/site inventory → \`divo-oms-site-inventory\`.
 
 Never substitute web results for official Semrush or OMS data.
@@ -228,6 +266,7 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
     targetSlugs: [
       DIVO_LOCAL_PYTHON_SKILL_SLUG,
       DATA_EXPORT_SYSTEM_SKILL.slug,
+      'google-sheets',
       READ_FILES_SKILL_SLUG,
     ],
   },

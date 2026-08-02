@@ -383,6 +383,8 @@ describe('ToolExecutor', () => {
         channel: 'lark',
         larkOpenId: 'ou-requester',
         larkTenantKey: 'tenant-1',
+        runtimeChatId: 'oc_runtime_chat',
+        runtimeRunId: 'run-1',
       },
       toolId: 'fakeTool',
       args: { query: 'send it' },
@@ -398,9 +400,12 @@ describe('ToolExecutor', () => {
     assert.equal(result.status, 'approval_required');
     assert.equal(approvalInput.runContext.tenantId, 'tenant-1');
     assert.equal(approvalInput.runContext.userExternalId, 'ou-requester');
-    assert.equal(approvalInput.runContext.chatId, 'oc_chat');
+    assert.equal(approvalInput.runContext.chatId, 'oc_runtime_chat');
     assert.equal(approvalInput.runContext.replyToMessageId, 'om_root');
     assert.equal(approvalInput.runContext.replyInThread, true);
+    // Taken off the signed lease, and the only way a tool can reach the request
+    // that started this run when it needs to ask for OAuth.
+    assert.equal(approvalInput.runContext.runtimeRunId, 'run-1');
     assert.match(approvalInput.chatId, /^gateway:company:co-test:requester:user-test:/);
   });
 
@@ -2417,6 +2422,540 @@ describe('GatewayDispatcher', () => {
     assert.deepEqual((result.data as { result: { result: string } }).result, { result: 'echo:gateway' });
   });
 
+  it('records a trusted export offer against the exact Lark runtime lease', async () => {
+    const offerId = '11111111-1111-4111-8111-111111111111';
+    const receipts: unknown[] = [];
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      resultSchema: z.object({
+        result: z.string(),
+        preview: z.object({ exportOfferId: z.string().uuid() }),
+      }) as any,
+      execute: async () => ok({ result: '25 rows', preview: { exportOfferId: offerId } }) as any,
+    }));
+    const permissions = makePermissionService();
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([allowedSkill]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      runEffectReceipts: {
+        reserveKnowledgeReview: async () => ({ status: 'claimed' }),
+        completeKnowledgeReview: async () => ({} as any),
+        releaseKnowledgeReview: async () => {},
+        recordPersonalMemory: async () => ({} as any),
+        recordDataExportOffer: async (identity, input) => {
+          receipts.push({ identity, input });
+          return {} as any;
+        },
+      },
+      logger: noopLogger,
+    });
+
+    const result = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      execution: {
+        version: 1,
+        runId: 'run-1',
+        threadId: 'thread-1',
+        actionId: 'call-1',
+      },
+      payload: { toolId: 'fakeTool', args: { query: 'large dataset' } },
+    }, {
+      ...member,
+      channel: 'lark',
+      runtimeChatId: 'chat-1',
+      runtimeRunId: 'run-1',
+      runtimeThreadId: 'thread-1',
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(receipts, [{
+      identity: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        chatId: 'chat-1',
+        threadId: 'thread-1',
+        runId: 'run-1',
+      },
+      input: { offerId },
+    }]);
+  });
+
+  it('replaces a resolved Lark Sheet target with a run-bound opaque reference', async () => {
+    const receipts: unknown[] = [];
+    let executedArgs: unknown;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      id: asToolId('googleSheets'),
+      actionGroups: new Set(['read', 'update']),
+      argsSchema: z.union([
+        z.object({ op: z.literal('resolve_reference'), url: z.string() }),
+        z.object({
+          op: z.literal('call'),
+          connectionId: z.string().uuid(),
+          nativeTool: z.string(),
+          input: z.record(z.unknown()),
+        }),
+      ]),
+      resultSchema: z.object({}).passthrough(),
+      permissionCheck: (args: any) => ok(args.op === 'call' ? 'update' : 'read'),
+      execute: async (args: any) => {
+        if (args.op === 'call') {
+          executedArgs = args;
+          return ok({
+            success: true,
+            message: `Updated ${args.input.spreadsheet_id} through ${args.connectionId}`,
+          });
+        }
+        return ok({
+          success: true,
+          nativeTool: 'resolve_sheet_reference',
+          data: {
+            status: 'resolved',
+            resource: {
+              provider: 'google',
+              kind: 'spreadsheet',
+              resourceId: 'sheet_1',
+              subresourceId: '42',
+              connectionId: '11111111-1111-4111-8111-111111111111',
+            },
+          },
+        });
+      },
+    } as any));
+    const permissions = makePermissionService(makeAllowedPerm('googleSheets', ['read']));
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([allowedSkill]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      runEffectReceipts: {
+        recordGoogleSheetDestination: async (identity, input) => {
+          receipts.push({ identity, input });
+          return {} as any;
+        },
+        getVerifiedGoogleSheetDestination: async (identity, referenceId) => ({
+          version: 1,
+          kind: 'google_sheet_destination',
+          status: 'resolved',
+          ...identity,
+          referenceId,
+          connectionId: '11111111-1111-4111-8111-111111111111',
+          spreadsheetId: 'sheet_1',
+          gid: '42',
+          createdAt: '2026-08-02T00:00:00.000Z',
+        }),
+      } as any,
+      logger: noopLogger,
+    });
+
+    const result = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      execution: {
+        version: 1,
+        runId: 'run-1',
+        threadId: 'thread-1',
+        actionId: 'sheet-reference-1',
+      },
+      payload: {
+        toolId: 'googleSheets',
+        args: {
+          op: 'resolve_reference',
+          url: 'https://docs.google.com/spreadsheets/d/sheet_1/edit#gid=42',
+        },
+      },
+    }, {
+      ...member,
+      channel: 'lark',
+      runtimeChatId: 'chat-1',
+      runtimeRunId: 'run-1',
+      runtimeThreadId: 'thread-1',
+    });
+
+    assert.equal(result.ok, true);
+    const destinationReferenceId = (result.data as any).result.data.destinationReferenceId;
+    assert.match(destinationReferenceId, /^[0-9a-f-]{36}$/i);
+    assert.equal(JSON.stringify(result.data).includes('sheet_1'), false);
+    assert.equal(JSON.stringify(result.data).includes('11111111-1111-4111-8111-111111111111'), false);
+    assert.deepEqual(receipts, [{
+      identity: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        chatId: 'chat-1',
+        threadId: 'thread-1',
+        runId: 'run-1',
+      },
+      input: {
+        referenceId: destinationReferenceId,
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        spreadsheetId: 'sheet_1',
+        gid: '42',
+      },
+    }]);
+
+    const update = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      execution: {
+        version: 1,
+        runId: 'run-1',
+        threadId: 'thread-1',
+        actionId: 'sheet-update-1',
+      },
+      payload: {
+        toolId: 'googleSheets',
+        args: {
+          op: 'call_resolved_sheet',
+          destinationReferenceId,
+          nativeTool: 'modify_sheet_values',
+          input: { range_name: 'Sheet1!A1', values: [['verified']] },
+        },
+      },
+    }, {
+      ...member,
+      channel: 'lark',
+      runtimeChatId: 'chat-1',
+      runtimeRunId: 'run-1',
+      runtimeThreadId: 'thread-1',
+    });
+
+    assert.equal(update.ok, true);
+    assert.deepEqual(executedArgs, {
+      op: 'call',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      nativeTool: 'modify_sheet_values',
+      input: {
+        spreadsheet_id: 'sheet_1',
+        range_name: 'Sheet1!A1',
+        values: [['verified']],
+      },
+    });
+    assert.equal(JSON.stringify(update.data).includes('sheet_1'), false);
+    assert.equal(JSON.stringify(update.data).includes('11111111-1111-4111-8111-111111111111'), false);
+  });
+
+  it('replaces a resolved Drive workbook with an opaque confirmation offer', async () => {
+    const receipts: unknown[] = [];
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      id: asToolId('googleSheets'),
+      actionGroups: new Set(['read']),
+      argsSchema: z.object({ op: z.literal('resolve_reference'), url: z.string() }),
+      resultSchema: z.object({}).passthrough(),
+      permissionCheck: () => ok('read'),
+      execute: async () => ok({
+        success: true,
+        nativeTool: 'resolve_sheet_reference',
+        data: {
+          status: 'resolved',
+          resource: {
+            provider: 'google',
+            kind: 'excel_workbook',
+            resourceId: 'xlsx_file_1',
+            connectionId: '11111111-1111-4111-8111-111111111111',
+            fileName: 'Forecast.xlsx',
+            requiresConfirmation: true,
+            conversion: 'new_google_sheet_copy',
+          },
+        },
+      }),
+    } as any));
+    const permissions = makePermissionService(makeAllowedPerm('googleSheets', ['read']));
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([allowedSkill]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      runEffectReceipts: {
+        recordWorkbookConversionOffer: async (identity, input) => {
+          receipts.push({ identity, input });
+          return {} as any;
+        },
+      } as any,
+      logger: noopLogger,
+    });
+
+    const result = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      execution: {
+        version: 1,
+        runId: 'run-1',
+        threadId: 'thread-1',
+        actionId: 'workbook-reference-1',
+      },
+      payload: {
+        toolId: 'googleSheets',
+        args: {
+          op: 'resolve_reference',
+          url: 'https://drive.google.com/file/d/xlsx_file_1/view',
+        },
+      },
+    }, {
+      ...member,
+      channel: 'lark',
+      runtimeChatId: 'chat-1',
+      runtimeRunId: 'run-1',
+      runtimeThreadId: 'thread-1',
+    });
+
+    assert.equal(result.ok, true);
+    const safe = JSON.stringify(result.data);
+    assert.equal(safe.includes('xlsx_file_1'), false);
+    assert.equal(safe.includes('11111111-1111-4111-8111-111111111111'), false);
+    const conversionOfferId = (result.data as any).result.data.conversionOfferId;
+    assert.match(conversionOfferId, /^[0-9a-f-]{36}$/i);
+    assert.deepEqual(receipts, [{
+      identity: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        chatId: 'chat-1',
+        threadId: 'thread-1',
+        runId: 'run-1',
+      },
+      input: {
+        offerId: conversionOfferId,
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        fileId: 'xlsx_file_1',
+        fileName: 'Forecast.xlsx',
+      },
+    }]);
+  });
+
+  it('materializes an exported Sheet reference only inside the governed Google call', async () => {
+    const resourceRef = '22222222-2222-4222-8222-222222222222';
+    const connectionId = '11111111-1111-4111-8111-111111111111';
+    let executedArgs: unknown;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      id: asToolId('googleSheets'),
+      actionGroups: new Set(['read', 'update']),
+      argsSchema: z.object({
+        op: z.literal('call'),
+        connectionId: z.string().uuid(),
+        nativeTool: z.string(),
+        input: z.record(z.unknown()),
+      }),
+      resultSchema: z.object({}).passthrough(),
+      permissionCheck: () => ok('update'),
+      execute: async (args: any) => {
+        executedArgs = args;
+        return ok({
+          success: true,
+          spreadsheetId: args.input.spreadsheet_id,
+          connectionId: args.connectionId,
+          spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet-exported/edit',
+        });
+      },
+    } as any));
+    const permissions = makePermissionService(makeAllowedPerm('googleSheets', ['read', 'update']));
+    const dataExportResources = {
+      getToolTurnByResourceRef: async () => ok({
+        id: 'resource-turn',
+        role: 'tool' as const,
+        content: 'verified export',
+        timestamp: '2026-08-02T00:00:00.000Z',
+        toolName: 'dataExportResource',
+        toolOutcome: {
+          version: 1,
+          kind: 'data_export_resource',
+          resourceRef,
+          ownerUserId: 'user-test',
+          artifactId: 'sheet-exported',
+          artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-exported/edit',
+          artifactType: 'google_sheet',
+          rowCount: 50,
+          connectionId,
+          spreadsheetId: 'sheet-exported',
+          createdAt: '2026-08-02T00:00:00.000Z',
+          expiresAt: '2099-08-09T00:00:00.000Z',
+        },
+      }),
+    };
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([allowedSkill]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      dataExportResources,
+      resolveGoogleSheetReference: async () => ({
+        status: 'resolved',
+        resource: {
+          provider: 'google',
+          kind: 'spreadsheet',
+          connectionId,
+          resourceId: 'sheet-exported',
+        },
+      }),
+      logger: noopLogger,
+    });
+    const execution = {
+      version: 1 as const,
+      runId: 'run-1',
+      threadId: 'thread-1',
+      actionId: 'edit-export-1',
+    };
+    const larkMember = {
+      ...member,
+      channel: 'lark' as const,
+      runtimeChatId: 'chat-1',
+      runtimeRunId: 'run-1',
+      runtimeThreadId: 'thread-1',
+    };
+    const specialArgs = {
+      op: 'call_exported_sheet',
+      resourceRef,
+      nativeTool: 'modify_sheet_values',
+      input: { range: 'Sheet1!H1:H3', values: [['Notes'], ['Needs review'], ['Needs review']] },
+    };
+
+    const result = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      execution,
+      payload: { toolId: 'googleSheets', args: specialArgs },
+    }, larkMember);
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(executedArgs, {
+      op: 'call',
+      connectionId,
+      nativeTool: 'modify_sheet_values',
+      input: {
+        spreadsheet_id: 'sheet-exported',
+        range: 'Sheet1!H1:H3',
+        values: [['Notes'], ['Needs review'], ['Needs review']],
+      },
+    });
+    assert.equal(JSON.stringify(result.data).includes(connectionId), false);
+    assert.equal(JSON.stringify(result.data).includes('"spreadsheetId"'), false);
+    assert.deepEqual((result.data as any).exportedSheet, {
+      resourceRef,
+      url: 'https://docs.google.com/spreadsheets/d/sheet-exported/edit',
+    });
+
+    const preflight = await dispatcher.dispatch({
+      op: 'tools.preflight',
+      execution,
+      payload: { invocations: [{ toolId: 'googleSheets', args: specialArgs }] },
+    }, larkMember);
+    assert.equal(preflight.ok, true);
+    assert.equal(JSON.stringify(preflight.data).includes(connectionId), false);
+    assert.equal(JSON.stringify(preflight.data).includes('spreadsheet_id'), false);
+
+    const injectedHandle = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      execution,
+      payload: {
+        toolId: 'googleSheets',
+        args: { ...specialArgs, input: { ...specialArgs.input, spreadsheet_id: 'attacker' } },
+      },
+    }, larkMember);
+    assert.equal(injectedHandle.status, 'bad_request');
+
+    let deniedResolverCalls = 0;
+    const deniedPermissions = makePermissionService(makeDeniedPerm());
+    const deniedDispatcher = new GatewayDispatcher({
+      permissions: deniedPermissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([allowedSkill]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions: deniedPermissions,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      dataExportResources,
+      resolveGoogleSheetReference: async () => {
+        deniedResolverCalls += 1;
+        return { status: 'resolved' };
+      },
+      logger: noopLogger,
+    });
+    const denied = await deniedDispatcher.dispatch({
+      op: 'tools.invoke',
+      execution,
+      payload: { toolId: 'googleSheets', args: specialArgs },
+    }, larkMember);
+    assert.equal(denied.status, 'permission_denied');
+    assert.equal(deniedResolverCalls, 0);
+
+    const rejectingDispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([allowedSkill]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      dataExportResources,
+      resolveGoogleSheetReference: async () => {
+        throw new Error('provider unavailable');
+      },
+      logger: noopLogger,
+    });
+    const rejected = await rejectingDispatcher.dispatch({
+      op: 'tools.invoke',
+      execution,
+      payload: { toolId: 'googleSheets', args: specialArgs },
+    }, larkMember);
+    assert.equal(rejected.status, 'tool_error');
+    assert.match(rejected.error?.message ?? '', /could not verify that Sheet right now/);
+  });
+
+  it('does not expose a Lark export offer without matching runtime provenance', async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      resultSchema: z.object({ preview: z.object({ exportOfferId: z.string().uuid() }) }) as any,
+      execute: async () => ok({
+        preview: { exportOfferId: '11111111-1111-4111-8111-111111111111' },
+      }) as any,
+    }));
+    const permissions = makePermissionService();
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([allowedSkill]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      runEffectReceipts: {} as any,
+      logger: noopLogger,
+    });
+
+    const result = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      payload: { toolId: 'fakeTool', args: { query: 'large dataset' } },
+    }, { ...member, channel: 'lark' });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'tool_error');
+    assert.equal(result.data, undefined);
+  });
+
   it('returns a bound write intent from invoke and executes it only after commit', async () => {
     let executions = 0;
     const registry = new ToolRegistry();
@@ -2622,11 +3161,11 @@ describe('GatewayDispatcher', () => {
     let replacements = 0;
     const registry = new ToolRegistry();
     registry.register(createMailAutomationsTool({
-      pubsubReady: true,
+      runtime: { pubsubConfigured: true, workersEnabled: true },
       repo: {
         replaceRule: async () => {
           replacements++;
-          return { ok: true, value: true };
+          return { ok: true, value: 'replaced' };
         },
       } as any,
       resolveConnection: async () => ({

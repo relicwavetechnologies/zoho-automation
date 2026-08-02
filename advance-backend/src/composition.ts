@@ -14,6 +14,7 @@ import { ApprovalResumerService } from './application/approval/approval-resumer.
 import { AutomationPlanService } from './application/gateway/automation-plan.service';
 import { AutomationPlanExecutor } from './application/gateway/automation-plan.executor';
 import { LarkApprovalCardHandler } from './infrastructure/channels/lark/lark-approval-card.handler';
+import { LarkDataExportCardHandler } from './infrastructure/channels/lark/lark-data-export-card.handler';
 import { ConsoleLogger } from './shared/logger';
 import { createPinoLogger } from './shared/pino-logger';
 import { systemClock } from './shared/clock';
@@ -122,13 +123,39 @@ import { ChatMessageSerializer } from './application/channels/chat-message-seria
 
 // Data export and async ingress
 import { DataExportQueue } from './application/data-export/data-export.queue';
-import { DataExportSourceRegistry } from './application/data-export/data-export.types';
+import { DataExportOfferService } from './application/data-export/data-export-offer.service';
+import { WorkbookConversionQueue } from './application/data-export/workbook-conversion.queue';
+import { WorkbookConversionConfirmationService } from './application/data-export/workbook-conversion.service';
+import { GoogleDriveXlsxConversionWorker } from './application/data-export/google-drive-xlsx-conversion.worker';
+import { GoogleDriveXlsxConversionConsumer } from './application/data-export/google-drive-xlsx-conversion.consumer';
+import { GoogleDriveXlsxConversionCheckpointStore } from './application/data-export/google-drive-xlsx-conversion.checkpoint.store';
+import { WorkbookConversionLarkDelivery } from './application/data-export/workbook-conversion-lark-delivery';
+import { RedisWorkbookConversionLarkDeliveryStore } from './application/data-export/workbook-conversion-lark-delivery.store';
+import { WorkbookConversionContinuityRecorder } from './application/data-export/workbook-conversion-continuity';
+import { GoogleDriveXlsxConversionAdapter } from './infrastructure/google/google-drive-xlsx-conversion.adapter';
+import { DatasetSourceRegistry } from './application/data-export/data-export.source-registry';
 import {
   AirtableDataExportSource,
+  OmsSnapshotDataExportSource,
+  SemrushSnapshotDataExportSource,
   ZohoBooksDataExportSource,
 } from './application/data-export/data-export.sources';
 import { GoogleWorkspaceExportSink } from './application/data-export/google-workspace-export.sink';
-import { parseDataExportProfile, DATA_EXPORT_CAPABILITY_ID } from './application/data-export/data-export.profile';
+import { parseGoogleDriveXlsxReference } from './application/data-export/google-drive-xlsx-resource-reference';
+import { GoogleDriveXlsxResourceResolver } from './application/data-export/google-drive-xlsx-resource-resolver';
+import { parseGoogleSheetReference } from './application/data-export/google-sheet-resource-reference';
+import { GoogleSheetResourceResolver } from './application/data-export/google-sheet-resource-resolver';
+import { GoogleSheetResourceProbeClient } from './infrastructure/google/google-sheet-resource-probe';
+import { DataExportOfferRepository } from './infrastructure/persistence/data-export-offer.repository';
+import { DataExportDestinationPreferenceRepository } from './infrastructure/persistence/data-export-destination-preference.repository';
+import {
+  getDataExportProfile,
+  parseDataExportProfile,
+  DATA_EXPORT_CAPABILITY_ID,
+} from './application/data-export/data-export.profile';
+import { selectDataExportDestination } from './application/data-export/data-export-destination-resolver';
+import type { DataExportDestinationTarget } from './application/data-export/data-export.types';
+import type { GoogleExportAuth } from './application/data-export/data-export.destination';
 import { LarkIngressQueue } from './application/lark-ingress/lark-ingress.queue';
 import {
   GoogleConnectionContinuationQueue,
@@ -136,9 +163,17 @@ import {
 import {
   GoogleConnectionAuthorizationService,
 } from './application/connections/google-connection-authorization.service';
+import { RunOriginStore } from './application/connections/run-origin.store';
+import { createLarkChatDestinationAuthorizer } from './application/mail-ops/lark-chat-destination';
+import {
+  createBeginGoogleAuthorization,
+  type DeliverGoogleConnectCard,
+} from './application/connections/begin-google-authorization';
 import { MailOpsWorker } from './application/mail-ops/mail-ops.worker';
 import { GmailHistoryClient } from './infrastructure/google/gmail-history.client';
 import { MailOpsRepository } from './infrastructure/persistence/mail-ops.repository';
+import { MailOpsReadRepository } from './infrastructure/persistence/mail-ops-read.repository';
+import { MailOpsMailboxNotifier } from './application/mail-ops/mail-ops-notifier';
 import {
   buildGoogleConnectCard,
   googleConnectFallbackText,
@@ -208,7 +243,10 @@ import { createKnowledgeTool } from './application/tools/families/knowledge.tool
 import { createDataExportTool } from './application/tools/families/data-export.tool';
 import { createRunCommandTool } from './application/tools/families/run-command.tool';
 import { createScheduledWorkflowsTool } from './application/tools/families/scheduled-workflows.tool';
-import { createMailAutomationsTool } from './application/tools/families/mail-automations.tool';
+import {
+  createMailAutomationsTool,
+  mailOpsConnectionUnavailableMessage,
+} from './application/tools/families/mail-automations.tool';
 import { createSemrushTool } from './application/tools/families/semrush.tool';
 import { createOmsSiteDataTool } from './application/tools/families/oms-site-data.tool';
 import { ScheduledLarkDmChannelAdapter } from './infrastructure/channels/lark/scheduled-lark-dm.adapter';
@@ -285,6 +323,7 @@ export interface Container {
   googleConnectionContinuationQueue: GoogleConnectionContinuationQueue;
   connectionAuthorizationRepo: ConnectionAuthorizationRepository;
   mailOpsRepo: MailOpsRepository;
+  mailOpsReadRepo: MailOpsReadRepository;
   mailOpsWorker: MailOpsWorker;
   canvaMcpOAuthService: CanvaMcpOAuthService;
   airtableMcpOAuthService: AirtableMcpOAuthService;
@@ -309,15 +348,28 @@ export interface Container {
   // HITL approval
   approvalGate: ApprovalGateService;
   approvalCardHandler: LarkApprovalCardHandler;
+  dataExportCardHandler: LarkDataExportCardHandler;
   approvalResumer: ApprovalResumerService;
   approvalInbox: ApprovalInboxService;
   dataExportQueue: DataExportQueue;
-  dataExportSources: DataExportSourceRegistry;
+  workbookConversionQueue: WorkbookConversionQueue;
+  workbookConversionWorker: GoogleDriveXlsxConversionConsumer;
+  dataExportSources: DatasetSourceRegistry;
   googleWorkspaceExportSink: GoogleWorkspaceExportSink;
-  resolveGoogleExportAuth: (companyId: string) => Promise<{
-    readonly accessToken: string;
-    readonly readerDomain: string;
-  }>;
+  resumeDataExportAfterGoogleConnection: (input: {
+    readonly offerId: string;
+    readonly companyId: string;
+    readonly userId: string;
+    readonly chatId: string;
+    readonly progressMessageId: string;
+    readonly connectionId: string;
+    readonly format?: 'google_sheet' | 'csv' | 'xlsx';
+  }) => Promise<string>;
+  resolveGoogleExportAuth: (
+    companyId: string,
+    userId: string,
+    target?: DataExportDestinationTarget,
+  ) => Promise<GoogleExportAuth>;
   airtableConnectionResolver: ResolveAirtableMcpConnection;
   larkIngressQueue: LarkIngressQueue;
   // Manager learning P1–P4. Promotion remains isolated from memory, skills, and RBAC.
@@ -383,6 +435,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   const cache       = new RedisCache(getRedisClient(cacheRedisUrl));
   const ephemeralCache = new RedisCache(getRedisClient(ephemeralRedisUrl));
+  const runOrigins = new RunOriginStore(ephemeralCache);
   const connectionRateLimits = new ConnectionRateLimitService({
     repository: new PrismaConnectionGovernanceRepository(prisma),
     store: new RedisRateLimitStore(getRedisClient(cacheRedisUrl)),
@@ -416,12 +469,19 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const conversationRepo      = new ConversationRepository(prisma, cache);
   const channelIdentityRepo   = new ChannelIdentityRepository(prisma, cache);
   const larkChatContextRepo   = new LarkChatContextRepository(prisma);
+  // Grounds a mail rule's Lark destination in a room Divo has actually been in
+  // for this company. Until now nothing checked at all: the "use governed chat
+  // discovery" rule lived only in prompt text, so any room the bot could reach
+  // was a legal destination — including, where one Lark install serves two Divo
+  // companies, the other company's rooms.
+  const authorizeMailOpsLarkChat = createLarkChatDestinationAuthorizer(larkChatContextRepo);
   const ingressReceiptRepo    = new IngressReceiptRepository(prisma);
   const connectionAuthorizationRepo = new ConnectionAuthorizationRepository(
     prisma,
     env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '',
   );
   const mailOpsRepo = new MailOpsRepository(prisma);
+  const mailOpsReadRepo = new MailOpsReadRepository(prisma);
 
   // ── Permission service ─────────────────────────────────────────────────
   const permissions = new PermissionServiceImpl({
@@ -570,53 +630,13 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     callbackUrl: googleConnectionCallbackUrl,
     logger,
   });
-  let deliverGoogleConnect:
-    | ((input: {
-        url: string;
-        reason: string;
-        chatId: string;
-        replyToMessageId: string;
-        replyInThread: boolean;
-      }) => Promise<boolean>)
-    | undefined;
-  const beginGoogleAuthorization = async (input: {
-    toolId: string;
-    reason: string;
-    runContext: import('./domain/orchestration/run-context').RunContext;
-  }) => {
-    const target = input.runContext.connectionAuthorization;
-    if (!target || !deliverGoogleConnect) {
-      return { status: 'unavailable' as const };
-    }
-    const issued = await googleConnectionAuthorization.issue({
-      companyId: String(input.runContext.companyId),
-      userId: String(input.runContext.userId),
-      ...(input.runContext.departmentId
-        ? { departmentId: String(input.runContext.departmentId) }
-        : {}),
-      ...target,
-      requestedToolIds: [input.toolId],
-    });
-    if (issued.outcome === 'already_pending') {
-      return { status: 'already_pending' as const, intentId: issued.intentId };
-    }
-    const delivered = await deliverGoogleConnect({
-      url: issued.authorizeUrl,
-      reason: input.reason,
-      chatId: target.chatId,
-      replyToMessageId: target.originalMessageId,
-      replyInThread: target.replyInThread,
-    });
-    if (!delivered) {
-      logger.error('google.authorization.card_delivery_failed', {
-        intentId: issued.intentId,
-        companyId: input.runContext.companyId,
-        userId: input.runContext.userId,
-      });
-      return { status: 'unavailable' as const };
-    }
-    return { status: 'sent' as const, intentId: issued.intentId };
-  };
+  let deliverGoogleConnect: DeliverGoogleConnectCard | undefined;
+  const beginGoogleAuthorization = createBeginGoogleAuthorization({
+    runOrigins,
+    authorization: googleConnectionAuthorization,
+    deliverConnectCard: () => deliverGoogleConnect,
+    logger,
+  });
   const googleWorkspaceMcpSchemas = new GoogleWorkspaceMcpSchemaCatalog();
   const canvaMcpOAuthService      = new CanvaMcpOAuthService({ env, cache: ephemeralCache, logger });
   const airtableMcpOAuthService   = new AirtableMcpOAuthService({ env, cache: ephemeralCache, logger });
@@ -737,6 +757,81 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     }
   }
 
+  async function resolveGoogleSheetReference(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly url: string;
+    readonly connectionId?: string;
+    readonly abortSignal?: AbortSignal;
+  }) {
+    input.abortSignal?.throwIfAborted();
+    const parsedSheet = parseGoogleSheetReference(input.url);
+    const parsedWorkbook = parsedSheet.ok ? null : parseGoogleDriveXlsxReference(input.url);
+    const workbookReference = parsedWorkbook?.ok ? parsedWorkbook.reference : null;
+    if (!parsedSheet.ok && !parsedWorkbook?.ok) {
+      return { status: 'invalid_reference' as const, reason: parsedWorkbook?.reason ?? parsedSheet.reason };
+    }
+    if (!googleOAuthService.isConfigured()) return { status: 'no_connection' as const };
+
+    const accessible = await integrationConnectionRepo.listAccessibleGoogleConnections({
+      companyId: input.companyId,
+      userId: input.userId,
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+    });
+    if (!accessible.ok) throw accessible.error;
+    input.abortSignal?.throwIfAborted();
+
+    const probe = new GoogleSheetResourceProbeClient(async connectionId => {
+      const resolved = await integrationConnectionRepo.findAccessibleGoogleConnection({
+        companyId: input.companyId,
+        userId: input.userId,
+        connectionId,
+        minimumAccess: 'read_write',
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+      });
+      if (!resolved.ok) throw resolved.error;
+      const connection = resolved.value;
+      if (
+        !connection?.refreshToken
+        || connection.ownerType !== 'user'
+        || connection.ownerUserId !== input.userId
+        || connection.status !== 'connected'
+        || !hasGoogleScopeGroups(connection.scopes, [
+          [GOOGLE_SCOPE.driveFull],
+          [GOOGLE_SCOPE.sheetsFull],
+        ])
+      ) {
+        throw new Error('Selected personal Google account is no longer eligible for this file');
+      }
+      const token = await googleOAuthService.getValidAccessToken({
+        companyId: input.companyId,
+        userId: `connection:${connectionId}`,
+        refreshToken: connection.refreshToken,
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+      });
+      await integrationConnectionRepo.touchLastUsed(connectionId);
+      input.abortSignal?.throwIfAborted();
+      return token;
+    });
+    const resolutionInput = {
+      userId: input.userId,
+      accessible: accessible.value.filter(connection => connection.connectionId === input.connectionId),
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+    };
+    if (parsedSheet.ok) {
+      const resolver = new GoogleSheetResourceResolver(probe);
+      if (!input.connectionId) {
+        return resolver.listEligible({ userId: input.userId, accessible: accessible.value });
+      }
+      return resolver.resolve({ ...resolutionInput, reference: parsedSheet.reference });
+    }
+    const resolver = new GoogleDriveXlsxResourceResolver(probe);
+    if (!input.connectionId) {
+      return resolver.listEligible({ userId: input.userId, accessible: accessible.value });
+    }
+    return resolver.resolve({ ...resolutionInput, reference: workbookReference! });
+  }
+
   async function resolveMailAutomationGoogleConnection(input: {
     readonly companyId: string;
     readonly userId: string;
@@ -787,9 +882,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     if (selection.status === 'unavailable') {
       return {
         status: 'unavailable' as const,
-        reason:
-          'Mail Ops needs a user-owned Google account with Gmail read, watch, '
-          + 'and send access. Connect or reconnect Google to continue.',
+        connectionState: selection.reason,
+        reason: mailOpsConnectionUnavailableMessage(selection.reason),
       };
     }
     if (!selection.connection.accountEmail) {
@@ -807,10 +901,79 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     };
   }
 
-  async function resolveGoogleExportAuth(companyId: string): Promise<{
-    readonly accessToken: string;
-    readonly readerDomain: string;
-  }> {
+  const dataExportDestinationPreferenceRepo =
+    new DataExportDestinationPreferenceRepository(prisma);
+
+  async function resolveDataExportDestination(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId?: string;
+  }) {
+    const [accessible, configured, preferred] = await Promise.all([
+      integrationConnectionRepo.listAccessibleGoogleConnections({
+        companyId: input.companyId,
+        userId: input.userId,
+      }),
+      getDataExportProfile(prisma, input.companyId),
+      dataExportDestinationPreferenceRepo.findConnectionId(input),
+    ]);
+    if (!accessible.ok) throw accessible.error;
+    if (!preferred.ok) throw preferred.error;
+    return selectDataExportDestination({
+      userId: input.userId,
+      accessible: accessible.value,
+      ...(configured.profile
+        ? { companyFallback: { connectionId: configured.profile.googleConnectionId } }
+        : {}),
+      ...(input.connectionId ? { connectionId: input.connectionId } : {}),
+      ...(preferred.value ? { preferredConnectionId: preferred.value } : {}),
+    });
+  }
+
+  async function resolveGoogleExportAuth(
+    companyId: string,
+    userId: string,
+    target?: DataExportDestinationTarget,
+  ): Promise<GoogleExportAuth> {
+    if (target?.kind === 'user_google' || target?.kind === 'existing_google_sheet') {
+      const resolved = await integrationConnectionRepo.findAccessibleGoogleConnection({
+        companyId,
+        userId,
+        connectionId: target.connectionId,
+        minimumAccess: 'read_write',
+      });
+      if (!resolved.ok || !resolved.value?.refreshToken) {
+        throw new Error('Selected personal Google export connection is unavailable');
+      }
+      const connection = resolved.value;
+      const refreshToken = connection.refreshToken;
+      if (!refreshToken) {
+        throw new Error('Selected personal Google export connection has no refresh credential');
+      }
+      if (connection.ownerType !== 'user' || connection.ownerUserId !== userId) {
+        throw new Error('Selected Google export connection is not owned by the requester');
+      }
+      if (!connection.accountEmail) {
+        throw new Error('Selected personal Google export connection has no verified account email');
+      }
+      if (!hasGoogleScopeGroups(connection.scopes, [
+        [GOOGLE_SCOPE.driveFull, GOOGLE_SCOPE.driveFile],
+        [GOOGLE_SCOPE.sheetsFull],
+      ])) {
+        throw new Error('Selected personal Google export connection no longer has Drive and Sheets write scopes');
+      }
+      const accessToken = await googleOAuthService.getValidAccessToken({
+        companyId,
+        userId: `data-export:${connection.id}`,
+        refreshToken,
+      });
+      await integrationConnectionRepo.touchLastUsed(connection.id);
+      return {
+        accessToken,
+        ownerEmail: connection.accountEmail.trim().toLowerCase(),
+      };
+    }
+
     const configured = await prisma.companyCapabilityGovernance.findUnique({
       where: {
         companyId_capabilityId: { companyId, capabilityId: DATA_EXPORT_CAPABILITY_ID },
@@ -820,6 +983,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     const profile = configured ? parseDataExportProfile(configured.policyJson) : null;
     if (!profile) {
       throw new Error('Company data export is not configured by an administrator');
+    }
+    if (target && target.connectionId !== profile.googleConnectionId) {
+      throw new Error('Configured company Google export destination changed before execution');
     }
     const resolved = await integrationConnectionRepo.findCompanyGoogleExportConnection({
       companyId,
@@ -1244,6 +1410,50 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   );
 
   const dataExportQueue = new DataExportQueue(queueRedisUrl);
+  const workbookConversionQueue = new WorkbookConversionQueue(queueRedisUrl);
+  const dataExportOfferService = new DataExportOfferService({
+    offers: new DataExportOfferRepository(prisma),
+    queue: dataExportQueue,
+    identityRepo: channelIdentityRepo,
+    permissions,
+    resolveDestination: resolveDataExportDestination,
+    rememberDestination: async input => {
+      const saved = await dataExportDestinationPreferenceRepo.save(input);
+      if (!saved.ok) {
+        logger.warn('Could not remember the selected data export destination', {
+          companyId: input.companyId,
+          userId: input.userId,
+          error: saved.error.message,
+        });
+      }
+    },
+  });
+  const resumeDataExportAfterGoogleConnection = async (input: {
+    readonly offerId: string;
+    readonly companyId: string;
+    readonly userId: string;
+    readonly chatId: string;
+    readonly progressMessageId: string;
+    readonly connectionId: string;
+    readonly format?: 'google_sheet' | 'csv' | 'xlsx';
+  }): Promise<string> => {
+    const confirmed = await dataExportOfferService.confirmForActor({
+      offerId: input.offerId,
+      companyId: input.companyId,
+      userId: input.userId,
+      chatId: input.chatId,
+      progressMessageId: input.progressMessageId,
+      destinationConnectionId: input.connectionId,
+      ...(input.format ? { destinationFormat: input.format } : {}),
+    });
+    if (
+      confirmed.disposition === 'choose_destination'
+      || confirmed.disposition === 'connect_required'
+    ) {
+      throw new Error('The connected Google account did not resolve the pending export destination.');
+    }
+    return confirmed.exportJobId;
+  };
   const larkIngressQueue = new LarkIngressQueue(queueRedisUrl);
   const googleConnectionContinuationQueue =
     new GoogleConnectionContinuationQueue(queueRedisUrl);
@@ -1307,7 +1517,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   // ── Zoho Books paginated client + finance ops ────────────────────────────
   const zohoPaginatedBooksClient = new ZohoBooksPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
-  const dataExportSources = new DataExportSourceRegistry();
+  const dataExportSources = new DatasetSourceRegistry();
   dataExportSources.register(new AirtableDataExportSource(getAirtableMcpConnection));
   dataExportSources.register(new ZohoBooksDataExportSource(
     zohoPaginatedBooksClient,
@@ -1316,6 +1526,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       return buildCurrencyUtilities(await getExchangeRates());
     },
   ));
+  dataExportSources.register(new OmsSnapshotDataExportSource(companyOmsSiteDataService));
+  dataExportSources.register(new SemrushSnapshotDataExportSource(semrushService));
   const googleWorkspaceExportSink = new GoogleWorkspaceExportSink();
 
   const zohoFinanceOps = new ZohoFinanceOps(
@@ -1602,15 +1814,26 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   }));
   for (const tool of createGoogleWorkspaceMcpTools({
     getConnection: getGoogleWorkspaceMcpConnection,
+    resolveSheetReference: resolveGoogleSheetReference,
     beginAuthorization: beginGoogleAuthorization,
   })) {
     toolRegistry.register(tool);
   }
   toolRegistry.register(createMailAutomationsTool({
     repo: mailOpsRepo,
-    pubsubReady: Boolean(gmailPubsubConfig),
+    runtime: {
+      pubsubConfigured: Boolean(gmailPubsubConfig),
+      // The worker reads this flag itself; without it here the tool could not
+      // see the difference between "configured" and "will actually run".
+      workersEnabled: env.DIVO_AUTONOMOUS_WORKERS_ENABLED,
+    },
     resolveConnection: resolveMailAutomationGoogleConnection,
     beginAuthorization: beginGoogleAuthorization,
+    authorizeLarkChat: authorizeMailOpsLarkChat,
+    connectionApproval: input => connectionRateLimits.approval(input),
+    // The read repository, not `mailOpsRepo`: a dry run must not be able to
+    // touch a lease, a cursor, or a rule status even by accident.
+    dryRun: input => mailOpsReadRepo.loadRuleForDryRun(input),
   }));
   toolRegistry.register(createCanvaDesignTool({ getClient: getCanvaMcpClient }));
   for (const tool of createAirtableMcpTools({
@@ -1635,7 +1858,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     getClient:       getZohoBooksClient,
     booksClient:     zohoPaginatedBooksClient,
     financeOps:      zohoFinanceOps,
-    exportQueue:     dataExportQueue,
+    offers:          dataExportOfferService,
     inlineThreshold: env.ZOHO_BOOKS_CSV_INLINE_THRESHOLD,
   }));
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
@@ -1647,19 +1870,19 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     files: knowledgeFileService,
     documents: knowledgeDocumentSearch,
   }));
-  toolRegistry.register(createDataExportTool({ queue: dataExportQueue }));
+  toolRegistry.register(createDataExportTool({
+    offers: dataExportOfferService,
+  }));
   toolRegistry.register(createSemrushTool({
     service: semrushService,
-    cloudinary: cloudinaryAdapter,
+    offers: dataExportOfferService,
     audit: auditService,
-    csvLinkTtl: env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
     apiKeyExhaustion: apiKeyExhaustionFacade,
   }));
   toolRegistry.register(createOmsSiteDataTool({
     service: companyOmsSiteDataService,
-    cloudinary: cloudinaryAdapter,
+    offers: dataExportOfferService,
     audit: auditService,
-    csvLinkTtl: env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
   }));
   toolRegistry.register(createRunCommandTool());
   toolRegistry.register(createScheduledWorkflowsTool({ prisma }));
@@ -1750,8 +1973,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     runEffectReceipts,
     conversationHistory: conversationRepo,
     knowledgeRecall,
+    runOrigins,
     ...(env.KNOWLEDGE_LEARNING_ENABLED ? { knowledgeLearning: knowledgeLearningService } : {}),
-    allowedModelsFor: (userId) => llmProxyService.allowedModelsFor(userId),
   });
 
   const larkAdapter = new LarkChannelAdapter({
@@ -1782,6 +2005,23 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     return fallback.ok;
   };
   const gmailHistoryClient = new GmailHistoryClient();
+  // Only signal a member has that their mail rules stopped. Lark-only for
+  // now: the people who create mail rules today do so from Lark, so that is
+  // where they will look. A no-Lark owner is recorded and skipped, not retried.
+  const mailOpsNotifier = new MailOpsMailboxNotifier({
+    readRepo: mailOpsReadRepo,
+    repo: mailOpsRepo,
+    resolveLarkOpenId: async input => {
+      const identity = await channelIdentityRepo.resolveByUserId(
+        input.userId,
+        input.companyId,
+      );
+      if (!identity.ok) throw identity.error;
+      return identity.value?.larkOpenId ?? null;
+    },
+    sendDirectCard: (openId, card) => larkAdapter.sendDirectCard(openId, card),
+    logger,
+  });
   const mailOpsWorker = new MailOpsWorker({
     repo: mailOpsRepo,
     gmail: gmailHistoryClient,
@@ -1800,7 +2040,25 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
         refreshToken: connection.value.refreshToken,
       });
     },
+    /**
+     * Answers whether one rule may act, and never throws for a denial.
+     *
+     * It used to throw on any permission error. Inside the worker's per-rule
+     * loop that throw escaped to the method-level catch, failed the sync, and
+     * left the cursor unmoved — so one person changing department stalled
+     * every rule on their mailbox, retrying the same range every five minutes
+     * forever. Denials are answers now; only genuinely unanswerable questions
+     * are reported as unavailable, and those are the ones worth retrying.
+     */
     authorizeRule: async input => {
+      // `minimumAccess` reads like a live control here and is not one: a
+      // connection's owner is always granted `admin`, and the ownership check
+      // just below means a Mail Ops rule can only ever exist on a connection
+      // the requester owns. So the read_write floor cannot currently reject
+      // anything. It is kept because it becomes real the moment rules are
+      // allowed on shared connections — but nobody should read it as the thing
+      // stopping a downgraded share from forwarding mail today. The ownership
+      // and scope checks below are what actually stop that.
       const connection = await integrationConnectionRepo
         .findAccessibleGoogleConnection({
           companyId: input.companyId,
@@ -1808,22 +2066,44 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
           connectionId: input.connectionId,
           minimumAccess: 'read_write',
         });
-      if (!connection.ok) throw connection.error;
+      if (!connection.ok) {
+        return {
+          verdict: 'unavailable',
+          reason: connection.error.message,
+        };
+      }
       if (
         connection.value?.ownerType !== 'user'
         || connection.value.ownerUserId !== input.userId
         || !connection.value.refreshToken
-        || !hasGoogleScopeGroups(connection.value.scopes, [
-          [GOOGLE_SCOPE.gmailModify],
-          [GOOGLE_SCOPE.gmailSend],
-        ])
-      ) return false;
+      ) {
+        return {
+          verdict: 'denied',
+          reason: 'The Google account behind this rule is no longer connected to you.',
+        };
+      }
+      if (!hasGoogleScopeGroups(connection.value.scopes, [
+        [GOOGLE_SCOPE.gmailModify],
+        [GOOGLE_SCOPE.gmailSend],
+      ])) {
+        return {
+          verdict: 'denied',
+          reason: 'Your Google connection no longer allows Divo to read and send mail. Reconnect it to resume.',
+        };
+      }
       const identity = await channelIdentityRepo.resolveByUserId(
         input.userId,
         input.companyId,
       );
-      if (!identity.ok) throw identity.error;
-      if (!identity.value) return false;
+      if (!identity.ok) {
+        return { verdict: 'unavailable', reason: identity.error.message };
+      }
+      if (!identity.value) {
+        return {
+          verdict: 'denied',
+          reason: 'Divo can no longer identify you in this company.',
+        };
+      }
       const resolved = await permissions.resolve({
         companyId: asCompanyId(input.companyId),
         userId: asUserId(input.userId),
@@ -1833,11 +2113,31 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
           : {}),
         channel: 'lark',
       });
-      if (!resolved.ok) throw resolved.error;
-      return resolved.value.allowedActionsByTool
+      if (!resolved.ok) {
+        // The one distinction that matters: a store that could not be read is
+        // retried, a decision is recorded.
+        if (resolved.error.payload.reason === 'permission_lookup_failed') {
+          return { verdict: 'unavailable', reason: resolved.error.message };
+        }
+        return {
+          verdict: 'denied',
+          reason: input.departmentId
+            ? 'This rule is tied to a team you are no longer in, so Divo will not act on it.'
+            : 'Your access to mail automations was removed.',
+        };
+      }
+      const allowed = resolved.value.allowedActionsByTool
         .get(asToolId('mailAutomations'))
         ?.has('execute') ?? false;
+      return allowed
+        ? { verdict: 'allowed' }
+        : {
+            verdict: 'denied',
+            reason: 'You no longer have permission to run mail automations.',
+          };
     },
+    authorizeLarkChat: authorizeMailOpsLarkChat,
+    connectionRateLimits,
     deliverLark: async input => {
       const sent = await larkAdapter.sendToChatId(
         input.chatId,
@@ -1848,6 +2148,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       if (!sent.ok) throw sent.error;
       return sent.value;
     },
+    reviewMailboxHealth: subscriptionId =>
+      mailOpsNotifier.review(subscriptionId),
     logger,
     ...(gmailPubsubConfig
       ? { pubsubTopicName: gmailPubsubConfig.topic }
@@ -1928,6 +2230,119 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger.child({ service: 'approval-card-handler' }),
     auditService,
   );
+  const dataExportCardHandler = new LarkDataExportCardHandler(
+    dataExportOfferService,
+    logger.child({ service: 'data-export-card-handler' }),
+    googleConnectionAuthorization,
+    new WorkbookConversionConfirmationService({
+      offers: runEffectReceipts,
+      queue: workbookConversionQueue,
+    }),
+  );
+  const resolveWorkbookIdentity = async (companyId: string, userId: string) => {
+    const resolved = await channelIdentityRepo.resolveByUserId(userId, companyId);
+    if (!resolved.ok) throw resolved.error;
+    return resolved.value;
+  };
+  const resolveWorkbookPermission = async (input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly departmentId?: string;
+  }) => {
+    const identity = await resolveWorkbookIdentity(input.companyId, input.userId);
+    if (!identity) return null;
+    const resolved = await permissions.resolve({
+      companyId: asCompanyId(input.companyId),
+      userId: asUserId(input.userId),
+      companyRole: asCompanyRoleSlug(identity.aiRole),
+      ...(input.departmentId ? { departmentId: asDepartmentId(input.departmentId) } : {}),
+      channel: 'lark',
+    });
+    if (!resolved.ok) throw resolved.error;
+    return resolved.value;
+  };
+  const resolveWorkbookConnection = async (input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly sourceConnectionId: string;
+  }) => {
+    const resolved = await integrationConnectionRepo.findAccessibleGoogleConnection({
+      companyId: input.companyId,
+      userId: input.userId,
+      connectionId: input.sourceConnectionId,
+      minimumAccess: 'read_write',
+    });
+    if (!resolved.ok) throw resolved.error;
+    const connection = resolved.value;
+    if (!connection) return null;
+    return {
+      connectionId: connection.id,
+      companyId: connection.companyId,
+      ownerType: connection.ownerType,
+      ...(connection.ownerUserId ? { ownerUserId: connection.ownerUserId } : {}),
+      status: 'connected' as const,
+      ...(connection.accountEmail ? { accountEmail: connection.accountEmail } : {}),
+      scopes: connection.scopes,
+    };
+  };
+  const workbookConversionDelivery = new WorkbookConversionLarkDelivery({
+    store: new RedisWorkbookConversionLarkDeliveryStore(ephemeralCache),
+    lark: larkAdapter,
+    logger,
+  });
+  const workbookConversionCore = new GoogleDriveXlsxConversionWorker({
+    checkpoints: new GoogleDriveXlsxConversionCheckpointStore(ephemeralCache),
+    identity: {
+      resolve: async input => {
+        const identity = await resolveWorkbookIdentity(input.companyId, input.userId);
+        return identity
+          ? { companyId: identity.companyId, userId: identity.userId, active: true }
+          : null;
+      },
+    },
+    permissions: {
+      canReadDriveXlsx: async input => {
+        const permission = await resolveWorkbookPermission(input);
+        return permission?.allowedActionsByTool.get(asToolId('googleDrive'))?.has('read') ?? false;
+      },
+      canCreateGoogleSheet: async input => {
+        const permission = await resolveWorkbookPermission(input);
+        return permission?.allowedActionsByTool.get(asToolId('googleSheets'))?.has('create') ?? false;
+      },
+    },
+    connections: { resolve: resolveWorkbookConnection },
+    drive: new GoogleDriveXlsxConversionAdapter(async input => {
+      const connection = await integrationConnectionRepo.findAccessibleGoogleConnection({
+        companyId: input.companyId,
+        userId: input.userId,
+        connectionId: input.connectionId,
+        minimumAccess: 'read_write',
+      });
+      if (!connection.ok) throw connection.error;
+      if (
+        !connection.value?.refreshToken
+        || connection.value.ownerType !== 'user'
+        || connection.value.ownerUserId !== input.userId
+      ) {
+        throw new Error('The selected personal Google account is no longer eligible.');
+      }
+      const token = await googleOAuthService.getValidAccessToken({
+        companyId: input.companyId,
+        userId: `connection:${input.connectionId}`,
+        refreshToken: connection.value.refreshToken,
+      });
+      await integrationConnectionRepo.touchLastUsed(input.connectionId);
+      return token;
+    }),
+    continuity: new WorkbookConversionContinuityRecorder(conversationRepo),
+    delivery: workbookConversionDelivery,
+  });
+  const workbookConversionWorker = new GoogleDriveXlsxConversionConsumer({
+    redisUrl: queueRedisUrl,
+    core: workbookConversionCore,
+    delivery: workbookConversionDelivery,
+    logger,
+  });
 
   // The same decisions the Lark card carries, reachable by anyone signed in.
   // `onResolvedCard` is what stops a delivered card from still offering buttons
@@ -1995,6 +2410,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     larkKnowledgeReview: larkKnowledgeReviewService,
     knowledgeMutations,
     personalMemoryCommands,
+    dataExportResources: conversationRepo,
+    resolveGoogleSheetReference,
     runEffectReceipts,
     logger: logger.child({ service: 'gateway-dispatcher' }),
   });
@@ -2034,6 +2451,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     googleConnectionContinuationQueue,
     connectionAuthorizationRepo,
     mailOpsRepo,
+    mailOpsReadRepo,
     mailOpsWorker,
     canvaMcpOAuthService,
     airtableMcpOAuthService,
@@ -2057,12 +2475,16 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   // HITL approval
   approvalGate,
     approvalCardHandler,
+    dataExportCardHandler,
     approvalResumer,
     approvalInbox,
     // Data export and async ingress
     dataExportQueue,
+    workbookConversionQueue,
+    workbookConversionWorker,
     dataExportSources,
     googleWorkspaceExportSink,
+    resumeDataExportAfterGoogleConnection,
     resolveGoogleExportAuth,
     airtableConnectionResolver: getAirtableMcpConnection,
     larkIngressQueue,

@@ -6,6 +6,7 @@ import {
   canonicalModel,
   costUsd,
   providerOf,
+  bestGrantedModel,
   supportsVision,
 } from '../../src/application/observability/pricing.ts';
 import { ProxyKeyStore } from '../../src/application/proxy/proxy-key.store.ts';
@@ -13,7 +14,12 @@ import { ProxyKeyStore } from '../../src/application/proxy/proxy-key.store.ts';
 describe('model catalogue', () => {
   it('keeps the legacy DeepSeek aliases pointing at the models that replaced them', () => {
     assert.equal(canonicalModel('deepseek-chat'), 'deepseek-v4-flash');
-    assert.equal(canonicalModel('deepseek-reasoner'), 'deepseek-v4-pro');
+    assert.equal(canonicalModel('deepseek-reasoner'), 'deepseek-v4-flash');
+  });
+
+  it('prefers Luna, then Flash, then Pro when multiple models are granted', () => {
+    assert.equal(bestGrantedModel(['deepseek-v4-pro', 'deepseek-v4-flash']), 'deepseek-v4-flash');
+    assert.equal(bestGrantedModel(['deepseek-v4-flash', 'gpt-5.6-luna']), 'gpt-5.6-luna');
   });
 
   // An unknown id used to fall through to the pro/reason heuristic, which is a

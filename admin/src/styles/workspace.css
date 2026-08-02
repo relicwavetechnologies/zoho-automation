@@ -69,19 +69,9 @@
 }
 .cur .ws-scope-opt:hover { background: var(--cur-canvas-soft); }
 .cur .ws-scope-opt .ck { margin-left: auto; color: var(--cur-primary); }
-.cur .ws-scope-group {
-  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em;
-  color: var(--cur-muted-soft); padding: 9px 10px 4px;
-}
 
 /* ── Sidebar additions ───────────────────────────────── */
 .cur .ws-nav { display: flex; flex-direction: column; gap: 1px; overflow-y: auto; flex: 1; margin: 0 -2px; padding: 0 2px; }
-.cur .ws-nav-count {
-  margin-left: auto; min-width: 19px; height: 19px; padding: 0 6px; border-radius: 999px;
-  display: grid; place-items: center; font-size: 11px; font-weight: 600;
-  background: color-mix(in srgb, var(--cur-primary) 14%, transparent); color: var(--cur-primary);
-}
-.cur .nav-item.active .ws-nav-count { background: var(--cur-primary); color: var(--cur-on-primary); }
 .cur .ws-acct {
   width: 100%; display: flex; align-items: center; gap: 9px; padding: 6px 8px; border: 0;
   background: none; border-radius: var(--cur-r-cta); cursor: pointer; text-align: left; color: var(--cur-ink);
@@ -100,10 +90,6 @@
   font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 11px;
   padding: 2px 5px; border-radius: 999px; border: 1px solid var(--cur-hairline-strong);
   color: var(--cur-muted); background: var(--cur-canvas);
-}
-.cur .ws-dot-alert {
-  position: absolute; top: 7px; right: 7px; width: 6px; height: 6px; border-radius: 50%;
-  background: var(--cur-primary); box-shadow: 0 0 0 2px var(--cur-surface);
 }
 
 /* ── Page header ─────────────────────────────────────── */
@@ -335,7 +321,23 @@
   overflow: hidden; animation: ws-in .16s ease both; z-index: 71;
 }
 .cur .ws-pal-in { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--cur-hairline); }
+/*
+ * The palette field carries no focus ring of its own.
+ *
+ * global.css puts `ring-2 ring-ring ring-offset-2` on every `:focus-visible`,
+ * and `--ring` is the brand orange. Tailwind's ring is a box-shadow, not an
+ * outline, so the `outline: none` here never suppressed it — a borderless
+ * full-width input inside an already-bordered container ended up wearing a
+ * thick offset orange rectangle that reads as a validation error. The palette
+ * opens by keyboard and autofocuses, so it appeared every single time.
+ *
+ * Suppressed only here, and only because the indicator is not lost: this input
+ * is the sole focusable thing in a modal that is unmistakably the focused
+ * surface, and the list below shows its own cursor. Everywhere else keeps the
+ * ring, which is one of the four places the design spends orange.
+ */
 .cur .ws-pal-in input { flex: 1; border: 0; background: none; outline: none; font-size: 14px; color: var(--cur-ink); font-family: inherit; }
+.cur .ws-pal-in input:focus-visible { box-shadow: none; }
 .cur .ws-pal-in input::placeholder { color: var(--cur-muted-soft); }
 .cur .ws-pal-l { overflow-y: auto; padding: 5px; }
 .cur .ws-pal-i {
@@ -347,13 +349,6 @@
 .cur .ws-pal-empty { padding: 30px; text-align: center; font-size: 13px; color: var(--cur-muted); }
 
 /* ── Toast — inverted chip, correct in both themes ───── */
-.cur .ws-toast {
-  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 80;
-  display: flex; align-items: center; gap: 9px; padding: 11px 16px; border-radius: 999px;
-  background: var(--cur-ink); color: var(--cur-canvas); font-size: 13px;
-  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.45); animation: ws-in .18s ease both;
-}
-.cur .ws-toast svg { color: var(--cur-canvas); }
 
 /* ── Empty state ─────────────────────────────────────── */
 .cur .ws-empty { padding: 52px 24px; text-align: center; }
@@ -369,13 +364,13 @@
   display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px;
   font-size: 11px; background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline); color: var(--cur-body);
 }
+/* A tag that is reporting something that did not go well. Amber, not red: an
+   audit row saying "denied" is a record, not an incident. */
+.cur .ws-tag[data-tone="warn"] { color: var(--ws-warning); border-color: color-mix(in srgb, var(--ws-warning) 34%, transparent); }
 .cur .ws-num { font-size: 30px; letter-spacing: -0.03em; font-weight: 400; }
 .cur .ws-num-sm { font-size: 20px; letter-spacing: -0.02em; font-weight: 400; }
 .cur .ws-lbl { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--cur-muted); }
 .cur .ws-sub { font-size: 12px; color: var(--cur-muted); }
-.cur .ws-people { display: flex; }
-.cur .ws-people .avatar { width: 24px; height: 24px; font-size: 10px; margin-left: -6px; box-shadow: 0 0 0 2px var(--cur-surface); }
-.cur .ws-people .avatar:first-child { margin-left: 0; }
 .cur .ws-spark { height: 46px; display: flex; align-items: flex-end; gap: 3px; }
 .cur .ws-spark i { flex: 1; border-radius: 2px 2px 0 0; background: var(--cur-surface-strong); min-height: 2px; }
 .cur .ws-spark i[data-hot="true"] { background: color-mix(in srgb, var(--cur-primary) 60%, transparent); }
@@ -652,14 +647,6 @@
 /* ── Connection coverage ──────────────────────────────
    One stacked bar per provider: connected / expiring / never. The third
    segment is the one that matters — those people are silently broken. */
-.cur .ws-hbar { display: flex; height: 6px; border-radius: 999px; overflow: hidden; background: var(--cur-surface-strong); }
-.cur .ws-hbar i { display: block; height: 100%; }
-.cur .ws-hbar i[data-k="ok"] { background: var(--cur-success); }
-.cur .ws-hbar i[data-k="soon"] { background: var(--ws-warning); }
-.cur .ws-hbar i[data-k="none"] { background: var(--cur-hairline-strong); }
-.cur .ws-hkey { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 9px; font-size: 11px; color: var(--cur-muted); }
-.cur .ws-hkey span { display: inline-flex; align-items: center; gap: 6px; }
-.cur .ws-hkey i { width: 7px; height: 7px; border-radius: 2px; display: inline-block; }
 
 /* ══════════════════════════════════════════════════════
    Auth surfaces.
@@ -740,6 +727,23 @@
 .cur .ws-auth-alt a { color: var(--cur-muted); }
 .cur .ws-auth-alt a:hover { color: var(--cur-primary); }
 
+/* Separator between the two ways in. A rule through the middle rather than a
+   heading, because neither side is a section — they are one choice. */
+.cur .ws-auth-or {
+  display: flex; align-items: center; gap: 12px;
+  font-size: 11px; color: var(--cur-muted-soft); text-transform: uppercase; letter-spacing: .06em; font-weight: 600;
+}
+.cur .ws-auth-or::before,
+.cur .ws-auth-or::after { content: ''; flex: 1; height: 1px; background: var(--cur-hairline); }
+
+/* Outcome lines on the auth cards. Green for "it worked", amber for "it did
+   not, and nothing changed" — the second is not an error, it is an answer. */
+.cur .ws-auth-done, .cur .ws-auth-warn {
+  display: flex; align-items: center; gap: 8px; font-size: 13px; line-height: 1.45;
+}
+.cur .ws-auth-done { color: var(--cur-success); }
+.cur .ws-auth-warn { color: var(--ws-warning); }
+
 /* ── Disclosure row ──────────────────────────────────── */
 .cur .ws-more {
   border: 0; background: none; padding: 0; font-size: 12px; color: var(--cur-primary);
@@ -747,3 +751,177 @@
 }
 .cur .ws-more svg { transition: transform .14s ease; }
 .cur .ws-more[data-open="true"] svg { transform: rotate(90deg); }
+
+/* ── Skills library ───────────────────────────────────
+   A tree on the left, one thing at a time on the right. The registry has real
+   nesting — company-wide folders plus a root per department — and a flat list
+   would hide where a skill actually lives, which is exactly what decides who
+   can be given it. */
+.cur .ws-skills {
+  display: grid; gap: 16px; grid-template-columns: 292px minmax(0, 1fr); align-items: start;
+}
+@media (max-width: 1080px) { .cur .ws-skills { grid-template-columns: 1fr; } }
+.cur .ws-skills .search { max-width: none; }
+
+.cur .ws-tree { padding: 4px 0 8px; max-height: 62vh; overflow-y: auto; border-top: 1px solid var(--cur-hairline-soft); }
+.cur .ws-node {
+  display: flex; align-items: center; gap: 7px; width: 100%; padding: 5px 12px 5px 0;
+  border: 0; background: none; font-family: inherit; font-size: 13px; color: var(--cur-body);
+  text-align: left; cursor: pointer;
+}
+.cur .ws-node:hover { background: var(--cur-canvas-soft); }
+.cur .ws-node[data-on="true"] { background: var(--cur-canvas-soft); color: var(--cur-ink); font-weight: 500; }
+.cur .ws-node .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cur .ws-node .ct { font-size: 11px; color: var(--cur-muted); flex-shrink: 0; }
+.cur .ws-node .cv { color: var(--cur-muted-soft); flex-shrink: 0; transition: transform .12s ease; }
+.cur .ws-node[data-open="true"] > .cv { transform: rotate(90deg); }
+.cur .ws-node-ic { color: var(--cur-muted); flex-shrink: 0; }
+.cur .ws-node-ic[data-skill="true"] { color: var(--cur-body); }
+
+/* Facts about one thing. Two columns so the labels line up and the eye can run
+   down the values rather than hunting for them. */
+.cur .ws-kv { border-top: 1px solid var(--cur-hairline-soft); }
+.cur .ws-kv > div {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 20px;
+  padding: 11px 18px; border-top: 1px solid var(--cur-hairline-soft);
+}
+.cur .ws-kv > div:first-child { border-top: 0; }
+.cur .ws-kv span { font-size: 12px; color: var(--cur-muted); flex-shrink: 0; }
+.cur .ws-kv b { font-size: 13px; font-weight: 400; color: var(--cur-ink); text-align: right; min-width: 0; }
+
+/* The skill recipe, verbatim. It is written as markdown and read as text; the
+   agent gets these exact characters, so pretty-printing it would be a lie. */
+.cur .ws-code {
+  margin: 0; padding: 16px 18px; border-top: 1px solid var(--cur-hairline-soft);
+  font-family: var(--cur-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px; line-height: 1.6; color: var(--cur-body);
+  white-space: pre-wrap; word-break: break-word; max-height: 60vh; overflow-y: auto;
+}
+
+.cur .ws-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--cur-muted); cursor: pointer; }
+.cur .ws-check input { accent-color: var(--cur-ink); }
+
+.cur .ws-chev { color: var(--cur-muted-soft); flex-shrink: 0; }
+
+.cur .ws-row[data-on="true"] { background: var(--cur-canvas-soft); }
+
+/* Every search field styled its own input inline. One rule instead, so the
+   five call sites stay in step when it changes. */
+.cur .search input {
+  flex: 1; min-width: 0; border: 0; background: none; outline: none;
+  font-family: inherit; font-size: 13px; color: var(--cur-ink);
+}
+.cur .search input::placeholder { color: var(--cur-muted-soft); }
+
+/* ── Run trace ────────────────────────────────────────
+   Replaces the `.turn`/`.step` cards this screen used to borrow from
+   cursor.css. Those gave every step a bordered box roughly 100px tall, so a
+   four-step turn filled a screen and the *shape* of a run — where it looped,
+   where it stalled — was invisible. These are rows.
+
+   The old rows also had nothing to say: they rendered `divo_gateway` for every
+   vendor call, because that is the transport, so five different actions read
+   identically. `readStep` unwraps the dispatch; this styles the result as
+   name → operation → subject, in falling weight, so the eye lands on what
+   differs between rows rather than on what repeats. */
+.cur .ws-turn { margin-top: 22px; }
+.cur .ws-turn:first-child { margin-top: 0; }
+.cur .ws-turn-h {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding-bottom: 8px; border-bottom: 1px solid var(--cur-hairline);
+}
+.cur .ws-turn-n { font-size: 12px; font-weight: 500; color: var(--cur-ink); }
+.cur .ws-turn-m { font-size: 11.5px; color: var(--cur-muted); }
+/* Separator only between adjacent metadata, never before the right-aligned
+   cost — a dot pushed to the far right separates nothing. */
+.cur .ws-turn-m + .ws-turn-m::before { content: "·"; margin-right: 12px; color: var(--cur-hairline-strong); }
+.cur .ws-turn-c { font-size: 11.5px; color: var(--cur-primary); margin-left: auto; }
+.cur .ws-turn-m:last-child { margin-left: auto; }
+.cur .ws-turn-m:last-child::before { content: none; }
+
+.cur .ws-steps { display: flex; flex-direction: column; }
+.cur .ws-step { border-bottom: 1px solid var(--cur-hairline-soft); }
+.cur .ws-step:last-child { border-bottom: 0; }
+.cur .ws-step-h {
+  width: 100%; display: flex; align-items: center; gap: 9px; min-width: 0;
+  padding: 9px 2px; border: 0; background: none; cursor: pointer;
+  text-align: left; color: var(--cur-ink); font-family: inherit; font-size: 13px;
+}
+.cur .ws-step-h:hover { background: var(--cur-canvas-soft); }
+.cur .ws-step-chev { color: var(--cur-muted-soft); flex-shrink: 0; transition: transform 0.14s ease; }
+.cur .ws-step[data-open] .ws-step-chev { transform: rotate(180deg); }
+.cur .ws-step-t { font-weight: 500; flex-shrink: 0; }
+.cur .ws-step-op { font-size: 12px; color: var(--cur-body); flex-shrink: 0; }
+/* The subject truncates rather than wrapping: a run is scanned down the left
+   edge, and a wrapped query pushes every later step out of rhythm. */
+.cur .ws-step-d {
+  font-size: 12px; color: var(--cur-muted); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cur .ws-step-x {
+  font-size: 11px; color: var(--cur-muted); background: var(--cur-surface-strong);
+  border-radius: 999px; padding: 1px 7px; flex-shrink: 0;
+}
+.cur .ws-step-a {
+  margin-left: auto; flex-shrink: 0; font-size: 10.5px; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--cur-muted);
+}
+/* A write is the one thing on this row worth a second look, so it is the only
+   thing that gets a colour. Reads are the overwhelming majority and stay grey. */
+.cur .ws-step-a[data-a="write"] { color: var(--ws-warning); }
+.cur .ws-step-h .badge { margin-left: auto; flex-shrink: 0; }
+.cur .ws-step-b { padding: 2px 0 14px 22px; }
+.cur .ws-turn-end {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--cur-hairline);
+  font-size: 12px; color: var(--cur-muted);
+}
+
+/* ── Connected apps ───────────────────────────────────
+   A provider can hold several accounts, so the provider is a group and each
+   account is a row inside it. The first pass rendered a full-width "Add
+   another X account" row after every provider — five of them in one flat list,
+   drowning the accounts they belonged to. The add action lives in the group
+   header instead, once, where it reads as belonging to that provider. */
+.cur .ws-conns { display: flex; flex-direction: column; }
+.cur .ws-conn-group { border-top: 1px solid var(--cur-hairline-soft); }
+.cur .ws-conns > .ws-conn-group:first-child { border-top: 0; }
+.cur .ws-conn-h { display: flex; align-items: center; gap: 13px; padding: 14px 18px; }
+.cur .ws-conn-h-main { flex: 1; min-width: 0; }
+.cur .ws-conn-h-main b { font-size: 13px; font-weight: 500; }
+.cur .ws-conn-h-main p { font-size: 12px; color: var(--cur-muted); margin-top: 3px; }
+/* Accounts are indented under their provider and sit on the canvas, so the
+   group reads as one object rather than as more sibling rows. */
+.cur .ws-conn-accounts {
+  background: var(--cur-canvas-soft);
+  border-top: 1px solid var(--cur-hairline-soft);
+  padding-left: 27px;
+}
+.cur .ws-conn-accounts .ws-row { border-top-color: var(--cur-hairline-soft); }
+.cur .ws-conn-accounts > .ws-row:first-child { border-top: 0; }
+
+/* A quiet inline action inside a panel — "Share with someone".
+   Not `.btn`: it opens a form in place rather than committing anything, and a
+   bordered button next to the real Share button read as two equal choices. */
+.cur .ws-linkish {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 0; background: none; padding: 0; cursor: pointer;
+  font-family: inherit; font-size: 12.5px; color: var(--cur-body);
+}
+.cur .ws-linkish:hover { color: var(--cur-primary); }
+.cur .ws-linkish:disabled { color: var(--cur-muted-soft); cursor: default; }
+
+/* ── Granted scopes ───────────────────────────────────
+   What an account actually handed over at sign-in. Static on purpose, and
+   deliberately not `.ws-chip`: that is a filter control, and a row of things
+   that look pressable but are not is worse than no styling at all. */
+.cur .ws-perms { display: flex; flex-wrap: wrap; gap: 6px; }
+.cur .ws-perm {
+  padding: 4px 9px; border-radius: 6px; border: 1px solid var(--cur-hairline);
+  background: var(--cur-canvas); font-size: 11.5px; color: var(--cur-body); line-height: 1.5;
+}
+
+/* A notice you can act on. Additive rather than a change to `.ws-ceiling`,
+   which a dozen read-only notices already use and should keep looking the
+   way they do — without this the button stretches to the banner's height. */
+.cur .ws-ceiling > .btn { align-self: center; flex-shrink: 0; margin-left: auto; }

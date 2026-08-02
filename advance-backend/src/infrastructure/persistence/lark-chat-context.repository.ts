@@ -36,6 +36,15 @@ export interface LarkChatContextRepoPort {
     chatId: string;
   }): Promise<Result<LarkChatContextRow | null, InfraError>>;
 
+  /**
+   * Every company that has seen this chat. Normally one, and normally the
+   * caller's own — a second entry means one Lark installation is serving more
+   * than one Divo company and the same room is reachable from both.
+   */
+  listCompanyIdsForChat(
+    chatId: string,
+  ): Promise<Result<readonly string[], InfraError>>;
+
   update(
     id: string,
     expectedUpdatedAt: Date,
@@ -121,6 +130,21 @@ export class LarkChatContextRepository implements LarkChatContextRepoPort {
       });
     } catch (e) {
       return err(wrapInfra('prisma', 'larkChatContext.get', e));
+    }
+  }
+
+  async listCompanyIdsForChat(
+    chatId: string,
+  ): Promise<Result<readonly string[], InfraError>> {
+    try {
+      const rows = await this.db.larkChatContext.findMany({
+        where: { channel: 'lark', chatId },
+        select: { companyId: true },
+        distinct: ['companyId'],
+      });
+      return ok(rows.map(row => row.companyId));
+    } catch (e) {
+      return err(wrapInfra('prisma', 'larkChatContext.listCompanyIdsForChat', e));
     }
   }
 

@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import { randomBytes } from 'node:crypto';
 import {
   isLarkHumanMessage,
   shouldStartLarkAgent,
@@ -22,6 +23,10 @@ import type {
   LarkApprovalCardHandler,
   LarkAuthenticatedCardActor,
 } from './lark-approval-card.handler';
+import {
+  isDataExportCardAction,
+  type LarkDataExportCardHandler,
+} from './lark-data-export-card.handler';
 import type { LarkKnowledgeReviewService } from '../../../application/knowledge/lark-knowledge-review.service';
 import type { ChatMessageSerializer } from '../../../application/channels/chat-message-serializer';
 import type { LaneLeaseHolder } from '../../../application/channels/lane-lease.holder';
@@ -85,6 +90,7 @@ import type {
   ChannelPlanStepStatus,
   ChannelRunState,
   FinalReply,
+  InteractiveAction,
 } from '../../../domain/channel/outbound';
 import {
   isUntaggedGroupMessage,
@@ -119,7 +125,7 @@ import {
   signInFallbackText,
   SIGN_IN_WORKSPACE_NOT_CONNECTED,
   SIGN_IN_DIRECTORY_UNAVAILABLE,
-  SIGN_IN_NOT_CONFIGURED,
+  SIGN_IN_UNAVAILABLE,
   SIGN_IN_MISSING_EMAIL,
 } from './lark-signin';
 import type {
@@ -146,9 +152,12 @@ export interface LarkWebhookDeps {
   env: TypedEnv;
   approvalGate?: ApprovalGateService;
   approvalCardHandler?: LarkApprovalCardHandler;
+  dataExportCardHandler?: LarkDataExportCardHandler;
   knowledgeReviewService?: LarkKnowledgeReviewService;
   larkOAuthService?: LarkOAuthService;
   connectionRepo?: IntegrationConnectionRepository;
+  /** Origin of the web app — the sign-in card's button points here. */
+  appBaseUrl: string;
   cache: CachePort;
   voiceFileClient?: Pick<LarkFileClient, 'downloadFile'>;
   voiceTranscriber?: Pick<ElevenLabsTranscriptionClient, 'transcribe'>;
@@ -264,6 +273,26 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
     const isCard10Click = !headerType && !!topLevelAction && typeof topLevelAction === 'object';
     if (isCard20Click || isCard10Click) {
       const cardEvent = isCard20Click ? (event['event'] as unknown) : event;
+      if (deps.dataExportCardHandler && isDataExportCardAction(cardEvent)) {
+        res.status(200).json({
+          toast: {
+            type: 'success',
+            content: 'Request received. Divo is starting it now.',
+          },
+        });
+        setImmediate(() => {
+          void processDeferredDataExportAction({
+            cardEvent,
+            envelope: event,
+            eventHeader,
+            handler: deps.dataExportCardHandler!,
+            identityRepo: deps.channelIdentityRepo,
+            adapter: deps.adapter,
+            log,
+          });
+        });
+        return;
+      }
       void (async () => {
         try {
           const actor = await resolveAuthenticatedCardActor(
@@ -298,6 +327,13 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
               },
             });
             return;
+          }
+          if (deps.dataExportCardHandler) {
+            const result = await deps.dataExportCardHandler.handle(cardEvent, actor);
+            if (result.handled) {
+              res.status(200).json(result.responseBody ?? { ok: true });
+              return;
+            }
           }
           if (deps.approvalCardHandler) {
             const result = await deps.approvalCardHandler.handle(cardEvent, actor);
@@ -473,6 +509,178 @@ function createLarkRequestLog(
     requesterOpenId: incoming.userExternalId,
     legacyLaneKey: `lark:${String(incoming.chatId)}`,
   });
+}
+
+async function processDeferredDataExportAction(input: {
+  readonly cardEvent: unknown;
+  readonly envelope: Record<string, unknown>;
+  readonly eventHeader: Record<string, unknown> | undefined;
+  readonly handler: LarkDataExportCardHandler;
+  readonly identityRepo: ChannelIdentityRepoPort;
+  readonly adapter: LarkChannelAdapter;
+  readonly log: Logger;
+}): Promise<void> {
+  try {
+    const actor = await resolveAuthenticatedCardActor(
+      input.cardEvent,
+      input.envelope,
+      input.eventHeader,
+      input.identityRepo,
+    );
+    const result = actor
+      ? await input.handler.handle(input.cardEvent, actor)
+      : {
+          handled: true,
+          responseBody: {
+            toast: { type: 'error', content: 'Divo could not verify this Lark action.' },
+          },
+        };
+    await deliverDeferredDataExportResponse(
+      result,
+      input.cardEvent,
+      input.adapter,
+      input.log,
+    );
+  } catch (error) {
+    input.log.error('webhook.data_export.deferred_failed', { error: String(error) });
+    await deliverDeferredDataExportResponse({
+      handled: true,
+      responseBody: {
+        toast: {
+          type: 'error',
+          content: 'Divo could not start this export. Please try again.',
+        },
+      },
+    }, input.cardEvent, input.adapter, input.log);
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+async function deliverDeferredDataExportResponse(
+  result: { handled: boolean; responseBody?: unknown },
+  cardEvent: unknown,
+  adapter: LarkChannelAdapter,
+  log: Logger,
+): Promise<void> {
+  if (!result.handled) return;
+  const response = asRecord(result.responseBody);
+  const card = asRecord(response?.['card']);
+  const cardData = card?.['type'] === 'raw' ? card['data'] : undefined;
+  const delivery = response?.['delivery'];
+  const event = asRecord(cardEvent);
+  const context = asRecord(event?.['context']);
+  const chatId = typeof context?.['open_chat_id'] === 'string'
+    ? context['open_chat_id']
+    : undefined;
+  if (!chatId) {
+    log.warn('webhook.data_export.deferred_delivery_missing_chat');
+    return;
+  }
+  if (delivery === 'remove_source_actions') {
+    const sourceMessageId = typeof context?.['open_message_id'] === 'string'
+      ? context['open_message_id']
+      : typeof event?.['open_message_id'] === 'string'
+        ? event['open_message_id']
+        : undefined;
+    if (!sourceMessageId) {
+      log.warn('webhook.data_export.deferred_update_missing_message');
+      return;
+    }
+    const source = await adapter.getInteractiveMessageCard(sourceMessageId);
+    if (!source.ok) {
+      log.warn('webhook.data_export.deferred_source_fetch_failed', {
+        error: source.error.message,
+      });
+      return;
+    }
+    if (source.value.chatId !== chatId) {
+      log.warn('webhook.data_export.deferred_source_chat_mismatch');
+      return;
+    }
+    const lockedCard = removeDataExportActions(source.value.card);
+    if (!lockedCard) {
+      log.warn('webhook.data_export.deferred_source_actions_missing');
+      return;
+    }
+    const updated = await adapter.updateMessageById(
+      sourceMessageId,
+      JSON.stringify({ msg_type: 'interactive', card: lockedCard }),
+    );
+    if (!updated.ok) {
+      log.warn('webhook.data_export.deferred_update_failed', {
+        error: updated.error.message,
+      });
+    }
+    return;
+  }
+  if (cardData) {
+    if (delivery === 'replace_source_card') {
+      const sourceMessageId = typeof context?.['open_message_id'] === 'string'
+        ? context['open_message_id']
+        : typeof event?.['open_message_id'] === 'string'
+          ? event['open_message_id']
+          : undefined;
+      if (!sourceMessageId) {
+        log.warn('webhook.data_export.deferred_update_missing_message');
+        return;
+      }
+      const updated = await adapter.updateMessageById(
+        sourceMessageId,
+        JSON.stringify({ msg_type: 'interactive', card: cardData }),
+      );
+      if (!updated.ok) {
+        log.warn('webhook.data_export.deferred_update_failed', {
+          error: updated.error.message,
+        });
+      }
+      return;
+    }
+    const sent = await adapter.sendCardToChat(
+      chatId,
+      JSON.stringify({ msg_type: 'interactive', card: cardData }),
+    );
+    if (!sent.ok) {
+      log.warn('webhook.data_export.deferred_card_failed', {
+        error: sent.error.message,
+      });
+    }
+    return;
+  }
+  const toast = asRecord(response?.['toast']);
+  if (toast?.['type'] !== 'error' || typeof toast['content'] !== 'string') return;
+  const sent = await adapter.sendToChatId(chatId, toast['content']);
+  if (!sent.ok) {
+    log.warn('webhook.data_export.deferred_error_failed', {
+      error: sent.error.message,
+    });
+  }
+}
+
+function removeDataExportActions(
+  card: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const body = asRecord(card['body']);
+  const elements = body?.['elements'];
+  if (!body || !Array.isArray(elements)) return null;
+  const remaining = elements.filter(element => !containsDataExportAction(element));
+  if (remaining.length === elements.length) return null;
+  return { ...card, body: { ...body, elements: remaining } };
+}
+
+function containsDataExportAction(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsDataExportAction);
+  const record = asRecord(value);
+  if (!record) return false;
+  if (
+    record['type'] === 'callback'
+    && isDataExportCardAction({ action: { value: record['value'] } })
+  ) return true;
+  return Object.values(record).some(containsDataExportAction);
 }
 
 /**
@@ -1471,6 +1679,7 @@ export async function runPiAndDeliver(input: {
   };
 
   let text: string;
+  let actions: readonly InteractiveAction[] | undefined;
   let runtimeFailure: unknown;
   try {
     await publishStatus();
@@ -1493,6 +1702,7 @@ export async function runPiAndDeliver(input: {
       onProgress: reportProgress,
     });
     text = result.text;
+    actions = result.actions;
   } catch (error) {
     runtimeFailure = error;
     if (runtimeSignal.aborted) {
@@ -1502,7 +1712,7 @@ export async function runPiAndDeliver(input: {
       const code = error instanceof LarkPiRuntimeError ? error.code : 'run_failed';
       text = error instanceof LarkPiRuntimeError
         ? divoFacingRuntimeMessage(error.userMessage)
-        : 'Divo could not complete this request (run_failed). No fallback agent was run.';
+        : 'Divo hit a temporary problem while finishing this request. Please try again.';
       log.error('webhook.pi.failed', {
         code,
         error: String(error),
@@ -1555,6 +1765,7 @@ export async function runPiAndDeliver(input: {
     kind: 'final',
     text,
     format: 'markdown',
+    ...(actions?.length ? { actions } : {}),
     ...(transcript ? { executionTrace: transcript } : {}),
   });
   if (!delivered.ok) {
@@ -1587,6 +1798,20 @@ function encodeLarkOAuthState(input: {
   return Buffer.from(JSON.stringify(input)).toString('base64url');
 }
 
+/**
+ * Where the sign-in card's button goes.
+ *
+ * It used to go straight to Lark's OAuth consent screen, and the callback that
+ * came back both stored tokens and minted a session — a second way to sign in,
+ * living beside the web one. There is one sign-in now: this points at the web
+ * login, carrying a one-time nonce that says which Lark account asked. The web
+ * app hands that nonce back to `POST /api/lark/auth/link`, which attaches the
+ * identity to the session the web sign-in already created.
+ *
+ * Consequently this no longer needs Lark OAuth to be configured at all. A
+ * deployment without `LARK_OAUTH_REDIRECT_URI` can still let people sign in;
+ * it just cannot act *as* them until they connect Lark separately.
+ */
 async function createLarkLoginUrl(input: {
   companyId: string;
   userId: string;
@@ -1595,14 +1820,11 @@ async function createLarkLoginUrl(input: {
   /** The message that triggered the prompt, answered once sign-in completes. */
   pendingEvent?: Record<string, unknown>;
   deps: {
-    larkOAuthService?: LarkOAuthService;
+    appBaseUrl: string;
     cache: CachePort;
   };
 }): Promise<string | null> {
-  const oauth = input.deps.larkOAuthService;
-  if (!oauth?.isConfigured()) return null;
-
-  const nonce = oauth.generateNonce();
+  const nonce = randomBytes(32).toString('base64url');
   const cached = await input.deps.cache.set(
     larkOAuthNonceKey(nonce),
     {
@@ -1615,16 +1837,20 @@ async function createLarkLoginUrl(input: {
     LARK_OAUTH_NONCE_TTL_SECONDS,
   );
   if (!cached.ok) {
-    throw new Error(cached.error.message);
+    // Without the stored nonce the link cannot be honoured, so returning one
+    // would send the person to a page that refuses them. `null` is the caller's
+    // signal to say so plainly instead.
+    return null;
   }
 
-  return oauth.getAuthorizeUrl(encodeLarkOAuthState({
+  const state = encodeLarkOAuthState({
     companyId:  input.companyId,
     userId:     input.userId,
     larkOpenId: input.larkOpenId,
     tenantKey:  input.tenantKey,
     nonce,
-  }));
+  });
+  return `${input.deps.appBaseUrl.replace(/\/+$/, '')}/link/lark?state=${encodeURIComponent(state)}`;
 }
 
 async function processInBackground(
@@ -1639,6 +1865,7 @@ async function processInBackground(
     env: TypedEnv;
     larkOAuthService?: LarkOAuthService;
     connectionRepo?: IntegrationConnectionRepository;
+    appBaseUrl: string;
     cache: CachePort;
     channelDeliveryRepo?: ChannelDeliveryRepoPort;
     onRetryableDelivery?: () => Promise<void>;
@@ -1872,7 +2099,7 @@ async function processInBackground(
       }
 
       // Recognised, but this deployment cannot complete a sign-in.
-      await tell(SIGN_IN_NOT_CONFIGURED);
+      await tell(SIGN_IN_UNAVAILABLE);
       log.error('webhook.login_prompt.oauth_unconfigured', {
         larkOpenId: incoming.userExternalId,
         companyId: pending.value.companyId,
@@ -1924,7 +2151,7 @@ async function processInBackground(
     if (!loginUrl) {
       await deps.adapter.sendToChatId(
         String(incoming.chatId),
-        SIGN_IN_NOT_CONFIGURED,
+        SIGN_IN_UNAVAILABLE,
         String(incoming.messageId),
         undefined,
         incoming.chatType === 'group'
@@ -2096,9 +2323,10 @@ async function processInBackground(
     const transcript = await transcribeLarkVoiceNote({
       attachment: {
         type: 'audio',
+        source: parentRef.audioAttachment.source,
         key: parentRef.audioAttachment.fileKey,
-        fileName: 'voice-note.ogg',
-        mimeType: 'audio/ogg',
+        fileName: parentRef.audioAttachment.fileName,
+        mimeType: parentRef.audioAttachment.mimeType,
         messageId: parentRef.messageId,
         durationMs: parentRef.audioAttachment.durationMs,
       },
@@ -2374,8 +2602,8 @@ async function processInBackground(
               {
                 type: 'audio' as const,
                 fileKey: parentRef.audioAttachment.fileKey,
-                mimeType: 'audio/ogg',
-                name: 'voice-note.ogg',
+                mimeType: parentRef.audioAttachment.mimeType,
+                name: parentRef.audioAttachment.fileName,
               },
             ],
           }
@@ -2518,12 +2746,27 @@ async function resolveAuthenticatedCardActor(
 ): Promise<(LarkAuthenticatedCardActor & { activeDepartmentId?: string }) | null> {
   const card = toRecord(cardEvent);
   const operator = toRecord(card?.['operator']);
+  const operatorId = toRecord(operator?.['operator_id']);
   const envelopeEvent = toRecord(envelope['event']);
+  const envelopeOperator = toRecord(envelopeEvent?.['operator']);
+  const envelopeOperatorId = toRecord(envelopeOperator?.['operator_id']);
   const openId = firstNonEmptyString(
     operator?.['open_id'],
+    operatorId?.['open_id'],
     card?.['open_id'],
+    envelopeOperator?.['open_id'],
+    envelopeOperatorId?.['open_id'],
     envelopeEvent?.['open_id'],
     envelope['open_id'],
+  );
+  const larkUserId = firstNonEmptyString(
+    operator?.['user_id'],
+    operatorId?.['user_id'],
+    card?.['user_id'],
+    envelopeOperator?.['user_id'],
+    envelopeOperatorId?.['user_id'],
+    envelopeEvent?.['user_id'],
+    envelope['user_id'],
   );
   const tenantKey = firstNonEmptyString(
     header?.['tenant_key'],
@@ -2531,10 +2774,12 @@ async function resolveAuthenticatedCardActor(
     envelopeEvent?.['tenant_key'],
     envelope['tenant_key'],
   );
-  if (!openId || !tenantKey) return null;
+  if ((!openId && !larkUserId) || !tenantKey) return null;
 
-  const resolved = await identityRepo.resolveByLarkTenantIdentity(openId, tenantKey);
+  const resolved = await identityRepo.resolveByLarkTenantIdentity(openId, tenantKey, larkUserId);
   if (!resolved.ok || !resolved.value) return null;
+  const canonicalOpenId = resolved.value.larkOpenId ?? openId;
+  if (!canonicalOpenId) return null;
   const displayName = firstNonEmptyString(
     operator?.['name'],
     card?.['user_name'],
@@ -2543,7 +2788,7 @@ async function resolveAuthenticatedCardActor(
 
   return {
     tenantKey,
-    openId,
+    openId: canonicalOpenId,
     userId: resolved.value.userId,
     companyId: resolved.value.companyId,
     aiRole: resolved.value.aiRole,
@@ -2652,6 +2897,7 @@ async function handleSlashCommand(args: {
     logger: Logger;
     larkOAuthService?: LarkOAuthService;
     connectionRepo?: IntegrationConnectionRepository;
+    appBaseUrl: string;
     cache: CachePort;
     chatContextService?: LarkChatContextService;
     groupContextHydrator?: Pick<GroupContextHydrator, 'hydrate'>;
@@ -2793,13 +3039,12 @@ async function handleSlashCommand(args: {
     return;
   }
 
-  // ── /login — start Lark user OAuth ─────────────────────────────────────────
+  // ── /login — hand them the web sign-in ─────────────────────────────────────
+  //
+  // No longer gated on Lark OAuth being configured: signing in happens in the
+  // web app now, and Lark OAuth is a separate, later thing you do only if you
+  // want Divo acting under your own name.
   if (cmd === '/login') {
-    if (!deps.larkOAuthService?.isConfigured()) {
-      await reply('User OAuth is not configured on this server. Ask your admin to set LARK_OAUTH_REDIRECT_URI.');
-      return;
-    }
-
     const url = await createLarkLoginUrl({
       companyId:  identity.companyId,
       userId:     identity.userId,
@@ -2809,7 +3054,7 @@ async function handleSlashCommand(args: {
     });
 
     if (!url) {
-      await reply('User OAuth is not configured on this server. Ask your admin to set LARK_OAUTH_REDIRECT_URI.');
+      await reply('Could not start sign-in just now. Please try again in a moment.');
       return;
     }
 
@@ -3028,14 +3273,14 @@ async function transcribeLarkVoiceNote(input: {
     if (!sent.ok) log.warn('webhook.voice.notice_failed', { error: sent.error.message });
   };
 
-  if (attachment.durationMs === null) {
+  if (attachment.source === 'voice-note' && attachment.durationMs === null) {
     log.info('webhook.voice.duration_missing');
     await notify(
       'I could not verify the length of that voice note. Please send it again or type your request.',
     );
     return null;
   }
-  if (attachment.durationMs > MAX_LARK_VOICE_DURATION_MS) {
+  if (attachment.durationMs !== null && attachment.durationMs > MAX_LARK_VOICE_DURATION_MS) {
     log.info('webhook.voice.duration_rejected', { durationMs: attachment.durationMs });
     await notify('That voice note is longer than the 10-minute limit. Please send a shorter one.');
     return null;

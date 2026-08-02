@@ -101,6 +101,25 @@ Jan/Desktop should own local user experience:
 - Provide the Divo gateway tool configuration/token path.
 - Surface departments as user-selectable context, not as a complex policy engine in V1.
 
+## Database Environment Rules
+
+Development and Main use separate PostgreSQL containers, databases, users,
+networks, and Docker volumes. Never treat them as a shared database.
+
+- Local `advance-backend/.env` and `scripts/db-tunnel.sh` target the live
+  Development database only (`localhost:15432` -> VPS `127.0.0.1:15433` ->
+  `divo_dev`). A local `prisma db push` never promotes schema or data to Main.
+- Main's schema source of truth is the `schema.prisma` committed on the `main`
+  branch. Main deployment's `divo-schema-sync` applies that checked-in schema
+  to `divo_main` before the backend starts.
+- A successful Main schema sync means Main matches the Main branch schema; it
+  does not mean Main matches Development. Schema changes must be committed and
+  merged to `main` before deploying Main.
+- Deployments synchronize schema only. They do not copy application rows,
+  Hindsight memory, Redis state, or files. Development-to-Main data cloning is
+  a separate, explicit, destructive, manual operation that requires a verified
+  Main backup and rollback path.
+
 ## Testing Expectations
 
 Backend gateway work needs focused tests:

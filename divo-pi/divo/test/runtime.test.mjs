@@ -15,6 +15,7 @@ import {
 	sweepAbandonedRunSessions,
 	sweepExpiredPendingAttachments,
 } from "../runtime.mjs";
+import { thinkingLevelForModel } from "../runtime-models.mjs";
 
 const values = {
 	agentDir: "/tmp/divo-agent",
@@ -234,7 +235,7 @@ describe("The run launches on the model it was given", () => {
 
 		assert.equal(args[args.indexOf("--model") + 1], "deepseek-v4-flash");
 		assert.equal(args[args.indexOf("--provider") + 1], "deepseek");
-		assert.equal(args[args.indexOf("--thinking") + 1], "medium");
+		assert.equal(args[args.indexOf("--thinking") + 1], "high");
 	});
 });
 
@@ -249,6 +250,12 @@ describe("How a run is told to look at a picture", () => {
 
 		assert.match(imagePolicyFor("deepseek-v4-flash"), /media\.image_ocr/);
 		assert.match(imagePolicyFor("deepseek-v4-pro"), /media\.image_ocr/);
+	});
+
+	it("runs V4 Flash at the provider's upgraded high reasoning level", () => {
+		assert.equal(thinkingLevelForModel("deepseek-v4-flash"), "high");
+		assert.equal(thinkingLevelForModel("gpt-5.6-luna"), "high");
+		assert.equal(thinkingLevelForModel("deepseek-v4-pro", "medium"), "medium");
 	});
 
 	it("puts exactly one policy into the prompt the agent is given", () => {

@@ -160,6 +160,15 @@ export const CREATE_FILES_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = 
 Use this when the deliverable is a file: a workbook, a report, a formatted
 export, or an edit to a file the user sent.
 
+This skill owns files already in the workspace and artifacts Divo genuinely
+authors there. It does not own a complete export from a connected provider. If
+a provider result contains \`preview.exportOfferId\`, keep that opaque offer and
+finish the response. In Lark, Divo's verified final-response card owns the
+Sheet/CSV/XLSX choice and export queue; do not ask again, load/call
+\`dataExport\`, or copy rows into a locally rebuilt file. If the target is a
+pasted or recent Google Sheet, load \`google-sheets\` and retain only Divo's
+opaque Sheet reference.
+
 ${DEPENDENCY_TIERS}
 
 ## Spreadsheets
@@ -201,7 +210,8 @@ a file merely to return a \`DIVO_ARTIFACTS_DIR\` path. In Jan desktop, put the
 finished file in \`DIVO_ARTIFACTS_DIR\`. Scratch work goes in \`DIVO_RUN_DIR\`.
 
 If the user wants the result in Google Sheets or Drive rather than as a file,
-that is a governed export — use the connected-account path, not a local file.`,
+that is a governed connected-account result — use the matching Divo provider
+skill, not a local file.`,
   toolIds: [],
   tags: ['divo', 'files', 'excel', 'spreadsheet', 'authoring', 'artifacts'],
   aliases: [

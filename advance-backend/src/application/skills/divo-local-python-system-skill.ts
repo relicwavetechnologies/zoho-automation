@@ -22,11 +22,17 @@ Use this recipe when one coherent workflow materially benefits from Python for
 bounded pagination, parsing, transformation, grouping, deduplication, joining,
 or several related destination writes.
 
-This is also how data of any size is processed. There is no separate in-backend
-calculation tool: the container is a real machine with a real terminal, so a
-script that fetches, computes, and writes is both more capable and easier to
-correct than a reducer submitted as an argument. Write the file, run it, read
-the error, edit that same file, run it again.
+Use the governed provider preview and export-offer path when one source simply
+needs a complete downloadable artifact. Use Python when the work genuinely
+needs computation across pages, transformation, more than one connected
+product, or related writes. The container is a real machine with a real
+terminal: write the file, run it, read the error, edit that same file, and run
+it again.
+
+Never use \`preview.exportOfferId\`, \`destinationReferenceId\`, or \`resourceRef\`
+as Python data input. Those opaque handles stay with \`secure-data-export\` or
+\`google-sheets\`. A returned export job ID is only a status/checkpoint handle;
+it is not a dataset and must never be expanded into rows.
 
 Python is ordinary local execution. The agent creates a persistent source file,
 runs it through Bash, edits that same file after an error, and reruns the same
@@ -273,7 +279,7 @@ export const DIVO_LOCAL_PYTHON_SYSTEM_SKILL: DivoProductivitySystemSkillDefiniti
   markdown: DIVO_LOCAL_PYTHON_MARKDOWN,
   toolIds: [],
   tags: ['divo', 'python', 'local-execution', 'data-transform', 'data-transfer', 'google-sheets', 'export'],
-  aliases: ['python workflow', 'transform data', 'export data', 'move data to google sheets', 'gmail to sheets', 'gmail export google sheets', 'email operations analysis', 'bulk gmail sheet', 'batch update', 'data transfer'],
+  aliases: ['python workflow', 'transform data', 'combine connected data', 'gmail to sheets', 'gmail export google sheets', 'email operations analysis', 'bulk gmail sheet', 'batch update', 'cross-tool data transfer'],
   sortOrder: 24,
 };
 

@@ -10,6 +10,7 @@ import {
 	promptWithTransientRetries,
 	projectRuntimeProgress,
 } from "../local-rpc-controller.mjs";
+import { isTransientDivoRunFailure } from "../run-terminal.mjs";
 
 function deferred() {
 	let resolve;
@@ -115,6 +116,65 @@ test("transient model failures retry the continuation three times", async () => 
 	assert.deepEqual(retries.map((retry) => retry.attempt), [1, 2, 3]);
 });
 
+test("a terminated provider stream retries the continuation", async () => {
+	const completions = [
+		{
+			messages: [{
+				role: "assistant",
+				stopReason: "error",
+				errorMessage: "terminated",
+				content: [],
+			}],
+		},
+		{
+			messages: [{
+				role: "assistant",
+				stopReason: "stop",
+				usage: { input: 10, output: 5 },
+				content: [{ type: "text", text: "Recovered answer" }],
+			}],
+		},
+	];
+	const prompts = [];
+	const rpc = {
+		waitFor: () => Promise.resolve(completions.shift()),
+		send: async (command) => {
+			if (command.type === "get_state") return { isStreaming: false, isCompacting: false };
+			prompts.push(command.message);
+		},
+	};
+
+	const completion = await promptWithTransientRetries({
+		rpc,
+		message: "Original request",
+		retryDelayMs: 0,
+	});
+
+	assert.equal(collectRunAssistantText(completion.messages), "Recovered answer");
+	assert.equal(prompts.length, 2);
+});
+
+test("provider transport failures share one retry classification", () => {
+	for (const errorMessage of [
+		"terminated",
+		"Connection error.",
+		"Network error",
+		"WebSocket closed",
+		"stream ended before message_stop",
+	]) {
+		assert.equal(isTransientDivoRunFailure([{
+			role: "assistant",
+			stopReason: "error",
+			errorMessage,
+		}]), true, errorMessage);
+	}
+	assert.equal(isTransientDivoRunFailure([{
+		role: "assistant",
+		stopReason: "error",
+		errorMessage: "insufficient_quota",
+	}]), false);
+});
+
 test("a transient retry waits until the Pi runtime is idle", async () => {
 	const completions = [
 		{
@@ -196,8 +256,207 @@ test("a transient failure after a completed gateway action is not retried", asyn
 			message: "Original request",
 			retryDelayMs: 0,
 		}),
-		/failed after a company action completed/,
+		/failed after a company action was issued/,
 	);
+});
+
+test("a transient failure after a mutation and later read returns a truthful safe completion", async () => {
+	let prompts = 0;
+	const rpc = {
+		waitFor: () => Promise.resolve({
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "Update the sheet" }] },
+				{
+					role: "assistant",
+					content: [{
+						type: "toolCall",
+						id: "write-1",
+						name: "divo_gateway",
+						arguments: { op: "tools.invoke" },
+					}],
+				},
+				{
+					role: "toolResult",
+					toolCallId: "write-1",
+					toolName: "divo_gateway",
+					isError: false,
+					details: { data: { action: "update" } },
+				},
+				{
+					role: "assistant",
+					content: [{
+						type: "toolCall",
+						id: "read-1",
+						name: "divo_gateway",
+						arguments: { op: "tools.invoke" },
+					}],
+				},
+				{
+					role: "toolResult",
+					toolCallId: "read-1",
+					toolName: "divo_gateway",
+					isError: false,
+					details: { data: { action: "read" } },
+				},
+				{
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "502: Upstream unreachable",
+					content: [],
+				},
+			],
+		}),
+		send: async () => {
+			prompts += 1;
+		},
+	};
+
+	const completion = await promptWithTransientRetries({
+		rpc,
+		message: "Original request",
+		retryDelayMs: 0,
+	});
+
+	assert.equal(prompts, 1);
+	assert.match(collectRunAssistantText(completion.messages), /subsequent read also succeeded/i);
+	assert.match(collectRunAssistantText(completion.messages), /did not repeat/i);
+});
+
+test("a transient failure after read-only gateway calls may retry", async () => {
+	const completions = [
+		{
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "Read the sheet" }] },
+				{
+					role: "assistant",
+					content: [{
+						type: "toolCall",
+						id: "read-1",
+						name: "divo_gateway",
+						arguments: { op: "tools.invoke" },
+					}],
+				},
+				{
+					role: "toolResult",
+					toolCallId: "read-1",
+					toolName: "divo_gateway",
+					isError: false,
+					details: { data: { action: "read" } },
+				},
+				{
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "502: Upstream unreachable",
+					content: [],
+				},
+			],
+		},
+		{
+			messages: [{
+				role: "assistant",
+				stopReason: "stop",
+				usage: { input: 10, output: 5 },
+				content: [{ type: "text", text: "Recovered read" }],
+			}],
+		},
+	];
+	const rpc = {
+		waitFor: () => Promise.resolve(completions.shift()),
+		send: async (command) => (
+			command.type === "get_state"
+				? { isStreaming: false, isCompacting: false }
+				: undefined
+		),
+	};
+
+	const completion = await promptWithTransientRetries({
+		rpc,
+		message: "Original request",
+		retryDelayMs: 0,
+	});
+
+	assert.equal(collectRunAssistantText(completion.messages), "Recovered read");
+});
+
+test("a transient failure after an unknown gateway action is not retried", async () => {
+	let prompts = 0;
+	const rpc = {
+		waitFor: () => Promise.resolve({
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "Approve the request" }] },
+				{
+					role: "assistant",
+					content: [{
+						type: "toolCall",
+						id: "unknown-1",
+						name: "divo_gateway",
+						arguments: { op: "tools.invoke" },
+					}],
+				},
+				{
+					role: "toolResult",
+					toolCallId: "unknown-1",
+					toolName: "divo_gateway",
+					isError: false,
+					details: { data: { action: "approve" } },
+				},
+				{
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "502: Upstream unreachable",
+					content: [],
+				},
+			],
+		}),
+		send: async () => {
+			prompts += 1;
+		},
+	};
+
+	await assert.rejects(
+		promptWithTransientRetries({
+			rpc,
+			message: "Original request",
+			retryDelayMs: 0,
+		}),
+		/failed after a company action was issued/,
+	);
+	assert.equal(prompts, 1);
+});
+
+test("a transient failure after an issued gateway action is not retried without its result", async () => {
+	let prompts = 0;
+	const rpc = {
+		waitFor: () => Promise.resolve({
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "Create the record" }] },
+				{
+					role: "assistant",
+					stopReason: "error",
+					errorMessage: "Connection error.",
+					content: [{
+						type: "toolCall",
+						id: "call-1",
+						name: "divo_gateway",
+						arguments: { op: "tools.invoke" },
+					}],
+				},
+			],
+		}),
+		send: async () => {
+			prompts += 1;
+		},
+	};
+
+	await assert.rejects(
+		promptWithTransientRetries({
+			rpc,
+			message: "Original request",
+			retryDelayMs: 0,
+		}),
+		/failed after a company action was issued/,
+	);
+	assert.equal(prompts, 1);
 });
 
 test("exhausted transient retries fail instead of delivering earlier narration", async () => {

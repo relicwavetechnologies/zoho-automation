@@ -1,5 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
+import { createRequire } from 'node:module';
 import type { Request, Response } from 'express';
 
 import { createDesktopAuthRoutes } from '../../src/http/desktop/desktop-auth.routes.ts';
@@ -788,6 +790,92 @@ describe('desktop auth routes', () => {
     }
   });
 
+  it('uses the company bound to the exchanged Lark tenant, not an arbitrary company', async () => {
+    const sessionCompanyIds: string[] = [];
+    const connectionCompanyIds: string[] = [];
+    const router = createDesktopAuthRoutes(makeDeps({
+      larkOAuthService: {
+        isConfigured: () => true,
+        getAuthorizeUrl: (state: string, input: { redirectUri: string }) =>
+          `https://accounts.larksuite.com/authorize?state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(input.redirectUri)}`,
+        exchangeCode: async () => ({
+          accessToken: 'access-token', refreshToken: 'refresh-token', tokenType: 'Bearer',
+          expiresIn: 7200, refreshTokenExpiresIn: 2_592_000,
+          larkOpenId: 'ou_relicwave_dev', larkUserId: 'u_relicwave_dev', larkName: 'Dev User',
+          larkEmail: 'dev@relicwave.example', larkEnName: null,
+          tenantKey: 'tenant-development', scope: 'auth:user.id:read', avatarUrl: null,
+        }),
+      },
+      prisma: {
+        company: { findFirst: async () => { throw new Error('must not select an arbitrary company'); } },
+        larkTenantBinding: {
+          findFirst: async ({ where }: { where: { larkTenantKey: string; isActive: boolean } }) =>
+            where.larkTenantKey === 'tenant-development' && where.isActive
+              ? { companyId: 'company-development' }
+              : null,
+        },
+        user: {
+          findFirst: async () => null,
+          create: async () => ({ id: 'user-1', email: 'dev@relicwave.example', name: 'Dev User' }),
+        },
+        adminMembership: { findFirst: async () => null, create: async () => ({}) },
+        memberSession: { create: async ({ data }: { data: { companyId: string } }) => { sessionCompanyIds.push(data.companyId); } },
+        department: { findMany: async () => [] },
+      },
+      connectionRepo: {
+        findLarkConnectionOwner: async () => ({ ok: true, value: null }),
+        upsertLarkConnection: async ({ companyId }: { companyId: string }) => {
+          connectionCompanyIds.push(companyId);
+          return { ok: true, value: {} };
+        },
+      },
+    }));
+
+    const authorize = await callRoute(router, 'GET', '/lark/authorize-url', { headers: { host: 'localhost:8000' } });
+    const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state');
+    const result = await callRoute(router, 'POST', '/lark/exchange', { body: { code: 'auth-code', state } });
+
+    assert.equal(result.status, 200);
+    assert.equal(result.body.data.session.companyId, 'company-development');
+    assert.deepEqual(sessionCompanyIds, ['company-development']);
+    assert.deepEqual(connectionCompanyIds, ['company-development']);
+  });
+
+  it('rejects an unbound Lark tenant before creating a session or connection', async () => {
+    let createdSession = false;
+    let storedConnection = false;
+    const router = createDesktopAuthRoutes(makeDeps({
+      larkOAuthService: {
+        isConfigured: () => true,
+        getAuthorizeUrl: (state: string, input: { redirectUri: string }) =>
+          `https://accounts.larksuite.com/authorize?state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(input.redirectUri)}`,
+        exchangeCode: async () => ({
+          accessToken: 'access-token', refreshToken: 'refresh-token', tokenType: 'Bearer',
+          expiresIn: 7200, refreshTokenExpiresIn: 2_592_000,
+          larkOpenId: 'ou_unknown', larkUserId: 'u_unknown', larkName: 'Unknown User',
+          larkEmail: 'unknown@example.com', larkEnName: null,
+          tenantKey: 'tenant-unknown', scope: 'auth:user.id:read', avatarUrl: null,
+        }),
+      },
+      prisma: {
+        larkTenantBinding: { findFirst: async () => null },
+        memberSession: { create: async () => { createdSession = true; } },
+      },
+      connectionRepo: {
+        upsertLarkConnection: async () => { storedConnection = true; return { ok: true, value: {} }; },
+      },
+    }));
+
+    const authorize = await callRoute(router, 'GET', '/lark/authorize-url', { headers: { host: 'localhost:8000' } });
+    const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state');
+    const result = await callRoute(router, 'POST', '/lark/exchange', { body: { code: 'auth-code', state } });
+
+    assert.equal(result.status, 403);
+    assert.match(result.body.message, /not linked to an active Divo company/);
+    assert.equal(createdSession, false);
+    assert.equal(storedConnection, false);
+  });
+
   it('does not create a separate Desktop user when Lark does not expose an email', async () => {
     let exchangedRedirectUri: string | undefined;
     let createdUser = false;
@@ -808,7 +896,7 @@ describe('desktop auth routes', () => {
         },
       },
       prisma: {
-        company: { findFirst: async () => ({ id: 'company-1' }) },
+        larkTenantBinding: { findFirst: async () => ({ companyId: 'company-1' }) },
         user: {
           findFirst: async () => null,
           findUnique: async () => null,
@@ -861,7 +949,7 @@ describe('desktop auth routes', () => {
         }),
       },
       prisma: {
-        company: { findFirst: async () => ({ id: 'company-1' }) },
+        larkTenantBinding: { findFirst: async () => ({ companyId: 'company-1' }) },
         user: {
           findFirst: async () => null,
           findUnique: async () => ({
@@ -1144,6 +1232,225 @@ describe('desktop auth routes', () => {
       personaPrompt: '',
       version: null,
       personalMemory: [],
+    });
+  });
+});
+
+describe('desktop password sign-in', () => {
+  const require_ = createRequire(import.meta.url);
+  const bcrypt = require_('bcryptjs') as {
+    hashSync(input: string, rounds: number): string;
+  };
+  const PASSWORD = 'correct-horse-battery';
+  const HASH = bcrypt.hashSync(PASSWORD, 4);
+
+  /**
+   * `password` holds an HMAC digest rather than a bcrypt hash for an account
+   * Lark provisioned — that person never chose a password. Copied from the
+   * shape `lark.exchange.user_created` writes.
+   */
+  const LARK_PROVISIONED_PASSWORD = createHmac('sha256', 'irrelevant').update('x').digest('hex');
+
+  const loginPrisma = (user: { password: string } | null, membership: unknown) => ({
+    user: { findUnique: async () => (user ? { id: 'user-1', email: 'a@acme.co', name: 'A', ...user } : null) },
+    adminMembership: { findFirst: async () => membership },
+    department: { findMany: async () => [] },
+    memberSession: { create: async () => ({}) },
+  });
+
+  it('issues a member session for valid credentials', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: loginPrisma({ password: HASH }, { companyId: 'company-1', role: 'MEMBER' }),
+    }));
+
+    const result = await callRoute(router, 'POST', '/login', {
+      body: { email: 'a@acme.co', password: PASSWORD },
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(typeof result.body.data.token, 'string');
+    assert.equal(result.body.data.session.authProvider, 'password');
+    // No Lark identity on this session, and the client is told so rather than
+    // left to discover that the person's Lark chat does not work.
+    assert.equal(result.body.data.session.larkOpenId, null);
+  });
+
+  it('gives an unknown email and a wrong password the same answer', async () => {
+    const wrongPassword = createDesktopAuthRoutes(makeDeps({
+      prisma: loginPrisma({ password: HASH }, { companyId: 'company-1', role: 'MEMBER' }),
+    }));
+    const unknownEmail = createDesktopAuthRoutes(makeDeps({
+      prisma: loginPrisma(null, null),
+    }));
+
+    const a = await callRoute(wrongPassword, 'POST', '/login', {
+      body: { email: 'a@acme.co', password: 'not-it' },
+    });
+    const b = await callRoute(unknownEmail, 'POST', '/login', {
+      body: { email: 'nobody@acme.co', password: PASSWORD },
+    });
+
+    assert.equal(a.status, 401);
+    assert.equal(b.status, 401);
+    // Identical, so this route cannot be used to discover who has an account.
+    assert.equal(a.body.message, b.body.message);
+  });
+
+  it('refuses an account Lark provisioned, whose stored password is not a hash', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: loginPrisma(
+        { password: LARK_PROVISIONED_PASSWORD },
+        { companyId: 'company-1', role: 'MEMBER' },
+      ),
+    }));
+
+    // The digest itself, which is the one value most likely to be guessed if
+    // the shape were ever compared directly.
+    const result = await callRoute(router, 'POST', '/login', {
+      body: { email: 'a@acme.co', password: LARK_PROVISIONED_PASSWORD },
+    });
+
+    assert.equal(result.status, 401);
+  });
+
+  it('refuses an account with no active workspace membership', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: loginPrisma({ password: HASH }, null),
+    }));
+
+    const result = await callRoute(router, 'POST', '/login', {
+      body: { email: 'a@acme.co', password: PASSWORD },
+    });
+
+    // 403 and not 401: the credentials were right, so saying so leaks nothing
+    // this caller does not already know, and "wrong password" would be a lie.
+    assert.equal(result.status, 403);
+  });
+});
+
+describe('desktop /me reports the department role', () => {
+  /**
+   * Company role is the ceiling; leading a department is a separate axis. The
+   * web shell decides whether someone gets a Team scope from the second one,
+   * and cannot derive it from the first — so /me has to carry both.
+   */
+  const mePrisma = (memberships: unknown[]) => ({
+    user:    { findUnique: async () => ({ id: 'user-1', email: 'a@acme.co', name: 'A' }) },
+    company: { findUnique: async () => ({ name: 'Acme Technologies' }) },
+    departmentMembership: { findMany: async () => memberships },
+  });
+
+  const connectionRepo = {
+    listAccessibleLarkConnections:   async () => ({ ok: true, value: [] }),
+    listAccessibleGoogleConnections: async () => ({ ok: true, value: [] }),
+  };
+
+  it('marks the department a person manages', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      connectionRepo,
+      prisma: mePrisma([
+        { department: { id: 'd_fin', name: 'Finance' }, role: { slug: 'MANAGER', name: 'Manager' } },
+        { department: { id: 'd_ops', name: 'Operations' }, role: { slug: 'MEMBER', name: 'Member' } },
+      ]),
+    }));
+
+    const result = await callRoute(router, 'GET', '/me', {
+      locals: { userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER' },
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(result.body.data.companyName, 'Acme Technologies');
+    assert.deepEqual(result.body.data.departments, [
+      { id: 'd_fin', name: 'Finance', roleSlug: 'MANAGER', roleName: 'Manager', isManager: true },
+      { id: 'd_ops', name: 'Operations', roleSlug: 'MEMBER', roleName: 'Member', isManager: false },
+    ]);
+  });
+
+  it('keys manager off the slug, not the editable role name', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      connectionRepo,
+      // An admin renamed the MEMBER role to "Team Manager". The label changed;
+      // the authority did not, and only the slug says so.
+      prisma: mePrisma([
+        { department: { id: 'd_fin', name: 'Finance' }, role: { slug: 'MEMBER', name: 'Team Manager' } },
+      ]),
+    }));
+
+    const result = await callRoute(router, 'GET', '/me', {
+      locals: { userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER' },
+    });
+
+    assert.equal(result.body.data.departments[0].isManager, false);
+  });
+
+  /*
+   * The model list a member sees.
+   *
+   * Labels used to come from GET /api/admin/proxy/models, which is behind
+   * adminAuth — so a plain member got a 403, the web UI swallowed it, and the
+   * settings screen listed `deepseek-v4-flash` instead of "Flash". The member
+   * route carries the catalogue fields itself now.
+   */
+  describe('model options', () => {
+    const policyPrisma = (policy: { allowedModels: string[]; blocked: boolean } | null) => ({
+      memberProxyPolicy: { findUnique: async () => policy },
+    });
+
+    it('carries a label for every model the member is allowed', async () => {
+      const router = createDesktopAuthRoutes(makeDeps({
+        prisma: policyPrisma({ allowedModels: ['deepseek-v4-pro', 'deepseek-v4-flash'], blocked: false }),
+      }));
+
+      const result = await callRoute(router, 'GET', '/model-options', {
+        locals: { userId: 'user-1', companyId: 'company-1' },
+      });
+
+      assert.equal(result.status, 200);
+      const models = result.body.data.models as { id: string; label: string }[];
+      assert.equal(models.length, 2);
+      for (const model of models) {
+        assert.ok(model.label.length > 0, `${model.id} has no label`);
+        assert.notEqual(model.label, model.id, `${model.id} fell back to its raw id`);
+      }
+    });
+
+    it('lists only the models the member actually holds', async () => {
+      const router = createDesktopAuthRoutes(makeDeps({
+        prisma: policyPrisma({ allowedModels: ['deepseek-v4-flash'], blocked: false }),
+      }));
+
+      const result = await callRoute(router, 'GET', '/model-options', {
+        locals: { userId: 'user-1', companyId: 'company-1' },
+      });
+
+      assert.deepEqual(
+        (result.body.data.models as { id: string }[]).map(m => m.id),
+        ['deepseek-v4-flash'],
+      );
+    });
+
+    it('never reports pricing to a member', async () => {
+      const router = createDesktopAuthRoutes(makeDeps({
+        prisma: policyPrisma({ allowedModels: ['deepseek-v4-pro'], blocked: false }),
+      }));
+
+      const result = await callRoute(router, 'GET', '/model-options', {
+        locals: { userId: 'user-1', companyId: 'company-1' },
+      });
+
+      const [model] = result.body.data.models as Record<string, unknown>[];
+      assert.deepEqual(Object.keys(model!).sort(), ['id', 'label', 'provider', 'vision']);
+    });
+
+    it('falls back to the Flash default when no policy is stored', async () => {
+      const router = createDesktopAuthRoutes(makeDeps({ prisma: policyPrisma(null) }));
+
+      const result = await callRoute(router, 'GET', '/model-options', {
+        locals: { userId: 'user-1', companyId: 'company-1' },
+      });
+
+      assert.deepEqual(result.body.data.allowedModels, ['deepseek-v4-flash']);
+      assert.equal((result.body.data.models as { label: string }[])[0]!.label.length > 0, true);
     });
   });
 });

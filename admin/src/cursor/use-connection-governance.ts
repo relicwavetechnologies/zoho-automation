@@ -79,15 +79,6 @@ export function defaultConnectionGovernancePolicy(): ConnectionGovernancePolicy 
   }
 }
 
-export function useMemberConnections(token: string | null, userId: string | undefined, companyId?: string) {
-  const scope = getAdminQueryScope(token)
-  return useQuery({
-    queryKey: ["admin", scope, "member-connections", userId ?? "none", companyId ?? ""] as const,
-    enabled: Boolean(token && userId),
-    queryFn: () => api.get<GovernedConnection[]>(scoped(`/api/admin/company/members/${userId}/connections`, companyId), token!),
-  })
-}
-
 export function useMemberConnection(token: string | null, userId: string | undefined, connectionId: string | undefined, companyId?: string) {
   const scope = getAdminQueryScope(token)
   return useQuery({
@@ -107,24 +98,5 @@ export function useSaveConnectionGovernance(token: string | null, companyId?: st
       await queryClient.invalidateQueries({ queryKey: ["admin", scope, "member-connections"] })
       await queryClient.invalidateQueries({ queryKey: ["admin", scope, "member-connection"] })
     },
-  })
-}
-
-export function useCompanyCapabilityGovernance(token: string | null, companyId?: string) {
-  const scope = getAdminQueryScope(token)
-  return useQuery({
-    queryKey: ["admin", scope, "capability-governance", companyId ?? ""] as const,
-    enabled: Boolean(token),
-    queryFn: () => api.get<CompanyCapabilityGovernance[]>(scoped("/api/admin/company/capability-governance", companyId), token!),
-  })
-}
-
-export function useSaveCompanyCapabilityGovernance(token: string | null, companyId?: string) {
-  const queryClient = useQueryClient()
-  const scope = getAdminQueryScope(token)
-  return useMutation({
-    mutationFn: ({ capabilityId, policy }: { capabilityId: CompanyCapabilityGovernance["id"]; policy: CompanyCapabilityGovernance["policy"] }) =>
-      api.put(`/api/admin/company/capability-governance/${capabilityId}`, { policy, ...(companyId ? { companyId } : {}) }, token!),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin", scope, "capability-governance"] }),
   })
 }
