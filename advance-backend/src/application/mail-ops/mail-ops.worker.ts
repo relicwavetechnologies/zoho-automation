@@ -523,8 +523,9 @@ export class MailOpsWorker {
    * here; a live draft means no send ever completed and it is safe to send
    * that same draft now.
    *
-   * Returns the sent message ID, or `null` when a previous attempt already
-   * delivered it.
+   * A draft handed in here has already been proved live by the caller, so it
+   * is sent rather than replaced — reusing it is what keeps a retry from
+   * composing a second copy.
    */
   private async forwardThroughDraft(input: {
     accessToken: string;
@@ -532,18 +533,13 @@ export class MailOpsWorker {
     attempts: number;
     payload: PendingMailDeliveryPayload;
     stagedDraftId?: string;
-  }): Promise<string | null> {
+  }): Promise<string> {
     const { payload } = input;
     if (payload.destination.type !== 'email') {
       throw new Error('Mail delivery action and destination do not match.');
     }
 
     if (input.stagedDraftId) {
-      const pending = await this.deps.gmail.forwardDraftPending({
-        accessToken: input.accessToken,
-        draftId: input.stagedDraftId,
-      });
-      if (!pending) return null;
       return this.deps.gmail.sendForwardDraft({
         accessToken: input.accessToken,
         draftId: input.stagedDraftId,
@@ -591,6 +587,32 @@ export class MailOpsWorker {
         action: payload.action.type,
         destination: payload.destination.type,
       });
+      // Asked before anything else, because everything else assumes nothing
+      // has been sent yet. A retry holding a staged draft may be retrying a
+      // send that already succeeded, and deciding it was refused — or dropping
+      // it for any other reason — would file a lie about mail that is already
+      // in somebody's inbox, and leave the row permanently `ambiguous`.
+      if (input.providerDraftId) {
+        const pending = await this.deps.gmail.forwardDraftPending({
+          accessToken: await this.deps.resolveAccessToken({
+            companyId: payload.companyId,
+            userId: payload.userId,
+            connectionId: payload.connectionId,
+          }),
+          draftId: input.providerDraftId,
+        });
+        if (!pending) {
+          const settled = await this.deps.repo.markDeliveryDelivered(
+            input.deliveryId,
+          );
+          if (!settled.ok) throw settled.error;
+          this.log.info('mail_ops.delivery_confirmed_from_draft', {
+            deliveryId: input.deliveryId,
+            attempts: input.attempts,
+          });
+          return;
+        }
+      }
       const authorized = await this.deps.authorizeRule({
         companyId: payload.companyId,
         userId: payload.userId,
@@ -657,7 +679,9 @@ export class MailOpsWorker {
           userId: payload.userId,
           connectionId: payload.connectionId,
         });
-        const forwarded = await this.forwardThroughDraft({
+        // The staged draft was already proved live at the top of this method,
+        // so it is safe to send rather than compose a second copy.
+        providerMessageId = await this.forwardThroughDraft({
           accessToken,
           deliveryId: input.deliveryId,
           attempts: input.attempts,
@@ -666,21 +690,6 @@ export class MailOpsWorker {
             ? { stagedDraftId: input.providerDraftId }
             : {}),
         });
-        if (forwarded === null) {
-          // A previous attempt sent it and we never learned so. Nothing to do
-          // but write that down; sending again is the exact duplicate this
-          // whole path exists to prevent.
-          const settled = await this.deps.repo.markDeliveryDelivered(
-            input.deliveryId,
-          );
-          if (!settled.ok) throw settled.error;
-          this.log.info('mail_ops.delivery_confirmed_from_draft', {
-            deliveryId: input.deliveryId,
-            attempts: input.attempts,
-          });
-          return;
-        }
-        providerMessageId = forwarded;
       } else if (
         payload.action.type === 'deliver'
         && payload.destination.type === 'lark_chat'

@@ -1176,6 +1176,72 @@ describe('MailOpsWorker', () => {
     return { worker, state };
   }
 
+  it('does not file a completed send as refused when permission was revoked after it', async () => {
+    // A retry holding a staged draft may be retrying a send that already
+    // succeeded. Deciding it was refused — or dropping it for any other reason
+    // — files a lie about mail already sitting in somebody's inbox, and leaves
+    // the row permanently `ambiguous`.
+    let deliveryClaimed = false;
+    let abandoned = 0;
+    let delivered: any;
+    const worker = new MailOpsWorker({
+      repo: {
+        claimNextWatchRenewal: async () => ({ ok: true, value: null }),
+        claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        claimNextDueDelivery: async () => {
+          if (deliveryClaimed) return { ok: true, value: null };
+          deliveryClaimed = true;
+          return {
+            ok: true,
+            value: {
+              deliveryId: 'delivery-1',
+              attempts: 2,
+              providerDraftId: 'draft-1',
+              payload: {
+                companyId: 'company-1',
+                userId: 'user-1',
+                subscriptionId: 'mailbox-1',
+                connectionId: 'connection-1',
+                mailboxEmail: 'user@example.com',
+                ruleId: 'rule-1',
+                eventId: 'event-1',
+                sourceMessageId: 'message-1',
+                idempotencyKey: 'mail:idempotency',
+                action: { type: 'forward' },
+                destination: { type: 'email', email: 'owner@example.com' },
+                message: event.metadata,
+              },
+            },
+          };
+        },
+        markDeliveryDelivered: async (deliveryId: string) => {
+          delivered = { deliveryId };
+          return { ok: true, value: true };
+        },
+        markDeliveryFailed: async () => ({ ok: true, value: true }),
+        markDeliveryAbandoned: async () => { abandoned += 1; return { ok: true, value: true }; },
+      },
+      gmail: {
+        watch: async () => { throw new Error('unused'); },
+        sync: async () => { throw new Error('unused'); },
+        forwardDraftPending: async () => false,
+        createForwardDraft: async () => { throw new Error('unused'); },
+        sendForwardDraft: async () => { throw new Error('Nothing should be sent again.'); },
+      },
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => {
+        throw new Error('A completed send must be settled before permission is re-asked.');
+      },
+      deliverLark: async () => { throw new Error('unused'); },
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(abandoned, 0);
+    assert.deepEqual(delivered, { deliveryId: 'delivery-1' });
+  });
+
   it('does not forward twice when a send succeeded but its response was lost', async () => {
     // Gmail deletes a draft the moment it sends it, so a missing draft is proof
     // the mail went out. The old guard searched `in:sent rfc822msgid:` — for a
