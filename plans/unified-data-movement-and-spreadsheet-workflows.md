@@ -16,7 +16,7 @@
 | 2 — preview and durable offers | ✅ Done | Bounded previews, opaque 24-hour offers, fresh authorization, and idempotent confirmation implemented |
 | 3 — Lark export interaction | ✅ Done | Signed format/account cards, same-card progress, OAuth resume, and personal destination preference implemented |
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
-| 5 — Semrush and OMS convergence | 🟡 In review | OMS central snapshot migration is implemented in isolated commit `6bec8626`; Semrush and live OMS parity/removal evidence remain |
+| 5 — Semrush and OMS convergence | 🟡 Partial | OMS central snapshot migration is integrated in `130fbd3cb`; Semrush and live OMS parity/removal evidence remain |
 | 6 — pasted Sheet/Drive URLs | ⬜ Not started | Typed URL resolver and existing-Sheet bulk write remain |
 | 7 — routers and provider skills | 🟡 Partial | Central export skill knows Excel; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
@@ -42,9 +42,10 @@
   error/trace path.
 - Retry/error-boundary verification: controller 28/28 passed; Lark runtime and
   webhook 150/150 passed.
-- OMS snapshot convergence is complete in isolated commit `6bec8626` with
+- OMS snapshot convergence is integrated in `130fbd3cb` (implemented first in
+  isolated commit `6bec8626`) with
   14/14 OMS and 46/46 combined OMS/export checks plus TypeScript and diff
-  validation. It is not merged pending independent review and live parity.
+  validation. Independent cold review verdict: `ship`; live parity remains.
 
 - Rebuilt `divo-pi-local:phase0` after detecting that the local image predated
   several committed runtime/extension changes. The controller will replace the
@@ -1111,8 +1112,8 @@ Never log:
    repeat as CSV, and clean up only the exact test artifacts.
 2. Run the no-eligible-account OAuth-resume case with a designated test
    identity that has neither a personal Google destination nor company fallback.
-3. Review and integrate isolated OMS commit `6bec8626`, then obtain live parity
-   evidence before deleting the retained rollback-only Cloudinary path.
+3. Obtain live OMS parity evidence before deleting the retained rollback-only
+   Cloudinary path.
 4. Migrate Semrush through the same central source/offer pipeline.
 5. Add the pasted Google Sheet resolver and existing-Sheet streaming destination.
 6. Tune skills and routers once each instruction describes backend behavior
