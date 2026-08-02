@@ -22,6 +22,7 @@ import {
   isDefiniteApprovalNonDelivery,
 } from './approval-delivery';
 import type { KnowledgeMutationService } from '../knowledge/knowledge-mutation.service';
+import { externalMailDestination } from '../mail-ops/external-destination';
 
 export type { ApprovalAuthority } from './approval.types';
 
@@ -374,6 +375,9 @@ export class ApprovalGateService {
     const knowledgeRequirement = await this.inspectKnowledgeMutation(input);
     if (knowledgeRequirement) return knowledgeRequirement;
 
+    const exfiltrationRequirement = await this.inspectExternalMailForward(input);
+    if (exfiltrationRequirement) return exfiltrationRequirement;
+
     const policyResult = checkApprovalPolicy({ toolId, action, args, perm, runContext });
     const connectionId = connectionIdFromArgs(args);
     const connectionPolicy = this.connectionRateLimits
@@ -450,6 +454,66 @@ export class ApprovalGateService {
     }
     if (!this.options.disableManagerSelfBypass && String(runContext.userId) === approver.userId) {
       this.logger.info('approval.gate.self_bypass', { userId: runContext.userId, toolId, action });
+      return { kind: 'allowed' };
+    }
+    return { kind: 'required', approver, authority: 'department_manager' };
+  }
+
+  /**
+   * A standing forward out of the company is approved by a person, always.
+   *
+   * A mail rule ships the whole original message, and creation goes through
+   * the model, so an instruction hidden in an earlier tool result could set one
+   * up silently. Everything else about that rule is governed by policy a
+   * manager may or may not have configured; this one does not wait to be
+   * switched on.
+   *
+   * Deliberately every external rule, not merely the first to a given domain.
+   * Creating a rule is a rare act, and "first time" is state that would have to
+   * be right for this to be worth anything.
+   */
+  private async inspectExternalMailForward(
+    input: Pick<ApprovalGateInput, 'toolId' | 'action' | 'args' | 'perm' | 'runContext'>,
+  ): Promise<ApprovalRequirement | null> {
+    if (input.toolId !== 'mailAutomations') return null;
+    const destination = externalMailDestination({
+      args: input.args,
+      requesterEmail: input.runContext.requesterEmail,
+    });
+    if (!destination) return null;
+
+    const companyId = String(input.runContext.companyId);
+    const requesterId = String(input.runContext.userId);
+    const departmentId = input.runContext.departmentId
+      ? String(input.runContext.departmentId)
+      : input.perm.department?.id
+        ? String(input.perm.department.id)
+        : null;
+    const approver = departmentId
+      ? await this.resolver.resolveManager(departmentId, companyId, {
+          excludeUserId: requesterId,
+          allowCompanyAdminFallback: true,
+        })
+      : null;
+    if (!approver) {
+      // Fails closed. The alternative is a silent standing forward to an
+      // address nobody in the company chose.
+      return {
+        kind: 'misconfigured',
+        message:
+          `Forwarding mail to ${destination} leaves your organisation, so it `
+          + 'needs a manager or company admin to approve it — and none with a '
+          + 'connected Lark account could be found.',
+      };
+    }
+    if (
+      !this.options.disableManagerSelfBypass
+      && requesterId === approver.userId
+    ) {
+      this.logger.info('approval.gate.external_mail_forward_self_bypass', {
+        userId: requesterId,
+        destination,
+      });
       return { kind: 'allowed' };
     }
     return { kind: 'required', approver, authority: 'department_manager' };
