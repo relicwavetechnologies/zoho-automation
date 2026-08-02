@@ -628,6 +628,66 @@ describe('MailOpsWorker', () => {
     });
   });
 
+  it('does not match its own forward arriving back in the mailbox', async () => {
+    // A destination that aliases home, plus a rule matching on subject alone,
+    // re-matches its own `Fwd:` output on every pass. Nothing else in a message
+    // distinguishes Divo's forward from ordinary mail.
+    let reservations = 0;
+    let mailboxClaimed = false;
+    const worker = new MailOpsWorker({
+      repo: {
+        claimNextWatchRenewal: async () => ({ ok: true, value: null }),
+        claimNextDueMailbox: async () => {
+          if (mailboxClaimed) return { ok: true, value: null };
+          mailboxClaimed = true;
+          return { ok: true, value: claim };
+        },
+        recordEvents: async () => ({
+          ok: true,
+          value: [{
+            eventId: 'event-1',
+            metadata: {
+              ...event.metadata,
+              subject: 'Fwd: Your secure link',
+              forwardedByRuleId: 'rule-1',
+            },
+          }],
+        }),
+        listActiveRules: async () => ({
+          ok: true,
+          value: [{
+            ruleId: 'rule-1',
+            match: { subjectContains: 'secure link' },
+            action: { type: 'forward' },
+            destination: { type: 'email', email: 'owner@example.com' },
+          }],
+        }),
+        reserveDelivery: async () => { reservations += 1; return { ok: true, value: true }; },
+        recordBlockedDelivery: async () => ({ ok: true, value: true }),
+        advanceCursor: async () => ({ ok: true, value: true }),
+        markSyncFailed: async () => ({ ok: true, value: true }),
+        claimNextDueDelivery: async () => ({ ok: true, value: null }),
+      },
+      gmail: {
+        watch: async () => ({ historyId: '100', expiration: new Date('2026-08-05T05:00:00.000Z') }),
+        sync: async () => ({
+          nextHistoryId: '101',
+          events: [event],
+          staleCursorRecovered: false,
+        }),
+        forward: async () => { throw new Error('Nothing should be forwarded.'); },
+      },
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => { throw new Error('A skipped event must not cost a permission lookup.'); },
+      deliverLark: async () => { throw new Error('unused'); },
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(reservations, 0);
+  });
+
   it('charges the connection rate budget for a background delivery', async () => {
     // A manager could throttle interactive use of a connection and a mail rule
     // on that same connection then ran under no policy at all — the worker was

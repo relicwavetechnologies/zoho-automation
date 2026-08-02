@@ -28,6 +28,14 @@ export interface MailMessageMetadata extends Record<string, unknown> {
   snippet: string;
   bodyText: string;
   hasAttachment: boolean;
+  /**
+   * Set when Divo forwarded this message itself, to the rule that did it.
+   *
+   * A destination aliasing back into the same mailbox, plus a rule matching on
+   * subject alone, re-matches its own `Fwd:` output forever. Nothing else in a
+   * message distinguishes Divo's forward from ordinary mail.
+   */
+  forwardedByRuleId?: string;
 }
 
 export interface MailRuleMatch {

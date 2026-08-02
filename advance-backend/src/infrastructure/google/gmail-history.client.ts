@@ -17,6 +17,14 @@ const MAX_RECOVERY_MESSAGES = 100;
  */
 const MESSAGE_FETCH_CONCURRENCY = 6;
 const MAX_BODY_CHARS = 50_000;
+/**
+ * Stamped on everything Mail Ops forwards, and skipped on the way back in.
+ *
+ * A destination that aliases into the same mailbox plus a rule matching only on
+ * subject re-matches its own `Fwd:` output, forever. Nothing else in the
+ * pipeline can tell Divo's own forward apart from ordinary mail.
+ */
+const MAILOPS_HEADER = 'X-Divo-Mailops';
 
 export interface GmailHistorySync {
   nextHistoryId: string;
@@ -93,6 +101,7 @@ export class GmailHistoryClient {
     sourceMessageId: string;
     source: MailMessageMetadata;
     idempotencyKey: string;
+    ruleId: string;
   }): Promise<string> {
     const messageId = `<${input.idempotencyKey.replace(/[^a-z0-9.-]/gi, '')}@mailops.divo>`;
     const query = new URLSearchParams({
@@ -121,6 +130,7 @@ export class GmailHistoryClient {
       source: input.source,
       sourceRaw: Buffer.from(source.raw, 'base64url'),
       idempotencyKey: input.idempotencyKey,
+      ruleId: input.ruleId,
     });
     const sent = await this.getJson<{ id?: string }>(
       `${GMAIL_API}/messages/send`,
@@ -343,6 +353,11 @@ function messageMetadata(message: GmailMessage): MailMessageMetadata {
     snippet: message.snippet ?? '',
     bodyText: extractBody(message.payload).slice(0, MAX_BODY_CHARS),
     hasAttachment: hasAttachment(message.payload),
+    // Present only on mail Divo forwarded itself. Carried through so the sync
+    // loop can refuse to match its own output.
+    ...(headers.get(MAILOPS_HEADER.toLocaleLowerCase())
+      ? { forwardedByRuleId: headers.get(MAILOPS_HEADER.toLocaleLowerCase())! }
+      : {}),
   };
 }
 
@@ -394,6 +409,7 @@ function buildForwardMime(input: {
   source: MailMessageMetadata;
   sourceRaw: Buffer;
   idempotencyKey: string;
+  ruleId: string;
 }): Buffer {
   const original = splitRawMessage(input.sourceRaw);
   const contentHeaders = selectContentHeaders(original.headers);
@@ -416,6 +432,7 @@ function buildForwardMime(input: {
     `To: ${sanitizeHeader(input.destination)}`,
     `Subject: ${sanitizeHeader(input.subject)}`,
     `Message-ID: ${input.messageId}`,
+    `${MAILOPS_HEADER}: ${sanitizeHeader(input.ruleId)}`,
     `Date: ${new Date().toUTCString()}`,
     'MIME-Version: 1.0',
     `Content-Type: multipart/mixed; boundary="${boundary}"`,

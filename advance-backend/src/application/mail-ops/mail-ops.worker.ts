@@ -328,6 +328,19 @@ export class MailOpsWorker {
           });
           continue;
         }
+        // Divo's own forward, arriving back in the mailbox it left. A
+        // destination that aliases home plus a subject-only rule would
+        // otherwise re-match its own `Fwd:` output on every pass, forever.
+        // Skipped whichever rule sent it: a loop through two rules is still a
+        // loop.
+        if (message.forwardedByRuleId) {
+          this.log.info('mail_ops.event_self_forward_skipped', {
+            subscriptionId: claim.subscriptionId,
+            eventId: event.eventId,
+            forwardedByRuleId: message.forwardedByRuleId,
+          });
+          continue;
+        }
         for (const rawRule of rules.value) {
           let rule;
           try {
@@ -533,6 +546,7 @@ export class MailOpsWorker {
           sourceMessageId: payload.sourceMessageId,
           source: payload.message,
           idempotencyKey: payload.idempotencyKey,
+          ruleId: payload.ruleId,
         });
       } else if (
         payload.action.type === 'deliver'

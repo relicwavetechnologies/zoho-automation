@@ -201,3 +201,86 @@ describe('GmailHistoryClient message loading', () => {
     );
   });
 });
+
+describe('GmailHistoryClient forward stamping', () => {
+  it('stamps its own forwards and reads the stamp back off arriving mail', async () => {
+    let sentRaw = '';
+    const fetchStub = (async (url: string, init: any) => {
+      if (url.includes('/messages?')) {
+        return { ok: true, status: 200, json: async () => ({ messages: [] }) };
+      }
+      if (url.includes('format=raw')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            raw: Buffer.from('Subject: Original\r\n\r\nbody').toString('base64url'),
+          }),
+        };
+      }
+      if (url.includes('/messages/send')) {
+        sentRaw = Buffer.from(JSON.parse(init.body).raw, 'base64url').toString('utf8');
+        return { ok: true, status: 200, json: async () => ({ id: 'sent-1' }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+
+    const sentId = await new GmailHistoryClient(fetchStub).forward({
+      accessToken: 'token',
+      destination: 'finance@example.com',
+      mailboxEmail: 'owner@example.com',
+      sourceMessageId: 'm1',
+      source: {
+        from: 'a@b.test',
+        to: 'owner@example.com',
+        subject: 'Original',
+        snippet: '',
+        bodyText: '',
+        hasAttachment: false,
+      },
+      idempotencyKey: 'mail:idempotency',
+      ruleId: 'rule-1',
+    });
+
+    assert.equal(sentId, 'sent-1');
+    assert.match(sentRaw, /X-Divo-Mailops: rule-1/);
+  });
+
+  it('carries the stamp into event metadata so the loop can be broken', async () => {
+    const fetchStub = (async (url: string) => {
+      if (url.includes('/history?')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            historyId: '200',
+            history: [{ id: '150', messagesAdded: [{ message: { id: 'm1' } }] }],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: 'm1',
+          threadId: 't1',
+          historyId: '1',
+          internalDate: '0',
+          payload: {
+            mimeType: 'text/plain',
+            headers: [
+              { name: 'From', value: 'owner@example.com' },
+              { name: 'Subject', value: 'Fwd: Original' },
+              { name: 'X-Divo-Mailops', value: 'rule-1' },
+            ],
+          },
+        }),
+      };
+    }) as unknown as typeof fetch;
+
+    const sync = await new GmailHistoryClient(fetchStub)
+      .sync({ accessToken: 'token', historyId: '100' });
+
+    assert.equal(sync.events[0]?.metadata.forwardedByRuleId, 'rule-1');
+  });
+});
