@@ -958,6 +958,44 @@ export class MailOpsRepository {
     }
   }
 
+  /**
+   * Puts a claimed delivery back without spending the attempt it was claimed
+   * with.
+   *
+   * For refusals that are nobody's failure and will simply be true again later
+   * — a connection over its budget, a policy store that could not be read. The
+   * retry ladder abandons at five attempts with backoff totalling about
+   * seventy-five seconds, so routing these through `markDeliveryFailed` threw
+   * the mail away roughly a minute into an hour-long rate window and left the
+   * row terminal, unclaimable and undeliverable for good.
+   */
+  async rescheduleDelivery(input: {
+    deliveryId: string;
+    attempts: number;
+    nextAttemptAt: Date;
+    reason: string;
+  }): Promise<Result<boolean, InfraError>> {
+    try {
+      const updated = await this.db.mailDelivery.updateMany({
+        where: {
+          id: input.deliveryId,
+          status: 'sending',
+          attempts: input.attempts,
+        },
+        data: {
+          status: 'pending',
+          // Handing back what the claim took. Waiting is not an attempt.
+          attempts: { decrement: 1 },
+          lastError: input.reason.slice(0, 500),
+          nextAttemptAt: input.nextAttemptAt,
+        },
+      });
+      return ok(updated.count === 1);
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'mailOps.rescheduleDelivery', cause));
+    }
+  }
+
   async markDeliveryAbandoned(
     deliveryId: string,
     attempts: number,

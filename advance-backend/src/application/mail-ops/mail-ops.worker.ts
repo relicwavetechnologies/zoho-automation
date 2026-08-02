@@ -18,6 +18,8 @@ import {
 } from './mail-rule.matcher';
 
 const MAILBOX_BATCH_SIZE = 20;
+const DEFAULT_BUDGET_RETRY_MS = 5 * 60_000;
+const MAX_BUDGET_RETRY_MS = 60 * 60_000;
 const DELIVERY_BATCH_SIZE = 50;
 
 /**
@@ -75,6 +77,7 @@ type MailRepo = Pick<
   | 'reserveDelivery'
   | 'recordBlockedDelivery'
   | 'claimNextDueDelivery'
+  | 'rescheduleDelivery'
   | 'stageDeliveryDraft'
   | 'markDeliveryDelivered'
   | 'markDeliveryFailed'
@@ -147,7 +150,13 @@ export class MailOpsWorker {
         readonly companyId: string;
         readonly connectionId?: string;
         readonly action: 'execute';
-      }): Promise<{ readonly kind: string; readonly message?: string }>;
+      }): Promise<{
+        readonly kind: string;
+        readonly message?: string;
+        readonly check?: {
+          readonly windows: ReadonlyArray<{ readonly retryAfterSeconds: number }>;
+        };
+      }>;
     };
     /**
      * Tells the mailbox owner, once, when their rules have stopped running.
@@ -609,9 +618,24 @@ export class MailOpsWorker {
           action: 'execute',
         });
         if (budget.kind === 'limited' || budget.kind === 'unavailable') {
-          throw new Error(
-            budget.message ?? 'The connection rate budget refused this delivery.',
-          );
+          // Not a failed attempt — a "not yet". Counting it as an attempt
+          // abandoned the mail about a minute into an hour-long rate window,
+          // which is the opposite of what a budget is for.
+          const rescheduled = await this.deps.repo.rescheduleDelivery({
+            deliveryId: input.deliveryId,
+            attempts: input.attempts,
+            nextAttemptAt: new Date(
+              Date.now() + budgetRetryDelayMs(budget.check),
+            ),
+            reason: budget.message
+              ?? 'The connection rate budget refused this delivery.',
+          });
+          if (!rescheduled.ok) throw rescheduled.error;
+          this.log.info('mail_ops.delivery_budget_deferred', {
+            deliveryId: input.deliveryId,
+            kind: budget.kind,
+          });
+          return;
         }
       }
       let providerMessageId: string;
@@ -710,6 +734,23 @@ export class MailOpsWorker {
       });
     }
   }
+}
+
+/**
+ * When to look again after a budget refusal.
+ *
+ * The store knows exactly when each window reopens, so use the soonest of
+ * them. Without that answer — an unreadable policy store — five minutes is a
+ * cadence that neither hammers the store nor leaves mail sitting for an hour.
+ */
+function budgetRetryDelayMs(
+  check?: { readonly windows: ReadonlyArray<{ readonly retryAfterSeconds: number }> },
+): number {
+  const waits = (check?.windows ?? [])
+    .map(window => window.retryAfterSeconds)
+    .filter(seconds => Number.isFinite(seconds) && seconds > 0);
+  if (waits.length === 0) return DEFAULT_BUDGET_RETRY_MS;
+  return Math.min(Math.max(...waits) * 1_000, MAX_BUDGET_RETRY_MS);
 }
 
 function readMessageMetadata(

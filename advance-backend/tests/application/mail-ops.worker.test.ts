@@ -695,6 +695,7 @@ describe('MailOpsWorker', () => {
     let deliveryClaimed = false;
     let consumed: any;
     let failedWith: string | undefined;
+    let rescheduled: any;
     let larkSends = 0;
     const worker = new MailOpsWorker({
       repo: {
@@ -731,6 +732,10 @@ describe('MailOpsWorker', () => {
           return { ok: true, value: true };
         },
         markDeliveryAbandoned: async () => ({ ok: true, value: true }),
+        rescheduleDelivery: async (input: any) => {
+          rescheduled = input;
+          return { ok: true, value: true };
+        },
       },
       gmail: {
         watch: async () => { throw new Error('unused'); },
@@ -742,7 +747,11 @@ describe('MailOpsWorker', () => {
       connectionRateLimits: {
         consume: async (input: any) => {
           consumed = input;
-          return { kind: 'limited', message: 'Connection budget exhausted.' };
+          return {
+            kind: 'limited',
+            message: 'Connection budget exhausted.',
+            check: { windows: [{ retryAfterSeconds: 1_800 }] },
+          };
         },
       },
       deliverLark: async () => { larkSends += 1; return 'unexpected'; },
@@ -757,9 +766,83 @@ describe('MailOpsWorker', () => {
       action: 'execute',
     });
     assert.equal(larkSends, 0);
-    // Failed, not abandoned: the budget window reopens and the mail is still
-    // sitting there.
-    assert.equal(failedWith, 'Connection budget exhausted.');
+    // Rescheduled, not failed. The retry ladder abandons at five attempts with
+    // backoff totalling about seventy-five seconds, so counting this as an
+    // attempt threw the mail away a minute into a half-hour rate window.
+    assert.equal(failedWith, undefined);
+    assert.equal(rescheduled?.deliveryId, 'delivery-1');
+    assert.equal(rescheduled?.attempts, 1);
+    assert.equal(rescheduled?.reason, 'Connection budget exhausted.');
+    // Waits for the window the store actually reported, not a guess.
+    const waitMs = rescheduled!.nextAttemptAt.getTime() - Date.now();
+    assert.ok(waitMs > 1_700_000 && waitMs <= 1_800_000, `waited ${waitMs}ms`);
+  });
+
+  it('never abandons a delivery for being over budget, however long that lasts', async () => {
+    // The claim spends an attempt, so a refusal has to hand it back — five
+    // refusals inside a rate window must leave the row exactly where it was.
+    let claims = 0;
+    let abandoned = 0;
+    let failed = 0;
+    const attemptsSeen: number[] = [];
+    const worker = new MailOpsWorker({
+      repo: {
+        claimNextWatchRenewal: async () => ({ ok: true, value: null }),
+        claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        claimNextDueDelivery: async () => {
+          if (claims >= 5) return { ok: true, value: null };
+          claims += 1;
+          return {
+            ok: true,
+            value: {
+              deliveryId: 'delivery-1',
+              // The row never advances, because every refusal gives the
+              // attempt back.
+              attempts: 1,
+              payload: {
+                companyId: 'company-1',
+                userId: 'user-1',
+                subscriptionId: 'mailbox-1',
+                connectionId: 'connection-1',
+                mailboxEmail: 'user@example.com',
+                ruleId: 'rule-1',
+                eventId: 'event-1',
+                sourceMessageId: 'message-1',
+                idempotencyKey: 'mail:idempotency',
+                action: { type: 'deliver' },
+                destination: { type: 'lark_chat', chatId: 'oc_destination' },
+                message: event.metadata,
+              },
+            },
+          };
+        },
+        rescheduleDelivery: async (input: any) => {
+          attemptsSeen.push(input.attempts);
+          return { ok: true, value: true };
+        },
+        markDeliveryDelivered: async () => ({ ok: true, value: true }),
+        markDeliveryFailed: async () => { failed += 1; return { ok: true, value: true }; },
+        markDeliveryAbandoned: async () => { abandoned += 1; return { ok: true, value: true }; },
+      },
+      gmail: {
+        watch: async () => { throw new Error('unused'); },
+        sync: async () => { throw new Error('unused'); },
+      },
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      connectionRateLimits: {
+        consume: async () => ({ kind: 'limited', message: 'Over budget.' }),
+      },
+      deliverLark: async () => { throw new Error('Nothing should be delivered.'); },
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(claims, 5);
+    assert.equal(failed, 0);
+    assert.equal(abandoned, 0);
+    assert.deepEqual(attemptsSeen, [1, 1, 1, 1, 1]);
   });
 
   it('abandons rather than retries a Lark chat owned by another company', async () => {
