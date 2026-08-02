@@ -533,15 +533,24 @@ references. Mail Ops is provisioned by two different paths:
 | Path | What it provisions | When it runs |
 |---|---|---|
 | [`admin-auth.routes.ts`](../advance-backend/src/http/admin/admin-auth.routes.ts) `:420` | `mail-ops` + `google-workspace-router` **skills** | at company creation |
-| [`reconcile-capabilities.ts`](../advance-backend/scripts/reconcile-capabilities.ts) `:46`, `:53` | skills **and** `mailAutomations` permission rows | **manually, by an operator** |
+| [`reconcile-capabilities.ts`](../advance-backend/scripts/reconcile-capabilities.ts) `:46`, `:53` | skills **and** `mailAutomations` permission rows | *[corrected 2026-08-02]* **on every backend boot** — `package.json` binds it to `prestart`, the image `CMD` is `pnpm start`, and the compose service has no `command:` override |
 | `memberTemplateGrants()` in [`department-admin.service.ts`](../advance-backend/src/application/departments/department-admin.service.ts) `:27` | `mailAutomations` permission rows for the two system roles | at **department** creation |
 
-> **Operational trap.** The dev deploy runs `pnpm provision:google-workspace-skills`,
-> which does **not** cover Mail Ops. Whether a given user can create a mail rule
-> therefore depends on *when their department was created* relative to the
-> deploy that introduced `mailAutomations`, and on whether an operator remembered
-> to run `reconcile-capabilities.ts`. Missing permission rows are denied at
-> runtime, silently. See defects P1–P3 in the finalization plan.
+> **[corrected 2026-08-02] The operational trap was the opposite of what was
+> written here.** The claim was that provisioning depended on an operator
+> remembering to run `reconcile-capabilities.ts`. It runs on every boot, and the
+> real problem was what it did when it ran: it granted all five actions to
+> **every** `DepartmentRole` including hand-configured ones, so an admin could
+> narrow a custom role and watch it re-widen at the next deploy — and it *threw*
+> on any company without an active administrator, which failed `prestart` and so
+> kept the backend from serving at all.
+>
+> Fixed in Wave 7. It now writes only to the two system roles, exactly as
+> department creation does; skips any role already holding a `mailAutomations`
+> row, allowed or denied; skips and reports a company between administrators
+> instead of throwing; and invalidates the permission cache for each department
+> it wrote to, so a grant is visible immediately rather than within fifteen
+> minutes. A second run writes nothing. See P1–P3 in the finalization plan.
 
 ### 7.2 `google-workspace-router`
 
@@ -721,6 +730,32 @@ Archived rules cannot be resumed — `resume` on one returns the misleading
   rule rather than archive anything. Both are recognised by recomputed identity,
   not by stored key, for the same reason as `create`.
 
+**[added 2026-08-02] Two more destinations and one more operation (Wave 8).**
+
+`destination: {"type":"organize","label":"Receipts","archive":true,"markRead":false}`
+files the message in the member's own Gmail and **sends nothing**. At least one
+of `label`, `archive`, `markRead` must be set; a missing label is created.
+Archiving is removing `INBOX`. A destination address on an `organize` rule is
+refused rather than ignored, because a stray one means its author believed mail
+was going somewhere.
+
+`rateLimitPerHour` sits beside the destination (1–1000) and applies to `email`
+and `lark_chat` only. Over the ceiling a message is **dropped and recorded as
+`blocked`, not queued** — the rest does not arrive later. It is not part of a
+rule's identity, so re-creating a rule with a new ceiling updates the existing
+rule rather than forking it.
+
+`{"operation":"test","ruleId":"<uuid>","limit":50}` — and `POST
+/api/mail-automations/rules/:ruleId/test` — replay the rule over mail Divo has
+already recorded and report what it would have matched. Nothing is sent, no
+Gmail API is touched, and it reads through `MailOpsReadRepository` so it cannot
+reach a lease or a cursor. Gated on `read`, deliberately: the member whose edit
+rights were just withdrawn is the one most likely to need it. `predatingCount`
+counts hits older than the rule's `activatedAt` — real matches the runtime will
+never act on, kept separate so they cannot read as a promised backfill. A
+`consideredCount` of 0 means the mailbox has no recorded mail yet, which is not
+the same answer as "this rule matches nothing".
+
 ### 8.2 Match fields
 
 At least one is required. All supplied criteria are combined with logical AND.
@@ -732,6 +767,9 @@ At least one is required. All supplied criteria are combined with logical AND.
 | `subjectContains` | Case-insensitive substring | Literal `String.includes`. `"OTP\|verification code"` and `"*invoice*"` match nothing. (T8) |
 | `bodyContains` | Case-insensitive substring of extracted bounded text | Sees the first `text/plain` part, else stripped HTML, capped at 50,000 chars. Never attachment contents. |
 | `hasAttachment` | Exact Boolean equality | *[corrected 2026-08-02]* True only for an attached file. A part saying `Content-Disposition: inline`, or carrying a `Content-ID` without saying `attachment`, no longer counts — a signature logo does not make a message "has attachment". (D10 — fixed) |
+| `notFrom` | *[added 2026-08-02]* Exact mailbox or `@domain`, excluded | Narrowing-only: rejected unless the rule also has `from`, `to`, `subjectContains` or `bodyContains`. Rejected when it cancels its own `from`. A `From` header that cannot be parsed **fails** the exclusion, so the rule does not fire — an unreadable header is not evidence the sender is someone else. (Wave 8) |
+| `notSubjectContains` | *[added 2026-08-02]* Case-insensitive substring, excluded | Narrowing-only. Rejected when every subject satisfying `subjectContains` would also contain it. Tests the subject only, never the body. (Wave 8) |
+| `activeWindow` | *[added 2026-08-02]* `{days?, start, end, timeZone}` in local wall clock | Narrowing-only. `timeZone` is a **required** IANA name with no default. Half-open: `09:00`–`18:00` includes 09:00, excludes 18:00. An `end` at or before `start` is overnight and belongs to the day it opened on. Judged on **arrival time**, not processing time. Unlike `to`, it is *not* loosened for stored rules — an unresolvable timezone fails to parse and the rule reports itself broken. (Wave 8) |
 
 Valid sender examples:
 
