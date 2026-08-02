@@ -81,8 +81,8 @@ describe('MailOpsRepository', () => {
           findInput = input;
           return { id: 'rule-1', subscriptionId: 'mailbox-1' };
         },
-        // No other rule on this mailbox already answers to the new key.
-        findUnique: async () => null,
+        // No other rule on this mailbox is the rule being asked for.
+        findMany: async () => [],
         update: async (input: any) => {
           ruleUpdate = input;
         },
@@ -749,7 +749,16 @@ describe('MailOpsRepository', () => {
       $transaction: async (fn: any) => fn({
         mailAutomationRule: {
           findFirst: async () => ({ id: 'rule-1', subscriptionId: 'mailbox-1', status: 'active' }),
-          findUnique: async () => ({ id: 'rule-2' }),
+          // Carrying the key the old formula produced, which no request can
+          // reproduce — so it is recognised by what it holds, not by its key.
+          findMany: async () => [{
+            id: 'rule-2',
+            status: 'active',
+            dedupeKey: 'mail-rule:whatever-the-old-serialisation-produced',
+            matchJson: { subjectContains: 'OTP' },
+            actionJson: { type: 'forward' },
+            destinationJson: { type: 'email', email: 'owner@example.com' },
+          }],
           update: async () => {
             throw new Error('The duplicate must be caught before the write.');
           },
@@ -767,7 +776,14 @@ describe('MailOpsRepository', () => {
       match: { subjectContains: 'otp' },
       action: { type: 'forward' },
       destination: { type: 'email', email: 'owner@example.com' },
-      dedupeKey: 'mail-rule:already-taken',
+      dedupeKey: mailRuleDedupeKey({
+        companyId: 'company-1',
+        userId: 'user-1',
+        connectionId: 'connection-1',
+        match: { subjectContains: 'otp' },
+        action: { type: 'forward' },
+        destination: { type: 'email', email: 'owner@example.com' },
+      }),
     });
 
     assert.deepEqual(result, { ok: true, value: 'duplicate' });
@@ -781,7 +797,14 @@ describe('MailOpsRepository', () => {
       $transaction: async (fn: any) => fn({
         mailAutomationRule: {
           findFirst: async () => ({ id: 'rule-1', subscriptionId: 'mailbox-1', status: 'active' }),
-          findUnique: async () => ({ id: 'rule-2', status: 'archived' }),
+          findMany: async () => [{
+            id: 'rule-2',
+            status: 'archived',
+            dedupeKey: 'mail-rule:whatever-the-old-serialisation-produced',
+            matchJson: { subjectContains: 'OTP' },
+            actionJson: { type: 'forward' },
+            destinationJson: { type: 'email', email: 'owner@example.com' },
+          }],
           update: async () => {
             throw new Error('The duplicate must be caught before the write.');
           },
@@ -799,7 +822,14 @@ describe('MailOpsRepository', () => {
       match: { subjectContains: 'otp' },
       action: { type: 'forward' },
       destination: { type: 'email', email: 'owner@example.com' },
-      dedupeKey: 'mail-rule:already-taken',
+      dedupeKey: mailRuleDedupeKey({
+        companyId: 'company-1',
+        userId: 'user-1',
+        connectionId: 'connection-1',
+        match: { subjectContains: 'otp' },
+        action: { type: 'forward' },
+        destination: { type: 'email', email: 'owner@example.com' },
+      }),
     });
 
     assert.deepEqual(result, { ok: true, value: 'duplicate_archived' });
@@ -1003,7 +1033,7 @@ describe('MailOpsRepository', () => {
       $transaction: async (fn: any) => fn({
         mailAutomationRule: {
           findFirst: async () => current,
-          findUnique: async () => null,
+          findMany: async () => [],
           update: async (input: any) => { updates.push(input); },
         },
         mailboxSubscription: { update: async () => undefined },

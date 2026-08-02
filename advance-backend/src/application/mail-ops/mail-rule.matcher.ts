@@ -315,7 +315,11 @@ function splitRecipients(header: string): string[] {
         continue;
       }
     }
-    if (character === ',' && !hidden) {
+    // `;` as well as `,`: it closes a group — `Team: ana@x.example,
+    // bob@x.example;` — and some clients simply separate recipients with it.
+    // Either way what follows is a different recipient, which is exactly what
+    // an entry boundary means.
+    if ((character === ',' || character === ';') && !hidden) {
       entries.push(entry);
       entry = '';
       continue;
@@ -353,7 +357,12 @@ function addressIn(entry: string): string | undefined {
   const addresses = entry
     .trim()
     .split(/\s+/)
-    .map(token => token.replace(/^[;:,<>]+/, '').replace(/[;:,<>.]+$/, ''))
+    // A group label sits on the front of the first recipient when no space
+    // follows the colon — `Team:ana@example.com` is one token holding one
+    // address, and `:` is not legal in a local part, so the whole token would
+    // otherwise be refused and that recipient lost.
+    .map(token => token.slice(token.lastIndexOf(':') + 1))
+    .map(token => token.replace(/^[<>]+/, '').replace(/[<>.]+$/, ''))
     .filter(token => WHOLE_ADDRESS_PATTERN.test(token));
   return addresses.length === 1 ? addresses[0]!.toLowerCase() : undefined;
 }

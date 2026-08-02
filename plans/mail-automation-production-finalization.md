@@ -356,7 +356,7 @@ The closure moved out of composition for one reason: the only test covering it s
 
 **D9.** Forwards carry `X-Divo-Mailops: <ruleId>`; the marker survives into event metadata and the sync loop skips any message wearing one, whichever rule sent it. The skip runs before authorization, so a self-forward costs no permission lookup.
 
-**Wave 6 — Matching fidelity** *(D10, D11, D13, T7)* — ✅ done. **D12 and T8 remain open**, both waiting on decisions rather than on work.
+**Wave 6 — Matching fidelity** *(D10, D11, D13, T7)* — ✅ done. **D12 and T8 remain open**, both waiting on decisions rather than on work. The wave's "plus direct MIME unit tests" is only partly met: `hasAttachment` is covered through the sync path, but `extractBody`, `splitRawMessage` and `selectContentHeaders` still have no test of their own and move to Wave 9 with the rest of §3.
 
 **D10.** A filename alone no longer makes a message attachment-bearing. An inline part — a signature logo, a tracking pixel, an embedded screenshot — is one the message draws itself with, and says so through `Content-Disposition: inline` or the `Content-ID` its HTML points at. A part saying `attachment` outright is one regardless, since some clients stamp a `Content-ID` on every part they emit. A filename with nothing contradicting it still counts, because Gmail omits the disposition on plenty of genuine attachments; the test asserts each direction.
 

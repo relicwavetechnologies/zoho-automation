@@ -321,6 +321,20 @@ describe('mailAutomations tool', () => {
       ...message,
       to: 'ana@example.com, "unterminated <bo@example.com>',
     }), true);
+    // Group syntax, with and without the space a group label usually has after
+    // it, and the semicolon some clients use to separate recipients outright.
+    assert.equal(mailRuleMatches({ to: 'ana@example.com' }, {
+      ...message,
+      to: 'Team:ana@example.com,bob@example.com;',
+    }), true);
+    assert.equal(mailRuleMatches({ to: 'bob@example.com' }, {
+      ...message,
+      to: 'Team: ana@example.com, bob@example.com;',
+    }), true);
+    assert.equal(mailRuleMatches({ to: 'ana@example.com' }, {
+      ...message,
+      to: 'ana@example.com; bob@example.com',
+    }), true);
   });
 
   it('keeps a stored free-text recipient rule firing while refusing to create another', () => {

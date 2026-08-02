@@ -220,6 +220,63 @@ export class MailOpsRepository {
   }
 
   /**
+   * Every rule this member holds on this mailbox, oldest first.
+   *
+   * Ordered so two requests racing the same decision reach the same one rather
+   * than each acting on a different row. Archived rules are included:
+   * recreating one is the only way to bring it back, so an archived row that is
+   * this rule must be visible here or a revive silently becomes a second rule.
+   */
+  private async rulesOnMailbox(
+    client: Pick<MailOpsDb, 'mailAutomationRule'>,
+    input: { companyId: string; connectionId: string; createdByUserId?: string; userId?: string },
+  ) {
+    return client.mailAutomationRule.findMany({
+      where: {
+        companyId: input.companyId,
+        createdByUserId: input.createdByUserId ?? input.userId!,
+        subscription: { connectionId: input.connectionId },
+      },
+      select: {
+        id: true,
+        status: true,
+        dedupeKey: true,
+        matchJson: true,
+        actionJson: true,
+        destinationJson: true,
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+  }
+
+  /**
+   * Is this stored rule the one being asked for?
+   *
+   * Answered from what the row holds, never from the key it carries. Every rule
+   * written before canonicalisation carries a key derived by the old formula,
+   * and that key cannot be reproduced from a request — so a comparison of
+   * stored keys is blind to exactly the rules the migration is about.
+   */
+  private isSameRule(
+    rule: {
+      matchJson: unknown;
+      actionJson: unknown;
+      destinationJson: unknown;
+    },
+    input: { companyId: string; connectionId: string; dedupeKey: string },
+    userId: string,
+  ): boolean {
+    return mailRuleDedupeKey({
+      companyId: input.companyId,
+      userId,
+      connectionId: input.connectionId,
+      match: rule.matchJson as MailRuleMatch,
+      action: rule.actionJson as MailRuleAction,
+      destination: rule.destinationJson as MailRuleDestination,
+    }) === input.dedupeKey;
+  }
+
+  /**
    * Move a rule keyed before canonicalisation onto the key its content earns.
    *
    * Without this, canonicalising the key would cause on its first use the exact
@@ -245,36 +302,11 @@ export class MailOpsRepository {
   private async adoptRuleKeyedBeforeCanonicalisation(
     input: CreateMailAutomationRuleInput,
   ): Promise<void> {
-    const candidates = await this.db.mailAutomationRule.findMany({
-      // Archived rules included: recreating one is the only way to bring it
-      // back, so an archived row that is this rule must be found here or the
-      // revive below silently becomes a second rule instead.
-      where: {
-        companyId: input.companyId,
-        createdByUserId: input.createdByUserId,
-        subscription: { connectionId: input.connectionId },
-      },
-      select: {
-        id: true,
-        status: true,
-        dedupeKey: true,
-        matchJson: true,
-        actionJson: true,
-        destinationJson: true,
-      },
-      // Deterministic, so two workers racing the same create choose the same
-      // row rather than each adopting a different one and colliding.
-      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-    });
+    const candidates = await this.rulesOnMailbox(this.db, input);
     if (candidates.some(rule => rule.dedupeKey === input.dedupeKey)) return;
-    const sameRule = candidates.filter(rule => mailRuleDedupeKey({
-      companyId: input.companyId,
-      userId: input.createdByUserId,
-      connectionId: input.connectionId,
-      match: rule.matchJson as MailRuleMatch,
-      action: rule.actionJson as MailRuleAction,
-      destination: rule.destinationJson as MailRuleDestination,
-    }) === input.dedupeKey);
+    const sameRule = candidates.filter(
+      rule => this.isSameRule(rule, input, input.createdByUserId),
+    );
     if (sameRule.length === 0) return;
     // A live rule is preferred when the member already holds the fork this
     // repairs, because the create below revives whatever it lands on: adopting
@@ -377,22 +409,29 @@ export class MailOpsRepository {
           },
         });
         if (!current) return 'not_found' as const;
-        // Asking for a rule this member already holds elsewhere on the same
-        // mailbox would collide on the unique key. That collision is a real
-        // answer — the rule they are asking for exists — so it is checked here
-        // and reported, rather than left to raise inside the transaction and
-        // reach them as an infra failure they can do nothing about. It matters
-        // more since the key was canonicalised: two rules that differ only in
-        // case now land on the same key, and one of them is very likely the
-        // fork the canonicalisation exists to repair.
-        const collision = await tx.mailAutomationRule.findUnique({
-          where: { dedupeKey: input.dedupeKey },
+        // Editing a rule into one this member already holds is a real answer —
+        // the rule they are asking for exists — and it is reported rather than
+        // left to raise a unique violation inside the transaction and reach
+        // them as an infra failure they can do nothing about.
+        //
+        // Recognised the same way the create path recognises it: by what each
+        // stored rule holds, not by the key it carries. Every rule written
+        // before the key was canonicalised carries one derived by the old
+        // formula, and no request can reproduce that — so a comparison of
+        // stored keys is blind to precisely the rules this window is about, and
+        // the edit would quietly produce the second active rule, forwarding
+        // every matching message twice, that the whole exercise is against.
+        const collision = (await this.rulesOnMailbox(tx, input)).find(
+          rule => rule.id !== current.id
+            && (
+              rule.dedupeKey === input.dedupeKey
+              || this.isSameRule(rule, input, input.userId)
+            ),
+        );
+        if (collision) {
           // An archived rule holds its key too, and telling the member to
           // archive one of two rules forwarding twice would be untrue: the
           // other forwards nothing. Their way forward is a different one.
-          select: { id: true, status: true },
-        });
-        if (collision && collision.id !== current.id) {
           return collision.status === 'archived'
             ? 'duplicate_archived' as const
             : 'duplicate' as const;
