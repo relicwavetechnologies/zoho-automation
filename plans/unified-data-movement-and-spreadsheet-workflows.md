@@ -16,7 +16,7 @@
 | 2 — preview and durable offers | ✅ Done | Bounded previews, opaque 24-hour offers, fresh authorization, and idempotent confirmation implemented |
 | 3 — Lark export interaction | ✅ Done | Signed format/account cards, same-card progress, OAuth resume, and personal destination preference implemented |
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
-| 5 — Semrush and OMS convergence | 🟡 Partial | OMS central snapshot migration is integrated in `130fbd3cb`; Semrush and live OMS parity/removal evidence remain |
+| 5 — Semrush and OMS convergence | 🟡 Partial | OMS is integrated; Semrush is implemented and cold-reviewed in isolated commit `8eb621a4a`, pending safe integration and live parity evidence |
 | 6 — pasted Sheet/Drive URLs | ⬜ Not started | Typed URL resolver and existing-Sheet bulk write remain |
 | 7 — routers and provider skills | 🟡 Partial | Central export skill knows Excel; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
@@ -46,6 +46,15 @@
   isolated commit `6bec8626`) with
   14/14 OMS and 46/46 combined OMS/export checks plus TypeScript and diff
   validation. Independent cold review verdict: `ship`; live parity remains.
+- Semrush central convergence is complete in isolated commit `8eb621a4a`:
+  model-facing previews are capped at 25 rows, exports use opaque central
+  offers, partial coverage stays explicit, production no longer creates a
+  Cloudinary artifact, and confirmation transparently reruns the same governed
+  query. Optional offer-persistence failures now leave both Semrush and OMS
+  previews usable instead of failing the agent turn. Focused validation passed
+  47/47 checks plus TypeScript and diff validation; two cold-review passes found
+  no P0–P3 issue. Integration waits only for the shared `composition.ts` edit
+  owned by the other active agent to land cleanly.
 
 - Rebuilt `divo-pi-local:phase0` after detecting that the local image predated
   several committed runtime/extension changes. The controller will replace the
@@ -1114,7 +1123,8 @@ Never log:
    identity that has neither a personal Google destination nor company fallback.
 3. Obtain live OMS parity evidence before deleting the retained rollback-only
    Cloudinary path.
-4. Migrate Semrush through the same central source/offer pipeline.
+4. Integrate isolated Semrush commit `8eb621a4a`, then obtain live Semrush
+   preview/offer/export evidence before removing its rollback-only Cloudinary path.
 5. Add the pasted Google Sheet resolver and existing-Sheet streaming destination.
 6. Tune skills and routers once each instruction describes backend behavior
    that exists and is covered by contract tests.
