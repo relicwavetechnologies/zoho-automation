@@ -17,10 +17,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowRight, Check, Clock, Copy, Lock, Plus, Search, ShieldCheck,
-  TriangleAlert, UserPlus, Users,
+  Trash2, TriangleAlert, UserPlus, Users,
 } from 'lucide-react'
 import {
-  Bar, ClickRow, DataNote, Drawer, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, Seg, Skel, SkelRows,
+  Bar, ClickRow, Confirm, DataNote, Drawer, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, Seg, Skel, SkelRows,
   Switch, listPhrase, money, useStaged,
 } from './ui'
 import type { Toast } from './ui'
@@ -798,10 +798,12 @@ const stateOfUser = (tool: ToolScopeSnapshot, userId: string, action: string) =>
 export function TeamRoles({ replay, toast }: Props) {
   const dept = useMyManagedDepartment()
   const [r1] = useStaged([300], replay)
-  const { snapshot, createRole } = useDepartment(dept?.id)
+  const { snapshot, createRole, renameRole, deleteRole } = useDepartment(dept?.id)
   const matrix = useDepartmentMatrix(dept?.id)
   const [roleId, setRoleId] = useState<string | null>(null)
   const [creatingRole, setCreatingRole] = useState(false)
+  const [renaming, setRenaming] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [pending, setPending] = useState<{ toolId: string; action: string; next: boolean }[]>([])
   const [saving, setSaving] = useState(false)
 
@@ -904,6 +906,22 @@ export function TeamRoles({ replay, toast }: Props) {
             ? `${holders.length} people · ${holders.map((h) => firstName(h.name, h.email)).join(', ')}`
             : 'Nobody holds this role yet'}
           source="permissions"
+          aside={selected ? (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" className="btn" onClick={() => setRenaming(true)}>Rename</button>
+              {/*
+                * Deleting is offered even when it will be refused, and the
+                * refusal is shown rather than pre-empted. The backend owns the
+                * three rules — a system role, the default role, and a role
+                * somebody still holds — and hiding the button would leave a
+                * manager with a role they cannot remove and no idea why.
+                * Its message names the reason and what to do about it.
+                */}
+              <button type="button" className="btn" onClick={() => setDeleting(true)}>
+                <Trash2 size={14} />Delete
+              </button>
+            </div>
+          ) : undefined}
         >
           <div className="ws-panel-body">
             {!r1 || matrix.loading ? <SkelRows n={6} icon={false} /> : matrix.error ? (
@@ -929,6 +947,44 @@ export function TeamRoles({ replay, toast }: Props) {
           </div>
         </Panel>
       </div>
+
+      {renaming && selected ? (
+        <Prompt
+          title="Rename role"
+          description="Only the label changes. Everyone keeps the role and everything it grants."
+          label="Name"
+          initial={selected.name}
+          confirm="Rename"
+          onClose={() => setRenaming(false)}
+          onConfirm={async (name) => {
+            try { await renameRole(selected.id, name); toast(`Renamed to ${name}`) }
+            catch { toast('Could not rename that role', 'error') }
+          }}
+        />
+      ) : null}
+
+      {deleting && selected ? (
+        <Confirm
+          title={`Delete ${selected.name}?`}
+          body={holders.length
+            ? `${holders.length} ${holders.length === 1 ? 'person holds' : 'people hold'} this role. Move them to another role first — the backend will refuse this until you do.`
+            : 'Nobody holds this role, so nothing anyone can do changes. The permissions granted to it are removed with it.'}
+          confirm="Delete role"
+          onClose={() => setDeleting(false)}
+          onConfirm={async () => {
+            try {
+              await deleteRole(selected.id)
+              setRoleId(null)
+              toast(`${selected.name} deleted`)
+            } catch (e) {
+              // The service refuses with a sentence that already says what to
+              // do — "Move members off this role before deleting it" — so it is
+              // shown as-is rather than flattened into "could not delete".
+              toast(e instanceof Error ? e.message : 'Could not delete that role', 'error')
+            }
+          }}
+        />
+      ) : null}
 
       {creatingRole ? (
         <Prompt
