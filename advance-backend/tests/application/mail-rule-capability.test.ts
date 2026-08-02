@@ -479,6 +479,132 @@ describe('rule identity', () => {
   });
 });
 
+describe('phrase matching', () => {
+  /** The creation path: what a new rule is allowed to say. */
+  const authored = (match: Record<string, unknown>) =>
+    mailRuleMatchSchema.parse(match);
+  /** The stored path: what an existing rule is read back as. */
+  const ruleWith = (match: Record<string, unknown>) => parseMailRule({
+    match,
+    action: { type: 'forward' },
+    destination: { type: 'email', email: 'owner@example.com' },
+  });
+
+  it('strips the search-box decoration people type around a phrase', () => {
+    // Every one of these matched nothing, silently, while `list` reported the
+    // rule valid — the exact shape of failure this subsystem exists to remove.
+    for (const typed of ['*invoice*', '%invoice%', '"invoice"', '  invoice  ']) {
+      const { match } = ruleWith({ subjectContains: typed });
+      assert.equal(match.subjectContains, 'invoice', `for ${typed}`);
+    }
+  });
+
+  it('collapses the whitespace a wrapped subject was pasted with', () => {
+    const { match } = ruleWith({ subjectContains: 'Your  secure\n  link' });
+    assert.equal(match.subjectContains, 'Your secure link');
+  });
+
+  it('matches any phrase in a list', () => {
+    const { match } = ruleWith({
+      subjectContains: ['OTP', 'verification code'],
+    });
+
+    assert.equal(mailRuleMatches(match, message({ subject: 'Your OTP' }), TUESDAY_AFTERNOON), true);
+    assert.equal(
+      mailRuleMatches(match, message({ subject: 'Your verification code' }), TUESDAY_AFTERNOON),
+      true,
+    );
+    assert.equal(
+      mailRuleMatches(match, message({ subject: 'Weekly digest' }), TUESDAY_AFTERNOON),
+      false,
+    );
+  });
+
+  it('refuses a pipe by name, and says to use a list instead', () => {
+    // Deliberately not split. `Acme | Invoice 42` is an ordinary subject, so
+    // splitting would silently widen somebody's rule — the same defect as the
+    // silent narrowing it replaces, pointed the other way.
+    assert.throws(
+      () => authored({ subjectContains: 'OTP|verification code' }),
+      /list instead/,
+    );
+  });
+
+  it('does not retroactively refuse a stored rule for the same spelling', () => {
+    // A stored subject can legitimately contain any of these — `Acme | Invoice`
+    // is an ordinary subject line. Refusing on read would stop a rule that has
+    // been working, which is a worse failure than the one being fixed, and the
+    // creation path already prevents new ones.
+    assert.doesNotThrow(() => ruleWith({ subjectContains: 'Acme | Invoice' }));
+  });
+
+  it('refuses a regular expression rather than matching it literally', () => {
+    assert.throws(
+      () => authored({ subjectContains: '^Invoice.*' }),
+      /not a regular expression/,
+    );
+    assert.throws(
+      () => authored({ subjectContains: 'Invoice [0-9]{6}' }),
+      /not a regular expression/,
+    );
+  });
+
+  it('refuses a wildcard left in the middle, where stripping it would be a guess', () => {
+    assert.throws(
+      () => authored({ subjectContains: 'Inv*ice' }),
+      /wildcard in the middle/,
+    );
+  });
+
+  it('is the same rule however the list is ordered', () => {
+    // Identity is derived from this value. Two orders hashing differently would
+    // hand the member two rules forwarding every message twice.
+    const one = mailRuleDedupeKey({
+      companyId: 'c', userId: 'u', connectionId: 'n',
+      match: ruleWith({ subjectContains: ['OTP', 'code'] }).match,
+      action: { type: 'forward' },
+      destination: { type: 'email', email: 'owner@example.com' },
+    });
+    const other = mailRuleDedupeKey({
+      companyId: 'c', userId: 'u', connectionId: 'n',
+      match: ruleWith({ subjectContains: ['code', 'OTP'] }).match,
+      action: { type: 'forward' },
+      destination: { type: 'email', email: 'owner@example.com' },
+    });
+
+    assert.equal(one, other);
+  });
+
+  it('is the same rule whether one phrase is written alone or in a list', () => {
+    const identity = (match: Record<string, unknown>) => mailRuleDedupeKey({
+      companyId: 'c', userId: 'u', connectionId: 'n',
+      match: ruleWith(match).match,
+      action: { type: 'forward' },
+      destination: { type: 'email', email: 'owner@example.com' },
+    });
+
+    assert.equal(
+      identity({ subjectContains: 'invoice' }),
+      identity({ subjectContains: ['invoice'] }),
+    );
+  });
+
+  it('only calls a list rule dead when every alternative is excluded', () => {
+    // One surviving alternative means the rule still matches something.
+    assert.doesNotThrow(() => authored({
+      subjectContains: ['Invoice paid', 'Receipt'],
+      notSubjectContains: 'paid',
+    }));
+    assert.throws(
+      () => authored({
+        subjectContains: ['Invoice paid', 'Payment paid'],
+        notSubjectContains: 'paid',
+      }),
+      /could never match/,
+    );
+  });
+});
+
 describe('dry run', () => {
   const rule = {
     match: { subjectContains: 'Invoice' },

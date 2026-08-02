@@ -100,6 +100,10 @@ const mailboxCriterionSchema = (subject: 'Sender' | 'Recipient') =>
 const senderCriterionSchema = mailboxCriterionSchema('Sender');
 const recipientCriterionSchema = mailboxCriterionSchema('Recipient');
 
+/** One phrase or many, always read as many. */
+const asPhrases = (value: string | readonly string[]): readonly string[] =>
+  typeof value === 'string' ? [value] : value;
+
 /** Fields that narrow a rule to a recognisable slice of someone's mail. */
 const NARROWING_FIELDS = ['from', 'to', 'subjectContains', 'bodyContains'] as const;
 
@@ -136,6 +140,89 @@ const activeWindowSchema = z.object({
 });
 
 /**
+ * A phrase somebody typed, reduced to the text they meant to match.
+ *
+ * People reach for the syntax of whatever search box they last used, and every
+ * one of those spellings matched *nothing* — a rule reported `valid: true` and
+ * sat silent for weeks, which is the failure this whole subsystem exists to
+ * stop. The decorations below are unambiguous: nobody writing `*invoice*` wants
+ * a subject with asterisks in it, and no real subject is wrapped in the quotes
+ * somebody typed around their search term.
+ *
+ * Only decoration is removed. Anything that changes *which* messages match is
+ * refused instead, by `phraseSchema` — a guessed widening is the same defect as
+ * today's silent narrowing, pointed the other way.
+ */
+export function normalizePhrase(raw: string): string {
+  return raw
+    .trim()
+    // Quotes somebody wrapped their search term in, straight or curly.
+    .replace(/^["'\u201c\u2018]+|["'\u201d\u2019]+$/g, '')
+    // Glob and SQL wildcards at the ends. Interior ones stay: `a*b` is a
+    // pattern, not decoration, and is refused below rather than mangled.
+    .replace(/^[*%]+|[*%]+$/g, '')
+    // A subject wraps and gets re-flowed; nobody means to match a run of
+    // spaces or the newline they pasted in.
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * The spellings that mean something we cannot honestly act on.
+ *
+ * `|` is the one worth naming: it usually means "either of these", but
+ * `Acme | Invoice 42` is also an ordinary subject line, so splitting on it
+ * would silently *widen* somebody's rule. Refusing and pointing at the list
+ * form is the only answer that is never wrong.
+ */
+const PATTERN_HINTS: ReadonlyArray<{ test: RegExp; hint: string }> = [
+  {
+    test: /\|/,
+    hint: 'Write the alternatives as a list instead — ["OTP", "verification '
+      + 'code"] — because a subject can legitimately contain a "|".',
+  },
+  {
+    test: /[*%]/,
+    hint: 'Matching is "contains", so a wildcard in the middle has nothing to '
+      + 'do. Write the part that is always there.',
+  },
+  {
+    test: /^\^|\$$|\[.*\]|\{\d+,?\d*\}|\.\*/,
+    hint: 'Matching is plain text, not a regular expression. Write the words '
+      + 'as they appear in the message.',
+  },
+];
+
+/**
+ * One phrase, or a list of phrases any of which matches.
+ *
+ * The list is what `|` was reaching for. It is sorted and de-duplicated on the
+ * way in so that the same set written in two orders is the same rule — the
+ * identity key is derived from this value, and `["a","b"]` and `["b","a"]`
+ * would otherwise be two rules forwarding every message twice.
+ */
+const phraseSchema = z
+  .union([z.string(), z.array(z.string()).min(1).max(20)])
+  .transform(value => (Array.isArray(value) ? value : [value])
+    .map(normalizePhrase)
+    .filter(phrase => phrase.length > 0))
+  .pipe(z.array(z.string().min(1)).min(1))
+  .transform(phrases => [...new Set(phrases.map(p => p))].sort())
+  .superRefine((phrases, ctx) => {
+    for (const phrase of phrases) {
+      const hint = PATTERN_HINTS.find(({ test }) => test.test(phrase));
+      if (hint) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `"${phrase}" looks like a search pattern. ${hint.hint}`,
+        });
+        return;
+      }
+    }
+  })
+  .transform(phrases => (phrases.length === 1 ? phrases[0]! : phrases));
+
+/**
  * What a newly submitted match may say.
  *
  * `.strict()` because the alternative is worse than a rejection: Zod strips
@@ -147,11 +234,11 @@ const activeWindowSchema = z.object({
 export const mailRuleMatchSchema = z.object({
   from: senderCriterionSchema.optional(),
   to: recipientCriterionSchema.optional(),
-  subjectContains: z.string().trim().min(1).optional(),
-  bodyContains: z.string().trim().min(1).optional(),
+  subjectContains: phraseSchema.optional(),
+  bodyContains: phraseSchema.optional(),
   hasAttachment: z.boolean().optional(),
   notFrom: senderCriterionSchema.optional(),
-  notSubjectContains: z.string().trim().min(1).optional(),
+  notSubjectContains: phraseSchema.optional(),
   activeWindow: activeWindowSchema.optional(),
 }).strict().refine(
   // Exclusions are not narrowing. `notFrom` alone describes every message
@@ -172,15 +259,19 @@ export const mailRuleMatchSchema = z.object({
       + 'one of them.',
   },
 ).refine(
-  value => !(
-    value.subjectContains
-    && value.notSubjectContains
-    && value.subjectContains.toLowerCase()
-      .includes(value.notSubjectContains.toLowerCase())
-  ),
+  // With lists, the rule is dead only when *every* phrase it looks for
+  // contains one of the phrases it excludes — if one alternative survives, the
+  // rule still matches something.
+  value => {
+    if (!value.subjectContains || !value.notSubjectContains) return true;
+    const wanted = asPhrases(value.subjectContains);
+    const unwanted = asPhrases(value.notSubjectContains);
+    return !wanted.every(want =>
+      unwanted.some(avoid => want.toLowerCase().includes(avoid.toLowerCase())));
+  },
   {
-    message: 'Every subject containing subjectContains also contains '
-      + 'notSubjectContains, so this rule could never match.',
+    message: 'Every subject this rule looks for also contains something it '
+      + 'excludes, so it could never match.',
   },
 );
 
@@ -218,14 +309,31 @@ function excludes(exclusion: string, inclusion: string): boolean {
  *   header alone (see `recipientMatches`).
  * - `hasAttachment` alone still counts as a match clause.
  */
+/**
+ * The same field, read back off a rule that already exists.
+ *
+ * Looser than `phraseSchema` on purpose, and for the reason the rest of the
+ * stored schema is: a rule written under an older grammar has to keep running.
+ * It normalises but never refuses, because refusing here does not stop a bad
+ * rule being created — that already happened — it stops a working rule from
+ * firing.
+ */
+const storedPhraseSchema = z
+  .union([z.string(), z.array(z.string())])
+  .transform(value => (Array.isArray(value) ? value : [value])
+    .map(normalizePhrase)
+    .filter(phrase => phrase.length > 0))
+  .pipe(z.array(z.string().min(1)).min(1))
+  .transform(phrases => (phrases.length === 1 ? phrases[0]! : phrases));
+
 const storedMailRuleMatchSchema = z.object({
   from: senderCriterionSchema.optional(),
   to: z.string().trim().min(1).optional(),
-  subjectContains: z.string().trim().min(1).optional(),
-  bodyContains: z.string().trim().min(1).optional(),
+  subjectContains: storedPhraseSchema.optional(),
+  bodyContains: storedPhraseSchema.optional(),
   hasAttachment: z.boolean().optional(),
   notFrom: senderCriterionSchema.optional(),
-  notSubjectContains: z.string().trim().min(1).optional(),
+  notSubjectContains: storedPhraseSchema.optional(),
   // Not loosened for stored rules, unlike `to`. A window whose timezone this
   // runtime cannot resolve has no answer to "is it inside the window right
   // now", and the two ways of inventing one are both wrong: matching always
@@ -373,8 +481,13 @@ export function mailRuleMatches(
    */
   occurredAt: Date,
 ): boolean {
-  const includes = (actual: string, expected: string): boolean =>
-    actual.toLowerCase().includes(expected.toLowerCase());
+  // Any one of the phrases counts. A single phrase is the same question asked
+  // of a one-item list, so there is one code path and not two.
+  const includes = (actual: string, expected: string | readonly string[]): boolean => {
+    const haystack = actual.toLowerCase();
+    return (typeof expected === 'string' ? [expected] : expected)
+      .some(phrase => haystack.includes(phrase.toLowerCase()));
+  };
   return (
     (!match.from || senderMatches(message.from, match.from))
     && (!match.to || recipientMatches(message, match.to))

@@ -164,14 +164,25 @@ export interface MailRuleActiveWindow {
   timeZone: string;
 }
 
+/**
+ * A phrase to look for, or several any one of which counts.
+ *
+ * The list is what people were reaching for when they typed
+ * `OTP|verification code` into a field that matched it literally and therefore
+ * matched nothing at all. Stored sorted and de-duplicated, so the same set
+ * written in two orders is one rule rather than two forwarding every message
+ * twice.
+ */
+export type MailRulePhrase = string | readonly string[];
+
 export interface MailRuleMatch {
   from?: string;
   to?: string;
-  subjectContains?: string;
-  bodyContains?: string;
+  subjectContains?: MailRulePhrase;
+  bodyContains?: MailRulePhrase;
   hasAttachment?: boolean;
   notFrom?: string;
-  notSubjectContains?: string;
+  notSubjectContains?: MailRulePhrase;
   activeWindow?: MailRuleActiveWindow;
 }
 
@@ -257,6 +268,19 @@ export interface MailRuleIdentity {
  * `actionJson` on the update branch — the action can differ from the stored one
  * in that field alone, so writing it means exactly "adopt the new ceiling".
  */
+/**
+ * A phrase field, folded for identity.
+ *
+ * Always a sorted array, even for one phrase, so `"invoice"` and `["invoice"]`
+ * are the same rule — otherwise adding a second alternative and removing it
+ * again would leave the member with a different rule than they started with.
+ */
+const phraseIdentity = (value: MailRulePhrase | undefined): string[] | null => {
+  if (value === undefined) return null;
+  const phrases = typeof value === 'string' ? [value] : value;
+  return [...new Set(phrases.map(phrase => phrase.toLowerCase()))].sort();
+};
+
 export function mailRuleDedupeKey(input: MailRuleIdentity): string {
   return `mail-rule:${sha256(JSON.stringify([
     input.companyId,
@@ -264,11 +288,11 @@ export function mailRuleDedupeKey(input: MailRuleIdentity): string {
     input.connectionId,
     input.match.from?.toLowerCase() ?? null,
     input.match.to?.toLowerCase() ?? null,
-    input.match.subjectContains?.toLowerCase() ?? null,
-    input.match.bodyContains?.toLowerCase() ?? null,
+    phraseIdentity(input.match.subjectContains),
+    phraseIdentity(input.match.bodyContains),
     input.match.hasAttachment ?? null,
     input.match.notFrom?.toLowerCase() ?? null,
-    input.match.notSubjectContains?.toLowerCase() ?? null,
+    phraseIdentity(input.match.notSubjectContains),
     activeWindowIdentity(input.match.activeWindow),
     input.action.type,
     input.action.type === 'organize' ? input.action.label?.toLowerCase() ?? null : null,
