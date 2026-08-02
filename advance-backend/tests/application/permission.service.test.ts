@@ -240,6 +240,17 @@ describe('PermissionService', () => {
       assert.ok(ids.includes('larkApproval'));
     });
 
+    it('reports an unreadable role list as a lookup failure, not an unknown role', async () => {
+      const companyRoleRepo: CompanyRoleRepoPort = {
+        getValidSlugs: async () => err(wrapInfra('prisma', 'getValidSlugs', new Error('db unavailable'))),
+      } as any;
+      const result = await new PermissionServiceImpl(buildDeps({ companyRoleRepo }))
+        .resolve(baseQuery({ companyRole: 'MEMBER' as any }));
+
+      assert.ok(!result.ok);
+      assert.equal(result.error.payload.reason, 'permission_lookup_failed');
+    });
+
     it('unknown role returns PermissionError(unknown_role)', async () => {
       const svc = new PermissionServiceImpl(buildDeps());
       const result = await svc.resolve(baseQuery({ companyRole: 'GHOST_ROLE' as any }));
@@ -309,7 +320,11 @@ describe('PermissionService', () => {
       const query = baseQuery({ companyRole: 'MEMBER' as any });
       const first = await svc.resolve(query);
       assert.ok(!first.ok);
-      assert.equal(first.error.payload.reason, 'not_allowed');
+      // Not `not_allowed`. The company axis runs on every resolve, and
+      // reporting an unreadable store as a refusal made a transient database
+      // error indistinguishable from a decision that access is absent —
+      // callers act on that difference, recording one and retrying the other.
+      assert.equal(first.error.payload.reason, 'permission_lookup_failed');
       const second = await svc.resolve(query);
       assert.ok(second.ok);
       assert.equal(attempts, 2);
