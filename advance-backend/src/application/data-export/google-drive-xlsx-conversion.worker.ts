@@ -158,6 +158,7 @@ export class GoogleDriveXlsxConversionWorker {
       const claimed = await this.deps.checkpoints.claim(job);
       if (claimed.status === 'in_progress') return { disposition: 'in_progress' };
       if (claimed.status === 'completed') {
+        await this.deps.continuity.record({ job, completion: claimed.completion });
         await this.deps.delivery.completed({ jobKey: job.jobKey, completion: claimed.completion });
         return { disposition: 'completed', completion: claimed.completion };
       }

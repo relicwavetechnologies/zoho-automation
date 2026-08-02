@@ -142,6 +142,28 @@ describe('GoogleDriveXlsxConversionWorker', () => {
     assert.equal(calls.delivered.length, 2);
   });
 
+  it('retries continuity after the verified Sheet was checkpointed', async () => {
+    let continuityAttempts = 0;
+    const { deps, calls } = createDeps({
+      continuity: {
+        record: async () => {
+          continuityAttempts += 1;
+          if (continuityAttempts === 1) throw new Error('conversation store unavailable');
+          calls.continuity += 1;
+        },
+      },
+    });
+    const worker = new GoogleDriveXlsxConversionWorker(deps);
+    await assert.rejects(worker.process(job, { finalAttempt: false }), /conversation store unavailable/);
+    const retry = await worker.process(job, { finalAttempt: true });
+
+    assert.equal(retry.disposition, 'completed');
+    assert.equal(calls.import, 1);
+    assert.equal(calls.download, 1);
+    assert.equal(continuityAttempts, 2);
+    assert.equal(calls.continuity, 1);
+  });
+
   it('does not import when identity, permission, or source access is revoked and only delivers safe failure copy', async () => {
     const cases: readonly [string, Partial<GoogleDriveXlsxConversionWorkerDeps>][] = [
       ['identity', {
