@@ -126,6 +126,13 @@ import { DataExportQueue } from './application/data-export/data-export.queue';
 import { DataExportOfferService } from './application/data-export/data-export-offer.service';
 import { WorkbookConversionQueue } from './application/data-export/workbook-conversion.queue';
 import { WorkbookConversionConfirmationService } from './application/data-export/workbook-conversion.service';
+import { GoogleDriveXlsxConversionWorker } from './application/data-export/google-drive-xlsx-conversion.worker';
+import { GoogleDriveXlsxConversionConsumer } from './application/data-export/google-drive-xlsx-conversion.consumer';
+import { GoogleDriveXlsxConversionCheckpointStore } from './application/data-export/google-drive-xlsx-conversion.checkpoint.store';
+import { WorkbookConversionLarkDelivery } from './application/data-export/workbook-conversion-lark-delivery';
+import { RedisWorkbookConversionLarkDeliveryStore } from './application/data-export/workbook-conversion-lark-delivery.store';
+import { WorkbookConversionContinuityRecorder } from './application/data-export/workbook-conversion-continuity';
+import { GoogleDriveXlsxConversionAdapter } from './infrastructure/google/google-drive-xlsx-conversion.adapter';
 import { DatasetSourceRegistry } from './application/data-export/data-export.source-registry';
 import {
   AirtableDataExportSource,
@@ -346,6 +353,7 @@ export interface Container {
   approvalInbox: ApprovalInboxService;
   dataExportQueue: DataExportQueue;
   workbookConversionQueue: WorkbookConversionQueue;
+  workbookConversionWorker: GoogleDriveXlsxConversionConsumer;
   dataExportSources: DatasetSourceRegistry;
   googleWorkspaceExportSink: GoogleWorkspaceExportSink;
   resumeDataExportAfterGoogleConnection: (input: {
@@ -2244,6 +2252,110 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       queue: workbookConversionQueue,
     }),
   );
+  const resolveWorkbookIdentity = async (companyId: string, userId: string) => {
+    const resolved = await channelIdentityRepo.resolveByUserId(userId, companyId);
+    if (!resolved.ok) throw resolved.error;
+    return resolved.value;
+  };
+  const resolveWorkbookPermission = async (input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly departmentId?: string;
+  }) => {
+    const identity = await resolveWorkbookIdentity(input.companyId, input.userId);
+    if (!identity) return null;
+    const resolved = await permissions.resolve({
+      companyId: asCompanyId(input.companyId),
+      userId: asUserId(input.userId),
+      companyRole: asCompanyRoleSlug(identity.aiRole),
+      ...(input.departmentId ? { departmentId: asDepartmentId(input.departmentId) } : {}),
+      channel: 'lark',
+    });
+    if (!resolved.ok) throw resolved.error;
+    return resolved.value;
+  };
+  const resolveWorkbookConnection = async (input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly sourceConnectionId: string;
+  }) => {
+    const resolved = await integrationConnectionRepo.findAccessibleGoogleConnection({
+      companyId: input.companyId,
+      userId: input.userId,
+      connectionId: input.sourceConnectionId,
+      minimumAccess: 'read_write',
+    });
+    if (!resolved.ok) throw resolved.error;
+    const connection = resolved.value;
+    if (!connection) return null;
+    return {
+      connectionId: connection.id,
+      companyId: connection.companyId,
+      ownerType: connection.ownerType,
+      ...(connection.ownerUserId ? { ownerUserId: connection.ownerUserId } : {}),
+      status: 'connected' as const,
+      ...(connection.accountEmail ? { accountEmail: connection.accountEmail } : {}),
+      scopes: connection.scopes,
+    };
+  };
+  const workbookConversionDelivery = new WorkbookConversionLarkDelivery({
+    store: new RedisWorkbookConversionLarkDeliveryStore(ephemeralCache),
+    lark: larkAdapter,
+    logger,
+  });
+  const workbookConversionCore = new GoogleDriveXlsxConversionWorker({
+    checkpoints: new GoogleDriveXlsxConversionCheckpointStore(ephemeralCache),
+    identity: {
+      resolve: async input => {
+        const identity = await resolveWorkbookIdentity(input.companyId, input.userId);
+        return identity
+          ? { companyId: identity.companyId, userId: identity.userId, active: true }
+          : null;
+      },
+    },
+    permissions: {
+      canReadDriveXlsx: async input => {
+        const permission = await resolveWorkbookPermission(input);
+        return permission?.allowedActionsByTool.get(asToolId('googleDrive'))?.has('read') ?? false;
+      },
+      canCreateGoogleSheet: async input => {
+        const permission = await resolveWorkbookPermission(input);
+        return permission?.allowedActionsByTool.get(asToolId('googleSheets'))?.has('create') ?? false;
+      },
+    },
+    connections: { resolve: resolveWorkbookConnection },
+    drive: new GoogleDriveXlsxConversionAdapter(async input => {
+      const connection = await integrationConnectionRepo.findAccessibleGoogleConnection({
+        companyId: input.companyId,
+        userId: input.userId,
+        connectionId: input.connectionId,
+        minimumAccess: 'read_write',
+      });
+      if (!connection.ok) throw connection.error;
+      if (
+        !connection.value?.refreshToken
+        || connection.value.ownerType !== 'user'
+        || connection.value.ownerUserId !== input.userId
+      ) {
+        throw new Error('The selected personal Google account is no longer eligible.');
+      }
+      const token = await googleOAuthService.getValidAccessToken({
+        companyId: input.companyId,
+        userId: `connection:${input.connectionId}`,
+        refreshToken: connection.value.refreshToken,
+      });
+      await integrationConnectionRepo.touchLastUsed(input.connectionId);
+      return token;
+    }),
+    continuity: new WorkbookConversionContinuityRecorder(conversationRepo),
+    delivery: workbookConversionDelivery,
+  });
+  const workbookConversionWorker = new GoogleDriveXlsxConversionConsumer({
+    redisUrl: queueRedisUrl,
+    core: workbookConversionCore,
+    delivery: workbookConversionDelivery,
+    logger,
+  });
 
   // The same decisions the Lark card carries, reachable by anyone signed in.
   // `onResolvedCard` is what stops a delivered card from still offering buttons
@@ -2382,6 +2494,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     // Data export and async ingress
     dataExportQueue,
     workbookConversionQueue,
+    workbookConversionWorker,
     dataExportSources,
     googleWorkspaceExportSink,
     resumeDataExportAfterGoogleConnection,

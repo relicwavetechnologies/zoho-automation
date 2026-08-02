@@ -87,8 +87,8 @@ export interface GoogleDriveXlsxConversionWorkerDeps {
     resolve(input: Pick<GoogleDriveXlsxConversionJob, 'companyId' | 'userId'>): Promise<GoogleDriveXlsxConversionIdentity | null>;
   };
   readonly permissions: {
-    canReadDriveXlsx(input: Pick<GoogleDriveXlsxConversionJob, 'companyId' | 'userId'>): Promise<boolean>;
-    canCreateGoogleSheet(input: Pick<GoogleDriveXlsxConversionJob, 'companyId' | 'userId'>): Promise<boolean>;
+    canReadDriveXlsx(input: Pick<GoogleDriveXlsxConversionJob, 'companyId' | 'userId' | 'departmentId'>): Promise<boolean>;
+    canCreateGoogleSheet(input: Pick<GoogleDriveXlsxConversionJob, 'companyId' | 'userId' | 'departmentId'>): Promise<boolean>;
   };
   /** This port resolves server-side OAuth only; no credential crosses this worker boundary. */
   readonly connections: {

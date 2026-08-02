@@ -197,6 +197,7 @@ export const createServer = (c: Container): DivoServerApplication => {
     logger: c.logger,
   });
   dataExportWorker.start();
+  c.workbookConversionWorker.start();
 
   // Manager persona promotion remains independent from memory, skills, RBAC,
   // and runtime prompt delivery. P5 adds a separate read-only delivery path.
@@ -853,6 +854,7 @@ export const createServer = (c: Container): DivoServerApplication => {
         { name: 'lark-ingress-worker', close: () => larkIngressWorker.stop() },
         { name: 'google-continuation-worker', close: () => googleConnectionContinuationWorker.stop() },
         { name: 'data-export-worker', close: () => dataExportWorker.stop() },
+        { name: 'workbook-conversion-worker', close: () => c.workbookConversionWorker.stop() },
         { name: 'persona-learning-worker', close: () => personaLearningWorker.stop() },
         ...(knowledgeLearningWorker
           ? [{ name: 'knowledge-learning-worker', close: () => knowledgeLearningWorker.stop() }]
@@ -864,6 +866,7 @@ export const createServer = (c: Container): DivoServerApplication => {
         { name: 'lark-ingress-queue', close: () => c.larkIngressQueue.close() },
         { name: 'google-continuation-queue', close: () => c.googleConnectionContinuationQueue.close() },
         { name: 'data-export-queue', close: () => c.dataExportQueue.close() },
+        { name: 'workbook-conversion-queue', close: () => c.workbookConversionQueue.close() },
         { name: 'persona-learning-queue', close: () => c.personaLearningQueue.close() },
         { name: 'knowledge-learning-queue', close: () => c.knowledgeLearningQueue.close() },
         { name: 'manager-teach-queue', close: () => c.managerTeachQueue.close() },
