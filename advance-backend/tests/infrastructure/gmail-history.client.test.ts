@@ -601,3 +601,68 @@ describe('GmailHistoryClient draft send', () => {
     );
   });
 });
+
+describe('GmailHistoryClient error reasons', () => {
+  const failWith = (status: number, body: unknown) => new GmailHistoryClient(
+    (async () => ({
+      ok: false,
+      status,
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+    })) as unknown as typeof fetch,
+  );
+
+  const reasonOf = async (status: number, body: unknown): Promise<string | undefined> => {
+    try {
+      await failWith(status, body).watch({
+        accessToken: 't',
+        topicName: 'projects/divo/topics/gmail',
+      });
+    } catch (error) {
+      return (error as { reason?: string }).reason;
+    }
+    throw new Error('The call should have failed.');
+  };
+
+  it('prefers the precise reason Google puts in details over the catch-all one', async () => {
+    // A real scope loss can arrive with `errors[0].reason: "forbidden"` — the
+    // one word we refuse to read as a scope problem, because a Pub/Sub topic
+    // Divo owns raises it too. Read only that, and the member who actually did
+    // revoke a grant is never told to reconnect.
+    assert.equal(
+      await reasonOf(403, {
+        error: {
+          code: 403,
+          message: 'Request had insufficient authentication scopes.',
+          errors: [{ message: 'Insufficient Permission', reason: 'forbidden' }],
+          status: 'PERMISSION_DENIED',
+          details: [{
+            '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+            reason: 'ACCESS_TOKEN_SCOPE_INSUFFICIENT',
+          }],
+        },
+      }),
+      'ACCESS_TOKEN_SCOPE_INSUFFICIENT',
+    );
+  });
+
+  it('reads the legacy reason when there are no details', async () => {
+    assert.equal(
+      await reasonOf(403, {
+        error: {
+          code: 403,
+          message: 'Error sending test message to Cloud PubSub.',
+          errors: [{ message: 'Forbidden', reason: 'forbidden' }],
+        },
+      }),
+      'forbidden',
+    );
+  });
+
+  it('falls back to the status when Google names no reason at all', async () => {
+    assert.equal(
+      await reasonOf(429, { error: { code: 429, status: 'RESOURCE_EXHAUSTED' } }),
+      'RESOURCE_EXHAUSTED',
+    );
+  });
+});

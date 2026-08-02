@@ -1010,7 +1010,6 @@ function formatLarkDelivery(payload: PendingMailDeliveryPayload): string {
   ].join('\n').slice(0, 20_000);
 }
 
-/** Google reasons that mean "too fast", not "not allowed". */
 /**
  * The reasons that genuinely mean "the member has not granted us this".
  *
@@ -1025,8 +1024,10 @@ const SCOPE_REASONS = new Set([
   'accesstokenscopeinsufficient',
 ]);
 
+/** Google reasons that mean "too fast", not "not allowed". */
 const RATE_LIMIT_REASONS = new Set([
   'ratelimitexceeded',
+  'rate_limit_exceeded',
   'userratelimitexceeded',
   'quotaexceeded',
   'dailylimitexceeded',

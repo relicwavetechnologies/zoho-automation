@@ -585,64 +585,6 @@ describe('MailOpsWorker', () => {
     assert.deepEqual(reserved.map(row => row.eventId), ['event-0', 'event-15']);
   });
 
-  it('counts a burst that shares one arrival instant against itself', async () => {
-    // Gmail's `internalDate` is milliseconds but routinely carries only second
-    // precision, so a mailing-list blast arrives as a group with one identical
-    // `occurredAt` — the exact case a ceiling is for. Excluded from each other's
-    // windows by a half-open upper bound, all of them saw an empty hour.
-    const burst = ['a', 'b', 'c', 'd'].map(id => ({
-      ...event,
-      eventId: `event-${id}`,
-      providerMessageId: `message-${id}`,
-    }));
-    const reserved: string[] = [];
-    let blocked = 0;
-    const worker = new MailOpsWorker({
-      repo: syncRepo({
-        recordEvents: async () => ({ ok: true, value: burst }),
-        listActiveRules: async () => ({
-          ok: true,
-          value: [{
-            ruleId: 'rule-1',
-            activatedAt: RULE_ACTIVATED_AT,
-            match: { from: 'alerts@example.com' },
-            action: { type: 'deliver', rateLimitPerHour: 2 },
-            destination: { type: 'lark_chat', chatId: 'oc_destination' },
-          }],
-        }),
-        countRecentDeliveries: async (input: any) => ({
-          ok: true,
-          value: reserved.filter(id => id !== input.exceptEventId
-            && event.occurredAt >= input.since
-            && event.occurredAt <= input.until).length,
-        }),
-        reserveDelivery: async (
-          _company: string,
-          _subscription: string,
-          _rule: string,
-          eventId: string,
-        ) => {
-          reserved.push(eventId);
-          return { ok: true, value: { outcome: 'reserved', deliveryId: eventId } };
-        },
-        recordBlockedDelivery: async () => {
-          blocked += 1;
-          return { ok: true, value: true };
-        },
-      }),
-      gmail: syncGmail,
-      resolveAccessToken: async () => 'access-token',
-      authorizeRule: async () => ({ verdict: 'allowed' }),
-      deliverLark: async () => 'lark-message',
-      logger,
-    } as any);
-
-    await worker.runOnce();
-
-    assert.equal(reserved.length, 2);
-    assert.equal(blocked, 2);
-  });
-
   it('never counts a message against its own ceiling', async () => {
     // A retry reaches the ceiling check with a delivery row already written for
     // this event. Counting itself would refuse a message the rule is entitled

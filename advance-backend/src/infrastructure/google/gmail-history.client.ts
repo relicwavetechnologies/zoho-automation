@@ -792,6 +792,20 @@ function providerReason(payload: unknown): string | undefined {
   if (!payload || typeof payload !== 'object') return undefined;
   const error = (payload as Record<string, unknown>)['error'];
   if (!error || typeof error !== 'object') return undefined;
+  // `details[].ErrorInfo.reason` first, because it is the most precise thing
+  // Google says. On a scope failure the legacy `errors[0].reason` can be the
+  // catch-all `forbidden` while this one is
+  // `ACCESS_TOKEN_SCOPE_INSUFFICIENT` — and `forbidden` is the reason we
+  // deliberately refuse to read as a scope problem, since a Pub/Sub topic
+  // Divo owns raises it too. Without this the member who really did lose a
+  // grant would never be told to reconnect.
+  const details = (error as Record<string, unknown>)['details'];
+  if (Array.isArray(details)) {
+    for (const entry of details) {
+      const reason = (entry as Record<string, unknown> | undefined)?.['reason'];
+      if (typeof reason === 'string' && reason.trim()) return reason.trim();
+    }
+  }
   const errors = (error as Record<string, unknown>)['errors'];
   if (Array.isArray(errors) && errors.length > 0) {
     const reason = (errors[0] as Record<string, unknown> | undefined)?.['reason'];
