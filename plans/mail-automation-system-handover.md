@@ -734,12 +734,13 @@ Invalid:
 { "from": "Anthropic" }
 ```
 
-**[added 2026-08-02] Unknown match keys are silently dropped.** The operation
-object is `.strict()`, but `mailRuleMatchSchema` is a plain `z.object`, so Zod
-strips unrecognized keys rather than rejecting them.
-`{"from":"@x.com","cc":"finance@y.com"}` creates a rule matching **only** `from`,
-reports success, and the narrowing the user asked for is gone. Only if *every*
-key is unknown does the `refine` fire. (D13.)
+**[corrected 2026-08-02] Unknown match keys are rejected.** They used to be
+stripped: `mailRuleMatchSchema` was a plain `z.object`, so
+`{"from":"@x.com","cc":"finance@y.com"}` created a rule matching **only**
+`from`, reported success, and the narrowing the user asked for was gone. The
+creation schema is `.strict()` now. A rule already stored is parsed by a looser
+schema that does not add keys it never had, so nothing in the database changed.
+(D13 — fixed.)
 
 **[corrected 2026-08-02] "At least one is required" is now a narrowing check.**
 `{"hasAttachment": true}` used to be legal and forwarded every
@@ -1416,8 +1417,9 @@ only at reservation time, in `listActiveRules`.
 ### Important boundaries
 
 - Exact `From` matching is not a standalone SPF/DKIM/DMARC validator.
-- `to` remains substring-based, and matches the `To:` header **only** — not Cc,
-  Bcc, or Delivered-To.
+- *[corrected 2026-08-02]* `to` is an exact mailbox or `@domain`, matched
+  against `To`, `Cc`, `Bcc` and `Delivered-To` together. Rules stored before
+  that keep a substring test against `To` alone and cannot be recreated.
 - `@domain` matching is `address.endsWith('@domain')`, so it does **not** match
   subdomains: `@stripe.com` misses `receipts@mail.stripe.com`.
 - Body extraction is basic text/HTML processing, not a full MIME renderer.
@@ -2096,11 +2098,11 @@ Retained here for provenance, with status:
 | 1 | Repair the legacy `"anthropic"` rule | **Still open.** Observation is from 2026-07-29; re-inspect before acting. |
 | 2 | One controlled real Gmail arrival test | **Still open** — now Wave 2 acceptance. |
 | 3 | Idempotency test | **Reframed.** The mechanism itself is unsound (§12.5). Test the draft-based replacement, not the current one. |
-| 4 | Non-match test | **Still open**, and now must cover subdomains (D12) and dropped unknown keys (D13). |
+| 4 | Non-match test | **Partly done.** Unknown keys (D13), whole-mailbox recipients and inline attachments are covered by unit tests. Subdomains (D12) still open, pending O-2. |
 | 5 | Operator metrics | **Still open** — Wave 10. Preceded by the user-facing read API in Wave 1. |
 | 6 | Define retention | **Still open** — Wave 10. |
 | 7 | Legacy-rule health visibility | **Done.** Shipped in `6b9d65751`; `list` returns `valid` / `invalidReason`. No instruction tells the model to read it — that is now a Wave 0 item. |
-| 8 | Decide `to` semantics | **Still open** — Wave 6 (D11), now bundled with Cc/Delivered-To. |
+| 8 | Decide `to` semantics | **Done.** Wave 6 (D11): exact mailbox or `@domain`, matched across `To`/`Cc`/`Bcc`/`Delivered-To`. |
 | 9 | Operator reconciliation action | **Still open** — Wave 10. |
 | 10 | Semantic actions / non-Gmail | **Still deferred** — Wave 11 and out of scope respectively. |
 

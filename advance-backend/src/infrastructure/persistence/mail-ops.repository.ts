@@ -230,14 +230,18 @@ export class MailOpsRepository {
       },
       select: {
         id: true,
+        status: true,
         dedupeKey: true,
         matchJson: true,
         actionJson: true,
         destinationJson: true,
       },
+      // Deterministic, so two workers racing the same create choose the same
+      // row rather than each adopting a different one and colliding.
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     });
     if (candidates.some(rule => rule.dedupeKey === input.dedupeKey)) return;
-    const sameRule = candidates.find(rule => mailRuleDedupeKey({
+    const sameRule = candidates.filter(rule => mailRuleDedupeKey({
       companyId: input.companyId,
       userId: input.createdByUserId,
       connectionId: input.connectionId,
@@ -245,11 +249,29 @@ export class MailOpsRepository {
       action: rule.actionJson as MailRuleAction,
       destination: rule.destinationJson as MailRuleDestination,
     }) === input.dedupeKey);
-    if (!sameRule) return;
-    await tx.mailAutomationRule.update({
-      where: { id: sameRule.id },
-      data: { dedupeKey: input.dedupeKey },
-    });
+    if (sameRule.length === 0) return;
+    // A live rule is preferred when the member already holds the fork this
+    // repairs, because the create below revives whatever it lands on: adopting
+    // the archived twin would bring a second rule back to life beside the one
+    // already forwarding, which is the outcome the whole exercise is against.
+    const adopted = sameRule.find(rule => rule.status === 'active')
+      ?? sameRule[0]!;
+    try {
+      await tx.mailAutomationRule.update({
+        where: { id: adopted.id },
+        data: { dedupeKey: input.dedupeKey },
+      });
+    } catch (cause) {
+      // Another transaction claimed the canonical key between the scan and
+      // here. That rule is this rule, so the create below finds it and there
+      // is nothing left to migrate — failing the member's request over a race
+      // that already reached the right answer would be the worse outcome.
+      if (
+        cause instanceof Prisma.PrismaClientKnownRequestError
+        && cause.code === 'P2002'
+      ) return;
+      throw cause;
+    }
   }
 
   async listRulesForUser(input: {

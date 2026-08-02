@@ -443,16 +443,30 @@ function messageMetadata(message: GmailMessage): MailMessageMetadata {
       header.value ?? '',
     ]),
   );
+  // A recipient header can legally appear more than once, and `Delivered-To`
+  // does so as a matter of course: an alias or group expansion adds one per
+  // hop, and the address the member actually typed is on whichever hop the
+  // chain started at. Keeping one of them — which is all a map of headers can
+  // hold — means a rule on that alias fires or does not depending on the order
+  // Gmail happened to return the trace in.
+  const allValuesOf = (name: string): string =>
+    (message.payload?.headers ?? [])
+      .filter(header => header.name?.toLocaleLowerCase() === name)
+      .map(header => header.value?.trim())
+      .filter((value): value is string => Boolean(value))
+      .join(', ');
+  const to = allValuesOf('to');
+  const cc = allValuesOf('cc');
+  const bcc = allValuesOf('bcc');
+  const deliveredTo = allValuesOf('delivered-to');
   return {
     from: headers.get('from') ?? '',
-    to: headers.get('to') ?? '',
     // Carried so a recipient rule sees every address the message was actually
-    // sent to. `Delivered-To` is the one that survives an alias expansion.
-    ...(headers.get('cc') ? { cc: headers.get('cc')! } : {}),
-    ...(headers.get('bcc') ? { bcc: headers.get('bcc')! } : {}),
-    ...(headers.get('delivered-to')
-      ? { deliveredTo: headers.get('delivered-to')! }
-      : {}),
+    // sent to, not just the one the sender addressed it to.
+    to,
+    ...(cc ? { cc } : {}),
+    ...(bcc ? { bcc } : {}),
+    ...(deliveredTo ? { deliveredTo } : {}),
     subject: headers.get('subject') ?? '',
     ...(headers.get('date') ? { date: headers.get('date')! } : {}),
     snippet: message.snippet ?? '',

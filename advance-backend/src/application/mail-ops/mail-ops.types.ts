@@ -125,12 +125,3 @@ export function mailRuleDedupeKey(input: MailRuleIdentity): string {
       : input.destination.chatId,
   ]))}`;
 }
-
-/**
- * A rule created before that fix carries whatever key the old serialisation
- * produced, and there is no way to recompute it from a fresh request — the
- * fork being repaired was a difference of case, so the request that exposes it
- * hashes to a third value under the old rule too. `createRuleForMailbox`
- * therefore recognises those rules by recomputing this key from what each one
- * stores, and moves the match onto its canonical key before creating anything.
- */

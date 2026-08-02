@@ -829,6 +829,15 @@ describe('MailOpsRepository', () => {
       matchJson: { subjectContains: 'Invoice' },
     }]);
     assert.deepEqual(unrelated.calls, ['scan', 'upsert', 'revive']);
+
+    // The member already holds the fork this repairs. The create revives
+    // whatever it lands on, so adopting the archived twin would bring a second
+    // rule back to life beside the one already forwarding.
+    const bothStates = await run([
+      { ...legacyRow, id: 'rule-archived', status: 'archived' },
+      { ...legacyRow, id: 'rule-live', status: 'active' },
+    ]);
+    assert.equal(bothStates.updates[0].where.id, 'rule-live');
   });
 
   it('starts a revived rule watching from now, not from when it was first written', async () => {

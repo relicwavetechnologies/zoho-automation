@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { GmailHistoryClient } from '../../src/infrastructure/google/gmail-history.client.ts';
+import { mailRuleMatches } from '../../src/application/mail-ops/mail-rule.matcher.ts';
 
 /**
  * The page cap used to throw, which wedged busy mailboxes permanently: the
@@ -366,6 +367,29 @@ describe('GmailHistoryClient message metadata', () => {
     assert.equal(metadata.cc, 'ana@example.com');
     assert.equal(metadata.deliveredTo, 'alias@example.com');
     assert.equal(metadata.bcc, undefined);
+  });
+
+  it('keeps every hop of a repeated trace header, not the last one', async () => {
+    // An alias or group expansion adds one `Delivered-To` per hop, and the
+    // address the member typed is on whichever hop the chain started at.
+    // Keeping one made a rule on that alias fire or not depending on the
+    // order Gmail happened to return the trace in — the silent never-fires
+    // that reading `Delivered-To` at all exists to remove.
+    const metadata = await syncOneMessage({
+      mimeType: 'text/plain',
+      headers: [
+        { name: 'From', value: 'payroll@example.com' },
+        { name: 'To', value: 'sales@example.com' },
+        { name: 'Delivered-To', value: 'ana@example.com' },
+        { name: 'Delivered-To', value: 'sales@example.com' },
+      ],
+    });
+
+    assert.equal(metadata.deliveredTo, 'ana@example.com, sales@example.com');
+    assert.equal(
+      mailRuleMatches({ to: 'ana@example.com' }, metadata),
+      true,
+    );
   });
 });
 
