@@ -356,7 +356,22 @@ retry immediately with its exact connection ID. If it returns several, ask
 once, then retry the same URL with the selected exact connection.
 In a Lark runtime, a resolved response returns only
 \`data.destinationReferenceId\`; retain that opaque, short-lived handle bound
-to the exact user, chat, thread, and run. In Desktop, retain the governed
+to the exact user, chat, thread, and run. Use it for reads or edits without
+extracting a spreadsheet ID from the URL:
+
+\`\`\`json
+{
+  "toolId": "googleSheets",
+  "args": {
+    "op": "call_resolved_sheet",
+    "destinationReferenceId": "<opaque resolved reference>",
+    "nativeTool": "read_sheet_values",
+    "input": { "range_name": "Sheet1!A1:Z100" }
+  }
+}
+\`\`\`
+
+In Desktop, retain the governed
 \`data.resource.resourceId\` and \`data.resource.connectionId\` handles already
 returned by Divo. Never reconstruct Google IDs or move Sheet rows through
 model context.

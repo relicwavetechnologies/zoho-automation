@@ -128,14 +128,16 @@ export interface GatewayDispatcherDeps {
   }) => Promise<unknown>;
   readonly runEffectReceipts?: Pick<
     RunEffectReceiptStore,
-    'reserveKnowledgeReview' | 'completeKnowledgeReview' | 'releaseKnowledgeReview' | 'recordPersonalMemory' | 'recordDataExportOffer' | 'recordGoogleSheetDestination'
+    'reserveKnowledgeReview' | 'completeKnowledgeReview' | 'releaseKnowledgeReview' | 'recordPersonalMemory' | 'recordDataExportOffer' | 'recordGoogleSheetDestination' | 'getVerifiedGoogleSheetDestination'
   >;
   readonly logger: Logger;
 }
 
 interface MaterializedExportedSheetCall {
   readonly args: Record<string, unknown>;
-  readonly resource: DataExportResourceRecord;
+  readonly connectionId: string;
+  readonly spreadsheetId: string;
+  readonly resource?: DataExportResourceRecord;
 }
 
 type ExportedSheetMaterialization =
@@ -764,7 +766,8 @@ export class GatewayDispatcher {
     args: Record<string, unknown>,
     execution: GatewayExecutionContext | undefined,
   ): Promise<ExportedSheetMaterialization> {
-    if (args['op'] !== 'call_exported_sheet') return { kind: 'ordinary', args };
+    const op = args['op'];
+    if (op !== 'call_exported_sheet' && op !== 'call_resolved_sheet') return { kind: 'ordinary', args };
     if (toolId !== 'googleSheets') {
       return { kind: 'failure', response: gatewayFailure('bad_request', 'Exported Sheet references are only valid for Google Sheets') };
     }
@@ -777,13 +780,10 @@ export class GatewayDispatcher {
     ) {
       return { kind: 'failure', response: gatewayFailure('permission_denied', 'This exported Sheet reference is not valid for the current Lark request') };
     }
-    const resourceRef = args['resourceRef'];
     const nativeTool = args['nativeTool'];
     const nativeInput = args['input'] ?? {};
     if (
-      typeof resourceRef !== 'string'
-      || !isUuid(resourceRef)
-      || typeof nativeTool !== 'string'
+      typeof nativeTool !== 'string'
       || !nativeTool
       || !isRecord(nativeInput)
       || args['connectionId'] !== undefined
@@ -791,6 +791,50 @@ export class GatewayDispatcher {
       || nativeInput['spreadsheet_id'] !== undefined
       || nativeInput['spreadsheetId'] !== undefined
     ) {
+      return { kind: 'failure', response: gatewayFailure('bad_request', 'Invalid exported Sheet call') };
+    }
+    if (op === 'call_resolved_sheet') {
+      const referenceId = args['destinationReferenceId'];
+      if (typeof referenceId !== 'string' || !isUuid(referenceId) || !this.deps.runEffectReceipts) {
+        return { kind: 'failure', response: gatewayFailure('bad_request', 'Invalid resolved Sheet call') };
+      }
+      let destination;
+      try {
+        destination = await this.deps.runEffectReceipts.getVerifiedGoogleSheetDestination({
+          companyId: member.companyId,
+          userId: member.userId,
+          chatId: member.runtimeChatId,
+          threadId: execution.threadId,
+          runId: execution.runId,
+        }, referenceId);
+      } catch (error) {
+        this.deps.logger.error('gateway.resolved_sheet.lookup_failed', {
+          companyId: member.companyId,
+          userId: member.userId,
+          runId: execution.runId,
+          error: safeGatewayMessage(error),
+        });
+        return { kind: 'failure', response: gatewayFailure('tool_error', 'Divo could not open that Sheet reference. Please try again.') };
+      }
+      if (!destination) {
+        return { kind: 'failure', response: gatewayFailure('bad_request', 'That Sheet reference is unavailable or expired. Paste its link to open it again.') };
+      }
+      return {
+        kind: 'materialized',
+        value: {
+          connectionId: destination.connectionId,
+          spreadsheetId: destination.spreadsheetId,
+          args: {
+            op: 'call',
+            connectionId: destination.connectionId,
+            nativeTool,
+            input: { ...nativeInput, spreadsheet_id: destination.spreadsheetId },
+          },
+        },
+      };
+    }
+    const resourceRef = args['resourceRef'];
+    if (typeof resourceRef !== 'string' || !isUuid(resourceRef)) {
       return { kind: 'failure', response: gatewayFailure('bad_request', 'Invalid exported Sheet call') };
     }
     const lookup = this.deps.dataExportResources?.getToolTurnByResourceRef;
@@ -856,6 +900,8 @@ export class GatewayDispatcher {
       kind: 'materialized',
       value: {
         resource,
+        connectionId: resource.connectionId,
+        spreadsheetId: resource.spreadsheetId,
         args: {
           op: 'call',
           connectionId: resource.connectionId,
@@ -885,7 +931,7 @@ export class GatewayDispatcher {
     const permission = await this.resolvePerm(member, departmentId);
     if (!permission) return this.permissionDenied('Permission resolution failed');
     if (
-      parsed.data.args['op'] === 'call_exported_sheet'
+      isOpaqueSheetCall(parsed.data.args)
       && !(permission.allowedActionsByTool.get(asToolId(parsed.data.toolId))?.size)
     ) {
       return this.permissionDenied(`No access to ${parsed.data.toolId}`);
@@ -1097,7 +1143,7 @@ export class GatewayDispatcher {
       }
     }
     return materialized.kind === 'materialized'
-      ? safeExportedSheetResponse(response, materialized.value.resource)
+      ? safeMaterializedSheetResponse(response, materialized.value)
       : response;
   }
 
@@ -1503,7 +1549,7 @@ export class GatewayDispatcher {
       return gatewayFailure('bad_request', `Invalid tools.preflight payload — ${issues}`);
     }
     const hasExportedSheetCall = parsed.data.invocations.some(
-      invocation => invocation.args['op'] === 'call_exported_sheet',
+      invocation => isOpaqueSheetCall(invocation.args),
     );
     const permission = hasExportedSheetCall
       ? await this.resolvePerm(member, departmentId)
@@ -1513,7 +1559,7 @@ export class GatewayDispatcher {
     }
     const invocations = await Promise.all(parsed.data.invocations.map(async (invocation) => {
       if (
-        invocation.args['op'] === 'call_exported_sheet'
+        isOpaqueSheetCall(invocation.args)
         && !(permission?.allowedActionsByTool.get(asToolId(invocation.toolId))?.size)
       ) {
         return {
@@ -1545,7 +1591,7 @@ export class GatewayDispatcher {
         ...(execution ? { execution } : {}),
       });
       const safeResponse = materialized.kind === 'materialized'
-        ? safeExportedSheetResponse(response, materialized.value.resource)
+        ? safeMaterializedSheetResponse(response, materialized.value)
         : response;
       return {
         toolId: invocation.toolId,
@@ -1574,7 +1620,7 @@ export class GatewayDispatcher {
         .join('; ');
       return gatewayFailure('bad_request', `Invalid tools.prepare payload — ${issues}`);
     }
-    if (parsed.data.args['op'] === 'call_exported_sheet') {
+    if (isOpaqueSheetCall(parsed.data.args)) {
       return gatewayFailure('bad_request', 'Exported Sheet references are available only through Lark tools.invoke or tools.preflight');
     }
     if (!this.deps.localApprovalIntents) {
@@ -1857,22 +1903,25 @@ function googleSheetDestinationFrom(
   };
 }
 
-function safeExportedSheetResponse(
+function safeMaterializedSheetResponse(
   response: GatewayResponse,
-  resource: DataExportResourceRecord,
+  materialized: MaterializedExportedSheetCall,
 ): GatewayResponse {
-  const safeData = redactExportedSheetHandles(response.data);
+  const safeData = redactSheetHandles(
+    response.data,
+    [materialized.connectionId, materialized.spreadsheetId],
+  );
   return {
     ...response,
     ...(safeData === undefined
       ? {}
       : {
-          data: response.ok && isRecord(safeData)
+          data: response.ok && isRecord(safeData) && materialized.resource
             ? {
                 ...safeData,
                 exportedSheet: {
-                  resourceRef: resource.resourceRef,
-                  url: resource.artifactUrl,
+                  resourceRef: materialized.resource.resourceRef,
+                  url: materialized.resource.artifactUrl,
                 },
               }
             : safeData,
@@ -1880,15 +1929,22 @@ function safeExportedSheetResponse(
   };
 }
 
-function redactExportedSheetHandles(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactExportedSheetHandles);
+function redactSheetHandles(value: unknown, secrets: readonly string[]): unknown {
+  if (typeof value === 'string') {
+    return secrets.reduce((safe, secret) => safe.replaceAll(secret, '[redacted]'), value);
+  }
+  if (Array.isArray(value)) return value.map(entry => redactSheetHandles(entry, secrets));
   if (!isRecord(value)) return value;
   const safe: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
     if (key === 'connectionId' || key === 'spreadsheetId' || key === 'spreadsheet_id') continue;
-    safe[key] = redactExportedSheetHandles(entry);
+    safe[key] = redactSheetHandles(entry, secrets);
   }
   return safe;
+}
+
+function isOpaqueSheetCall(args: Readonly<Record<string, unknown>>): boolean {
+  return args['op'] === 'call_exported_sheet' || args['op'] === 'call_resolved_sheet';
 }
 
 function isUuid(value: string): boolean {

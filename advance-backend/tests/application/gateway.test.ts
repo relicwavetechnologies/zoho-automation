@@ -2489,26 +2489,45 @@ describe('GatewayDispatcher', () => {
 
   it('replaces a resolved Lark Sheet target with a run-bound opaque reference', async () => {
     const receipts: unknown[] = [];
+    let executedArgs: unknown;
     const registry = new ToolRegistry();
     registry.register(makeFakeTool({
       id: asToolId('googleSheets'),
-      argsSchema: z.object({ op: z.literal('resolve_reference'), url: z.string() }),
+      actionGroups: new Set(['read', 'update']),
+      argsSchema: z.union([
+        z.object({ op: z.literal('resolve_reference'), url: z.string() }),
+        z.object({
+          op: z.literal('call'),
+          connectionId: z.string().uuid(),
+          nativeTool: z.string(),
+          input: z.record(z.unknown()),
+        }),
+      ]),
       resultSchema: z.object({}).passthrough(),
-      permissionCheck: () => ok('read'),
-      execute: async () => ok({
-        success: true,
-        nativeTool: 'resolve_sheet_reference',
-        data: {
-          status: 'resolved',
-          resource: {
-            provider: 'google',
-            kind: 'spreadsheet',
-            resourceId: 'sheet_1',
-            subresourceId: '42',
-            connectionId: '11111111-1111-4111-8111-111111111111',
+      permissionCheck: (args: any) => ok(args.op === 'call' ? 'update' : 'read'),
+      execute: async (args: any) => {
+        if (args.op === 'call') {
+          executedArgs = args;
+          return ok({
+            success: true,
+            message: `Updated ${args.input.spreadsheet_id} through ${args.connectionId}`,
+          });
+        }
+        return ok({
+          success: true,
+          nativeTool: 'resolve_sheet_reference',
+          data: {
+            status: 'resolved',
+            resource: {
+              provider: 'google',
+              kind: 'spreadsheet',
+              resourceId: 'sheet_1',
+              subresourceId: '42',
+              connectionId: '11111111-1111-4111-8111-111111111111',
+            },
           },
-        },
-      }),
+        });
+      },
     } as any));
     const permissions = makePermissionService(makeAllowedPerm('googleSheets', ['read']));
     const dispatcher = new GatewayDispatcher({
@@ -2526,6 +2545,17 @@ describe('GatewayDispatcher', () => {
           receipts.push({ identity, input });
           return {} as any;
         },
+        getVerifiedGoogleSheetDestination: async (identity, referenceId) => ({
+          version: 1,
+          kind: 'google_sheet_destination',
+          status: 'resolved',
+          ...identity,
+          referenceId,
+          connectionId: '11111111-1111-4111-8111-111111111111',
+          spreadsheetId: 'sheet_1',
+          gid: '42',
+          createdAt: '2026-08-02T00:00:00.000Z',
+        }),
       } as any,
       logger: noopLogger,
     });
@@ -2573,6 +2603,45 @@ describe('GatewayDispatcher', () => {
         gid: '42',
       },
     }]);
+
+    const update = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      execution: {
+        version: 1,
+        runId: 'run-1',
+        threadId: 'thread-1',
+        actionId: 'sheet-update-1',
+      },
+      payload: {
+        toolId: 'googleSheets',
+        args: {
+          op: 'call_resolved_sheet',
+          destinationReferenceId,
+          nativeTool: 'modify_sheet_values',
+          input: { range_name: 'Sheet1!A1', values: [['verified']] },
+        },
+      },
+    }, {
+      ...member,
+      channel: 'lark',
+      runtimeChatId: 'chat-1',
+      runtimeRunId: 'run-1',
+      runtimeThreadId: 'thread-1',
+    });
+
+    assert.equal(update.ok, true);
+    assert.deepEqual(executedArgs, {
+      op: 'call',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      nativeTool: 'modify_sheet_values',
+      input: {
+        spreadsheet_id: 'sheet_1',
+        range_name: 'Sheet1!A1',
+        values: [['verified']],
+      },
+    });
+    assert.equal(JSON.stringify(update.data).includes('sheet_1'), false);
+    assert.equal(JSON.stringify(update.data).includes('11111111-1111-4111-8111-111111111111'), false);
   });
 
   it('materializes an exported Sheet reference only inside the governed Google call', async () => {

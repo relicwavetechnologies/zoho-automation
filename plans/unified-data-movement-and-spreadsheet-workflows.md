@@ -32,6 +32,13 @@
   a repeated URL or account choice. It invoked `call_exported_sheet` using only
   the opaque resource reference, changed `Organic Positions!N2`, and read back
   `N2:N3`; `N2` was `Reviewed now` and `N3` remained `Needs review`.
+- A separate fresh Pi session received only the pasted Sheet URL plus the named
+  personal account. Divo resolved it to a run-bound opaque destination, invoked
+  `call_resolved_sheet` for both update and read-back, and verified
+  `Organic Positions!N3 = Opaque route verified` without exposing or rebuilding
+  the Google connection or spreadsheet ID. The repaired run completed in
+  108.743 seconds; the pre-fix run took 148.888 seconds and made two failed
+  handle calls before extracting the ID from the URL.
 - Resumed Pi sessions now receive the opaque follow-up contract on every turn,
   so stale in-session skill text cannot send a verified export back through
   generic URL/account resolution. The runtime regression assertion and the

@@ -41,13 +41,15 @@ describe('Google Workspace system skills', () => {
     assert(sheets.aliases.includes('google sheet url'));
   });
 
-  it('resolves pasted Sheet URLs before web search without claiming a bulk write', () => {
+  it('resolves pasted Sheet URLs into an opaque governed read/write handle', () => {
     const sheets = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find((skill) => skill.slug === 'google-sheets')!;
 
     assert.match(sheets.markdown, /Before generic web search or a native Sheets operation/);
     assert.match(sheets.markdown, /"op": "resolve_reference"/);
     assert.match(sheets.markdown, /"url": "<exact pasted Google Sheet URL>"/);
     assert.match(sheets.markdown, /data\.destinationReferenceId/);
+    assert.match(sheets.markdown, /"op": "call_resolved_sheet"/);
+    assert.match(sheets.markdown, /without\s+extracting a spreadsheet ID from the URL/s);
     assert.match(sheets.markdown, /In a Lark runtime/);
     assert.match(sheets.markdown, /In Desktop.*data\.resource\.resourceId.*data\.resource\.connectionId/s);
     assert.match(sheets.markdown, /one eligible account.*retry immediately/s);
