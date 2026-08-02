@@ -207,6 +207,17 @@ describe('mailAutomations tool', () => {
       { from: '@anthropic.com' },
       sender('notice@anthropic.com attacker@evil.example'),
     ), false);
+    // A group label is stripped off the token it is stuck to, but only a label
+    // that could not be an address itself. Otherwise the prefix is free space
+    // for the sender and the rule reads the brand out of the tail.
+    assert.equal(mailRuleMatches(
+      { from: '@anthropic.com' },
+      sender('attacker@evil.example:notice@anthropic.com'),
+    ), false);
+    assert.equal(mailRuleMatches(
+      { from: '@anthropic.com' },
+      sender('Notifications attacker@evil.example:notice@anthropic.com'),
+    ), false);
   });
 
   it('matches a recipient across To, Cc and Delivered-To, not To alone', () => {

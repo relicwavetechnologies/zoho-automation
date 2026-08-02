@@ -360,8 +360,11 @@ function addressIn(entry: string): string | undefined {
     // A group label sits on the front of the first recipient when no space
     // follows the colon — `Team:ana@example.com` is one token holding one
     // address, and `:` is not legal in a local part, so the whole token would
-    // otherwise be refused and that recipient lost.
-    .map(token => token.slice(token.lastIndexOf(':') + 1))
+    // otherwise be refused and that recipient lost. Only a label that could not
+    // itself be an address is taken off: strip to the last colon instead and
+    // the prefix becomes free space for the sender, who writes
+    // `evil@attacker.tld:receipts@stripe.com` and has the rule read the brand.
+    .map(token => token.replace(/^[^\s:<>@]*:/, ''))
     .map(token => token.replace(/^[<>]+/, '').replace(/[<>.]+$/, ''))
     .filter(token => WHOLE_ADDRESS_PATTERN.test(token));
   return addresses.length === 1 ? addresses[0]!.toLowerCase() : undefined;
