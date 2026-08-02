@@ -83,6 +83,7 @@ export interface OfferedWorkbookConversionEffect extends LarkRunEffectIdentity {
   readonly connectionId: string;
   readonly fileId: string;
   readonly fileName?: string;
+  readonly replyInThread?: boolean;
   readonly createdAt: string;
 }
 
@@ -280,6 +281,7 @@ export class RunEffectReceiptStore {
       readonly connectionId: string;
       readonly fileId: string;
       readonly fileName?: string;
+      readonly replyInThread?: boolean;
     },
   ): Promise<OfferedWorkbookConversionEffect> {
     if (!isUuid(input.offerId) || !isUuid(input.connectionId) || !isSpreadsheetId(input.fileId)) {

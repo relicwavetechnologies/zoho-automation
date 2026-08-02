@@ -325,10 +325,17 @@ function createProductTool(
               });
             }
           }
+          const data = resolution.status === 'resolved'
+            && resolution.resource.kind === 'excel_workbook'
+            ? {
+                ...resolution,
+                delivery: { replyInThread: ctx.runContext.replyInThread === true },
+              }
+            : resolution;
           return ok({
             success: resolution.status === 'resolved',
             nativeTool: 'resolve_sheet_reference',
-            data: resolution,
+            data,
             message: sheetReferenceResolutionMessage(resolution),
           });
         } catch (cause) {

@@ -1968,6 +1968,7 @@ function googleDriveWorkbookConversionFrom(
   readonly connectionId: string;
   readonly fileId: string;
   readonly fileName?: string;
+  readonly replyInThread?: boolean;
 } | null {
   if (toolId !== 'googleSheets' || args['op'] !== 'resolve_reference' || !response.ok) return null;
   if (!isRecord(response.data) || !isRecord(response.data['result'])) return null;
@@ -1989,6 +1990,9 @@ function googleDriveWorkbookConversionFrom(
     connectionId: resource['connectionId'],
     fileId: resource['resourceId'],
     ...(typeof resource['fileName'] === 'string' ? { fileName: resource['fileName'] } : {}),
+    ...(isRecord(resolution['delivery']) && resolution['delivery']['replyInThread'] === true
+      ? { replyInThread: true }
+      : {}),
   };
 }
 
