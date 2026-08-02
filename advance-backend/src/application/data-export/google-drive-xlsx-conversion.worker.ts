@@ -93,14 +93,16 @@ export interface GoogleDriveXlsxConversionWorkerDeps {
     resolve(input: Pick<GoogleDriveXlsxConversionJob, 'companyId' | 'userId' | 'sourceConnectionId'>): Promise<GoogleDriveXlsxConversionConnection | null>;
   };
   readonly drive: {
-    getSourceMetadata(input: Pick<GoogleDriveXlsxConversionJob, 'sourceConnectionId' | 'sourceFileId'>): Promise<GoogleDriveXlsxSourceMetadata | null>;
-    downloadXlsx(input: Pick<GoogleDriveXlsxConversionJob, 'sourceConnectionId' | 'sourceFileId'>): Promise<AsyncIterable<Uint8Array>>;
+    getSourceMetadata(input: Pick<GoogleDriveXlsxConversionJob, 'companyId' | 'userId' | 'sourceConnectionId' | 'sourceFileId'>): Promise<GoogleDriveXlsxSourceMetadata | null>;
+    downloadXlsx(input: Pick<GoogleDriveXlsxConversionJob, 'companyId' | 'userId' | 'sourceConnectionId' | 'sourceFileId'>): Promise<AsyncIterable<Uint8Array>>;
     /**
      * Must search only for a prior Divo-created resource tagged with this
      * exact idempotency key. It must not search by title.
      */
     findCreatedSheet(input: {
       readonly connectionId: string;
+      readonly companyId: string;
+      readonly userId: string;
       readonly idempotencyKey: string;
     }): Promise<{ readonly spreadsheetId: string } | null>;
     /**
@@ -109,6 +111,8 @@ export interface GoogleDriveXlsxConversionWorkerDeps {
      */
     importXlsxAsNewSheet(input: {
       readonly connectionId: string;
+      readonly companyId: string;
+      readonly userId: string;
       readonly sourceFileId: string;
       readonly sourceTitle: string;
       readonly idempotencyKey: string;
@@ -116,6 +120,8 @@ export interface GoogleDriveXlsxConversionWorkerDeps {
     }): Promise<{ readonly spreadsheetId: string }>;
     getCreatedSheetMetadata(input: {
       readonly connectionId: string;
+      readonly companyId: string;
+      readonly userId: string;
       readonly spreadsheetId: string;
     }): Promise<GoogleDriveXlsxCreatedSheetMetadata | null>;
   };
@@ -162,6 +168,8 @@ export class GoogleDriveXlsxConversionWorker {
 
       const existing = await this.deps.drive.findCreatedSheet({
         connectionId: job.sourceConnectionId,
+        companyId: job.companyId,
+        userId: job.userId,
         idempotencyKey: job.jobKey,
       });
       const spreadsheetId = existing?.spreadsheetId ?? await this.importNewSheet(job);
@@ -223,6 +231,8 @@ export class GoogleDriveXlsxConversionWorker {
     const source = await this.deps.drive.downloadXlsx(job);
     const result = await this.deps.drive.importXlsxAsNewSheet({
       connectionId: job.sourceConnectionId,
+      companyId: job.companyId,
+      userId: job.userId,
       sourceFileId: job.sourceFileId,
       sourceTitle: job.sourceTitle,
       idempotencyKey: job.jobKey,
@@ -252,6 +262,8 @@ export class GoogleDriveXlsxConversionWorker {
     ) throw new GoogleDriveXlsxConversionError('The selected personal Google account is no longer eligible.', true);
     const created = await this.deps.drive.getCreatedSheetMetadata({
       connectionId: job.sourceConnectionId,
+      companyId: job.companyId,
+      userId: job.userId,
       spreadsheetId,
     });
     const owner = normalizedEmail(created?.ownerEmail);

@@ -57,32 +57,38 @@ describe('GoogleDriveXlsxConversionAdapter', () => {
         },
       },
     }) as any);
-    const adapter = new GoogleDriveXlsxConversionAdapter(async connectionId => {
+    const adapter = new GoogleDriveXlsxConversionAdapter(async input => {
       tokenCalls += 1;
-      assert.equal(connectionId, 'connection-1');
+      assert.deepEqual(input, {
+        companyId: 'company-1',
+        userId: 'user-1',
+        connectionId: 'connection-1',
+      });
       return 'access-token';
     });
 
     assert.deepEqual(await adapter.getSourceMetadata({
-      sourceConnectionId: 'connection-1', sourceFileId: 'source-xlsx',
+      companyId: 'company-1', userId: 'user-1', sourceConnectionId: 'connection-1', sourceFileId: 'source-xlsx',
     }), {
       id: 'source-xlsx',
       mimeType: XLSX_MIME_TYPE,
       trashed: false,
       capabilities: { canDownload: true, canCopy: true },
     });
-    const download = await adapter.downloadXlsx({ sourceConnectionId: 'connection-1', sourceFileId: 'source-xlsx' });
+    const download = await adapter.downloadXlsx({ companyId: 'company-1', userId: 'user-1', sourceConnectionId: 'connection-1', sourceFileId: 'source-xlsx' });
     assert.deepEqual([...await collect(download)], [1, 2, 3]);
-    assert.equal(await adapter.findCreatedSheet({ connectionId: 'connection-1', idempotencyKey: "job-'1" }), null);
+    assert.equal(await adapter.findCreatedSheet({ companyId: 'company-1', userId: 'user-1', connectionId: 'connection-1', idempotencyKey: "job-'1" }), null);
     assert.deepEqual(await adapter.importXlsxAsNewSheet({
       connectionId: 'connection-1',
+      companyId: 'company-1',
+      userId: 'user-1',
       sourceFileId: 'source-xlsx',
       sourceTitle: 'Quarterly budget.xlsx',
       idempotencyKey: "job-'1",
       content: (async function* () { yield new Uint8Array([4, 5, 6]); })(),
     }), { spreadsheetId: 'new-sheet' });
     assert.deepEqual(await adapter.getCreatedSheetMetadata({
-      connectionId: 'connection-1', spreadsheetId: 'new-sheet',
+      companyId: 'company-1', userId: 'user-1', connectionId: 'connection-1', spreadsheetId: 'new-sheet',
     }), {
       id: 'new-sheet',
       mimeType: 'application/vnd.google-apps.spreadsheet',

@@ -8,7 +8,11 @@ const CONVERSION_JOB_KEY_PROPERTY = 'divoXlsxConversionJobKey';
 
 type GoogleDriveXlsxConversionDrive = GoogleDriveXlsxConversionWorkerDeps['drive'];
 
-export type ResolveGoogleDriveXlsxConversionAccessToken = (connectionId: string) => Promise<string>;
+export type ResolveGoogleDriveXlsxConversionAccessToken = (input: {
+  readonly companyId: string;
+  readonly userId: string;
+  readonly connectionId: string;
+}) => Promise<string>;
 
 /**
  * Google Drive adapter for the XLSX conversion worker. It only reads the
@@ -18,10 +22,12 @@ export class GoogleDriveXlsxConversionAdapter implements GoogleDriveXlsxConversi
   constructor(private readonly resolveAccessToken: ResolveGoogleDriveXlsxConversionAccessToken) {}
 
   async getSourceMetadata(input: {
+    readonly companyId: string;
+    readonly userId: string;
     readonly sourceConnectionId: string;
     readonly sourceFileId: string;
   }) {
-    const drive = await this.drive(input.sourceConnectionId);
+    const drive = await this.drive(input.companyId, input.userId, input.sourceConnectionId);
     const response = await drive.files.get({
       fileId: input.sourceFileId,
       supportsAllDrives: true,
@@ -47,10 +53,12 @@ export class GoogleDriveXlsxConversionAdapter implements GoogleDriveXlsxConversi
   }
 
   async downloadXlsx(input: {
+    readonly companyId: string;
+    readonly userId: string;
     readonly sourceConnectionId: string;
     readonly sourceFileId: string;
   }): Promise<AsyncIterable<Uint8Array>> {
-    const drive = await this.drive(input.sourceConnectionId);
+    const drive = await this.drive(input.companyId, input.userId, input.sourceConnectionId);
     const response = await drive.files.get({
       fileId: input.sourceFileId,
       alt: 'media',
@@ -61,10 +69,12 @@ export class GoogleDriveXlsxConversionAdapter implements GoogleDriveXlsxConversi
   }
 
   async findCreatedSheet(input: {
+    readonly companyId: string;
+    readonly userId: string;
     readonly connectionId: string;
     readonly idempotencyKey: string;
   }): Promise<{ readonly spreadsheetId: string } | null> {
-    const drive = await this.drive(input.connectionId);
+    const drive = await this.drive(input.companyId, input.userId, input.connectionId);
     const response = await drive.files.list({
       q: `appProperties has { key='${CONVERSION_JOB_KEY_PROPERTY}' and value='${escapeDriveQueryValue(input.idempotencyKey)}' } and trashed = false`,
       pageSize: 2,
@@ -86,13 +96,15 @@ export class GoogleDriveXlsxConversionAdapter implements GoogleDriveXlsxConversi
   }
 
   async importXlsxAsNewSheet(input: {
+    readonly companyId: string;
+    readonly userId: string;
     readonly connectionId: string;
     readonly sourceFileId: string;
     readonly sourceTitle: string;
     readonly idempotencyKey: string;
     readonly content: AsyncIterable<Uint8Array>;
   }): Promise<{ readonly spreadsheetId: string }> {
-    const drive = await this.drive(input.connectionId);
+    const drive = await this.drive(input.companyId, input.userId, input.connectionId);
     const response = await drive.files.create({
       ignoreDefaultVisibility: true,
       supportsAllDrives: true,
@@ -112,10 +124,12 @@ export class GoogleDriveXlsxConversionAdapter implements GoogleDriveXlsxConversi
   }
 
   async getCreatedSheetMetadata(input: {
+    readonly companyId: string;
+    readonly userId: string;
     readonly connectionId: string;
     readonly spreadsheetId: string;
   }) {
-    const drive = await this.drive(input.connectionId);
+    const drive = await this.drive(input.companyId, input.userId, input.connectionId);
     const response = await drive.files.get({
       fileId: input.spreadsheetId,
       supportsAllDrives: true,
@@ -131,9 +145,9 @@ export class GoogleDriveXlsxConversionAdapter implements GoogleDriveXlsxConversi
     };
   }
 
-  private async drive(connectionId: string) {
+  private async drive(companyId: string, userId: string, connectionId: string) {
     const auth = new google.auth.OAuth2();
-    auth.setCredentials({ access_token: await this.resolveAccessToken(connectionId) });
+    auth.setCredentials({ access_token: await this.resolveAccessToken({ companyId, userId, connectionId }) });
     return google.drive({ version: 'v3', auth });
   }
 }
