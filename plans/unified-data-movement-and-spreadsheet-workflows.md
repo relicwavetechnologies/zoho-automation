@@ -17,7 +17,7 @@
 | 3 — Lark export interaction | ✅ Done | Signed format/account cards, immediate callback ACK, locked choice cards, governed progress delivery, OAuth resume, and personal destination preference implemented |
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
 | 5 — Semrush and OMS convergence | 🟡 Partial | OMS and Semrush are integrated; live Semrush preview/offer passes, while artifact verification and rollback-path removal evidence remain |
-| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Strict parsing, live personal-account access probes, governed resolution, and opaque run/thread-bound destination receipts are wired; existing-Sheet bulk write remains |
+| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Governed resolution now seals and consumes an opaque run/thread-bound target into the export queue; the existing-Sheet new-tab writer remains |
 | 7 — routers and provider skills | 🟡 Partial | Exact pasted Sheet URLs now route to governed reference resolution before web search; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
 | 9 — realistic isolated-runtime validation | 🟡 In progress | Dev Lark received a real Zoho preview and a fresh opaque export offer; Sheet/CSV confirmation and no-account OAuth resume remain |
@@ -140,6 +140,12 @@
 - Fresh review confirmed the Lark receipt boundary and caught a channel-neutral
   skill ambiguity: the backend skill now explicitly distinguishes Lark's
   opaque destination reference from Desktop's governed raw resource handles.
+- `dataExport` can now consume that opaque reference only from the same signed
+  Lark company/user/chat/thread/run, then seal an `existing_google_sheet`
+  new-tab target into the queued job. The model cannot submit connection,
+  spreadsheet, or tab IDs, and existing export cards retain their established
+  authority-safe payload. Offer/tool verification passes 55/55 checks plus
+  TypeScript and diff validation. The worker/sink is not yet claimed as usable.
 
 ---
 
