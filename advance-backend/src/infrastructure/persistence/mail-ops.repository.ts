@@ -629,6 +629,31 @@ export class MailOpsRepository {
     }
   }
 
+  /**
+   * Records the mailbox state the owner was last told about.
+   *
+   * Written after the notification is sent, never before: if delivery fails we
+   * would rather risk a duplicate alert on the next pass than silently swallow
+   * the only warning a member gets that their rules have stopped.
+   */
+  async recordNotifiedMailboxState(
+    subscriptionId: string,
+    state: string,
+    now = new Date(),
+  ): Promise<Result<boolean, InfraError>> {
+    try {
+      const updated = await this.db.mailboxSubscription.updateMany({
+        where: { id: subscriptionId },
+        data: { notifiedState: state, notifiedStateAt: now },
+      });
+      return ok(updated.count === 1);
+    } catch (cause) {
+      return err(
+        wrapInfra('prisma', 'mailOps.recordNotifiedMailboxState', cause),
+      );
+    }
+  }
+
   async listActiveRules(
     subscriptionId: string,
   ): Promise<Result<Array<{

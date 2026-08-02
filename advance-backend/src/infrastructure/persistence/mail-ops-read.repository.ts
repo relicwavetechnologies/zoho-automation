@@ -70,6 +70,9 @@ export interface MailDeliveryRecord {
 
 export interface MailboxHealthRecord {
   subscriptionId: string;
+  /** Owner identity, needed to notify. The HTTP layer does not return these. */
+  companyId: string;
+  userId: string;
   mailboxEmail: string;
   status: string;
   connectionId: string;
@@ -85,6 +88,8 @@ export interface MailboxHealthRecord {
   lastError: string | null;
   activeRuleCount: number;
   totalRuleCount: number;
+  /** Last state the owner was notified about, so we alert once per transition. */
+  notifiedState: string | null;
 }
 
 export class MailOpsReadRepository {
@@ -267,12 +272,35 @@ export class MailOpsReadRepository {
     companyId: string;
     userId: string;
   }): Promise<Result<MailboxHealthRecord[], InfraError>> {
+    return this.readMailboxHealth({
+      companyId: input.companyId,
+      userId: input.userId,
+    });
+  }
+
+  /**
+   * One mailbox by ID, for the worker's post-operation health review. Returns
+   * null when the subscription has been removed mid-flight.
+   */
+  async getMailboxHealth(
+    subscriptionId: string,
+  ): Promise<Result<MailboxHealthRecord | null, InfraError>> {
+    const found = await this.readMailboxHealth({ id: subscriptionId });
+    if (!found.ok) return found;
+    return ok(found.value[0] ?? null);
+  }
+
+  private async readMailboxHealth(
+    where: { companyId: string; userId: string } | { id: string },
+  ): Promise<Result<MailboxHealthRecord[], InfraError>> {
     try {
       const subscriptions = await this.db.mailboxSubscription.findMany({
-        where: { companyId: input.companyId, userId: input.userId },
+        where,
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
         select: {
           id: true,
+          companyId: true,
+          userId: true,
           mailboxEmail: true,
           status: true,
           connectionId: true,
@@ -286,12 +314,15 @@ export class MailOpsReadRepository {
           lastFailedAt: true,
           failureCode: true,
           lastError: true,
+          notifiedState: true,
           rules: { select: { status: true } },
         },
       });
 
       return ok(subscriptions.map(subscription => ({
         subscriptionId: subscription.id,
+        companyId: subscription.companyId,
+        userId: subscription.userId,
         mailboxEmail: subscription.mailboxEmail,
         status: subscription.status,
         connectionId: subscription.connectionId,
@@ -309,9 +340,10 @@ export class MailOpsReadRepository {
           rule => rule.status === 'active',
         ).length,
         totalRuleCount: subscription.rules.length,
+        notifiedState: subscription.notifiedState,
       })));
     } catch (cause) {
-      return err(wrapInfra('prisma', 'mailOpsRead.listMailboxHealth', cause));
+      return err(wrapInfra('prisma', 'mailOpsRead.readMailboxHealth', cause));
     }
   }
 }

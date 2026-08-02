@@ -151,6 +151,7 @@ import { MailOpsWorker } from './application/mail-ops/mail-ops.worker';
 import { GmailHistoryClient } from './infrastructure/google/gmail-history.client';
 import { MailOpsRepository } from './infrastructure/persistence/mail-ops.repository';
 import { MailOpsReadRepository } from './infrastructure/persistence/mail-ops-read.repository';
+import { MailOpsMailboxNotifier } from './application/mail-ops/mail-ops-notifier';
 import {
   buildGoogleConnectCard,
   googleConnectFallbackText,
@@ -1921,6 +1922,23 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     return fallback.ok;
   };
   const gmailHistoryClient = new GmailHistoryClient();
+  // Only signal a member has that their mail rules stopped. Lark-only for
+  // now: the people who create mail rules today do so from Lark, so that is
+  // where they will look. A no-Lark owner is recorded and skipped, not retried.
+  const mailOpsNotifier = new MailOpsMailboxNotifier({
+    readRepo: mailOpsReadRepo,
+    repo: mailOpsRepo,
+    resolveLarkOpenId: async input => {
+      const identity = await channelIdentityRepo.resolveByUserId(
+        input.userId,
+        input.companyId,
+      );
+      if (!identity.ok) throw identity.error;
+      return identity.value?.larkOpenId ?? null;
+    },
+    sendDirectCard: (openId, card) => larkAdapter.sendDirectCard(openId, card),
+    logger,
+  });
   const mailOpsWorker = new MailOpsWorker({
     repo: mailOpsRepo,
     gmail: gmailHistoryClient,
@@ -1987,6 +2005,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       if (!sent.ok) throw sent.error;
       return sent.value;
     },
+    reviewMailboxHealth: subscriptionId =>
+      mailOpsNotifier.review(subscriptionId),
     logger,
     ...(gmailPubsubConfig
       ? { pubsubTopicName: gmailPubsubConfig.topic }

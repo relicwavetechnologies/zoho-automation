@@ -58,6 +58,12 @@ export class MailOpsWorker {
       text: string;
       idempotencyKey: string;
     }): Promise<string>;
+    /**
+     * Tells the mailbox owner, once, when their rules have stopped running.
+     * Optional so the worker still runs headless in tests and in environments
+     * with no outbound channel configured.
+     */
+    reviewMailboxHealth?(subscriptionId: string): Promise<unknown>;
     logger: Logger;
     pubsubTopicName?: string;
     scanIntervalMs?: number;
@@ -158,6 +164,24 @@ export class MailOpsWorker {
       if (!failed.ok) throw failed.error;
       this.log.warn('mail_ops.gmail_watch_failed', {
         subscriptionId: claim.subscriptionId,
+        error: errorText(error),
+      });
+    }
+    await this.reviewHealth(claim.subscriptionId);
+  }
+
+  /**
+   * Reviewed after the outcome is durable, so the owner is never told about a
+   * state the database does not agree with. Failures here are swallowed by the
+   * notifier itself — an unreachable owner must not stall the mailbox.
+   */
+  private async reviewHealth(subscriptionId: string): Promise<void> {
+    if (!this.deps.reviewMailboxHealth) return;
+    try {
+      await this.deps.reviewMailboxHealth(subscriptionId);
+    } catch (error) {
+      this.log.warn('mail_ops.health_review_failed', {
+        subscriptionId,
         error: errorText(error),
       });
     }
@@ -281,6 +305,7 @@ export class MailOpsWorker {
         error: errorText(error),
       });
     }
+    await this.reviewHealth(claim.subscriptionId);
   }
 
   private async deliver(input: {

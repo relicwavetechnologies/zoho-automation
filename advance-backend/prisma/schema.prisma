@@ -1412,6 +1412,11 @@ model MailboxSubscription {
   lastSignalMessageId String?
   claimToken          String?
   claimedAt           DateTime?
+  /// Last mailbox state the owner was told about. Notification fires on the
+  /// transition into a broken state, not while it stays broken, so this must
+  /// survive a restart — an in-memory guard would re-alert on every deploy.
+  notifiedState       String?
+  notifiedStateAt     DateTime?
   lastSyncAt          DateTime?
   lastSucceededAt     DateTime?
   lastFailedAt        DateTime?
