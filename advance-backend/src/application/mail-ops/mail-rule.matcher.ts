@@ -192,46 +192,74 @@ function addressesIn(header: string): string[] {
 }
 
 /**
- * One header split into its entries, with every display name blanked out.
+ * One header split into its entries, with everything that is not an address
+ * blanked out.
  *
  * Both halves matter, and a sender controls the header of the mail they send.
- * A display name may legally hold a comma, so splitting the raw header hands
- * `addressIn` a fragment with no bracketed mailbox left in it, and the fragment
- * reads as whatever address the name contained. And a name is quoted text, so
- * a name may also hold an escaped quote — meaning a scanner that ends a name at
- * the first `"` it meets can be walked straight out of the quotes and into the
- * same trick. Either way an outsider sending
- * `"cfo@victim.com, x" <evil@example.tld>` would make a rule on `cfo@` fire on
- * their own mail, and the member's mailbox would forward it wherever the rule
- * points.
+ * Three constructs sit in the display position, all of them free text and all
+ * of them able to hold a comma: a quoted name, a parenthesised comment, and an
+ * encoded word. Split the raw header on commas and any of them hands
+ * `addressIn` a fragment with no bracketed mailbox left in it — and the
+ * fragment then reads as whatever address the free text contained. An outsider
+ * sending `(cfo@victim.com, x) <evil@example.tld>` to a member would otherwise
+ * make that member's rule on `cfo@` fire on the outsider's own mail, and the
+ * member's mailbox would forward it wherever the rule points.
  *
- * A name is therefore consumed as a unit and replaced with blanks: it can never
- * be an address, and blanks keep the entry's real mailbox where it was. An
- * unbalanced quote swallows the rest of the header, which loses a match rather
- * than inventing one.
+ * So each is consumed as a unit and replaced with blanks: none can ever be an
+ * address, and blanks keep the entry's real mailbox where it was. Quotes and
+ * comments both honour `\` escapes, since a scanner that ends a name at the
+ * first delimiter it meets can be walked straight back out of it. Comments
+ * nest, as RFC 5322 allows.
+ *
+ * Anything left unterminated swallows the rest of the header. That loses a
+ * match rather than inventing one, which is the only direction this is allowed
+ * to fail in.
  */
 function splitRecipients(header: string): string[] {
   const entries: string[] = [];
   let entry = '';
   let quoted = false;
+  let commentDepth = 0;
   for (let index = 0; index < header.length; index += 1) {
     const character = header[index]!;
-    if (quoted && character === '\\') {
+    const hidden = quoted || commentDepth > 0;
+    if (hidden && character === '\\') {
       index += 1;
       entry += ' ';
       continue;
     }
-    if (character === '"') {
+    if (character === '"' && commentDepth === 0) {
       quoted = !quoted;
       entry += ' ';
       continue;
     }
-    if (character === ',' && !quoted) {
+    if (!quoted && character === '(') {
+      commentDepth += 1;
+      entry += ' ';
+      continue;
+    }
+    if (!quoted && commentDepth > 0 && character === ')') {
+      commentDepth -= 1;
+      entry += ' ';
+      continue;
+    }
+    // An encoded word is a single token: `=?charset?encoding?text?=`. Its text
+    // may hold a comma and, because `?` and `=` are legal in an address, its
+    // tail can read as one. The rare address whose local part contains `=?`
+    // loses its match here, which is the safe direction.
+    if (!hidden && character === '=' && header[index + 1] === '?') {
+      const end = header.indexOf('?=', index + 2);
+      const stop = end === -1 ? header.length : end + 2;
+      entry += ' '.repeat(stop - index);
+      index = stop - 1;
+      continue;
+    }
+    if (character === ',' && !hidden) {
       entries.push(entry);
       entry = '';
       continue;
     }
-    entry += quoted ? ' ' : character;
+    entry += hidden ? ' ' : character;
   }
   entries.push(entry);
   return entries;

@@ -205,10 +205,36 @@ describe('mailAutomations tool', () => {
       ...message,
       to: '"a \\" ana@example.com, VIP" <impostor@evil.example>',
     }), false);
-    // The same comma in an honest name still resolves to the real mailbox.
+    // A quoted name is not the only free text in the display position. A
+    // comment and an encoded word can both hold a comma too, and an outsider
+    // sending one of these to a member would otherwise fire that member's rule
+    // on the outsider's own mail.
+    assert.equal(mailRuleMatches({ to: 'ana@example.com' }, {
+      ...message,
+      to: '(ana@example.com, VIP) <impostor@evil.example>',
+    }), false);
+    assert.equal(mailRuleMatches({ to: 'ana@example.com' }, {
+      ...message,
+      to: 'Jane (ana@example.com, VIP) <impostor@evil.example>',
+    }), false);
+    // `?` and `=` are legal in an address, so an encoded word's tail reads as
+    // one to a domain rule even when it does not to an exact-mailbox rule.
+    assert.equal(mailRuleMatches({ to: '@example.com' }, {
+      ...message,
+      to: '=?utf-8?Q?ana@example.com,_x?= <impostor@evil.tld>',
+    }), false);
+    // Honest versions of all of it still resolve to the real mailbox.
     assert.equal(mailRuleMatches({ to: 'ana@example.com' }, {
       ...message,
       to: '"Smith, Ana" <ana@example.com>, bo@example.com',
+    }), true);
+    assert.equal(mailRuleMatches({ to: 'ana@example.com' }, {
+      ...message,
+      to: 'Jane <ana@example.com> (assistant), bo@example.com',
+    }), true);
+    assert.equal(mailRuleMatches({ to: 'ana@example.com' }, {
+      ...message,
+      to: '=?utf-8?Q?Ana_Smith?= <ana@example.com>',
     }), true);
   });
 
