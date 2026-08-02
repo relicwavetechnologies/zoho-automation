@@ -118,6 +118,68 @@ describe('MailOpsRepository', () => {
     assert.equal(subscriptionUpdate.data.status, 'active');
   });
 
+  it('keeps the mailbox syncing when the last active rule is paused', async () => {
+    // Pausing the mailbox underneath a paused rule made "paused" untrue in both
+    // directions: the cursor stopped moving, and past Gmail's history retention
+    // the resume lost the intervening days *and* replayed up to a day of
+    // already-read mail through the freshly resumed rule.
+    let subscriptionUpdate: any;
+    const counts: any[] = [];
+    const tx = {
+      mailAutomationRule: {
+        findFirst: async () => ({ id: 'rule-1', subscriptionId: 'mailbox-1', status: 'active' }),
+        update: async () => ({}),
+        count: async (input: any) => {
+          counts.push(input.where.status);
+          // No active rules left; one paused rule survives.
+          return input.where.status === 'active' ? 0 : 1;
+        },
+      },
+      mailboxSubscription: {
+        update: async (input: any) => { subscriptionUpdate = input; return {}; },
+      },
+    };
+    const repo = new MailOpsRepository({ $transaction: async (fn: any) => fn(tx) } as any);
+
+    const result = await repo.setRuleStatus({
+      companyId: 'company-1',
+      userId: 'user-1',
+      ruleId: 'rule-1',
+      status: 'paused',
+    });
+
+    assert.deepEqual(result, { ok: true, value: true });
+    assert.equal(subscriptionUpdate.data.status, 'active');
+    // Nothing can fire, so there is no reason to chase the mailbox right now —
+    // it just keeps its ordinary cadence and its cursor.
+    assert.equal('nextPollAt' in subscriptionUpdate.data, false);
+    assert.deepEqual(counts, ['active', { not: 'archived' }]);
+  });
+
+  it('pauses the mailbox only once every rule on it is archived', async () => {
+    let subscriptionUpdate: any;
+    const tx = {
+      mailAutomationRule: {
+        findFirst: async () => ({ id: 'rule-1', subscriptionId: 'mailbox-1', status: 'active' }),
+        update: async () => ({}),
+        count: async () => 0,
+      },
+      mailboxSubscription: {
+        update: async (input: any) => { subscriptionUpdate = input; return {}; },
+      },
+    };
+    const repo = new MailOpsRepository({ $transaction: async (fn: any) => fn(tx) } as any);
+
+    await repo.setRuleStatus({
+      companyId: 'company-1',
+      userId: 'user-1',
+      ruleId: 'rule-1',
+      status: 'archived',
+    });
+
+    assert.equal(subscriptionUpdate.data.status, 'paused');
+  });
+
   it('does not reactivate an archived rule', async () => {
     let updates = 0;
     const tx = {

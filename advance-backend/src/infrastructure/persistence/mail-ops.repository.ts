@@ -264,13 +264,30 @@ export class MailOpsRepository {
         const activeRules = await tx.mailAutomationRule.count({
           where: { subscriptionId: current.subscriptionId, status: 'active' },
         });
+        // A paused rule is meant to be resumable, and pausing the mailbox
+        // underneath it made that untrue in both directions. A paused
+        // subscription is claimed neither for sync nor for watch renewal, so
+        // the cursor stood still; past Gmail's history retention the resume
+        // 404s into recovery, which loses the intervening days outright *and*
+        // replays up to a day of already-read mail through the freshly resumed
+        // rule. Keeping the mailbox live costs a poll nobody needs and keeps
+        // "paused" meaning what the member was told it means.
+        const livingRules = await tx.mailAutomationRule.count({
+          where: {
+            subscriptionId: current.subscriptionId,
+            status: { not: 'archived' },
+          },
+        });
         await tx.mailboxSubscription.update({
           where: { id: current.subscriptionId },
-          data: activeRules > 0
+          data: livingRules > 0
             ? {
                 status: 'active',
-                nextPollAt: now,
-                nextWatchRenewalAt: now,
+                // Only chase the mailbox immediately when something can
+                // actually fire; otherwise let it keep its ordinary cadence.
+                ...(activeRules > 0
+                  ? { nextPollAt: now, nextWatchRenewalAt: now }
+                  : {}),
               }
             : { status: 'paused' },
         });
