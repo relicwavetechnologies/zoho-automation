@@ -19,7 +19,7 @@ Last synced 2026-08-02. Branch `dev`, **not pushed**.
 | **2 — Silent death (D2, D3, D4, D14, DR-2)** | ✅ merged to `dev` | `6e0d120cf`, `97be67a46`, `c4a5e2561`, `97b4d22b9` |
 | 2 — cold-review fixes (2 rounds) | ✅ merged to `dev` | `0b94131b2`, `458736c01`, `88ef5b75e`, `d4a88353e`, `9067fea78` |
 | **3 — Dead OAuth path (D5)** | ✅ merged to `dev` | `04d39a7f0`, `e1f923a66`, `45d6b79c9`, `f20d7935c` |
-| 4 — Security and governance (S1–S5) | ⬜ | — |
+| **4 — Security and governance (S1–S5)** | ✅ merged to `dev` | `cb7dcca3a`, `505c8032e`, `c9cb95da1`, `654475e2d` |
 | 5–11 | ⬜ | — |
 
 Audit and doc revamp: `cb6b983b2`.
@@ -310,7 +310,7 @@ Added a guard test asserting no surface claims OTP extraction, **verified by rei
 
 **Known and deferred:** a stalled backlog is now visible but still cannot make progress. Resuming from a stored Gmail `pageToken` is the real repair — it needs a column on `MailboxSubscription` and belongs in **Wave 10**.
 
-*Acceptance:* revoke the Pub/Sub publisher grant in a test project — mail still syncs within 60 minutes, health reports `watch_degraded` after three failures, owner notified once. Move a user out of a rule's department — that rule blocks with a visible row, the mailbox keeps syncing. **Not yet exercised against a live Google project**; covered by unit tests only (279 passing across the mail, permission, Gmail-client, connection and gateway suites after Wave 3).
+*Acceptance:* revoke the Pub/Sub publisher grant in a test project — mail still syncs within 60 minutes, health reports `watch_degraded` after three failures, owner notified once. Move a user out of a rule's department — that rule blocks with a visible row, the mailbox keeps syncing. **Not yet exercised against a live Google project**; covered by unit tests only (the full backend suite is green after Wave 4: 2483 tests, 0 failures).
 
 **Wave 3 — The dead OAuth path** *(D5)* — ✅ done, P0, cross-cutting beyond mail
 
@@ -328,8 +328,19 @@ The closure moved out of composition for one reason: the only test covering it s
 
 **Not exercised against a live Google project.** No card has been delivered, no intent issued, no continuation run started for real.
 
-**Wave 4 — Security and governance** *(S1, S2, S3, S4, S5)*
-Ground `chatId` in code and scope `deliverLark` by tenant. Pass `ConnectionRateLimitService` and `ApprovalGateService` into the worker; make `connectionId` required for `create`. Approval for first-time external destination domains. Drop `execute` from `pause`.
+**Wave 4 — Security and governance** *(S1–S5)* — ✅ done
+
+**S1.** A named `lark_chat` is grounded against a room this company has actually been in — `LarkChatContext`, which Divo writes when it observes a group chat and which is already scoped by company. Refusals split: a room Divo has never seen is the member's to fix and the message says how; a room belonging to another company is not, and says so. `current_lark_chat` is exempt by design — it resolves to the chat on the signed run context, and demanding a room record for it would break every DM. Delivery keeps a backstop that refuses only a room positively known to belong elsewhere, and *abandons* rather than retrying.
+
+**S2.** `MailOpsWorker` now charges the connection's `execute` budget per delivery attempt, before the send. A refused budget fails the delivery rather than abandoning it — the window reopens and the mail is still there. Creation is governed on `execute` rather than `create`, because creating a rule authorizes unbounded future background execution, and that check asks about the **resolved** connection: `connectionId` is optional on `create`, so a connection-owner policy was bypassable by omission. Rev 1 proposed making `connectionId` required instead; that was rejected because `mailAutomations` sits in the `scheduling` family with `connectionMode: 'none'` (T6), so the model sees zero Google connections and could not supply one.
+
+**S3.** A create or update whose destination leaves the requester's own email domain requires a manager or company admin to approve it, asserted by the approval gate itself alongside the knowledge-mutation branch rather than waiting to be configured. Fails closed twice: an unknown requester domain counts as external, and no reachable approver refuses the rule. Every external rule, not merely the first to a domain — "first time" is state that would have to be right for the control to be worth anything.
+
+**S4 — the audit's claim did not reproduce.** `needsExecute` keys on the operation name and `pause` is not among create/update/resume, so revoking `execute` never blocked pausing. The real defect was next to it: `pause` shares the `update` action group with editing, so revoking `update` to stop members rewriting rules also removed their ability to stop a live one. Anyone who can archive a rule can now pause it.
+
+**S5 — documented rather than changed.** The `minimumAccess: 'read_write'` floor is dead: a connection's owner is always granted `admin` and a rule can only exist on an owned connection, so it cannot reject anything. It stays, because it becomes real if rules are ever allowed on shared connections, with a comment at the site saying plainly that the ownership and scope checks below it are what actually stop a downgraded share.
+
+**Still open from S3:** an already-reserved delivery is not re-checked against its rule, so pausing or archiving a rule does not stop deliveries already in flight. Narrow window, but real — carried into Wave 10 with the other delivery-lifecycle work.
 
 **Wave 5 — Send correctness** *(D1, D6, D7, D8, D9)*
 
