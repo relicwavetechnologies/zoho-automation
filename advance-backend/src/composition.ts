@@ -132,6 +132,9 @@ import {
   ZohoBooksDataExportSource,
 } from './application/data-export/data-export.sources';
 import { GoogleWorkspaceExportSink } from './application/data-export/google-workspace-export.sink';
+import { parseGoogleSheetReference } from './application/data-export/google-sheet-resource-reference';
+import { GoogleSheetResourceResolver } from './application/data-export/google-sheet-resource-resolver';
+import { GoogleSheetResourceProbeClient } from './infrastructure/google/google-sheet-resource-probe';
 import { DataExportOfferRepository } from './infrastructure/persistence/data-export-offer.repository';
 import { DataExportDestinationPreferenceRepository } from './infrastructure/persistence/data-export-destination-preference.repository';
 import {
@@ -739,6 +742,67 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       });
       return { status: 'unavailable' as const };
     }
+  }
+
+  async function resolveGoogleSheetReference(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly url: string;
+    readonly connectionId?: string;
+    readonly abortSignal?: AbortSignal;
+  }) {
+    input.abortSignal?.throwIfAborted();
+    const parsed = parseGoogleSheetReference(input.url);
+    if (!parsed.ok) return { status: 'invalid_reference' as const, reason: parsed.reason };
+
+    const accessible = await integrationConnectionRepo.listAccessibleGoogleConnections({
+      companyId: input.companyId,
+      userId: input.userId,
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+    });
+    if (!accessible.ok) throw accessible.error;
+    input.abortSignal?.throwIfAborted();
+
+    const probe = new GoogleSheetResourceProbeClient(async connectionId => {
+      const resolved = await integrationConnectionRepo.findAccessibleGoogleConnection({
+        companyId: input.companyId,
+        userId: input.userId,
+        connectionId,
+        minimumAccess: 'read_write',
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+      });
+      if (!resolved.ok) throw resolved.error;
+      const connection = resolved.value;
+      if (
+        !connection?.refreshToken
+        || connection.ownerType !== 'user'
+        || connection.ownerUserId !== input.userId
+        || connection.status !== 'connected'
+        || !hasGoogleScopeGroups(connection.scopes, [
+          [GOOGLE_SCOPE.driveFull],
+          [GOOGLE_SCOPE.sheetsFull],
+        ])
+      ) {
+        throw new Error('Selected personal Google account is no longer eligible for this Sheet');
+      }
+      const token = await googleOAuthService.getValidAccessToken({
+        companyId: input.companyId,
+        userId: `connection:${connectionId}`,
+        refreshToken: connection.refreshToken,
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+      });
+      await integrationConnectionRepo.touchLastUsed(connectionId);
+      input.abortSignal?.throwIfAborted();
+      return token;
+    });
+    const resolver = new GoogleSheetResourceResolver(probe);
+    return resolver.resolve({
+      userId: input.userId,
+      accessible: input.connectionId
+        ? accessible.value.filter(connection => connection.connectionId === input.connectionId)
+        : accessible.value,
+      reference: parsed.reference,
+    });
   }
 
   async function resolveMailAutomationGoogleConnection(input: {
@@ -1722,6 +1786,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   }));
   for (const tool of createGoogleWorkspaceMcpTools({
     getConnection: getGoogleWorkspaceMcpConnection,
+    resolveSheetReference: resolveGoogleSheetReference,
     beginAuthorization: beginGoogleAuthorization,
   })) {
     toolRegistry.register(tool);

@@ -1,0 +1,80 @@
+import { google } from 'googleapis';
+import type {
+  GoogleDriveFileMetadata,
+  GoogleSheetResourceProbe,
+  GoogleSheetsMetadata,
+} from '../../application/data-export/google-sheet-resource-resolver';
+
+export type ResolveGoogleSheetAccessToken = (connectionId: string) => Promise<string>;
+
+/** One instance is used for one resource-resolution request. */
+export class GoogleSheetResourceProbeClient implements GoogleSheetResourceProbe {
+  private readonly accessTokens = new Map<string, Promise<string>>();
+
+  constructor(private readonly resolveAccessToken: ResolveGoogleSheetAccessToken) {}
+
+  async getDriveFile(input: {
+    readonly connectionId: string;
+    readonly fileId: string;
+  }): Promise<GoogleDriveFileMetadata | null> {
+    const drive = google.drive({ version: 'v3', auth: await this.auth(input.connectionId) });
+    try {
+      const response = await drive.files.get({
+        fileId: input.fileId,
+        supportsAllDrives: true,
+        fields: 'id,mimeType,trashed,capabilities(canEdit)',
+      });
+      return {
+        ...(response.data.id ? { id: response.data.id } : {}),
+        ...(response.data.mimeType ? { mimeType: response.data.mimeType } : {}),
+        ...(typeof response.data.trashed === 'boolean' ? { trashed: response.data.trashed } : {}),
+        ...(response.data.capabilities
+          ? { capabilities: { canEdit: response.data.capabilities.canEdit === true } }
+          : {}),
+      };
+    } catch (error) {
+      if (isInaccessible(error)) return null;
+      throw error;
+    }
+  }
+
+  async getSpreadsheet(input: {
+    readonly connectionId: string;
+    readonly spreadsheetId: string;
+  }): Promise<GoogleSheetsMetadata | null> {
+    const sheets = google.sheets({ version: 'v4', auth: await this.auth(input.connectionId) });
+    try {
+      const response = await sheets.spreadsheets.get({
+        spreadsheetId: input.spreadsheetId,
+        fields: 'spreadsheetId',
+      });
+      return response.data.spreadsheetId ? { spreadsheetId: response.data.spreadsheetId } : {};
+    } catch (error) {
+      if (isInaccessible(error)) return null;
+      throw error;
+    }
+  }
+
+  private auth(connectionId: string) {
+    let token = this.accessTokens.get(connectionId);
+    if (!token) {
+      token = this.resolveAccessToken(connectionId).catch(error => {
+        this.accessTokens.delete(connectionId);
+        throw error;
+      });
+      this.accessTokens.set(connectionId, token);
+    }
+    return token.then(accessToken => {
+      const auth = new google.auth.OAuth2();
+      auth.setCredentials({ access_token: accessToken });
+      return auth;
+    });
+  }
+}
+
+function isInaccessible(error: unknown): boolean {
+  const status = error && typeof error === 'object'
+    ? (error as { response?: { status?: unknown } }).response?.status
+    : undefined;
+  return status === 403 || status === 404;
+}

@@ -31,6 +31,79 @@ describe('Google Workspace MCP product tools', () => {
     assert.equal(result.ok, false);
   });
 
+  it('resolves a pasted Sheet through the backend-owned resource resolver', async () => {
+    const requests: unknown[] = [];
+    let connectionLookups = 0;
+    const sheets = createGoogleWorkspaceMcpTools({
+      getConnection: async () => {
+        connectionLookups += 1;
+        return { status: 'unavailable' as const };
+      },
+      resolveSheetReference: async request => {
+        requests.push(request);
+        return {
+          status: 'resolved',
+          resource: {
+            provider: 'google',
+            kind: 'spreadsheet',
+            resourceId: 'sheet-1',
+            connectionId: '11111111-1111-4111-8111-111111111111',
+            canonicalUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+          },
+        };
+      },
+    }).find((tool) => tool.id === 'googleSheets')!;
+    const parsed = sheets.argsSchema.safeParse({
+      op: 'resolve_reference',
+      url: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+    });
+    assert.equal(parsed.success, true);
+    if (!parsed.success) return;
+
+    const permission = sheets.permissionCheck(parsed.data, makeAllowedPerm('googleSheets', ['read']));
+    assert.equal(permission.ok && permission.value, 'read');
+    const result = await sheets.execute(parsed.data, makeCtx('googleSheets', ['read']));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && result.value.success, true);
+    assert.equal(connectionLookups, 0);
+    assert.deepEqual(requests, [{
+      companyId: 'co-test',
+      userId: 'user-test',
+      url: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+    }]);
+  });
+
+  it('starts resumable Google authorization when no personal account can open a pasted Sheet', async () => {
+    const authorizationReasons: string[] = [];
+    const sheets = createGoogleWorkspaceMcpTools({
+      getConnection: async () => ({ status: 'unavailable' as const }),
+      resolveSheetReference: async () => ({ status: 'no_connection' }),
+      beginAuthorization: async request => {
+        authorizationReasons.push(request.reason);
+        return { status: 'sent', intentId: 'intent-1' };
+      },
+    }).find((tool) => tool.id === 'googleSheets')!;
+    const parsed = sheets.argsSchema.safeParse({
+      op: 'resolve_reference',
+      url: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+    });
+    assert.equal(parsed.success, true);
+    if (!parsed.success) return;
+
+    const result = await sheets.execute(parsed.data, makeCtx('googleSheets', ['read']));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && result.value.success, false);
+    assert.deepEqual(result.ok && result.value.data, {
+      code: 'google_workspace_authorization_pending',
+      intentId: 'intent-1',
+    });
+    assert.deepEqual(authorizationReasons, [
+      'Connect a writable personal Google account to open this Sheet.',
+    ]);
+  });
+
   it('describes a reviewed operation through the selected connection', async () => {
     const connectionRequests: unknown[] = [];
     const client: GoogleWorkspaceMcpPort = {

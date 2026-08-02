@@ -17,7 +17,7 @@
 | 3 — Lark export interaction | ✅ Done | Signed format/account cards, immediate callback ACK, locked choice cards, governed progress delivery, OAuth resume, and personal destination preference implemented |
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
 | 5 — Semrush and OMS convergence | 🟡 Partial | OMS and Semrush are integrated; live Semrush preview/offer passes, while artifact verification and rollback-path removal evidence remain |
-| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Strict URL parsing and the personal-account access resolver core are complete; runtime probes, thread binding, and existing-Sheet bulk write remain |
+| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Strict parsing, live personal-account access probes, and governed `googleSheets` reference resolution are wired; thread binding and existing-Sheet bulk write remain |
 | 7 — routers and provider skills | 🟡 Partial | Central export skill knows Excel; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
 | 9 — realistic isolated-runtime validation | 🟡 In progress | Dev Lark received a real Zoho preview and a fresh opaque export offer; Sheet/CSV confirmation and no-account OAuth resume remain |
@@ -101,8 +101,20 @@
   Drive and Sheets scopes; company/granted/read-only accounts cannot be chosen.
   Injected probes distinguish inaccessible, trashed, wrong-type, and read-only
   Sheets, and multiple valid personal accounts produce an explicit choice.
-  Parser/resolver tests pass 6/6 and TypeScript passes. Composition and live
-  Drive/Sheets probe adapters remain intentionally unwired in this slice.
+  Parser/resolver tests pass 6/6 and TypeScript passes.
+- Phase 6C wires that core into the governed `googleSheets` tool as
+  `resolve_reference`; the agent supplies the pasted URL, while the backend
+  parses it and returns only a typed resource or explicit account/access state.
+  A request-bound direct Google API probe reads only Drive identity/type/trash/
+  editability metadata and the Sheets spreadsheet ID. It re-fetches the exact
+  requester-owned connection, requires full Drive plus Sheets scopes, and
+  refreshes the OAuth token server-side. No personal account starts the
+  existing signed Google OAuth-and-resume flow instead of stranding the turn.
+  Only Google 403/404 become
+  `inaccessible`; auth, throttling, and provider failures remain operational
+  errors. Parser, resolver, probe, and governed-tool tests pass 28/28;
+  TypeScript and diff validation pass. Thread binding and existing-Sheet writes
+  remain deliberately unclaimed.
 
 ---
 

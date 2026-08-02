@@ -14,24 +14,28 @@ import {
   googleWorkspaceScopeGroupsFor,
   type GoogleWorkspaceProductDefinition,
 } from '../../google/google-workspace-mcp-manifest';
+import type { GoogleSheetReferenceParseResult } from '../../data-export/google-sheet-resource-reference';
+import type { GoogleSheetResourceResolution } from '../../data-export/google-sheet-resource-resolver';
 
-const ArgsSchema = z.object({
-  connectionId: z.string().uuid().optional(),
-  op: z.enum(['describe', 'call']),
-  nativeTool: z.string().min(1),
-  input: z.record(z.unknown()).optional(),
-}).superRefine((value, context) => {
-  // Mutating or data-reading calls must identify one account exactly. Besides
-  // avoiding accidental cross-account work, this is what lets the backend
-  // enforce the connection owner's operating policy and live rate budget.
-  if (value.op === 'call' && !value.connectionId) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['connectionId'],
-      message: 'is required for Google Workspace calls; reuse the run-bootstrap account or use connections.list once when none was loaded',
-    });
-  }
-});
+const ArgsSchema = z.discriminatedUnion('op', [
+  z.object({
+    connectionId: z.string().uuid().optional(),
+    op: z.literal('describe'),
+    nativeTool: z.string().min(1),
+    input: z.record(z.unknown()).optional(),
+  }),
+  z.object({
+    connectionId: z.string().uuid(),
+    op: z.literal('call'),
+    nativeTool: z.string().min(1),
+    input: z.record(z.unknown()).optional(),
+  }),
+  z.object({
+    connectionId: z.string().uuid().optional(),
+    op: z.literal('resolve_reference'),
+    url: z.string().trim().min(1).max(2_048),
+  }),
+]);
 type Args = z.infer<typeof ArgsSchema>;
 
 const ResultSchema = z.object({
@@ -92,6 +96,20 @@ export type ResolveGoogleWorkspaceMcpConnection = (input: {
   readonly abortSignal?: AbortSignal;
 }) => Promise<GoogleWorkspaceMcpConnectionResolution>;
 
+export type ResolveGoogleSheetReference = (input: {
+  readonly companyId: string;
+  readonly userId: string;
+  readonly url: string;
+  readonly connectionId?: string;
+  readonly abortSignal?: AbortSignal;
+}) => Promise<
+  GoogleSheetResourceResolution
+  | {
+      readonly status: 'invalid_reference';
+      readonly reason: Exclude<GoogleSheetReferenceParseResult, { readonly ok: true }>['reason'];
+    }
+>;
+
 export type BeginGoogleWorkspaceAuthorization = (input: {
   readonly toolId: string;
   readonly reason: string;
@@ -116,6 +134,7 @@ export const SELF_SERVICE_CONNECT_HINT =
 
 export function createGoogleWorkspaceMcpTools(deps: {
   readonly getConnection: ResolveGoogleWorkspaceMcpConnection;
+  readonly resolveSheetReference?: ResolveGoogleSheetReference;
   readonly beginAuthorization?: BeginGoogleWorkspaceAuthorization;
 }): Tool<Args, ToolResult>[] {
   return GOOGLE_WORKSPACE_PRODUCTS.map((product) => createProductTool(product, deps));
@@ -125,6 +144,7 @@ function createProductTool(
   product: GoogleWorkspaceProductDefinition,
   deps: {
     readonly getConnection: ResolveGoogleWorkspaceMcpConnection;
+    readonly resolveSheetReference?: ResolveGoogleSheetReference;
     readonly beginAuthorization?: BeginGoogleWorkspaceAuthorization;
   },
 ): Tool<Args, ToolResult> {
@@ -141,11 +161,20 @@ function createProductTool(
     description: product.description,
     parameterDocs: [
       'connectionId: reuse the exact run-bootstrap account when supplied. In backend-hosted channels, omit it when no account was supplied; the backend selects only one eligible account or returns safe choices. Reuse the same connectionId for describe and call.',
-      'op: describe|call. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required native operation whose schema is absent; input may be omitted for describe.',
+      product.toolId === 'googleSheets'
+        ? 'op: describe|call|resolve_reference. Use resolve_reference with url for an exact pasted Google Sheet before any web lookup; connectionId is optional until Divo returns an account choice. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required native operation whose schema is absent; input may be omitted for describe.'
+        : 'op: describe|call. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required native operation whose schema is absent; input may be omitted for describe.',
       `nativeTool: one of ${product.tools.join('|')}.`,
       `input: exact object accepted by the described MCP tool. ${GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance}`,
     ].join(' '),
     permissionCheck(args, permission) {
+      if (args.op === 'resolve_reference') {
+        const allowed = product.toolId === 'googleSheets'
+          && (permission.allowedActionsByTool.get(asToolId(product.toolId))?.has('read') ?? false);
+        return allowed
+          ? ok('read')
+          : err(new PermissionError({ toolId: product.toolId, action: 'read', reason: 'not_allowed' }));
+      }
       if (!product.tools.includes(args.nativeTool)) {
         return err(new PermissionError({
           toolId: product.toolId,
@@ -163,6 +192,16 @@ function createProductTool(
         : err(new PermissionError({ toolId: product.toolId, action, reason: 'not_allowed' }));
     },
     async preflight(args, ctx) {
+      if (args.op === 'resolve_reference') {
+        if (product.toolId !== 'googleSheets' || !deps.resolveSheetReference) {
+          return badArgs(product.toolId, 'Pasted Sheet reference resolution is unavailable');
+        }
+        return ok({
+          level: 'resource_reference',
+          nativeTool: 'resolve_sheet_reference',
+          action: 'read' as const,
+        });
+      }
       if (!product.tools.includes(args.nativeTool)) {
         return badArgs(product.toolId, `${args.nativeTool} is not an approved ${product.name} operation`);
       }
@@ -235,6 +274,58 @@ function createProductTool(
       }
     },
     async execute(args, ctx): Promise<Result<ToolResult, ToolError>> {
+      if (args.op === 'resolve_reference') {
+        if (product.toolId !== 'googleSheets' || !deps.resolveSheetReference) {
+          return badArgs(product.toolId, 'Pasted Sheet reference resolution is unavailable');
+        }
+        try {
+          ctx.onProgress?.('Checking this Google Sheet and its writable account…');
+          const resolution = await deps.resolveSheetReference({
+            companyId: ctx.runContext.companyId,
+            userId: ctx.runContext.userId,
+            url: args.url,
+            ...(args.connectionId ? { connectionId: args.connectionId } : {}),
+            ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
+          });
+          if (
+            resolution.status === 'no_connection'
+            && !args.connectionId
+            && deps.beginAuthorization
+          ) {
+            const authorization = await deps.beginAuthorization({
+              toolId: product.toolId,
+              reason: 'Connect a writable personal Google account to open this Sheet.',
+              runContext: ctx.runContext,
+            });
+            if (authorization.status !== 'unavailable') {
+              return ok({
+                success: false,
+                nativeTool: 'resolve_sheet_reference',
+                data: {
+                  code: 'google_workspace_authorization_pending',
+                  intentId: authorization.intentId,
+                },
+                message:
+                  'The Google connection card was sent. End this run now; '
+                  + 'Divo will start a fresh run automatically after OAuth completes.',
+              });
+            }
+          }
+          return ok({
+            success: resolution.status === 'resolved',
+            nativeTool: 'resolve_sheet_reference',
+            data: resolution,
+            message: sheetReferenceResolutionMessage(resolution),
+          });
+        } catch (cause) {
+          return err(new ToolError({
+            toolId: product.toolId,
+            reason: 'upstream_failure',
+            cause,
+            message: cause instanceof Error ? cause.message : String(cause),
+          }));
+        }
+      }
       if (!product.tools.includes(args.nativeTool)) {
         return badArgs(product.toolId, `${args.nativeTool} is not an approved ${product.name} operation`);
       }
@@ -377,6 +468,22 @@ function progressVerb(action: ToolActionGroup): string {
   if (action === 'send') return 'Sending with';
   if (action === 'execute') return 'Running';
   return 'Updating';
+}
+
+function sheetReferenceResolutionMessage(
+  resolution: Awaited<ReturnType<ResolveGoogleSheetReference>>,
+): string {
+  if (resolution.status === 'resolved') return 'Google Sheet access verified.';
+  if (resolution.status === 'choose_connection') {
+    return 'Choose which writable personal Google account Divo should use for this Sheet.';
+  }
+  if (resolution.status === 'invalid_reference') return 'This is not a supported Google Sheet URL.';
+  if (resolution.status === 'no_connection') return 'No writable personal Google account is connected.';
+  if (resolution.status === 'missing_scope') return 'The connected Google account is missing Drive or Sheets write access.';
+  if (resolution.status === 'read_only') return 'This Google Sheet is read-only for the connected personal account.';
+  if (resolution.status === 'trashed') return 'This Google Sheet is in the trash.';
+  if (resolution.status === 'wrong_type') return 'This Google Drive resource is not a Google Sheet.';
+  return 'This Google Sheet is not accessible through the connected personal account.';
 }
 
 function badArgs(toolId: string, message: string): Result<never, ToolError> {
