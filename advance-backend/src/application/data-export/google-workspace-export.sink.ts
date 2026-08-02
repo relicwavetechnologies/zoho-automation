@@ -676,19 +676,28 @@ function sheetPresentation(input: {
     ],
     numberFormats: {
       Position: '#,##0',
+      'Previous Position': '#,##0',
+      'Position Difference': '#,##0;[Red]-#,##0',
       'Search Volume': '#,##0',
       CPC: '0.00',
       'Traffic (%)': '0.00"%"',
       'Traffic Cost (%)': '0.00"%"',
+      Competition: '0.00',
+      'Number of Results': '#,##0',
     },
     columnWidths: {
       Keyword: 240,
       Position: 90,
+      'Previous Position': 120,
+      'Position Difference': 130,
       'Search Volume': 120,
       CPC: 90,
       Url: 380,
       'Traffic (%)': 110,
       'Traffic Cost (%)': 130,
+      Competition: 105,
+      'Number of Results': 135,
+      Trends: 220,
     },
   };
 }
@@ -701,7 +710,10 @@ function normalizeSheetCell(
   if (
     source?.kind === 'semrush_snapshot'
     && typeof value === 'string'
-    && ['Position', 'Search Volume', 'CPC', 'Traffic (%)', 'Traffic Cost (%)'].includes(column)
+    && [
+      'Position', 'Previous Position', 'Position Difference', 'Search Volume',
+      'CPC', 'Traffic (%)', 'Traffic Cost (%)', 'Competition', 'Number of Results',
+    ].includes(column)
     && value.trim() !== ''
   ) {
     const numeric = Number(value);

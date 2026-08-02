@@ -55,8 +55,9 @@ it('creates a typed and presentation-ready Semrush organic positions sheet', asy
           return {
             data: {
               values: [[
-                'Keyword', 'Position', 'Search Volume', 'CPC', 'Url',
-                'Traffic (%)', 'Traffic Cost (%)',
+                'Keyword', 'Position', 'Previous Position', 'Position Difference',
+                'Search Volume', 'CPC', 'Url', 'Traffic (%)', 'Traffic Cost (%)',
+                'Competition', 'Number of Results', 'Trends',
               ]],
             },
           };
@@ -89,11 +90,16 @@ it('creates a typed and presentation-ready Semrush organic positions sheet', asy
       yield [{
         Keyword: 'example keyword',
         Position: '6',
+        'Previous Position': '9',
+        'Position Difference': '3',
         'Search Volume': '1000',
         CPC: '0.73',
         Url: 'https://example.com/page',
         'Traffic (%)': '12.50',
         'Traffic Cost (%)': '1.25',
+        Competition: '0.34',
+        'Number of Results': '125000',
+        Trends: '0.81,0.75,0.70',
       }];
     })(),
     sourceTruncated: () => false,
@@ -102,8 +108,15 @@ it('creates a typed and presentation-ready Semrush organic positions sheet', asy
   assert.equal(result.artifactType, 'google_sheet');
   assert.equal(result.rowCount, 1);
   assert.deepEqual(appendedValues, [[
-    ['Keyword', 'Position', 'Search Volume', 'CPC', 'Url', 'Traffic (%)', 'Traffic Cost (%)'],
-    ['example keyword', 6, 1000, 0.73, 'https://example.com/page', 12.5, 1.25],
+    [
+      'Keyword', 'Position', 'Previous Position', 'Position Difference',
+      'Search Volume', 'CPC', 'Url', 'Traffic (%)', 'Traffic Cost (%)',
+      'Competition', 'Number of Results', 'Trends',
+    ],
+    [
+      'example keyword', 6, 9, 3, 1000, 0.73, 'https://example.com/page',
+      12.5, 1.25, 0.34, 125000, '0.81,0.75,0.70',
+    ],
   ]]);
   assert.equal(overviewValues.length, 1);
   assert.deepEqual(overviewValues[0]?.slice(0, 8).map(row => row[0]), [

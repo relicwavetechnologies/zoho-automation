@@ -51,6 +51,10 @@ describe('SemrushClient', () => {
     assert.equal(result.status, 'partial');
     assert.equal(result.nextPage, '1');
     assert.equal(calls[0]?.searchParams.get('display_limit'), '2');
+    assert.equal(
+      calls[0]?.searchParams.get('export_columns'),
+      'Ph,Po,Pp,Pd,Nq,Cp,Ur,Tr,Tc,Co,Nr,Td',
+    );
   });
 
   it('does not invent a continuation when the provider returns no look-ahead row', async () => {
