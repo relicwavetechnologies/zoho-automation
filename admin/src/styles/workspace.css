@@ -812,3 +812,67 @@
   font-family: inherit; font-size: 13px; color: var(--cur-ink);
 }
 .cur .search input::placeholder { color: var(--cur-muted-soft); }
+
+/* ── Run trace ────────────────────────────────────────
+   Replaces the `.turn`/`.step` cards this screen used to borrow from
+   cursor.css. Those gave every step a bordered box roughly 100px tall, so a
+   four-step turn filled a screen and the *shape* of a run — where it looped,
+   where it stalled — was invisible. These are rows.
+
+   The old rows also had nothing to say: they rendered `divo_gateway` for every
+   vendor call, because that is the transport, so five different actions read
+   identically. `readStep` unwraps the dispatch; this styles the result as
+   name → operation → subject, in falling weight, so the eye lands on what
+   differs between rows rather than on what repeats. */
+.cur .ws-turn { margin-top: 22px; }
+.cur .ws-turn:first-child { margin-top: 0; }
+.cur .ws-turn-h {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding-bottom: 8px; border-bottom: 1px solid var(--cur-hairline);
+}
+.cur .ws-turn-n { font-size: 12px; font-weight: 500; color: var(--cur-ink); }
+.cur .ws-turn-m { font-size: 11.5px; color: var(--cur-muted); }
+/* Separator only between adjacent metadata, never before the right-aligned
+   cost — a dot pushed to the far right separates nothing. */
+.cur .ws-turn-m + .ws-turn-m::before { content: "·"; margin-right: 12px; color: var(--cur-hairline-strong); }
+.cur .ws-turn-c { font-size: 11.5px; color: var(--cur-primary); margin-left: auto; }
+.cur .ws-turn-m:last-child { margin-left: auto; }
+.cur .ws-turn-m:last-child::before { content: none; }
+
+.cur .ws-steps { display: flex; flex-direction: column; }
+.cur .ws-step { border-bottom: 1px solid var(--cur-hairline-soft); }
+.cur .ws-step:last-child { border-bottom: 0; }
+.cur .ws-step-h {
+  width: 100%; display: flex; align-items: center; gap: 9px; min-width: 0;
+  padding: 9px 2px; border: 0; background: none; cursor: pointer;
+  text-align: left; color: var(--cur-ink); font-family: inherit; font-size: 13px;
+}
+.cur .ws-step-h:hover { background: var(--cur-canvas-soft); }
+.cur .ws-step-chev { color: var(--cur-muted-soft); flex-shrink: 0; transition: transform 0.14s ease; }
+.cur .ws-step[data-open] .ws-step-chev { transform: rotate(180deg); }
+.cur .ws-step-t { font-weight: 500; flex-shrink: 0; }
+.cur .ws-step-op { font-size: 12px; color: var(--cur-body); flex-shrink: 0; }
+/* The subject truncates rather than wrapping: a run is scanned down the left
+   edge, and a wrapped query pushes every later step out of rhythm. */
+.cur .ws-step-d {
+  font-size: 12px; color: var(--cur-muted); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cur .ws-step-x {
+  font-size: 11px; color: var(--cur-muted); background: var(--cur-surface-strong);
+  border-radius: 999px; padding: 1px 7px; flex-shrink: 0;
+}
+.cur .ws-step-a {
+  margin-left: auto; flex-shrink: 0; font-size: 10.5px; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--cur-muted);
+}
+/* A write is the one thing on this row worth a second look, so it is the only
+   thing that gets a colour. Reads are the overwhelming majority and stay grey. */
+.cur .ws-step-a[data-a="write"] { color: var(--ws-warning); }
+.cur .ws-step-h .badge { margin-left: auto; flex-shrink: 0; }
+.cur .ws-step-b { padding: 2px 0 14px 22px; }
+.cur .ws-turn-end {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--cur-hairline);
+  font-size: 12px; color: var(--cur-muted);
+}

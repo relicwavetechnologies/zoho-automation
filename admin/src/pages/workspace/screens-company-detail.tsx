@@ -30,6 +30,7 @@ import { useProxyAudit, useProxyModels } from '@/cursor/use-proxy'
 import {
   ROLE_LABEL, ago, displayName, initialsOf, useDepartmentDetail, useRuns,
 } from './data/use-company'
+import { foldRepeats, readStep } from './data/trace-step'
 import { useTeamUsage } from './data/use-team'
 
 /** Mirrors the run badge on the AI Ops list, so a status reads the same everywhere. */
@@ -187,76 +188,89 @@ export function CompanyRunDetail({ replay, go }: Props) {
             ) : (
               <Fade>
                 {run.turns.map((turn, ti) => (
-                  <div className="turn" key={ti}>
-                    <div className="turn-h">
-                      Turn {ti + 1}
-                      <span className="ln" />
+                  <div className="ws-turn" key={ti}>
+                    <div className="ws-turn-h">
+                      <span className="ws-turn-n">Turn {ti + 1}</span>
                       {turn.model ? (
                         <>
-                          <span>{turn.model.modelName}</span>
-                          <span>{compact(turn.model.input)} in · {compact(turn.model.output)} out</span>
-                          <span style={{ color: 'var(--cur-primary)' }}>{money(turn.model.costUsd)}</span>
+                          <span className="ws-turn-m">{turn.model.modelName}</span>
+                          <span className="ws-turn-m">{compact(turn.model.input)} in · {compact(turn.model.output)} out</span>
+                          {/* Orange is for cost that exists. Repeating $0.00 in
+                              the brand colour on every turn spends the loudest
+                              thing on the page saying nothing happened. */}
+                          {turn.model.costUsd > 0
+                            ? <span className="ws-turn-c">{money(turn.model.costUsd)}</span>
+                            : <span className="ws-turn-m">no charge</span>}
                         </>
                       ) : (
-                        <span className="ws-sub">no model call recorded</span>
+                        <span className="ws-turn-m">no model call recorded</span>
                       )}
                     </div>
 
-                    {turn.tools.map((step, i) => {
-                      const id = `${ti}-${i}`
-                      const isOpen = open === id
-                      return (
-                        <div className="step" key={id}>
-                          <span className={`tl tl-${step.stage}`} style={{ height: 20, alignSelf: 'flex-start' }}>
-                            {step.label}
-                          </span>
-                          <div className="main">
-                            <div className="title">
-                              <span className="name">{step.n}</span>
-                              {step._subtitle ? <span className="muted" style={{ fontSize: 12.5 }}>{step._subtitle}</span> : null}
-                              {step._error ? <span className="badge b-err"><span className="dot" />Failed</span> : null}
-                            </div>
-                            <div className="meta">
-                              <button
-                                type="button"
-                                className={`expand${isOpen ? ' open' : ''}`}
-                                style={{ border: 0, background: 'none', padding: 0 }}
-                                onClick={() => setOpen(isOpen ? null : id)}
-                              >
-                                {isOpen ? 'Hide' : 'Show'} raw <ChevronDown size={12} />
-                              </button>
-                            </div>
+                    <div className="ws-steps">
+                      {foldRepeats(
+                        turn.tools.map((tool, i) => ({ tool, i, view: readStep(tool.n, tool.i) })),
+                        ({ tool, view }) => `${view.title}|${view.operation}|${view.detail}|${tool._error}`,
+                      ).map(({ step: { tool, i, view }, count }) => {
+                        const id = `${ti}-${i}`
+                        const isOpen = open === id
+                        return (
+                          <div className="ws-step" key={id} data-open={isOpen || undefined}>
+                            <button
+                              type="button"
+                              className="ws-step-h"
+                              aria-expanded={isOpen}
+                              onClick={() => setOpen(isOpen ? null : id)}
+                            >
+                              <ChevronDown size={13} className="ws-step-chev" />
+                              <span className="ws-step-t">{view.title}</span>
+                              {view.operation ? <span className="ws-step-op">{view.operation}</span> : null}
+                              {view.detail ? <span className="ws-step-d">{view.detail}</span> : null}
+                              {count > 1 ? <span className="ws-step-x">×{count}</span> : null}
+                              {/* No badge when the action cannot be established.
+                                  The old one read the transport name, so every
+                                  row claimed READ — including the writes. */}
+                              {tool._error
+                                ? <span className="badge b-err"><span className="dot" />Failed</span>
+                                : view.action
+                                  ? <span className="ws-step-a" data-a={view.action}>{view.action}</span>
+                                  : null}
+                            </button>
 
                             {isOpen ? (
-                              !maySeeRaw ? (
-                                <div className="gate">
-                                  <Lock size={13} />
-                                  Raw input and output are held back by the backend unless your session carries{' '}
-                                  <b>canViewRawExecutionData</b>. The summary above is what every admin sees.
-                                </div>
-                              ) : !showRaw ? (
-                                <div className="gate">
-                                  <Lock size={13} />
-                                  Hidden by you — use <b>Show raw</b> above. Nothing is being withheld by the backend.
-                                </div>
-                              ) : (
-                                <div className="raw">
-                                  <div className="lbl">Input</div>
-                                  <pre>{JSON.stringify(step.i, null, 2)}</pre>
-                                  <div className="lbl">Output</div>
-                                  <pre>{JSON.stringify(step.o, null, 2)}</pre>
-                                </div>
-                              )
+                              <div className="ws-step-b">
+                                {!maySeeRaw ? (
+                                  <div className="gate">
+                                    <Lock size={13} />
+                                    Raw input and output are held back by the backend unless your session carries{' '}
+                                    <b>canViewRawExecutionData</b>. The summary above is what every admin sees.
+                                  </div>
+                                ) : !showRaw ? (
+                                  <div className="gate">
+                                    <Lock size={13} />
+                                    Hidden by you — use <b>Show raw</b> above. Nothing is being withheld by the backend.
+                                  </div>
+                                ) : (
+                                  <div className="raw">
+                                    <div className="lbl">
+                                      Input{view.viaGateway ? ' · sent through the gateway' : ''}
+                                    </div>
+                                    <pre>{JSON.stringify(tool.i, null, 2)}</pre>
+                                    <div className="lbl">Output</div>
+                                    <pre>{JSON.stringify(tool.o, null, 2)}</pre>
+                                  </div>
+                                )}
+                              </div>
                             ) : null}
                           </div>
-                        </div>
-                      )
-                    })}
+                        )
+                      })}
+                    </div>
                   </div>
                 ))}
                 {run.ended ? (
-                  <div className="step" style={{ justifyContent: 'center', gap: 9 }}>
-                    <span className="tl tl-done">Done</span><b>run_end · {run.statusLabel}</b>
+                  <div className="ws-turn-end">
+                    <Check size={13} />Run ended · {run.statusLabel}
                   </div>
                 ) : null}
               </Fade>
