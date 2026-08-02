@@ -83,15 +83,10 @@ describe('OMS Site Data tool', () => {
     );
   });
 
-  it('keeps the legacy Cloudinary rollback path bounded at 25 rows', async () => {
+  it('keeps large provider snapshots bounded without creating a temporary artifact', async () => {
     const rows = Array.from({ length: 100 }, (_, index) => ({ website: `site-${index}.com`, domainAuthority: index }));
-    const uploads: unknown[] = [];
     const tool = createTool({
       service: { execute: async () => ({ operation: 'search_sites', status: 'partial', coverage: { providerRowCap: 100 }, rows }) },
-      cloudinary: {
-        isAvailable: true,
-        uploadCsvBuffer: async (input: unknown) => { uploads.push(input); return { publicId: 'temp_exports/co/oms', signedUrl: 'https://example.test/oms.csv', expiresAt: '2026-07-21T00:00:00.000Z' }; },
-      },
     });
     const result = await tool.execute({ operation: 'search_sites', niche: 'Technology' }, makeCtx('omsSiteData', ['read']));
     assert.equal(result.ok, true);
@@ -99,15 +94,14 @@ describe('OMS Site Data tool', () => {
     assert.equal(result.value.status, 'partial');
     assert.equal(result.value.preview?.rows.length, 25);
     assert.equal(result.value.preview?.coverage.kind, 'provider_limited');
-    assert.equal(result.value.artifact?.id, 'temp_exports/co/oms');
-    assert.equal(uploads.length, 1);
+    assert.equal('artifact' in result.value, false);
+    assert.doesNotMatch(result.value.message, /temporary CSV|download link/i);
     assert.match(result.value.message, /arbitrary subset/i);
   });
 
   it('creates one central provider-limited offer without using Cloudinary', async () => {
     const rows = Array.from({ length: 100 }, (_, index) => ({ website: `site-${index}.com` }));
     const offers: unknown[] = [];
-    const uploads: unknown[] = [];
     const tool = createTool({
       service: { execute: async () => ({ operation: 'search_sites', status: 'partial', coverage: {}, rows }) },
       offers: {
@@ -115,10 +109,6 @@ describe('OMS Site Data tool', () => {
           offers.push(payload);
           return { offerId: 'offer-opaque', expiresAt: new Date('2026-08-03T00:00:00.000Z') };
         },
-      },
-      cloudinary: {
-        isAvailable: true,
-        uploadCsvBuffer: async (input: unknown) => { uploads.push(input); return null; },
       },
     });
     const ctx = makeCtx('omsSiteData', ['read'], { chatId: 'oc-chat', requestId: 'request-1' });
@@ -135,8 +125,6 @@ describe('OMS Site Data tool', () => {
       reason: 'oms_100_row_cap_without_pagination_or_total',
     });
     assert.equal(result.value.preview?.exportOfferId, 'offer-opaque');
-    assert.equal(result.value.artifact, undefined);
-    assert.equal(uploads.length, 0);
     assert.equal(offers.length, 1);
     const payload = parseDataExportOfferPayload(offers[0]);
     assert.deepEqual(payload.source, {
@@ -152,7 +140,6 @@ describe('OMS Site Data tool', () => {
     );
     assert.equal(withoutExportPermission.ok && withoutExportPermission.value.preview?.exportOfferId, undefined);
     assert.equal(offers.length, 1);
-    assert.equal(uploads.length, 0);
 
     const dataExport = createDataExportTool({ offers: {} as never });
     assert.equal(dataExport.argsSchema.safeParse({
@@ -320,17 +307,14 @@ describe('OMS Site Data tool', () => {
 function createTool(overrides: {
   service?: Record<string, unknown>;
   offers?: Record<string, unknown>;
-  cloudinary?: Record<string, unknown>;
 } = {}) {
   const service = {
     preflight: async () => ({ configured: true }),
     execute: async () => ({ operation: 'search_sites', status: 'complete' as const, coverage: {}, rows: [{ website: 'example.com' }] }),
     ...overrides.service,
   };
-  const cloudinary = { isAvailable: false, uploadCsvBuffer: async () => null, ...overrides.cloudinary };
   return createOmsSiteDataTool({
     service: service as never,
     ...(overrides.offers ? { offers: overrides.offers as never } : {}),
-    cloudinary: cloudinary as never,
   });
 }

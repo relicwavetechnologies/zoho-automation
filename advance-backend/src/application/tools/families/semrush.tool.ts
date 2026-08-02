@@ -6,9 +6,7 @@ import { PermissionError, ToolError } from '../../../shared/errors';
 import type { PermissionResult } from '../../permissions/permission.types';
 import type { ToolActionGroup } from '../../../domain/permissions/tool-action-group';
 import { asToolId } from '../../../shared/ids';
-import type { CloudinaryAdapter } from '../../../infrastructure/cloudinary/cloudinary.adapter';
 import type { AuditService } from '../../observability/audit.service';
-import { arrayToCsv } from '../shared/sandbox-runner';
 import { SemrushService } from '../../semrush/semrush.service';
 import { SemrushServiceError, SemrushToolArgsSchema, type SemrushFetchedData, type SemrushToolArgs } from '../../semrush/semrush.types';
 import type { ApiKeyExhaustionNotifierPort } from '../../governance/api-key-exhaustion.notifier';
@@ -44,7 +42,6 @@ const ResultSchema = z.object({
     exportOfferId: z.string().optional(),
   }).optional(),
   nextPage: z.string().optional(),
-  artifact: z.object({ id: z.string(), downloadUrl: z.string().url(), expiresAt: z.string() }).optional(),
   message: z.string(),
 });
 
@@ -53,9 +50,7 @@ type Res = z.infer<typeof ResultSchema>;
 export const createSemrushTool = (deps: {
   service: SemrushService;
   offers?: Pick<DataExportOfferService, 'createAuthorizedOffer'>;
-  cloudinary: CloudinaryAdapter;
   audit?: AuditService;
-  csvLinkTtl?: number;
   apiKeyExhaustion?: ApiKeyExhaustionNotifierPort;
 }): Tool<SemrushToolArgs, Res> => ({
   id: asToolId('semrush'),
@@ -115,17 +110,6 @@ export const createSemrushTool = (deps: {
         coverage: previewCoverageFor(data, allRows.length),
         ...(offer ? { exportOfferId: offer.offerId } : {}),
       });
-      let artifact: Res['artifact'];
-      if (deps.offers === undefined && allRows.length > DATASET_PREVIEW_ROW_LIMIT && deps.cloudinary.isAvailable) {
-        const headers = headersFor(allRows);
-        const exported = await deps.cloudinary.uploadCsvBuffer({
-          buffer: arrayToCsv(headers, allRows),
-          fileName: `semrush-${args.operation}-${new Date().toISOString().slice(0, 10)}.csv`,
-          companyId: ctx.runContext.companyId,
-          ttlSeconds: deps.csvLinkTtl ?? 86_400,
-        });
-        if (exported) artifact = { id: exported.publicId, downloadUrl: exported.signedUrl, expiresAt: exported.expiresAt };
-      }
       const result: Res = {
         status: data.status,
         operation: data.operation,
@@ -133,11 +117,9 @@ export const createSemrushTool = (deps: {
         coverage: data.coverage,
         preview,
         ...(data.nextPage ? { nextPage: data.nextPage } : {}),
-        ...(artifact ? { artifact } : {}),
         message: messageFor({
           rowCount: allRows.length,
           returnedRows: preview.rows.length,
-          artifact: Boolean(artifact),
           offer: Boolean(offer),
           status: data.status,
         }),
@@ -152,7 +134,6 @@ export const createSemrushTool = (deps: {
           status: result.status,
           rowCount: allRows.length,
           returnedRowCount: preview.rows.length,
-          artifactId: artifact?.id ?? null,
           exportOfferId: offer?.offerId ?? null,
           latencyMs: Date.now() - startedAt,
           correlationId: ctx.correlationId,
@@ -192,16 +173,11 @@ export const createSemrushTool = (deps: {
   },
 });
 
-function headersFor(rows: Array<Record<string, unknown>>): string[] {
-  return [...new Set(rows.flatMap(row => Object.keys(row)))].slice(0, 60);
-}
-
-function messageFor(input: { rowCount: number; returnedRows: number; artifact: boolean; offer: boolean; status: Res['status'] }): string {
+function messageFor(input: { rowCount: number; returnedRows: number; offer: boolean; status: Res['status'] }): string {
   if (input.status === 'empty') return 'Semrush returned no matching data for this request.';
   const parts = [`Retrieved ${input.rowCount} row${input.rowCount === 1 ? '' : 's'}.`];
   if (input.rowCount > input.returnedRows) parts.push(`Showing the first ${input.returnedRows} rows in chat.`);
   if (input.offer) parts.push('A governed export is available. It reruns this Semrush query when the user confirms, so current provider data may differ from this preview.');
-  if (input.artifact) parts.push('The complete normalized result is available as a temporary CSV download.');
   return parts.join(' ');
 }
 

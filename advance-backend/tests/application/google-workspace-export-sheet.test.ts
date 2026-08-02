@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { google } from 'googleapis';
 import { GoogleWorkspaceExportSink } from '../../src/application/data-export/google-workspace-export.sink.ts';
 
-it('creates a typed and presentation-ready Semrush organic positions sheet', async t => {
+it('creates a typed Semrush sheet in the company account and grants only the invoker read access', async t => {
   const appendedValues: Array<{ range: string; values: unknown[][] }> = [];
   const overviewValues: unknown[][][] = [];
   const batchRequests: Record<string, unknown>[][] = [];
+  const permissionCreates: unknown[] = [];
   const drive = {
     files: {
       list: async () => ({ data: { files: [] } }),
@@ -21,11 +22,14 @@ it('creates a typed and presentation-ready Semrush organic positions sheet', asy
       list: async () => ({
         data: {
           permissions: [
-            { type: 'user', role: 'owner', emailAddress: 'member@gmail.com' },
+            { type: 'user', role: 'owner', emailAddress: 'divo@emiactech.com' },
+            ...(permissionCreates.length > 0
+              ? [{ type: 'user', role: 'reader', emailAddress: 'member@emiactech.com' }]
+              : []),
           ],
         },
       }),
-      create: async () => assert.fail('owner export must not create a reader permission'),
+      create: async (input: unknown) => { permissionCreates.push(input); return { data: { id: 'reader-1' } }; },
     },
   };
   const sheets = {
@@ -90,8 +94,8 @@ it('creates a typed and presentation-ready Semrush organic positions sheet', asy
 
   const sink = new GoogleWorkspaceExportSink();
   const result = await sink.write({
-    auth: { accessToken: 'token', ownerEmail: 'member@gmail.com' },
-    readerEmail: 'member@gmail.com',
+    auth: { accessToken: 'token', readerDomain: 'emiactech.com' },
+    readerEmail: 'member@emiactech.com',
     exportKey: 'job-sheet',
     source: {
       kind: 'semrush_snapshot',
@@ -127,6 +131,13 @@ it('creates a typed and presentation-ready Semrush organic positions sheet', asy
 
   assert.equal(result.artifactType, 'google_sheet');
   assert.equal(result.rowCount, 1);
+  assert.equal(result.sharedWith, 'member@emiactech.com (reader)');
+  assert.deepEqual(permissionCreates, [{
+    fileId: 'sheet-1',
+    requestBody: { type: 'user', role: 'reader', emailAddress: 'member@emiactech.com' },
+    fields: 'id',
+    sendNotificationEmail: false,
+  }]);
   assert.deepEqual(appendedValues[0], {
     range: 'Sheet1!A1',
     values: [

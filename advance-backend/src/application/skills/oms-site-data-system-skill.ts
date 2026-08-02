@@ -38,7 +38,7 @@ Use this skill only for the company-approved OMS website inventory capability.
 7. OMS never paginates and never returns a total count. Never state or imply how many sites exist in total, and never claim a shortlist is exhaustive beyond what the row cap allows.
 8. Site rows are per listing, not per domain, so the same website can appear more than once with different niche, price, or link attributes. Report the rows as returned rather than merging them.
 9. Authority values are source data and are occasionally out of range, including values above 100. Pass them through as stored and do not silently correct them.
-10. Summarize only the useful evidence in chat. The preview contains at most 25 rows. When it contains \`preview.exportOfferId\`, use the governed export action; the resulting Google artifact contains the returned OMS snapshot and may not be exhaustive. A temporary private CSV can still appear only on the retained legacy rollback path.
+10. Summarize only the useful evidence in chat. The preview contains at most 25 rows. When it contains \`preview.exportOfferId\`, use the governed export action; the resulting Google artifact contains the returned OMS snapshot and may not be exhaustive. Never create or promise a separate temporary download link.
 
 OMS access is read-only and available only to active company administrators in this rollout.`,
   toolIds: ['omsSiteData'],

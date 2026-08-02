@@ -1877,17 +1877,13 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   toolRegistry.register(createSemrushTool({
     service: semrushService,
     offers: dataExportOfferService,
-    cloudinary: cloudinaryAdapter,
     audit: auditService,
-    csvLinkTtl: env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
     apiKeyExhaustion: apiKeyExhaustionFacade,
   }));
   toolRegistry.register(createOmsSiteDataTool({
     service: companyOmsSiteDataService,
     offers: dataExportOfferService,
-    cloudinary: cloudinaryAdapter,
     audit: auditService,
-    csvLinkTtl: env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
   }));
   toolRegistry.register(createRunCommandTool());
   toolRegistry.register(createScheduledWorkflowsTool({ prisma }));

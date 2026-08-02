@@ -28,15 +28,10 @@ describe('semrush tool', () => {
     assert.deepEqual(allowed, { ok: true, value: 'read' });
   });
 
-  it('keeps the legacy Cloudinary rollback path bounded at 25 preview rows', async () => {
-    const uploads: unknown[] = [];
+  it('keeps large results bounded without creating a temporary artifact', async () => {
     const tool = createTool({
       service: {
         execute: async () => ({ operation: 'organic_positions', status: 'complete', coverage: { database: 'in' }, rows }),
-      },
-      cloudinary: {
-        isAvailable: true,
-        uploadCsvBuffer: async (input: unknown) => { uploads.push(input); return { publicId: 'temp_exports/co/rows', signedUrl: 'https://example.test/signed.csv', expiresAt: '2026-07-21T00:00:00.000Z' }; },
       },
     });
     const result = await tool.execute({ operation: 'organic_positions', domain: 'example.com', database: 'in', limit: 1_000 }, makeCtx('semrush', ['read']));
@@ -49,14 +44,12 @@ describe('semrush tool', () => {
       knownTotal: 1_000,
       reason: 'model_preview_limit',
     });
-    assert.equal(result.value.artifact?.id, 'temp_exports/co/rows');
-    assert.equal(uploads.length, 1);
-    assert.match(result.value.message, /temporary CSV/i);
+    assert.equal('artifact' in result.value, false);
+    assert.doesNotMatch(result.value.message, /temporary CSV|download link/i);
   });
 
   it('creates one opaque export offer without creating a production Cloudinary artifact', async () => {
     const offers: unknown[] = [];
-    const uploads: unknown[] = [];
     const tool = createTool({
       service: {
         execute: async () => ({
@@ -72,10 +65,6 @@ describe('semrush tool', () => {
           offers.push(payload);
           return { offerId: 'offer-opaque', expiresAt: new Date('2026-08-03T00:00:00.000Z') };
         },
-      },
-      cloudinary: {
-        isAvailable: true,
-        uploadCsvBuffer: async (input: unknown) => { uploads.push(input); return null; },
       },
     });
     const ctx = makeCtx('semrush', ['read'], {
@@ -100,8 +89,6 @@ describe('semrush tool', () => {
     });
     assert.equal(result.value.preview?.exportOfferId, 'offer-opaque');
     assert.equal(result.value.nextPage, '1000');
-    assert.equal(result.value.artifact, undefined);
-    assert.equal(uploads.length, 0);
     assert.equal(offers.length, 1);
     const payload = parseDataExportOfferPayload(offers[0]);
     assert.deepEqual(payload.source, {
@@ -119,7 +106,6 @@ describe('semrush tool', () => {
     );
     assert.equal(withoutExportPermission.ok && withoutExportPermission.value.preview?.exportOfferId, undefined);
     assert.equal(offers.length, 1);
-    assert.equal(uploads.length, 0);
 
     const dataExport = createDataExportTool({ offers: {} as never });
     assert.equal(dataExport.argsSchema.safeParse({
@@ -215,21 +201,14 @@ describe('semrush tool', () => {
 function createTool(overrides: {
   service?: Record<string, unknown>;
   offers?: Record<string, unknown>;
-  cloudinary?: Record<string, unknown>;
 } = {}) {
   const service = {
     preflight: async () => ({ configured: true }),
     execute: async () => ({ operation: 'domain_overview', status: 'complete' as const, coverage: {}, rows: [{ domain: 'example.com' }] }),
     ...overrides.service,
   };
-  const cloudinary = {
-    isAvailable: false,
-    uploadCsvBuffer: async () => null,
-    ...overrides.cloudinary,
-  };
   return createSemrushTool({
     service: service as never,
     ...(overrides.offers ? { offers: overrides.offers as never } : {}),
-    cloudinary: cloudinary as never,
   });
 }

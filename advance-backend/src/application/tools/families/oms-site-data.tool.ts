@@ -6,9 +6,7 @@ import { PermissionError, ToolError } from '../../../shared/errors';
 import type { PermissionResult } from '../../permissions/permission.types';
 import type { ToolActionGroup } from '../../../domain/permissions/tool-action-group';
 import { asToolId } from '../../../shared/ids';
-import type { CloudinaryAdapter } from '../../../infrastructure/cloudinary/cloudinary.adapter';
 import type { AuditService } from '../../observability/audit.service';
-import { arrayToCsv } from '../shared/sandbox-runner';
 import { CompanyOmsSiteDataService } from '../../oms/company-oms-site-data.service';
 import { defaultSortDirection, excludesUnmeasuredSpamScore, OmsSiteDataServiceError, OmsSiteDataToolArgsSchema, type OmsSiteDataToolArgs } from '../../oms/oms-site-data.types';
 import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
@@ -40,7 +38,6 @@ const ResultSchema = z.object({
     ]),
     exportOfferId: z.string().optional(),
   }).optional(),
-  artifact: z.object({ id: z.string(), downloadUrl: z.string().url(), expiresAt: z.string() }).optional(),
   message: z.string(),
 });
 
@@ -49,9 +46,7 @@ type Res = z.infer<typeof ResultSchema>;
 export const createOmsSiteDataTool = (deps: {
   service: CompanyOmsSiteDataService;
   offers?: Pick<DataExportOfferService, 'createAuthorizedOffer'>;
-  cloudinary: CloudinaryAdapter;
   audit?: AuditService;
-  csvLinkTtl?: number;
 }): Tool<OmsSiteDataToolArgs, Res> => ({
   id: asToolId('omsSiteData'),
   family: 'oms',
@@ -117,25 +112,13 @@ export const createOmsSiteDataTool = (deps: {
         },
         ...(offer ? { exportOfferId: offer.offerId } : {}),
       });
-      let artifact: Res['artifact'];
-      if (deps.offers === undefined && data.rows.length > DATASET_PREVIEW_ROW_LIMIT && deps.cloudinary.isAvailable) {
-        const headers = headersFor(data.rows);
-        const exported = await deps.cloudinary.uploadCsvBuffer({
-          buffer: arrayToCsv(headers, data.rows),
-          fileName: `oms-site-data-${args.operation}-${new Date().toISOString().slice(0, 10)}.csv`,
-          companyId: ctx.runContext.companyId,
-          ttlSeconds: deps.csvLinkTtl ?? 86_400,
-        });
-        if (exported) artifact = { id: exported.publicId, downloadUrl: exported.signedUrl, expiresAt: exported.expiresAt };
-      }
       const result: Res = {
         status: data.status,
         operation: data.operation,
         retrievedAt: new Date().toISOString(),
         coverage: data.coverage,
         preview,
-        ...(artifact ? { artifact } : {}),
-        message: messageFor(data.status, data.rows.length, preview.rows.length, Boolean(artifact), Boolean(offer), args),
+        message: messageFor(data.status, data.rows.length, preview.rows.length, Boolean(offer), args),
       };
       deps.audit?.record({
         actorId: ctx.runContext.userId,
@@ -147,7 +130,6 @@ export const createOmsSiteDataTool = (deps: {
           status: result.status,
           rowCount: data.rows.length,
           returnedRowCount: preview.rows.length,
-          artifactId: artifact?.id ?? null,
           exportOfferId: offer?.offerId ?? null,
           latencyMs: Date.now() - startedAt,
           correlationId: ctx.correlationId,
@@ -179,10 +161,6 @@ export const createOmsSiteDataTool = (deps: {
   },
 });
 
-function headersFor(rows: Array<Record<string, unknown>>): string[] {
-  return [...new Set(rows.flatMap(row => Object.keys(row)))].slice(0, 25);
-}
-
 /**
  * The agent reads this after every call, so the 100-row provider cap is stated
  * unconditionally rather than only when it is hit. Without that, a 40-row
@@ -198,7 +176,6 @@ function messageFor(
   status: 'complete' | 'empty' | 'partial',
   rowCount: number,
   returnedRows: number,
-  artifact: boolean,
   offer: boolean,
   args: OmsSiteDataToolArgs,
 ): string {
@@ -222,7 +199,6 @@ function messageFor(
   parts.push(`OMS never paginates and never reports a total count.${spamNote}`);
   if (rowCount > returnedRows) parts.push(`Showing the first ${returnedRows} rows in chat.`);
   if (offer) parts.push('A governed export of the returned OMS snapshot is available.');
-  if (artifact) parts.push('All rows in this provider-limited response are available as a temporary CSV download.');
   return parts.join(' ');
 }
 
