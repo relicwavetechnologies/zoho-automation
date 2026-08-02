@@ -634,7 +634,14 @@ describe('MailOpsWorker', () => {
     // The new rule has no prior deliveries, so `reserveDelivery` dedupes
     // nothing — without this guard it forwards all of it. The tool's own
     // contract is that a rule reacts to future arrivals.
-    const ruleCreatedAt = new Date('2026-08-01T00:00:00.000Z');
+    //
+    // Read off `activatedAt`, not `createdAt`, because the row outlives its
+    // own archival: recreating an archived rule is the only way to bring it
+    // back, and a replace reuses the row too. A rule first written in January,
+    // archived, and asked for again today would otherwise carry a January
+    // floor and pass the entire recovery window.
+    const ruleCreatedAt = new Date('2026-01-04T00:00:00.000Z');
+    const ruleActivatedAt = new Date('2026-08-01T00:00:00.000Z');
     const reserved: string[] = [];
     let mailboxClaimed = false;
     const worker = new MailOpsWorker({
@@ -665,6 +672,7 @@ describe('MailOpsWorker', () => {
           value: [{
             ruleId: 'rule-1',
             createdAt: ruleCreatedAt,
+            activatedAt: ruleActivatedAt,
             match: { from: 'alerts@example.com' },
             action: { type: 'deliver' },
             destination: { type: 'lark_chat', chatId: 'oc_destination' },
@@ -826,7 +834,16 @@ describe('MailOpsWorker', () => {
           return {
             kind: 'limited',
             message: 'Connection budget exhausted.',
-            check: { windows: [{ retryAfterSeconds: 1_800 }] },
+            check: {
+              windows: [
+                // Exhausted: this is the one the delivery is waiting on.
+                { retryAfterSeconds: 1_800, used: 60, limit: 60 },
+                // Configured, reported, nowhere near its ceiling. Waiting for
+                // this one would drain the mailbox at a daily cadence because
+                // a half-hour window was touched.
+                { retryAfterSeconds: 80_000, used: 61, limit: 5_000 },
+              ],
+            },
           };
         },
       },
@@ -849,7 +866,8 @@ describe('MailOpsWorker', () => {
     assert.equal(rescheduled?.deliveryId, 'delivery-1');
     assert.equal(rescheduled?.attempts, 1);
     assert.equal(rescheduled?.reason, 'Connection budget exhausted.');
-    // Waits for the window the store actually reported, not a guess.
+    // Waits for the window that actually refused it, not the longest window
+    // the store happened to report.
     const waitMs = rescheduled!.nextAttemptAt.getTime() - Date.now();
     assert.ok(waitMs > 1_700_000 && waitMs <= 1_800_000, `waited ${waitMs}ms`);
   });
@@ -1240,6 +1258,143 @@ describe('MailOpsWorker', () => {
 
     assert.equal(abandoned, 0);
     assert.deepEqual(delivered, { deliveryId: 'delivery-1' });
+  });
+
+  it('stops calling a delivery unconfirmed once it is proved nothing was sent', async () => {
+    // The probe answers "nothing went out" definitively when the draft is
+    // still there. Abandoning the row right afterwards without spending that
+    // answer leaves the screen showing "Unconfirmed" — "may already be in
+    // somebody's inbox" — about mail that provably never left, and nothing
+    // later will ever revisit it.
+    let deliveryClaimed = false;
+    let abandonedWith: any;
+    const worker = new MailOpsWorker({
+      repo: {
+        claimNextWatchRenewal: async () => ({ ok: true, value: null }),
+        claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        claimNextDueDelivery: async () => {
+          if (deliveryClaimed) return { ok: true, value: null };
+          deliveryClaimed = true;
+          return {
+            ok: true,
+            value: {
+              deliveryId: 'delivery-1',
+              attempts: 2,
+              providerDraftId: 'draft-1',
+              payload: {
+                companyId: 'company-1',
+                userId: 'user-1',
+                subscriptionId: 'mailbox-1',
+                connectionId: 'connection-1',
+                mailboxEmail: 'user@example.com',
+                ruleId: 'rule-1',
+                eventId: 'event-1',
+                sourceMessageId: 'message-1',
+                idempotencyKey: 'mail:idempotency',
+                action: { type: 'forward' },
+                destination: { type: 'email', email: 'owner@example.com' },
+                message: event.metadata,
+              },
+            },
+          };
+        },
+        markDeliveryDelivered: async () => ({ ok: true, value: true }),
+        markDeliveryFailed: async () => ({ ok: true, value: true }),
+        markDeliveryAbandoned: async (
+          deliveryId: string,
+          attempts: number,
+          reason: string,
+          options?: unknown,
+        ) => {
+          abandonedWith = { deliveryId, attempts, reason, options };
+          return { ok: true, value: true };
+        },
+      },
+      gmail: {
+        watch: async () => { throw new Error('unused'); },
+        sync: async () => { throw new Error('unused'); },
+        forwardDraftPending: async () => true,
+        createForwardDraft: async () => { throw new Error('unused'); },
+        sendForwardDraft: async () => { throw new Error('A denied delivery must not send.'); },
+      },
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({
+        verdict: 'denied',
+        reason: 'Your Google connection no longer allows Divo to send mail.',
+      }),
+      deliverLark: async () => { throw new Error('unused'); },
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(abandonedWith?.deliveryId, 'delivery-1');
+    assert.deepEqual(abandonedWith?.options, { nothingWasSent: true });
+  });
+
+  it('leaves an unproved delivery unconfirmed when it is abandoned', async () => {
+    // The mirror case, and the reason the flag is not just "we abandoned it".
+    // With no staged draft nothing was ever asked, so the row keeps whatever
+    // it already said about itself.
+    let deliveryClaimed = false;
+    let abandonedWith: any;
+    const worker = new MailOpsWorker({
+      repo: {
+        claimNextWatchRenewal: async () => ({ ok: true, value: null }),
+        claimNextDueMailbox: async () => ({ ok: true, value: null }),
+        claimNextDueDelivery: async () => {
+          if (deliveryClaimed) return { ok: true, value: null };
+          deliveryClaimed = true;
+          return {
+            ok: true,
+            value: {
+              deliveryId: 'delivery-1',
+              attempts: 2,
+              payload: {
+                companyId: 'company-1',
+                userId: 'user-1',
+                subscriptionId: 'mailbox-1',
+                connectionId: 'connection-1',
+                mailboxEmail: 'user@example.com',
+                ruleId: 'rule-1',
+                eventId: 'event-1',
+                sourceMessageId: 'message-1',
+                idempotencyKey: 'mail:idempotency',
+                action: { type: 'forward' },
+                destination: { type: 'email', email: 'owner@example.com' },
+                message: event.metadata,
+              },
+            },
+          };
+        },
+        markDeliveryDelivered: async () => ({ ok: true, value: true }),
+        markDeliveryFailed: async () => ({ ok: true, value: true }),
+        markDeliveryAbandoned: async (
+          _deliveryId: string,
+          _attempts: number,
+          _reason: string,
+          options?: unknown,
+        ) => {
+          abandonedWith = { options };
+          return { ok: true, value: true };
+        },
+      },
+      gmail: {
+        watch: async () => { throw new Error('unused'); },
+        sync: async () => { throw new Error('unused'); },
+        forwardDraftPending: async () => { throw new Error('Nothing to ask about.'); },
+        createForwardDraft: async () => { throw new Error('unused'); },
+        sendForwardDraft: async () => { throw new Error('unused'); },
+      },
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'denied', reason: 'Permission withdrawn.' }),
+      deliverLark: async () => { throw new Error('unused'); },
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.deepEqual(abandonedWith?.options, { nothingWasSent: false });
   });
 
   it('does not forward twice when a send succeeded but its response was lost', async () => {

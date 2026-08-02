@@ -154,7 +154,14 @@ export class MailOpsWorker {
         readonly kind: string;
         readonly message?: string;
         readonly check?: {
-          readonly windows: ReadonlyArray<{ readonly retryAfterSeconds: number }>;
+          // `used`/`limit` because a check reports every configured window,
+          // exhausted or not, and only the exhausted ones say when this
+          // delivery may go.
+          readonly windows: ReadonlyArray<{
+            readonly retryAfterSeconds: number;
+            readonly used: number;
+            readonly limit: number;
+          }>;
         };
       }>;
     };
@@ -362,7 +369,11 @@ export class MailOpsWorker {
           // stale-cursor recovery holding a week of INBOX. Without this the
           // brand-new rule matches all of it, dedupes against nothing, and
           // forwards hundreds of old messages to its destination.
-          if (event.occurredAt < rawRule.createdAt) continue;
+          //
+          // Against `activatedAt`, not `createdAt`: reviving an archived rule
+          // and replacing a rule both reuse the original row, so `createdAt`
+          // can predate the current destination by months.
+          if (event.occurredAt < rawRule.activatedAt) continue;
 
           let rule;
           try {
@@ -518,14 +529,12 @@ export class MailOpsWorker {
    * Three steps, in this order, because the order is the guarantee: stage the
    * draft, write its ID down, send it. If anything is lost after the send —
    * the response, the process, the network — the next attempt arrives holding
-   * that ID and asks Gmail one unambiguous question. Gmail deletes a draft
-   * when it sends it, so a 404 means the mail went out and `null` comes back
-   * here; a live draft means no send ever completed and it is safe to send
-   * that same draft now.
+   * that ID, and `deliver` asks Gmail the one unambiguous question before it
+   * gets here.
    *
-   * A draft handed in here has already been proved live by the caller, so it
-   * is sent rather than replaced — reusing it is what keeps a retry from
-   * composing a second copy.
+   * So a draft handed in as `stagedDraftId` has already been proved live, and
+   * is sent rather than composed again — reusing it is what keeps a retry from
+   * putting a second copy in somebody's inbox.
    */
   private async forwardThroughDraft(input: {
     accessToken: string;
@@ -592,6 +601,11 @@ export class MailOpsWorker {
       // send that already succeeded, and deciding it was refused — or dropping
       // it for any other reason — would file a lie about mail that is already
       // in somebody's inbox, and leave the row permanently `ambiguous`.
+      // Set once the probe says the draft is still sitting there unsent. It
+      // stays true only until something is actually sent, so a terminal
+      // decision taken before that point can retire the `ambiguous` warning
+      // instead of leaving the member to wonder forever.
+      let nothingWasSent = false;
       if (input.providerDraftId) {
         const pending = await this.deps.gmail.forwardDraftPending({
           accessToken: await this.deps.resolveAccessToken({
@@ -601,6 +615,7 @@ export class MailOpsWorker {
           }),
           draftId: input.providerDraftId,
         });
+        nothingWasSent = pending;
         if (!pending) {
           const settled = await this.deps.repo.markDeliveryDelivered(
             input.deliveryId,
@@ -631,6 +646,7 @@ export class MailOpsWorker {
           input.deliveryId,
           input.attempts,
           authorized.reason,
+          { nothingWasSent },
         );
         if (!abandoned.ok) throw abandoned.error;
         this.log.warn('mail_ops.delivery_permission_revoked', {
@@ -757,14 +773,28 @@ export class MailOpsWorker {
 /**
  * When to look again after a budget refusal.
  *
- * The store knows exactly when each window reopens, so use the soonest of
- * them. Without that answer — an unreadable policy store — five minutes is a
+ * Only the windows actually over their ceiling are what the delivery is
+ * waiting on. A check reports every configured window, and a per-day window
+ * reopens up to a day out, so taking the longest of all of them would defer by
+ * a day because a per-minute ceiling was touched — the mailbox would then
+ * drain at the daily cadence no matter how quickly the minute reopened. Among
+ * the windows that are genuinely exhausted the longest is the right one: the
+ * retry has to clear all of them to get through.
+ *
+ * Without any such answer — an unreadable policy store — five minutes is a
  * cadence that neither hammers the store nor leaves mail sitting for an hour.
  */
 function budgetRetryDelayMs(
-  check?: { readonly windows: ReadonlyArray<{ readonly retryAfterSeconds: number }> },
+  check?: {
+    readonly windows: ReadonlyArray<{
+      readonly retryAfterSeconds: number;
+      readonly used: number;
+      readonly limit: number;
+    }>;
+  },
 ): number {
   const waits = (check?.windows ?? [])
+    .filter(window => window.used >= window.limit)
     .map(window => window.retryAfterSeconds)
     .filter(seconds => Number.isFinite(seconds) && seconds > 0);
   if (waits.length === 0) return DEFAULT_BUDGET_RETRY_MS;

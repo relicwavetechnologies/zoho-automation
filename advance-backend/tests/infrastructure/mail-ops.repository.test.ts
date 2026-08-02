@@ -584,4 +584,206 @@ describe('MailOpsRepository', () => {
       now.getTime() + 20_000,
     );
   });
+
+  it('hands back the attempt a claim spent when a delivery only has to wait', async () => {
+    // The guard is the claim's own `attempts`, so the row can only be
+    // rescheduled by the worker still holding it. The decrement undoes what
+    // the claim took: five refusals inside one rate window must leave the
+    // ladder exactly where it started, or waiting quietly abandons the mail.
+    let update: any;
+    const repo = new MailOpsRepository({
+      mailDelivery: {
+        updateMany: async (input: any) => {
+          update = input;
+          return { count: 1 };
+        },
+      },
+    } as any);
+    const nextAttemptAt = new Date('2026-08-02T06:30:00.000Z');
+
+    const result = await repo.rescheduleDelivery({
+      deliveryId: 'delivery-1',
+      attempts: 3,
+      nextAttemptAt,
+      reason: 'Connection budget exhausted.',
+    });
+
+    assert.deepEqual(result, { ok: true, value: true });
+    assert.deepEqual(update.where, {
+      id: 'delivery-1',
+      status: 'sending',
+      attempts: 3,
+    });
+    assert.equal(update.data.status, 'pending');
+    assert.deepEqual(update.data.attempts, { decrement: 1 });
+    assert.equal(update.data.nextAttemptAt, nextAttemptAt);
+    assert.equal(update.data.lastError, 'Connection budget exhausted.');
+  });
+
+  it('reports a lost claim rather than rescheduling somebody else\'s delivery', async () => {
+    const repo = new MailOpsRepository({
+      mailDelivery: { updateMany: async () => ({ count: 0 }) },
+    } as any);
+
+    const result = await repo.rescheduleDelivery({
+      deliveryId: 'delivery-1',
+      attempts: 3,
+      nextAttemptAt: new Date('2026-08-02T06:30:00.000Z'),
+      reason: 'Connection budget exhausted.',
+    });
+
+    assert.deepEqual(result, { ok: true, value: false });
+  });
+
+  it('takes the unconfirmed warning down when the caller proved nothing was sent', async () => {
+    // `ambiguous` reads as "this may already be in somebody's inbox".
+    // Abandoning is terminal, so nothing later revisits the question — the
+    // caller that answered it is the last chance to say so.
+    const updates: any[] = [];
+    const repo = new MailOpsRepository({
+      mailDelivery: {
+        updateMany: async (input: any) => {
+          updates.push(input);
+          return { count: 1 };
+        },
+      },
+    } as any);
+
+    await repo.markDeliveryAbandoned('delivery-1', 2, 'denied', {
+      nothingWasSent: true,
+    });
+    await repo.markDeliveryAbandoned('delivery-2', 2, 'denied');
+
+    assert.equal(updates[0].data.ambiguous, false);
+    // The draft is still sitting in the mailbox and the row is the only record
+    // of which one it is.
+    assert.equal(updates[0].data.providerDraftId, undefined);
+    // Never asked, so nothing to say — not silently reclassified as safe.
+    assert.equal(updates[1].data.ambiguous, undefined);
+  });
+
+  it('starts a revived rule watching from now, not from when it was first written', async () => {
+    // Recreating an archived rule is the only way to bring one back, and the
+    // upsert reuses the original row. Left on `createdAt`, a rule first
+    // written in January and asked for again today would treat the entire
+    // stale-cursor recovery window as mail it is entitled to forward.
+    let ruleUpsert: any;
+    const repo = new MailOpsRepository({
+      $transaction: async (fn: any) => fn({
+        mailboxSubscription: { upsert: async () => ({ id: 'mailbox-1' }) },
+        mailAutomationRule: {
+          upsert: async (input: any) => {
+            ruleUpsert = input;
+            return { id: 'rule-1' };
+          },
+        },
+      }),
+    } as any);
+    const before = Date.now();
+
+    await repo.createRuleForMailbox({
+      companyId: 'company-1',
+      createdByUserId: 'user-1',
+      connectionId: 'connection-1',
+      mailboxEmail: 'user@example.com',
+      name: 'Forward OTP',
+      match: { from: 'alerts@example.com' },
+      action: { type: 'forward' },
+      destination: { type: 'email', email: 'owner@example.com' },
+      dedupeKey: 'mail-rule:key',
+    });
+
+    // Only on the revive branch: a genuinely new row takes the column default.
+    assert.equal(ruleUpsert.create.activatedAt, undefined);
+    assert.ok(ruleUpsert.update.activatedAt.getTime() >= before);
+  });
+
+  it('starts a replaced rule watching from now, so a new destination gets no backlog', async () => {
+    let ruleUpdate: any;
+    const repo = new MailOpsRepository({
+      $transaction: async (fn: any) => fn({
+        mailAutomationRule: {
+          findFirst: async () => ({ id: 'rule-1', subscriptionId: 'mailbox-1' }),
+          update: async (input: any) => { ruleUpdate = input; },
+        },
+        mailboxSubscription: { update: async () => undefined },
+      }),
+    } as any);
+    const before = Date.now();
+
+    await repo.replaceRule({
+      companyId: 'company-1',
+      userId: 'user-1',
+      ruleId: 'rule-1',
+      connectionId: 'connection-1',
+      name: 'Forward OTP',
+      match: { from: 'alerts@example.com' },
+      action: { type: 'forward' },
+      destination: { type: 'email', email: 'new-owner@example.com' },
+      dedupeKey: 'mail-rule:key',
+    });
+
+    assert.ok(ruleUpdate.data.activatedAt.getTime() >= before);
+  });
+
+  it('starts a resumed rule watching from now, so a pause is not delivered later', async () => {
+    // "Paused" was sold to the member as "stop forwarding". Resuming is not a
+    // licence to deliver everything that arrived meanwhile.
+    const updates: any[] = [];
+    const now = new Date('2026-08-02T06:00:00.000Z');
+    const repo = new MailOpsRepository({
+      $transaction: async (fn: any) => fn({
+        mailAutomationRule: {
+          findFirst: async () => ({
+            id: 'rule-1',
+            subscriptionId: 'mailbox-1',
+            status: 'paused',
+          }),
+          update: async (input: any) => { updates.push(input); },
+          count: async () => 1,
+        },
+        mailboxSubscription: { update: async () => undefined },
+      }),
+    } as any);
+
+    await repo.setRuleStatus({
+      companyId: 'company-1',
+      userId: 'user-1',
+      ruleId: 'rule-1',
+      status: 'active',
+      now,
+    });
+
+    assert.equal(updates[0].data.activatedAt.getTime(), now.getTime());
+  });
+
+  it('does not move the watch floor when a rule is paused or archived', async () => {
+    // Pausing must not silently forgive the gap when the rule is resumed by
+    // some other route, and archiving is terminal.
+    const updates: any[] = [];
+    const repo = (status: 'paused' | 'archived') => new MailOpsRepository({
+      $transaction: async (fn: any) => fn({
+        mailAutomationRule: {
+          findFirst: async () => ({
+            id: 'rule-1',
+            subscriptionId: 'mailbox-1',
+            status: 'active',
+          }),
+          update: async (input: any) => { updates.push({ status, ...input }); },
+          count: async () => 0,
+        },
+        mailboxSubscription: { update: async () => undefined },
+      }),
+    } as any);
+
+    await repo('paused').setRuleStatus({
+      companyId: 'company-1', userId: 'user-1', ruleId: 'rule-1', status: 'paused',
+    });
+    await repo('archived').setRuleStatus({
+      companyId: 'company-1', userId: 'user-1', ruleId: 'rule-1', status: 'archived',
+    });
+
+    assert.equal(updates[0].data.activatedAt, undefined);
+    assert.equal(updates[1].data.activatedAt, undefined);
+  });
 });

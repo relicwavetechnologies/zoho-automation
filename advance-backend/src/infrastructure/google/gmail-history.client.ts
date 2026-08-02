@@ -298,7 +298,6 @@ export class GmailHistoryClient {
     let pageToken: string | undefined;
     let recoveryTruncated = false;
     for (let page = 0; page < MAX_RECOVERY_PAGES; page++) {
-      if (ids.length >= MAX_RECOVERY_MESSAGES) break;
       const query = new URLSearchParams({
         q: RECOVERY_WINDOW_QUERY,
         maxResults: String(Math.min(

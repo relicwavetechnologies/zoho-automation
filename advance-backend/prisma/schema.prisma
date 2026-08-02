@@ -1459,6 +1459,12 @@ model MailAutomationRule {
   version         Int                 @default(1)
   pausedAt        DateTime?
   archivedAt      DateTime?
+  /// When this rule most recently started watching for mail. Distinct from
+  /// `createdAt`, which a revive or a replace leaves untouched: the rule row
+  /// outlives its own archival, so `createdAt` can predate the current
+  /// destination by months and is not a safe floor for "mail this rule is
+  /// entitled to act on".
+  activatedAt     DateTime            @default(now())
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
   deliveries      MailDelivery[]

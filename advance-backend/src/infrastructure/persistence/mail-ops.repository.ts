@@ -126,6 +126,12 @@ export class MailOpsRepository {
             status: 'active',
             pausedAt: null,
             archivedAt: null,
+            // Recreating a rule is how an archived one comes back, so this
+            // branch routinely revives a row created months ago. The revived
+            // rule watches from now, not from whenever the original row was
+            // first written, or its first pass ships the whole recovery
+            // window.
+            activatedAt: new Date(),
           },
           select: { id: true },
         });
@@ -214,6 +220,10 @@ export class MailOpsRepository {
             status: 'active',
             pausedAt: null,
             version: { increment: 1 },
+            // A replace can move the destination. The mail that arrived while
+            // the old destination was in force was never addressed to the new
+            // one, so this version of the rule starts watching now.
+            activatedAt: new Date(),
           },
         });
         await tx.mailboxSubscription.update({
@@ -259,6 +269,10 @@ export class MailOpsRepository {
             status: input.status,
             pausedAt: input.status === 'paused' ? now : null,
             archivedAt: input.status === 'archived' ? now : null,
+            // Resuming is not a licence to deliver the pause. "Paused" was
+            // sold to the member as "stop forwarding", so the mail that
+            // arrived meanwhile is not this rule's to send.
+            ...(input.status === 'active' ? { activatedAt: now } : {}),
           },
         });
         const activeRules = await tx.mailAutomationRule.count({
@@ -696,7 +710,7 @@ export class MailOpsRepository {
   ): Promise<Result<Array<{
     ruleId: string;
     departmentId?: string;
-    createdAt: Date;
+    activatedAt: Date;
     match: Record<string, unknown>;
     action: Record<string, unknown>;
     destination: Record<string, unknown>;
@@ -708,7 +722,7 @@ export class MailOpsRepository {
         select: {
           id: true,
           departmentId: true,
-          createdAt: true,
+          activatedAt: true,
           matchJson: true,
           actionJson: true,
           destinationJson: true,
@@ -717,7 +731,7 @@ export class MailOpsRepository {
       return ok(rules.map(rule => ({
         ruleId: rule.id,
         ...(rule.departmentId ? { departmentId: rule.departmentId } : {}),
-        createdAt: rule.createdAt,
+        activatedAt: rule.activatedAt,
         match: rule.matchJson as Record<string, unknown>,
         action: rule.actionJson as Record<string, unknown>,
         destination: rule.destinationJson as Record<string, unknown>,
@@ -1003,6 +1017,7 @@ export class MailOpsRepository {
     deliveryId: string,
     attempts: number,
     reason: string,
+    options?: { readonly nothingWasSent?: boolean },
   ): Promise<Result<boolean, InfraError>> {
     try {
       const updated = await this.db.mailDelivery.updateMany({
@@ -1011,6 +1026,14 @@ export class MailOpsRepository {
           status: 'abandoned',
           lastError: reason.slice(0, 500),
           nextAttemptAt: null,
+          // Only when the caller actually established it. `ambiguous` reads to
+          // the member as "this may already be in somebody's inbox", and a
+          // delivery that is being abandoned will never resolve that question
+          // later — so a caller that has proved the mail never went out is the
+          // last chance to take the warning down. `providerDraftId` stays: the
+          // draft is still sitting in the mailbox and the row is the only
+          // record of which one it is.
+          ...(options?.nothingWasSent ? { ambiguous: false } : {}),
         },
       });
       return ok(updated.count === 1);
