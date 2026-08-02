@@ -696,6 +696,7 @@ export class MailOpsRepository {
   ): Promise<Result<Array<{
     ruleId: string;
     departmentId?: string;
+    createdAt: Date;
     match: Record<string, unknown>;
     action: Record<string, unknown>;
     destination: Record<string, unknown>;
@@ -707,6 +708,7 @@ export class MailOpsRepository {
         select: {
           id: true,
           departmentId: true,
+          createdAt: true,
           matchJson: true,
           actionJson: true,
           destinationJson: true,
@@ -715,6 +717,7 @@ export class MailOpsRepository {
       return ok(rules.map(rule => ({
         ruleId: rule.id,
         ...(rule.departmentId ? { departmentId: rule.departmentId } : {}),
+        createdAt: rule.createdAt,
         match: rule.matchJson as Record<string, unknown>,
         action: rule.actionJson as Record<string, unknown>,
         destination: rule.destinationJson as Record<string, unknown>,

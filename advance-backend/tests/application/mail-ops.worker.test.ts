@@ -628,6 +628,82 @@ describe('MailOpsWorker', () => {
     });
   });
 
+  it('does not backfill a brand-new rule with mail that predates it', async () => {
+    // Pause every rule and the mailbox stops; add a rule a fortnight later and
+    // its very first pass is a stale-cursor recovery holding a week of INBOX.
+    // The new rule has no prior deliveries, so `reserveDelivery` dedupes
+    // nothing — without this guard it forwards all of it. The tool's own
+    // contract is that a rule reacts to future arrivals.
+    const ruleCreatedAt = new Date('2026-08-01T00:00:00.000Z');
+    const reserved: string[] = [];
+    let mailboxClaimed = false;
+    const worker = new MailOpsWorker({
+      repo: {
+        claimNextWatchRenewal: async () => ({ ok: true, value: null }),
+        claimNextDueMailbox: async () => {
+          if (mailboxClaimed) return { ok: true, value: null };
+          mailboxClaimed = true;
+          return { ok: true, value: claim };
+        },
+        recordEvents: async () => ({
+          ok: true,
+          value: [
+            {
+              eventId: 'event-old',
+              occurredAt: new Date('2026-07-28T09:00:00.000Z'),
+              metadata: event.metadata,
+            },
+            {
+              eventId: 'event-new',
+              occurredAt: new Date('2026-08-02T09:00:00.000Z'),
+              metadata: event.metadata,
+            },
+          ],
+        }),
+        listActiveRules: async () => ({
+          ok: true,
+          value: [{
+            ruleId: 'rule-1',
+            createdAt: ruleCreatedAt,
+            match: { from: 'alerts@example.com' },
+            action: { type: 'deliver' },
+            destination: { type: 'lark_chat', chatId: 'oc_destination' },
+          }],
+        }),
+        reserveDelivery: async (
+          _companyId: string,
+          _subscriptionId: string,
+          _ruleId: string,
+          eventId: string,
+        ) => {
+          reserved.push(eventId);
+          return { ok: true, value: true };
+        },
+        recordBlockedDelivery: async () => ({ ok: true, value: true }),
+        advanceCursor: async () => ({ ok: true, value: true }),
+        markSyncFailed: async () => ({ ok: true, value: true }),
+        claimNextDueDelivery: async () => ({ ok: true, value: null }),
+      },
+      gmail: {
+        watch: async () => ({ historyId: '100', expiration: new Date('2026-08-05T05:00:00.000Z') }),
+        sync: async () => ({
+          nextHistoryId: '900',
+          events: [event],
+          staleCursorRecovered: true,
+          recoveredMessageCount: 2,
+        }),
+      },
+      resolveAccessToken: async () => 'access-token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'lark-message-1',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.deepEqual(reserved, ['event-new']);
+  });
+
   it('does not match its own forward arriving back in the mailbox', async () => {
     // A destination that aliases home, plus a rule matching on subject alone,
     // re-matches its own `Fwd:` output on every pass. Nothing else in a message

@@ -355,6 +355,15 @@ export class MailOpsWorker {
           continue;
         }
         for (const rawRule of rules.value) {
+          // A rule reacts to future arrivals, which is exactly what the tool
+          // promises, and mail that predates it is not one. This matters
+          // because a cursor can be a week stale — pause every rule and the
+          // mailbox stops; add a rule later and the first pass is a
+          // stale-cursor recovery holding a week of INBOX. Without this the
+          // brand-new rule matches all of it, dedupes against nothing, and
+          // forwards hundreds of old messages to its destination.
+          if (event.occurredAt < rawRule.createdAt) continue;
+
           let rule;
           try {
             rule = parseMailRule(rawRule);
