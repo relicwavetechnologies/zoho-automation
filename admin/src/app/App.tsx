@@ -36,7 +36,7 @@ type ProtectedProps = {
 }
 
 const Protected = ({ children }: ProtectedProps) => {
-  const { session, loading } = useAdminAuth()
+  const { session, loading, unreachable, refresh } = useAdminAuth()
 
   // Painted before anything else on a cold load, so it has to be on the same
   // tokens as the shell — a shadcn-styled flash here undoes the whole point.
@@ -45,6 +45,33 @@ const Protected = ({ children }: ProtectedProps) => {
       <div className="cur">
         <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "var(--cur-canvas)" }}>
           <div className="ws-auth-wait">Restoring your session…</div>
+        </div>
+      </div>
+    )
+  }
+
+  /*
+   * Being unable to reach Divo is not the same as being signed out.
+   *
+   * The provider used to bin the token whenever `/me` failed for any reason,
+   * so a backend blip bounced people to /login holding a credential that was
+   * still good. It now keeps the token and says so here instead — sending
+   * somebody to re-enter their password because a request timed out is the
+   * app blaming them for its own outage.
+   */
+  if (!session && unreachable) {
+    return (
+      <div className="cur">
+        <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "var(--cur-canvas)" }}>
+          <div style={{ textAlign: "center", maxWidth: 380 }}>
+            <div className="ws-auth-wait">Cannot reach Divo right now.</div>
+            <p className="ws-sub" style={{ marginTop: 10, lineHeight: 1.5 }}>
+              You are still signed in — this is the connection, not your account.
+            </p>
+            <button type="button" className="btn" style={{ marginTop: 16 }} onClick={() => void refresh()}>
+              Try again
+            </button>
+          </div>
         </div>
       </div>
     )

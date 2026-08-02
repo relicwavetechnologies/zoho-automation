@@ -32,6 +32,12 @@ type AdminAuthContextValue = {
   session: Session | null;
   scopes: Scope[];
   loading: boolean;
+  /**
+   * The session could not be read, and it is not because you are signed out.
+   * Kept apart so the app can say "cannot reach Divo" instead of showing the
+   * login page to somebody who never lost their credential.
+   */
+  unreachable: boolean;
   /** True while a sign-in attempt is in flight, for the button's own state. */
   signingIn: boolean;
   loginWithPassword: (email: string, password: string) => Promise<void>;
@@ -159,6 +165,7 @@ export const AdminAuthProvider = ({ children }: { children: React.ReactNode }) =
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [signingIn, setSigningIn] = useState(false);
+  const [unreachable, setUnreachable] = useState(false);
 
   const persistToken = useCallback((value: string | null) => {
     queryClient.clear();
@@ -182,25 +189,57 @@ export const AdminAuthProvider = ({ children }: { children: React.ReactNode }) =
   }, []);
 
   useEffect(() => {
+    let live = true;
+
+    /**
+     * Only the server gets to say a session is over.
+     *
+     * This used to discard the token on *any* failure of `/me` — the comment
+     * even said "whatever the reason". So a backend hiccup logged the person
+     * out: the read fails, the token is thrown away, `session` goes null, and
+     * the router sends them to /login holding a credential that was still
+     * perfectly valid. On a laptop whose database tunnel drops every few
+     * minutes that is a sign-in, a few minutes of work, and a sign-in again.
+     *
+     * A 401 is the one answer that means the token is genuinely no good — it
+     * is the server rejecting the credential rather than failing to check it.
+     * Everything else is a broken request, and a broken request is not a
+     * statement about who you are. Those get retried, and if they keep
+     * failing the token is kept so a reload recovers the session instead of
+     * demanding the password again.
+     */
     const bootstrap = async () => {
       if (!token) {
         setSession(null);
         setLoading(false);
         return;
       }
-      try {
-        await fetchSession(token);
-      } catch {
-        // Any failure to resolve the session means the token is no good to us,
-        // whatever the reason. Keeping it would loop the app through the same
-        // failure on every navigation.
-        persistToken(null);
-        setSession(null);
-      } finally {
-        setLoading(false);
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          await fetchSession(token);
+          if (live) { setUnreachable(false); setLoading(false); }
+          return;
+        } catch (e) {
+          if (!live) return;
+          if (e instanceof ApiError && e.status === 401) {
+            persistToken(null);
+            setSession(null);
+            setUnreachable(false);
+            setLoading(false);
+            return;
+          }
+          // Transient: back off and ask again before giving up on the attempt,
+          // not on the credential.
+          if (attempt < 2) {
+            await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+          }
+        }
       }
+      if (live) { setUnreachable(true); setLoading(false); }
     };
+
     void bootstrap();
+    return () => { live = false; };
   }, [token, fetchSession, persistToken]);
 
   const loginWithPassword = useCallback(async (email: string, password: string) => {
@@ -241,9 +280,29 @@ export const AdminAuthProvider = ({ children }: { children: React.ReactNode }) =
     }
   }, [fetchSession, persistToken]);
 
+  /**
+   * Re-reads the session. Safe to call from a retry button.
+   *
+   * Swallows a transient failure rather than throwing: the "cannot reach
+   * Divo" screen calls this, and an unhandled rejection there would be a
+   * button that appears to do nothing. A 401 is still honoured — if the
+   * server rejects the credential, the sign-out is real.
+   */
   const refresh = useCallback(async () => {
-    if (token) await fetchSession(token);
-  }, [token, fetchSession]);
+    if (!token) return;
+    try {
+      await fetchSession(token);
+      setUnreachable(false);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        persistToken(null);
+        setSession(null);
+        setUnreachable(false);
+        return;
+      }
+      setUnreachable(true);
+    }
+  }, [token, fetchSession, persistToken]);
 
   const logout = useCallback(async () => {
     if (token) {
@@ -262,10 +321,10 @@ export const AdminAuthProvider = ({ children }: { children: React.ReactNode }) =
 
   const value = useMemo<AdminAuthContextValue>(
     () => ({
-      token, session, scopes, loading, signingIn,
+      token, session, scopes, loading, unreachable, signingIn,
       loginWithPassword, loginWithLark, refresh, logout,
     }),
-    [token, session, scopes, loading, signingIn, loginWithPassword, loginWithLark, refresh, logout],
+    [token, session, scopes, loading, unreachable, signingIn, loginWithPassword, loginWithLark, refresh, logout],
   );
 
   return <AdminAuthContext.Provider value={value}>{children}</AdminAuthContext.Provider>;
