@@ -15,7 +15,7 @@ export interface DeliverGoogleConnectCard {
 }
 
 export interface BeginGoogleAuthorizationDeps {
-  readonly runOrigins: Pick<RunOriginStore, 'recall'>;
+  readonly runOrigins: Pick<RunOriginStore, 'recall' | 'attachGoogleAuthorization'>;
   readonly authorization: Pick<GoogleConnectionAuthorizationService, 'issue'>;
   /**
    * Resolved per call, not captured: the Lark adapter that delivers the card is
@@ -28,7 +28,8 @@ export interface BeginGoogleAuthorizationDeps {
 
 /**
  * Ask a member to connect Google, and arrange for their request to be re-run
- * once they have.
+ * once they have. The normal Lark path attaches the direct OAuth URL to the
+ * run's final card; a separate card is only the storage-failure fallback.
  *
  * This lived inline in composition for a long time and was dead the whole time:
  * it read a run-context field that nothing ever wrote, so every production call
@@ -42,12 +43,11 @@ export function createBeginGoogleAuthorization(
   return async (input) => {
     const companyId = String(input.runContext.companyId);
     const userId = String(input.runContext.userId);
-    const deliver = deps.deliverConnectCard();
     // The inbound request that started this run, recovered by the run ID on the
     // signed runtime lease. Without it there is no conversation to send a card
     // into and no ask to resume, so there is no continuation to offer.
     const origin = await recallOrigin(deps, input.runContext, companyId, userId);
-    if (!origin || !deliver) {
+    if (!origin) {
       return { status: 'unavailable' as const };
     }
 
@@ -68,11 +68,32 @@ export function createBeginGoogleAuthorization(
       originalRequest: origin.originalRequest,
       requestedToolIds: [input.toolId],
     });
-    // A card for this exact request is already out. Sending a second one would
-    // only give the member two links to the same thing.
+    // A Connect action for this exact request is already pending. Issuing a
+    // second URL would give the member two continuations for the same ask.
     if (issued.outcome === 'already_pending') {
       return { status: 'already_pending' as const, intentId: issued.intentId };
     }
+
+    try {
+      const attached = await deps.runOrigins.attachGoogleAuthorization({
+        runId: String(input.runContext.runtimeRunId),
+        companyId,
+        userId,
+        intentId: issued.intentId,
+        authorizeUrl: issued.authorizeUrl,
+      });
+      if (attached) return { status: 'sent' as const, intentId: issued.intentId };
+    } catch (error) {
+      deps.logger.error('google.authorization.final_action_store_failed', {
+        intentId: issued.intentId,
+        companyId,
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    const deliver = deps.deliverConnectCard();
+    if (!deliver) return { status: 'unavailable' as const };
 
     const delivered = await deliver({
       url: issued.authorizeUrl,

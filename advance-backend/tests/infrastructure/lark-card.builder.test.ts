@@ -393,6 +393,25 @@ describe('lark-card.builder final card actions', () => {
     assert.equal(button.behaviors[0]!.type, 'callback');
     assert.equal(button.behaviors[0]!.value.action, 'open_zoho');
   });
+
+  it('emits direct connection links as open-url buttons', () => {
+    const card = parseCard(buildFinalCard({
+      markdown: 'Connect Google to continue.',
+      actions: [{
+        label: 'Connect Google',
+        url: 'https://accounts.google.com/o/oauth2/auth?state=opaque',
+        style: 'primary',
+      }],
+    }));
+    const columns = (elementById(card, 'final_actions')!['columns'] as Array<{
+      elements: Array<{ behaviors: Array<{ type: string; default_url: string }> }>;
+    }>);
+
+    assert.deepEqual(columns[0]!.elements[0]!.behaviors, [{
+      type: 'open_url',
+      default_url: 'https://accounts.google.com/o/oauth2/auth?state=opaque',
+    }]);
+  });
 });
 
 describe('lark-card.builder final reply planning', () => {

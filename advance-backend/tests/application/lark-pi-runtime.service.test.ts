@@ -307,6 +307,65 @@ test('turns a verified workbook receipt into one explicit copy confirmation', as
   }]);
 });
 
+test('turns a run-bound Google authorization into a direct final-card action', async () => {
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts,
+    runOrigins: {
+      remember: async () => true,
+      recall: async () => ({
+        version: 1,
+        companyId: 'company-1',
+        userId: 'user-1',
+        larkOpenId: 'ou-user-1',
+        larkTenantKey: 'tenant-1',
+        chatId: 'chat-1',
+        chatType: 'p2p',
+        originalMessageId: 'message-1',
+        replyInThread: false,
+        originalRequest: 'Read my mail',
+        googleAuthorization: {
+          intentId: 'intent-1',
+          authorizeUrl: 'https://accounts.google.com/o/oauth2/auth?state=opaque',
+        },
+      }),
+    },
+    fetch: async () => new Response(JSON.stringify({ text: 'Connect Google to continue.' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  const input = runtimeInput();
+  input.runContext.runtimeRunId = 'trace-1';
+  const result = await service.run(input);
+
+  assert.equal(
+    result.text,
+    '# Connect Google Workspace\n\nConnect or reconnect your Google account below. '
+      + 'Once it’s connected, I’ll continue this request automatically—no need to send it again.',
+  );
+  assert.deepEqual(result.actions, [{
+    label: 'Connect Google',
+    url: 'https://accounts.google.com/o/oauth2/auth?state=opaque',
+    style: 'primary',
+  }]);
+});
+
 test('delivers a natural personal-preference acknowledgement and captures learning once', async () => {
   const captured: unknown[] = [];
   const acknowledgement = 'Got it — I’ll give you very detailed answers from now on.';

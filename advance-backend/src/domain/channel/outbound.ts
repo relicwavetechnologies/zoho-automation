@@ -1,8 +1,14 @@
-export interface InteractiveAction {
+export type InteractiveAction = {
   readonly label: string;
   readonly value: string;
+  readonly url?: never;
   readonly style?: 'primary' | 'danger' | 'default';
-}
+} | {
+  readonly label: string;
+  readonly value?: never;
+  readonly url: string;
+  readonly style?: 'primary' | 'danger' | 'default';
+};
 
 export interface ChannelBranding {
   readonly departmentLabel?: string;

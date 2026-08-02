@@ -95,7 +95,7 @@ function harness(input: {
 }
 
 describe('createBeginGoogleAuthorization', () => {
-  it('sends the Connect card into the conversation the run came from', async () => {
+  it('attaches the direct Google OAuth action to the run final response', async () => {
     const h = harness();
     await h.runOrigins.remember('run-1', ORIGIN);
 
@@ -106,13 +106,15 @@ describe('createBeginGoogleAuthorization', () => {
     });
 
     assert.deepEqual(result, { status: 'sent', intentId: 'intent-1' });
-    assert.deepEqual(h.delivered, [{
-      url: 'https://accounts.google.com/o/oauth2/auth?state=abc',
-      reason: 'Connect Google to read your mail.',
-      chatId: 'oc_chat',
-      replyToMessageId: 'om_request',
-      replyInThread: true,
-    }]);
+    assert.equal(h.delivered.length, 0);
+    assert.deepEqual((await h.runOrigins.recall({
+      runId: 'run-1',
+      companyId: 'co-1',
+      userId: 'user-1',
+    }))?.googleAuthorization, {
+      intentId: 'intent-1',
+      authorizeUrl: 'https://accounts.google.com/o/oauth2/auth?state=abc',
+    });
   });
 
   it('carries the original ask into the intent so the run can be resumed', async () => {
@@ -190,10 +192,42 @@ describe('createBeginGoogleAuthorization', () => {
     assert.equal(h.delivered.length, 0);
   });
 
-  it('reports unavailable when the card could not be delivered', async () => {
-    // An intent exists but nothing reached the member, so telling the model the
-    // card was sent would leave the run waiting on something that never arrives.
-    const h = harness({ deliver: () => async () => false });
+  it('falls back to a separate Connect card when the final action cannot be stored', async () => {
+    const cache = memoryCache();
+    const store = cache.set.bind(cache);
+    cache.set = async (key, value, ttlSeconds) => (
+      (value as any)?.googleAuthorization
+        ? err(wrapInfra('redis', 'set', new Error('down')))
+        : store(key, value, ttlSeconds)
+    );
+    const h = harness({ cache });
+    await h.runOrigins.remember('run-1', ORIGIN);
+
+    const result = await h.begin({
+      toolId: 'googleGmail',
+      reason: 'Connect Google to read your mail.',
+      runContext: runContext({ runtimeRunId: 'run-1' }),
+    });
+
+    assert.deepEqual(result, { status: 'sent', intentId: 'intent-1' });
+    assert.deepEqual(h.delivered, [{
+      url: 'https://accounts.google.com/o/oauth2/auth?state=abc',
+      reason: 'Connect Google to read your mail.',
+      chatId: 'oc_chat',
+      replyToMessageId: 'om_request',
+      replyInThread: true,
+    }]);
+  });
+
+  it('reports unavailable when neither final-action storage nor fallback delivery works', async () => {
+    const cache = memoryCache();
+    const store = cache.set.bind(cache);
+    cache.set = async (key, value, ttlSeconds) => (
+      (value as any)?.googleAuthorization
+        ? err(wrapInfra('redis', 'set', new Error('down')))
+        : store(key, value, ttlSeconds)
+    );
+    const h = harness({ cache, deliver: () => async () => false });
     await h.runOrigins.remember('run-1', ORIGIN);
 
     const result = await h.begin({

@@ -228,7 +228,8 @@ export interface LarkPiRuntimeServiceDeps {
     ): Promise<Result<Turn, InfraError>>;
   };
   readonly knowledgeRecall?: Pick<KnowledgeRecallService, 'recall'>;
-  readonly runOrigins?: Pick<RunOriginStore, 'remember'>;
+  readonly runOrigins?: Pick<RunOriginStore, 'remember'>
+    & Partial<Pick<RunOriginStore, 'recall'>>;
   readonly fetch?: typeof globalThis.fetch;
 }
 
@@ -850,6 +851,7 @@ export class LarkPiRuntimeService {
     if (
       !this.deps.runEffectReceipts
       && !this.deps.knowledgeLearning
+      && !this.deps.runOrigins?.recall
     ) {
       return { text: assistantText };
     }
@@ -863,6 +865,7 @@ export class LarkPiRuntimeService {
     let effect: VerifiedKnowledgeEffect | null = null;
     let exportEffect: OfferedDataExportEffect | null = null;
     let workbookEffect: OfferedWorkbookConversionEffect | null = null;
+    let googleAuthorization: RunOrigin['googleAuthorization'];
     let effectVerification: 'verified' | 'unavailable' = 'verified';
     if (this.deps.runEffectReceipts) {
       try {
@@ -898,6 +901,20 @@ export class LarkPiRuntimeService {
     } else {
       effectVerification = 'unavailable';
     }
+    if (this.deps.runOrigins?.recall && input.runContext.runtimeRunId) {
+      try {
+        googleAuthorization = (await this.deps.runOrigins.recall({
+          runId: input.runContext.runtimeRunId,
+          companyId: identity.companyId,
+          userId: identity.userId,
+        }))?.googleAuthorization;
+      } catch (error) {
+        this.log.error('pi.google_authorization.lookup_failed', {
+          correlationId: input.incoming.traceId,
+          error: String(error),
+        });
+      }
+    }
 
     const userMessages = await this.persistPrivateConversation(input, assistantText);
 
@@ -932,9 +949,12 @@ export class LarkPiRuntimeService {
     }
 
     return {
-      text: assistantText,
+      text: googleAuthorization
+        ? '# Connect Google Workspace\n\nConnect or reconnect your Google account below. '
+          + "Once it’s connected, I’ll continue this request automatically—no need to send it again."
+        : assistantText,
       effects: effect ? [effect] : [],
-      ...(exportEffect || workbookEffect
+      ...(exportEffect || workbookEffect || googleAuthorization
         ? {
             actions: [
               ...(exportEffect ? [{
@@ -968,6 +988,11 @@ export class LarkPiRuntimeService {
                   kind: 'workbook_conversion_confirm',
                   offerId: workbookEffect.offerId,
                 }),
+                style: 'primary',
+              } as const] : []),
+              ...(googleAuthorization ? [{
+                label: 'Connect Google',
+                url: googleAuthorization.authorizeUrl,
                 style: 'primary',
               } as const] : []),
             ],

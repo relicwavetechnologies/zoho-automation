@@ -854,7 +854,9 @@ function buildFinalCardResult(input: FinalCardInput & {
           text:       { tag: 'plain_text', content: a.label },
           type:       a.style === 'primary' ? 'primary' : a.style === 'danger' ? 'danger' : 'default',
           size:       'small',
-          behaviors:  [{ type: 'callback', value: { action: a.value } }],
+          behaviors:  a.url
+            ? [{ type: 'open_url', default_url: a.url }]
+            : [{ type: 'callback', value: { action: a.value } }],
         }],
       })),
     });

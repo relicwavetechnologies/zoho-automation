@@ -32,6 +32,10 @@ export interface RunOrigin {
   readonly replyInThread: boolean;
   readonly groupReplyMode?: GroupReplyMode;
   readonly originalRequest: string;
+  readonly googleAuthorization?: {
+    readonly intentId: string;
+    readonly authorizeUrl: string;
+  };
 }
 
 /**
@@ -78,6 +82,30 @@ export class RunOriginStore {
     if (origin.companyId !== input.companyId) return undefined;
     if (origin.userId !== input.userId) return undefined;
     return origin;
+  }
+
+  async attachGoogleAuthorization(input: {
+    readonly runId: string;
+    readonly companyId: string;
+    readonly userId: string;
+    readonly intentId: string;
+    readonly authorizeUrl: string;
+  }): Promise<boolean> {
+    const origin = await this.recall(input);
+    if (!origin) return false;
+    const stored = await this.cache.set(
+      runOriginKey(input.runId),
+      {
+        ...origin,
+        googleAuthorization: {
+          intentId: input.intentId,
+          authorizeUrl: input.authorizeUrl,
+        },
+      },
+      RUN_ORIGIN_TTL_SECONDS,
+    );
+    if (!stored.ok) throw stored.error;
+    return true;
   }
 }
 
