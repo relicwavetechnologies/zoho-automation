@@ -25,9 +25,13 @@ Audit and doc revamp: `cb6b983b2`.
 
 ### Blocking before any of this is live
 
-1. **`prisma db push`** — Wave 1 added `MailboxSubscription.notifiedState` and
-   `notifiedStateAt`. Not yet applied to `divo_dev`. Run over the SSH tunnel
-   (`pnpm dev:e2e`); there is no `_prisma_migrations` table.
+1. ~~**`prisma db push`**~~ — ✅ **applied to `divo_dev` 2026-08-02.**
+   `MailboxSubscription.notifiedState` and `notifiedStateAt` are live; a
+   follow-up `migrate diff` returns empty, so the database matches the schema
+   with no drift. The pushed diff was exactly those two nullable columns —
+   nothing else was pending, and nothing was dropped. Applied over the SSH
+   tunnel (`bash scripts/db-tunnel.sh`); there is still no `_prisma_migrations`
+   table, so `db push` remains the mechanism.
 2. **`scripts/reconcile-capabilities.ts`** — Wave 0 is text in the DB-seeded
    skill registry. Committed ≠ live. New companies pick it up at creation;
    every existing company needs this script run once. This is defect P2 and it
