@@ -13,7 +13,11 @@ import type {
 } from './google-workspace-mcp.tool';
 import { SELF_SERVICE_CONNECT_HINT } from './google-workspace-mcp.tool';
 import { mailRuleMatchSchema, parseMailRule } from '../../mail-ops/mail-rule.matcher';
-import { mailRuleDedupeKey } from '../../mail-ops/mail-ops.types';
+import {
+  legacyMailRuleDedupeKey,
+  mailRuleDedupeKey,
+} from '../../mail-ops/mail-ops.types';
+import type { MailRuleIdentity } from '../../mail-ops/mail-ops.types';
 import type {
   AuthorizeLarkChatDestination,
   LarkChatDestinationVerdict,
@@ -474,6 +478,14 @@ export function createMailAutomationsTool(deps: {
           action,
           destination,
         });
+        // Built once, so the canonical key and the key this rule would have
+        // carried before canonicalisation describe the very same request.
+        const identity: MailRuleIdentity = {
+          companyId: String(ctx.runContext.companyId),
+          userId: String(ctx.runContext.userId),
+          connectionId: connection.connectionId,
+          ...parsed,
+        };
         if (args.operation === 'update') {
           const updated = await deps.repo.replaceRule({
             companyId: String(ctx.runContext.companyId),
@@ -484,12 +496,7 @@ export function createMailAutomationsTool(deps: {
             match: { ...parsed.match },
             action: { ...parsed.action },
             destination: { ...parsed.destination },
-            dedupeKey: mailRuleDedupeKey({
-              companyId: String(ctx.runContext.companyId),
-              userId: String(ctx.runContext.userId),
-              connectionId: connection.connectionId,
-              ...parsed,
-            }),
+            dedupeKey: mailRuleDedupeKey(identity),
           });
           if (!updated.ok) throw updated.error;
           if (!updated.value) {
@@ -518,12 +525,8 @@ export function createMailAutomationsTool(deps: {
           match: { ...parsed.match },
           action: { ...parsed.action },
           destination: { ...parsed.destination },
-          dedupeKey: mailRuleDedupeKey({
-            companyId: String(ctx.runContext.companyId),
-            userId: String(ctx.runContext.userId),
-            connectionId: connection.connectionId,
-            ...parsed,
-          }),
+          dedupeKey: mailRuleDedupeKey(identity),
+          legacyDedupeKey: legacyMailRuleDedupeKey(identity),
         });
         if (!created.ok) throw created.error;
         ctx.onProgress?.('Mail automation activated.');

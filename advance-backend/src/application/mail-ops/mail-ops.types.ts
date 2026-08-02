@@ -84,13 +84,57 @@ export function mailDeliveryIdempotencyKey(ruleId: string, eventId: string): str
   return `mail:${sha256(`${ruleId}:${eventId}`)}`;
 }
 
-export function mailRuleDedupeKey(input: {
+export interface MailRuleIdentity {
   companyId: string;
   userId: string;
   connectionId: string;
   match: MailRuleMatch;
   action: MailRuleAction;
   destination: MailRuleDestination;
-}): string {
+}
+
+/**
+ * The identity of a rule, so that asking for one twice does not create two.
+ *
+ * Derived from a fixed sequence rather than from `JSON.stringify` of the
+ * request, which made the identity turn on things the rule does not: the order
+ * the keys happened to be written in, and the case of every value. Matching is
+ * case-insensitive, so a rule asked for as `otp` and a rule asked for as `OTP`
+ * watch exactly the same mail — and both being active meant every matching
+ * message was forwarded twice, with nothing in either rule to suggest the
+ * other existed.
+ *
+ * Case is folded only where the runtime already ignores it: the match clause,
+ * and a destination email address. A Lark `chatId` is an opaque identifier and
+ * is left alone — two chats whose IDs differ only in case are two chats.
+ */
+export function mailRuleDedupeKey(input: MailRuleIdentity): string {
+  return `mail-rule:${sha256(JSON.stringify([
+    input.companyId,
+    input.userId,
+    input.connectionId,
+    input.match.from?.toLocaleLowerCase() ?? null,
+    input.match.to?.toLocaleLowerCase() ?? null,
+    input.match.subjectContains?.toLocaleLowerCase() ?? null,
+    input.match.bodyContains?.toLocaleLowerCase() ?? null,
+    input.match.hasAttachment ?? null,
+    input.action.type,
+    input.destination.type,
+    input.destination.type === 'email'
+      ? input.destination.email.toLocaleLowerCase()
+      : input.destination.chatId,
+  ]))}`;
+}
+
+/**
+ * How a rule created before that fix is keyed.
+ *
+ * Kept so an existing rule can be recognised and adopted on the next request
+ * for it, rather than being forked into a second rule that forwards the same
+ * mail again — which is the very failure canonicalising the key exists to
+ * prevent. Every rule migrates the first time someone asks for it again;
+ * a rule nobody asks for again keeps this key and comes to no harm.
+ */
+export function legacyMailRuleDedupeKey(input: MailRuleIdentity): string {
   return `mail-rule:${sha256(JSON.stringify(input))}`;
 }

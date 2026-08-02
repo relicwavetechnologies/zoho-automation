@@ -13,7 +13,11 @@ import {
   mailRuleMatches,
   parseMailRule,
 } from '../../src/application/mail-ops/mail-rule.matcher.ts';
-import type { MailMessageMetadata } from '../../src/application/mail-ops/mail-ops.types.ts';
+import { mailRuleDedupeKey } from '../../src/application/mail-ops/mail-ops.types.ts';
+import type {
+  MailMessageMetadata,
+  MailRuleIdentity,
+} from '../../src/application/mail-ops/mail-ops.types.ts';
 import { makeCtx } from './tool-test.helpers.ts';
 
 const connectionId = '11111111-1111-4111-8111-111111111111';
@@ -219,6 +223,47 @@ describe('mailAutomations tool', () => {
     assert.equal(
       mailRuleMatchSchema.safeParse({ from: '@x.example', cc: 'finance@y.example' }).success,
       false,
+    );
+  });
+
+  it('gives one rule one identity however the request was written', () => {
+    const identity: MailRuleIdentity = {
+      companyId: 'company-1',
+      userId: 'user-1',
+      connectionId: 'connection-1',
+      match: { from: 'alerts@example.com', subjectContains: 'OTP' },
+      action: { type: 'forward' },
+      destination: { type: 'email', email: 'person@example.com' },
+    };
+
+    // Matching is case-insensitive, so these two rules watch exactly the same
+    // mail. Keying them apart made both active and forwarded every matching
+    // message twice.
+    assert.equal(
+      mailRuleDedupeKey({
+        ...identity,
+        match: { from: 'Alerts@Example.com', subjectContains: 'otp' },
+        destination: { type: 'email', email: 'Person@Example.com' },
+      }),
+      mailRuleDedupeKey(identity),
+    );
+    assert.equal(
+      mailRuleDedupeKey({
+        ...identity,
+        match: { subjectContains: 'OTP', from: 'alerts@example.com' },
+      }),
+      mailRuleDedupeKey(identity),
+    );
+    // A Lark chat ID is opaque: two IDs differing in case are two chats.
+    const chat = { ...identity, action: { type: 'deliver' as const } };
+    assert.notEqual(
+      mailRuleDedupeKey({ ...chat, destination: { type: 'lark_chat', chatId: 'oc_A' } }),
+      mailRuleDedupeKey({ ...chat, destination: { type: 'lark_chat', chatId: 'oc_a' } }),
+    );
+    // And a rule that watches something else is still a different rule.
+    assert.notEqual(
+      mailRuleDedupeKey({ ...identity, match: { from: 'alerts@example.com' } }),
+      mailRuleDedupeKey(identity),
     );
   });
 

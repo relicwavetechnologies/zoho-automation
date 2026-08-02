@@ -49,6 +49,11 @@ export interface CreateMailAutomationRuleInput {
   connectionId: string;
   mailboxEmail: string;
   dedupeKey: string;
+  /**
+   * How this same rule would have been keyed before the key was canonicalised.
+   * Supplied so an existing rule is adopted rather than forked in two.
+   */
+  legacyDedupeKey?: string;
 }
 
 export interface PersistedMailEvent extends NewMailEvent {
@@ -142,6 +147,7 @@ export class MailOpsRepository {
           },
           select: { id: true },
         });
+        await this.adoptLegacyKeyedRule(tx, input);
         const rule = await tx.mailAutomationRule.upsert({
           where: { dedupeKey: input.dedupeKey },
           create: {
@@ -186,6 +192,39 @@ export class MailOpsRepository {
     } catch (cause) {
       return err(wrapInfra('prisma', 'mailOps.createRuleForMailbox', cause));
     }
+  }
+
+  /**
+   * Move a rule created under the old key onto its canonical one.
+   *
+   * Without this, canonicalising the key would cause on its first use the exact
+   * duplicate it exists to prevent: the upsert below would find nothing, create
+   * a second rule beside the one already watching, and both would forward every
+   * matching message. Migration happens here, one rule at a time, as each is
+   * asked for again — a bulk rewrite of every row on deploy would have to be
+   * right about all of them at once.
+   *
+   * Skipped when a canonical row already exists, because then the two rules
+   * genuinely are the fork this fix is about, and renaming one onto the other's
+   * key would only fail the unique constraint and take the request with it. The
+   * canonical one wins; the other keeps running until someone removes it.
+   */
+  private async adoptLegacyKeyedRule(
+    tx: Prisma.TransactionClient,
+    input: CreateMailAutomationRuleInput,
+  ): Promise<void> {
+    if (!input.legacyDedupeKey || input.legacyDedupeKey === input.dedupeKey) {
+      return;
+    }
+    const canonical = await tx.mailAutomationRule.findUnique({
+      where: { dedupeKey: input.dedupeKey },
+      select: { id: true },
+    });
+    if (canonical) return;
+    await tx.mailAutomationRule.updateMany({
+      where: { companyId: input.companyId, dedupeKey: input.legacyDedupeKey },
+      data: { dedupeKey: input.dedupeKey },
+    });
   }
 
   async listRulesForUser(input: {

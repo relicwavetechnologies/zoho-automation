@@ -731,6 +731,67 @@ describe('MailOpsRepository', () => {
     assert.equal(updates[2].data.ambiguous, undefined);
   });
 
+  it('adopts a rule keyed the old way instead of forking it in two', async () => {
+    // Canonicalising the key changes the identity of every rule already
+    // written. Without the adoption the very first re-request would create a
+    // second rule beside the one already watching, and both would forward
+    // every matching message — the exact duplicate the key exists to prevent.
+    const run = async (canonicalExists: boolean) => {
+      const calls: string[] = [];
+      const updates: any[] = [];
+      const repo = new MailOpsRepository({
+        $transaction: async (fn: any) => fn({
+          mailboxSubscription: { upsert: async () => ({ id: 'mailbox-1' }) },
+          mailAutomationRule: {
+            findUnique: async () => {
+              calls.push('lookup');
+              return canonicalExists ? { id: 'rule-1' } : null;
+            },
+            updateMany: async (input: any) => {
+              calls.push(input.data.dedupeKey ? 'adopt' : 'revive');
+              updates.push(input);
+              return { count: 1 };
+            },
+            upsert: async () => {
+              calls.push('upsert');
+              return { id: 'rule-1' };
+            },
+          },
+        }),
+      } as any);
+      const created = await repo.createRuleForMailbox({
+        companyId: 'company-1',
+        createdByUserId: 'user-1',
+        connectionId: 'connection-1',
+        mailboxEmail: 'user@example.com',
+        name: 'Forward OTP',
+        match: { from: 'alerts@example.com' },
+        action: { type: 'forward' },
+        destination: { type: 'email', email: 'owner@example.com' },
+        dedupeKey: 'mail-rule:canonical',
+        legacyDedupeKey: 'mail-rule:legacy',
+      });
+      assert.equal(created.ok, true);
+      return { calls, updates };
+    };
+
+    const adopted = await run(false);
+    // Before the upsert, or the upsert would already have created the second
+    // rule this is meant to prevent.
+    assert.deepEqual(adopted.calls, ['lookup', 'adopt', 'upsert', 'revive']);
+    assert.deepEqual(adopted.updates[0].where, {
+      companyId: 'company-1',
+      dedupeKey: 'mail-rule:legacy',
+    });
+    assert.equal(adopted.updates[0].data.dedupeKey, 'mail-rule:canonical');
+
+    // A canonical row already exists, so the two rules genuinely are a fork.
+    // Renaming one onto the other's key would only break the unique
+    // constraint and take the whole request down with it.
+    const forked = await run(true);
+    assert.deepEqual(forked.calls, ['lookup', 'upsert', 'revive']);
+  });
+
   it('starts a revived rule watching from now, not from when it was first written', async () => {
     // Recreating an archived rule is the only way to bring one back, and the
     // upsert reuses the original row. Left on `createdAt`, a rule first
