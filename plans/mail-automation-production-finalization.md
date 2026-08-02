@@ -18,7 +18,7 @@ Last synced 2026-08-02. Branch `dev`, **not pushed**.
 | **1 — Visibility (screen)** | ✅ merged to `dev` | `b994c22f7` |
 | **2 — Silent death (D2, D3, D4, D14, DR-2)** | ✅ merged to `dev` | `6e0d120cf`, `97be67a46`, `c4a5e2561`, `97b4d22b9` |
 | 2 — cold-review fixes (2 rounds) | ✅ merged to `dev` | `0b94131b2`, `458736c01`, `88ef5b75e`, `d4a88353e`, `9067fea78` |
-| 3 — Dead OAuth path (D5) | ⬜ | — |
+| **3 — Dead OAuth path (D5)** | ✅ merged to `dev` | `04d39a7f0`, `e1f923a66`, `45d6b79c9`, `f20d7935c` |
 | 4 — Security and governance (S1–S5) | ⬜ | — |
 | 5–11 | ⬜ | — |
 
@@ -310,10 +310,23 @@ Added a guard test asserting no surface claims OTP extraction, **verified by rei
 
 **Known and deferred:** a stalled backlog is now visible but still cannot make progress. Resuming from a stored Gmail `pageToken` is the real repair — it needs a column on `MailboxSubscription` and belongs in **Wave 10**.
 
-*Acceptance:* revoke the Pub/Sub publisher grant in a test project — mail still syncs within 60 minutes, health reports `watch_degraded` after three failures, owner notified once. Move a user out of a rule's department — that rule blocks with a visible row, the mailbox keeps syncing. **Not yet exercised against a live Google project**; covered by unit tests only (120 passing across the mail, permission and Gmail-client suites).
+*Acceptance:* revoke the Pub/Sub publisher grant in a test project — mail still syncs within 60 minutes, health reports `watch_degraded` after three failures, owner notified once. Move a user out of a rule's department — that rule blocks with a visible row, the mailbox keeps syncing. **Not yet exercised against a live Google project**; covered by unit tests only (279 passing across the mail, permission, Gmail-client, connection and gateway suites after Wave 3).
 
-**Wave 3 — The dead OAuth path** *(D5)* — P0, cross-cutting beyond mail
-Populate `connectionAuthorization` at Lark ingress, propagate through `ToolExecutor.buildRunContext`. Define off-Lark behaviour: either a real desktop/web connect-and-resume, or a distinguishable outcome so the tool can say "open Settings → Integrations" instead of an opaque `unrecoverable`. Stop collapsing `selection.reason` so `insufficient_access` is distinguishable from `none_accessible`. Delete or implement `continuationToolIds`. Test against real wiring.
+**Wave 3 — The dead OAuth path** *(D5)* — ✅ done, P0, cross-cutting beyond mail
+
+The context could not live on `RunContext` as rev 1 assumed, because it does not survive the trip: Pi runs in a container and calls tools back through the gateway long after the Lark event is out of scope. It is recorded at ingress instead — `RunOriginStore`, Redis, 30 minutes — keyed by the run ID already carried on the signed runtime lease, and `createBeginGoogleAuthorization` looks it back up. Every read is re-bound to the calling member, so knowing a run ID is not enough to start an authorization in somebody else's conversation. An ask too long to store faithfully is not stored at all: a continuation re-runs it verbatim, and half an instruction is worse than none.
+
+`ToolExecutor.buildRunContext` now carries `runtimeRunId`, taken off the lease rather than the request body.
+
+Off-Lark behaviour is the `SELF_SERVICE_CONNECT_HINT`: when no card can be delivered — no conversation to put one in, or delivery failed — both Google tools name the route that actually exists, **Connected apps** (`/me/connections`), not the "Settings → Integrations" this document invented before checking.
+
+`selection.reason` is no longer collapsed. `mailOpsConnectionUnavailableMessage` gives `none_accessible`, `insufficient_access` and `requested_not_accessible` their own remedies, and `connectionState` travels beside the sentence so callers branch on state rather than prose.
+
+`continuationToolIds` was deleted. It was written on every continuation run and read nowhere, under a comment promising an RBAC intersection no code performed; a continuation resolves permissions per tool call like any other run, so it granted nothing and guarded nothing.
+
+The closure moved out of composition for one reason: the only test covering it stubbed that exact seam, which is how the feature stayed dead and green. It now has tests against the real store, and the two tool tests assert only what the tools are responsible for.
+
+**Not exercised against a live Google project.** No card has been delivered, no intent issued, no continuation run started for real.
 
 **Wave 4 — Security and governance** *(S1, S2, S3, S4, S5)*
 Ground `chatId` in code and scope `deliverLark` by tenant. Pass `ConnectionRateLimitService` and `ApprovalGateService` into the worker; make `connectionId` required for `create`. Approval for first-time external destination domains. Drop `execute` from `pause`.
