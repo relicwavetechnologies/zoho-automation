@@ -33,6 +33,46 @@ const SEGMENT: Record<Provider, string> = {
   zoho: 'zoho',
 }
 
+/**
+ * Where each provider's *connect* flow starts — and why this cannot be derived.
+ *
+ * Lark owns two authorize routes that differ by one path segment and by
+ * everything else. `/lark/authorize-url` is the unauthenticated desktop
+ * sign-in hop: it signs `kind: 'desktop_lark_login'` and its callback parks the
+ * code for `/lark/poll`, writing no connection at all. The connect flow is
+ * `/lark/connections/authorize-url`, behind memberAuth, whose callback is the
+ * one that actually stores an `IntegrationConnection`.
+ *
+ * Deriving the path from the segment picked the first one, so Connect ran a
+ * whole consent screen, closed the popup, refetched status, found nothing, and
+ * put the button back to "Connect" — no error anywhere. A wrong route that
+ * resolves to a real route is worse than a 404, so the mapping is written out
+ * rather than computed.
+ *
+ * `null` means the provider has no OAuth to start. AITable is key-based: its
+ * connection is created by posting a key, not by a redirect.
+ */
+const AUTHORIZE_PATH: Record<Provider, string | null> = {
+  google_workspace: '/api/desktop/auth/google/authorize-url',
+  lark: '/api/desktop/auth/lark/connections/authorize-url',
+  canva: '/api/desktop/auth/canva/authorize-url',
+  airtable: '/api/desktop/auth/airtable/authorize-url',
+  aitable: null,
+  zoho: '/api/desktop/auth/zoho/authorize-url',
+}
+
+/**
+ * How each provider's connection is taken away.
+ *
+ * Five providers answer `DELETE {provider}/connections/:id`. AITable does not
+ * have that route at all — it revokes through `POST .../revoke` — so the shared
+ * shape 404'd and toasted a bare `Error 404` while the connection stayed live.
+ */
+const disconnectRequest = (provider: Provider, connectionId: string): { method: 'delete' | 'post'; path: string } =>
+  provider === 'aitable'
+    ? { method: 'post', path: `/api/desktop/auth/aitable/connections/${connectionId}/revoke` }
+    : { method: 'delete', path: `/api/desktop/auth/${SEGMENT[provider]}/connections/${connectionId}` }
+
 export type LiveConnection = {
   connectionId: string
   label: string
@@ -124,10 +164,14 @@ export function useConnections() {
    */
   const connect = useCallback(async (provider: Provider) => {
     if (!token) return
+    const authorizePath = AUTHORIZE_PATH[provider]
+    if (!authorizePath) {
+      throw new Error('This app is connected with an API key rather than a sign-in, so there is nothing to authorize here.')
+    }
     setConnecting(provider)
     try {
       const { authorizeUrl } = await api.get<{ authorizeUrl: string }>(
-        `/api/desktop/auth/${SEGMENT[provider]}/authorize-url`,
+        authorizePath,
         token,
         { quiet: true },
       )
@@ -147,11 +191,9 @@ export function useConnections() {
 
   const disconnect = useCallback(async (provider: Provider, connectionId: string) => {
     if (!token) return
-    await api.delete(
-      `/api/desktop/auth/${SEGMENT[provider]}/connections/${connectionId}`,
-      {},
-      token,
-    )
+    const { method, path } = disconnectRequest(provider, connectionId)
+    if (method === 'post') await api.post(path, {}, token)
+    else await api.delete(path, {}, token)
     await load()
   }, [token, load])
 

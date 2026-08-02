@@ -23,13 +23,15 @@ import {
   Bar, DataNote, Drawer, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, Seg, Skel, SkelRows,
   Switch, listPhrase, money, useStaged,
 } from './ui'
+import type { Toast } from './ui'
 import {
+  candidateBlock, candidateLabel,
   useApprovalPolicy, useDepartment, useDepartmentMatrix, useMyManagedDepartment, useTeamUsage,
-  type MemberActionState, type RoleActionState, type ToolScopeSnapshot,
+  type Candidate, type MemberActionState, type RoleActionState, type ToolScopeSnapshot,
 } from './data/use-team'
 import { useApprovals, expiryLabel } from './data/use-approvals'
 
-type Props = { replay: number; toast: (m: string) => void; go: (screen: string) => void }
+type Props = { replay: number; toast: Toast; go: (screen: string) => void }
 
 /* ══ Shared reading of the snapshot ════════════════════ */
 
@@ -309,7 +311,7 @@ export function TeamPeople({ replay, toast }: Props) {
   const [r1] = useStaged([300], replay)
   const [open, setOpen] = useState<string | null>(null)
   const [query, setQuery] = useState('')
-  const { snapshot, loading, addMember, findCandidates } = useDepartment(dept?.id)
+  const { snapshot, loading, error, refused, addMember, findCandidates, refresh } = useDepartment(dept?.id)
   const { usage } = useTeamUsage(dept?.id)
   const matrix = useDepartmentMatrix(dept?.id)
   const [adding, setAdding] = useState(false)
@@ -347,8 +349,27 @@ export function TeamPeople({ replay, toast }: Props) {
       </div>
 
       <Panel source="teamPeople">
-        {!r1 || loading ? <SkelRows n={6} /> : list.length === 0 ? (
-          <Empty icon={Users} title="Nobody matches" body="Try a different name." />
+        {/* "Nobody matches" is an answer about the search box. A refused or
+            failed snapshot produces the same empty list with an empty search
+            box, which reads as an empty team — so both are named first. */}
+        {!r1 || loading ? <SkelRows n={6} /> : refused ? (
+          <NoAccess
+            what="this team's people"
+            who="Only whoever leads this team can see who is in it."
+          />
+        ) : error ? (
+          <Empty
+            icon={TriangleAlert}
+            title="Could not load this team"
+            body={error}
+            action={<button type="button" className="btn" onClick={() => void refresh()}>Try again</button>}
+          />
+        ) : list.length === 0 ? (
+          <Empty
+            icon={Users}
+            title={people.length === 0 ? 'Nobody is in this team yet' : 'Nobody matches'}
+            body={people.length === 0 ? 'Add someone to give Divo a team to work for.' : 'Try a different name.'}
+          />
         ) : (
           <Fade>
             <div className="ws-rows">
@@ -384,7 +405,7 @@ export function TeamPeople({ replay, toast }: Props) {
           search={findCandidates}
           onAdd={async (userId, roleId, name) => {
             try { await addMember(userId, roleId); toast(`${name} added`) }
-            catch { toast('Could not add them') }
+            catch { toast('Could not add them', 'error') }
           }}
           onClose={() => setAdding(false)}
         />
@@ -406,20 +427,24 @@ export function TeamPeople({ replay, toast }: Props) {
 /**
  * Adding somebody to the team.
  *
- * The search is server-side and already excludes people who are in — a list
- * that offers a name and then rejects it is worse than no list. A role is
- * required rather than defaulted, because "which role" is the whole decision
- * and silently picking one hides it.
+ * The search is server-side and returns everyone it matched, including people
+ * already in this team and Lark accounts with no Divo user behind them. Those
+ * rows are shown but not selectable, with the reason on the row: a list that
+ * offers a name and then rejects it is worse than no list, and a list that
+ * silently omits somebody you can see in Lark is just as confusing.
+ *
+ * A role is required rather than defaulted, because "which role" is the whole
+ * decision and silently picking one hides it.
  */
 function AddPersonDrawer({ roles, search, onAdd, onClose }: {
   roles: { id: string; name: string }[]
-  search: (query: string) => Promise<{ userId: string; name: string | null; email: string }[]>
+  search: (query: string) => Promise<Candidate[]>
   onAdd: (userId: string, roleId: string, name: string) => Promise<void>
   onClose: () => void
 }) {
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<{ userId: string; name: string | null; email: string }[]>([])
-  const [picked, setPicked] = useState<{ userId: string; name: string | null; email: string } | null>(null)
+  const [results, setResults] = useState<Candidate[]>([])
+  const [picked, setPicked] = useState<Candidate | null>(null)
   const [roleId, setRoleId] = useState(roles[0]?.id ?? '')
   const [busy, setBusy] = useState(false)
 
@@ -443,11 +468,11 @@ function AddPersonDrawer({ roles, search, onAdd, onClose }: {
           <button
             type="button"
             className="btn primary"
-            disabled={!picked || !roleId || busy}
+            disabled={!picked?.userId || !roleId || busy}
             onClick={async () => {
-              if (!picked || !roleId) return
+              if (!picked?.userId || !roleId) return
               setBusy(true)
-              try { await onAdd(picked.userId, roleId, displayName(picked.name, picked.email)); onClose() }
+              try { await onAdd(picked.userId, roleId, candidateLabel(picked)); onClose() }
               finally { setBusy(false) }
             }}
           >
@@ -461,7 +486,7 @@ function AddPersonDrawer({ roles, search, onAdd, onClose }: {
         <Search size={14} />
         <input
           autoFocus
-          value={picked ? displayName(picked.name, picked.email) : query}
+          value={picked ? candidateLabel(picked) : query}
           onChange={(e) => { setPicked(null); setQuery(e.target.value) }}
           placeholder="Search by name or email"
         />
@@ -473,12 +498,25 @@ function AddPersonDrawer({ roles, search, onAdd, onClose }: {
             <div style={{ padding: 16 }}>
               <Empty title="Nobody matches" body="They may already be in this team, or not in the company yet." />
             </div>
-          ) : results.map((r) => (
-            <div className="ws-row click" key={r.userId} onClick={() => setPicked(r)}>
-              <span className="avatar">{initialsOf(r.name, r.email)}</span>
-              <div className="ws-row-main"><b>{displayName(r.name, r.email)}</b><p>{r.email}</p></div>
-            </div>
-          ))}
+          ) : results.map((r) => {
+            const blocked = candidateBlock(r)
+            const label = candidateLabel(r)
+            return (
+              <div
+                className={blocked ? 'ws-row' : 'ws-row click'}
+                key={r.channelIdentityId}
+                data-muted={blocked ? '' : undefined}
+                onClick={blocked ? undefined : () => setPicked(r)}
+              >
+                <span className="avatar">{initialsOf(r.name ?? r.larkDisplayName ?? null, r.email ?? '')}</span>
+                <div className="ws-row-main">
+                  <b>{label}</b>
+                  <p>{r.email ?? 'No email on their Lark account'}</p>
+                </div>
+                {blocked ? <span className="ws-sub">{blocked}</span> : null}
+              </div>
+            )
+          })}
         </div>
       ) : null}
 
@@ -508,7 +546,7 @@ function AddPersonDrawer({ roles, search, onAdd, onClose }: {
 function PersonDrawer({ userId, onClose, toast, matrix, people }: {
   userId: string
   onClose: () => void
-  toast: (m: string) => void
+  toast: Toast
   matrix: ReturnType<typeof useDepartmentMatrix>
   people: { userId: string; name: string | null; email: string; roleSlug?: string; roleName?: string }[]
 }) {
@@ -576,7 +614,7 @@ function PersonDrawer({ userId, onClose, toast, matrix, people }: {
       toast(`${pending.length} change${pending.length > 1 ? 's' : ''} saved for ${firstName(person.name, person.email)}`)
       setPending([])
     } catch {
-      toast('Could not save every change — reopen to see what landed')
+      toast('Could not save every change — reopen to see what landed', 'error')
     } finally {
       setSaving(false)
     }
@@ -587,7 +625,7 @@ function PersonDrawer({ userId, onClose, toast, matrix, people }: {
       await matrix.clearMemberAction(toolId, userId, action)
       toast('Exception removed — they follow the role again')
     } catch {
-      toast('Could not remove that exception')
+      toast('Could not remove that exception', 'error')
     }
   }
 
@@ -613,7 +651,17 @@ function PersonDrawer({ userId, onClose, toast, matrix, people }: {
         <button type="button" className={tab === 'detail' ? 'on' : ''} onClick={() => setTab('detail')}>Every action</button>
       </div>
 
-      {tab === 'summary' ? (
+      {/* Every sentence and every cell in this drawer is derived from the
+          matrix. Without it, "Divo cannot do anything for them yet" is not a
+          fact about this person — it is the shape of a failed read. */}
+      {matrix.loading ? <SkelRows n={5} icon={false} /> : matrix.error ? (
+        <Empty
+          icon={TriangleAlert}
+          title="Could not read their permissions"
+          body={matrix.error}
+          action={<button type="button" className="btn" onClick={() => void matrix.refresh()}>Try again</button>}
+        />
+      ) : tab === 'summary' ? (
         <>
           {can.length ? (
             <p className="ws-sentence">
@@ -795,7 +843,7 @@ export function TeamRoles({ replay, toast }: Props) {
       toast(`Role updated for ${holders.length} ${holders.length === 1 ? 'person' : 'people'}`)
       setPending([])
     } catch {
-      toast('Could not save every change — reopen to see what landed')
+      toast('Could not save every change — reopen to see what landed', 'error')
     } finally {
       setSaving(false)
     }
@@ -858,7 +906,16 @@ export function TeamRoles({ replay, toast }: Props) {
           source="permissions"
         >
           <div className="ws-panel-body">
-            {!r1 || matrix.loading ? <SkelRows n={6} icon={false} /> : !selected ? (
+            {!r1 || matrix.loading ? <SkelRows n={6} icon={false} /> : matrix.error ? (
+              /* The read failed. Saying "no configurable tools" here would be a
+                 claim about the team made on the strength of a broken request. */
+              <Empty
+                icon={TriangleAlert}
+                title="Could not load this team's permissions"
+                body={matrix.error}
+                action={<button type="button" className="btn" onClick={() => void matrix.refresh()}>Try again</button>}
+              />
+            ) : !selected ? (
               <Empty title="No editable roles" body="Every role in this team is governed at company level." />
             ) : (
               <Fade><ToolMatrix tools={matrix.tools} cellFor={cellFor} onToggle={toggle} /></Fade>
@@ -883,7 +940,7 @@ export function TeamRoles({ replay, toast }: Props) {
           onClose={() => setCreatingRole(false)}
           onConfirm={async (name) => {
             try { await createRole(name); toast(`${name} created`) }
-            catch { toast('Could not create that role') }
+            catch { toast('Could not create that role', 'error') }
           }}
         />
       ) : null}
@@ -923,7 +980,7 @@ export function TeamApprovalPolicy({ replay, toast }: Props) {
       await save({ enabled, requiredActions: [...byTool].map(([toolId, actions]) => ({ toolId, actions })) })
       toast('Approval policy updated')
     } catch {
-      toast('Could not update the approval policy')
+      toast('Could not update the approval policy', 'error')
     }
   }
 
@@ -965,7 +1022,15 @@ export function TeamApprovalPolicy({ replay, toast }: Props) {
           </div>
         </Panel>
 
-        {policy?.enabled ? (
+        {loading || policy === null ? (
+          // Not an else-branch of `enabled`. "Nothing is gated" is a safety
+          // claim, and a null policy means the read failed or has not landed —
+          // telling a manager their team has no approval gates, from no
+          // evidence, points them exactly the wrong way.
+          <Panel><div className="ws-panel-body">{loading ? <SkelRows n={3} icon={false} /> : (
+            <span className="ws-sub">Whether anything needs your approval could not be read, so it is not stated here.</span>
+          )}</div></Panel>
+        ) : policy.enabled ? (
           <Panel title="Gated actions" description={`${gated.size} of ${gateable.length} actions need you`} source="permissions">
             {!r1 || loading || matrix.loading ? <SkelRows n={5} icon={false} /> : (
               <Fade>

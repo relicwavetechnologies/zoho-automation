@@ -24,11 +24,12 @@ import {
   ArrowRight, Ban, Check, Clock, ExternalLink, Loader, MessageSquare, ShieldCheck, TriangleAlert,
 } from 'lucide-react'
 import { DataNote, PageHeader, Panel, Seg } from './ui'
+import type { Toast } from './ui'
 
 /** Mirrors the callback's own switch — these five already exist in the backend. */
 type Outcome = 'connected' | 'already_consumed' | 'denied' | 'expired' | 'invalid'
 
-type Props = { replay: number; toast: (m: string) => void; go: (s: string) => void }
+type Props = { replay: number; toast: Toast; go: (s: string) => void }
 
 const ORIGINAL_REQUEST = 'Summarise the invoices I have not paid yet and draft a reminder to each supplier'
 
@@ -223,7 +224,7 @@ const COPY: Record<Outcome, {
   },
 }
 
-function Landing({ outcome, toast }: { outcome: Outcome; toast: (m: string) => void }) {
+function Landing({ outcome, toast }: { outcome: Outcome; toast: Toast }) {
   const c = COPY[outcome]
   const Icon = c.icon
   return (

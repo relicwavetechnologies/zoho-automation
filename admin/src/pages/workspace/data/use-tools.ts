@@ -7,9 +7,24 @@
  * answers to one question and two chances to disagree. The fetch lives here and
  * the two views are derived from it.
  */
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
+
+/**
+ * Where every tool route lives — and it is not where it looks like it should be.
+ *
+ * The tools router is mounted under `/api/desktop/auth`, not `/api/desktop`,
+ * because the desktop client prefixes `/auth` onto every tool path and moving
+ * the router would take `GET /api/desktop/auth/tools` off the air mid-session.
+ * server.ts says so where it mounts it.
+ *
+ * That surprise is exactly why this is a constant. The Team screens had built
+ * their tool paths off a plain `/api/desktop`, so every permission read and
+ * every toggle 404'd — and the matrix rendered the failure as "no configurable
+ * tools", which reads as a fact about the team rather than a broken request.
+ */
+export const TOOLS_BASE = '/api/desktop/auth'
 
 export type ToolOrigin = {
   kind: 'global' | 'department' | 'system' | 'local'
@@ -32,9 +47,15 @@ export function useToolInventory() {
   // look identical downstream otherwise, and one of those is retryable.
   const [failed, setFailed] = useState(false)
 
+  // Bumped by `refresh`, which is the whole point of telling somebody a read
+  // failed: the message is only worth showing if it comes with a way out.
+  const [attempt, setAttempt] = useState(0)
+  const refresh = useCallback(() => { setAttempt((n) => n + 1) }, [])
+
   useEffect(() => {
     if (!token) return
     let live = true
+    setLoading(true)
     void (async () => {
       try {
         const data = await api.get<{ tools: InventoryEntry[] }>(
@@ -50,7 +71,7 @@ export function useToolInventory() {
       }
     })()
     return () => { live = false }
-  }, [token])
+  }, [token, attempt])
 
-  return { tools, loading, failed }
+  return { tools, loading, failed, refresh }
 }

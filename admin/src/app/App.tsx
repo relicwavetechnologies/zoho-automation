@@ -87,7 +87,8 @@ const RequireScope = ({ kind, children }: { kind: ScopeKind; children: JSX.Eleme
   )
 }
 
-/* Workspace screens, adapted to routes. Still on fixtures; each marks itself. */
+/* Workspace screens, adapted to routes. Live, apart from the few panels
+   that mark themselves as sample data. */
 const MeHome = routed(YouHome)
 const MeApprovals = routed(YouApprovals)
 const MeArtifacts = routed(Artifacts)
@@ -142,7 +143,8 @@ export function App() {
           <Route index element={<DefaultProtectedRoute />} />
 
           {/* ── You ─────────────────────────────────────────
-              Fixtures. Every panel marks its own data state. */}
+              Live, apart from skills, memory and artifacts — those panels
+              carry their own marker. */}
           <Route path="me" element={<MeHome />} />
           <Route path="me/approvals" element={<MeApprovals />} />
           <Route path="me/artifacts" element={<MeArtifacts />} />

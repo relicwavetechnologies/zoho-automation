@@ -19,9 +19,9 @@
  * two answers to one question; when in doubt the cursor one wins and this file
  * covers only what it does not.
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, api, type DepartmentDetailSection } from '@/lib/api'
-import { useToolInventory } from './use-tools'
+import { TOOLS_BASE, useToolInventory } from './use-tools'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 
 const base = '/api/admin'
@@ -47,20 +47,44 @@ function useAdminResource<T>(path: string | null, fallback: T) {
    */
   const [notFound, setNotFound] = useState(false)
 
+  /**
+   * Which request is allowed to write into this state.
+   *
+   * Open department A, switch to B before A answers, and without this the two
+   * responses race: whichever lands last wins. B usually resolves first over a
+   * fast link, so A arrives second and paints A's members and permissions under
+   * B's heading — with `loading` false, so it reads as settled rather than
+   * stale. Every read stamps a generation and drops itself if a newer one has
+   * started since.
+   */
+  const generation = useRef(0)
+
   const load = useCallback(async () => {
-    if (!token || !path) { setLoading(false); return }
+    if (!token || !path) {
+      // A cleared selection must clear the answer too — otherwise the previous
+      // department stays on screen as though it were the current one.
+      generation.current += 1
+      setData(fallback)
+      setLoading(false)
+      return
+    }
+    const gen = ++generation.current
+    setLoading(true)
     try {
-      setData(await api.get<T>(`${base}${path}`, token, { quiet: true }))
+      const next = await api.get<T>(`${base}${path}`, token, { quiet: true })
+      if (generation.current !== gen) return
+      setData(next)
       setError(null)
       setRefused(false)
       setNotFound(false)
     } catch (e) {
+      if (generation.current !== gen) return
       setError(e instanceof Error ? e.message : 'Could not load this.')
       setRefused(e instanceof ApiError && (e.status === 403 || e.status === 401))
       setNotFound(e instanceof ApiError && e.status === 404)
       setData(fallback)
     } finally {
-      setLoading(false)
+      if (generation.current === gen) setLoading(false)
     }
     // `fallback` is a literal at every call site; including it would reload forever.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -244,9 +268,6 @@ export function useRuns(filters: { limit?: number; status?: string; channel?: st
   return useAdminResource<Run[]>(`/executions?${query.toString()}`, [])
 }
 
-export const useRun = (runId?: string) =>
-  useAdminResource<Run | null>(runId ? `/executions/${runId}` : null, null)
-
 export type RunEvent = {
   id: string
   sequence: number
@@ -260,9 +281,6 @@ export type RunEvent = {
   payload: unknown
   createdAt: string
 }
-
-export const useRunEvents = (runId?: string) =>
-  useAdminResource<RunEvent[]>(runId ? `/executions/${runId}/events` : null, [])
 
 /* ── Audit ────────────────────────────────────────────── */
 
@@ -323,6 +341,9 @@ export function useCompanyCeiling() {
   const [tools, setTools] = useState<CeilingTool[]>([])
   const [loading, setLoading] = useState(true)
   const [refused, setRefused] = useState(false)
+  // Separate from `refused`: one means "you may not", the other means "we could
+  // not ask". They render as the same empty grid otherwise.
+  const [failed, setFailed] = useState(false)
 
   const load = useCallback(async () => {
     if (!token) { setLoading(false); return }
@@ -336,15 +357,22 @@ export function useCompanyCeiling() {
       if (governable.length === 0) { setTools([]); setRefused(!inventoryFailed); setLoading(false); return }
       const snapshots = await Promise.all(governable.map((t) =>
         api.get<CeilingTool>(
-          `/api/desktop/auth/tools/${t.tool.toolId}/manage?scope=global`, token, { quiet: true, raw: true },
+          `${TOOLS_BASE}/tools/${t.tool.toolId}/manage?scope=global`, token, { quiet: true, raw: true },
         ).catch(() => null),
       ))
-      setTools(snapshots.filter((s): s is CeilingTool => s !== null))
+      const kept = snapshots.filter((s): s is CeilingTool => s !== null)
+      setTools(kept)
+      // Dropping a tool that refused is right; dropping *every* tool and
+      // rendering the result is not. With none of them read, the grid has no
+      // role columns and the screen says "no configurable tools" — a statement
+      // about the company produced entirely by broken requests.
+      setFailed(kept.length === 0 && governable.length > 0)
       setRefused(false)
     } catch (e) {
-      // The inventory itself refuses a non-admin, which is the honest signal —
-      // the per-tool reads below would only ever return an empty grid.
+      // Reached when the fan-out itself throws rather than an individual tool —
+      // `Promise.all` over per-item catches does not reject on its own.
       setRefused(e instanceof ApiError && (e.status === 403 || e.status === 401))
+      setFailed(!(e instanceof ApiError && (e.status === 403 || e.status === 401)))
       setTools([])
     } finally {
       setLoading(false)
@@ -356,7 +384,7 @@ export function useCompanyCeiling() {
   const reloadTool = useCallback(async (toolId: string) => {
     if (!token) return
     const fresh = await api.get<CeilingTool>(
-      `/api/desktop/auth/tools/${toolId}/manage?scope=global`, token, { quiet: true, raw: true },
+      `${TOOLS_BASE}/tools/${toolId}/manage?scope=global`, token, { quiet: true, raw: true },
     )
     setTools((prev) => prev.map((t) => (t.tool.toolId === toolId ? fresh : t)))
   }, [token])
@@ -364,13 +392,13 @@ export function useCompanyCeiling() {
   const setCeiling = useCallback(async (toolId: string, role: string, actionGroup: string, enabled: boolean) => {
     if (!token) return
     await api.put(
-      `/api/desktop/auth/tools/${toolId}/global/roles/${role}/actions/${actionGroup}`,
+      `${TOOLS_BASE}/tools/${toolId}/global/roles/${role}/actions/${actionGroup}`,
       { enabled }, token, { raw: true },
     )
     await reloadTool(toolId)
   }, [token, reloadTool])
 
-  return { tools, loading, refused, refresh: load, setCeiling }
+  return { tools, loading, refused, failed, refresh: load, setCeiling }
 }
 
 /* ── Formatting shared by the company screens ─────────── */

@@ -6,15 +6,13 @@
  * person who is both an individual and a lead is never left guessing whether
  * "Connections" means theirs or their team's.
  *
- * Company-scope items route to the existing, live admin pages. You and Team
- * route to the Workspace screens, which are still on fixtures — every one of
- * them marks itself in the UI, so nothing here implies more is wired than is.
+ * Every scope now runs on real endpoints. A few panels are still fixtures —
+ * /me/skills, /me/memory and /me/artifacts — and each marks itself in the UI
+ * rather than relying on a note here that goes stale the moment one is wired.
  *
- * Scope availability: an admin session is only ever issued to SUPER_ADMIN or
- * COMPANY_ADMIN today (admin-auth.routes.ts), so Company is present for
- * everyone who can sign in. Team has no data source yet — `/me` reports
- * departments but the admin session does not carry managed departments — so it
- * is shown as a preview until that lands.
+ * Scope availability: one member session serves everybody, so Team appears for
+ * whoever actually manages a department and Company for admins. Nothing is
+ * shown as a preview any more.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'

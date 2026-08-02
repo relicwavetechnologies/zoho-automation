@@ -11,8 +11,9 @@
  * These routers answer with their payload bare rather than the usual
  * { success, data }, hence `raw` on every call.
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, api } from '@/lib/api'
+import { TOOLS_BASE } from './use-tools'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 
 export type DeptRole = { id: string; name: string; slug: string; isDefault?: boolean }
@@ -87,6 +88,36 @@ export type ToolScopeSnapshot = {
 
 const base = '/api/desktop'
 
+/**
+ * One row from the candidate search.
+ *
+ * Mirrors `CandidateSummary` on the backend, optionality included: the rows are
+ * built from Lark channel identities, and an identity may carry no email, no
+ * display name and no matching Divo user.
+ */
+export type Candidate = {
+  channelIdentityId: string
+  userId?: string
+  name?: string
+  email?: string
+  workspaceRole?: string
+  isWorkspaceMember: boolean
+  isAlreadyAssigned: boolean
+  larkDisplayName?: string
+}
+
+/** Whether this candidate can actually be added, and if not, why. */
+export function candidateBlock(c: Candidate): string | null {
+  if (c.isAlreadyAssigned) return 'Already in this team'
+  if (!c.isWorkspaceMember || !c.userId) return 'No Divo account yet'
+  return null
+}
+
+/** A name for a candidate that never assumes a field is present. */
+export function candidateLabel(c: Candidate): string {
+  return c.name ?? c.larkDisplayName ?? c.email ?? 'Unnamed Lark account'
+}
+
 export function useDepartment(departmentId?: string) {
   const { token } = useAdminAuth()
   const [snapshot, setSnapshot] = useState<DepartmentSnapshot | null>(null)
@@ -94,23 +125,31 @@ export function useDepartment(departmentId?: string) {
   const [error, setError] = useState<string | null>(null)
   const [refused, setRefused] = useState(false)
 
+  // See `useAdminResource` in use-company.ts: switching departments mid-flight
+  // otherwise lets the older answer land last and win.
+  const generation = useRef(0)
+
   const load = useCallback(async () => {
-    if (!token || !departmentId) { setLoading(false); return }
+    if (!token || !departmentId) { generation.current += 1; setLoading(false); return }
+    const gen = ++generation.current
+    setLoading(true)
     try {
       const data = await api.get<DepartmentSnapshot>(
         `${base}/departments/${departmentId}/manage`, token, { quiet: true, raw: true },
       )
+      if (generation.current !== gen) return
       setSnapshot(data)
       setError(null)
       setRefused(false)
     } catch (e) {
+      if (generation.current !== gen) return
       // The route refuses anyone who does not manage this department, which is
       // a meaningful answer rather than a failure — say so plainly.
       setError(e instanceof Error ? e.message : 'Could not load this department.')
       setRefused(e instanceof ApiError && (e.status === 403 || e.status === 401))
       setSnapshot(null)
     } finally {
-      setLoading(false)
+      if (generation.current === gen) setLoading(false)
     }
   }, [token, departmentId])
 
@@ -132,10 +171,25 @@ export function useDepartment(departmentId?: string) {
     await load()
   }, [token, departmentId, load])
 
-  /** Search people who could join, excluding those already in. */
-  const findCandidates = useCallback(async (query: string) => {
+  /**
+   * Search people who could join this team.
+   *
+   * It does **not** exclude anyone — that was a comment describing behaviour
+   * the route never had. The search runs over Lark channel identities, and it
+   * returns three kinds of person: somebody addable, somebody already in this
+   * team, and a Lark identity with no Divo account behind it at all. Only the
+   * first can be added; `userId` is genuinely absent for the third, which is
+   * why every field here is optional. Typing them as required is what let a
+   * `userId`-less row reach `addMember` and come back as a bare 400, and let a
+   * row with neither name nor email throw inside `initialsOf` mid-render.
+   *
+   * The two unaddable kinds are returned rather than filtered out, so the
+   * drawer can say which one it is. "Nobody matches" when the person is right
+   * there in Lark is a worse answer than "they need a Divo account first".
+   */
+  const findCandidates = useCallback(async (query: string): Promise<Candidate[]> => {
     if (!token || !departmentId || query.trim().length === 0) return []
-    return api.get<{ userId: string; name: string | null; email: string }[]>(
+    return api.get<Candidate[]>(
       `${base}/departments/${departmentId}/candidates?query=${encodeURIComponent(query)}`,
       token, { quiet: true, raw: true },
     ).catch(() => [])
@@ -209,29 +263,45 @@ export function useDepartmentMatrix(departmentId?: string) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // Same reason as `useDepartment` above: the permission grid is the one place
+  // a stale answer is genuinely dangerous, because it is read as the record of
+  // who may do what in the department currently on screen.
+  const generation = useRef(0)
+
   const load = useCallback(async () => {
-    if (!token || !departmentId) { setLoading(false); return }
+    if (!token || !departmentId) { generation.current += 1; setLoading(false); return }
+    const gen = ++generation.current
+    setLoading(true)
     try {
       const cover = await api.get<Coverage>(
-        `${base}/tools/coverage/${departmentId}`, token, { quiet: true, raw: true },
+        `${TOOLS_BASE}/tools/coverage/${departmentId}`, token, { quiet: true, raw: true },
       )
+      if (generation.current !== gen) return
       const query = `scope=department&departmentId=${encodeURIComponent(departmentId)}`
       const snapshots = await Promise.all(cover.tools.map((entry) =>
         api.get<ToolScopeSnapshot>(
-          `${base}/tools/${entry.tool.toolId}/manage?${query}`, token, { quiet: true, raw: true },
+          `${TOOLS_BASE}/tools/${entry.tool.toolId}/manage?${query}`, token, { quiet: true, raw: true },
         ).catch(() => null),
       ))
+      if (generation.current !== gen) return
       setCoverage(cover)
       // A tool that refuses is dropped rather than rendered as a blank row —
       // an empty grid reads as "nothing is allowed", which is a lie.
-      setTools(snapshots.filter((s): s is ToolScopeSnapshot => s !== null))
-      setError(null)
+      const kept = snapshots.filter((s): s is ToolScopeSnapshot => s !== null)
+      setTools(kept)
+      // But dropping every one of them and rendering the remains is the same
+      // lie in a different shape. If the coverage listed tools and not one
+      // snapshot came back, that is a failed read, not an ungoverned team.
+      setError(kept.length === 0 && cover.tools.length > 0
+        ? 'Could not read this team’s permissions.'
+        : null)
     } catch (e) {
+      if (generation.current !== gen) return
       setError(e instanceof Error ? e.message : 'Could not load this team’s permissions.')
       setCoverage(null)
       setTools([])
     } finally {
-      setLoading(false)
+      if (generation.current === gen) setLoading(false)
     }
   }, [token, departmentId])
 
@@ -242,7 +312,7 @@ export function useDepartmentMatrix(departmentId?: string) {
     if (!token || !departmentId) return
     const query = `scope=department&departmentId=${encodeURIComponent(departmentId)}`
     const fresh = await api.get<ToolScopeSnapshot>(
-      `${base}/tools/${toolId}/manage?${query}`, token, { quiet: true, raw: true },
+      `${TOOLS_BASE}/tools/${toolId}/manage?${query}`, token, { quiet: true, raw: true },
     )
     setTools((prev) => prev.map((s) => (s.tool.toolId === toolId ? fresh : s)))
   }, [token, departmentId])
@@ -250,7 +320,7 @@ export function useDepartmentMatrix(departmentId?: string) {
   const setRoleAction = useCallback(async (toolId: string, roleId: string, actionGroup: string, allowed: boolean) => {
     if (!token || !departmentId) return
     await api.put(
-      `${base}/tools/${toolId}/departments/${departmentId}/roles/${roleId}/actions/${actionGroup}`,
+      `${TOOLS_BASE}/tools/${toolId}/departments/${departmentId}/roles/${roleId}/actions/${actionGroup}`,
       { allowed }, token, { raw: true },
     )
     await reloadTool(toolId)
@@ -259,7 +329,7 @@ export function useDepartmentMatrix(departmentId?: string) {
   const setMemberAction = useCallback(async (toolId: string, userId: string, actionGroup: string, allowed: boolean) => {
     if (!token || !departmentId) return
     await api.put(
-      `${base}/tools/${toolId}/departments/${departmentId}/members/${userId}/actions/${actionGroup}`,
+      `${TOOLS_BASE}/tools/${toolId}/departments/${departmentId}/members/${userId}/actions/${actionGroup}`,
       { allowed }, token, { raw: true },
     )
     await reloadTool(toolId)
@@ -268,7 +338,7 @@ export function useDepartmentMatrix(departmentId?: string) {
   const clearMemberAction = useCallback(async (toolId: string, userId: string, actionGroup: string) => {
     if (!token || !departmentId) return
     await api.delete(
-      `${base}/tools/${toolId}/departments/${departmentId}/members/${userId}/actions/${actionGroup}`,
+      `${TOOLS_BASE}/tools/${toolId}/departments/${departmentId}/members/${userId}/actions/${actionGroup}`,
       {}, token, { raw: true },
     )
     await reloadTool(toolId)

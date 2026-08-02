@@ -126,7 +126,11 @@ export type MyTool = {
  * of the app reasons about.
  */
 export function useMyTools() {
-  const { tools, loading } = useToolInventory()
+  // `failed` is carried through, not swallowed. The inventory hook keeps it
+  // apart from an empty list for a reason: dropping it here is what let a
+  // failed fetch render as "Divo cannot do anything on your behalf yet", which
+  // sends someone to their manager about a permission problem they do not have.
+  const { tools, loading, failed, refresh } = useToolInventory()
   const inventory: MyTool[] = tools.map((entry) => {
     const actions = Array.from(new Set(entry.origins.flatMap((o) => o.allowedActions ?? [])))
     return {
@@ -143,7 +147,7 @@ export function useMyTools() {
       configurable: entry.origins.every((o) => o.kind !== 'system' && o.kind !== 'local'),
     }
   })
-  return { inventory, loading }
+  return { inventory, loading, failed, refresh }
 }
 
 /* ── Which models this person may pick ────────────────── */
@@ -168,15 +172,20 @@ export function useMyModelOptions() {
     let live = true
     void (async () => {
       try {
-        const [mine, catalogue] = await Promise.all([
-          api.get<{ allowedModels: string[]; blocked: boolean }>(
-            '/api/desktop/auth/model-options', token, { quiet: true },
-          ),
-          // The catalogue carries the labels; the policy carries only ids.
-          api.get<ModelOption[]>('/api/admin/proxy/models', token, { quiet: true }).catch(() => []),
-        ])
+        // One member-scoped call, labels included.
+        //
+        // This used to pair `/model-options` with `/api/admin/proxy/models` for
+        // the labels — a route behind adminAuth. For a plain member, who is
+        // most of this screen's audience, that 403'd into a `.catch(() => [])`
+        // and every model rendered as its raw id. The member route now carries
+        // the catalogue fields itself.
+        const mine = await api.get<{
+          allowedModels: string[]
+          models?: ModelOption[]
+          blocked: boolean
+        }>('/api/desktop/auth/model-options', token, { quiet: true })
         if (!live) return
-        const byId = new Map(catalogue.map((m) => [m.id, m]))
+        const byId = new Map((mine.models ?? []).map((m) => [m.id, m]))
         setAllowed(mine.allowedModels.map((id) =>
           byId.get(id) ?? { id, label: id, provider: 'unknown', vision: false }))
         setBlocked(mine.blocked)

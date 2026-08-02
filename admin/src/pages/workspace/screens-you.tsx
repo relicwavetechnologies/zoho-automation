@@ -11,20 +11,22 @@ import {
   Eye, Gauge, Link2, Lock, MessageSquare, Plus, ShieldCheck, Sparkles, Trash2, TriangleAlert, X,
 } from 'lucide-react'
 import {
-  CONNECTORS, MEMORIES, PEOPLE, SKILLS, TOOLS, personById, resolveGrants, toolById,
+  CONNECTORS, MEMORIES, SKILLS, toolById,
   type Memory, type Persona, type Provider,
 } from './fixtures'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
+import { useTheme } from '@/lib/use-theme'
 import { CONNECTABLE, useConnectionGrants, useConnections, type LiveConnection } from './data/use-connections'
 import { ago, expiryLabel, useApprovals } from './data/use-approvals'
 import {
   changePct, durationLabel, useMyModelOptions, useMyRuns, useMyTools, useMyUsage, type MyRun,
 } from './data/use-my-activity'
 import {
-  Bar, ChangePreview, DataNote, Drawer, Empty, Fade, Matrix, PageHeader, Panel, Provenance,
+  Bar, DataNote, Drawer, Empty, Fade, PageHeader, Panel,
   ProviderMark, Seg, Skel, SkelRows, Spark, Switch, compact, listPhrase, money,
-  permissionSentence, providerName, useStaged,
+  providerName, useStaged,
 } from './ui'
+import type { Toast } from './ui'
 
 const initialsOf = (name: string | null, email: string) =>
   (name ?? email).split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((p) => p[0]!.toUpperCase()).join('')
@@ -33,7 +35,7 @@ const COMPANY_ROLE_LABEL: Record<string, string> = {
   SUPER_ADMIN: 'Super admin', COMPANY_ADMIN: 'Company admin', MEMBER: 'Member',
 }
 
-type ScreenProps = { persona: Persona; replay: number; toast: (m: string) => void; go: (screen: string) => void }
+type ScreenProps = { persona: Persona; replay: number; toast: Toast; go: (screen: string) => void }
 
 /* ══ Home ══════════════════════════════════════════════
    Deliberately NOT four KPI tiles. The first thing on the page is the small
@@ -76,7 +78,9 @@ export function YouHome({ persona, replay, toast, go }: ScreenProps) {
         body: `${a.description?.summary ?? a.toolId} was never approved, so Divo stopped and did nothing.`,
         meta: [ago(a.requestedAt)],
         cta: 'Ask again',
-        onClick: () => toast('Ask in Lark or raise it with your manager — Divo cannot re-open an expired request.'),
+        // Nothing happened when they pressed this, so it must not arrive as a
+        // green tick — the button's whole answer is that it cannot help.
+        onClick: () => toast('Ask in Lark or raise it with your manager — Divo cannot re-open an expired request.', 'error'),
       })),
   ]
 
@@ -381,7 +385,7 @@ function ConnectionDrawer({ provider, connection, onClose, onConnect, onDisconne
   onClose: () => void
   onConnect: () => void
   onDisconnect: (connectionId: string) => Promise<void>
-  toast: (m: string) => void
+  toast: Toast
 }) {
   const def = CONNECTORS.find((c) => c.provider === provider)!
   const [confirming, setConfirming] = useState(false)
@@ -512,7 +516,7 @@ function ConnectionDrawer({ provider, connection, onClose, onConnect, onDisconne
 export function YouAccess({ replay }: ScreenProps) {
   const { session } = useAdminAuth()
   const [r1, r2] = useStaged([280, 560], replay)
-  const { inventory, loading } = useMyTools()
+  const { inventory, loading, failed, refresh } = useMyTools()
 
   const usable = inventory.filter((entry) => entry.allowedActions.length > 0)
   const can = usable.flatMap((entry) =>
@@ -543,6 +547,18 @@ export function YouAccess({ replay }: ScreenProps) {
                 <Skel w="78%" h={15} /><div style={{ height: 12 }} />
                 <Skel w="46%" h={15} />
               </>
+            ) : failed ? (
+              // Every sentence below is derived from the inventory, so with no
+              // inventory they would all say the same wrong thing: that this
+              // person holds nothing and belongs to no department. The route
+              // answers every signed-in member, so this is never a permission
+              // problem — it is something to retry.
+              <Empty
+                icon={TriangleAlert}
+                title="Could not read your access"
+                body="This is a broken request, not a restriction — nothing about what you can do has changed."
+                action={<button type="button" className="btn" onClick={refresh}>Try again</button>}
+              />
             ) : (
               <Fade>
                 {can.length ? (
@@ -597,7 +613,14 @@ export function YouAccess({ replay }: ScreenProps) {
           source="permissions"
         >
           <div className="ws-panel-body">
-            {!r2 || loading ? <SkelRows n={5} icon={false} /> : inventory.length === 0 ? (
+            {!r2 || loading ? <SkelRows n={5} icon={false} /> : failed ? (
+              <Empty
+                icon={TriangleAlert}
+                title="Could not read your tools"
+                body="The list is unavailable right now. This says nothing about what you hold."
+                action={<button type="button" className="btn" onClick={refresh}>Try again</button>}
+              />
+            ) : inventory.length === 0 ? (
               <Empty title="Nothing is configured for you" body="Divo has no tools it may use on your behalf." />
             ) : (
               <Fade>
@@ -929,7 +952,10 @@ export function YouMemory({ replay, toast }: ScreenProps) {
                     className="btn"
                     disabled={m.scope !== 'personal'}
                     title={m.scope !== 'personal' ? 'Shared memories can only be removed by whoever shared them' : undefined}
-                    onClick={() => { setForgotten((f) => [...f, m.id]); toast('Forgotten') }}
+                    // The row is a fixture and there is no route to delete a
+                    // memory, so "Forgotten" was a claim about Divo that
+                    // nothing backed. It hides the sample row and says so.
+                    onClick={() => { setForgotten((f) => [...f, m.id]); toast('Hidden here only — nothing was deleted, because this panel is sample data', 'error') }}
                   >
                     <Trash2 size={14} />Forget
                   </button>
@@ -948,13 +974,25 @@ export function YouMemory({ replay, toast }: ScreenProps) {
 }
 
 /* ══ Settings ══════════════════════════════════════════ */
-export function YouSettings({ persona, replay, toast }: ScreenProps) {
+export function YouSettings({ persona, replay }: ScreenProps) {
   const [r1] = useStaged([260], replay)
-  const [model, setModel] = useState<string | null>(null)
-  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system')
-  const [notify, setNotify] = useState(true)
   const { session } = useAdminAuth()
   const { allowedModels, loading: modelsLoading } = useMyModelOptions()
+  // The one real theme in the app — the same hook the topbar toggle uses, and
+  // the same stored value. This panel used to hold its own `useState`, so it
+  // always opened on "System" whatever was actually set, and picking one
+  // toasted a change that never left the component.
+  const { theme, setTheme } = useTheme()
+
+  /*
+   * The model list is read-only, and that is not a shortcut.
+   *
+   * No route stores a member's model preference — the proxy resolves it from
+   * the grant on every call. The panel used to render each model as a clickable
+   * row that toasted "Switched to Pro", which persisted nothing, survived
+   * nothing, and left no model marked as current. Stating what they are allowed
+   * to use, and who decides, is the whole truth available here.
+   */
 
   return (
     <>
@@ -999,29 +1037,26 @@ export function YouSettings({ persona, replay, toast }: ScreenProps) {
           <Panel title="Model" description="Which model Divo uses when it works for you" source="profile">
             <div className="ws-panel-body">
               {modelsLoading ? <SkelRows n={2} icon={false} /> : allowedModels.length === 0 ? (
-                <Empty title="No model is available to you" body="An admin has switched every model off for your account." />
+                // Reached both when every model is switched off and when the
+                // read failed, and the hook cannot currently tell them apart —
+                // so the sentence stops short of blaming an admin.
+                <Empty title="No model is listed for you" body="Divo will fall back to its default until this says otherwise." />
               ) : (
                 <div className="ws-rows">
                   {/* Only what the proxy will actually accept for this person.
-                      Offering a model it refuses turns a settings screen into a
-                      way to break your own next task. */}
+                      Showing a model it refuses would turn a settings screen
+                      into a way to break your own next task. */}
                   {allowedModels.map((m) => (
-                    <div
-                      className="ws-row click"
-                      style={{ paddingLeft: 0, paddingRight: 0 }}
-                      key={m.id}
-                      onClick={() => { setModel(m.id); toast(`Switched to ${m.label}`) }}
-                    >
-                      <span className="ws-ic" data-tone={model === m.id ? 'ok' : undefined}>
-                        {model === m.id ? <Check size={14} /> : null}
-                      </span>
+                    <div className="ws-row" style={{ paddingLeft: 0, paddingRight: 0 }} key={m.id}>
+                      <span className="ws-ic" data-tone="ok"><Check size={14} /></span>
                       <div className="ws-row-main"><b>{m.label}</b><p>{m.id}{m.vision ? ' · reads images' : ''}</p></div>
                     </div>
                   ))}
                 </div>
               )}
               <p className="ws-sub" style={{ marginTop: 14, lineHeight: 1.5 }}>
-                Your admin decides which models you may pick. With none set, Divo uses its default.
+                Your admin decides which models you may use, and Divo picks the best one you are allowed for
+                each task — there is nothing to choose here.
               </p>
             </div>
           </Panel>
@@ -1031,19 +1066,19 @@ export function YouSettings({ persona, replay, toast }: ScreenProps) {
           <div className="ws-panel-body">
             <div className="ws-lbl">Theme</div>
             <div style={{ marginTop: 10 }}>
+              {/* No toast: the whole window changing colour is the confirmation,
+                  and it is a better one than a message saying it happened. */}
               <Seg
                 value={theme}
-                onChange={(v) => { setTheme(v); toast(`Theme: ${v}`) }}
+                onChange={(v) => setTheme(v as 'light' | 'dark' | 'system')}
                 options={[{ value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }, { value: 'system', label: 'System' }]}
               />
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 22 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>Notify me when work needs me</div>
-                <div className="ws-sub" style={{ marginTop: 3 }}>Approvals and blocked tasks</div>
-              </div>
-              <Switch on={notify} onToggle={() => setNotify((v) => !v)} label="Notifications" />
-            </div>
+            {/* A "Notify me when work needs me" switch sat here. Nothing was
+                behind it — no preference was stored and no notification is sent
+                from anywhere — so it was a switch whose only effect was to look
+                like it had one. It comes back when there is something to turn
+                on. Approvals already reach people in Lark. */}
           </div>
         </Panel>
       </div>

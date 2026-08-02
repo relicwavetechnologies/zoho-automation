@@ -19,6 +19,7 @@ import {
   Bar, DataNote, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, Seg, Skel, SkelRows,
   Switch, compact, money, useStaged,
 } from './ui'
+import type { Toast } from './ui'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import {
   ROLE_LABEL, ago, displayName, durationLabel, initialsOf,
@@ -35,7 +36,7 @@ function useAdminScope() {
   return { token, companyId: useCompanyScope() }
 }
 
-type Props = { replay: number; toast: (m: string) => void; go: (screen: string) => void }
+type Props = { replay: number; toast: Toast; go: (screen: string) => void }
 
 const sum = (xs: number[]) => xs.reduce((n, x) => n + x, 0)
 
@@ -331,7 +332,7 @@ export function CompanyPolicy({ replay, toast }: Props) {
   const [r1] = useStaged([300], replay)
   const [role, setRole] = useState<string | null>(null)
   const [saving, setSaving] = useState<string | null>(null)
-  const { tools, loading, refused, setCeiling } = useCompanyCeiling()
+  const { tools, loading, refused, failed, refresh, setCeiling } = useCompanyCeiling()
 
   // Roles come from the snapshot rather than a hardcoded pair, because a
   // company can define its own and a missing column is a permission nobody
@@ -357,7 +358,7 @@ export function CompanyPolicy({ replay, toast }: Props) {
         ? `No team may grant ${tool.actionLabels[action] ?? action} now`
         : `Teams may grant ${tool.actionLabels[action] ?? action}`)
     } catch {
-      toast('Could not change the ceiling')
+      toast('Could not change the ceiling', 'error')
     } finally {
       setSaving(null)
     }
@@ -395,6 +396,13 @@ export function CompanyPolicy({ replay, toast }: Props) {
             <NoAccess
               what="the company ceiling"
               who="Only a company admin can set what departments are allowed to grant. A manager sets grants within it, from their own team."
+            />
+          ) : failed ? (
+            <Empty
+              icon={TriangleAlert}
+              title="Could not read the ceiling"
+              body="The per-tool reads did not come back, so there is nothing to show. This is not a statement that the company grants nothing."
+              action={<button type="button" className="btn" onClick={() => void refresh()}>Try again</button>}
             />
           ) : tools.length === 0 ? (
             <Empty title="No configurable tools" />
@@ -593,7 +601,7 @@ export function CompanyDepartments({ replay, toast, go }: Props) {
           onClose={() => setCreating(false)}
           onConfirm={async (name) => {
             try { await createDepartment(name); toast(`${name} created`) }
-            catch { toast('Could not create that department') }
+            catch { toast('Could not create that department', 'error') }
           }}
         />
       ) : null}
@@ -938,51 +946,6 @@ export function CompanyAudit({ replay }: Props) {
    kept and will be plugged straight in.
    ══════════════════════════════════════════════════════ */
 
-type CoRun = {
-  id: string
-  who: string
-  initials: string
-  dept: string
-  summary: string
-  channel: 'lark' | 'desktop'
-  status: 'completed' | 'running' | 'failed'
-  day: string
-  when: string
-  dur: string | null
-  cost: number
-  fail?: string
-}
-
-const CO_RUNS: CoRun[] = [
-  { id: 'r2211', who: 'Rohan Iyer', initials: 'RI', dept: 'Finance', summary: 'Reconciled the March vendor ledger', channel: 'lark', status: 'running', day: 'Today', when: '4 min ago', dur: null, cost: 0.21 },
-  { id: 'r2210', who: 'Ananya Mehta', initials: 'AM', dept: 'Finance', summary: 'Drafted 14 supplier reminders', channel: 'desktop', status: 'completed', day: 'Today', when: '2 hours ago', dur: '3m 41s', cost: 0.38 },
-  { id: 'r2209', who: 'Vikram Desai', initials: 'VD', dept: 'Sales', summary: 'Built the Q3 pipeline review deck', channel: 'desktop', status: 'completed', day: 'Today', when: '3 hours ago', dur: '8m 12s', cost: 1.64 },
-  { id: 'r2208', who: 'Kabir Shah', initials: 'KS', dept: 'Finance', summary: 'Looked up supplier GST numbers', channel: 'desktop', status: 'failed', day: 'Today', when: '4 hours ago', dur: '0m 22s', cost: 0.02, fail: 'Tool not permitted' },
-  { id: 'r2207', who: 'Priya Nair', initials: 'PN', dept: 'Finance', summary: 'Built the Q2 expense breakdown', channel: 'desktop', status: 'completed', day: 'Today', when: '5 hours ago', dur: '6m 02s', cost: 0.71 },
-  { id: 'r2206', who: 'Sana Qureshi', initials: 'SQ', dept: 'Operations', summary: 'Chased three shipment delays', channel: 'lark', status: 'running', day: 'Today', when: '6 hours ago', dur: null, cost: 0.14 },
-  { id: 'r2205', who: 'Farah Khan', initials: 'FK', dept: 'Sales', summary: 'Pulled last quarter’s win rates', channel: 'lark', status: 'failed', day: 'Today', when: '7 hours ago', dur: '0m 08s', cost: 0, fail: 'Provider returned 401 — token expired' },
-  { id: 'r2204', who: 'Meera Rao', initials: 'MR', dept: 'People', summary: 'Assembled the new-joiner checklist', channel: 'lark', status: 'failed', day: 'Yesterday', when: '19:22', dur: '0m 11s', cost: 0, fail: 'Approval expired before anyone answered' },
-  { id: 'r2203', who: 'Vikram Desai', initials: 'VD', dept: 'Sales', summary: 'Wrote 22 follow-up emails after the expo', channel: 'desktop', status: 'completed', day: 'Yesterday', when: '17:05', dur: '11m 38s', cost: 2.41 },
-  { id: 'r2202', who: 'Rohan Iyer', initials: 'RI', dept: 'Finance', summary: 'Re-read the ledger sheet eleven times', channel: 'desktop', status: 'completed', day: 'Yesterday', when: '14:11', dur: '21m 04s', cost: 41.2 },
-  { id: 'r2201', who: 'Nikhil Roy', initials: 'NR', dept: 'Operations', summary: 'Checked three vendor GST filings', channel: 'desktop', status: 'failed', day: 'Yesterday', when: '11:40', dur: '0m 19s', cost: 0.01, fail: 'Tool not permitted' },
-  { id: 'r2200', who: 'Ananya Mehta', initials: 'AM', dept: 'Finance', summary: 'Summarised the audit thread', channel: 'lark', status: 'running', day: 'Yesterday', when: '10:02', dur: null, cost: 0.09 },
-  { id: 'r2199', who: 'Farah Khan', initials: 'FK', dept: 'Sales', summary: 'Built a prospect list from the web', channel: 'desktop', status: 'failed', day: 'Yesterday', when: '09:14', dur: '1m 02s', cost: 0.44, fail: 'Model budget reached (402)' },
-  { id: 'r2198', who: 'Kabir Shah', initials: 'KS', dept: 'Finance', summary: 'Filed the month-close checklist', channel: 'desktop', status: 'failed', day: 'Yesterday', when: '08:31', dur: '0m 06s', cost: 0, fail: 'Provider returned 401 — token expired' },
-]
-
-const FAIL_FIX: Record<string, string> = {
-  'Tool not permitted': 'The person asked for something their role does not grant. Either grant it or the skill should stop offering it.',
-  'Provider returned 401 — token expired': 'Their connection lapsed. Divo cannot tell them why, so the run just dies — ask them to reconnect.',
-  'Approval expired before anyone answered': 'A manager was asked and nobody replied within the hour. The department has no second approver.',
-  'Model budget reached (402)': 'The proxy refused mid-run. The work is lost, not queued.',
-}
-
-const MODEL_SPEND = [
-  { model: 'deepseek-v4-flash', label: 'Flash', calls: 4820, cost: 34.11 },
-  { model: 'deepseek-v4-pro', label: 'Pro', calls: 962, cost: 118.42 },
-  { model: 'gpt-5.6-luna', label: 'Luna', calls: 114, cost: 21.55 },
-]
-
 /* ══ AI Ops ════════════════════════════════════════════ */
 export function CompanyAiOps({ replay, go }: Props) {
   const { session } = useAdminAuth()
@@ -1258,8 +1221,21 @@ export function CompanyGuardrails({ replay, toast }: Props) {
   const deepseek = useProxyStatus(token, 'deepseek', companyId).data
   const openai = useProxyStatus(token, 'openai', companyId).data
   const memberSpend = useSpendMembers(token, 30, companyId).data
-  const policies = useProxyPolicies(token, companyId).data ?? []
+  const policyQuery = useProxyPolicies(token, companyId)
+  const policies = policyQuery.data ?? []
   const savePolicy = useSaveProxyPolicy(token, companyId)
+
+  /**
+   * Every switch below is held until this is true.
+   *
+   * Blocking somebody sends the complete next policy, because the route
+   * replaces rather than patches. Composed from a list that failed to load,
+   * that write carries `monthlyBudgetUsd: null`, `rateLimitRpm: null` and no
+   * model grant — so one click on a row that merely *looks* unrestricted wipes
+   * a real budget and drops them back to Flash-only. Nothing here is safe to
+   * toggle until the policies are actually known.
+   */
+  const policiesKnown = policyQuery.isSuccess
 
   const policyFor = (userId: string) => policies.find((p) => p.userId === userId)
   const [keyFor, setKeyFor] = useState<'deepseek' | 'openai' | null>(null)
@@ -1271,6 +1247,7 @@ export function CompanyGuardrails({ replay, toast }: Props) {
   ]
 
   const toggleBlocked = async (userId: string, name: string, nowBlocked: boolean) => {
+    if (!policiesKnown) return
     const existing = policyFor(userId)
     try {
       // The route replaces the whole policy, so a partial write would silently
@@ -1288,7 +1265,7 @@ export function CompanyGuardrails({ replay, toast }: Props) {
       })
       toast(nowBlocked ? `${name} unblocked` : `${name} blocked`)
     } catch {
-      toast('Could not change that limit')
+      toast('Could not change that limit', 'error')
     }
   }
 
@@ -1342,7 +1319,14 @@ export function CompanyGuardrails({ replay, toast }: Props) {
           title="Per-person limits"
           description="A monthly budget in dollars, enforced — the proxy refuses the call when it is reached"
         >
-          {!r1 ? <SkelRows n={4} /> : (memberSpend?.members ?? []).length === 0 ? (
+          {!r1 || policyQuery.isPending ? <SkelRows n={4} /> : !policiesKnown ? (
+            <Empty
+              icon={TriangleAlert}
+              title="Could not read the limits"
+              body="Every row here would otherwise read as allowed and unbudgeted, and blocking somebody from that state would erase their real budget. Nothing is shown until this loads."
+              action={<button type="button" className="btn" onClick={() => void policyQuery.refetch()}>Try again</button>}
+            />
+          ) : (memberSpend?.members ?? []).length === 0 ? (
             <Empty title="Nobody has spent anything yet" body="Limits appear here once someone starts using Divo." />
           ) : (
             <Fade>
@@ -1407,7 +1391,7 @@ export function CompanyGuardrails({ replay, toast }: Props) {
               await save.mutateAsync({ key, keyScope: 'company' })
               toast('Key saved')
             } catch {
-              toast('Could not save that key')
+              toast('Could not save that key', 'error')
             }
           }}
         />

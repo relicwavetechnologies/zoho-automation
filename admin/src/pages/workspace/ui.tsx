@@ -34,6 +34,16 @@ export function useStaged(steps: number[], replayKey: number) {
   return ready
 }
 
+/**
+ * How a screen reports the outcome of a write.
+ *
+ * The tone is optional and defaults to success, because most messages are one.
+ * It exists because every screen used to report failures through the success
+ * channel: "Could not save that key" arrived in green with a checkmark, which
+ * is a completed action as far as anyone reading it is concerned.
+ */
+export type Toast = (message: string, tone?: 'ok' | 'error') => void
+
 export const Skel = ({ w, h = 11, circle }: { w?: number | string; h?: number; circle?: boolean }) => (
   <div
     className={`ws-skel${circle ? ' circle' : ' line'}`}
@@ -328,13 +338,6 @@ export const Spark = ({ data }: { data: number[] }) => {
   )
 }
 
-/* ── Provenance ───────────────────────────────────────
-   The backend already tells us WHY a permission resolved. Showing it is the
-   difference between a matrix people fear and one they can reason about. */
-export const Provenance = ({ source }: { source: PermissionSource }) => (
-  <span className="ws-prov" data-src={source}>{SOURCE_LABEL[source]}</span>
-)
-
 /* ── Drawer ──────────────────────────────────────────── */
 export function Drawer({ title, subtitle, onClose, children, footer }: {
   title: string; subtitle?: string; onClose: () => void; children: ReactNode; footer?: ReactNode
@@ -365,29 +368,6 @@ export function Drawer({ title, subtitle, onClose, children, footer }: {
 /* ── Permission language ──────────────────────────────
    Managers do not think in grants, they think in sentences about people.
    This turns a resolved GrantMap into prose before any matrix is offered. */
-export function permissionSentence(person: Person): { can: string[]; cannot: string[] } {
-  const grants = resolveGrants(person)
-  const can: string[] = []
-  for (const [toolId, actions] of Object.entries(grants)) {
-    const tool = toolById(toolId)
-    if (!tool) continue
-    for (const [action, grant] of Object.entries(actions)) {
-      if (!grant?.allowed) continue
-      const phrase = tool.verb[action as ActionGroup]
-      if (phrase) can.push(phrase)
-    }
-  }
-  const cannot: string[] = []
-  for (const tool of TOOLS_WITH_VERBS) {
-    const held = grants[tool.id]
-    for (const action of tool.actions) {
-      if (held?.[action]?.allowed) continue
-      const phrase = tool.verb[action]
-      if (phrase && SENSITIVE.has(`${tool.id}:${action}`)) cannot.push(phrase)
-    }
-  }
-  return { can: dedupe(can), cannot: dedupe(cannot) }
-}
 
 const dedupe = (xs: string[]) => Array.from(new Set(xs))
 const SENSITIVE = new Set([
@@ -410,106 +390,9 @@ export const listPhrase = (items: string[], max = 4) => {
    whether the company ceiling forbids it. The third is the one that bites —
    a department grant is silently clamped in the backend, so a locked cell
    explains itself rather than just failing later. */
-export function Matrix({ grants, onToggle, readOnly, tools }: {
-  grants: GrantMap
-  onToggle?: (toolId: string, action: ActionGroup) => void
-  readOnly?: boolean
-  tools: typeof TOOLS
-}) {
-  return (
-    <div style={{ overflowX: 'auto' }}>
-      <table className="ws-matrix">
-        <thead>
-          <tr>
-            <th>Tool</th>
-            {ACTION_GROUPS.map((a) => <th key={a} className="act">{a}</th>)}
-          </tr>
-        </thead>
-        <tbody>
-          {tools.map((tool) => (
-            <tr key={tool.id}>
-              <td>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                  <span style={{ fontWeight: 500 }}>{tool.name}</span>
-                  <span className="ws-sub">{tool.family}</span>
-                </div>
-              </td>
-              {ACTION_GROUPS.map((action) => {
-                const supported = tool.actions.includes(action)
-                if (!supported) return <td key={action} className="act"><span className="ws-cell-na">·</span></td>
-                const grant = grants[tool.id]?.[action]
-                const on = Boolean(grant?.allowed)
-                const locked = !ceilingAllows(tool.id, action)
-                return (
-                  <td key={action} className="act">
-                    <button
-                      type="button"
-                      className="ws-cell"
-                      data-on={on}
-                      data-src={grant?.source}
-                      data-locked={locked || readOnly}
-                      disabled={locked || readOnly}
-                      title={
-                        locked
-                          ? `Company policy blocks ${action} on ${tool.name} for this role`
-                          : grant
-                            ? `${on ? 'Allowed' : 'Blocked'} — ${SOURCE_LABEL[grant.source]}`
-                            : 'Not granted'
-                      }
-                      onClick={() => onToggle?.(tool.id, action)}
-                    >
-                      {locked ? <Lock size={11} /> : on ? <Check size={13} /> : null}
-                    </button>
-                  </td>
-                )
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
 
 /** A pending permission edit, shown as a diff before it is applied. */
 export type PendingChange = { toolId: string; action: ActionGroup; next: boolean; blocked?: boolean }
-
-export function ChangePreview({ person, changes, onApply, onCancel }: {
-  person: Person; changes: PendingChange[]; onApply: () => void; onCancel: () => void
-}) {
-  if (changes.length === 0) return null
-  return (
-    <div className="ws-diff">
-      <div className="ws-diff-h">
-        <ChevronRight size={14} />
-        {changes.length} change{changes.length > 1 ? 's' : ''} for {person.name.split(' ')[0]}, not saved yet
-      </div>
-      <div className="ws-diff-l">
-        {changes.map((c) => {
-          const tool = toolById(c.toolId)
-          const kind = c.blocked ? 'blocked' : c.next ? 'add' : 'remove'
-          return (
-            <div className="ws-diff-i" key={`${c.toolId}:${c.action}`} data-k={kind}>
-              <span className="sg">{c.blocked ? '!' : c.next ? '+' : '−'}</span>
-              <span>
-                {c.next ? 'Can' : 'Can no longer'} <b>{tool?.verb[c.action] ?? `${c.action} ${tool?.name}`}</b>
-              </span>
-              {c.blocked ? <small>blocked by company policy</small> : null}
-            </div>
-          )
-        })}
-      </div>
-      <div className="ws-diff-f">
-        <button type="button" className="btn" onClick={onCancel}>Discard</button>
-        <button type="button" className="btn primary" onClick={onApply}>Apply {changes.length}</button>
-      </div>
-    </div>
-  )
-}
-
-export const Ceiling = ({ children }: { children: ReactNode }) => (
-  <div className="ws-ceiling"><AlertTriangle size={14} />{<div>{children}</div>}</div>
-)
 
 /* ── Provider glyphs ─────────────────────────────────
    Wordmark initials rather than logos — no brand assets to license, and it
@@ -531,25 +414,5 @@ export const ProviderMark = ({ provider }: { provider: Provider }) => (
 
 export const providerName = (p: Provider) => PROVIDER_META[p].name
 
-export function useToast() {
-  const [message, setMessage] = useState<string | null>(null)
-  const timer = useRef<number | null>(null)
-  const show = (m: string) => {
-    setMessage(m)
-    if (timer.current) window.clearTimeout(timer.current)
-    timer.current = window.setTimeout(() => setMessage(null), 2600)
-  }
-  useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current) }, [])
-  return { message, show }
-}
-
 export const money = (n: number) => `$${n.toFixed(2)}`
 export const compact = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
-
-export function useDelta(current: number, previous: number) {
-  return useMemo(() => {
-    if (previous === 0) return null
-    const pct = Math.round(((current - previous) / previous) * 100)
-    return { pct, up: pct >= 0 }
-  }, [current, previous])
-}

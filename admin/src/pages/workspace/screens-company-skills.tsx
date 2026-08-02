@@ -28,6 +28,7 @@ import {
   Confirm, Drawer, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, Seg, SkelRows,
   isRefusal,
 } from './ui'
+import type { Toast } from './ui'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { ago } from './data/use-company'
 import type {
@@ -38,7 +39,7 @@ import {
   useSkillAccess, useSkillAudit, useSkillDetail, useSkillRegistry, useToolLabels,
 } from './data/use-skills'
 
-type Props = { replay: number; toast: (m: string) => void }
+type Props = { replay: number; toast: Toast }
 
 /* ── The tree, flattened from the backend DTO ─────────
    The registry has two roots — company-wide and one per department — and the

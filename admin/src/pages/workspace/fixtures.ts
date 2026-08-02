@@ -460,14 +460,7 @@ export type DataState = 'live' | 'not-wired' | 'needs-endpoint' | 'needs-backend
 
 export const DATA_SOURCES: Record<string, { state: DataState; note: string }> = {
   connections: { state: 'live', note: 'GET /api/desktop/auth/{provider}/status — real today' },
-  /**
-   * Mounted at the real /connections path while still on fixtures — the only
-   * screen in the signed-in app where that is true. The endpoints behind it
-   * exist; nothing calls them yet.
-   */
-  companyConnections: { state: 'not-wired', note: 'The provider endpoints exist. This screen still renders fixtures — wire it before anyone trusts these rows.' },
   connectionCoverage: { state: 'needs-backend', note: 'No route reports per-provider coverage or expiry across a company. Token expiry is stored but never evaluated.' },
-  connectionManage: { state: 'live', note: 'GET /{provider}/connections/:id/manage — real today' },
   approvals: { state: 'live', note: 'GET /api/desktop/approvals — real today' },
   permissions: { state: 'live', note: 'GET /api/desktop/auth/tools/:toolId/manage — real today' },
   teamPeople: { state: 'live', note: 'GET /api/desktop/departments/:id/manage — real today' },
@@ -476,9 +469,17 @@ export const DATA_SOURCES: Record<string, { state: DataState; note: string }> = 
   profile: { state: 'live', note: 'GET /api/desktop/auth/me + /auth/model-options — real today' },
   myUsage: { state: 'live', note: 'GET /api/desktop/me/usage — real today' },
   myRuns: { state: 'live', note: 'GET /api/desktop/me/runs — real today' },
+  /** The admin-side run list is a different route, so it is a different key. */
+  companyRuns: { state: 'live', note: 'GET /api/admin/executions — real today' },
   teamUsage: { state: 'live', note: 'GET /api/desktop/departments/:id/usage — real today' },
-  memory: { state: 'needs-endpoint', note: 'Memory is admin-only. A member cannot list or delete their own memories today.' },
-  accessRequest: { state: 'needs-backend', note: 'No access-request model exists. RuntimeApproval is per-tool-call, not a standing grant.' },
+  /**
+   * Both things are true — no member-facing route exists, *and* the rows on
+   * screen are invented. Only the second one can mislead somebody: "Needs an
+   * endpoint" reads as a missing feature, while the person is looking at five
+   * fabricated statements about what Divo remembers of them. The marker that
+   * protects the reader wins.
+   */
+  memory: { state: 'not-wired', note: 'These rows are invented. Memory is admin-only — no route lets a member list or delete their own memories, so nothing here was read from anywhere.' },
   overrideRemoval: { state: 'live', note: 'DELETE /tools/:toolId/departments/:id/members/:userId/actions/:action — real today' },
   /**
    * The Pi artifact extension exists but is switched off, and runtime.test.mjs
@@ -490,7 +491,6 @@ export const DATA_SOURCES: Record<string, { state: DataState; note: string }> = 
   artifacts: { state: 'needs-backend', note: 'divo_artifact is disabled, markdown-only, and never leaves the container.' },
   artifactSharing: { state: 'needs-backend', note: 'An artifact has no owner or grants today — it is only a file path.' },
   artifactHistory: { state: 'needs-backend', note: 'No versioned storage; the workspace file is overwritten in place.' },
-  artifactLive: { state: 'needs-backend', note: 'No event fires when the agent writes a file, so an open viewer cannot update.' },
   reconnect: { state: 'needs-backend', note: 'Token expiry is stored but never evaluated — there is no needs_reauth state to read.' },
 }
 

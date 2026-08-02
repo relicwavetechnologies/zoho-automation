@@ -69,19 +69,9 @@
 }
 .cur .ws-scope-opt:hover { background: var(--cur-canvas-soft); }
 .cur .ws-scope-opt .ck { margin-left: auto; color: var(--cur-primary); }
-.cur .ws-scope-group {
-  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em;
-  color: var(--cur-muted-soft); padding: 9px 10px 4px;
-}
 
 /* ── Sidebar additions ───────────────────────────────── */
 .cur .ws-nav { display: flex; flex-direction: column; gap: 1px; overflow-y: auto; flex: 1; margin: 0 -2px; padding: 0 2px; }
-.cur .ws-nav-count {
-  margin-left: auto; min-width: 19px; height: 19px; padding: 0 6px; border-radius: 999px;
-  display: grid; place-items: center; font-size: 11px; font-weight: 600;
-  background: color-mix(in srgb, var(--cur-primary) 14%, transparent); color: var(--cur-primary);
-}
-.cur .nav-item.active .ws-nav-count { background: var(--cur-primary); color: var(--cur-on-primary); }
 .cur .ws-acct {
   width: 100%; display: flex; align-items: center; gap: 9px; padding: 6px 8px; border: 0;
   background: none; border-radius: var(--cur-r-cta); cursor: pointer; text-align: left; color: var(--cur-ink);
@@ -100,10 +90,6 @@
   font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 11px;
   padding: 2px 5px; border-radius: 999px; border: 1px solid var(--cur-hairline-strong);
   color: var(--cur-muted); background: var(--cur-canvas);
-}
-.cur .ws-dot-alert {
-  position: absolute; top: 7px; right: 7px; width: 6px; height: 6px; border-radius: 50%;
-  background: var(--cur-primary); box-shadow: 0 0 0 2px var(--cur-surface);
 }
 
 /* ── Page header ─────────────────────────────────────── */
@@ -347,13 +333,6 @@
 .cur .ws-pal-empty { padding: 30px; text-align: center; font-size: 13px; color: var(--cur-muted); }
 
 /* ── Toast — inverted chip, correct in both themes ───── */
-.cur .ws-toast {
-  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 80;
-  display: flex; align-items: center; gap: 9px; padding: 11px 16px; border-radius: 999px;
-  background: var(--cur-ink); color: var(--cur-canvas); font-size: 13px;
-  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.45); animation: ws-in .18s ease both;
-}
-.cur .ws-toast svg { color: var(--cur-canvas); }
 
 /* ── Empty state ─────────────────────────────────────── */
 .cur .ws-empty { padding: 52px 24px; text-align: center; }
@@ -376,9 +355,6 @@
 .cur .ws-num-sm { font-size: 20px; letter-spacing: -0.02em; font-weight: 400; }
 .cur .ws-lbl { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--cur-muted); }
 .cur .ws-sub { font-size: 12px; color: var(--cur-muted); }
-.cur .ws-people { display: flex; }
-.cur .ws-people .avatar { width: 24px; height: 24px; font-size: 10px; margin-left: -6px; box-shadow: 0 0 0 2px var(--cur-surface); }
-.cur .ws-people .avatar:first-child { margin-left: 0; }
 .cur .ws-spark { height: 46px; display: flex; align-items: flex-end; gap: 3px; }
 .cur .ws-spark i { flex: 1; border-radius: 2px 2px 0 0; background: var(--cur-surface-strong); min-height: 2px; }
 .cur .ws-spark i[data-hot="true"] { background: color-mix(in srgb, var(--cur-primary) 60%, transparent); }
@@ -655,14 +631,6 @@
 /* ── Connection coverage ──────────────────────────────
    One stacked bar per provider: connected / expiring / never. The third
    segment is the one that matters — those people are silently broken. */
-.cur .ws-hbar { display: flex; height: 6px; border-radius: 999px; overflow: hidden; background: var(--cur-surface-strong); }
-.cur .ws-hbar i { display: block; height: 100%; }
-.cur .ws-hbar i[data-k="ok"] { background: var(--cur-success); }
-.cur .ws-hbar i[data-k="soon"] { background: var(--ws-warning); }
-.cur .ws-hbar i[data-k="none"] { background: var(--cur-hairline-strong); }
-.cur .ws-hkey { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 9px; font-size: 11px; color: var(--cur-muted); }
-.cur .ws-hkey span { display: inline-flex; align-items: center; gap: 6px; }
-.cur .ws-hkey i { width: 7px; height: 7px; border-radius: 2px; display: inline-block; }
 
 /* ══════════════════════════════════════════════════════
    Auth surfaces.

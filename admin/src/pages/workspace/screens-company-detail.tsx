@@ -21,6 +21,7 @@ import {
   Bar, Empty, Fade, NoAccess, PageHeader, Panel, Seg, Skel, SkelRows, Spark,
   Switch, compact, money, useStaged,
 } from './ui'
+import type { Toast } from './ui'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useRunDetail, type RunTurnView } from '@/cursor/use-run-detail'
 import { useCompanyScope, useDirectory, useMemberSpend } from '@/cursor/use-spend'
@@ -41,7 +42,7 @@ const RunStatusBadge = ({ status }: { status: string }) => (
 /** How a channel is named in prose, as opposed to in a filter chip. */
 const CHANNEL_WORD: Record<string, string> = { lark: 'in a Lark chat', desktop: 'on the desktop', api: 'over the API' }
 
-type Props = { replay: number; toast: (m: string) => void; go: (s: string) => void }
+type Props = { replay: number; toast: Toast; go: (s: string) => void }
 
 /* ══════════════════════════════════════════════════════
    Run detail — the trace
@@ -323,10 +324,24 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
   const allowed = current?.allowedModels ?? []
 
   /**
+   * Every control on the Limits tab is held until this is true.
+   *
+   * The route replaces the whole policy, so a write composed while `current` is
+   * undefined sends `{blocked, monthlyBudgetUsd: null, rateLimitRpm: null}` and
+   * no model list — which the backend reads as "clear the budget, clear the
+   * rate limit, reset to Flash-only". Blocking somebody whose policy failed to
+   * load would therefore also erase their $200 cap and their Pro grant, with a
+   * success toast and no diff. The read has to have succeeded before any of
+   * these switches mean anything.
+   */
+  const policyKnown = policy.isSuccess
+
+  /**
    * The route replaces the whole policy, so every write sends the complete
    * next state — patching one field would silently clear the others.
    */
   const write = async (patch: Partial<ProxyPolicyInput>, message: string) => {
+    if (!policyKnown) return
     try {
       await savePolicy.mutateAsync({
         userId: userId!,
@@ -340,7 +355,7 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
       })
       toast(message)
     } catch {
-      toast('Could not save that limit')
+      toast('Could not save that limit', 'error')
     }
   }
 
@@ -351,7 +366,7 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
     // Refuse here so the reason is legible rather than a 400 about a field the
     // person did not touch.
     if (next.length === 0) {
-      toast('At least one model must stay allowed')
+      toast('At least one model must stay allowed', 'error')
       return
     }
     void write({ allowedModels: next }, 'Model access updated')
@@ -454,7 +469,7 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
             </Panel>
           </div>
 
-          <Panel title="Recent runs" source="myRuns">
+          <Panel title="Recent runs" source="companyRuns">
             {!r2 || runs.loading ? <SkelRows n={4} icon={false} /> : runs.data.length === 0 ? (
               <Empty title="Nothing has run for them" body="They have permissions but Divo has not done anything on their behalf." />
             ) : (
@@ -523,30 +538,43 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
       {tab === 'limits' ? (
         <div className="ws-stack">
           <Panel title="Spending" description="Enforced — the proxy refuses the call when the budget is reached">
-            <div className="ws-panel-body">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                <span className="ws-num-sm">{money(spent)}</span>
-                <span className="ws-sub">{budget === null ? 'no dollar budget set' : `of ${money(budget)} this month`}</span>
-              </div>
-              {budget !== null ? (
-                <div style={{ marginTop: 12 }}><Bar pct={(spent / budget) * 100} tone="brand" /></div>
-              ) : null}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 22 }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500 }}>Allow Divo to work for them</div>
-                  <div className="ws-sub" style={{ marginTop: 3 }}>Blocking is immediate and applies to every channel</div>
-                </div>
-                <Switch
-                  on={!(current?.blocked ?? false)}
-                  onToggle={() => void write(
-                    { blocked: !(current?.blocked ?? false) },
-                    current?.blocked ? `${name.split(' ')[0]} unblocked` : `${name.split(' ')[0]} blocked`,
-                  )}
-                  label="Allow"
+            {policy.isPending ? (
+              <div className="ws-panel-body"><Skel w="60%" h={22} /><div style={{ height: 18 }} /><SkelRows n={1} icon={false} /></div>
+            ) : !policyKnown ? (
+              <div className="ws-panel-body">
+                <Empty
+                  icon={TriangleAlert}
+                  title="Could not read their limits"
+                  body="Nothing here can be changed until this loads — a write would replace the whole policy, and this screen does not know what it currently is."
+                  action={<button type="button" className="btn" onClick={() => void policy.refetch()}>Try again</button>}
                 />
               </div>
-            </div>
-            {current?.isDefault ? (
+            ) : (
+              <div className="ws-panel-body">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                  <span className="ws-num-sm">{money(spent)}</span>
+                  <span className="ws-sub">{budget === null ? 'no dollar budget set' : `of ${money(budget)} this month`}</span>
+                </div>
+                {budget !== null ? (
+                  <div style={{ marginTop: 12 }}><Bar pct={(spent / budget) * 100} tone="brand" /></div>
+                ) : null}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 22 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>Allow Divo to work for them</div>
+                    <div className="ws-sub" style={{ marginTop: 3 }}>Blocking is immediate and applies to every channel</div>
+                  </div>
+                  <Switch
+                    on={!(current?.blocked ?? false)}
+                    onToggle={() => void write(
+                      { blocked: !(current?.blocked ?? false) },
+                      current?.blocked ? `${name.split(' ')[0]} unblocked` : `${name.split(' ')[0]} blocked`,
+                    )}
+                    label="Allow"
+                  />
+                </div>
+              </div>
+            )}
+            {policyKnown && current?.isDefault ? (
               <div className="ws-panel-foot">
                 They are on the company default — the first change here creates a policy of their own.
               </div>
@@ -554,7 +582,11 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
           </Panel>
 
           <Panel title="Models they may use">
-            {models.isLoading ? <SkelRows n={3} icon={false} /> : (
+            {models.isLoading || policy.isPending ? <SkelRows n={3} icon={false} /> : !policyKnown ? (
+              <div className="ws-panel-body ws-sub">
+                Their model grant is part of the same policy, so it cannot be shown or changed until that read succeeds.
+              </div>
+            ) : (
               <div className="ws-rows">
                 {(models.data ?? []).map((m) => (
                   <div className="ws-row" key={m.id}>

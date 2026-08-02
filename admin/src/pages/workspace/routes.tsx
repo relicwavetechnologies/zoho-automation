@@ -14,6 +14,7 @@ import { useNavigate } from 'react-router-dom'
 import { toast as sonner } from 'sonner'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import type { Persona } from './fixtures'
+import type { Toast } from './ui'
 
 /** Screen ids used inside the screens map onto real paths here. */
 const PATHS: Record<string, string> = {
@@ -78,7 +79,7 @@ export function resolvePath(screen: string): string {
 type ScreenProps = {
   persona: Persona
   replay: number
-  toast: (m: string) => void
+  toast: Toast
   go: (screen: string) => void
 }
 
@@ -104,7 +105,11 @@ export function routed(Screen: ComponentType<ScreenProps>) {
         <Screen
           persona={persona}
           replay={replay}
-          toast={(m) => sonner.success(m)}
+          // A failed write must not look like a completed one. Every screen
+          // toasted through `sonner.success`, so "Could not save that key"
+          // arrived green with a checkmark next to it — the one moment the
+          // interface has to be believed, spent saying the opposite.
+          toast={(m, tone) => (tone === 'error' ? sonner.error(m) : sonner.success(m))}
           go={(screen) => navigate(resolvePath(screen))}
         />
       </div>
