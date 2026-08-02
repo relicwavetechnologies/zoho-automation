@@ -1,6 +1,6 @@
 # Unified Data Movement and Spreadsheet Workflows
 
-**Status:** implementation active; Phases 0–3 are complete, and Phase 4 code is complete pending real container-to-Lark validation
+**Status:** implementation active; Phases 0–3 are complete, Phase 4 code is complete, and isolated-runtime validation is in progress
 **Date:** 2026-08-02
 **Scope:** tabular previews, proactive exports, cross-tool data movement, pasted spreadsheet URLs, and the boundary between deterministic backend exports and agent-authored container workflows
 **Related foundation:** `plans/secure-data-export-pipeline.md`
@@ -15,14 +15,28 @@
 | 1 — exporter modularization | ✅ Done | Source registry, destination sink, queue, verification, and worker boundaries centralized |
 | 2 — preview and durable offers | ✅ Done | Bounded previews, opaque 24-hour offers, fresh authorization, and idempotent confirmation implemented |
 | 3 — Lark export interaction | ✅ Done | Signed format/account cards, same-card progress, OAuth resume, and personal destination preference implemented |
-| 4 — editable destinations and formats | 🟡 Code complete | Personal owner/company reader semantics and real Sheet/CSV/XLSX outputs implemented; real container-to-Lark XLSX run remains |
+| 4 — editable destinations and formats | 🟡 Code complete | Personal owner/company reader semantics and real Sheet/CSV/XLSX outputs implemented; final XLSX artifact verification remains |
 | 5 — Semrush and OMS convergence | ⬜ Not started | Central source adapters and legacy Cloudinary path removal remain |
 | 6 — pasted Sheet/Drive URLs | ⬜ Not started | Typed URL resolver and existing-Sheet bulk write remain |
 | 7 — routers and provider skills | 🟡 Partial | Central export skill knows Excel; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
-| 9 — realistic isolated-runtime validation | ⬜ Not started | Full low-hint container → backend → Lark iteration matrix remains |
+| 9 — realistic isolated-runtime validation | 🟡 In progress | Fresh isolated run reached governed Zoho account selection; XLSX completion and Lark delivery remain |
 
 **Immediate completion count:** 4 phases done; Phase 4 implementation is done but is not marked complete until the real Lark artifact is opened and verified.
+
+**Latest validation evidence (2026-08-02):**
+
+- Rebuilt `divo-pi-local:phase0` after detecting that the local image predated
+  several committed runtime/extension changes. The controller will replace the
+  stopped stale container by immutable image ID on its next activation.
+- A fresh, low-hint isolated request now passes signed runtime admission and
+  reaches governed Zoho Books account selection. It correctly asks the user to
+  choose between the two accessible Books organizations instead of guessing.
+- Real Lark delivery is currently blocked by local configuration, not the
+  runtime: the configured local backend bot is a different Lark application
+  from the bot in the Abhishek–Divo DM. Load the Divo application's credentials
+  and restart the local backend before judging status/final-card delivery.
+- No Sheet/CSV/XLSX artifact has been claimed as end-to-end verified yet.
 
 ---
 
@@ -1055,14 +1069,17 @@ Never log:
 
 ## 13. Immediate next actions
 
-1. Validate Sheet, CSV, and true XLSX through the isolated container-to-Lark
+1. Load the Divo Lark application's credentials into the local backend, restart
+   it, then continue the existing Abhishek–Divo DM validation. Do not substitute
+   another bot or chat ID just to make delivery green.
+2. Validate Sheet, CSV, and true XLSX through the isolated container-to-Lark
    flow, including one personal-account choice and one OAuth-resume case.
-2. Open the delivered XLSX, verify its rows/access, then mark Phase 4 complete.
-3. Migrate Semrush, then OMS, and delete their temporary Cloudinary export paths after parity.
-4. Add the pasted Google Sheet resolver and existing-Sheet streaming destination.
-5. Tune skills and routers once each instruction describes backend behavior
+3. Open the delivered XLSX, verify its rows/access, then mark Phase 4 complete.
+4. Migrate Semrush, then OMS, and delete their temporary Cloudinary export paths after parity.
+5. Add the pasted Google Sheet resolver and existing-Sheet streaming destination.
+6. Tune skills and routers once each instruction describes backend behavior
    that exists and is covered by contract tests.
-6. Execute Phase 9 through the isolated Docker runtime, deliver every
+7. Execute Phase 9 through the isolated Docker runtime, deliver every
     scenario to the configured Divo Lark DM, and iterate until the final quality
     gate passes.
 
