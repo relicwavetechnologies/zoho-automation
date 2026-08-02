@@ -100,6 +100,22 @@ export function assessMailbox(record: MailboxHealthRecord): MailboxHealth {
     };
   }
 
+  // Ahead of the watch states, and deliberately after `never_started`. A
+  // parked mailbox has no active rules, so the state of its notifications is
+  // not something to report — saying "rules still run on the hourly check"
+  // about a mailbox running no rules is simply untrue.
+  if (record.status !== 'active' || record.activeRuleCount === 0) {
+    return {
+      ...base,
+      state: 'paused',
+      rulesCanFire: false,
+      summary: `No rules are running on ${record.mailboxEmail}.`,
+      remedy: record.totalRuleCount > 0
+        ? 'Resume a rule to start watching this mailbox again.'
+        : null,
+    };
+  }
+
   if (record.watchFailureCode || !record.watchRegisteredAt) {
     const degraded = record.watchFailureCount >= WATCH_FAILURES_BEFORE_DEGRADED;
     return {
@@ -117,18 +133,6 @@ export function assessMailbox(record: MailboxHealthRecord): MailboxHealth {
       remedy: degraded
         ? remedyForFailure(record.watchFailureCode)
           ?? 'This needs a Divo operator — the mail service is refusing the notification setup.'
-        : null,
-    };
-  }
-
-  if (record.status !== 'active' || record.activeRuleCount === 0) {
-    return {
-      ...base,
-      state: 'paused',
-      rulesCanFire: false,
-      summary: `No rules are running on ${record.mailboxEmail}.`,
-      remedy: record.totalRuleCount > 0
-        ? 'Resume a rule to start watching this mailbox again.'
         : null,
     };
   }
@@ -157,6 +161,10 @@ function remedyForFailure(code: string | null): string | null {
       return 'Your Google connection is no longer valid. Reconnect it to resume.';
     case 'provider_rate_limited':
       return 'Google is rate-limiting this mailbox. Divo keeps retrying — no action needed yet.';
+    case 'authorization_unavailable':
+      // Nothing on the member's side is wrong, and telling them to reconnect
+      // Google would send them to fix an account that is working.
+      return 'This is a problem inside Divo, not with your account. It retries automatically.';
     default:
       return null;
   }
@@ -185,7 +193,8 @@ export function assessRule(
   rule: Pick<
     MailRuleActivity,
     'status' | 'match' | 'action' | 'destination' | 'lastDeliveredAt'
-    | 'abandonedCount' | 'blockedCount' | 'lastError'
+    | 'abandonedCount' | 'blockedCount' | 'lastBlockedAt' | 'blockedReason'
+    | 'lastError'
   >,
   mailbox: Pick<MailboxHealth, 'rulesCanFire' | 'state'> | undefined,
 ): MailRuleHealth {
@@ -217,14 +226,19 @@ export function assessRule(
   // Ahead of the mailbox check: this rule is refused on its own terms, and
   // fixing the mailbox would not change it. Reported before "waiting", which
   // is what a refused rule looked like for as long as refusals went unrecorded.
-  if (rule.blockedCount > 0) {
+  //
+  // Gated on the refusal being the *latest* evidence, not merely present in
+  // the 30-day window. Access can be taken away and given back; a rule that
+  // has delivered since is working, and calling it blocked contradicts the
+  // delivery count sitting next to it.
+  if (rule.blockedCount > 0 && isCurrentlyRefused(rule)) {
     return {
       state: 'blocked',
       summary:
         `${rule.blockedCount} matching message`
         + `${rule.blockedCount === 1 ? ' was' : 's were'} not sent because `
         + 'Divo is no longer allowed to act on this rule. '
-        + (rule.lastError ?? ''),
+        + (rule.blockedReason ?? ''),
       invalidReason: null,
     };
   }
@@ -256,6 +270,21 @@ export function assessRule(
       : 'Active. No matching mail has arrived yet.',
     invalidReason: null,
   };
+}
+
+/**
+ * Whether the refusal is still the last thing that happened to this rule.
+ *
+ * A rule with no successful delivery at all stays blocked; one that delivered
+ * after the refusal has plainly recovered.
+ */
+function isCurrentlyRefused(rule: {
+  lastDeliveredAt: Date | null;
+  lastBlockedAt: Date | null;
+}): boolean {
+  if (!rule.lastBlockedAt) return false;
+  if (!rule.lastDeliveredAt) return true;
+  return rule.lastBlockedAt > rule.lastDeliveredAt;
 }
 
 /** Mirrors what the worker does at match time, so the two cannot disagree. */

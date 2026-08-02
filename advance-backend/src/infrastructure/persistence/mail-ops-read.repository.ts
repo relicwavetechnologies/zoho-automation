@@ -57,6 +57,16 @@ export interface MailRuleActivity {
   /** Most recent terminal failure, so the UI can say why without a second call. */
   lastError: string | null;
   lastErrorAt: Date | null;
+  /**
+   * When the most recent refusal happened, and in whose words.
+   *
+   * Separate from `lastError` because the two answer different questions: a
+   * refusal is about authority and can be undone, a terminal delivery failure
+   * is about the send. Reading a windowed refusal count alone made a rule that
+   * had since recovered go on reporting itself blocked.
+   */
+  lastBlockedAt: Date | null;
+  blockedReason: string | null;
 }
 
 export interface MailDeliveryRecord {
@@ -140,7 +150,7 @@ export class MailOpsReadRepository {
       if (rules.length === 0) return ok([]);
 
       const ruleIds = rules.map(rule => rule.id);
-      const [windowed, lastDelivered, lastFailure] = await Promise.all([
+      const [windowed, lastDelivered, lastFailure, lastBlocked] = await Promise.all([
         this.db.mailDelivery.groupBy({
           by: ['ruleId', 'status'],
           where: { ruleId: { in: ruleIds }, createdAt: { gte: since } },
@@ -155,12 +165,18 @@ export class MailOpsReadRepository {
         this.db.mailDelivery.findMany({
           where: {
             ruleId: { in: ruleIds },
-            status: { in: ['abandoned', 'blocked'] },
+            status: 'abandoned',
             lastError: { not: null },
           },
           orderBy: [{ updatedAt: 'desc' }],
           distinct: ['ruleId'],
           select: { ruleId: true, lastError: true, updatedAt: true },
+        }),
+        this.db.mailDelivery.findMany({
+          where: { ruleId: { in: ruleIds }, status: 'blocked' },
+          orderBy: [{ createdAt: 'desc' }],
+          distinct: ['ruleId'],
+          select: { ruleId: true, lastError: true, createdAt: true },
         }),
       ]);
 
@@ -179,10 +195,17 @@ export class MailOpsReadRepository {
           { lastError: row.lastError, at: row.updatedAt },
         ]),
       );
+      const refusals = new Map(
+        lastBlocked.map(row => [
+          row.ruleId,
+          { reason: row.lastError, at: row.createdAt },
+        ]),
+      );
 
       return ok(rules.map(rule => {
         const byStatus = counts.get(rule.id);
         const failure = failures.get(rule.id);
+        const refusal = refusals.get(rule.id);
         return {
           ruleId: rule.id,
           name: rule.name,
@@ -202,6 +225,8 @@ export class MailOpsReadRepository {
           blockedCount: byStatus?.get('blocked') ?? 0,
           lastError: failure?.lastError ?? null,
           lastErrorAt: failure?.at ?? null,
+          lastBlockedAt: refusal?.at ?? null,
+          blockedReason: refusal?.reason ?? null,
         };
       }));
     } catch (cause) {

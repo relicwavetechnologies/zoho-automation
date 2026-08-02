@@ -159,8 +159,16 @@ export function buildMailboxAlertCard(health: MailboxHealth): string {
   return JSON.stringify({
     config: { wide_screen_mode: true },
     header: {
-      template: 'red',
-      title: { tag: 'plain_text', content: 'Your mail rules have stopped' },
+      // A degraded watch still delivers, just late, and this card is now sent
+      // for that too — a fixed "have stopped" would contradict the body text
+      // sitting directly underneath it.
+      template: health.rulesCanFire ? 'orange' : 'red',
+      title: {
+        tag: 'plain_text',
+        content: health.rulesCanFire
+          ? 'Your mail rules are running late'
+          : 'Your mail rules have stopped',
+      },
     },
     elements: [
       { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },

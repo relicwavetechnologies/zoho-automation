@@ -42,6 +42,8 @@ const VALID_RULE = {
   lastDeliveredAt: null,
   abandonedCount: 0,
   blockedCount: 0,
+  lastBlockedAt: null,
+  blockedReason: null,
   lastError: null,
 };
 
@@ -111,6 +113,32 @@ describe('mailbox health', () => {
     assert.equal(health.rulesCanFire, false);
   });
 
+  it('does not describe a parked mailbox in terms of its notifications', () => {
+    // A mailbox with no active rules has nothing running, so "rules still run
+    // on the hourly check" is untrue — and a watch state ranked above `paused`
+    // said exactly that.
+    const health = assessMailbox(mailbox({
+      watchRegisteredAt: null,
+      status: 'paused',
+      activeRuleCount: 0,
+    }));
+
+    assert.equal(health.state, 'paused');
+  });
+
+  it('does not blame Google when the failure is inside Divo', () => {
+    // `syncFailureCode` classifies by substring and the permission-store
+    // message contains "permission", which used to land on `scope_missing` —
+    // telling the member to reconnect a Google account that is working.
+    const health = assessMailbox(mailbox({
+      failureCode: 'authorization_unavailable',
+    }));
+
+    assert.equal(health.state, 'sync_failing');
+    assert.match(health.remedy ?? '', /problem inside Divo/);
+    assert.doesNotMatch(health.remedy ?? '', /Reconnect Google/);
+  });
+
   it('gives a remedy only for failures it can honestly advise on', () => {
     assert.match(
       assessMailbox(mailbox({ failureCode: 'scope_missing' })).remedy ?? '',
@@ -176,13 +204,37 @@ describe('rule health', () => {
     // had simply never matched anything — which is the whole reason nobody
     // could tell why deliveries stopped.
     const health = assessRule(
-      { ...VALID_RULE, blockedCount: 2, lastError: 'You are no longer in that team.' },
+      {
+        ...VALID_RULE,
+        blockedCount: 2,
+        lastBlockedAt: AT,
+        blockedReason: 'You are no longer in that team.',
+      },
       healthy,
     );
 
     assert.equal(health.state, 'blocked');
     assert.match(health.summary, /2 matching messages were not sent/);
     assert.match(health.summary, /no longer in that team/);
+  });
+
+  it('stops calling a rule blocked once it has delivered again', () => {
+    // Access can be taken away and given back. `blockedCount` is a 30-day
+    // window, so a rule refused a fortnight ago and delivering ever since was
+    // reporting itself refused — in red, next to a delivery count saying the
+    // opposite.
+    const health = assessRule(
+      {
+        ...VALID_RULE,
+        blockedCount: 2,
+        lastBlockedAt: AT,
+        blockedReason: 'You are no longer in that team.',
+        lastDeliveredAt: new Date(AT.getTime() + 60_000),
+      },
+      healthy,
+    );
+
+    assert.equal(health.state, 'working');
   });
 
   it('says a working rule is working, and still surfaces failed deliveries', () => {
