@@ -16,7 +16,7 @@
 | 2 — preview and durable offers | ✅ Done | Bounded previews, opaque 24-hour offers, fresh authorization, and idempotent confirmation implemented |
 | 3 — Lark export interaction | ✅ Done | Signed format/account cards, same-card progress, OAuth resume, and personal destination preference implemented |
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
-| 5 — Semrush and OMS convergence | 🟡 Partial | OMS and Semrush are integrated; live provider parity and rollback-path removal evidence remain |
+| 5 — Semrush and OMS convergence | 🟡 Partial | OMS and Semrush are integrated; live Semrush preview/offer passes, while artifact verification and rollback-path removal evidence remain |
 | 6 — pasted Sheet/Drive URLs | ⬜ Not started | Typed URL resolver and existing-Sheet bulk write remain |
 | 7 — routers and provider skills | 🟡 Partial | Central export skill knows Excel; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
@@ -55,6 +55,11 @@
   previews usable instead of failing the agent turn. Focused validation passed
   47/47 checks plus TypeScript and diff validation, both before and after
   integration; two cold-review passes found no P0–P3 issue.
+- A low-hint isolated Semrush request for `emiactech.com` completed through the
+  production Lark status/final-card flow in 56.2 seconds. Divo returned a
+  bounded organic-keyword answer and persisted pending opaque offer
+  `5ce39d0c-b27b-40b4-a8e4-87dac9662139`, expiring after 24 hours. The remaining
+  proof is user confirmation plus destination-content verification.
 
 - Rebuilt `divo-pi-local:phase0` after detecting that the local image predated
   several committed runtime/extension changes. The controller will replace the
@@ -1138,8 +1143,9 @@ Never log:
    identity that has neither a personal Google destination nor company fallback.
 3. Obtain live OMS parity evidence before deleting the retained rollback-only
    Cloudinary path.
-4. Obtain live Semrush preview/offer/export evidence before removing its
-   rollback-only Cloudinary path.
+4. Confirm pending Semrush offer `5ce39d0c-b27b-40b4-a8e4-87dac9662139`,
+   verify the destination content/owner, then remove its rollback-only
+   Cloudinary path only after that parity evidence passes.
 5. Add the pasted Google Sheet resolver and existing-Sheet streaming destination.
 6. Tune skills and routers once each instruction describes backend behavior
    that exists and is covered by contract tests.
