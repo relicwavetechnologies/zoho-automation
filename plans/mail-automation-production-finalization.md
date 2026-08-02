@@ -20,7 +20,8 @@ Last synced 2026-08-02. Branch `dev`, **not pushed**.
 | 2 — cold-review fixes (2 rounds) | ✅ merged to `dev` | `0b94131b2`, `458736c01`, `88ef5b75e`, `d4a88353e`, `9067fea78` |
 | **3 — Dead OAuth path (D5)** | ✅ merged to `dev` | `04d39a7f0`, `e1f923a66`, `45d6b79c9`, `f20d7935c` |
 | **4 — Security and governance (S1–S5)** | ✅ merged to `dev` | `cb7dcca3a`, `505c8032e`, `c9cb95da1`, `654475e2d` |
-| 5–11 | ⬜ | — |
+| **5 — Send correctness (D1, D6–D9)** | ✅ merged to `dev` | `6f0a2e010`, `a67dfc89a`, `6639e23a1`, `1a243b23f`, `5a4c71dcc` |
+| 6–11 | ⬜ | — |
 
 Audit and doc revamp: `cb6b983b2`.
 
@@ -342,7 +343,17 @@ The closure moved out of composition for one reason: the only test covering it s
 
 **Still open from S3:** an already-reserved delivery is not re-checked against its rule, so pausing or archiving a rule does not stop deliveries already in flight. Narrow window, but real — carried into Wave 10 with the other delivery-lifecycle work.
 
-**Wave 5 — Send correctness** *(D1, D6, D7, D8, D9)*
+**Wave 5 — Send correctness** *(D1, D6–D9)* — ✅ done
+
+**D1.** A forward is staged as a Gmail draft, its ID persisted, and only then sent. On retry the draft's presence answers the one question that matters, with no search index involved: Gmail consumes a draft when it sends it, so a 404 proves the mail went out and a live draft proves no send completed — and that same draft is then sent, which is also what stops a retry composing a second copy. `ambiguous` finally means something: set at staging, cleared only by a confirmed outcome. The `rfc822msgid:` search path is deleted. Schema: `MailDelivery.providerDraftId`, pushed to `divo_dev`, re-diff empty.
+
+**D6.** Message fetches run six at a time. A 404 message is skipped — deleted between the history record and the fetch, undeliverable by anyone, and failing on it wedged the cursor exactly like the old page cap. Every other per-message failure still aborts the batch.
+
+**D7.** Recovery sweeps seven days paginated to 500, not one day capped at 100. It needs no per-rule ceiling to be safe: the burst the audit feared was a burst of *duplicates*, and `reserveDelivery` refuses those on `(ruleId, eventId)`. Genuinely undelivered mail is what the member asked to have forwarded. A recovery is logged distinctly, and escalated to an error when the window held more than one pass reads — that case still loses mail. The `MailboxReconciliation` audit row is deferred to Wave 10; the log line carries the same facts.
+
+**D8.** The mailbox stays live while any non-archived rule exists, and is paused only when every rule on it is archived. It is chased immediately only when something can fire.
+
+**D9.** Forwards carry `X-Divo-Mailops: <ruleId>`; the marker survives into event metadata and the sync loop skips any message wearing one, whichever rule sent it. The skip runs before authorization, so a self-forward costs no permission lookup.
 
 **Wave 6 — Matching fidelity** *(D10, D11, D12, D13, T7, T8)* plus direct MIME unit tests.
 
