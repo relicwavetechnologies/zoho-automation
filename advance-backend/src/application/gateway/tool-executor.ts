@@ -808,6 +808,9 @@ export class ToolExecutor {
         ? { deliveryMode: 'scheduled_runtime_delivery' as const }
         : {}),
       ...(requestId ? { traceId: requestId, requestId } : {}),
+      // Read off the signed runtime lease, never off the request body, so a run
+      // cannot reach somebody else's origin by naming their run ID.
+      ...(member.runtimeRunId ? { runtimeRunId: member.runtimeRunId } : {}),
       chatId: member.runtimeChatId ?? larkDelivery?.chatId ?? execution?.threadId ?? `gateway:${member.sessionId}`,
       ...(larkDelivery?.replyToMessageId
         ? { replyToMessageId: larkDelivery.replyToMessageId }

@@ -6,6 +6,7 @@ import type { IncomingMessage } from '../../domain/channel/incoming-message';
 import type { InteractiveAction } from '../../domain/channel/outbound';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import { issuePiRuntimeLease } from './pi-runtime-lease';
+import type { RunOrigin, RunOriginStore } from '../connections/run-origin.store';
 import type { KnowledgeLearningService } from '../knowledge/knowledge-learning.service';
 import type { Turn } from '../../domain/conversation/turn';
 import type { ConversationScope } from '../../domain/conversation/conversation-scope';
@@ -215,6 +216,7 @@ export interface LarkPiRuntimeServiceDeps {
     ): Promise<Result<Turn, InfraError>>;
   };
   readonly knowledgeRecall?: Pick<KnowledgeRecallService, 'recall'>;
+  readonly runOrigins?: Pick<RunOriginStore, 'remember'>;
   readonly fetch?: typeof globalThis.fetch;
 }
 
@@ -506,6 +508,63 @@ export class LarkPiRuntimeService {
     }, this.deps.memberJwtSecret);
   }
 
+  /**
+   * Keep the inbound request reachable for as long as this run can call back.
+   *
+   * A tool that discovers it needs Google OAuth has to send a card into this
+   * conversation and re-run this ask afterwards, and by then the Lark event is
+   * gone. Recording it here — at the one place a run gains the ability to call
+   * the gateway — is what makes that continuation possible at all.
+   *
+   * Best effort by design: losing the origin costs the member a Connect card,
+   * which is not worth failing their request over. It is logged rather than
+   * swallowed, because a run that silently cannot be continued is exactly the
+   * kind of quiet dead end this path already suffered once.
+   */
+  private async rememberRunOrigin(input: LarkPiRuntimeInput): Promise<void> {
+    const { incoming } = input;
+    if (!this.deps.runOrigins) return;
+    // Every one of these is required to issue an authorization intent. A run
+    // without them (a scheduled run, say) has no conversation to continue in.
+    if (incoming.channel !== 'lark') return;
+    if (!incoming.tenantKey || !incoming.userExternalId) return;
+
+    const origin: RunOrigin = {
+      version: 1,
+      companyId: String(input.runContext.companyId),
+      userId: String(input.runContext.userId),
+      larkOpenId: incoming.userExternalId,
+      larkTenantKey: incoming.tenantKey,
+      chatId: String(incoming.chatId),
+      chatType: incoming.chatType,
+      originalMessageId: String(incoming.messageId),
+      ...(incoming.rootMessageId
+        ? { rootMessageId: String(incoming.rootMessageId) }
+        : {}),
+      replyInThread: input.conversation.replyInThread ?? false,
+      ...(incoming.groupReplyMode ? { groupReplyMode: incoming.groupReplyMode } : {}),
+      originalRequest: incoming.text,
+    };
+
+    try {
+      const remembered = await this.deps.runOrigins.remember(
+        String(incoming.traceId),
+        origin,
+      );
+      if (!remembered) {
+        this.log.warn('pi.run_origin.not_retained', {
+          correlationId: incoming.traceId,
+          reason: 'request_too_long',
+        });
+      }
+    } catch (error) {
+      this.log.warn('pi.run_origin.write_failed', {
+        correlationId: incoming.traceId,
+        error: String(error),
+      });
+    }
+  }
+
   async run(input: LarkPiRuntimeInput): Promise<LarkPiRuntimeResult> {
     const session = await this.findActiveSession(input.runContext, input.sessionId);
     if (!session) {
@@ -516,6 +575,7 @@ export class LarkPiRuntimeService {
     }
 
     const runtimeLease = this.issueRuntimeLease(input, session);
+    await this.rememberRunOrigin(input);
 
     const timeoutSignal = AbortSignal.timeout(this.deps.runTimeoutMs);
     const signal = input.abortSignal

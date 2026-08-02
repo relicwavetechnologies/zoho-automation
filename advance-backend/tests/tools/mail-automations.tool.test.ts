@@ -157,16 +157,6 @@ describe('mailAutomations tool', () => {
         return { status: 'sent', intentId: 'intent-1' };
       },
     });
-    const connectionAuthorization = {
-      larkOpenId: 'ou_user',
-      larkTenantKey: 'tenant-1',
-      chatId: 'oc_current',
-      chatType: 'p2p',
-      originalMessageId: 'om_request',
-      replyInThread: false,
-      originalRequest: 'Forward future OTP mail here',
-    };
-
     const result = await tool.execute({
       operation: 'create',
       name: 'Forward login OTP',
@@ -175,7 +165,7 @@ describe('mailAutomations tool', () => {
     }, makeCtx('mailAutomations', ['create', 'execute'], {
       channel: 'lark',
       chatId: 'oc_current',
-      connectionAuthorization,
+      runtimeRunId: 'run-1',
     }));
 
     assert.equal(result.ok, true);
@@ -184,10 +174,12 @@ describe('mailAutomations tool', () => {
       'google_workspace_authorization_pending',
     );
     assert.equal(authorizationInput.toolId, 'mailAutomations');
-    assert.deepEqual(
-      authorizationInput.runContext.connectionAuthorization,
-      connectionAuthorization,
-    );
+    // The tool's only job here is to hand the live run context over intact.
+    // Whether an authorization can actually be started from it is decided by
+    // createBeginGoogleAuthorization, and is asserted against the real closure
+    // in begin-google-authorization.test.ts — this test used to hand-build the
+    // precondition production never supplied, and stayed green over dead code.
+    assert.equal(authorizationInput.runContext.runtimeRunId, 'run-1');
   });
 
   it('replaces an owned rule without creating a second rule', async () => {

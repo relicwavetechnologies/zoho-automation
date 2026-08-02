@@ -384,6 +384,7 @@ describe('ToolExecutor', () => {
         larkOpenId: 'ou-requester',
         larkTenantKey: 'tenant-1',
         runtimeChatId: 'oc_runtime_chat',
+        runtimeRunId: 'run-1',
       },
       toolId: 'fakeTool',
       args: { query: 'send it' },
@@ -402,6 +403,9 @@ describe('ToolExecutor', () => {
     assert.equal(approvalInput.runContext.chatId, 'oc_runtime_chat');
     assert.equal(approvalInput.runContext.replyToMessageId, 'om_root');
     assert.equal(approvalInput.runContext.replyInThread, true);
+    // Taken off the signed lease, and the only way a tool can reach the request
+    // that started this run when it needs to ask for OAuth.
+    assert.equal(approvalInput.runContext.runtimeRunId, 'run-1');
     assert.match(approvalInput.chatId, /^gateway:company:co-test:requester:user-test:/);
   });
 

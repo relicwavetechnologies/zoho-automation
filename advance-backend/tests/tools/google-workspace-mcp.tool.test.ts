@@ -355,27 +355,20 @@ describe('Google Workspace MCP product tools', () => {
         return { status: 'sent', intentId: 'intent-1' };
       },
     }).find((tool) => tool.id === 'googleGmail')!;
-    const connectionAuthorization = {
-      larkOpenId: 'ou_user',
-      larkTenantKey: 'tenant-1',
-      chatId: 'oc_chat',
-      chatType: 'p2p',
-      originalMessageId: 'om_request',
-      replyInThread: false,
-      originalRequest: 'Find my latest OTP email',
-    };
-
     const result = await gmail.execute({
       op: 'call',
       connectionId: '11111111-1111-4111-8111-111111111111',
       nativeTool: 'search_gmail_messages',
       input: { query: 'newer_than:1d OTP' },
-    }, makeCtx('googleGmail', ['read'], { connectionAuthorization }));
+    }, makeCtx('googleGmail', ['read'], { runtimeRunId: 'run-1' }));
 
     assert.equal(result.ok, true);
     assert.equal(result.ok && (result.value.data as any).code, 'google_workspace_authorization_pending');
     assert.equal(authorizationInput.toolId, 'googleGmail');
-    assert.deepEqual(authorizationInput.runContext.connectionAuthorization, connectionAuthorization);
+    // See the note in mail-automations.tool.test.ts: the tool forwards the live
+    // run context, and whether an authorization can start from it is proved
+    // against the real closure in begin-google-authorization.test.ts.
+    assert.equal(authorizationInput.runContext.runtimeRunId, 'run-1');
     assert.match(result.ok ? result.value.message ?? '' : '', /fresh run automatically/);
   });
 

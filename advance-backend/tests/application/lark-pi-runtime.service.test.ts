@@ -1262,3 +1262,102 @@ test('the run asks for the Flash model pinned to the Lark channel', async () => 
   assert.equal(runBody?.['model'], 'deepseek-v4-flash');
   assert.equal(runBody?.['provider'], 'deepseek');
 });
+
+function larkIngressInput(overrides: Record<string, unknown> = {}) {
+  const base = runtimeInput();
+  return {
+    ...base,
+    incoming: {
+      ...base.incoming,
+      channel: 'lark',
+      messageId: 'om_request',
+      chatType: 'group',
+      tenantKey: 'tenant-1',
+      userExternalId: 'ou-user-1',
+      rootMessageId: 'om_root',
+      groupReplyMode: 'threaded',
+      ...overrides,
+    },
+    conversation: { ...base.conversation, replyInThread: true },
+  } as any;
+}
+
+function originRecordingService(
+  runOrigins: { remember: (runId: string, origin: unknown) => Promise<boolean> },
+) {
+  return new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317/',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts,
+    runOrigins,
+    fetch: async () => new Response(JSON.stringify({ text: 'Finished' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+}
+
+// The run is the only moment the inbound Lark request still exists. A tool that
+// later needs Google OAuth has to send a card back into this conversation and
+// re-run this ask, and for a long time nothing recorded either, so the card was
+// never sent at all.
+test('records where a Lark run came from so a deferred authorization can resume it', async () => {
+  const written: Array<{ runId: string; origin: any }> = [];
+  const service = originRecordingService({
+    remember: async (runId, origin) => { written.push({ runId, origin: origin as any }); return true; },
+  });
+
+  await service.run(larkIngressInput());
+
+  assert.equal(written.length, 1);
+  assert.equal(written[0]!.runId, 'trace-1');
+  assert.deepEqual(written[0]!.origin, {
+    version: 1,
+    companyId: 'company-1',
+    userId: 'user-1',
+    larkOpenId: 'ou-user-1',
+    larkTenantKey: 'tenant-1',
+    chatId: 'chat-1',
+    chatType: 'group',
+    originalMessageId: 'om_request',
+    rootMessageId: 'om_root',
+    replyInThread: true,
+    groupReplyMode: 'threaded',
+    originalRequest: 'Do the work',
+  });
+});
+
+test('records nothing for a run with no tenant identity to authorize against', async () => {
+  const written: unknown[] = [];
+  const service = originRecordingService({
+    remember: async (_runId, origin) => { written.push(origin); return true; },
+  });
+
+  // A scheduled run reaches the same code path without a real Lark event
+  // behind it. There is no conversation to continue in, so inventing an origin
+  // would only produce a Connect card nobody asked for.
+  await service.run(larkIngressInput({ tenantKey: undefined }));
+
+  assert.deepEqual(written, []);
+});
+
+test('a run survives an unwritable origin, losing only the Connect card', async () => {
+  const service = originRecordingService({
+    remember: async () => { throw new Error('redis down'); },
+  });
+
+  assert.equal((await service.run(larkIngressInput())).text, 'Finished');
+});

@@ -148,6 +148,11 @@ import {
 import {
   GoogleConnectionAuthorizationService,
 } from './application/connections/google-connection-authorization.service';
+import { RunOriginStore } from './application/connections/run-origin.store';
+import {
+  createBeginGoogleAuthorization,
+  type DeliverGoogleConnectCard,
+} from './application/connections/begin-google-authorization';
 import { MailOpsWorker } from './application/mail-ops/mail-ops.worker';
 import { GmailHistoryClient } from './infrastructure/google/gmail-history.client';
 import { MailOpsRepository } from './infrastructure/persistence/mail-ops.repository';
@@ -409,6 +414,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   const cache       = new RedisCache(getRedisClient(cacheRedisUrl));
   const ephemeralCache = new RedisCache(getRedisClient(ephemeralRedisUrl));
+  const runOrigins = new RunOriginStore(ephemeralCache);
   const connectionRateLimits = new ConnectionRateLimitService({
     repository: new PrismaConnectionGovernanceRepository(prisma),
     store: new RedisRateLimitStore(getRedisClient(cacheRedisUrl)),
@@ -597,53 +603,13 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     callbackUrl: googleConnectionCallbackUrl,
     logger,
   });
-  let deliverGoogleConnect:
-    | ((input: {
-        url: string;
-        reason: string;
-        chatId: string;
-        replyToMessageId: string;
-        replyInThread: boolean;
-      }) => Promise<boolean>)
-    | undefined;
-  const beginGoogleAuthorization = async (input: {
-    toolId: string;
-    reason: string;
-    runContext: import('./domain/orchestration/run-context').RunContext;
-  }) => {
-    const target = input.runContext.connectionAuthorization;
-    if (!target || !deliverGoogleConnect) {
-      return { status: 'unavailable' as const };
-    }
-    const issued = await googleConnectionAuthorization.issue({
-      companyId: String(input.runContext.companyId),
-      userId: String(input.runContext.userId),
-      ...(input.runContext.departmentId
-        ? { departmentId: String(input.runContext.departmentId) }
-        : {}),
-      ...target,
-      requestedToolIds: [input.toolId],
-    });
-    if (issued.outcome === 'already_pending') {
-      return { status: 'already_pending' as const, intentId: issued.intentId };
-    }
-    const delivered = await deliverGoogleConnect({
-      url: issued.authorizeUrl,
-      reason: input.reason,
-      chatId: target.chatId,
-      replyToMessageId: target.originalMessageId,
-      replyInThread: target.replyInThread,
-    });
-    if (!delivered) {
-      logger.error('google.authorization.card_delivery_failed', {
-        intentId: issued.intentId,
-        companyId: input.runContext.companyId,
-        userId: input.runContext.userId,
-      });
-      return { status: 'unavailable' as const };
-    }
-    return { status: 'sent' as const, intentId: issued.intentId };
-  };
+  let deliverGoogleConnect: DeliverGoogleConnectCard | undefined;
+  const beginGoogleAuthorization = createBeginGoogleAuthorization({
+    runOrigins,
+    authorization: googleConnectionAuthorization,
+    deliverConnectCard: () => deliverGoogleConnect,
+    logger,
+  });
   const googleWorkspaceMcpSchemas = new GoogleWorkspaceMcpSchemaCatalog();
   const canvaMcpOAuthService      = new CanvaMcpOAuthService({ env, cache: ephemeralCache, logger });
   const airtableMcpOAuthService   = new AirtableMcpOAuthService({ env, cache: ephemeralCache, logger });
@@ -1899,6 +1865,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     runEffectReceipts,
     conversationHistory: conversationRepo,
     knowledgeRecall,
+    runOrigins,
     ...(env.KNOWLEDGE_LEARNING_ENABLED ? { knowledgeLearning: knowledgeLearningService } : {}),
   });
 
