@@ -91,10 +91,12 @@ const errorText = (error: unknown): string =>
 /**
  * Is this stored rule clause the same one the caller is submitting?
  *
- * Key order is not meaning here — both sides are small JSON objects that have
- * been round-tripped through Postgres and Zod — so the comparison sorts keys
- * before comparing. Answering "different" when they are in fact the same is
- * the safe direction: it only restarts a rule's watch.
+ * Neither key order nor letter case is meaning here. Both sides are small JSON
+ * objects round-tripped through Postgres and Zod, and every clause is matched
+ * case-insensitively (`mailRuleMatches`), so retyping `OTP` as `otp` changes
+ * nothing about which mail the rule takes. Scoring that as a change would
+ * restart the rule's watch and drop its backlog, which is the harm this
+ * comparison exists to prevent.
  */
 function sameRuleClause(stored: unknown, submitted: unknown): boolean {
   return stableJson(stored) === stableJson(submitted);
@@ -102,6 +104,7 @@ function sameRuleClause(stored: unknown, submitted: unknown): boolean {
 
 function stableJson(value: unknown): string {
   return JSON.stringify(value, (_key, inner) => {
+    if (typeof inner === 'string') return inner.toLocaleLowerCase();
     if (inner === null || typeof inner !== 'object' || Array.isArray(inner)) {
       return inner;
     }
@@ -146,14 +149,33 @@ export class MailOpsRepository {
         // drop whatever backlog it had not reached yet, and the member never
         // asked for anything to stop.
         //
-        // Written as its own conditional update rather than a read followed by
-        // a decision, so the status it tests is the one the row actually holds
-        // under the write lock. The upsert below then revives the row without
-        // touching the floor either way.
-        await tx.mailAutomationRule.updateMany({
+        // The revival and its floor are one statement, so a row can never come
+        // back to life carrying an old floor: whatever this matches, it locks
+        // and rewrites together. What it cannot cover is a row that is active
+        // when this runs and is paused before the upsert below — no rows
+        // matched, so nothing was locked. That resumes a rule without moving
+        // its floor, which needs a member pausing a rule in the same instant
+        // another request recreates it, and costs one pause window of mail.
+        const revived = await tx.mailAutomationRule.updateMany({
           where: { dedupeKey: input.dedupeKey, status: { not: 'active' } },
-          data: { activatedAt: new Date() },
+          data: {
+            name: input.name,
+            status: 'active',
+            pausedAt: null,
+            archivedAt: null,
+            activatedAt: new Date(),
+          },
         });
+        if (revived.count > 0) {
+          const revivedRule = await tx.mailAutomationRule.findUniqueOrThrow({
+            where: { dedupeKey: input.dedupeKey },
+            select: { id: true },
+          });
+          return {
+            ruleId: revivedRule.id,
+            subscriptionId: subscription.id,
+          };
+        }
         const rule = await tx.mailAutomationRule.upsert({
           where: { dedupeKey: input.dedupeKey },
           create: {
@@ -167,18 +189,11 @@ export class MailOpsRepository {
             destinationJson: input.destination as Prisma.InputJsonObject,
             dedupeKey: input.dedupeKey,
           },
-          update: {
-            name: input.name,
-            status: 'active',
-            pausedAt: null,
-            archivedAt: null,
-            // Recreating a rule is how an archived one comes back, so this
-            // branch routinely revives a row created months ago. The revived
-            // rule watches from now, not from whenever the original row was
-            // first written, or its first pass ships the whole recovery
-            // window. Moved by the conditional update above, which is the only
-            // place that can read the row's status and act on it atomically.
-          },
+          // Only reached when the rule was already active or does not exist
+          // yet, so there is nothing to revive and no floor to move — a rule
+          // that is already running keeps watching from where it was, backlog
+          // and all.
+          update: { name: input.name },
           select: { id: true },
         });
         return { ruleId: rule.id, subscriptionId: subscription.id };
@@ -906,12 +921,31 @@ export class MailOpsRepository {
     now = new Date(),
   ): Promise<Result<ClaimedMailDelivery | null, InfraError>> {
     try {
+      const staleBefore = new Date(now.getTime() - MAILBOX_CLAIM_STALE_AFTER_MS);
+      // A worker that died mid-attempt on the last rung has nowhere to go: the
+      // claim already spent the attempt, and the search below refuses anything
+      // at five. Returning such a row to `pending` stranded it there for the
+      // life of the table — never claimed, never abandoned, and still wearing
+      // whatever `ambiguous` said about it. `ambiguous` is left exactly as it
+      // was, because a process that died during a send genuinely did not
+      // establish whether the mail went out.
       await this.db.mailDelivery.updateMany({
         where: {
           status: 'sending',
-          startedAt: {
-            lt: new Date(now.getTime() - MAILBOX_CLAIM_STALE_AFTER_MS),
-          },
+          startedAt: { lt: staleBefore },
+          attempts: { gte: 5 },
+        },
+        data: {
+          status: 'abandoned',
+          nextAttemptAt: null,
+          lastError: 'The worker stopped mid-attempt on the last retry.',
+        },
+      });
+      await this.db.mailDelivery.updateMany({
+        where: {
+          status: 'sending',
+          startedAt: { lt: staleBefore },
+          attempts: { lt: 5 },
         },
         data: { status: 'pending', nextAttemptAt: now },
       });

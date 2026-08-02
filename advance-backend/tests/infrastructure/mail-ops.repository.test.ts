@@ -60,7 +60,9 @@ describe('MailOpsRepository', () => {
     assert.equal(ruleUpsert.where.dedupeKey, 'mail-rule:key');
     assert.equal(ruleUpsert.create.subscriptionId, 'mailbox-1');
     assert.equal(ruleUpsert.update.name, 'Forward OTP');
-    assert.equal(ruleUpsert.update.status, 'active');
+    // Reviving is the conditional write above, not this branch: a rule that is
+    // already active reaches here and must keep watching from where it was.
+    assert.equal(ruleUpsert.update.status, undefined);
   });
 
   it('replaces an owned rule and reactivates its mailbox atomically', async () => {
@@ -663,6 +665,39 @@ describe('MailOpsRepository', () => {
     assert.equal(updates[1].data.ambiguous, undefined);
   });
 
+  it('abandons a delivery whose worker died on the last rung instead of stranding it', async () => {
+    // The claim spends the attempt before the work, and the search below
+    // refuses anything at five — so returning a crashed attempt-five row to
+    // `pending` left it there for the life of the table: never claimed, never
+    // abandoned, and still wearing "Unconfirmed" with nothing left to answer
+    // it. `ambiguous` is untouched, because a process that died during a send
+    // genuinely did not establish whether the mail went out.
+    const sweeps: any[] = [];
+    const repo = new MailOpsRepository({
+      mailDelivery: {
+        updateMany: async (input: any) => {
+          sweeps.push(input);
+          return { count: 0 };
+        },
+        findFirst: async () => null,
+      },
+    } as any);
+
+    await repo.claimNextDueDelivery(new Date('2026-08-02T05:00:00.000Z'));
+
+    assert.deepEqual(sweeps[0].where.attempts, { gte: 5 });
+    assert.equal(sweeps[0].data.status, 'abandoned');
+    assert.equal(sweeps[0].data.nextAttemptAt, null);
+    assert.equal(sweeps[0].data.ambiguous, undefined);
+    assert.deepEqual(sweeps[1].where.attempts, { lt: 5 });
+    assert.equal(sweeps[1].data.status, 'pending');
+    // Both look at the same staleness boundary, or a row slips between them.
+    assert.equal(
+      sweeps[0].where.startedAt.lt.getTime(),
+      sweeps[1].where.startedAt.lt.getTime(),
+    );
+  });
+
   it('clears the unconfirmed warning on the last rung of the ladder, not before', async () => {
     // While the row is still retryable the next attempt re-probes and answers
     // the question properly. Clearing it early would be a lie the retry could
@@ -702,15 +737,16 @@ describe('MailOpsRepository', () => {
     // written in January and asked for again today would treat the entire
     // stale-cursor recovery window as mail it is entitled to forward.
     const upserts: any[] = [];
-    const floorMoves: any[] = [];
-    const repo = () => new MailOpsRepository({
+    const revivals: any[] = [];
+    const repo = (matched: number) => new MailOpsRepository({
       $transaction: async (fn: any) => fn({
         mailboxSubscription: { upsert: async () => ({ id: 'mailbox-1' }) },
         mailAutomationRule: {
           updateMany: async (input: any) => {
-            floorMoves.push(input);
-            return { count: 1 };
+            revivals.push(input);
+            return { count: matched };
           },
+          findUniqueOrThrow: async () => ({ id: 'rule-1' }),
           upsert: async (input: any) => {
             upserts.push(input);
             return { id: 'rule-1' };
@@ -731,25 +767,32 @@ describe('MailOpsRepository', () => {
     };
     const before = Date.now();
 
-    await repo().createRuleForMailbox(args);
+    // A row that had stopped: the revival matched, so the upsert is never
+    // reached at all.
+    const revived = await repo(1).createRuleForMailbox(args);
+    // Nothing to revive — already active, or no such rule yet.
+    await repo(0).createRuleForMailbox(args);
 
-    // The floor moves through a conditional write, not a read followed by a
-    // decision — the status it tests has to be the one the row holds under the
-    // write lock, or an archive committing in between revives a months-old
-    // floor and the next pass ships the whole recovery window.
-    //
-    // The dedupe key is content-derived, so re-asking for a rule that is
-    // already running lands on the same upsert. `status: { not: 'active' }` is
-    // what keeps that case from discarding backlog nobody asked to stop.
-    assert.deepEqual(floorMoves[0].where, {
+    // The status change and the floor move are one statement, so a rule can
+    // never come back to life still carrying its old floor.
+    assert.deepEqual(revivals[0].where, {
       dedupeKey: 'mail-rule:key',
       status: { not: 'active' },
     });
-    assert.ok(floorMoves[0].data.activatedAt.getTime() >= before);
-    // Neither upsert branch writes it: the create takes the column default,
-    // and the update branch would overwrite the conditional decision above.
+    assert.equal(revivals[0].data.status, 'active');
+    assert.equal(revivals[0].data.archivedAt, null);
+    assert.ok(revivals[0].data.activatedAt.getTime() >= before);
+    assert.deepEqual(revived, {
+      ok: true,
+      value: { ruleId: 'rule-1', subscriptionId: 'mailbox-1' },
+    });
+    assert.equal(upserts.length, 1);
+    // The dedupe key is content-derived, so re-asking for a rule that is
+    // already running lands here. It gets its name and nothing else: moving
+    // the floor would discard backlog nobody asked to stop.
+    assert.deepEqual(upserts[0].update, { name: 'Forward OTP' });
+    // A genuinely new row takes the column default rather than a written value.
     assert.equal(upserts[0].create.activatedAt, undefined);
-    assert.equal(upserts[0].update.activatedAt, undefined);
   });
 
   it('starts a replaced rule watching from now, so a new destination gets no backlog', async () => {
@@ -804,12 +847,19 @@ describe('MailOpsRepository', () => {
       ...stored,
       destinationJson: { email: 'owner@example.com', type: 'email' },
     }).replaceRule(args);
+    // Neither is letter case — every clause is matched case-insensitively, so
+    // retyping `OTP` as `otp` changes nothing about which mail is taken.
+    await repo({
+      ...stored,
+      matchJson: { from: 'Alerts@Example.com' },
+    }).replaceRule(args);
 
     assert.ok(updates[0].data.activatedAt.getTime() >= before);
     assert.ok(updates[1].data.activatedAt.getTime() >= before);
     assert.ok(updates[2].data.activatedAt.getTime() >= before);
     assert.equal(updates[3].data.activatedAt, undefined);
     assert.equal(updates[4].data.activatedAt, undefined);
+    assert.equal(updates[5].data.activatedAt, undefined);
     // The rest of the replace still happens either way.
     assert.equal(updates[3].data.name, 'OTP forwarding');
     assert.deepEqual(updates[3].data.version, { increment: 1 });
