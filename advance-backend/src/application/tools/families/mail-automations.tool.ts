@@ -496,12 +496,23 @@ export function createMailAutomationsTool(deps: {
             dedupeKey: mailRuleDedupeKey(identity),
           });
           if (!updated.ok) throw updated.error;
-          if (!updated.value) {
+          if (updated.value === 'not_found') {
             return err(new ToolError({
               toolId: 'mailAutomations',
               reason: 'bad_args',
               message:
                 'Mail automation rule was not found for the selected account.',
+            }));
+          }
+          if (updated.value === 'duplicate') {
+            return err(new ToolError({
+              toolId: 'mailAutomations',
+              reason: 'bad_args',
+              message:
+                'That change would make this rule identical to another rule on '
+                + 'the same mailbox, which would forward every matching message '
+                + 'twice. Nothing was changed. List the rules to see the one it '
+                + 'matches, and archive whichever of the two is not wanted.',
             }));
           }
           return ok({

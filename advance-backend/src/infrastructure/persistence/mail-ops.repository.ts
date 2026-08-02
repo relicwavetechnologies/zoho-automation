@@ -42,6 +42,13 @@ export interface MailboxWatchClaim {
   claimToken: string;
 }
 
+/**
+ * What became of a replace. `duplicate` is its own answer rather than a
+ * failure: the rule the member asked for exists, it is just not the row they
+ * named.
+ */
+export type MailRuleReplacement = 'replaced' | 'not_found' | 'duplicate';
+
 export interface CreateMailAutomationRuleInput {
   companyId: string;
   createdByUserId: string;
@@ -209,8 +216,9 @@ export class MailOpsRepository {
    * asked for again — a bulk rewrite of every row on deploy would have to be
    * right about all of them at once.
    *
-   * The old key is recomputed from the stored rule rather than from the
-   * request, because the request is the one thing that cannot reproduce it. The
+   * The canonical key is recomputed from what each stored rule holds, rather
+   * than the old key being recomputed from the request — the request is the
+   * one thing that cannot reproduce the old key. The
    * fork this repairs was a difference of case, so a member asking again in the
    * other case — `otp` where the stored rule says `OTP` — would hash to a third
    * key and match nothing. Comparing what the rules *are* is what makes the
@@ -331,7 +339,7 @@ export class MailOpsRepository {
     action: Record<string, unknown>;
     destination: Record<string, unknown>;
     dedupeKey: string;
-  }): Promise<Result<boolean, InfraError>> {
+  }): Promise<Result<MailRuleReplacement, InfraError>> {
     try {
       const changed = await this.db.$transaction(async tx => {
         const current = await tx.mailAutomationRule.findFirst({
@@ -351,7 +359,20 @@ export class MailOpsRepository {
             destinationJson: true,
           },
         });
-        if (!current) return false;
+        if (!current) return 'not_found' as const;
+        // Asking for a rule this member already holds elsewhere on the same
+        // mailbox would collide on the unique key. That collision is a real
+        // answer — the rule they are asking for exists — so it is checked here
+        // and reported, rather than left to raise inside the transaction and
+        // reach them as an infra failure they can do nothing about. It matters
+        // more since the key was canonicalised: two rules that differ only in
+        // case now land on the same key, and one of them is very likely the
+        // fork the canonicalisation exists to repair.
+        const collision = await tx.mailAutomationRule.findUnique({
+          where: { dedupeKey: input.dedupeKey },
+          select: { id: true },
+        });
+        if (collision && collision.id !== current.id) return 'duplicate' as const;
         // The tool's `update` takes the whole rule, so renaming one resubmits
         // its existing match and destination. That is the same rule watching
         // the same address, and moving its floor would quietly drop whatever
@@ -387,10 +408,16 @@ export class MailOpsRepository {
             nextWatchRenewalAt: new Date(),
           },
         });
-        return true;
+        return 'replaced' as const;
       });
       return ok(changed);
     } catch (cause) {
+      // The check above narrows the window rather than closing it: another
+      // request can claim the key between the two statements. Same answer.
+      if (
+        cause instanceof Prisma.PrismaClientKnownRequestError
+        && cause.code === 'P2002'
+      ) return ok('duplicate');
       return err(wrapInfra('prisma', 'mailOps.replaceRule', cause));
     }
   }

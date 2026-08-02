@@ -2817,7 +2817,7 @@ describe('GatewayDispatcher', () => {
       repo: {
         replaceRule: async () => {
           replacements++;
-          return { ok: true, value: true };
+          return { ok: true, value: 'replaced' };
         },
       } as any,
       resolveConnection: async () => ({

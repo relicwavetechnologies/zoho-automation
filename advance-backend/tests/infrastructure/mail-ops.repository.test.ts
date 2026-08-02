@@ -81,6 +81,8 @@ describe('MailOpsRepository', () => {
           findInput = input;
           return { id: 'rule-1', subscriptionId: 'mailbox-1' };
         },
+        // No other rule on this mailbox already answers to the new key.
+        findUnique: async () => null,
         update: async (input: any) => {
           ruleUpdate = input;
         },
@@ -110,7 +112,7 @@ describe('MailOpsRepository', () => {
       dedupeKey: 'mail-rule:updated',
     });
 
-    assert.deepEqual(result, { ok: true, value: true });
+    assert.deepEqual(result, { ok: true, value: 'replaced' });
     assert.deepEqual(findInput.where, {
       id: 'rule-1',
       companyId: 'company-1',
@@ -737,6 +739,40 @@ describe('MailOpsRepository', () => {
     assert.equal(updates[2].data.ambiguous, undefined);
   });
 
+  it('says an edit would duplicate a rule instead of failing on the constraint', async () => {
+    // Canonicalising the key makes two rules that differ only in case land on
+    // the same one — and one of those two is very likely the fork the
+    // canonicalisation exists to repair. Editing the other used to raise a
+    // unique violation that reached the member as an infra failure they could
+    // do nothing about, permanently: every retry collided again.
+    const repo = new MailOpsRepository({
+      $transaction: async (fn: any) => fn({
+        mailAutomationRule: {
+          findFirst: async () => ({ id: 'rule-1', subscriptionId: 'mailbox-1', status: 'active' }),
+          findUnique: async () => ({ id: 'rule-2' }),
+          update: async () => {
+            throw new Error('The duplicate must be caught before the write.');
+          },
+        },
+        mailboxSubscription: { update: async () => undefined },
+      }),
+    } as any);
+
+    const result = await repo.replaceRule({
+      companyId: 'company-1',
+      userId: 'user-1',
+      ruleId: 'rule-1',
+      connectionId: 'connection-1',
+      name: 'Forward OTP',
+      match: { subjectContains: 'otp' },
+      action: { type: 'forward' },
+      destination: { type: 'email', email: 'owner@example.com' },
+      dedupeKey: 'mail-rule:already-taken',
+    });
+
+    assert.deepEqual(result, { ok: true, value: 'duplicate' });
+  });
+
   it('adopts a rule keyed the old way instead of forking it in two', async () => {
     // Canonicalising the key changes the identity of every rule already
     // written. Without the adoption the very first re-request would create a
@@ -926,6 +962,7 @@ describe('MailOpsRepository', () => {
       $transaction: async (fn: any) => fn({
         mailAutomationRule: {
           findFirst: async () => current,
+          findUnique: async () => null,
           update: async (input: any) => { updates.push(input); },
         },
         mailboxSubscription: { update: async () => undefined },

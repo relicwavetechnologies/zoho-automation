@@ -107,21 +107,25 @@ export interface MailRuleIdentity {
  * Case is folded only where the runtime already ignores it: the match clause,
  * and a destination email address. A Lark `chatId` is an opaque identifier and
  * is left alone — two chats whose IDs differ only in case are two chats.
+ *
+ * `toLowerCase`, not `toLocaleLowerCase`, because this value is stored: a
+ * locale-sensitive fold would make a rule's identity depend on the environment
+ * of whichever process last wrote it. Turkish alone would map `I` to `ı`.
  */
 export function mailRuleDedupeKey(input: MailRuleIdentity): string {
   return `mail-rule:${sha256(JSON.stringify([
     input.companyId,
     input.userId,
     input.connectionId,
-    input.match.from?.toLocaleLowerCase() ?? null,
-    input.match.to?.toLocaleLowerCase() ?? null,
-    input.match.subjectContains?.toLocaleLowerCase() ?? null,
-    input.match.bodyContains?.toLocaleLowerCase() ?? null,
+    input.match.from?.toLowerCase() ?? null,
+    input.match.to?.toLowerCase() ?? null,
+    input.match.subjectContains?.toLowerCase() ?? null,
+    input.match.bodyContains?.toLowerCase() ?? null,
     input.match.hasAttachment ?? null,
     input.action.type,
     input.destination.type,
     input.destination.type === 'email'
-      ? input.destination.email.toLocaleLowerCase()
+      ? input.destination.email.toLowerCase()
       : input.destination.chatId,
   ]))}`;
 }

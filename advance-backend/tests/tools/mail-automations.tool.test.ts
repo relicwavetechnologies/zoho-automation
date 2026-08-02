@@ -588,7 +588,7 @@ describe('mailAutomations tool', () => {
         },
         replaceRule: async input => {
           replaced = input;
-          return { ok: true, value: true };
+          return { ok: true, value: 'replaced' };
         },
         listRulesForUser: async () => ({ ok: true, value: [] }),
         setRuleStatus: async () => ({ ok: true, value: true }),
