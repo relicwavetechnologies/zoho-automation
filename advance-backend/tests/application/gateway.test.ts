@@ -2721,7 +2721,7 @@ describe('GatewayDispatcher', () => {
     let replacements = 0;
     const registry = new ToolRegistry();
     registry.register(createMailAutomationsTool({
-      pubsubReady: true,
+      runtime: { pubsubConfigured: true, workersEnabled: true },
       repo: {
         replaceRule: async () => {
           replacements++;
