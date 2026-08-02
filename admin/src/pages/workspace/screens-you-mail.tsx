@@ -105,7 +105,16 @@ export function YouMailRules({ replay }: ScreenProps) {
         ) : null}
 
         <Panel title={scope === 'all' ? 'All rules' : 'Active rules'} source="mailRules">
-          {!ready ? <SkelRows n={3} /> : rules.length === 0 ? (
+          {/* `error` is checked before `ready` because a failed load clears
+              `loading` and leaves `rules` empty — which rendered "No mail
+              rules yet" directly under the banner saying the opposite. */}
+          {error ? (
+            <Empty
+              icon={TriangleAlert}
+              title="Your rules could not be loaded"
+              body="This is not the same as having none. Reload to try again."
+            />
+          ) : !ready ? <SkelRows n={3} /> : rules.length === 0 ? (
             <Empty
               icon={Inbox}
               title={scope === 'all' ? 'No mail rules yet' : 'No active mail rules'}
