@@ -26,8 +26,8 @@ import {
 import type { Toast } from './ui'
 import {
   candidateBlock, candidateLabel,
-  useApprovalPolicy, useDepartment, useDepartmentMatrix, useMyManagedDepartment, useTeamUsage,
-  type Candidate, type MemberActionState, type RoleActionState, type ToolScopeSnapshot,
+  useApprovalPolicy, useDepartment, useDepartmentMatrix, useManagedDepartments, useTeamUsage,
+  type Candidate, type DeptRole, type MemberActionState, type RoleActionState, type ToolScopeSnapshot,
 } from './data/use-team'
 import { useApprovals, expiryLabel } from './data/use-approvals'
 
@@ -172,6 +172,35 @@ const NoTeam = () => (
   />
 )
 
+/**
+ * Which of your teams this screen is about.
+ *
+ * Only rendered by somebody who leads more than one. For everybody else the
+ * eyebrow already names their department and a one-option switch would be a
+ * control that cannot do anything.
+ *
+ * It sits under the header on every Team screen rather than only on the
+ * overview, because the answer to "whose people am I looking at" has to be on
+ * screen wherever you landed — including from a bookmark straight into Roles.
+ */
+function TeamSwitch() {
+  const { departments, department, select } = useManagedDepartments()
+  if (departments.length < 2 || !department) return null
+  return (
+    <div className="filters">
+      <Seg
+        value={department.id}
+        onChange={select}
+        options={departments.map((d) => ({ value: d.id, label: d.name }))}
+      />
+      <span className="ws-sub">You lead {departments.length} teams — everything below is about this one</span>
+    </div>
+  )
+}
+
+/** The department the Team scope is about, for screens that only need the one. */
+const useMyManagedDepartment = () => useManagedDepartments().department
+
 /* ══ Team overview ═════════════════════════════════════ */
 export function TeamHome({ replay, go }: Props) {
   const dept = useMyManagedDepartment()
@@ -231,6 +260,7 @@ export function TeamHome({ replay, go }: Props) {
         title="Your team"
         description={`${people.length} ${people.length === 1 ? 'person' : 'people'}. You decide what Divo may do for each of them, and what it must ask you first.`}
       />
+      <TeamSwitch />
       <div className="ws-stack">
         <Panel title="Needs you">
           {!r1 ? <SkelRows n={3} icon={false} /> : attention.length === 0 ? (
@@ -311,7 +341,9 @@ export function TeamPeople({ replay, toast }: Props) {
   const [r1] = useStaged([300], replay)
   const [open, setOpen] = useState<string | null>(null)
   const [query, setQuery] = useState('')
-  const { snapshot, loading, error, refused, addMember, findCandidates, refresh } = useDepartment(dept?.id)
+  const {
+    snapshot, loading, error, refused, addMember, removeMember, setMemberRole, findCandidates, refresh,
+  } = useDepartment(dept?.id)
   const { usage } = useTeamUsage(dept?.id)
   const matrix = useDepartmentMatrix(dept?.id)
   const [adding, setAdding] = useState(false)
@@ -337,6 +369,7 @@ export function TeamPeople({ replay, toast }: Props) {
         description="Open anyone to see what Divo can do for them, in plain English, and change it."
         actions={<button type="button" className="btn primary" onClick={() => setAdding(true)}><UserPlus size={14} />Add someone</button>}
       />
+      <TeamSwitch />
       <div className="filters">
         <div className="search" style={{ maxWidth: 300 }}>
           <Search size={14} />
@@ -418,6 +451,16 @@ export function TeamPeople({ replay, toast }: Props) {
           toast={toast}
           matrix={matrix}
           people={people}
+          departmentName={dept.name}
+          roles={snapshot?.roles ?? []}
+          onSetRole={async (userId, roleId, roleName, who) => {
+            try { await setMemberRole(userId, roleId); toast(`${who} is now ${roleName}`) }
+            catch { toast('Could not change their role', 'error') }
+          }}
+          onRemove={async (userId, who) => {
+            try { await removeMember(userId); toast(`${who} removed from ${dept.name}`); setOpen(null) }
+            catch (e) { toast(e instanceof Error ? e.message : 'Could not remove them', 'error') }
+          }}
         />
       ) : null}
     </>
@@ -543,21 +586,32 @@ function AddPersonDrawer({ roles, search, onAdd, onClose }: {
  * set is written one call per change on apply, because each grant is its own
  * row on the backend and there is no batch route to fake atomicity with.
  */
-function PersonDrawer({ userId, onClose, toast, matrix, people }: {
+function PersonDrawer({
+  userId, onClose, toast, matrix, people, roles, departmentName, onSetRole, onRemove,
+}: {
   userId: string
   onClose: () => void
   toast: Toast
   matrix: ReturnType<typeof useDepartmentMatrix>
-  people: { userId: string; name: string | null; email: string; roleSlug?: string; roleName?: string }[]
+  people: { userId: string; name: string | null; email: string; roleId?: string; roleSlug?: string; roleName?: string }[]
+  roles: DeptRole[]
+  departmentName: string
+  onSetRole: (userId: string, roleId: string, roleName: string, who: string) => Promise<void>
+  onRemove: (userId: string, who: string) => Promise<void>
 }) {
   const person = people.find((p) => p.userId === userId)
   const [tab, setTab] = useState<'summary' | 'detail'>('summary')
   const [pending, setPending] = useState<{ toolId: string; action: string; next: boolean }[]>([])
   const [copyFrom, setCopyFrom] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [movingTo, setMovingTo] = useState<DeptRole | null>(null)
+  const [removing, setRemoving] = useState(false)
 
   if (!person) return null
   const isManager = person.roleSlug === 'MANAGER'
+  // Managers are governed at company level, so offering to move somebody into
+  // the Manager role here would promise something this scope cannot deliver.
+  const assignableRoles = roles.filter((r) => r.slug !== 'MANAGER')
   const { can, cannot } = sentenceFor(matrix.tools, userId)
 
   const stateOf = (tool: ToolScopeSnapshot, action: string) =>
@@ -630,6 +684,7 @@ function PersonDrawer({ userId, onClose, toast, matrix, people }: {
   }
 
   return (
+    <>
     <Drawer
       title={displayName(person.name, person.email)}
       subtitle={`${person.email} · ${person.roleName ?? 'Member'}`}
@@ -747,6 +802,49 @@ function PersonDrawer({ userId, onClose, toast, matrix, people }: {
               </div>
             </div>
           ) : null}
+
+          {/* Last, and deliberately so. Everything above adjusts what Divo may
+              do for somebody who is in the team; this is whether they are in it
+              at all, and the destructive half of it belongs at the bottom of a
+              drawer rather than next to the first thing you read. */}
+          {!isManager ? (
+            <>
+              <div className="ws-lbl" style={{ marginTop: 26 }}>Membership</div>
+              <div className="ws-rows" style={{ marginTop: 6 }}>
+                <div className="ws-row" style={{ paddingLeft: 0, paddingRight: 0 }}>
+                  <div className="ws-row-main">
+                    <b>Role in {departmentName}</b>
+                    <p>A role is the starting point for everything Divo may do for them here.</p>
+                  </div>
+                  <select
+                    className="select"
+                    aria-label={`Role for ${person.email}`}
+                    value={person.roleId ?? ''}
+                    onChange={(e) => {
+                      const next = assignableRoles.find((r) => r.id === e.target.value)
+                      if (next && next.id !== person.roleId) setMovingTo(next)
+                    }}
+                  >
+                    {assignableRoles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                  </select>
+                </div>
+                <div className="ws-row" style={{ paddingLeft: 0, paddingRight: 0 }}>
+                  <div className="ws-row-main">
+                    <b>Remove from this team</b>
+                    <p>Their Divo account and any other team they are in are untouched.</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ color: 'var(--cur-error)', borderColor: 'var(--cur-error)' }}
+                    onClick={() => setRemoving(true)}
+                  >
+                    <Trash2 size={14} />Remove
+                  </button>
+                </div>
+              </div>
+            </>
+          ) : null}
         </>
       ) : (
         <>
@@ -788,6 +886,36 @@ function PersonDrawer({ userId, onClose, toast, matrix, people }: {
         </div>
       ) : null}
     </Drawer>
+
+      {/* Siblings of the drawer, not children. The drawer is a fixed element
+          with its own stacking context, so a dialog nested inside it can never
+          paint above it — and during the open animation its transform would
+          make the "fixed" dialog position against the drawer instead of the
+          viewport. */}
+      {movingTo ? (
+        <Confirm
+          title={`Move ${firstName(person.name, person.email)} to ${movingTo.name}?`}
+          body={`They stop getting whatever ${person.roleName ?? 'their current role'} grants and start getting whatever ${movingTo.name} grants.${
+            exceptions.length
+              ? ` Their ${exceptions.length} personal exception${exceptions.length > 1 ? 's stay' : ' stays'} in place on top.`
+              : ''
+          }`}
+          confirm="Move them"
+          onClose={() => setMovingTo(null)}
+          onConfirm={() => onSetRole(userId, movingTo.id, movingTo.name, firstName(person.name, person.email))}
+        />
+      ) : null}
+
+      {removing ? (
+        <Confirm
+          title={`Remove ${displayName(person.name, person.email)} from ${departmentName}?`}
+          body={`Divo stops doing anything for them through this team, and anything granted to them personally here goes with the membership. Their Divo account, and any other team they are in, are untouched.`}
+          confirm="Remove from team"
+          onClose={() => setRemoving(false)}
+          onConfirm={() => onRemove(userId, displayName(person.name, person.email))}
+        />
+      ) : null}
+    </>
   )
 }
 
@@ -859,6 +987,7 @@ export function TeamRoles({ replay, toast }: Props) {
         description="A role is a starting point, not a cage. Change one here and it changes for everyone who holds it."
         actions={<button type="button" className="btn" onClick={() => setCreatingRole(true)}><Plus size={14} />New role</button>}
       />
+      <TeamSwitch />
       {editable.length > 1 ? (
         <div className="filters">
           <Seg
@@ -1054,6 +1183,7 @@ export function TeamApprovalPolicy({ replay, toast }: Props) {
         title="What Divo must ask you first"
         description="Anything ticked here pauses and waits for your approval before it happens. Reading is never gated."
       />
+      <TeamSwitch />
       <div className="ws-stack">
         <Panel>
           <div className="ws-panel-body" style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
@@ -1129,6 +1259,7 @@ export function TeamUsage({ replay }: Props) {
   return (
     <>
       <PageHeader eyebrow={dept.name} title="Team usage" description="What Divo did for your team, and what it cost." />
+      <TeamSwitch />
       <div className="ws-stack">
         <div className="ws-cols">
           <Panel title="Cost by person" source="teamUsage">

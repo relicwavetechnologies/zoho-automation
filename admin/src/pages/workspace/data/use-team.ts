@@ -11,7 +11,7 @@
  * These routers answer with their payload bare rather than the usual
  * { success, data }, hence `raw` on every call.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { ApiError, api } from '@/lib/api'
 import { TOOLS_BASE } from './use-tools'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
@@ -446,14 +446,70 @@ export function useApprovalPolicy(departmentId?: string) {
   return { policy, loading, saving, save }
 }
 
+/* ── Which team am I managing ─────────────────────────── */
+
 /**
- * The department this person leads.
+ * Leading two departments used to mean managing one of them.
  *
- * Managing more than one is possible, and the scope switcher already lists each
- * separately — this picks the first as the default landing department.
+ * `session.departments` can hold several with `isManager`, and the sidebar
+ * switcher lists each — but every Team entry navigated to the same `/team`, and
+ * this hook returned `.find(isManager)`, so the second department was
+ * unreachable from anywhere in the app. The URL is not the right place to carry
+ * it either: five routes would each have to grow a segment, and coming back to
+ * `/team` from a bookmark would still have to choose.
+ *
+ * So the choice is remembered, the way the desktop remembers its tool scope.
+ * `useSyncExternalStore` rather than a context because the writer is the
+ * sidebar and the readers are five screens that do not share a provider — this
+ * keeps them in step without threading state through the shell.
  */
-export function useMyManagedDepartment(): { id: string; name: string } | null {
+const MANAGED_DEPARTMENT_KEY = 'divo_team_department'
+
+const departmentListeners = new Set<() => void>()
+
+const readStoredDepartment = (): string | null => {
+  try { return localStorage.getItem(MANAGED_DEPARTMENT_KEY) } catch { return null }
+}
+
+let storedDepartmentId: string | null = readStoredDepartment()
+
+/** Remembers which led department the Team scope is currently about. */
+export function selectManagedDepartment(departmentId: string): void {
+  if (storedDepartmentId === departmentId) return
+  storedDepartmentId = departmentId
+  try { localStorage.setItem(MANAGED_DEPARTMENT_KEY, departmentId) } catch { /* private browsing */ }
+  for (const listener of departmentListeners) listener()
+}
+
+const subscribeDepartment = (listener: () => void) => {
+  departmentListeners.add(listener)
+  return () => { departmentListeners.delete(listener) }
+}
+
+const departmentSnapshot = () => storedDepartmentId
+
+/**
+ * Every department this person leads, and which one the Team scope is showing.
+ *
+ * Falls back to the first rather than to nothing when the remembered id is not
+ * one they lead any more — losing the manager role on one team should not blank
+ * the scope for the other.
+ */
+export function useManagedDepartments(): {
+  departments: { id: string; name: string }[]
+  department: { id: string; name: string } | null
+  select: (departmentId: string) => void
+} {
   const { session } = useAdminAuth()
-  const led = session?.departments.find((d) => d.isManager)
-  return led ? { id: led.id, name: led.name } : null
+  const stored = useSyncExternalStore(subscribeDepartment, departmentSnapshot, departmentSnapshot)
+
+  const departments = useMemo(
+    () => (session?.departments ?? [])
+      .filter((d) => d.isManager)
+      .map((d) => ({ id: d.id, name: d.name })),
+    [session],
+  )
+
+  const department = departments.find((d) => d.id === stored) ?? departments[0] ?? null
+  return { departments, department, select: selectManagedDepartment }
 }

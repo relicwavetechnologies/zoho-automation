@@ -22,6 +22,7 @@ import {
   Sun, Users, UserSquare, type LucideIcon,
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
+import { useManagedDepartments } from '@/pages/workspace/data/use-team'
 import { RoleProvider } from '@/cursor/role-context'
 import { useTheme } from '@/lib/use-theme'
 import '@/styles/workspace.css'
@@ -157,7 +158,14 @@ export function WorkspaceShell() {
     return () => window.removeEventListener('mousedown', onDown)
   }, [scopeOpen])
 
-  const active = scopes.find((s) => s.kind === scope) ?? scopes[0]
+  // Which team the Team scope is about. A person can lead several, and every
+  // Team entry in this menu points at the same `/team` — the department is
+  // carried in the remembered selection instead, so the label has to follow it
+  // rather than always naming the first.
+  const managed = useManagedDepartments()
+  const active = scopes.find((s) => (
+    s.kind === scope && (s.kind !== 'team' || s.departmentId === managed.department?.id)
+  )) ?? scopes.find((s) => s.kind === scope) ?? scopes[0]
   const ScopeIcon = scope === 'you' ? UserSquare : scope === 'team' ? Users : Building2
 
   return (
@@ -190,16 +198,25 @@ export function WorkspaceShell() {
               <div className="ws-scope-menu">
                 {scopes.map((s) => {
                   const Icon = s.kind === 'you' ? UserSquare : s.kind === 'team' ? Users : Building2
+                  // Keyed by department too. Two led departments produce two
+                  // Team scopes, and keying on `kind` alone gave React duplicate
+                  // keys and the reader two identical-looking rows.
+                  const current = s.kind === scope
+                    && (s.kind !== 'team' || s.departmentId === managed.department?.id)
                   return (
                     <button
                       type="button"
-                      key={s.kind}
+                      key={`${s.kind}:${s.departmentId ?? ''}`}
                       className="ws-scope-opt"
-                      onClick={() => { setScopeOpen(false); navigate(HOME[s.kind]) }}
+                      onClick={() => {
+                        setScopeOpen(false)
+                        if (s.kind === 'team' && s.departmentId) managed.select(s.departmentId)
+                        navigate(HOME[s.kind])
+                      }}
                     >
                       <span className="ws-scope-ic"><Icon size={13} /></span>
                       <span className="ws-scope-txt"><b>{s.label}</b><span>{s.detail}</span></span>
-                      {s.kind === scope ? <Check size={14} className="ck" /> : null}
+                      {current ? <Check size={14} className="ck" /> : null}
                     </button>
                   )
                 })}
