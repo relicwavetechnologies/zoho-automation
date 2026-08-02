@@ -161,6 +161,10 @@ function remedyForFailure(code: string | null): string | null {
       return 'Your Google connection is no longer valid. Reconnect it to resume.';
     case 'provider_rate_limited':
       return 'Google is rate-limiting this mailbox. Divo keeps retrying — no action needed yet.';
+    case 'history_backlog_stalled':
+      // Deliberately not addressed to the member: there is nothing in their
+      // account to fix, and saying otherwise would send them looking.
+      return 'This needs a Divo operator — a large run of mailbox history is blocking new mail from being read.';
     case 'authorization_unavailable':
       // Nothing on the member's side is wrong, and telling them to reconnect
       // Google would send them to fix an account that is working.

@@ -74,9 +74,13 @@ export function YouMailRules({ replay }: ScreenProps) {
           </div>
         ) : null}
 
-        {ready && anyMailboxBroken ? <MailboxBanner mailboxes={mailboxes} /> : null}
+        {/* Everything below is gated on `!error` as well as `ready`. A failed
+            reload leaves the previous response in state, so without this a
+            stale mailbox banner and a stale list of externally-forwarding
+            rules render directly beneath a banner saying nothing was read. */}
+        {ready && !error && anyMailboxBroken ? <MailboxBanner mailboxes={mailboxes} /> : null}
 
-        {ready && leaving.length > 0 ? (
+        {ready && !error && leaving.length > 0 ? (
           <Panel
             title="Mail leaving your company"
             description="A forward sends the whole message — headers, body and attachments, unchanged."
@@ -162,7 +166,7 @@ export function YouMailRules({ replay }: ScreenProps) {
           )}
         </Panel>
 
-        {ready && mailboxes.length > 0 ? (
+        {ready && !error && mailboxes.length > 0 ? (
           <Panel title="Mailboxes" description="Rules can only fire while Divo is being told about new mail.">
             <div className="ws-rows">
               {mailboxes.map((mailbox) => (

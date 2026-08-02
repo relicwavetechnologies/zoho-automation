@@ -45,6 +45,22 @@ class AuthorizationUnavailableError extends Error {
   }
 }
 
+/**
+ * Raised when a mailbox's history backlog cannot be advanced through.
+ *
+ * Distinct from a provider error because nothing is wrong with Google or with
+ * the member's account — Divo simply cannot get past this stretch of history
+ * with the page budget it allows itself.
+ */
+class HistoryBacklogStalledError extends Error {
+  constructor(mailboxEmail: string) {
+    super(
+      `Gmail history for ${mailboxEmail} could not be advanced within the page limit.`,
+    );
+    this.name = 'HistoryBacklogStalledError';
+  }
+}
+
 type MailRepo = Pick<
   MailOpsRepository,
   | 'claimNextDueMailbox'
@@ -363,13 +379,26 @@ export class MailOpsWorker {
       }
       // A partial drain is a success with work left over, so it comes back on
       // the next tick instead of waiting out the reconciliation interval.
-      //
-      // Only when the cursor actually moved. A truncated pass that consumed no
-      // history record returns the cursor it was given — asking to be re-polled
-      // on that would re-claim the same mailbox immediately, twenty times a
-      // tick, ten Gmail page reads each, forever, with no progress and a
-      // mailbox still reporting healthy.
       const movedForward = sync.nextHistoryId !== claim.historyId;
+
+      // Truncated *and* stationary is not a success. The client hit the page
+      // limit without consuming a single history record — pages of label
+      // changes with no INBOX arrival among them — so it returned the cursor
+      // it was given rather than guess forward.
+      //
+      // Recording that as a clean pass cleared failureCode and set
+      // lastSucceededAt, so the mailbox reported healthy while repeating the
+      // identical ten reads every hour and delivering nothing. Any arrival
+      // sitting beyond that window went undelivered until Gmail expired the
+      // cursor a week later and the 404 path recovered with a one-day scan,
+      // silently dropping the days in between.
+      //
+      // Failing it is the honest answer: the member is told, and the state is
+      // visible. Resuming from a stored page token is the real fix and needs
+      // its own column — see the finalization plan.
+      if (sync.truncated && !movedForward) {
+        throw new HistoryBacklogStalledError(claim.mailboxEmail);
+      }
       const advanced = await this.deps.repo.advanceCursor(
         claim,
         sync.nextHistoryId,
@@ -578,6 +607,9 @@ function syncFailureCode(error: unknown): string {
   // "permission" in the message and blame Google's scopes.
   if (error instanceof AuthorizationUnavailableError) {
     return 'authorization_unavailable';
+  }
+  if (error instanceof HistoryBacklogStalledError) {
+    return 'history_backlog_stalled';
   }
   const text = errorText(error).toLocaleLowerCase();
   if (text.includes('scope') || text.includes('permission')) return 'scope_missing';

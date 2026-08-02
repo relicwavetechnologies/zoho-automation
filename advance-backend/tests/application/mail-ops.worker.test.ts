@@ -485,21 +485,22 @@ describe('MailOpsWorker', () => {
     assert.deepEqual(advanceOptions, { pollImmediately: true });
   });
 
-  it('does not re-poll a truncated pass that made no progress', async () => {
+  it('fails a truncated pass that made no progress rather than calling it healthy', async () => {
     // The client returns the cursor unchanged when it drained the page limit
-    // without consuming a single history record. Re-polling on that re-claims
-    // the same mailbox every tick — ten Gmail page reads a time, indefinitely,
-    // while the mailbox goes on reporting healthy.
-    let advanceOptions: unknown;
+    // without consuming a single history record. Recording that as a clean
+    // pass cleared the failure code and set lastSucceededAt, so the mailbox
+    // reported healthy while repeating the same ten reads every hour and
+    // delivering nothing.
+    let advanceCalls = 0;
+    let failureCode: string | undefined;
     const worker = new MailOpsWorker({
       repo: syncRepo({
-        advanceCursor: async (
-          _claim: unknown,
-          _historyId: string,
-          _now: Date,
-          options: unknown,
-        ) => {
-          advanceOptions = options;
+        advanceCursor: async () => {
+          advanceCalls++;
+          return { ok: true, value: true };
+        },
+        markSyncFailed: async (_claim: unknown, code: string) => {
+          failureCode = code;
           return { ok: true, value: true };
         },
       }),
@@ -521,7 +522,8 @@ describe('MailOpsWorker', () => {
 
     await worker.runOnce();
 
-    assert.deepEqual(advanceOptions, { pollImmediately: false });
+    assert.equal(advanceCalls, 0);
+    assert.equal(failureCode, 'history_backlog_stalled');
   });
 
   it('abandons a reserved delivery when current authority is revoked', async () => {

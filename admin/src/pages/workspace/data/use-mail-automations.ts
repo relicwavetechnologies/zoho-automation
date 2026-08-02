@@ -52,8 +52,6 @@ export type MailRule = {
   abandonedCount: number
   /** Matched the rule, then was refused. Recorded rather than dropped. */
   blockedCount: number
-  /** When the last refusal happened; null once the rule has recovered. */
-  lastBlockedAt: string | null
   lastError: string | null
   lastErrorAt: string | null
 }
