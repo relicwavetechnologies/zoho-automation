@@ -901,10 +901,10 @@ export class LarkPiRuntimeService {
     } else {
       effectVerification = 'unavailable';
     }
-    if (this.deps.runOrigins?.recall && input.runContext.runtimeRunId) {
+    if (this.deps.runOrigins?.recall) {
       try {
         googleAuthorization = (await this.deps.runOrigins.recall({
-          runId: input.runContext.runtimeRunId,
+          runId: input.incoming.traceId,
           companyId: identity.companyId,
           userId: identity.userId,
         }))?.googleAuthorization;

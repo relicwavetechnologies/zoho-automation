@@ -308,6 +308,7 @@ test('turns a verified workbook receipt into one explicit copy confirmation', as
 });
 
 test('turns a run-bound Google authorization into a direct final-card action', async () => {
+  let recalledRunId: string | undefined;
   const service = new LarkPiRuntimeService({
     prisma: {
       memberSession: {
@@ -327,22 +328,25 @@ test('turns a run-bound Google authorization into a direct final-card action', a
     runEffectReceipts,
     runOrigins: {
       remember: async () => true,
-      recall: async () => ({
-        version: 1,
-        companyId: 'company-1',
-        userId: 'user-1',
-        larkOpenId: 'ou-user-1',
-        larkTenantKey: 'tenant-1',
-        chatId: 'chat-1',
-        chatType: 'p2p',
-        originalMessageId: 'message-1',
-        replyInThread: false,
-        originalRequest: 'Read my mail',
-        googleAuthorization: {
-          intentId: 'intent-1',
-          authorizeUrl: 'https://accounts.google.com/o/oauth2/auth?state=opaque',
-        },
-      }),
+      recall: async (input) => {
+        recalledRunId = input.runId;
+        return {
+          version: 1,
+          companyId: 'company-1',
+          userId: 'user-1',
+          larkOpenId: 'ou-user-1',
+          larkTenantKey: 'tenant-1',
+          chatId: 'chat-1',
+          chatType: 'p2p',
+          originalMessageId: 'message-1',
+          replyInThread: false,
+          originalRequest: 'Read my mail',
+          googleAuthorization: {
+            intentId: 'intent-1',
+            authorizeUrl: 'https://accounts.google.com/o/oauth2/auth?state=opaque',
+          },
+        };
+      },
     },
     fetch: async () => new Response(JSON.stringify({ text: 'Connect Google to continue.' }), {
       status: 200,
@@ -351,9 +355,9 @@ test('turns a run-bound Google authorization into a direct final-card action', a
   });
 
   const input = runtimeInput();
-  input.runContext.runtimeRunId = 'trace-1';
   const result = await service.run(input);
 
+  assert.equal(recalledRunId, input.incoming.traceId);
   assert.equal(
     result.text,
     '# Connect Google Workspace\n\nConnect or reconnect your Google account below. '

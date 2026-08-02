@@ -54,6 +54,32 @@ describe('RunOriginStore', () => {
     assert.ok(stored?.ttl && stored.ttl > 0);
   });
 
+  it('retains a Google authorization action when the same run is recorded again', async () => {
+    const store = new RunOriginStore(fakeCache());
+    await store.remember('run-1', ORIGIN);
+    await store.attachGoogleAuthorization({
+      runId: 'run-1',
+      companyId: 'co-1',
+      userId: 'user-1',
+      intentId: 'intent-1',
+      authorizeUrl: 'https://accounts.google.com/o/oauth2/auth?state=opaque',
+    });
+
+    await store.remember('run-1', ORIGIN);
+
+    assert.deepEqual(
+      (await store.recall({
+        runId: 'run-1',
+        companyId: 'co-1',
+        userId: 'user-1',
+      }))?.googleAuthorization,
+      {
+        intentId: 'intent-1',
+        authorizeUrl: 'https://accounts.google.com/o/oauth2/auth?state=opaque',
+      },
+    );
+  });
+
   it('refuses to hand a run origin to a different member or company', async () => {
     const store = new RunOriginStore(fakeCache());
     await store.remember('run-1', ORIGIN);

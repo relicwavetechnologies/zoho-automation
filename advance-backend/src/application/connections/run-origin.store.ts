@@ -61,9 +61,18 @@ export class RunOriginStore {
    */
   async remember(runId: string, origin: RunOrigin): Promise<boolean> {
     if (origin.originalRequest.length > MAX_ORIGINAL_REQUEST_CHARS) return false;
+    const key = runOriginKey(runId);
+    const current = await this.cache.get<RunOrigin>(key);
+    if (!current.ok) throw current.error;
+    const retainedAuthorization = current.value?.version === 1
+      && current.value.companyId === origin.companyId
+      && current.value.userId === origin.userId
+      && current.value.originalMessageId === origin.originalMessageId
+      ? current.value.googleAuthorization
+      : undefined;
     const stored = await this.cache.set(
-      runOriginKey(runId),
-      origin,
+      key,
+      retainedAuthorization ? { ...origin, googleAuthorization: retainedAuthorization } : origin,
       RUN_ORIGIN_TTL_SECONDS,
     );
     if (!stored.ok) throw stored.error;
