@@ -175,9 +175,9 @@ function senderAddress(fromHeader: string): string | undefined {
   // a rule the member is actively watching with nothing to show why. Recovered
   // only when exactly one entry holds a bracketed mailbox, so the recovery
   // cannot pick between candidates or read anything out of display text.
-  const bracketed = entries
-    .map(entry => entry.match(/<\s*([^<>]+)\s*>/)?.[1])
-    .filter((mailbox): mailbox is string => mailbox !== undefined);
+  const bracketed = entries.flatMap(
+    entry => [...entry.matchAll(/<\s*([^<>]+)\s*>/g)].map(match => match[1]!),
+  );
   if (bracketed.length !== 1) return undefined;
   return bracketed[0]!.match(ADDRESS_PATTERN)?.[0]?.toLowerCase();
 }
@@ -260,6 +260,19 @@ function splitRecipients(header: string): string[] {
   for (let index = 0; index < header.length; index += 1) {
     const character = header[index]!;
     const hidden = quoted || commentDepth > 0;
+    // A header appearing more than once arrives here as its instances joined
+    // by newlines, and no parser state may cross that seam. One instance
+    // leaving a quote open would otherwise swallow the next — and `Delivered-To`
+    // is exactly the header that repeats, where the instance the receiving
+    // server added is the one worth having. Damage stays inside the instance
+    // that caused it.
+    if (character === '\n') {
+      entries.push(hidden ? '' : entry);
+      entry = '';
+      quoted = false;
+      commentDepth = 0;
+      continue;
+    }
     if (hidden && character === '\\') {
       index += 1;
       entry += ' ';

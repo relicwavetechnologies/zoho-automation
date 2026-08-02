@@ -187,6 +187,13 @@ describe('mailAutomations tool', () => {
       { from: 'notice@anthropic.com' },
       sender('Doe, John <notice@anthropic.com>'),
     ), true);
+    // Two candidates is ambiguity, and the recovery does not choose. It counts
+    // every bracketed mailbox, not one per entry, or a second one sharing an
+    // entry with the first would go uncounted.
+    assert.equal(mailRuleMatches(
+      { from: 'notice@anthropic.com' },
+      sender('Doe, John <notice@anthropic.com> <attacker@evil.example>'),
+    ), false);
   });
 
   it('matches a recipient across To, Cc and Delivered-To, not To alone', () => {

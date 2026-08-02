@@ -385,11 +385,29 @@ describe('GmailHistoryClient message metadata', () => {
       ],
     });
 
-    assert.equal(metadata.deliveredTo, 'ana@example.com, sales@example.com');
+    assert.equal(metadata.deliveredTo, 'ana@example.com\nsales@example.com');
     assert.equal(
       mailRuleMatches({ to: 'ana@example.com' }, metadata),
       true,
     );
+  });
+
+  it('does not let one malformed hop swallow the hop that matters', async () => {
+    // The instance the receiving server added is the one worth having, and it
+    // arrives after whatever the sender wrote. Joined into a single string with
+    // no boundary, an unterminated quote in the first would take the second
+    // with it and the rule would silently never fire.
+    const metadata = await syncOneMessage({
+      mimeType: 'text/plain',
+      headers: [
+        { name: 'From', value: 'sender@evil.example' },
+        { name: 'To', value: 'member@example.com' },
+        { name: 'Delivered-To', value: '"poison' },
+        { name: 'Delivered-To', value: 'alias@example.com' },
+      ],
+    });
+
+    assert.equal(mailRuleMatches({ to: 'alias@example.com' }, metadata), true);
   });
 });
 

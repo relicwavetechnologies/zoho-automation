@@ -457,7 +457,11 @@ function messageMetadata(message: GmailMessage): MailMessageMetadata {
       .filter(header => header.name?.toLowerCase() === name)
       .map(header => header.value?.trim())
       .filter((value): value is string => Boolean(value))
-      .join(', ');
+      // Newline, not comma: the matcher treats it as a hard boundary, so one
+      // instance leaving a quote or comment open cannot swallow the next. A
+      // header value from the API is already unfolded, so it holds none of its
+      // own.
+      .join('\n');
   const to = allValuesOf('to');
   const cc = allValuesOf('cc');
   const bcc = allValuesOf('bcc');

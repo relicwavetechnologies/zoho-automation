@@ -112,6 +112,11 @@ const errorText = (error: unknown): string =>
  * nothing about which mail the rule takes. Scoring that as a change would
  * restart the rule's watch and drop its backlog, which is the harm this
  * comparison exists to prevent.
+ *
+ * `toLowerCase`, matching the fold used by `mailRuleMatches` and by the rule's
+ * stored identity. A locale-sensitive one would leave the three disagreeing:
+ * under a Turkish locale a case-only edit would count as a change here, and
+ * drop the backlog, while both of the others called it the same rule.
  */
 function sameRuleClause(stored: unknown, submitted: unknown): boolean {
   return stableJson(stored) === stableJson(submitted);
@@ -119,7 +124,7 @@ function sameRuleClause(stored: unknown, submitted: unknown): boolean {
 
 function stableJson(value: unknown): string {
   return JSON.stringify(value, (_key, inner) => {
-    if (typeof inner === 'string') return inner.toLocaleLowerCase();
+    if (typeof inner === 'string') return inner.toLowerCase();
     if (inner === null || typeof inner !== 'object' || Array.isArray(inner)) {
       return inner;
     }
@@ -706,7 +711,7 @@ export class MailOpsRepository {
       const updated = await this.db.mailboxSubscription.updateMany({
         where: {
           mailboxEmail: {
-            equals: input.mailboxEmail.trim().toLocaleLowerCase(),
+            equals: input.mailboxEmail.trim().toLowerCase(),
             mode: 'insensitive',
           },
           status: 'active',
