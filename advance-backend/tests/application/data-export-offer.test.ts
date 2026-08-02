@@ -69,6 +69,13 @@ const confirmationDeps = {
       decisions: [],
     }),
   },
+  resolveDestination: async () => ({
+    status: 'selected' as const,
+    target: {
+      kind: 'company_google' as const,
+      connectionId: '22222222-2222-4222-8222-222222222222',
+    },
+  }),
 };
 
 const unusedLoad: DataExportOfferRepositoryPort['loadForConfirmation'] = async () =>
@@ -125,10 +132,66 @@ describe('DataExportOfferService', () => {
     assert.equal(jobId, 'dtx_job');
     assert.equal(createInput?.expiresAt.toISOString(), '2026-08-03T05:00:00.000Z');
     assert.deepEqual(createInput?.payload, payload);
-    assert.deepEqual(queued, payload);
+    assert.deepEqual(queued, {
+      ...payload,
+      destination: {
+        ...payload.destination,
+        target: {
+          kind: 'company_google',
+          connectionId: '22222222-2222-4222-8222-222222222222',
+        },
+      },
+    });
     assert.equal(confirmedJobId, 'dtx_job');
     assert.equal('progressMessageId' in createInput!.payload, false);
     assert.equal('completedExport' in createInput!.payload, false);
+  });
+
+  it('does not persist or queue a direct export while its personal destination is ambiguous', async () => {
+    let createCount = 0;
+    let enqueueCount = 0;
+    const service = new DataExportOfferService({
+      offers: {
+        create: async () => {
+          createCount += 1;
+          return ok({ outcome: 'created', offer: storedOffer() });
+        },
+        loadForConfirmation: unusedLoad,
+        claimConfirmation: async () => assert.fail('ambiguous export must not be claimed'),
+        markConfirmed: async () => assert.fail('ambiguous export must not be confirmed'),
+      },
+      queue: {
+        enqueue: async () => {
+          enqueueCount += 1;
+          return 'unexpected';
+        },
+      },
+      identityRepo: confirmationDeps.identityRepo,
+      permissions: confirmationDeps.permissions,
+      resolveDestination: async () => ({
+        status: 'choose_connection',
+        connections: [
+          {
+            connectionId: '33333333-3333-4333-8333-333333333333',
+            label: 'Work Google',
+            accountEmail: 'member@company.test',
+          },
+          {
+            connectionId: '44444444-4444-4444-8444-444444444444',
+            label: 'Personal Google',
+            accountEmail: 'member@gmail.com',
+          },
+        ],
+      }),
+      now: () => NOW,
+    });
+
+    await assert.rejects(
+      service.submitAuthorized(payload),
+      /choose one Google export account/i,
+    );
+    assert.equal(createCount, 0);
+    assert.equal(enqueueCount, 0);
   });
 
   it('returns the prior job without queueing a duplicate confirmation', async () => {
@@ -251,6 +314,7 @@ describe('DataExportOfferService', () => {
     const offer = confirmableOffer();
     let loadInput: Parameters<DataExportOfferRepositoryPort['loadForConfirmation']>[0] | undefined;
     let permissionInput: unknown;
+    let destinationInput: unknown;
     let queued: DataExportOfferPayload | undefined;
     let confirmationInput: unknown;
     const service = new DataExportOfferService({
@@ -282,6 +346,16 @@ describe('DataExportOfferService', () => {
           return confirmationDeps.permissions.resolve();
         },
       },
+      resolveDestination: async (input) => {
+        destinationInput = input;
+        return {
+          status: 'selected',
+          target: {
+            kind: 'user_google',
+            connectionId: '33333333-3333-4333-8333-333333333333',
+          },
+        };
+      },
       now: () => NOW,
     });
 
@@ -292,12 +366,20 @@ describe('DataExportOfferService', () => {
       chatId: payload.chatId,
       progressMessageId: 'om_export_card',
       destinationFormat: 'csv',
+      destinationConnectionId: '33333333-3333-4333-8333-333333333333',
     });
 
     assert.deepEqual(result, { exportJobId: 'dtx_confirmed', disposition: 'queued' });
     assert.deepEqual(queued, {
       ...payload,
-      destination: { ...payload.destination, format: 'csv' },
+      destination: {
+        ...payload.destination,
+        format: 'csv',
+        target: {
+          kind: 'user_google',
+          connectionId: '33333333-3333-4333-8333-333333333333',
+        },
+      },
       progressMessageId: 'om_export_card',
     });
     assert.deepEqual(loadInput, {
@@ -313,6 +395,11 @@ describe('DataExportOfferService', () => {
       departmentId: payload.departmentId,
       channel: 'lark',
     });
+    assert.deepEqual(destinationInput, {
+      companyId: payload.companyId,
+      userId: payload.userId,
+      connectionId: '33333333-3333-4333-8333-333333333333',
+    });
     assert.deepEqual(confirmationInput, {
       offerId: offer.id,
       companyId: payload.companyId,
@@ -320,6 +407,70 @@ describe('DataExportOfferService', () => {
       queueJobId: 'dtx_confirmed',
       confirmedAt: NOW,
     });
+  });
+
+  it('asks the actor to choose among writable Google accounts before claiming', async () => {
+    const offer = confirmableOffer();
+    let claimCount = 0;
+    let enqueueCount = 0;
+    const service = new DataExportOfferService({
+      offers: {
+        create: async () => assert.fail('confirmation must not create another offer'),
+        loadForConfirmation: async () => ok({ outcome: 'found', offer }),
+        claimConfirmation: async () => {
+          claimCount += 1;
+          return ok({ outcome: 'claimed', offer });
+        },
+        markConfirmed: async () => assert.fail('unselected exports must not be confirmed'),
+      },
+      queue: {
+        enqueue: async () => {
+          enqueueCount += 1;
+          return 'unexpected';
+        },
+      },
+      identityRepo: confirmationDeps.identityRepo,
+      permissions: confirmationDeps.permissions,
+      resolveDestination: async () => ({
+        status: 'choose_connection',
+        connections: [
+          {
+            connectionId: '33333333-3333-4333-8333-333333333333',
+            label: 'Work Google',
+            accountEmail: 'member@company.test',
+          },
+          {
+            connectionId: '44444444-4444-4444-8444-444444444444',
+            label: 'Personal Google',
+            accountEmail: 'member@gmail.com',
+          },
+        ],
+      }),
+      now: () => NOW,
+    });
+
+    assert.deepEqual(await service.confirmForActor({
+      offerId: offer.id,
+      companyId: payload.companyId,
+      userId: payload.userId,
+      chatId: payload.chatId,
+    }), {
+      disposition: 'choose_destination',
+      connections: [
+        {
+          connectionId: '33333333-3333-4333-8333-333333333333',
+          label: 'Work Google',
+          accountEmail: 'member@company.test',
+        },
+        {
+          connectionId: '44444444-4444-4444-8444-444444444444',
+          label: 'Personal Google',
+          accountEmail: 'member@gmail.com',
+        },
+      ],
+    });
+    assert.equal(claimCount, 0);
+    assert.equal(enqueueCount, 0);
   });
 
   it('replays an already-confirmed offer without queueing or mutating it', async () => {
@@ -473,6 +624,7 @@ describe('DataExportOfferService', () => {
           resolveByUserId: async () => ok(scenario.identity),
         },
         permissions: { resolve: scenario.permissions },
+        resolveDestination: confirmationDeps.resolveDestination,
         now: () => NOW,
       });
 

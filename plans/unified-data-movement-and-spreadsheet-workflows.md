@@ -1,6 +1,6 @@
 # Unified Data Movement and Spreadsheet Workflows
 
-**Status:** implementation active; Phase 0, Phase 1, Phase 2A/2B/2C, and the Phase 3A Lark export-button vertical slice are complete
+**Status:** implementation active; Phases 0–3 are complete, and Phase 4 destination ownership is in progress
 **Date:** 2026-08-02
 **Scope:** tabular previews, proactive exports, cross-tool data movement, pasted spreadsheet URLs, and the boundary between deterministic backend exports and agent-authored container workflows
 **Related foundation:** `plans/secure-data-export-pipeline.md`
@@ -160,8 +160,8 @@ The current central export creates an artifact under one company Google account 
 Confirmed destination order:
 
 1. a connected user-owned Google account, producing a user-owned/editable Sheet;
-2. an explicitly selected Divo/company destination governed by admin policy,
-   where the requester receives read-only access;
+2. only when no eligible personal account exists, the Divo/company destination
+   governed by admin policy, where the requester receives read-only access;
 3. a downloadable CSV/XLSX artifact when a Sheet is unsuitable.
 
 The Divo/company fallback remains read-only for the requester in V1. We must
@@ -169,7 +169,9 @@ not silently grant editor or broad-link access to company-owned artifacts.
 
 ### D5. Destination selection should not become repetitive
 
-- An explicitly named account or destination wins after access validation.
+- An explicitly named eligible personal account wins after access validation.
+- The company destination remains fallback-only and cannot bypass an eligible
+  personal account.
 - Otherwise, prefer the requesting user's eligible personal connection.
 - Multiple eligible personal accounts: use a stored explicit preference; if none exists, ask once and remember the scoped preference.
 - No eligible personal connection: use the governed Divo/company account only when company policy allows the operation.
@@ -533,6 +535,25 @@ Card callbacks must authenticate the clicking actor and must not trust company/u
 - Reply-address focused result: 63 passed, 0 failed; `pnpm typecheck` and
   `git diff --check` passed. Fresh GPT-5.6 Terra medium cold review verdict:
   `ship`, with no verified findings or cleanup proposed.
+- Added a backend-owned Google destination resolver. One eligible user-owned
+  writable account is selected automatically; multiple accounts produce a
+  signed Lark choice card; an exact selected connection is carried into the
+  immutable queue job; and the configured company destination is used only
+  when no eligible personal account exists.
+- The worker revalidates the exact selected connection before execution.
+  Personal-account exports are created and verified under that account as the
+  sole owner. Company fallback exports retain the V1 requester-reader policy.
+  Legacy queued jobs without a target remain compatible with the configured
+  company fallback.
+- Removed the remaining direct `zohoBooks exportAll` queue bypass. Explicit
+  Zoho exports now use the same destination-resolving offer service as every
+  other governed export before a job can be queued. If personal ownership is
+  ambiguous, Zoho keeps its source connection separate and accepts only the
+  exact backend-returned Google `destinationConnectionId` on retry.
+- Destination ownership focused result: resolver/offer 28 passed, export 38
+  passed, Zoho Books 23 passed, Lark runtime 30 passed, Lark webhook 134
+  passed; gateway/finalization 90 passed, TypeScript and `git diff --check`
+  passed.
 
 ### Phase 0 — freeze contracts and characterize current behavior
 
@@ -604,14 +625,16 @@ Card callbacks must authenticate the clicking actor and must not trust company/u
 
 **Phase 3B completed:** the verified offer card now presents explicit Google
 Sheet and Drive CSV choices. The signed callback may alter only that output
-format before the immutable recipe is queued; both choices state the current
-governed output is view-only, and the same card remains the progress tracker.
+format before the immutable recipe is queued; destination ownership is resolved
+separately, and the same card remains the progress tracker.
 
-**Still pending in Phase 3:** personal/company account choice and destination
-OAuth resume.
+**Phase 3C completed:** personal Google account ambiguity is resolved through
+the signed Lark card. The card carries only the opaque offer, allowed format,
+and exact eligible connection ID; backend identity, RBAC, chat, and connection
+eligibility remain authoritative.
 
-- Add personal/company account choices only after the backend destination
-  resolver can validate and execute them.
+**Still pending in Phase 3:** destination OAuth resume.
+
 - Resume cleanly after destination OAuth.
 
 **Exit criteria**
@@ -630,6 +653,11 @@ OAuth resume.
 - Remember an explicit destination preference at the correct user/company scope.
 - Add a real XLSX sink; do not rename CSV bytes to `.xlsx`.
 - Keep Sheet/CSV/XLSX format selection deterministic and size-aware.
+
+**Completed in Phase 4:** user-owned Google resolution, signed account choice,
+execution-time connection revalidation, owner-only artifact verification, and
+the governed company-reader fallback. Preference persistence and true XLSX
+remain pending.
 
 **Exit criteria**
 

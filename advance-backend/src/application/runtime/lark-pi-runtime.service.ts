@@ -796,7 +796,7 @@ export class LarkPiRuntimeService {
         ? {
             actions: [
               {
-                label: 'Sheet (view-only)',
+                label: 'Google Sheet',
                 value: JSON.stringify({
                   kind: 'data_export_confirm',
                   offerId: exportEffect.offerId,
@@ -805,7 +805,7 @@ export class LarkPiRuntimeService {
                 style: 'primary',
               },
               {
-                label: 'CSV (view-only)',
+                label: 'CSV in Drive',
                 value: JSON.stringify({
                   kind: 'data_export_confirm',
                   offerId: exportEffect.offerId,

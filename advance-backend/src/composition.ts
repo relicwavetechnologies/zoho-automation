@@ -131,7 +131,14 @@ import {
 } from './application/data-export/data-export.sources';
 import { GoogleWorkspaceExportSink } from './application/data-export/google-workspace-export.sink';
 import { DataExportOfferRepository } from './infrastructure/persistence/data-export-offer.repository';
-import { parseDataExportProfile, DATA_EXPORT_CAPABILITY_ID } from './application/data-export/data-export.profile';
+import {
+  getDataExportProfile,
+  parseDataExportProfile,
+  DATA_EXPORT_CAPABILITY_ID,
+} from './application/data-export/data-export.profile';
+import { selectDataExportDestination } from './application/data-export/data-export-destination-resolver';
+import type { DataExportDestinationTarget } from './application/data-export/data-export.types';
+import type { GoogleExportAuth } from './application/data-export/data-export.destination';
 import { LarkIngressQueue } from './application/lark-ingress/lark-ingress.queue';
 import {
   GoogleConnectionContinuationQueue,
@@ -318,10 +325,11 @@ export interface Container {
   dataExportQueue: DataExportQueue;
   dataExportSources: DatasetSourceRegistry;
   googleWorkspaceExportSink: GoogleWorkspaceExportSink;
-  resolveGoogleExportAuth: (companyId: string) => Promise<{
-    readonly accessToken: string;
-    readonly readerDomain: string;
-  }>;
+  resolveGoogleExportAuth: (
+    companyId: string,
+    userId: string,
+    target?: DataExportDestinationTarget,
+  ) => Promise<GoogleExportAuth>;
   airtableConnectionResolver: ResolveAirtableMcpConnection;
   larkIngressQueue: LarkIngressQueue;
   // Manager learning P1–P4. Promotion remains isolated from memory, skills, and RBAC.
@@ -811,10 +819,73 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     };
   }
 
-  async function resolveGoogleExportAuth(companyId: string): Promise<{
-    readonly accessToken: string;
-    readonly readerDomain: string;
-  }> {
+  async function resolveDataExportDestination(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId?: string;
+  }) {
+    const [accessible, configured] = await Promise.all([
+      integrationConnectionRepo.listAccessibleGoogleConnections({
+        companyId: input.companyId,
+        userId: input.userId,
+      }),
+      getDataExportProfile(prisma, input.companyId),
+    ]);
+    if (!accessible.ok) throw accessible.error;
+    return selectDataExportDestination({
+      userId: input.userId,
+      accessible: accessible.value,
+      ...(configured.profile
+        ? { companyFallback: { connectionId: configured.profile.googleConnectionId } }
+        : {}),
+      ...(input.connectionId ? { connectionId: input.connectionId } : {}),
+    });
+  }
+
+  async function resolveGoogleExportAuth(
+    companyId: string,
+    userId: string,
+    target?: DataExportDestinationTarget,
+  ): Promise<GoogleExportAuth> {
+    if (target?.kind === 'user_google') {
+      const resolved = await integrationConnectionRepo.findAccessibleGoogleConnection({
+        companyId,
+        userId,
+        connectionId: target.connectionId,
+        minimumAccess: 'read_write',
+      });
+      if (!resolved.ok || !resolved.value?.refreshToken) {
+        throw new Error('Selected personal Google export connection is unavailable');
+      }
+      const connection = resolved.value;
+      const refreshToken = connection.refreshToken;
+      if (!refreshToken) {
+        throw new Error('Selected personal Google export connection has no refresh credential');
+      }
+      if (connection.ownerType !== 'user' || connection.ownerUserId !== userId) {
+        throw new Error('Selected Google export connection is not owned by the requester');
+      }
+      if (!connection.accountEmail) {
+        throw new Error('Selected personal Google export connection has no verified account email');
+      }
+      if (!hasGoogleScopeGroups(connection.scopes, [
+        [GOOGLE_SCOPE.driveFull, GOOGLE_SCOPE.driveFile],
+        [GOOGLE_SCOPE.sheetsFull],
+      ])) {
+        throw new Error('Selected personal Google export connection no longer has Drive and Sheets write scopes');
+      }
+      const accessToken = await googleOAuthService.getValidAccessToken({
+        companyId,
+        userId: `data-export:${connection.id}`,
+        refreshToken,
+      });
+      await integrationConnectionRepo.touchLastUsed(connection.id);
+      return {
+        accessToken,
+        ownerEmail: connection.accountEmail.trim().toLowerCase(),
+      };
+    }
+
     const configured = await prisma.companyCapabilityGovernance.findUnique({
       where: {
         companyId_capabilityId: { companyId, capabilityId: DATA_EXPORT_CAPABILITY_ID },
@@ -824,6 +895,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     const profile = configured ? parseDataExportProfile(configured.policyJson) : null;
     if (!profile) {
       throw new Error('Company data export is not configured by an administrator');
+    }
+    if (target && target.connectionId !== profile.googleConnectionId) {
+      throw new Error('Configured company Google export destination changed before execution');
     }
     const resolved = await integrationConnectionRepo.findCompanyGoogleExportConnection({
       companyId,
@@ -1253,6 +1327,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     queue: dataExportQueue,
     identityRepo: channelIdentityRepo,
     permissions,
+    resolveDestination: resolveDataExportDestination,
   });
   const larkIngressQueue = new LarkIngressQueue(queueRedisUrl);
   const googleConnectionContinuationQueue =
@@ -1645,7 +1720,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     getClient:       getZohoBooksClient,
     booksClient:     zohoPaginatedBooksClient,
     financeOps:      zohoFinanceOps,
-    exportQueue:     dataExportQueue,
     offers:          dataExportOfferService,
     inlineThreshold: env.ZOHO_BOOKS_CSV_INLINE_THRESHOLD,
   }));

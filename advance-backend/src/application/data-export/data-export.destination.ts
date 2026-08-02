@@ -3,10 +3,19 @@ import type {
   DataExportDestination,
 } from './data-export.types';
 
-export interface GoogleExportAuth {
-  readonly accessToken: string;
-  readonly readerDomain: string;
-}
+export type GoogleExportAuth =
+  | {
+      readonly accessToken: string;
+      readonly ownerEmail: string;
+    }
+  | {
+      readonly accessToken: string;
+      readonly readerDomain: string;
+    };
+
+export type DataExportArtifactAccess =
+  | { readonly kind: 'owner'; readonly email: string }
+  | { readonly kind: 'reader'; readonly email: string };
 
 export interface DataExportDestinationWriteProgress {
   readonly stage: 'writing';

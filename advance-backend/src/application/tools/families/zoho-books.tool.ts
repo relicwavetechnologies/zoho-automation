@@ -52,7 +52,6 @@ import type { ZohoBooksPaginatedClient, ZohoBooksModule } from '../../../infrast
 import { getModuleSchema, injectSyntheticFields, toSchemaHint } from '../../../infrastructure/zoho/zoho-books-schema.cache';
 import { runInSandbox, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
 import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } from '../../../shared/zoho-personalization';
-import type { DataExportQueue } from '../../data-export/data-export.queue';
 import {
   DATA_EXPORT_ROW_LIMIT,
 } from '../../data-export/data-export.types';
@@ -67,6 +66,7 @@ import {
 
 const Schema = z.object({
   connectionId: z.string().uuid(),
+  destinationConnectionId: z.string().uuid().optional(),
   op: z.enum([
     // CRUD
     'list_invoices',
@@ -508,8 +508,7 @@ export const createZohoBooksTool = (deps: {
   booksClient:  ZohoBooksPaginatedClient;
   /** Finance ops service for deep report operations. */
   financeOps:   ZohoFinanceOps;
-  exportQueue?: Pick<DataExportQueue, 'enqueue'>;
-  offers?: Pick<DataExportOfferService, 'createAuthorizedOffer'>;
+  offers?: Pick<DataExportOfferService, 'createAuthorizedOffer' | 'submitAuthorized'>;
   inlineThreshold?: number;
 }): Tool<Args, Res> => ({
   id:           asToolId('zohoBooks'),
@@ -525,7 +524,7 @@ export const createZohoBooksTool = (deps: {
     'For an exact aggregate that may require more than 4000 records, page through this tool inside a scripted workflow, write the rows to a file, and aggregate over that file.',
     'Use populated _amount_inr/_balance_inr for INR calculations; never infer an original currency when _currency is UNKNOWN.',
     `Set exportAll=true for a governed Google export capped at ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows. If the user asks for more or every row, disclose the cap and never call the result complete.`,
-    'Export example: {"op":"list_invoices","dateFrom":"2026-07-01","dateTo":"2026-07-31","exportAll":true,"connectionId":"<exact UUID>"}. Keep every field top-level.',
+    'Export example: {"op":"list_invoices","dateFrom":"2026-07-01","dateTo":"2026-07-31","exportAll":true,"connectionId":"<exact Zoho UUID>"}. If Divo returns eligible Google destination choices, retry with the same arguments plus destinationConnectionId="<chosen Google UUID>". Keep every field top-level.',
   ].join(' '),
 
   parameterDocs: [
@@ -676,7 +675,7 @@ export const createZohoBooksTool = (deps: {
         }));
       }
       if (
-        !deps.exportQueue
+        !deps.offers
         || ctx.runContext.channel !== 'lark'
         || !ctx.runContext.chatId
         || !args.connectionId
@@ -687,14 +686,26 @@ export const createZohoBooksTool = (deps: {
           message: `Governed Zoho exports of up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows require an exact connection UUID and a Lark chat for delivery`,
         }));
       }
-      const payload = exportPayloadFor(exportModule);
-      const exportJobId = await deps.exportQueue.enqueue(payload);
-      return ok({
-        success: true,
-        exportQueued: true,
-        exportJobId,
-        message: `Zoho Books export queued through dataExport with the current ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')}-row cap. I will deliver the verified invoker-only Google reader link to this Lark chat. If more rows exist, they will be omitted and the result will not be described as complete.`,
-      });
+      try {
+        const payload = exportPayloadFor(exportModule);
+        const exportJobId = await deps.offers.submitAuthorized(
+          payload,
+          args.destinationConnectionId,
+        );
+        return ok({
+          success: true,
+          exportQueued: true,
+          exportJobId,
+          message: `Zoho Books export queued through dataExport with the current ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')}-row cap. I will deliver the verified private Google artifact to this Lark chat. If more rows exist, they will be omitted and the result will not be described as complete.`,
+        });
+      } catch (cause) {
+        return err(new ToolError({
+          toolId: 'dataExport',
+          reason: 'upstream_failure',
+          cause,
+          message: `Could not queue Zoho Books export: ${cause instanceof Error ? cause.message : String(cause)}`,
+        }));
+      }
     }
 
     // ── Script mode (auto-escalate list ops to exhaustive fetch + sandbox) ──

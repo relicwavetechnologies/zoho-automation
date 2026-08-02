@@ -19,11 +19,14 @@ import {
 const RecipeSchema = z.object({
   source: datasetSourceSchema,
   transform: dataExportTransformSchema.optional(),
-  destination: dataExportDestinationSchema,
+  destination: dataExportDestinationSchema.extend({
+    connectionId: z.string().uuid().optional(),
+  }).strict(),
 }).strict();
 
 const ConfirmOfferSchema = z.object({
   offerId: z.string().uuid(),
+  destinationConnectionId: z.string().uuid().optional(),
 }).strict();
 
 const Schema = z.union([RecipeSchema, ConfirmOfferSchema]);
@@ -52,12 +55,12 @@ export function createDataExportTool(deps: {
       `Export up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} Airtable or Zoho Books rows through a governed, queued pipeline. Source pages and sandboxed transforms stay server-side; only a verified invoker-only Google Sheet or Drive CSV is returned.`,
     parameterDocs: [
       `Use this for large tabular results. The current hard cap is ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows. If the user requests more or every row, disclose the cap and never call the result complete.`,
-      'offerId: when a source preview returned preview.exportOfferId and the user explicitly confirms, call dataExport with only that opaque offerId. Never resend or alter its source or destination.',
+      'offerId: when a source preview returned preview.exportOfferId and the user explicitly confirms, call dataExport with that opaque offerId. Include destinationConnectionId only when a prior confirmation response asked the user to choose one exact eligible Google account.',
       'source.kind: airtable_records or zoho_books. Always use the exact source connection UUID.',
       'transform.script: optional JavaScript function body. It receives row, index, and args. Return an object, an array of objects, or null to filter.',
       'destination.format: auto chooses Google Sheets for manageable datasets and CSV in Google Drive for large datasets.',
       'destination.title: human-readable artifact title. destination.columns optionally fixes column order.',
-      'Artifact access is fixed: the verified invoking user receives reader access. Access changes, additional recipients, domain sharing, and public links are unsupported and must be refused.',
+      'Artifact access is fixed by the backend: a selected personal Google account owns its export; the governed company fallback grants reader access only to the verified invoker. Additional recipients, domain sharing, and public links are unsupported and must be refused.',
       'The backend re-checks requester RBAC, source access, the configured Google export account, invoker-only sharing, and artifact integrity before delivery.',
     ].join('\n'),
 
@@ -89,7 +92,21 @@ export function createDataExportTool(deps: {
             companyId: ctx.runContext.companyId,
             userId: ctx.runContext.userId,
             chatId: ctx.runContext.chatId,
+            ...(args.destinationConnectionId
+              ? { destinationConnectionId: args.destinationConnectionId }
+              : {}),
           });
+          if (confirmed.disposition === 'choose_destination') {
+            const choices = confirmed.connections
+              .map(connection => `${connection.accountEmail ?? connection.label} — ${connection.connectionId}`)
+              .join('; ');
+            return ok({
+              success: true,
+              exportQueued: false,
+              exportJobId: args.offerId,
+              message: `Ask the user which Google account should own the export, then retry with its exact destinationConnectionId: ${choices}`,
+            });
+          }
           return ok({
             success: true,
             exportQueued: confirmed.disposition !== 'in_progress',
@@ -139,12 +156,15 @@ export function createDataExportTool(deps: {
           requestId: ctx.runContext.requestId ?? ctx.correlationId,
           ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
         };
-        const exportJobId = await deps.offers.submitAuthorized(payload);
+        const exportJobId = await deps.offers.submitAuthorized(
+          payload,
+          args.destination.connectionId,
+        );
         return ok({
           success: true,
           exportQueued: true,
           exportJobId,
-          message: `Governed data export queued with the current ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')}-row cap. The verified invoker-only Google reader link will be delivered to this Lark chat.`,
+          message: `Governed data export queued with the current ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')}-row cap. The verified private Google artifact will be delivered to this Lark chat.`,
         });
       } catch (cause) {
         return err(new ToolError({

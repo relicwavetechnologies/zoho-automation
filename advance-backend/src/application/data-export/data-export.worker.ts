@@ -38,7 +38,11 @@ export interface DataExportWorkerDeps {
   readonly sink: DataExportDestinationSink;
   readonly identityRepo: Pick<ChannelIdentityRepoPort, 'resolveByUserId'>;
   readonly permissions: PermissionService;
-  readonly resolveGoogleAuth: (companyId: string) => Promise<GoogleExportAuth>;
+  readonly resolveGoogleAuth: (
+    companyId: string,
+    userId: string,
+    target?: DataExportJobPayload['destination']['target'],
+  ) => Promise<GoogleExportAuth>;
   readonly larkAdapter: Pick<LarkChannelAdapter, 'sendToChatId' | 'updateMessageById'>;
   readonly logger: Logger;
   readonly concurrency?: number;
@@ -145,8 +149,15 @@ export class DataExportWorker {
       throw new UnrecoverableError('Complete Zoho exports require full company Zoho read scope');
     }
 
-    const googleAuth = await this.deps.resolveGoogleAuth(payload.companyId);
-    if (readerEmail.split('@')[1] !== googleAuth.readerDomain.toLowerCase()) {
+    const googleAuth = await this.deps.resolveGoogleAuth(
+      payload.companyId,
+      payload.userId,
+      payload.destination.target,
+    );
+    if (
+      'readerDomain' in googleAuth
+      && readerEmail.split('@')[1] !== googleAuth.readerDomain.toLowerCase()
+    ) {
       throw new UnrecoverableError(
         `Data export can only share with a verified ${googleAuth.readerDomain} invoker`,
       );
@@ -217,6 +228,7 @@ export class DataExportWorker {
       requestId: payload.requestId,
       source: payload.source.kind,
       destination: payload.destination.format,
+      destinationOwner: payload.destination.target?.kind ?? 'legacy_company_google',
     });
     try {
       const completion = await this.deps.sink.write({
@@ -309,7 +321,7 @@ export class DataExportWorker {
     const sent = await this.deps.larkAdapter.sendToChatId(
       job.data.chatId,
       buildFinalCard({
-        markdown: '# Data export in progress\nPreparing the governed export. Only you will receive reader access.',
+        markdown: '# Data export in progress\nPreparing the governed export in your resolved Google destination.',
       }),
       job.data.replyToMessageId,
       deliveryKey('dtxp', job),
@@ -323,7 +335,7 @@ export class DataExportWorker {
     const updated = await this.deps.larkAdapter.updateMessageById(
       messageId,
       buildFinalCard({
-        markdown: '# Data export in progress\nPreparing the governed export. Only you will receive reader access.',
+        markdown: '# Data export in progress\nPreparing the governed export in your resolved Google destination.',
       }),
     );
     if (!updated.ok) throw updated.error;
@@ -346,7 +358,7 @@ export class DataExportWorker {
     const updated = await this.deps.larkAdapter.updateMessageById(
       messageId,
       buildFinalCard({
-        markdown: `# Data export in progress\n${detail}\n\nOnly you will receive reader access.`,
+        markdown: `# Data export in progress\n${detail}\n\nThe file stays private to your resolved Google destination.`,
       }),
     );
     if (!updated.ok) {

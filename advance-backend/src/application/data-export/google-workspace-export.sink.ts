@@ -10,6 +10,7 @@ import type {
   DataExportDestinationSink,
   DataExportDestinationWriteInput,
   DataExportDestinationWriteProgress,
+  DataExportArtifactAccess,
   GoogleExportAuth,
 } from './data-export.destination';
 
@@ -27,10 +28,11 @@ const EXPORT_TYPE_PROPERTY = 'divoExportType';
 export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
   async write(input: DataExportDestinationWriteInput): Promise<DataExportCompletion> {
     const drive = google.drive({ version: 'v3', auth: oauth(input.auth.accessToken) });
+    const access = artifactAccess(input.auth, input.readerEmail);
     const recovered = await recoverCompletedExport(
       drive,
       input.exportKey,
-      input.readerEmail,
+      access,
       input.signal,
     );
     if (recovered) return recovered;
@@ -81,7 +83,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       return format === 'google_sheet'
         ? await this.createSheet({
             auth: input.auth,
-            readerEmail: input.readerEmail,
+            access,
             exportKey: input.exportKey,
             title: input.destination.title,
             columns,
@@ -93,7 +95,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
           })
         : await this.createAndUploadCsv({
             auth: input.auth,
-            readerEmail: input.readerEmail,
+            access,
             exportKey: input.exportKey,
             title: input.destination.title,
             rowsPath,
@@ -112,7 +114,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
 
   private async createSheet(input: {
     readonly auth: GoogleExportAuth;
-    readonly readerEmail: string;
+    readonly access: DataExportArtifactAccess;
     readonly exportKey: string;
     readonly title: string;
     readonly columns: readonly string[];
@@ -167,7 +169,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         writtenRows += values.length - (writtenRows === 0 ? 1 : 0);
         await input.onProgress?.({ stage: 'writing', rowsProcessed: writtenRows });
       }
-      await shareUserReader(drive, spreadsheetId, input.readerEmail, input.signal);
+      await ensureArtifactAccess(drive, spreadsheetId, input.access, input.signal);
       const verified = await sheets.spreadsheets.values.get({
         spreadsheetId,
         range: 'Sheet1!1:1',
@@ -175,7 +177,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       if ((verified.data.values?.[0]?.length ?? 0) !== input.columns.length) {
         throw new Error('Google Sheet verification failed: header width differs from export');
       }
-      await verifyUserReader(drive, spreadsheetId, input.readerEmail, input.signal);
+      await verifyArtifactAccess(drive, spreadsheetId, input.access, input.signal);
       await markCompletedExport(drive, spreadsheetId, {
         exportKey: input.exportKey,
         artifactType: 'google_sheet',
@@ -189,7 +191,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         artifactType: 'google_sheet',
         rowCount: input.rowCount,
         sourceTruncated: input.sourceTruncated,
-        sharedWith: `${input.readerEmail} (reader)`,
+        sharedWith: accessLabel(input.access),
         verified: true,
       };
     } catch (error) {
@@ -200,7 +202,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
 
   private async createAndUploadCsv(input: {
     readonly auth: GoogleExportAuth;
-    readonly readerEmail: string;
+    readonly access: DataExportArtifactAccess;
     readonly exportKey: string;
     readonly title: string;
     readonly rowsPath: string;
@@ -251,7 +253,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       }, requestOptions(input.signal));
       fileId = created.data.id ?? undefined;
       if (!fileId) throw new Error('Google Drive did not return a file ID');
-      await shareUserReader(drive, fileId, input.readerEmail, input.signal);
+      await ensureArtifactAccess(drive, fileId, input.access, input.signal);
       const localSize = (await stat(input.csvPath)).size;
       const verified = await drive.files.get(
         { fileId, fields: 'id,size,webViewLink' },
@@ -260,7 +262,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       if (Number(verified.data.size ?? -1) !== localSize) {
         throw new Error('Google Drive verification failed: uploaded CSV size differs from source');
       }
-      await verifyUserReader(drive, fileId, input.readerEmail, input.signal);
+      await verifyArtifactAccess(drive, fileId, input.access, input.signal);
       await markCompletedExport(drive, fileId, {
         exportKey: input.exportKey,
         artifactType: 'csv',
@@ -274,7 +276,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         artifactType: 'csv',
         rowCount: input.rowCount,
         sourceTruncated: input.sourceTruncated,
-        sharedWith: `${input.readerEmail} (reader)`,
+        sharedWith: accessLabel(input.access),
         verified: true,
       };
     } catch (error) {
@@ -340,7 +342,7 @@ async function verifyUserReader(
 export async function recoverCompletedExport(
   drive: ReturnType<typeof google.drive>,
   exportKey: string,
-  readerEmail: string,
+  access: DataExportArtifactAccess,
   signal?: AbortSignal,
 ): Promise<DataExportCompletion | null> {
   const listed = await drive.files.list({
@@ -363,8 +365,8 @@ export async function recoverCompletedExport(
           await drive.files.delete({ fileId: file.id }, requestOptions(signal));
         }
       }
-      await ensureUserReader(drive, completed.id, readerEmail, signal);
-      await verifyUserReader(drive, completed.id, readerEmail, signal);
+      await ensureArtifactAccess(drive, completed.id, access, signal);
+      await verifyArtifactAccess(drive, completed.id, access, signal);
       return {
         success: true,
         artifactId: completed.id,
@@ -375,7 +377,7 @@ export async function recoverCompletedExport(
         artifactType,
         rowCount,
         sourceTruncated: completed.appProperties?.[EXPORT_TRUNCATED_PROPERTY] === 'true',
-        sharedWith: `${readerEmail} (reader)`,
+        sharedWith: accessLabel(access),
         verified: true,
       };
     }
@@ -385,6 +387,65 @@ export async function recoverCompletedExport(
     await drive.files.delete({ fileId: file.id }, requestOptions(signal));
   }
   return null;
+}
+
+function artifactAccess(
+  auth: GoogleExportAuth,
+  readerEmail: string,
+): DataExportArtifactAccess {
+  return 'ownerEmail' in auth
+    ? { kind: 'owner', email: auth.ownerEmail }
+    : { kind: 'reader', email: readerEmail };
+}
+
+function accessLabel(access: DataExportArtifactAccess): string {
+  return `${access.email} (${access.kind})`;
+}
+
+async function ensureArtifactAccess(
+  drive: ReturnType<typeof google.drive>,
+  fileId: string,
+  access: DataExportArtifactAccess,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (access.kind === 'reader') {
+    await ensureUserReader(drive, fileId, access.email, signal);
+  }
+}
+
+async function verifyArtifactAccess(
+  drive: ReturnType<typeof google.drive>,
+  fileId: string,
+  access: DataExportArtifactAccess,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (access.kind === 'reader') {
+    await verifyUserReader(drive, fileId, access.email, signal);
+    return;
+  }
+  const permissions = await drive.permissions.list({
+    fileId,
+    fields: 'permissions(type,role,emailAddress)',
+  }, requestOptions(signal));
+  const found = permissions.data.permissions?.some(permission =>
+    permission.type === 'user'
+    && permission.role === 'owner'
+    && permission.emailAddress?.toLowerCase() === access.email.toLowerCase(),
+  );
+  if (!found) throw new Error('Google Drive verification failed: selected account is not the export owner');
+  const broad = permissions.data.permissions?.some(permission =>
+    permission.type === 'anyone'
+    || permission.type === 'domain'
+    || permission.type === 'group'
+    || (
+      permission.type === 'user'
+      && !(
+        permission.role === 'owner'
+        && permission.emailAddress?.toLowerCase() === access.email.toLowerCase()
+      )
+    ),
+  );
+  if (broad) throw new Error('Google Drive verification failed: export has access beyond its owner');
 }
 
 async function ensureUserReader(

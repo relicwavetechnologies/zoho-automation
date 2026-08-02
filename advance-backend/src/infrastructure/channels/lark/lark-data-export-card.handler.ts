@@ -6,6 +6,7 @@ interface DataExportCardAction {
   readonly kind: 'data_export_confirm';
   readonly offerId: string;
   readonly format?: 'google_sheet' | 'csv';
+  readonly connectionId?: string;
 }
 
 type ParsedAction = DataExportCardAction | 'invalid' | null;
@@ -51,7 +52,21 @@ export class LarkDataExportCardHandler {
         chatId,
         progressMessageId,
         ...(action.format ? { destinationFormat: action.format } : {}),
+        ...(action.connectionId
+          ? { destinationConnectionId: action.connectionId }
+          : {}),
       });
+      if (result.disposition === 'choose_destination') {
+        return {
+          handled: true,
+          responseBody: {
+            card: {
+              type: 'raw',
+              data: buildDestinationChoiceCard(action, result.connections),
+            },
+          },
+        };
+      }
       if (result.disposition === 'in_progress') {
         return {
           handled: true,
@@ -104,15 +119,20 @@ function parseAction(rawValue: unknown): ParsedAction {
   const payload = asRecord(candidate);
   if (payload?.['kind'] === 'data_export_confirm') {
     const format = payload['format'];
+    const connectionId = payload['connectionId'];
     if (
-      Object.keys(payload).length !== (format === undefined ? 2 : 3)
+      Object.keys(payload).length !== 2
+        + (format === undefined ? 0 : 1)
+        + (connectionId === undefined ? 0 : 1)
       || !isUuid(payload['offerId'])
       || (format !== undefined && format !== 'google_sheet' && format !== 'csv')
+      || (connectionId !== undefined && !isUuid(connectionId))
     ) return 'invalid';
     return {
       kind: 'data_export_confirm',
       offerId: payload['offerId'],
       ...(format ? { format } : {}),
+      ...(connectionId ? { connectionId } : {}),
     };
   }
   return null;
@@ -135,9 +155,75 @@ function safeConfirmationMessage(error: unknown): string {
     /^Data export permission was revoked/,
     / read permission was revoked before confirmation\.$/,
     /^Complete Zoho exports require full company Zoho read scope\./,
+    /^Connect a writable Google account/,
+    /^The selected Google export account is unavailable/,
   ].some(pattern => pattern.test(message))
     ? message
     : 'Divo could not confirm this export. Please try again.';
+}
+
+function buildDestinationChoiceCard(
+  action: DataExportCardAction,
+  connections: readonly {
+    readonly connectionId: string;
+    readonly label: string;
+    readonly accountEmail?: string;
+  }[],
+): Record<string, unknown> {
+  return {
+    schema: '2.0',
+    config: {
+      width_mode: 'fill',
+      update_multi: true,
+      enable_forward: false,
+      summary: { content: 'Choose where Divo should create the export' },
+    },
+    header: {
+      template: 'default',
+      title: { tag: 'plain_text', content: 'Choose a Google account' },
+    },
+    body: {
+      vertical_spacing: '8px',
+      padding: '12px',
+      elements: [
+        {
+          tag: 'markdown',
+          content: 'You have more than one writable Google account. Choose the account that should own this export.',
+        },
+        {
+          tag: 'column_set',
+          element_id: 'export_accounts',
+          flex_mode: 'flow',
+          horizontal_spacing: '8px',
+          columns: connections.map((connection, index) => ({
+            tag: 'column',
+            width: 'auto',
+            elements: [{
+              tag: 'button',
+              element_id: `export_account_${index + 1}`,
+              text: {
+                tag: 'plain_text',
+                content: (connection.accountEmail ?? connection.label).slice(0, 48),
+              },
+              type: index === 0 ? 'primary' : 'default',
+              size: 'small',
+              behaviors: [{
+                type: 'callback',
+                value: {
+                  action: JSON.stringify({
+                    kind: action.kind,
+                    offerId: action.offerId,
+                    ...(action.format ? { format: action.format } : {}),
+                    connectionId: connection.connectionId,
+                  }),
+                },
+              }],
+            }],
+          })),
+        },
+      ],
+    },
+  };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

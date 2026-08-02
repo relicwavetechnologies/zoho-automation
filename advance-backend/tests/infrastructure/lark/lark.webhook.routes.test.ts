@@ -1493,6 +1493,105 @@ describe('Lark webhook card authorization', () => {
     assert.equal('card' in (result.responseBody as any), false);
   });
 
+  it('replaces the export card with eligible Google account choices before queueing', async () => {
+    const handler = new LarkDataExportCardHandler({
+      confirmForActor: async () => ({
+        disposition: 'choose_destination',
+        connections: [
+          {
+            connectionId: '33333333-3333-4333-8333-333333333333',
+            label: 'Work Google',
+            accountEmail: 'member@company.test',
+          },
+          {
+            connectionId: '44444444-4444-4444-8444-444444444444',
+            label: 'Personal Google',
+            accountEmail: 'member@gmail.com',
+          },
+        ],
+      }),
+    } as any, noopLogger);
+    const offerId = '11111111-1111-4111-8111-111111111111';
+    const result = await runWebhook({
+      header: {
+        event_type: 'card.action.trigger',
+        token: 'verify',
+        tenant_key: 'tenant-1',
+      },
+      event: {
+        operator: { open_id: 'ou_admin' },
+        context: { open_chat_id: 'oc_export', open_message_id: 'om_export_card' },
+        action: {
+          value: {
+            action: JSON.stringify({ kind: 'data_export_confirm', offerId, format: 'csv' }),
+          },
+        },
+      },
+    }, { dataExportCardHandler: handler });
+
+    const card = (result.responseBody as any).card.data;
+    assert.equal(card.header.title.content, 'Choose a Google account');
+    assert.equal(card.body.elements[1].columns.length, 2);
+    const callback = JSON.parse(card.body.elements[1].columns[1].elements[0].behaviors[0].value.action);
+    assert.deepEqual(callback, {
+      kind: 'data_export_confirm',
+      offerId,
+      format: 'csv',
+      connectionId: '44444444-4444-4444-8444-444444444444',
+    });
+  });
+
+  it('passes only the signed actor context and selected Google connection to confirmation', async () => {
+    let confirmation: unknown;
+    const handler = new LarkDataExportCardHandler({
+      confirmForActor: async input => {
+        confirmation = input;
+        return { exportJobId: 'job-1', disposition: 'queued' };
+      },
+    } as any, noopLogger);
+    const offerId = '11111111-1111-4111-8111-111111111111';
+    const result = await runWebhook({
+      header: {
+        event_type: 'card.action.trigger',
+        token: 'verify',
+        tenant_key: 'tenant-1',
+      },
+      event: {
+        operator: { open_id: 'ou_admin' },
+        context: { open_chat_id: 'oc_export', open_message_id: 'om_export_card' },
+        action: {
+          value: {
+            action: JSON.stringify({
+              kind: 'data_export_confirm',
+              offerId,
+              format: 'google_sheet',
+              connectionId: '33333333-3333-4333-8333-333333333333',
+            }),
+          },
+        },
+      },
+    }, {
+      identity: {
+        userId: 'admin-1',
+        companyId: 'company-1',
+        aiRole: 'COMPANY_ADMIN',
+        channel: 'lark',
+      },
+      dataExportCardHandler: handler,
+    });
+
+    assert.deepEqual(confirmation, {
+      offerId,
+      companyId: 'company-1',
+      userId: 'admin-1',
+      chatId: 'oc_export',
+      progressMessageId: 'om_export_card',
+      destinationFormat: 'google_sheet',
+      destinationConnectionId: '33333333-3333-4333-8333-333333333333',
+    });
+    assert.equal((result.responseBody as any).toast.type, 'success');
+  });
+
   it('keeps the export button when confirmation is still in progress', async () => {
     const handler = new LarkDataExportCardHandler({
       confirmForActor: async () => ({ exportJobId: 'job-1', disposition: 'in_progress' }),

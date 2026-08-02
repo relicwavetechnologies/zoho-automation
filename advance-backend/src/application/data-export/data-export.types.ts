@@ -46,7 +46,19 @@ export interface DataExportDestination {
   readonly format: 'auto' | 'google_sheet' | 'csv';
   readonly title: string;
   readonly columns?: readonly string[];
+  /** Backend-resolved at confirmation time; never accepted from model input. */
+  readonly target?: DataExportDestinationTarget;
 }
+
+export type DataExportDestinationTarget =
+  | {
+      readonly kind: 'user_google';
+      readonly connectionId: string;
+    }
+  | {
+      readonly kind: 'company_google';
+      readonly connectionId: string;
+    };
 
 export interface DataExportCompletion {
   readonly success: true;

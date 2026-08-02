@@ -19,6 +19,11 @@ import {
   type DataExportOfferRepositoryPort,
 } from './export-offer';
 import { datasetSourceToolId } from './data-export.types';
+import type { DataExportDestinationTarget } from './data-export.types';
+import type {
+  DataExportDestinationChoice,
+  ResolveDataExportDestination,
+} from './data-export-destination-resolver';
 
 const CONFLICT_MESSAGE =
   'Only one data export can be queued per user request. Ask the user to choose one dataset before exporting.';
@@ -29,6 +34,7 @@ export class DataExportOfferService {
     readonly queue: Pick<DataExportQueue, 'enqueue'>;
     readonly identityRepo: Pick<ChannelIdentityRepoPort, 'resolveByUserId'>;
     readonly permissions: Pick<PermissionService, 'resolve'>;
+    readonly resolveDestination: ResolveDataExportDestination;
     readonly now?: () => Date;
   }) {}
 
@@ -36,9 +42,17 @@ export class DataExportOfferService {
    * Persist and submit an export after the gateway has authorized this exact
    * payload. Opaque-offer confirmation uses confirmForActor instead.
    */
-  async submitAuthorized(payload: DataExportOfferPayload): Promise<string> {
+  async submitAuthorized(
+    payload: DataExportOfferPayload,
+    destinationConnectionId?: string,
+  ): Promise<string> {
+    const target = await this.requireDestination({
+      companyId: payload.companyId,
+      userId: payload.userId,
+      ...(destinationConnectionId ? { connectionId: destinationConnectionId } : {}),
+    });
     const prepared = await this.persistAuthorized(payload);
-    const queued = await this.claimAndQueue(prepared.offer, prepared.now);
+    const queued = await this.claimAndQueue(prepared.offer, prepared.now, { target });
     return queued.exportJobId;
   }
 
@@ -49,10 +63,17 @@ export class DataExportOfferService {
     readonly chatId: string;
     readonly progressMessageId?: string;
     readonly destinationFormat?: 'google_sheet' | 'csv';
-  }): Promise<{
-    readonly exportJobId: string;
-    readonly disposition: 'queued' | 'already_confirmed' | 'in_progress';
-  }> {
+    readonly destinationConnectionId?: string;
+  }): Promise<
+    | {
+        readonly exportJobId: string;
+        readonly disposition: 'queued' | 'already_confirmed' | 'in_progress';
+      }
+    | {
+        readonly disposition: 'choose_destination';
+        readonly connections: readonly DataExportDestinationChoice[];
+      }
+  > {
     const now = this.deps.now?.() ?? new Date();
     const loaded = await this.deps.offers.loadForConfirmation({
       offerId: input.offerId,
@@ -103,19 +124,40 @@ export class DataExportOfferService {
       throw new Error('Complete Zoho exports require full company Zoho read scope.');
     }
 
-    return this.claimAndQueue(
-      offer,
-      now,
-      input.progressMessageId,
-      input.destinationFormat,
-    );
+    const destination = await this.deps.resolveDestination({
+      companyId: input.companyId,
+      userId: input.userId,
+      ...(input.destinationConnectionId
+        ? { connectionId: input.destinationConnectionId }
+        : {}),
+    });
+    if (destination.status === 'choose_connection') {
+      return { disposition: 'choose_destination', connections: destination.connections };
+    }
+    if (destination.status === 'connect_required') {
+      throw new Error('Connect a writable Google account before confirming this export.');
+    }
+    if (destination.status === 'unavailable') throw new Error(destination.message);
+
+    return this.claimAndQueue(offer, now, {
+      target: destination.target,
+      ...(input.progressMessageId
+        ? { progressMessageId: input.progressMessageId }
+        : {}),
+      ...(input.destinationFormat
+        ? { destinationFormat: input.destinationFormat }
+        : {}),
+    });
   }
 
   private async claimAndQueue(
     expected: DataExportOfferRecord,
     now: Date,
-    progressMessageId?: string,
-    destinationFormat?: 'google_sheet' | 'csv',
+    options: {
+      readonly target: DataExportDestinationTarget;
+      readonly progressMessageId?: string;
+      readonly destinationFormat?: 'google_sheet' | 'csv';
+    },
   ): Promise<{
     readonly exportJobId: string;
     readonly disposition: 'queued' | 'already_confirmed' | 'in_progress';
@@ -149,10 +191,14 @@ export class DataExportOfferService {
     const claimedPayload = claimed.value.offer.payload;
     const exportJobId = await this.deps.queue.enqueue({
       ...claimedPayload,
-      ...(destinationFormat
-        ? { destination: { ...claimedPayload.destination, format: destinationFormat } }
+      destination: {
+        ...claimedPayload.destination,
+        ...(options.destinationFormat ? { format: options.destinationFormat } : {}),
+        target: options.target,
+      },
+      ...(options.progressMessageId
+        ? { progressMessageId: options.progressMessageId }
         : {}),
-      ...(progressMessageId ? { progressMessageId } : {}),
     });
     const confirmed = await this.deps.offers.markConfirmed({
       offerId: claimed.value.offer.id,
@@ -166,6 +212,25 @@ export class DataExportOfferService {
       throw new Error('Data export was queued but its confirmation could not be persisted. Retry this request safely.');
     }
     return { exportJobId, disposition: 'queued' };
+  }
+
+  private async requireDestination(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId?: string;
+  }): Promise<DataExportDestinationTarget> {
+    const destination = await this.deps.resolveDestination(input);
+    if (destination.status === 'selected') return destination.target;
+    if (destination.status === 'choose_connection') {
+      const choices = destination.connections
+        .map(choice => `${choice.accountEmail ?? choice.label} (${choice.connectionId})`)
+        .join('; ');
+      throw new Error(`Choose one Google export account and retry: ${choices}`);
+    }
+    if (destination.status === 'connect_required') {
+      throw new Error('Connect a writable Google account before exporting data.');
+    }
+    throw new Error(destination.message);
   }
 
   async createAuthorizedOffer(payload: DataExportOfferPayload): Promise<{

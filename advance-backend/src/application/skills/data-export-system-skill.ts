@@ -13,7 +13,7 @@ export const DATA_EXPORT_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = {
 
 Use \`dataExport\` when the user asks for all rows, a complete export, a CSV, a Google Sheet, or when a source preview reports more data.
 
-When a source result contains \`preview.exportOfferId\`, explain briefly that more rows are available and ask whether the user wants the offered export. After an explicit confirmation, call \`dataExport\` with only \`{ "offerId": "<preview.exportOfferId>" }\`. Never reconstruct the source query, connection, filters, destination, company, or user from the conversation, and never combine \`offerId\` with other arguments.
+When a source result contains \`preview.exportOfferId\`, explain briefly that more rows are available and ask whether the user wants the offered export. After an explicit confirmation, call \`dataExport\` with \`{ "offerId": "<preview.exportOfferId>" }\`. If that exact confirmation returns eligible Google account choices, ask once and retry with only the same \`offerId\` plus the chosen \`destinationConnectionId\`. Never reconstruct the source query, source connection, filters, title, company, or user from the conversation.
 
 The current system cap is ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows per export. If the user asks for more or for every row, state this limit clearly. Never claim that a capped artifact is complete; the completion card will say when additional source rows were omitted.
 
@@ -24,9 +24,9 @@ The current system cap is ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows 
 5. For mapping, filtering, renaming, flattening, or calculated columns, provide a row transform. It receives \`row\`, \`index\`, and \`args\`; return one object, an array of objects, or \`null\`.
 6. Never fetch source pages manually, paste bulk rows into model context, or invoke Google Drive/Sheets directly for the export.
 
-Every artifact is owned by the administrator-approved Google export account and shared as reader with the verified invoking user only. Access changes are not supported. If asked to share an export with another user, group, department, company, domain, or public link, refuse clearly; do not call Google permission tools.
+When the user has one writable Google account, the export is created there and owned by that account. With multiple writable accounts, use the backend choices and ask once; never guess. If no writable personal account is available, the backend may use the administrator-approved company export account and grant reader access only to the verified invoking user. Access changes are not supported. If asked to share an export with another user, group, department, company, domain, or public link, refuse clearly; do not call Google permission tools.
 
-The backend re-checks dataExport permission, source read permission, invoker access to the exact source connection, the configured Google export account, the invoker-only reader permission, and artifact integrity.`,
+The backend re-checks dataExport permission, source read permission, invoker access to the exact source connection, the exact selected Google destination, the resulting owner-or-reader access, and artifact integrity.`,
   toolIds: ['dataExport'],
   tags: ['divo', 'data', 'export', 'google-drive', 'google-sheets'],
   aliases: [

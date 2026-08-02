@@ -515,13 +515,16 @@ describe('zohoBooks expanded execution', () => {
 
   it('exports every list operation through the tool contract when exportAll=true', async () => {
     const jobs: any[] = [];
+    const destinations: Array<string | undefined> = [];
     const tool = createZohoBooksTool({
       getClient: async () => fakeSimpleClient,
       booksClient: makeBooksClient(),
       financeOps: fakeFinanceOps as ZohoFinanceOps,
-      exportQueue: {
-        enqueue: async (payload) => {
+      offers: {
+        createAuthorizedOffer: async () => assert.fail('explicit export must queue immediately'),
+        submitAuthorized: async (payload, destinationConnectionId) => {
           jobs.push(payload);
+          destinations.push(destinationConnectionId);
           return `dtx-${jobs.length}`;
         },
       },
@@ -567,6 +570,50 @@ describe('zohoBooks expanded execution', () => {
     ]);
     assert.ok(jobs.every(job => job.source.kind === 'zoho_books'));
     assert.ok(jobs.every(job => job.destination.format === 'auto'));
+    assert.deepEqual(destinations, Array(ops.length).fill(undefined));
+  });
+
+  it('retries an ambiguous Zoho export with a separately selected Google destination', async () => {
+    const destinationId = '22222222-2222-4222-8222-222222222222';
+    const calls: Array<string | undefined> = [];
+    const tool = createZohoBooksTool({
+      getClient: async () => fakeSimpleClient,
+      booksClient: makeBooksClient(),
+      financeOps: fakeFinanceOps as ZohoFinanceOps,
+      offers: {
+        createAuthorizedOffer: async () => assert.fail('explicit export must queue immediately'),
+        submitAuthorized: async (_payload, destinationConnectionId) => {
+          calls.push(destinationConnectionId);
+          if (!destinationConnectionId) {
+            throw new Error(`Choose one Google export account and retry: Work (${destinationId})`);
+          }
+          return 'dtx-selected';
+        },
+      },
+    });
+    const exportCtx = makeCtx('zohoBooks', ['read'], {
+      chatId: 'oc_test',
+      requestId: 'om_test_ambiguous',
+    });
+    exportCtx.perm.allowedToolIds.add(asToolId('dataExport'));
+    exportCtx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
+    const baseArgs = {
+      op: 'list_invoices' as const,
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      exportAll: true,
+    };
+
+    const ambiguous = await tool.execute(baseArgs, exportCtx);
+    assert.equal(ambiguous.ok, false);
+    assert.match((ambiguous as any).error.payload.message, /choose one Google export account/i);
+
+    const selected = await tool.execute({
+      ...baseArgs,
+      destinationConnectionId: destinationId,
+    }, exportCtx);
+    assert.equal(selected.ok, true);
+    assert.equal((selected as any).value.exportJobId, 'dtx-selected');
+    assert.deepEqual(calls, [undefined, destinationId]);
   });
 
   it('bounds script results inline and leaves complete artifacts to dataExport', async () => {

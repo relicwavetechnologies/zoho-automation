@@ -161,12 +161,12 @@ test('turns a verified export offer receipt into explicit governed format choice
 
   assert.deepEqual(result.actions, [
     {
-      label: 'Sheet (view-only)',
+      label: 'Google Sheet',
       value: JSON.stringify({ kind: 'data_export_confirm', offerId, format: 'google_sheet' }),
       style: 'primary',
     },
     {
-      label: 'CSV (view-only)',
+      label: 'CSV in Drive',
       value: JSON.stringify({ kind: 'data_export_confirm', offerId, format: 'csv' }),
     },
   ]);
