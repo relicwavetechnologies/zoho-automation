@@ -24,6 +24,7 @@ import type { MemoryService } from '../../application/knowledge/semantic-memory.
 import { buildDesktopCapabilityBootstrap, isFinanceDepartment } from '../../application/desktop/desktop-capability-bootstrap';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
+import { PROXY_MODEL_SPECS, RUNTIME_MODEL_PREFERENCE } from '../../application/observability/pricing';
 import {
   connectionGovernancePolicySchema,
   defaultConnectionGovernancePolicy,
@@ -1145,9 +1146,22 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       });
       const allowedModels =
         policy && policy.allowedModels.length > 0 ? policy.allowedModels : ['deepseek-v4-flash'];
+      // Labels travel with the ids, in runtime preference order.
+      //
+      // The web UI used to read these from GET /api/admin/proxy/models, which
+      // sits behind adminAuth — so for a plain member it 403'd and the settings
+      // screen listed raw ids like `deepseek-v4-flash` instead of "Flash". The
+      // catalogue is static, so serving the member-visible fields here costs
+      // nothing and removes the admin round-trip entirely. Pricing stays out:
+      // a member has no business reading per-million rates.
+      const catalogue = RUNTIME_MODEL_PREFERENCE
+        .filter((id) => allowedModels.includes(id))
+        .map((id) => PROXY_MODEL_SPECS.find((spec) => spec.id === id))
+        .filter((spec): spec is (typeof PROXY_MODEL_SPECS)[number] => Boolean(spec))
+        .map((spec) => ({ id: spec.id, label: spec.label, provider: spec.provider, vision: spec.vision }));
       res.json({
         success: true,
-        data: { allowedModels, blocked: policy?.blocked ?? false },
+        data: { allowedModels, models: catalogue, blocked: policy?.blocked ?? false },
       });
     } catch (e) {
       res.status(500).json({ success: false, message: String(e) });

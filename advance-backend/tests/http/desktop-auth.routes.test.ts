@@ -1296,4 +1296,75 @@ describe('desktop /me reports the department role', () => {
 
     assert.equal(result.body.data.departments[0].isManager, false);
   });
+
+  /*
+   * The model list a member sees.
+   *
+   * Labels used to come from GET /api/admin/proxy/models, which is behind
+   * adminAuth — so a plain member got a 403, the web UI swallowed it, and the
+   * settings screen listed `deepseek-v4-flash` instead of "Flash". The member
+   * route carries the catalogue fields itself now.
+   */
+  describe('model options', () => {
+    const policyPrisma = (policy: { allowedModels: string[]; blocked: boolean } | null) => ({
+      memberProxyPolicy: { findUnique: async () => policy },
+    });
+
+    it('carries a label for every model the member is allowed', async () => {
+      const router = createDesktopAuthRoutes(makeDeps({
+        prisma: policyPrisma({ allowedModels: ['deepseek-v4-pro', 'deepseek-v4-flash'], blocked: false }),
+      }));
+
+      const result = await callRoute(router, 'GET', '/model-options', {
+        locals: { userId: 'user-1', companyId: 'company-1' },
+      });
+
+      assert.equal(result.status, 200);
+      const models = result.body.data.models as { id: string; label: string }[];
+      assert.equal(models.length, 2);
+      for (const model of models) {
+        assert.ok(model.label.length > 0, `${model.id} has no label`);
+        assert.notEqual(model.label, model.id, `${model.id} fell back to its raw id`);
+      }
+    });
+
+    it('lists only the models the member actually holds', async () => {
+      const router = createDesktopAuthRoutes(makeDeps({
+        prisma: policyPrisma({ allowedModels: ['deepseek-v4-flash'], blocked: false }),
+      }));
+
+      const result = await callRoute(router, 'GET', '/model-options', {
+        locals: { userId: 'user-1', companyId: 'company-1' },
+      });
+
+      assert.deepEqual(
+        (result.body.data.models as { id: string }[]).map(m => m.id),
+        ['deepseek-v4-flash'],
+      );
+    });
+
+    it('never reports pricing to a member', async () => {
+      const router = createDesktopAuthRoutes(makeDeps({
+        prisma: policyPrisma({ allowedModels: ['deepseek-v4-pro'], blocked: false }),
+      }));
+
+      const result = await callRoute(router, 'GET', '/model-options', {
+        locals: { userId: 'user-1', companyId: 'company-1' },
+      });
+
+      const [model] = result.body.data.models as Record<string, unknown>[];
+      assert.deepEqual(Object.keys(model!).sort(), ['id', 'label', 'provider', 'vision']);
+    });
+
+    it('falls back to the Flash default when no policy is stored', async () => {
+      const router = createDesktopAuthRoutes(makeDeps({ prisma: policyPrisma(null) }));
+
+      const result = await callRoute(router, 'GET', '/model-options', {
+        locals: { userId: 'user-1', companyId: 'company-1' },
+      });
+
+      assert.deepEqual(result.body.data.allowedModels, ['deepseek-v4-flash']);
+      assert.equal((result.body.data.models as { label: string }[])[0]!.label.length > 0, true);
+    });
+  });
 });
