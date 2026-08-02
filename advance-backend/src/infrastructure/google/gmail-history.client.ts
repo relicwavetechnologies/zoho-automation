@@ -7,6 +7,15 @@ import type {
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const MAX_HISTORY_PAGES = 10;
 const MAX_RECOVERY_MESSAGES = 100;
+/**
+ * How many `format=full` message fetches run at once.
+ *
+ * One history pass can name a thousand messages, and firing a thousand
+ * concurrent requests at Gmail exhausts the per-user quota and gets the whole
+ * batch throttled — which fails the sync and leaves the cursor where it was, so
+ * the next pass does exactly the same thing.
+ */
+const MESSAGE_FETCH_CONCURRENCY = 6;
 const MAX_BODY_CHARS = 50_000;
 
 export interface GmailHistorySync {
@@ -218,23 +227,57 @@ export class GmailHistoryClient {
     };
   }
 
+  /**
+   * Fetch every named message, a few at a time.
+   *
+   * A message that has gone missing between the history record and this fetch —
+   * deleted, or moved by another client — is skipped rather than allowed to
+   * fail the pass. It cannot be delivered by anyone, ever, and failing on it
+   * would wedge the cursor: the next pass reads the same history, finds the same
+   * dead message and dies the same way, while every later arrival waits behind
+   * it.
+   *
+   * Every other failure still aborts the batch. Those are transient, and
+   * skipping them would advance the cursor past mail nobody has read.
+   */
   private async loadEvents(
     accessToken: string,
     ids: string[],
   ): Promise<NewMailEvent[]> {
-    return Promise.all(ids.map(async id => {
-      const message = await this.getJson<GmailMessage>(
+    const events: NewMailEvent[] = [];
+    for (let start = 0; start < ids.length; start += MESSAGE_FETCH_CONCURRENCY) {
+      const batch = ids.slice(start, start + MESSAGE_FETCH_CONCURRENCY);
+      const loaded = await Promise.all(
+        batch.map(id => this.loadEvent(accessToken, id)),
+      );
+      for (const event of loaded) {
+        if (event) events.push(event);
+      }
+    }
+    return events;
+  }
+
+  private async loadEvent(
+    accessToken: string,
+    id: string,
+  ): Promise<NewMailEvent | null> {
+    let message: GmailMessage;
+    try {
+      message = await this.getJson<GmailMessage>(
         `${GMAIL_API}/messages/${encodeURIComponent(id)}?format=full`,
         accessToken,
       );
-      return {
-        providerMessageId: id,
-        ...(message.threadId ? { providerThreadId: message.threadId } : {}),
-        historyId: message.historyId ?? '0',
-        metadata: messageMetadata(message),
-        occurredAt: new Date(Number(message.internalDate ?? Date.now())),
-      };
-    }));
+    } catch (error) {
+      if (error instanceof GmailApiError && error.status === 404) return null;
+      throw error;
+    }
+    return {
+      providerMessageId: id,
+      ...(message.threadId ? { providerThreadId: message.threadId } : {}),
+      historyId: message.historyId ?? '0',
+      metadata: messageMetadata(message),
+      occurredAt: new Date(Number(message.internalDate ?? Date.now())),
+    };
   }
 
   private async getJson<T>(

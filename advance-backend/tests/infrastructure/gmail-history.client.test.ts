@@ -98,3 +98,106 @@ describe('GmailHistoryClient history draining', () => {
     assert.equal(urls.filter(url => url.includes('/history?')).length, 10);
   });
 });
+
+/**
+ * Stub whose `messages.get` can fail per message and which records how many
+ * fetches are in flight at once.
+ */
+function gmailWithMessages(input: {
+  readonly ids: readonly string[];
+  readonly respond: (id: string) => { status: number; body: Json };
+}) {
+  let inFlight = 0;
+  let peakInFlight = 0;
+  const fetched: string[] = [];
+  const fetchStub = (async (url: string) => {
+    if (url.includes('/history?')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          historyId: '200',
+          history: [{
+            id: '150',
+            messagesAdded: input.ids.map(id => ({ message: { id } })),
+          }],
+        }),
+      };
+    }
+    if (url.includes('/messages/')) {
+      const id = decodeURIComponent(url.split('/messages/')[1]!.split('?')[0]!);
+      fetched.push(id);
+      inFlight++;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      await new Promise(resolve => setTimeout(resolve, 1));
+      inFlight--;
+      const { status, body } = input.respond(id);
+      return { ok: status < 400, status, json: async () => body };
+    }
+    return { ok: true, status: 200, json: async () => ({ historyId: '999' }) };
+  }) as unknown as typeof fetch;
+  return {
+    client: new GmailHistoryClient(fetchStub),
+    fetched,
+    peak: () => peakInFlight,
+  };
+}
+
+const okMessage = (id: string) => ({
+  status: 200,
+  body: {
+    id,
+    threadId: `t-${id}`,
+    historyId: '1',
+    internalDate: '0',
+    payload: { headers: [], mimeType: 'text/plain' },
+  } as Json,
+});
+
+describe('GmailHistoryClient message loading', () => {
+  it('does not fire one request per message at Gmail all at once', async () => {
+    // A single history pass can name a thousand messages. Firing a thousand
+    // concurrent fetches exhausts the per-user quota, throttles the batch, and
+    // fails the sync — leaving the cursor where it was, so the next pass does
+    // exactly the same thing.
+    const ids = Array.from({ length: 40 }, (_, i) => `m${i}`);
+    const gmail = gmailWithMessages({ ids, respond: okMessage });
+
+    const sync = await gmail.client.sync({ accessToken: 'token', historyId: '100' });
+
+    assert.equal(sync.events.length, 40);
+    assert.ok(gmail.peak() <= 6, `peak concurrency was ${gmail.peak()}`);
+  });
+
+  it('skips a message that has vanished instead of wedging the cursor', async () => {
+    // Deleted between the history record and the fetch. Nobody can ever deliver
+    // it, and failing on it would make every later arrival queue behind a dead
+    // message forever.
+    const gmail = gmailWithMessages({
+      ids: ['m1', 'gone', 'm3'],
+      respond: id => id === 'gone'
+        ? { status: 404, body: { error: { message: 'Not Found' } } }
+        : okMessage(id),
+    });
+
+    const sync = await gmail.client.sync({ accessToken: 'token', historyId: '100' });
+
+    assert.deepEqual(sync.events.map(e => e.providerMessageId), ['m1', 'm3']);
+    assert.equal(sync.nextHistoryId, '200');
+  });
+
+  it('still fails the whole pass on a transient message error', async () => {
+    // Skipping these would advance the cursor past mail nobody has read.
+    const gmail = gmailWithMessages({
+      ids: ['m1', 'flaky'],
+      respond: id => id === 'flaky'
+        ? { status: 500, body: { error: { message: 'Backend Error' } } }
+        : okMessage(id),
+    });
+
+    await assert.rejects(
+      gmail.client.sync({ accessToken: 'token', historyId: '100' }),
+      /Backend Error/,
+    );
+  });
+});
