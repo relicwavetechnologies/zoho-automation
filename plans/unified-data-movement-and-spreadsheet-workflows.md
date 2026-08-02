@@ -15,7 +15,7 @@
 | 1 — exporter modularization | ✅ Done | Source registry, destination sink, queue, verification, and worker boundaries centralized |
 | 2 — preview and durable offers | ✅ Done | Bounded previews, opaque 24-hour offers, fresh authorization, and idempotent confirmation implemented |
 | 3 — Lark export interaction | ✅ Done | Signed format/account cards, same-card progress, OAuth resume, and personal destination preference implemented |
-| 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and real Sheet/CSV/XLSX outputs are implemented and the personal-owner XLSX path is verified end to end |
+| 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
 | 5 — Semrush and OMS convergence | ⬜ Not started | Central source adapters and legacy Cloudinary path removal remain |
 | 6 — pasted Sheet/Drive URLs | ⬜ Not started | Typed URL resolver and existing-Sheet bulk write remain |
 | 7 — routers and provider skills | 🟡 Partial | Central export skill knows Excel; provider-wide routing/skill convergence remains |
@@ -46,6 +46,10 @@
   for `abhishek@emiactech.com`, and Drive completion metadata. Independent
   readback opened the 61-row by 48-column workbook, found one table, and found
   no formula-error cells.
+- XLSX output now derives bounded readable column widths while streaming,
+  preserves long string IDs as text, and filters the complete data range.
+  Focused tests, TypeScript, raw workbook XML, and LibreOffice rendering pass;
+  the independent cold review returned `ship` with no findings.
 - A truncated provider page is now described as a preview; an unknown full
   count is no longer exposed as `totalCount`.
 
@@ -728,6 +732,9 @@ then verified by Drive size, MIME type, and access. Since the installed SheetJS
 writer retains workbook cells in memory, explicit Excel output is bounded to
 5,000 rows and 100,000 cells; larger or wider exports must use CSV. `auto`
 continues to choose only Google Sheet or CSV and never silently selects XLSX.
+Generated workbooks also keep long string IDs as text, size columns from the
+actual normalized data within a fixed readability cap, and apply a filter to
+the full exported range.
 
 **Exit criteria**
 
