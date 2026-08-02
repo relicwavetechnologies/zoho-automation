@@ -53,7 +53,10 @@ describe('Google Workspace system skills', () => {
     assert.match(sheets.markdown, /one eligible account.*retry immediately/s);
     assert.match(sheets.markdown, /returns several, ask\s+once/s);
     assert.match(sheets.markdown, /URL-only request resolves metadata and access only/);
-    assert.match(sheets.markdown, /Existing-Sheet bulk\s+write, append, and import are not available yet/);
+    assert.match(sheets.markdown, /RECENT DIVO EXPORTS/);
+    assert.match(sheets.markdown, /"op": "call_exported_sheet"/);
+    assert.match(sheets.markdown, /never supply a\s+connection or spreadsheet ID/s);
+    assert.match(sheets.markdown, /read the exact changed range back/);
   });
 
   it('gives the six upgraded products complete Divo-native workflows', () => {

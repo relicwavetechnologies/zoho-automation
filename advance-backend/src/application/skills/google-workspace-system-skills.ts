@@ -362,9 +362,30 @@ returned by Divo. Never reconstruct Google IDs or move Sheet rows through
 model context.
 
 A URL-only request resolves metadata and access only. Confirm that Divo can
-open the Sheet, then ask what the member wants to do next. Existing-Sheet bulk
-write, append, and import are not available yet; never claim that this
-resolution wrote or prepared bulk rows.
+open the Sheet, then ask what the member wants to do next.
+
+When RECENT DIVO EXPORTS identifies a Google Sheet, use its opaque reference
+for every read or edit in Lark. Never copy an ID from its URL and never supply a
+connection or spreadsheet ID:
+
+\`\`\`json
+{
+  "toolId": "googleSheets",
+  "args": {
+    "op": "call_exported_sheet",
+    "resourceRef": "<opaque recent-export reference>",
+    "nativeTool": "read_sheet_values",
+    "input": { "range": "Sheet1!A1:Z100" }
+  }
+}
+\`\`\`
+
+For follow-up edits, inspect workbook metadata or the exact header range first,
+perform the narrow requested native operation through \`call_exported_sheet\`,
+then read the exact changed range back through the same opaque reference. Divo
+revalidates the original Google account and workbook on every call. CSV and
+Excel exports are not editable through this reference; ask the member to use a
+Google Sheet destination instead.
 
 For a new structured spreadsheet, use this order:
 

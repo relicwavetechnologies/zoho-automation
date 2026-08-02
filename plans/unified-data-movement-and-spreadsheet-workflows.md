@@ -17,7 +17,7 @@
 | 3 — Lark export interaction | ✅ Done | Signed format/account cards, immediate callback ACK, locked choice cards, governed progress delivery, OAuth resume, and personal destination preference implemented |
 | 4 — editable destinations and formats | ✅ Done | Personal owner/company reader semantics and usable Sheet/CSV/XLSX outputs are implemented; the personal-owner XLSX path is verified end to end |
 | 5 — Semrush and OMS convergence | 🟡 Partial | OMS and Semrush are integrated; live Semrush preview/offer passes, while artifact verification and rollback-path removal evidence remain |
-| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Governed resolution, retry-safe existing-Sheet writes, and exact-thread export continuity are implemented; secure follow-up edits, live isolated proof, and Drive-hosted XLSX resolution remain |
+| 6 — pasted Sheet/Drive URLs | 🟡 In progress | Governed resolution, retry-safe existing-Sheet writes, exact-thread continuity, and secure follow-up edit routing are implemented; live isolated proof and Drive-hosted XLSX resolution remain |
 | 7 — routers and provider skills | 🟡 Partial | Exact pasted Sheet URLs now route to governed reference resolution before web search; provider-wide routing/skill convergence remains |
 | 8 — load and limit tuning | ⬜ Not started | Production measurements and tuned queue/resource ceilings remain |
 | 9 — realistic isolated-runtime validation | 🟡 In progress | Dev Lark received a real Zoho preview and a fresh opaque export offer; Sheet/CSV confirmation and no-account OAuth resume remain |
@@ -166,8 +166,18 @@
   write, so a transient DB retry cannot create a duplicate export; if every
   continuity attempt fails, the success card truthfully asks the user to paste
   its link for later follow-up. Focused export/runtime verification passes 69/69 plus
-  TypeScript and diff validation. Secure edit-by-reference and live follow-up
-  proof remain.
+  TypeScript and diff validation.
+- A later turn in that exact Lark DM/thread can now submit only the opaque
+  resource reference plus the intended native Google operation. The gateway
+  resolves the server-only connection and spreadsheet IDs, re-probes the
+  canonical URL with that same account, and materializes an ordinary governed
+  Google Sheets call. Existing RBAC, HITL, audit, connection-owner approval,
+  and rate-limit enforcement therefore remain authoritative. Caller-supplied
+  connection or spreadsheet handles are rejected, and tool/preflight responses
+  redact those handles. CSV and XLSX artifacts are not treated as editable
+  Sheet references. Focused gateway/skill/repository verification passes 94/94
+  checks plus TypeScript and diff validation. Live low-hint follow-up proof
+  remains.
 
 ---
 
@@ -903,6 +913,12 @@ the full exported range.
   the header, final row, and count. It does not clear, overwrite, or append to
   an existing tab. Append remains deferred until it has its own retry-safe
   idempotency marker.
+- For an exported Google Sheet retained in the current Lark conversation,
+  accept only its opaque resource reference. Resolve and revalidate the exact
+  personal account/workbook server-side, then pass the materialized call
+  through the normal governed Google executor. Never expose or accept raw
+  connection/spreadsheet handles. A follow-up edit first inspects the current
+  header/range, performs the narrow write, and reads back the affected range.
 - Add Drive XLSX metadata resolution and explicit conversion approval.
 - Return clear unsupported behavior for OneDrive/Excel Online and Lark Base until their connectors are ready.
 
@@ -1235,9 +1251,10 @@ Never log:
 4. Confirm pending Semrush offer `5ce39d0c-b27b-40b4-a8e4-87dac9662139`,
    verify the destination content/owner, then remove its rollback-only
    Cloudinary path only after that parity evidence passes.
-5. Add the Lark-only secure edit-by-reference adapter, then run a real export
-   followed by the low-hint request “Add a Notes column to that sheet and put
-   Needs review in the first two rows.” Verify the exact workbook readback.
+5. Run a real export followed by the low-hint request “Add a Notes column to
+   that sheet and put Needs review in the first two rows.” Verify the exact
+   workbook readback through the implemented Lark-only secure edit-by-reference
+   adapter.
 6. Run the pasted-Sheet existing-tab flow through isolated cloud Pi and verify
    the produced tab in the requester's workbook; then add Drive-hosted XLSX
    metadata resolution and explicit conversion approval.

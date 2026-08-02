@@ -2291,6 +2291,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     larkKnowledgeReview: larkKnowledgeReviewService,
     knowledgeMutations,
     personalMemoryCommands,
+    dataExportResources: conversationRepo,
+    resolveGoogleSheetReference,
     runEffectReceipts,
     logger: logger.child({ service: 'gateway-dispatcher' }),
   });

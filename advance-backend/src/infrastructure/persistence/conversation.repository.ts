@@ -31,6 +31,13 @@ export interface ConversationRepoPort {
     scope: ConversationScope,
     ownerUserId?: string,
   ): Promise<Result<Turn[], InfraError>>;
+  getToolTurnByResourceRef?(
+    chatId: string,
+    toolName: string,
+    resourceRef: string,
+    ownerUserId: string,
+    scope: ConversationScope,
+  ): Promise<Result<Turn | null, InfraError>>;
   appendTurn(
     chatId: string,
     turn: Omit<Turn, 'id'>,
@@ -159,6 +166,45 @@ export class ConversationRepository implements ConversationRepoPort {
       })));
     } catch (e) {
       return err(wrapInfra('prisma', 'getRecentToolTurns', e));
+    }
+  }
+
+  async getToolTurnByResourceRef(
+    chatId: string,
+    toolName: string,
+    resourceRef: string,
+    ownerUserId: string,
+    scope: ConversationScope,
+  ): Promise<Result<Turn | null, InfraError>> {
+    try {
+      const conversation = await this.db.runtimeConversation.findUnique({
+        where: { companyId_channel_channelConversationKey: conversationUniqueKey(chatId, scope) },
+        select: { id: true },
+      });
+      if (!conversation) return ok(null);
+      const row = await this.db.runtimeConversationMessage.findFirst({
+        where: {
+          conversationId: conversation.id,
+          messageKind: 'tool_result',
+          AND: [
+            { toolCallJson: { path: ['name'], equals: toolName } },
+            { toolResultJson: { path: ['resourceRef'], equals: resourceRef } },
+            { toolResultJson: { path: ['ownerUserId'], equals: ownerUserId } },
+          ],
+        },
+        orderBy: { sequence: 'desc' },
+      });
+      if (!row) return ok(null);
+      return ok({
+        id: row.id,
+        role: 'tool',
+        content: row.contentText ?? '',
+        timestamp: row.createdAt.toISOString(),
+        toolName,
+        ...(row.toolResultJson !== null ? { toolOutcome: row.toolResultJson } : {}),
+      });
+    } catch (e) {
+      return err(wrapInfra('prisma', 'getToolTurnByResourceRef', e));
     }
   }
 
