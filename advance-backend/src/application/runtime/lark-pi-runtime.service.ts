@@ -827,7 +827,9 @@ export class LarkPiRuntimeService {
       return [
         'RECENT DIVO EXPORTS — backend-verified conversation context:',
         ...exports.map(resource => (
-          `- ${resource.resourceRef} | ${resource.artifactType} | ${resource.rowCount} rows | ${resource.artifactUrl}`
+          `- ${resource.resourceRef} | ${resource.artifactType} | ${
+            resource.rowCount === undefined ? 'row count not inspected' : `${resource.rowCount} rows`
+          } | ${resource.artifactUrl}`
         )),
         'Use these only when the user refers to a recent export. Resource references never bypass backend permissions.',
         'For a google_sheet follow-up, invoke googleSheets with op=call_exported_sheet and resourceRef from this list. Do not resolve its URL, choose an account, or supply connection/spreadsheet IDs.',

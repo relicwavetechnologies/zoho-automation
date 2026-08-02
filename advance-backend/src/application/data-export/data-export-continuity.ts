@@ -9,7 +9,7 @@ export interface DataExportResourceRecord {
   readonly artifactId: string;
   readonly artifactUrl: string;
   readonly artifactType: 'google_sheet' | 'csv' | 'xlsx';
-  readonly rowCount: number;
+  readonly rowCount?: number;
   readonly connectionId?: string;
   readonly spreadsheetId?: string;
   readonly createdAt: string;
@@ -27,7 +27,7 @@ export function parseDataExportResourceRecord(value: unknown): DataExportResourc
     || typeof record['artifactId'] !== 'string'
     || typeof record['artifactUrl'] !== 'string'
     || !['google_sheet', 'csv', 'xlsx'].includes(String(record['artifactType']))
-    || typeof record['rowCount'] !== 'number'
+    || (record['rowCount'] !== undefined && typeof record['rowCount'] !== 'number')
     || typeof record['createdAt'] !== 'string'
     || typeof record['expiresAt'] !== 'string'
   ) return null;
