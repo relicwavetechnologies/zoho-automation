@@ -910,3 +910,13 @@
 }
 .cur .ws-linkish:hover { color: var(--cur-primary); }
 .cur .ws-linkish:disabled { color: var(--cur-muted-soft); cursor: default; }
+
+/* ── Granted scopes ───────────────────────────────────
+   What an account actually handed over at sign-in. Static on purpose, and
+   deliberately not `.ws-chip`: that is a filter control, and a row of things
+   that look pressable but are not is worse than no styling at all. */
+.cur .ws-perms { display: flex; flex-wrap: wrap; gap: 6px; }
+.cur .ws-perm {
+  padding: 4px 9px; border-radius: 6px; border: 1px solid var(--cur-hairline);
+  background: var(--cur-canvas); font-size: 11.5px; color: var(--cur-body); line-height: 1.5;
+}

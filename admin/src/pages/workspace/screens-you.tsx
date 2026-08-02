@@ -5,10 +5,11 @@
  * console shrunk down. An employee comes here because something is blocked,
  * because they want to know what Divo can see, or to take access back.
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
-  Activity, ArrowUpRight, Ban, BookOpen, Brain, Check, CircleAlert, Clock, ExternalLink,
-  ChevronRight, Eye, Gauge, Link2, Lock, MessageSquare, Plus, Search, ShieldCheck, Sparkles, Trash2, TriangleAlert, X,
+  Activity, ArrowUpRight, Ban, BookOpen, Brain, Building2, Check, CircleAlert, Clock, ExternalLink,
+  ChevronRight, Eye, Gauge, Globe, Link2, Lock, MessageSquare, Plus, RotateCw, Search, ShieldCheck,
+  Sparkles, Trash2, TriangleAlert, Users, X,
 } from 'lucide-react'
 import {
   CONNECTORS, MEMORIES, SKILLS, toolById,
@@ -17,16 +18,19 @@ import {
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useTheme } from '@/lib/use-theme'
 import {
-  CONNECTABLE, useConnectionManage, useConnections,
-  type AccessLevel, type GranteeType, type LiveConnection, type ManageCandidates,
+  CONNECTABLE, CONNECTION_ACTIONS, LABELLED, samePolicy, scopeLabel, setActionPolicy,
+  useConnectionManage, useConnections,
+  type AccessLevel, type ConnectionAction, type ConnectionApprovalMode, type ConnectionGovernance,
+  type ConnectionGovernancePolicy, type ConnectionGrant, type GranteeType, type LiveConnection,
+  type ManageCandidates,
 } from './data/use-connections'
 import { ago, expiryLabel, useApprovals } from './data/use-approvals'
 import {
   changePct, durationLabel, useMyModelOptions, useMyRuns, useMyTools, useMyUsage, type MyRun,
 } from './data/use-my-activity'
 import {
-  Bar, ClickRow, DataNote, Drawer, Empty, Fade, PageHeader, Panel,
-  ProviderMark, Seg, Skel, SkelRows, Spark, Switch, compact, listPhrase, money,
+  Bar, ClickRow, Confirm, DataNote, Drawer, Empty, Fade, PageHeader, Panel,
+  Prompt, ProviderMark, Seg, Skel, SkelRows, Spark, Switch, compact, listPhrase, money,
   providerName, useStaged,
 } from './ui'
 import type { Toast } from './ui'
@@ -250,7 +254,22 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
   // Which account's drawer is open — the provider alone is no longer enough
   // now that a provider can hold several.
   const [open, setOpen] = useState<{ provider: Provider; connectionId?: string } | null>(null)
+  // Which provider is waiting on a name before its sign-in window opens.
+  const [naming, setNaming] = useState<Provider | null>(null)
   const { byProvider, loading, connecting, connect, disconnect } = useConnections()
+
+  /**
+   * Adding an account, with a name where a name is worth having.
+   *
+   * Canva and Airtable hold several connections per company and their accounts
+   * carry no address to tell them apart, so a second one is otherwise "Airtable"
+   * next to "Airtable". Google labels itself with the Google address and Lark
+   * holds one, so asking there would be a question with no answer worth giving.
+   */
+  const startConnect = (provider: Provider, existing: number) => {
+    if (LABELLED.includes(provider) && existing > 0) setNaming(provider)
+    else void connect(provider)
+  }
 
   // Two gates, not one. `r1` is the staged reveal that keeps the page from
   // snapping in; `loading` is the real fetch. Showing content when only one has
@@ -311,7 +330,7 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
                             type="button"
                             className="btn"
                             disabled={connecting !== null}
-                            onClick={() => void connect(def.provider)}
+                            onClick={() => startConnect(def.provider, accounts.length)}
                           >
                             {connecting === def.provider
                               ? 'Waiting…'
@@ -383,12 +402,29 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
         </Panel>
       </div>
 
+      {naming ? (
+        <Prompt
+          title={`Name this ${providerName(naming)} account`}
+          description={`You already have one. A name is how you and Divo tell them apart afterwards — "Marketing", "Client work". Leave it blank to let Divo name it.`}
+          label="Name"
+          placeholder="Marketing"
+          confirm="Continue to sign-in"
+          optional
+          onClose={() => setNaming(null)}
+          onConfirm={(label) => { void connect(naming, label ? { label } : undefined) }}
+        />
+      ) : null}
+
       {open ? (
         <ConnectionDrawer
           provider={open.provider}
           connection={byProvider.get(open.provider)?.connections.find((c) => c.connectionId === open.connectionId)}
           onClose={() => setOpen(null)}
           onConnect={() => { void connect(open.provider) }}
+          // Same authorize hop as a first connection. The backend keys a Google
+          // connection by Google account, so re-approving the same one updates
+          // it in place rather than making a second row.
+          onReconnect={() => { void connect(open.provider) }}
           onDisconnect={async (connectionId) => {
             await disconnect(open.provider, connectionId)
             toast(`${providerName(open.provider)} disconnected`)
@@ -416,6 +452,217 @@ function since(iso?: string | null): string {
 
 const onDate = (iso?: string | null): string =>
   iso ? new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
+
+/* ── Operating rules ──────────────────────────────────── */
+
+/**
+ * The six actions, named for whoever owns the account rather than for the API.
+ *
+ * "execute" is the backend's word for running something the tool exposes — a
+ * script, an automation — and nobody connecting a Canva account thinks of it
+ * that way.
+ */
+const ACTION_COPY: Record<ConnectionAction, { label: string; detail: string }> = {
+  read: { label: 'Looking things up', detail: 'Reading mail, files, records — anything it only needs to see.' },
+  create: { label: 'Making something new', detail: 'A new document, record, event or design.' },
+  update: { label: 'Changing something', detail: 'Editing something that already exists.' },
+  delete: { label: 'Deleting something', detail: 'Removing something for good.' },
+  send: { label: 'Sending something out', detail: 'Mail, messages — anything that leaves the account.' },
+  execute: { label: 'Running something', detail: 'Scripts and automations the account can trigger.' },
+}
+
+/**
+ * Who Divo waits for, before it does the thing.
+ *
+ * The backend's `connection_owner` is a role, not a person, so the label has to
+ * follow who is reading it: the same rule reads "me" to the person who
+ * connected the account and "whoever connected it" to an admin looking at
+ * somebody else's.
+ */
+const approverOptions = (isOwner: boolean): { value: ConnectionApprovalMode; label: string }[] => [
+  { value: 'connection_owner', label: isOwner ? 'Me' : 'Whoever connected it' },
+  { value: 'company_admin', label: 'A company admin' },
+]
+
+/**
+ * Rules that apply to everybody using this connection — including the people
+ * it has been shared with.
+ *
+ * This is not access. Access is the section below; this is what Divo has to
+ * stop and ask about once somebody has it. The two were the same control on
+ * every version of this screen before, and conflating them is how you end up
+ * with an approval rule that quietly grants somebody a tool.
+ *
+ * Rate caps are enforced by the backend but not edited here. Six numbers per
+ * action, per connection, buried the one control anybody actually reaches for.
+ */
+function OperatingRules({ governance, isOwner, saving, onSave }: {
+  governance: ConnectionGovernance
+  isOwner: boolean
+  saving: boolean
+  onSave: (policy: ConnectionGovernancePolicy) => Promise<void>
+}) {
+  const [draft, setDraft] = useState<ConnectionGovernancePolicy>(governance.managerPolicy)
+
+  // The saved policy is the source of truth. Re-seeding on it means a save, or
+  // somebody else's save arriving on a refetch, resets the draft rather than
+  // leaving edits floating over a policy that has moved underneath them.
+  useEffect(() => { setDraft(governance.managerPolicy) }, [governance.managerPolicy])
+
+  const dirty = !samePolicy(draft, governance.managerPolicy)
+  const overridden = governance.adminOverride !== null
+
+  return (
+    <>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 26 }}>
+        <span className="ws-lbl">What Divo must ask about</span>
+        {overridden ? <span className="ws-prov" data-src="company_default">Company rules apply</span> : null}
+      </div>
+
+      {overridden ? (
+        <div className="ws-ceiling" style={{ marginTop: 10 }}>
+          <ShieldCheck size={14} />
+          <div>
+            A company admin has set their own rules for this connection, and those win. What you set here
+            stays saved and takes over again if they drop theirs.
+          </div>
+        </div>
+      ) : null}
+
+      <p className="ws-sentence-note" style={{ marginTop: 10 }}>
+        These apply to everyone using this connection, you included. They never give anybody access —
+        that is the next section.
+      </p>
+
+      <div className="ws-rows" style={{ marginTop: 8 }}>
+        {CONNECTION_ACTIONS.map((action) => {
+          const policy = draft.actions[action] ?? { mode: 'inherit' as const }
+          const enforced = policy.mode === 'enforced'
+          return (
+            <div className="ws-row" style={{ paddingLeft: 0, paddingRight: 0, alignItems: 'flex-start' }} key={action}>
+              <div className="ws-row-main">
+                <b style={{ fontWeight: 400 }}>{ACTION_COPY[action].label}</b>
+                <p>{ACTION_COPY[action].detail}</p>
+                {enforced ? (
+                  <div style={{ marginTop: 10 }}>
+                    <Seg
+                      value={policy.approval ?? 'connection_owner'}
+                      onChange={(v) => setDraft((d) => setActionPolicy(d, action, { approval: v }))}
+                      options={approverOptions(isOwner)}
+                    />
+                  </div>
+                ) : null}
+              </div>
+              <div className="ws-row-act">
+                <Seg
+                  value={policy.mode}
+                  onChange={(mode) => setDraft((d) => setActionPolicy(d, action, { mode }))}
+                  options={[
+                    { value: 'inherit', label: 'Just do it' },
+                    { value: 'enforced', label: 'Ask first' },
+                  ]}
+                />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {dirty ? (
+        <div className="ws-diff" style={{ marginTop: 14 }}>
+          <div className="ws-diff-h">Rules changed, not saved yet</div>
+          <div className="ws-diff-f">
+            <button
+              type="button"
+              className="btn"
+              disabled={saving}
+              onClick={() => setDraft(governance.managerPolicy)}
+            >
+              Discard
+            </button>
+            <button
+              type="button"
+              className="btn primary"
+              disabled={saving}
+              onClick={() => void onSave(draft)}
+            >
+              {saving ? 'Saving…' : 'Save rules'}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </>
+  )
+}
+
+/**
+ * Everybody who can act through this account, in one list.
+ *
+ * The owner is a row rather than a footnote: they are the person with the most
+ * access and the one somebody scanning this list is trying to place. Grants to
+ * a department, a role or the whole company sit alongside, because "Finance"
+ * having access is exactly as important as one named person having it — and
+ * more easily forgotten.
+ */
+function AccessList({ owner, grants, busy, onRevoke }: {
+  owner: { id: string; email: string; name: string | null } | null
+  grants: ConnectionGrant[]
+  busy: boolean
+  onRevoke: (grant: ConnectionGrant) => Promise<void>
+}) {
+  const { session } = useAdminAuth()
+  const GRANTEE_ICON: Record<GranteeType, typeof Users> = {
+    user: Users, department: Building2, role: ShieldCheck, company: Globe,
+  }
+
+  return (
+    <div className="ws-rows" style={{ marginTop: 8 }}>
+      {owner ? (
+        <div className="ws-row" style={{ paddingLeft: 0, paddingRight: 0 }}>
+          <span className="ws-ic" data-tone="ok"><Users size={14} /></span>
+          <div className="ws-row-main">
+            <b>
+              {owner.id === session?.userId ? 'You' : owner.name ?? owner.email}
+              <span className="ws-tag">Owner</span>
+            </b>
+            <p>Connected the account. Full access, and cannot be revoked without disconnecting it.</p>
+          </div>
+        </div>
+      ) : null}
+
+      {grants.map((grant) => {
+        const Icon = GRANTEE_ICON[grant.granteeType]
+        return (
+          <div className="ws-row" style={{ paddingLeft: 0, paddingRight: 0 }} key={grant.id}>
+            <span className="ws-ic"><Icon size={14} /></span>
+            <div className="ws-row-main">
+              <b>{grant.granteeLabel}</b>
+              <p>
+                {grant.granteeDetail ?? GRANTEE_NOUN[grant.granteeType]} · {grant.access.replace(/_/g, ' ')}
+                {grant.grantedBy
+                  ? ` · shared by ${grant.grantedBy.id === session?.userId ? 'you' : grant.grantedBy.name ?? grant.grantedBy.email}`
+                  : ''}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              title={`Stop ${grant.granteeLabel} acting through this connection`}
+              onClick={() => void onRevoke(grant)}
+            >
+              <Trash2 size={14} />Revoke
+            </button>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+const GRANTEE_NOUN: Record<GranteeType, string> = {
+  user: 'One person', department: 'Everyone in this team', role: 'Everyone with this role', company: 'Everyone in the company',
+}
 
 /**
  * Granting somebody else the use of your connection.
@@ -544,21 +791,30 @@ function GrantAccess({ candidates, accessLevels, busy, onGrant }: {
   )
 }
 
-function ConnectionDrawer({ provider, connection, onClose, onConnect, onDisconnect, toast }: {
+function ConnectionDrawer({ provider, connection, onClose, onConnect, onReconnect, onDisconnect, toast }: {
   provider: Provider
   connection?: LiveConnection
   onClose: () => void
   onConnect: () => void
+  onReconnect: () => void
   onDisconnect: (connectionId: string) => Promise<void>
   toast: Toast
 }) {
+  const { session } = useAdminAuth()
   const def = CONNECTORS.find((c) => c.provider === provider)!
   const [confirming, setConfirming] = useState(false)
+  const [reconnecting, setReconnecting] = useState(false)
   const [busy, setBusy] = useState(false)
   const manage = useConnectionManage(provider, connection?.connectionId)
   const grants = manage.data?.grants ?? []
+  const owner = manage.data?.connection.ownerUser ?? null
+  // Whether the reader is the person who connected the account, which changes
+  // how the approval rules read — "me" rather than "whoever connected it".
+  const isOwner = owner !== null && owner.id === session?.userId
+  const scopes = manage.data?.connection.scopes ?? connection?.scopes ?? []
 
   return (
+    <>
     <Drawer
       title={def.name}
       subtitle={connection
@@ -627,79 +883,128 @@ function ConnectionDrawer({ provider, connection, onClose, onConnect, onDisconne
 
       {connection ? (
         <>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 26 }}>
-            <span className="ws-lbl">Who else can use it</span>
-            {manage.saving ? <span className="ws-sub">Saving…</span> : null}
-          </div>
-
-          {/* Sharing is a real editor, not a read-out. The routes to grant and
-              revoke have always existed and the desktop has always used them;
-              this screen listed the grants and offered no way to change them,
-              so the only way to share your own connection was to open the
-              desktop app. */}
-          {manage.loading ? <SkelRows n={2} icon={false} /> : manage.refused ? (
-            <div className="ws-ceiling" style={{ marginTop: 12 }}>
+          {/* One gate for everything the manage route feeds: the rules, the
+              access list and the sharing editor. A 403 here is a real answer —
+              only the owner or a company admin may read it — and rendering an
+              empty rules panel to somebody who simply may not see it would
+              read as "no rules are set". */}
+          {manage.loading ? <SkelRows n={3} icon={false} /> : manage.refused ? (
+            <div className="ws-ceiling" style={{ marginTop: 22 }}>
               <Lock size={14} />
-              <div>Only whoever owns this connection, or a company admin, can change who uses it.</div>
+              <div>Only whoever connected this account, or a company admin, can see and change how it is used.</div>
             </div>
           ) : manage.error ? (
-            <div className="ws-ceiling" style={{ marginTop: 12 }}>
+            <div className="ws-ceiling" style={{ marginTop: 22 }}>
               <TriangleAlert size={14} />
               <div>{manage.error}</div>
             </div>
-          ) : (
+          ) : manage.data ? (
             <>
+              <OperatingRules
+                governance={manage.data.governance}
+                isOwner={isOwner}
+                saving={manage.saving}
+                onSave={async (policy) => {
+                  try { await manage.saveGovernance(policy); toast('Rules saved') }
+                  catch { toast('Could not save those rules', 'error') }
+                }}
+              />
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 26 }}>
+                <span className="ws-lbl">Who can use it</span>
+                {manage.saving ? <span className="ws-sub">Saving…</span> : null}
+              </div>
+
+              {/* Sharing is a real editor, not a read-out. The routes to grant
+                  and revoke have always existed and the desktop has always used
+                  them; this screen listed the grants and offered no way to
+                  change them, so the only way to share your own connection was
+                  to open the desktop app. */}
               {grants.length === 0 ? (
-                <div className="ws-private" style={{ marginTop: 12 }}>
+                <div className="ws-private" style={{ marginTop: 10 }}>
                   <ShieldCheck size={15} />
-                  <div>Only you. Nobody else in your company can act through this connection.</div>
+                  <div>
+                    {isOwner || !owner
+                      ? 'Only you. Nobody else in your company can act through this connection.'
+                      : `Only ${owner.name ?? owner.email}. Nobody else can act through this connection.`}
+                  </div>
                 </div>
               ) : (
-                <div className="ws-rows" style={{ marginTop: 8 }}>
-                  {grants.map((grant) => (
-                    <div className="ws-row" style={{ paddingLeft: 0, paddingRight: 0 }} key={grant.id}>
-                      <div className="ws-row-main">
-                        <b>{grant.granteeLabel}</b>
-                        <p>{grant.granteeDetail ?? grant.granteeType} · {grant.access.replace(/_/g, ' ')}</p>
-                      </div>
-                      <button
-                        type="button"
-                        className="btn"
-                        disabled={manage.saving}
-                        title={`Stop ${grant.granteeLabel} acting through this connection`}
-                        onClick={async () => {
-                          try { await manage.revoke(grant.id); toast(`${grant.granteeLabel} can no longer use it`) }
-                          catch { toast('Could not revoke that access', 'error') }
-                        }}
-                      >
-                        <Trash2 size={14} />Revoke
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {manage.data ? (
-                <GrantAccess
-                  candidates={manage.data.candidates}
-                  accessLevels={manage.data.accessLevels}
+                <AccessList
+                  owner={owner}
+                  grants={grants}
                   busy={manage.saving}
-                  onGrant={async (type, id, access, label) => {
-                    try { await manage.grant(type, id, access); toast(`${label} can now use it`) }
-                    catch { toast('Could not share this connection', 'error') }
+                  onRevoke={async (grant) => {
+                    try { await manage.revoke(grant.id); toast(`${grant.granteeLabel} can no longer use it`) }
+                    catch { toast('Could not revoke that access', 'error') }
                   }}
                 />
-              ) : null}
+              )}
+
+              <GrantAccess
+                candidates={manage.data.candidates}
+                accessLevels={manage.data.accessLevels}
+                busy={manage.saving}
+                onGrant={async (type, id, access, label) => {
+                  try { await manage.grant(type, id, access); toast(`${label} can now use it`) }
+                  catch { toast('Could not share this connection', 'error') }
+                }}
+              />
             </>
-          )}
+          ) : null}
+
+          {/* The scopes the account actually granted, rather than the static
+              copy above. The two can disagree — an older connection carries
+              whatever was asked for when it was made — and the granted list is
+              the one that decides what Divo can really reach. */}
+          {scopes.length ? (
+            <>
+              <div className="ws-lbl" style={{ marginTop: 26 }}>What this account granted</div>
+              <div className="ws-perms" style={{ marginTop: 8 }}>
+                {scopes.map((scope) => (
+                  <span className="ws-perm" key={scope} title={scope}>{scopeLabel(scope)}</span>
+                ))}
+              </div>
+              <p className="ws-sentence-note">
+                Straight from the sign-in. Reconnect below to widen or narrow it.
+              </p>
+            </>
+          ) : null}
 
           <div className="ws-lbl" style={{ marginTop: 26 }}>Details</div>
           <div style={{ marginTop: 6 }}>
             <div className="kv"><span className="k">Connected</span><span className="v">{onDate(connection.connectedAt)}</span></div>
             <div className="kv"><span className="k">Last used</span><span className="v">{since(connection.lastUsedAt)}</span></div>
-            <div className="kv"><span className="k">Owned by</span><span className="v">{connection.ownerType === 'company' ? 'The company' : 'You'}</span></div>
+            <div className="kv">
+              <span className="k">Owned by</span>
+              <span className="v">
+                {connection.ownerType === 'company'
+                  ? 'The company'
+                  : owner && !isOwner ? owner.name ?? owner.email : 'You'}
+              </span>
+            </div>
             <div className="kv"><span className="k">Sign-in method</span><span className="v">{def.auth}</span></div>
           </div>
+
+          {/* Reconnect is not repair — nothing here can tell a stale token from
+              a live one. It is how you change what was granted, which is the
+              only reason to sign in again to an account that already works. */}
+          {def.memberCanConnect ? (
+            <div className="ws-rows" style={{ marginTop: 20 }}>
+              <div className="ws-row" style={{ paddingLeft: 0, paddingRight: 0 }}>
+                <div className="ws-row-main">
+                  <b>Sign in again</b>
+                  <p>
+                    To change what Divo may reach, or after revoking access at {def.name}.
+                    Pick the same account — a different one is added alongside rather than replacing this.
+                  </p>
+                </div>
+                <button type="button" className="btn" onClick={() => setReconnecting(true)}>
+                  <RotateCw size={14} />Reconnect
+                </button>
+              </div>
+            </div>
+          ) : null}
         </>
       ) : !def.memberCanConnect ? (
         <div className="ws-ceiling" style={{ marginTop: 22 }}>
@@ -711,6 +1016,17 @@ function ConnectionDrawer({ provider, connection, onClose, onConnect, onDisconne
         </div>
       ) : null}
     </Drawer>
+
+    {reconnecting ? (
+      <Confirm
+        title={`Sign in to ${def.name} again?`}
+        body={`A ${def.name} window opens. Choose ${connection?.accountEmail ?? 'the same account'} — whatever you approve replaces what Divo may reach through it. Choosing a different account adds that one instead, and leaves this connection alone.`}
+        confirm="Open sign-in"
+        onClose={() => setReconnecting(false)}
+        onConfirm={() => { onReconnect() }}
+      />
+    ) : null}
+    </>
   )
 }
 

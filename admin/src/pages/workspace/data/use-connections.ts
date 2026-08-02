@@ -13,6 +13,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError } from '@/lib/api'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import type { Provider } from '../fixtures'
+import type { ConnectionGovernance, ConnectionGovernancePolicy } from './connection-policy'
+
+// Re-exported so a screen reaches for one module rather than two to render a
+// connection. The policy logic lives apart because it is pure and tested.
+export {
+  CONNECTION_ACTIONS, defaultGovernancePolicy, samePolicy, scopeLabel, setActionPolicy,
+} from './connection-policy'
+export type {
+  ConnectionAction, ConnectionActionPolicy, ConnectionApprovalMode,
+  ConnectionGovernance, ConnectionGovernancePolicy,
+} from './connection-policy'
 
 /** Providers that answer the shared status/authorize surface. */
 export const CONNECTABLE: Provider[] = [
@@ -60,6 +71,16 @@ const AUTHORIZE_PATH: Record<Provider, string | null> = {
   aitable: null,
   zoho: '/api/desktop/auth/zoho/authorize-url',
 }
+
+/**
+ * Providers whose authorize-url accepts a `label`.
+ *
+ * These hold several connections per company, so the person naming one is
+ * distinguishing it from the others. Google keys its connections by Google
+ * account and shows the address, and Lark holds one — neither has anything to
+ * disambiguate, and the backend ignores the parameter for both.
+ */
+export const LABELLED: Provider[] = ['canva', 'airtable']
 
 /**
  * How each provider's connection is taken away.
@@ -199,7 +220,7 @@ export function useConnections() {
    * database — so the honest signal that something may have changed is the
    * window going away.
    */
-  const connect = useCallback(async (provider: Provider) => {
+  const connect = useCallback(async (provider: Provider, options?: { label?: string }) => {
     if (!token) return
     const authorizePath = AUTHORIZE_PATH[provider]
     if (!authorizePath) {
@@ -207,8 +228,13 @@ export function useConnections() {
     }
     setConnecting(provider)
     try {
+      // Only where the backend accepts it. Sending `label` to a provider that
+      // holds one account per company would be a name nothing ever reads.
+      const named = options?.label && LABELLED.includes(provider)
+        ? `${authorizePath}?label=${encodeURIComponent(options.label)}`
+        : authorizePath
       const { authorizeUrl } = await api.get<{ authorizeUrl: string }>(
-        authorizePath,
+        named,
         token,
         { quiet: true },
       )
@@ -250,6 +276,7 @@ export type ConnectionGrant = {
   granteeDetail: string | null
   access: string
   grantedAt: string
+  grantedBy: { id: string; email: string; name: string | null } | null
 }
 
 export type GranteeType = ConnectionGrant['granteeType']
@@ -270,6 +297,8 @@ export type ConnectionManage = {
     accountEmail: string | null
     accountName: string | null
     ownerType: string
+    /** Null for a company-owned connection nobody personally holds. */
+    ownerUser: { id: string; email: string; name: string | null } | null
     access: string
     scopes: string[]
     readOnlyEnforced?: boolean
@@ -278,6 +307,7 @@ export type ConnectionManage = {
   grants: ConnectionGrant[]
   candidates: ManageCandidates
   accessLevels: AccessLevel[]
+  governance: ConnectionGovernance
 }
 
 /**
@@ -345,5 +375,30 @@ export function useConnectionManage(provider: Provider, connectionId?: string) {
     }
   }, [token, base, connectionId, load])
 
-  return { data, loading, refused, error, saving, grant, revoke, refresh: load }
+  /**
+   * Saves the connection's own operating rules.
+   *
+   * Not under the provider segment — governance is one route for every
+   * provider, because the policy is about the connection rather than about
+   * what it connects to. The response carries the stored governance back, so
+   * the whole payload is re-read rather than patched locally: the backend
+   * normalises the policy and increments a version, and adopting our own copy
+   * would leave the screen a version behind its own save.
+   */
+  const saveGovernance = useCallback(async (managerPolicy: ConnectionGovernancePolicy) => {
+    if (!token || !connectionId) return
+    setSaving(true)
+    try {
+      await api.put(
+        `/api/desktop/auth/connections/${connectionId}/governance`,
+        { managerPolicy },
+        token,
+      )
+      await load()
+    } finally {
+      setSaving(false)
+    }
+  }, [token, connectionId, load])
+
+  return { data, loading, refused, error, saving, grant, revoke, saveGovernance, refresh: load }
 }

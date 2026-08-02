@@ -225,12 +225,21 @@ export const isRefusal = (error: unknown): boolean =>
  * The confirm stays disabled until the field has something in it, so the
  * failure mode is "nothing happens" rather than a 400 from the backend.
  */
-export function Prompt({ title, description, label, placeholder, confirm, secret, initial, extra, onConfirm, onClose }: {
+export function Prompt({ title, description, label, placeholder, confirm, secret, initial, extra, optional, onConfirm, onClose }: {
   title: string
   description?: string
   label: string
   placeholder?: string
   confirm: string
+  /**
+   * Lets the field be left empty.
+   *
+   * For the case where the value is a nicety rather than the decision —
+   * naming a second Canva account, where the backend has a default and the
+   * person is only overriding it. Without this the dialog would insist on a
+   * name to do something that does not need one.
+   */
+  optional?: boolean
   /** Masks the field and stops the browser offering to remember it. */
   secret?: boolean
   /**
@@ -259,7 +268,7 @@ export function Prompt({ title, description, label, placeholder, confirm, secret
   }, [onClose])
 
   const submit = async () => {
-    if (!value.trim() || busy) return
+    if ((!value.trim() && !optional) || busy) return
     setBusy(true)
     try { await onConfirm(value.trim()); onClose() } finally { setBusy(false) }
   }
@@ -291,7 +300,7 @@ export function Prompt({ title, description, label, placeholder, confirm, secret
           </div>
           <div className="ws-modal-f">
             <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
-            <button type="button" className="btn primary" onClick={() => void submit()} disabled={busy || !value.trim()}>
+            <button type="button" className="btn primary" onClick={() => void submit()} disabled={busy || (!value.trim() && !optional)}>
               {busy ? 'Working…' : confirm}
             </button>
           </div>
