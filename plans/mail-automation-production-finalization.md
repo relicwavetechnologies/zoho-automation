@@ -21,7 +21,7 @@ Last synced 2026-08-02. Branch `dev`, **not pushed**.
 | **3 — Dead OAuth path (D5)** | ✅ merged to `dev` | `04d39a7f0`, `e1f923a66`, `45d6b79c9`, `f20d7935c` |
 | **4 — Security and governance (S1–S5)** | ✅ merged to `dev` | `cb7dcca3a`, `505c8032e`, `c9cb95da1`, `654475e2d` |
 | **5 — Send correctness (D1, D6–D9)** | ✅ merged to `dev` | `6f0a2e010`, `a67dfc89a`, `6639e23a1`, `1a243b23f`, `5a4c71dcc` |
-| 3–5 — cold-review fixes | ✅ merged to `dev` | `cdb1049fb`, `a4ca91b83`, `033caa57d`, `4103e8067`, `0b73456d6`, `cd89879c9`, `0160e44d0`, `38a92af9e` |
+| 3–5 — cold-review fixes | ✅ merged to `dev` | `cdb1049fb`, `a4ca91b83`, `033caa57d`, `4103e8067`, `0b73456d6`, `cd89879c9`, `0160e44d0`, `38a92af9e`, `45bcfe127` |
 | 6–11 | ⬜ | — |
 
 Audit and doc revamp: `cb6b983b2`.
