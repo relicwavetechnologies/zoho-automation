@@ -24,6 +24,7 @@ const PATHS: Record<string, string> = {
   connections: '/me/connections',
   'connect-flow': '/me/connections/lark-flow',
   access: '/me/access',
+  'mail-rules': '/me/mail-rules',
   skills: '/me/skills',
   memory: '/me/memory',
   usage: '/me/usage',

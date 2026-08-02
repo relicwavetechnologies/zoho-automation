@@ -490,6 +490,7 @@ export const DATA_SOURCES: Record<string, { state: DataState; note: string }> = 
   artifactSharing: { state: 'needs-backend', note: 'An artifact has no owner or grants today — it is only a file path.' },
   artifactHistory: { state: 'needs-backend', note: 'No versioned storage; the workspace file is overwritten in place.' },
   reconnect: { state: 'needs-backend', note: 'Token expiry is stored but never evaluated — there is no needs_reauth state to read.' },
+  mailRules: { state: 'live', note: 'GET /api/mail-automations/rules + /health — real today. Read-only: pausing or deleting a rule is still done by asking Divo.' },
 }
 
 /* ── Scopes per persona ──────────────────────────────── */

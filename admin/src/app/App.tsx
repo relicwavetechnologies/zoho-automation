@@ -17,6 +17,7 @@ import { NoAccess } from "@/pages/workspace/ui"
 import {
   YouAccess, YouApprovals, YouConnections, YouHome, YouMemory, YouSettings, YouSkills, YouUsage,
 } from "@/pages/workspace/screens-you"
+import { YouMailRules } from "@/pages/workspace/screens-you-mail"
 import {
   TeamApprovalPolicy, TeamHome, TeamPeople, TeamRoles, TeamUsage,
 } from "@/pages/workspace/screens-team"
@@ -95,6 +96,7 @@ const MeArtifacts = routed(Artifacts)
 const MeConnections = routed(YouConnections)
 const MeConnectFlow = routed(ConnectFlow)
 const MeAccess = routed(YouAccess)
+const MeMailRules = routed(YouMailRules)
 const MeSkills = routed(YouSkills)
 const MeMemory = routed(YouMemory)
 const MeUsage = routed(YouUsage)
@@ -151,6 +153,7 @@ export function App() {
           <Route path="me/connections" element={<MeConnections />} />
           <Route path="me/connections/lark-flow" element={<MeConnectFlow />} />
           <Route path="me/access" element={<MeAccess />} />
+          <Route path="me/mail-rules" element={<MeMailRules />} />
           <Route path="me/skills" element={<MeSkills />} />
           <Route path="me/memory" element={<MeMemory />} />
           <Route path="me/usage" element={<MeUsage />} />

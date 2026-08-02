@@ -18,7 +18,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity, Bell, Brain, Building2, Check, ChevronsUpDown, Diamond, FileClock, FileStack,
-  Gauge, Grid2X2, KeyRound, Library, Link2, LogOut, Moon, Search, Settings, ShieldCheck,
+  Gauge, Grid2X2, KeyRound, Library, Link2, LogOut, Mail, Moon, Search, Settings, ShieldCheck,
   Sun, Users, UserSquare, type LucideIcon,
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
@@ -44,6 +44,7 @@ const NAV: Record<ScopeKind, NavGroup[]> = {
         { to: '/me/artifacts', label: 'Things Divo made', icon: FileStack },
         { to: '/me/connections', label: 'Connected apps', icon: Link2 },
         { to: '/me/access', label: 'What Divo can do', icon: KeyRound },
+        { to: '/me/mail-rules', label: 'Mail rules', icon: Mail },
         { to: '/me/skills', label: 'Skills', icon: Library },
         { to: '/me/memory', label: 'Memory', icon: Brain },
       ],
