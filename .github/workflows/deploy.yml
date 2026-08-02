@@ -38,6 +38,45 @@ jobs:
       - name: Require the main branch
         run: test "${GITHUB_REF}" = refs/heads/main
 
+      - name: Validate isolated Pi runtime URL
+        env:
+          PRODUCTION_ENV_FILE: ${{ secrets.PRODUCTION_ENV_FILE }}
+        run: |
+          node <<'NODE'
+          const values = new Map();
+          for (const rawLine of (process.env.PRODUCTION_ENV_FILE ?? '').split(/\r?\n/)) {
+            const line = rawLine.trim();
+            if (!line || line.startsWith('#')) continue;
+            const match = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+            if (!match) continue;
+            let value = match[2].trim();
+            if ((value.startsWith('"') && value.endsWith('"')) ||
+                (value.startsWith("'") && value.endsWith("'"))) {
+              value = value.slice(1, -1);
+            }
+            values.set(match[1], value);
+          }
+
+          const runtimeUrl = values.get('PI_LARK_BACKEND_URL') || values.get('BACKEND_PUBLIC_URL');
+          let parsed;
+          try {
+            parsed = new URL(runtimeUrl);
+          } catch {
+            throw new Error('PI_LARK_BACKEND_URL (or BACKEND_PUBLIC_URL) must be a valid URL');
+          }
+
+          const hostname = parsed.hostname.toLowerCase();
+          const isolatedHost = !hostname.includes('.') && !hostname.includes(':');
+          const localHost = hostname === 'localhost' || hostname === '127.0.0.1' ||
+            hostname === '::1' || hostname === '[::1]' || hostname === '0.0.0.0' ||
+            hostname.endsWith('.localhost') || hostname.endsWith('.local') || hostname.endsWith('.internal');
+          if (parsed.protocol !== 'https:' || isolatedHost || localHost) {
+            throw new Error(
+              'PI_LARK_BACKEND_URL must be a public HTTPS URL reachable from isolated per-user Docker networks',
+            );
+          }
+          NODE
+
   build-and-push:
     name: build-and-push
     runs-on: ubuntu-latest
