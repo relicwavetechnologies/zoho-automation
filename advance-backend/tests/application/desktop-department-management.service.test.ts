@@ -25,7 +25,7 @@ function detail(overrides: any = {}) {
   };
 }
 
-function makeService(options: { managedDepartment?: string; revokeOnSecondCheck?: boolean; targetRole?: string; targetStatus?: string } = {}) {
+function makeService(options: { managedDepartment?: string; revokeOnSecondCheck?: boolean; targetRole?: string; targetStatus?: string; approvalJson?: unknown } = {}) {
   let managerChecks = 0;
   const audits: any[] = [];
   const calls: any[] = [];
@@ -40,6 +40,10 @@ function makeService(options: { managedDepartment?: string; revokeOnSecondCheck?
         const permitted = (options.managedDepartment ?? 'finance') === where.departmentId && !(options.revokeOnSecondCheck && managerChecks >= 2);
         return permitted ? { id: 'manager-membership' } : null;
       },
+    },
+    departmentAgentConfig: {
+      findFirst: async () => (options.approvalJson === undefined ? null : { id: 'cfg-1', managerApprovalJson: options.approvalJson }),
+      update: async () => ({}),
     },
   } as any;
   const deptAdmin = {
@@ -59,6 +63,7 @@ function makeService(options: { managedDepartment?: string; revokeOnSecondCheck?
     departmentAdminService: deptAdmin,
     auditService: { record: (entry: any) => audits.push(entry) } as any,
     logger: { error: () => {}, warn: () => {}, info: () => {}, debug: () => {}, child() { return this; } } as any,
+    permissions: { invalidateDept: async () => {} } as any,
   });
   return { service, calls, audits };
 }
@@ -123,5 +128,70 @@ describe('DesktopDepartmentManagementService', () => {
       (error: unknown) => error instanceof DesktopDepartmentManagementError && error.code === 'forbidden',
     );
     assert.equal(calls.length, 0);
+  });
+
+  /*
+   * A policy can gate an action three ways, and the screen can only edit one of
+   * them. Reading back only that one is what let Finance run with
+   * `requiredToolIds: ['zohoCrm','zohoBooks']` while its manager was shown
+   * "Nothing is gated" — and made their next toggle silently delete both gates,
+   * because the screen sends the complete next state.
+   */
+  describe('reading a policy that uses the older selectors', () => {
+    const gatedKeys = (policy: { requiredActions: { toolId: string; actions: string[] }[] }) =>
+      policy.requiredActions.flatMap(e => e.actions.map(a => `${e.toolId}:${a}`)).sort();
+
+    it('reports a legacy tool id as its concrete non-read actions', async () => {
+      const { service } = makeService({
+        approvalJson: { enabled: true, requiredActions: [], requiredToolIds: ['larkTask'], requiredActionGroups: [] },
+      });
+
+      const policy = await service.managerApprovalPolicy(actor, 'finance');
+
+      assert.equal(policy.enabled, true);
+      assert.deepEqual(gatedKeys(policy), ['larkTask:create', 'larkTask:delete', 'larkTask:update']);
+    });
+
+    it('never gates reading, whichever selector asked for it', async () => {
+      const { service } = makeService({
+        approvalJson: { enabled: true, requiredActions: [], requiredToolIds: ['larkTask'], requiredActionGroups: ['read'] },
+      });
+
+      const policy = await service.managerApprovalPolicy(actor, 'finance');
+
+      assert.equal(gatedKeys(policy).some(key => key.endsWith(':read')), false);
+    });
+
+    it('merges the old and new forms without duplicating an action', async () => {
+      const { service } = makeService({
+        approvalJson: {
+          enabled: true,
+          requiredActions: [{ toolId: 'larkTask', actions: ['create'] }],
+          requiredToolIds: ['larkTask'],
+          requiredActionGroups: [],
+        },
+      });
+
+      const policy = await service.managerApprovalPolicy(actor, 'finance');
+
+      assert.equal(policy.requiredActions.length, 1);
+      assert.deepEqual(gatedKeys(policy), ['larkTask:create', 'larkTask:delete', 'larkTask:update']);
+    });
+
+    it('leaves a policy that already uses exact actions untouched', async () => {
+      const { service } = makeService({
+        approvalJson: {
+          enabled: false,
+          requiredActions: [{ toolId: 'larkTask', actions: ['delete'] }],
+          requiredToolIds: [],
+          requiredActionGroups: [],
+        },
+      });
+
+      const policy = await service.managerApprovalPolicy(actor, 'finance');
+
+      assert.equal(policy.enabled, false);
+      assert.deepEqual(gatedKeys(policy), ['larkTask:delete']);
+    });
   });
 });

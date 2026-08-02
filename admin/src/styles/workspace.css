@@ -321,7 +321,23 @@
   overflow: hidden; animation: ws-in .16s ease both; z-index: 71;
 }
 .cur .ws-pal-in { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--cur-hairline); }
+/*
+ * The palette field carries no focus ring of its own.
+ *
+ * global.css puts `ring-2 ring-ring ring-offset-2` on every `:focus-visible`,
+ * and `--ring` is the brand orange. Tailwind's ring is a box-shadow, not an
+ * outline, so the `outline: none` here never suppressed it — a borderless
+ * full-width input inside an already-bordered container ended up wearing a
+ * thick offset orange rectangle that reads as a validation error. The palette
+ * opens by keyboard and autofocuses, so it appeared every single time.
+ *
+ * Suppressed only here, and only because the indicator is not lost: this input
+ * is the sole focusable thing in a modal that is unmistakably the focused
+ * surface, and the list below shows its own cursor. Everywhere else keeps the
+ * ring, which is one of the four places the design spends orange.
+ */
 .cur .ws-pal-in input { flex: 1; border: 0; background: none; outline: none; font-size: 14px; color: var(--cur-ink); font-family: inherit; }
+.cur .ws-pal-in input:focus-visible { box-shadow: none; }
 .cur .ws-pal-in input::placeholder { color: var(--cur-muted-soft); }
 .cur .ws-pal-l { overflow-y: auto; padding: 5px; }
 .cur .ws-pal-i {
