@@ -98,6 +98,22 @@ export class LarkChannelAdapter implements ChannelAdapter {
     return this.messagingClient.listThreadMessages(threadId, limit);
   }
 
+  async getInteractiveMessageCard(messageId: string): Promise<Result<{
+    chatId: string;
+    card: Record<string, unknown>;
+  }, ChannelError>> {
+    try {
+      return ok(await this.messagingClient.getInteractiveMessageCard(messageId));
+    } catch (e) {
+      return err(new ChannelError({
+        channel: 'lark',
+        stage: 'edit_status',
+        reason: 'upstream_5xx',
+        cause: e,
+      }));
+    }
+  }
+
   // ── parseIncoming ────────────────────────────────────────────────────
 
   parseIncoming(raw: unknown): Result<IncomingMessage, ChannelError> {

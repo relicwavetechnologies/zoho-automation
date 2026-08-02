@@ -1483,7 +1483,7 @@ describe('Lark webhook card authorization', () => {
     assert.equal(receivedActor.userId, 'admin-1');
   });
 
-  it('locks the source export card with the selected format after queueing', async () => {
+  it('preserves the source export card and removes only its export actions after queueing', async () => {
     const confirmations: unknown[] = [];
     const handler = new LarkDataExportCardHandler({
       confirmForActor: async input => {
@@ -1492,14 +1492,57 @@ describe('Lark webhook card authorization', () => {
       },
     } as any, noopLogger);
     const offerId = '11111111-1111-4111-8111-111111111111';
-    const cases = [
-      { format: 'google_sheet', title: 'Google Sheet export started' },
-      { format: 'csv', title: 'CSV export started' },
-      { format: 'xlsx', title: 'Excel export started' },
-    ] as const;
+    const cases = ['google_sheet', 'csv', 'xlsx'] as const;
 
-    for (const testCase of cases) {
+    for (const format of cases) {
       let adapter: any;
+      const sourceCard = {
+        schema: '2.0',
+        config: { width_mode: 'fill', summary: { content: 'Original analysis' } },
+        header: {
+          template: 'blue',
+          title: { tag: 'plain_text', content: 'Original analysis' },
+        },
+        body: {
+          padding: '12px',
+          elements: [
+            { tag: 'markdown', content: 'The original result must stay unchanged.' },
+            {
+              tag: 'column_set',
+              element_id: 'unrelated_action',
+              columns: [{
+                tag: 'column',
+                elements: [{
+                  tag: 'button',
+                  text: { tag: 'plain_text', content: 'Keep this action' },
+                  behaviors: [{ type: 'callback', value: { action: '{"kind":"other"}' } }],
+                }],
+              }],
+            },
+            {
+              tag: 'column_set',
+              element_id: 'final_actions',
+              columns: cases.map(buttonFormat => ({
+                tag: 'column',
+                elements: [{
+                  tag: 'button',
+                  text: { tag: 'plain_text', content: buttonFormat },
+                  behaviors: [{
+                    type: 'callback',
+                    value: {
+                      action: JSON.stringify({
+                        kind: 'data_export_confirm',
+                        offerId,
+                        format: buttonFormat,
+                      }),
+                    },
+                  }],
+                }],
+              })),
+            },
+          ],
+        },
+      };
       const result = await runWebhook({
         header: {
           event_type: 'card.action.trigger',
@@ -1514,7 +1557,7 @@ describe('Lark webhook card authorization', () => {
               action: JSON.stringify({
                 kind: 'data_export_confirm',
                 offerId,
-                format: testCase.format,
+                format,
               }),
             },
           },
@@ -1526,7 +1569,14 @@ describe('Lark webhook card authorization', () => {
           aiRole: 'COMPANY_ADMIN',
           channel: 'lark',
         },
-        setupAdapter: value => { adapter = value; captureOutbound(value); },
+        setupAdapter: value => {
+          adapter = value;
+          captureOutbound(value);
+          value.__interactiveMessages.set('om_export_card', {
+            chatId: 'oc_export',
+            card: sourceCard,
+          });
+        },
         dataExportCardHandler: handler,
       });
 
@@ -1535,17 +1585,18 @@ describe('Lark webhook card authorization', () => {
       await waitUntil(() => adapter.__updatedMessages.length === 1, 'source export card locked');
       assert.equal(adapter.__updatedMessages[0].messageId, 'om_export_card');
       const card = JSON.parse(adapter.__updatedMessages[0].card).card;
-      assert.equal(card.header.title.content, testCase.title);
-      assert.match(card.body.elements[0].content, /separate Divo card/);
-      assert.equal(JSON.stringify(card).includes('"tag":"button"'), false);
+      assert.deepEqual(card, {
+        ...sourceCard,
+        body: {
+          ...sourceCard.body,
+          elements: sourceCard.body.elements.slice(0, 2),
+        },
+      });
+      assert.equal(JSON.stringify(card).includes('data_export_confirm'), false);
       assert.equal(adapter.__sentCards.length, 0);
     }
 
-    assert.deepEqual(confirmations.map((value: any) => value.destinationFormat), [
-      'google_sheet',
-      'csv',
-      'xlsx',
-    ]);
+    assert.deepEqual(confirmations.map((value: any) => value.destinationFormat), cases);
   });
 
   it('acknowledges and locks an authenticated workbook conversion action', async () => {
@@ -1909,7 +1960,37 @@ describe('Lark webhook card authorization', () => {
         },
       },
     }, {
-      setupAdapter: value => { adapter = value; captureOutbound(value); },
+      setupAdapter: value => {
+        adapter = value;
+        captureOutbound(value);
+        value.__interactiveMessages.set('om_export_card', {
+          chatId: 'oc_export',
+          card: {
+            schema: '2.0',
+            body: {
+              elements: [{
+                tag: 'column_set',
+                element_id: 'final_actions',
+                columns: [{
+                  tag: 'column',
+                  elements: [{
+                    tag: 'button',
+                    behaviors: [{
+                      type: 'callback',
+                      value: {
+                        action: JSON.stringify({
+                          kind: 'data_export_confirm',
+                          offerId: '11111111-1111-4111-8111-111111111111',
+                        }),
+                      },
+                    }],
+                  }],
+                }],
+              }],
+            },
+          },
+        });
+      },
       dataExportCardHandler: handler,
     });
 
@@ -1918,7 +1999,7 @@ describe('Lark webhook card authorization', () => {
     assert.equal('card' in (result.responseBody as any), false);
     await waitUntil(() => adapter.__updatedMessages.length === 1, 'existing export card locked');
     const card = JSON.parse(adapter.__updatedMessages[0].card).card;
-    assert.equal(card.header.title.content, 'Data export started');
+    assert.deepEqual(card.body.elements, []);
     assert.equal(JSON.stringify(card).includes('"tag":"button"'), false);
   });
 
@@ -2140,6 +2221,7 @@ function captureOutbound(adapter: any): void {
   adapter.__sentCards = [];
   adapter.__sentCardDeliveries = [];
   adapter.__updatedMessages = [];
+  adapter.__interactiveMessages = new Map<string, { chatId: string; card: Record<string, unknown> }>();
   adapter.__finalReplies = [];
   adapter.__finalActions = [];
   adapter.__finalTraces = [];
@@ -2183,6 +2265,16 @@ function captureOutbound(adapter: any): void {
   adapter.updateMessageById = async (messageId: string, card: string) => {
     adapter.__updatedMessages.push({ messageId, card });
     return ok(undefined);
+  };
+  adapter.getInteractiveMessageCard = async (messageId: string) => {
+    const message = adapter.__interactiveMessages.get(messageId);
+    return message
+      ? ok(message)
+      : err(new ChannelError({
+          channel: 'lark',
+          stage: 'edit_status',
+          reason: 'upstream_5xx',
+        }));
   };
   adapter.sendFinalReply = async (
     _conversation: unknown,

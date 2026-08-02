@@ -190,14 +190,7 @@ export class LarkDataExportCardHandler {
         handled: true,
         responseBody: {
           toast: { type: 'success', content: message },
-          delivery: 'replace_source_card',
-          card: {
-            type: 'raw',
-            data: buildLockedExportCard(
-              result.disposition === 'queued' ? action.format : undefined,
-              result.disposition,
-            ),
-          },
+          delivery: 'remove_source_actions',
         },
       };
     } catch (error) {
@@ -210,42 +203,6 @@ export class LarkDataExportCardHandler {
       return failure(safeConfirmationMessage(error));
     }
   }
-}
-
-function buildLockedExportCard(
-  format: DataExportCardAction['format'],
-  disposition: 'queued' | 'already_confirmed',
-): Record<string, unknown> {
-  const formatLabel = format === 'google_sheet'
-    ? 'Google Sheet'
-    : format === 'csv'
-      ? 'CSV'
-      : format === 'xlsx'
-        ? 'Excel'
-        : 'Data';
-  const detail = disposition === 'queued'
-    ? `Divo accepted the **${formatLabel}** export.`
-    : 'This export was already accepted.';
-  return {
-    schema: '2.0',
-    config: {
-      width_mode: 'fill',
-      update_multi: true,
-      enable_forward: false,
-      summary: { content: `${formatLabel} export started` },
-    },
-    header: {
-      template: 'green',
-      title: { tag: 'plain_text', content: `${formatLabel} export started` },
-    },
-    body: {
-      padding: '12px',
-      elements: [{
-        tag: 'markdown',
-        content: `${detail}\n\nProgress and the final file will arrive in a separate Divo card.`,
-      }],
-    },
-  };
 }
 
 function buildLockedWorkbookCard(): Record<string, unknown> {

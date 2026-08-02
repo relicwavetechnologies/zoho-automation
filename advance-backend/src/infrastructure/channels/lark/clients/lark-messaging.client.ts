@@ -58,6 +58,11 @@ export interface LarkThreadMessage {
   readonly timestamp: string;
 }
 
+export interface LarkInteractiveMessageCard {
+  readonly chatId: string;
+  readonly card: Record<string, unknown>;
+}
+
 /**
  * SDK-backed client for Lark bot messaging APIs.
  * All business logic lives in LarkChannelAdapter, not here.
@@ -104,6 +109,28 @@ export class LarkMessagingClient {
       },
     );
     return (data.items ?? []).map(message => messageFromLarkApi(message));
+  }
+
+  async getInteractiveMessageCard(messageId: string): Promise<LarkInteractiveMessageCard> {
+    const data = await this.sdk.request<{
+      items?: Array<{
+        chat_id?: string;
+        msg_type?: string;
+        body?: { content?: unknown };
+      }>;
+    }>('GET', `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`);
+    const message = data.items?.[0];
+    const chatId = message?.chat_id?.trim();
+    if (!message || message.msg_type !== 'interactive' || !chatId) {
+      throw new Error('Lark message response did not include an interactive card');
+    }
+    const parsed = typeof message.body?.content === 'string'
+      ? JSON.parse(message.body.content) as unknown
+      : message.body?.content;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Lark interactive message did not include a valid card body');
+    }
+    return { chatId, card: parsed as Record<string, unknown> };
   }
 
   /**

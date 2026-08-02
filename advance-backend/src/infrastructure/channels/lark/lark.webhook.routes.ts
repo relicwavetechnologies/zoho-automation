@@ -581,6 +581,43 @@ async function deliverDeferredDataExportResponse(
     log.warn('webhook.data_export.deferred_delivery_missing_chat');
     return;
   }
+  if (delivery === 'remove_source_actions') {
+    const sourceMessageId = typeof context?.['open_message_id'] === 'string'
+      ? context['open_message_id']
+      : typeof event?.['open_message_id'] === 'string'
+        ? event['open_message_id']
+        : undefined;
+    if (!sourceMessageId) {
+      log.warn('webhook.data_export.deferred_update_missing_message');
+      return;
+    }
+    const source = await adapter.getInteractiveMessageCard(sourceMessageId);
+    if (!source.ok) {
+      log.warn('webhook.data_export.deferred_source_fetch_failed', {
+        error: source.error.message,
+      });
+      return;
+    }
+    if (source.value.chatId !== chatId) {
+      log.warn('webhook.data_export.deferred_source_chat_mismatch');
+      return;
+    }
+    const lockedCard = removeDataExportActions(source.value.card);
+    if (!lockedCard) {
+      log.warn('webhook.data_export.deferred_source_actions_missing');
+      return;
+    }
+    const updated = await adapter.updateMessageById(
+      sourceMessageId,
+      JSON.stringify({ msg_type: 'interactive', card: lockedCard }),
+    );
+    if (!updated.ok) {
+      log.warn('webhook.data_export.deferred_update_failed', {
+        error: updated.error.message,
+      });
+    }
+    return;
+  }
   if (cardData) {
     if (delivery === 'replace_source_card') {
       const sourceMessageId = typeof context?.['open_message_id'] === 'string'
@@ -622,6 +659,28 @@ async function deliverDeferredDataExportResponse(
       error: sent.error.message,
     });
   }
+}
+
+function removeDataExportActions(
+  card: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const body = asRecord(card['body']);
+  const elements = body?.['elements'];
+  if (!body || !Array.isArray(elements)) return null;
+  const remaining = elements.filter(element => !containsDataExportAction(element));
+  if (remaining.length === elements.length) return null;
+  return { ...card, body: { ...body, elements: remaining } };
+}
+
+function containsDataExportAction(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsDataExportAction);
+  const record = asRecord(value);
+  if (!record) return false;
+  if (
+    record['type'] === 'callback'
+    && isDataExportCardAction({ action: { value: record['value'] } })
+  ) return true;
+  return Object.values(record).some(containsDataExportAction);
 }
 
 /**
