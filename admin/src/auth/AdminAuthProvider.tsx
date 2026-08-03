@@ -98,10 +98,12 @@ async function beginLarkLogin(returnTo?: string): Promise<void> {
   const start = await api.get<{ authorizeUrl: string; nonce: string }>(
     `/api/desktop/auth/lark/authorize-url${query}`,
     undefined,
-    { quiet: true },
+    { quiet: true, timeoutMs: 12_000 },
   );
   window.location.assign(start.authorizeUrl);
-  await new Promise<void>(() => undefined);
+  await new Promise<void>((_resolve, reject) => {
+    window.setTimeout(() => reject(new Error('Lark sign-in did not open. Try again.')), 12_000);
+  });
 }
 
 type LarkHandshake = { code: string; state: string };
@@ -111,7 +113,7 @@ async function exchange(handshake: LarkHandshake): Promise<string> {
     '/api/desktop/auth/lark/exchange',
     handshake,
     undefined,
-    { quiet: true },
+    { quiet: true, timeoutMs: 12_000 },
   );
   return result.token;
 }
@@ -131,7 +133,11 @@ export const AdminAuthProvider = ({ children }: { children: React.ReactNode }) =
   }, []);
 
   const fetchSession = useCallback(async (activeToken: string) => {
-    const me = await api.get<MeResponse>('/api/desktop/auth/me', activeToken, { quiet: true });
+    const me = await api.get<MeResponse>('/api/desktop/auth/me', activeToken, {
+      quiet: true,
+      timeoutMs: 12_000,
+      retries: 0,
+    });
     setSession({
       userId: me.userId,
       companyId: me.companyId,
@@ -205,7 +211,7 @@ export const AdminAuthProvider = ({ children }: { children: React.ReactNode }) =
         '/api/desktop/auth/login',
         { email, password },
         undefined,
-        { quiet: true },
+        { quiet: true, timeoutMs: 12_000 },
       );
       persistToken(result.token);
       await fetchSession(result.token);

@@ -56,13 +56,14 @@ export const signInFallbackText = (input: {
   `${input.reason ?? `Hi ${input.name} — one quick step before I can work for you.`}\n\n`
   + `Sign in to Divo:\n${input.url}\n\n`
   + `The link expires in ${SIGN_IN_LINK_TTL_MINUTES} minutes. `
-  + "I'll answer your message as soon as you're connected — no need to send it again.";
+  + "I'll try to answer your message as soon as you're connected. If nothing appears, send it again.";
 
 /**
  * Sign-in card with a single button.
  *
- * `open_url` rather than a callback: there is no state to mutate here, and a
- * callback button would need a live run to answer it.
+ * `open_url` rather than a callback: the button opens the web sign-in page.
+ * After a successful link, `POST /api/lark/auth/link` PATCHes this card to a
+ * connected state using the message id stored on the nonce.
  *
  * The button opens the web sign-in, not Lark's consent screen — one place to
  * sign in, and the identity is mapped afterwards rather than a second session
@@ -102,7 +103,47 @@ export const buildSignInCard = (input: {
           tag: 'markdown',
           content:
             `<font color="grey">Link expires in ${SIGN_IN_LINK_TTL_MINUTES} minutes. `
-            + "I'll answer your message as soon as you're connected — no need to send it again.</font>",
+            + "I'll try to answer your message as soon as you're connected. If nothing appears, send it again.</font>",
+        },
+      ],
+    },
+  };
+
+  return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(card) });
+};
+
+/**
+ * Replaces the sign-in card after the web link succeeds.
+ *
+ * Sent as a PATCH over the original message so the stale "Sign in" button
+ * disappears once the identity is attached.
+ */
+export const buildSignInConnectedCard = (input: {
+  readonly name: string;
+  readonly replaying?: boolean;
+}): string => {
+  const followUp = input.replaying
+    ? "I'm working on your earlier message now. If nothing appears in a minute, send it again."
+    : "You're connected. You can close this tab and return to Lark.";
+
+  const card = {
+    schema: '2.0',
+    config: { width_mode: 'fill', update_multi: true, enable_forward: false },
+    header: {
+      template: 'green',
+      title: { tag: 'plain_text', content: 'Connected to Divo' },
+    },
+    body: {
+      vertical_spacing: '8px',
+      padding: '12px 12px 12px 12px',
+      elements: [
+        {
+          tag: 'markdown',
+          content: `Hi ${input.name} — you're signed in.`,
+        },
+        {
+          tag: 'markdown',
+          content: `<font color="grey">${followUp}</font>`,
         },
       ],
     },

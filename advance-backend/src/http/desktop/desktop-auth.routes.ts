@@ -46,6 +46,8 @@ export interface DesktopAuthRoutesDeps {
   zohoTokenService:       ZohoTokenService;
   zohoConnectionRepo:     ZohoConnectionRepository;
   connectionRepo:         IntegrationConnectionRepository;
+  /** Busts tenant-scoped Lark identity resolution after a successful OAuth link. */
+  invalidateLarkIdentityCache?: (larkOpenId: string) => Promise<void>;
   permissions:            PermissionService;
   skillCatalog:           SkillCatalogService;
   skillAccessEnforcement: SkillAccessEnforcementPort;
@@ -826,6 +828,19 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
       const companyId = tenantBinding.companyId;
+      const larkOpenId = tokenBundle.larkOpenId?.trim();
+      if (!larkOpenId) {
+        log.warn('lark.exchange.identity_missing', {
+          companyId,
+          tenantKey,
+          hasEmail: Boolean(tokenBundle.larkEmail?.trim()),
+        });
+        res.status(400).json({
+          success: false,
+          message: 'Lark did not return a usable account identity. Please try again.',
+        });
+        return;
+      }
 
       let email = (tokenBundle.larkEmail?.trim()) || null;
 
@@ -837,12 +852,20 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         });
       }
 
-      if (!user && tokenBundle.larkOpenId) {
+      if (!user) {
         const existingConnection = await deps.connectionRepo.findLarkConnectionOwner({
-          larkOpenId: tokenBundle.larkOpenId,
+          larkOpenId,
           companyId,
+          larkTenantKey: tenantKey,
         });
-        if (existingConnection.ok && existingConnection.value) {
+        if (!existingConnection.ok) {
+          log.error('lark.exchange.connection_owner_lookup_failed', {
+            companyId,
+            tenantKey,
+            larkOpenId,
+            error: existingConnection.error.message,
+          });
+        } else if (existingConnection.value) {
           user = await deps.prisma.user.findUnique({ where: { id: existingConnection.value.userId } });
         }
       }
@@ -854,7 +877,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       if (!email && user && isSyntheticLarkIdentityEmail(user.email)) {
         log.warn('lark.exchange.synthetic_identity_rejected', {
           userId: user.id,
-          larkOpenId: tokenBundle.larkOpenId,
+          larkOpenId,
         });
         user = null;
       }
@@ -862,7 +885,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       if (!user) {
         if (!email) {
           log.warn('lark.exchange.email_missing', {
-            larkOpenId: tokenBundle.larkOpenId,
+            larkOpenId,
             returnedScopes: tokenBundle.scope,
           });
           res.status(400).json({
@@ -898,13 +921,12 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
 
       // A Lark sign-in is also a company-managed Lark connection. The generic
       // registry is the only token and sharing authority.
-      if (tokenBundle.larkOpenId) {
-        const connectionResult = await deps.connectionRepo.upsertLarkConnection({
+      const connectionResult = await deps.connectionRepo.upsertLarkConnection({
           companyId,
           ownerType: 'user',
           ownerUserId: user.id,
           createdBy: user.id,
-          larkOpenId: tokenBundle.larkOpenId,
+          larkOpenId,
           larkUserId: tokenBundle.larkUserId,
           larkTenantKey: tokenBundle.tenantKey,
           larkEmail: email,
@@ -917,16 +939,34 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           scopes: tokenBundle.scope?.split(/\s+/).filter(Boolean) ?? [],
           initialAccess: 'admin',
         });
-        if (!connectionResult.ok) {
-          log.error('lark.exchange.connection_upsert_failed', { error: String(connectionResult.error) });
-          throw new Error('Could not save the Lark connection');
+      if (!connectionResult.ok) {
+        log.error('lark.exchange.connection_upsert_failed', { error: String(connectionResult.error) });
+        throw new Error('Could not save the Lark connection');
+      }
+      if (deps.invalidateLarkIdentityCache) {
+        try {
+          await deps.invalidateLarkIdentityCache(larkOpenId);
+          log.info('lark.exchange.identity_cache_invalidated', {
+            companyId,
+            userId: user.id,
+            larkOpenId,
+            tenantKey,
+          });
+        } catch (error) {
+          log.error('lark.exchange.identity_cache_invalidation_failed', {
+            companyId,
+            userId: user.id,
+            larkOpenId,
+            tenantKey,
+            error: String(error),
+          });
         }
       }
 
       const session = await issueDesktopSession(deps, user.id, companyId, role, {
         authProvider:  'lark',
         larkTenantKey: tenantKey,
-        larkOpenId:    tokenBundle.larkOpenId,
+        larkOpenId,
         larkUserId:    tokenBundle.larkUserId,
       });
 
@@ -947,7 +987,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
             email: user.email,
             name: user.name ?? email,
             larkTenantKey: tenantKey,
-            larkOpenId:    tokenBundle.larkOpenId,
+            larkOpenId,
             larkUserId:    tokenBundle.larkUserId,
             avatarUrl:     tokenBundle.avatarUrl,
             departments,

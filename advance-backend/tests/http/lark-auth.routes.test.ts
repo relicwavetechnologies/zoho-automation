@@ -5,6 +5,7 @@ import {
   createLarkAuthRoutes,
   encodeLarkOAuthState,
   larkOAuthNonceKey,
+  larkOAuthReplayKey,
 } from '../../src/http/lark/lark-auth.routes.ts';
 import { ok } from '../../src/shared/result.ts';
 
@@ -105,6 +106,36 @@ describe('Lark OAuth account binding', () => {
 
     assert.equal(response.status, 403);
     assert.deepEqual(response.body, { error: 'lark_identity_mismatch' });
+  });
+
+  it('does not issue an authorize URL when the nonce cannot be stored', async () => {
+    const events: string[] = [];
+    const router = makeRouter({
+      logger: {
+        ...noopLogger,
+        error: (event: string) => { events.push(event); },
+      },
+      cache: {
+        get: async () => ok(null),
+        set: async () => ({ ok: false, error: new Error('redis unavailable') }),
+        del: async () => ok(undefined),
+        setNx: async () => ok(true),
+        scanDel: async () => ok(0),
+      },
+    });
+
+    const response = await callRoute(router, 'GET', '/connect', {
+      headers: {
+        'x-company-id': 'company-1',
+        'x-user-id': 'user-1',
+        'x-lark-open-id': 'ou_alice',
+        'x-lark-tenant-key': 'tenant-1',
+      },
+    });
+
+    assert.equal(response.status, 503);
+    assert.deepEqual(response.body, { error: 'lark_auth_state_unavailable' });
+    assert.deepEqual(events, ['lark.auth.connect.nonce_store_failed']);
   });
 
   it('rejects a callback when OAuth returns a different Lark account', async () => {
@@ -392,6 +423,52 @@ describe('attaching a Lark identity to a web session', () => {
     assert.deepEqual(response.body, { error: 'link_expired' });
   });
 
+  it('reports a nonce-store outage as temporary instead of expired', async () => {
+    const events: string[] = [];
+    const router = makeRouter({
+      logger: {
+        ...noopLogger,
+        error: (event: string) => { events.push(event); },
+      },
+      cache: {
+        get: async () => ({ ok: false, error: new Error('redis unavailable') }),
+        set: async () => ok(undefined),
+        del: async () => ok(undefined),
+        setNx: async () => ok(true),
+        scanDel: async () => ok(0),
+      },
+    });
+
+    const response = await callLink(router, { state: linkState() }, signedInAs('user-1'));
+
+    assert.equal(response.status, 503);
+    assert.deepEqual(response.body, { error: 'lark_link_status_unavailable' });
+    assert.deepEqual(events, ['lark.auth.link.nonce_read_failed']);
+  });
+
+  it('turns an unexpected link-route failure into a logged temporary error', async () => {
+    const events: string[] = [];
+    const router = makeRouter({
+      logger: {
+        ...noopLogger,
+        error: (event: string) => { events.push(event); },
+      },
+      cache: {
+        get: async () => { throw new Error('redis connection dropped'); },
+        set: async () => ok(undefined),
+        del: async () => ok(undefined),
+        setNx: async () => ok(true),
+        scanDel: async () => ok(0),
+      },
+    });
+
+    const response = await callLink(router, { state: linkState() }, signedInAs('user-1'));
+
+    assert.equal(response.status, 503);
+    assert.deepEqual(response.body, { error: 'lark_auth_unavailable' });
+    assert.deepEqual(events, ['lark.auth.request_failed']);
+  });
+
   it('refuses when the workspace mapping went away while the card sat unread', async () => {
     const router = makeRouter({
       cache: {
@@ -425,8 +502,10 @@ describe('attaching a Lark identity to a web session', () => {
         scanDel: async () => ok(0),
       },
       connectionRepo: {
-        findLarkConnectionOwner: async (input: { larkOpenId: string }) => {
+        findLarkConnectionOwner: async (input: { companyId: string; larkOpenId: string; larkTenantKey: string }) => {
+          assert.equal(input.companyId, 'company-1');
           assert.equal(input.larkOpenId, 'ou_alice');
+          assert.equal(input.larkTenantKey, 'tenant-1');
           return ok(null);
         },
       },
@@ -472,10 +551,15 @@ describe('attaching a Lark identity to a web session', () => {
     let stamped: any = null;
     let detached: any = null;
     let replayed: unknown = null;
+    let resolvedCard: unknown = null;
 
     const router = makeRouter({
       cache: {
-        get: async () => ok(storedNonce({ pendingEvent: { message: 'what is on my calendar?' } })),
+        get: async () => ok(storedNonce({
+          pendingEvent: { message: 'what is on my calendar?' },
+          signInCardMessageId: 'om_sign_in',
+          signInCardDisplayName: 'Alice',
+        })),
         set: async () => ok(undefined),
         del: async (key: string) => { deleted.push(key); return ok(undefined); },
         setNx: async () => ok(true),
@@ -497,6 +581,10 @@ describe('attaching a Lark identity to a web session', () => {
       onLinked: async (event: Record<string, unknown>) => {
         order.push('replayed');
         replayed = event;
+      },
+      onSignInCardResolved: async (input) => {
+        order.push('sign_in_card');
+        resolvedCard = input;
       },
     });
 
@@ -520,7 +608,109 @@ describe('attaching a Lark identity to a web session', () => {
 
     await new Promise((r) => setImmediate(r));
     assert.deepEqual(replayed, { message: 'what is on my calendar?' });
-    assert.deepEqual(order, ['invalidated', 'replayed']);
+    assert.deepEqual(resolvedCard, {
+      messageId: 'om_sign_in',
+      displayName: 'Alice',
+      replaying: true,
+    });
+    assert.deepEqual(order, ['invalidated', 'sign_in_card', 'replayed']);
+  });
+
+  it('does not start a second replay when the link is clicked twice quickly', async () => {
+    let claimAttempts = 0;
+    let replayCalls = 0;
+    let finishReplay!: (value: boolean) => void;
+    const replay = new Promise<boolean>((resolve) => { finishReplay = resolve; });
+    const router = makeRouter({
+      cache: {
+        get: async () => ok(storedNonce({ pendingEvent: { message: 'hello' } })),
+        set: async () => ok(undefined),
+        del: async () => ok(undefined),
+        setNx: async () => {
+          claimAttempts += 1;
+          return ok(claimAttempts === 1);
+        },
+        scanDel: async () => ok(0),
+      },
+      prisma: {
+        memberSession: {
+          update: async () => ({}),
+          updateMany: async () => ({ count: 0 }),
+        },
+      },
+      onLinked: async () => {
+        replayCalls += 1;
+        return replay;
+      },
+    });
+
+    const first = callLink(router, { state: linkState() }, signedInAs('user-1'));
+    await new Promise((resolve) => setImmediate(resolve));
+    const second = callLink(router, { state: linkState() }, signedInAs('user-1'));
+    const [firstResponse, secondResponse] = await Promise.all([first, second]);
+
+    assert.deepEqual(firstResponse.body, { linked: true, replaying: true });
+    assert.deepEqual(secondResponse.body, { linked: true, replaying: true });
+    assert.equal(replayCalls, 1);
+
+    finishReplay(true);
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  it('keeps the pending link when replay does not complete', async () => {
+    const deleted: string[] = [];
+    const router = makeRouter({
+      cache: {
+        get: async () => ok(storedNonce({ pendingEvent: { message: 'what is on my calendar?' } })),
+        set: async () => ok(undefined),
+        del: async (key: string) => { deleted.push(key); return ok(undefined); },
+        setNx: async () => ok(true),
+        scanDel: async () => ok(0),
+      },
+      prisma: {
+        memberSession: {
+          update: async () => ({}),
+          updateMany: async () => ({ count: 0 }),
+        },
+      },
+      onLinked: async () => false,
+    });
+
+    const response = await callLink(router, { state: linkState() }, signedInAs('user-1'));
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body, { linked: true, replaying: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(deleted, [larkOAuthReplayKey('nonce-1')], 'the nonce remains retryable until replay completes');
+  });
+
+  it('logs a nonce cleanup failure without hiding a successful link', async () => {
+    const events: string[] = [];
+    const router = makeRouter({
+      logger: {
+        ...noopLogger,
+        error: (event: string) => { events.push(event); },
+      },
+      cache: {
+        get: async () => ok(storedNonce()),
+        set: async () => ok(undefined),
+        del: async () => ({ ok: false, error: new Error('redis unavailable') }),
+        setNx: async () => ok(true),
+        scanDel: async () => ok(0),
+      },
+      prisma: {
+        memberSession: {
+          update: async () => ({}),
+          updateMany: async () => ({ count: 0 }),
+        },
+      },
+    });
+
+    const response = await callLink(router, { state: linkState() }, signedInAs('user-1'));
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body, { linked: true, replaying: false });
+    assert.deepEqual(events, ['lark.auth.link.nonce_cleanup_failed']);
   });
 
   it('says so plainly when the link is not a link', async () => {

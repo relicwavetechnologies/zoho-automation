@@ -470,7 +470,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const omsEncryptionKey = env.OMS_CONNECTION_ENCRYPTION_KEY ?? env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '';
   const companyOmsConnectionRepo = new CompanyOmsConnectionRepository(prisma, omsEncryptionKey);
   const conversationRepo      = new ConversationRepository(prisma, cache);
-  const channelIdentityRepo   = new ChannelIdentityRepository(prisma, cache);
+  const channelIdentityRepo   = new ChannelIdentityRepository(prisma, cache, logger);
   const larkChatContextRepo   = new LarkChatContextRepository(prisma);
   // Grounds a mail rule's Lark destination in a room Divo has actually been in
   // for this company. Until now nothing checked at all: the "use governed chat

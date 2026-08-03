@@ -33,11 +33,15 @@ export function LoginPage() {
    */
   const requested = params.get("next")
   const next = requested && requested.startsWith("/") && !requested.startsWith("//") ? requested : "/"
+  const isLarkLinkFlow = next.startsWith("/link/lark")
   const larkCode = params.get("lark_code")
   const larkState = params.get("lark_state")
   const callbackStarted = useRef(false)
+  const attemptInFlight = useRef(false)
 
   const attempt = async (kind: "lark" | "password", run: () => Promise<void>) => {
+    if (attemptInFlight.current) return
+    attemptInFlight.current = true
     setBusy(kind)
     setError(null)
     try {
@@ -47,6 +51,7 @@ export function LoginPage() {
       setError(signInError instanceof Error ? signInError.message : "Sign-in failed.")
     } finally {
       setBusy(null)
+      attemptInFlight.current = false
     }
   }
 
@@ -94,7 +99,9 @@ export function LoginPage() {
 
           <Field
             label="Password"
-            hint="Signing in this way does not connect Lark. You can link it afterwards from Connected apps."
+            hint={isLarkLinkFlow
+              ? "This signs you into Divo first; you’ll connect Lark next so Divo can answer the message you sent."
+              : "Signing in this way does not connect Lark. You can link it afterwards from Connected apps."}
           >
             <input
               className="input"

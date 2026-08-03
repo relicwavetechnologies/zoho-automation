@@ -27,6 +27,23 @@ import type { CachePort } from '../../shared/cache';
 import type { Logger } from '../../shared/logger';
 import type { ChannelIdentityRepository } from '../../infrastructure/persistence/channel-identity.repository';
 import type { PrismaClient } from '../../generated/prisma';
+import {
+  larkOAuthNonceKey,
+  larkOAuthReplayKey,
+  LARK_OAUTH_NONCE_TTL_SECONDS,
+  recordSignInCardOnNonce,
+  encodeLarkOAuthState,
+  type LarkOAuthNoncePayload,
+} from '../../infrastructure/channels/lark/lark-oauth-nonce';
+
+export {
+  larkOAuthNonceKey,
+  larkOAuthReplayKey,
+  LARK_OAUTH_NONCE_TTL_SECONDS,
+  recordSignInCardOnNonce,
+  encodeLarkOAuthState,
+};
+export type { LarkOAuthNoncePayload };
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -36,16 +53,6 @@ interface OAuthState {
   larkOpenId: string;
   tenantKey:  string;
   nonce:      string;
-}
-
-export const LARK_OAUTH_NONCE_TTL_SECONDS = 600; // 10 min
-
-export function larkOAuthNonceKey(nonce: string): string {
-  return `lark:oauth:nonce:${nonce}`;
-}
-
-export function encodeLarkOAuthState(s: OAuthState): string {
-  return Buffer.from(JSON.stringify(s)).toString('base64url');
 }
 
 function decodeState(raw: string): OAuthState | null {
@@ -64,7 +71,7 @@ function decodeState(raw: string): OAuthState | null {
 
 // ─── HTML pages ───────────────────────────────────────────────────────────────
 
-const successHtml = (name: string) => `<!DOCTYPE html>
+const successHtml = (name: string, replaying = false) => `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Divo — Connected</title>
 <style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f0fdf4}
@@ -74,7 +81,9 @@ const successHtml = (name: string) => `<!DOCTYPE html>
 <body><div class="card">
 <div class="icon">✅</div>
 <p class="title">Connected as ${escapeHtml(name)}</p>
-<p class="sub">You can close this tab and return to Lark.</p>
+<p class="sub">${replaying
+  ? 'I will try your earlier message next. If nothing appears in Lark, send it again.'
+  : 'You can close this tab and return to Lark.'}</p>
 </div></body></html>`;
 
 const errorHtml = (reason: string) => `<!DOCTYPE html>
@@ -127,7 +136,16 @@ export function createLarkAuthRoutes(deps: {
    * stay usable without the webhook wiring; absent simply means they have to
    * resend, which is the behaviour this replaced.
    */
-  onLinked?:             (pendingEvent: Record<string, unknown>) => Promise<void>;
+  onLinked?:             (pendingEvent: Record<string, unknown>) => Promise<void | boolean>;
+  /**
+   * Best-effort PATCH of the sign-in card after `POST /link` succeeds. The
+   * card message id is stored on the nonce when the webhook sends the card.
+   */
+  onSignInCardResolved?: (input: {
+    messageId: string;
+    displayName: string;
+    replaying: boolean;
+  }) => Promise<void>;
   larkOAuthService:      LarkOAuthService;
   connectionRepo:        IntegrationConnectionRepository;
   cache:                 CachePort;
@@ -151,6 +169,28 @@ export function createLarkAuthRoutes(deps: {
   const router = Router();
   const log    = deps.logger.child({ router: 'lark-auth' });
 
+  const guarded = (
+    route: string,
+    handler: (req: Request, res: Response) => Promise<void>,
+  ): RequestHandler => (req, res, next) => {
+    void handler(req, res).catch(error => {
+      log.error('lark.auth.request_failed', {
+        route,
+        requestId: (req as unknown as Record<string, unknown>)['requestId']
+          ?? req.headers['x-request-id']
+          ?? null,
+        companyId: res.locals?.['companyId'] ?? null,
+        userId: res.locals?.['userId'] ?? null,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (res.headersSent) {
+        next(error);
+        return;
+      }
+      res.status(503).json({ error: 'lark_auth_unavailable' });
+    });
+  };
+
   // ── 0. Attach a Lark identity to the session the web app just created ──────
   //
   // The sign-in card in Lark now opens the web login rather than Lark's OAuth
@@ -160,7 +200,7 @@ export function createLarkAuthRoutes(deps: {
   // webhook stored, checks that the person who signed in is the person the
   // card was addressed to, and stamps their existing session. It grants
   // nothing, takes no OAuth tokens, and cannot create a session.
-  router.post('/link', ...(deps.memberAuth ? [deps.memberAuth] : []), async (req: Request, res: Response) => {
+  router.post('/link', ...(deps.memberAuth ? [deps.memberAuth] : []), guarded('link', async (req: Request, res: Response) => {
     const userId    = res.locals['userId']    as string | undefined;
     const companyId = res.locals['companyId'] as string | undefined;
     const sessionId = res.locals['sessionId'] as string | undefined;
@@ -175,17 +215,20 @@ export function createLarkAuthRoutes(deps: {
       return;
     }
 
-    const stored = await deps.cache.get<{
-      companyId: string;
-      userId: string;
-      larkOpenId: string;
-      tenantKey: string;
-      pendingEvent?: Record<string, unknown>;
-    }>(larkOAuthNonceKey(state.nonce));
+    const stored = await deps.cache.get<LarkOAuthNoncePayload>(larkOAuthNonceKey(state.nonce));
+
+    if (!stored.ok) {
+      log.error('lark.auth.link.nonce_read_failed', {
+        companyId: state.companyId,
+        userId: state.userId,
+        error: stored.error.message,
+      });
+      res.status(503).json({ error: 'lark_link_status_unavailable' });
+      return;
+    }
 
     if (
-      !stored.ok
-      || !stored.value
+      !stored.value
       || stored.value.companyId  !== state.companyId
       || stored.value.userId     !== state.userId
       || stored.value.larkOpenId !== state.larkOpenId
@@ -216,9 +259,17 @@ export function createLarkAuthRoutes(deps: {
     // Re-read the mapping rather than trusting a ten-minute-old nonce: a
     // membership can be revoked between the card being sent and being clicked.
     const identity = await deps.channelIdentityRepo.prepareLarkLogin(state.larkOpenId, state.tenantKey);
+    if (!identity.ok) {
+      log.error('lark.auth.link.mapping_read_failed', {
+        companyId,
+        userId,
+        error: identity.error.message,
+      });
+      res.status(503).json({ error: 'lark_identity_status_unavailable' });
+      return;
+    }
     if (
-      !identity.ok
-      || identity.value?.status !== 'ready'
+      identity.value?.status !== 'ready'
       || identity.value.companyId !== companyId
       || identity.value.userId   !== userId
     ) {
@@ -226,6 +277,7 @@ export function createLarkAuthRoutes(deps: {
       res.status(403).json({ error: 'lark_identity_mismatch' });
       return;
     }
+    const aiRole = identity.value.aiRole;
 
     // Chat identity and capability ownership must name the same Lark account.
     // A user may own or be granted several Lark connections; accepting any one
@@ -233,9 +285,14 @@ export function createLarkAuthRoutes(deps: {
     const connectionOwner = await deps.connectionRepo.findLarkConnectionOwner({
       companyId,
       larkOpenId: state.larkOpenId,
+      larkTenantKey: state.tenantKey,
     });
     if (!connectionOwner.ok) {
-      log.warn('lark.auth.link.connection_read_failed', { companyId, userId });
+      log.error('lark.auth.link.connection_read_failed', {
+        companyId,
+        userId,
+        error: connectionOwner.error.message,
+      });
       res.status(503).json({ error: 'lark_connection_status_unavailable' });
       return;
     }
@@ -244,31 +301,42 @@ export function createLarkAuthRoutes(deps: {
       return;
     }
 
-    await deps.cache.del(larkOAuthNonceKey(state.nonce));
+    // One Lark identity resolves to one session. Keep detaching old sessions
+    // and stamping the current one in one transaction, or a failed second
+    // write would leave the identity attached to nobody.
+    type SessionDb = Pick<PrismaClient, 'memberSession'>;
+    const updateSessions = async (db: SessionDb): Promise<void> => {
+      await db.memberSession.updateMany({
+        where: {
+          companyId,
+          larkOpenId: state.larkOpenId,
+          larkTenantKey: state.tenantKey,
+          revokedAt: null,
+          sessionId: { not: sessionId },
+          authProvider: { not: SCHEDULED_SESSION_AUTH_PROVIDER },
+        },
+        data: { larkOpenId: null, larkTenantKey: null, larkUserId: null },
+      });
 
-    // One Lark identity resolves to one session. Detaching it from the others
-    // first keeps the runtime lookup unambiguous; it does not sign anyone out,
-    // it only stops an older session answering for this Lark account.
-    await deps.prisma.memberSession.updateMany({
-      where: {
-        companyId,
-        larkOpenId: state.larkOpenId,
-        larkTenantKey: state.tenantKey,
-        revokedAt: null,
-        sessionId: { not: sessionId },
-        authProvider: { not: SCHEDULED_SESSION_AUTH_PROVIDER },
-      },
-      data: { larkOpenId: null, larkTenantKey: null, larkUserId: null },
-    });
-
-    await deps.prisma.memberSession.update({
-      where: { sessionId },
-      data: {
-        larkTenantKey: state.tenantKey,
-        larkOpenId:    state.larkOpenId,
-        role:          identity.value.aiRole,
-      },
-    });
+      await db.memberSession.update({
+        where: { sessionId },
+        data: {
+          larkTenantKey: state.tenantKey,
+          larkOpenId:    state.larkOpenId,
+          role:          aiRole,
+        },
+      });
+    };
+    const transactionalPrisma = deps.prisma as PrismaClient & {
+      $transaction?: (callback: (db: SessionDb) => Promise<void>) => Promise<void>;
+    };
+    if (typeof transactionalPrisma.$transaction === 'function') {
+      await transactionalPrisma.$transaction(updateSessions);
+    } else {
+      // Test doubles may expose only the two delegates; production Prisma
+      // always has `$transaction`.
+      await updateSessions(deps.prisma);
+    }
 
     // The replay resolves this identity immediately. Wait for the old
     // unauthenticated cache entry to disappear first, or the replay can race
@@ -277,20 +345,132 @@ export function createLarkAuthRoutes(deps: {
 
     log.info('lark.auth.link.attached', { companyId, userId, larkOpenId: state.larkOpenId });
 
+    const noncePayload = stored.value;
+    const willReplay = Boolean(noncePayload.pendingEvent && deps.onLinked);
+    if (noncePayload.signInCardMessageId && deps.onSignInCardResolved) {
+      void deps.onSignInCardResolved({
+        messageId: noncePayload.signInCardMessageId,
+        displayName: noncePayload.signInCardDisplayName ?? 'there',
+        replaying: willReplay,
+      }).catch(error => {
+        log.warn('lark.auth.link.sign_in_card_update_failed', {
+          companyId,
+          userId,
+          larkOpenId: state.larkOpenId,
+          messageId: noncePayload.signInCardMessageId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+
+    const consumeNonce = async (reason: string): Promise<void> => {
+      try {
+        const deleted = await deps.cache.del(larkOAuthNonceKey(state.nonce));
+        if (!deleted.ok) {
+          log.error('lark.auth.link.nonce_cleanup_failed', {
+            companyId,
+            userId,
+            larkOpenId: state.larkOpenId,
+            reason,
+            error: deleted.error.message,
+          });
+        }
+      } catch (error) {
+        log.error('lark.auth.link.nonce_cleanup_failed', {
+          companyId,
+          userId,
+          larkOpenId: state.larkOpenId,
+          reason,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
+    const releaseReplayClaim = async (reason: string): Promise<void> => {
+      try {
+        const released = await deps.cache.del(larkOAuthReplayKey(state.nonce));
+        if (!released.ok) {
+          log.error('lark.auth.link.replay_claim_release_failed', {
+            companyId,
+            userId,
+            larkOpenId: state.larkOpenId,
+            reason,
+            error: released.error.message,
+          });
+        }
+      } catch (error) {
+        log.error('lark.auth.link.replay_claim_release_failed', {
+          companyId,
+          userId,
+          larkOpenId: state.larkOpenId,
+          reason,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
     // Answer what they asked before signing in. Not awaited — the browser is
     // waiting on this response and an agent run is far slower than a page load.
-    const pendingEvent = stored.value.pendingEvent;
+    const pendingEvent = noncePayload.pendingEvent;
+    let replaying = false;
     if (pendingEvent && deps.onLinked) {
-      void deps.onLinked(pendingEvent).catch(e =>
-        log.warn('lark.auth.link.replay_failed', { error: String(e), companyId }));
+      const claim = await deps.cache.setNx(
+        larkOAuthReplayKey(state.nonce),
+        { status: 'running' },
+        LARK_OAUTH_NONCE_TTL_SECONDS,
+      );
+      if (!claim.ok) {
+        log.error('lark.auth.link.replay_claim_failed', {
+          companyId,
+          userId,
+          larkOpenId: state.larkOpenId,
+          error: claim.error.message,
+        });
+        res.status(503).json({ error: 'lark_replay_status_unavailable' });
+        return;
+      }
+      replaying = true;
+      if (!claim.value) {
+        log.info('lark.auth.link.replay_already_running', {
+          companyId,
+          userId,
+          larkOpenId: state.larkOpenId,
+        });
+        res.json({ linked: true, replaying: true });
+        return;
+      }
+      void deps.onLinked(pendingEvent)
+        .then(async replayed => {
+          if (replayed === false) {
+            await releaseReplayClaim('replay_not_completed');
+            log.warn('lark.auth.link.replay_not_completed', {
+              companyId,
+              userId,
+              larkOpenId: state.larkOpenId,
+            });
+            return;
+          }
+          await consumeNonce('replay_completed');
+        })
+        .catch(async e => {
+          await releaseReplayClaim('replay_failed');
+          log.error('lark.auth.link.replay_failed', {
+            error: e instanceof Error ? e.message : String(e),
+            companyId,
+            userId,
+            larkOpenId: state.larkOpenId,
+          });
+        });
+    } else {
+      await consumeNonce('no_pending_event');
     }
 
     res.json({
       linked: true,
       /** Whether the reply to their original message is already on its way. */
-      replaying: Boolean(pendingEvent && deps.onLinked),
+      replaying,
     });
-  });
+  }));
 
   // ── 1. Generate authorize URL ──────────────────────────────────────────────
   //
@@ -298,7 +478,7 @@ export function createLarkAuthRoutes(deps: {
   // Header values are never trusted: they must match the server-side Lark
   // identity mapping before an OAuth nonce is issued.
   //
-  router.get('/connect', async (req: Request, res: Response) => {
+  router.get('/connect', guarded('connect', async (req: Request, res: Response) => {
     if (!deps.larkOAuthService.isConfigured()) {
       res.status(503).json({ error: 'lark_oauth_not_configured' });
       return;
@@ -320,9 +500,18 @@ export function createLarkAuthRoutes(deps: {
     }
 
     const identity = await deps.channelIdentityRepo.prepareLarkLogin(larkOpenId, tenantKey);
+    if (!identity.ok) {
+      log.error('lark.auth.connect.mapping_read_failed', {
+        companyId,
+        userId,
+        larkOpenId,
+        error: identity.error.message,
+      });
+      res.status(503).json({ error: 'lark_identity_status_unavailable' });
+      return;
+    }
     if (
-      !identity.ok
-      || identity.value?.status !== 'ready'
+      identity.value?.status !== 'ready'
       || identity.value.companyId !== companyId
       || identity.value.userId !== userId
       || identity.value.larkOpenId !== larkOpenId
@@ -333,28 +522,38 @@ export function createLarkAuthRoutes(deps: {
     }
 
     const nonce = deps.larkOAuthService.generateNonce();
-    await deps.cache.set(
+    const stored = await deps.cache.set(
       larkOAuthNonceKey(nonce),
       { companyId, userId, larkOpenId, tenantKey },
       LARK_OAUTH_NONCE_TTL_SECONDS,
     );
+    if (!stored.ok) {
+      log.error('lark.auth.connect.nonce_store_failed', {
+        companyId,
+        userId,
+        larkOpenId,
+        error: stored.error.message,
+      });
+      res.status(503).json({ error: 'lark_auth_state_unavailable' });
+      return;
+    }
 
     const state = encodeLarkOAuthState({ companyId, userId, larkOpenId, tenantKey, nonce });
     const url   = deps.larkOAuthService.getAuthorizeUrl(state);
 
     log.info('lark.auth.connect.initiated', { companyId, userId, larkOpenId });
     res.json({ url });
-  });
+  }));
 
   // ── 2. OAuth callback ──────────────────────────────────────────────────────
 
-  router.get('/callback', async (req: Request, res: Response) => {
+  router.get('/callback', guarded('callback', async (req: Request, res: Response) => {
     const code     = req.query['code']  as string | undefined;
     const stateRaw = req.query['state'] as string | undefined;
     const error    = req.query['error'] as string | undefined;
 
-    const sendError = (reason: string) => {
-      res.status(400).send(errorHtml(reason));
+    const sendError = (reason: string, status = 400) => {
+      res.status(status).send(errorHtml(reason));
     };
 
     if (error) {
@@ -376,18 +575,20 @@ export function createLarkAuthRoutes(deps: {
     }
 
     // Validate CSRF nonce
-    const stored = await deps.cache.get<{
-      companyId: string;
-      userId: string;
-      larkOpenId: string;
-      tenantKey: string;
-      pendingEvent?: Record<string, unknown>;
-    }>(
+    const stored = await deps.cache.get<LarkOAuthNoncePayload>(
       larkOAuthNonceKey(state.nonce),
     );
+    if (!stored.ok) {
+      log.error('lark.auth.callback.nonce_read_failed', {
+        companyId: state.companyId,
+        userId: state.userId,
+        error: stored.error.message,
+      });
+      sendError('Divo is temporarily unavailable — please try again in a moment.', 503);
+      return;
+    }
     if (
-      !stored.ok
-      || !stored.value
+      !stored.value
       || stored.value.companyId !== state.companyId
       || stored.value.userId !== state.userId
       || stored.value.larkOpenId !== state.larkOpenId
@@ -397,8 +598,17 @@ export function createLarkAuthRoutes(deps: {
       sendError('Session expired or invalid — please run /login again.');
       return;
     }
-    await deps.cache.del(larkOAuthNonceKey(state.nonce));
+    const consumed = await deps.cache.del(larkOAuthNonceKey(state.nonce));
+    if (!consumed.ok) {
+      log.error('lark.auth.callback.nonce_cleanup_failed', {
+        companyId: state.companyId,
+        userId: state.userId,
+        larkOpenId: state.larkOpenId,
+        error: consumed.error.message,
+      });
+    }
 
+    let callbackFailureStatus = 503;
     try {
       if (!deps.channelIdentityRepo) {
         throw new Error('Lark identity validation is unavailable');
@@ -407,12 +617,21 @@ export function createLarkAuthRoutes(deps: {
         state.larkOpenId,
         state.tenantKey,
       );
+      if (!identity.ok) {
+        log.error('lark.auth.callback.mapping_read_failed', {
+          companyId: state.companyId,
+          userId: state.userId,
+          larkOpenId: state.larkOpenId,
+          error: identity.error.message,
+        });
+        throw new Error('Lark identity validation is temporarily unavailable');
+      }
       if (
-        !identity.ok
-        || identity.value?.status !== 'ready'
+        identity.value?.status !== 'ready'
         || identity.value.companyId !== state.companyId
         || identity.value.userId !== state.userId
       ) {
+        callbackFailureStatus = 400;
         throw new Error('The Lark workspace binding is no longer active');
       }
 
@@ -423,6 +642,7 @@ export function createLarkAuthRoutes(deps: {
       }
 
       if (!tokens.larkOpenId || tokens.larkOpenId !== state.larkOpenId) {
+        callbackFailureStatus = 400;
         log.warn('lark.auth.callback.account_mismatch', {
           expectedLarkOpenId: state.larkOpenId,
           returnedLarkOpenId: tokens.larkOpenId || null,
@@ -432,6 +652,7 @@ export function createLarkAuthRoutes(deps: {
         throw new Error('The authorised Lark account does not match the account that started this connection');
       }
       if (!tokens.tenantKey || tokens.tenantKey !== state.tenantKey) {
+        callbackFailureStatus = 400;
         log.warn('lark.auth.callback.tenant_mismatch', {
           expectedTenantKey: state.tenantKey,
           returnedTenantKey: tokens.tenantKey || null,
@@ -543,17 +764,42 @@ export function createLarkAuthRoutes(deps: {
       // browser is waiting on this response, and an agent run takes far longer
       // than a page load should. Failures are logged inside the replay.
       const pendingEvent = stored.value.pendingEvent;
+      const replaying = Boolean(pendingEvent && deps.onLinked);
       if (pendingEvent && deps.onLinked) {
-        void deps.onLinked(pendingEvent).catch(e =>
-          log.warn('lark.auth.replay_failed', { error: String(e), companyId: state.companyId }));
+        void deps.onLinked(pendingEvent)
+          .then(replayed => {
+            if (replayed === false) {
+              log.warn('lark.auth.callback.replay_not_completed', {
+                companyId: state.companyId,
+                userId: state.userId,
+                larkOpenId: state.larkOpenId,
+              });
+            }
+          })
+          .catch(e => log.error('lark.auth.callback.replay_failed', {
+            error: e instanceof Error ? e.message : String(e),
+            companyId: state.companyId,
+            userId: state.userId,
+            larkOpenId: state.larkOpenId,
+          }));
       }
 
-      res.send(successHtml(displayName));
+      res.send(successHtml(displayName, replaying));
     } catch (e) {
-      log.error('lark.auth.callback.failed', { error: String(e), companyId: state.companyId });
-      sendError('Something went wrong during the connection. Please try again.');
+      log.error('lark.auth.callback.failed', {
+        error: e instanceof Error ? e.message : String(e),
+        companyId: state.companyId,
+        userId: state.userId,
+        larkOpenId: state.larkOpenId,
+      });
+      sendError(
+        callbackFailureStatus === 400
+          ? 'The authorization response did not match this Lark account. Please start again.'
+          : 'Something went wrong during the connection. Please try again.',
+        callbackFailureStatus,
+      );
     }
-  });
+  }));
 
   return router;
 }

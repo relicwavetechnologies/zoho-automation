@@ -128,6 +128,12 @@ import {
   SIGN_IN_UNAVAILABLE,
   SIGN_IN_MISSING_EMAIL,
 } from './lark-signin';
+import {
+  encodeLarkOAuthState,
+  larkOAuthNonceKey,
+  LARK_OAUTH_NONCE_TTL_SECONDS,
+  recordSignInCardOnNonce,
+} from './lark-oauth-nonce';
 import type {
   IngressReceipt,
   IngressReceiptRepoPort,
@@ -694,21 +700,21 @@ function containsDataExportAction(value: unknown): boolean {
  * `:replay` is stable across retries of the replay, so it still deduplicates
  * itself.
  *
- * Best-effort by construction. It is triggered by an OAuth callback, not by a
- * durable receipt, so there is nothing to retry it and nothing to fail: the
- * user's original message is already answered or already lost by this point,
- * and the worst case is that they resend it as before.
+ * Best-effort by construction. It is triggered by an OAuth callback rather than
+ * a durable receipt, so a failed attempt is not retried automatically. The auth
+ * route keeps the sign-in nonce alive when this returns false, allowing the
+ * existing card to be tried again before its TTL expires.
  */
 export async function replayLarkMessageAfterLogin(
   rawEvent: Record<string, unknown>,
   deps: LarkWebhookDeps,
-): Promise<void> {
+): Promise<boolean> {
   const parsed = deps.adapter.parseIncoming(rawEvent);
   if (!parsed.ok) {
     deps.logger.warn('webhook.replay.unparseable', { reason: parsed.error.payload.reason });
-    return;
+    return false;
   }
-  if (!isLarkHumanMessage(parsed.value)) return;
+  if (!isLarkHumanMessage(parsed.value)) return true;
 
   const parsedIncoming: IncomingMessage = {
     ...parsed.value,
@@ -722,6 +728,7 @@ export async function replayLarkMessageAfterLogin(
   const laneKey = buildLarkIngressLaneKey(incoming);
 
   log.info('webhook.replay.started', { laneKey });
+  let replayed = true;
   await deps.serializer.runAndWait(laneKey, async signal => {
     const run = (adapter: LarkChannelAdapter, turnSignal: AbortSignal) =>
       processInBackground(
@@ -746,9 +753,23 @@ export async function replayLarkMessageAfterLogin(
     // schedule, and re-answering later out of order would be worse than not
     // answering at all.
     if (outcome.outcome === 'deferred') {
+      replayed = false;
       log.warn('webhook.replay.lane_busy', { laneKey, heldBy: outcome.ownerId });
     }
-  }).catch(e => log.error('webhook.replay.failed', { error: String(e) }));
+  }).catch(e => {
+    replayed = false;
+    log.error('webhook.replay.failed', {
+      error: e instanceof Error ? e.message : String(e),
+      laneKey,
+      tenantKey: incoming.tenantKey ?? null,
+      chatId: incoming.chatId,
+      messageId: incoming.messageId,
+      threadId: incoming.threadId ?? null,
+      traceId: incoming.traceId,
+      requesterOpenId: incoming.userExternalId,
+    });
+  });
+  return replayed;
 }
 
 /**
@@ -1833,22 +1854,6 @@ export async function runPiAndDeliver(input: {
   return text;
 }
 
-const LARK_OAUTH_NONCE_TTL_SECONDS = 600;
-
-function larkOAuthNonceKey(nonce: string): string {
-  return `lark:oauth:nonce:${nonce}`;
-}
-
-function encodeLarkOAuthState(input: {
-  companyId: string;
-  userId: string;
-  larkOpenId: string;
-  tenantKey: string;
-  nonce: string;
-}): string {
-  return Buffer.from(JSON.stringify(input)).toString('base64url');
-}
-
 /**
  * Where the sign-in card's button goes.
  *
@@ -1875,7 +1880,7 @@ async function createLarkLoginUrl(input: {
     appBaseUrl: string;
     cache: CachePort;
   };
-}): Promise<string | null> {
+}): Promise<{ url: string; nonce: string } | null> {
   const nonce = randomBytes(32).toString('base64url');
   const cached = await input.deps.cache.set(
     larkOAuthNonceKey(nonce),
@@ -1902,7 +1907,10 @@ async function createLarkLoginUrl(input: {
     tenantKey:  input.tenantKey,
     nonce,
   });
-  return `${input.deps.appBaseUrl.replace(/\/+$/, '')}/link/lark?state=${encodeURIComponent(state)}`;
+  return {
+    url: `${input.deps.appBaseUrl.replace(/\/+$/, '')}/link/lark?state=${encodeURIComponent(state)}`,
+    nonce,
+  };
 }
 
 async function processInBackground(
@@ -2110,7 +2118,7 @@ async function processInBackground(
     );
 
     if (pending.ok && pending.value?.status === 'ready') {
-      const loginUrl = await createLarkLoginUrl({
+      const login = await createLarkLoginUrl({
         companyId:  pending.value.companyId,
         userId:     pending.value.userId,
         larkOpenId: pending.value.larkOpenId,
@@ -2122,22 +2130,28 @@ async function processInBackground(
         deps,
       });
 
-      if (loginUrl) {
+      if (login) {
         const name = pending.value.displayName ?? pending.value.email;
         const card = await deps.adapter.sendCardToChat(
           String(incoming.chatId),
-          buildSignInCard({ name, url: loginUrl, ...(signInReason ? { reason: signInReason } : {}) }),
+          buildSignInCard({ name, url: login.url, ...(signInReason ? { reason: signInReason } : {}) }),
           incoming.chatType === 'group' ? String(incoming.messageId) : undefined,
           incoming.chatType === 'group'
             ? incoming.groupReplyMode !== 'inline'
             : undefined,
         );
+        if (card.ok) {
+          await recordSignInCardOnNonce(deps.cache, login.nonce, {
+            messageId: card.value.messageId,
+            displayName: name,
+          }, log);
+        }
         if (!card.ok) {
           // A working link in a plain message beats a button nobody received.
           log.warn('webhook.login_prompt.card_failed', {
             error: card.error.message, correlationId,
           });
-          await tell(signInFallbackText({ name, url: loginUrl, ...(signInReason ? { reason: signInReason } : {}) }));
+          await tell(signInFallbackText({ name, url: login.url, ...(signInReason ? { reason: signInReason } : {}) }));
         }
         log.info('webhook.login_prompt.sent', {
           larkOpenId: incoming.userExternalId,
@@ -2192,7 +2206,7 @@ async function processInBackground(
       userExternalId: incoming.userExternalId,
     })
   ) {
-    const loginUrl = await createLarkLoginUrl({
+    const login = await createLarkLoginUrl({
       companyId: identity.companyId,
       userId: identity.userId,
       larkOpenId: incoming.userExternalId,
@@ -2200,7 +2214,7 @@ async function processInBackground(
       pendingEvent: rawEvent,
       deps,
     });
-    if (!loginUrl) {
+    if (!login) {
       await deps.adapter.sendToChatId(
         String(incoming.chatId),
         SIGN_IN_UNAVAILABLE,
@@ -2217,16 +2231,22 @@ async function processInBackground(
     const reason = 'Your Divo cloud session expired. Connect again and I’ll continue this request automatically.';
     const card = await deps.adapter.sendCardToChat(
       String(incoming.chatId),
-      buildSignInCard({ name, url: loginUrl, reason }),
+      buildSignInCard({ name, url: login.url, reason }),
       incoming.chatType === 'group' ? String(incoming.messageId) : undefined,
       incoming.chatType === 'group'
         ? incoming.groupReplyMode !== 'inline'
         : undefined,
     );
+    if (card.ok) {
+      await recordSignInCardOnNonce(deps.cache, login.nonce, {
+        messageId: card.value.messageId,
+        displayName: name,
+      }, log);
+    }
     if (!card.ok) {
       await deps.adapter.sendToChatId(
         String(incoming.chatId),
-        signInFallbackText({ name, url: loginUrl, reason }),
+        signInFallbackText({ name, url: login.url, reason }),
         String(incoming.messageId),
         undefined,
         incoming.chatType === 'group'
@@ -3189,7 +3209,7 @@ async function handleSlashCommand(args: {
   // Lark OAuth hop. Keeping that decision in one place prevents two competing
   // sign-in flows.
   if (cmd === '/login') {
-    const url = await createLarkLoginUrl({
+    const login = await createLarkLoginUrl({
       companyId:  identity.companyId,
       userId:     identity.userId,
       larkOpenId: incoming.userExternalId,
@@ -3197,7 +3217,7 @@ async function handleSlashCommand(args: {
       deps,
     });
 
-    if (!url) {
+    if (!login) {
       await reply('Could not start sign-in just now. Please try again in a moment.');
       return;
     }
@@ -3206,18 +3226,24 @@ async function handleSlashCommand(args: {
     const name = identity.displayName ?? identity.email ?? 'there';
     const card = await deps.adapter.sendCardToChat(
       String(incoming.chatId),
-      buildSignInCard({ name, url }),
+      buildSignInCard({ name, url: login.url }),
       incoming.chatType === 'group' ? String(incoming.messageId) : undefined,
       incoming.chatType === 'group'
         ? incoming.groupReplyMode !== 'inline'
         : undefined,
     );
+    if (card.ok) {
+      await recordSignInCardOnNonce(deps.cache, login.nonce, {
+        messageId: card.value.messageId,
+        displayName: name,
+      }, log);
+    }
     if (!card.ok) {
       log.warn('webhook.command.login.card_failed', {
         error: card.error.message,
         correlationId,
       });
-      await reply(signInFallbackText({ name, url }));
+      await reply(signInFallbackText({ name, url: login.url }));
     }
     return;
   }

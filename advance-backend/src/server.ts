@@ -18,6 +18,7 @@ import { createGmailPubSubRoutes } from './http/google/gmail-pubsub.routes';
 import { GooglePubSubPushVerifier } from './infrastructure/google/google-pubsub-push-auth';
 import { createZohoAuthRoutes } from './http/zoho/zoho-auth.routes';
 import { createLarkAuthRoutes } from './http/lark/lark-auth.routes';
+import { buildSignInConnectedCard } from './infrastructure/channels/lark/lark-signin';
 import { createExecutionRoutes } from './http/executions/execution.routes';
 import { createAdminAuthMiddleware } from './http/middleware/admin-auth.middleware';
 import { createMemberAuthMiddleware, MEMBER_SESSION_TTL_MINUTES } from './http/middleware/member-auth.middleware';
@@ -194,6 +195,7 @@ export const createServer = (c: Container): DivoServerApplication => {
     resolveGoogleAuth: c.resolveGoogleExportAuth,
     larkAdapter: c.larkAdapter,
     conversationHistory: c.conversationRepo,
+    runLeaseHolder: c.laneLeaseHolder,
     logger: c.logger,
   });
   dataExportWorker.start();
@@ -505,6 +507,18 @@ export const createServer = (c: Container): DivoServerApplication => {
       // same lane, lease, and delivery path as any other message.
       onLinked:            pendingEvent =>
         replayLarkMessageAfterLogin(pendingEvent, larkWebhookDeps),
+      onSignInCardResolved: async ({ messageId, displayName, replaying }) => {
+        const updated = await c.larkAdapter.updateMessageById(
+          messageId,
+          buildSignInConnectedCard({ name: displayName, replaying }),
+        );
+        if (!updated.ok) {
+          c.logger.warn('lark.auth.sign_in_card.update_failed', {
+            messageId,
+            error: updated.error.message,
+          });
+        }
+      },
     }),
   );
 
@@ -657,6 +671,8 @@ export const createServer = (c: Container): DivoServerApplication => {
       zohoTokenService:       c.zohoTokenService,
       zohoConnectionRepo:     c.zohoConnectionRepo,
       connectionRepo:         c.integrationConnectionRepo,
+      invalidateLarkIdentityCache: (larkOpenId: string) =>
+        c.channelIdentityRepo.invalidateIdentityCache(larkOpenId),
       permissions:            c.permissions,
       skillCatalog:           c.skillCatalog,
       skillAccessEnforcement: c.skillAccessEnforcement,

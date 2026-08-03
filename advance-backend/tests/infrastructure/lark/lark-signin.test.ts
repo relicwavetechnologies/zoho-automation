@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildSignInCard,
+  buildSignInConnectedCard,
   signInFallbackText,
   SIGN_IN_LINK_TTL_MINUTES,
   SIGN_IN_WORKSPACE_NOT_CONNECTED,
@@ -38,15 +39,32 @@ describe('buildSignInCard', () => {
   });
 
   it('promises the original message will be answered', () => {
-    // The replay is the reason this promise can be made at all. If the promise
-    // is here and the replay is not, the card lies.
-    assert.match(JSON.stringify(elements), /no need to send it again/i);
+    assert.match(JSON.stringify(elements), /if nothing appears, send it again/i);
   });
 
   it('escapes nothing into the card structure itself', () => {
     // A name with quotes must not break the JSON envelope.
     const odd = JSON.parse(buildSignInCard({ name: 'A"B', url: URL }));
     assert.doesNotThrow(() => JSON.parse(odd.card));
+  });
+});
+
+describe('buildSignInConnectedCard', () => {
+  it('shows a green header with no sign-in button', () => {
+    const parsed = JSON.parse(buildSignInConnectedCard({ name: 'Alice', replaying: true }));
+    const card = JSON.parse(parsed.card);
+    const elements = card.body.elements as Array<Record<string, unknown>>;
+
+    assert.equal(card.header.template, 'green');
+    assert.equal(elements.some(e => e['tag'] === 'button'), false);
+    assert.match(JSON.stringify(elements), /Alice/);
+    assert.match(JSON.stringify(elements), /earlier message/i);
+  });
+
+  it('uses idle copy when nothing is being replayed', () => {
+    const parsed = JSON.parse(buildSignInConnectedCard({ name: 'Alice' }));
+    const card = JSON.parse(parsed.card);
+    assert.match(JSON.stringify(card.body.elements), /return to Lark/i);
   });
 });
 
@@ -58,7 +76,7 @@ describe('signInFallbackText', () => {
   });
 
   it('makes the same promise as the card', () => {
-    assert.match(text, /no need to send it again/i);
+    assert.match(text, /if nothing appears, send it again/i);
   });
 });
 

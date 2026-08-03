@@ -4,6 +4,7 @@ import type { Result } from '../../shared/result';
 import { ok, err } from '../../shared/result';
 import { wrapInfra, type InfraError } from '../../shared/errors';
 import type { CachePort } from '../../shared/cache';
+import type { Logger } from '../../shared/logger';
 
 const LARK_IDENTITY_TTL = 900; // 15 min — identity almost never changes; invalidated on OAuth success
 // v2 selects the canonical Divo owner when historical duplicate Lark
@@ -137,6 +138,7 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
   constructor(
     private readonly db: PrismaClient,
     private readonly cache?: CachePort,
+    private readonly logger?: Logger,
   ) {}
 
   async resolveByLarkOpenId(
@@ -189,8 +191,25 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
 
     // Cache read — only non-null identities are cached (null = user may register soon).
     if (this.cache && larkOpenId && !larkUserId) {
-      const cached = await this.cache.get<ResolvedUserIdentity>(identityCacheKey(larkOpenId, tenantKey));
-      if (cached.ok && cached.value !== null) {
+      const cacheKey = identityCacheKey(larkOpenId, tenantKey);
+      let cached: Result<ResolvedUserIdentity | null, InfraError> | undefined;
+      try {
+        cached = await this.cache.get<ResolvedUserIdentity>(cacheKey);
+      } catch (error) {
+        this.logger?.error('lark.identity.cache_read_failed', {
+          larkOpenId,
+          tenantKey: tenantKey ?? null,
+          error: String(error),
+        });
+      }
+      if (cached && !cached.ok) {
+        this.logger?.warn('lark.identity.cache_read_failed', {
+          larkOpenId,
+          tenantKey: tenantKey ?? null,
+          error: cached.error.message,
+        });
+      }
+      if (cached?.ok && cached.value !== null) {
         if (boundCompanyId && cached.value.companyId !== boundCompanyId) return ok(null);
         const membership = await this.db.adminMembership.findFirst({
           where: {
@@ -202,7 +221,11 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
           orderBy: { updatedAt: 'desc' },
         });
         if (!membership) return ok(null);
-        return ok({ ...cached.value, aiRole: membership.role });
+        return ok({
+          ...cached.value,
+          ...(tenantKey ? { larkTenantKey: tenantKey } : {}),
+          aiRole: membership.role,
+        });
       }
     }
 
@@ -301,13 +324,33 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
         aiRole: membership.role,
         channel: canonicalIdentity.channel,
         larkOpenId: canonicalOpenId,
+        ...(tenantKey ? { larkTenantKey: tenantKey } : {}),
         ...(canonicalIdentity.displayName ? { displayName: canonicalIdentity.displayName } : {}),
         ...(canonicalIdentity.email ? { email: canonicalIdentity.email } : {}),
         ...(deptPref?.activeDepartmentId ? { activeDepartmentId: deptPref.activeDepartmentId } : {}),
       };
       // Populate cache — fire-and-forget.
       if (this.cache) {
-        void this.cache.set(identityCacheKey(canonicalOpenId, tenantKey), resolved, LARK_IDENTITY_TTL);
+        void this.cache
+          .set(identityCacheKey(canonicalOpenId, tenantKey), resolved, LARK_IDENTITY_TTL)
+          .then(result => {
+            if (!result.ok) {
+              this.logger?.warn('lark.identity.cache_write_failed', {
+                companyId: resolved.companyId,
+                userId: resolved.userId,
+                larkOpenId: canonicalOpenId,
+                tenantKey: tenantKey ?? null,
+                error: result.error.message,
+              });
+            }
+          })
+          .catch(error => this.logger?.error('lark.identity.cache_write_failed', {
+            companyId: resolved.companyId,
+            userId: resolved.userId,
+            larkOpenId: canonicalOpenId,
+            tenantKey: tenantKey ?? null,
+            error: String(error),
+          }));
       }
       return ok(resolved);
     } catch (e) {
@@ -318,9 +361,30 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
   /** Invalidate cached identity for a Lark user (call after OAuth link created/updated). */
   async invalidateIdentityCache(larkOpenId: string): Promise<void> {
     if (this.cache) {
+      const invalidate = async (
+        scope: 'unscoped' | 'tenant_scoped',
+        operation: () => Promise<Result<unknown, InfraError>>,
+      ) => {
+        try {
+          const result = await operation();
+          if (!result.ok) {
+            this.logger?.error('lark.identity.cache_invalidation_failed', {
+              larkOpenId,
+              scope,
+              error: result.error.message,
+            });
+          }
+        } catch (error) {
+          this.logger?.error('lark.identity.cache_invalidation_failed', {
+            larkOpenId,
+            scope,
+            error: String(error),
+          });
+        }
+      };
       await Promise.all([
-        this.cache.del(identityCacheKey(larkOpenId)),
-        this.cache.scanDel(`lark:id:v3:*:${larkOpenId}`),
+        invalidate('unscoped', () => this.cache!.del(identityCacheKey(larkOpenId))),
+        invalidate('tenant_scoped', () => this.cache!.scanDel(`lark:id:v3:*:${larkOpenId}`)),
       ]);
     }
   }

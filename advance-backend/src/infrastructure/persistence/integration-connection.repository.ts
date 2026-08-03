@@ -1051,6 +1051,7 @@ export class IntegrationConnectionRepository {
   async findLarkConnectionOwner(input: {
     readonly companyId: string;
     readonly larkOpenId: string;
+    readonly larkTenantKey: string;
   }): Promise<Result<{ userId: string } | null, InfraError>> {
     try {
       const row = await this.db.integrationConnection.findFirst({
@@ -1058,6 +1059,10 @@ export class IntegrationConnectionRepository {
           companyId: input.companyId,
           provider: LARK_PROVIDER,
           externalAccountId: input.larkOpenId,
+          tokenMetadata: {
+            path: ['larkTenantKey'],
+            equals: input.larkTenantKey,
+          },
           ownerUserId: { not: null },
           status: 'connected',
           revokedAt: null,

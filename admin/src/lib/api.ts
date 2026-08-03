@@ -11,19 +11,27 @@ type ApiResponse<T> = {
 };
 
 const extractErrorMessage = async (response: Response): Promise<string> => {
+  const fallback = `HTTP ${response.status}`;
   const raw = await response.text();
   if (!raw) {
-    return `HTTP ${response.status}`;
+    return fallback;
   }
 
   try {
     const parsed = JSON.parse(raw) as {
       message?: string;
       meta?: { message?: string };
+      error?: string | { message?: string };
     };
-    return parsed.meta?.message || parsed.message || raw;
+    if (typeof parsed.error === "string") return parsed.error;
+    if (parsed.error && typeof parsed.error === "object" && typeof parsed.error.message === "string") {
+      return parsed.error.message;
+    }
+    return parsed.meta?.message || parsed.message || fallback;
   } catch {
-    return raw;
+    // Reverse proxies sometimes return an HTML error page or a stack trace.
+    // Keep that implementation detail out of the person's auth screen.
+    return fallback;
   }
 };
 
@@ -53,6 +61,10 @@ type RequestOptions = {
    * declared at the call site rather than guessed at here.
    */
   raw?: boolean;
+  /** Abort an auth request that has stopped responding instead of loading forever. */
+  timeoutMs?: number;
+  /** Override the default read retry count when the caller already retries. */
+  retries?: number;
 };
 
 /**
@@ -94,16 +106,26 @@ const request = async <T>(
     headers.set("Authorization", `Bearer ${token}`);
   }
 
-  const retries = (init.method ?? "GET") === "GET" ? 2 : 0;
+  const retries = opts.retries ?? ((init.method ?? "GET") === "GET" ? 2 : 0);
   let response: Response;
   for (let attempt = 0; ; attempt += 1) {
+    const controller = opts.timeoutMs === undefined ? undefined : new AbortController();
+    const timeoutId = opts.timeoutMs === undefined
+      ? undefined
+      : setTimeout(() => controller?.abort(), opts.timeoutMs);
     try {
-      response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers });
+      response = await fetch(`${API_BASE_URL}${path}`, {
+        ...init,
+        headers,
+        ...(init.signal || !controller ? {} : { signal: controller.signal }),
+      });
       if (response.ok || !RETRYABLE.has(response.status) || attempt >= retries) break;
     } catch (networkError) {
       // The backend is not answering at all. Worth one more ask before this
       // becomes a sentence on somebody's screen.
       if (attempt >= retries) throw networkError;
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
     await wait(300 * (attempt + 1));
   }
