@@ -235,6 +235,14 @@ export function buildDesktopCapabilityBootstrap(input: {
     );
     if (webHint) routingHints.push(webHint);
   }
+  if (availableToolIds.has('menhoodData')) {
+    const menhoodHint = viaSkill(
+      'menhoodData',
+      'Menhood orders, customers, products, delivered sales, RTO, COD, campaign, or pincode analysis',
+      'invoke menhoodData. Do not use Airtable Records or reuse an Airtable/Python checkpoint.',
+    );
+    if (menhoodHint) routingHints.push(menhoodHint);
+  }
   if (localWorkflowSkill) {
     routingHints.push(
       `Work with ${GOVERNED_LOCAL_WORKFLOW_CRITERION} (for example Gmail/CRM → Sheets) -> call the unified Divo work resolver once with the user's complete original request, plus at most one source-oriented and one destination-oriented intent-preserving variant. Do not fetch ${localWorkflowSkill.name} by itself: the resolver must load that recipe together with the relevant source/destination recipes, exact governed tool contracts, and accessible accounts. Then use one persistent Python file and credential-free divo-local, not model-carried records or direct provider access.`,
