@@ -3,7 +3,9 @@
 Status: **decided**, 2026-08-03. Baseline: `cd218170c`. Not yet implemented.
 
 This design closes the class of defects behind the export pipeline's repeated
-breakages and defines the durable recovery path for a confirmed export. It is
+breakages. V1 is a correct, idempotent whole-run retry: after an interruption it
+may re-fetch the recipe from page one. Part 6 records the Airbyte-inspired V2
+durable-recovery path for when resume-from-checkpoint becomes necessary. It is
 written against verified Divo and Airbyte production code rather than inferred
 from intent. Divo borrows Airbyte's checkpoint protocol; it does not adopt the
 Airbyte platform, credential model, or connector runtime.
@@ -96,9 +98,10 @@ The current job can recover an already-completed new Google artifact by
 worker crash during source reading loses the spool and restarts the recipe from
 the beginning. A local temp file therefore cannot be a checkpoint.
 
-The durable design must add a Divo-private staging store and a persisted run
-manifest. Provider credentials and source rows never enter Pi, the run payload,
-or the manifest database row.
+This is an accepted V1 tradeoff: a retry may re-fetch the recipe from page one.
+The V2 durable design in Part 6 adds a Divo-private staging store and a
+persisted run manifest. In either version, provider credentials and source rows
+never enter Pi or a job payload.
 
 ---
 
@@ -269,11 +272,20 @@ recorded under Decision 1.
 
 ---
 
-## Part 6 — Durable recovery for a confirmed export
+## Part 6 — V2 reference: durable recovery for a confirmed export
 
-The earlier decisions make a completed export truthful. They do not make an
-interrupted export resumable. This section closes that gap using the smallest
-useful subset of Airbyte's production protocol:
+The earlier decisions make a completed export truthful. **V1 deliberately does
+not make source reading resumable:** a worker loss before publication re-runs
+the confirmed recipe from page one. This is acceptable while exports are small
+enough that the retry cost and source-change risk are tolerable.
+
+V1 still keeps destination effects safe: the Google sink looks up Divo-created
+files by `exportKey`, removes only incomplete Divo-created artifacts, recovers a
+verified completed artifact, and uses a deterministic tab plus append-missing
+behaviour for an existing member-owned Sheet. It never clears a member sheet.
+
+The rest of this section is the deferred V2 path that closes source-recovery
+gaps using the smallest useful subset of Airbyte's production protocol:
 
 ```txt
 source page + proposed next state
@@ -466,6 +478,8 @@ but Divo must not claim a globally immutable upstream snapshot it cannot prove.
 Write these tests before implementation. They are the export contract, not
 after-the-fact regression tests.
 
+### V1 — correctness and whole-run retry
+
 | Scenario | Required outcome |
 |---|---|
 | Asked 1,234; 5,000 exist; wrote 1,234 | `requested_window_satisfied`; no warning |
@@ -476,12 +490,21 @@ after-the-fact regression tests.
 | Cell or spool ceiling stops output | precise `destination_cell_cap` or `spool_cap` |
 | Transform filters rows | fewer output rows, never partial by itself |
 | Offset/limit, multi-part sources, zero-row pages | window is applied once per part; no false partial |
-| Crash after page staging, before checkpoint | retry validates/adopts page or safely restages it |
-| Crash after checkpoint, before next read | retry starts exactly at committed resume state |
 | Crash after Google file/tab creation | retry reuses the same artifact/tab |
 | Crash after provider write, before completion receipt | retry verifies resource and completes; no duplicate artifact |
-| Two workers claim the same run | lease permits only one publisher; the other exits/retries harmlessly |
 | OAuth/RBAC revoked on retry | terminal failure, no stale credential use or partial publish |
+
+A V1 worker loss while source reading simply re-fetches from page one. The
+completion receipt reports the final retrieval time and must not claim the
+result is an immutable upstream snapshot.
+
+### V2 — durable resume and operations
+
+| Scenario | Required outcome |
+|---|---|
+| Crash after page staging, before checkpoint | retry validates/adopts page or safely restages it |
+| Crash after checkpoint, before next read | retry starts exactly at committed resume state |
+| Two workers claim the same run | lease permits only one publisher; the other exits/retries harmlessly |
 | Stale staging data reaches retention | sweeper removes raw pages and marks the run expired |
 
 Run the matrix with fake sources/sinks first, then at least one live Google
@@ -491,13 +514,10 @@ destination E2E test for create, existing-sheet tab, retry, and verification.
 
 ## Implementation order
 
-Each step is independently reviewable; the durable-run steps require a schema
-migration and a provisioned private object store, so they are deliberately
-designed before code changes begin.
+V1 is independently shippable with no object-storage dependency or schema
+migration. V2 is explicitly deferred until whole-run retry is no longer an
+acceptable product tradeoff.
 
-0. **Infrastructure decision and contract tests** — provision the Divo-private
-   encrypted object store and agree its lifecycle permissions/retention. Add the
-   Part 7 matrix as failing tests. No source or destination code changes first.
 1. **Decision 4** — withdrawal stated in `message` by all five provider tools.
    Smallest, and it is the only defect currently reaching members with no
    explanation at all.
@@ -506,26 +526,33 @@ designed before code changes begin.
 3. **Decision 2** — `datasetSourceSelection` and the registry window decorator.
    This flips the pinned Airtable test; rewrite the assertion explicitly rather
    than deleting it.
-4. **Decisions 6–8** — add the `ExportRun` migration, run repository, lease,
+
+When V2 is approved:
+
+4. **Infrastructure decision and V2 contract tests** — provision the
+   Divo-private encrypted object store and agree its lifecycle
+   permissions/retention before changing source or destination code.
+5. **Decisions 6–8** — add the `ExportRun` migration, run repository, lease,
    staging-store port, local test store, page receipts, and checkpoint state.
    No provider adapter uses a resume cursor until the worker can durably accept
    it.
-5. **Decision 7** — make source adapters resume-capable one at a time, starting
+6. **Decision 7** — make source adapters resume-capable one at a time, starting
    with Semrush/Airtable pagination. Mark single-page sources `restart_part`
    rather than pretending they can seek.
-6. **Decisions 9–10** — make Google publication read verified staging, persist
+7. **Decisions 9–10** — make Google publication read verified staging, persist
    the artifact checkpoint, classify retries, add the retention sweeper, and
    emit provenance.
-7. **Decision 11** — run failure-injection tests and Google E2E checks for
+8. **Decision 11** — run failure-injection tests and Google E2E checks for
    create, existing-sheet tab, mid-read retry, post-create retry, and revoked
    access. Instrument run age, retries, expired staging, and verification
    failures before enabling the path broadly.
 
-Rollback is phase-safe: coverage remains additive with the legacy boolean;
-new runs are routed through the durable worker behind a feature flag; old jobs
-continue through the present worker. If staging or publication regresses, stop
-new durable runs, retain their private staged pages for the configured recovery
-window, and let the legacy path continue for unaffected exports. Never delete or
-clear a member-owned artifact as a rollback mechanism.
+V1 rollback is phase-safe: coverage remains additive with the legacy boolean,
+and the retry path remains the existing full recipe re-fetch. V2 routes new runs
+through the durable worker behind a feature flag; old jobs continue through the
+V1 worker. If staging or publication regresses, stop new durable runs, retain
+their private staged pages for the configured recovery window, and let V1
+continue for unaffected exports. Never delete or clear a member-owned artifact
+as a rollback mechanism.
 
 Cold review each step before commit, per the repository's standing rule.
