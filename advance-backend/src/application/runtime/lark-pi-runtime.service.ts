@@ -37,7 +37,7 @@ import {
 } from '../data-export/data-export-continuity';
 
 const MAX_RUNTIME_ATTACHMENTS = 4;
-const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-flash';
+const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-pro';
 
 function asyncIterableBody(source: AsyncIterable<Uint8Array>): ReadableStream<Uint8Array> {
   const iterator = source[Symbol.asyncIterator]();

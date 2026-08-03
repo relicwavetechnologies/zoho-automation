@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   PROXY_MODELS,
   PROXY_MODEL_SPECS,
+  DEFAULT_ALLOWED_MODELS,
   canonicalModel,
   costUsd,
   providerOf,
@@ -52,6 +53,10 @@ describe('model catalogue', () => {
 
   it('offers every catalogue model to the admin grant', () => {
     assert.deepEqual([...PROXY_MODELS], ['deepseek-v4-flash', 'deepseek-v4-pro', 'gpt-5.6-luna']);
+  });
+
+  it('allows the Pro model for members without a custom proxy policy', () => {
+    assert.ok(DEFAULT_ALLOWED_MODELS.includes('deepseek-v4-pro'));
   });
 
   // The container cannot import this module, so the same three facts live twice.

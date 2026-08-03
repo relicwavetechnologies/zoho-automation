@@ -308,7 +308,7 @@ describe("How a run is told to look at a picture", () => {
 	it("runs V4 Flash at the provider's upgraded high reasoning level", () => {
 		assert.equal(thinkingLevelForModel("deepseek-v4-flash"), "high");
 		assert.equal(thinkingLevelForModel("gpt-5.6-luna"), "high");
-		assert.equal(thinkingLevelForModel("deepseek-v4-pro", "medium"), "medium");
+		assert.equal(thinkingLevelForModel("deepseek-v4-pro", "medium"), "high");
 	});
 
 	it("puts exactly one policy into the prompt the agent is given", () => {

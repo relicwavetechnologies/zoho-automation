@@ -147,7 +147,11 @@ export const RUNTIME_MODEL_PREFERENCE = [
 export const DEFAULT_MODEL: ProxyModel = 'deepseek-v4-flash'
 
 /** Models available to every unblocked member before an admin customizes access. */
-export const DEFAULT_ALLOWED_MODELS: readonly ProxyModel[] = [DEFAULT_MODEL, 'gpt-5.6-luna']
+export const DEFAULT_ALLOWED_MODELS: readonly ProxyModel[] = [
+  DEFAULT_MODEL,
+  'deepseek-v4-pro',
+  'gpt-5.6-luna',
+]
 
 /**
  * The model a run should use, given what its member is allowed.
