@@ -16,10 +16,42 @@ import {
 	runtimeIdentityNames,
 	runtimeContainerNeedsReplacement,
 	runtimeStartupProgress,
+	settleAll,
 	validateProfileName,
 	validateRuntimeModel,
 	validateThread,
 } from "../local-rpc-controller.mjs";
+
+test("concurrent runtime probes return their values in order", async () => {
+	const order = [];
+	const probe = (value, delayMs) => new Promise((resolve) => {
+		setTimeout(() => {
+			order.push(value);
+			resolve(value);
+		}, delayMs);
+	});
+	// Slowest first: the caller destructures positionally, so a result array
+	// ordered by completion instead of by argument would hand `ensureRuntime`
+	// the container where it expects the network's existence.
+	const values = await settleAll([probe("network", 20), probe("container", 1)]);
+	assert.deepEqual(values, ["network", "container"]);
+	assert.deepEqual(order, ["container", "network"]);
+});
+
+test("a failing runtime probe waits for the others before it throws", async () => {
+	let slowSettled = false;
+	const failedFirst = Promise.reject(new Error("container is not ours"));
+	const stillMutating = new Promise((_resolve, reject) => {
+		setTimeout(() => {
+			slowSettled = true;
+			reject(new Error("volume create failed"));
+		}, 10);
+	});
+	await assert.rejects(settleAll([failedFirst, stillMutating]), /container is not ours/);
+	// `Promise.all` would have thrown while the volume create was still running,
+	// handing the caller an error about a profile Docker was still mutating.
+	assert.equal(slowSettled, true);
+});
 
 test("startup progress names newly created work only", () => {
 	assert.deepEqual(runtimeStartupProgress({ wasRunning: true, created: false }), [{ type: "working" }]);

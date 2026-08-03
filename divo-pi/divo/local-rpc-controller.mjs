@@ -445,13 +445,47 @@ async function dockerObjectExists(kind, name) {
 	}
 }
 
-async function inspectImageId(image) {
-	const result = await docker(["image", "inspect", image]);
+/**
+ * The image's immutable ID, or `null` when the tag names nothing.
+ *
+ * Existence and identity come from one `docker image inspect` because they
+ * always used to come from two: a `dockerObjectExists` probe that threw its
+ * output away, followed by the inspect that re-fetched it. Every Docker CLI
+ * call is a process spawn on a path that runs before every single turn.
+ */
+async function resolveImageId(image) {
+	let result;
+	try {
+		result = await docker(["image", "inspect", image]);
+	} catch {
+		return null;
+	}
 	const [metadata] = JSON.parse(result.stdout);
 	if (typeof metadata?.Id !== "string" || !metadata.Id) {
 		throw new Error(`Docker image ${image} has no resolved image ID`);
 	}
 	return metadata.Id;
+}
+
+/**
+ * Run independent Docker probes concurrently, and do not return until every one
+ * of them has finished.
+ *
+ * Deliberately not `Promise.all`, which rejects the moment the first task fails
+ * and leaves the rest running. Here that would mean throwing out of
+ * `ensureRuntime` while a `docker volume create` is still in flight, so the
+ * caller starts cleaning up — or retrying — against a profile that is still
+ * being mutated. Waiting costs nothing on the failure path and makes "this
+ * function threw" mean "nothing it started is still running".
+ *
+ * The first task to fail by argument order is the one thrown, so the reported
+ * error does not depend on which probe happened to lose the race.
+ */
+export async function settleAll(tasks) {
+	const results = await Promise.allSettled(tasks);
+	const failure = results.find(result => result.status === "rejected");
+	if (failure) throw failure.reason;
+	return results.map(result => result.value);
 }
 
 async function storeToken(profile, token) {
@@ -613,9 +647,22 @@ async function login(profileName, options) {
 	);
 }
 
-async function inspectOwnedContainer(profile) {
+/**
+ * The profile's container, or `null` when it does not exist.
+ *
+ * Absence returns null; a container that exists but is *not* ours still throws.
+ * Collapsing "does it exist" and "is it ours" into one inspect keeps the
+ * ownership check on every path that previously ran the two separately, without
+ * paying for the same inspect twice.
+ */
+async function findOwnedContainer(profile) {
 	const resources = resourcesFor(profile);
-	const result = await docker(["container", "inspect", resources.container]);
+	let result;
+	try {
+		result = await docker(["container", "inspect", resources.container]);
+	} catch {
+		return null;
+	}
 	const [container] = JSON.parse(result.stdout);
 	if (
 		container?.Config?.Labels?.["dev.divo.profile"] !== profile ||
@@ -623,6 +670,16 @@ async function inspectOwnedContainer(profile) {
 	) {
 		throw new Error(
 			`Refusing unowned or mismatched Docker container: ${resources.container}`,
+		);
+	}
+	return container;
+}
+
+async function inspectOwnedContainer(profile) {
+	const container = await findOwnedContainer(profile);
+	if (!container) {
+		throw new Error(
+			`Docker container is missing: ${resourcesFor(profile).container}`,
 		);
 	}
 	return container;
@@ -652,7 +709,7 @@ export async function ensureProfileVolume(profileName) {
 	const profile = validateProfileName(profileName);
 	// The staging writer runs from the Pi image. Checking here turns a raw
 	// `docker run` failure mid-upload into a clear refusal before any bytes move.
-	if (!(await dockerObjectExists("image", IMAGE))) {
+	if (!(await resolveImageId(IMAGE))) {
 		throw stagingError(
 			"runtime_image_missing",
 			`Image ${IMAGE} is missing, so attachments cannot be staged.`,
@@ -666,16 +723,26 @@ async function ensureRuntime(profile, { ephemeral = false } = {}) {
 	const resources = resourcesFor(profile);
 	let wasRunning = false;
 	let created = false;
-	let container;
-	if (!(await dockerObjectExists("image", IMAGE))) {
+	// Resolve the immutable image ID on every activation. A mutable tag can move
+	// after a deploy or rebuild while a warm container still runs old code.
+	// Checked before anything else so a missing image refuses the run without
+	// first creating volumes and a network for work that cannot start.
+	const imageId = await resolveImageId(IMAGE);
+	if (!imageId) {
 		throw new Error(
 			`Image ${IMAGE} is missing. Build it with: docker build -t ${IMAGE} .`,
 		);
 	}
-	// Resolve the immutable image ID on every activation. A mutable tag can move
-	// after a deploy or rebuild while a warm container still runs old code.
-	const imageId = await inspectImageId(IMAGE);
-	if (!(await dockerObjectExists("network", resources.network))) {
+	// The network, both volumes and the container are four unrelated Docker
+	// objects. Probing them one after another spent four sequential CLI round
+	// trips before every turn to learn what a warm profile already satisfies.
+	const [networkExists, existing] = await settleAll([
+		dockerObjectExists("network", resources.network),
+		findOwnedContainer(profile),
+		ensureVolume(profile, resources.volume),
+		ensureVolume(profile, resources.authVolume),
+	]);
+	if (!networkExists) {
 		await docker([
 			"network",
 			"create",
@@ -686,10 +753,8 @@ async function ensureRuntime(profile, { ephemeral = false } = {}) {
 			resources.network,
 		]);
 	}
-	await ensureVolume(profile, resources.volume);
-	await ensureVolume(profile, resources.authVolume);
-	if (await dockerObjectExists("container", resources.container)) {
-		container = await inspectOwnedContainer(profile);
+	let container = existing;
+	if (container) {
 		if (runtimeContainerNeedsReplacement(container, IMAGE, imageId)) {
 			if (container.State.Running) await docker(["stop", resources.container]);
 			await docker(["rm", resources.container]);
@@ -719,8 +784,8 @@ async function destroyEphemeralRuntime(profileName) {
 		throw new Error(`Refusing to destroy a non-ephemeral runtime: ${profile}`);
 	}
 	const resources = resourcesFor(profile);
-	if (await dockerObjectExists("container", resources.container)) {
-		const container = await inspectOwnedContainer(profile);
+	const container = await findOwnedContainer(profile);
+	if (container) {
 		if (container.State.Running) await docker(["stop", resources.container]);
 		await docker(["rm", resources.container]);
 	}
@@ -1505,8 +1570,8 @@ function createHeadlessExtensionResponder() {
 
 async function stopOwnedContainer(profile) {
 	const resources = resourcesFor(profile);
-	if (!(await dockerObjectExists("container", resources.container))) return;
-	const container = await inspectOwnedContainer(profile);
+	const container = await findOwnedContainer(profile);
+	if (!container) return;
 	if (container.State.Running) await docker(["stop", resources.container]);
 }
 
@@ -1765,9 +1830,16 @@ async function runPrompt({
 		}
 		if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
 		const startedAt = Date.now();
-		const container = await inspectOwnedContainer(profile);
-		if (!container.State.Running) await docker(["start", resources.container]);
-		await waitUntilRunning(resources.container);
+		// `ensureRuntime` just inspected this container and verified it is ours,
+		// so its running state is already known here. Polling is only meaningful
+		// when we actually issued the start: a container already reported running
+		// has nothing to wait for, and if it died in the moment since, `docker
+		// exec` reports that immediately rather than after ten seconds spent
+		// waiting for a transition nobody triggered.
+		if (!runtime.wasRunning) {
+			await docker(["start", resources.container]);
+			await waitUntilRunning(resources.container);
+		}
 		bootstrapAttempted = true;
 		await writeBootstrap(resources.container, bootstrap);
 		child = spawn("docker", [
@@ -1919,7 +1991,7 @@ async function status(profileName) {
 	const profile = validateProfileName(profileName);
 	const metadata = readProfile(profile);
 	const resources = resourcesFor(profile);
-	const exists = await dockerObjectExists("container", resources.container);
+	const container = await findOwnedContainer(profile);
 	console.log(
 		JSON.stringify(
 			{
@@ -1928,7 +2000,7 @@ async function status(profileName) {
 				companyId: metadata.companyId,
 				backendUrl: metadata.backendUrl,
 				resources,
-				container: exists ? (await inspectOwnedContainer(profile)).State.Status : "missing",
+				container: container ? container.State.Status : "missing",
 			},
 			null,
 			2,

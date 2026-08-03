@@ -1262,26 +1262,28 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     const userId = res.locals['userId'] as string;
     const companyId = res.locals['companyId'] as string;
     const departmentId = parsed.data.departmentId;
-    let personalMemory: string[] = [];
-    if (deps.memory) {
-      try {
-        personalMemory = await deps.memory.getPersonalSnapshot({
-          userId,
-          companyId,
-          limit: 12,
-          maxFactChars: 500,
-          maxTotalChars: 2_200,
-        });
-      } catch (error) {
-        // Personal memory is advisory context. An unavailable memory backend
-        // must not block authentication or department capability bootstrap.
+    // Started, not awaited. This is a vector recall against the memory backend
+    // and the membership lookup below is a database read — neither needs the
+    // other's answer, and awaiting them in turn put a full network round trip
+    // in front of every runtime bootstrap. Resolves to `[]` rather than
+    // rejecting: personal memory is advisory context, and an unavailable memory
+    // backend must not block authentication or department capability bootstrap.
+    const personalMemoryLoad: Promise<string[]> = deps.memory
+      ? deps.memory.getPersonalSnapshot({
+        userId,
+        companyId,
+        limit: 12,
+        maxFactChars: 500,
+        maxTotalChars: 2_200,
+      }).catch((error: unknown) => {
         log.warn('runtime_context.personal_memory_failed', {
           error: String(error),
           userId,
           companyId,
         });
-      }
-    }
+        return [];
+      })
+      : Promise.resolve([]);
 
     if (!departmentId) {
       res.json({
@@ -1291,37 +1293,40 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           departmentName: null,
           personaPrompt: '',
           version: null,
-          personalMemory,
+          personalMemory: await personalMemoryLoad,
         },
       });
       return;
     }
 
     try {
-      const membership = await deps.prisma.departmentMembership.findFirst({
-        where: {
-          userId,
-          departmentId,
-          status: 'active',
-          department: { companyId, status: 'active' },
-        },
-        select: {
-          department: {
-            select: {
-              id: true,
-              name: true,
-              slug: true,
-              agentConfig: {
-                select: {
-                  desktopPersonaPrompt: true,
-                  isActive: true,
-                  updatedAt: true,
+      const [personalMemory, membership] = await Promise.all([
+        personalMemoryLoad,
+        deps.prisma.departmentMembership.findFirst({
+          where: {
+            userId,
+            departmentId,
+            status: 'active',
+            department: { companyId, status: 'active' },
+          },
+          select: {
+            department: {
+              select: {
+                id: true,
+                name: true,
+                slug: true,
+                agentConfig: {
+                  select: {
+                    desktopPersonaPrompt: true,
+                    isActive: true,
+                    updatedAt: true,
+                  },
                 },
               },
             },
           },
-        },
-      });
+        }),
+      ]);
 
       if (!membership) {
         res.status(403).json({ success: false, message: 'Department access denied' });
