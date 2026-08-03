@@ -52,7 +52,10 @@ function makeRouter(overrides: Record<string, unknown> = {}) {
       getAuthorizeUrl: (state: string) => `https://accounts.larksuite.com/authorize?state=${state}`,
       exchangeCode: async () => { throw new Error('not configured'); },
     } as any,
-    connectionRepo: { upsertLarkConnection: async () => ok({ id: 'connection-1' }) } as any,
+    connectionRepo: {
+      upsertLarkConnection: async () => ok({ id: 'connection-1' }),
+      findLarkConnectionOwner: async () => ok({ userId: 'user-1' }),
+    } as any,
     cache: {
       get: async () => ok(null),
       set: async () => ok(undefined),
@@ -410,8 +413,62 @@ describe('attaching a Lark identity to a web session', () => {
     assert.deepEqual(response.body, { error: 'lark_identity_mismatch' });
   });
 
+  it('requests OAuth when this exact Lark account has no capability connection', async () => {
+    const writes: string[] = [];
+    const deleted: string[] = [];
+    const router = makeRouter({
+      cache: {
+        get: async () => ok(storedNonce()),
+        set: async () => ok(undefined),
+        del: async (key: string) => { deleted.push(key); return ok(undefined); },
+        setNx: async () => ok(true),
+        scanDel: async () => ok(0),
+      },
+      connectionRepo: {
+        findLarkConnectionOwner: async (input: { larkOpenId: string }) => {
+          assert.equal(input.larkOpenId, 'ou_alice');
+          return ok(null);
+        },
+      },
+      prisma: {
+        memberSession: {
+          update: async () => { writes.push('update'); return {}; },
+          updateMany: async () => { writes.push('updateMany'); return { count: 0 }; },
+        },
+      },
+    });
+
+    const response = await callLink(router, { state: linkState() }, signedInAs('user-1'));
+
+    assert.equal(response.status, 409);
+    assert.deepEqual(response.body, { error: 'lark_connection_required' });
+    assert.deepEqual(writes, []);
+    assert.deepEqual(deleted, [], 'OAuth must be able to reuse the pending link');
+  });
+
+  it('does not turn a connection-status outage into another OAuth redirect', async () => {
+    const router = makeRouter({
+      cache: {
+        get: async () => ok(storedNonce()),
+        set: async () => ok(undefined),
+        del: async () => ok(undefined),
+        setNx: async () => ok(true),
+        scanDel: async () => ok(0),
+      },
+      connectionRepo: {
+        findLarkConnectionOwner: async () => ({ ok: false, error: new Error('database unavailable') }),
+      },
+    });
+
+    const response = await callLink(router, { state: linkState() }, signedInAs('user-1'));
+
+    assert.equal(response.status, 503);
+    assert.deepEqual(response.body, { error: 'lark_connection_status_unavailable' });
+  });
+
   it('stamps the caller\'s session, detaches the identity from any other, and replays the question', async () => {
     const deleted: string[] = [];
+    const order: string[] = [];
     let stamped: any = null;
     let detached: any = null;
     let replayed: unknown = null;
@@ -430,7 +487,17 @@ describe('attaching a Lark identity to a web session', () => {
           updateMany: async (args: any) => { detached = args; return { count: 1 }; },
         },
       },
-      onLinked: async (event: Record<string, unknown>) => { replayed = event; },
+      channelIdentityRepo: {
+        prepareLarkLogin: async (larkOpenId: string) => ok({
+          status: 'ready', companyId: 'company-1', userId: 'user-1', aiRole: 'MEMBER',
+          larkOpenId, email: 'user@example.com', createdUser: false,
+        }),
+        invalidateIdentityCache: async () => { order.push('invalidated'); },
+      },
+      onLinked: async (event: Record<string, unknown>) => {
+        order.push('replayed');
+        replayed = event;
+      },
     });
 
     const response = await callLink(router, { state: linkState() }, signedInAs('user-1'));
@@ -453,6 +520,7 @@ describe('attaching a Lark identity to a web session', () => {
 
     await new Promise((r) => setImmediate(r));
     assert.deepEqual(replayed, { message: 'what is on my calendar?' });
+    assert.deepEqual(order, ['invalidated', 'replayed']);
   });
 
   it('says so plainly when the link is not a link', async () => {

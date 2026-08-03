@@ -227,6 +227,23 @@ export function createLarkAuthRoutes(deps: {
       return;
     }
 
+    // Chat identity and capability ownership must name the same Lark account.
+    // A user may own or be granted several Lark connections; accepting any one
+    // of them here could attach Account B while tools still act as Account A.
+    const connectionOwner = await deps.connectionRepo.findLarkConnectionOwner({
+      companyId,
+      larkOpenId: state.larkOpenId,
+    });
+    if (!connectionOwner.ok) {
+      log.warn('lark.auth.link.connection_read_failed', { companyId, userId });
+      res.status(503).json({ error: 'lark_connection_status_unavailable' });
+      return;
+    }
+    if (connectionOwner.value?.userId !== userId) {
+      res.status(409).json({ error: 'lark_connection_required' });
+      return;
+    }
+
     await deps.cache.del(larkOAuthNonceKey(state.nonce));
 
     // One Lark identity resolves to one session. Detaching it from the others
@@ -253,7 +270,10 @@ export function createLarkAuthRoutes(deps: {
       },
     });
 
-    void deps.channelIdentityRepo.invalidateIdentityCache(state.larkOpenId);
+    // The replay resolves this identity immediately. Wait for the old
+    // unauthenticated cache entry to disappear first, or the replay can race
+    // it and send another sign-in card after a successful link.
+    await deps.channelIdentityRepo.invalidateIdentityCache(state.larkOpenId);
 
     log.info('lark.auth.link.attached', { companyId, userId, larkOpenId: state.larkOpenId });
 
@@ -504,7 +524,7 @@ export function createLarkAuthRoutes(deps: {
 
       // Bust identity cache so next message resolves fresh DB state.
       if (resolvedOpenId && deps.channelIdentityRepo) {
-        void deps.channelIdentityRepo.invalidateIdentityCache(resolvedOpenId);
+        await deps.channelIdentityRepo.invalidateIdentityCache(resolvedOpenId);
       }
 
       // Send DM confirmation (best-effort — don't fail the callback if this errors)

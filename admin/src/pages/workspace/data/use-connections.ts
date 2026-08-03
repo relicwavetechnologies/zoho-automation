@@ -48,11 +48,10 @@ const SEGMENT: Record<Provider, string> = {
  * Where each provider's *connect* flow starts — and why this cannot be derived.
  *
  * Lark owns two authorize routes that differ by one path segment and by
- * everything else. `/lark/authorize-url` is the unauthenticated desktop
- * sign-in hop: it signs `kind: 'desktop_lark_login'` and its callback parks the
- * code for `/lark/poll`, writing no connection at all. The connect flow is
- * `/lark/connections/authorize-url`, behind memberAuth, whose callback is the
- * one that actually stores an `IntegrationConnection`.
+ * everything else. `/lark/authorize-url` is the primary Divo sign-in hop and
+ * also stores the person's Lark connection. The explicit connect flow remains
+ * `/lark/connections/authorize-url`, behind memberAuth, for adding or
+ * reconnecting an account from Connected apps.
  *
  * Deriving the path from the segment picked the first one, so Connect ran a
  * whole consent screen, closed the popup, refetched status, found nothing, and

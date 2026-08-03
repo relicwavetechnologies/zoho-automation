@@ -919,6 +919,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         });
         if (!connectionResult.ok) {
           log.error('lark.exchange.connection_upsert_failed', { error: String(connectionResult.error) });
+          throw new Error('Could not save the Lark connection');
         }
       }
 
@@ -956,7 +957,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       });
     } catch (e) {
       log.error('lark.exchange.error', { error: String(e) });
-      res.status(500).json({ success: false, message: String(e) });
+      res.status(500).json({ success: false, message: 'Could not complete Lark sign-in. Please try again.' });
     }
   });
 
