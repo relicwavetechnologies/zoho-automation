@@ -13,6 +13,7 @@ import {
 	prepareSessionDirectories,
 	readInterruptedWorkFact,
 	recordInterruptedWorkFact,
+	removePreviousRunDirectories,
 	resolveSessionPaths,
 	runtimeContextForSession,
 	sweepAbandonedRunSessions,
@@ -183,6 +184,19 @@ describe("Pi session scope", () => {
 		// the container even if cleanup never runs.
 		assert.ok(!paths.sessionPath.startsWith("/data"));
 		assert.equal(paths.threadDir, "/data/state/data/threads/lark-abc");
+	});
+
+	it("removes prior Lark scratch runs without touching the current run", () => {
+		const runsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "divo-lark-runs-"));
+		fs.mkdirSync(path.join(runsRoot, "old-run-a"));
+		fs.mkdirSync(path.join(runsRoot, "old-run-b"));
+		fs.mkdirSync(path.join(runsRoot, "current-run"));
+
+		assert.deepEqual(
+			removePreviousRunDirectories(runsRoot, "current-run").sort(),
+			["old-run-a", "old-run-b"],
+		);
+		assert.deepEqual(fs.readdirSync(runsRoot), ["current-run"]);
 	});
 
 	it("gives two runs of one thread separate sessions", () => {

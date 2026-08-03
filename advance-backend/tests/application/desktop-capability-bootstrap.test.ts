@@ -166,6 +166,30 @@ describe('desktop capability bootstrap', () => {
     assert.deepEqual(bootstrap.routingHints, []);
   });
 
+  it('routes explicit Menhood analysis away from Airtable checkpoints', () => {
+    const bootstrap = buildDesktopCapabilityBootstrap({
+      departmentName: 'Operations',
+      departmentSlug: 'operations',
+      companyRole: 'COMPANY_ADMIN',
+      permission: permission([['menhoodData', ['read']]]),
+      visibleSkills: [{
+        id: 'menhood-skill-id',
+        slug: 'menhood-data',
+        name: 'Menhood Data',
+        description: 'Query Menhood reporting data.',
+        instructions: 'Hidden full recipe.',
+        toolIds: ['menhoodData'],
+        aliases: [], tags: [], revision: 1,
+      }],
+      registryRevision: 14,
+    });
+
+    assert.ok(bootstrap.routingHints.some(hint =>
+      hint.includes('load menhood-skill-id with divo_skill_view')
+      && hint.includes('invoke menhoodData')
+      && hint.includes('Do not use Airtable Records')));
+  });
+
   it('routes a permitted tool through the skill that declares it', () => {
     const bootstrap = buildDesktopCapabilityBootstrap({
       departmentName: 'Engineering',

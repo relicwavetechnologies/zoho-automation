@@ -138,6 +138,27 @@ function removeDirectory(directory) {
 	}
 }
 
+/**
+ * DIVO_RUN_DIR is scratch for one Lark turn, never durable conversation state.
+ * Removing siblings prevents an absolute path retained in chat history from
+ * silently reviving an incompatible script or checkpoint in a later request.
+ */
+export function removePreviousRunDirectories(runsRoot, currentRunId) {
+	let entries;
+	try {
+		entries = fs.readdirSync(runsRoot, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+	const removed = [];
+	for (const entry of entries) {
+		if (!entry.isDirectory() || entry.name === currentRunId) continue;
+		removeDirectory(path.join(runsRoot, entry.name));
+		removed.push(entry.name);
+	}
+	return removed;
+}
+
 function interruptedWorkFactPath(threadDir) {
 	return path.join(threadDir, INTERRUPTED_WORK_FACT_FILE);
 }
@@ -547,6 +568,9 @@ export function startDivoPi({
 	const contextDir = path.join(stateRoot, "context");
 	const runtimeContextPath = path.join(contextDir, "runtime.json");
 	const runContextPath = path.join(contextDir, `${thread}.json`);
+	if (channel === "lark") {
+		removePreviousRunDirectories(path.dirname(runDir), runId);
+	}
 
 	for (const directory of [
 		agentDir,
@@ -640,6 +664,7 @@ export function startDivoPi({
 	});
 	child.once("exit", (code, signal) => {
 		if (signal) console.error(`[divo-pi] exited by signal ${signal}`);
+		if (channel === "lark") removeDirectory(runDir);
 		// Removed on every outcome, not only success: a failed or interrupted run
 		// leaves a partial transcript that the next turn must not resume, since
 		// the authoritative conversation is sent in with the request.
