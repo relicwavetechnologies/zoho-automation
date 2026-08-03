@@ -7,7 +7,7 @@ import type { PermissionResult } from '../../permissions/permission.types';
 import type { ToolActionGroup } from '../../../domain/permissions/tool-action-group';
 import { asToolId } from '../../../shared/ids';
 import type { AuditService } from '../../observability/audit.service';
-import { contributeExportPart } from '../../data-export/tool-export-offer';
+import { contributeExportPart, exportWithdrawalMessage } from '../../data-export/tool-export-offer';
 import { dataExportRunRequestId } from '../../data-export/export-request-identity';
 import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
 import type { DataExportOfferPayload } from '../../data-export/export-offer';
@@ -118,9 +118,9 @@ export const createMenhoodDataTool = (deps: {
           ...(offer.kind === 'offered' ? { exportOfferId: offer.offerId, exportRowCount: offer.observedRowCount } : {}),
           ...(offer.kind === 'withdrawn' ? { exportWithdrawn: true as const } : {}),
         },
-        message: data.coverage.truncated
+        message: `${data.coverage.truncated
           ? `Showing the first ${data.coverage.returnedRows} matching rows.${offer.kind === 'offered' ? ' A governed export is available and reruns this query when confirmed.' : ''}`
-          : `Retrieved ${data.coverage.returnedRows} matching row${data.coverage.returnedRows === 1 ? '' : 's'}.${offer.kind === 'offered' ? ' A governed export is available and reruns this query when confirmed.' : ''}`,
+          : `Retrieved ${data.coverage.returnedRows} matching row${data.coverage.returnedRows === 1 ? '' : 's'}.${offer.kind === 'offered' ? ' A governed export is available and reruns this query when confirmed.' : ''}`}${offer.kind === 'withdrawn' ? ` ${exportWithdrawalMessage(offer.reason)}` : ''}`,
       };
       deps.audit?.record({
         actorId: ctx.runContext.userId,

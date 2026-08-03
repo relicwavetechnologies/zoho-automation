@@ -22,6 +22,13 @@ export type ToolExportOffer =
     }
   | { readonly kind: 'withdrawn'; readonly reason: string };
 
+export function exportWithdrawalMessage(reason: string): string {
+  if (reason === 'shape_mismatch') {
+    return 'No export is available for this result because it combines datasets that cannot share one file. Ask for one dataset at a time.';
+  }
+  return 'No export is available for this result because Divo could not safely prepare one. Ask Divo to rerun the single dataset you want to export.';
+}
+
 export interface ToolExportOfferInput {
   readonly offers: Pick<DataExportOfferService, 'appendAuthorizedPart'> | undefined;
   /** Every gate the caller already evaluated: channel, chat, RBAC, row count. */

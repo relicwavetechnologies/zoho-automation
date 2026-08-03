@@ -35,7 +35,7 @@ import { asToolId }                        from '../../../shared/ids';
 import type { ZohoCrmOps }                 from '../../zoho/zoho-crm-ops';
 import { mapZohoError }                    from '../../zoho/zoho-error.utils';
 import type { ZohoCrmPaginatedClient, ZohoCrmModule } from '../../../infrastructure/zoho/zoho-crm-paginated.client';
-import { contributeExportPart } from '../../data-export/tool-export-offer';
+import { contributeExportPart, exportWithdrawalMessage } from '../../data-export/tool-export-offer';
 import { dataExportRunRequestId } from '../../data-export/export-request-identity';
 import type { DataExportOfferService }     from '../../data-export/data-export-offer.service';
 import type { DataExportOfferPayload }     from '../../data-export/export-offer';
@@ -485,6 +485,7 @@ export const createZohoCrmTool = (deps: {
             let message = `Found ${items.length} ${mod} record(s).`;
             if (items.length > inline.length) message += ` Showing ${inline.length} inline.`;
             if (truncated) message += ' Pagination limit reached — additional records may exist.';
+            if (offer.kind === 'withdrawn') message += ` ${exportWithdrawalMessage(offer.reason)}`;
 
             return ok({
               success: true,

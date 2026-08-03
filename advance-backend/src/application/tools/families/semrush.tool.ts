@@ -13,7 +13,7 @@ import type { ApiKeyExhaustionNotifierPort } from '../../governance/api-key-exha
 import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
 import type { DataExportOfferPayload } from '../../data-export/export-offer';
 import { createDatasetPreview, DATASET_PREVIEW_ROW_LIMIT, type DatasetCoverage } from '../../data-export/dataset-preview';
-import { contributeExportPart } from '../../data-export/tool-export-offer';
+import { contributeExportPart, exportWithdrawalMessage } from '../../data-export/tool-export-offer';
 import { dataExportRunRequestId } from '../../data-export/export-request-identity';
 
 const MAX_TASK_ROWS = 1_000;
@@ -123,7 +123,7 @@ export const createSemrushTool = (deps: {
           rowCount: allRows.length,
           returnedRows: preview.rows.length,
           offer: offer.kind === 'offered',
-          withdrawn: offer.kind === 'withdrawn',
+          withdrawnReason: offer.kind === 'withdrawn' ? offer.reason : undefined,
           status: data.status,
         }),
       };
@@ -180,16 +180,14 @@ function messageFor(input: {
   rowCount: number;
   returnedRows: number;
   offer: boolean;
-  withdrawn: boolean;
+  withdrawnReason: string | undefined;
   status: Res['status'];
 }): string {
   if (input.status === 'empty') return 'Semrush returned no matching data for this request.';
   const parts = [`Retrieved ${input.rowCount} row${input.rowCount === 1 ? '' : 's'}.`];
   if (input.rowCount > input.returnedRows) parts.push(`Showing the first ${input.returnedRows} rows in chat.`);
   if (input.offer) parts.push('A governed export covering every Semrush result in this request is available. It reruns those queries when the user confirms, so current provider data may differ from this preview.');
-  if (input.withdrawn) {
-    parts.push('No export is offered for this request: it mixes datasets that cannot share one file. Tell the user which single dataset to export and rerun that one.');
-  }
+  if (input.withdrawnReason) parts.push(exportWithdrawalMessage(input.withdrawnReason));
   return parts.join(' ');
 }
 

@@ -131,7 +131,7 @@ describe('semrush tool', () => {
     if (!result.ok) return;
     assert.equal(result.value.preview?.exportOfferId, undefined, 'no button may be offered');
     assert.equal(result.value.preview?.exportWithdrawn, true, 'the gateway must revoke the bound offer');
-    assert.match(result.value.message, /no export is offered/i);
+    assert.match(result.value.message, /combines datasets that cannot share one file/i);
   });
 
   it('creates one opaque export offer without creating a production Cloudinary artifact', async () => {
@@ -242,6 +242,7 @@ describe('semrush tool', () => {
     if (!result.ok) return;
     assert.deepEqual(result.value.preview?.rows, [{ domain: 'example.com' }]);
     assert.equal(result.value.preview?.exportOfferId, undefined);
+    assert.match(result.value.message, /could not safely prepare one/i);
   });
 
   it('replays an opaque offer through the central Semrush source adapter', async () => {

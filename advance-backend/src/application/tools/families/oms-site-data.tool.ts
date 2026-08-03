@@ -11,7 +11,7 @@ import { CompanyOmsSiteDataService } from '../../oms/company-oms-site-data.servi
 import { defaultSortDirection, excludesUnmeasuredSpamScore, OmsSiteDataServiceError, OmsSiteDataToolArgsSchema, type OmsSiteDataToolArgs } from '../../oms/oms-site-data.types';
 import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
 import type { DataExportOfferPayload } from '../../data-export/export-offer';
-import { contributeExportPart } from '../../data-export/tool-export-offer';
+import { contributeExportPart, exportWithdrawalMessage } from '../../data-export/tool-export-offer';
 import { dataExportRunRequestId } from '../../data-export/export-request-identity';
 import { createDatasetPreview, DATASET_PREVIEW_ROW_LIMIT } from '../../data-export/dataset-preview';
 
@@ -120,7 +120,14 @@ export const createOmsSiteDataTool = (deps: {
         retrievedAt: new Date().toISOString(),
         coverage: data.coverage,
         preview,
-        message: messageFor(data.status, data.rows.length, preview.rows.length, offer.kind === 'offered', args),
+        message: messageFor(
+          data.status,
+          data.rows.length,
+          preview.rows.length,
+          offer.kind === 'offered',
+          offer.kind === 'withdrawn' ? offer.reason : undefined,
+          args,
+        ),
       };
       deps.audit?.record({
         actorId: ctx.runContext.userId,
@@ -179,6 +186,7 @@ function messageFor(
   rowCount: number,
   returnedRows: number,
   offer: boolean,
+  withdrawnReason: string | undefined,
   args: OmsSiteDataToolArgs,
 ): string {
   // Divo injects a spamScore >= 0 filter to drop the unmeasured sentinel, which
@@ -201,6 +209,7 @@ function messageFor(
   parts.push(`OMS never paginates and never reports a total count.${spamNote}`);
   if (rowCount > returnedRows) parts.push(`Showing the first ${returnedRows} rows in chat.`);
   if (offer) parts.push('A governed export of the returned OMS snapshot is available.');
+  if (withdrawnReason) parts.push(exportWithdrawalMessage(withdrawnReason));
   return parts.join(' ');
 }
 

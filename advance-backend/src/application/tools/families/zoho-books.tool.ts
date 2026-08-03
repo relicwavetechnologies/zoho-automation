@@ -52,7 +52,7 @@ import type { ZohoBooksPaginatedClient, ZohoBooksModule } from '../../../infrast
 import { getModuleSchema, injectSyntheticFields, toSchemaHint } from '../../../infrastructure/zoho/zoho-books-schema.cache';
 import { runInSandbox, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
 import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } from '../../../shared/zoho-personalization';
-import { contributeExportPart } from '../../data-export/tool-export-offer';
+import { contributeExportPart, exportWithdrawalMessage } from '../../data-export/tool-export-offer';
 import {
   dataExportCallRequestId,
   dataExportRunRequestId,
@@ -894,7 +894,9 @@ export const createZohoBooksTool = (deps: {
 
       return {
         success: true,
-        message: result.summary,
+        message: offer.kind === 'withdrawn'
+          ? `${result.summary} ${exportWithdrawalMessage(offer.reason)}`
+          : result.summary,
         preview,
         report: {
           returnedCount: result.items.length,
