@@ -1359,6 +1359,12 @@ model DataExportOffer {
   idempotencyKey     String
   status             DataExportOfferStatus @default(pending)
   queueJobId         String?
+  /// Every artifact this offer has produced, one job id per destination
+  /// format. `queueJobId` alone cannot serve as the ledger: a member may take
+  /// the Sheet and the Excel file, and the column can only remember the last
+  /// one, which made a repeat click on the earlier format report success while
+  /// queueing nothing.
+  confirmedJobIds    String[]              @default([])
   expiresAt          DateTime
   confirmedAt        DateTime?
   createdAt          DateTime              @default(now())

@@ -984,11 +984,23 @@ export class LarkPiRuntimeService {
       }
     }
 
+    // The chat answer may summarise; the file always carries the underlying
+    // rows. Saying so — with a count the backend measured, not one the model
+    // inferred from a 25-row preview — stops the sheet from looking like it
+    // disagrees with the message above it.
+    const exportNote = exportEffect && !googleAuthorization
+      ? `\n\n---\n\n*Export: ${
+          exportEffect.observedRowCount === undefined
+            ? 'the full rows'
+            : `all ${exportEffect.observedRowCount.toLocaleString('en-IN')} row${exportEffect.observedRowCount === 1 ? '' : 's'}`
+        } behind this answer, as a private file in your Google account.*`
+      : '';
+
     return {
       text: googleAuthorization
         ? '# Connect Google Workspace\n\nConnect or reconnect your Google account below. '
           + "Once it’s connected, I’ll continue this request automatically—no need to send it again."
-        : assistantText,
+        : assistantText + exportNote,
       effects: effect ? [effect] : [],
       ...(exportEffect || workbookEffect || googleAuthorization
         ? {

@@ -22,7 +22,11 @@ import type {
   DataExportCompletion,
   DataExportJobPayload,
 } from './data-export.types';
-import { datasetSourceToolId } from './data-export.types';
+import {
+  dataExportParts,
+  datasetSourceShapeKey,
+  datasetSourceToolId,
+} from './data-export.types';
 import {
   DATA_EXPORT_GENERIC_SPOOL_BYTE_LIMIT,
   DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT,
@@ -207,15 +211,20 @@ export class DataExportWorker {
     if (!permission.value.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')) {
       throw new UnrecoverableError('Data export permission was revoked before the job started');
     }
-    const sourceToolId = datasetSourceToolId(payload.source);
-    if (!permission.value.allowedActionsByTool.get(asToolId(sourceToolId))?.has('read')) {
-      throw new UnrecoverableError(`${sourceToolId} read permission was revoked before the export started`);
-    }
-    if (
-      payload.source.kind === 'zoho_books'
-      && permission.value.department?.zohoReadScope === 'personalized'
-    ) {
-      throw new UnrecoverableError('Complete Zoho exports require full company Zoho read scope');
+    // Every part is re-authorized, not just part 0: one revoked tool must not
+    // ride along inside an export that another part still permits.
+    const parts = dataExportParts(payload);
+    for (const part of parts) {
+      const sourceToolId = datasetSourceToolId(part);
+      if (!permission.value.allowedActionsByTool.get(asToolId(sourceToolId))?.has('read')) {
+        throw new UnrecoverableError(`${sourceToolId} read permission was revoked before the export started`);
+      }
+      if (
+        part.kind === 'zoho_books'
+        && permission.value.department?.zohoReadScope === 'personalized'
+      ) {
+        throw new UnrecoverableError('Complete Zoho exports require full company Zoho read scope');
+      }
     }
 
     const googleAuth = await this.deps.resolveGoogleAuth(
@@ -240,7 +249,8 @@ export class DataExportWorker {
         abortController.abort(new Error('Data export made no progress for the configured inactivity window'));
       }, inactivityMs);
     };
-    const adapter = this.deps.sources.resolve(payload.source);
+    // Resolved up front so an unsupported part fails before anything is written.
+    const adapters = parts.map(part => this.deps.sources.resolve(part));
     const sandbox = new DataExportTransformSandbox(payload.transform);
     touch();
     const maxRows = resolvedExportRowLimit(payload, this.deps.maxRows);
@@ -252,42 +262,71 @@ export class DataExportWorker {
     let limitNeedsProbe = false;
     const updateProgressTracker = this.updateProgressTracker.bind(this);
     const transformedPages = (async function* () {
-      for await (const page of adapter.read(payload.source, {
-        companyId: payload.companyId,
-        userId: payload.userId,
-        signal: abortController.signal,
-      })) {
-        touch();
-        sourceTruncated ||= page.sourceTruncated === true;
-        if (limitNeedsProbe) {
-          sourceTruncated ||= page.rows.length > 0 || page.hasMore === true;
-          break;
+      // Parts stream in the order the run produced them, through one shared row
+      // index, so the transform and the row limit see a single dataset rather
+      // than N restarts.
+      let exhausted = false;
+      for (const [partIndex, part] of parts.entries()) {
+        if (exhausted) break;
+        const pages = adapters[partIndex]!.read(part, {
+          companyId: payload.companyId,
+          userId: payload.userId,
+          signal: abortController.signal,
+        });
+        try {
+          for await (const page of pages) {
+            touch();
+            sourceTruncated ||= page.sourceTruncated === true;
+            if (limitNeedsProbe) {
+              // Any part after this one is about to be dropped, so its mere
+              // existence means the export is truncated.
+              if (page.rows.length > 0 || page.hasMore === true || partIndex < parts.length - 1) {
+                sourceTruncated = true;
+                exhausted = true;
+                break;
+              }
+              // An empty page proves nothing — the next page of this same part
+              // may still hold rows. Keep probing rather than declaring the
+              // export complete.
+              continue;
+            }
+            const remainingInput = maxRows - inputIndex;
+            const inputRows = page.rows.slice(0, remainingInput);
+            const transformed = await sandbox.transformPage(inputRows, inputIndex);
+            inputIndex += inputRows.length;
+            const remainingOutput = maxRows - outputIndex;
+            const outputRows = transformed.slice(0, remainingOutput);
+            outputIndex += outputRows.length;
+            const limitReached = inputIndex >= maxRows || outputIndex >= maxRows;
+            const omittedRows = page.rows.length > inputRows.length
+              || transformed.length > outputRows.length;
+            sourceTruncated ||= omittedRows || (limitReached && page.hasMore === true);
+            pageCount += 1;
+            if (pageCount === 1 || pageCount % 10 === 0) {
+              const progress = {
+                stage: 'reading',
+                pagesRead: pageCount,
+                rowsRead: inputIndex,
+              } as const;
+              await job.updateProgress(progress);
+              await updateProgressTracker(progressMessageId, progress);
+              lastTrackerUpdateAt = Date.now();
+            }
+            if (outputRows.length > 0) yield outputRows;
+            if (omittedRows || (limitReached && page.hasMore !== undefined)) {
+              exhausted = true;
+              break;
+            }
+            limitNeedsProbe = limitReached;
+          }
+        } catch (cause) {
+          // Naming the part matters: "part 7 of 22 failed" is actionable where
+          // a bare provider error on a 22-call export is not.
+          throw new Error(
+            `Data export part ${partIndex + 1} of ${parts.length} (${datasetSourceShapeKey(part)}) could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
+            { cause },
+          );
         }
-        const remainingInput = maxRows - inputIndex;
-        const inputRows = page.rows.slice(0, remainingInput);
-        const transformed = await sandbox.transformPage(inputRows, inputIndex);
-        inputIndex += inputRows.length;
-        const remainingOutput = maxRows - outputIndex;
-        const outputRows = transformed.slice(0, remainingOutput);
-        outputIndex += outputRows.length;
-        const limitReached = inputIndex >= maxRows || outputIndex >= maxRows;
-        const omittedRows = page.rows.length > inputRows.length
-          || transformed.length > outputRows.length;
-        sourceTruncated ||= omittedRows || (limitReached && page.hasMore === true);
-        pageCount += 1;
-        if (pageCount === 1 || pageCount % 10 === 0) {
-          const progress = {
-            stage: 'reading',
-            pagesRead: pageCount,
-            rowsRead: inputIndex,
-          } as const;
-          await job.updateProgress(progress);
-          await updateProgressTracker(progressMessageId, progress);
-          lastTrackerUpdateAt = Date.now();
-        }
-        if (outputRows.length > 0) yield outputRows;
-        if (omittedRows || (limitReached && page.hasMore !== undefined)) break;
-        limitNeedsProbe = limitReached;
       }
       const progress = {
         stage: 'writing',
@@ -303,6 +342,8 @@ export class DataExportWorker {
       companyId: payload.companyId,
       requestId: payload.requestId,
       source: payload.source.kind,
+      parts: parts.length,
+      observedRowCount: payload.observedRowCount ?? null,
       destination: payload.destination.format,
       destinationOwner: payload.destination.target?.kind ?? 'legacy_company_google',
     });

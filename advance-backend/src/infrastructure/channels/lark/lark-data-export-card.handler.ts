@@ -183,14 +183,16 @@ export class LarkDataExportCardHandler {
         };
       }
 
+      // The three format actions stay live. Each is its own artifact, so a
+      // member who wants the Sheet and the Excel file clicks twice; stripping
+      // the actions after the first click made the other two look broken.
       const message = result.disposition === 'queued'
         ? 'Export queued. Divo will post progress and the final file in a new card.'
-        : 'Export already confirmed. Its existing job will deliver to the original Divo conversation.';
+        : 'That format is already exported. Its file was delivered to this conversation.';
       return {
         handled: true,
         responseBody: {
           toast: { type: 'success', content: message },
-          delivery: 'remove_source_actions',
         },
       };
     } catch (error) {

@@ -52,6 +52,7 @@ import type { ZohoBooksPaginatedClient, ZohoBooksModule } from '../../../infrast
 import { getModuleSchema, injectSyntheticFields, toSchemaHint } from '../../../infrastructure/zoho/zoho-books-schema.cache';
 import { runInSandbox, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
 import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } from '../../../shared/zoho-personalization';
+import { contributeExportPart } from '../../data-export/tool-export-offer';
 import { DATA_EXPORT_CSV_ROW_LIMIT } from '../../data-export/data-export-limits';
 import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
 import type { DataExportOfferPayload } from '../../data-export/export-offer';
@@ -153,6 +154,8 @@ const ResultSchema = z.object({
       z.object({ kind: z.literal('unknown'), returnedRows: z.number().int().nonnegative() }),
     ]),
     exportOfferId: z.string().optional(),
+    exportRowCount: z.number().int().nonnegative().optional(),
+    exportWithdrawn: z.literal(true).optional(),
   }).optional(),
 });
 
@@ -508,7 +511,7 @@ export const createZohoBooksTool = (deps: {
   booksClient:  ZohoBooksPaginatedClient;
   /** Finance ops service for deep report operations. */
   financeOps:   ZohoFinanceOps;
-  offers?: Pick<DataExportOfferService, 'createAuthorizedOffer' | 'submitAuthorized'>;
+  offers?: Pick<DataExportOfferService, 'appendAuthorizedPart' | 'submitAuthorized'>;
   inlineThreshold?: number;
 }): Tool<Args, Res> => ({
   id:           asToolId('zohoBooks'),
@@ -799,13 +802,21 @@ export const createZohoBooksTool = (deps: {
       });
       const modelItems = projectListItems(result.items, options.columns);
       const formattedItems = formatZohoResult(modelItems) as Record<string, unknown>[];
-      const offer = result.suggestExport && canOfferExport
-        ? await deps.offers!.createAuthorizedOffer(exportPayloadFor(moduleName))
-        : undefined;
+      const offer = await contributeExportPart({
+        offers: deps.offers,
+        eligible: result.suggestExport && canOfferExport,
+        payload: () => exportPayloadFor(moduleName),
+        observedRowCount: formattedItems.length,
+        collectionTitle: `Zoho Books ${moduleName}`,
+        logger: ctx.logger,
+        scope: 'zoho_books',
+        correlationId: ctx.correlationId,
+      });
       const preview = createDatasetPreview({
         rows: formattedItems,
         coverage: result.coverage,
-        ...(offer ? { exportOfferId: offer.offerId } : {}),
+        ...(offer.kind === 'offered' ? { exportOfferId: offer.offerId, exportRowCount: offer.observedRowCount } : {}),
+        ...(offer.kind === 'withdrawn' ? { exportWithdrawn: true as const } : {}),
       });
 
       return {

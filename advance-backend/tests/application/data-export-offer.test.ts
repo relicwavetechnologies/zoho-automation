@@ -10,6 +10,7 @@ import {
 } from '../../src/application/data-export/export-offer.ts';
 import {
   datasetSourceSchema,
+  datasetSourceShapeKey,
   datasetSourceToolId,
   directDatasetSourceSchema,
   type DataExportJobPayload,
@@ -19,6 +20,7 @@ import { ok } from '../../src/shared/result.ts';
 import { asToolId } from '../../src/shared/ids.ts';
 import {
   dataExportJobId,
+  dataExportOfferKey,
   dataExportSpecHash,
 } from '../../src/application/data-export/data-export.queue.ts';
 
@@ -49,6 +51,7 @@ const storedOffer = (overrides: Partial<DataExportOfferRecord> = {}): DataExport
   specHash: 'spec-1',
   idempotencyKey: 'idempotency-1',
   status: 'pending',
+  confirmedJobIds: [],
   expiresAt: new Date(NOW.getTime() + DATA_EXPORT_OFFER_TTL_MS),
   createdAt: NOW,
   updatedAt: NOW,
@@ -139,7 +142,7 @@ const confirmableOffer = (overrides: Partial<DataExportOfferRecord> = {}): DataE
   storedOffer({
     id: '11111111-1111-4111-8111-111111111111',
     specHash: dataExportSpecHash(payload),
-    idempotencyKey: dataExportJobId(payload),
+    idempotencyKey: dataExportOfferKey(payload),
     ...overrides,
   });
 
@@ -174,7 +177,7 @@ describe('DataExportOfferService', () => {
       queue: {
         enqueue: async (input) => {
           queued = input;
-          return 'dtx_job';
+          return { jobId: 'dtx_job', added: true };
         },
       },
       ...confirmationDeps,
@@ -217,7 +220,7 @@ describe('DataExportOfferService', () => {
       queue: {
         enqueue: async () => {
           enqueueCount += 1;
-          return 'unexpected';
+          return { jobId: 'unexpected', added: true };
         },
       },
       identityRepo: confirmationDeps.identityRepo,
@@ -274,7 +277,7 @@ describe('DataExportOfferService', () => {
       queue: {
         enqueue: async () => {
           enqueueCount += 1;
-          return 'unexpected';
+          return { jobId: 'unexpected', added: true };
         },
       },
       ...confirmationDeps,
@@ -313,7 +316,7 @@ describe('DataExportOfferService', () => {
       queue: {
         enqueue: async () => {
           queueCalls += 1;
-          return 'unexpected';
+          return { jobId: 'unexpected', added: true };
         },
       },
       ...confirmationDeps,
@@ -349,7 +352,7 @@ describe('DataExportOfferService', () => {
       queue: {
         enqueue: async () => {
           enqueueCount += 1;
-          return 'unexpected';
+          return { jobId: 'unexpected', added: true };
         },
       },
       ...confirmationDeps,
@@ -391,7 +394,7 @@ describe('DataExportOfferService', () => {
       queue: {
         enqueue: async (input) => {
           queued = input;
-          return 'dtx_confirmed';
+          return { jobId: 'dtx_confirmed', added: true };
         },
       },
       identityRepo: confirmationDeps.identityRepo,
@@ -527,7 +530,7 @@ describe('DataExportOfferService', () => {
       queue: {
         enqueue: async input => {
           queued = input;
-          return 'dtx_existing_sheet';
+          return { jobId: 'dtx_existing_sheet', added: true };
         },
       },
       identityRepo: confirmationDeps.identityRepo,
@@ -571,7 +574,7 @@ describe('DataExportOfferService', () => {
       queue: {
         enqueue: async () => {
           enqueueCount += 1;
-          return 'unexpected';
+          return { jobId: 'unexpected', added: true };
         },
       },
       identityRepo: confirmationDeps.identityRepo,
@@ -627,7 +630,7 @@ describe('DataExportOfferService', () => {
     const offer = confirmableOffer({
       payload: threadedPayload,
       specHash: dataExportSpecHash(threadedPayload),
-      idempotencyKey: dataExportJobId(threadedPayload),
+      idempotencyKey: dataExportOfferKey(threadedPayload),
     });
     let claimCount = 0;
     const service = new DataExportOfferService({
@@ -677,7 +680,7 @@ describe('DataExportOfferService', () => {
       queue: {
         enqueue: async () => {
           enqueueCount += 1;
-          return 'unexpected';
+          return { jobId: 'unexpected', added: true };
         },
       },
       ...confirmationDeps,
@@ -714,7 +717,7 @@ describe('DataExportOfferService', () => {
         enqueue: async () => {
           enqueueCount += 1;
           await firstEnqueueReleased;
-          return 'dtx_confirmed';
+          return { jobId: 'dtx_confirmed', added: true };
         },
       },
       ...confirmationDeps,
@@ -804,7 +807,7 @@ describe('DataExportOfferService', () => {
         queue: {
           enqueue: async () => {
             enqueueCount += 1;
-            return 'unexpected';
+            return { jobId: 'unexpected', added: true };
           },
         },
         identityRepo: {
@@ -840,6 +843,7 @@ describe('DataExportOfferRepository', () => {
     idempotencyKey: 'idempotency-1',
     status: 'pending',
     queueJobId: null,
+    confirmedJobIds: [] as string[],
     expiresAt: new Date(NOW.getTime() + DATA_EXPORT_OFFER_TTL_MS),
     confirmedAt: null,
     createdAt: NOW,
@@ -1034,5 +1038,423 @@ describe('DataExportOfferRepository', () => {
         { expiresAt: { lte: NOW } },
       ],
     });
+  });
+});
+
+describe('Multi-call exports fold into one offer', () => {
+  const semrushPayload = (domain: string): DataExportOfferPayload => ({
+    ...payload,
+    source: {
+      kind: 'semrush_snapshot',
+      connectionId: 'backend_managed',
+      args: { operation: 'domain_overview', domain },
+    },
+    destination: { format: 'auto', title: 'Domain overviews' },
+  });
+
+  /** Minimal stand-in for the offer table, keyed the way Postgres keys it. */
+  const fakeRepo = () => {
+    const rows = new Map<string, DataExportOfferRecord>();
+    const repo: DataExportOfferRepositoryPort & { rows: typeof rows } = {
+      rows,
+      create: async (input) => {
+        const key = `${input.companyId}:${input.idempotencyKey}`;
+        const existing = rows.get(key);
+        if (existing) return ok({ outcome: 'existing', offer: existing });
+        const offer = storedOffer({
+          id: `offer-${rows.size + 1}`,
+          sourceKind: input.payload.source.kind,
+          sourceConnectionId: input.payload.source.connectionId,
+          payload: input.payload,
+          specHash: input.specHash,
+          idempotencyKey: input.idempotencyKey,
+          expiresAt: input.expiresAt,
+        });
+        rows.set(key, offer);
+        return ok({ outcome: 'created', offer });
+      },
+      replacePendingPayload: async (input) => {
+        const entry = [...rows.entries()].find(([, row]) => row.id === input.offerId);
+        if (!entry) return ok({ outcome: 'stale' });
+        const [key, row] = entry;
+        if (row.status !== 'pending' || row.specHash !== input.expectedSpecHash) {
+          return ok({ outcome: 'stale' });
+        }
+        const updated = { ...row, payload: input.payload, specHash: input.specHash };
+        rows.set(key, updated);
+        return ok({ outcome: 'replaced', offer: updated });
+      },
+      cancelPending: async (input) => {
+        const entry = [...rows.entries()].find(([, row]) => row.id === input.offerId);
+        if (!entry || entry[1].status !== 'pending') return ok(false);
+        rows.set(entry[0], { ...entry[1], status: 'cancelled' });
+        return ok(true);
+      },
+      loadForConfirmation: async () => ok({ outcome: 'not_found' }),
+      claimConfirmation: async () => ok({ outcome: 'not_found' }),
+      markConfirmed: async () => ok(true),
+    };
+    return repo;
+  };
+
+  const serviceWith = (offers: DataExportOfferRepositoryPort) => new DataExportOfferService({
+    ...confirmationDeps,
+    offers,
+    queue: { enqueue: async () => assert.fail('appending must not queue anything') },
+    now: () => NOW,
+  });
+
+  it('folds one call per domain into a single offer covering every row', async () => {
+    const offers = fakeRepo();
+    const service = serviceWith(offers);
+    const domains = Array.from({ length: 22 }, (_, index) => `site-${index}.com`);
+
+    const results = [];
+    for (const domain of domains) {
+      results.push(await service.appendAuthorizedPart(semrushPayload(domain), {
+        observedRowCount: 1,
+      }));
+    }
+
+    const offerIds = new Set(results.map(result =>
+      result.outcome === 'appended' ? result.offerId : 'withdrawn'));
+    assert.deepEqual(offerIds, new Set(['offer-1']), 'every call feeds one offer');
+    const stored = [...offers.rows.values()][0]!;
+    assert.equal(stored.payload.additionalParts?.length, 21);
+    assert.equal(stored.payload.observedRowCount, 22, 'the offer counts all 22 rows');
+    assert.deepEqual(
+      [stored.payload.source, ...(stored.payload.additionalParts ?? [])]
+        .map(source => source.kind === 'semrush_snapshot' && 'domain' in source.args
+          ? source.args.domain
+          : null),
+      domains,
+      'parts keep the order the run produced them',
+    );
+  });
+
+  it('withdraws the offer rather than exporting one shape out of two', async () => {
+    const offers = fakeRepo();
+    const service = serviceWith(offers);
+    await service.appendAuthorizedPart(semrushPayload('site-a.com'), { observedRowCount: 1 });
+
+    const mixed = await service.appendAuthorizedPart({
+      ...payload,
+      source: {
+        kind: 'semrush_snapshot',
+        connectionId: 'backend_managed',
+        args: { operation: 'organic_positions', domain: 'site-a.com' },
+      },
+      destination: { format: 'auto', title: 'Domain overviews' },
+    }, { observedRowCount: 100 });
+
+    assert.deepEqual(mixed, {
+      outcome: 'withdrawn',
+      reason: 'shape_mismatch',
+      revokedOfferId: 'offer-1',
+    });
+    assert.equal(
+      [...offers.rows.values()][0]!.status,
+      'cancelled',
+      'the already-offered button must not survive a shape it cannot represent',
+    );
+  });
+
+  it('does not double-count a provider call that was retried', async () => {
+    const offers = fakeRepo();
+    const service = serviceWith(offers);
+    await service.appendAuthorizedPart(semrushPayload('site-a.com'), { observedRowCount: 1 });
+    const repeated = await service.appendAuthorizedPart(semrushPayload('site-a.com'), {
+      observedRowCount: 1,
+    });
+
+    assert.equal(repeated.outcome, 'appended');
+    const stored = [...offers.rows.values()][0]!;
+    assert.equal(stored.payload.additionalParts, undefined);
+    assert.equal(stored.payload.observedRowCount, 1);
+  });
+});
+
+describe('Export identity separates the dataset from the artifact', () => {
+  const withFormat = (format: DataExportJobPayload['destination']['format']) => ({
+    ...payload,
+    destination: { ...payload.destination, format },
+  });
+
+  it('gives each offered format its own job so the second button is a real file', () => {
+    assert.notEqual(
+      dataExportJobId(withFormat('google_sheet')),
+      dataExportJobId(withFormat('xlsx')),
+    );
+    assert.notEqual(
+      dataExportJobId(withFormat('csv')),
+      dataExportJobId(withFormat('xlsx')),
+    );
+  });
+
+  it('keeps one dataset identity across formats so a run\'s parts still merge', () => {
+    assert.equal(
+      dataExportOfferKey(withFormat('google_sheet')),
+      dataExportOfferKey(withFormat('xlsx')),
+    );
+    assert.notEqual(
+      dataExportOfferKey(payload),
+      dataExportOfferKey({ ...payload, requestId: 'request-2' }),
+    );
+  });
+});
+
+describe('Taking more than one format from one offer', () => {
+  /**
+   * A single mutable offer row plus just enough Prisma semantics to evaluate
+   * the repository's real `where` clauses. The point is to exercise the
+   * predicates themselves — a hand-written fake that ignores them cannot catch
+   * a claim rule that lets a confirmed offer re-open when it should not.
+   */
+  const inMemoryOfferDb = (seed: Record<string, any>) => {
+    const state = { ...seed };
+    const queued: string[] = [];
+
+    const matches = (where: any): boolean => {
+      for (const [key, condition] of Object.entries(where ?? {})) {
+        if (key === 'OR') {
+          if (!(condition as any[]).some(matches)) return false;
+          continue;
+        }
+        if (key === 'NOT') {
+          if (matches(condition)) return false;
+          continue;
+        }
+        const value = state[key];
+        if (condition !== null && typeof condition === 'object' && !(condition instanceof Date)) {
+          const c = condition as any;
+          if ('has' in c && !(value as string[]).includes(c.has)) return false;
+          if ('not' in c && value === c.not) return false;
+          if ('gt' in c && !(value > c.gt)) return false;
+          if ('lte' in c && !(value <= c.lte)) return false;
+          continue;
+        }
+        if (value !== condition) return false;
+      }
+      return true;
+    };
+
+    const apply = (data: any) => {
+      for (const [key, value] of Object.entries(data)) {
+        if (value !== null && typeof value === 'object' && 'push' in (value as any)) {
+          state[key] = [...state[key], (value as any).push];
+        } else {
+          state[key] = value;
+        }
+      }
+    };
+
+    return {
+      state,
+      queued,
+      db: {
+        dataExportOffer: {
+          findFirst: async ({ where }: any) => (matches(where) ? { ...state } : null),
+          updateMany: async ({ where, data }: any) => {
+            if (!matches(where)) return { count: 0 };
+            apply(data);
+            return { count: 1 };
+          },
+        },
+      } as any,
+    };
+  };
+
+  const confirmedOfferService = (harness: ReturnType<typeof inMemoryOfferDb>) => {
+    const repository = new DataExportOfferRepository(harness.db);
+    return new DataExportOfferService({
+      ...confirmationDeps,
+      offers: repository,
+      queue: {
+        // Mirrors DataExportQueue: a job id already present is not re-added.
+        enqueue: async (job: any) => {
+          const jobId = dataExportJobId(job);
+          if (harness.queued.includes(jobId)) return { jobId, added: false };
+          harness.queued.push(jobId);
+          return { jobId, added: true };
+        },
+      },
+      now: () => NOW,
+    });
+  };
+
+  const click = (service: DataExportOfferService, format: 'google_sheet' | 'csv' | 'xlsx') =>
+    service.confirmForActor({
+      offerId: 'offer-1',
+      companyId: payload.companyId,
+      userId: payload.userId,
+      chatId: payload.chatId,
+      destinationFormat: format,
+    });
+
+  const seedRow = () => ({
+    id: 'offer-1',
+    companyId: payload.companyId,
+    userId: payload.userId,
+    departmentId: payload.departmentId,
+    sourceKind: payload.source.kind,
+    sourceConnectionId: payload.source.connectionId,
+    payloadJson: payload,
+    specHash: dataExportSpecHash(payload),
+    idempotencyKey: dataExportOfferKey(payload),
+    status: 'pending',
+    queueJobId: null,
+    confirmedJobIds: [] as string[],
+    expiresAt: new Date(NOW.getTime() + DATA_EXPORT_OFFER_TTL_MS),
+    confirmedAt: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+
+  it('gives each format its own file and never reports a queue that did not happen', async () => {
+    const harness = inMemoryOfferDb(seedRow());
+    const service = confirmedOfferService(harness);
+
+    const sheet = await click(service, 'google_sheet');
+    const csv = await click(service, 'csv');
+    const sheetAgain = await click(service, 'google_sheet');
+    const csvAgain = await click(service, 'csv');
+
+    assert.equal((sheet as any).disposition, 'queued');
+    assert.equal((csv as any).disposition, 'queued');
+    assert.notEqual((sheet as any).exportJobId, (csv as any).exportJobId);
+    // Once two formats exist, `queueJobId` can only remember the newest. A
+    // repeat click used to re-claim on that basis and answer "queued" while
+    // adding nothing to the queue.
+    assert.equal((sheetAgain as any).disposition, 'already_confirmed');
+    assert.equal((csvAgain as any).disposition, 'already_confirmed');
+    assert.equal((sheetAgain as any).exportJobId, (sheet as any).exportJobId);
+    assert.equal(harness.queued.length, 2, 'exactly one job per format');
+  });
+
+  it('still opens for a format the member has not taken yet', async () => {
+    const harness = inMemoryOfferDb(seedRow());
+    const service = confirmedOfferService(harness);
+
+    await click(service, 'google_sheet');
+    const xlsx = await click(service, 'xlsx');
+
+    assert.equal((xlsx as any).disposition, 'queued');
+    assert.equal(harness.queued.length, 2);
+    assert.equal(harness.state.confirmedJobIds.length, 2, 'the ledger records both artifacts');
+  });
+});
+
+describe('Withdrawal reports only what it actually did', () => {
+  const semrushPart = (domain: string): DataExportOfferPayload => ({
+    ...payload,
+    source: {
+      kind: 'semrush_snapshot',
+      connectionId: 'backend_managed',
+      args: { operation: 'domain_overview', domain },
+    },
+    destination: { format: 'auto', title: 'Overviews' },
+  });
+
+  it('cancels the offer when every append round loses the race', async () => {
+    let cancelled = false;
+    const offer = storedOffer({
+      id: 'offer-1',
+      status: 'pending',
+      payload: semrushPart('a.com'),
+      sourceKind: 'semrush_snapshot',
+      sourceConnectionId: 'backend_managed',
+    });
+    const service = new DataExportOfferService({
+      ...confirmationDeps,
+      offers: {
+        create: async () => ok({ outcome: 'existing', offer }),
+        // Always stale: a concurrent append wins every round.
+        replacePendingPayload: async () => ok({ outcome: 'stale' }),
+        cancelPending: async () => { cancelled = true; return ok(true); },
+        loadForConfirmation: async () => ok({ outcome: 'not_found' }),
+        claimConfirmation: async () => ok({ outcome: 'not_found' }),
+        markConfirmed: async () => ok(true),
+      },
+      queue: { enqueue: async () => assert.fail('appending must not queue') },
+      now: () => NOW,
+    });
+
+    const result = await service.appendAuthorizedPart(semrushPart('z.com'), {
+      observedRowCount: 1,
+    });
+
+    assert.deepEqual(result, {
+      outcome: 'withdrawn',
+      reason: 'append_contention',
+      revokedOfferId: 'offer-1',
+    });
+    assert.equal(cancelled, true, 'a part that never landed must not leave a live button');
+  });
+
+  it('does not report a revocation it did not perform', async () => {
+    // The offer is already cancelled, so cancelPending matches nothing.
+    const offer = storedOffer({ id: 'offer-1', status: 'cancelled' });
+    const service = new DataExportOfferService({
+      ...confirmationDeps,
+      offers: {
+        create: async () => ok({ outcome: 'existing', offer }),
+        replacePendingPayload: async () => ok({ outcome: 'stale' }),
+        cancelPending: async () => ok(false),
+        loadForConfirmation: async () => ok({ outcome: 'not_found' }),
+        claimConfirmation: async () => ok({ outcome: 'not_found' }),
+        markConfirmed: async () => ok(true),
+      },
+      queue: { enqueue: async () => assert.fail('appending must not queue') },
+      now: () => NOW,
+    });
+
+    const result = await service.appendAuthorizedPart(semrushPart('b.com'), {
+      observedRowCount: 1,
+    });
+
+    assert.deepEqual(result, { outcome: 'withdrawn', reason: 'offer_not_appendable' });
+  });
+});
+
+describe('Row shape decides what may share one export', () => {
+  const airtable = (fieldIds: string[] | undefined, tableId = 'tbl1') => ({
+    kind: 'airtable_records' as const,
+    connectionId: '11111111-1111-4111-8111-111111111111',
+    toolId: 'airtableRecords' as const,
+    nativeTool: 'list_records_for_table' as const,
+    input: { baseId: 'app1', tableId, ...(fieldIds ? { fieldIds } : {}) },
+  });
+
+  it('separates reads of one table that select different columns', () => {
+    assert.notEqual(
+      datasetSourceShapeKey(airtable(['fldA', 'fldB'])),
+      datasetSourceShapeKey(airtable(['fldA'])),
+    );
+    // Order is not meaning: the same fields chosen in another order are one shape.
+    assert.equal(
+      datasetSourceShapeKey(airtable(['fldB', 'fldA'])),
+      datasetSourceShapeKey(airtable(['fldA', 'fldB'])),
+    );
+  });
+
+  it('separates the same module read through different connections', () => {
+    const invoices = (connectionId: string) => ({
+      kind: 'zoho_books' as const,
+      connectionId,
+      module: 'invoices' as const,
+    });
+    assert.notEqual(
+      datasetSourceShapeKey(invoices('11111111-1111-4111-8111-111111111111')),
+      datasetSourceShapeKey(invoices('22222222-2222-4222-8222-222222222222')),
+    );
+  });
+
+  it('keeps one Semrush operation across domains as a single shape', () => {
+    const overview = (domain: string) => ({
+      kind: 'semrush_snapshot' as const,
+      connectionId: 'backend_managed' as const,
+      args: { operation: 'domain_overview' as const, domain },
+    });
+    assert.equal(datasetSourceShapeKey(overview('a.com')), datasetSourceShapeKey(overview('b.com')));
   });
 });

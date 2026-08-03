@@ -126,9 +126,14 @@ describe('Menhood Data tool', () => {
     const payloads: unknown[] = [];
     const tool = createTool({
       offers: {
-        createAuthorizedOffer: async (payload: unknown) => {
+        appendAuthorizedPart: async (payload: unknown) => {
           payloads.push(payload);
-          return { offerId: '11111111-1111-4111-8111-111111111111', expiresAt: new Date() };
+          return {
+            outcome: 'appended' as const,
+            offerId: '11111111-1111-4111-8111-111111111111',
+            expiresAt: new Date(),
+            partCount: 1,
+          };
         },
       },
     });

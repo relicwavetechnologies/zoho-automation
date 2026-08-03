@@ -105,9 +105,14 @@ describe('OMS Site Data tool', () => {
     const tool = createTool({
       service: { execute: async () => ({ operation: 'search_sites', status: 'partial', coverage: {}, rows }) },
       offers: {
-        createAuthorizedOffer: async (payload: unknown) => {
+        appendAuthorizedPart: async (payload: unknown) => {
           offers.push(payload);
-          return { offerId: 'offer-opaque', expiresAt: new Date('2026-08-03T00:00:00.000Z') };
+          return {
+            outcome: 'appended' as const,
+            offerId: 'offer-opaque',
+            expiresAt: new Date('2026-08-03T00:00:00.000Z'),
+            partCount: 1,
+          };
         },
       },
     });
@@ -159,7 +164,7 @@ describe('OMS Site Data tool', () => {
         }),
       },
       offers: {
-        createAuthorizedOffer: async () => { throw new Error('database unavailable'); },
+        appendAuthorizedPart: async () => { throw new Error('database unavailable'); },
       },
     });
     const ctx = makeCtx('omsSiteData', ['read'], { chatId: 'oc-chat', requestId: 'request-3' });

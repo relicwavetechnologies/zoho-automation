@@ -60,6 +60,12 @@ export interface OfferedDataExportEffect extends LarkRunEffectIdentity {
   readonly status: 'offered';
   readonly effectKind: 'data_export_offered';
   readonly offerId: string;
+  /**
+   * Rows the backend measured across every contributing call. Refreshed as a
+   * run adds parts, so the card can state a number it counted rather than one
+   * the model inferred from a 25-row preview.
+   */
+  readonly observedRowCount?: number;
   readonly createdAt: string;
 }
 
@@ -225,7 +231,7 @@ export class RunEffectReceiptStore {
 
   async recordDataExportOffer(
     identity: LarkRunEffectIdentity,
-    input: { readonly offerId: string },
+    input: { readonly offerId: string; readonly observedRowCount?: number },
   ): Promise<OfferedDataExportEffect> {
     if (!isUuid(input.offerId)) throw new Error('Data export offer ID is invalid.');
     const effect: OfferedDataExportEffect = {
@@ -235,6 +241,9 @@ export class RunEffectReceiptStore {
       effectKind: 'data_export_offered',
       ...identity,
       offerId: input.offerId,
+      ...(input.observedRowCount !== undefined
+        ? { observedRowCount: input.observedRowCount }
+        : {}),
       createdAt: new Date().toISOString(),
     };
     const stored = await this.cache.setNx(
@@ -250,7 +259,37 @@ export class RunEffectReceiptStore {
     if (existing.offerId !== input.offerId) {
       throw new Error('This run is already bound to a different data export offer.');
     }
+    // Same offer, more parts: refresh the measured count so the card reflects
+    // the whole answer rather than whichever call happened to arrive first.
+    if (
+      input.observedRowCount !== undefined
+      && input.observedRowCount !== existing.observedRowCount
+    ) {
+      const refreshed: OfferedDataExportEffect = {
+        ...existing,
+        observedRowCount: input.observedRowCount,
+      };
+      const updated = await this.cache.set(
+        runEffectIndexKey(identity, refreshed.effectKind),
+        refreshed,
+        RUN_EFFECT_TTL_SECONDS,
+      );
+      if (!updated.ok) throw updated.error;
+      return refreshed;
+    }
     return existing;
+  }
+
+  /**
+   * Drop this run's export binding so the final card renders no export action.
+   * Used when a run's datasets stop fitting one file — the offer row itself is
+   * cancelled separately by the offer service.
+   */
+  async clearDataExportOffer(identity: LarkRunEffectIdentity): Promise<void> {
+    const removed = await this.cache.del(
+      runEffectIndexKey(identity, 'data_export_offered'),
+    );
+    if (!removed.ok) throw removed.error;
   }
 
   async getVerifiedDataExportOffer(

@@ -3,7 +3,9 @@ import type { Result } from '../../shared/result';
 import {
   datasetSourceSchema,
   type DataExportJobPayload,
+  type DataExportSource,
 } from './data-export.types';
+import { DATA_EXPORT_MAX_PARTS } from './data-export-limits';
 
 export const DATA_EXPORT_OFFER_TTL_MS = 24 * 60 * 60 * 1_000;
 
@@ -28,6 +30,8 @@ export const dataExportOfferPayloadSchema = z.object({
   userId: z.string().min(1),
   departmentId: z.string().min(1).optional(),
   source: datasetSourceSchema,
+  additionalParts: z.array(datasetSourceSchema).max(DATA_EXPORT_MAX_PARTS - 1).optional(),
+  observedRowCount: z.number().int().nonnegative().optional(),
   transform: dataExportTransformSchema.optional(),
   destination: dataExportDestinationSchema,
   chatId: z.string().min(1),
@@ -38,41 +42,50 @@ export const dataExportOfferPayloadSchema = z.object({
   traceId: z.string().min(1).optional(),
 }).strict();
 
-export function parseDataExportOfferPayload(value: unknown): DataExportOfferPayload {
-  const parsed = dataExportOfferPayloadSchema.parse(value);
-  const source: DataExportOfferPayload['source'] = parsed.source.kind === 'airtable_records'
-    ? { ...parsed.source }
-    : parsed.source.kind === 'zoho_books' ? {
-        kind: parsed.source.kind,
-        connectionId: parsed.source.connectionId,
-        module: parsed.source.module,
-        ...(parsed.source.organizationId ? { organizationId: parsed.source.organizationId } : {}),
-        ...(parsed.source.filters ? { filters: parsed.source.filters } : {}),
-        ...(parsed.source.query ? { query: parsed.source.query } : {}),
+/**
+ * Rebuilds a source with only its declared fields, so a persisted payload can
+ * never smuggle an extra key back through a later confirmation.
+ */
+function normalizeDatasetSource(source: DataExportSource): DataExportSource {
+  return source.kind === 'airtable_records'
+    ? { ...source }
+    : source.kind === 'zoho_books' ? {
+        kind: source.kind,
+        connectionId: source.connectionId,
+        module: source.module,
+        ...(source.organizationId ? { organizationId: source.organizationId } : {}),
+        ...(source.filters ? { filters: source.filters } : {}),
+        ...(source.query ? { query: source.query } : {}),
       }
-    : parsed.source.kind === 'zoho_crm' ? {
-        kind: parsed.source.kind,
-        connectionId: parsed.source.connectionId,
-        module: parsed.source.module,
-        ...(parsed.source.sortBy ? { sortBy: parsed.source.sortBy } : {}),
-        ...(parsed.source.sortOrder ? { sortOrder: parsed.source.sortOrder } : {}),
+    : source.kind === 'zoho_crm' ? {
+        kind: source.kind,
+        connectionId: source.connectionId,
+        module: source.module,
+        ...(source.sortBy ? { sortBy: source.sortBy } : {}),
+        ...(source.sortOrder ? { sortOrder: source.sortOrder } : {}),
       }
-    : parsed.source.kind === 'oms_snapshot' ? {
-        kind: parsed.source.kind,
-        connectionId: parsed.source.connectionId,
-        args: parsed.source.args,
+    : source.kind === 'oms_snapshot' ? {
+        kind: source.kind,
+        connectionId: source.connectionId,
+        args: source.args,
       }
-    : parsed.source.kind === 'menhood_query' ? {
-        kind: parsed.source.kind,
-        connectionId: parsed.source.connectionId,
-        query: parsed.source.query,
-        queryFingerprint: parsed.source.queryFingerprint,
+    : source.kind === 'menhood_query' ? {
+        kind: source.kind,
+        connectionId: source.connectionId,
+        query: source.query,
+        queryFingerprint: source.queryFingerprint,
       }
     : {
-        kind: parsed.source.kind,
-        connectionId: parsed.source.connectionId,
-        args: parsed.source.args,
+        kind: source.kind,
+        connectionId: source.connectionId,
+        args: source.args,
       };
+}
+
+export function parseDataExportOfferPayload(value: unknown): DataExportOfferPayload {
+  const parsed = dataExportOfferPayloadSchema.parse(value);
+  const source = normalizeDatasetSource(parsed.source);
+  const additionalParts = parsed.additionalParts?.map(normalizeDatasetSource);
   const transform: DataExportOfferPayload['transform'] = parsed.transform
     ? {
         script: parsed.transform.script,
@@ -89,6 +102,10 @@ export function parseDataExportOfferPayload(value: unknown): DataExportOfferPayl
     userId: parsed.userId,
     ...(parsed.departmentId ? { departmentId: parsed.departmentId } : {}),
     source,
+    ...(additionalParts && additionalParts.length > 0 ? { additionalParts } : {}),
+    ...(parsed.observedRowCount !== undefined
+      ? { observedRowCount: parsed.observedRowCount }
+      : {}),
     ...(transform ? { transform } : {}),
     destination,
     chatId: parsed.chatId,
@@ -118,7 +135,10 @@ export interface DataExportOfferRecord {
   readonly specHash: string;
   readonly idempotencyKey: string;
   readonly status: DataExportOfferStatus;
+  /** Most recently confirmed artifact. Not a ledger — see `confirmedJobIds`. */
   readonly queueJobId?: string;
+  /** Every artifact already produced, one job id per destination format. */
+  readonly confirmedJobIds: readonly string[];
   readonly expiresAt: Date;
   readonly confirmedAt?: Date;
   readonly createdAt: Date;
@@ -154,10 +174,39 @@ export type LoadDataExportOfferResult =
   | { readonly outcome: 'expired' }
   | { readonly outcome: 'not_found' };
 
+export interface ReplacePendingDataExportOfferInput {
+  readonly offerId: string;
+  readonly companyId: string;
+  /** Compare-and-set token: the hash this update believes it is replacing. */
+  readonly expectedSpecHash: string;
+  readonly payload: DataExportOfferPayload;
+  readonly specHash: string;
+  readonly now?: Date;
+}
+
+export type ReplacePendingDataExportOfferResult =
+  | { readonly outcome: 'replaced'; readonly offer: DataExportOfferRecord }
+  /** Another append won the race, or the offer left `pending`. Re-read and retry. */
+  | { readonly outcome: 'stale' };
+
 export interface DataExportOfferRepositoryPort {
   create(
     input: CreateDataExportOfferInput,
   ): Promise<Result<CreateDataExportOfferResult, Error>>;
+  /**
+   * Swap a still-pending offer's payload, but only if `expectedSpecHash` still
+   * describes it. Two tool calls appending at once cannot lose a part this way:
+   * the loser sees `stale` and retries against the winner's payload.
+   */
+  replacePendingPayload(
+    input: ReplacePendingDataExportOfferInput,
+  ): Promise<Result<ReplacePendingDataExportOfferResult, Error>>;
+  /** Withdraw a pending offer so no card can confirm a partial dataset. */
+  cancelPending(input: {
+    readonly offerId: string;
+    readonly companyId: string;
+    readonly now?: Date;
+  }): Promise<Result<boolean, Error>>;
   loadForConfirmation(input: {
     readonly offerId: string;
     readonly companyId: string;
@@ -168,6 +217,12 @@ export interface DataExportOfferRepositoryPort {
     readonly offerId: string;
     readonly companyId: string;
     readonly userId: string;
+    /**
+     * Job identity of the artifact this confirmation wants. A confirmed offer
+     * re-opens for a different one, because Sheet, CSV and Excel are three
+     * files, not three names for the first click's file.
+     */
+    readonly requestedJobId?: string;
     readonly now?: Date;
   }): Promise<Result<ClaimDataExportOfferResult, Error>>;
   markConfirmed(input: {

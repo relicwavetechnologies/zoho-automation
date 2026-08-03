@@ -7,6 +7,7 @@ import type { PermissionResult } from '../../permissions/permission.types';
 import type { ToolActionGroup } from '../../../domain/permissions/tool-action-group';
 import { asToolId } from '../../../shared/ids';
 import type { AuditService } from '../../observability/audit.service';
+import { contributeExportPart } from '../../data-export/tool-export-offer';
 import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
 import type { DataExportOfferPayload } from '../../data-export/export-offer';
 import {
@@ -40,6 +41,8 @@ const ResultSchema = z.object({
       }),
     ]),
     exportOfferId: z.string().optional(),
+    exportRowCount: z.number().int().nonnegative().optional(),
+    exportWithdrawn: z.literal(true).optional(),
   }),
   message: z.string(),
 });
@@ -48,7 +51,7 @@ type MenhoodDataToolResult = z.infer<typeof ResultSchema>;
 
 export const createMenhoodDataTool = (deps: {
   service: MenhoodService;
-  offers?: Pick<DataExportOfferService, 'createAuthorizedOffer'>;
+  offers?: Pick<DataExportOfferService, 'appendAuthorizedPart'>;
   audit?: AuditService;
 }): Tool<MenhoodQueryRequest, MenhoodDataToolResult> => ({
   id: asToolId('menhoodData'),
@@ -84,20 +87,23 @@ export const createMenhoodDataTool = (deps: {
     try {
       ctx.abortSignal?.throwIfAborted();
       validated = validateMenhoodQuery(args);
+      // Captured so the offer closure sees the narrowed value, not the
+      // still-possibly-undefined outer binding used by the catch block.
+      const validatedQuery = validated;
       const data = await deps.service.execute(ctx.runContext.companyId, args);
-      const canOfferExport = deps.offers !== undefined
-        && data.rows.length > 0
-        && ctx.runContext.channel === 'lark'
-        && Boolean(ctx.runContext.chatId)
-        && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true;
-      let offer: Awaited<ReturnType<DataExportOfferService['createAuthorizedOffer']>> | undefined;
-      if (canOfferExport) {
-        try {
-          offer = await deps.offers!.createAuthorizedOffer(exportPayloadFor(validated, ctx));
-        } catch {
-          ctx.logger.warn('menhood.export_offer.create_failed', { correlationId: ctx.correlationId });
-        }
-      }
+      const offer = await contributeExportPart({
+        offers: deps.offers,
+        eligible: data.rows.length > 0
+          && ctx.runContext.channel === 'lark'
+          && Boolean(ctx.runContext.chatId)
+          && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true,
+        payload: () => exportPayloadFor(validatedQuery, ctx),
+        observedRowCount: data.rows.length,
+        collectionTitle: 'Menhood query results',
+        logger: ctx.logger,
+        scope: 'menhood',
+        correlationId: ctx.correlationId,
+      });
       const result: MenhoodDataToolResult = {
         status: data.coverage.truncated ? 'partial' : 'complete',
         queryFingerprint: data.queryFingerprint,
@@ -108,11 +114,12 @@ export const createMenhoodDataTool = (deps: {
           coverage: data.coverage.truncated
             ? { kind: 'truncated', returnedRows: data.coverage.returnedRows, reason: 'menhood_more_rows_available' }
             : { kind: 'complete', totalRows: data.coverage.returnedRows },
-          ...(offer ? { exportOfferId: offer.offerId } : {}),
+          ...(offer.kind === 'offered' ? { exportOfferId: offer.offerId, exportRowCount: offer.observedRowCount } : {}),
+          ...(offer.kind === 'withdrawn' ? { exportWithdrawn: true as const } : {}),
         },
         message: data.coverage.truncated
-          ? `Showing the first ${data.coverage.returnedRows} matching rows.${offer ? ' A governed export is available and reruns this query when confirmed.' : ''}`
-          : `Retrieved ${data.coverage.returnedRows} matching row${data.coverage.returnedRows === 1 ? '' : 's'}.${offer ? ' A governed export is available and reruns this query when confirmed.' : ''}`,
+          ? `Showing the first ${data.coverage.returnedRows} matching rows.${offer.kind === 'offered' ? ' A governed export is available and reruns this query when confirmed.' : ''}`
+          : `Retrieved ${data.coverage.returnedRows} matching row${data.coverage.returnedRows === 1 ? '' : 's'}.${offer.kind === 'offered' ? ' A governed export is available and reruns this query when confirmed.' : ''}`,
       };
       deps.audit?.record({
         actorId: ctx.runContext.userId,
@@ -124,7 +131,7 @@ export const createMenhoodDataTool = (deps: {
           tables: validated.tables,
           returnedRows: data.coverage.returnedRows,
           truncated: data.coverage.truncated,
-          exportOfferId: offer?.offerId ?? null,
+          exportOfferId: offer.kind === 'offered' ? offer.offerId : null,
           latencyMs: Date.now() - startedAt,
           correlationId: ctx.correlationId,
         },
