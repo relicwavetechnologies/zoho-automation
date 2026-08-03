@@ -113,6 +113,18 @@ function makeFailingCache(): CachePort {
   };
 }
 
+function captureLogger() {
+  const events: string[] = [];
+  const logger: any = {
+    debug: (event: string) => events.push(event),
+    info: (event: string) => events.push(event),
+    warn: (event: string) => events.push(event),
+    error: (event: string) => events.push(event),
+    child: () => logger,
+  };
+  return { events, logger };
+}
+
 describe('ChannelIdentityRepository.resolveByUserId', () => {
   it('resolves an internal member without requiring a Lark connection', async () => {
     const repo = new ChannelIdentityRepository(makeDb({
@@ -344,13 +356,17 @@ describe('ChannelIdentityRepository.resolveByLarkOpenId (cache)', () => {
       integrationConnection: { findMany: async () => { dbCalls++; return [{ ownerUserId: 'user-1', ownerUser: { email: 'user@example.com' } }]; } },
       userDepartmentPreference: { findUnique: async () => { dbCalls++; return null; } },
     });
-    const repo = new ChannelIdentityRepository(db as any, makeFailingCache());
+    const logging = captureLogger();
+    const repo = new ChannelIdentityRepository(db as any, makeFailingCache(), logging.logger);
 
     const result = await repo.resolveByLarkOpenId(OPEN_ID);
+    await new Promise(r => setImmediate(r));
 
     assert.ok(result.ok);
     assert.ok(result.value !== null);
     assert.ok(dbCalls >= 2, 'should fall back to DB when cache errors');
+    assert.ok(logging.events.includes('lark.identity.cache_read_failed'));
+    assert.ok(logging.events.includes('lark.identity.cache_write_failed'));
   });
 });
 
@@ -403,6 +419,8 @@ describe('ChannelIdentityRepository.resolveByLarkTenantIdentity', () => {
     assert.ok(second.ok && second.value);
     assert.equal(first.value.companyId, 'company-shared');
     assert.equal(second.value.companyId, 'company-shared');
+    assert.equal(first.value.larkTenantKey, 'tenant-1');
+    assert.equal(second.value.larkTenantKey, 'tenant-2');
     assert.notEqual(first.value.userId, second.value.userId);
     assert.deepEqual(
       connectionQueries.map(where => where.tokenMetadata),
@@ -574,6 +592,18 @@ describe('ChannelIdentityRepository.invalidateIdentityCache', () => {
       'should invalidate tenant-scoped identity cache keys',
     );
     assert.ok(!cache.store.has(CACHE_KEY), 'cached entry should be removed');
+  });
+
+  it('logs cache invalidation failures without failing the caller', async () => {
+    const logging = captureLogger();
+    const cache = makeCache();
+    cache.del = async () => err({ kind: 'infra', source: 'redis', operation: 'del', cause: new Error('redis down') } as any);
+    cache.scanDel = async () => { throw new Error('scan unavailable'); };
+    const repo = new ChannelIdentityRepository(makeIdentityDb() as any, cache, logging.logger);
+
+    await repo.invalidateIdentityCache(OPEN_ID);
+
+    assert.equal(logging.events.filter(event => event === 'lark.identity.cache_invalidation_failed').length, 2);
   });
 });
 

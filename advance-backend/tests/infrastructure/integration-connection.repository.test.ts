@@ -140,3 +140,25 @@ describe('IntegrationConnectionRepository.upsertLarkConnection', () => {
     assert.equal(fixture.rows.length, 0);
   });
 });
+
+describe('IntegrationConnectionRepository.findLarkConnectionOwner', () => {
+  it('scopes an owner lookup by Lark tenant when open IDs are identical', async () => {
+    const fixture = makeDb();
+    const first = makeConnection('connection-1', 'lark:user:user-1:ou_same', 'tenant-1');
+    const second = makeConnection('connection-2', 'lark:user:user-2:ou_same', 'tenant-2');
+    first.ownerUserId = 'user-1';
+    second.ownerUserId = 'user-2';
+    fixture.rows.push(first, second);
+    const repo = new IntegrationConnectionRepository(fixture.db as any, {
+      ZOHO_TOKEN_ENCRYPTION_KEY: 'test-key',
+    } as any);
+
+    const result = await repo.findLarkConnectionOwner({
+      companyId: 'company-1',
+      larkOpenId: 'ou_same',
+      larkTenantKey: 'tenant-2',
+    });
+
+    assert.deepEqual(result, { ok: true, value: { userId: 'user-2' } });
+  });
+});

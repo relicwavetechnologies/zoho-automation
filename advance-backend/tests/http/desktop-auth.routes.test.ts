@@ -16,6 +16,18 @@ const noopLogger = {
   child: function() { return this; },
 } as any;
 
+function captureLogger() {
+  const events: string[] = [];
+  const logger: any = {
+    info: (event: string) => events.push(event),
+    warn: (event: string) => events.push(event),
+    error: (event: string) => events.push(event),
+    debug: (event: string) => events.push(event),
+    child: () => logger,
+  };
+  return { events, logger };
+}
+
 function signTestState(payload: Record<string, unknown>): string {
   const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
@@ -855,7 +867,11 @@ describe('desktop auth routes', () => {
   it('uses the company bound to the exchanged Lark tenant, not an arbitrary company', async () => {
     const sessionCompanyIds: string[] = [];
     const connectionCompanyIds: string[] = [];
+    const invalidatedOpenIds: string[] = [];
     const router = createDesktopAuthRoutes(makeDeps({
+      invalidateLarkIdentityCache: async (larkOpenId: string) => {
+        invalidatedOpenIds.push(larkOpenId);
+      },
       larkOAuthService: {
         isConfigured: () => true,
         getAuthorizeUrl: (state: string, input: { redirectUri: string }) =>
@@ -901,6 +917,7 @@ describe('desktop auth routes', () => {
     assert.equal(result.body.data.session.companyId, 'company-development');
     assert.deepEqual(sessionCompanyIds, ['company-development']);
     assert.deepEqual(connectionCompanyIds, ['company-development']);
+    assert.deepEqual(invalidatedOpenIds, ['ou_relicwave_dev']);
   });
 
   it('does not issue a successful Lark session when its capability connection cannot be saved', async () => {
@@ -1004,7 +1021,14 @@ describe('desktop auth routes', () => {
         department: { findMany: async () => [] },
       },
       connectionRepo: {
-        findLarkConnectionOwner: async () => ({ ok: true, value: null }),
+        findLarkConnectionOwner: async (input: { companyId: string; larkOpenId: string; larkTenantKey: string }) => {
+          assert.deepEqual(input, {
+            companyId: 'company-1',
+            larkOpenId: 'ou_no_email',
+            larkTenantKey: 'tenant-1',
+          });
+          return { ok: true, value: null };
+        },
         upsertLarkConnection: async () => {
           storedConnection = true;
           return { ok: true, value: {} };
@@ -1025,6 +1049,53 @@ describe('desktop auth routes', () => {
     assert.match(result.body.message, /contact:user\.email:readonly/);
     assert.equal(createdUser, false);
     assert.equal(storedConnection, false);
+  });
+
+  it('fails closed when Lark returns no usable account identity', async () => {
+    const logging = captureLogger();
+    let createdUser = false;
+    let createdSession = false;
+    let storedConnection = false;
+    const router = createDesktopAuthRoutes(makeDeps({
+      logger: logging.logger,
+      larkOAuthService: {
+        isConfigured: () => true,
+        getAuthorizeUrl: (state: string, input: { redirectUri: string }) =>
+          `https://accounts.larksuite.com/authorize?state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(input.redirectUri)}`,
+        exchangeCode: async () => ({
+          accessToken: 'access-token', refreshToken: 'refresh-token', tokenType: 'Bearer',
+          expiresIn: 7200, refreshTokenExpiresIn: 2_592_000,
+          larkOpenId: '   ', larkUserId: null, larkName: 'No Identity',
+          larkEmail: 'no-identity@example.com', larkEnName: null,
+          tenantKey: 'tenant-1', scope: 'auth:user.id:read', avatarUrl: null,
+        }),
+      },
+      prisma: {
+        larkTenantBinding: { findFirst: async () => ({ companyId: 'company-1' }) },
+        user: {
+          findFirst: async () => { throw new Error('user lookup must not run'); },
+          create: async () => { createdUser = true; return { id: 'user-1', email: 'unused@example.com', name: 'Unused' }; },
+        },
+        adminMembership: { findFirst: async () => ({ role: 'MEMBER' }), create: async () => ({}) },
+        memberSession: { create: async () => { createdSession = true; } },
+        department: { findMany: async () => [] },
+      },
+      connectionRepo: {
+        findLarkConnectionOwner: async () => ({ ok: true, value: null }),
+        upsertLarkConnection: async () => { storedConnection = true; return { ok: true, value: {} }; },
+      },
+    }));
+
+    const authorize = await callRoute(router, 'GET', '/lark/authorize-url', { headers: { host: 'localhost:8000' } });
+    const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state');
+    const result = await callRoute(router, 'POST', '/lark/exchange', { body: { code: 'auth-code', state } });
+
+    assert.equal(result.status, 400);
+    assert.match(result.body.message, /usable account identity/);
+    assert.equal(createdUser, false);
+    assert.equal(createdSession, false);
+    assert.equal(storedConnection, false);
+    assert.ok(logging.events.includes('lark.exchange.identity_missing'));
   });
 
   it('rejects an existing synthetic Lark owner instead of signing it in as a Member', async () => {
