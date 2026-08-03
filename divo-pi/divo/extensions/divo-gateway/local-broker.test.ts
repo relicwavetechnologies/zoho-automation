@@ -7,12 +7,9 @@ import {
 	clearCapturedDivoGatewayConfig,
 } from "./gateway-client.ts";
 import { executeGatewayRequest } from "./gateway-execution.ts";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
 	executeLocalBrokerRequest,
-	makeCliDirectory,
+	localCliEnabled,
 	parseLocalBrokerRequest,
 	registerLocalDivoBroker,
 	type ActiveBashCall,
@@ -357,50 +354,70 @@ describe("Divo local broker protocol", () => {
 	});
 });
 
-describe("divo-local CLI staging", () => {
-	it("stages the launchers on the run volume when the runtime provides one", async () => {
-		// The cloud container mounts /tmp noexec, so a launcher written to the OS
-		// temp dir can be read but never executed. DIVO_INTERNAL_DIR points at the
-		// run volume, which carries no such restriction.
-		const internal = await mkdtemp(join(tmpdir(), "divo-internal-"));
-		const original = process.env.DIVO_INTERNAL_DIR;
-		process.env.DIVO_INTERNAL_DIR = internal;
+async function pathAfterSessionStart(disabled: string | undefined): Promise<string | undefined> {
+	const originalDisabled = process.env.DIVO_LOCAL_CLI_DISABLED;
+	const originalPath = process.env.PATH;
+	const originalSocket = process.env.DIVO_LOCAL_BROKER_SOCKET;
+	if (disabled === undefined) delete process.env.DIVO_LOCAL_CLI_DISABLED;
+	else process.env.DIVO_LOCAL_CLI_DISABLED = disabled;
+	captureDivoGatewayConfig({
+		DIVO_BACKEND_URL: "http://localhost:4000",
+		DIVO_MEMBER_TOKEN: "member-token",
+	});
+	const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
+	registerLocalDivoBroker({
+		on(name: string, handler: (event: any, ctx: any) => unknown) {
+			const list = handlers.get(name) ?? [];
+			list.push(handler);
+			handlers.set(name, list);
+		},
+	} as never);
+	try {
+		await handlers.get("session_start")?.[0]?.({}, {});
+		return process.env.PATH;
+	} finally {
+		await handlers.get("session_shutdown")?.[0]?.({}, {});
+		clearCapturedDivoGatewayConfig();
+		process.env.PATH = originalPath;
+		if (originalSocket === undefined) delete process.env.DIVO_LOCAL_BROKER_SOCKET;
+		else process.env.DIVO_LOCAL_BROKER_SOCKET = originalSocket;
+		if (originalDisabled === undefined) delete process.env.DIVO_LOCAL_CLI_DISABLED;
+		else process.env.DIVO_LOCAL_CLI_DISABLED = originalDisabled;
+	}
+}
+
+describe("divo-local CLI availability", () => {
+	it("offers the CLI by default, for desktop workflows that page through data", () => {
+		const original = process.env.DIVO_LOCAL_CLI_DISABLED;
+		delete process.env.DIVO_LOCAL_CLI_DISABLED;
 		try {
-			const directory = await makeCliDirectory();
-			assert.equal(directory.startsWith(internal), true);
+			assert.equal(localCliEnabled(), true);
 		} finally {
-			if (original === undefined) delete process.env.DIVO_INTERNAL_DIR;
-			else process.env.DIVO_INTERNAL_DIR = original;
-			await rm(internal, { recursive: true, force: true });
+			if (original !== undefined) process.env.DIVO_LOCAL_CLI_DISABLED = original;
 		}
 	});
 
-	it("falls back to the OS temp dir when no run volume is provided", async () => {
-		const original = process.env.DIVO_INTERNAL_DIR;
-		delete process.env.DIVO_INTERNAL_DIR;
+	it("withholds the CLI when the runtime disables it", () => {
+		const original = process.env.DIVO_LOCAL_CLI_DISABLED;
+		process.env.DIVO_LOCAL_CLI_DISABLED = "1";
 		try {
-			const directory = await makeCliDirectory();
-			assert.equal(directory.startsWith(tmpdir()), true);
-			await rm(directory, { recursive: true, force: true });
+			assert.equal(localCliEnabled(), false);
 		} finally {
-			if (original !== undefined) process.env.DIVO_INTERNAL_DIR = original;
+			if (original === undefined) delete process.env.DIVO_LOCAL_CLI_DISABLED;
+			else process.env.DIVO_LOCAL_CLI_DISABLED = original;
 		}
 	});
 
-	it("keeps the CLI rather than losing it when the run volume is unusable", async () => {
-		const original = process.env.DIVO_INTERNAL_DIR;
-		// A path whose parent is a file cannot be created as a directory.
-		const blocker = join(await mkdtemp(join(tmpdir(), "divo-blocked-")), "file");
-		await writeFile(blocker, "not a directory");
-		process.env.DIVO_INTERNAL_DIR = join(blocker, "nested");
-		try {
-			const directory = await makeCliDirectory();
-			assert.equal(directory.startsWith(tmpdir()), true);
-			await rm(directory, { recursive: true, force: true });
-		} finally {
-			if (original === undefined) delete process.env.DIVO_INTERNAL_DIR;
-			else process.env.DIVO_INTERNAL_DIR = original;
-			await rm(blocker, { force: true });
-		}
+	it("stages nothing and leaves PATH alone when the CLI is withheld", async () => {
+		// The point is absence, not refusal: a launcher the agent can find is a
+		// launcher it will try to use, whatever the instructions say. The enabled
+		// case is asserted alongside it so this cannot pass by staging never
+		// happening at all.
+		const staged = await pathAfterSessionStart(undefined);
+		assert.notEqual(staged, process.env.PATH);
+		assert.match(String(staged), /divo-cli-/);
+
+		const withheld = await pathAfterSessionStart("1");
+		assert.equal(withheld, process.env.PATH);
 	});
 });

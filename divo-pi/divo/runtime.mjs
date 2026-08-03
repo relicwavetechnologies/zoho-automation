@@ -363,6 +363,12 @@ export function buildChildEnvironment(baseEnvironment, values) {
 		DIVO_BUNDLED_SKILLS_DIR: path.join(divoDir, "skills"),
 		DIVO_WORKSPACE_DIR: values.workspace,
 		DIVO_INTERNAL_DIR: values.internalDir,
+		// The `divo-local` CLI is a desktop execution shape. A server channel's
+		// complete-data path is the backend's own export pipeline, and this
+		// container mounts /tmp noexec, so a staged launcher could never run.
+		// Leaving one on PATH only gave the agent something to find, fail to
+		// execute, and route around.
+		...(values.channel === "lark" ? { DIVO_LOCAL_CLI_DISABLED: "1" } : {}),
 		DIVO_RUN_ID: values.runId,
 		DIVO_RUN_DIR: values.runDir,
 		DIVO_SCRATCH_DIR: values.scratchDir,

@@ -4,7 +4,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { authorizeToolInvocation, type LoadedSkillLookup } from "./skill-authorization.ts";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -257,27 +257,23 @@ function shellQuote(value: string): string {
 }
 
 /**
- * Stage the CLI launchers somewhere they can actually be executed.
+ * Whether this runtime offers the `divo-local` CLI at all.
  *
- * The cloud runtime container mounts `/tmp` as `noexec`, so a launcher written
- * to the OS temp dir there is readable but never executable: every run that
- * reached for `divo-local` got `Permission denied` and had to rediscover that
- * `sh <path>` was the only way in. `DIVO_INTERNAL_DIR` points at the run
- * volume, which carries no such restriction. Desktop has no `noexec` mount and
- * keeps using the OS temp dir.
+ * The CLI exists so a desktop workflow can page through a large record set
+ * from one persistent Python file without every row landing in the model's
+ * context. A server channel has no use for it: the backend's own export path
+ * already owns complete data sets, and the cloud container mounts `/tmp`
+ * `noexec`, so a staged launcher cannot even be executed.
+ *
+ * Leaving it there anyway was not neutral. A run that had already read its
+ * data through the governed tool would find the binary on `PATH`, conclude it
+ * must be the intended route, and spend turns discovering `Permission denied`
+ * and working around it. Telling the agent not to use it did not help while
+ * the binary was still discoverable — so the runtime stops offering it, and
+ * there is nothing left to find.
  */
-export async function makeCliDirectory(): Promise<string> {
-	const internal = process.env["DIVO_INTERNAL_DIR"]?.trim();
-	if (internal) {
-		try {
-			await mkdir(internal, { recursive: true });
-			return await mkdtemp(join(internal, "cli-"));
-		} catch {
-			// An unusable run volume is not a reason to lose the CLI entirely;
-			// the temp dir still works wherever it is not mounted noexec.
-		}
-	}
-	return await mkdtemp(join(tmpdir(), "divo-cli-"));
+export function localCliEnabled(): boolean {
+	return process.env["DIVO_LOCAL_CLI_DISABLED"] !== "1";
 }
 
 async function writeCliLaunchers(directory: string): Promise<void> {
@@ -347,10 +343,13 @@ export function registerLocalDivoBroker(
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (server) return;
+		// No socket, no launchers, no PATH entry: on a server channel the CLI is
+		// not merely unused, it is absent.
+		if (!localCliEnabled()) return;
 		const resolved = resolveDivoGatewayConfig();
 		if ("error" in resolved) return;
 		try {
-			cliDirectory = await makeCliDirectory();
+			cliDirectory = await mkdtemp(join(tmpdir(), "divo-cli-"));
 			await writeCliLaunchers(cliDirectory);
 			socketPath = socketAddress();
 			server = createServer((socket) => {
