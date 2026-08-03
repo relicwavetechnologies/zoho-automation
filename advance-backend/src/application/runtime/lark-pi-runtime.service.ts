@@ -578,6 +578,37 @@ export class LarkPiRuntimeService {
     }
   }
 
+  private async markInterruptedExecutionRun(input: LarkPiRuntimeInput): Promise<void> {
+    try {
+      await this.deps.prisma.executionRun.updateMany({
+        where: {
+          requestId: String(input.incoming.traceId),
+          companyId: String(input.runContext.companyId),
+          userId: String(input.runContext.userId),
+          status: 'running',
+        },
+        data: {
+          status: 'failed',
+          finishedAt: new Date(),
+          errorCode: 'interrupted',
+          errorMessage: 'The Pi run was interrupted.',
+        },
+      });
+    } catch (error) {
+      // Observability must not turn a user-requested stop into a failed stop.
+      this.log.warn('pi.execution.interrupt_terminalization_failed', {
+        correlationId: input.incoming.traceId,
+        error: String(error),
+      });
+    }
+  }
+
+  private async throwIfCallerInterrupted(input: LarkPiRuntimeInput): Promise<void> {
+    if (!input.abortSignal?.aborted) return;
+    await this.markInterruptedExecutionRun(input);
+    throw new DOMException('The Pi run was interrupted.', 'AbortError');
+  }
+
   async run(input: LarkPiRuntimeInput): Promise<LarkPiRuntimeResult> {
     const session = await this.findActiveSession(input.runContext, input.sessionId);
     if (!session) {
@@ -683,9 +714,7 @@ export class LarkPiRuntimeService {
         },
       );
     } catch (error) {
-      if (input.abortSignal?.aborted) {
-        throw new DOMException('The Pi run was interrupted.', 'AbortError');
-      }
+      await this.throwIfCallerInterrupted(input);
       // Staging already decided what the user should be told — that a file is
       // too large, or could not be opened. Rewrapping it as
       // `controller_unreachable` would replace a fixable instruction with a
@@ -703,7 +732,13 @@ export class LarkPiRuntimeService {
     }
 
     if (response.headers.get('content-type')?.includes('application/x-ndjson')) {
-      const streamed = await this.readStream(response, input);
+      let streamed: { text: string };
+      try {
+        streamed = await this.readStream(response, input);
+      } catch (error) {
+        await this.throwIfCallerInterrupted(input);
+        throw error;
+      }
       await this.consumePendingAttachments(pendingRows.map(row => row.id));
       return this.finalizeResult(streamed.text, input);
     }
@@ -712,6 +747,7 @@ export class LarkPiRuntimeService {
       text?: unknown;
       error?: { code?: unknown; message?: unknown };
     } | null;
+    await this.throwIfCallerInterrupted(input);
     if (!response.ok) {
       const code = typeof body?.error?.code === 'string'
         ? body.error.code

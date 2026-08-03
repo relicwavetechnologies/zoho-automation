@@ -7,7 +7,11 @@ import {
 	fetchRuntimeContext,
 	selectDepartment,
 } from "./auth.mjs";
-import { resolveRuntimeThreadId, startDivoPi } from "./runtime.mjs";
+import {
+	recordInterruptedWorkFact,
+	resolveRuntimeThreadId,
+	startDivoPi,
+} from "./runtime.mjs";
 
 const DEFAULT_BOOTSTRAP_PATH = "/run/divo-auth/bootstrap.json";
 const DEFAULT_BOOTSTRAP_TIMEOUT_MS = 30_000;
@@ -40,6 +44,12 @@ export function validateBootstrap(value) {
 		&& value.sessionScope !== "run"
 	) {
 		throw new Error("Bootstrap sessionScope is invalid");
+	}
+	if (
+		value.interruptionTask !== undefined
+		&& (typeof value.interruptionTask !== "string" || value.interruptionTask.length > 8_000)
+	) {
+		throw new Error("Bootstrap interruptionTask is invalid");
 	}
 	return value;
 }
@@ -109,8 +119,23 @@ export async function runContainer() {
 		departments: session.departments,
 	});
 	const child = startDivoPi(piOptions({ bootstrap, department, runtimeContext }));
+	let interruptionRecorded = false;
 	for (const signal of ["SIGINT", "SIGTERM"]) {
-		process.once(signal, () => child.kill(signal));
+		process.once(signal, () => {
+			if (!interruptionRecorded && bootstrap.channel === "lark") {
+				interruptionRecorded = true;
+				try {
+					recordInterruptedWorkFact({
+						dataDir: "/data/state/data",
+						thread: bootstrap.thread,
+						task: bootstrap.interruptionTask,
+					});
+				} catch (error) {
+					console.error(`[divo-container] could not record interrupted work: ${error.message}`);
+				}
+			}
+			child.kill(signal);
+		});
 	}
 	await new Promise((resolve, reject) => {
 		child.once("error", reject);

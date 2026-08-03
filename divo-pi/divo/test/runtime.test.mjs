@@ -10,6 +10,8 @@ import {
 	imagePolicyFor,
 	resolveRuntimeThreadId,
 	prepareSessionDirectories,
+	readInterruptedWorkFact,
+	recordInterruptedWorkFact,
 	resolveSessionPaths,
 	runtimeContextForSession,
 	sweepAbandonedRunSessions,
@@ -133,6 +135,22 @@ describe("Pi session scope", () => {
 			...base,
 			sessionScope: "thread",
 		}));
+	});
+
+	it("injects an interrupted DM fact instead of implicitly resuming its work", () => {
+		const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "divo-interrupted-work-"));
+		const fact = recordInterruptedWorkFact({
+			dataDir,
+			thread: "lark-abc",
+			task: "  Prepare   the monthly report  ",
+		});
+		const { threadDir } = resolveSessionPaths({ ...base, dataDir });
+		assert.deepEqual(readInterruptedWorkFact(threadDir), { task: fact.task });
+
+		const args = buildPiArguments({ ...values, interruptedWork: fact });
+		const prompt = args[args.indexOf("--append-system-prompt") + 1];
+		assert.match(prompt, /Never resume, retry, or continue its work/i);
+		assert.match(prompt, /Prepare the monthly report/);
 	});
 
 	it("keeps a run-scoped session off the user's durable volume entirely", () => {

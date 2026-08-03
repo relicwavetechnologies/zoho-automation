@@ -815,6 +815,7 @@ test('a streamed provider failure keeps diagnostics internal', async () => {
 
 test('propagates caller interruption instead of converting it to a Pi failure', async () => {
   const controller = new AbortController();
+  const terminalized: unknown[] = [];
   const service = new LarkPiRuntimeService({
     prisma: {
       memberSession: {
@@ -822,6 +823,12 @@ test('propagates caller interruption instead of converting it to a Pi failure', 
           sessionId: 'session-1',
           expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
         }),
+      },
+      executionRun: {
+        updateMany: async (input: unknown) => {
+          terminalized.push(input);
+          return { count: 1 };
+        },
       },
     } as any,
     logger,
@@ -842,6 +849,18 @@ test('propagates caller interruption instead of converting it to a Pi failure', 
     service.run({ ...runtimeInput(), abortSignal: controller.signal }),
     (error) => error instanceof DOMException && error.name === 'AbortError',
   );
+  assert.equal(terminalized.length, 1);
+  const update = terminalized[0] as any;
+  assert.deepEqual(update.where, {
+    requestId: 'trace-1',
+    companyId: 'company-1',
+    userId: 'user-1',
+    status: 'running',
+  });
+  assert.equal(update.data.status, 'failed');
+  assert.ok(update.data.finishedAt instanceof Date);
+  assert.equal(update.data.errorCode, 'interrupted');
+  assert.equal(update.data.errorMessage, 'The Pi run was interrupted.');
 });
 
 // ── Attachment staging ──────────────────────────────────────────────────────

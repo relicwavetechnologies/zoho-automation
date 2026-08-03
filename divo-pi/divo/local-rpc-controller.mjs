@@ -1740,6 +1740,7 @@ async function runPrompt({
 		departmentId,
 		sessionScope: normalizedSessionScope,
 		...(channel ? { channel } : {}),
+		...(channel === "lark" ? { interruptionTask: message } : {}),
 		...(selectedModel ?? {}),
 	};
 	if (!ephemeral) await idleContainers.activate(profile);

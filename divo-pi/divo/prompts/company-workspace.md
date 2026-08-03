@@ -28,3 +28,5 @@ Divo workspace policy:
 - Do not create temporary scripts or scratch files in the workspace root or project folders.
 - Only create or edit files outside .divo when they are real project files or deliverables required by the user's task.
 - Do not store credentials, backend tokens, or SaaS tokens in workspace files.
+
+{{interrupted_work_policy}}
