@@ -5,6 +5,7 @@ import {
 	assertPinnedProfile,
 	approveHeadlessWorkspaceAction,
 	backendUrlForContainer,
+	buildBootstrapWriteArgs,
 	buildContainerCreateArgs,
 	createIdleContainerScheduler,
 	finalizeRuntimeLifecycle,
@@ -20,9 +21,10 @@ import {
 	validateThread,
 } from "../local-rpc-controller.mjs";
 
-test("startup progress names cold work only and keeps warm runs generic", () => {
-	assert.deepEqual(runtimeStartupProgress(true), [{ type: "working" }]);
-	assert.deepEqual(runtimeStartupProgress(false), [
+test("startup progress names newly created work only", () => {
+	assert.deepEqual(runtimeStartupProgress({ wasRunning: true, created: false }), [{ type: "working" }]);
+	assert.deepEqual(runtimeStartupProgress({ wasRunning: false, created: false }), [{ type: "working" }]);
+	assert.deepEqual(runtimeStartupProgress({ wasRunning: false, created: true }), [
 		{ type: "starting", stage: "workspace", label: "Checking your workspace…" },
 		{ type: "starting", stage: "container", label: "Waking up Divo…" },
 	]);
@@ -118,6 +120,22 @@ test("container creation is hardened and contains no member secret", () => {
 	assert.match(serialized, /dev\.divo\.runtime-mode=exec-v1/);
 	assert.match(serialized, /divo-pi:test sleep infinity$/);
 	assert.doesNotMatch(serialized, /token|password|secret/i);
+});
+
+test("a running owned container receives bootstrap through docker exec", () => {
+	assert.deepEqual(
+		buildBootstrapWriteArgs("divo-pi-local-abhishek"),
+		[
+			"exec",
+			"--interactive",
+			"--user",
+			"10001:10001",
+			"divo-pi-local-abhishek",
+			"/bin/sh",
+			"-c",
+			"umask 077; cat > /run/divo-auth/bootstrap.json",
+		],
+	);
 });
 
 test("a shared container mounts only its run-specific disposable volumes", () => {

@@ -133,6 +133,7 @@ import type {
   IngressReceiptRepoPort,
 } from '../../persistence/ingress-receipt.repository';
 import type { LarkIngressQueue } from '../../../application/lark-ingress/lark-ingress.queue';
+import { SCHEDULED_SESSION_AUTH_PROVIDER } from '../../../application/scheduling/scheduled-runtime-session';
 
 type LarkPiRuntimePort =
   Pick<LarkPiRuntimeService, 'run'>
@@ -1519,9 +1520,9 @@ export async function runPiAndDeliver(input: {
   const startedAtMs = Date.now();
   const ledger = new Map<string, ChannelLedgerRow>();
   let statusHandle: StatusHandle | null = null;
-  let phase = 'Starting';
+  let phase = 'Thinking';
   let state: ChannelRunState = 'thinking';
-  let liveLabel = 'Getting things ready…';
+  let liveLabel = 'Thinking…';
   let actionCount = 0;
   let declared: ChannelDeclaredPlan | undefined;
   /** Bumped per tool call so each stretch of talking gets its own ledger keys. */
@@ -1607,20 +1608,28 @@ export async function runPiAndDeliver(input: {
     publishStatus,
     error => log.warn('webhook.pi.status_failed', { error: String(error), correlationId }),
   );
+  let nextProgressPublishAt = startedAtMs + 1_000;
+
+  const queueProgressStatus = (): void => {
+    const now = Date.now();
+    if (now < nextProgressPublishAt) return;
+    nextProgressPublishAt = now + 1_000;
+    queueStatus();
+  };
 
   const reportProgress = (event: LarkPiProgressEvent): void => {
     if (event.type === 'starting') {
-      phase = 'Starting';
+      phase = 'Thinking';
       state = 'thinking';
-      liveLabel = divoFacingRuntimeMessage(event.label);
+      liveLabel = 'Thinking…';
     } else if (event.type === 'working') {
-      phase = 'Working';
-      state = 'working';
-      liveLabel = 'Working…';
+      phase = 'Thinking';
+      state = 'thinking';
+      liveLabel = 'Thinking…';
     } else if (event.type === 'ready' || event.type === 'thinking') {
       phase = 'Thinking';
       state = 'thinking';
-      liveLabel = 'Understanding your request…';
+      liveLabel = 'Thinking…';
     } else if (event.type === 'say') {
       phase = 'Writing';
       state = 'writing';
@@ -1675,7 +1684,7 @@ export async function runPiAndDeliver(input: {
       state = 'writing';
       liveLabel = 'Preparing your response…';
     }
-    queueStatus();
+    queueProgressStatus();
   };
 
   let text: string;
@@ -3078,28 +3087,38 @@ async function handleSlashCommand(args: {
     return;
   }
 
-  // ── /logout — revoke stored user token ──────────────────────────────────────
+  // ── /logout — detach this Lark identity from the current member session ─────
   if (cmd === '/logout') {
-    if (!deps.connectionRepo) {
-      await reply('User OAuth is not configured on this server.');
+    if (!deps.prisma) {
+      await reply('Could not sign out just now. Please try again.');
       return;
     }
-    const result = await deps.connectionRepo.revokeLarkConnectionsForUser(identity.companyId, identity.userId);
-    if (!result.ok) {
-      log.warn('webhook.command.logout.failed', {
+    try {
+      const result = await deps.prisma.memberSession.updateMany({
+        where: {
+          companyId: identity.companyId,
+          userId: identity.userId,
+          larkTenantKey: String(incoming.tenantKey),
+          larkOpenId: String(incoming.userExternalId),
+          revokedAt: null,
+          authProvider: { not: SCHEDULED_SESSION_AUTH_PROVIDER },
+        },
+        data: { larkTenantKey: null, larkOpenId: null, larkUserId: null },
+      });
+      await deps.channelIdentityRepo.invalidateIdentityCache?.(incoming.userExternalId);
+      log.info('webhook.command.logout.ok', {
         userId: identity.userId,
-        error: result.error.message,
+        detachedSessions: result.count,
         correlationId,
       });
-      await reply('Could not disconnect your Lark account. Please try again.');
-      return;
-    }
-    await deps.channelIdentityRepo.invalidateIdentityCache?.(incoming.userExternalId);
-    if (result.value > 0) {
-      log.info('webhook.command.logout.ok', { userId: identity.userId, correlationId });
-      await reply('Disconnected. Your personal Lark sign-in has been removed. Send me another message whenever you want to reconnect.');
-    } else {
-      await reply('No connected account found. Send me another message to connect.');
+      await reply('Signed out of Divo in Lark. Your web session and connected apps stay connected. Send me another message whenever you want to sign in again.');
+    } catch (error) {
+      log.warn('webhook.command.logout.failed', {
+        userId: identity.userId,
+        error: String(error),
+        correlationId,
+      });
+      await reply('Could not sign out just now. Please try again.');
     }
     return;
   }

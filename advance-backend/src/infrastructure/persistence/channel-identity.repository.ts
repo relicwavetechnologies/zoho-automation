@@ -232,7 +232,14 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
       const canonicalOpenId = canonicalIdentity?.larkOpenId ?? larkOpenId;
       if (!canonicalIdentity || !canonicalOpenId) return ok(null);
 
-      const connections = await this.db.integrationConnection.findMany({
+      const identityEmail = canonicalIdentity.email?.trim().toLowerCase();
+      const emailMatchedUser = identityEmail
+        ? await this.db.user.findUnique({
+            where: { email: identityEmail },
+            select: { id: true },
+          })
+        : null;
+      const connections = emailMatchedUser ? [] : await this.db.integrationConnection.findMany({
         where: {
           companyId: canonicalIdentity.companyId,
           provider: 'lark',
@@ -254,7 +261,6 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
         orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
       });
 
-      const identityEmail = canonicalIdentity.email?.trim().toLowerCase();
       const emailMatchedOwner = identityEmail
         ? connections.find(connection => connection.ownerUser?.email.trim().toLowerCase() === identityEmail)
         : undefined;
@@ -263,7 +269,8 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
           .map(connection => connection.ownerUserId)
           .filter((ownerUserId): ownerUserId is string => Boolean(ownerUserId)),
       ));
-      const ownerUserId = emailMatchedOwner?.ownerUserId
+      const ownerUserId = emailMatchedUser?.id
+        ?? emailMatchedOwner?.ownerUserId
         ?? (distinctOwnerIds.length === 1 ? distinctOwnerIds[0] : undefined);
       if (!ownerUserId) return ok(null);
 

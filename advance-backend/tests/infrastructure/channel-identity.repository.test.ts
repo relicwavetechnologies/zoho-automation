@@ -224,6 +224,53 @@ describe('ChannelIdentityRepository.resolveByLarkOpenId (cache)', () => {
     assert.equal(membershipUserId, 'admin-user');
   });
 
+  it('resolves a verified Lark email without an active Lark connection', async () => {
+    let connectionCalls = 0;
+    let membershipUserId: string | undefined;
+    const db = makeIdentityDb({
+      channelIdentity: {
+        findFirst: async () => ({
+          id: 'ci-1',
+          aiRole: 'MEMBER',
+          channel: 'lark',
+          companyId: 'company-1',
+          email: 'member@example.com',
+          larkOpenId: OPEN_ID,
+        }),
+      },
+      user: {
+        findUnique: async (input: any) => {
+          assert.deepEqual(input, {
+            where: { email: 'member@example.com' },
+            select: { id: true },
+          });
+          return { id: 'member-user' };
+        },
+        create: async () => ({ id: 'created-user' }),
+      },
+      integrationConnection: {
+        findMany: async () => {
+          connectionCalls++;
+          return [];
+        },
+      },
+      adminMembership: {
+        findFirst: async (input: any) => {
+          membershipUserId = input.where.userId;
+          return { role: 'MEMBER' };
+        },
+      },
+    });
+    const repo = new ChannelIdentityRepository(db as any);
+
+    const result = await repo.resolveByLarkOpenId(OPEN_ID);
+
+    assert.ok(result.ok);
+    assert.equal(result.value?.userId, 'member-user');
+    assert.equal(membershipUserId, 'member-user');
+    assert.equal(connectionCalls, 0);
+  });
+
   it('fails closed when duplicate Lark owners are ambiguous and identity email is unavailable', async () => {
     const db = makeIdentityDb({
       integrationConnection: {

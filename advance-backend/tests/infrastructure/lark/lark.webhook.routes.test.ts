@@ -154,6 +154,8 @@ async function runWebhook(body: unknown, options: {
   changedDepartmentMemberships?: string[];
   /** Number of user-owned Lark connections revoked by an auth command. */
   larkConnectionCount?: number;
+  /** Number of live Lark-bound member sessions detached by `/logout`. */
+  logoutSessionCount?: number;
   setupAdapter?: (adapter: LarkChannelAdapter) => void;
   /** Background document indexing. Ships 'off'. */
   documentIndexing?: 'on' | 'off';
@@ -233,6 +235,7 @@ async function runWebhook(body: unknown, options: {
   const identityLookups: Array<{ openId?: string; userId?: string; tenantKey: string }> = [];
   const invalidatedIdentities: string[] = [];
   const revokedLarkUsers: Array<{ companyId: string; userId: string }> = [];
+  const detachedLarkSessions: unknown[] = [];
   const departmentPreferenceUpdates: unknown[] = [];
   const completedBatchReceipts: string[] = [];
   const groupModeUpdates: unknown[] = [];
@@ -471,11 +474,11 @@ async function runWebhook(body: unknown, options: {
           } as any,
         }
       : {}),
-    ...(options.changedDepartmentMemberships || options.larkConnectionCount !== undefined
+    ...(options.changedDepartmentMemberships || options.larkConnectionCount !== undefined || options.logoutSessionCount !== undefined
       ? {
-          ...(options.changedDepartmentMemberships
-            ? {
-                prisma: {
+          prisma: {
+            ...(options.changedDepartmentMemberships
+              ? {
                   departmentMembership: {
                     findFirst: async ({ where }: any) =>
                       options.changedDepartmentMemberships!.includes(where.departmentId)
@@ -492,16 +495,30 @@ async function runWebhook(body: unknown, options: {
                       return { count: 1 };
                     },
                   },
-                  runtimeConversation,
+                }
+              : {}),
+            ...(options.logoutSessionCount !== undefined
+              ? {
+                  memberSession: {
+                    updateMany: async (input: unknown) => {
+                      detachedLarkSessions.push(input);
+                      return { count: options.logoutSessionCount };
+                    },
+                  },
+                }
+              : {}),
+            runtimeConversation,
+          } as any,
+          ...(options.changedDepartmentMemberships || options.larkConnectionCount !== undefined
+            ? {
+                connectionRepo: {
+                  revokeLarkConnectionsForUser: async (companyId: string, userId: string) => {
+                    revokedLarkUsers.push({ companyId, userId });
+                    return ok(options.larkConnectionCount ?? 1);
+                  },
                 } as any,
               }
             : {}),
-          connectionRepo: {
-            revokeLarkConnectionsForUser: async (companyId: string, userId: string) => {
-              revokedLarkUsers.push({ companyId, userId });
-              return ok(options.larkConnectionCount ?? 1);
-            },
-          } as any,
         }
       : {}),
     // The sign-in card points at the web app now, so the link needs no Lark
@@ -593,6 +610,7 @@ async function runWebhook(body: unknown, options: {
     identityLookups,
     invalidatedIdentities,
     revokedLarkUsers,
+    detachedLarkSessions,
     departmentPreferenceUpdates,
     logEvents,
     retainedMessages,
@@ -1083,7 +1101,7 @@ describe('Lark webhook admission', () => {
     });
 
     const adapter = result.routeDeps.adapter as any;
-    assert.ok(adapter.__statusUpdates.length >= 3);
+    assert.equal(adapter.__statusUpdates.length, 2, 'a burst of progress collapses into the opening and settled frames');
     assert.equal(adapter.__outboundOrder[0], 'status');
     assert.equal(adapter.__outboundOrder.at(-1), 'final');
     assert.deepEqual(adapter.__finalReplies, ['Report complete']);
@@ -1104,7 +1122,7 @@ describe('Lark webhook admission', () => {
     }
 
     // The opening frame is awaited before the run starts, so it is exact.
-    assert.equal(adapter.__statusUpdates[0].timeline.liveLabel, 'Getting things ready…');
+    assert.equal(adapter.__statusUpdates[0].timeline.liveLabel, 'Thinking…');
     assert.doesNotMatch(
       adapter.__statusUpdates.map((update: any) => update.timeline.liveLabel).join(' '),
       /\bPi\b/,
@@ -2776,18 +2794,29 @@ describe('Lark auth commands', () => {
     }]);
   });
 
-  it('revokes /logout and clears the cached identity before offering reconnect', async () => {
+  it('detaches /logout from the Lark session without revoking connected apps', async () => {
     let adapter: any;
     const result = await runWebhook(makeEvent({ chatType: 'p2p', text: '/logout' }), {
-      larkConnectionCount: 1,
+      logoutSessionCount: 1,
       setupAdapter: value => { adapter = value; captureOutbound(value); },
     });
 
     assert.ok(!result.order.includes('engine'), 'auth command never reaches the agent');
-    assert.deepEqual(result.revokedLarkUsers, [{ companyId: 'company-1', userId: 'user-1' }]);
+    assert.deepEqual(result.revokedLarkUsers, []);
+    assert.deepEqual(result.detachedLarkSessions, [{
+      where: {
+        companyId: 'company-1',
+        userId: 'user-1',
+        larkTenantKey: 'tenant-1',
+        larkOpenId: 'ou_sender',
+        revokedAt: null,
+        authProvider: { not: 'scheduled_workflow' },
+      },
+      data: { larkTenantKey: null, larkOpenId: null, larkUserId: null },
+    }]);
     assert.deepEqual(result.invalidatedIdentities, ['ou_sender']);
     assert.deepEqual(adapter.__finalReplies, [
-      'Disconnected. Your personal Lark sign-in has been removed. Send me another message whenever you want to reconnect.',
+      'Signed out of Divo in Lark. Your web session and connected apps stay connected. Send me another message whenever you want to sign in again.',
     ]);
   });
 });
@@ -2800,6 +2829,29 @@ describe('Post-login replay', () => {
     await replayLarkMessageAfterLogin(event as any, base.routeDeps as any);
 
     // The whole reason the sign-in card can promise "no need to send it again".
+    const replayed = base.engineInputs.at(-1) as Record<string, any>;
+    assert.match(String(replayed?.['incoming']?.text ?? ''), /what is my quota/);
+  });
+
+  it('replays once after the Lark session is attached instead of showing another sign-in card', async () => {
+    let adapter: any;
+    const event = makeEvent({ chatType: 'p2p', text: 'what is my quota' });
+    const base = await runWebhook(event, {
+      activePiSession: false,
+      oauthConfigured: true,
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
+    });
+
+    assert.equal(adapter.__sentCards.length, 1, 'the original request receives one sign-in card');
+    await replayLarkMessageAfterLogin(event as any, {
+      ...base.routeDeps,
+      piRuntime: {
+        ...base.routeDeps.piRuntime,
+        hasActiveSession: async () => true,
+      },
+    } as any);
+
+    assert.equal(adapter.__sentCards.length, 1, 'an attached session must not receive a second sign-in card');
     const replayed = base.engineInputs.at(-1) as Record<string, any>;
     assert.match(String(replayed?.['incoming']?.text ?? ''), /what is my quota/);
   });

@@ -665,6 +665,8 @@ export async function ensureProfileVolume(profileName) {
 async function ensureRuntime(profile, { ephemeral = false } = {}) {
 	const resources = resourcesFor(profile);
 	let wasRunning = false;
+	let created = false;
+	let container;
 	if (!(await dockerObjectExists("image", IMAGE))) {
 		throw new Error(
 			`Image ${IMAGE} is missing. Build it with: docker build -t ${IMAGE} .`,
@@ -687,19 +689,21 @@ async function ensureRuntime(profile, { ephemeral = false } = {}) {
 	await ensureVolume(profile, resources.volume);
 	await ensureVolume(profile, resources.authVolume);
 	if (await dockerObjectExists("container", resources.container)) {
-		const container = await inspectOwnedContainer(profile);
+		container = await inspectOwnedContainer(profile);
 		if (runtimeContainerNeedsReplacement(container, IMAGE, imageId)) {
 			if (container.State.Running) await docker(["stop", resources.container]);
 			await docker(["rm", resources.container]);
+			container = undefined;
 		} else {
 			wasRunning = container.State.Running;
 		}
 	}
-	if (!(await dockerObjectExists("container", resources.container))) {
+	if (!container) {
 		await docker(buildContainerCreateArgs(profile, IMAGE, { ephemeral }));
+		container = await inspectOwnedContainer(profile);
+		created = true;
 	}
-	await inspectOwnedContainer(profile);
-	return { resources, wasRunning };
+	return { resources, wasRunning, created };
 }
 
 /**
@@ -936,12 +940,21 @@ async function runVolumeCommand(volume, script, input = "") {
 	});
 }
 
-async function writeBootstrap(volume, bootstrap) {
-	await runVolumeCommand(
-		volume,
+export function buildBootstrapWriteArgs(container) {
+	return [
+		"exec",
+		"--interactive",
+		"--user",
+		WORKSPACE_UID_GID,
+		container,
+		"/bin/sh",
+		"-c",
 		"umask 077; cat > /run/divo-auth/bootstrap.json",
-		JSON.stringify(bootstrap),
-	);
+	];
+}
+
+async function writeBootstrap(container, bootstrap) {
+	await runWithInput("docker", buildBootstrapWriteArgs(container), JSON.stringify(bootstrap));
 }
 
 async function clearBootstrap(volume) {
@@ -1310,8 +1323,8 @@ function emitRuntimeProgress(onProgress, event) {
 	}
 }
 
-export function runtimeStartupProgress(wasRunning) {
-	return wasRunning
+export function runtimeStartupProgress({ wasRunning, created }) {
+	return wasRunning || !created
 		? [{ type: "working" }]
 		: [
 			{ type: "starting", stage: "workspace", label: "Checking your workspace…" },
@@ -1730,11 +1743,6 @@ async function runPrompt({
 		...(selectedModel ?? {}),
 	};
 	if (!ephemeral) await idleContainers.activate(profile);
-	emitRuntimeProgress(onProgress, {
-		type: "starting",
-		stage: "workspace",
-		label: "Checking your workspace…",
-	});
 	let abortStop;
 	let bootstrapAttempted = false;
 	let child;
@@ -1751,16 +1759,16 @@ async function runPrompt({
 	try {
 		const runtime = await ensureRuntime(profile, { ephemeral });
 		resources = runtime.resources;
-		for (const progress of runtimeStartupProgress(runtime.wasRunning)) {
+		for (const progress of runtimeStartupProgress(runtime)) {
 			emitRuntimeProgress(onProgress, progress);
 		}
 		if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
-		bootstrapAttempted = true;
-		await writeBootstrap(resources.authVolume, bootstrap);
 		const startedAt = Date.now();
 		const container = await inspectOwnedContainer(profile);
 		if (!container.State.Running) await docker(["start", resources.container]);
 		await waitUntilRunning(resources.container);
+		bootstrapAttempted = true;
+		await writeBootstrap(resources.container, bootstrap);
 		child = spawn("docker", [
 			"exec",
 			"--interactive",
