@@ -1539,14 +1539,14 @@ describe('desktop /me reports the department role', () => {
       assert.deepEqual(Object.keys(model!).sort(), ['id', 'label', 'provider', 'vision']);
     });
 
-    it('falls back to the Flash default when no policy is stored', async () => {
+    it('offers Flash and Luna when no policy is stored', async () => {
       const router = createDesktopAuthRoutes(makeDeps({ prisma: policyPrisma(null) }));
 
       const result = await callRoute(router, 'GET', '/model-options', {
         locals: { userId: 'user-1', companyId: 'company-1' },
       });
 
-      assert.deepEqual(result.body.data.allowedModels, ['deepseek-v4-flash']);
+      assert.deepEqual(result.body.data.allowedModels, ['deepseek-v4-flash', 'gpt-5.6-luna']);
       assert.equal((result.body.data.models as { label: string }[])[0]!.label.length > 0, true);
     });
   });

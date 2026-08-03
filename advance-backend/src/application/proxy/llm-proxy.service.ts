@@ -15,7 +15,7 @@ import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import { ExecutionRepository } from '../../infrastructure/persistence/execution.repository';
 import { TokenUsageService } from '../observability/token-usage.service';
-import { costUsd } from '../observability/pricing';
+import { costUsd, DEFAULT_ALLOWED_MODELS } from '../observability/pricing';
 
 export interface GateInput {
   companyId: string;
@@ -45,9 +45,6 @@ interface ChatMessage {
   tool_calls?:   { id: string; function?: { name?: string; arguments?: string } }[];
 }
 
-/** Effective allow-list when a member has no explicit policy: Flash only. */
-const DEFAULT_ALLOWED_MODELS: string[] = ['deepseek-v4-flash'];
-
 const startOfMonth = (): Date => { const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d; };
 const asText = (content: unknown): string =>
   typeof content === 'string' ? content : content == null ? '' : JSON.stringify(content);
@@ -73,13 +70,13 @@ export class LlmProxyService {
    *
    * Exposed so a caller can *choose* a model it is allowed to run instead of
    * asking for one and being refused. Lark used to pin Pro unconditionally, so
-   * every member on the Flash-only default — which is the default — got a 403
+   * every member on the old Flash-only default got a 403
    * before the model saw a token.
    */
   async allowedModelsFor(userId: string): Promise<string[]> {
     const policy = await this.prisma.memberProxyPolicy.findUnique({ where: { userId } });
     if (policy?.blocked) return [];
-    return policy && policy.allowedModels.length > 0 ? policy.allowedModels : DEFAULT_ALLOWED_MODELS;
+    return policy && policy.allowedModels.length > 0 ? policy.allowedModels : [...DEFAULT_ALLOWED_MODELS];
   }
 
   async gate(input: GateInput): Promise<GateResult> {
@@ -88,8 +85,9 @@ export class LlmProxyService {
     if (policy?.blocked) return { allow: false, status: 403, reason: 'This account is blocked from the AI proxy.' };
 
     // `input.model` is already canonical (route normalizes). When no policy has been
-    // set, members default to Flash-only — Pro must be explicitly granted by an admin.
-    const allowed = policy && policy.allowedModels.length > 0 ? policy.allowedModels : DEFAULT_ALLOWED_MODELS;
+    // set, members receive the shared default grant. Pro still requires an admin grant.
+    const allowed: readonly string[] =
+      policy && policy.allowedModels.length > 0 ? policy.allowedModels : DEFAULT_ALLOWED_MODELS;
     if (!allowed.includes(input.model)) {
       return { allow: false, status: 403, reason: `Model ${input.model} is not enabled for this account.` };
     }

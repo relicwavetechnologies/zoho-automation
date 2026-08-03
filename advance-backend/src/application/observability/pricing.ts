@@ -146,6 +146,9 @@ export const RUNTIME_MODEL_PREFERENCE = [
 /** The lowest-privilege model, and what a member with no grant at all runs on. */
 export const DEFAULT_MODEL: ProxyModel = 'deepseek-v4-flash'
 
+/** Models available to every unblocked member before an admin customizes access. */
+export const DEFAULT_ALLOWED_MODELS: readonly ProxyModel[] = [DEFAULT_MODEL, 'gpt-5.6-luna']
+
 /**
  * The model a run should use, given what its member is allowed.
  *

@@ -24,7 +24,7 @@ import type { MemoryService } from '../../application/knowledge/semantic-memory.
 import { buildDesktopCapabilityBootstrap, isFinanceDepartment } from '../../application/desktop/desktop-capability-bootstrap';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
-import { PROXY_MODEL_SPECS, RUNTIME_MODEL_PREFERENCE } from '../../application/observability/pricing';
+import { DEFAULT_ALLOWED_MODELS, PROXY_MODEL_SPECS, RUNTIME_MODEL_PREFERENCE } from '../../application/observability/pricing';
 import {
   connectionGovernancePolicySchema,
   defaultConnectionGovernancePolicy,
@@ -1206,8 +1206,8 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
   /**
    * The LLM models this member is allowed to use through the proxy. Drives the
    * desktop model toggle: the client shows a switch only when more than one
-   * model is returned. Defaults to Flash-only when no policy is set, mirroring
-   * the proxy gate. The proxy remains authoritative — this is a UI hint.
+   * model is returned. Uses the proxy's shared default grant when no policy is
+   * set. The proxy remains authoritative — this is a UI hint.
    */
   router.get('/model-options', memberAuth, async (_req: Request, res: Response) => {
     try {
@@ -1217,7 +1217,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         select: { allowedModels: true, blocked: true },
       });
       const allowedModels =
-        policy && policy.allowedModels.length > 0 ? policy.allowedModels : ['deepseek-v4-flash'];
+        policy && policy.allowedModels.length > 0 ? policy.allowedModels : [...DEFAULT_ALLOWED_MODELS];
       // Labels travel with the ids, in runtime preference order.
       //
       // The web UI used to read these from GET /api/admin/proxy/models, which
