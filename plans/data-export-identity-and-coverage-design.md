@@ -1,6 +1,6 @@
 # Data export: identity, coverage, and recovery — final design
 
-Status: **implemented (V1)**, 2026-08-03. Baseline: `cd218170c`; V2 durable recovery remains deferred.
+Status: **implemented (V1 + V2-lite)**, 2026-08-03. Baseline: `cd218170c`; full V2 durable source recovery remains deferred.
 
 This design closes the class of defects behind the export pipeline's repeated
 breakages. V1 is a correct, idempotent whole-run retry: after an interruption it
@@ -98,10 +98,10 @@ The current job can recover an already-completed new Google artifact by
 worker crash during source reading loses the spool and restarts the recipe from
 the beginning. A local temp file therefore cannot be a checkpoint.
 
-This is an accepted V1 tradeoff: a retry may re-fetch the recipe from page one.
-The V2 durable design in Part 6 adds a Divo-private staging store and a
-persisted run manifest. In either version, provider credentials and source rows
-never enter Pi or a job payload.
+This is an accepted V1/V2-lite tradeoff: a retry may re-fetch the recipe from
+page one. The full V2 durable design in Part 6 adds a Divo-private staging store
+and a persisted run manifest. In either version, provider credentials and source
+rows never enter Pi or a job payload.
 
 ---
 
@@ -272,7 +272,7 @@ recorded under Decision 1.
 
 ---
 
-## Part 6 — V2 reference: durable recovery for a confirmed export
+## Part 6 — V2-lite implementation and full V2 reference
 
 The earlier decisions make a completed export truthful. **V1 deliberately does
 not make source reading resumable:** a worker loss before publication re-runs
@@ -283,6 +283,33 @@ V1 still keeps destination effects safe: the Google sink looks up Divo-created
 files by `exportKey`, removes only incomplete Divo-created artifacts, recovers a
 verified completed artifact, and uses a deterministic tab plus append-missing
 behaviour for an existing member-owned Sheet. It never clears a member sheet.
+
+### V2-lite — implemented 2026-08-03
+
+V2-lite closes the cross-replica publishing gap without retaining raw source
+rows. The deterministic BullMQ export job is the durable run record: it already
+holds the immutable recipe, progress-card ID, and — before any conversation
+write or final-card delivery — the verified Google artifact receipt. The worker
+now takes the existing fenced database lease under
+`data-export:<exportKey>` for the complete job lifetime.
+
+- A second replica defers before it reads a source, creates a Google artifact,
+  or edits the member's card. The deterministic BullMQ job is moved back to
+  its delayed queue without spending a retry attempt.
+- The holder checks that it still owns the lease before checkpointing a
+  completion, saving the conversation resource, or delivering the final card.
+  A lost lease never sends a terminal failure card; the current lease holder is
+  allowed to complete the same idempotent job.
+- The existing Google recovery remains the artifact boundary: a verified
+  `complete` artifact is recovered by `exportKey`; an incomplete Divo-created
+  artifact is removed and the recipe is re-fetched. Existing member-owned
+  Sheets are never cleared.
+
+This deliberately does **not** claim source resume. A crash during source
+reading has no durable page receipt, so its retry starts at page one and may see
+changed upstream data. That is the explicit boundary until private durable
+staging is provisioned. No new storage provider, schema migration, source
+cursor contract, or raw-row retention was introduced for V2-lite.
 
 The rest of this section is the deferred V2 path that closes source-recovery
 gaps using the smallest useful subset of Airbyte's production protocol:
@@ -502,6 +529,8 @@ result is an immutable upstream snapshot.
 
 | Scenario | Required outcome |
 |---|---|
+| Two replicas receive the same V2-lite job | Only the lease holder reads, publishes, or edits the card; the other defers and is requeued without spending an attempt |
+| A V2-lite holder loses its lease | It aborts before publication, is requeued without spending an attempt, and never sends a terminal failure card |
 | Crash after page staging, before checkpoint | retry validates/adopts page or safely restages it |
 | Crash after checkpoint, before next read | retry starts exactly at committed resume state |
 | Two workers claim the same run | lease permits only one publisher; the other exits/retries harmlessly |

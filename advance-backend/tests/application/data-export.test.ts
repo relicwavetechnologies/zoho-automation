@@ -910,6 +910,10 @@ describe('data export worker', () => {
     conversationHistory?: {
       appendTurn: (...args: any[]) => Promise<any>;
     };
+    runLeaseHolder?: {
+      withLane: (...args: any[]) => Promise<any>;
+      holdsLane: (...args: any[]) => Promise<boolean>;
+    };
     inactivityMs?: number;
     maxRows?: number;
   }) => new DataExportWorker({
@@ -944,9 +948,213 @@ describe('data export worker', () => {
     resolveGoogleAuth: async () => ({ accessToken: 'short-lived', readerDomain: 'emiactech.com' }),
     larkAdapter: input.larkAdapter as any,
     ...(input.conversationHistory ? { conversationHistory: input.conversationHistory as any } : {}),
+    ...(input.runLeaseHolder ? { runLeaseHolder: input.runLeaseHolder as any } : {}),
     logger: noopLogger,
     ...(input.inactivityMs === undefined ? {} : { inactivityMs: input.inactivityMs }),
     ...(input.maxRows === undefined ? {} : { maxRows: input.maxRows }),
+  });
+
+  it('does not start a second publisher while another replica owns the export lease', async () => {
+    const registry = new DatasetSourceRegistry();
+    let sourceResolves = 0;
+    registry.register({
+      kind: 'airtable_records',
+      async *read() {
+        sourceResolves += 1;
+        yield { rows: [{ Name: 'must not run' }] };
+      },
+    });
+    let sinkWrites = 0;
+    let trackerWrites = 0;
+    const laneKeys: string[] = [];
+    const delayed: Array<{ readonly retryAt: number; readonly token: string }> = [];
+    const worker = createWorker({
+      registry,
+      sink: {
+        write: async () => {
+          sinkWrites += 1;
+          throw new Error('duplicate publisher must not run');
+        },
+      } as any,
+      runLeaseHolder: {
+        withLane: async (laneKey) => {
+          laneKeys.push(laneKey);
+          return {
+            outcome: 'deferred' as const,
+            ownerId: 'replica-1',
+            expiresAt: new Date('2026-08-03T12:00:00.000Z'),
+          };
+        },
+        holdsLane: async () => false,
+      },
+      larkAdapter: {
+        sendToChatId: async () => {
+          trackerWrites += 1;
+          return { ok: true as const, value: 'om-progress' };
+        },
+        updateMessageById: async () => {
+          trackerWrites += 1;
+          return { ok: true as const, value: undefined };
+        },
+      },
+    });
+
+    await assert.rejects(
+      () => worker.processJob({
+        id: 'dtx_lease_held',
+        data: payload,
+        token: 'worker-token',
+        attemptsMade: 0,
+        opts: { attempts: 3 },
+        updateData: async () => assert.fail('a deferred replica must not checkpoint the job'),
+        updateProgress: async () => assert.fail('a deferred replica must not report progress'),
+        moveToDelayed: async (retryAt, token) => { delayed.push({ retryAt, token: token! }); },
+      }),
+      { name: 'DelayedError' },
+    );
+
+    assert.deepEqual(laneKeys, ['data-export:dtx_lease_held']);
+    assert.deepEqual(delayed, [{
+      retryAt: Date.parse('2026-08-03T12:00:01.000Z'),
+      token: 'worker-token',
+    }]);
+    assert.equal(sourceResolves, 0);
+    assert.equal(sinkWrites, 0);
+    assert.equal(trackerWrites, 0);
+  });
+
+  it('does not send a terminal failure after losing the export lease', async () => {
+    const registry = new DatasetSourceRegistry();
+    registry.register({
+      kind: 'airtable_records',
+      async *read() {
+        assert.fail('a lost lease must abort before source reading');
+      },
+    });
+    let terminalUpdates = 0;
+    let delayed = 0;
+    const worker = createWorker({
+      registry,
+      sink: { write: async () => assert.fail('a lost lease must not publish') } as any,
+      runLeaseHolder: {
+        withLane: async (_laneKey, task) => {
+          const controller = new AbortController();
+          controller.abort();
+          await task({}, controller.signal);
+          return { outcome: 'lost' as const };
+        },
+        holdsLane: async () => false,
+      },
+      larkAdapter: {
+        sendToChatId: async () => assert.fail('a lost lease must not create a tracker'),
+        updateMessageById: async () => {
+          terminalUpdates += 1;
+          return { ok: true as const, value: undefined };
+        },
+      },
+    });
+
+    await assert.rejects(
+      () => worker.processJob({
+        id: 'dtx_lease_lost',
+        data: payload,
+        token: 'worker-token',
+        attemptsMade: 2,
+        opts: { attempts: 3 },
+        updateData: async () => assert.fail('a lost lease must not checkpoint the job'),
+        updateProgress: async () => assert.fail('a lost lease must not report progress'),
+        moveToDelayed: async () => { delayed += 1; },
+      }),
+      { name: 'DelayedError' },
+    );
+    assert.equal(delayed, 1);
+    assert.equal(terminalUpdates, 0);
+  });
+
+  it('requeues a final-attempt lease loss after checkpointing and later delivers that artifact', async () => {
+    const registry = new DatasetSourceRegistry();
+    let sourceReads = 0;
+    registry.register({
+      kind: 'airtable_records',
+      async *read() {
+        sourceReads += 1;
+        yield { rows: [{ Name: 'One' }] };
+      },
+    });
+    let sinkWrites = 0;
+    const holds = [true, true, false];
+    const delayed: Array<{ readonly retryAt: number; readonly token: string }> = [];
+    let delivered = '';
+    const worker = createWorker({
+      registry,
+      sink: {
+        write: async (input: any) => {
+          sinkWrites += 1;
+          for await (const _page of input.rows) { /* source must be consumed before checkpointing */ }
+          return {
+            success: true as const,
+            artifactId: 'sheet-checked',
+            artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-checked/edit',
+            artifactType: 'google_sheet' as const,
+            rowCount: 1,
+            sourceTruncated: false,
+            sharedWith: 'abhishek@emiactech.com (reader)',
+            verified: true as const,
+          };
+        },
+      } as any,
+      runLeaseHolder: {
+        withLane: async (_laneKey, task) => {
+          await task({}, new AbortController().signal);
+          return { outcome: 'ran' as const };
+        },
+        holdsLane: async () => holds.shift() ?? true,
+      },
+      larkAdapter: {
+        sendToChatId: async () => ({ ok: true as const, value: 'om-progress' }),
+        updateMessageById: async (_messageId, content) => {
+          delivered = content;
+          return { ok: true as const, value: undefined };
+        },
+      },
+    });
+    let jobData: DataExportJobPayload = payload;
+    const updateData = async (updated: DataExportJobPayload) => { jobData = updated; };
+
+    await assert.rejects(
+      () => worker.processJob({
+        id: 'dtx_checkpoint_lease_loss',
+        data: jobData,
+        token: 'worker-token-1',
+        attemptsMade: 2,
+        opts: { attempts: 3 },
+        updateData,
+        updateProgress: async () => undefined,
+        moveToDelayed: async (retryAt, token) => { delayed.push({ retryAt, token: token! }); },
+      }),
+      { name: 'DelayedError' },
+    );
+    assert.equal(jobData.completedExport?.artifactId, 'sheet-checked');
+    assert.equal(sourceReads, 1);
+    assert.equal(sinkWrites, 1);
+    assert.doesNotMatch(delivered, /Data export ready|could not finish/i);
+    assert.deepEqual(delayed.map(entry => entry.token), ['worker-token-1']);
+
+    await worker.processJob({
+      id: 'dtx_checkpoint_lease_loss',
+      data: jobData,
+      token: 'worker-token-2',
+      attemptsMade: 2,
+      opts: { attempts: 3 },
+      updateData: async () => assert.fail('a checkpointed completion must not be rewritten'),
+      updateProgress: async () => assert.fail('a checkpointed completion must not report progress'),
+      moveToDelayed: async () => assert.fail('a recovered completion must not be delayed'),
+    });
+
+    assert.equal(sourceReads, 1);
+    assert.equal(sinkWrites, 1);
+    assert.match(delivered, /Data export ready/i);
+    assert.match(delivered, /sheet-checked/i);
   });
 
   it('revalidates the selected personal Google destination before writing', async () => {

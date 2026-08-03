@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Worker, type Job } from 'bullmq';
+import { DelayedError, Worker, type Job } from 'bullmq';
 import type { PermissionService } from '../permissions/permission.service';
 import type { ChannelIdentityRepoPort } from '../../infrastructure/persistence/channel-identity.repository';
 import type { LarkChannelAdapter } from '../../infrastructure/channels/lark/lark.adapter';
@@ -40,6 +40,7 @@ import type {
 } from './data-export.destination';
 import type { DatasetSourceRegistry } from './data-export.source-registry';
 import type { ConversationRepoPort } from '../../infrastructure/persistence/conversation.repository';
+import type { LaneLeaseHolder } from '../channels/lane-lease.holder';
 import {
   DATA_EXPORT_RESOURCE_TOOL,
   DATA_EXPORT_RESOURCE_TTL_MS,
@@ -60,6 +61,8 @@ export interface DataExportWorkerDeps {
   ) => Promise<GoogleExportAuth>;
   readonly larkAdapter: Pick<LarkChannelAdapter, 'sendToChatId' | 'updateMessageById'>;
   readonly conversationHistory?: Pick<ConversationRepoPort, 'appendTurn'>;
+  /** Fences one export job across replicas; its durable BullMQ job is the V2-lite run record. */
+  readonly runLeaseHolder?: Pick<LaneLeaseHolder, 'withLane' | 'holdsLane'>;
   readonly logger: Logger;
   readonly concurrency?: number;
   readonly inactivityMs?: number;
@@ -69,7 +72,7 @@ export interface DataExportWorkerDeps {
 export type DataExportWorkerJob = Pick<
   Job<DataExportJobPayload>,
   'id' | 'data' | 'attemptsMade' | 'opts' | 'updateData' | 'updateProgress'
->;
+> & Partial<Pick<Job<DataExportJobPayload>, 'moveToDelayed' | 'token'>>;
 
 export class DataExportWorker {
   private worker?: Worker<DataExportJobPayload>;
@@ -101,9 +104,61 @@ export class DataExportWorker {
   }
 
   async processJob(job: DataExportWorkerJob): Promise<void> {
+    const runLeaseHolder = this.deps.runLeaseHolder;
+    if (!runLeaseHolder) return this.processJobUnderLease(job);
+
+    try {
+      const outcome = await runLeaseHolder.withLane(
+        dataExportRunLaneKey(job),
+        async (lease, signal) => this.processJobUnderLease(job, {
+          signal,
+          holdsLease: () => runLeaseHolder.holdsLane(lease),
+        }),
+      );
+      if (outcome.outcome === 'deferred') {
+        this.log.info('data_export.worker.lease_deferred', {
+          jobId: job.id,
+          ownerId: outcome.ownerId,
+          expiresAt: outcome.expiresAt.toISOString(),
+        });
+        await this.deferLeaseRecovery(job, outcome.expiresAt.getTime() + 1_000);
+      }
+      if (outcome.outcome === 'lost') await this.deferLeaseRecovery(job);
+    } catch (error) {
+      if (isDataExportRunLeaseLostError(error)) await this.deferLeaseRecovery(job);
+      throw error;
+    }
+  }
+
+  private async deferLeaseRecovery(
+    job: DataExportWorkerJob,
+    retryAt = Date.now() + 5_000,
+  ): Promise<never> {
+    if (!job.moveToDelayed || !job.token) {
+      throw new Error('Data export lease recovery requires an active BullMQ job token');
+    }
+    await job.moveToDelayed(retryAt, job.token);
+    // BullMQ recognizes this sentinel and leaves the manually delayed job
+    // alone, including its attempt count. Throwing an ordinary error here
+    // would turn lease churn into a terminal failed export.
+    throw new DelayedError();
+  }
+
+  private async processJobUnderLease(
+    job: DataExportWorkerJob,
+    runLease?: {
+      readonly signal: AbortSignal;
+      readonly holdsLease: () => Promise<boolean>;
+    },
+  ): Promise<void> {
     let payload = job.data;
     let progressMessageId = payload.progressMessageId;
+    const assertLeaseHeld = async () => {
+      if (runLease?.signal.aborted) throw new DataExportRunLeaseLostError();
+      if (runLease && !await runLease.holdsLease()) throw new DataExportRunLeaseLostError();
+    };
     try {
+      await assertLeaseHeld();
       if (!progressMessageId) {
         progressMessageId = await this.createProgressTracker(job);
         payload = { ...payload, progressMessageId };
@@ -112,15 +167,18 @@ export class DataExportWorker {
         await this.initializeProgressTracker(progressMessageId);
       }
       const completion = payload.completedExport
-        ?? await this.runExport(job, payload, progressMessageId);
+        ?? await this.runExport(job, payload, progressMessageId, runLease?.signal);
+      await assertLeaseHeld();
       if (!payload.completedExport) {
         payload = { ...payload, completedExport: completion };
         await job.updateData(payload);
       }
       let continuityAvailable = true;
       try {
+        await assertLeaseHeld();
         await this.recordCompletionResource(job, payload, completion);
       } catch (error) {
+        if (isDataExportRunLeaseLostError(error)) throw error;
         const finalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
         if (!finalAttempt) throw error;
         this.log.error('data_export.continuity_unavailable', {
@@ -129,6 +187,7 @@ export class DataExportWorker {
         });
         continuityAvailable = false;
       }
+      await assertLeaseHeld();
       await this.deliverCompletion(
         job,
         payload,
@@ -137,6 +196,7 @@ export class DataExportWorker {
         continuityAvailable,
       );
     } catch (error) {
+      if (isDataExportRunLeaseLostError(error)) throw error;
       const finalAttempt = isUnrecoverableJobError(error)
         || job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
       if (finalAttempt && !payload.completedExport) {
@@ -189,7 +249,9 @@ export class DataExportWorker {
     job: DataExportWorkerJob,
     payload: DataExportJobPayload,
     progressMessageId: string,
+    runLeaseSignal?: AbortSignal,
   ): Promise<DataExportCompletion> {
+    if (runLeaseSignal?.aborted) throw new DataExportRunLeaseLostError();
     const identityResult = await this.deps.identityRepo.resolveByUserId(payload.userId, payload.companyId);
     if (!identityResult.ok) throw new Error(`Could not re-check export identity: ${identityResult.error.message}`);
     if (!identityResult.value) {
@@ -258,6 +320,9 @@ export class DataExportWorker {
     }
     const inactivityMs = this.deps.inactivityMs ?? 10 * 60 * 1_000;
     const abortController = new AbortController();
+    const forwardRunLeaseAbort = () => abortController.abort(new DataExportRunLeaseLostError());
+    runLeaseSignal?.addEventListener('abort', forwardRunLeaseAbort, { once: true });
+    if (runLeaseSignal?.aborted) forwardRunLeaseAbort();
     let inactivityTimer: NodeJS.Timeout | undefined;
     const touch = () => {
       if (inactivityTimer) clearTimeout(inactivityTimer);
@@ -388,6 +453,7 @@ export class DataExportWorker {
             limitNeedsProbe = limitReached;
           }
         } catch (cause) {
+          if (isDataExportRunLeaseLostError(cause)) throw cause;
           // Naming the part matters: "part 7 of 22 failed" is actionable where
           // a bare provider error on a 22-call export is not.
           throw new Error(
@@ -464,6 +530,7 @@ export class DataExportWorker {
       }
       throw error;
     } finally {
+      runLeaseSignal?.removeEventListener('abort', forwardRunLeaseAbort);
       if (inactivityTimer) clearTimeout(inactivityTimer);
       await sandbox.close();
     }
@@ -577,6 +644,23 @@ export class DataExportWorker {
       });
     }
   }
+}
+
+class DataExportRunLeaseLostError extends Error {
+  constructor() {
+    super('Data export run lease was lost before publication could finish');
+    this.name = 'DataExportRunLeaseLostError';
+  }
+}
+
+function isDataExportRunLeaseLostError(error: unknown): boolean {
+  if (error instanceof DataExportRunLeaseLostError) return true;
+  const cause = error instanceof Error ? error.cause : undefined;
+  return cause instanceof DataExportRunLeaseLostError;
+}
+
+function dataExportRunLaneKey(job: DataExportWorkerJob): string {
+  return `data-export:${String(job.id ?? dataExportJobId(job.data))}`;
 }
 
 function deliveryKey(prefix: string, job: DataExportWorkerJob): string {
