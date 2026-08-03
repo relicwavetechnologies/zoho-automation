@@ -18,6 +18,7 @@ import { provisionSystemSkillRoutesForExistingCompanies } from '../src/applicati
 import { provisionKnowledgeForExistingCompanies } from '../src/application/skills/knowledge-provisioning';
 import { provisionFilesAndDocumentsForExistingCompanies } from '../src/application/skills/files-and-documents-system-skills';
 import { provisionDivoLocalPythonForExistingCompanies } from '../src/application/skills/divo-local-python-system-skill';
+import { provisionMenhoodDataForExistingCompanies } from '../src/application/skills/menhood-data-system-skill';
 import { PermissionCache } from '../src/application/permissions/permission.cache';
 import { RedisCache } from '../src/infrastructure/cache/redis-cache';
 import { disconnectAllRedis, getRedisClient } from '../src/infrastructure/cache/redis.client';
@@ -44,6 +45,7 @@ export async function reconcileCapabilities(
     lark: await provisionLarkSkillsForExistingCompanies(prisma),
     google: await provisionGoogleWorkspaceSkillsForExistingCompanies(prisma),
     airtableAndAitable: await provisionConnectedProviderSkillsForExistingCompanies(prisma),
+    menhood: await provisionMenhoodDataForExistingCompanies(prisma),
     zoho: await provisionZohoFinanceSkillsForExistingCompanies(prisma),
     dataExport: await provisionDataExportSystemSkillForExistingCompanies(prisma),
     semrush: await provisionDivoSemrushForExistingCompanies(prisma),

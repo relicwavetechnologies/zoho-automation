@@ -13,6 +13,7 @@ import {
 import { GOOGLE_WORKSPACE_SYSTEM_SKILLS } from './google-workspace-system-skills';
 import { LARK_SYSTEM_SKILLS } from './lark-system-skills';
 import { MAIL_OPS_SYSTEM_SKILLS } from './mail-ops-system-skills';
+import { MENHOOD_DATA_SYSTEM_SKILL } from './menhood-data-system-skill';
 import { DIVO_OMS_SITE_DATA_SYSTEM_SKILL } from './oms-site-data-system-skill';
 import { DIVO_LOCAL_PYTHON_SKILL_SLUG } from './divo-local-python-system-skill';
 import { SCHEDULE_DIVO_WORK_SKILL_SLUG } from './scheduled-work-system-skill';
@@ -24,19 +25,20 @@ export const ROUTING_SYSTEM_SKILLS = [
   {
     slug: 'airtable-router',
     name: 'Airtable Router',
-    summary: 'Routes Airtable record, schema, and automation work to the exact specialist.',
+    summary: 'Routes Airtable and synced Menhood data work to the exact specialist.',
     markdown: `# Airtable Router
 
 Choose the exact approved specialist returned by this router.
 
-- Records and comments → \`airtable-core\`.
+- Menhood order, customer, product, RTO, COD, campaign, or pincode analysis that needs joins, aggregates, cohorts, broad filtering, or bulk analysis → \`menhood-data\`. This company-managed source needs no Airtable connection ID and does not use local Python.
+- Ordinary Airtable records, comments, and CRUD → \`airtable-core\`.
 - Bases, tables, fields, schemas, and views → \`airtable-schema-ops\`.
-- Interfaces and automations → \`airtable-automation-ops\`.
+- Interfaces, forms, and automations → \`airtable-automation-ops\`.
 
 Airtable and AITable are different products. Never route an AITable request here.
 This router is instruction-only: loading it successfully means to load one specialist above next.`,
     toolIds: [],
-    tags: ['airtable', 'router', 'records', 'schema', 'automation'],
+    tags: ['airtable', 'menhood', 'router', 'records', 'analytics', 'schema', 'automation'],
     aliases: [
       'airtable',
       'airtable records',
@@ -45,6 +47,16 @@ This router is instruction-only: loading it successfully means to load one speci
       'customer queries',
       'query status',
       'record status counts',
+      'menhood',
+      'company airtable sync',
+      'orders',
+      'customers',
+      'products',
+      'sales analysis',
+      'rto analysis',
+      'cod analysis',
+      'campaign analysis',
+      'pincode analysis',
     ],
     sortOrder: 3,
   },
@@ -251,9 +263,12 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
   },
   {
     routerSlug: 'airtable-router',
-    targetSlugs: CONNECTED_PROVIDER_SYSTEM_SKILLS
-      .filter(skill => skill.slug.startsWith('airtable-'))
-      .map(skill => skill.slug),
+    targetSlugs: [
+      MENHOOD_DATA_SYSTEM_SKILL.slug,
+      ...CONNECTED_PROVIDER_SYSTEM_SKILLS
+        .filter(skill => skill.slug.startsWith('airtable-'))
+        .map(skill => skill.slug),
+    ],
   },
   {
     routerSlug: 'aitable-router',
@@ -306,6 +321,7 @@ export const ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS = [
   DATA_EXPORT_SYSTEM_SKILL,
   DIVO_SEMRUSH_SYSTEM_SKILL,
   DIVO_OMS_SITE_DATA_SYSTEM_SKILL,
+  MENHOOD_DATA_SYSTEM_SKILL,
   ...ROUTING_SYSTEM_SKILLS,
 ]
   .map(skill => skill.slug)

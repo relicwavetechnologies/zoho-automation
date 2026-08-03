@@ -874,6 +874,7 @@ export const createServer = (c: Container): DivoServerApplication => {
         { name: 'knowledge-learning-queue', close: () => c.knowledgeLearningQueue.close() },
         { name: 'manager-teach-queue', close: () => c.managerTeachQueue.close() },
         { name: 'knowledge-review-queue', close: () => c.knowledgeReviewDecisionQueue.close() },
+        { name: 'menhood-query-pool', close: () => c.menhoodQueryService.close() },
       ]);
 
       if (errors.length > 0) {

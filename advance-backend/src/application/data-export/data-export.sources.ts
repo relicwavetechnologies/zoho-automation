@@ -16,6 +16,7 @@ import {
   injectCrmSyntheticFields,
 } from '../../infrastructure/zoho/zoho-crm-schema.cache';
 import type { CompanyOmsSiteDataService } from '../oms/company-oms-site-data.service';
+import type { MenhoodQueryService } from '../menhood/menhood-query.service';
 import type { SemrushService } from '../semrush/semrush.service';
 import {
   type CurrencyConverter,
@@ -33,6 +34,7 @@ type ZohoBooksSource = Extract<DataExportSource, { kind: 'zoho_books' }>;
 type ZohoCrmSource = Extract<DataExportSource, { kind: 'zoho_crm' }>;
 type OmsSnapshotSource = Extract<DataExportSource, { kind: 'oms_snapshot' }>;
 type SemrushSnapshotSource = Extract<DataExportSource, { kind: 'semrush_snapshot' }>;
+type MenhoodQuerySource = Extract<DataExportSource, { kind: 'menhood_query' }>;
 
 const AIRTABLE_REST_KEYS = new Set(['baseId', 'tableId', 'fieldIds']);
 const AIRTABLE_PAGE_LIMIT = 20_000;
@@ -226,6 +228,26 @@ export class ZohoCrmDataExportSource implements DataExportSourceAdapter<ZohoCrmS
         ...(isLast && truncated ? { sourceTruncated: true } : {}),
       };
     }
+  }
+}
+
+export class MenhoodQueryDataExportSource implements DataExportSourceAdapter<MenhoodQuerySource> {
+  readonly kind = 'menhood_query' as const;
+
+  constructor(
+    private readonly service: Pick<MenhoodQueryService, 'streamExportPages'>,
+  ) {}
+
+  async *read(source: MenhoodQuerySource, context: {
+    readonly companyId: string;
+    readonly signal?: AbortSignal;
+  }): AsyncIterable<DataExportPage> {
+    yield* this.service.streamExportPages(
+      context.companyId,
+      source.query,
+      source.queryFingerprint,
+      context.signal,
+    );
   }
 }
 

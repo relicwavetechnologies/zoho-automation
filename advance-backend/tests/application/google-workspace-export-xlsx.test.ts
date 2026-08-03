@@ -165,3 +165,24 @@ it('expands Semrush trends into explicit CSV columns', async t => {
   ].join(','));
   assert.doesNotMatch(lines[0] ?? '', /(^|,)Trends(,|$)/u);
 });
+
+it('does not fall back from an explicitly requested oversized XLSX export', async t => {
+  t.mock.method(google, 'drive', () => ({
+    files: { list: async () => ({ data: { files: [] } }) },
+  }) as any);
+  const sink = new GoogleWorkspaceExportSink();
+  t.mock.method(sink as any, 'createAndUploadCsv', async () => {
+    assert.fail('an explicit XLSX request must never fall back to CSV');
+  });
+
+  await assert.rejects(sink.write({
+    auth: { accessToken: 'token', ownerEmail: 'member@gmail.com' },
+    readerEmail: 'member@gmail.com',
+    exportKey: 'oversized-xlsx',
+    destination: { format: 'xlsx', title: 'Too many Excel rows' },
+    rows: (async function* () {
+      yield Array.from({ length: 5_001 }, (_, index) => ({ index }));
+    })(),
+    sourceTruncated: () => false,
+  }), /Excel export exceeds the 5,000-row/);
+});

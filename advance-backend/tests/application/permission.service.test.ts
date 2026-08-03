@@ -20,6 +20,11 @@ import { asToolId } from '../../src/shared/ids.ts';
 const COMPANY_ID = 'co_test_001';
 const USER_ID    = 'usr_test_001';
 const DEPT_ID    = 'dep_test_001';
+const MENHOOD_ALIAS = {
+  companyId: COMPANY_ID,
+  source: { toolId: 'airtableRecords', action: 'read' },
+  target: { toolId: 'menhoodData', action: 'read' },
+} as const;
 
 const noopLogger: Logger = {
   info:  () => {},
@@ -115,6 +120,57 @@ describe('PermissionService', () => {
   // ── Company-only: MEMBER defaults ─────────────────────────────────────────
 
   describe('company-only resolution (no department)', () => {
+    it('copies the final Airtable read decision to Menhood only for its configured company', async () => {
+      const enabledMenhood: ToolPermissionRepoPort = {
+        getForCompany: async () => ok([
+          { companyId: COMPANY_ID, toolId: 'menhoodData', role: 'MEMBER', enabled: true } as ToolPermissionRow,
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const denyAirtableRead: ToolActionPermissionRepoPort = {
+        getForCompany: async () => ok([
+          { companyId: COMPANY_ID, toolId: 'airtableRecords', role: 'MEMBER', actionGroup: 'read', enabled: false } as ToolActionPermissionRow,
+          { companyId: COMPANY_ID, toolId: 'menhoodData', role: 'MEMBER', actionGroup: 'read', enabled: true } as ToolActionPermissionRow,
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const allowed = await new PermissionServiceImpl(buildDeps({ finalPermissionAliases: [MENHOOD_ALIAS] }))
+        .resolve(baseQuery());
+      const denied = await new PermissionServiceImpl(buildDeps({
+        toolPermRepo: enabledMenhood,
+        toolActionRepo: denyAirtableRead,
+        finalPermissionAliases: [MENHOOD_ALIAS],
+      })).resolve(baseQuery());
+      const otherCompany = await new PermissionServiceImpl(buildDeps({
+        toolPermRepo: enabledMenhood,
+        finalPermissionAliases: [MENHOOD_ALIAS],
+      })).resolve(baseQuery({ companyId: 'co_other' as any }));
+
+      assert.ok(allowed.ok);
+      assert.equal(allowed.value.allowedActionsByTool.get(asToolId('menhoodData'))?.has('read'), true);
+      assert.ok(denied.ok);
+      assert.equal(denied.value.allowedToolIds.has(asToolId('menhoodData')), false);
+      assert.ok(otherCompany.ok);
+      assert.equal(otherCompany.value.allowedToolIds.has(asToolId('menhoodData')), false);
+    });
+
+    it('applies a company admin Airtable floor before copying it to Menhood', async () => {
+      const toolActionRepo: ToolActionPermissionRepoPort = {
+        getForCompany: async () => ok([
+          { companyId: COMPANY_ID, toolId: 'airtableRecords', role: 'COMPANY_ADMIN', actionGroup: 'read', enabled: false } as ToolActionPermissionRow,
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const result = await new PermissionServiceImpl(buildDeps({
+        toolActionRepo,
+        finalPermissionAliases: [MENHOOD_ALIAS],
+      })).resolve(baseQuery({ companyRole: 'COMPANY_ADMIN' as any }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedActionsByTool.get(asToolId('airtableRecords'))?.has('read'), true);
+      assert.equal(result.value.allowedActionsByTool.get(asToolId('menhoodData'))?.has('read'), true);
+    });
+
     it('MEMBER gets default operational tools and NOT larkBase/larkApproval', async () => {
       const svc = new PermissionServiceImpl(buildDeps());
       const result = await svc.resolve(baseQuery({ companyRole: 'MEMBER' as any }));
@@ -370,6 +426,61 @@ describe('PermissionService', () => {
   // ── Department overlay ────────────────────────────────────────────────────
 
   describe('department overlay', () => {
+    it('copies the effective department Airtable decision and ignores independent Menhood rows', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_member_001', toolId: 'airtableRecords', actionGroup: 'read', allowed: true },
+          { departmentId: DEPT_ID, roleId: 'role_member_001', toolId: 'menhoodData', actionGroup: 'read', allowed: false },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+        finalPermissionAliases: [MENHOOD_ALIAS],
+      }));
+      const query = baseQuery({ companyRole: 'MEMBER' as any, departmentId: DEPT_ID as any });
+      const first = await svc.resolve(query);
+      const cached = await svc.resolve(query);
+
+      assert.ok(first.ok);
+      assert.equal(first.value.allowedActionsByTool.get(asToolId('menhoodData'))?.has('read'), true);
+      assert.ok(cached.ok);
+      assert.equal(cached.value.allowedActionsByTool.get(asToolId('menhoodData'))?.has('read'), true);
+    });
+
+    it('copies an Airtable user denial over an independent Menhood allow', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_member_001', toolId: 'airtableRecords', actionGroup: 'read', allowed: true },
+          { departmentId: DEPT_ID, roleId: 'role_member_001', toolId: 'menhoodData', actionGroup: 'read', allowed: true },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const deptUserOverrideRepo: DeptUserOverrideRepoPort = {
+        getForUser: async () => ok([
+          { departmentId: DEPT_ID, userId: USER_ID, toolId: 'airtableRecords', actionGroup: 'read', allowed: false },
+        ]),
+      };
+      const toolPermRepo: ToolPermissionRepoPort = {
+        getForCompany: async () => ok([
+          { companyId: COMPANY_ID, toolId: 'menhoodData', role: 'MEMBER', enabled: true } as ToolPermissionRow,
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const result = await new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+        deptUserOverrideRepo,
+        toolPermRepo,
+        finalPermissionAliases: [MENHOOD_ALIAS],
+      })).resolve(baseQuery({ companyRole: 'MEMBER' as any, departmentId: DEPT_ID as any }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedToolIds.has(asToolId('airtableRecords')), false);
+      assert.equal(result.value.allowedToolIds.has(asToolId('menhoodData')), false);
+    });
+
     it('user not a member of dept returns PermissionError(department_access_denied)', async () => {
       const svc = new PermissionServiceImpl(buildDeps({
         deptRepo: { getMembership: async () => ok(null) },
@@ -769,6 +880,7 @@ describe('PermissionService', () => {
         deptRepo: { getMembership: async () => ok(membershipRow()) },
         deptToolPermRepo: emptyDeptToolPermRepo(),
         deptUserOverrideRepo: emptyUserOverrideRepo(),
+        finalPermissionAliases: [MENHOOD_ALIAS],
       }));
       const result = await svc.resolve(baseQuery({
         companyRole: 'COMPANY_ADMIN' as any,
@@ -783,6 +895,7 @@ describe('PermissionService', () => {
           `${toolId} should be granted to a company admin outright`,
         );
       }
+      assert.equal(result.value.allowedActionsByTool.get(asToolId('menhoodData'))?.has('read'), true);
     });
 
     it('denies Airtable to a department member with no grant, unlike the company admin', async () => {

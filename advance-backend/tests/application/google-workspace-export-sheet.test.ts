@@ -1,5 +1,8 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { google } from 'googleapis';
 import { GoogleWorkspaceExportSink } from '../../src/application/data-export/google-workspace-export.sink.ts';
 
@@ -413,3 +416,148 @@ it('rejects an oversized existing-Sheet export before touching the workbook', as
     /Dataset is too large for the requested Google Sheet/,
   );
 });
+
+it('selects Sheet or CSV for auto only after the final row and cell counts are known', async t => {
+  t.mock.method(google, 'drive', () => ({
+    files: { list: async () => ({ data: { files: [] } }) },
+  }) as any);
+  const selected: string[] = [];
+  const sink = new GoogleWorkspaceExportSink();
+  t.mock.method(sink as any, 'createSheet', async (input: any) => {
+    selected.push(`sheet:${input.rowCount}`);
+    return completion('google_sheet', input.rowCount, input.sourceTruncated);
+  });
+  t.mock.method(sink as any, 'createAndUploadCsv', async (input: any) => {
+    selected.push(`csv:${input.rowCount}`);
+    return completion('csv', input.rowCount, input.sourceTruncated);
+  });
+
+  const rows = Array.from({ length: 5_001 }, (_, index) => ({ id: index + 1 }));
+  await sink.write({
+    auth: { accessToken: 'token', ownerEmail: 'member@gmail.com' },
+    readerEmail: 'member@gmail.com',
+    exportKey: 'auto-sheet',
+    destination: { format: 'auto', title: 'Eligible', columns: ['id'] },
+    rows: (async function* () { yield rows; })(),
+    sourceTruncated: () => false,
+  });
+  await sink.write({
+    auth: { accessToken: 'token', ownerEmail: 'member@gmail.com' },
+    readerEmail: 'member@gmail.com',
+    exportKey: 'auto-csv',
+    destination: {
+      format: 'auto',
+      title: 'Too many cells',
+      columns: Array.from({ length: 400 }, (_, index) => `column_${index}`),
+    },
+    rows: (async function* () { yield rows; })(),
+    sourceTruncated: () => false,
+  });
+  await sink.write({
+    auth: { accessToken: 'token', ownerEmail: 'member@gmail.com' },
+    readerEmail: 'member@gmail.com',
+    exportKey: 'auto-csv-row-limit',
+    destination: { format: 'auto', title: 'Too many Sheet rows', columns: ['id'] },
+    rows: (async function* () {
+      for (let offset = 0; offset < 50_001; offset += 1_000) {
+        const count = Math.min(1_000, 50_001 - offset);
+        yield Array.from({ length: count }, (_, index) => ({ id: offset + index + 1 }));
+      }
+    })(),
+    sourceTruncated: () => false,
+  });
+
+  assert.deepEqual(selected, ['sheet:5001', 'csv:5001', 'csv:50001']);
+});
+
+it('truncates a Menhood spool at its byte boundary and closes the source iterator', async t => {
+  t.mock.method(google, 'drive', () => ({
+    files: { list: async () => ({ data: { files: [] } }) },
+  }) as any);
+  const temporaryDirectoryRoot = await mkdtemp(join(tmpdir(), 'divo-export-test-'));
+  t.after(() => rm(temporaryDirectoryRoot, { recursive: true, force: true }));
+  let iteratorClosed = false;
+  const sink = new GoogleWorkspaceExportSink({
+    menhoodSpoolByteLimit: 32,
+    temporaryDirectoryRoot,
+  });
+  t.mock.method(sink as any, 'createAndUploadCsv', async (input: any) => {
+    assert.equal(input.rowCount, 1);
+    assert.equal(input.sourceTruncated, true);
+    return completion('csv', input.rowCount, input.sourceTruncated);
+  });
+
+  const result = await sink.write({
+    auth: { accessToken: 'token', ownerEmail: 'member@gmail.com' },
+    readerEmail: 'member@gmail.com',
+    exportKey: 'menhood-byte-limit',
+    source: {
+      kind: 'menhood_query',
+      connectionId: 'backend_managed',
+      query: { sql: 'SELECT * FROM menhood_orders' },
+      queryFingerprint: 'a'.repeat(64),
+    },
+    destination: { format: 'csv', title: 'Menhood orders' },
+    rows: (async function* () {
+      try {
+        yield [{ value: 'ok' }, { value: 'x'.repeat(100) }];
+      } finally {
+        iteratorClosed = true;
+      }
+    })(),
+    sourceTruncated: () => false,
+  });
+
+  assert.equal(result.rowCount, 1);
+  assert.equal(result.sourceTruncated, true);
+  assert.equal(iteratorClosed, true);
+  assert.deepEqual(await readdir(temporaryDirectoryRoot), []);
+});
+
+it('closes the source and removes its spool when cancellation interrupts reading', async t => {
+  t.mock.method(google, 'drive', () => ({
+    files: { list: async () => ({ data: { files: [] } }) },
+  }) as any);
+  const temporaryDirectoryRoot = await mkdtemp(join(tmpdir(), 'divo-export-cancel-test-'));
+  t.after(() => rm(temporaryDirectoryRoot, { recursive: true, force: true }));
+  const controller = new AbortController();
+  let iteratorClosed = false;
+
+  await assert.rejects(new GoogleWorkspaceExportSink({ temporaryDirectoryRoot }).write({
+    auth: { accessToken: 'token', ownerEmail: 'member@gmail.com' },
+    readerEmail: 'member@gmail.com',
+    exportKey: 'cancelled-spool',
+    destination: { format: 'csv', title: 'Cancelled' },
+    rows: (async function* () {
+      try {
+        yield [{ value: 'written' }];
+        controller.abort();
+        yield [{ value: 'must not be written' }];
+      } finally {
+        iteratorClosed = true;
+      }
+    })(),
+    sourceTruncated: () => false,
+    signal: controller.signal,
+  }), error => error instanceof Error && error.name === 'AbortError');
+
+  assert.equal(iteratorClosed, true);
+  assert.deepEqual(await readdir(temporaryDirectoryRoot), []);
+});
+
+function completion(
+  artifactType: 'google_sheet' | 'csv',
+  rowCount: number,
+  sourceTruncated: boolean,
+) {
+  return {
+    success: true as const,
+    artifactId: `artifact-${artifactType}`,
+    artifactUrl: `https://example.com/${artifactType}`,
+    artifactType,
+    rowCount,
+    sourceTruncated,
+    sharedWith: 'member@gmail.com (owner)',
+    verified: true as const,
+  };
+}

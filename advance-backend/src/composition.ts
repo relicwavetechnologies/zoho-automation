@@ -77,6 +77,7 @@ import { CompanySerperConnectionRepository } from './infrastructure/persistence/
 import { CompanySerperService } from './application/web-search/company-serper.service';
 import { SemrushClient } from './infrastructure/semrush/semrush.client';
 import { SemrushService } from './application/semrush/semrush.service';
+import { MenhoodQueryService } from './application/menhood/menhood-query.service';
 import { CompanyOmsConnectionRepository } from './infrastructure/persistence/company-oms-connection.repository';
 import { OmsSiteDataClient } from './infrastructure/oms/oms-site-data.client';
 import { CompanyOmsSiteDataService } from './application/oms/company-oms-site-data.service';
@@ -136,6 +137,7 @@ import { GoogleDriveXlsxConversionAdapter } from './infrastructure/google/google
 import { DatasetSourceRegistry } from './application/data-export/data-export.source-registry';
 import {
   AirtableDataExportSource,
+  MenhoodQueryDataExportSource,
   OmsSnapshotDataExportSource,
   SemrushSnapshotDataExportSource,
   ZohoBooksDataExportSource,
@@ -250,6 +252,7 @@ import {
 } from './application/tools/families/mail-automations.tool';
 import { createSemrushTool } from './application/tools/families/semrush.tool';
 import { createOmsSiteDataTool } from './application/tools/families/oms-site-data.tool';
+import { createMenhoodDataTool } from './application/tools/families/menhood-data.tool';
 import { ScheduledLarkDmChannelAdapter } from './infrastructure/channels/lark/scheduled-lark-dm.adapter';
 import { LarkMessagingClient } from './infrastructure/channels/lark/clients/lark-messaging.client';
 import { ToolExecutor } from './application/gateway/tool-executor';
@@ -334,6 +337,7 @@ export interface Container {
   companySerperConnectionRepo: CompanySerperConnectionRepository;
   companySerperService: CompanySerperService;
   semrushService: SemrushService;
+  menhoodQueryService: MenhoodQueryService;
   companyOmsConnectionRepo: CompanyOmsConnectionRepository;
   companyOmsSiteDataService: CompanyOmsSiteDataService;
   zohoTokenService: ZohoTokenService;
@@ -450,6 +454,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ service: 'execution-query' }),
   });
   const auditService       = new AuditService(prisma, logger.child({ service: 'audit' }));
+  const menhoodQueryService = new MenhoodQueryService(env);
   const tokenUsageService  = new TokenUsageService(prisma, logger.child({ service: 'token-usage' }));
   const proxyKeyStore = new ProxyKeyStore({
     prisma,
@@ -494,6 +499,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     deptUserOverrideRepo,
     cache,
     logger: logger.child({ service: 'permissions' }),
+    finalPermissionAliases: [{
+      companyId: env.MENHOOD_COMPANY_ID,
+      source: { toolId: 'airtableRecords', action: 'read' },
+      target: { toolId: 'menhoodData', action: 'read' },
+    }],
   });
 
 
@@ -1531,6 +1541,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   dataExportSources.register(new ZohoCrmDataExportSource(zohoPaginatedCrmClient));
   dataExportSources.register(new OmsSnapshotDataExportSource(companyOmsSiteDataService));
   dataExportSources.register(new SemrushSnapshotDataExportSource(semrushService));
+  dataExportSources.register(new MenhoodQueryDataExportSource(menhoodQueryService));
   const googleWorkspaceExportSink = new GoogleWorkspaceExportSink();
 
   const zohoFinanceOps = new ZohoFinanceOps(
@@ -1879,6 +1890,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   }));
   toolRegistry.register(createOmsSiteDataTool({
     service: companyOmsSiteDataService,
+    offers: dataExportOfferService,
+    audit: auditService,
+  }));
+  toolRegistry.register(createMenhoodDataTool({
+    service: menhoodQueryService,
     offers: dataExportOfferService,
     audit: auditService,
   }));
@@ -2458,6 +2474,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     companySerperConnectionRepo,
     companySerperService,
     semrushService,
+    menhoodQueryService,
     companyOmsConnectionRepo,
     companyOmsSiteDataService,
     zohoConnectionRepo,

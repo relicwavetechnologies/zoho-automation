@@ -205,7 +205,7 @@ export class DesktopToolAccessService {
           ? [{ kind: 'department' as const, department: { id: membership.departmentId, name: membership.department.name }, allowedActions: [...(result.value.allowedActionsByTool.get(tool.toolId as any) ?? [])] }]
           : [],
       );
-      const managementScopes = [
+      const managementScopes = policy.kind === 'inherited' ? [] : [
         ...(canManageGlobal ? [{ kind: 'global' as const, label: 'Global' as const }] : []),
         ...manageableDepartments.map(department => ({ kind: 'department' as const, department })),
       ];

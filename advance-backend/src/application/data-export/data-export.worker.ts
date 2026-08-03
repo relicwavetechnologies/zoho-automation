@@ -22,10 +22,14 @@ import type {
   DataExportCompletion,
   DataExportJobPayload,
 } from './data-export.types';
+import { datasetSourceToolId } from './data-export.types';
 import {
-  DATA_EXPORT_ROW_LIMIT,
-  datasetSourceToolId,
-} from './data-export.types';
+  DATA_EXPORT_GENERIC_SPOOL_BYTE_LIMIT,
+  DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT,
+  DATA_EXPORT_MENHOOD_SPOOL_MB_LIMIT,
+  DATA_EXPORT_XLSX_CELL_LIMIT,
+  dataExportRowLimitForFormat,
+} from './data-export-limits';
 import type {
   DataExportDestinationSink,
   GoogleExportAuth,
@@ -121,7 +125,13 @@ export class DataExportWorker {
         });
         continuityAvailable = false;
       }
-      await this.deliverCompletion(job, completion, progressMessageId, continuityAvailable);
+      await this.deliverCompletion(
+        job,
+        payload,
+        completion,
+        progressMessageId,
+        continuityAvailable,
+      );
     } catch (error) {
       const finalAttempt = isUnrecoverableJobError(error)
         || job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
@@ -233,12 +243,13 @@ export class DataExportWorker {
     const adapter = this.deps.sources.resolve(payload.source);
     const sandbox = new DataExportTransformSandbox(payload.transform);
     touch();
-    const maxRows = resolvedExportRowLimit(this.deps.maxRows);
+    const maxRows = resolvedExportRowLimit(payload, this.deps.maxRows);
     let sourceTruncated = false;
     let inputIndex = 0;
     let outputIndex = 0;
     let pageCount = 0;
     let lastTrackerUpdateAt = 0;
+    let limitNeedsProbe = false;
     const updateProgressTracker = this.updateProgressTracker.bind(this);
     const transformedPages = (async function* () {
       for await (const page of adapter.read(payload.source, {
@@ -248,6 +259,10 @@ export class DataExportWorker {
       })) {
         touch();
         sourceTruncated ||= page.sourceTruncated === true;
+        if (limitNeedsProbe) {
+          sourceTruncated ||= page.rows.length > 0 || page.hasMore === true;
+          break;
+        }
         const remainingInput = maxRows - inputIndex;
         const inputRows = page.rows.slice(0, remainingInput);
         const transformed = await sandbox.transformPage(inputRows, inputIndex);
@@ -255,9 +270,10 @@ export class DataExportWorker {
         const remainingOutput = maxRows - outputIndex;
         const outputRows = transformed.slice(0, remainingOutput);
         outputIndex += outputRows.length;
-        sourceTruncated ||= page.rows.length > inputRows.length
-          || transformed.length > outputRows.length
-          || (inputIndex >= maxRows && page.hasMore === true);
+        const limitReached = inputIndex >= maxRows || outputIndex >= maxRows;
+        const omittedRows = page.rows.length > inputRows.length
+          || transformed.length > outputRows.length;
+        sourceTruncated ||= omittedRows || (limitReached && page.hasMore === true);
         pageCount += 1;
         if (pageCount === 1 || pageCount % 10 === 0) {
           const progress = {
@@ -270,7 +286,8 @@ export class DataExportWorker {
           lastTrackerUpdateAt = Date.now();
         }
         if (outputRows.length > 0) yield outputRows;
-        if (inputIndex >= maxRows || outputIndex >= maxRows) break;
+        if (omittedRows || (limitReached && page.hasMore !== undefined)) break;
+        limitNeedsProbe = limitReached;
       }
       const progress = {
         stage: 'writing',
@@ -338,12 +355,13 @@ export class DataExportWorker {
 
   private async deliverCompletion(
     job: DataExportWorkerJob,
+    payload: DataExportJobPayload,
     completion: DataExportCompletion,
     progressMessageId: string,
     continuityAvailable = true,
   ): Promise<void> {
     const warning = completion.sourceTruncated
-      ? `\n\n⚠️ Current exports are capped at ${resolvedExportRowLimit(this.deps.maxRows).toLocaleString('en-IN')} rows. Additional source rows were not included.`
+      ? `\n\n⚠️ ${truncationWarning(payload, this.deps.maxRows)}`
       : '';
     const card = buildFinalCard({
       markdown: [
@@ -446,6 +464,27 @@ function normalizedEmail(value: string | undefined): string | null {
   return email && /^[^@\s]+@[^@\s]+$/.test(email) ? email : null;
 }
 
-function resolvedExportRowLimit(value: number | undefined): number {
-  return Math.max(1, Math.floor(value ?? DATA_EXPORT_ROW_LIMIT));
+function resolvedExportRowLimit(
+  payload: DataExportJobPayload,
+  override: number | undefined,
+): number {
+  return Math.max(
+    1,
+    Math.floor(override ?? dataExportRowLimitForFormat(payload.destination.format)),
+  );
+}
+
+function truncationWarning(payload: DataExportJobPayload, override: number | undefined): string {
+  const limits = [
+    `${resolvedExportRowLimit(payload, override).toLocaleString('en-IN')} rows`,
+  ];
+  if (payload.destination.format === 'xlsx') {
+    limits.push(`${DATA_EXPORT_XLSX_CELL_LIMIT.toLocaleString('en-IN')} cells`);
+  } else if (payload.destination.format === 'google_sheet') {
+    limits.push(`${DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT.toLocaleString('en-IN')} cells`);
+  }
+  limits.push(payload.source.kind === 'menhood_query'
+    ? `${DATA_EXPORT_MENHOOD_SPOOL_MB_LIMIT} MB spool`
+    : `${DATA_EXPORT_GENERIC_SPOOL_BYTE_LIMIT / (1_024 * 1_024 * 1_024)} GiB spool`);
+  return `The source/provider or an applicable safety limit truncated this export. Limits for this request: ${limits.join(', ')}.`;
 }

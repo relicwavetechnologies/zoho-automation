@@ -62,6 +62,12 @@ export function parseDataExportOfferPayload(value: unknown): DataExportOfferPayl
         connectionId: parsed.source.connectionId,
         args: parsed.source.args,
       }
+    : parsed.source.kind === 'menhood_query' ? {
+        kind: parsed.source.kind,
+        connectionId: parsed.source.connectionId,
+        query: parsed.source.query,
+        queryFingerprint: parsed.source.queryFingerprint,
+      }
     : {
         kind: parsed.source.kind,
         connectionId: parsed.source.connectionId,

@@ -6,10 +6,17 @@ import { asToolId } from '../../../shared/ids';
 import type { ToolActionGroup } from '../../../domain/permissions/tool-action-group';
 import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
 import {
-  DATA_EXPORT_ROW_LIMIT,
   directDatasetSourceSchema,
   datasetSourceToolId,
 } from '../../data-export/data-export.types';
+import {
+  DATA_EXPORT_CSV_ROW_LIMIT,
+  DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT,
+  DATA_EXPORT_GOOGLE_SHEET_ROW_LIMIT,
+  DATA_EXPORT_XLSX_CELL_LIMIT,
+  DATA_EXPORT_XLSX_ROW_LIMIT,
+  dataExportRowLimitForFormat,
+} from '../../data-export/data-export-limits';
 import {
   dataExportDestinationSchema,
   dataExportTransformSchema,
@@ -47,9 +54,9 @@ export function createDataExportTool(deps: {
     argsSchema: Schema,
     resultSchema: ResultSchema,
     description:
-      `Directly export up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} Airtable or Zoho Books rows through Divo's governed, queued pipeline. Provider offers are confirmed only by Divo's verified Lark card and are outside this schema. Source pages and sandboxed transforms stay server-side; only a verified invoker-only Google Sheet, Excel file, or Drive CSV is returned.`,
+      `Directly export up to ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} Airtable or Zoho Books rows through Divo's governed, queued pipeline. Provider offers are confirmed only by Divo's verified Lark card and are outside this schema. Source pages and sandboxed transforms stay server-side; only a verified invoker-only Google Sheet, Excel file, or Drive CSV is returned.`,
     parameterDocs: [
-      `Use this for large tabular results. The current hard cap is ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows. If the user requests more or every row, disclose the cap and never call the result complete.`,
+      `Format limits: Excel ${DATA_EXPORT_XLSX_ROW_LIMIT.toLocaleString('en-IN')} rows/${DATA_EXPORT_XLSX_CELL_LIMIT.toLocaleString('en-IN')} cells; Google Sheets ${DATA_EXPORT_GOOGLE_SHEET_ROW_LIMIT.toLocaleString('en-IN')} rows/${DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT.toLocaleString('en-IN')} cells; CSV/auto ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} rows. If the user requests more or every row, disclose the applicable cap and never call a truncated result complete.`,
       'Provider offer confirmation is not part of this agent-callable schema. When a source preview returns preview.exportOfferId, finish the answer; Divo\'s verified Lark card owns format, eligible-account selection, queueing, and connect-and-resume.',
       'source.kind: airtable_records or zoho_books. Always use the exact source connection UUID.',
       'transform.script: optional JavaScript function body. It receives row, index, and args. Return an object, an array of objects, or null to filter.',
@@ -137,7 +144,7 @@ export function createDataExportTool(deps: {
           success: true,
           exportQueued: true,
           exportJobId,
-          message: `Governed data export queued with the current ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')}-row cap. The verified private Google artifact will be delivered to this Lark chat.`,
+          message: `Governed data export queued with the ${dataExportRowLimitForFormat(args.destination.format).toLocaleString('en-IN')}-row limit for ${args.destination.format}. The verified private Google artifact will be delivered to this Lark chat.`,
         });
       } catch (cause) {
         return err(new ToolError({

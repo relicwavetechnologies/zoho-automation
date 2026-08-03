@@ -3,12 +3,19 @@ import {
   provisionDivoProductivitySystemSkill,
   type DivoProductivitySystemSkillDefinition,
 } from './divo-productivity-system-skills';
-import { DATA_EXPORT_ROW_LIMIT } from '../data-export/data-export.types';
+import {
+  DATA_EXPORT_CSV_ROW_LIMIT,
+  DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT,
+  DATA_EXPORT_GOOGLE_SHEET_ROW_LIMIT,
+  DATA_EXPORT_MENHOOD_SPOOL_MB_LIMIT,
+  DATA_EXPORT_XLSX_CELL_LIMIT,
+  DATA_EXPORT_XLSX_ROW_LIMIT,
+} from '../data-export/data-export-limits';
 
 export const DATA_EXPORT_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = {
   slug: 'secure-data-export',
   name: 'Secure Data Export',
-  summary: `Export up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} Airtable or Zoho Books rows from an exact governed source recipe without putting rows in model context; verified Lark cards own provider offers.`,
+  summary: `Export up to ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} governed source rows without putting them in model context; verified Lark cards own provider offers.`,
   markdown: `# Secure Data Export
 
 In Lark, a source result containing \`preview.exportOfferId\` already creates
@@ -24,7 +31,7 @@ and the exact backend-resolved source identifiers are already available. Never
 construct provider identifiers, filters, account ownership, or rows from the
 conversation.
 
-The current system cap is ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows per export. If the user asks for more or for every row, state this limit clearly. Never claim that a capped artifact is complete; the completion card will say when additional source rows were omitted.
+Format limits are explicit: Excel ${DATA_EXPORT_XLSX_ROW_LIMIT.toLocaleString('en-IN')} rows/${DATA_EXPORT_XLSX_CELL_LIMIT.toLocaleString('en-IN')} cells, Google Sheets ${DATA_EXPORT_GOOGLE_SHEET_ROW_LIMIT.toLocaleString('en-IN')} rows/${DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT.toLocaleString('en-IN')} cells, and CSV/auto ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} rows. Menhood also stops before its spool exceeds ${DATA_EXPORT_MENHOOD_SPOOL_MB_LIMIT} MB. If the user asks for more or every row, state the applicable limit. Never claim that a capped artifact is complete; the completion card says when source rows were omitted.
 
 1. Keep a provider offer opaque and let Divo's Lark card complete it; never
    reconstruct its query, pagination, filters, account, or rows.

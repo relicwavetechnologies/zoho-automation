@@ -15,7 +15,7 @@ const positiveNum = (def: number) =>
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
-const EnvSchema = z.object({
+export const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT:     z.coerce.number().int().min(1).max(65535).default(8000),
 
@@ -42,6 +42,20 @@ const EnvSchema = z.object({
   REDIS_QUEUE_URL:  z.string().default(''),
   REDIS_CACHE_URL:  z.string().default(''),
   REDIS_MEMORY_URL: z.string().default(''),
+
+  // ── Menhood company reporting database ─────────────────────────────────
+  // One backend-managed, read-only company source. It never appears in the
+  // Airtable connection picker and its credential never leaves the backend.
+  MENHOOD_ENABLED:     booleanStr.default('false'),
+  MENHOOD_DB_HOST:     z.string().default(''),
+  MENHOOD_DB_PORT:     z.coerce.number().int().min(1).max(65_535).default(25_432),
+  MENHOOD_DB_NAME:     z.string().default(''),
+  MENHOOD_DB_USER:     z.string().default(''),
+  MENHOOD_DB_PASSWORD: z.string().default(''),
+  MENHOOD_COMPANY_ID:  z.string().default(''),
+  MENHOOD_DB_SSL_MODE: z.literal('require').default('require'),
+  MENHOOD_DB_SSL_CA_BASE64: z.string().default(''),
+  MENHOOD_DB_SSL_SERVER_NAME: z.string().regex(/^[A-Za-z0-9.-]*$/).default(''),
 
   // ── Logging ───────────────────────────────────────────────────────────────
   LOG_LEVEL:              z.enum(['debug', 'info', 'warn', 'error']).default('info'),
@@ -343,6 +357,35 @@ const EnvSchema = z.object({
   KNOWLEDGE_LEARNING_IMMEDIATE_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.9),
   KNOWLEDGE_LEARNING_REPEATED_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.75),
   KNOWLEDGE_LEARNING_REPEATED_EVIDENCE_COUNT: z.coerce.number().int().min(2).max(10).default(3),
+}).superRefine((env, ctx) => {
+  if (!env.MENHOOD_ENABLED) return;
+  const required = [
+    'MENHOOD_DB_HOST',
+    'MENHOOD_DB_NAME',
+    'MENHOOD_DB_USER',
+    'MENHOOD_DB_PASSWORD',
+    'MENHOOD_COMPANY_ID',
+    'MENHOOD_DB_SSL_CA_BASE64',
+    'MENHOOD_DB_SSL_SERVER_NAME',
+  ] as const;
+  for (const field of required) {
+    if (!env[field].trim()) {
+      ctx.addIssue({ code: 'custom', path: [field], message: `${field} is required when Menhood is enabled` });
+    }
+  }
+  if (env.MENHOOD_COMPANY_ID && !z.string().uuid().safeParse(env.MENHOOD_COMPANY_ID).success) {
+    ctx.addIssue({ code: 'custom', path: ['MENHOOD_COMPANY_ID'], message: 'MENHOOD_COMPANY_ID must be a UUID' });
+  }
+  if (env.MENHOOD_DB_SSL_CA_BASE64) {
+    const certificate = Buffer.from(env.MENHOOD_DB_SSL_CA_BASE64, 'base64').toString('utf8');
+    if (!certificate.includes('-----BEGIN CERTIFICATE-----') || !certificate.includes('-----END CERTIFICATE-----')) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['MENHOOD_DB_SSL_CA_BASE64'],
+        message: 'MENHOOD_DB_SSL_CA_BASE64 must contain a base64-encoded PEM certificate',
+      });
+    }
+  }
 });
 
 export type TypedEnv = z.infer<typeof EnvSchema>;

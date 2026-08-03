@@ -20,6 +20,7 @@ import { provisionDataExportSystemSkill } from '../../application/skills/data-ex
 import { provisionFilesAndDocumentsSystemSkills } from '../../application/skills/files-and-documents-system-skills';
 import { provisionMailOpsSystemSkills } from '../../application/skills/mail-ops-system-skills';
 import { provisionSystemSkillRoutes } from '../../application/skills/system-skill-routes';
+import { provisionMenhoodDataSystemSkill } from '../../application/skills/menhood-data-system-skill';
 
 type AdminRole = 'SUPER_ADMIN' | 'COMPANY_ADMIN' | 'DEPARTMENT_MANAGER';
 
@@ -410,6 +411,7 @@ export const createAdminAuthRoutes = (deps: AdminAuthRouteDeps): Router => {
         await provisionLarkSystemSkills(tx, company.id);
         await provisionGoogleWorkspaceSystemSkills(tx, company.id);
         await provisionConnectedProviderSystemSkills(tx, company.id);
+        await provisionMenhoodDataSystemSkill(tx, company.id);
         await provisionDataExportSystemSkill(tx, company.id);
         await provisionFilesAndDocumentsSystemSkills(tx, company.id);
         await provisionScheduleDivoWorkSystemSkill(tx, company.id);

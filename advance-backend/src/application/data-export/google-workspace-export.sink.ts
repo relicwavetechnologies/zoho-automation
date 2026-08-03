@@ -20,14 +20,17 @@ import {
   type DataExportPresentation,
 } from './data-export-presentation';
 import { writeXlsxArtifact } from './xlsx-export-file';
+import {
+  DATA_EXPORT_CSV_ROW_LIMIT,
+  DATA_EXPORT_GENERIC_SPOOL_BYTE_LIMIT,
+  DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT,
+  DATA_EXPORT_GOOGLE_SHEET_ROW_LIMIT,
+  DATA_EXPORT_MENHOOD_SPOOL_BYTE_LIMIT,
+} from './data-export-limits';
 
 const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-const SHEET_ROW_LIMIT = 50_000;
-const SHEET_CELL_LIMIT = 2_000_000;
 const SHEET_APPEND_ROWS = 500;
-const MAX_EXPORT_ROWS = 1_000_000;
-const MAX_SPOOL_BYTES = 1_024 * 1024 * 1_024;
 const EXPORT_KEY_PROPERTY = 'divoExportKey';
 const EXPORT_STATE_PROPERTY = 'divoExportState';
 const EXPORT_ROW_COUNT_PROPERTY = 'divoExportRowCount';
@@ -35,6 +38,11 @@ const EXPORT_TRUNCATED_PROPERTY = 'divoExportTruncated';
 const EXPORT_TYPE_PROPERTY = 'divoExportType';
 
 export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
+  constructor(private readonly options: {
+    readonly menhoodSpoolByteLimit?: number;
+    readonly temporaryDirectoryRoot?: string;
+  } = {}) {}
+
   async write(input: DataExportDestinationWriteInput): Promise<DataExportCompletion> {
     const existingSheet = input.destination.target?.kind === 'existing_google_sheet'
       ? input.destination.target
@@ -51,7 +59,10 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       if (recovered) return recovered;
     }
 
-    const tempDirectory = await mkdtemp(join(tmpdir(), 'divo-export-'));
+    const tempDirectory = await mkdtemp(join(
+      this.options.temporaryDirectoryRoot ?? tmpdir(),
+      'divo-export-',
+    ));
     const rowsPath = join(tempDirectory, 'rows.ndjson');
     const csvPath = join(tempDirectory, 'export.csv');
     const xlsxPath = join(tempDirectory, 'export.xlsx');
@@ -62,18 +73,32 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
     const discoveredColumns = new Set<string>(configuredColumns ?? []);
     let rowCount = 0;
     let spooledBytes = 0;
+    let spoolTruncated = false;
+    const spoolByteLimit = input.source?.kind === 'menhood_query'
+      ? this.options.menhoodSpoolByteLimit ?? DATA_EXPORT_MENHOOD_SPOOL_BYTE_LIMIT
+      : DATA_EXPORT_GENERIC_SPOOL_BYTE_LIMIT;
 
     try {
-      for await (const page of input.rows) {
+      spoolPages: for await (const page of input.rows) {
         input.signal?.throwIfAborted();
         for (const row of page) {
-          if (!configuredColumns) {
-            for (const column of Object.keys(row)) discoveredColumns.add(column);
-          }
           const line = JSON.stringify(row);
           const lineBytes = Buffer.byteLength(line, 'utf8') + 2;
-          if (rowCount >= MAX_EXPORT_ROWS || spooledBytes + lineBytes > MAX_SPOOL_BYTES) {
+          if (
+            input.source?.kind === 'menhood_query'
+            && spooledBytes + lineBytes > spoolByteLimit
+          ) {
+            spoolTruncated = true;
+            break spoolPages;
+          }
+          if (
+            rowCount >= DATA_EXPORT_CSV_ROW_LIMIT
+            || spooledBytes + lineBytes > spoolByteLimit
+          ) {
             throw new Error('Data export exceeds the 1,000,000-row or 1 GB safety ceiling');
+          }
+          if (!configuredColumns) {
+            for (const column of Object.keys(row)) discoveredColumns.add(column);
           }
           await writeLine(rowStream, line);
           spooledBytes += lineBytes;
@@ -86,8 +111,9 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       const columns = [...discoveredColumns];
       const sheetEligible = input.destination.format !== 'csv'
         && input.destination.format !== 'xlsx'
-        && rowCount <= SHEET_ROW_LIMIT
-        && rowCount * Math.max(1, columns.length) <= SHEET_CELL_LIMIT;
+        && rowCount <= DATA_EXPORT_GOOGLE_SHEET_ROW_LIMIT
+        && rowCount * Math.max(1, columns.length) <= DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT;
+      const sourceTruncated = input.sourceTruncated() || spoolTruncated;
       let format: 'google_sheet' | 'csv' | 'xlsx';
       if (existingSheet) format = 'google_sheet';
       else if (input.destination.format === 'xlsx') format = 'xlsx';
@@ -107,7 +133,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
             columns,
             rowsPath,
             rowCount,
-            sourceTruncated: input.sourceTruncated(),
+            sourceTruncated,
             ...(input.signal ? { signal: input.signal } : {}),
             ...(input.onProgress ? { onProgress: input.onProgress } : {}),
           })
@@ -121,7 +147,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
             columns,
             rowsPath,
             rowCount,
-            sourceTruncated: input.sourceTruncated(),
+            sourceTruncated,
             ...(input.signal ? { signal: input.signal } : {}),
             ...(input.onProgress ? { onProgress: input.onProgress } : {}),
           })
@@ -136,7 +162,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
               xlsxPath,
               columns,
               rowCount,
-              sourceTruncated: input.sourceTruncated(),
+              sourceTruncated,
               ...(input.signal ? { signal: input.signal } : {}),
               ...(input.onProgress ? { onProgress: input.onProgress } : {}),
             })
@@ -150,7 +176,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
             csvPath,
             columns,
             rowCount,
-            sourceTruncated: input.sourceTruncated(),
+            sourceTruncated,
             ...(input.signal ? { signal: input.signal } : {}),
             ...(input.onProgress ? { onProgress: input.onProgress } : {}),
           });

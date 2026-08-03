@@ -3,11 +3,17 @@ import assert from 'node:assert/strict';
 import { DataExportOfferService } from '../../src/application/data-export/data-export-offer.service.ts';
 import {
   DATA_EXPORT_OFFER_TTL_MS,
+  parseDataExportOfferPayload,
   type DataExportOfferPayload,
   type DataExportOfferRecord,
   type DataExportOfferRepositoryPort,
 } from '../../src/application/data-export/export-offer.ts';
-import type { DataExportJobPayload } from '../../src/application/data-export/data-export.types.ts';
+import {
+  datasetSourceSchema,
+  datasetSourceToolId,
+  directDatasetSourceSchema,
+  type DataExportJobPayload,
+} from '../../src/application/data-export/data-export.types.ts';
 import { DataExportOfferRepository } from '../../src/infrastructure/persistence/data-export-offer.repository.ts';
 import { ok } from '../../src/shared/result.ts';
 import { asToolId } from '../../src/shared/ids.ts';
@@ -78,6 +84,53 @@ const confirmationDeps = {
     },
   }),
 };
+
+describe('Menhood export offer source', () => {
+  const menhoodPayload = {
+    ...payload,
+    source: {
+      kind: 'menhood_query' as const,
+      connectionId: 'backend_managed' as const,
+      query: {
+        sql: 'SELECT * FROM menhood_orders WHERE customer_id = $1',
+        parameters: ['customer-1'],
+        exportTitle: 'Customer orders',
+      },
+      queryFingerprint: 'a'.repeat(64),
+    },
+  };
+
+  it('preserves the replay recipe and maps it to Menhood read authority', () => {
+    const parsed = parseDataExportOfferPayload(menhoodPayload);
+
+    assert.deepEqual(parsed.source, menhoodPayload.source);
+    assert.equal(datasetSourceToolId(parsed.source), 'menhoodData');
+    assert.equal(directDatasetSourceSchema.safeParse(parsed.source).success, false);
+    assert.notEqual(dataExportSpecHash(parsed), dataExportSpecHash({
+      ...parsed,
+      source: { ...parsed.source, queryFingerprint: 'b'.repeat(64) },
+    }));
+    assert.equal(dataExportJobId(parsed), dataExportJobId({
+      ...parsed,
+      source: { ...parsed.source, queryFingerprint: 'b'.repeat(64) },
+    }));
+  });
+
+  it('rejects tampered fingerprints, preview rows, and unbounded titles', () => {
+    assert.equal(datasetSourceSchema.safeParse({
+      ...menhoodPayload.source,
+      queryFingerprint: 'not-a-fingerprint',
+    }).success, false);
+    assert.equal(datasetSourceSchema.safeParse({
+      ...menhoodPayload.source,
+      previewRows: [{ id: 'must-not-persist' }],
+    }).success, false);
+    assert.equal(datasetSourceSchema.safeParse({
+      ...menhoodPayload.source,
+      query: { ...menhoodPayload.source.query, exportTitle: 'x'.repeat(121) },
+    }).success, false);
+  });
+});
 
 const unusedLoad: DataExportOfferRepositoryPort['loadForConfirmation'] = async () =>
   ok({ outcome: 'not_found' });

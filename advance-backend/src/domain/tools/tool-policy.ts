@@ -6,12 +6,16 @@ import { CANONICAL_TOOL_IDS, TOOL_SUPPORTED_ACTIONS, type CanonicalToolId } from
  */
 export type DesktopToolPolicy =
   | { readonly kind: 'configurable'; readonly supportedActions: readonly string[] }
+  | { readonly kind: 'inherited'; readonly supportedActions: readonly string[]; readonly reason: string }
   | { readonly kind: 'local'; readonly reason: string }
   | { readonly kind: 'system'; readonly supportedActions: readonly ['read']; readonly reason: string };
 
 export function getDesktopToolPolicy(toolId: string): DesktopToolPolicy | null {
   if (toolId === 'runCommand') {
     return { kind: 'local', reason: 'Runs on this terminal and is approved locally for each command.' };
+  }
+  if (toolId === 'menhoodData') {
+    return { kind: 'inherited', supportedActions: ['read'], reason: 'Access follows Airtable Records.' };
   }
   // omsSiteData was classified 'system' here, which made every write path
   // reject it outright — a company admin could not grant it to a department
@@ -25,10 +29,10 @@ export function getDesktopToolPolicy(toolId: string): DesktopToolPolicy | null {
 }
 
 
-/** Fixed Local/System tools have no persistent company or department policy rows. */
+/** Inherited, Local, and System tools have no persistent company or department policy rows. */
 export function isFixedToolPolicy(toolId: string): boolean {
   const policy = getDesktopToolPolicy(toolId);
-  return policy?.kind === 'local' || policy?.kind === 'system';
+  return policy?.kind === 'inherited' || policy?.kind === 'local' || policy?.kind === 'system';
 }
 
 /**

@@ -17,6 +17,7 @@ export const TOOL_FAMILY_IDS = [
   'scheduling',
   'semrush',
   'oms',
+  'menhood',
 ] as const;
 
 export type ToolFamily = typeof TOOL_FAMILY_IDS[number];
@@ -58,6 +59,7 @@ export const TOOL_FAMILY_DEFINITIONS: Record<ToolFamily, ToolFamilyDefinition> =
   scheduling: { displayName: 'Scheduled work', connectionMode: 'none', skillMode: 'required', routingAliases: [] },
   semrush:    { displayName: 'Semrush', connectionMode: 'backend_managed', skillMode: 'optional', routingAliases: ['semrush'] },
   oms:        { displayName: 'OMS', connectionMode: 'backend_managed', skillMode: 'optional', routingAliases: ['oms'] },
+  menhood:    { displayName: 'Menhood', connectionMode: 'backend_managed', skillMode: 'optional', routingAliases: ['menhood'] },
 };
 
 export function isToolFamily(value: string): value is ToolFamily {
@@ -101,6 +103,12 @@ const ADMIN_ONLY: BuiltInRoleDefaults = {
   MEMBER: false,
   COMPANY_ADMIN: true,
   SUPER_ADMIN: true,
+};
+
+const DENY_ALL: BuiltInRoleDefaults = {
+  MEMBER: false,
+  COMPANY_ADMIN: false,
+  SUPER_ADMIN: false,
 };
 
 function defineCapability<const Family extends ToolFamily, const Actions extends readonly string[]>(
@@ -172,6 +180,7 @@ export const TOOL_CAPABILITY_DEFINITIONS = {
   // policy keeps both tools unavailable until explicitly granted.
   semrush:     defineCapability('semrush', ['read']),
   omsSiteData: defineCapability('oms', ['read']),
+  menhoodData: defineCapability('menhood', ['read'], DENY_ALL),
 } as const;
 
 export type CanonicalToolId = keyof typeof TOOL_CAPABILITY_DEFINITIONS;

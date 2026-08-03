@@ -61,6 +61,7 @@ export const TOOL_LABELS: Readonly<Record<CanonicalToolId, ToolLabel>> = {
   scheduledWorkflows: { name: 'Scheduled Work',   noun: 'schedules' },
   semrush:            { name: 'Semrush',          noun: 'SEO data' },
   omsSiteData:        { name: 'OMS Site Data',    noun: 'site inventory' },
+  menhoodData:        { name: 'Menhood Data',     noun: 'records' },
 };
 
 /** Title case a camelCase or dotted identifier, for anything not in the table. */

@@ -2,9 +2,12 @@ import * as XLSX from 'xlsx';
 import type { DataExportDestinationWriteProgress } from './data-export.destination';
 import { buildDataExportPresentation } from './data-export-presentation';
 import type { DataExportSource } from './data-export.types';
+import {
+  DATA_EXPORT_XLSX_CELL_LIMIT as XLSX_MAX_CELLS,
+  DATA_EXPORT_XLSX_ROW_LIMIT as XLSX_MAX_ROWS,
+} from './data-export-limits';
 
-export const XLSX_MAX_ROWS = 5_000;
-export const XLSX_MAX_CELLS = 100_000;
+export { XLSX_MAX_CELLS, XLSX_MAX_ROWS };
 export const XLSX_MAX_COLUMNS = 16_384;
 const XLSX_APPEND_ROWS = 500;
 const XLSX_MIN_COLUMN_WIDTH = 10;

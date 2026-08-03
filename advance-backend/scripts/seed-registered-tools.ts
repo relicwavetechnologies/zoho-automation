@@ -73,6 +73,19 @@ export const REGISTERED_TOOL_SEEDS: readonly RegisteredToolSeed[] = [
       'Airtable enforces its own base permissions on top of Divo RBAC',
     ],
   })),
+  {
+    toolId: 'menhoodData',
+    name: 'Menhood Data',
+    description: 'Query the company-managed Menhood Airtable sync for filtered business analysis.',
+    category: 'analytics',
+    domain: 'menhood',
+    guardrails: [
+      'Uses only the backend-managed company database connection',
+      'Accepts one read-only SELECT with bound parameters',
+      'Queries only the approved order, customer, product, and city/pincode tables',
+      'Returns a bounded preview; bulk data stays outside model context',
+    ],
+  },
   // Written literally rather than mapped from a manifest: the AITable manifest
   // lands with the client in a later wave, and a catalogue row is needed before
   // then so the admin panel can list the tool an administrator already holds.

@@ -157,6 +157,7 @@ describe('admin auth company signup provisioning', () => {
       'airtable-automation-ops',
       'aitable-datasheets',
       'aitable-fields',
+      'menhood-data',
       'divo-semrush-seo-research',
     ]) {
       assert(createdSkillSlugs.includes(slug), `missing signup system skill: ${slug}`);

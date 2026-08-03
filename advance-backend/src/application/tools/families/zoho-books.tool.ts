@@ -52,9 +52,7 @@ import type { ZohoBooksPaginatedClient, ZohoBooksModule } from '../../../infrast
 import { getModuleSchema, injectSyntheticFields, toSchemaHint } from '../../../infrastructure/zoho/zoho-books-schema.cache';
 import { runInSandbox, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
 import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } from '../../../shared/zoho-personalization';
-import {
-  DATA_EXPORT_ROW_LIMIT,
-} from '../../data-export/data-export.types';
+import { DATA_EXPORT_CSV_ROW_LIMIT } from '../../data-export/data-export-limits';
 import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
 import type { DataExportOfferPayload } from '../../data-export/export-offer';
 import {
@@ -525,7 +523,7 @@ export const createZohoBooksTool = (deps: {
     'For custom analysis (grouping, aggregation, ranking), add a `script` parameter to fetch up to 4000 records with pre-converted INR fields (_amount_inr, _balance_inr, _total_inr).',
     'For an exact aggregate that may require more than 4000 records, page through this tool inside a scripted workflow, write the rows to a file, and aggregate over that file.',
     'Use populated _amount_inr/_balance_inr for INR calculations; never infer an original currency when _currency is UNKNOWN.',
-    `Set exportAll=true for a governed Google export capped at ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows. If the user asks for more or every row, disclose the cap and never call the result complete.`,
+    `Set exportAll=true for a governed auto-format export with a ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')}-row pipeline ceiling, subject to provider availability. If the user asks for more or every row, disclose the cap and never call the result complete.`,
     'Export example: {"op":"list_invoices","dateFrom":"2026-07-01","dateTo":"2026-07-31","exportAll":true,"connectionId":"<exact Zoho UUID>"}. If Divo returns eligible Google destination choices, retry with the same arguments plus destinationConnectionId="<chosen Google UUID>". Keep every field top-level.',
   ].join(' '),
 
@@ -547,7 +545,7 @@ export const createZohoBooksTool = (deps: {
     '  formatAmount(value, currency) and formatDate(iso) are available in the sandbox.',
     '  Example: "const g={}; data.forEach(b=>{const v=b.vendor_name||\'Unknown\'; if(!g[v])g[v]={vendor:v,count:0,outstanding:0}; g[v].count++; g[v].outstanding+=b._balance_inr;}); return Object.values(g).sort((a,b)=>b.outstanding-a.outstanding)"',
     'scriptArgs: extra parameters available as `args` in the script',
-    `Script results stay bounded inline. For a governed source artifact of up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows, use exportAll=true or dataExport.`,
+    `Script results stay bounded inline. For a governed auto-format source artifact of up to ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} rows, subject to provider availability, use exportAll=true or dataExport.`,
   ].join('\n'),
 
   permissionCheck(args, perm) {
@@ -669,14 +667,14 @@ export const createZohoBooksTool = (deps: {
         return err(new ToolError({
           toolId: 'dataExport',
           reason: 'permission_denied',
-          message: `Governed Zoho Books exports of up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows are not permitted for this member`,
+          message: `Governed Zoho Books exports of up to ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} rows are not permitted for this member`,
         }));
       }
       if (personalizedScope) {
         return err(new ToolError({
           toolId: 'zohoBooks',
           reason: 'permission_denied',
-          message: `Governed Zoho exports of up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows require full company Zoho read scope`,
+          message: `Governed Zoho exports of up to ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} rows require full company Zoho read scope`,
         }));
       }
       if (
@@ -688,7 +686,7 @@ export const createZohoBooksTool = (deps: {
         return err(new ToolError({
           toolId: 'zohoBooks',
           reason: 'bad_args',
-          message: `Governed Zoho exports of up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows require an exact connection UUID and a Lark chat for delivery`,
+          message: `Governed Zoho exports of up to ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} rows require an exact connection UUID and a Lark chat for delivery`,
         }));
       }
       try {
@@ -701,7 +699,7 @@ export const createZohoBooksTool = (deps: {
           success: true,
           exportQueued: true,
           exportJobId,
-          message: `Zoho Books export queued through dataExport with the current ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')}-row cap. I will deliver the verified private Google artifact to this Lark chat. If more rows exist, they will be omitted and the result will not be described as complete.`,
+          message: `Zoho Books export queued through dataExport with the ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')}-row auto-format pipeline ceiling, subject to provider availability. I will deliver the verified private Google artifact to this Lark chat. If more rows exist, they will be omitted and the result will not be described as complete.`,
         });
       } catch (cause) {
         return err(new ToolError({

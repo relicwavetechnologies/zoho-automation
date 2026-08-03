@@ -48,6 +48,13 @@ export interface PermissionServiceDeps {
   deptUserOverrideRepo: DeptUserOverrideRepoPort;
   cache: CachePort;
   logger: Logger;
+  finalPermissionAliases?: readonly FinalPermissionAlias[];
+}
+
+export interface FinalPermissionAlias {
+  readonly companyId: string;
+  readonly source: { readonly toolId: CanonicalToolId; readonly action: ToolActionGroup };
+  readonly target: { readonly toolId: CanonicalToolId; readonly action: ToolActionGroup };
 }
 
 // ─── Service interface ─────────────────────────────────────────────────────
@@ -81,7 +88,7 @@ export class PermissionServiceImpl implements PermissionService {
     // ── No department: pure company-axis ──────────────────────────────
     if (!departmentId) {
       const companyOnly = await this.resolveCompanyOnly(companyId, companyRole);
-      return this.applyCompanyAdminFixedAccess(
+      return this.finalizeResolvedPermissions(query,
         companyRole,
         companyOnly.ok ? ok(stripDepartmentGrantOnlyTools(companyOnly.value)) : companyOnly,
       );
@@ -91,7 +98,7 @@ export class PermissionServiceImpl implements PermissionService {
     const cached = await this.permCache.getDept(companyId, departmentId, userId, companyRole);
     if (cached.ok && cached.value !== null) {
       this.deps.logger.debug('perm.cache.hit.dept', { companyId, departmentId, userId });
-      return this.applyCompanyAdminFixedAccess(companyRole, ok(deserializePermissionResult(cached.value)));
+      return this.finalizeResolvedPermissions(query, companyRole, ok(deserializePermissionResult(cached.value)));
     }
 
     // ── Company axis (the ceiling) ─────────────────────────────────────
@@ -239,7 +246,7 @@ export class PermissionServiceImpl implements PermissionService {
     // Cache the result
     await this.permCache.setDept(companyId, departmentId, userId, companyRole, serializePermissionResult(result));
 
-    return this.applyCompanyAdminFixedAccess(companyRole, ok(result));
+    return this.finalizeResolvedPermissions(query, companyRole, ok(result));
   }
 
   // ── Public: canInvoke ────────────────────────────────────────────────
@@ -441,6 +448,20 @@ export class PermissionServiceImpl implements PermissionService {
     }
     return ok({ ...base, allowedToolIds, allowedActionsByTool, decisions });
   }
+
+  private finalizeResolvedPermissions(
+    query: PermissionQuery,
+    companyRole: CompanyRoleSlug,
+    result: Result<PermissionResult, PermissionError>,
+  ): Result<PermissionResult, PermissionError> {
+    const withAdminFloor = this.applyCompanyAdminFixedAccess(companyRole, result);
+    if (!withAdminFloor.ok) return withAdminFloor;
+    return ok(applyFinalPermissionAliases(
+      withAdminFloor.value,
+      query.companyId,
+      this.deps.finalPermissionAliases ?? [],
+    ));
+  }
 }
 
 /**
@@ -518,6 +539,51 @@ function applyDerivedDepartmentPermissions(
       allowed: true,
       source: 'derived',
     });
+  }
+  return { ...result, allowedToolIds, allowedActionsByTool, decisions };
+}
+
+function applyFinalPermissionAliases(
+  result: PermissionResult,
+  companyId: string,
+  aliases: readonly FinalPermissionAlias[],
+): PermissionResult {
+  if (aliases.length === 0) return result;
+  const allowedToolIds = new Set(result.allowedToolIds);
+  const allowedActionsByTool = new Map(result.allowedActionsByTool);
+  let decisions = [...result.decisions];
+
+  for (const target of new Map(aliases.map(alias => [
+    `${alias.target.toolId}:${alias.target.action}`,
+    alias.target,
+  ])).values()) {
+    const targetToolId = asToolId(target.toolId);
+    const targetActions = new Set(allowedActionsByTool.get(targetToolId) ?? []);
+    targetActions.delete(target.action);
+    decisions = decisions.filter(decision =>
+      String(decision.toolId) !== target.toolId || decision.actionGroup !== target.action,
+    );
+
+    const alias = aliases.find(candidate =>
+      candidate.companyId === companyId
+      && candidate.target.toolId === target.toolId
+      && candidate.target.action === target.action,
+    );
+    const sourceAllowed = alias
+      ? allowedActionsByTool.get(asToolId(alias.source.toolId))?.has(alias.source.action) ?? false
+      : false;
+    if (sourceAllowed) {
+      targetActions.add(target.action);
+      decisions.push({ toolId: targetToolId, actionGroup: target.action, allowed: true, source: 'derived' });
+    }
+
+    if (targetActions.size > 0) {
+      allowedActionsByTool.set(targetToolId, targetActions);
+      allowedToolIds.add(targetToolId);
+    } else {
+      allowedActionsByTool.delete(targetToolId);
+      allowedToolIds.delete(targetToolId);
+    }
   }
   return { ...result, allowedToolIds, allowedActionsByTool, decisions };
 }

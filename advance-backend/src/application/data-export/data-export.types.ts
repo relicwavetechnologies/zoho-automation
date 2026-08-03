@@ -2,10 +2,14 @@ import { z } from 'zod';
 import type { CanonicalToolId } from '../../domain/tools/tool-id';
 import type { ZohoBooksModule } from '../../infrastructure/zoho/zoho-books-paginated.client';
 import type { ZohoCrmModule } from '../../infrastructure/zoho/zoho-crm-paginated.client';
+import { MenhoodQueryRequestSchema } from '../menhood/menhood-query';
 import { OmsSiteDataToolArgsSchema } from '../oms/oms-site-data.types';
 import { SemrushToolArgsSchema } from '../semrush/semrush.types';
 
-export const DATA_EXPORT_ROW_LIMIT = 5_000;
+export {
+  DATA_EXPORT_CSV_ROW_LIMIT as DATA_EXPORT_ROW_LIMIT,
+} from './data-export-limits';
+
 const ZOHO_BOOKS_SOURCE_MODULES = [
   'contacts', 'invoices', 'estimates', 'creditnotes', 'bills',
   'salesorders', 'purchaseorders', 'customerpayments', 'vendorpayments',
@@ -47,6 +51,12 @@ const semrushSnapshotDatasetSourceSchema = z.object({
   connectionId: z.literal('backend_managed'),
   args: SemrushToolArgsSchema,
 }).strict();
+const menhoodQueryDatasetSourceSchema = z.object({
+  kind: z.literal('menhood_query'),
+  connectionId: z.literal('backend_managed'),
+  query: MenhoodQueryRequestSchema,
+  queryFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
 
 export const directDatasetSourceSchema = z.discriminatedUnion('kind', [
   airtableDatasetSourceSchema,
@@ -60,6 +70,7 @@ export const datasetSourceSchema = z.discriminatedUnion('kind', [
   zohoCrmDatasetSourceSchema,
   omsSnapshotDatasetSourceSchema,
   semrushSnapshotDatasetSourceSchema,
+  menhoodQueryDatasetSourceSchema,
 ]);
 
 export type DataExportSource = z.infer<typeof datasetSourceSchema>;
@@ -68,6 +79,7 @@ export function datasetSourceToolId(source: DataExportSource): CanonicalToolId {
   if (source.kind === 'airtable_records') return source.toolId;
   if (source.kind === 'zoho_books') return 'zohoBooks';
   if (source.kind === 'zoho_crm') return 'zohoCrm';
+  if (source.kind === 'menhood_query') return 'menhoodData';
   return source.kind === 'oms_snapshot' ? 'omsSiteData' : 'semrush';
 }
 

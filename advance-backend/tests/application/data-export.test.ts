@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { transformExportPage } from '../../src/application/data-export/data-export.sandbox.ts';
 import {
   AirtableDataExportSource,
+  MenhoodQueryDataExportSource,
   ZohoBooksDataExportSource,
   ZohoCrmDataExportSource,
 } from '../../src/application/data-export/data-export.sources.ts';
@@ -74,6 +75,42 @@ describe('data export sandbox', () => {
 });
 
 describe('data export source adapters', () => {
+  it('delegates backend-managed Menhood query replay as streaming pages', async () => {
+    const controller = new AbortController();
+    const calls: unknown[][] = [];
+    const adapter = new MenhoodQueryDataExportSource({
+      streamExportPages: async function* (companyId, query, fingerprint, signal) {
+        calls.push([companyId, query, fingerprint, signal]);
+        yield { rows: [{ id: 1 }], hasMore: true };
+        yield { rows: [{ id: 2 }] };
+      },
+    });
+    const source = {
+      kind: 'menhood_query' as const,
+      connectionId: 'backend_managed' as const,
+      query: { sql: 'SELECT id FROM menhood_orders ORDER BY id' },
+      queryFingerprint: 'a'.repeat(64),
+    };
+    const pages = [];
+
+    for await (const page of adapter.read(source, {
+      companyId: 'company-1',
+      userId: 'user-1',
+      signal: controller.signal,
+    })) pages.push(page);
+
+    assert.deepEqual(calls, [[
+      'company-1',
+      source.query,
+      source.queryFingerprint,
+      controller.signal,
+    ]]);
+    assert.deepEqual(pages, [
+      { rows: [{ id: 1 }], hasMore: true },
+      { rows: [{ id: 2 }] },
+    ]);
+  });
+
   it('pages Airtable through the backend connection and preserves sparse fields', async () => {
     const calls: Array<Record<string, unknown>> = [];
     const adapter = new AirtableDataExportSource(async () => ({
@@ -1342,6 +1379,7 @@ describe('data export worker', () => {
     });
     let writtenRows: Array<Record<string, unknown>> = [];
     let truncated = false;
+    let completionCard = '';
     const worker = createWorker({
       registry,
       maxRows: 3,
@@ -1363,7 +1401,10 @@ describe('data export worker', () => {
       },
       larkAdapter: {
         sendToChatId: async () => ({ ok: true as const, value: 'om-progress' }),
-        updateMessageById: async () => ({ ok: true as const, value: undefined }),
+        updateMessageById: async (_messageId, card) => {
+          completionCard = card;
+          return { ok: true as const, value: undefined };
+        },
       },
     });
     await worker.processJob({
@@ -1376,7 +1417,151 @@ describe('data export worker', () => {
     });
     assert.deepEqual(writtenRows, [{ id: 1 }, { id: 2 }, { id: 3 }]);
     assert.equal(truncated, true);
+    assert.match(completionCard, /source\/provider or an applicable safety limit/i);
+    assert.match(completionCard, /3 rows/i);
+    assert.match(completionCard, /1 GiB spool/i);
   });
+
+  it('uses the requested format row ceiling without cutting larger Sheet or auto exports at 5,000', async () => {
+    assert.deepEqual(await runGeneratedExport(5_000, 'xlsx'), {
+      rows: 5_000,
+      truncated: false,
+    });
+    assert.deepEqual(await runGeneratedExport(5_001, 'xlsx'), {
+      rows: 5_000,
+      truncated: true,
+    });
+    assert.deepEqual(await runGeneratedExport(5_001, 'google_sheet'), {
+      rows: 5_001,
+      truncated: false,
+    });
+    assert.deepEqual(await runGeneratedExport(5_001, 'auto'), {
+      rows: 5_001,
+      truncated: false,
+    });
+    assert.deepEqual(await runGeneratedExport(160_713, 'csv'), {
+      rows: 160_713,
+      truncated: false,
+    });
+  });
+
+  it('caps an explicit Sheet at 50,000 while auto continues to CSV capacity', async () => {
+    assert.deepEqual(await runGeneratedExport(50_001, 'google_sheet'), {
+      rows: 50_000,
+      truncated: true,
+    });
+    assert.deepEqual(await runGeneratedExport(50_001, 'auto'), {
+      rows: 50_001,
+      truncated: false,
+    });
+  });
+
+  it('reports Menhood row, cell, and byte limits without inventing one truncation cause', async () => {
+    const registry = new DatasetSourceRegistry();
+    let completionCard = '';
+    const worker = createWorker({
+      registry,
+      sink: { write: async () => assert.fail('persisted export must not run the sink') },
+      larkAdapter: {
+        sendToChatId: async () => assert.fail('persisted export must reuse its tracker'),
+        updateMessageById: async (_messageId, card) => {
+          completionCard = card;
+          return { ok: true as const, value: undefined };
+        },
+      },
+    });
+    await worker.processJob({
+      id: 'menhood-truncated-job',
+      data: {
+        ...payload,
+        source: {
+          kind: 'menhood_query',
+          connectionId: 'backend_managed',
+          query: { sql: 'SELECT id FROM menhood_orders' },
+          queryFingerprint: 'a'.repeat(64),
+        },
+        destination: { format: 'xlsx', title: 'Menhood orders' },
+        progressMessageId: 'om-progress',
+        completedExport: {
+          success: true,
+          artifactId: 'xlsx-1',
+          artifactUrl: 'https://drive.google.com/file/d/xlsx-1/view',
+          artifactType: 'xlsx',
+          rowCount: 5_000,
+          sourceTruncated: true,
+          sharedWith: 'abhishek@emiactech.com (reader)',
+          verified: true,
+        },
+      },
+      attemptsMade: 0,
+      opts: { attempts: 1 },
+      updateData: async () => assert.fail('persisted completion must not be rewritten'),
+      updateProgress: async () => assert.fail('persisted completion must not report progress'),
+    });
+
+    assert.match(completionCard, /source\/provider or an applicable safety limit/i);
+    assert.match(completionCard, /5,000 rows/i);
+    assert.match(completionCard, /1,00,000 cells/i);
+    assert.match(completionCard, /200 MB spool/i);
+    assert.doesNotMatch(completionCard, /additional source rows were not included/i);
+  });
+
+  async function runGeneratedExport(
+    totalRows: number,
+    format: DataExportJobPayload['destination']['format'],
+  ): Promise<{ rows: number; truncated: boolean }> {
+    const registry = new DatasetSourceRegistry();
+    registry.register({
+      kind: 'airtable_records',
+      async *read() {
+        const pageSize = 1_000;
+        for (let offset = 0; offset < totalRows; offset += pageSize) {
+          const count = Math.min(pageSize, totalRows - offset);
+          yield {
+            rows: Array.from({ length: count }, (_, index) => ({ id: offset + index })),
+            ...(offset + count < totalRows ? { hasMore: true } : {}),
+          };
+        }
+      },
+    });
+    let result = { rows: 0, truncated: false };
+    const worker = createWorker({
+      registry,
+      sink: {
+        write: async (input) => {
+          for await (const page of input.rows) result.rows += page.length;
+          result.truncated = input.sourceTruncated();
+          return {
+            success: true,
+            artifactId: 'generated-export',
+            artifactUrl: 'https://drive.google.com/file/d/generated-export/view',
+            artifactType: format === 'xlsx' ? 'xlsx' : format === 'google_sheet' ? 'google_sheet' : 'csv',
+            rowCount: result.rows,
+            sourceTruncated: result.truncated,
+            sharedWith: 'abhishek@emiactech.com (reader)',
+            verified: true,
+          };
+        },
+      },
+      larkAdapter: {
+        sendToChatId: async () => ({ ok: true as const, value: 'om-progress' }),
+        updateMessageById: async () => ({ ok: true as const, value: undefined }),
+      },
+    });
+    const { transform: _transform, ...untransformedPayload } = payload;
+    await worker.processJob({
+      id: `generated-${format}-${totalRows}`,
+      data: {
+        ...untransformedPayload,
+        destination: { ...untransformedPayload.destination, format },
+      },
+      attemptsMade: 0,
+      opts: { attempts: 1 },
+      updateData: async () => undefined,
+      updateProgress: async () => undefined,
+    });
+    return result;
+  }
 });
 
 describe('data export access contract', () => {

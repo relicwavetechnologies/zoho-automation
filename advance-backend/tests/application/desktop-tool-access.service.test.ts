@@ -161,6 +161,32 @@ describe('DesktopToolAccessService', () => {
     assert.equal((await connected.service.inventory(actor)).tools[0]?.readiness, 'ready');
   });
 
+  it('shows effective inherited Menhood access without rendering permission controls', async () => {
+    const menhood = { ...tool, toolId: 'menhoodData', name: 'Menhood Data', category: 'data', domain: 'menhood' };
+    const effective = (actions: string[]) => ({
+      ok: true as const,
+      value: { allowedActionsByTool: new Map(actions.length ? [['menhoodData' as any, new Set(actions)]] : []) },
+    });
+    const { service } = makeService({
+      registeredTools: [menhood],
+      runtimeToolIds: ['menhoodData'],
+      companyRole: 'COMPANY_ADMIN',
+      resolve: async query => query.departmentId === 'ops' ? effective(['read']) : effective([]),
+    });
+
+    const inventory = await service.inventory({ ...actor, role: 'COMPANY_ADMIN' });
+    assert.deepEqual(inventory.tools[0]?.origins, [
+      { kind: 'department', department: { id: 'ops', name: 'Ops' }, allowedActions: ['read'] },
+    ]);
+    assert.deepEqual(inventory.tools[0]?.managementScopes, []);
+    await assert.rejects(
+      () => service.setDepartmentRole(
+        { ...actor, role: 'COMPANY_ADMIN' }, 'menhoodData', 'ops', 'role-ops', 'read', true,
+      ),
+      (error: unknown) => error instanceof DesktopToolAccessError && error.code === 'invalid',
+    );
+  });
+
   // The Tools page is built from RegisteredTool rows, but a row alone is not
   // enough: cataloguePolicy also requires the ID to be canonical AND present in
   // the runtime registry. Both gates have to pass or the tool is silently

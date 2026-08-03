@@ -558,7 +558,7 @@ describe('zohoBooks expanded execution', () => {
       }, ctx);
       assert.equal(result.ok, true);
       assert.equal((result as any).value.exportQueued, true);
-      assert.match((result as any).value.message, /5,000-row cap/i);
+      assert.match((result as any).value.message, /10,00,000-row auto-format pipeline ceiling/i);
       assert.match((result as any).value.message, /not be described as complete/i);
     }
 
