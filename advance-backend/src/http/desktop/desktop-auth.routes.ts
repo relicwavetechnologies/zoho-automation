@@ -69,6 +69,8 @@ interface StatePayload {
   sessionId?: string;
   /** Exact OAuth callback used to mint this signed state. */
   redirectUri?: string;
+  /** Safe app-local page to resume after a same-tab browser sign-in. */
+  returnTo?: string;
   exp?: number;
 }
 
@@ -239,6 +241,12 @@ function verifyJwt(token: string, secret: string): StatePayload | null {
 
 function isSyntheticLarkIdentityEmail(email: string): boolean {
   return email.toLowerCase().endsWith('@identity.divo.invalid');
+}
+
+function appLocalReturnPath(value: unknown): string | undefined {
+  return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//')
+    ? value
+    : undefined;
 }
 
 async function issueDesktopSession(
@@ -702,8 +710,9 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
 
       const nonce = randomBytes(16).toString('hex');
       const redirectUri = desktopCallbackUri(req, '/api/desktop/auth/lark/callback');
+      const returnTo = appLocalReturnPath(req.query.returnTo);
       const state = signJwt(
-        { kind: 'desktop_lark_login', nonce, redirectUri },
+        { kind: 'desktop_lark_login', nonce, redirectUri, ...(returnTo ? { returnTo } : {}) },
         deps.memberJwtSecret,
         600,
       );
@@ -725,6 +734,14 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     }
 
     const statePayload = verifyJwt(String(state), deps.memberJwtSecret);
+    if (statePayload?.kind === 'desktop_lark_login' && statePayload.nonce && statePayload.returnTo) {
+      const loginUrl = new URL('/login', deps.appBaseUrl);
+      loginUrl.searchParams.set('next', statePayload.returnTo);
+      loginUrl.searchParams.set('lark_code', String(code));
+      loginUrl.searchParams.set('lark_state', String(state));
+      res.redirect(303, loginUrl.toString());
+      return;
+    }
     if (statePayload?.nonce) {
       pendingCallbacks.set(statePayload.nonce, {
         code: String(code),

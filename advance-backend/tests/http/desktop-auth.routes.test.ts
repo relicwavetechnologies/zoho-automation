@@ -16,6 +16,15 @@ const noopLogger = {
   child: function() { return this; },
 } as any;
 
+function signTestState(payload: Record<string, unknown>): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = createHmac('sha256', 'test-member-secret-32-bytes-long')
+    .update(`${header}.${body}`)
+    .digest('base64url');
+  return `${header}.${body}.${signature}`;
+}
+
 function makeDeps(overrides: Record<string, unknown> = {}) {
   return {
     prisma: {} as any,
@@ -47,6 +56,7 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
     logger: noopLogger,
     memberJwtSecret: 'test-member-secret-32-bytes-long',
     backendPublicUrl: 'https://backend.example.com',
+    appBaseUrl: 'https://app.example.com',
     sessionTtlMinutes: 480,
     ...overrides,
   };
@@ -82,6 +92,7 @@ async function callRoute(
       status: (s: number) => { status = s; return res; },
       json: (b: unknown) => { body = b; resolve({ status, body }); return res; },
       send: (b: unknown) => { body = b; resolve({ status, body }); return res; },
+      redirect: (s: number, location: string) => { status = s; body = location; resolve({ status, body }); return res; },
     } as unknown as Response;
 
     const stack = (router as any).stack as any[];
@@ -665,6 +676,57 @@ describe('desktop auth routes', () => {
       'http://localhost:8000/api/desktop/auth/lark/callback',
     );
     assert.equal(authorizeUrl.searchParams.get('scope'), LARK_USER_OAUTH_SCOPES.join(' '));
+  });
+
+  it('returns a same-tab Lark login to the original app-local page', async () => {
+    const router = createDesktopAuthRoutes(makeDeps());
+    const returnTo = '/link/lark?state=card-state';
+    const authorize = await callRoute(router, 'GET', '/lark/authorize-url', {
+      headers: { host: 'localhost:8000' },
+      query: { returnTo },
+    });
+    const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state')!;
+
+    const callback = await callRoute(router, 'GET', '/lark/callback', {
+      query: { code: 'lark-code', state },
+    });
+
+    assert.equal(callback.status, 303);
+    const location = new URL(callback.body);
+    assert.equal(location.origin, 'https://app.example.com');
+    assert.equal(location.pathname, '/login');
+    assert.equal(location.searchParams.get('next'), returnTo);
+    assert.equal(location.searchParams.get('lark_code'), 'lark-code');
+    assert.equal(location.searchParams.get('lark_state'), state);
+  });
+
+  it('does not carry an external return target through Lark login', async () => {
+    const router = createDesktopAuthRoutes(makeDeps());
+    const authorize = await callRoute(router, 'GET', '/lark/authorize-url', {
+      headers: { host: 'localhost:8000' },
+      query: { returnTo: '//evil.example/path' },
+    });
+    const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state')!;
+    const payload = JSON.parse(Buffer.from(state.split('.')[1]!, 'base64url').toString('utf8'));
+
+    assert.equal(payload.returnTo, undefined);
+  });
+
+  it('does not return a non-login OAuth state to the app login page', async () => {
+    const router = createDesktopAuthRoutes(makeDeps());
+    const state = signTestState({
+      kind: 'lark_connection',
+      nonce: 'nonce-1',
+      returnTo: '/link/lark?state=card-state',
+      exp: Math.floor(Date.now() / 1000) + 600,
+    });
+
+    const callback = await callRoute(router, 'GET', '/lark/callback', {
+      query: { code: 'lark-code', state },
+    });
+
+    assert.equal(callback.status, 200);
+    assert.match(String(callback.body), /Authentication complete/);
   });
 
   it('builds the additional Lark-account callback from the Desktop-selected local backend', async () => {

@@ -8,7 +8,7 @@
  * who set a password when accepting an email invite — it works fully in the web
  * app, and the page says plainly what it does not do.
  */
-import { FormEvent, useState } from "react"
+import { FormEvent, useEffect, useRef, useState } from "react"
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { Loader2 } from "lucide-react"
 import { AuthCard, AuthError, Field } from "@/components/admin/auth-card"
@@ -20,7 +20,7 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   /** Which button is busy — so only the one that was pressed shows a spinner. */
   const [busy, setBusy] = useState<"lark" | "password" | null>(null)
-  const { loginWithLark, loginWithPassword } = useAdminAuth()
+  const { loginWithLark, completeLarkLogin, loginWithPassword } = useAdminAuth()
   const navigate = useNavigate()
   const [params] = useSearchParams()
 
@@ -33,6 +33,9 @@ export function LoginPage() {
    */
   const requested = params.get("next")
   const next = requested && requested.startsWith("/") && !requested.startsWith("//") ? requested : "/"
+  const larkCode = params.get("lark_code")
+  const larkState = params.get("lark_state")
+  const callbackStarted = useRef(false)
 
   const attempt = async (kind: "lark" | "password", run: () => Promise<void>) => {
     setBusy(kind)
@@ -52,6 +55,12 @@ export function LoginPage() {
     void attempt("password", () => loginWithPassword(email, password))
   }
 
+  useEffect(() => {
+    if (!larkCode || !larkState || callbackStarted.current) return
+    callbackStarted.current = true
+    void attempt("lark", () => completeLarkLogin(larkCode, larkState))
+  }, [completeLarkLogin, larkCode, larkState])
+
   return (
     <AuthCard
       title="Sign in to Divo"
@@ -62,7 +71,7 @@ export function LoginPage() {
           type="button"
           className="btn primary"
           disabled={busy !== null}
-          onClick={() => void attempt("lark", loginWithLark)}
+          onClick={() => void attempt("lark", () => loginWithLark(next))}
         >
           {busy === "lark" ? <Loader2 size={14} className="ws-spin" /> : <LarkGlyph />}
           {busy === "lark" ? "Waiting for Lark" : "Continue with Lark"}

@@ -41,7 +41,8 @@ type AdminAuthContextValue = {
   /** True while a sign-in attempt is in flight, for the button's own state. */
   signingIn: boolean;
   loginWithPassword: (email: string, password: string) => Promise<void>;
-  loginWithLark: () => Promise<void>;
+  loginWithLark: (returnTo?: string) => Promise<void>;
+  completeLarkLogin: (code: string, state: string) => Promise<void>;
   refresh: () => Promise<void>;
   logout: () => Promise<void>;
 };
@@ -92,63 +93,18 @@ export const scopesFor = (session: Session): Scope[] => {
   return scopes;
 };
 
-/**
- * Runs the Lark OAuth handshake in a popup.
- *
- * The backend mints a signed, single-use state and parks the callback result
- * under its nonce; we poll for it and exchange. Same flow the desktop app uses,
- * which is why it needs no new redirect URI registered with Lark.
- */
-async function runLarkPopupFlow(): Promise<string> {
+async function beginLarkLogin(returnTo?: string): Promise<void> {
+  const query = returnTo ? `?returnTo=${encodeURIComponent(returnTo)}` : '';
   const start = await api.get<{ authorizeUrl: string; nonce: string }>(
-    '/api/desktop/auth/lark/authorize-url',
+    `/api/desktop/auth/lark/authorize-url${query}`,
     undefined,
     { quiet: true },
   );
-
-  const popup = window.open(start.authorizeUrl, 'divo-lark-signin', 'width=520,height=720');
-  if (!popup) {
-    throw new Error('Your browser blocked the sign-in window. Allow pop-ups for this site and try again.');
-  }
-
-  // Ten minutes, matching the TTL the backend signs into the state. Polling
-  // past that point would only ever collect an expired handshake.
-  const deadline = Date.now() + 10 * 60 * 1000;
-  while (Date.now() < deadline) {
-    if (popup.closed) {
-      // One last look: the popup closes itself on success, so a closed window
-      // is ambiguous until the parked result has been checked for.
-      const late = await pollOnce(start.nonce);
-      if (late) return exchange(late);
-      throw new Error('Sign-in was cancelled.');
-    }
-    const pending = await pollOnce(start.nonce);
-    if (pending) {
-      popup.close();
-      return exchange(pending);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
-
-  popup.close();
-  throw new Error('Sign-in timed out. Please try again.');
+  window.location.assign(start.authorizeUrl);
+  await new Promise<void>(() => undefined);
 }
 
 type LarkHandshake = { code: string; state: string };
-
-async function pollOnce(nonce: string): Promise<LarkHandshake | null> {
-  try {
-    return await api.get<LarkHandshake>(
-      `/api/desktop/auth/lark/poll?nonce=${encodeURIComponent(nonce)}`,
-      undefined,
-      { quiet: true },
-    );
-  } catch {
-    // The poll route answers `{ success: false, pending: true }` while it waits,
-    // which the shared client reads as a failure. Nothing has gone wrong yet.
-    return null;
-  }
-}
 
 async function exchange(handshake: LarkHandshake): Promise<string> {
   const result = await api.post<{ token: string }>(
@@ -269,10 +225,19 @@ export const AdminAuthProvider = ({ children }: { children: React.ReactNode }) =
     }
   }, [fetchSession, persistToken]);
 
-  const loginWithLark = useCallback(async () => {
+  const loginWithLark = useCallback(async (returnTo?: string) => {
     setSigningIn(true);
     try {
-      const issued = await runLarkPopupFlow();
+      await beginLarkLogin(returnTo);
+    } finally {
+      setSigningIn(false);
+    }
+  }, []);
+
+  const completeLarkLogin = useCallback(async (code: string, state: string) => {
+    setSigningIn(true);
+    try {
+      const issued = await exchange({ code, state });
       persistToken(issued);
       await fetchSession(issued);
     } finally {
@@ -322,9 +287,9 @@ export const AdminAuthProvider = ({ children }: { children: React.ReactNode }) =
   const value = useMemo<AdminAuthContextValue>(
     () => ({
       token, session, scopes, loading, unreachable, signingIn,
-      loginWithPassword, loginWithLark, refresh, logout,
+      loginWithPassword, loginWithLark, completeLarkLogin, refresh, logout,
     }),
-    [token, session, scopes, loading, unreachable, signingIn, loginWithPassword, loginWithLark, refresh, logout],
+    [token, session, scopes, loading, unreachable, signingIn, loginWithPassword, loginWithLark, completeLarkLogin, refresh, logout],
   );
 
   return <AdminAuthContext.Provider value={value}>{children}</AdminAuthContext.Provider>;
