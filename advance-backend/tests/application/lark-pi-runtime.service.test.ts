@@ -1574,3 +1574,55 @@ test('a run survives an unwritable origin, losing only the Connect card', async 
 
   assert.equal((await service.run(larkIngressInput())).text, 'Finished');
 });
+
+test('the export lookup and the knowledge recall are in flight together', async () => {
+  const events: string[] = [];
+  const settleLater = () => new Promise(resolve => setTimeout(resolve, 5));
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts,
+    conversationHistory: {
+      getHistory: async () => ({ ok: true as const, value: [] }),
+      getRecentToolTurns: async () => {
+        events.push('history:start');
+        await settleLater();
+        events.push('history:end');
+        return { ok: true as const, value: [] };
+      },
+      appendTurn: async () => assert.fail('non-p2p test must not append conversation turns'),
+    },
+    knowledgeRecall: {
+      recall: async () => {
+        events.push('recall:start');
+        await settleLater();
+        events.push('recall:end');
+        return { facts: [] };
+      },
+    } as any,
+    fetch: async () => new Response(JSON.stringify({ text: 'Finished' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  await service.run(runtimeInput());
+
+  // Run one behind the other, the history read would have finished before the
+  // recall was even issued, putting both round trips in front of the container
+  // start. Overlapping is the whole point.
+  assert.deepEqual(events, ['history:start', 'recall:start', 'history:end', 'recall:end']);
+});

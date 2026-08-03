@@ -619,13 +619,18 @@ export class LarkPiRuntimeService {
     }
 
     const runtimeLease = this.issueRuntimeLease(input, session);
-    await this.rememberRunOrigin(input);
 
     const timeoutSignal = AbortSignal.timeout(this.deps.runTimeoutMs);
     const signal = input.abortSignal
       ? AbortSignal.any([input.abortSignal, timeoutSignal])
       : timeoutSignal;
-    const pendingRows = await this.loadPendingAttachments(input);
+    // Recording where this run came from is a write nothing here reads back,
+    // and the pending-attachment lookup does not depend on it. Both used to be
+    // awaited one after the other before the run could begin.
+    const [, pendingRows] = await Promise.all([
+      this.rememberRunOrigin(input),
+      this.loadPendingAttachments(input),
+    ]);
     const pendingAttachments = pendingRows.map(row => row.descriptor);
     // Sending five screenshots at once is an ordinary thing to do, and refusing
     // the whole turn answers nothing. Pending DM files consume the same bounded
@@ -653,10 +658,14 @@ export class LarkPiRuntimeService {
           signal,
         ),
       ];
-      const runtimeMessage = await this.withRecalledKnowledge(input);
+      // The member's model grant is a lookup the recalled context never feeds,
+      // so the two resolve together rather than one behind the other.
+      const [runtimeMessage, model] = await Promise.all([
+        this.withRecalledKnowledge(input),
+        this.modelFor(String(input.runContext.userId)),
+      ]);
       const ask = droppedAttachmentNotice(dropped, runtimeMessage);
       const askWithoutRecall = droppedAttachmentNotice(dropped, input.incoming.text);
-      const model = await this.modelFor(String(input.runContext.userId));
       let fitted = fitBodyToController(
         message => ({
           backendUrl: this.deps.backendUrl,
@@ -812,27 +821,42 @@ export class LarkPiRuntimeService {
 
   private async withRecalledKnowledge(input: LarkPiRuntimeInput): Promise<string> {
     const ask = input.incoming.text;
-    const exportContext = await this.recentExportContext(input);
+    // Two unrelated reads: recent exports come from conversation history, the
+    // recall from the knowledge store, and neither uses the other's answer.
+    // Awaiting them in turn put both round trips in front of the container
+    // being asked to start, on every single message.
+    const [exportContext, recalledContext] = await Promise.all([
+      this.recentExportContext(input),
+      this.recalledKnowledgeContext(input, ask),
+    ]);
     const request = exportContext
       ? `${exportContext}\n\nCURRENT USER REQUEST:\n${ask}`
       : ask;
-    if (!this.deps.knowledgeRecall || !ask.trim()) return request;
+    return recalledContext ? `${recalledContext}\n\n${request}` : request;
+  }
+
+  /** Recalled knowledge is advisory: an unavailable store contributes nothing. */
+  private async recalledKnowledgeContext(
+    input: LarkPiRuntimeInput,
+    ask: string,
+  ): Promise<string> {
+    const knowledgeRecall = this.deps.knowledgeRecall;
+    if (!knowledgeRecall || !ask.trim()) return '';
     try {
-      const recalled = await this.deps.knowledgeRecall.recall({
+      const recalled = await knowledgeRecall.recall({
         query: ask.slice(0, 500),
         companyId: String(input.runContext.companyId),
         userId: String(input.runContext.userId),
         companyRole: String(input.runContext.companyRole),
         channel: 'lark',
       });
-      const context = renderRecalledKnowledge(recalled);
-      return context ? `${context}\n\n${request}` : request;
+      return renderRecalledKnowledge(recalled);
     } catch (error) {
       this.log.warn('pi.knowledge-recall.unavailable', {
         correlationId: input.incoming.traceId,
         error: String(error),
       });
-      return request;
+      return '';
     }
   }
 
