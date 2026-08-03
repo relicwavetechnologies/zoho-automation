@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import {
 	acknowledgeInterruptedWorkFact,
+	buildAgentConfiguration,
 	buildChildEnvironment,
 	buildPiArguments,
 	buildRunCorrelationContext,
@@ -48,6 +49,28 @@ const values = {
 };
 
 describe("Divo Pi runtime boundary", () => {
+	it("caps DeepSeek context before compaction and output become unbounded", () => {
+		const configuration = buildAgentConfiguration({
+			provider: "deepseek",
+			model: "deepseek-v4-pro",
+			thinkingLevel: "high",
+		});
+
+		assert.deepEqual(configuration.settings.compaction, {
+			enabled: true,
+			reserveTokens: 24_576,
+			keepRecentTokens: 20_000,
+		});
+		assert.deepEqual(
+			configuration.models.providers.deepseek.modelOverrides["deepseek-v4-pro"],
+			{ contextWindow: 150_000, maxTokens: 32_768 },
+		);
+		assert.deepEqual(
+			configuration.models.providers.deepseek.modelOverrides["deepseek-v4-flash"],
+			{ contextWindow: 150_000, maxTokens: 32_768 },
+		);
+	});
+
 	it("keeps signed gateway correlation separate from the filesystem thread", () => {
 		assert.equal(
 			resolveRuntimeThreadId("lark-safe-hash", "oc_chat:thread:om_root"),

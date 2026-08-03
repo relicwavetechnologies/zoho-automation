@@ -849,6 +849,11 @@ export async function processAcceptedLarkReceipt(
     return;
   }
 
+  if (isNewConversationCommand(incoming.text)) {
+    await handleNewConversationBeforeLane(incoming, deps, requestLog);
+    return;
+  }
+
   // Decided before queueing, because "is this lane busy" is only true while the
   // previous turn is still running — asking after `runAndWait` has admitted
   // this task would always answer yes, and every message would look queued.
@@ -1152,6 +1157,37 @@ function runtimeThreadIdFor(incoming: IncomingMessage): string {
     userExternalId: incoming.userExternalId,
     ...(incoming.groupReplyMode ? { groupReplyMode: incoming.groupReplyMode } : {}),
   }));
+}
+
+const ACTIVE_PRIVATE_SESSION_REF = 'activePrivateSessionKey';
+
+const isPrivateSessionKey = (value: unknown, conversationKey: string): value is string =>
+  typeof value === 'string'
+  && value.startsWith(`${conversationKey}:session:`)
+  && value.length <= 200;
+
+async function activeRuntimeThreadIdFor(
+  prisma: PrismaClient | undefined,
+  companyId: string,
+  incoming: IncomingMessage,
+): Promise<string> {
+  const conversationKey = runtimeThreadIdFor(incoming);
+  if (!prisma || incoming.chatType === 'group') return conversationKey;
+
+  const conversation = await prisma.runtimeConversation.findUnique({
+    where: {
+      companyId_channel_channelConversationKey: {
+        companyId,
+        channel: 'lark',
+        channelConversationKey: conversationKey,
+      },
+    },
+    select: { refsJson: true },
+  });
+  const refs = conversation?.refsJson;
+  if (!refs || typeof refs !== 'object' || Array.isArray(refs)) return conversationKey;
+  const sessionKey = (refs as Record<string, unknown>)[ACTIVE_PRIVATE_SESSION_REF];
+  return isPrivateSessionKey(sessionKey, conversationKey) ? sessionKey : conversationKey;
 }
 
 function conversationForIncoming(incoming: IncomingMessage): ConversationHandle {
@@ -1499,6 +1535,7 @@ export async function runPiAndDeliver(input: {
     conversationRepo?: Pick<ConversationRepoPort, 'appendTurn'>;
     channelDeliveryRepo?: ChannelDeliveryRepoPort;
     groupContextHydrator?: Pick<GroupContextHydrator, 'hydrate'>;
+    prisma?: PrismaClient;
     onRetryableDelivery?: () => Promise<void>;
   };
   log: Logger;
@@ -1512,6 +1549,11 @@ export async function runPiAndDeliver(input: {
     ? AbortSignal.any([signal, controller.signal])
     : controller.signal;
   const correlationId = String(incoming.traceId);
+  const runtimeThreadId = await activeRuntimeThreadIdFor(
+    deps.prisma,
+    String(runContext.companyId),
+    incoming,
+  );
   deps.adapter.registerAbortController(correlationId, controller, {
     userId: String(runContext.userId),
     companyId: String(runContext.companyId),
@@ -1703,7 +1745,7 @@ export async function runPiAndDeliver(input: {
       incoming,
       runContext,
       conversation,
-      threadId: runtimeThreadIdFor(incoming),
+      threadId: runtimeThreadId,
       ...(attachments?.length ? { attachments } : {}),
       ...(sharedContext ? { sharedContext } : {}),
       ...(incoming.chatType === 'group' ? { sessionScope: 'run' as const } : {}),
@@ -1733,7 +1775,7 @@ export async function runPiAndDeliver(input: {
   }
 
   if (runtimeFailure && deps.conversationRepo) {
-    const conversationKey = runtimeThreadIdFor(incoming);
+    const conversationKey = runtimeThreadId;
     const scope = { companyId: String(runContext.companyId), channel: 'lark' as const };
     const sourceMessageId = String(incoming.messageId);
     const userTurn = await deps.conversationRepo.appendTurn(
@@ -2437,7 +2479,11 @@ async function processInBackground(
         incoming: withLarkSenderName(incoming, identity),
         runContext,
         conversation,
-        threadId: runtimeThreadIdFor(incoming),
+        threadId: await activeRuntimeThreadIdFor(
+          deps.prisma,
+          identity.companyId,
+          incoming,
+        ),
         attachments: runtimeAttachments,
         ...(signal ? { abortSignal: signal } : {}),
       });
@@ -2449,15 +2495,7 @@ async function processInBackground(
         .join('\n\n');
       if (seen) {
         await deps.conversationRepo.appendTurn(
-          conversationKeyForMessage({
-            chatId: String(incoming.chatId),
-            chatType: incoming.chatType,
-            messageId: String(incoming.messageId),
-            ...(incoming.threadId ? { threadId: String(incoming.threadId) } : {}),
-            ...(incoming.rootMessageId ? { rootMessageId: String(incoming.rootMessageId) } : {}),
-            userExternalId: incoming.userExternalId,
-            ...(incoming.groupReplyMode ? { groupReplyMode: incoming.groupReplyMode } : {}),
-          }) as never,
+          await activeRuntimeThreadIdFor(deps.prisma, identity.companyId, incoming) as never,
           {
             role: 'user',
             content: userHistoryContent(withLarkSenderName(incoming, identity), seen),
@@ -2832,8 +2870,104 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
  */
 const STOP_COMMANDS: ReadonlySet<string> = new Set(['/q', '/stop']);
 
+const NEW_CONVERSATION_COMMAND = '/new';
+
 const isStopCommand = (text: string | undefined): boolean =>
   STOP_COMMANDS.has((text ?? '').trim().toLowerCase());
+
+const isNewConversationCommand = (text: string | undefined): boolean =>
+  (text ?? '').trim().toLowerCase() === NEW_CONVERSATION_COMMAND;
+
+async function handleNewConversationBeforeLane(
+  incoming: IncomingMessage,
+  deps: Pick<LarkWebhookDeps, 'adapter' | 'channelIdentityRepo' | 'prisma'>,
+  log: Logger,
+): Promise<void> {
+  const reply = async (text: string): Promise<void> => {
+    const sent = await deps.adapter.sendToChatId(
+      String(incoming.chatId),
+      text,
+      String(incoming.messageId),
+      undefined,
+      incoming.chatType === 'group'
+        ? incoming.groupReplyMode !== 'inline'
+        : undefined,
+    );
+    if (!sent.ok) log.warn('webhook.command.new.reply_failed', { error: sent.error.message });
+  };
+
+  if (incoming.chatType === 'group') {
+    await reply('Start a new Lark thread for a fresh group conversation with Divo.');
+    return;
+  }
+  if (!deps.prisma || !incoming.tenantKey) {
+    await reply('I could not start a new Divo chat just now. Please try again.');
+    return;
+  }
+
+  const identity = await deps.channelIdentityRepo.resolveByLarkTenantIdentity(
+    incoming.userExternalId,
+    incoming.tenantKey,
+  );
+  if (!identity.ok || !identity.value) {
+    await reply('Sign in to Divo first, then send `/new` again.');
+    return;
+  }
+
+  const conversationKey = runtimeThreadIdFor(incoming);
+  const existing = await deps.prisma.runtimeConversation.findUnique({
+    where: {
+      companyId_channel_channelConversationKey: {
+        companyId: identity.value.companyId,
+        channel: 'lark',
+        channelConversationKey: conversationKey,
+      },
+    },
+    select: { refsJson: true },
+  });
+  const refs = existing?.refsJson && typeof existing.refsJson === 'object'
+    && !Array.isArray(existing.refsJson)
+    ? existing.refsJson as Record<string, unknown>
+    : {};
+  const sessionKey = `${conversationKey}:session:${randomBytes(12).toString('hex')}`;
+
+  deps.adapter.interruptConversation(conversationKey, {
+    userId: identity.value.userId,
+    companyId: identity.value.companyId,
+    aiRole: identity.value.aiRole,
+  });
+  await deps.prisma.runtimeConversation.upsert({
+    where: {
+      companyId_channel_channelConversationKey: {
+        companyId: identity.value.companyId,
+        channel: 'lark',
+        channelConversationKey: conversationKey,
+      },
+    },
+    create: {
+      companyId: identity.value.companyId,
+      channel: 'lark',
+      channelConversationKey: conversationKey,
+      rawChannelKey: String(incoming.chatId),
+      createdByUserId: identity.value.userId,
+      refsJson: {
+        chatType: incoming.chatType,
+        larkOpenId: incoming.userExternalId,
+        [ACTIVE_PRIVATE_SESSION_REF]: sessionKey,
+      },
+    },
+    update: {
+      updatedAt: new Date(),
+      refsJson: { ...refs, [ACTIVE_PRIVATE_SESSION_REF]: sessionKey },
+    },
+  });
+  log.info('webhook.command.new.ok', {
+    companyId: identity.value.companyId,
+    userId: identity.value.userId,
+    conversationKey,
+  });
+  await reply('Started a new Divo chat. Your earlier chats are still available if you ask me to find something from them.');
+}
 
 async function handleStopBeforeLane(
   incoming: IncomingMessage,
@@ -3240,7 +3374,7 @@ async function handleSlashCommand(args: {
     await reply(
       '**Divo Commands**\n\n' +
       '**Conversation**\n' +
-      '`/clear` — Reset this DM, thread, or inline session.\n' +
+      '`/new` — Start a fresh private chat; earlier chats stay searchable.\n' +
       '`/clear room` — Admin-only two-step reset for every thread in this group.\n' +
       '`/q` — Stop the active run in this conversation.\n' +
       '`/group-settings` — Admin-only group reply settings.\n' +

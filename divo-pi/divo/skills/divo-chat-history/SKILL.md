@@ -17,9 +17,9 @@ Where the two tools' own guidance differs from this skill, follow this skill: it
 describes the runtime you are actually running in.
 
 The corpus is this one person's own past sessions in this workspace — their
-direct messages with Divo, and their own scheduled runs. It is a small number of
-long-running sessions rather than many separate chats, so recall here is usually
-finding a moment in time, not finding a different chat.
+current and earlier `/new` direct-message chats with Divo, plus their own
+scheduled runs. Search across chats first; never assume the active chat contains
+the history the user is referring to.
 
 A hit may occasionally come from a group room this person was in, left over from
 an older version of Divo. Read what you find before repeating it: if a hit shows

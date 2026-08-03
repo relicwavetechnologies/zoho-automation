@@ -88,22 +88,28 @@ jobs:
           - component: backend
             context: ./advance-backend
             file: ./advance-backend/Dockerfile
+            checkout_path: advance-backend
             build-args: ""
           - component: admin
             context: ./admin
             file: ./admin/Dockerfile
+            checkout_path: admin
             build-args: VITE_API_BASE_URL=
           - component: pi
             context: ./divo-pi
             file: ./divo-pi/Dockerfile
+            checkout_path: divo-pi
             build-args: ""
           - component: pi-controller
             context: ./divo-pi
             file: ./divo-pi/Dockerfile.controller
+            checkout_path: divo-pi
             build-args: ""
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
+        with:
+          sparse-checkout: ${{ matrix.checkout_path }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -183,6 +189,11 @@ jobs:
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            /docker-compose.yml
+            /infra/production/nginx/
+          sparse-checkout-cone-mode: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

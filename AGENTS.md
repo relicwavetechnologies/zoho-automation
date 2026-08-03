@@ -1,6 +1,13 @@
 # AGENTS.md
 > Shared working rules for AI coding agents in this workspace.
 
+## Local operational context
+
+If `AGENTS.local.md` exists at the repository root, read it before starting
+local infrastructure, using local credentials, or running cloud-Pi/Lark E2E
+tests. It is intentionally ignored and contains local-only operational context;
+never copy its secrets into tracked files or output.
+
 ## Prime Directive
 
 Code quality is the priority. Do not rush wiring that creates dead code, unclear ownership, duplicated flows, conflicting comments, or hidden security gaps. Reason from the existing code structure before editing.

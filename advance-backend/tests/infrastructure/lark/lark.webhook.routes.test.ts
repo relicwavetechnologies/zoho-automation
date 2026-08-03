@@ -192,6 +192,8 @@ async function runWebhook(body: unknown, options: {
   groupReplyMode?: 'threaded' | 'inline';
   /** Durable canonical conversation keys already owned by Divo. */
   ownedThreadKeys?: Set<string>;
+  /** Durable refs for private conversation session rotation. */
+  runtimeSessionRefs?: Map<string, Record<string, unknown>>;
   ownershipReadFails?: boolean;
   ownershipWriteFails?: boolean;
   /** Parent lookup result for quote context. */
@@ -243,21 +245,27 @@ async function runWebhook(body: unknown, options: {
   const logEvents: Array<{ event: string; fields: Record<string, unknown> }> = [];
   const cacheWrites: Array<{ key: string; value: string; ttlSeconds: number }> = [];
   const ownedThreadKeys = options.ownedThreadKeys ?? new Set<string>();
+  const runtimeSessionRefs = options.runtimeSessionRefs ?? new Map<string, Record<string, unknown>>();
   const runtimeConversation = {
     findUnique: async (input: any) => {
       if (options.ownershipReadFails) throw new Error('ownership read unavailable');
       const key = input.where.companyId_channel_channelConversationKey.channelConversationKey;
+      const refsJson = runtimeSessionRefs.get(key);
+      if (refsJson) return { refsJson };
       return ownedThreadKeys.has(key)
         ? { refsJson: { divoOwnedThread: true } }
         : null;
     },
     upsert: async (input: any) => {
       const key = input.where.companyId_channel_channelConversationKey.channelConversationKey;
-      const refs = input.create?.refsJson ?? input.update?.refsJson;
+      const refs = runtimeSessionRefs.has(key)
+        ? input.update?.refsJson ?? runtimeSessionRefs.get(key)
+        : input.create?.refsJson ?? input.update?.refsJson;
       if (refs?.divoOwnedThread === true && options.ownershipWriteFails) {
         throw new Error('ownership write unavailable');
       }
       if (refs?.divoOwnedThread === true) ownedThreadKeys.add(key);
+      if (refs && typeof refs === 'object') runtimeSessionRefs.set(key, refs);
       return {};
     },
   };
@@ -416,6 +424,7 @@ async function runWebhook(body: unknown, options: {
       || options.groupReplyMode
       || options.groupModeStore
       || options.ownedThreadKeys
+      || options.runtimeSessionRefs
       || options.ownershipReadFails
       || options.ownershipWriteFails
       ? {
@@ -625,6 +634,7 @@ async function runWebhook(body: unknown, options: {
     completedBatchReceipts,
     groupModeUpdates,
     ownedThreadKeys,
+    runtimeSessionRefs,
     cacheWrites,
     processQueuedReceipt,
   };
@@ -2470,6 +2480,54 @@ describe('Lark conversation commands', () => {
       }]);
     });
   }
+
+  it('starts a fresh private Pi session before entering the busy lane', async () => {
+    let adapter: any;
+    const runtimeSessionRefs = new Map<string, Record<string, unknown>>();
+    const created = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      text: '/new',
+      rootId: null,
+      parentId: null,
+    }), {
+      runtimeSessionRefs,
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
+    });
+
+    assert.deepEqual(created.serializerKeys, []);
+    assert.equal(created.engineInputs.length, 0);
+    const sessionKey = runtimeSessionRefs.get('oc_1')?.activePrivateSessionKey;
+    assert.equal(typeof sessionKey, 'string');
+    assert.match(String(sessionKey), /^oc_1:session:[a-f0-9]{24}$/);
+    assert.match(noticesSent(adapter)[0], /Started a new Divo chat/i);
+    assert.match(noticesSent(adapter)[0], /earlier chats are still available/i);
+
+    const next = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      text: 'hello from the new chat',
+      messageId: 'om_2',
+      rootId: null,
+      parentId: null,
+    }), { runtimeSessionRefs });
+    assert.equal((next.engineInputs[0] as any).threadId, sessionKey);
+  });
+
+  it('keeps group session boundaries native to Lark threads', async () => {
+    let adapter: any;
+    const runtimeSessionRefs = new Map<string, Record<string, unknown>>();
+    const result = await runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      text: '/new',
+    }), {
+      runtimeSessionRefs,
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
+    });
+
+    assert.equal(runtimeSessionRefs.size, 0);
+    assert.equal(result.engineInputs.length, 0);
+    assert.match(noticesSent(adapter)[0], /Start a new Lark thread/i);
+  });
 });
 
 describe('Lark first contact', () => {

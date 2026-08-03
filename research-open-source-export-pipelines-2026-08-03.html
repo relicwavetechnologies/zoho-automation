@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Open-source export pipeline references — Divo</title>
+  <meta name="description" content="Primary-source research on open-source connector, workflow, AI agent, and export pipelines, translated into robustness guidance for Divo.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    :root {
+      --font-display: 'Space Grotesk', 'General Sans', 'Satoshi', system-ui, sans-serif;
+      --font-body: 'Plus Jakarta Sans', 'Satoshi', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+      --fs-xs: .75rem; --fs-sm: .875rem; --fs-base: 1rem; --fs-lg: 1.125rem;
+      --fs-xl: 1.375rem; --fs-2xl: 1.75rem; --fs-3xl: 2.25rem; --fs-4xl: 3rem; --fs-5xl: 4.25rem;
+      --lh-tight: 1.15; --lh-snug: 1.35; --lh-normal: 1.55; --lh-relaxed: 1.75;
+      --fw-regular: 400; --fw-medium: 500; --fw-semibold: 600; --fw-bold: 700;
+      --bg-primary: #0a0a0f; --bg-secondary: #11111a; --bg-card: #16161f; --bg-elevated: #1d1d28;
+      --text-primary: #f4f4f8; --text-secondary: #b4b4c2; --text-muted: #6f6f80;
+      --accent-primary: #7c5cff; --accent-secondary: #22d3ee; --accent-success: #34d399;
+      --accent-warning: #fbbf24; --accent-danger: #f87171;
+      --border-subtle: rgba(255,255,255,.06); --border-soft: rgba(255,255,255,.10); --border-strong: rgba(255,255,255,.18);
+      --space-xs: .25rem; --space-sm: .5rem; --space-md: 1rem; --space-lg: 1.5rem; --space-xl: 2.5rem; --space-2xl: 4rem; --space-3xl: 6rem;
+      --radius-sm: 6px; --radius-md: 12px; --radius-lg: 20px; --radius-xl: 28px; --radius-full: 9999px;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,.4); --shadow-md: 0 8px 24px rgba(0,0,0,.35); --shadow-lg: 0 24px 60px rgba(0,0,0,.5); --shadow-glow: 0 0 32px rgba(124,92,255,.45);
+      --ease-default: cubic-bezier(.4,0,.2,1); --ease-smooth: cubic-bezier(.16,1,.3,1); --dur-normal: 300ms; --dur-slow: 600ms;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: var(--bg-primary); color: var(--text-primary); font-family: var(--font-body); font-size: var(--fs-base); line-height: var(--lh-normal); -webkit-font-smoothing: antialiased; }
+    h1, h2, h3, h4 { font-family: var(--font-display); font-weight: var(--fw-semibold); line-height: var(--lh-tight); letter-spacing: -.01em; }
+    a { color: var(--accent-secondary); }
+    code, pre, .mono { font-family: var(--font-mono); }
+    .shell { width: min(1120px, calc(100% - 2rem)); margin: 0 auto; }
+    .topbar { position: sticky; top: 0; z-index: 10; background: color-mix(in oklab, var(--bg-primary) 88%, transparent); backdrop-filter: blur(16px); border-bottom: 1px solid var(--border-subtle); }
+    .topbar__inner { display: flex; gap: 1rem; align-items: center; justify-content: space-between; min-height: 56px; }
+    .brand { color: var(--text-primary); text-decoration: none; font-family: var(--font-display); font-weight: var(--fw-semibold); }
+    .nav { display: flex; gap: .8rem; overflow-x: auto; white-space: nowrap; }
+    .nav a { color: var(--text-muted); font-size: var(--fs-xs); text-decoration: none; }
+    .nav a:hover { color: var(--text-primary); }
+    .hero { padding: clamp(4rem, 10vw, 8rem) 0 3.5rem; position: relative; }
+    .hero::before { content: ""; position: absolute; width: 320px; height: 320px; top: 10%; right: 8%; background: var(--accent-primary); filter: blur(120px); opacity: .16; pointer-events: none; }
+    .eyebrow, .kicker { color: var(--accent-secondary); font-family: var(--font-mono); font-size: var(--fs-xs); letter-spacing: .12em; text-transform: uppercase; }
+    h1 { max-width: 900px; margin: .75rem 0 1.25rem; font-size: clamp(2.6rem, 7vw, var(--fs-5xl)); }
+    .hero__dek { max-width: 780px; color: var(--text-secondary); font-size: clamp(1.05rem, 2vw, var(--fs-xl)); line-height: var(--lh-relaxed); }
+    .meta { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: 1.5rem; color: var(--text-muted); font-size: var(--fs-sm); }
+    .pill, .tag { display: inline-flex; align-items: center; padding: .32rem .65rem; border: 1px solid var(--border-soft); border-radius: var(--radius-full); background: var(--bg-card); color: var(--text-secondary); font-size: var(--fs-xs); }
+    main { padding-bottom: 4rem; }
+    section { scroll-margin-top: 76px; margin: 4rem 0; }
+    .section-head { display: flex; gap: 1rem; align-items: end; justify-content: space-between; margin-bottom: 1.25rem; }
+    .section-head h2 { margin: .35rem 0 0; font-size: clamp(1.8rem, 4vw, var(--fs-3xl)); }
+    .section-note { max-width: 550px; color: var(--text-muted); font-size: var(--fs-sm); }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; }
+    .grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .card { background: linear-gradient(145deg, color-mix(in oklab, var(--bg-card) 96%, var(--accent-primary) 4%), var(--bg-card)); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); padding: 1.25rem; box-shadow: var(--shadow-sm); transition: transform var(--dur-normal) var(--ease-smooth), border-color var(--dur-normal) var(--ease-default), box-shadow var(--dur-normal) var(--ease-default); }
+    .card:hover { transform: translateY(-3px); border-color: var(--border-strong); box-shadow: var(--shadow-md); }
+    .card h3 { margin: .55rem 0 .55rem; font-size: var(--fs-xl); }
+    .card p, .card li { color: var(--text-secondary); font-size: var(--fs-sm); line-height: var(--lh-relaxed); }
+    .card ul { margin: .7rem 0 0; padding-left: 1.15rem; }
+    .card .label { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .08em; }
+    .confidence { display: inline-block; width: .55rem; height: .55rem; margin-left: .3rem; border-radius: 999px; vertical-align: .08em; cursor: help; }
+    .confidence--high { background: var(--accent-success); box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent-success) 22%, transparent); }
+    .confidence--medium { background: var(--accent-warning); box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent-warning) 22%, transparent); }
+    .confidence--low { background: var(--text-muted); box-shadow: 0 0 0 2px color-mix(in oklab, var(--text-muted) 22%, transparent); }
+    .legend { display: flex; flex-wrap: wrap; gap: .8rem; color: var(--text-muted); font-size: var(--fs-xs); }
+    .legend span { display: inline-flex; align-items: center; gap: .3rem; }
+    .flow { display: grid; grid-template-columns: repeat(7, minmax(110px, 1fr)); gap: .5rem; align-items: center; padding: 1.25rem; background: var(--bg-secondary); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); overflow-x: auto; }
+    .flow__node { min-height: 90px; display: grid; place-items: center; padding: .7rem; text-align: center; background: var(--bg-card); border: 1px solid var(--border-soft); border-radius: var(--radius-md); color: var(--text-primary); font-family: var(--font-display); font-size: var(--fs-sm); }
+    .flow__node small { display: block; margin-top: .3rem; color: var(--text-muted); font-family: var(--font-body); font-size: var(--fs-xs); }
+    .flow__arrow { color: var(--accent-primary); font-size: 1.4rem; text-align: center; }
+    .callout { padding: 1.25rem 1.35rem; border-left: 3px solid var(--accent-warning); background: color-mix(in oklab, var(--bg-card) 92%, var(--accent-warning) 8%); border-radius: 0 var(--radius-md) var(--radius-md) 0; color: var(--text-secondary); }
+    .callout strong { color: var(--text-primary); }
+    .ref-card { display: flex; flex-direction: column; min-height: 100%; }
+    .ref-card__footer { margin-top: auto; padding-top: 1rem; font-size: var(--fs-xs); }
+    .ref-card__footer a { color: var(--accent-secondary); text-decoration: none; }
+    .ref-card__footer a:hover { text-decoration: underline; }
+    .checklist { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; margin: 0; padding: 0; list-style: none; }
+    .checklist li { display: grid; grid-template-columns: 1.5rem 1fr; gap: .65rem; padding: .9rem 1rem; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); color: var(--text-secondary); font-size: var(--fs-sm); }
+    .checklist li::before { content: "✓"; color: var(--accent-success); font-family: var(--font-mono); }
+    .insight { margin: 2.5rem 0; padding: clamp(1.5rem, 3vw, 2.25rem); background: var(--bg-card); border: 1px solid var(--border-soft); border-radius: 16px; position: relative; overflow: hidden; }
+    .insight::before { content: ""; position: absolute; top: 0; left: 0; width: 3px; height: 100%; background: var(--insight-color, var(--accent-primary)); opacity: .85; }
+    .insight[data-kind="why"] { --insight-color: var(--accent-primary); } .insight[data-kind="hooks"] { --insight-color: var(--accent-secondary); } .insight[data-kind="considered"] { --insight-color: var(--text-muted); } .insight[data-kind="risk"] { --insight-color: var(--accent-danger); } .insight[data-kind="trojan"] { --insight-color: var(--accent-success); }
+    .insight__kicker { color: var(--insight-color); font-family: var(--font-display); font-size: var(--fs-xs); font-weight: var(--fw-semibold); letter-spacing: .12em; text-transform: uppercase; margin-bottom: .75rem; }
+    .insight__title { margin: 0 0 1rem; font-size: var(--fs-2xl); }
+    .insight[data-kind="trojan"] .insight__title { font-size: clamp(var(--fs-2xl), 4vw, var(--fs-4xl)); }
+    .insight__body { color: var(--text-secondary); line-height: var(--lh-relaxed); }
+    .insight__list { display: grid; gap: .85rem; list-style: none; padding: 0; margin: 0; }
+    .insight__item { display: grid; grid-template-columns: max-content 1fr; gap: .85rem; align-items: baseline; }
+    .insight__rank { min-width: 1.6rem; padding: .15rem .45rem; border-radius: 6px; background: color-mix(in oklab, var(--insight-color) 14%, transparent); color: var(--insight-color); font-family: var(--font-mono); font-size: var(--fs-xs); text-align: center; }
+    .insight__hook { color: var(--text-primary); font-weight: var(--fw-medium); }
+    .insight__why { display: block; margin-top: .2rem; color: var(--text-muted); font-size: var(--fs-sm); }
+    .sources-footer { margin-top: 5rem; padding: 2rem 0 3rem; border-top: 1px solid var(--border-soft); color: var(--text-muted); font-size: var(--fs-sm); }
+    .sources-footer__title { margin: 0 0 1.25rem; color: var(--text-secondary); font-family: var(--font-display); font-size: var(--fs-sm); letter-spacing: .08em; text-transform: uppercase; }
+    .sources-footer__list { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr) max-content; gap: .45rem 1.5rem; }
+    .sources-footer__row { display: contents; }
+    .sources-footer__url { color: var(--text-secondary); overflow-wrap: anywhere; text-decoration: none; border-bottom: 1px dotted var(--border-soft); }
+    .sources-footer__url:hover { color: var(--accent-secondary); }
+    .sources-footer__use { color: var(--text-muted); font-style: italic; }
+    .sources-footer__date { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--fs-xs); white-space: nowrap; }
+    .copy-button, .top-button { border: 1px solid var(--border-soft); background: var(--bg-card); color: var(--text-secondary); border-radius: var(--radius-full); padding: .55rem .8rem; cursor: pointer; font-family: var(--font-body); font-size: var(--fs-xs); }
+    .copy-button:hover, .top-button:hover { border-color: var(--accent-secondary); color: var(--text-primary); }
+    .top-button { position: fixed; right: 1rem; bottom: 1rem; display: none; z-index: 20; }
+    .top-button.is-visible { display: block; }
+    .fade-in { opacity: 0; transform: translateY(16px); transition: opacity var(--dur-slow) var(--ease-smooth), transform var(--dur-slow) var(--ease-smooth); }
+    .fade-in.is-visible { opacity: 1; transform: none; }
+    @media (max-width: 900px) { .grid, .grid--3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } .flow { grid-template-columns: repeat(7, minmax(120px, 1fr)); } }
+    @media (max-width: 720px) { .topbar__inner { align-items: flex-start; flex-direction: column; padding: .7rem 0; } .nav { width: 100%; } .hero { padding-top: 4rem; } .grid, .grid--2, .grid--3, .checklist { grid-template-columns: 1fr; } .flow { display: flex; align-items: stretch; } .flow__node { min-width: 130px; } .flow__arrow { display: grid; place-items: center; } .sources-footer__list { grid-template-columns: 1fr; } .sources-footer__row { display: grid; gap: .2rem; padding: .6rem 0; border-bottom: 1px solid var(--border-subtle); } }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .fade-in, .fade-in.is-visible, .card { transition: none; transform: none; opacity: 1; } }
+    @media print { body { background: #fff; color: #111; } .topbar, .top-button, .copy-button { display: none !important; } .card, .insight, .callout, .flow { background: #fff; border-color: #ccc; box-shadow: none; } .card p, .card li, .insight__body, .insight__why, .section-note { color: #333; } .sources-footer { color: #555; border-top-color: #ccc; } .sources-footer__url { color: #333; } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell topbar__inner">
+      <a class="brand" href="#top">Divo / export research</a>
+      <nav class="nav" aria-label="Report sections">
+        <a href="#thesis">Thesis</a><a href="#references">References</a><a href="#pipeline">Pipeline</a><a href="#divo">Divo</a><a href="#sources">Sources</a>
+      </nav>
+    </div>
+  </header>
+
+  <div id="top" class="shell">
+    <header class="hero">
+      <div class="eyebrow">Research brief · 03 Aug 2026</div>
+      <h1>Make export a durable product, not a lucky background job.</h1>
+      <p class="hero__dek">A primary-source scan of open-source workflow engines, data-sync systems, AI Workspace agents, and Drive/Sheets connector patterns. The useful common thread is simple: bounded source reads, durable progress, idempotent side effects, and a verification receipt before delivery.</p>
+      <div class="meta"><span class="pill">Divo autonomous export E2E</span><span class="pill">Google Drive / Sheets / files</span><span class="pill">No model-context payloads</span><span class="pill">Primary docs + repositories</span></div>
+    </header>
+
+    <main>
+      <section id="thesis" class="fade-in">
+        <div class="section-head"><div><div class="kicker">The short answer</div><h2>Borrow the state machine, not the UI.</h2></div><button class="copy-button" id="copy-takeaways">Copy key takeaways</button></div>
+        <div class="callout"><strong>Recommendation:</strong> model every export as a resumable state machine with a durable source checkpoint and a separate artifact lifecycle. Do not let a retry re-run a completed source page or re-create a Google Sheet without first checking the deterministic resource identity.<span class="confidence confidence--high" title="high — synthesized from multiple primary sources"></span></div>
+        <div class="grid" style="margin-top:1rem">
+          <article class="card"><div class="label">01 / best execution pattern</div><h3>Step-level replay</h3><p>Activepieces checkpoints completed steps and replays only the first in-flight step after a crash. That keeps retries from re-sending every earlier side effect.<span class="confidence confidence--high" title="high — official Activepieces architecture docs"></span></p></article>
+          <article class="card"><div class="label">02 / best source pattern</div><h3>Committed page cursors</h3><p>Airbyte checkpoints only after the destination confirms persistence, then resumes from that state. It explicitly accepts at-least-once delivery so reliability does not depend on fragile exactly-once behavior.<span class="confidence confidence--high" title="high — official Airbyte engineering docs"></span></p></article>
+          <article class="card"><div class="label">03 / best artifact pattern</div><h3>Pointer + receipt</h3><p>NiFi keeps FlowFile content behind a pointer and records attributes, routing, and provenance separately. Divo should return an opaque artifact reference plus verification metadata, not the rows themselves.<span class="confidence confidence--high" title="high — official Apache NiFi docs plus Divo handover context"></span></p></article>
+          <article class="card"><div class="label">04 / best agent boundary</div><h3>Strict JSON + MIME rules</h3><p>Google Workspace CLI exposes structured JSON and bounded pagination; Anthropic’s Drive skill reads metadata first, branches by MIME type, and rejects unsupported or oversized reads clearly.<span class="confidence confidence--high" title="high — official repositories and bundled skill source"></span></p></article>
+        </div>
+        <div class="legend" style="margin-top:1rem"><span><i class="confidence confidence--high"></i> verified by primary source</span><span><i class="confidence confidence--medium"></i> single reasonable source</span><span><i class="confidence confidence--low"></i> inference / caution</span></div>
+      </section>
+
+      <section id="pipeline" class="fade-in">
+        <div class="section-head"><div><div class="kicker">Reference architecture</div><h2>The pipeline Divo should make explicit.</h2></div><p class="section-note">The model should only initiate or continue the run. The backend owns every durable transition, credential, side effect, and proof of completion.</p></div>
+        <div class="flow" aria-label="Recommended export pipeline">
+          <div class="flow__node">Intent<small>offerId + format</small></div><div class="flow__arrow">→</div>
+          <div class="flow__node">Preflight<small>auth + RBAC + limit</small></div><div class="flow__arrow">→</div>
+          <div class="flow__node">Read<small>bounded pages + cursor</small></div><div class="flow__arrow">→</div>
+          <div class="flow__node">Stage<small>rows outside context</small></div><div class="flow__arrow">→</div>
+          <div class="flow__node">Build<small>CSV / XLSX / Sheet</small></div><div class="flow__arrow">→</div>
+          <div class="flow__node">Verify<small>counts + schema + values</small></div><div class="flow__arrow">→</div>
+          <div class="flow__node">Deliver<small>opaque receipt</small></div>
+        </div>
+        <div class="grid grid--3" style="margin-top:1rem">
+          <article class="card"><div class="label">State / durable</div><h3>Source progress</h3><ul><li>page token or cursor</li><li>page index and rows read</li><li>requested limit and remaining limit</li><li>schema hash and source fingerprint</li></ul></article>
+          <article class="card"><div class="label">State / durable</div><h3>Artifact identity</h3><ul><li>offer ID + format + destination</li><li>provider resource ID</li><li>temporary vs published status</li><li>artifact version and checksum/size</li></ul></article>
+          <article class="card"><div class="label">State / user-visible</div><h3>Verification receipt</h3><ul><li>rows read / exported</li><li>columns and order</li><li>source-truncated flag</li><li>provider URL or file download</li></ul></article>
+        </div>
+      </section>
+
+      <section id="references" class="fade-in">
+        <div class="section-head"><div><div class="kicker">Reference set</div><h2>What each project teaches.</h2></div><p class="section-note">Licensing is called out because “open source” is not uniform. Reuse the design pattern; inspect the license before embedding code or a runtime.</p></div>
+        <div class="grid grid--3">
+          <article class="card ref-card"><div class="label">Workflow engine · MIT community edition</div><h3>Activepieces<span class="confidence confidence--high" title="high — official repository and docs"></span></h3><p>Google Drive and Sheets pieces expose read, list, upload, export, row, and write-back actions. Its durable execution model stores a compressed run log with each finished step’s input, output, status, and error; a fresh worker skips completed steps and re-runs only the first unfinished one.</p><div class="ref-card__footer"><span class="tag">Use for: crash-safe replay</span> <a href="https://www.activepieces.com/docs/install/architecture/durable-execution" target="_blank" rel="noopener">Durable execution ↗</a></div></article>
+          <article class="card ref-card"><div class="label">Orchestrator · Apache 2 core</div><h3>Kestra<span class="confidence confidence--high" title="high — official repository and docs"></span></h3><p>Its Google Drive plugin covers upload, download, export, list, and file-created triggers. Kestra distinguishes task retries from flow restart/replay, and stores large data in internal storage while task outputs carry references and metadata rather than the payload.</p><div class="ref-card__footer"><span class="tag">Use for: lifecycle semantics</span> <a href="https://kestra.io/plugins/plugin-googleworkspace/drive" target="_blank" rel="noopener">Drive plugin ↗</a></div></article>
+          <article class="card ref-card"><div class="label">Developer platform · AGPL core / commercial packaging caveat</div><h3>Windmill<span class="confidence confidence--high" title="high — official repository and docs"></span></h3><p>Google Drive and Sheets credentials are modeled as workspace resources. Drive push channels are renewed automatically; jobs have UUIDs, logs, results, metadata, and progress APIs. Its docs recommend object storage for large binary data instead of step-local state.</p><div class="ref-card__footer"><span class="tag">Use for: resource + job model</span> <a href="https://www.windmill.dev/docs/core_concepts/native_triggers" target="_blank" rel="noopener">Triggers ↗</a></div></article>
+          <article class="card ref-card"><div class="label">Data sync · open-source platform</div><h3>Airbyte<span class="confidence confidence--high" title="high — official Airbyte engineering docs"></span></h3><p>Airbyte’s checkpoint protocol emits state as pages progress and only treats a checkpoint as committed after the destination confirms it persisted the records. Resumable full refresh uses the last successful page as a synthetic cursor, while accepting possible duplicates as an at-least-once tradeoff.</p><div class="ref-card__footer"><span class="tag">Use for: page recovery</span> <a href="https://airbyte.com/blog/resumable-full-refresh-building-resilient-systems-for-syncing-data" target="_blank" rel="noopener">Resumable refresh ↗</a></div></article>
+          <article class="card ref-card"><div class="label">Orchestrator · Apache 2</div><h3>Apache Airflow<span class="confidence confidence--high" title="high — official provider documentation"></span></h3><p>Google providers make the source/sink boundary explicit: SQL-to-Sheets, local-filesystem-to-Drive, and Sheets-to-GCS transfer operators. Connections, templated IDs/ranges, impersonation, retries, and returned resource URIs stay in the orchestration layer.</p><div class="ref-card__footer"><span class="tag">Use for: typed transfer steps</span> <a href="https://airflow.apache.org/docs/apache-airflow-providers-google/stable/operators/transfer/sql_to_sheets.html" target="_blank" rel="noopener">SQL → Sheets ↗</a></div></article>
+          <article class="card ref-card"><div class="label">Dataflow · Apache 2</div><h3>Apache NiFi<span class="confidence confidence--high" title="high — official NiFi docs"></span></h3><p>NiFi’s Google Drive listing processor can track entities across a cluster without duplicating a full listing after primary-node failover. Its FlowFile model, backpressure, retry/penalize/yield rules, failure relationships, and provenance replay are unusually useful references for export evidence.</p><div class="ref-card__footer"><span class="tag">Use for: lineage + backpressure</span> <a href="https://nifi.apache.org/components/org.apache.nifi.processors.gcp.drive.ListGoogleDrive/" target="_blank" rel="noopener">ListGoogleDrive ↗</a></div></article>
+          <article class="card ref-card"><div class="label">Task engine · persistence + caching</div><h3>Prefect<span class="confidence confidence--medium" title="medium — official docs; license not central to this brief"></span></h3><p>Prefect treats persisted results as the foundation for retries, caching, and later retrieval. Its docs explicitly warn that local result storage does not survive a new ephemeral container; remote object storage or a shared volume is required across retries.</p><div class="ref-card__footer"><span class="tag">Use for: deterministic cache keys</span> <a href="https://docs.prefect.io/v3/advanced/results" target="_blank" rel="noopener">Result persistence ↗</a></div></article>
+          <article class="card ref-card"><div class="label">Agent boundary · Apache 2</div><h3>Google Workspace CLI<span class="confidence confidence--high" title="high — official repository"></span></h3><p>The CLI generates its command surface from Google Discovery, returns structured JSON, supports bounded auto-pagination as NDJSON with page limits and delays, and offers explicit upload/auth paths for headless operation. It also ships agent skills.</p><div class="ref-card__footer"><span class="tag">Use for: governed tool surface</span> <a href="https://github.com/googleworkspace/cli" target="_blank" rel="noopener">Repository ↗</a></div></article>
+          <article class="card ref-card"><div class="label">Drive read/export skill · open repository</div><h3>Anthropic Google Drive skill<span class="confidence confidence--high" title="high — bundled skill source"></span></h3><p>The skill reads metadata first, branches on MIME type, exports Google-native files to explicit formats, limits large stdout reads, writes larger outputs to a file, and exposes clear exit codes and provider error reasons.</p><div class="ref-card__footer"><span class="tag">Use for: MIME-aware export</span> <a href="https://github.com/anthropics/claude-tag-plugins/blob/main/google-drive/skills/google-drive-api/SKILL.md" target="_blank" rel="noopener">Skill source ↗</a></div></article>
+          <article class="card ref-card"><div class="label">AI knowledge app · open source</div><h3>Onyx<span class="confidence confidence--high" title="high — official Onyx docs"></span></h3><p>Onyx separates connector credentials, connector configuration, access type, input mode, refresh frequency, and prune frequency. Its Google Drive connector supports Docs, Sheets, Slides, common office files, and permission synchronization when the source account can provide directory access.</p><div class="ref-card__footer"><span class="tag">Use for: source ACL sync</span> <a href="https://docs.onyx.app/admins/connectors/overview" target="_blank" rel="noopener">Connector model ↗</a></div></article>
+          <article class="card ref-card"><div class="label">AI research app · MIT / prototype caution</div><h3>Google Workspace Agent<span class="confidence confidence--medium" title="medium — repository claims are primary but project scale is smaller"></span></h3><p>This MIT project combines a typed DAG, persisted state, a five-step verification engine, read-only-by-default behavior, manual confirmation for writes, and sandboxed code execution. Treat it as a useful agent UX/checklist reference, not as proof of production scale.</p><div class="ref-card__footer"><span class="tag">Use for: plan → verify → write</span> <a href="https://github.com/haseeb-heaven/gworkspace-agent" target="_blank" rel="noopener">Repository ↗</a></div></article>
+          <article class="card ref-card"><div class="label">AI workspace · open source</div><h3>SurfSense<span class="confidence confidence--medium" title="medium — repository README; internals not independently audited here"></span></h3><p>SurfSense connects Google Drive and other sources, offers report export to PDF/DOCX/HTML and other formats, and describes scheduled/event-triggered agents that write results back to tools including Drive. It is a useful product-shape reference for “research in → deliverable out.”</p><div class="ref-card__footer"><span class="tag">Use for: deliverable studio</span> <a href="https://github.com/MODSetter/SurfSense" target="_blank" rel="noopener">Repository ↗</a></div></article>
+        </div>
+        <div class="callout" style="margin-top:1rem"><strong>License caution:</strong> n8n is a strong workflow reference for Google Drive/Sheets operations and external binary storage, but its own repository describes it as fair-code rather than a conventional OSI-licensed project. Windmill’s AGPL source and the packaged Community Edition have different redistribution/commercial-use terms. Kestra’s current Google Drive catalog entry is marked “Business,” even though the orchestration core is Apache 2. Use these as design references unless the exact component license fits Divo.<span class="confidence confidence--high" title="high — official repositories/catalogs"></span></div>
+      </section>
+
+      <section id="divo" class="fade-in">
+        <div class="section-head"><div><div class="kicker">Divo translation</div><h2>Robustness backlog, in priority order.</h2></div><p class="section-note">These are recommendations inferred from the references and the handover’s current Google Sheet/CSV/XLSX E2E shape.</p></div>
+        <ol class="checklist">
+          <li><div><strong>Make the offer immutable.</strong> Freeze the source operation, arguments, requested limit, ordering, selected columns, and format at confirmation. A callback must replay the frozen offer, never reconstruct intent from chat.</div></li>
+          <li><div><strong>Persist page checkpoints only after durable staging.</strong> Commit <code>pageToken/pageIndex/rowsRead</code> after the page has been written to staging. This follows Airbyte’s “destination echoes committed state” model and prevents a cursor from claiming rows that were never persisted.<span class="confidence confidence--high" title="high — inference from Airbyte checkpointing"></span></div></li>
+          <li><div><strong>Separate transient retries from side-effect retries.</strong> Retry source reads and artifact verification with bounded backoff. For Google Sheet create/write/upload, first look up the deterministic artifact key and resume/update rather than blindly creating another file.<span class="confidence confidence--high" title="high — inference from Activepieces, Prefect, Airbyte, and provider behavior"></span></div></li>
+          <li><div><strong>Use a staging artifact or staging sheet.</strong> Build into a temporary object or hidden worksheet; publish/rename only after row count, column order, values, and type checks pass. A visible half-export should never be the “completed” artifact.<span class="confidence confidence--medium" title="medium — synthesis across artifact and transfer references"></span></div></li>
+          <li><div><strong>Make the sink idempotent per format.</strong> Key the artifact by <code>offerId + sourceFingerprint + format + destination</code>. Same format after completion returns the existing resource; a different format gets its own resource, matching the handover’s intended behavior.<span class="confidence confidence--high" title="high — Divo requirement reinforced by caching/idempotency references"></span></div></li>
+          <li><div><strong>Keep the model on a receipt.</strong> Return <code>artifactId</code>, provider URL/download reference, status, rows exported, columns, source-truncated flag, and verification status. Keep rows in backend/object storage, never in Pi context.<span class="confidence confidence--high" title="high — Onyx/NiFi/Windmill storage patterns plus Divo architecture rule"></span></div></li>
+          <li><div><strong>Record provenance as first-class data.</strong> Log source pages, API request metadata without secrets, checkpoint transitions, worker/job IDs, provider resource IDs, artifact checksums or byte sizes, and verification results. This is the Divo version of NiFi provenance and Windmill job metadata.<span class="confidence confidence--high" title="high — official provenance/job docs and Divo handover"></span></div></li>
+          <li><div><strong>Verify provider state after every publish.</strong> For Sheets, re-read the written range. For CSV/XLSX, parse the artifact back and compare rows/columns/types. A successful API response is not proof that the artifact is correct.<span class="confidence confidence--high" title="high — Divo E2E requirement and provider-specific export patterns"></span></div></li>
+          <li><div><strong>Make continuation use the same opaque resource.</strong> Store the provider resource identity and worksheet/tab in the artifact registry. “Edit the exported Sheet” must resolve that resource, not create a new export path.<span class="confidence confidence--high" title="high — direct mapping to Divo handover continuation requirement"></span></div></li>
+          <li><div><strong>Test crash windows intentionally.</strong> Inject failure after page read, after staging, after Sheet create, after batch write, before verification, and after verification. Assert no extra rows, no duplicate artifact, correct resume point, and correct idempotent callback behavior.<span class="confidence confidence--high" title="high — derived from durable execution and at-least-once references"></span></div></li>
+        </ol>
+      </section>
+
+      <section class="fade-in">
+        <div class="section-head"><div><div class="kicker">Failure semantics</div><h2>The edges that deserve tests.</h2></div><p class="section-note">A robust export is mostly about what happens when the provider, worker, or user acts twice.</p></div>
+        <div class="grid grid--2">
+          <article class="card"><div class="label">Source edge</div><h3>Limit changes mid-run<span class="confidence confidence--high" title="high — directly matches Divo handover bug"></span></h3><p>Freeze the original limit and carry the remaining count through every page. Never let a default page size replace the request’s explicit boundary. Record whether the source ended naturally or was cut by the requested limit.</p></article>
+          <article class="card"><div class="label">Worker edge</div><h3>Crash after a side effect<span class="confidence confidence--high" title="high — durable execution references"></span></h3><p>The in-flight step may run twice. Store an idempotency key before the side effect, reconcile provider state on retry, and prefer updating a known artifact over creating another one.</p></article>
+          <article class="card"><div class="label">Artifact edge</div><h3>Provider says “success” but data is wrong<span class="confidence confidence--high" title="high — Divo verification requirement"></span></h3><p>Separate “published” from “verified.” Re-read the provider artifact or parse the file back. Only the verification gate may transition an artifact to deliverable.</p></article>
+          <article class="card"><div class="label">User edge</div><h3>Callback repeats or changes format<span class="confidence confidence--high" title="high — Divo handover acceptance criteria"></span></h3><p>Same offer + same format returns the existing artifact receipt. Same offer + another format creates a sibling artifact tied to the same source fingerprint.</p></article>
+        </div>
+      </section>
+
+      <section class="fade-in">
+        <div class="insight" data-kind="why">
+          <div class="insight__kicker">Why this matters for Divo</div>
+          <h2 class="insight__title">The export should be a small transactional system with a chat interface on top.</h2>
+          <div class="insight__body"><p>The research converges on the same separation: the agent decides intent, while the backend owns state, credentials, bounded reads, retries, artifacts, and proof. Divo already has the right high-level boundary; the next hardening step is to make each boundary visible in persisted state and testable on its own.</p></div>
+        </div>
+        <div class="insight" data-kind="hooks">
+          <div class="insight__kicker">Implementation hooks (ranked)</div>
+          <h2 class="insight__title">Five changes with the most reliability per line of code.</h2>
+          <ol class="insight__list">
+            <li class="insight__item"><span class="insight__rank">01</span><div><span class="insight__hook">Add a durable page checkpoint to the export run.</span><span class="insight__why">This catches the exact “source re-fetches too much” class of bug and enables resume after a worker crash.</span></div></li>
+            <li class="insight__item"><span class="insight__rank">02</span><div><span class="insight__hook">Introduce a deterministic artifact key and a reconcile-before-create sink.</span><span class="insight__why">This protects Google Sheets and Drive from duplicate artifacts when a side-effect step is retried.</span></div></li>
+            <li class="insight__item"><span class="insight__rank">03</span><div><span class="insight__hook">Split “published” and “verified” into separate states.</span><span class="insight__why">It makes provider responses and actual file correctness different, testable facts.</span></div></li>
+            <li class="insight__item"><span class="insight__rank">04</span><div><span class="insight__hook">Return a compact verification receipt to Pi.</span><span class="insight__why">This preserves the no-large-payload rule while giving the agent enough information for follow-up edits.</span></div></li>
+            <li class="insight__item"><span class="insight__rank">05</span><div><span class="insight__hook">Add fault injection around every external side effect.</span><span class="insight__why">The happy path already works; crash-window tests are what prove the pipeline is robust.</span></div></li>
+          </ol>
+        </div>
+        <div class="insight" data-kind="considered">
+          <div class="insight__kicker">Probably already considered</div>
+          <h2 class="insight__title">Ideas that look simpler, but leave a hole.</h2>
+          <ul class="insight__list">
+            <li class="insight__item"><span class="insight__rank">↳</span><div><span class="insight__hook">Retry the whole BullMQ job.</span><span class="insight__why">Fine for pure reads; unsafe once a Sheet/file side effect has happened. Replay should skip committed work.</span></div></li>
+            <li class="insight__item"><span class="insight__rank">↳</span><div><span class="insight__hook">Keep the fetched rows in job return values.</span><span class="insight__why">Works at small volume, but makes queue/DB state and model context fragile. Store large payloads as files or staged pages.</span></div></li>
+            <li class="insight__item"><span class="insight__rank">↳</span><div><span class="insight__hook">Treat the provider’s “created” response as completion.</span><span class="insight__why">Creation proves an object exists, not that the expected rows, columns, types, and values landed.</span></div></li>
+          </ul>
+        </div>
+        <div class="insight" data-kind="risk">
+          <div class="insight__kicker">Risk flags</div>
+          <h2 class="insight__title">Do not ship these failure modes as “edge cases.”</h2>
+          <ul class="insight__list">
+            <li class="insight__item"><span class="insight__rank">!</span><div><span class="insight__hook">A retry can create a second Google Sheet or upload a second Drive file.</span><span class="insight__why">External side effects need a durable idempotency key and reconciliation path.</span></div></li>
+            <li class="insight__item"><span class="insight__rank">!</span><div><span class="insight__hook">A page checkpoint advances before page data is durably staged.</span><span class="insight__why">The next retry can silently skip rows.</span></div></li>
+            <li class="insight__item"><span class="insight__rank">!</span><div><span class="insight__hook">OAuth or service-account credentials cross into Pi/model context.</span><span class="insight__why">This violates Divo’s authority boundary; Pi should receive only the governed gateway result.</span></div></li>
+            <li class="insight__item"><span class="insight__rank">!</span><div><span class="insight__hook">A completed export has no reusable resource identity.</span><span class="insight__why">Continuation then creates a new file or loses the link between chat intent and the artifact.</span></div></li>
+          </ul>
+        </div>
+        <div class="insight" data-kind="trojan">
+          <div class="insight__kicker">If I had to reduce the research to one sentence</div>
+          <h2 class="insight__title">Divo should treat every export as a durable run with page checkpoints, immutable artifact versions, and a verification receipt—then let chat reveal only the receipt.</h2>
+          <div class="insight__body"><p>This is the smallest architectural shift that captures the strongest ideas from Activepieces, Airbyte, NiFi, Prefect, and the Google Workspace agent references without moving authority into Pi.</p></div>
+        </div>
+      </section>
+
+      <section id="sources" class="sources-footer" aria-label="Sources">
+        <h2 class="sources-footer__title">Sources · fetched 2026-08-03</h2>
+        <div class="sources-footer__list">
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://www.activepieces.com/docs/install/architecture/durable-execution" target="_blank" rel="noopener">activepieces.com/docs/install/architecture/durable-execution</a><span class="sources-footer__use">step checkpointing and replay</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://www.activepieces.com/docs/install/reference/limits" target="_blank" rel="noopener">activepieces.com/docs/install/reference/limits</a><span class="sources-footer__use">persisted files, log limits</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://www.activepieces.com/mcp/google-drive" target="_blank" rel="noopener">activepieces.com/mcp/google-drive</a><span class="sources-footer__use">Drive read/write/export actions</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://www.activepieces.com/pieces/google-sheets" target="_blank" rel="noopener">activepieces.com/pieces/google-sheets</a><span class="sources-footer__use">Sheets row and export actions</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://github.com/activepieces/activepieces" target="_blank" rel="noopener">github.com/activepieces/activepieces</a><span class="sources-footer__use">open-source/license status</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://kestra.io/plugins/plugin-googleworkspace/drive" target="_blank" rel="noopener">kestra.io/plugins/plugin-googleworkspace/drive</a><span class="sources-footer__use">Drive upload/download/export/watch</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://kestra.io/docs/workflow-components/retries" target="_blank" rel="noopener">kestra.io/docs/workflow-components/retries</a><span class="sources-footer__use">retry/restart/replay semantics</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://kestra.io/docs/plugin-developer-guide/task" target="_blank" rel="noopener">kestra.io/docs/plugin-developer-guide/task</a><span class="sources-footer__use">storage URI versus task metadata</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://www.windmill.dev/docs/integrations/gdrive" target="_blank" rel="noopener">windmill.dev/docs/integrations/gdrive</a><span class="sources-footer__use">OAuth resource and Drive scripts</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://www.windmill.dev/docs/core_concepts/native_triggers" target="_blank" rel="noopener">windmill.dev/docs/core_concepts/native_triggers</a><span class="sources-footer__use">Drive push channels and renewal</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://www.windmill.dev/docs/core_concepts/persistent_storage" target="_blank" rel="noopener">windmill.dev/docs/core_concepts/persistent_storage</a><span class="sources-footer__use">large-object persistence</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://www.windmill.dev/docs/core_concepts/jobs" target="_blank" rel="noopener">windmill.dev/docs/core_concepts/jobs</a><span class="sources-footer__use">job identity and progress</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://airbyte.com/blog/checkpointing" target="_blank" rel="noopener">airbyte.com/blog/checkpointing</a><span class="sources-footer__use">committed state and at-least-once</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://airbyte.com/blog/resumable-full-refresh-building-resilient-systems-for-syncing-data" target="_blank" rel="noopener">airbyte.com/blog/resumable-full-refresh-building-resilient-systems-for-syncing-data</a><span class="sources-footer__use">synthetic cursors and duplicates</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://airflow.apache.org/docs/apache-airflow-providers-google/stable/operators/transfer/sql_to_sheets.html" target="_blank" rel="noopener">airflow.apache.org/.../sql_to_sheets.html</a><span class="sources-footer__use">typed SQL → Sheets transfer</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://airflow.apache.org/docs/apache-airflow-providers-google/stable/operators/transfer/local_to_drive.html" target="_blank" rel="noopener">airflow.apache.org/.../local_to_drive.html</a><span class="sources-footer__use">file → Drive transfer</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://airflow.apache.org/docs/apache-airflow-providers-google/stable/_api/airflow/providers/google/cloud/transfers/sheets_to_gcs/index.html" target="_blank" rel="noopener">airflow.apache.org/.../sheets_to_gcs</a><span class="sources-footer__use">Sheets → object storage</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://nifi.apache.org/components/org.apache.nifi.processors.gcp.drive.ListGoogleDrive/" target="_blank" rel="noopener">nifi.apache.org/.../ListGoogleDrive</a><span class="sources-footer__use">Drive listing and failover</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://nifi.apache.org/nifi-docs/user-guide.html" target="_blank" rel="noopener">nifi.apache.org/nifi-docs/user-guide.html</a><span class="sources-footer__use">retry, backpressure, provenance</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://docs.prefect.io/v3/advanced/results" target="_blank" rel="noopener">docs.prefect.io/v3/advanced/results</a><span class="sources-footer__use">persisted results and ephemeral workers</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://github.com/googleworkspace/cli" target="_blank" rel="noopener">github.com/googleworkspace/cli</a><span class="sources-footer__use">structured JSON, pagination, auth</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://github.com/anthropics/claude-tag-plugins/blob/main/google-drive/skills/google-drive-api/SKILL.md" target="_blank" rel="noopener">github.com/anthropics/claude-tag-plugins/.../google-drive-api/SKILL.md</a><span class="sources-footer__use">MIME-aware export and size guard</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://docs.onyx.app/admins/connectors/overview" target="_blank" rel="noopener">docs.onyx.app/admins/connectors/overview</a><span class="sources-footer__use">connector ACL and refresh model</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://github.com/haseeb-heaven/gworkspace-agent" target="_blank" rel="noopener">github.com/haseeb-heaven/gworkspace-agent</a><span class="sources-footer__use">typed DAG and verification idea</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://github.com/MODSetter/SurfSense" target="_blank" rel="noopener">github.com/MODSetter/SurfSense</a><span class="sources-footer__use">Drive sync → report export shape</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://docs.n8n.io/hosting/scaling/external-storage/" target="_blank" rel="noopener">docs.n8n.io/hosting/scaling/external-storage</a><span class="sources-footer__use">binary artifact storage and pruning</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+          <div class="sources-footer__row"><a class="sources-footer__url" href="https://n8n.io/integrations/google-drive/and/google-sheets/" target="_blank" rel="noopener">n8n.io/integrations/google-drive/and/google-sheets</a><span class="sources-footer__use">Google operations and AI workflows</span><time class="sources-footer__date" datetime="2026-08-03">2026-08-03</time></div>
+        </div>
+        <p style="margin-top:1.25rem;font-size:var(--fs-xs)">Confidence dots: <span class="confidence confidence--high"></span> verified by a primary source, <span class="confidence confidence--medium"></span> single reasonable source, <span class="confidence confidence--low"></span> inferred or cautionary. Licensing and feature availability can change; verify before embedding a runtime.</p>
+      </section>
+    </main>
+  </div>
+
+  <button class="top-button" id="back-to-top" aria-label="Back to top">↑ top</button>
+  <script>
+    const takeaways = document.querySelector('#thesis .callout').innerText;
+    document.querySelector('#copy-takeaways').addEventListener('click', async (event) => {
+      await navigator.clipboard.writeText(takeaways);
+      event.currentTarget.textContent = 'Copied';
+      window.setTimeout(() => { event.currentTarget.textContent = 'Copy key takeaways'; }, 1400);
+    });
+    const observer = new IntersectionObserver((entries) => entries.forEach((entry) => entry.isIntersecting && entry.target.classList.add('is-visible')), { threshold: .12 });
+    document.querySelectorAll('.fade-in').forEach((node) => observer.observe(node));
+    const back = document.querySelector('#back-to-top');
+    window.addEventListener('scroll', () => back.classList.toggle('is-visible', window.scrollY > 600), { passive: true });
+    back.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+  </script>
+</body>
+</html>

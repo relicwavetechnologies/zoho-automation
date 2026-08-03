@@ -19,6 +19,41 @@ const manifest = JSON.parse(
 	fs.readFileSync(path.join(divoDir, "runtime-manifest.json"), "utf8"),
 );
 
+export const DIVO_CONTEXT_WINDOW = 150_000;
+export const DIVO_CONTEXT_RESERVE = 24_576;
+export const DIVO_CONTEXT_RECENT = 20_000;
+export const DIVO_MAX_OUTPUT_TOKENS = 32_768;
+
+export function buildAgentConfiguration({ provider, model, thinkingLevel }) {
+	const deepseekOverride = {
+		contextWindow: DIVO_CONTEXT_WINDOW,
+		maxTokens: DIVO_MAX_OUTPUT_TOKENS,
+	};
+	return {
+		settings: {
+			packages: [],
+			defaultProvider: provider,
+			defaultModel: model,
+			defaultThinkingLevel: thinkingLevel,
+			compaction: {
+				enabled: true,
+				reserveTokens: DIVO_CONTEXT_RESERVE,
+				keepRecentTokens: DIVO_CONTEXT_RECENT,
+			},
+		},
+		models: {
+			providers: {
+				deepseek: {
+					modelOverrides: {
+						"deepseek-v4-flash": deepseekOverride,
+						"deepseek-v4-pro": deepseekOverride,
+					},
+				},
+			},
+		},
+	};
+}
+
 const PROVIDER_ENV_KEYS = [
 	"ANTHROPIC_API_KEY",
 	"ANTHROPIC_OAUTH_TOKEN",
@@ -598,18 +633,18 @@ export function startDivoPi({
 	for (const extensionName of manifest.extensions) {
 		ensureExtensionLink(agentDir, extensionName);
 	}
+	const agentConfiguration = buildAgentConfiguration({
+		provider,
+		model,
+		thinkingLevel: thinkingLevelForModel(model, manifest.thinkingLevel),
+	});
 	fs.writeFileSync(
 		path.join(agentDir, "settings.json"),
-		`${JSON.stringify(
-			{
-				packages: [],
-				defaultProvider: provider,
-				defaultModel: model,
-				defaultThinkingLevel: thinkingLevelForModel(model, manifest.thinkingLevel),
-			},
-			null,
-			2,
-		)}\n`,
+		`${JSON.stringify(agentConfiguration.settings, null, 2)}\n`,
+	);
+	fs.writeFileSync(
+		path.join(agentDir, "models.json"),
+		`${JSON.stringify(agentConfiguration.models, null, 2)}\n`,
 	);
 	const sessionRuntimeContext = runtimeContextForSession(runtimeContext, isRunScoped);
 	fs.writeFileSync(runtimeContextPath, `${JSON.stringify(sessionRuntimeContext, null, 2)}\n`, {
