@@ -903,6 +903,41 @@ describe('desktop auth routes', () => {
     assert.deepEqual(connectionCompanyIds, ['company-development']);
   });
 
+  it('does not issue a successful Lark session when its capability connection cannot be saved', async () => {
+    let createdSession = false;
+    const router = createDesktopAuthRoutes(makeDeps({
+      larkOAuthService: {
+        isConfigured: () => true,
+        getAuthorizeUrl: (state: string) => `https://accounts.larksuite.com/authorize?state=${encodeURIComponent(state)}`,
+        exchangeCode: async () => ({
+          accessToken: 'access-token', refreshToken: 'refresh-token', tokenType: 'Bearer',
+          expiresIn: 7200, refreshTokenExpiresIn: 2_592_000,
+          larkOpenId: 'ou_user', larkUserId: 'u_user', larkName: 'User',
+          larkEmail: 'user@example.com', larkEnName: null,
+          tenantKey: 'tenant-1', scope: 'auth:user.id:read', avatarUrl: null,
+        }),
+      },
+      prisma: {
+        larkTenantBinding: { findFirst: async () => ({ companyId: 'company-1' }) },
+        user: { findFirst: async () => ({ id: 'user-1', email: 'user@example.com', name: 'User' }) },
+        adminMembership: { findFirst: async () => ({ role: 'MEMBER' }) },
+        memberSession: { create: async () => { createdSession = true; } },
+        department: { findMany: async () => [] },
+      },
+      connectionRepo: {
+        upsertLarkConnection: async () => ({ ok: false, error: new Error('storage unavailable') }),
+      },
+    }));
+
+    const authorize = await callRoute(router, 'GET', '/lark/authorize-url', { headers: { host: 'localhost:8000' } });
+    const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state');
+    const result = await callRoute(router, 'POST', '/lark/exchange', { body: { code: 'auth-code', state } });
+
+    assert.equal(result.status, 500);
+    assert.equal(result.body.message, 'Could not complete Lark sign-in. Please try again.');
+    assert.equal(createdSession, false);
+  });
+
   it('rejects an unbound Lark tenant before creating a session or connection', async () => {
     let createdSession = false;
     let storedConnection = false;
@@ -1504,14 +1539,14 @@ describe('desktop /me reports the department role', () => {
       assert.deepEqual(Object.keys(model!).sort(), ['id', 'label', 'provider', 'vision']);
     });
 
-    it('falls back to the Flash default when no policy is stored', async () => {
+    it('offers Flash and Luna when no policy is stored', async () => {
       const router = createDesktopAuthRoutes(makeDeps({ prisma: policyPrisma(null) }));
 
       const result = await callRoute(router, 'GET', '/model-options', {
         locals: { userId: 'user-1', companyId: 'company-1' },
       });
 
-      assert.deepEqual(result.body.data.allowedModels, ['deepseek-v4-flash']);
+      assert.deepEqual(result.body.data.allowedModels, ['deepseek-v4-flash', 'gpt-5.6-luna']);
       assert.equal((result.body.data.models as { label: string }[])[0]!.label.length > 0, true);
     });
   });

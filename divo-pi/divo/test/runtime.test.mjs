@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import {
+	acknowledgeInterruptedWorkFact,
 	buildChildEnvironment,
 	buildPiArguments,
 	buildRunCorrelationContext,
@@ -145,12 +146,32 @@ describe("Pi session scope", () => {
 			task: "  Prepare   the monthly report  ",
 		});
 		const { threadDir } = resolveSessionPaths({ ...base, dataDir });
-		assert.deepEqual(readInterruptedWorkFact(threadDir), { task: fact.task });
+		assert.deepEqual(readInterruptedWorkFact(threadDir), {
+			task: fact.task,
+			clarificationShown: false,
+		});
 
 		const args = buildPiArguments({ ...values, interruptedWork: fact });
 		const prompt = args[args.indexOf("--append-system-prompt") + 1];
-		assert.match(prompt, /Never resume, retry, or continue its work/i);
+		assert.match(prompt, /Never resume, retry, or continue it/i);
+		assert.match(prompt, /ask one brief question/i);
 		assert.match(prompt, /Prepare the monthly report/);
+
+		acknowledgeInterruptedWorkFact(threadDir, fact);
+		const acknowledged = readInterruptedWorkFact(threadDir);
+		assert.deepEqual(acknowledged, {
+			task: fact.task,
+			clarificationShown: true,
+		});
+		const acknowledgedArgs = buildPiArguments({
+			...values,
+			interruptedWork: acknowledged,
+		});
+		const acknowledgedPrompt = acknowledgedArgs[
+			acknowledgedArgs.indexOf("--append-system-prompt") + 1
+		];
+		assert.match(acknowledgedPrompt, /respond normally without mentioning or resuming/i);
+		assert.match(acknowledgedPrompt, /Never resume, retry, or continue it/i);
 	});
 
 	it("keeps a run-scoped session off the user's durable volume entirely", () => {

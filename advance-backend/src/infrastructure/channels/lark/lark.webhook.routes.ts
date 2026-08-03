@@ -1817,9 +1817,10 @@ function encodeLarkOAuthState(input: {
  * app hands that nonce back to `POST /api/lark/auth/link`, which attaches the
  * identity to the session the web sign-in already created.
  *
- * Consequently this no longer needs Lark OAuth to be configured at all. A
- * deployment without `LARK_OAUTH_REDIRECT_URI` can still let people sign in;
- * it just cannot act *as* them until they connect Lark separately.
+ * If the browser session has no personal Lark connection, the web flow runs
+ * the normal full-scope Lark sign-in before it attaches this identity. A
+ * previously connected person can reattach after `/logout` without consenting
+ * again.
  */
 async function createLarkLoginUrl(input: {
   companyId: string;
@@ -3050,9 +3051,9 @@ async function handleSlashCommand(args: {
 
   // ── /login — hand them the web sign-in ─────────────────────────────────────
   //
-  // No longer gated on Lark OAuth being configured: signing in happens in the
-  // web app now, and Lark OAuth is a separate, later thing you do only if you
-  // want Divo acting under your own name.
+  // The web page owns both the Divo session and, when needed, the full-scope
+  // Lark OAuth hop. Keeping that decision in one place prevents two competing
+  // sign-in flows.
   if (cmd === '/login') {
     const url = await createLarkLoginUrl({
       companyId:  identity.companyId,

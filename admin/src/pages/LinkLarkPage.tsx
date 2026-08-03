@@ -30,7 +30,7 @@ type Outcome =
 
 export function LinkLarkPage() {
   const [params] = useSearchParams()
-  const { token, session, loading } = useAdminAuth()
+  const { token, session, loading, loginWithLark } = useAdminAuth()
   const state = params.get('state')
   const [outcome, setOutcome] = useState<Outcome>({ kind: 'working' })
 
@@ -40,7 +40,7 @@ export function LinkLarkPage() {
   const sent = useRef(false)
 
   useEffect(() => {
-    if (!token || !state || sent.current) return
+    if (loading || !token || !session || !state || sent.current) return
     sent.current = true
     void (async () => {
       try {
@@ -49,12 +49,21 @@ export function LinkLarkPage() {
         )
         setOutcome({ kind: 'linked', replaying: result.replaying })
       } catch (e) {
-        if (e instanceof ApiError && e.status === 403) setOutcome({ kind: 'wrong-person' })
+        if (e instanceof ApiError && e.status === 409) {
+          const next = `/link/lark?state=${encodeURIComponent(state)}`
+          try {
+            await loginWithLark(next)
+          } catch (oauthError) {
+            sent.current = false
+            setOutcome({ kind: 'error', message: oauthError instanceof Error ? oauthError.message : 'Could not start Lark sign-in.' })
+          }
+        }
+        else if (e instanceof ApiError && e.status === 403) setOutcome({ kind: 'wrong-person' })
         else if (e instanceof ApiError && e.status === 410) setOutcome({ kind: 'expired' })
         else setOutcome({ kind: 'error', message: e instanceof Error ? e.message : 'Something went wrong.' })
       }
     })()
-  }, [token, state])
+  }, [loading, loginWithLark, session, state, token])
 
   if (!state) {
     return (
@@ -92,8 +101,7 @@ export function LinkLarkPage() {
             : 'Head back to Lark and ask again.'}
         </p>
         <p className="ws-sub" style={{ marginTop: 14, lineHeight: 1.55 }}>
-          Divo replies as itself. If you want tasks and events it creates to be owned by you,
-          connect Lark from <b>Connected apps</b> — that is a separate step and entirely optional.
+          Your Lark connection is ready too, so Divo can use the capabilities you approved without another sign-in.
         </p>
       </AuthCard>
     )

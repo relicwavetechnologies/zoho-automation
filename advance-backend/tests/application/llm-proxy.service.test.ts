@@ -11,6 +11,17 @@ const logger = {
   debug() {},
 } as any;
 
+test('allows Luna for an unblocked member without an explicit policy', async () => {
+  const service = new LlmProxyService({
+    memberProxyPolicy: { findUnique: async () => null },
+  } as any, logger);
+
+  assert.deepEqual(
+    await service.allowedModelsFor('user-1'),
+    ['deepseek-v4-flash', 'gpt-5.6-luna'],
+  );
+});
+
 test('records a title completion without creating a visible execution run', async () => {
   let data: Record<string, unknown> | undefined;
   const service = new LlmProxyService({

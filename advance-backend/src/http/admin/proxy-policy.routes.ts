@@ -4,12 +4,12 @@
  * Mounted at /api/admin/proxy-policy.
  *
  *   GET  /            — all explicit policies for the company (keyed by userId)
- *   GET  /:userId     — one member's effective policy (defaults to Flash-only)
+ *   GET  /:userId     — one member's effective policy
  *   PUT  /:userId     — upsert a member's policy (block / budget / rate / models)
  *
  * These write the MemberProxyPolicy rows that LlmProxyService.gate() enforces.
- * When a member has no row, the proxy defaults them to Flash-only; this endpoint
- * surfaces that default (isDefault=true) so the UI can pre-select Flash.
+ * When a member has no row, this endpoint surfaces the shared default grant
+ * (isDefault=true).
  */
 
 import { Router } from 'express';
@@ -17,7 +17,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
-import { PROXY_MODELS } from '../../application/observability/pricing';
+import { DEFAULT_ALLOWED_MODELS, PROXY_MODELS } from '../../application/observability/pricing';
 
 export interface ProxyPolicyRoutesDeps {
   prisma: PrismaClient;
@@ -59,9 +59,6 @@ function resolveCompanyId(res: Response, providedId?: string): string {
 const qCompany = (req: Request, res: Response) =>
   resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
 
-/** Effective allow-list default when a member has no explicit row: Flash only. */
-const DEFAULT_ALLOWED: string[] = ['deepseek-v4-flash'];
-
 interface ProxyPolicyDto {
   userId: string;
   blocked: boolean;
@@ -84,7 +81,7 @@ const toDto = (userId: string, row: PolicyRow | null): ProxyPolicyDto => ({
   blocked: row?.blocked ?? false,
   monthlyBudgetUsd: row?.monthlyBudgetUsd ?? null,
   rateLimitRpm: row?.rateLimitRpm ?? null,
-  allowedModels: row && row.allowedModels.length > 0 ? row.allowedModels : DEFAULT_ALLOWED,
+  allowedModels: row && row.allowedModels.length > 0 ? row.allowedModels : [...DEFAULT_ALLOWED_MODELS],
   isDefault: !row,
 });
 
@@ -134,7 +131,7 @@ export function createProxyPolicyRoutes(deps: ProxyPolicyRoutesDeps): Router {
       blocked: body.blocked ?? false,
       monthlyBudgetUsd: body.monthlyBudgetUsd ?? null,
       rateLimitRpm: body.rateLimitRpm ?? null,
-      allowedModels: body.allowedModels ?? DEFAULT_ALLOWED,
+      allowedModels: body.allowedModels ?? [...DEFAULT_ALLOWED_MODELS],
     };
 
     const row = await prisma.memberProxyPolicy.upsert({
