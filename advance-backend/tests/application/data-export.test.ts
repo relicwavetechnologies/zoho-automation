@@ -2601,6 +2601,17 @@ describe('data export access contract', () => {
     assert.equal(tool.argsSchema.safeParse({ ...base, recipients: ['other@emiactech.com'] }).success, false);
   });
 
+  it('rejects direct Zoho CRM recipes', () => {
+    assert.equal(tool.argsSchema.safeParse({
+      ...base,
+      source: {
+        kind: 'zoho_crm',
+        connectionId: base.source.connectionId,
+        module: 'Deals',
+      },
+    }).success, false);
+  });
+
   it('rejects provider offer confirmation from the agent-callable tool', () => {
     const offerId = '11111111-1111-4111-8111-111111111111';
     assert.equal(tool.argsSchema.safeParse({ offerId }).success, false);

@@ -185,6 +185,19 @@ describe('dataset source recipes the provider would reject', () => {
   });
 });
 
+describe('direct data export source boundary', () => {
+  it('keeps Zoho CRM behind its provider-offer flow', () => {
+    const crmSource = {
+      kind: 'zoho_crm' as const,
+      connectionId: '11111111-2222-4333-8444-555555555555',
+      module: 'Deals' as const,
+    };
+
+    assert.equal(datasetSourceSchema.safeParse(crmSource).success, true);
+    assert.equal(directDatasetSourceSchema.safeParse(crmSource).success, false);
+  });
+});
+
 const unusedLoad: DataExportOfferRepositoryPort['loadForConfirmation'] = async () =>
   ok({ outcome: 'not_found' });
 

@@ -162,7 +162,7 @@ export class DataExportOfferService {
       throw new Error(`${sourceToolId} read permission was revoked before confirmation.`);
     }
     if (
-      offer.payload.source.kind === 'zoho_books'
+      (offer.payload.source.kind === 'zoho_books' || offer.payload.source.kind === 'zoho_crm')
       && permission.value.department?.zohoReadScope === 'personalized'
     ) {
       throw new Error('Complete Zoho exports require full company Zoho read scope.');

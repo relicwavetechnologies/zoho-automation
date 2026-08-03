@@ -322,7 +322,7 @@ export class DataExportWorker {
         );
       }
       if (
-        part.kind === 'zoho_books'
+        (part.kind === 'zoho_books' || part.kind === 'zoho_crm')
         && permission.value.department?.zohoReadScope === 'personalized'
       ) {
         throw new PermanentDataExportError(
