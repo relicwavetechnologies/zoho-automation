@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { buildDesktopCapabilityBootstrap } from '../../src/application/desktop/desktop-capability-bootstrap';
 import {
   GOVERNED_DIRECT_ACTION_CRITERION,
+  GOVERNED_LOCAL_DESKTOP_ONLY,
   GOVERNED_LOCAL_WORKFLOW_CRITERION,
 } from '../../src/application/skills/governed-local-routing';
 import { GOOGLE_WORKSPACE_SYSTEM_SKILLS } from '../../src/application/skills/google-workspace-system-skills';
@@ -78,11 +79,46 @@ describe('governed local-workflow instruction contract', () => {
   });
 
   it('routes exact whole-account finance aggregates through complete governed sources', () => {
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /Exact whole-account or potentially large aggregate -> use the scripted workflow/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /Exact whole-account or potentially large aggregate -> .*use the scripted workflow/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /omit the limit argument unless the user explicitly requested a numeric maximum/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /When a list result is truncated, do not retry with a larger limit/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /Number\(_balance_inr\) > 0/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /reconcile it: every source page accounted for/);
+  });
+
+  it('never names divo-local to a skill reader without saying it is desktop-only', () => {
+    // Server channels run in the cloud container, whose /tmp is mounted noexec.
+    // An unqualified mention sends a Lark run hunting for a binary it cannot
+    // execute, instead of staying on the governed tool it was already using.
+    const publishedInstructions = [
+      financeOpsCoreSkill.instructions,
+      zohoBooksReadAnalysisSkill.instructions,
+      zohoBooksBillSkill.instructions,
+      zohoBillNotifyAccountsSkill.instructions,
+      ...GOOGLE_WORKSPACE_SYSTEM_SKILLS.map((skill) => skill.markdown),
+    ];
+
+    for (const text of publishedInstructions) {
+      for (const line of text.split('\n')) {
+        if (!line.includes('divo-local')) continue;
+        assert.match(
+          line,
+          new RegExp(GOVERNED_LOCAL_DESKTOP_ONLY),
+          `unqualified divo-local instruction: ${line}`,
+        );
+      }
+    }
+  });
+
+  it('tells a server-channel run what to do instead of reaching for divo-local', () => {
+    assert.match(
+      zohoBooksReadAnalysisSkill.instructions,
+      /On server channels there is no divo-local/,
+    );
+    assert.match(
+      zohoBooksReadAnalysisSkill.instructions,
+      /Never go looking for a local CLI there/,
+    );
   });
 
   it('keeps one-source export offers out of the local Python path', () => {

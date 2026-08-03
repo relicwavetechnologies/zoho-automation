@@ -7,8 +7,12 @@ import {
 	clearCapturedDivoGatewayConfig,
 } from "./gateway-client.ts";
 import { executeGatewayRequest } from "./gateway-execution.ts";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	executeLocalBrokerRequest,
+	makeCliDirectory,
 	parseLocalBrokerRequest,
 	registerLocalDivoBroker,
 	type ActiveBashCall,
@@ -349,6 +353,54 @@ describe("Divo local broker protocol", () => {
 			clearCapturedDivoGatewayConfig();
 			assert.equal(process.env.PATH, originalPath);
 			assert.equal(process.env.DIVO_LOCAL_BROKER_SOCKET, originalSocket);
+		}
+	});
+});
+
+describe("divo-local CLI staging", () => {
+	it("stages the launchers on the run volume when the runtime provides one", async () => {
+		// The cloud container mounts /tmp noexec, so a launcher written to the OS
+		// temp dir can be read but never executed. DIVO_INTERNAL_DIR points at the
+		// run volume, which carries no such restriction.
+		const internal = await mkdtemp(join(tmpdir(), "divo-internal-"));
+		const original = process.env.DIVO_INTERNAL_DIR;
+		process.env.DIVO_INTERNAL_DIR = internal;
+		try {
+			const directory = await makeCliDirectory();
+			assert.equal(directory.startsWith(internal), true);
+		} finally {
+			if (original === undefined) delete process.env.DIVO_INTERNAL_DIR;
+			else process.env.DIVO_INTERNAL_DIR = original;
+			await rm(internal, { recursive: true, force: true });
+		}
+	});
+
+	it("falls back to the OS temp dir when no run volume is provided", async () => {
+		const original = process.env.DIVO_INTERNAL_DIR;
+		delete process.env.DIVO_INTERNAL_DIR;
+		try {
+			const directory = await makeCliDirectory();
+			assert.equal(directory.startsWith(tmpdir()), true);
+			await rm(directory, { recursive: true, force: true });
+		} finally {
+			if (original !== undefined) process.env.DIVO_INTERNAL_DIR = original;
+		}
+	});
+
+	it("keeps the CLI rather than losing it when the run volume is unusable", async () => {
+		const original = process.env.DIVO_INTERNAL_DIR;
+		// A path whose parent is a file cannot be created as a directory.
+		const blocker = join(await mkdtemp(join(tmpdir(), "divo-blocked-")), "file");
+		await writeFile(blocker, "not a directory");
+		process.env.DIVO_INTERNAL_DIR = join(blocker, "nested");
+		try {
+			const directory = await makeCliDirectory();
+			assert.equal(directory.startsWith(tmpdir()), true);
+			await rm(directory, { recursive: true, force: true });
+		} finally {
+			if (original === undefined) delete process.env.DIVO_INTERNAL_DIR;
+			else process.env.DIVO_INTERNAL_DIR = original;
+			await rm(blocker, { force: true });
 		}
 	});
 });

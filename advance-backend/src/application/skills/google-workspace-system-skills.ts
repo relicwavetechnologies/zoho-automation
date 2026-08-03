@@ -9,6 +9,7 @@ import {
 import { recordSkillRegistryMutation } from './skill-registry-versioning';
 import {
   GOVERNED_DIRECT_ACTION_CRITERION,
+  GOVERNED_LOCAL_DESKTOP_ONLY,
   GOVERNED_LOCAL_WORKFLOW_CRITERION,
 } from './governed-local-routing';
 
@@ -221,7 +222,7 @@ Use this skill for ${product.description.toLowerCase()}
 
 ## Canonical governed call shape
 
-For a direct ${GOVERNED_DIRECT_ACTION_CRITERION}, invoke the runtime's governed wrapper with \`toolId: "${product.toolId}"\` and keep all product arguments under its \`args\` object: \`{ "op": "describe|call", "nativeTool": "<approved operation>", "connectionId": "<UUID required for call>", "input": {} }\`. When the local-workflow criterion above applies, put that same \`args\` object in an adjacent JSON file and call \`divo-local invoke --tool ${product.toolId} --args-file <path>\` from the one persistent Python file. Never place \`connectionId\` beside the wrapper's payload.
+For a direct ${GOVERNED_DIRECT_ACTION_CRITERION}, invoke the runtime's governed wrapper with \`toolId: "${product.toolId}"\` and keep all product arguments under its \`args\` object: \`{ "op": "describe|call", "nativeTool": "<approved operation>", "connectionId": "<UUID required for call>", "input": {} }\`. ${GOVERNED_LOCAL_DESKTOP_ONLY}, when the local-workflow criterion above applies, put that same \`args\` object in an adjacent JSON file and call \`divo-local invoke --tool ${product.toolId} --args-file <path>\` from the one persistent Python file. The file holds the \`args\` object alone — a wrapper envelope carrying \`toolId\` or \`skillId\` is rejected as invalid args. Never place \`connectionId\` beside the wrapper's payload.
 
 ## Approved operations
 
@@ -235,7 +236,7 @@ ${productWorkflow}
 - Never guess Google resource IDs. Discover or read the target before an ambiguous mutation.
 - Verify important content changes with a read operation and return canonical Google URLs from successful responses.
 - Treat every result advisory with \`level: "required"\` as part of the tool contract. Satisfy it before reporting completion; if it cannot be satisfied, report partial completion and the exact missing evidence.
-- Never expose tokens or the private MCP endpoint. A local path is forbidden only inside native Google \`input\`; it cannot be used as provider content. A local JSON \`--args-file\` passed to credential-free \`divo-local\` is allowed as Divo transport. Use base64 content or HTTPS sources when the native Google operation requires content.`;
+- Never expose tokens or the private MCP endpoint. A local path is forbidden only inside native Google \`input\`; it cannot be used as provider content. ${GOVERNED_LOCAL_DESKTOP_ONLY}, a local JSON \`--args-file\` passed to credential-free \`divo-local\` is allowed as Divo transport. Use base64 content or HTTPS sources when the native Google operation requires content.`;
 }
 
 function buildProductWorkflow(service: GoogleWorkspaceProductDefinition['service']): string {

@@ -4,7 +4,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { authorizeToolInvocation, type LoadedSkillLookup } from "./skill-authorization.ts";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -256,6 +256,30 @@ function shellQuote(value: string): string {
 	return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
+/**
+ * Stage the CLI launchers somewhere they can actually be executed.
+ *
+ * The cloud runtime container mounts `/tmp` as `noexec`, so a launcher written
+ * to the OS temp dir there is readable but never executable: every run that
+ * reached for `divo-local` got `Permission denied` and had to rediscover that
+ * `sh <path>` was the only way in. `DIVO_INTERNAL_DIR` points at the run
+ * volume, which carries no such restriction. Desktop has no `noexec` mount and
+ * keeps using the OS temp dir.
+ */
+export async function makeCliDirectory(): Promise<string> {
+	const internal = process.env["DIVO_INTERNAL_DIR"]?.trim();
+	if (internal) {
+		try {
+			await mkdir(internal, { recursive: true });
+			return await mkdtemp(join(internal, "cli-"));
+		} catch {
+			// An unusable run volume is not a reason to lose the CLI entirely;
+			// the temp dir still works wherever it is not mounted noexec.
+		}
+	}
+	return await mkdtemp(join(tmpdir(), "divo-cli-"));
+}
+
 async function writeCliLaunchers(directory: string): Promise<void> {
 	const cliPath = join(import.meta.dirname, "local-broker-cli.mjs");
 	const unixPath = join(directory, "divo-local");
@@ -326,7 +350,7 @@ export function registerLocalDivoBroker(
 		const resolved = resolveDivoGatewayConfig();
 		if ("error" in resolved) return;
 		try {
-			cliDirectory = await mkdtemp(join(tmpdir(), "divo-cli-"));
+			cliDirectory = await makeCliDirectory();
 			await writeCliLaunchers(cliDirectory);
 			socketPath = socketAddress();
 			server = createServer((socket) => {

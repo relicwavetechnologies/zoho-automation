@@ -3,6 +3,7 @@ import {
   ZOHO_BOOKS_OUTSTANDING_RULE,
   ZOHO_BOOKS_ROW_CONTRACT,
 } from '../../shared/zoho-books-row-contract';
+import { GOVERNED_LOCAL_DESKTOP_ONLY } from './governed-local-routing';
 
 const ZOHO_CONNECTION_METHOD = `DIVO-GOVERNED ZOHO CONNECTION:
 - Invoke Zoho only through the Divo tool surface available in the current runtime: server channels use call_tool; desktop uses divo_gateway. Never call Zoho directly, use local credentials, or switch to an unavailable tool surface.
@@ -90,7 +91,7 @@ READ ROUTING:
 - For an explicit complete-data request that genuinely returned no provider offer, load secure-data-export only when the exact backend-resolved Zoho source identifiers are available. Never rebuild the Zoho query, copy rows, or use Python merely to create that one-source artifact.
 - Latest/recent bounded invoices -> use zohoBooks op="list_invoices" with the requested limit; it is already sorted by invoice date newest-first. Do not scan or sort thousands of rows.
 - Human invoice number -> use zohoBooks op="get_invoice" with that exact number, or list_invoices with searchQuery and accept only an exact normalized invoice_number match before using its invoice_id. Never substitute a fuzzy result.
-- Exact whole-account or potentially large aggregate -> use the scripted workflow: fetch pages through divo-local, write them to a file, and aggregate over that file. Do not start with zohoBooks script mode; it is capped at 4,000 records, and pulling pages into context to add them up is how totals silently come out short.
+- Exact whole-account or potentially large aggregate -> ${GOVERNED_LOCAL_DESKTOP_ONLY}, use the scripted workflow: fetch pages through divo-local, write them to a file, and aggregate over that file. On server channels there is no divo-local: stay on the governed zohoBooks operations and let the backend's export path own the complete set. Never go looking for a local CLI there. Either way, do not start with zohoBooks script mode; it is capped at 4,000 records, and pulling pages into context to add them up is how totals silently come out short.
 - Aging/overdue report -> use zohoBooks op="build_overdue_report".
 - Before describing a total as exact, reconcile it: every source page accounted for, and the row count you computed over stated alongside the figure.
 - Zoho customer-payment list rows may omit original currency. When _currency is UNKNOWN, do not call it INR or produce an original-currency breakdown. _amount_inr remains safe when populated from Zoho bcy_amount; otherwise state that original-currency analysis requires stronger evidence.
