@@ -7,6 +7,7 @@ const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
 
 it('recovers a verified XLSX when the completion metadata response is lost', async t => {
   let completedProperties: Record<string, string> | undefined;
+  let lostCompletionResponse = true;
   let uploadedSize = 0;
   let deletedFiles = 0;
   let sourceReads = 0;
@@ -42,8 +43,15 @@ it('recovers a verified XLSX when the completion metadata response is lost', asy
         },
       }),
       update: async (input: any) => {
+        if (
+          input.requestBody.appProperties.divoExportState === 'complete'
+          && lostCompletionResponse
+        ) {
+          lostCompletionResponse = false;
+          throw new Error('Drive completion response was lost');
+        }
         completedProperties = input.requestBody.appProperties;
-        throw new Error('Drive completion response was lost');
+        return { data: { id: 'xlsx-1' } };
       },
       delete: async () => {
         deletedFiles += 1;

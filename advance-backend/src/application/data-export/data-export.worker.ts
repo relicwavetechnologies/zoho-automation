@@ -40,7 +40,9 @@ import type {
 } from './data-export.destination';
 import type { DatasetSourceRegistry } from './data-export.source-registry';
 import type { ConversationRepoPort } from '../../infrastructure/persistence/conversation.repository';
+import type { ChannelDeliveryRepoPort } from '../../infrastructure/persistence/channel-delivery.repository';
 import type { LaneLeaseHolder } from '../channels/lane-lease.holder';
+import { buildDeliveryKey } from '../../domain/channel/delivery-key';
 import {
   DATA_EXPORT_RESOURCE_TOOL,
   DATA_EXPORT_RESOURCE_TTL_MS,
@@ -61,6 +63,11 @@ export interface DataExportWorkerDeps {
   ) => Promise<GoogleExportAuth>;
   readonly larkAdapter: Pick<LarkChannelAdapter, 'sendToChatId' | 'updateMessageById'>;
   readonly conversationHistory?: Pick<ConversationRepoPort, 'appendTurn'>;
+  /** Durable claim for the terminal Lark card, independent of the export lease. */
+  readonly completionDelivery?: Pick<
+    ChannelDeliveryRepoPort,
+    'reserve' | 'markDelivered' | 'markFailed'
+  >;
   /** Fences one export job across replicas; its durable BullMQ job is the V2-lite run record. */
   readonly runLeaseHolder?: Pick<LaneLeaseHolder, 'withLane' | 'holdsLane'>;
   readonly logger: Logger;
@@ -94,7 +101,10 @@ export class DataExportWorker {
       this.log.info('data_export.worker.completed', { jobId: job.id });
     });
     this.worker.on('failed', (job, error) => {
-      this.log.error('data_export.worker.failed', { jobId: job?.id, error: String(error) });
+      this.log.error('data_export.worker.failed', {
+        jobId: job?.id,
+        errorType: dataExportErrorType(error),
+      });
     });
     this.log.info('data_export.worker.started', { queueName, concurrency });
   }
@@ -104,10 +114,9 @@ export class DataExportWorker {
   }
 
   async processJob(job: DataExportWorkerJob): Promise<void> {
-    const runLeaseHolder = this.deps.runLeaseHolder;
-    if (!runLeaseHolder) return this.processJobUnderLease(job);
-
     try {
+      const runLeaseHolder = this.deps.runLeaseHolder;
+      if (!runLeaseHolder) return await this.processJobUnderLease(job);
       const outcome = await runLeaseHolder.withLane(
         dataExportRunLaneKey(job),
         async (lease, signal) => this.processJobUnderLease(job, {
@@ -121,16 +130,23 @@ export class DataExportWorker {
           ownerId: outcome.ownerId,
           expiresAt: outcome.expiresAt.toISOString(),
         });
-        await this.deferLeaseRecovery(job, outcome.expiresAt.getTime() + 1_000);
+        await this.deferRecovery(job, outcome.expiresAt.getTime() + 1_000);
       }
-      if (outcome.outcome === 'lost') await this.deferLeaseRecovery(job);
+      if (outcome.outcome === 'lost') {
+        this.log.warn('data_export.worker.lease_lost', { jobId: job.id });
+        await this.deferRecovery(job);
+      }
     } catch (error) {
-      if (isDataExportRunLeaseLostError(error)) await this.deferLeaseRecovery(job);
-      throw error;
+      if (error instanceof DelayedError) throw error;
+      if (isDataExportRunLeaseLostError(error)) {
+        this.log.warn('data_export.worker.lease_lost', { jobId: job.id });
+        await this.deferRecovery(job);
+      }
+      throw dataExportQueueError(error);
     }
   }
 
-  private async deferLeaseRecovery(
+  private async deferRecovery(
     job: DataExportWorkerJob,
     retryAt = Date.now() + 5_000,
   ): Promise<never> {
@@ -172,6 +188,13 @@ export class DataExportWorker {
       if (!payload.completedExport) {
         payload = { ...payload, completedExport: completion };
         await job.updateData(payload);
+        this.log.info('data_export.artifact.checkpointed', {
+          jobId: job.id,
+          artifactType: completion.artifactType,
+          rowCount: completion.rowCount,
+          coverageOutcome: completion.coverage?.outcome ?? null,
+          coverageCause: completion.coverage?.cause ?? null,
+        });
       }
       let continuityAvailable = true;
       try {
@@ -183,7 +206,7 @@ export class DataExportWorker {
         if (!finalAttempt) throw error;
         this.log.error('data_export.continuity_unavailable', {
           jobId: job.id,
-          error: String(error),
+          errorType: dataExportErrorType(error),
         });
         continuityAvailable = false;
       }
@@ -197,9 +220,14 @@ export class DataExportWorker {
       );
     } catch (error) {
       if (isDataExportRunLeaseLostError(error)) throw error;
+      if (isDataExportPrivacyCleanupPendingError(error)) {
+        this.log.warn('data_export.privacy_cleanup_retry_deferred', { jobId: job.id });
+        await this.deferRecovery(job, Date.now() + 60_000);
+      }
       const finalAttempt = isUnrecoverableJobError(error)
         || job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
-      if (finalAttempt && !payload.completedExport) {
+      if (finalAttempt && (!payload.completedExport || error instanceof PermanentDataExportError)) {
+        await assertLeaseHeld();
         await this.deliverFailure(job, error, progressMessageId);
       }
       throw error;
@@ -454,11 +482,10 @@ export class DataExportWorker {
           }
         } catch (cause) {
           if (isDataExportRunLeaseLostError(cause)) throw cause;
-          // Naming the part matters: "part 7 of 22 failed" is actionable where
-          // a bare provider error on a 22-call export is not.
+          // Provider errors may contain request details or row text, so only
+          // the worker-owned failure boundary escapes the source iterator.
           throw new Error(
-            `Data export part ${partIndex + 1} of ${parts.length} (${datasetSourceShapeKey(part)}) could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
-            { cause },
+            `Data export part ${partIndex + 1} of ${parts.length} (${datasetSourceShapeKey(part)}) could not be read`,
           );
         }
       }
@@ -557,8 +584,68 @@ export class DataExportWorker {
           : ['Divo could not save this file to the conversation. To work on it later, paste the export link into your message.']),
       ].join('\n\n'),
     });
+    const completionDelivery = this.deps.completionDelivery;
+    if (completionDelivery) {
+      const reservation = await completionDelivery.reserve({
+        channel: 'lark',
+        idempotencyKey: buildDeliveryKey({
+          runKey: dataExportJobId(payload),
+          purpose: 'status',
+        }),
+        runKey: dataExportJobId(payload),
+        purpose: 'status',
+        companyId: payload.companyId,
+        chatId: payload.chatId,
+      });
+      if (!reservation.ok) throw reservation.error;
+      const claim = reservation.value;
+      if (claim.outcome === 'delivered') {
+        this.log.info('data_export.delivery.already_completed', { jobId: job.id });
+        return;
+      }
+      if (claim.outcome === 'inFlight') {
+        this.log.info('data_export.delivery.in_flight', { jobId: job.id });
+        return this.deferRecovery(job, Date.now() + 61_000);
+      }
+      if (claim.outcome === 'abandoned') {
+        this.log.error('data_export.delivery.abandoned', { jobId: job.id });
+        throw new PermanentDataExportError(
+          'Divo could not deliver the export completion card. Please run the export again.',
+          'Data export completion delivery was abandoned',
+        );
+      }
+      const updated = await this.deps.larkAdapter.updateMessageById(progressMessageId, card);
+      if (!updated.ok) {
+        const marked = await completionDelivery.markFailed(
+          claim.record.deliveryId,
+          new Error('Lark completion card update failed'),
+          { ambiguous: true, nextAttemptAt: new Date(Date.now() + 5_000) },
+        );
+        if (!marked.ok) {
+          this.log.warn('data_export.delivery_failure_not_recorded', {
+            jobId: job.id,
+            errorType: dataExportErrorType(marked.error),
+          });
+        }
+        this.log.warn('data_export.delivery.retry_deferred', {
+          jobId: job.id,
+          errorType: dataExportErrorType(updated.error),
+        });
+        return this.deferRecovery(job, Date.now() + 5_000);
+      }
+      const marked = await completionDelivery.markDelivered(
+        claim.record.deliveryId,
+        progressMessageId,
+      );
+      if (!marked.ok) throw marked.error;
+      this.log.info('data_export.delivery.completed', { jobId: job.id });
+      return;
+    }
     const updated = await this.deps.larkAdapter.updateMessageById(progressMessageId, card);
-    if (updated.ok) return;
+    if (updated.ok) {
+      this.log.info('data_export.delivery.completed', { jobId: job.id });
+      return;
+    }
     throw updated.error;
   }
 
@@ -569,7 +656,7 @@ export class DataExportWorker {
   ): Promise<void> {
     this.log.error('data_export.failure_delivered', {
       jobId: job.id,
-      error: String(error),
+      errorType: dataExportErrorType(error),
     });
     // "Try again shortly" is false for a disconnected destination or a recipe
     // the provider rejects — the member retries, waits, and fails identically.
@@ -587,7 +674,7 @@ export class DataExportWorker {
       if (updated.ok) return;
       this.log.warn('data_export.failure_tracker_update_failed', {
         jobId: job.id,
-        error: updated.error.message,
+        errorType: dataExportErrorType(updated.error),
       });
       return;
     }
@@ -639,8 +726,7 @@ export class DataExportWorker {
     );
     if (!updated.ok) {
       this.log.warn('data_export.progress_update_failed', {
-        messageId,
-        error: updated.error.message,
+        errorType: dataExportErrorType(updated.error),
       });
     }
   }
@@ -657,6 +743,22 @@ function isDataExportRunLeaseLostError(error: unknown): boolean {
   if (error instanceof DataExportRunLeaseLostError) return true;
   const cause = error instanceof Error ? error.cause : undefined;
   return cause instanceof DataExportRunLeaseLostError;
+}
+
+function dataExportErrorType(error: unknown): 'permanent' | 'lease_lost' | 'error' | 'non_error' {
+  if (error instanceof PermanentDataExportError) return 'permanent';
+  if (isDataExportRunLeaseLostError(error)) return 'lease_lost';
+  return error instanceof Error ? 'error' : 'non_error';
+}
+
+function dataExportQueueError(error: unknown): Error {
+  if (error instanceof PermanentDataExportError) return error;
+  return new Error('Data export processing failed');
+}
+
+function isDataExportPrivacyCleanupPendingError(error: unknown): boolean {
+  return error instanceof Error
+    && (error as { readonly code?: unknown }).code === 'data_export_privacy_cleanup_pending';
 }
 
 function dataExportRunLaneKey(job: DataExportWorkerJob): string {

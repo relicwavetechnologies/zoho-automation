@@ -195,6 +195,7 @@ export const createServer = (c: Container): DivoServerApplication => {
     resolveGoogleAuth: c.resolveGoogleExportAuth,
     larkAdapter: c.larkAdapter,
     conversationHistory: c.conversationRepo,
+    completionDelivery: c.channelDeliveryRepo,
     runLeaseHolder: c.laneLeaseHolder,
     logger: c.logger,
   });

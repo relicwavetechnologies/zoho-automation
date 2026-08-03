@@ -1,6 +1,6 @@
 # Data export: identity, coverage, and recovery — final design
 
-Status: **implemented (V1 + V2-lite)**, 2026-08-03. Baseline: `cd218170c`; full V2 durable source recovery remains deferred.
+Status: **implemented (V1 + V2-lite)**, 2026-08-04. Baseline: `cd218170c`; full V2 durable source recovery remains deferred.
 
 This design closes the class of defects behind the export pipeline's repeated
 breakages. V1 is a correct, idempotent whole-run retry: after an interruption it
@@ -297,13 +297,34 @@ now takes the existing fenced database lease under
   or edits the member's card. The deterministic BullMQ job is moved back to
   its delayed queue without spending a retry attempt.
 - The holder checks that it still owns the lease before checkpointing a
-  completion, saving the conversation resource, or delivering the final card.
+  completion, saving the conversation resource, or delivering either terminal
+  card. A completion-card transport failure defers the checkpointed job without
+  spending the final BullMQ attempt.
   A lost lease never sends a terminal failure card; the current lease holder is
   allowed to complete the same idempotent job.
-- The existing Google recovery remains the artifact boundary: a verified
-  `complete` artifact is recovered by `exportKey`; an incomplete Divo-created
-  artifact is removed and the recipe is re-fetched. Existing member-owned
-  Sheets are never cleared.
+- The Google artifact receipt has two durable states: `verified` records the
+  exact type, row count, coverage, and privacy check before `complete` is
+  acknowledged. A retry re-verifies and promotes `verified` to `complete`; it
+  never deletes a receipt it can prove was verified. Only an unverified,
+  Divo-created artifact is eligible for cleanup. Existing member-owned Sheets
+  are never cleared.
+- A crash can still occur between provider-side verification and the first
+  durable receipt. The remaining `writing` artifact is therefore ambiguous:
+  recovery re-checks that it is private, preserves it, and asks the member to
+  start a new export rather than deleting or blindly replaying it. The full V2
+  manifest/staging path is required to make that state automatically resumable.
+- The terminal Lark card has its own durable `ChannelDelivery` reservation,
+  keyed to the export job. A stale export worker cannot overwrite a newer card;
+  an active card publisher makes the retry defer without spending an attempt.
+- Lifecycle logs carry only job/export identity, safe artifact and coverage
+  fields, and bounded error class. Source rows, cursors, provider error text,
+  and arbitrary transform errors do not escape into logs or BullMQ failure
+  records. Cleanup failures are observable without replacing the export error.
+- A proved privacy-policy failure (wrong owner, missing selected reader, or
+  broader sharing) removes the Divo-created artifact before the member gets a
+  terminal sharing-policy message. If Drive deletion fails, that remediation is
+  manually delayed outside the normal export-attempt budget until it succeeds.
+  Transient Google API failures remain retryable.
 
 This deliberately does **not** claim source resume. A crash during source
 reading has no durable page receipt, so its retry starts at page one and may see
@@ -518,7 +539,9 @@ after-the-fact regression tests.
 | Transform filters rows | fewer output rows, never partial by itself |
 | Offset/limit, multi-part sources, zero-row pages | window is applied once per part; no false partial |
 | Crash after Google file/tab creation | retry reuses the same artifact/tab |
-| Crash after provider write, before completion receipt | retry verifies resource and completes; no duplicate artifact |
+| Crash after verification, before or during completion receipt | retry promotes the verified receipt; no duplicate artifact or source reread |
+| Stale worker reaches the terminal card after lease loss | durable card reservation admits one publisher; the other defers or observes delivery |
+| Source/provider error contains rows, cursor, or token-like text | logs and queue failure record contain only a safe error class/message |
 | OAuth/RBAC revoked on retry | terminal failure, no stale credential use or partial publish |
 
 A V1 worker loss while source reading simply re-fetches from page one. The

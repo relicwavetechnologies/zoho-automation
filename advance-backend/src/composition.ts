@@ -1603,7 +1603,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   dataExportSources.register(new OmsSnapshotDataExportSource(companyOmsSiteDataService));
   dataExportSources.register(new SemrushSnapshotDataExportSource(semrushService));
   dataExportSources.register(new MenhoodQueryDataExportSource(menhoodQueryService));
-  const googleWorkspaceExportSink = new GoogleWorkspaceExportSink();
+  const googleWorkspaceExportSink = new GoogleWorkspaceExportSink({
+    logger: logger.child({ service: 'google-workspace-export-sink' }),
+  });
 
   const zohoFinanceOps = new ZohoFinanceOps(
     zohoPaginatedBooksClient,

@@ -254,7 +254,10 @@ function normalizeSourceCell(
   return normalizeExportCell(value);
 }
 
-function isSemrushNumericColumn(column: string, source: DataExportSource): boolean {
+function isSemrushNumericColumn(
+  column: string,
+  source: Extract<DataExportSource, { readonly kind: 'semrush_snapshot' }>,
+): boolean {
   if (SEMRUSH_NUMERIC_COLUMNS.has(column)
     || SEMRUSH_DOMAIN_METRIC_COLUMNS.has(column)
     || SEMRUSH_BACKLINKS_NUMERIC_COLUMNS.has(column)) {

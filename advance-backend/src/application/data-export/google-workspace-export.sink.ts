@@ -6,6 +6,8 @@ import { once } from 'node:events';
 import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { google } from 'googleapis';
+import type { Logger } from '../../shared/logger';
+import { PermanentDataExportError } from './data-export.errors';
 import type {
   DataExportCompletion,
   DataExportCoverage,
@@ -43,11 +45,21 @@ const EXPORT_ROW_COUNT_PROPERTY = 'divoExportRowCount';
 const EXPORT_TRUNCATED_PROPERTY = 'divoExportTruncated';
 const EXPORT_COVERAGE_PROPERTY = 'divoExportCoverage';
 const EXPORT_TYPE_PROPERTY = 'divoExportType';
+const VERIFIED_EXPORT_STATE = 'verified';
+
+type PersistedArtifact = {
+  readonly exportKey: string;
+  readonly artifactType: 'google_sheet' | 'csv' | 'xlsx';
+  readonly rowCount: number;
+  readonly coverage: DataExportCoverage;
+  readonly sourceTruncated: boolean;
+};
 
 export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
   constructor(private readonly options: {
     readonly menhoodSpoolByteLimit?: number;
     readonly temporaryDirectoryRoot?: string;
+    readonly logger?: Logger | undefined;
   } = {}) {}
 
   async write(input: DataExportDestinationWriteInput): Promise<DataExportCompletion> {
@@ -62,6 +74,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         input.exportKey,
         access,
         input.signal,
+        this.options.logger,
       );
       if (recovered) return recovered;
     }
@@ -358,6 +371,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       sourceTruncated: input.sourceTruncated,
     });
     let spreadsheetId: string | undefined;
+    let contentAndAccessVerified = false;
     try {
       const created = await drive.files.create({
         ignoreDefaultVisibility: true,
@@ -448,13 +462,25 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         }
       }
       await verifyArtifactAccess(drive, spreadsheetId, input.access, input.signal);
-      await markCompletedExport(drive, spreadsheetId, {
+      contentAndAccessVerified = true;
+      const artifact: PersistedArtifact = {
         exportKey: input.exportKey,
         artifactType: 'google_sheet',
         rowCount: input.rowCount,
         coverage: input.coverage,
         sourceTruncated: input.sourceTruncated,
+      };
+      await markVerifiedExport(drive, spreadsheetId, artifact, input.signal);
+      await markCompletedExport(drive, spreadsheetId, {
+        ...artifact,
       }, input.signal);
+      this.options.logger?.info('data_export.artifact.completed', {
+        exportKey: input.exportKey,
+        artifactType: artifact.artifactType,
+        rowCount: artifact.rowCount,
+        coverageOutcome: artifact.coverage?.outcome ?? null,
+        coverageCause: artifact.coverage?.cause ?? null,
+      });
       return {
         success: true,
         artifactId: spreadsheetId,
@@ -467,7 +493,14 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         verified: true,
       };
     } catch (error) {
-      if (spreadsheetId) await drive.files.delete({ fileId: spreadsheetId }).catch(() => undefined);
+      if (spreadsheetId && !contentAndAccessVerified) {
+        await cleanupArtifact(drive, spreadsheetId, {
+          exportKey: input.exportKey,
+          artifactType: 'google_sheet',
+          reason: 'write_failed',
+          logger: this.options.logger,
+        });
+      }
       throw error;
     }
   }
@@ -519,6 +552,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
 
     const drive = google.drive({ version: 'v3', auth: oauth(input.auth.accessToken) });
     let fileId: string | undefined;
+    let contentAndAccessVerified = false;
     try {
       const created = await drive.files.create({
         ignoreDefaultVisibility: true,
@@ -545,13 +579,25 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         throw new Error('Google Drive verification failed: uploaded CSV size differs from source');
       }
       await verifyArtifactAccess(drive, fileId, input.access, input.signal);
-      await markCompletedExport(drive, fileId, {
+      contentAndAccessVerified = true;
+      const artifact: PersistedArtifact = {
         exportKey: input.exportKey,
         artifactType: 'csv',
         rowCount: input.rowCount,
         coverage: input.coverage,
         sourceTruncated: input.sourceTruncated,
+      };
+      await markVerifiedExport(drive, fileId, artifact, input.signal);
+      await markCompletedExport(drive, fileId, {
+        ...artifact,
       }, input.signal);
+      this.options.logger?.info('data_export.artifact.completed', {
+        exportKey: input.exportKey,
+        artifactType: artifact.artifactType,
+        rowCount: artifact.rowCount,
+        coverageOutcome: artifact.coverage?.outcome ?? null,
+        coverageCause: artifact.coverage?.cause ?? null,
+      });
       return {
         success: true,
         artifactId: fileId,
@@ -564,7 +610,14 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         verified: true,
       };
     } catch (error) {
-      if (fileId) await drive.files.delete({ fileId }).catch(() => undefined);
+      if (fileId && !contentAndAccessVerified) {
+        await cleanupArtifact(drive, fileId, {
+          exportKey: input.exportKey,
+          artifactType: 'csv',
+          reason: 'write_failed',
+          logger: this.options.logger,
+        });
+      }
       throw error;
     }
   }
@@ -630,13 +683,24 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       }
       await verifyArtifactAccess(drive, fileId, input.access, input.signal);
       contentAndAccessVerified = true;
-      await markCompletedExport(drive, fileId, {
+      const artifact: PersistedArtifact = {
         exportKey: input.exportKey,
         artifactType: 'xlsx',
         rowCount: input.rowCount,
         coverage: input.coverage,
         sourceTruncated: input.sourceTruncated,
+      };
+      await markVerifiedExport(drive, fileId, artifact, input.signal);
+      await markCompletedExport(drive, fileId, {
+        ...artifact,
       }, input.signal);
+      this.options.logger?.info('data_export.artifact.completed', {
+        exportKey: input.exportKey,
+        artifactType: artifact.artifactType,
+        rowCount: artifact.rowCount,
+        coverageOutcome: artifact.coverage?.outcome ?? null,
+        coverageCause: artifact.coverage?.cause ?? null,
+      });
       return {
         success: true,
         artifactId: fileId,
@@ -651,7 +715,12 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       };
     } catch (error) {
       if (fileId && !contentAndAccessVerified) {
-        await drive.files.delete({ fileId }).catch(() => undefined);
+        await cleanupArtifact(drive, fileId, {
+          exportKey: input.exportKey,
+          artifactType: 'xlsx',
+          reason: 'write_failed',
+          logger: this.options.logger,
+        });
       }
       throw error;
     }
@@ -1145,7 +1214,11 @@ async function verifyUserReader(
     && permission.role === 'reader'
     && permission.emailAddress?.toLowerCase() === emailAddress.toLowerCase(),
   );
-  if (!found) throw new Error('Google Drive verification failed: invoker reader permission is missing');
+  if (!found) {
+    throw exportPrivacyVerificationError(
+      'Google Drive verification failed: invoker reader permission is missing',
+    );
+  }
   const broad = permissions.data.permissions?.some((permission) =>
     permission.type === 'anyone'
     || permission.type === 'domain'
@@ -1156,7 +1229,11 @@ async function verifyUserReader(
       && permission.emailAddress?.toLowerCase() !== emailAddress.toLowerCase()
     ),
   );
-  if (broad) throw new Error('Google Drive verification failed: export has access beyond the invoker');
+  if (broad) {
+    throw exportPrivacyVerificationError(
+      'Google Drive verification failed: export has access beyond the invoker',
+    );
+  }
 }
 
 export async function recoverCompletedExport(
@@ -1164,6 +1241,7 @@ export async function recoverCompletedExport(
   exportKey: string,
   access: DataExportArtifactAccess,
   signal?: AbortSignal,
+  logger?: Logger,
 ): Promise<DataExportCompletion | null> {
   const listed = await drive.files.list({
     q: `appProperties has { key='${EXPORT_KEY_PROPERTY}' and value='${escapeDriveQueryValue(exportKey)}' } and trashed = false`,
@@ -1171,46 +1249,207 @@ export async function recoverCompletedExport(
     pageSize: 10,
   }, requestOptions(signal));
   const files = listed.data.files ?? [];
-  const completed = files.find((file) => file.appProperties?.[EXPORT_STATE_PROPERTY] === 'complete');
-  if (completed?.id) {
-    const artifactType = completed.appProperties?.[EXPORT_TYPE_PROPERTY];
-    const rowCount = Number(completed.appProperties?.[EXPORT_ROW_COUNT_PROPERTY]);
-    if (
-      (artifactType === 'google_sheet' || artifactType === 'csv' || artifactType === 'xlsx')
-      && (artifactType !== 'xlsx' || completed.mimeType === XLSX_MIME_TYPE)
-      && Number.isSafeInteger(rowCount)
-      && rowCount >= 0
-    ) {
-      for (const file of files) {
-        if (file.id && file.id !== completed.id) {
-          await drive.files.delete({ fileId: file.id }, requestOptions(signal));
+  const completed = files.find(file =>
+    file.appProperties?.[EXPORT_STATE_PROPERTY] === 'complete'
+    && persistedArtifactFrom(file),
+  );
+  const verified = completed
+    ? undefined
+    : files.find(file =>
+      file.appProperties?.[EXPORT_STATE_PROPERTY] === VERIFIED_EXPORT_STATE
+      && persistedArtifactFrom(file)?.coverage,
+    );
+  const recovered = completed ?? verified;
+  if (recovered?.id) {
+    const artifact = persistedArtifactFrom(recovered);
+    if (!artifact) throw new Error('Validated recovered export was missing its artifact receipt');
+    for (const file of files) {
+      if (file.id && file.id !== recovered.id) {
+        if (
+          (file.appProperties?.[EXPORT_STATE_PROPERTY] === 'complete'
+            || file.appProperties?.[EXPORT_STATE_PROPERTY] === VERIFIED_EXPORT_STATE)
+          && persistedArtifactFrom(file)
+        ) {
+          logger?.warn('data_export.artifact.duplicate_preserved', {
+            exportKey,
+            artifactType: persistedArtifactFrom(file)?.artifactType,
+          });
+          continue;
         }
+        await cleanupArtifact(drive, file.id, {
+          exportKey,
+          artifactType: artifact.artifactType,
+          reason: 'recovery_duplicate',
+          logger,
+        });
       }
-      await ensureArtifactAccess(drive, completed.id, access, signal);
-      await verifyArtifactAccess(drive, completed.id, access, signal);
-      const coverage = parsePersistedCoverage(completed.appProperties?.[EXPORT_COVERAGE_PROPERTY]);
-      return {
-        success: true,
-        artifactId: completed.id,
-        artifactUrl: completed.webViewLink
-          ?? (artifactType === 'google_sheet'
-            ? `https://docs.google.com/spreadsheets/d/${encodeURIComponent(completed.id)}/edit`
-            : `https://drive.google.com/file/d/${encodeURIComponent(completed.id)}/view`),
-        artifactType,
-        rowCount,
-        ...(coverage ? { coverage } : {}),
-        sourceTruncated: coverage?.outcome === 'partial'
-          || (!coverage && completed.appProperties?.[EXPORT_TRUNCATED_PROPERTY] === 'true'),
-        sharedWith: accessLabel(access),
-        verified: true,
-      };
     }
+    try {
+      await ensureArtifactAccess(drive, recovered.id, access, signal);
+      await verifyArtifactAccess(drive, recovered.id, access, signal);
+    } catch (error) {
+      if (error instanceof PermanentDataExportError) {
+        const removed = await cleanupArtifact(drive, recovered.id, {
+          exportKey,
+          artifactType: artifact.artifactType,
+          reason: 'privacy_violation',
+          logger,
+        });
+        if (!removed) throw privacyCleanupPendingError();
+      }
+      throw error;
+    }
+    if (verified) {
+      if (!artifact.coverage) throw new Error('Verified export receipt was missing coverage');
+      await markCompletedExport(drive, recovered.id, {
+        exportKey,
+        artifactType: artifact.artifactType,
+        rowCount: artifact.rowCount,
+        coverage: artifact.coverage,
+        sourceTruncated: artifact.sourceTruncated,
+      }, signal);
+    }
+    logger?.info('data_export.artifact.recovered', {
+      exportKey,
+      recoveryState: verified ? VERIFIED_EXPORT_STATE : 'complete',
+      artifactType: artifact.artifactType,
+      rowCount: artifact.rowCount,
+      coverageOutcome: artifact.coverage?.outcome ?? null,
+      coverageCause: artifact.coverage?.cause ?? null,
+    });
+    return completionFromArtifact(recovered.id, recovered.webViewLink, artifact, access);
+  }
+  const ambiguousWriting = files.find(file =>
+    file.id && file.appProperties?.[EXPORT_STATE_PROPERTY] === 'writing',
+  );
+  if (ambiguousWriting?.id) {
+    try {
+      await ensureArtifactAccess(drive, ambiguousWriting.id, access, signal);
+      await verifyArtifactAccess(drive, ambiguousWriting.id, access, signal);
+    } catch (error) {
+      if (error instanceof PermanentDataExportError) {
+        const removed = await cleanupArtifact(drive, ambiguousWriting.id, {
+          exportKey,
+          artifactType: 'unknown',
+          reason: 'privacy_violation',
+          logger,
+        });
+        if (!removed) throw privacyCleanupPendingError();
+      }
+      throw error;
+    }
+    logger?.warn('data_export.artifact.ambiguous_preserved', { exportKey });
+    throw new PermanentDataExportError(
+      'Divo found an earlier export attempt that it could not safely verify. It remains private; please run a new export.',
+      'Unverified Divo export artifact blocks automatic recovery',
+    );
   }
   for (const file of files) {
     if (!file.id) continue;
-    await drive.files.delete({ fileId: file.id }, requestOptions(signal));
+    await cleanupArtifact(drive, file.id, {
+      exportKey,
+      artifactType: 'unknown',
+      reason: 'recovery_incomplete',
+      logger,
+    });
   }
   return null;
+}
+
+type RecoveredArtifact = Omit<PersistedArtifact, 'exportKey' | 'coverage'> & {
+  readonly coverage?: DataExportCoverage;
+};
+
+function persistedArtifactFrom(file: {
+  readonly mimeType?: string | null;
+  readonly appProperties?: Record<string, string | null | undefined> | null;
+}): RecoveredArtifact | null {
+  const artifactType = file.appProperties?.[EXPORT_TYPE_PROPERTY];
+  const rowCount = Number(file.appProperties?.[EXPORT_ROW_COUNT_PROPERTY]);
+  if (
+    (artifactType !== 'google_sheet' && artifactType !== 'csv' && artifactType !== 'xlsx')
+    || (artifactType === 'xlsx' && file.mimeType !== XLSX_MIME_TYPE)
+    || !Number.isSafeInteger(rowCount)
+    || rowCount < 0
+  ) return null;
+  const coverage = parsePersistedCoverage(file.appProperties?.[EXPORT_COVERAGE_PROPERTY] ?? undefined);
+  return {
+    artifactType,
+    rowCount,
+    ...(coverage ? { coverage } : {}),
+    sourceTruncated: coverage?.outcome === 'partial'
+      || (!coverage && file.appProperties?.[EXPORT_TRUNCATED_PROPERTY] === 'true'),
+  };
+}
+
+function completionFromArtifact(
+  artifactId: string,
+  webViewLink: string | null | undefined,
+  artifact: RecoveredArtifact,
+  access: DataExportArtifactAccess,
+): DataExportCompletion {
+  return {
+    success: true,
+    artifactId,
+    artifactUrl: webViewLink
+      ?? (artifact.artifactType === 'google_sheet'
+        ? `https://docs.google.com/spreadsheets/d/${encodeURIComponent(artifactId)}/edit`
+        : `https://drive.google.com/file/d/${encodeURIComponent(artifactId)}/view`),
+    artifactType: artifact.artifactType,
+    rowCount: artifact.rowCount,
+    ...(artifact.coverage ? { coverage: artifact.coverage } : {}),
+    sourceTruncated: artifact.sourceTruncated,
+    sharedWith: accessLabel(access),
+    verified: true,
+  };
+}
+
+function exportPrivacyVerificationError(logMessage: string): PermanentDataExportError {
+  return new PermanentDataExportError(
+    'Divo could not verify that this export is private to your selected Google account. Reconnect that account or ask an administrator to restore the export sharing policy.',
+    logMessage,
+  );
+}
+
+async function cleanupArtifact(
+  drive: ReturnType<typeof google.drive>,
+  fileId: string,
+  input: {
+    readonly exportKey: string;
+    readonly artifactType: 'google_sheet' | 'csv' | 'xlsx' | 'unknown';
+    readonly reason: 'write_failed' | 'recovery_duplicate' | 'recovery_incomplete' | 'privacy_violation';
+    readonly logger?: Logger | undefined;
+  },
+): Promise<boolean> {
+  try {
+    await drive.files.delete({ fileId });
+    input.logger?.info('data_export.artifact_cleanup.completed', {
+      exportKey: input.exportKey,
+      artifactType: input.artifactType,
+      reason: input.reason,
+    });
+    return true;
+  } catch (error) {
+    input.logger?.warn('data_export.artifact_cleanup.failed', {
+      exportKey: input.exportKey,
+      artifactType: input.artifactType,
+      reason: input.reason,
+      errorType: dataExportErrorType(error),
+    });
+    return false;
+  }
+}
+
+function dataExportErrorType(error: unknown): 'permanent' | 'error' | 'non_error' {
+  if (error instanceof PermanentDataExportError) return 'permanent';
+  return error instanceof Error ? 'error' : 'non_error';
+}
+
+function privacyCleanupPendingError(): Error & { readonly code: 'data_export_privacy_cleanup_pending' } {
+  return Object.assign(
+    new Error('Divo could not remove an artifact that violates export privacy'),
+    { code: 'data_export_privacy_cleanup_pending' as const },
+  );
 }
 
 function artifactAccess(
@@ -1256,7 +1495,11 @@ async function verifyArtifactAccess(
     && permission.role === 'owner'
     && permission.emailAddress?.toLowerCase() === access.email.toLowerCase(),
   );
-  if (!found) throw new Error('Google Drive verification failed: selected account is not the export owner');
+  if (!found) {
+    throw exportPrivacyVerificationError(
+      'Google Drive verification failed: selected account is not the export owner',
+    );
+  }
   const broad = permissions.data.permissions?.some(permission =>
     permission.type === 'anyone'
     || permission.type === 'domain'
@@ -1269,7 +1512,11 @@ async function verifyArtifactAccess(
       )
     ),
   );
-  if (broad) throw new Error('Google Drive verification failed: export has access beyond its owner');
+  if (broad) {
+    throw exportPrivacyVerificationError(
+      'Google Drive verification failed: export has access beyond its owner',
+    );
+  }
 }
 
 async function ensureUserReader(
@@ -1290,16 +1537,29 @@ async function ensureUserReader(
   if (!found) await shareUserReader(drive, fileId, emailAddress, signal);
 }
 
+async function markVerifiedExport(
+  drive: ReturnType<typeof google.drive>,
+  fileId: string,
+  input: PersistedArtifact,
+  signal?: AbortSignal,
+): Promise<void> {
+  await markExportState(drive, fileId, input, VERIFIED_EXPORT_STATE, signal);
+}
+
 async function markCompletedExport(
   drive: ReturnType<typeof google.drive>,
   fileId: string,
-  input: {
-    readonly exportKey: string;
-    readonly artifactType: 'google_sheet' | 'csv' | 'xlsx';
-    readonly rowCount: number;
-    readonly coverage: DataExportCoverage;
-    readonly sourceTruncated: boolean;
-  },
+  input: PersistedArtifact,
+  signal?: AbortSignal,
+): Promise<void> {
+  await markExportState(drive, fileId, input, 'complete', signal);
+}
+
+async function markExportState(
+  drive: ReturnType<typeof google.drive>,
+  fileId: string,
+  input: PersistedArtifact,
+  state: 'complete' | typeof VERIFIED_EXPORT_STATE,
   signal?: AbortSignal,
 ): Promise<void> {
   await drive.files.update({
@@ -1307,7 +1567,7 @@ async function markCompletedExport(
     requestBody: {
       appProperties: {
         ...writingProperties(input.exportKey),
-        [EXPORT_STATE_PROPERTY]: 'complete',
+        [EXPORT_STATE_PROPERTY]: state,
         [EXPORT_ROW_COUNT_PROPERTY]: String(input.rowCount),
         [EXPORT_TRUNCATED_PROPERTY]: String(input.sourceTruncated),
         [EXPORT_COVERAGE_PROPERTY]: JSON.stringify(input.coverage),

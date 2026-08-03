@@ -671,6 +671,210 @@ describe('Google export retry recovery', () => {
     assert.equal(recovered?.sourceTruncated, true);
   });
 
+  it('promotes verified Sheet, CSV, and Excel artifacts without deleting or refetching them', async () => {
+    for (const artifactType of ['google_sheet', 'csv', 'xlsx'] as const) {
+      const updates: Record<string, string>[] = [];
+      const drive = {
+        files: {
+          list: async () => ({
+            data: {
+              files: [{
+                id: `${artifactType}-1`,
+                ...(artifactType === 'xlsx'
+                  ? { mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+                  : {}),
+                appProperties: {
+                  divoExportKey: `job-${artifactType}`,
+                  divoExportState: 'verified',
+                  divoExportRowCount: '2',
+                  divoExportTruncated: 'false',
+                  divoExportCoverage: JSON.stringify({
+                    inputRowsRead: 2,
+                    rowsWritten: 2,
+                    outcome: 'complete',
+                  }),
+                  divoExportType: artifactType,
+                },
+              }],
+            },
+          }),
+          update: async (input: any) => {
+            updates.push(input.requestBody.appProperties);
+            return { data: { id: `${artifactType}-1` } };
+          },
+          delete: async () => assert.fail('verified artifact must not be deleted'),
+        },
+        permissions: {
+          list: async () => ({
+            data: {
+              permissions: [{ type: 'user', role: 'owner', emailAddress: 'member@gmail.com' }],
+            },
+          }),
+          create: async () => assert.fail('owner export must not create reader permissions'),
+        },
+      };
+
+      const recovered = await recoverCompletedExport(
+        drive as any,
+        `job-${artifactType}`,
+        { kind: 'owner', email: 'member@gmail.com' },
+      );
+
+      assert.equal(recovered?.artifactType, artifactType);
+      assert.equal(recovered?.rowCount, 2);
+      assert.equal(updates.length, 1);
+      assert.equal(updates[0]?.divoExportState, 'complete');
+    }
+  });
+
+  it('preserves a second verified receipt while recovering the completed artifact', async () => {
+    let deleted = false;
+    const events: Record<string, unknown>[] = [];
+    const receipt = (state: 'complete' | 'verified', type: 'csv' | 'xlsx') => ({
+      divoExportKey: 'job-duplicates',
+      divoExportState: state,
+      divoExportRowCount: '1',
+      divoExportTruncated: 'false',
+      divoExportCoverage: JSON.stringify({ inputRowsRead: 1, rowsWritten: 1, outcome: 'complete' }),
+      divoExportType: type,
+    });
+    const drive = {
+      files: {
+        list: async () => ({
+          data: {
+            files: [
+              { id: 'csv-complete', appProperties: receipt('complete', 'csv') },
+              {
+                id: 'xlsx-verified',
+                mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                appProperties: receipt('verified', 'xlsx'),
+              },
+            ],
+          },
+        }),
+        delete: async () => { deleted = true; },
+      },
+      permissions: {
+        list: async () => ({
+          data: {
+            permissions: [{ type: 'user', role: 'owner', emailAddress: 'member@gmail.com' }],
+          },
+        }),
+        create: async () => assert.fail('owner export must not create reader permissions'),
+      },
+    };
+
+    const recovered = await recoverCompletedExport(
+      drive as any,
+      'job-duplicates',
+      { kind: 'owner', email: 'member@gmail.com' },
+      undefined,
+      {
+        info: () => undefined,
+        warn: (event: string, data?: Record<string, unknown>) => events.push({ event, ...data }),
+      } as any,
+    );
+
+    assert.equal(recovered?.artifactId, 'csv-complete');
+    assert.equal(deleted, false);
+    assert.ok(events.some(event => event.event === 'data_export.artifact.duplicate_preserved'));
+  });
+
+  it('records cleanup failures without logging provider error text', async () => {
+    const secret = 'DELETE_SECRET_84ea';
+    const events: Record<string, unknown>[] = [];
+    const logger = {
+      info: (event: string, data?: Record<string, unknown>) => events.push({ event, ...data }),
+      warn: (event: string, data?: Record<string, unknown>) => events.push({ event, ...data }),
+    };
+    const drive = {
+      files: {
+        list: async () => ({
+          data: {
+            files: [{
+              id: 'broad-file',
+              appProperties: {
+                divoExportKey: 'job-incomplete',
+                divoExportState: 'complete',
+                divoExportRowCount: '1',
+                divoExportTruncated: 'false',
+                divoExportType: 'csv',
+              },
+            }],
+          },
+        }),
+        delete: async () => { throw new Error(`provider cleanup rejected ${secret}`); },
+      },
+      permissions: {
+        list: async () => ({
+          data: {
+            permissions: [
+              { type: 'user', role: 'owner', emailAddress: 'member@gmail.com' },
+              { type: 'domain', role: 'reader', domain: 'example.com' },
+            ],
+          },
+        }),
+        create: async () => assert.fail('owner export must not create reader permissions'),
+      },
+    };
+
+    await assert.rejects(
+      () => recoverCompletedExport(
+        drive as any,
+        'job-incomplete',
+        { kind: 'owner', email: 'member@gmail.com' },
+        undefined,
+        logger as any,
+      ),
+      /could not remove an artifact that violates export privacy/i,
+    );
+    assert.ok(events.some(event => event.event === 'data_export.artifact_cleanup.failed'));
+    assert.doesNotMatch(JSON.stringify(events), new RegExp(secret));
+  });
+
+  it('preserves a private writing artifact whose verification receipt may have been lost', async () => {
+    let deleted = false;
+    const events: Record<string, unknown>[] = [];
+    const drive = {
+      files: {
+        list: async () => ({
+          data: {
+            files: [{
+              id: 'writing-file',
+              appProperties: { divoExportKey: 'job-writing', divoExportState: 'writing' },
+            }],
+          },
+        }),
+        delete: async () => { deleted = true; },
+      },
+      permissions: {
+        list: async () => ({
+          data: {
+            permissions: [{ type: 'user', role: 'owner', emailAddress: 'member@gmail.com' }],
+          },
+        }),
+        create: async () => assert.fail('owner export must not create reader permissions'),
+      },
+    };
+
+    await assert.rejects(
+      () => recoverCompletedExport(
+        drive as any,
+        'job-writing',
+        { kind: 'owner', email: 'member@gmail.com' },
+        undefined,
+        {
+          info: () => undefined,
+          warn: (event: string, data?: Record<string, unknown>) => events.push({ event, ...data }),
+        } as any,
+      ),
+      /Unverified Divo export artifact/i,
+    );
+
+    assert.equal(deleted, false);
+    assert.ok(events.some(event => event.event === 'data_export.artifact.ambiguous_preserved'));
+  });
+
   it('recovers a completed Excel artifact with the same access checks', async () => {
     const drive = {
       files: {
@@ -754,6 +958,7 @@ describe('Google export retry recovery', () => {
   });
 
   it('rejects a recovered artifact with access beyond the verified invoker', async () => {
+    let deleted = 0;
     const drive = {
       files: {
         list: async () => ({
@@ -771,7 +976,7 @@ describe('Google export retry recovery', () => {
             }],
           },
         }),
-        delete: async () => assert.fail('completed artifact must not be deleted'),
+        delete: async () => { deleted += 1; },
       },
       permissions: {
         list: async () => ({
@@ -794,6 +999,7 @@ describe('Google export retry recovery', () => {
       ),
       /access beyond the invoker/i,
     );
+    assert.equal(deleted, 1, 'a Divo-created file that violates privacy must be removed');
   });
 
   it('recovers a personal-account artifact only when that account is the sole owner', async () => {
@@ -840,6 +1046,7 @@ describe('Google export retry recovery', () => {
   });
 
   it('rejects a personal-account artifact that was shared beyond its owner', async () => {
+    let deleted = 0;
     const drive = {
       files: {
         list: async () => ({
@@ -856,7 +1063,7 @@ describe('Google export retry recovery', () => {
             }],
           },
         }),
-        delete: async () => assert.fail('completed artifact must not be deleted'),
+        delete: async () => { deleted += 1; },
       },
       permissions: {
         list: async () => ({
@@ -879,6 +1086,7 @@ describe('Google export retry recovery', () => {
       ),
       /access beyond its owner/i,
     );
+    assert.equal(deleted, 1, 'a Divo-created file that violates privacy must be removed');
   });
 });
 
@@ -914,6 +1122,12 @@ describe('data export worker', () => {
       withLane: (...args: any[]) => Promise<any>;
       holdsLane: (...args: any[]) => Promise<boolean>;
     };
+    completionDelivery?: {
+      reserve: (...args: any[]) => Promise<any>;
+      markDelivered: (...args: any[]) => Promise<any>;
+      markFailed: (...args: any[]) => Promise<any>;
+    };
+    logger?: typeof noopLogger;
     inactivityMs?: number;
     maxRows?: number;
   }) => new DataExportWorker({
@@ -949,7 +1163,8 @@ describe('data export worker', () => {
     larkAdapter: input.larkAdapter as any,
     ...(input.conversationHistory ? { conversationHistory: input.conversationHistory as any } : {}),
     ...(input.runLeaseHolder ? { runLeaseHolder: input.runLeaseHolder as any } : {}),
-    logger: noopLogger,
+    ...(input.completionDelivery ? { completionDelivery: input.completionDelivery as any } : {}),
+    logger: input.logger ?? noopLogger,
     ...(input.inactivityMs === undefined ? {} : { inactivityMs: input.inactivityMs }),
     ...(input.maxRows === undefined ? {} : { maxRows: input.maxRows }),
   });
@@ -1155,6 +1370,277 @@ describe('data export worker', () => {
     assert.equal(sinkWrites, 1);
     assert.match(delivered, /Data export ready/i);
     assert.match(delivered, /sheet-checked/i);
+  });
+
+  it('does not overwrite a completion card already claimed by another publisher', async () => {
+    const edits: string[] = [];
+    const worker = createWorker({
+      registry: new DatasetSourceRegistry(),
+      sink: { write: async () => assert.fail('a checkpointed export must not rerun') } as any,
+      completionDelivery: {
+        reserve: async () => ({
+          ok: true as const,
+          value: {
+            outcome: 'delivered' as const,
+            record: {
+              deliveryId: 'delivery-1',
+              attempts: 1,
+              firstAttemptAt: new Date(),
+            },
+          },
+        }),
+        markDelivered: async () => assert.fail('a delivered reservation must not be marked again'),
+        markFailed: async () => assert.fail('a delivered reservation must not fail'),
+      },
+      larkAdapter: {
+        sendToChatId: async () => assert.fail('a tracker was already created'),
+        updateMessageById: async (_messageId, card) => {
+          edits.push(card);
+          return { ok: true as const, value: undefined };
+        },
+      },
+    });
+
+    await worker.processJob({
+      id: 'dtx_completion_delivery',
+      data: {
+        ...payload,
+        progressMessageId: 'om-progress',
+        completedExport: {
+          success: true,
+          artifactId: 'sheet-delivered',
+          artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-delivered/edit',
+          artifactType: 'google_sheet',
+          rowCount: 1,
+          sourceTruncated: false,
+          sharedWith: 'abhishek@emiactech.com (reader)',
+          verified: true,
+        },
+      },
+      attemptsMade: 1,
+      opts: { attempts: 3 },
+      updateData: async () => assert.fail('a checkpointed export must not be rewritten'),
+      updateProgress: async () => assert.fail('a checkpointed export must not report progress'),
+    });
+
+    assert.deepEqual(edits, []);
+  });
+
+  it('defers a final-attempt completion-card failure and later delivers the checkpoint', async () => {
+    let updates = 0;
+    let delayed = 0;
+    const worker = createWorker({
+      registry: new DatasetSourceRegistry(),
+      sink: { write: async () => assert.fail('a checkpointed export must not rerun') } as any,
+      completionDelivery: {
+        reserve: async () => ({
+          ok: true as const,
+          value: {
+            outcome: 'reserved' as const,
+            record: {
+              deliveryId: 'delivery-retry',
+              attempts: 1,
+              firstAttemptAt: new Date(),
+            },
+          },
+        }),
+        markDelivered: async () => ({ ok: true as const, value: undefined }),
+        markFailed: async () => ({ ok: true as const, value: undefined }),
+      },
+      larkAdapter: {
+        sendToChatId: async () => assert.fail('a tracker was already created'),
+        updateMessageById: async () => {
+          updates += 1;
+          return updates === 1
+            ? { ok: false as const, error: new Error('Lark update temporarily unavailable') }
+            : { ok: true as const, value: undefined };
+        },
+      },
+    });
+    const data: DataExportJobPayload = {
+      ...payload,
+      progressMessageId: 'om-progress',
+      completedExport: {
+        success: true,
+        artifactId: 'sheet-retry-card',
+        artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-retry-card/edit',
+        artifactType: 'google_sheet',
+        rowCount: 1,
+        sourceTruncated: false,
+        sharedWith: 'abhishek@emiactech.com (reader)',
+        verified: true,
+      },
+    };
+
+    await assert.rejects(
+      () => worker.processJob({
+        id: 'dtx_completion_retry',
+        data,
+        token: 'worker-token-1',
+        attemptsMade: 2,
+        opts: { attempts: 3 },
+        updateData: async () => assert.fail('a checkpointed export must not be rewritten'),
+        updateProgress: async () => assert.fail('a checkpointed export must not report progress'),
+        moveToDelayed: async () => { delayed += 1; },
+      }),
+      { name: 'DelayedError' },
+    );
+    assert.equal(delayed, 1);
+
+    await worker.processJob({
+      id: 'dtx_completion_retry',
+      data,
+      token: 'worker-token-2',
+      attemptsMade: 2,
+      opts: { attempts: 3 },
+      updateData: async () => assert.fail('a checkpointed export must not be rewritten'),
+      updateProgress: async () => assert.fail('a checkpointed export must not report progress'),
+      moveToDelayed: async () => assert.fail('the recovered terminal card must not defer'),
+    });
+    assert.equal(updates, 2);
+  });
+
+  it('does not publish a failure card after lease loss during a terminal error', async () => {
+    const registry = new DatasetSourceRegistry();
+    registry.register({
+      kind: 'airtable_records',
+      async *read() {
+        throw new Error('source temporarily unavailable');
+      },
+    });
+    let terminalEdits = 0;
+    let delayed = 0;
+    const holds = [true, false];
+    const worker = createWorker({
+      registry,
+      sink: {
+        write: async (input: any) => {
+          for await (const _page of input.rows) { /* the source fails before publication */ }
+          assert.fail('the source failure must abort the export');
+        },
+      } as any,
+      runLeaseHolder: {
+        withLane: async (_key, task) => task({}, new AbortController().signal),
+        holdsLane: async () => holds.shift() ?? false,
+      },
+      larkAdapter: {
+        sendToChatId: async () => ({ ok: true as const, value: 'om-progress' }),
+        updateMessageById: async () => {
+          terminalEdits += 1;
+          return { ok: true as const, value: undefined };
+        },
+      },
+    });
+
+    await assert.rejects(
+      () => worker.processJob({
+        id: 'dtx_failure_lease_loss',
+        data: payload,
+        token: 'worker-token',
+        attemptsMade: 2,
+        opts: { attempts: 3 },
+        updateData: async () => undefined,
+        updateProgress: async () => undefined,
+        moveToDelayed: async () => { delayed += 1; },
+      }),
+      { name: 'DelayedError' },
+    );
+    assert.equal(delayed, 1);
+    assert.equal(terminalEdits, 0, 'a stale worker must not replace the progress card with failure');
+  });
+
+  it('keeps privacy-remediation cleanup scheduled beyond the final export attempt', async () => {
+    const registry = new DatasetSourceRegistry();
+    registry.register({
+      kind: 'airtable_records',
+      async *read() {
+        yield { rows: [{ Name: 'One' }] };
+      },
+    });
+    const edits: string[] = [];
+    let delayed = 0;
+    const worker = createWorker({
+      registry,
+      sink: {
+        write: async (input: any) => {
+          for await (const _page of input.rows) { /* consume the source before the privacy cleanup blocks */ }
+          throw Object.assign(
+            new Error('Divo could not remove an artifact that violates export privacy'),
+            { code: 'data_export_privacy_cleanup_pending' },
+          );
+        },
+      } as any,
+      larkAdapter: {
+        sendToChatId: async () => ({ ok: true as const, value: 'om-progress' }),
+        updateMessageById: async (_messageId, card) => {
+          edits.push(card);
+          return { ok: true as const, value: undefined };
+        },
+      },
+    });
+
+    await assert.rejects(
+      () => worker.processJob({
+        id: 'dtx_privacy_cleanup',
+        data: payload,
+        token: 'worker-token',
+        attemptsMade: 2,
+        opts: { attempts: 3 },
+        updateData: async () => undefined,
+        updateProgress: async () => undefined,
+        moveToDelayed: async () => { delayed += 1; },
+      }),
+      { name: 'DelayedError' },
+    );
+
+    assert.equal(delayed, 1);
+    assert.ok(edits.length > 0, 'normal progress updates may still be shown');
+    assert.ok(edits.every(card => !/could not finish/i.test(card)));
+  });
+
+  it('keeps source row text out of export lifecycle logs', async () => {
+    const secret = 'ROW_SECRET_5pW7--cursor-9d8c';
+    const entries: Record<string, unknown>[] = [];
+    const logger: any = {
+      child: () => logger,
+      debug: (event: string, data?: Record<string, unknown>) => entries.push({ event, ...data }),
+      info: (event: string, data?: Record<string, unknown>) => entries.push({ event, ...data }),
+      warn: (event: string, data?: Record<string, unknown>) => entries.push({ event, ...data }),
+      error: (event: string, data?: Record<string, unknown>) => entries.push({ event, ...data }),
+    };
+    const registry = new DatasetSourceRegistry();
+    registry.register({
+      kind: 'airtable_records',
+      async *read() {
+        throw new Error(`provider rejected row ${secret}`);
+      },
+    });
+    const worker = createWorker({
+      registry,
+      sink: {
+        write: async (input: any) => {
+          for await (const _page of input.rows) { /* the source fails before a row reaches the sink */ }
+          assert.fail('the source failure must abort the export');
+        },
+      } as any,
+      larkAdapter: {
+        sendToChatId: async () => ({ ok: true as const, value: 'om-progress' }),
+        updateMessageById: async () => ({ ok: true as const, value: undefined }),
+      },
+      logger: logger as any,
+    });
+
+    await assert.rejects(() => worker.processJob({
+      id: 'dtx_log_safety',
+      data: payload,
+      attemptsMade: 0,
+      opts: { attempts: 1 },
+      updateData: async () => undefined,
+      updateProgress: async () => undefined,
+    }));
+
+    assert.doesNotMatch(JSON.stringify(entries), new RegExp(secret));
+    assert.ok(entries.some(entry => entry.event === 'data_export.failure_delivered'));
   });
 
   it('revalidates the selected personal Google destination before writing', async () => {
@@ -1440,7 +1926,7 @@ describe('data export worker', () => {
       opts: { attempts: 2 },
       updateData,
       updateProgress: async () => undefined,
-    }), /temporary conversation DB failure/);
+    }), /Data export processing failed/);
     assert.equal(jobData.completedExport?.artifactId, 'sheet-once');
 
     await worker.processJob({
@@ -1720,7 +2206,7 @@ describe('data export worker', () => {
         updateData: async () => undefined,
         updateProgress: async () => undefined,
       }),
-      /no progress/i,
+      /Data export processing failed/,
     );
     assert.match(failureCard, /Data export could not finish/i);
     assert.doesNotMatch(failureCard, /no progress/i, 'internal worker errors must not reach Lark');
@@ -1769,7 +2255,7 @@ describe('data export worker', () => {
         updateData: async () => undefined,
         updateProgress: async () => undefined,
       }),
-      /tracker edit failed/i,
+      /Data export processing failed/,
     );
     assert.equal(sends, 1);
   });
@@ -2277,7 +2763,7 @@ describe('Exports built from several tool calls', () => {
     ], 'a 3-call answer exports 3 rows, not the first call\'s 1');
   });
 
-  it('names the failing part instead of reporting a bare provider error', async () => {
+  it('does not surface provider error text from a failing part', async () => {
     const worker = buildWorker({
       registry: registryYielding(async function* (source: any) {
         if (source.args.domain === 'b.com') throw new Error('provider timeout');
@@ -2300,7 +2786,7 @@ describe('Exports built from several tool calls', () => {
         updateData: async () => undefined,
         updateProgress: async () => undefined,
       } as any),
-      /part 2 of 3 .*could not be read.*provider timeout/i,
+      /Data export processing failed/,
     );
   });
 
