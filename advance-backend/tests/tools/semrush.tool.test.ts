@@ -5,6 +5,7 @@ import { SemrushServiceError } from '../../src/application/semrush/semrush.types
 import { createDataExportTool } from '../../src/application/tools/families/data-export.tool.ts';
 import { SemrushSnapshotDataExportSource } from '../../src/application/data-export/data-export.sources.ts';
 import { datasetSourceToolId } from '../../src/application/data-export/data-export.types.ts';
+import { DatasetSourceRegistry } from '../../src/application/data-export/data-export.source-registry.ts';
 import { parseDataExportOfferPayload } from '../../src/application/data-export/export-offer.ts';
 import { asToolId } from '../../src/shared/ids.ts';
 import { makeAllowedPerm, makeCtx, makeDeniedPerm } from './tool-test.helpers.ts';
@@ -303,6 +304,33 @@ describe('semrush tool', () => {
     // Exactly what was asked for is a complete export, not a truncated one.
     assert.equal(pages[0]?.hasMore, undefined);
     assert.equal(pages[0]?.sourceTruncated, undefined);
+  });
+
+  it('keeps a provider-applied Semrush offset inside the central window guard', async () => {
+    const calls: unknown[] = [];
+    const adapter = new SemrushSnapshotDataExportSource({
+      execute: async (args) => {
+        calls.push(args);
+        return {
+          operation: 'organic_positions', status: 'complete', coverage: {},
+          rows: [{ keyword: 'third result' }],
+        };
+      },
+    } as never);
+    const source = {
+      kind: 'semrush_snapshot' as const,
+      connectionId: 'backend_managed' as const,
+      args: { operation: 'organic_positions' as const, domain: 'example.com', offset: 2, limit: 1 },
+    };
+    const registry = new DatasetSourceRegistry();
+    registry.register(adapter);
+    const pages = [];
+    for await (const page of registry.resolve(source).read(source, { companyId: 'co-1', userId: 'user-1' })) {
+      pages.push(page);
+    }
+
+    assert.deepEqual(calls, [{ operation: 'organic_positions', domain: 'example.com', offset: 2, limit: 1 }]);
+    assert.deepEqual(pages, [{ rows: [{ keyword: 'third result' }], appliedOffset: 2, requestedRows: 1 }]);
   });
 
   it('keeps each part of a multi-part export on its own window', async () => {

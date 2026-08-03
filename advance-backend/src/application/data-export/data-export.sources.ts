@@ -340,6 +340,7 @@ export class SemrushSnapshotDataExportSource implements DataExportSourceAdapter<
       yield {
         rows,
         ...(hasMore && !requestedLimitReached ? { hasMore: true } : {}),
+        ...(source.args.offset === undefined ? {} : { appliedOffset: source.args.offset }),
         ...(source.args.limit === undefined ? {} : { requestedRows: source.args.limit }),
         ...(coverage ? { coverage } : {}),
       };

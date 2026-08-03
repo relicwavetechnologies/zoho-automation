@@ -1,6 +1,6 @@
 # Data export: identity, coverage, and recovery — final design
 
-Status: **decided**, 2026-08-03. Baseline: `cd218170c`. Not yet implemented.
+Status: **implemented (V1)**, 2026-08-03. Baseline: `cd218170c`; V2 durable recovery remains deferred.
 
 This design closes the class of defects behind the export pipeline's repeated
 breakages. V1 is a correct, idempotent whole-run retry: after an interruption it

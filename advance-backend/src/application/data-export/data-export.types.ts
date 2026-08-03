@@ -172,6 +172,42 @@ export function datasetSourceShapeKey(source: DataExportSource): string {
   }
 }
 
+/**
+ * The member-selected row window for one source part.
+ *
+ * This is deliberately resolved from each recipe part rather than the export
+ * payload: one offer can contain several compatible source reads, each with a
+ * different window.
+ */
+export interface DatasetSourceSelection {
+  readonly limit?: number;
+  readonly offset?: number;
+}
+
+export function datasetSourceSelection(source: DataExportSource): DatasetSourceSelection | undefined {
+  if (source.kind === 'airtable_records') {
+    const maxRecords = source.input['maxRecords'];
+    return typeof maxRecords === 'number'
+      && Number.isSafeInteger(maxRecords)
+      && maxRecords >= 0
+      ? { limit: maxRecords }
+      : undefined;
+  }
+  if (source.kind !== 'semrush_snapshot' || source.args.operation === 'organic_position_trend') {
+    return undefined;
+  }
+  const limit = 'limit' in source.args ? source.args.limit : undefined;
+  const offset = source.args.operation === 'organic_positions'
+    ? source.args.offset
+    : undefined;
+  return limit === undefined && offset === undefined
+    ? undefined
+    : {
+        ...(limit === undefined ? {} : { limit }),
+        ...(offset === undefined ? {} : { offset }),
+      };
+}
+
 export interface DataExportTransform {
   /**
    * Function body executed once per source row. It receives `row`, `index`,
@@ -288,6 +324,8 @@ export function dataExportParts(
 export interface DataExportPage {
   readonly rows: readonly Record<string, unknown>[];
   readonly hasMore?: boolean;
+  /** Source offset already applied before this page's rows, when known. */
+  readonly appliedOffset?: number;
   /** The source's row window, if this operation has one. */
   readonly requestedRows?: number;
   /** Source-only coverage facts. The worker owns the final export receipt. */

@@ -8,7 +8,10 @@ import {
   ZohoBooksDataExportSource,
   ZohoCrmDataExportSource,
 } from '../../src/application/data-export/data-export.sources.ts';
-import type { DataExportJobPayload } from '../../src/application/data-export/data-export.types.ts';
+import {
+  datasetSourceSelection,
+  type DataExportJobPayload,
+} from '../../src/application/data-export/data-export.types.ts';
 import { DatasetSourceRegistry } from '../../src/application/data-export/data-export.source-registry.ts';
 import { DataExportWorker } from '../../src/application/data-export/data-export.worker.ts';
 import { PermanentDataExportError } from '../../src/application/data-export/data-export.errors.ts';
@@ -131,26 +134,25 @@ describe('data export source adapters', () => {
         },
       },
     }));
-    const pages = [];
-    for await (const page of adapter.read({
+    const source = {
       kind: 'airtable_records',
       connectionId: '11111111-1111-4111-8111-111111111111',
       toolId: 'airtableRecords',
       nativeTool: 'list_records_for_table',
       input: { baseId: 'app1', tableId: 'tbl1', maxRecords: 1 },
-    }, { companyId: 'co-1', userId: 'user-1' })) {
+    } as const;
+    const registry = new DatasetSourceRegistry();
+    registry.register(adapter);
+    const pages = [];
+    for await (const page of registry.resolve(source).read(source, { companyId: 'co-1', userId: 'user-1' })) {
       pages.push(page);
     }
-    assert.deepEqual(calls, [
-      { baseId: 'app1', tableId: 'tbl1' },
-      { baseId: 'app1', tableId: 'tbl1', offset: 'next' },
-    ]);
+    assert.deepEqual(calls, [{ baseId: 'app1', tableId: 'tbl1' }]);
     assert.deepEqual(pages.flatMap((page) => page.rows), [
       { 'Record ID': 'rec1', Name: 'first' },
-      { 'Record ID': 'rec2', 'Late field': 'second page' },
     ]);
-    assert.equal(pages[0]?.hasMore, true);
-    assert.equal(pages[1]?.hasMore, undefined);
+    assert.deepEqual(pages[0]?.coverage, { outcome: 'requested_window_satisfied', requestedRows: 1 });
+    assert.equal(pages[0]?.requestedRows, 1);
   });
 
   it('keeps Airtable view filters on the governed MCP path', async () => {
@@ -427,12 +429,12 @@ describe('data export source registry', () => {
       toolId: 'airtableRecords',
       nativeTool: 'list_records_for_table',
       input: {},
-    }), airtable);
+    }).kind, airtable.kind);
     assert.equal(registry.resolve({
       kind: 'zoho_books',
       connectionId: '11111111-1111-4111-8111-111111111111',
       module: 'invoices',
-    }), zohoBooks);
+    }).kind, zohoBooks.kind);
     assert.throws(
       () => new DatasetSourceRegistry().resolve({
         kind: 'zoho_books',
@@ -441,6 +443,55 @@ describe('data export source registry', () => {
       }),
       /unsupported data export source/i,
     );
+  });
+
+  it('centrally applies each part row window, including an offset an adapter ignored', async () => {
+    const registry = new DatasetSourceRegistry();
+    registry.register({
+      kind: 'semrush_snapshot' as const,
+      async *read() {
+        yield { rows: [{ id: 0 }, { id: 1 }, { id: 2 }], hasMore: true };
+      },
+    });
+    const source = {
+      kind: 'semrush_snapshot' as const,
+      connectionId: 'backend_managed' as const,
+      args: { operation: 'organic_positions' as const, domain: 'example.com', offset: 1, limit: 1 },
+    };
+
+    const pages = [];
+    for await (const page of registry.resolve(source).read(source, { companyId: 'co-1', userId: 'user-1' })) {
+      pages.push(page);
+    }
+
+    assert.deepEqual(datasetSourceSelection(source), { offset: 1, limit: 1 });
+    assert.deepEqual(pages, [{
+      rows: [{ id: 1 }],
+      requestedRows: 1,
+      coverage: { outcome: 'requested_window_satisfied', requestedRows: 1 },
+    }]);
+  });
+
+  it('does not skip an offset that an adapter already applied', async () => {
+    const registry = new DatasetSourceRegistry();
+    registry.register({
+      kind: 'semrush_snapshot' as const,
+      async *read() {
+        yield { rows: [{ id: 1 }], appliedOffset: 1 };
+      },
+    });
+    const source = {
+      kind: 'semrush_snapshot' as const,
+      connectionId: 'backend_managed' as const,
+      args: { operation: 'organic_positions' as const, domain: 'example.com', offset: 1, limit: 1 },
+    };
+
+    const pages = [];
+    for await (const page of registry.resolve(source).read(source, { companyId: 'co-1', userId: 'user-1' })) {
+      pages.push(page);
+    }
+
+    assert.deepEqual(pages, [{ rows: [{ id: 1 }], appliedOffset: 1, requestedRows: 1 }]);
   });
 });
 
