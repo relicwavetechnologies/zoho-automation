@@ -1424,7 +1424,7 @@ test('a caller-issued session is used verbatim, not the member\'s own sign-in', 
   assert.equal(where['revokedAt'], null);
 });
 
-test('the run asks for the Flash model pinned to the Lark channel', async () => {
+test('the run asks for the Luna model pinned to the Lark channel', async () => {
   let runBody: Record<string, unknown> | undefined;
   const service = new LarkPiRuntimeService({
     prisma: {
@@ -1453,8 +1453,8 @@ test('the run asks for the Flash model pinned to the Lark channel', async () => 
 
   await service.run(runtimeInput());
 
-  assert.equal(runBody?.['model'], 'deepseek-v4-flash');
-  assert.equal(runBody?.['provider'], 'deepseek');
+  assert.equal(runBody?.['model'], 'gpt-5.6-luna');
+  assert.equal(runBody?.['provider'], 'openai');
 });
 
 function larkIngressInput(overrides: Record<string, unknown> = {}) {
