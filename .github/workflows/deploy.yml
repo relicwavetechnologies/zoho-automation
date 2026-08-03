@@ -352,11 +352,11 @@ jobs:
 
           if [[ "${APPLY_SCHEMA}" == "true" ]]; then
             docker compose --env-file .env.production.local run --rm --no-deps \
-              divo-backend pnpm prisma db push --skip-generate
+              divo-backend pnpm prisma db push --skip-generate </dev/null
             docker compose --env-file .env.production.local run --rm --no-deps \
-              divo-backend pnpm tsx scripts/seed-registered-tools.ts
+              divo-backend pnpm tsx scripts/seed-registered-tools.ts </dev/null
             docker compose --env-file .env.production.local run --rm --no-deps \
-              divo-backend pnpm provision:google-workspace-skills
+              divo-backend pnpm provision:google-workspace-skills </dev/null
           fi
 
           docker compose --env-file .env.production.local up -d --no-build --remove-orphans
