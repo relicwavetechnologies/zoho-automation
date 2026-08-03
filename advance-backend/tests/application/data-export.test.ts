@@ -10,6 +10,7 @@ import {
 import type { DataExportJobPayload } from '../../src/application/data-export/data-export.types.ts';
 import { DatasetSourceRegistry } from '../../src/application/data-export/data-export.source-registry.ts';
 import { DataExportWorker } from '../../src/application/data-export/data-export.worker.ts';
+import { PermanentDataExportError } from '../../src/application/data-export/data-export.errors.ts';
 import {
   dataExportJobId,
   dataExportSpecHash,
@@ -1235,6 +1236,79 @@ describe('data export worker', () => {
     );
     assert.equal(sourceRead, false);
     assert.equal(failureDelivered, true, 'deterministic policy failures must not wait for retries');
+  });
+
+  // A revoked destination fails identically on every attempt. Telling the
+  // member to try again shortly sends them back to wait for a file that can
+  // never arrive; only an administrator can unblock it.
+  it('names the reason for a permanent failure instead of promising a retry', async () => {
+    const cards: string[] = [];
+    let attempts = 0;
+    const registry = new DatasetSourceRegistry();
+    registry.register({
+      kind: 'airtable_records',
+      async *read() { yield { rows: [] }; },
+    });
+    const worker = new DataExportWorker({
+      redisUrl: 'redis://unused',
+      sources: registry,
+      sink: { write: async () => { throw new Error('sink must not run'); } } as any,
+      identityRepo: {
+        resolveByUserId: async () => ({
+          ok: true as const,
+          value: {
+            userId: 'user-1',
+            companyId: 'company-1',
+            aiRole: 'MEMBER',
+            channel: 'lark',
+            email: 'abhishek@emiactech.com',
+          },
+        }),
+      },
+      permissions: {
+        resolve: async () => ({
+          ok: true as const,
+          value: {
+            allowedToolIds: new Set([asToolId('dataExport'), asToolId('airtableRecords')]),
+            allowedActionsByTool: new Map([
+              [asToolId('dataExport'), new Set(['create'])],
+              [asToolId('airtableRecords'), new Set(['read'])],
+            ]),
+            decisions: [],
+          },
+        }),
+      } as any,
+      resolveGoogleAuth: async () => {
+        attempts += 1;
+        throw new PermanentDataExportError(
+          'The company Google export account (divo@emiactech.com) is disconnected.',
+          'Configured Google export connection is unavailable',
+        );
+      },
+      larkAdapter: {
+        sendToChatId: async () => ({ ok: true as const, value: 'om-progress' }),
+        updateMessageById: async (_messageId, content) => {
+          cards.push(content);
+          return { ok: true as const, value: undefined };
+        },
+      },
+      logger: noopLogger,
+    });
+
+    await assert.rejects(() => worker.processJob({
+      id: dataExportJobId(payload),
+      data: payload,
+      attemptsMade: 0,
+      opts: { attempts: 3 },
+      updateData: async () => undefined,
+      updateProgress: async () => undefined,
+    }));
+
+    const failure = cards.find(card => /could not finish/i.test(card));
+    assert.ok(failure, 'the member must be told on the first attempt, not left on the progress card');
+    assert.match(failure, /is disconnected/i);
+    assert.doesNotMatch(failure, /try again shortly/i);
+    assert.equal(attempts, 1, 'a permanent failure must not be retried');
   });
 
   it('keeps a progressing export alive beyond the inactivity window and aborts a stalled source', async () => {

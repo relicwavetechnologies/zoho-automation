@@ -1,4 +1,4 @@
-import type { Job } from 'bullmq';
+import { UnrecoverableError, type Job } from 'bullmq';
 
 /**
  * Whether BullMQ has genuinely given up on a job, inside a `failed` handler.
@@ -31,9 +31,17 @@ export function isFinalFailedAttempt(
  *
  * Matched by name as well as instance because the error crosses a process
  * boundary, arriving deserialised rather than as the original class.
+ *
+ * The `instanceof` clause has to come first, and has to be here rather than
+ * only in BullMQ: `UnrecoverableError` sets `name` to the *constructor* name,
+ * so a subclass is called e.g. `PermanentDataExportError` and matches neither
+ * string test. BullMQ still declined to retry it, but callers asking "is this
+ * job dead?" were told no — and a data export that could never succeed died
+ * without ever updating the member's progress card.
  */
 export function isUnrecoverableJobError(error: unknown): boolean {
   if (!error) return false;
+  if (error instanceof UnrecoverableError) return true;
   const name = (error as { name?: string }).name;
   return name === 'UnrecoverableError' || /UnrecoverableError/.test(String(error));
 }

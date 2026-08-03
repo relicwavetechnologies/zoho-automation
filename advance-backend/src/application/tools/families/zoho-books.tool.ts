@@ -54,6 +54,7 @@ import { runInSandbox, SandboxTimeoutError, SandboxScriptError, SandboxInputTooL
 import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } from '../../../shared/zoho-personalization';
 import { contributeExportPart } from '../../data-export/tool-export-offer';
 import { DATA_EXPORT_CSV_ROW_LIMIT } from '../../data-export/data-export-limits';
+import { datasetSourceSchema } from '../../data-export/data-export.types';
 import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
 import type { DataExportOfferPayload } from '../../data-export/export-offer';
 import {
@@ -372,6 +373,49 @@ const dateParams = (args: Args): Record<string, unknown> => ({
   ...(args.status ? { status: normalizeStatus(args.status) } : {}),
 });
 
+/**
+ * Provider filters for one module, derived once so the inline read and the
+ * export recipe cannot drift.
+ *
+ * They have to agree. The recipe is replayed at confirmation time, so a filter
+ * the preview applied but the recipe omits turns a scoped answer into an
+ * unscoped file — and `accountId` was being accepted and dropped by both,
+ * widening a one-account question to every account in the organisation.
+ */
+const moduleFilters = (
+  moduleName: ZohoBooksModule,
+  args: Args,
+): Record<string, unknown> =>
+  // Zoho scopes bank transactions per account: it rejects a status filter that
+  // names none, and ignores the account unless it is passed as account_id.
+  //
+  // Deliberately only the module-specific companion, not the date/status set.
+  // Folding those in here would start sending filters to modules that have
+  // never received them — `list_contacts` passes none today — and Zoho answers
+  // an unsupported filter with a 400 rather than ignoring it.
+  (moduleName === 'banktransactions' && args.accountId
+    ? { account_id: args.accountId }
+    : {});
+
+/**
+ * Zoho answers a status filter with no account as `The account does not exist`,
+ * which reads as a missing bank account rather than a missing argument. Say
+ * what is actually wrong, before the provider gets a chance to mislead.
+ */
+const bankTransactionFilterError = (args: Args): ToolError | undefined =>
+  args.status && !args.accountId
+    ? new ToolError({
+        toolId: 'zohoBooks',
+        reason: 'bad_args',
+        message:
+          'Add accountId and retry — this is a missing argument, not a permission problem. '
+          + 'Zoho Books scopes bank transactions per account and rejects a status filter that '
+          + 'names none. Call get_account_balance with no accountId to list the bank accounts '
+          + 'and their ids, then retry with accountId. To read every account instead, drop the '
+          + 'status filter.',
+      })
+    : undefined;
+
 const reportDateParams = (args: Args): Record<string, string> => {
   const range = buildDateRangeParams(args.invoiceDateFrom, args.invoiceDateTo);
   return {
@@ -640,10 +684,7 @@ export const createZohoBooksTool = (deps: {
         connectionId: args.connectionId,
         module: moduleName,
         ...(args.organizationId ? { organizationId: args.organizationId } : {}),
-        filters: {
-          ...dateParams(args),
-          ...(args.status ? { status: normalizeStatus(args.status) } : {}),
-        },
+        filters: { ...dateParams(args), ...moduleFilters(moduleName, args) },
         ...(args.searchQuery ? { query: args.searchQuery } : {}),
       },
       destination: {
@@ -692,8 +733,24 @@ export const createZohoBooksTool = (deps: {
           message: `Governed Zoho exports of up to ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} rows require an exact connection UUID and a Lark chat for delivery`,
         }));
       }
+      // exportAll returns before the per-op switch, so the guards on the
+      // individual bank-transaction cases never see it. Without this, the one
+      // path that queues an export directly is also the only one that could
+      // still submit a recipe the provider will reject.
+      if (exportModule === 'banktransactions') {
+        const filterError = bankTransactionFilterError(args);
+        if (filterError) return err(filterError);
+      }
+      const payload = exportPayloadFor(exportModule);
+      const recipe = datasetSourceSchema.safeParse(payload.source);
+      if (!recipe.success) {
+        return err(new ToolError({
+          toolId: 'zohoBooks',
+          reason: 'bad_args',
+          message: `This export cannot be run as asked — ${recipe.error.errors.map(issue => issue.message).join('; ')}`,
+        }));
+      }
       try {
-        const payload = exportPayloadFor(exportModule);
         const exportJobId = await deps.offers.submitAuthorized(
           payload,
           args.destinationConnectionId,
@@ -781,7 +838,7 @@ export const createZohoBooksTool = (deps: {
         moduleName,
         moduleLabel,
         ...(args.organizationId ? { organizationId: args.organizationId } : {}),
-        filters: { ...scopeFilter, ...options.filters },
+        filters: { ...scopeFilter, ...moduleFilters(moduleName, args), ...options.filters },
         ...(options.query ? { query: options.query } : {}),
         offerExportOnOverflow: canOfferExport,
         inlineThreshold: Math.min(
@@ -1029,7 +1086,9 @@ export const createZohoBooksTool = (deps: {
           return ok({ success: true, data: formatZohoResult(data) });
         }
 
-        case 'list_bank_transactions':
+        case 'list_bank_transactions': {
+          const filterError = bankTransactionFilterError(args);
+          if (filterError) return err(filterError);
           return ok(await listBounded('banktransactions', 'bank transactions', {
             filters: dateFilter,
             amountKeys: ['amount'],
@@ -1043,9 +1102,12 @@ export const createZohoBooksTool = (deps: {
               commonColumns.status,
             ],
           }));
+        }
 
         case 'search_transactions': {
           if (!args.searchQuery) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'searchQuery required for search_transactions' }));
+          const filterError = bankTransactionFilterError(args);
+          if (filterError) return err(filterError);
           return ok(await listBounded('banktransactions', 'transaction search results', {
             filters: dateFilter,
             query: args.searchQuery,

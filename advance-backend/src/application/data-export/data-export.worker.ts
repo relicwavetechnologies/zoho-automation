@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { UnrecoverableError, Worker, type Job } from 'bullmq';
+import { Worker, type Job } from 'bullmq';
 import type { PermissionService } from '../permissions/permission.service';
 import type { ChannelIdentityRepoPort } from '../../infrastructure/persistence/channel-identity.repository';
 import type { LarkChannelAdapter } from '../../infrastructure/channels/lark/lark.adapter';
@@ -14,6 +14,7 @@ import {
 import { buildFinalCard } from '../../infrastructure/channels/lark/lark-card.builder';
 import { isUnrecoverableJobError } from '../../shared/queue-retry';
 import { DataExportTransformSandbox } from './data-export.sandbox';
+import { dataExportFailureReason, PermanentDataExportError } from './data-export.errors';
 import {
   dataExportJobId,
   resolveDataExportQueueName,
@@ -193,12 +194,18 @@ export class DataExportWorker {
     const identityResult = await this.deps.identityRepo.resolveByUserId(payload.userId, payload.companyId);
     if (!identityResult.ok) throw new Error(`Could not re-check export identity: ${identityResult.error.message}`);
     if (!identityResult.value) {
-      throw new UnrecoverableError('Export requester no longer has active company access');
+      throw new PermanentDataExportError(
+        'You no longer have access to this workspace, so Divo cannot create the export.',
+        'Export requester no longer has active company access',
+      );
     }
     const identity = identityResult.value;
     const readerEmail = normalizedEmail(identity.email);
     if (!readerEmail) {
-      throw new UnrecoverableError('Data export requires a verified email for the invoking Lark user');
+      throw new PermanentDataExportError(
+        'Divo needs a verified email address on your Lark account before it can share an export with you.',
+        'Data export requires a verified email for the invoking Lark user',
+      );
     }
     const permission = await this.deps.permissions.resolve({
       companyId: asCompanyId(payload.companyId),
@@ -209,7 +216,10 @@ export class DataExportWorker {
     });
     if (!permission.ok) throw new Error(`Data export permission check failed: ${permission.error.message}`);
     if (!permission.value.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')) {
-      throw new UnrecoverableError('Data export permission was revoked before the job started');
+      throw new PermanentDataExportError(
+        'Your permission to create exports was removed before this one started.',
+        'Data export permission was revoked before the job started',
+      );
     }
     // Every part is re-authorized, not just part 0: one revoked tool must not
     // ride along inside an export that another part still permits.
@@ -217,13 +227,19 @@ export class DataExportWorker {
     for (const part of parts) {
       const sourceToolId = datasetSourceToolId(part);
       if (!permission.value.allowedActionsByTool.get(asToolId(sourceToolId))?.has('read')) {
-        throw new UnrecoverableError(`${sourceToolId} read permission was revoked before the export started`);
+        throw new PermanentDataExportError(
+          `Your permission to read ${sourceToolId} data was removed before this export started.`,
+          `${sourceToolId} read permission was revoked before the export started`,
+        );
       }
       if (
         part.kind === 'zoho_books'
         && permission.value.department?.zohoReadScope === 'personalized'
       ) {
-        throw new UnrecoverableError('Complete Zoho exports require full company Zoho read scope');
+        throw new PermanentDataExportError(
+          'Complete Zoho exports need full company Zoho read access, and yours is limited to your own records.',
+          'Complete Zoho exports require full company Zoho read scope',
+        );
       }
     }
 
@@ -236,7 +252,8 @@ export class DataExportWorker {
       'readerDomain' in googleAuth
       && readerEmail.split('@')[1] !== googleAuth.readerDomain.toLowerCase()
     ) {
-      throw new UnrecoverableError(
+      throw new PermanentDataExportError(
+        `The company export account can only share files with a verified ${googleAuth.readerDomain} address, and yours is not one.`,
         `Data export can only share with a verified ${googleAuth.readerDomain} invoker`,
       );
     }
@@ -429,8 +446,16 @@ export class DataExportWorker {
       jobId: job.id,
       error: String(error),
     });
+    // "Try again shortly" is false for a disconnected destination or a recipe
+    // the provider rejects — the member retries, waits, and fails identically.
+    // When the failure named a reason, say that instead.
+    const reason = dataExportFailureReason(error);
     const card = buildFinalCard({
-      markdown: '# Data export could not finish\nDivo could not complete this export. Your source data was not changed. Please try again shortly.',
+      markdown: [
+        '# Data export could not finish',
+        reason ?? 'Divo could not complete this export. Please try again shortly.',
+        'Your source data was not changed.',
+      ].join('\n\n'),
     });
     if (progressMessageId) {
       const updated = await this.deps.larkAdapter.updateMessageById(progressMessageId, card);

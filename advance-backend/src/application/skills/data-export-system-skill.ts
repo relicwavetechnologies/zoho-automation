@@ -51,9 +51,13 @@ Format limits are explicit: Excel ${DATA_EXPORT_XLSX_ROW_LIMIT.toLocaleString('e
 3. Use a direct Airtable or Zoho Books recipe only when the exact
    backend-resolved source identifiers are already available and the source did
    not provide an offer.
-4. Use \`destination.format="auto"\` unless the user explicitly requests CSV, Excel, or Google Sheets. Use \`xlsx\` for Excel; if the dataset exceeds 5,000 rows or 100,000 cells, explain that CSV is required.
-5. For mapping, filtering, renaming, flattening, or calculated columns, provide a row transform. It receives \`row\`, \`index\`, and \`args\`; return one object, an array of objects, or \`null\`.
-6. Never fetch source pages manually, paste bulk rows into model context, or invoke Google Drive/Sheets directly for the export.
+4. A recipe is replayed later, so every filter that narrowed your answer must
+   also be in it. Zoho Books bank transactions are scoped per account: pass
+   \`accountId\` when reading them, and a status filter without one is refused
+   rather than silently widened to every account in the organisation.
+5. Use \`destination.format="auto"\` unless the user explicitly requests CSV, Excel, or Google Sheets. Use \`xlsx\` for Excel; if the dataset exceeds 5,000 rows or 100,000 cells, explain that CSV is required.
+6. For mapping, filtering, renaming, flattening, or calculated columns, provide a row transform. It receives \`row\`, \`index\`, and \`args\`; return one object, an array of objects, or \`null\`. A transform shapes rows; it is not a substitute for a source filter the provider supports.
+7. Never fetch source pages manually, paste bulk rows into model context, or invoke Google Drive/Sheets directly for the export.
 
 When the user has one writable Google account, the export is created there and owned by that account. With multiple writable accounts, let Divo's verified card present the eligible choices; never guess or repeat the question in chat. If no writable personal account is available, the backend may use the administrator-approved company export account and grant reader access only to the verified invoking user. Access changes are not supported. If asked to share an export with another user, group, department, company, domain, or public link, refuse clearly; do not call Google permission tools.
 

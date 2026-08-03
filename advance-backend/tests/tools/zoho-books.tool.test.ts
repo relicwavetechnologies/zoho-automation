@@ -171,6 +171,55 @@ describe('zohoBooks expanded execution', () => {
     assert.equal(captures.listInput.filters.date_end, '2026-03-31');
   });
 
+  // The account was accepted and dropped, so a one-account question quietly
+  // read every account in the organisation and reported the result as scoped.
+  it('forwards accountId as account_id for bank transactions', async () => {
+    const captures: { listInput?: any } = {};
+    const tool = makeTool({ booksClient: makeBooksClient(captures) });
+
+    const result = await tool.execute({
+      op: 'list_bank_transactions',
+      accountId: '3846597000009355454',
+      status: 'uncategorized',
+    }, ctx);
+
+    assert.equal(result.ok, true);
+    assert.equal(captures.listInput.moduleName, 'banktransactions');
+    assert.equal(captures.listInput.filters.account_id, '3846597000009355454');
+    assert.equal(captures.listInput.filters.status, 'uncategorized');
+  });
+
+  // Zoho answers this combination with "The account does not exist", which
+  // reads as a missing bank account rather than a missing argument.
+  it('refuses a bank transaction status filter that names no account', async () => {
+    const captures: { listInput?: any } = {};
+    const tool = makeTool({ booksClient: makeBooksClient(captures) });
+
+    for (const op of ['list_bank_transactions', 'search_transactions']) {
+      const result = await tool.execute({
+        op,
+        status: 'uncategorized',
+        ...(op === 'search_transactions' ? { searchQuery: 'ICICI' } : {}),
+      }, ctx);
+
+      assert.equal(result.ok, false, `${op} should refuse`);
+      assert.match(String((result as any).error.message), /accountId/);
+    }
+    // Refused before the provider was called, not after a confusing 400.
+    assert.equal(captures.listInput, undefined);
+  });
+
+  it('still reads bank transactions unscoped when no status filter is asked for', async () => {
+    const captures: { listInput?: any } = {};
+    const tool = makeTool({ booksClient: makeBooksClient(captures) });
+
+    const result = await tool.execute({ op: 'list_bank_transactions' }, ctx);
+
+    assert.equal(result.ok, true);
+    assert.equal(captures.listInput.filters.status, undefined);
+    assert.equal(captures.listInput.filters.account_id, undefined);
+  });
+
   it('forwards invoice search text and requests newest invoice dates first', async () => {
     const captures: { listInput?: any } = {};
     const tool = makeTool({ booksClient: makeBooksClient(captures) });
@@ -576,6 +625,58 @@ describe('zohoBooks expanded execution', () => {
     assert.ok(jobs.every(job => job.source.kind === 'zoho_books'));
     assert.ok(jobs.every(job => job.destination.format === 'auto'));
     assert.deepEqual(destinations, Array(ops.length).fill(undefined));
+  });
+
+  // exportAll returns before the per-op switch, so the guards on the individual
+  // bank-transaction cases never see it. This is the one path that queues an
+  // export directly, and it was still submitting a recipe the provider rejects
+  // while telling the member the export was queued.
+  it('refuses an exportAll bank transaction recipe the provider would reject', async () => {
+    let submitted = 0;
+    const tool = makeTool({
+      offers: {
+        submitAuthorized: async () => { submitted += 1; return 'job-should-not-exist'; },
+      } as any,
+    });
+    const ctx = makeCtx('zohoBooks', ['read'], { chatId: 'oc_test', requestId: 'om_export_all' });
+    ctx.perm.allowedToolIds.add(asToolId('dataExport'));
+    ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
+
+    const result = await tool.execute({
+      op: 'list_bank_transactions',
+      exportAll: true,
+      status: 'uncategorized',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+    }, ctx);
+
+    assert.equal(result.ok, false);
+    assert.match(String((result as any).error.message), /accountId/);
+    assert.equal(submitted, 0, 'no offer row may be written for a recipe that cannot run');
+  });
+
+  it('queues an exportAll bank transaction recipe once the account is named', async () => {
+    const jobs: any[] = [];
+    const tool = makeTool({
+      offers: {
+        submitAuthorized: async (payload: any) => { jobs.push(payload); return 'job-1'; },
+      } as any,
+    });
+    const ctx = makeCtx('zohoBooks', ['read'], { chatId: 'oc_test', requestId: 'om_export_all_ok' });
+    ctx.perm.allowedToolIds.add(asToolId('dataExport'));
+    ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
+
+    const result = await tool.execute({
+      op: 'list_bank_transactions',
+      exportAll: true,
+      status: 'uncategorized',
+      accountId: '3846597000009355454',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+    }, ctx);
+
+    assert.equal(result.ok, true);
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0].source.filters.account_id, '3846597000009355454');
+    assert.equal(jobs[0].source.filters.status, 'uncategorized');
   });
 
   it('retries an ambiguous Zoho export with a separately selected Google destination', async () => {

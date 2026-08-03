@@ -760,6 +760,72 @@ describe('ToolExecutor', () => {
     assert.equal(executions, 0);
   });
 
+  // A tool saying "add accountId and retry" was reaching the model as a plain
+  // tool_error, so it reported the request as denied rather than correcting the
+  // one argument it had been asked to correct.
+  it('reports a bad_args tool refusal as invalid_args, not tool_error', async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      execute: async () => err(new ToolError({
+        toolId: 'fakeTool',
+        reason: 'bad_args',
+        message: 'Add accountId and retry — this is a missing argument.',
+      })),
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(),
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const result = await executor.executeForRuntime({
+      toolId: 'fakeTool',
+      args: { query: 'hello' },
+      runContext: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        companyRole: 'MEMBER',
+        channel: 'lark',
+      } as never,
+      perm: makeAllowedPerm('fakeTool', ['read']),
+    });
+
+    assert.equal(result.status, 'invalid_args');
+    assert.match(result.message ?? '', /add accountId/i);
+  });
+
+  it('still reports other tool failures as tool_error', async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      execute: async () => err(new ToolError({
+        toolId: 'fakeTool',
+        reason: 'upstream_failure',
+        message: 'Provider is down.',
+      })),
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(),
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const result = await executor.executeForRuntime({
+      toolId: 'fakeTool',
+      args: { query: 'hello' },
+      runContext: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        companyRole: 'MEMBER',
+        channel: 'lark',
+      } as never,
+      perm: makeAllowedPerm('fakeTool', ['read']),
+    });
+
+    assert.equal(result.status, 'tool_error');
+  });
+
   it('passes the parent cancellation signal into runtime tool context', async () => {
     let receivedSignal: AbortSignal | undefined;
     const registry = new ToolRegistry();

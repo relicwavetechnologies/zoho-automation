@@ -58,13 +58,38 @@ const menhoodQueryDatasetSourceSchema = z.object({
   queryFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 
-export const directDatasetSourceSchema = z.discriminatedUnion('kind', [
-  airtableDatasetSourceSchema,
-  zohoBooksDatasetSourceSchema,
-  zohoCrmDatasetSourceSchema,
-]);
+/**
+ * Filter keys a provider refuses to honour on their own.
+ *
+ * A recipe is a promise replayed later: whatever the member is told, the export
+ * only exists once this exact request succeeds at confirmation time. A filter
+ * combination the provider rejects therefore has to fail here, while the model
+ * can still repair it or ask, rather than after "your export has been queued".
+ *
+ * Only combinations verified against the live provider belong in this table.
+ * A guessed rule blocks a working export, which is the same failure in the
+ * other direction.
+ */
+const ZOHO_BOOKS_FILTER_COMPANIONS: readonly {
+  readonly module: (typeof ZOHO_BOOKS_SOURCE_MODULES)[number];
+  readonly whenAnyOf: readonly string[];
+  readonly requires: string;
+  readonly message: string;
+}[] = [
+  {
+    // Verified against Zoho Books: /banktransactions?status=… without an
+    // account answers 400 {"code":4,"message":"The account does not exist."},
+    // and succeeds the moment account_id is supplied.
+    module: 'banktransactions',
+    whenAnyOf: ['status', 'filter_by'],
+    requires: 'account_id',
+    message:
+      'Zoho Books rejects a bank transaction status filter that does not name an account. '
+      + 'Add account_id (the bank account this statement is for) to the source filters.',
+  },
+];
 
-export const datasetSourceSchema = z.discriminatedUnion('kind', [
+const datasetSourceUnion = z.discriminatedUnion('kind', [
   airtableDatasetSourceSchema,
   zohoBooksDatasetSourceSchema,
   zohoCrmDatasetSourceSchema,
@@ -72,6 +97,32 @@ export const datasetSourceSchema = z.discriminatedUnion('kind', [
   semrushSnapshotDatasetSourceSchema,
   menhoodQueryDatasetSourceSchema,
 ]);
+
+function refineDatasetSource(
+  source: z.infer<typeof datasetSourceUnion>,
+  ctx: z.RefinementCtx,
+): void {
+  if (source.kind !== 'zoho_books' || !source.filters) return;
+  const filters = source.filters;
+  for (const rule of ZOHO_BOOKS_FILTER_COMPANIONS) {
+    if (source.module !== rule.module) continue;
+    if (!rule.whenAnyOf.some(key => filters[key] !== undefined)) continue;
+    if (filters[rule.requires] !== undefined) continue;
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['filters', rule.requires],
+      message: rule.message,
+    });
+  }
+}
+
+export const directDatasetSourceSchema = z.discriminatedUnion('kind', [
+  airtableDatasetSourceSchema,
+  zohoBooksDatasetSourceSchema,
+  zohoCrmDatasetSourceSchema,
+]).superRefine(refineDatasetSource);
+
+export const datasetSourceSchema = datasetSourceUnion.superRefine(refineDatasetSource);
 
 export type DataExportSource = z.infer<typeof datasetSourceSchema>;
 

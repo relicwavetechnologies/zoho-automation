@@ -151,11 +151,8 @@ import { GoogleSheetResourceResolver } from './application/data-export/google-sh
 import { GoogleSheetResourceProbeClient } from './infrastructure/google/google-sheet-resource-probe';
 import { DataExportOfferRepository } from './infrastructure/persistence/data-export-offer.repository';
 import { DataExportDestinationPreferenceRepository } from './infrastructure/persistence/data-export-destination-preference.repository';
-import {
-  getDataExportProfile,
-  parseDataExportProfile,
-  DATA_EXPORT_CAPABILITY_ID,
-} from './application/data-export/data-export.profile';
+import { getDataExportProfile } from './application/data-export/data-export.profile';
+import { PermanentDataExportError } from './application/data-export/data-export.errors';
 import { selectDataExportDestination } from './application/data-export/data-export-destination-resolver';
 import type { DataExportDestinationTarget } from './application/data-export/data-export.types';
 import type { GoogleExportAuth } from './application/data-export/data-export.destination';
@@ -915,17 +912,85 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const dataExportDestinationPreferenceRepo =
     new DataExportDestinationPreferenceRepository(prisma);
 
+  /**
+   * The administrator-approved company export account, checked the same way at
+   * request time and at run time.
+   *
+   * The profile stores a connection id and is validated only when it is
+   * written. Nothing revalidates it when that connection is later revoked, so
+   * the fallback happily handed the queue a dead destination: the member was
+   * told the export was on its way, and the job discovered minutes later that
+   * the account was gone. One resolver means the offer and the run can never
+   * disagree about whether this destination exists.
+   */
+  async function resolveCompanyExportConnection(companyId: string): Promise<
+    | {
+        readonly ok: true;
+        readonly connectionId: string;
+        readonly refreshToken: string;
+        readonly readerDomain: string;
+      }
+    | { readonly ok: false; readonly reason: string }
+  > {
+    const configured = await getDataExportProfile(prisma, companyId);
+    const profile = configured.profile;
+    if (!profile) {
+      return { ok: false, reason: 'Company data export is not configured by an administrator.' };
+    }
+    const resolved = await integrationConnectionRepo.findCompanyGoogleExportConnection({
+      companyId,
+      connectionId: profile.googleConnectionId,
+    });
+    // A failed lookup is not a revoked account. Reporting a Prisma timeout as
+    // "an administrator must reconnect" is the exact confusion this change
+    // exists to remove, and it would also drop the fallback at request time for
+    // a member whose only route is the company account. Let it propagate so the
+    // job retries.
+    if (!resolved.ok) throw resolved.error;
+    const connection = resolved.value;
+    const refreshToken = connection?.refreshToken;
+    if (!connection || !refreshToken) {
+      return {
+        ok: false,
+        reason:
+          `The company Google export account (${profile.accountEmail}) is disconnected. `
+          + 'An administrator needs to reconnect it and save the data export profile again.',
+      };
+    }
+    if (connection.accountEmail?.trim().toLowerCase() !== profile.accountEmail) {
+      return {
+        ok: false,
+        reason: 'The company Google export account changed. An administrator needs to approve it again.',
+      };
+    }
+    if (!hasGoogleScopeGroups(connection.scopes, [
+      [GOOGLE_SCOPE.driveFull, GOOGLE_SCOPE.driveFile],
+      [GOOGLE_SCOPE.sheetsFull],
+    ])) {
+      return {
+        ok: false,
+        reason: 'The company Google export account no longer has Drive and Sheets write access.',
+      };
+    }
+    return {
+      ok: true,
+      connectionId: connection.id,
+      refreshToken,
+      readerDomain: profile.readerDomain,
+    };
+  }
+
   async function resolveDataExportDestination(input: {
     readonly companyId: string;
     readonly userId: string;
     readonly connectionId?: string;
   }) {
-    const [accessible, configured, preferred] = await Promise.all([
+    const [accessible, companyExport, preferred] = await Promise.all([
       integrationConnectionRepo.listAccessibleGoogleConnections({
         companyId: input.companyId,
         userId: input.userId,
       }),
-      getDataExportProfile(prisma, input.companyId),
+      resolveCompanyExportConnection(input.companyId),
       dataExportDestinationPreferenceRepo.findConnectionId(input),
     ]);
     if (!accessible.ok) throw accessible.error;
@@ -933,8 +998,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     return selectDataExportDestination({
       userId: input.userId,
       accessible: accessible.value,
-      ...(configured.profile
-        ? { companyFallback: { connectionId: configured.profile.googleConnectionId } }
+      // Offered only while it can actually be written to, so a member with no
+      // personal account is told to connect one instead of being handed a
+      // button that fails after the fact.
+      ...(companyExport.ok
+        ? { companyFallback: { connectionId: companyExport.connectionId } }
         : {}),
       ...(input.connectionId ? { connectionId: input.connectionId } : {}),
       ...(preferred.value ? { preferredConnectionId: preferred.value } : {}),
@@ -953,25 +1021,42 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
         connectionId: target.connectionId,
         minimumAccess: 'read_write',
       });
+      // Every branch here is permanent: nothing about a disconnected or
+      // unscoped Google account improves by running the same job again.
       if (!resolved.ok || !resolved.value?.refreshToken) {
-        throw new Error('Selected personal Google export connection is unavailable');
+        throw new PermanentDataExportError(
+          'Your Google account is no longer connected to Divo. Reconnect it, then ask again.',
+          'Selected personal Google export connection is unavailable',
+        );
       }
       const connection = resolved.value;
       const refreshToken = connection.refreshToken;
       if (!refreshToken) {
-        throw new Error('Selected personal Google export connection has no refresh credential');
+        throw new PermanentDataExportError(
+          'Your Google account is no longer connected to Divo. Reconnect it, then ask again.',
+          'Selected personal Google export connection has no refresh credential',
+        );
       }
       if (connection.ownerType !== 'user' || connection.ownerUserId !== userId) {
-        throw new Error('Selected Google export connection is not owned by the requester');
+        throw new PermanentDataExportError(
+          'That Google account does not belong to you, so Divo cannot export into it.',
+          'Selected Google export connection is not owned by the requester',
+        );
       }
       if (!connection.accountEmail) {
-        throw new Error('Selected personal Google export connection has no verified account email');
+        throw new PermanentDataExportError(
+          'Your connected Google account has no verified address. Reconnect it, then ask again.',
+          'Selected personal Google export connection has no verified account email',
+        );
       }
       if (!hasGoogleScopeGroups(connection.scopes, [
         [GOOGLE_SCOPE.driveFull, GOOGLE_SCOPE.driveFile],
         [GOOGLE_SCOPE.sheetsFull],
       ])) {
-        throw new Error('Selected personal Google export connection no longer has Drive and Sheets write scopes');
+        throw new PermanentDataExportError(
+          'Your Google connection no longer allows Divo to create Drive files and Sheets. Reconnect it to restore write access.',
+          'Selected personal Google export connection no longer has Drive and Sheets write scopes',
+        );
       }
       const accessToken = await googleOAuthService.getValidAccessToken({
         companyId,
@@ -985,45 +1070,21 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       };
     }
 
-    const configured = await prisma.companyCapabilityGovernance.findUnique({
-      where: {
-        companyId_capabilityId: { companyId, capabilityId: DATA_EXPORT_CAPABILITY_ID },
-      },
-      select: { policyJson: true },
-    });
-    const profile = configured ? parseDataExportProfile(configured.policyJson) : null;
-    if (!profile) {
-      throw new Error('Company data export is not configured by an administrator');
-    }
-    if (target && target.connectionId !== profile.googleConnectionId) {
-      throw new Error('Configured company Google export destination changed before execution');
-    }
-    const resolved = await integrationConnectionRepo.findCompanyGoogleExportConnection({
-      companyId,
-      connectionId: profile.googleConnectionId,
-    });
-    if (!resolved.ok || !resolved.value?.refreshToken) {
-      throw new Error('Configured Google export connection is unavailable');
-    }
-    const connection = resolved.value;
-    const refreshToken = connection.refreshToken;
-    if (!refreshToken) throw new Error('Configured Google export connection has no refresh token');
-    if (connection.accountEmail?.trim().toLowerCase() !== profile.accountEmail) {
-      throw new Error('Configured Google export account identity changed; administrator acknowledgement is required again');
-    }
-    if (!hasGoogleScopeGroups(connection.scopes, [
-      [GOOGLE_SCOPE.driveFull, GOOGLE_SCOPE.driveFile],
-      [GOOGLE_SCOPE.sheetsFull],
-    ])) {
-      throw new Error('Configured Google export connection no longer has Drive and Sheets write scopes');
+    const company = await resolveCompanyExportConnection(companyId);
+    if (!company.ok) throw new PermanentDataExportError(company.reason);
+    if (target && target.connectionId !== company.connectionId) {
+      throw new PermanentDataExportError(
+        'The company Google export account changed after this export was offered. Ask again to use the current one.',
+        'Configured company Google export destination changed before execution',
+      );
     }
     const accessToken = await googleOAuthService.getValidAccessToken({
       companyId,
-      userId: `data-export:${connection.id}`,
-      refreshToken,
+      userId: `data-export:${company.connectionId}`,
+      refreshToken: company.refreshToken,
     });
-    await integrationConnectionRepo.touchLastUsed(connection.id);
-    return { accessToken, readerDomain: profile.readerDomain };
+    await integrationConnectionRepo.touchLastUsed(company.connectionId);
+    return { accessToken, readerDomain: company.readerDomain };
   }
 
   /**

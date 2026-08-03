@@ -135,6 +135,56 @@ describe('Menhood export offer source', () => {
   });
 });
 
+describe('dataset source recipes the provider would reject', () => {
+  const bankTransactions = {
+    kind: 'zoho_books' as const,
+    connectionId: '11111111-2222-4333-8444-555555555555',
+    module: 'banktransactions' as const,
+  };
+
+  // Zoho Books answers 400 {"code":4,"message":"The account does not exist."}
+  // for a status filter with no account, so an offer built from one can only
+  // ever fail — after the member has been told the file is on its way.
+  it('rejects a bank transaction status filter that names no account', () => {
+    for (const filters of [
+      { status: 'uncategorized' },
+      { filter_by: 'Status.Uncategorized' },
+      { status: 'uncategorized', date_start: '2026-07-01' },
+    ]) {
+      const source = { ...bankTransactions, filters };
+      assert.equal(
+        datasetSourceSchema.safeParse(source).success,
+        false,
+        `expected ${JSON.stringify(filters)} to be rejected`,
+      );
+      // The direct recipe is the path that actually produced the outage, so it
+      // has to be gated too, not just the provider-offer union.
+      assert.equal(directDatasetSourceSchema.safeParse(source).success, false);
+    }
+  });
+
+  it('accepts the same filter once the account is named, and unfiltered reads', () => {
+    assert.equal(datasetSourceSchema.safeParse({
+      ...bankTransactions,
+      filters: { status: 'uncategorized', account_id: '3846597000009355454' },
+    }).success, true);
+    // Verified against the live provider: an unfiltered read needs no account.
+    assert.equal(datasetSourceSchema.safeParse(bankTransactions).success, true);
+    assert.equal(datasetSourceSchema.safeParse({
+      ...bankTransactions,
+      filters: { date_start: '2026-07-01' },
+    }).success, true);
+  });
+
+  it('leaves other Zoho Books modules alone', () => {
+    assert.equal(datasetSourceSchema.safeParse({
+      ...bankTransactions,
+      module: 'invoices' as const,
+      filters: { status: 'overdue' },
+    }).success, true);
+  });
+});
+
 const unusedLoad: DataExportOfferRepositoryPort['loadForConfirmation'] = async () =>
   ok({ outcome: 'not_found' });
 

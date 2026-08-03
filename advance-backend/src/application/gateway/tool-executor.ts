@@ -315,7 +315,19 @@ export class ToolExecutor {
           });
           if (!finalized) return approvalCheckpointFailure(executionGrant.approvalId);
         }
-        return gatewayFailure('tool_error', result.error.message);
+        // Same mapping as the two preflight sites and the runtime path: a tool
+        // asking for a corrected argument must not reach the caller as a flat
+        // tool failure. This is the path the cloud Pi container uses, so
+        // flattening here is what made the agent report "access was denied".
+        const status = result.error.payload.reason === 'bad_args' ? 'invalid_args' : 'tool_error';
+        this.deps.logger.warn('gateway.tool.failed', {
+          toolId: tool.id,
+          action,
+          status,
+          reason: result.error.payload.reason,
+          message: result.error.message,
+        });
+        return gatewayFailure(status, result.error.message);
       }
 
       if (executionGrant) {
@@ -333,6 +345,7 @@ export class ToolExecutor {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      this.deps.logger.error('gateway.tool.threw', { toolId: tool.id, action, message });
       if (executionGrant) {
         const finalized = await this.deps.approvalGate?.failExecution(executionGrant, {
           status: 'tool_error',
@@ -519,7 +532,23 @@ export class ToolExecutor {
             return runtimeApprovalCheckpointFailure(toolId, action, executionGrant.approvalId);
           }
         }
-        return runtimeFailure(toolId, 'tool_error', result.error.message, action);
+        // Preserve `bad_args` the way both preflight paths already do. Flattened
+        // to `tool_error`, a tool saying "add accountId and retry" reads to the
+        // model as the tool failing, and it reports the request as denied
+        // instead of correcting the one argument it was asked to correct.
+        const status = result.error.payload.reason === 'bad_args' ? 'invalid_args' : 'tool_error';
+        // Nothing on this path was logged, so a run that ended with the model
+        // telling a member "access was denied" left no record of which tool
+        // refused or why. Args stay out: they carry member data.
+        this.deps.logger.warn('gateway.tool.failed', {
+          toolId,
+          action,
+          status,
+          reason: result.error.payload.reason,
+          message: result.error.message,
+          correlationId: context.correlationId,
+        });
+        return runtimeFailure(toolId, status, result.error.message, action);
       }
 
       if (executionGrant) {
@@ -531,6 +560,11 @@ export class ToolExecutor {
           return runtimeApprovalCheckpointFailure(toolId, action, executionGrant.approvalId);
         }
       }
+      this.deps.logger.info('gateway.tool.succeeded', {
+        toolId,
+        action,
+        correlationId: context.correlationId,
+      });
       return {
         status: 'success',
         toolId,
@@ -539,6 +573,12 @@ export class ToolExecutor {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      this.deps.logger.error('gateway.tool.threw', {
+        toolId,
+        action,
+        message,
+        correlationId: context.correlationId,
+      });
       if (executionGrant) {
         const finalized = await input.approvalGate?.failExecution(executionGrant, {
           status: 'tool_error',
