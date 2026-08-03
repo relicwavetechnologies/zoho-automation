@@ -8,6 +8,7 @@ import type { ToolActionGroup } from '../../../domain/permissions/tool-action-gr
 import { asToolId } from '../../../shared/ids';
 import type { AuditService } from '../../observability/audit.service';
 import { contributeExportPart } from '../../data-export/tool-export-offer';
+import { dataExportRunRequestId } from '../../data-export/export-request-identity';
 import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
 import type { DataExportOfferPayload } from '../../data-export/export-offer';
 import {
@@ -186,9 +187,7 @@ function exportPayloadFor(
     ...(ctx.runContext.runtimeThreadId ? { conversationKey: ctx.runContext.runtimeThreadId } : {}),
     ...(ctx.runContext.replyToMessageId ? { replyToMessageId: ctx.runContext.replyToMessageId } : {}),
     ...(ctx.runContext.replyInThread !== undefined ? { replyInThread: ctx.runContext.replyInThread } : {}),
-    requestId: ctx.runContext.runtimeRunId
-      ?? ctx.runContext.requestId
-      ?? ctx.correlationId,
+    requestId: dataExportRunRequestId(ctx.runContext, ctx.correlationId),
     ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
   };
 }

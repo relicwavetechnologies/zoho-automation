@@ -293,26 +293,36 @@ export class SemrushSnapshotDataExportSource implements DataExportSourceAdapter<
       return;
     }
 
+    // The member's window, which the adapter's page size must never overwrite:
+    // `limit` is how many rows were asked for, `SEMRUSH_EXPORT_PAGE_SIZE` is
+    // only how many the provider is asked for at a time.
     let offset = source.args.offset ?? 0;
+    let remaining = source.args.limit;
     for (let page = 0; page < SEMRUSH_EXPORT_PAGE_LIMIT; page += 1) {
       context.signal?.throwIfAborted();
       const result = await this.service.execute({
         ...source.args,
-        limit: SEMRUSH_EXPORT_PAGE_SIZE,
+        limit: remaining === undefined
+          ? SEMRUSH_EXPORT_PAGE_SIZE
+          : Math.min(SEMRUSH_EXPORT_PAGE_SIZE, remaining),
         offset,
       });
       context.signal?.throwIfAborted();
+      const rows = remaining === undefined ? result.rows : result.rows.slice(0, remaining);
+      if (remaining !== undefined) remaining -= rows.length;
       const nextOffset = result.status === 'partial'
         ? Number(result.nextPage)
         : NaN;
       const hasMore = Number.isInteger(nextOffset) && nextOffset > offset;
-      const sourceTruncated = result.status === 'partial'
+      const requestedLimitReached = remaining === 0;
+      const sourceTruncated = !requestedLimitReached && result.status === 'partial'
         && (!hasMore || page === SEMRUSH_EXPORT_PAGE_LIMIT - 1);
       yield {
-        rows: result.rows,
-        ...(hasMore ? { hasMore: true } : {}),
+        rows,
+        ...(hasMore && !requestedLimitReached ? { hasMore: true } : {}),
         ...(sourceTruncated ? { sourceTruncated: true } : {}),
       };
+      if (requestedLimitReached) return;
       if (!hasMore || sourceTruncated) return;
       offset = nextOffset;
     }

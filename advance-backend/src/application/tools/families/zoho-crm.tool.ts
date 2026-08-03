@@ -36,6 +36,7 @@ import type { ZohoCrmOps }                 from '../../zoho/zoho-crm-ops';
 import { mapZohoError }                    from '../../zoho/zoho-error.utils';
 import type { ZohoCrmPaginatedClient, ZohoCrmModule } from '../../../infrastructure/zoho/zoho-crm-paginated.client';
 import { contributeExportPart } from '../../data-export/tool-export-offer';
+import { dataExportRunRequestId } from '../../data-export/export-request-identity';
 import type { DataExportOfferService }     from '../../data-export/data-export-offer.service';
 import type { DataExportOfferPayload }     from '../../data-export/export-offer';
 import {
@@ -371,7 +372,7 @@ export const createZohoCrmTool = (deps: {
       ...(ctx.runContext.replyInThread !== undefined
         ? { replyInThread: ctx.runContext.replyInThread }
         : {}),
-      requestId: ctx.runContext.requestId ?? ctx.correlationId,
+      requestId: dataExportRunRequestId(ctx.runContext, ctx.correlationId),
       ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
     });
 

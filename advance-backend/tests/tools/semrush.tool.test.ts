@@ -278,6 +278,62 @@ describe('semrush tool', () => {
     assert.equal(datasetSourceToolId(source), 'semrush');
   });
 
+  it('reads the requested window from the args, not from the adapter page size', async () => {
+    const calls: unknown[] = [];
+    const adapter = new SemrushSnapshotDataExportSource({
+      execute: async (args) => {
+        calls.push(args);
+        return {
+          operation: 'organic_positions', status: 'partial', coverage: {},
+          rows: Array.from({ length: args.limit ?? 0 }, (_, index) => ({ keyword: `keyword-${index}` })),
+          nextPage: String((args.offset ?? 0) + (args.limit ?? 0)),
+        };
+      },
+    } as never);
+    const pages = [];
+    for await (const page of adapter.read({
+      kind: 'semrush_snapshot', connectionId: 'backend_managed',
+      args: { operation: 'organic_positions', domain: 'example.com', limit: 50 },
+    }, { companyId: 'co-1', userId: 'user-1' })) pages.push(page);
+
+    // 50 is what was asked for; 1,000 is only the adapter's page size.
+    assert.deepEqual(calls, [{ operation: 'organic_positions', domain: 'example.com', limit: 50, offset: 0 }]);
+    assert.equal(pages.flatMap(page => page.rows).length, 50);
+    // Exactly what was asked for is a complete export, not a truncated one.
+    assert.equal(pages[0]?.hasMore, undefined);
+    assert.equal(pages[0]?.sourceTruncated, undefined);
+  });
+
+  it('keeps each part of a multi-part export on its own window', async () => {
+    // Two organic_positions lookups in one run merge into one offer. The window
+    // belongs to the part that carries it: capping the merged dataset at the
+    // first part's limit would drop the second domain entirely.
+    const calls: { domain: string; limit?: number; offset?: number }[] = [];
+    const adapter = new SemrushSnapshotDataExportSource({
+      execute: async (args: any) => {
+        calls.push({ domain: args.domain, limit: args.limit, offset: args.offset });
+        return {
+          operation: 'organic_positions', status: 'complete', coverage: {},
+          rows: Array.from({ length: args.limit ?? 0 }, (_, index) => ({ domain: args.domain, index })),
+        };
+      },
+    } as never);
+    const rows: Record<string, unknown>[] = [];
+    for (const domain of ['a.com', 'b.com']) {
+      for await (const page of adapter.read({
+        kind: 'semrush_snapshot', connectionId: 'backend_managed',
+        args: { operation: 'organic_positions', domain, limit: 50 },
+      }, { companyId: 'co-1', userId: 'user-1' })) rows.push(...page.rows);
+    }
+
+    assert.deepEqual(calls, [
+      { domain: 'a.com', limit: 50, offset: 0 },
+      { domain: 'b.com', limit: 50, offset: 0 },
+    ]);
+    assert.equal(rows.length, 100);
+    assert.deepEqual([...new Set(rows.map(row => row['domain']))], ['a.com', 'b.com']);
+  });
+
   it('returns an honest blocked result when the backend has no Semrush key', async () => {
     const tool = createTool({ service: { execute: async () => { throw new SemrushServiceError('not_configured', 'Semrush is not configured on this backend.'); } } });
     const result = await tool.execute({ operation: 'domain_overview', domain: 'example.com' }, makeCtx('semrush', ['read']));

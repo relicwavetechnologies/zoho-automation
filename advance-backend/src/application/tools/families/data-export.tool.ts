@@ -9,6 +9,7 @@ import {
   directDatasetSourceSchema,
   datasetSourceToolId,
 } from '../../data-export/data-export.types';
+import { dataExportCallRequestId } from '../../data-export/export-request-identity';
 import {
   DATA_EXPORT_CSV_ROW_LIMIT,
   DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT,
@@ -58,7 +59,7 @@ export function createDataExportTool(deps: {
     parameterDocs: [
       `Format limits: Excel ${DATA_EXPORT_XLSX_ROW_LIMIT.toLocaleString('en-IN')} rows/${DATA_EXPORT_XLSX_CELL_LIMIT.toLocaleString('en-IN')} cells; Google Sheets ${DATA_EXPORT_GOOGLE_SHEET_ROW_LIMIT.toLocaleString('en-IN')} rows/${DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT.toLocaleString('en-IN')} cells; CSV/auto ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} rows. If the user requests more or every row, disclose the applicable cap and never call a truncated result complete.`,
       'Provider offer confirmation is not part of this agent-callable schema. When a source preview returns preview.exportOfferId, finish the answer; Divo\'s verified Lark card owns format, eligible-account selection, queueing, and connect-and-resume.',
-      'source.kind: airtable_records or zoho_books. Always use the exact source connection UUID.',
+      'source.kind: airtable_records, zoho_books, or zoho_crm. Always use the exact source connection UUID.',
       'transform.script: optional JavaScript function body. It receives row, index, and args. Return an object, an array of objects, or null to filter.',
       'destination.format: auto chooses Google Sheets for manageable datasets and CSV in Google Drive for large datasets.',
       'Use destination.format=xlsx only when the user explicitly requests Excel. Excel is limited to 5,000 rows and 100,000 cells; use CSV for wider datasets.',
@@ -133,7 +134,7 @@ export function createDataExportTool(deps: {
           ...(ctx.runContext.replyInThread !== undefined
             ? { replyInThread: ctx.runContext.replyInThread }
             : {}),
-          requestId: ctx.runContext.requestId ?? ctx.correlationId,
+          requestId: dataExportCallRequestId(ctx.runContext, ctx.correlationId),
           ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
         };
         const exportJobId = await deps.offers.submitAuthorized(

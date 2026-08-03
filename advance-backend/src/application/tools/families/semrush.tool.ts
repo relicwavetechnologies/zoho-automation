@@ -14,6 +14,7 @@ import type { DataExportOfferService } from '../../data-export/data-export-offer
 import type { DataExportOfferPayload } from '../../data-export/export-offer';
 import { createDatasetPreview, DATASET_PREVIEW_ROW_LIMIT, type DatasetCoverage } from '../../data-export/dataset-preview';
 import { contributeExportPart } from '../../data-export/tool-export-offer';
+import { dataExportRunRequestId } from '../../data-export/export-request-identity';
 
 const MAX_TASK_ROWS = 1_000;
 
@@ -229,9 +230,7 @@ function exportPayloadFor(
       : {}),
     ...(ctx.runContext.replyToMessageId ? { replyToMessageId: ctx.runContext.replyToMessageId } : {}),
     ...(ctx.runContext.replyInThread !== undefined ? { replyInThread: ctx.runContext.replyInThread } : {}),
-    requestId: ctx.runContext.runtimeRunId
-      ?? ctx.runContext.requestId
-      ?? ctx.correlationId,
+    requestId: dataExportRunRequestId(ctx.runContext, ctx.correlationId),
     ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
   };
 }

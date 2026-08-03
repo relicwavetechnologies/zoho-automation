@@ -53,6 +53,10 @@ import { getModuleSchema, injectSyntheticFields, toSchemaHint } from '../../../i
 import { runInSandbox, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
 import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } from '../../../shared/zoho-personalization';
 import { contributeExportPart } from '../../data-export/tool-export-offer';
+import {
+  dataExportCallRequestId,
+  dataExportRunRequestId,
+} from '../../data-export/export-request-identity';
 import { DATA_EXPORT_CSV_ROW_LIMIT } from '../../data-export/data-export-limits';
 import { datasetSourceSchema } from '../../data-export/data-export.types';
 import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
@@ -675,7 +679,13 @@ export const createZohoBooksTool = (deps: {
 
     const scopeFilter: Record<string, unknown> = personalizedScope ? { email: requesterEmail! } : {};
 
-    const exportPayloadFor = (moduleName: ZohoBooksModule): DataExportOfferPayload => ({
+    // `exportAll` queues one artifact per call through `submitAuthorized`, while
+    // a bounded list contributes a part to the run's merged offer. Those want
+    // opposite identity scopes, so the caller states which it is.
+    const exportPayloadFor = (
+      moduleName: ZohoBooksModule,
+      requestId: string,
+    ): DataExportOfferPayload => ({
       companyId,
       userId,
       ...(ctx.runContext.departmentId ? { departmentId: ctx.runContext.departmentId } : {}),
@@ -701,7 +711,7 @@ export const createZohoBooksTool = (deps: {
       ...(ctx.runContext.replyInThread !== undefined
         ? { replyInThread: ctx.runContext.replyInThread }
         : {}),
-      requestId: ctx.runContext.requestId ?? ctx.correlationId,
+      requestId,
       ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
     });
 
@@ -741,7 +751,10 @@ export const createZohoBooksTool = (deps: {
         const filterError = bankTransactionFilterError(args);
         if (filterError) return err(filterError);
       }
-      const payload = exportPayloadFor(exportModule);
+      const payload = exportPayloadFor(
+        exportModule,
+        dataExportCallRequestId(ctx.runContext, ctx.correlationId),
+      );
       const recipe = datasetSourceSchema.safeParse(payload.source);
       if (!recipe.success) {
         return err(new ToolError({
@@ -862,7 +875,10 @@ export const createZohoBooksTool = (deps: {
       const offer = await contributeExportPart({
         offers: deps.offers,
         eligible: result.suggestExport && canOfferExport,
-        payload: () => exportPayloadFor(moduleName),
+        payload: () => exportPayloadFor(
+          moduleName,
+          dataExportRunRequestId(ctx.runContext, ctx.correlationId),
+        ),
         observedRowCount: formattedItems.length,
         collectionTitle: `Zoho Books ${moduleName}`,
         logger: ctx.logger,

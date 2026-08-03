@@ -12,6 +12,7 @@ import { defaultSortDirection, excludesUnmeasuredSpamScore, OmsSiteDataServiceEr
 import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
 import type { DataExportOfferPayload } from '../../data-export/export-offer';
 import { contributeExportPart } from '../../data-export/tool-export-offer';
+import { dataExportRunRequestId } from '../../data-export/export-request-identity';
 import { createDatasetPreview, DATASET_PREVIEW_ROW_LIMIT } from '../../data-export/dataset-preview';
 
 const ResultSchema = z.object({
@@ -226,7 +227,7 @@ function exportPayloadFor(
       : {}),
     ...(ctx.runContext.replyToMessageId ? { replyToMessageId: ctx.runContext.replyToMessageId } : {}),
     ...(ctx.runContext.replyInThread !== undefined ? { replyInThread: ctx.runContext.replyInThread } : {}),
-    requestId: ctx.runContext.requestId ?? ctx.correlationId,
+    requestId: dataExportRunRequestId(ctx.runContext, ctx.correlationId),
     ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
   };
 }
