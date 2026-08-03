@@ -33,7 +33,16 @@ const MAX_TRANSIENT_MODEL_RETRIES = 3;
 const MODEL_RETRY_IDLE_TIMEOUT_MS = 5_000;
 const MODEL_RETRY_PROMPT =
 	"The previous model continuation failed because the provider was temporarily unavailable. Continue this same request from the work already present in the session. Do not repeat completed tool calls or side effects. Finish the remaining work and return only the final user-facing answer.";
-export const RUNTIME_IDLE_TIMEOUT_MS = 10 * 60_000;
+/**
+ * How long a finished DM runtime stays running before it is stopped.
+ *
+ * Stopping is what makes the *next* turn cold: it discards the tmpfs holding the
+ * transpile cache, so the following run pays the full boot again. An idle
+ * container is `sleep infinity` under cgroup limits — it holds no CPU and only
+ * the few megabytes its tmpfs already contains — so a short window buys almost
+ * nothing back and charges the user for it on their next message.
+ */
+export const RUNTIME_IDLE_TIMEOUT_MS = 45 * 60_000;
 export const RUNTIME_STOP_RETRY_MS = 30_000;
 const RUNTIME_CONTAINER_MODE = "exec-v1";
 let tokenReadTail = Promise.resolve();
@@ -698,6 +707,26 @@ async function ensureVolume(profile, name) {
 }
 
 /**
+ * Shaped like `ensureVolume` so the network can be established inside the same
+ * concurrent batch. Probing the network, then creating it only once the volumes
+ * had finished, put its create alone on the critical path — and a `network
+ * create` is the most expensive object a group run makes.
+ */
+async function ensureNetwork(profile, name) {
+	if (await dockerObjectExists("network", name)) return name;
+	await docker([
+		"network",
+		"create",
+		"--driver",
+		"bridge",
+		"--label",
+		`dev.divo.profile=${profile}`,
+		name,
+	]);
+	return name;
+}
+
+/**
  * Create the workspace volume without touching the container or network.
  *
  * Attachments are staged *before* the run starts, so this is often the first
@@ -735,24 +764,14 @@ async function ensureRuntime(profile, { ephemeral = false } = {}) {
 	}
 	// The network, both volumes and the container are four unrelated Docker
 	// objects. Probing them one after another spent four sequential CLI round
-	// trips before every turn to learn what a warm profile already satisfies.
-	const [networkExists, existing] = await settleAll([
-		dockerObjectExists("network", resources.network),
+	// trips before every turn to learn what a warm profile already satisfies —
+	// and on a group run, which starts from nothing every time, four creates.
+	const [existing] = await settleAll([
 		findOwnedContainer(profile),
+		ensureNetwork(profile, resources.network),
 		ensureVolume(profile, resources.volume),
 		ensureVolume(profile, resources.authVolume),
 	]);
-	if (!networkExists) {
-		await docker([
-			"network",
-			"create",
-			"--driver",
-			"bridge",
-			"--label",
-			`dev.divo.profile=${profile}`,
-			resources.network,
-		]);
-	}
 	let container = existing;
 	if (container) {
 		if (runtimeContainerNeedsReplacement(container, IMAGE, imageId)) {
@@ -1660,8 +1679,42 @@ export function createIdleContainerScheduler({
 
 const idleContainers = createIdleContainerScheduler({ stop: stopOwnedContainer });
 
+/**
+ * Teardown that a reply is no longer waiting on.
+ *
+ * Removing a shared run's container, its two volumes and its network costs a
+ * third of a second of Docker round trips, and it used to sit between the
+ * model's last token and the reply reaching Lark — the room waited on work done
+ * purely to reclaim resources.
+ *
+ * Leaking is not the price: `reconcileOwnedContainers` destroys every stray
+ * `shared-` profile at controller startup, so backgrounding trades a removal
+ * guaranteed *now* for one guaranteed by the next start. Shutdown drains this
+ * set so an orderly stop still finishes what it began.
+ */
+const reclaiming = new Set();
+
+export function trackRuntimeReclamation(
+	profile,
+	work,
+	onError = (error) => console.error(`[Pi] ${error.message}`),
+) {
+	let settled;
+	settled = work.then(
+		() => undefined,
+		(error) => onError(
+			new Error(`Divo runtime reclamation failed for profile "${profile}": ${error.message}`),
+		),
+	).finally(() => {
+		reclaiming.delete(settled);
+	});
+	reclaiming.add(settled);
+	return settled;
+}
+
 export async function shutdownWarmContainers() {
 	await idleContainers.shutdown();
+	await Promise.allSettled([...reclaiming]);
 }
 
 export async function finalizeRuntimeLifecycle({
@@ -1676,6 +1729,7 @@ export async function finalizeRuntimeLifecycle({
 	clearBootstrapFn = clearBootstrap,
 	scheduler = idleContainers,
 	destroyRuntimeFn = destroyEphemeralRuntime,
+	reclaimFn = trackRuntimeReclamation,
 	onCleanupError = (error) => console.error(
 		`[Pi] ${error.message}: ${error.errors.map(String).join("; ")}`,
 	),
@@ -1695,10 +1749,18 @@ export async function finalizeRuntimeLifecycle({
 	const abortError = await abortStop;
 	if (abortError) cleanupErrors.push(abortError);
 	if (ephemeral) {
-		try {
-			await destroyRuntimeFn(profile);
-		} catch (error) {
-			cleanupErrors.push(error);
+		// A run that produced an answer has nothing left to decide, so its
+		// teardown is reclamation and the room should not wait for it. A run that
+		// failed still tears down synchronously: nobody is waiting on a reply
+		// there, and a cleanup failure has to stay able to surface.
+		if (completedSuccessfully && cleanupErrors.length === 0) {
+			reclaimFn(profile, destroyRuntimeFn(profile));
+		} else {
+			try {
+				await destroyRuntimeFn(profile);
+			} catch (error) {
+				cleanupErrors.push(error);
+			}
 		}
 	} else if (completedSuccessfully && cleanupErrors.length === 0) {
 		scheduler.keepWarm(profile);

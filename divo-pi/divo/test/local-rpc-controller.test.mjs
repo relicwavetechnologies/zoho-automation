@@ -17,6 +17,7 @@ import {
 	runtimeContainerNeedsReplacement,
 	runtimeStartupProgress,
 	settleAll,
+	trackRuntimeReclamation,
 	validateProfileName,
 	validateRuntimeModel,
 	validateThread,
@@ -322,6 +323,75 @@ test("credential cleanup failure stops the container instead of keeping it warm"
 		AggregateError,
 	);
 	assert.deepEqual(calls, ["clear", "stop"]);
+});
+
+test("a finished group run stops waiting on its own teardown", async () => {
+	let destroyed = false;
+	// A teardown that finishes on its own, so a version that waits for it fails
+	// the assertion below instead of deadlocking the suite.
+	const destroying = new Promise((resolve) => setTimeout(resolve, 20));
+	const backgrounded = [];
+	let reclamation;
+	await finalizeRuntimeLifecycle({
+		profile: "shared-8f2c",
+		resources: { authVolume: "shared-8f2c-auth" },
+		bootstrapAttempted: true,
+		completedSuccessfully: true,
+		ephemeral: true,
+	}, {
+		destroyRuntimeFn: async () => {
+			await destroying;
+			destroyed = true;
+		},
+		reclaimFn: (profile, work) => {
+			backgrounded.push(profile);
+			reclamation = work;
+			return work;
+		},
+		scheduler: { keepWarm: () => {}, stopNow: async () => {} },
+	});
+	// The room has its answer while Docker is still removing the container,
+	// its two volumes and its network — a third of a second the reply used to
+	// wait through.
+	assert.equal(destroyed, false);
+	assert.deepEqual(backgrounded, ["shared-8f2c"]);
+	await reclamation;
+	assert.equal(destroyed, true);
+});
+
+test("a failed group run tears down before it reports, and the failure still surfaces", async () => {
+	const calls = [];
+	await assert.rejects(
+		finalizeRuntimeLifecycle({
+			profile: "shared-8f2c",
+			resources: { authVolume: "shared-8f2c-auth" },
+			bootstrapAttempted: false,
+			completedSuccessfully: false,
+			ephemeral: true,
+		}, {
+			destroyRuntimeFn: async () => {
+				calls.push("destroy");
+				throw new Error("network rm failed");
+			},
+			reclaimFn: () => calls.push("backgrounded"),
+			scheduler: { keepWarm: () => {}, stopNow: async () => {} },
+		}),
+		AggregateError,
+	);
+	// Nobody is waiting on a reply here, so the teardown stays synchronous and
+	// its failure stays reportable. The absent "backgrounded" is the point.
+	assert.deepEqual(calls, ["destroy"]);
+});
+
+test("background reclamation reports its failure instead of rejecting", async () => {
+	const reported = [];
+	await trackRuntimeReclamation(
+		"shared-8f2c",
+		Promise.reject(new Error("network rm failed")),
+		(error) => reported.push(error.message),
+	);
+	assert.equal(reported.length, 1);
+	assert.match(reported[0], /shared-8f2c.*network rm failed/);
 });
 
 test("a completed run is kept warm without spending a container to clear the bootstrap", async () => {
