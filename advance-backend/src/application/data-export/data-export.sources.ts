@@ -117,13 +117,13 @@ export class AirtableDataExportSource implements DataExportSourceAdapter<Airtabl
       const next = typeof result['nextCursor'] === 'string' && result['nextCursor'].trim()
         ? result['nextCursor']
         : undefined;
-      const sourceTruncated = Boolean(next && (seenCursors.has(next) || page === AIRTABLE_PAGE_LIMIT - 1));
+      const providerLimited = Boolean(next && (seenCursors.has(next) || page === AIRTABLE_PAGE_LIMIT - 1));
       yield {
         rows,
         ...(next ? { hasMore: true } : {}),
-        ...(sourceTruncated ? { sourceTruncated: true } : {}),
+        ...(providerLimited ? { coverage: { outcome: 'partial' as const, cause: 'provider_limit' as const } } : {}),
       };
-      if (!next || sourceTruncated) return;
+      if (!next || providerLimited) return;
       seenCursors.add(next);
       cursor = next;
     }
@@ -171,14 +171,14 @@ export class ZohoBooksDataExportSource implements DataExportSourceAdapter<ZohoBo
           seen.add(key);
           return true;
         });
-        const sourceTruncated = result.hasMore && page === ZOHO_PAGE_LIMIT;
+        const providerLimited = result.hasMore && page === ZOHO_PAGE_LIMIT;
         const hasMore = result.hasMore || statusIndex < statuses.length - 1;
         yield {
           rows: injectSyntheticFields(unique, schema, currencyConverter),
           ...(hasMore ? { hasMore: true } : {}),
-          ...(sourceTruncated ? { sourceTruncated: true } : {}),
+          ...(providerLimited ? { coverage: { outcome: 'partial' as const, cause: 'provider_limit' as const } } : {}),
         };
-        if (!result.hasMore || sourceTruncated) break;
+        if (!result.hasMore || providerLimited) break;
       }
     }
   }
@@ -225,7 +225,7 @@ export class ZohoCrmDataExportSource implements DataExportSourceAdapter<ZohoCrmS
       yield {
         rows: injectCrmSyntheticFields(chunk, schema),
         ...(isLast ? {} : { hasMore: true }),
-        ...(isLast && truncated ? { sourceTruncated: true } : {}),
+        ...(isLast && truncated ? { coverage: { outcome: 'partial' as const, cause: 'provider_limit' as const } } : {}),
       };
     }
   }
@@ -268,7 +268,12 @@ export class OmsSnapshotDataExportSource implements DataExportSourceAdapter<OmsS
       args: source.args,
     });
     context.signal?.throwIfAborted();
-    yield { rows: result.rows };
+    yield {
+      rows: result.rows,
+      ...(result.status === 'partial'
+        ? { coverage: { outcome: 'partial' as const, cause: 'provider_limit' as const } }
+        : {}),
+    };
   }
 }
 
@@ -286,9 +291,19 @@ export class SemrushSnapshotDataExportSource implements DataExportSourceAdapter<
       context.signal?.throwIfAborted();
       const result = await this.service.execute(source.args);
       context.signal?.throwIfAborted();
+      const requestedRows = semrushRequestedRows(source);
+      const rows = requestedRows === undefined
+        ? result.rows
+        : result.rows.slice(0, requestedRows);
+      const coverage = result.status !== 'partial'
+        ? undefined
+        : requestedRows !== undefined && rows.length >= requestedRows
+          ? { outcome: 'requested_window_satisfied' as const, requestedRows }
+          : { outcome: 'partial' as const, cause: 'provider_limit' as const };
       yield {
-        rows: result.rows,
-        ...(result.status === 'partial' ? { sourceTruncated: true } : {}),
+        rows,
+        ...(requestedRows === undefined ? {} : { requestedRows }),
+        ...(coverage ? { coverage } : {}),
       };
       return;
     }
@@ -315,18 +330,29 @@ export class SemrushSnapshotDataExportSource implements DataExportSourceAdapter<
         : NaN;
       const hasMore = Number.isInteger(nextOffset) && nextOffset > offset;
       const requestedLimitReached = remaining === 0;
-      const sourceTruncated = !requestedLimitReached && result.status === 'partial'
+      const providerLimited = !requestedLimitReached && result.status === 'partial'
         && (!hasMore || page === SEMRUSH_EXPORT_PAGE_LIMIT - 1);
+      const coverage = requestedLimitReached && result.status === 'partial'
+        ? { outcome: 'requested_window_satisfied' as const, requestedRows: source.args.limit! }
+        : providerLimited
+          ? { outcome: 'partial' as const, cause: 'provider_limit' as const }
+          : undefined;
       yield {
         rows,
         ...(hasMore && !requestedLimitReached ? { hasMore: true } : {}),
-        ...(sourceTruncated ? { sourceTruncated: true } : {}),
+        ...(source.args.limit === undefined ? {} : { requestedRows: source.args.limit }),
+        ...(coverage ? { coverage } : {}),
       };
       if (requestedLimitReached) return;
-      if (!hasMore || sourceTruncated) return;
+      if (!hasMore || providerLimited) return;
       offset = nextOffset;
     }
   }
+}
+
+function semrushRequestedRows(source: SemrushSnapshotSource): number | undefined {
+  if (source.args.operation === 'organic_position_trend') return undefined;
+  return 'limit' in source.args ? source.args.limit : undefined;
 }
 
 function normalizeZohoFilters(

@@ -1,7 +1,7 @@
 import * as XLSX from 'xlsx';
 import type { DataExportDestinationWriteProgress } from './data-export.destination';
 import { buildDataExportPresentation } from './data-export-presentation';
-import type { DataExportSource } from './data-export.types';
+import type { DataExportCoverage, DataExportSource } from './data-export.types';
 import {
   DATA_EXPORT_XLSX_CELL_LIMIT as XLSX_MAX_CELLS,
   DATA_EXPORT_XLSX_ROW_LIMIT as XLSX_MAX_ROWS,
@@ -18,6 +18,7 @@ export async function writeXlsxArtifact(input: {
   readonly title?: string;
   readonly columns: readonly string[];
   readonly source?: DataExportSource;
+  readonly coverage?: DataExportCoverage;
   readonly sourceTruncated?: boolean;
   readonly rows: AsyncIterable<Record<string, unknown>>;
   readonly rowCount: number;
@@ -32,6 +33,7 @@ export async function writeXlsxArtifact(input: {
     columns: input.columns,
     ...(input.source ? { source: input.source } : {}),
     rowCount: input.rowCount,
+    ...(input.coverage ? { coverage: input.coverage } : {}),
     sourceTruncated: input.sourceTruncated ?? false,
   });
   const workbookColumns = presentation.mainColumns.length

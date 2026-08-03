@@ -188,7 +188,7 @@ describe('OMS Site Data tool', () => {
         calls.push(input);
         return {
           operation: 'get_site_profiles',
-          status: 'complete',
+          status: 'partial',
           coverage: {},
           rows: [{ website: 'example.com' }],
         };
@@ -205,7 +205,10 @@ describe('OMS Site Data tool', () => {
       companyId: 'co-1',
       args: { operation: 'get_site_profiles', websites: ['example.com'] },
     }]);
-    assert.deepEqual(pages, [{ rows: [{ website: 'example.com' }] }]);
+    assert.deepEqual(pages, [{
+      rows: [{ website: 'example.com' }],
+      coverage: { outcome: 'partial', cause: 'provider_limit' },
+    }]);
     assert.equal(datasetSourceToolId({
       kind: 'oms_snapshot',
       connectionId: 'backend_managed',

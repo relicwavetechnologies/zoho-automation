@@ -1,5 +1,5 @@
 import { normalizeExportCell } from './data-export-cell';
-import type { DataExportSource } from './data-export.types';
+import type { DataExportCoverage, DataExportSource } from './data-export.types';
 
 const SEMRUSH_NUMERIC_COLUMNS = new Set([
   'Position', 'Previous Position', 'Position Difference', 'Search Volume',
@@ -32,6 +32,7 @@ export function buildDataExportPresentation(input: {
   readonly columns: readonly string[];
   readonly source?: DataExportSource;
   readonly rowCount: number;
+  readonly coverage?: DataExportCoverage;
   readonly sourceTruncated: boolean;
 }): DataExportPresentation {
   const semrushOrganic = input.source?.kind === 'semrush_snapshot'
@@ -101,6 +102,7 @@ function semrushOverviewRows(input: {
   readonly title: string;
   readonly source?: DataExportSource;
   readonly rowCount: number;
+  readonly coverage?: DataExportCoverage;
   readonly sourceTruncated: boolean;
 }): readonly (readonly unknown[])[] | undefined {
   if (input.source?.kind !== 'semrush_snapshot') return undefined;
@@ -120,12 +122,29 @@ function semrushOverviewRows(input: {
     ['Database', 'database' in args ? args.database ?? 'in' : 'Not applicable'],
     ['Retrieved at', new Date().toISOString()],
     ['Rows exported', input.rowCount],
-    ['Completeness', input.sourceTruncated
-      ? 'Partial — Divo export safety cap reached'
-      : 'Complete for this query'],
+    ['Completeness', coverageLabel(input.coverage, input.sourceTruncated)],
     ['Metric note', 'CPC is kept currency-neutral because this report does not identify a currency.'],
     ['Trend note', 'Trend Period 01–12 preserve Semrush provider order; 1.00 is the row peak and lower values are relative interest.'],
   ];
+}
+
+function coverageLabel(
+  coverage: DataExportCoverage | undefined,
+  sourceTruncated: boolean,
+): string {
+  if (!coverage) return sourceTruncated
+    ? 'Partial — coverage cause was not recorded'
+    : 'Complete for this query';
+  if (coverage.outcome === 'complete') return 'Complete for this query';
+  if (coverage.outcome === 'requested_window_satisfied') return 'Requested row window satisfied';
+  if (!coverage.cause) return 'Partial — coverage cause was not recorded';
+  return {
+    provider_limit: 'Partial — provider limit reached',
+    export_row_cap: 'Partial — Divo export row cap reached',
+    destination_row_cap: 'Partial — destination row cap reached',
+    destination_cell_cap: 'Partial — destination cell cap reached',
+    spool_cap: 'Partial — Divo export spool cap reached',
+  }[coverage.cause];
 }
 
 function normalizeSourceCell(

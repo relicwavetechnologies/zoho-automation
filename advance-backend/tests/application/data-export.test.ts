@@ -4,6 +4,7 @@ import { transformExportPage } from '../../src/application/data-export/data-expo
 import {
   AirtableDataExportSource,
   MenhoodQueryDataExportSource,
+  SemrushSnapshotDataExportSource,
   ZohoBooksDataExportSource,
   ZohoCrmDataExportSource,
 } from '../../src/application/data-export/data-export.sources.ts';
@@ -212,12 +213,12 @@ describe('data export source adapters', () => {
     assert.equal(rows[0]?.['_id'], 'inv-1');
   });
 
-  it('flags a truncated CRM read once, on the page that ends the stream', async () => {
+  it('reports a provider limit once, on the CRM page that ends the stream', async () => {
     /*
-     * The sink turns the last page's `sourceTruncated` into what the member is
-     * told about coverage. Setting it on every chunk would warn about a
-     * complete export; setting it on none would present a capped export as the
-     * whole module — the silent one, and the one that misleads.
+     * The worker turns the last page's provider-limit coverage into the final
+     * receipt. Setting it on every chunk would wrongly describe a complete
+     * export; setting it on none would present a capped export as the whole
+     * module.
      */
     const adapter = new ZohoCrmDataExportSource({
       listAllRecords: async () => ({
@@ -226,19 +227,48 @@ describe('data export source adapters', () => {
       }),
     } as any);
 
-    const flags: (boolean | undefined)[] = [];
+    const coverage = [];
     let rows = 0;
     for await (const page of adapter.read({
       kind: 'zoho_crm',
       connectionId: '11111111-1111-4111-8111-111111111111',
       module: 'Deals',
     }, { companyId: 'co-1', userId: 'user-1' })) {
-      flags.push(page.sourceTruncated);
+      coverage.push(page.coverage);
       rows += page.rows.length;
     }
 
     assert.equal(rows, 1_200);
-    assert.deepEqual(flags, [undefined, undefined, true]);
+    assert.deepEqual(coverage, [
+      undefined,
+      undefined,
+      { outcome: 'partial', cause: 'provider_limit' },
+    ]);
+  });
+
+  it('treats a satisfied non-paged Semrush row request as an intentional window', async () => {
+    const adapter = new SemrushSnapshotDataExportSource({
+      execute: async () => ({
+        operation: 'keyword_gap',
+        status: 'partial',
+        coverage: {},
+        rows: Array.from({ length: 250 }, (_, index) => ({ keyword: `term-${index}` })),
+      }),
+    } as any);
+    const pages = [];
+    for await (const page of adapter.read({
+      kind: 'semrush_snapshot',
+      connectionId: 'backend_managed',
+      args: { operation: 'keyword_gap', targets: ['a.com', 'b.com'], limit: 250 },
+    }, {})) {
+      pages.push(page);
+    }
+
+    assert.equal(pages[0]?.requestedRows, 250);
+    assert.deepEqual(pages[0]?.coverage, {
+      outcome: 'requested_window_satisfied',
+      requestedRows: 250,
+    });
   });
 
   it('does not claim truncation when the CRM returned the whole module', async () => {
@@ -543,6 +573,51 @@ describe('Google export retry recovery', () => {
     assert.equal(recovered?.rowCount, 87_044);
     assert.equal(permissionCreates, 0);
     assert.equal(fileDeletes, 0);
+  });
+
+  it('falls back to the legacy truncation flag when stored partial coverage lacks a cause', async () => {
+    const drive = {
+      files: {
+        list: async () => ({
+          data: {
+            files: [{
+              id: 'file-legacy-coverage',
+              webViewLink: 'https://drive.google.com/file/d/file-legacy-coverage/view',
+              appProperties: {
+                divoExportKey: 'job-legacy-coverage',
+                divoExportState: 'complete',
+                divoExportRowCount: '10',
+                divoExportTruncated: 'true',
+                divoExportCoverage: JSON.stringify({
+                  inputRowsRead: 10,
+                  rowsWritten: 10,
+                  outcome: 'partial',
+                }),
+                divoExportType: 'csv',
+              },
+            }],
+          },
+        }),
+        delete: async () => assert.fail('completed artifact must not be deleted'),
+      },
+      permissions: {
+        list: async () => ({
+          data: {
+            permissions: [{ type: 'user', role: 'owner', emailAddress: 'member@gmail.com' }],
+          },
+        }),
+        create: async () => assert.fail('owner exports must not create reader permissions'),
+      },
+    };
+
+    const recovered = await recoverCompletedExport(
+      drive as any,
+      'job-legacy-coverage',
+      { kind: 'owner', email: 'member@gmail.com' },
+    );
+
+    assert.equal(recovered?.coverage, undefined);
+    assert.equal(recovered?.sourceTruncated, true);
   });
 
   it('recovers a completed Excel artifact with the same access checks', async () => {
@@ -1452,7 +1527,7 @@ describe('data export worker', () => {
       },
     });
     let writtenRows: Array<Record<string, unknown>> = [];
-    let truncated = false;
+    let coverage: unknown;
     let completionCard = '';
     const worker = createWorker({
       registry,
@@ -1460,14 +1535,15 @@ describe('data export worker', () => {
       sink: {
         write: async (input) => {
           for await (const page of input.rows) writtenRows.push(...page);
-          truncated = input.sourceTruncated();
+          coverage = input.coverage?.(writtenRows.length);
           return {
             success: true,
             artifactId: 'sheet-capped',
             artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-capped/edit',
             artifactType: 'google_sheet',
             rowCount: writtenRows.length,
-            sourceTruncated: truncated,
+            coverage: coverage as any,
+            sourceTruncated: input.sourceTruncated(),
             sharedWith: 'abhishek@emiactech.com (reader)',
             verified: true,
           };
@@ -1490,10 +1566,132 @@ describe('data export worker', () => {
       updateProgress: async () => undefined,
     });
     assert.deepEqual(writtenRows, [{ id: 1 }, { id: 2 }, { id: 3 }]);
-    assert.equal(truncated, true);
-    assert.match(completionCard, /source\/provider or an applicable safety limit/i);
-    assert.match(completionCard, /3 rows/i);
-    assert.match(completionCard, /1 GiB spool/i);
+    assert.deepEqual(coverage, {
+      inputRowsRead: 4,
+      rowsWritten: 3,
+      outcome: 'partial',
+      cause: 'export_row_cap',
+    });
+    assert.match(completionCard, /Divo's export row cap stopped this export/i);
+  });
+
+  it('does not call an empty next provider partition partial at an exact row cap', async () => {
+    const registry = new DatasetSourceRegistry();
+    registry.register({
+      kind: 'airtable_records',
+      async *read() {
+        yield { rows: [{ id: 1 }], hasMore: true };
+        yield { rows: [] };
+      },
+    });
+    let coverage: unknown;
+    let completionCard = '';
+    const worker = createWorker({
+      registry,
+      maxRows: 1,
+      sink: {
+        write: async (input) => {
+          const rows: Record<string, unknown>[] = [];
+          for await (const page of input.rows) rows.push(...page);
+          coverage = input.coverage?.(rows.length);
+          return {
+            success: true,
+            artifactId: 'sheet-exact-cap',
+            artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-exact-cap/edit',
+            artifactType: 'google_sheet',
+            rowCount: rows.length,
+            coverage: coverage as any,
+            sourceTruncated: input.sourceTruncated(),
+            sharedWith: 'abhishek@emiactech.com (reader)',
+            verified: true,
+          };
+        },
+      },
+      larkAdapter: {
+        sendToChatId: async () => ({ ok: true as const, value: 'om-progress' }),
+        updateMessageById: async (_messageId, card) => {
+          completionCard = card;
+          return { ok: true as const, value: undefined };
+        },
+      },
+    });
+    const { transform: _transform, ...untransformedPayload } = payload;
+    await worker.processJob({
+      id: 'exact-cap-empty-next-partition',
+      data: untransformedPayload,
+      attemptsMade: 0,
+      opts: { attempts: 1 },
+      updateData: async () => undefined,
+      updateProgress: async () => undefined,
+    });
+
+    assert.deepEqual(coverage, {
+      inputRowsRead: 1,
+      rowsWritten: 1,
+      outcome: 'complete',
+    });
+    assert.doesNotMatch(completionCard, /⚠️|row cap stopped/i);
+  });
+
+  it('delivers a satisfied requested row window without a partial warning', async () => {
+    const registry = new DatasetSourceRegistry();
+    registry.register({
+      kind: 'airtable_records',
+      async *read() {
+        yield {
+          rows: Array.from({ length: 1_234 }, (_, index) => ({ id: index + 1 })),
+          requestedRows: 1_234,
+          coverage: { outcome: 'requested_window_satisfied', requestedRows: 1_234 },
+        };
+      },
+    });
+    let coverage: unknown;
+    let completionCard = '';
+    const worker = createWorker({
+      registry,
+      sink: {
+        write: async (input) => {
+          let rowCount = 0;
+          for await (const page of input.rows) rowCount += page.length;
+          coverage = input.coverage?.(rowCount);
+          return {
+            success: true,
+            artifactId: 'sheet-requested-window',
+            artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-requested-window/edit',
+            artifactType: 'google_sheet',
+            rowCount,
+            coverage: coverage as any,
+            sourceTruncated: input.sourceTruncated(),
+            sharedWith: 'abhishek@emiactech.com (reader)',
+            verified: true,
+          };
+        },
+      },
+      larkAdapter: {
+        sendToChatId: async () => ({ ok: true as const, value: 'om-progress' }),
+        updateMessageById: async (_messageId, card) => {
+          completionCard = card;
+          return { ok: true as const, value: undefined };
+        },
+      },
+    });
+    const { transform: _transform, ...untransformedPayload } = payload;
+    await worker.processJob({
+      id: 'requested-window-satisfied',
+      data: untransformedPayload,
+      attemptsMade: 0,
+      opts: { attempts: 1 },
+      updateData: async () => undefined,
+      updateProgress: async () => undefined,
+    });
+
+    assert.deepEqual(coverage, {
+      requestedRows: 1_234,
+      inputRowsRead: 1_234,
+      rowsWritten: 1_234,
+      outcome: 'requested_window_satisfied',
+    });
+    assert.doesNotMatch(completionCard, /⚠️|partial/i);
   });
 
   it('uses the requested format row ceiling without cutting larger Sheet or auto exports at 5,000', async () => {
@@ -1530,7 +1728,7 @@ describe('data export worker', () => {
     });
   });
 
-  it('reports Menhood row, cell, and byte limits without inventing one truncation cause', async () => {
+  it('does not invent a cause for a legacy partial completion', async () => {
     const registry = new DatasetSourceRegistry();
     let completionCard = '';
     const worker = createWorker({
@@ -1573,11 +1771,7 @@ describe('data export worker', () => {
       updateProgress: async () => assert.fail('persisted completion must not report progress'),
     });
 
-    assert.match(completionCard, /source\/provider or an applicable safety limit/i);
-    assert.match(completionCard, /5,000 rows/i);
-    assert.match(completionCard, /1,00,000 cells/i);
-    assert.match(completionCard, /200 MB spool/i);
-    assert.doesNotMatch(completionCard, /additional source rows were not included/i);
+    assert.match(completionCard, /earlier Divo version recorded omitted rows without their cause/i);
   });
 
   async function runGeneratedExport(

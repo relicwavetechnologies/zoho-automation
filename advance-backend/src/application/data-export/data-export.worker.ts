@@ -21,6 +21,8 @@ import {
 } from './data-export.queue';
 import type {
   DataExportCompletion,
+  DataExportCoverage,
+  DataExportCoverageCause,
   DataExportJobPayload,
 } from './data-export.types';
 import {
@@ -30,9 +32,6 @@ import {
 } from './data-export.types';
 import {
   DATA_EXPORT_GENERIC_SPOOL_BYTE_LIMIT,
-  DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT,
-  DATA_EXPORT_MENHOOD_SPOOL_MB_LIMIT,
-  DATA_EXPORT_XLSX_CELL_LIMIT,
   dataExportRowLimitForFormat,
 } from './data-export-limits';
 import type {
@@ -271,13 +270,45 @@ export class DataExportWorker {
     const sandbox = new DataExportTransformSandbox(payload.transform);
     touch();
     const maxRows = resolvedExportRowLimit(payload, this.deps.maxRows);
-    let sourceTruncated = false;
+    const rowCapCause: DataExportCoverageCause = this.deps.maxRows === undefined
+      ? 'destination_row_cap'
+      : 'export_row_cap';
+    let partialCause: DataExportCoverageCause | undefined;
+    let knownOmittedRows: number | undefined;
+    let inputRowsRead = 0;
+    let requestedWindowSatisfied = false;
+    const requestedRowsByPart = new Map<number, number>();
     let inputIndex = 0;
     let outputIndex = 0;
     let pageCount = 0;
     let lastTrackerUpdateAt = 0;
     let limitNeedsProbe = false;
     const updateProgressTracker = this.updateProgressTracker.bind(this);
+    const markPartial = (
+      cause: DataExportCoverageCause,
+      options: { readonly knownOmittedRows?: number; readonly override?: boolean } = {},
+    ) => {
+      if (partialCause && !options.override) return;
+      partialCause = cause;
+      knownOmittedRows = options.knownOmittedRows;
+    };
+    const coverageFor = (rowsWritten: number): DataExportCoverage => {
+      const requestedRows = requestedRowsByPart.size > 0
+        ? [...requestedRowsByPart.values()].reduce((total, value) => total + value, 0)
+        : undefined;
+      return {
+        ...(requestedRows === undefined ? {} : { requestedRows }),
+        inputRowsRead,
+        rowsWritten,
+        outcome: partialCause
+          ? 'partial'
+          : requestedWindowSatisfied
+            ? 'requested_window_satisfied'
+            : 'complete',
+        ...(partialCause ? { cause: partialCause } : {}),
+        ...(knownOmittedRows === undefined ? {} : { knownOmittedRows }),
+      };
+    };
     const transformedPages = (async function* () {
       // Parts stream in the order the run produced them, through one shared row
       // index, so the transform and the row limit see a single dataset rather
@@ -293,18 +324,36 @@ export class DataExportWorker {
         try {
           for await (const page of pages) {
             touch();
-            sourceTruncated ||= page.sourceTruncated === true;
+            inputRowsRead += page.rows.length;
+            if (page.requestedRows !== undefined) {
+              const prior = requestedRowsByPart.get(partIndex);
+              if (prior !== undefined && prior !== page.requestedRows) {
+                throw new Error(`Data export source changed its requested row window within part ${partIndex + 1}`);
+              }
+              requestedRowsByPart.set(partIndex, page.requestedRows);
+            }
+            if (page.coverage?.outcome === 'requested_window_satisfied') {
+              requestedWindowSatisfied = true;
+            } else if (page.coverage?.outcome === 'partial') {
+              markPartial(page.coverage.cause, {
+                ...(page.coverage.knownOmittedRows === undefined
+                  ? {}
+                  : { knownOmittedRows: page.coverage.knownOmittedRows }),
+              });
+            } else if (page.sourceTruncated === true) {
+              markPartial('provider_limit');
+            }
             if (limitNeedsProbe) {
-              // Any part after this one is about to be dropped, so its mere
-              // existence means the export is truncated.
-              if (page.rows.length > 0 || page.hasMore === true || partIndex < parts.length - 1) {
-                sourceTruncated = true;
+              // `hasMore` can mean another provider partition rather than an
+              // actual row (Zoho status filters do this), so only a row proves
+              // that the exact row-cap boundary omitted data.
+              if (page.rows.length > 0) {
+                markPartial(rowCapCause, { override: true });
                 exhausted = true;
                 break;
               }
-              // An empty page proves nothing — the next page of this same part
-              // may still hold rows. Keep probing rather than declaring the
-              // export complete.
+              // An empty page proves nothing. Keep probing across pages and
+              // parts rather than declaring the export partial.
               continue;
             }
             const remainingInput = maxRows - inputIndex;
@@ -317,7 +366,9 @@ export class DataExportWorker {
             const limitReached = inputIndex >= maxRows || outputIndex >= maxRows;
             const omittedRows = page.rows.length > inputRows.length
               || transformed.length > outputRows.length;
-            sourceTruncated ||= omittedRows || (limitReached && page.hasMore === true);
+            if (omittedRows) {
+              markPartial(rowCapCause, { override: true });
+            }
             pageCount += 1;
             if (pageCount === 1 || pageCount % 10 === 0) {
               const progress = {
@@ -330,7 +381,7 @@ export class DataExportWorker {
               lastTrackerUpdateAt = Date.now();
             }
             if (outputRows.length > 0) yield outputRows;
-            if (omittedRows || (limitReached && page.hasMore !== undefined)) {
+            if (omittedRows) {
               exhausted = true;
               break;
             }
@@ -365,14 +416,15 @@ export class DataExportWorker {
       destinationOwner: payload.destination.target?.kind ?? 'legacy_company_google',
     });
     try {
-      const completion = await this.deps.sink.write({
+      const sinkCompletion = await this.deps.sink.write({
         auth: googleAuth,
         readerEmail,
         exportKey: String(job.id ?? dataExportJobId(payload)),
         source: payload.source,
         destination: payload.destination,
         rows: transformedPages,
-        sourceTruncated: () => sourceTruncated,
+        coverage: coverageFor,
+        sourceTruncated: () => coverageFor(outputIndex).outcome === 'partial',
         signal: abortController.signal,
         onProgress: async (progress) => {
           touch();
@@ -393,6 +445,12 @@ export class DataExportWorker {
           }
         },
       });
+      const completion = sinkCompletion.coverage
+        ? {
+            ...sinkCompletion,
+            sourceTruncated: sinkCompletion.coverage.outcome === 'partial',
+          }
+        : sinkCompletion;
       await job.updateProgress({
         stage: 'completed',
         pagesRead: pageCount,
@@ -418,8 +476,8 @@ export class DataExportWorker {
     progressMessageId: string,
     continuityAvailable = true,
   ): Promise<void> {
-    const warning = completion.sourceTruncated
-      ? `\n\n⚠️ ${truncationWarning(payload, this.deps.maxRows)}`
+    const warning = completion.coverage?.outcome === 'partial' || (!completion.coverage && completion.sourceTruncated)
+      ? `\n\n⚠️ ${truncationWarning(completion.coverage)}`
       : '';
     const card = buildFinalCard({
       markdown: [
@@ -540,17 +598,19 @@ function resolvedExportRowLimit(
   );
 }
 
-function truncationWarning(payload: DataExportJobPayload, override: number | undefined): string {
-  const limits = [
-    `${resolvedExportRowLimit(payload, override).toLocaleString('en-IN')} rows`,
-  ];
-  if (payload.destination.format === 'xlsx') {
-    limits.push(`${DATA_EXPORT_XLSX_CELL_LIMIT.toLocaleString('en-IN')} cells`);
-  } else if (payload.destination.format === 'google_sheet') {
-    limits.push(`${DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT.toLocaleString('en-IN')} cells`);
+function truncationWarning(coverage: DataExportCoverage | undefined): string {
+  if (!coverage || !coverage.cause) {
+    return 'This export may be partial because an earlier Divo version recorded omitted rows without their cause.';
   }
-  limits.push(payload.source.kind === 'menhood_query'
-    ? `${DATA_EXPORT_MENHOOD_SPOOL_MB_LIMIT} MB spool`
-    : `${DATA_EXPORT_GENERIC_SPOOL_BYTE_LIMIT / (1_024 * 1_024 * 1_024)} GiB spool`);
-  return `The source/provider or an applicable safety limit truncated this export. Limits for this request: ${limits.join(', ')}.`;
+  const cause = {
+    provider_limit: 'The provider stopped this export before all upstream rows could be read.',
+    export_row_cap: 'Divo\'s export row cap stopped this export.',
+    destination_row_cap: 'The selected export format\'s row cap stopped this export.',
+    destination_cell_cap: 'The selected export format\'s cell cap stopped this export.',
+    spool_cap: 'Divo\'s temporary export spool cap stopped this export.',
+  }[coverage.cause];
+  const omitted = coverage.knownOmittedRows === undefined
+    ? ''
+    : ` ${coverage.knownOmittedRows.toLocaleString('en-IN')} row${coverage.knownOmittedRows === 1 ? '' : 's'} were omitted.`;
+  return `${cause}${omitted}`;
 }

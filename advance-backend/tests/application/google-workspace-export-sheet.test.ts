@@ -129,11 +129,18 @@ it('creates a typed Semrush sheet in the company account and grants only the inv
         Trends: '0.81,0.75,0.70',
       }];
     })(),
+    coverage: (rowsWritten) => ({
+      requestedRows: 1,
+      inputRowsRead: rowsWritten,
+      rowsWritten,
+      outcome: 'requested_window_satisfied',
+    }),
     sourceTruncated: () => false,
   });
 
   assert.equal(result.artifactType, 'google_sheet');
   assert.equal(result.rowCount, 1);
+  assert.equal(result.coverage?.outcome, 'requested_window_satisfied');
   assert.equal(result.sharedWith, 'member@emiactech.com (reader)');
   assert.deepEqual(permissionCreates, [{
     fileId: 'sheet-1',
@@ -182,6 +189,7 @@ it('creates a typed Semrush sheet in the company account and grants only the inv
   ]);
   assert.equal(overviewValues[0]?.find(row => row[0] === 'Subject')?.[1], 'example.com');
   assert.equal(overviewValues[0]?.find(row => row[0] === 'Rows exported')?.[1], 1);
+  assert.equal(overviewValues[0]?.find(row => row[0] === 'Completeness')?.[1], 'Requested row window satisfied');
   assert.match(String(overviewValues[0]?.find(row => row[0] === 'Metric note')?.[1]), /currency-neutral/i);
   assert.match(String(overviewValues[0]?.find(row => row[0] === 'Trend note')?.[1]), /provider order/i);
   assert.doesNotMatch(JSON.stringify(overviewValues), /[$₹€£]/);
@@ -470,6 +478,54 @@ it('selects Sheet or CSV for auto only after the final row and cell counts are k
   assert.deepEqual(selected, ['sheet:5001', 'csv:5001', 'csv:50001']);
 });
 
+it('delivers an explicit Sheet cell cap as a precise partial export', async t => {
+  t.mock.method(google, 'drive', () => ({
+    files: { list: async () => ({ data: { files: [] } }) },
+  }) as any);
+  const sink = new GoogleWorkspaceExportSink();
+  let destinationInput: any;
+  t.mock.method(sink as any, 'createSheet', async (input: any) => {
+    destinationInput = input;
+    return {
+      ...completion('google_sheet', input.rowCount, input.sourceTruncated),
+      coverage: input.coverage,
+    };
+  });
+
+  const result = await sink.write({
+    auth: { accessToken: 'token', ownerEmail: 'member@gmail.com' },
+    readerEmail: 'member@gmail.com',
+    exportKey: 'sheet-cell-cap',
+    destination: {
+      format: 'google_sheet',
+      title: 'Wide export',
+      columns: Array.from({ length: 50 }, (_, index) => `column_${index}`),
+    },
+    rows: (async function* () {
+      for (let offset = 0; offset < 40_001; offset += 1_000) {
+        const count = Math.min(1_000, 40_001 - offset);
+        yield Array.from({ length: count }, (_, index) => ({ id: offset + index + 1 }));
+      }
+    })(),
+    coverage: (rowsWritten) => ({
+      inputRowsRead: 40_001,
+      rowsWritten,
+      outcome: 'complete',
+    }),
+    sourceTruncated: () => false,
+  });
+
+  assert.equal(destinationInput.rowCount, 39_999);
+  assert.deepEqual(result.coverage, {
+    inputRowsRead: 40_001,
+    rowsWritten: 39_999,
+    outcome: 'partial',
+    cause: 'destination_cell_cap',
+  });
+  assert.ok((destinationInput.rowCount + 1) * 50 <= 2_000_000);
+  assert.equal(result.sourceTruncated, true);
+});
+
 it('truncates a Menhood spool at its byte boundary and closes the source iterator', async t => {
   t.mock.method(google, 'drive', () => ({
     files: { list: async () => ({ data: { files: [] } }) },
@@ -484,7 +540,7 @@ it('truncates a Menhood spool at its byte boundary and closes the source iterato
   t.mock.method(sink as any, 'createAndUploadCsv', async (input: any) => {
     assert.equal(input.rowCount, 1);
     assert.equal(input.sourceTruncated, true);
-    return completion('csv', input.rowCount, input.sourceTruncated);
+    return { ...completion('csv', input.rowCount, input.sourceTruncated), coverage: input.coverage };
   });
 
   const result = await sink.write({
@@ -505,11 +561,22 @@ it('truncates a Menhood spool at its byte boundary and closes the source iterato
         iteratorClosed = true;
       }
     })(),
+    coverage: (rowsWritten) => ({
+      inputRowsRead: 2,
+      rowsWritten,
+      outcome: 'complete',
+    }),
     sourceTruncated: () => false,
   });
 
   assert.equal(result.rowCount, 1);
   assert.equal(result.sourceTruncated, true);
+  assert.deepEqual(result.coverage, {
+    inputRowsRead: 2,
+    rowsWritten: 1,
+    outcome: 'partial',
+    cause: 'spool_cap',
+  });
   assert.equal(iteratorClosed, true);
   assert.deepEqual(await readdir(temporaryDirectoryRoot), []);
 });

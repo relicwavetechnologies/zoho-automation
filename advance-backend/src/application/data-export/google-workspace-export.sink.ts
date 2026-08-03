@@ -6,7 +6,12 @@ import { once } from 'node:events';
 import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { google } from 'googleapis';
-import type { DataExportCompletion, DataExportSource } from './data-export.types';
+import type {
+  DataExportCompletion,
+  DataExportCoverage,
+  DataExportCoverageCause,
+  DataExportSource,
+} from './data-export.types';
 import type {
   DataExportDestinationSink,
   DataExportDestinationWriteInput,
@@ -26,6 +31,7 @@ import {
   DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT,
   DATA_EXPORT_GOOGLE_SHEET_ROW_LIMIT,
   DATA_EXPORT_MENHOOD_SPOOL_BYTE_LIMIT,
+  DATA_EXPORT_XLSX_CELL_LIMIT,
 } from './data-export-limits';
 
 const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -35,6 +41,7 @@ const EXPORT_KEY_PROPERTY = 'divoExportKey';
 const EXPORT_STATE_PROPERTY = 'divoExportState';
 const EXPORT_ROW_COUNT_PROPERTY = 'divoExportRowCount';
 const EXPORT_TRUNCATED_PROPERTY = 'divoExportTruncated';
+const EXPORT_COVERAGE_PROPERTY = 'divoExportCoverage';
 const EXPORT_TYPE_PROPERTY = 'divoExportType';
 
 export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
@@ -112,17 +119,41 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       const sheetEligible = input.destination.format !== 'csv'
         && input.destination.format !== 'xlsx'
         && rowCount <= DATA_EXPORT_GOOGLE_SHEET_ROW_LIMIT
-        && rowCount * Math.max(1, columns.length) <= DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT;
-      const sourceTruncated = input.sourceTruncated() || spoolTruncated;
+        && (rowCount + 1) * Math.max(1, columns.length) <= DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT;
       let format: 'google_sheet' | 'csv' | 'xlsx';
       if (existingSheet) format = 'google_sheet';
       else if (input.destination.format === 'xlsx') format = 'xlsx';
       else if (input.destination.format === 'google_sheet') format = 'google_sheet';
       else if (input.destination.format === 'csv' || !sheetEligible) format = 'csv';
       else format = 'google_sheet';
-      if (format === 'google_sheet' && !sheetEligible) {
+      if (format === 'google_sheet' && rowCount > DATA_EXPORT_GOOGLE_SHEET_ROW_LIMIT) {
         throw new Error('Dataset is too large for the requested Google Sheet; use format=auto or csv');
       }
+      const destinationCellRowLimit = cellRowLimitFor(format, columns, input.source);
+      const rowsWritten = Math.min(rowCount, destinationCellRowLimit);
+      const cellTruncated = rowsWritten < rowCount;
+      const sourceCoverage = input.coverage?.(rowsWritten) ?? {
+        inputRowsRead: rowsWritten,
+        rowsWritten,
+        outcome: input.sourceTruncated() ? 'partial' as const : 'complete' as const,
+        ...(input.sourceTruncated() ? { cause: 'provider_limit' as const } : {}),
+      } satisfies DataExportCoverage;
+      const coverage: DataExportCoverage = spoolTruncated
+        ? {
+            ...sourceCoverage,
+            rowsWritten,
+            outcome: 'partial',
+            cause: 'spool_cap',
+          }
+        : cellTruncated
+          ? {
+              ...sourceCoverage,
+              rowsWritten,
+              outcome: 'partial',
+              cause: 'destination_cell_cap',
+            }
+          : sourceCoverage;
+      const sourceTruncated = coverage.outcome === 'partial';
       return existingSheet
         ? await this.writeExistingSheet({
             auth: input.auth,
@@ -132,7 +163,8 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
             title: input.destination.title,
             columns,
             rowsPath,
-            rowCount,
+            rowCount: rowsWritten,
+            coverage,
             sourceTruncated,
             ...(input.signal ? { signal: input.signal } : {}),
             ...(input.onProgress ? { onProgress: input.onProgress } : {}),
@@ -146,7 +178,8 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
             title: input.destination.title,
             columns,
             rowsPath,
-            rowCount,
+            rowCount: rowsWritten,
+            coverage,
             sourceTruncated,
             ...(input.signal ? { signal: input.signal } : {}),
             ...(input.onProgress ? { onProgress: input.onProgress } : {}),
@@ -161,7 +194,8 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
               rowsPath,
               xlsxPath,
               columns,
-              rowCount,
+              rowCount: rowsWritten,
+              coverage,
               sourceTruncated,
               ...(input.signal ? { signal: input.signal } : {}),
               ...(input.onProgress ? { onProgress: input.onProgress } : {}),
@@ -175,7 +209,8 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
             rowsPath,
             csvPath,
             columns,
-            rowCount,
+            rowCount: rowsWritten,
+            coverage,
             sourceTruncated,
             ...(input.signal ? { signal: input.signal } : {}),
             ...(input.onProgress ? { onProgress: input.onProgress } : {}),
@@ -198,6 +233,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
     readonly columns: readonly string[];
     readonly rowsPath: string;
     readonly rowCount: number;
+    readonly coverage: DataExportCoverage;
     readonly sourceTruncated: boolean;
     readonly signal?: AbortSignal;
     readonly onProgress?: (progress: DataExportDestinationWriteProgress) => Promise<void>;
@@ -226,6 +262,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       columns: input.columns,
       ...(input.source ? { source: input.source } : {}),
       rowCount: input.rowCount,
+      coverage: input.coverage,
       sourceTruncated: input.sourceTruncated,
     });
     const tabTitle = existingSheetTabTitle(input.title, input.exportKey);
@@ -259,6 +296,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       tabTitle,
       presentation,
       rowsPath: input.rowsPath,
+      rowCount: input.rowCount,
       existingValues,
       ...(input.signal ? { signal: input.signal } : {}),
       ...(input.onProgress ? { onProgress: input.onProgress } : {}),
@@ -303,6 +341,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
     readonly columns: readonly string[];
     readonly rowsPath: string;
     readonly rowCount: number;
+    readonly coverage: DataExportCoverage;
     readonly sourceTruncated: boolean;
     readonly signal?: AbortSignal;
     readonly onProgress?: (progress: DataExportDestinationWriteProgress) => Promise<void>;
@@ -315,6 +354,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       columns: input.columns,
       ...(input.source ? { source: input.source } : {}),
       rowCount: input.rowCount,
+      coverage: input.coverage,
       sourceTruncated: input.sourceTruncated,
     });
     let spreadsheetId: string | undefined;
@@ -333,7 +373,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
 
       let values: unknown[][] = [[...presentation.mainColumns]];
       let writtenRows = 0;
-      for await (const row of readRows(input.rowsPath)) {
+      for await (const row of readRows(input.rowsPath, input.rowCount)) {
         input.signal?.throwIfAborted();
         values.push([...presentation.mainRow(row)]);
         if (values.length < SHEET_APPEND_ROWS) continue;
@@ -368,7 +408,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       });
       if (formatted.trendsSheetTitle && presentation.trends) {
         let trendValues: unknown[][] = [[...presentation.trends.columns]];
-        for await (const row of readRows(input.rowsPath)) {
+        for await (const row of readRows(input.rowsPath, input.rowCount)) {
           trendValues.push([...presentation.trendRow(row)]);
           if (trendValues.length < SHEET_APPEND_ROWS) continue;
           await sheets.spreadsheets.values.append({
@@ -412,6 +452,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         exportKey: input.exportKey,
         artifactType: 'google_sheet',
         rowCount: input.rowCount,
+        coverage: input.coverage,
         sourceTruncated: input.sourceTruncated,
       }, input.signal);
       return {
@@ -420,6 +461,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         artifactUrl: `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/edit`,
         artifactType: 'google_sheet',
         rowCount: input.rowCount,
+        coverage: input.coverage,
         sourceTruncated: input.sourceTruncated,
         sharedWith: accessLabel(input.access),
         verified: true,
@@ -440,6 +482,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
     readonly csvPath: string;
     readonly columns: readonly string[];
     readonly rowCount: number;
+    readonly coverage: DataExportCoverage;
     readonly sourceTruncated: boolean;
     readonly signal?: AbortSignal;
     readonly onProgress?: (progress: DataExportDestinationWriteProgress) => Promise<void>;
@@ -449,13 +492,14 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       columns: input.columns,
       ...(input.source ? { source: input.source } : {}),
       rowCount: input.rowCount,
+      coverage: input.coverage,
       sourceTruncated: input.sourceTruncated,
     });
     const csvStream = createWriteStream(input.csvPath, { encoding: 'utf8' });
     try {
       await writeLine(csvStream, presentation.flatColumns.map(escapeCsvCell).join(','));
       let writtenRows = 0;
-      for await (const row of readRows(input.rowsPath)) {
+      for await (const row of readRows(input.rowsPath, input.rowCount)) {
         input.signal?.throwIfAborted();
         await writeLine(
           csvStream,
@@ -505,6 +549,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         exportKey: input.exportKey,
         artifactType: 'csv',
         rowCount: input.rowCount,
+        coverage: input.coverage,
         sourceTruncated: input.sourceTruncated,
       }, input.signal);
       return {
@@ -513,6 +558,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         artifactUrl: verified.data.webViewLink ?? `https://drive.google.com/file/d/${encodeURIComponent(fileId)}/view`,
         artifactType: 'csv',
         rowCount: input.rowCount,
+        coverage: input.coverage,
         sourceTruncated: input.sourceTruncated,
         sharedWith: accessLabel(input.access),
         verified: true,
@@ -533,6 +579,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
     readonly xlsxPath: string;
     readonly columns: readonly string[];
     readonly rowCount: number;
+    readonly coverage: DataExportCoverage;
     readonly sourceTruncated: boolean;
     readonly signal?: AbortSignal;
     readonly onProgress?: (progress: DataExportDestinationWriteProgress) => Promise<void>;
@@ -542,8 +589,9 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       title: input.title,
       columns: input.columns,
       ...(input.source ? { source: input.source } : {}),
+      coverage: input.coverage,
       sourceTruncated: input.sourceTruncated,
-      rows: readRows(input.rowsPath),
+      rows: readRows(input.rowsPath, input.rowCount),
       rowCount: input.rowCount,
       ...(input.signal ? { signal: input.signal } : {}),
       ...(input.onProgress ? { onProgress: input.onProgress } : {}),
@@ -586,6 +634,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         exportKey: input.exportKey,
         artifactType: 'xlsx',
         rowCount: input.rowCount,
+        coverage: input.coverage,
         sourceTruncated: input.sourceTruncated,
       }, input.signal);
       return {
@@ -595,6 +644,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
           ?? `https://drive.google.com/file/d/${encodeURIComponent(fileId)}/view`,
         artifactType: 'xlsx',
         rowCount: input.rowCount,
+        coverage: input.coverage,
         sourceTruncated: input.sourceTruncated,
         sharedWith: accessLabel(input.access),
         verified: true,
@@ -884,6 +934,7 @@ async function appendMissingExistingSheetRows(input: {
   readonly tabTitle: string;
   readonly presentation: DataExportPresentation;
   readonly rowsPath: string;
+  readonly rowCount: number;
   readonly existingValues: readonly (readonly unknown[])[];
   readonly signal?: AbortSignal;
   readonly onProgress?: (progress: DataExportDestinationWriteProgress) => Promise<void>;
@@ -899,7 +950,7 @@ async function appendMissingExistingSheetRows(input: {
     ? [[...input.presentation.flatColumns]]
     : [];
   let sourceRowCount = 0;
-  for await (const row of readRows(input.rowsPath)) {
+  for await (const row of readRows(input.rowsPath, input.rowCount)) {
     input.signal?.throwIfAborted();
     const flatRow = [...input.presentation.flatRow(row)];
     if (sourceRowCount < existingRowCount) {
@@ -972,7 +1023,7 @@ async function verifyExistingSheetTab(input: {
   if (input.rowCount === 0) return;
 
   let expectedLast: readonly unknown[] | undefined;
-  for await (const row of readRows(input.rowsPath)) {
+  for await (const row of readRows(input.rowsPath, input.rowCount)) {
     expectedLast = input.presentation.flatRow(row);
   }
   if (!expectedLast) throw new Error('Google Sheet verification failed: final source row is missing');
@@ -991,6 +1042,7 @@ function existingSheetCompletion(
     readonly auth: GoogleExportAuth;
     readonly target: { readonly spreadsheetId: string };
     readonly rowCount: number;
+    readonly coverage: DataExportCoverage;
     readonly sourceTruncated: boolean;
   },
   sheetId: number,
@@ -1004,10 +1056,34 @@ function existingSheetCompletion(
     artifactUrl: `https://docs.google.com/spreadsheets/d/${encodeURIComponent(input.target.spreadsheetId)}/edit#gid=${sheetId}`,
     artifactType: 'google_sheet',
     rowCount: input.rowCount,
+    coverage: input.coverage,
     sourceTruncated: input.sourceTruncated,
     sharedWith: `${input.auth.ownerEmail} (owner)`,
     verified: true,
   };
+}
+
+function cellRowLimitFor(
+  format: 'google_sheet' | 'csv' | 'xlsx',
+  columns: readonly string[],
+  source: DataExportSource | undefined,
+): number {
+  if (format === 'csv') return Number.POSITIVE_INFINITY;
+  if (format === 'google_sheet') {
+    return Math.max(0, Math.floor(
+      DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT / Math.max(1, columns.length),
+    ) - 1);
+  }
+  const presentation = buildDataExportPresentation({
+    title: 'Export',
+    columns,
+    ...(source ? { source } : {}),
+    rowCount: 0,
+    sourceTruncated: false,
+  });
+  const workbookColumns = presentation.mainColumns.length
+    + (presentation.trends?.columns.length ?? 0);
+  return Math.max(0, Math.floor(DATA_EXPORT_XLSX_CELL_LIMIT / Math.max(1, workbookColumns)) - 1);
 }
 
 function existingSheetTabTitle(title: string, exportKey: string): string {
@@ -1112,6 +1188,7 @@ export async function recoverCompletedExport(
       }
       await ensureArtifactAccess(drive, completed.id, access, signal);
       await verifyArtifactAccess(drive, completed.id, access, signal);
+      const coverage = parsePersistedCoverage(completed.appProperties?.[EXPORT_COVERAGE_PROPERTY]);
       return {
         success: true,
         artifactId: completed.id,
@@ -1121,7 +1198,9 @@ export async function recoverCompletedExport(
             : `https://drive.google.com/file/d/${encodeURIComponent(completed.id)}/view`),
         artifactType,
         rowCount,
-        sourceTruncated: completed.appProperties?.[EXPORT_TRUNCATED_PROPERTY] === 'true',
+        ...(coverage ? { coverage } : {}),
+        sourceTruncated: coverage?.outcome === 'partial'
+          || (!coverage && completed.appProperties?.[EXPORT_TRUNCATED_PROPERTY] === 'true'),
         sharedWith: accessLabel(access),
         verified: true,
       };
@@ -1218,6 +1297,7 @@ async function markCompletedExport(
     readonly exportKey: string;
     readonly artifactType: 'google_sheet' | 'csv' | 'xlsx';
     readonly rowCount: number;
+    readonly coverage: DataExportCoverage;
     readonly sourceTruncated: boolean;
   },
   signal?: AbortSignal,
@@ -1230,11 +1310,57 @@ async function markCompletedExport(
         [EXPORT_STATE_PROPERTY]: 'complete',
         [EXPORT_ROW_COUNT_PROPERTY]: String(input.rowCount),
         [EXPORT_TRUNCATED_PROPERTY]: String(input.sourceTruncated),
+        [EXPORT_COVERAGE_PROPERTY]: JSON.stringify(input.coverage),
         [EXPORT_TYPE_PROPERTY]: input.artifactType,
       },
     },
     fields: 'id',
   }, requestOptions(signal));
+}
+
+function parsePersistedCoverage(value: string | undefined): DataExportCoverage | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    const candidate = parsed as Record<string, unknown>;
+    const outcome = candidate['outcome'];
+    const cause = candidate['cause'];
+    const validOutcome = outcome === 'complete'
+      || outcome === 'requested_window_satisfied'
+      || outcome === 'partial';
+    const validCause = cause === undefined
+      || cause === 'provider_limit'
+      || cause === 'export_row_cap'
+      || cause === 'destination_row_cap'
+      || cause === 'destination_cell_cap'
+      || cause === 'spool_cap';
+    if (
+      !validOutcome
+      || !validCause
+      || (outcome === 'partial' && cause === undefined)
+      || (outcome !== 'partial' && cause !== undefined)
+      || !isNonnegativeSafeInteger(candidate['inputRowsRead'])
+      || !isNonnegativeSafeInteger(candidate['rowsWritten'])
+      || (candidate['requestedRows'] !== undefined && !isNonnegativeSafeInteger(candidate['requestedRows']))
+      || (candidate['knownOmittedRows'] !== undefined && !isNonnegativeSafeInteger(candidate['knownOmittedRows']))
+      || (outcome !== 'partial' && candidate['knownOmittedRows'] !== undefined)
+    ) return undefined;
+    return {
+      ...(candidate['requestedRows'] === undefined ? {} : { requestedRows: candidate['requestedRows'] }),
+      inputRowsRead: candidate['inputRowsRead'],
+      rowsWritten: candidate['rowsWritten'],
+      outcome,
+      ...(cause === undefined ? {} : { cause: cause as DataExportCoverageCause }),
+      ...(candidate['knownOmittedRows'] === undefined ? {} : { knownOmittedRows: candidate['knownOmittedRows'] }),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function isNonnegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function writingProperties(exportKey: string): Record<string, string> {
@@ -1266,11 +1392,15 @@ function safeTitle(value: string): string {
   return title || `Divo export ${new Date().toISOString().slice(0, 10)}`;
 }
 
-async function* readRows(path: string): AsyncIterable<Record<string, unknown>> {
+async function* readRows(
+  path: string,
+  maxRows = Number.POSITIVE_INFINITY,
+): AsyncIterable<Record<string, unknown>> {
   const lines = createInterface({
     input: createReadStream(path, { encoding: 'utf8' }),
     crlfDelay: Infinity,
   });
+  let rowCount = 0;
   for await (const line of lines) {
     if (!line) continue;
     const parsed = JSON.parse(line) as unknown;
@@ -1278,5 +1408,7 @@ async function* readRows(path: string): AsyncIterable<Record<string, unknown>> {
       throw new Error('Data export spool contained a non-object row');
     }
     yield parsed as Record<string, unknown>;
+    rowCount += 1;
+    if (rowCount >= maxRows) return;
   }
 }

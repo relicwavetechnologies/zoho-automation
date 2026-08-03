@@ -1,5 +1,6 @@
 import type {
   DataExportCompletion,
+  DataExportCoverage,
   DataExportDestination,
   DataExportSource,
 } from './data-export.types';
@@ -30,6 +31,9 @@ export interface DataExportDestinationWriteInput {
   readonly source?: DataExportSource;
   readonly destination: DataExportDestination;
   readonly rows: AsyncIterable<readonly Record<string, unknown>[]>;
+  /** Finalizes source/worker coverage once the destination knows rows written. */
+  readonly coverage?: (rowsWritten: number) => DataExportCoverage;
+  /** Compatibility for older sinks; new sinks must return `coverage`. */
   readonly sourceTruncated: () => boolean;
   readonly signal?: AbortSignal;
   readonly onProgress?: (progress: DataExportDestinationWriteProgress) => Promise<void>;

@@ -212,10 +212,40 @@ export interface DataExportCompletion {
   readonly artifactUrl: string;
   readonly artifactType: 'google_sheet' | 'csv' | 'xlsx';
   readonly rowCount: number;
+  /** Present for exports completed after coverage causes were introduced. */
+  readonly coverage?: DataExportCoverage;
+  /** Compatibility for completed jobs and Drive metadata written before coverage. */
   readonly sourceTruncated: boolean;
   readonly sharedWith: string;
   readonly verified: true;
 }
+
+export type DataExportCoverageCause =
+  | 'provider_limit'
+  | 'export_row_cap'
+  | 'destination_row_cap'
+  | 'destination_cell_cap'
+  | 'spool_cap';
+
+export interface DataExportCoverage {
+  readonly requestedRows?: number;
+  readonly inputRowsRead: number;
+  readonly rowsWritten: number;
+  readonly outcome: 'complete' | 'requested_window_satisfied' | 'partial';
+  readonly cause?: DataExportCoverageCause;
+  readonly knownOmittedRows?: number;
+}
+
+export type DataExportSourceCoverage =
+  | {
+      readonly outcome: 'requested_window_satisfied';
+      readonly requestedRows: number;
+    }
+  | {
+      readonly outcome: 'partial';
+      readonly cause: 'provider_limit';
+      readonly knownOmittedRows?: number;
+    };
 
 export interface DataExportJobPayload {
   readonly companyId: string;
@@ -258,6 +288,11 @@ export function dataExportParts(
 export interface DataExportPage {
   readonly rows: readonly Record<string, unknown>[];
   readonly hasMore?: boolean;
+  /** The source's row window, if this operation has one. */
+  readonly requestedRows?: number;
+  /** Source-only coverage facts. The worker owns the final export receipt. */
+  readonly coverage?: DataExportSourceCoverage;
+  /** Compatibility for sources not yet migrated to `coverage`. */
   readonly sourceTruncated?: boolean;
 }
 

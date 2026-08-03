@@ -91,6 +91,57 @@ it('recovers a verified XLSX when the completion metadata response is lost', asy
   assert.equal(recovered.verified, true);
 });
 
+it('delivers an explicit XLSX cell cap as a precise partial export', async t => {
+  t.mock.method(google, 'drive', () => ({
+    files: { list: async () => ({ data: { files: [] } }) },
+  }) as any);
+  const sink = new GoogleWorkspaceExportSink();
+  let destinationInput: any;
+  t.mock.method(sink as any, 'createAndUploadXlsx', async (input: any) => {
+    destinationInput = input;
+    return {
+      success: true as const,
+      artifactId: 'xlsx-cell-cap',
+      artifactUrl: 'https://drive.google.com/file/d/xlsx-cell-cap/view',
+      artifactType: 'xlsx' as const,
+      rowCount: input.rowCount,
+      coverage: input.coverage,
+      sourceTruncated: input.sourceTruncated,
+      sharedWith: 'member@gmail.com (owner)',
+      verified: true as const,
+    };
+  });
+
+  const result = await sink.write({
+    auth: { accessToken: 'token', ownerEmail: 'member@gmail.com' },
+    readerEmail: 'member@gmail.com',
+    exportKey: 'xlsx-cell-cap',
+    destination: {
+      format: 'xlsx',
+      title: 'Wide export',
+      columns: Array.from({ length: 50 }, (_, index) => `column_${index}`),
+    },
+    rows: (async function* () {
+      yield Array.from({ length: 2_001 }, (_, index) => ({ id: index + 1 }));
+    })(),
+    coverage: (rowsWritten) => ({
+      inputRowsRead: 2_001,
+      rowsWritten,
+      outcome: 'complete',
+    }),
+    sourceTruncated: () => false,
+  });
+
+  assert.equal(destinationInput.rowCount, 1_999);
+  assert.deepEqual(result.coverage, {
+    inputRowsRead: 2_001,
+    rowsWritten: 1_999,
+    outcome: 'partial',
+    cause: 'destination_cell_cap',
+  });
+  assert.equal(result.sourceTruncated, true);
+});
+
 it('expands Semrush trends into explicit CSV columns', async t => {
   let uploaded = '';
   const drive = {
