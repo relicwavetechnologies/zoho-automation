@@ -11,6 +11,7 @@ import { CompanyOmsSiteDataService } from '../../oms/company-oms-site-data.servi
 import { defaultSortDirection, excludesUnmeasuredSpamScore, OmsSiteDataServiceError, OmsSiteDataToolArgsSchema, type OmsSiteDataToolArgs } from '../../oms/oms-site-data.types';
 import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
 import type { DataExportOfferPayload } from '../../data-export/export-offer';
+import { contributeExportPart } from '../../data-export/tool-export-offer';
 import { createDatasetPreview, DATASET_PREVIEW_ROW_LIMIT } from '../../data-export/dataset-preview';
 
 const ResultSchema = z.object({
@@ -37,6 +38,8 @@ const ResultSchema = z.object({
       z.object({ kind: z.literal('unknown'), returnedRows: z.number().int().nonnegative() }),
     ]),
     exportOfferId: z.string().optional(),
+    exportRowCount: z.number().int().nonnegative().optional(),
+    exportWithdrawn: z.literal(true).optional(),
   }).optional(),
   message: z.string(),
 });
@@ -45,7 +48,7 @@ type Res = z.infer<typeof ResultSchema>;
 
 export const createOmsSiteDataTool = (deps: {
   service: CompanyOmsSiteDataService;
-  offers?: Pick<DataExportOfferService, 'createAuthorizedOffer'>;
+  offers?: Pick<DataExportOfferService, 'appendAuthorizedPart'>;
   audit?: AuditService;
 }): Tool<OmsSiteDataToolArgs, Res> => ({
   id: asToolId('omsSiteData'),
@@ -85,22 +88,19 @@ export const createOmsSiteDataTool = (deps: {
     try {
       ctx.onProgress?.('Retrieving governed OMS site inventory…');
       const data = await deps.service.execute({ companyId: ctx.runContext.companyId, args });
-      const canOfferExport = deps.offers !== undefined
-        && data.rows.length > 0
-        && ctx.runContext.channel === 'lark'
-        && Boolean(ctx.runContext.chatId)
-        && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true;
-      let offer: Awaited<ReturnType<DataExportOfferService['createAuthorizedOffer']>> | undefined;
-      if (canOfferExport) {
-        try {
-          offer = await deps.offers!.createAuthorizedOffer(exportPayloadFor(args, ctx));
-        } catch (error) {
-          ctx.logger.warn('oms.export_offer.create_failed', {
-            error: String(error),
-            correlationId: ctx.correlationId,
-          });
-        }
-      }
+      const offer = await contributeExportPart({
+        offers: deps.offers,
+        eligible: data.rows.length > 0
+          && ctx.runContext.channel === 'lark'
+          && Boolean(ctx.runContext.chatId)
+          && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true,
+        payload: () => exportPayloadFor(args, ctx),
+        observedRowCount: data.rows.length,
+        collectionTitle: `OMS ${args.operation.replace(/_/g, ' ')}`,
+        logger: ctx.logger,
+        scope: 'oms',
+        correlationId: ctx.correlationId,
+      });
       const preview = createDatasetPreview({
         rows: data.rows,
         coverage: {
@@ -110,7 +110,8 @@ export const createOmsSiteDataTool = (deps: {
             ? 'oms_100_row_cap_without_pagination_or_total'
             : 'oms_snapshot_without_pagination_or_total',
         },
-        ...(offer ? { exportOfferId: offer.offerId } : {}),
+        ...(offer.kind === 'offered' ? { exportOfferId: offer.offerId, exportRowCount: offer.observedRowCount } : {}),
+        ...(offer.kind === 'withdrawn' ? { exportWithdrawn: true as const } : {}),
       });
       const result: Res = {
         status: data.status,
@@ -118,7 +119,7 @@ export const createOmsSiteDataTool = (deps: {
         retrievedAt: new Date().toISOString(),
         coverage: data.coverage,
         preview,
-        message: messageFor(data.status, data.rows.length, preview.rows.length, Boolean(offer), args),
+        message: messageFor(data.status, data.rows.length, preview.rows.length, offer.kind === 'offered', args),
       };
       deps.audit?.record({
         actorId: ctx.runContext.userId,
@@ -130,7 +131,7 @@ export const createOmsSiteDataTool = (deps: {
           status: result.status,
           rowCount: data.rows.length,
           returnedRowCount: preview.rows.length,
-          exportOfferId: offer?.offerId ?? null,
+          exportOfferId: offer.kind === 'offered' ? offer.offerId : null,
           latencyMs: Date.now() - startedAt,
           correlationId: ctx.correlationId,
         },

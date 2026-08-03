@@ -7,6 +7,13 @@ export const DATA_EXPORT_GENERIC_SPOOL_BYTE_LIMIT = 1_024 * 1_024 * 1_024;
 export const DATA_EXPORT_MENHOOD_SPOOL_MB_LIMIT = 200;
 export const DATA_EXPORT_MENHOOD_SPOOL_BYTE_LIMIT = DATA_EXPORT_MENHOOD_SPOOL_MB_LIMIT * 1_000_000;
 
+/**
+ * Tool calls one run may fold into a single export. A run that fans out wider
+ * than this is answering a different question than "give me this table", so the
+ * offer is withdrawn rather than silently covering the first 50 calls.
+ */
+export const DATA_EXPORT_MAX_PARTS = 50;
+
 export function dataExportRowLimitForFormat(
   format: 'auto' | 'google_sheet' | 'csv' | 'xlsx',
 ): number {

@@ -27,12 +27,22 @@ export interface DatasetPreview {
   /** Source truth; returnedRows may exceed rows.length by design. */
   readonly coverage: DatasetCoverage;
   readonly exportOfferId?: string;
+  /** Rows the backend counted across every contributing call. */
+  readonly exportRowCount?: number;
+  /**
+   * This run had an export offer and can no longer represent it honestly. The
+   * gateway revokes the run's bound offer so no button survives on an answer
+   * the export only partly covers.
+   */
+  readonly exportWithdrawn?: true;
 }
 
 export function createDatasetPreview(input: {
   readonly rows: readonly Record<string, unknown>[];
   readonly coverage: DatasetCoverage;
   readonly exportOfferId?: string;
+  readonly exportRowCount?: number;
+  readonly exportWithdrawn?: true;
 }): DatasetPreview {
   const rows = input.rows.slice(0, DATASET_PREVIEW_ROW_LIMIT);
   const coverage = input.rows.length > DATASET_PREVIEW_ROW_LIMIT
@@ -49,5 +59,7 @@ export function createDatasetPreview(input: {
     rows,
     coverage,
     ...(input.exportOfferId ? { exportOfferId: input.exportOfferId } : {}),
+    ...(input.exportRowCount !== undefined ? { exportRowCount: input.exportRowCount } : {}),
+    ...(input.exportWithdrawn ? { exportWithdrawn: true as const } : {}),
   };
 }

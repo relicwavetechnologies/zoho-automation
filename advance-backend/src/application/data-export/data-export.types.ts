@@ -83,6 +83,44 @@ export function datasetSourceToolId(source: DataExportSource): CanonicalToolId {
   return source.kind === 'oms_snapshot' ? 'omsSiteData' : 'semrush';
 }
 
+/**
+ * Identifies the row shape a source produces, so one export never unions
+ * columns that were never meant to sit in one table.
+ *
+ * Kind alone is too coarse. A single Semrush run can mix `domain_overview`
+ * (one row per domain) with `organic_positions` (many rows for one domain);
+ * folding those together yields a sparse sheet nobody asked for. Parts merge
+ * only when this key matches exactly.
+ */
+export function datasetSourceShapeKey(source: DataExportSource): string {
+  // Every key carries the connection: the same module read through two
+  // different accounts is two datasets, and the offer row's indexed
+  // `sourceConnectionId` only ever describes part 0.
+  const scope = `${source.kind}:${source.connectionId}`;
+  switch (source.kind) {
+    case 'airtable_records':
+      return [
+        scope,
+        source.toolId,
+        source.nativeTool,
+        String(source.input['tableId'] ?? ''),
+        // `fieldIds` is what selects the columns, so two reads of one table
+        // with different field sets produce different rows.
+        Array.isArray(source.input['fieldIds'])
+          ? [...source.input['fieldIds'] as unknown[]].map(String).sort().join(',')
+          : '',
+      ].join(':');
+    case 'zoho_books':
+    case 'zoho_crm':
+      return `${scope}:${source.module}`;
+    case 'oms_snapshot':
+    case 'semrush_snapshot':
+      return `${scope}:${source.args.operation}`;
+    case 'menhood_query':
+      return `${scope}:${source.queryFingerprint}`;
+  }
+}
+
 export interface DataExportTransform {
   /**
    * Function body executed once per source row. It receives `row`, `index`,
@@ -133,6 +171,19 @@ export interface DataExportJobPayload {
   readonly userId: string;
   readonly departmentId?: string;
   readonly source: DataExportSource;
+  /**
+   * Parts 1..N when one run built its table from several tool calls — 22
+   * `domain_overview` lookups are 22 parts of one 22-row table. Every part
+   * shares `source`'s shape key. Part 0 stays in `source` so offers persisted
+   * before this existed, and the offer row's indexed `sourceKind` /
+   * `sourceConnectionId` columns, keep parsing unchanged.
+   */
+  readonly additionalParts?: readonly DataExportSource[];
+  /**
+   * Rows the run actually observed across every part. Lets the offer state a
+   * count it measured instead of one the model narrated.
+   */
+  readonly observedRowCount?: number;
   readonly transform?: DataExportTransform;
   readonly destination: DataExportDestination;
   readonly chatId: string;
@@ -144,6 +195,13 @@ export interface DataExportJobPayload {
   readonly traceId?: string;
   readonly progressMessageId?: string;
   readonly completedExport?: DataExportCompletion;
+}
+
+/** Every source this payload reads, in the order the run produced them. */
+export function dataExportParts(
+  payload: Pick<DataExportJobPayload, 'source' | 'additionalParts'>,
+): readonly DataExportSource[] {
+  return [payload.source, ...(payload.additionalParts ?? [])];
 }
 
 export interface DataExportPage {

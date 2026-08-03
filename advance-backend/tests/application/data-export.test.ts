@@ -1633,3 +1633,303 @@ describe('data export access contract', () => {
   });
 
 });
+
+describe('Exports built from several tool calls', () => {
+  const multiPartPayload: DataExportJobPayload = {
+    companyId: 'company-1',
+    userId: 'user-1',
+    source: {
+      kind: 'semrush_snapshot',
+      connectionId: 'backend_managed',
+      args: { operation: 'domain_overview', domain: 'a.com' },
+    },
+    additionalParts: [
+      {
+        kind: 'semrush_snapshot',
+        connectionId: 'backend_managed',
+        args: { operation: 'domain_overview', domain: 'b.com' },
+      },
+      {
+        kind: 'semrush_snapshot',
+        connectionId: 'backend_managed',
+        args: { operation: 'domain_overview', domain: 'c.com' },
+      },
+    ],
+    observedRowCount: 3,
+    destination: { format: 'auto', title: 'Domain overviews' },
+    chatId: 'oc_test',
+    requestId: 'om_multi',
+  };
+
+  const buildWorker = (input: {
+    registry: DatasetSourceRegistry;
+    sink: any;
+    maxRows?: number;
+  }) => new DataExportWorker({
+    redisUrl: 'redis://unused',
+    sources: input.registry,
+    sink: input.sink,
+    identityRepo: {
+      resolveByUserId: async () => ({
+        ok: true as const,
+        value: {
+          userId: 'user-1',
+          companyId: 'company-1',
+          aiRole: 'MEMBER',
+          channel: 'lark',
+          email: 'abhishek@emiactech.com',
+        },
+      }),
+    } as any,
+    permissions: {
+      resolve: async () => ({
+        ok: true as const,
+        value: {
+          allowedToolIds: new Set([asToolId('dataExport'), asToolId('semrush')]),
+          allowedActionsByTool: new Map([
+            [asToolId('dataExport'), new Set(['create'])],
+            [asToolId('semrush'), new Set(['read'])],
+          ]),
+          decisions: [],
+        },
+      }),
+    } as any,
+    resolveGoogleAuth: async () => ({ accessToken: 'short-lived', readerDomain: 'emiactech.com' }),
+    larkAdapter: {
+      sendToChatId: async () => ({ ok: true as const, value: 'om_progress' }),
+      updateMessageById: async () => ({ ok: true as const, value: undefined }),
+    } as any,
+    logger: noopLogger,
+    ...(input.maxRows === undefined ? {} : { maxRows: input.maxRows }),
+  });
+
+  const registryYielding = (
+    read: (source: any) => AsyncIterable<{ rows: readonly Record<string, unknown>[] }>,
+  ) => {
+    const registry = new DatasetSourceRegistry();
+    registry.register({ kind: 'semrush_snapshot' as const, read });
+    return registry;
+  };
+
+  it('writes every part, in order, as one dataset', async () => {
+    let written: Record<string, unknown>[] = [];
+    const worker = buildWorker({
+      registry: registryYielding(async function* (source: any) {
+        yield { rows: [{ domain: source.args.domain, rank: 10 }] };
+      }),
+      sink: {
+        write: async (input: any) => {
+          for await (const page of input.rows) written.push(...page);
+          return {
+            success: true as const,
+            artifactId: 'sheet-1',
+            artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+            artifactType: 'google_sheet' as const,
+            rowCount: written.length,
+            sourceTruncated: input.sourceTruncated(),
+            sharedWith: 'abhishek@emiactech.com (reader)',
+            verified: true as const,
+          };
+        },
+      } as any,
+    });
+
+    await worker.processJob({
+      id: 'dtx_multi',
+      data: multiPartPayload,
+      attemptsMade: 0,
+      opts: { attempts: 1 },
+      updateData: async () => undefined,
+      updateProgress: async () => undefined,
+    } as any);
+
+    assert.deepEqual(written, [
+      { domain: 'a.com', rank: 10 },
+      { domain: 'b.com', rank: 10 },
+      { domain: 'c.com', rank: 10 },
+    ], 'a 3-call answer exports 3 rows, not the first call\'s 1');
+  });
+
+  it('names the failing part instead of reporting a bare provider error', async () => {
+    const worker = buildWorker({
+      registry: registryYielding(async function* (source: any) {
+        if (source.args.domain === 'b.com') throw new Error('provider timeout');
+        yield { rows: [{ domain: source.args.domain }] };
+      }),
+      sink: {
+        write: async (input: any) => {
+          for await (const _page of input.rows) { /* drain until the part throws */ }
+          assert.fail('the sink must not complete when a part cannot be read');
+        },
+      } as any,
+    });
+
+    await assert.rejects(
+      () => worker.processJob({
+        id: 'dtx_multi_fail',
+        data: multiPartPayload,
+        attemptsMade: 0,
+        opts: { attempts: 1 },
+        updateData: async () => undefined,
+        updateProgress: async () => undefined,
+      } as any),
+      /part 2 of 3 .*could not be read.*provider timeout/i,
+    );
+  });
+
+  it('applies the row limit across all parts rather than restarting it per part', async () => {
+    let written: Record<string, unknown>[] = [];
+    const worker = buildWorker({
+      maxRows: 2,
+      registry: registryYielding(async function* (source: any) {
+        yield { rows: [{ domain: source.args.domain }] };
+      }),
+      sink: {
+        write: async (input: any) => {
+          for await (const page of input.rows) written.push(...page);
+          return {
+            success: true as const,
+            artifactId: 'sheet-1',
+            artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+            artifactType: 'google_sheet' as const,
+            rowCount: written.length,
+            sourceTruncated: input.sourceTruncated(),
+            sharedWith: 'abhishek@emiactech.com (reader)',
+            verified: true as const,
+          };
+        },
+      } as any,
+    });
+
+    await worker.processJob({
+      id: 'dtx_multi_limit',
+      data: multiPartPayload,
+      attemptsMade: 0,
+      opts: { attempts: 1 },
+      updateData: async () => undefined,
+      updateProgress: async () => undefined,
+    } as any);
+
+    assert.equal(written.length, 2, 'the limit counts rows, not parts');
+  });
+});
+
+describe('Truncation across part boundaries', () => {
+  const partsPayload = (count: number): DataExportJobPayload => ({
+    companyId: 'company-1',
+    userId: 'user-1',
+    source: {
+      kind: 'semrush_snapshot',
+      connectionId: 'backend_managed',
+      args: { operation: 'domain_overview', domain: 'p0.com' },
+    },
+    additionalParts: Array.from({ length: count - 1 }, (_, i) => ({
+      kind: 'semrush_snapshot' as const,
+      connectionId: 'backend_managed' as const,
+      args: { operation: 'domain_overview' as const, domain: `p${i + 1}.com` },
+    })),
+    destination: { format: 'auto', title: 'Truncation' },
+    chatId: 'oc_test',
+    requestId: 'om_trunc',
+  });
+
+  const runWith = async (
+    read: (source: any) => AsyncIterable<any>,
+    maxRows: number,
+    partCount: number,
+  ) => {
+    const registry = new DatasetSourceRegistry();
+    registry.register({ kind: 'semrush_snapshot' as const, read });
+    let truncated: boolean | undefined;
+    const worker = new DataExportWorker({
+      redisUrl: 'redis://unused',
+      sources: registry,
+      sink: {
+        write: async (input: any) => {
+          const rows: unknown[] = [];
+          for await (const page of input.rows) rows.push(...page);
+          truncated = input.sourceTruncated();
+          return {
+            success: true as const,
+            artifactId: 'sheet-1',
+            artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+            artifactType: 'google_sheet' as const,
+            rowCount: rows.length,
+            sourceTruncated: truncated,
+            sharedWith: 'abhishek@emiactech.com (reader)',
+            verified: true as const,
+          };
+        },
+      } as any,
+      identityRepo: {
+        resolveByUserId: async () => ({
+          ok: true as const,
+          value: {
+            userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER',
+            channel: 'lark', email: 'abhishek@emiactech.com',
+          },
+        }),
+      } as any,
+      permissions: {
+        resolve: async () => ({
+          ok: true as const,
+          value: {
+            allowedToolIds: new Set([asToolId('dataExport'), asToolId('semrush')]),
+            allowedActionsByTool: new Map([
+              [asToolId('dataExport'), new Set(['create'])],
+              [asToolId('semrush'), new Set(['read'])],
+            ]),
+            decisions: [],
+          },
+        }),
+      } as any,
+      resolveGoogleAuth: async () => ({ accessToken: 't', readerDomain: 'emiactech.com' }),
+      larkAdapter: {
+        sendToChatId: async () => ({ ok: true as const, value: 'om_progress' }),
+        updateMessageById: async () => ({ ok: true as const, value: undefined }),
+      } as any,
+      logger: noopLogger,
+      maxRows,
+    });
+    await worker.processJob({
+      id: 'dtx_trunc',
+      data: partsPayload(partCount),
+      attemptsMade: 0,
+      opts: { attempts: 1 },
+      updateData: async () => undefined,
+      updateProgress: async () => undefined,
+    } as any);
+    return truncated;
+  };
+
+  it('flags truncation when an empty probe page hides later rows in the same part', async () => {
+    // The limit lands exactly at the end of part 2. Part 3 opens with an empty
+    // page, which proves nothing — its second page still holds a row.
+    const truncated = await runWith(async function* (source: any) {
+      if (source.args.domain === 'p2.com') {
+        yield { rows: [] };
+        yield { rows: [{ domain: source.args.domain }] };
+        return;
+      }
+      yield { rows: [{ domain: source.args.domain }] };
+    }, 2, 3);
+
+    assert.equal(truncated, true, 'dropped rows must never be reported as a complete export');
+  });
+
+  it('flags truncation when whole parts are dropped past the limit', async () => {
+    const truncated = await runWith(async function* (source: any) {
+      yield { rows: [{ domain: source.args.domain }] };
+    }, 2, 5);
+
+    assert.equal(truncated, true);
+  });
+
+  it('does not claim truncation when every part fits', async () => {
+    const truncated = await runWith(async function* (source: any) {
+      yield { rows: [{ domain: source.args.domain }] };
+    }, 100, 3);
+
+    assert.equal(truncated, false);
+  });
+});

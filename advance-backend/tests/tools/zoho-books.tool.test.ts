@@ -343,11 +343,13 @@ describe('zohoBooks expanded execution', () => {
     const tool = makeTool({
       booksClient,
       offers: {
-        createAuthorizedOffer: async (input) => {
+        appendAuthorizedPart: async (input) => {
           offeredPayload = input;
           return {
+            outcome: 'appended' as const,
             offerId: 'offer-opaque',
             expiresAt: new Date('2026-08-03T00:00:00.000Z'),
+            partCount: 1,
           };
         },
       },
@@ -408,7 +410,7 @@ describe('zohoBooks expanded execution', () => {
     } as unknown as ZohoBooksPaginatedClient;
     let offerCalls = 0;
     const offers = {
-      createAuthorizedOffer: async () => {
+      appendAuthorizedPart: async () => {
         offerCalls += 1;
         return { offerId: 'unexpected', expiresAt: new Date() };
       },
@@ -524,7 +526,7 @@ describe('zohoBooks expanded execution', () => {
       booksClient: makeBooksClient(),
       financeOps: fakeFinanceOps as ZohoFinanceOps,
       offers: {
-        createAuthorizedOffer: async () => assert.fail('explicit export must queue immediately'),
+        appendAuthorizedPart: async () => assert.fail('explicit export must queue immediately'),
         submitAuthorized: async (payload, destinationConnectionId) => {
           jobs.push(payload);
           destinations.push(destinationConnectionId);
@@ -584,7 +586,7 @@ describe('zohoBooks expanded execution', () => {
       booksClient: makeBooksClient(),
       financeOps: fakeFinanceOps as ZohoFinanceOps,
       offers: {
-        createAuthorizedOffer: async () => assert.fail('explicit export must queue immediately'),
+        appendAuthorizedPart: async () => assert.fail('explicit export must queue immediately'),
         submitAuthorized: async (_payload, destinationConnectionId) => {
           calls.push(destinationConnectionId);
           if (!destinationConnectionId) {

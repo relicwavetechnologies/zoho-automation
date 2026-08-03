@@ -13,6 +13,7 @@ import type { ApiKeyExhaustionNotifierPort } from '../../governance/api-key-exha
 import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
 import type { DataExportOfferPayload } from '../../data-export/export-offer';
 import { createDatasetPreview, DATASET_PREVIEW_ROW_LIMIT, type DatasetCoverage } from '../../data-export/dataset-preview';
+import { contributeExportPart } from '../../data-export/tool-export-offer';
 
 const MAX_TASK_ROWS = 1_000;
 
@@ -40,6 +41,8 @@ const ResultSchema = z.object({
       z.object({ kind: z.literal('unknown'), returnedRows: z.number().int().nonnegative() }),
     ]),
     exportOfferId: z.string().optional(),
+    exportRowCount: z.number().int().nonnegative().optional(),
+    exportWithdrawn: z.literal(true).optional(),
   }).optional(),
   nextPage: z.string().optional(),
   message: z.string(),
@@ -49,7 +52,7 @@ type Res = z.infer<typeof ResultSchema>;
 
 export const createSemrushTool = (deps: {
   service: SemrushService;
-  offers?: Pick<DataExportOfferService, 'createAuthorizedOffer'>;
+  offers?: Pick<DataExportOfferService, 'appendAuthorizedPart'>;
   audit?: AuditService;
   apiKeyExhaustion?: ApiKeyExhaustionNotifierPort;
 }): Tool<SemrushToolArgs, Res> => ({
@@ -89,26 +92,24 @@ export const createSemrushTool = (deps: {
       ctx.onProgress?.('Retrieving Semrush data…');
       const data = await deps.service.execute(args);
       const allRows = data.rows.slice(0, MAX_TASK_ROWS);
-      const canOfferExport = deps.offers !== undefined
-        && allRows.length > 0
-        && ctx.runContext.channel === 'lark'
-        && Boolean(ctx.runContext.chatId)
-        && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true;
-      let offer: Awaited<ReturnType<DataExportOfferService['createAuthorizedOffer']>> | undefined;
-      if (canOfferExport) {
-        try {
-          offer = await deps.offers!.createAuthorizedOffer(exportPayloadFor(args, ctx));
-        } catch (error) {
-          ctx.logger.warn('semrush.export_offer.create_failed', {
-            error: String(error),
-            correlationId: ctx.correlationId,
-          });
-        }
-      }
+      const offer = await contributeExportPart({
+        offers: deps.offers,
+        eligible: allRows.length > 0
+          && ctx.runContext.channel === 'lark'
+          && Boolean(ctx.runContext.chatId)
+          && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true,
+        payload: () => exportPayloadFor(args, ctx),
+        observedRowCount: allRows.length,
+        collectionTitle: semrushCollectionTitle(args),
+        logger: ctx.logger,
+        scope: 'semrush',
+        correlationId: ctx.correlationId,
+      });
       const preview = createDatasetPreview({
         rows: allRows,
         coverage: previewCoverageFor(data, allRows.length),
-        ...(offer ? { exportOfferId: offer.offerId } : {}),
+        ...(offer.kind === 'offered' ? { exportOfferId: offer.offerId, exportRowCount: offer.observedRowCount } : {}),
+        ...(offer.kind === 'withdrawn' ? { exportWithdrawn: true as const } : {}),
       });
       const result: Res = {
         status: data.status,
@@ -120,7 +121,8 @@ export const createSemrushTool = (deps: {
         message: messageFor({
           rowCount: allRows.length,
           returnedRows: preview.rows.length,
-          offer: Boolean(offer),
+          offer: offer.kind === 'offered',
+          withdrawn: offer.kind === 'withdrawn',
           status: data.status,
         }),
       };
@@ -134,7 +136,7 @@ export const createSemrushTool = (deps: {
           status: result.status,
           rowCount: allRows.length,
           returnedRowCount: preview.rows.length,
-          exportOfferId: offer?.offerId ?? null,
+          exportOfferId: offer.kind === 'offered' ? offer.offerId : null,
           latencyMs: Date.now() - startedAt,
           correlationId: ctx.correlationId,
         },
@@ -173,12 +175,26 @@ export const createSemrushTool = (deps: {
   },
 });
 
-function messageFor(input: { rowCount: number; returnedRows: number; offer: boolean; status: Res['status'] }): string {
+function messageFor(input: {
+  rowCount: number;
+  returnedRows: number;
+  offer: boolean;
+  withdrawn: boolean;
+  status: Res['status'];
+}): string {
   if (input.status === 'empty') return 'Semrush returned no matching data for this request.';
   const parts = [`Retrieved ${input.rowCount} row${input.rowCount === 1 ? '' : 's'}.`];
   if (input.rowCount > input.returnedRows) parts.push(`Showing the first ${input.returnedRows} rows in chat.`);
-  if (input.offer) parts.push('A governed export is available. It reruns this Semrush query when the user confirms, so current provider data may differ from this preview.');
+  if (input.offer) parts.push('A governed export covering every Semrush result in this request is available. It reruns those queries when the user confirms, so current provider data may differ from this preview.');
+  if (input.withdrawn) {
+    parts.push('No export is offered for this request: it mixes datasets that cannot share one file. Tell the user which single dataset to export and rerun that one.');
+  }
   return parts.join(' ');
+}
+
+/** Names the combined file when one request looks up several subjects. */
+function semrushCollectionTitle(args: SemrushToolArgs): string {
+  return `Semrush ${args.operation.replace(/_/g, ' ')}`;
 }
 
 function previewCoverageFor(data: SemrushFetchedData, rowCount: number): DatasetCoverage {

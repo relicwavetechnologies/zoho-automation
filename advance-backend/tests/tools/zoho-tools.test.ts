@@ -171,9 +171,9 @@ describe('zohoCrm tool', () => {
         crmClient: fakePaginatedCrmClient,
         crmOps: fakeCrmOps,
         offers: {
-          createAuthorizedOffer: async (payload: any) => {
+          appendAuthorizedPart: async (payload: any) => {
             offers.push(payload);
-            return { offerId: 'offer-1' } as any;
+            return { outcome: 'appended', offerId: 'offer-1', partCount: 1 } as any;
           },
         } as any,
       });
@@ -204,7 +204,7 @@ describe('zohoCrm tool', () => {
         crmClient: fakePaginatedCrmClient,
         crmOps: fakeCrmOps,
         offers: {
-          createAuthorizedOffer: async () => { offered = true; return { offerId: 'offer-1' } as any; },
+          appendAuthorizedPart: async () => { offered = true; return { outcome: 'appended', offerId: 'offer-1', partCount: 1 } as any; },
         } as any,
       });
       const personalized = makeCtx('zohoCrm', ['read'], {

@@ -7,6 +7,8 @@ import type {
   DataExportOfferRepositoryPort,
   DataExportOfferStatus,
   LoadDataExportOfferResult,
+  ReplacePendingDataExportOfferInput,
+  ReplacePendingDataExportOfferResult,
 } from '../../application/data-export/export-offer';
 import { parseDataExportOfferPayload } from '../../application/data-export/export-offer';
 import { wrapInfra } from '../../shared/errors';
@@ -28,6 +30,7 @@ const offerSelect = {
   idempotencyKey: true,
   status: true,
   queueJobId: true,
+  confirmedJobIds: true,
   expiresAt: true,
   confirmedAt: true,
   createdAt: true,
@@ -46,6 +49,7 @@ type OfferRow = {
   readonly idempotencyKey: string;
   readonly status: string;
   readonly queueJobId: string | null;
+  readonly confirmedJobIds: readonly string[];
   readonly expiresAt: Date;
   readonly confirmedAt: Date | null;
   readonly createdAt: Date;
@@ -118,6 +122,61 @@ export class DataExportOfferRepository implements DataExportOfferRepositoryPort 
     }
   }
 
+  async replacePendingPayload(
+    input: ReplacePendingDataExportOfferInput,
+  ): Promise<Result<ReplacePendingDataExportOfferResult, Error>> {
+    const now = input.now ?? new Date();
+    try {
+      const replaced = await this.db.dataExportOffer.updateMany({
+        where: {
+          id: input.offerId,
+          companyId: input.companyId,
+          status: 'pending',
+          specHash: input.expectedSpecHash,
+          expiresAt: { gt: now },
+        },
+        data: {
+          payloadJson: input.payload as unknown as Prisma.InputJsonValue,
+          specHash: input.specHash,
+          updatedAt: now,
+        },
+      });
+      if (replaced.count !== 1) return ok({ outcome: 'stale' });
+      const offer = await this.db.dataExportOffer.findFirst({
+        where: { id: input.offerId, companyId: input.companyId },
+        select: offerSelect,
+      });
+      // A concurrent claim can move the row out of `pending` between the update
+      // and this read; treating that as stale keeps the caller on the retry
+      // path instead of returning a record it can no longer append to.
+      return offer && offer.specHash === input.specHash
+        ? ok({ outcome: 'replaced', offer: toRecord(offer) })
+        : ok({ outcome: 'stale' });
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'dataExportOffer.replacePendingPayload', cause));
+    }
+  }
+
+  async cancelPending(input: {
+    readonly offerId: string;
+    readonly companyId: string;
+    readonly now?: Date;
+  }): Promise<Result<boolean, Error>> {
+    try {
+      const cancelled = await this.db.dataExportOffer.updateMany({
+        where: {
+          id: input.offerId,
+          companyId: input.companyId,
+          status: 'pending',
+        },
+        data: { status: 'cancelled', updatedAt: input.now ?? new Date() },
+      });
+      return ok(cancelled.count === 1);
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'dataExportOffer.cancelPending', cause));
+    }
+  }
+
   async loadForConfirmation(input: {
     readonly offerId: string;
     readonly companyId: string;
@@ -142,6 +201,7 @@ export class DataExportOfferRepository implements DataExportOfferRepositoryPort 
     readonly offerId: string;
     readonly companyId: string;
     readonly userId: string;
+    readonly requestedJobId?: string;
     readonly now?: Date;
   }): Promise<Result<ClaimDataExportOfferResult, Error>> {
     const now = input.now ?? new Date();
@@ -151,7 +211,22 @@ export class DataExportOfferRepository implements DataExportOfferRepositoryPort 
           id: input.offerId,
           companyId: input.companyId,
           userId: input.userId,
-          status: 'pending',
+          // A confirmed offer re-opens only for a format it has never produced.
+          // The ledger must be `confirmedJobIds`, not `queueJobId`: the latter
+          // holds just the most recent format, so after a member took two
+          // formats it no longer remembered the first, and clicking that one
+          // re-claimed and reported success while queueing nothing.
+          ...(input.requestedJobId
+            ? {
+                OR: [
+                  { status: 'pending' },
+                  {
+                    status: 'confirmed',
+                    NOT: { confirmedJobIds: { has: input.requestedJobId } },
+                  },
+                ],
+              }
+            : { status: 'pending' }),
           expiresAt: { gt: now },
         },
         data: { status: 'confirming', updatedAt: now },
@@ -169,7 +244,11 @@ export class DataExportOfferRepository implements DataExportOfferRepositoryPort 
         return ok({
           outcome: 'already_confirmed',
           offer,
-          queueJobId: offer.queueJobId,
+          // Report the artifact this click asked for, not whichever format
+          // happened to be confirmed most recently.
+          queueJobId: input.requestedJobId && offer.confirmedJobIds.includes(input.requestedJobId)
+            ? input.requestedJobId
+            : offer.queueJobId,
         });
       }
       if (offer.status === 'confirming') {
@@ -212,16 +291,23 @@ export class DataExportOfferRepository implements DataExportOfferRepositoryPort 
           companyId: input.companyId,
           userId: input.userId,
           status: 'confirming',
+          NOT: { confirmedJobIds: { has: input.queueJobId } },
         },
         data: {
           status: 'confirmed',
           queueJobId: input.queueJobId,
+          // Appended, never replaced: this is the record of every format the
+          // member has already been given.
+          confirmedJobIds: { push: input.queueJobId },
           confirmedAt,
         },
       });
       if (updated.count === 1) return ok(true);
       const existing = await this.findForActor(input);
-      return ok(existing?.status === 'confirmed' && existing.queueJobId === input.queueJobId);
+      return ok(
+        existing?.status === 'confirmed'
+        && existing.confirmedJobIds.includes(input.queueJobId),
+      );
     } catch (cause) {
       return err(wrapInfra('prisma', 'dataExportOffer.markConfirmed', cause));
     }
@@ -283,6 +369,7 @@ function toRecord(row: OfferRow): DataExportOfferRecord {
     idempotencyKey: row.idempotencyKey,
     status,
     ...(row.queueJobId ? { queueJobId: row.queueJobId } : {}),
+    confirmedJobIds: row.confirmedJobIds,
     expiresAt: row.expiresAt,
     ...(row.confirmedAt ? { confirmedAt: row.confirmedAt } : {}),
     createdAt: row.createdAt,

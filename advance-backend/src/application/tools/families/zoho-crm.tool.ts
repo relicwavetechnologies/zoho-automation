@@ -35,6 +35,7 @@ import { asToolId }                        from '../../../shared/ids';
 import type { ZohoCrmOps }                 from '../../zoho/zoho-crm-ops';
 import { mapZohoError }                    from '../../zoho/zoho-error.utils';
 import type { ZohoCrmPaginatedClient, ZohoCrmModule } from '../../../infrastructure/zoho/zoho-crm-paginated.client';
+import { contributeExportPart } from '../../data-export/tool-export-offer';
 import type { DataExportOfferService }     from '../../data-export/data-export-offer.service';
 import type { DataExportOfferPayload }     from '../../data-export/export-offer';
 import {
@@ -105,6 +106,8 @@ const ResultSchema = z.object({
       z.object({ kind: z.literal('unknown'), returnedRows: z.number().int().nonnegative() }),
     ]),
     exportOfferId: z.string().optional(),
+    exportRowCount: z.number().int().nonnegative().optional(),
+    exportWithdrawn: z.literal(true).optional(),
   }).optional(),
 });
 
@@ -246,7 +249,7 @@ export const createZohoCrmTool = (deps: {
   getClient:  (companyId: string, userId: string, connectionId?: string) => Promise<ZohoCrmClientPort | null>;
   crmClient:  ZohoCrmPaginatedClient;
   crmOps:     ZohoCrmOps;
-  offers?:    Pick<DataExportOfferService, 'createAuthorizedOffer'>;
+  offers?:    Pick<DataExportOfferService, 'appendAuthorizedPart'>;
 }): Tool<Args, Res> => ({
   id:           asToolId('zohoCrm'),
   family:       'zoho',
@@ -466,9 +469,16 @@ export const createZohoCrmTool = (deps: {
             });
 
             const items = personalizedScope ? filterZohoRecordsByEmail(sourceItems, requesterEmail!) : sourceItems;
-            const offer = canOfferExport(mod)
-              ? await deps.offers!.createAuthorizedOffer(exportPayloadFor(mod as ZohoCrmModule))
-              : undefined;
+            const offer = await contributeExportPart({
+              offers: deps.offers,
+              eligible: canOfferExport(mod),
+              payload: () => exportPayloadFor(mod as ZohoCrmModule),
+              observedRowCount: items.length,
+              collectionTitle: `Zoho CRM ${mod}`,
+              logger: ctx.logger,
+              scope: 'zoho_crm',
+              correlationId: ctx.correlationId,
+            });
 
             const inline = items.slice(0, Math.min(args.limit ?? DATASET_PREVIEW_ROW_LIMIT, DATASET_PREVIEW_ROW_LIMIT));
             let message = `Found ${items.length} ${mod} record(s).`;
@@ -485,7 +495,8 @@ export const createZohoCrmTool = (deps: {
                 coverage: truncated
                   ? { kind: 'provider_limited', returnedRows: items.length, reason: 'crm_pagination_limit' }
                   : { kind: 'complete', totalRows: items.length },
-                ...(offer ? { exportOfferId: offer.offerId } : {}),
+                ...(offer.kind === 'offered' ? { exportOfferId: offer.offerId, exportRowCount: offer.observedRowCount } : {}),
+                ...(offer.kind === 'withdrawn' ? { exportWithdrawn: true as const } : {}),
               }),
             });
           }

@@ -128,7 +128,7 @@ export interface GatewayDispatcherDeps {
   }) => Promise<unknown>;
   readonly runEffectReceipts?: Pick<
     RunEffectReceiptStore,
-    'reserveKnowledgeReview' | 'completeKnowledgeReview' | 'releaseKnowledgeReview' | 'recordPersonalMemory' | 'recordDataExportOffer' | 'recordGoogleSheetDestination' | 'getVerifiedGoogleSheetDestination' | 'recordWorkbookConversionOffer'
+    'reserveKnowledgeReview' | 'completeKnowledgeReview' | 'releaseKnowledgeReview' | 'recordPersonalMemory' | 'recordDataExportOffer' | 'clearDataExportOffer' | 'recordGoogleSheetDestination' | 'getVerifiedGoogleSheetDestination' | 'recordWorkbookConversionOffer'
   >;
   readonly logger: Logger;
 }
@@ -1166,7 +1166,38 @@ export class GatewayDispatcher {
         },
       });
     }
+    if (
+      dataExportWithdrawnFrom(response)
+      && member.channel === 'lark'
+      && this.deps.runEffectReceipts
+      && execution
+      && member.runtimeChatId
+    ) {
+      try {
+        await this.deps.runEffectReceipts.clearDataExportOffer({
+          companyId: member.companyId,
+          userId: member.userId,
+          chatId: member.runtimeChatId,
+          threadId: execution.threadId,
+          runId: execution.runId,
+        });
+      } catch (error) {
+        // Failing to revoke would leave a button covering part of the answer,
+        // which is worse than losing the tool result.
+        this.deps.logger.error('gateway.data_export_offer.revoke_failed', {
+          companyId: member.companyId,
+          userId: member.userId,
+          runId: execution.runId,
+          error: safeGatewayMessage(error),
+        });
+        return gatewayFailure(
+          'tool_error',
+          'Divo could not withdraw an export offer that no longer matches this answer. Retry the same request.',
+        );
+      }
+    }
     const exportOfferId = dataExportOfferIdFrom(response);
+    const exportRowCount = dataExportRowCountFrom(response);
     if (exportOfferId && member.channel === 'lark') {
       if (
         !this.deps.runEffectReceipts
@@ -1189,7 +1220,10 @@ export class GatewayDispatcher {
           chatId: member.runtimeChatId,
           threadId: execution.threadId,
           runId: execution.runId,
-        }, { offerId: exportOfferId });
+        }, {
+          offerId: exportOfferId,
+          ...(exportRowCount !== null ? { observedRowCount: exportRowCount } : {}),
+        });
       } catch (error) {
         this.deps.logger.error('gateway.data_export_offer.receipt_failed', {
           companyId: member.companyId,
@@ -1937,6 +1971,27 @@ function dataExportOfferIdFrom(response: GatewayResponse): string | null {
   if (!isRecord(result) || !isRecord(result['preview'])) return null;
   const offerId = result['preview']['exportOfferId'];
   return typeof offerId === 'string' && isUuid(offerId) ? offerId : null;
+}
+
+/** Backend-measured row total for the offer, when the tool published one. */
+function dataExportRowCountFrom(response: GatewayResponse): number | null {
+  if (!response.ok || !isRecord(response.data)) return null;
+  const result = response.data['result'];
+  if (!isRecord(result) || !isRecord(result['preview'])) return null;
+  const count = result['preview']['exportRowCount'];
+  return typeof count === 'number' && Number.isInteger(count) && count >= 0 ? count : null;
+}
+
+/**
+ * A tool reporting that this run's export can no longer be represented
+ * honestly. The offer row is already cancelled by the offer service; the run's
+ * receipt still has to go, or the final card renders a button for it.
+ */
+function dataExportWithdrawnFrom(response: GatewayResponse): boolean {
+  if (!response.ok || !isRecord(response.data)) return false;
+  const result = response.data['result'];
+  if (!isRecord(result) || !isRecord(result['preview'])) return false;
+  return result['preview']['exportWithdrawn'] === true;
 }
 
 function googleSheetDestinationFrom(

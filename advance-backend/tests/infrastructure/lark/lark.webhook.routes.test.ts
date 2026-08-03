@@ -1501,7 +1501,7 @@ describe('Lark webhook card authorization', () => {
     assert.equal(receivedActor.userId, 'admin-1');
   });
 
-  it('preserves the source export card and removes only its export actions after queueing', async () => {
+  it('keeps every format action live so a member can take more than one file', async () => {
     const confirmations: unknown[] = [];
     const handler = new LarkDataExportCardHandler({
       confirmForActor: async input => {
@@ -1512,7 +1512,7 @@ describe('Lark webhook card authorization', () => {
     const offerId = '11111111-1111-4111-8111-111111111111';
     const cases = ['google_sheet', 'csv', 'xlsx'] as const;
 
-    for (const format of cases) {
+    for (const [index, format] of cases.entries()) {
       let adapter: any;
       const sourceCard = {
         schema: '2.0',
@@ -1600,17 +1600,10 @@ describe('Lark webhook card authorization', () => {
 
       assert.equal((result.responseBody as any).toast.type, 'success');
       assert.equal('card' in (result.responseBody as any), false);
-      await waitUntil(() => adapter.__updatedMessages.length === 1, 'source export card locked');
-      assert.equal(adapter.__updatedMessages[0].messageId, 'om_export_card');
-      const card = JSON.parse(adapter.__updatedMessages[0].card).card;
-      assert.deepEqual(card, {
-        ...sourceCard,
-        body: {
-          ...sourceCard.body,
-          elements: sourceCard.body.elements.slice(0, 2),
-        },
-      });
-      assert.equal(JSON.stringify(card).includes('data_export_confirm'), false);
+      await waitUntil(() => confirmations.length === index + 1, 'confirmation processed');
+      // Sheet, CSV and Excel are three separate artifacts. Stripping the
+      // actions after the first click left the other two rendered but inert.
+      assert.equal(adapter.__updatedMessages.length, 0, 'the offer card keeps its actions');
       assert.equal(adapter.__sentCards.length, 0);
     }
 
@@ -1947,7 +1940,7 @@ describe('Lark webhook card authorization', () => {
     assert.equal(adapter.__updatedMessages.length, 0);
   });
 
-  it('does not claim an already-confirmed export is tracking on this card', async () => {
+  it('leaves the remaining format actions usable when one is already exported', async () => {
     let handled = false;
     let adapter: any;
     const handler = new LarkDataExportCardHandler({
@@ -2015,10 +2008,10 @@ describe('Lark webhook card authorization', () => {
     assert.equal((result.responseBody as any).toast.type, 'success');
     await waitUntil(() => handled, 'existing confirmation checked');
     assert.equal('card' in (result.responseBody as any), false);
-    await waitUntil(() => adapter.__updatedMessages.length === 1, 'existing export card locked');
-    const card = JSON.parse(adapter.__updatedMessages[0].card).card;
-    assert.deepEqual(card.body.elements, []);
-    assert.equal(JSON.stringify(card).includes('"tag":"button"'), false);
+    // A repeat click must not strip the card: the formats this member has not
+    // exported yet still need their actions.
+    assert.equal(adapter.__updatedMessages.length, 0);
+    assert.equal(adapter.__sentCards.length, 0);
   });
 
   it('does not confirm when Lark omits the signed source-card message ID', async () => {
