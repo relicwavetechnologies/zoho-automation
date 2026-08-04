@@ -172,6 +172,7 @@ jobs:
       - name: Require successful Dev push CI for this commit
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           passed="$(gh run list --workflow ci.yml --branch dev --event push \
             --commit "${GITHUB_SHA}" --status success --limit 1 \
