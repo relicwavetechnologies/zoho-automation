@@ -23,6 +23,8 @@ export interface ReserveDeliveryInput {
 
 export interface DeliveryRecord {
   deliveryId: string;
+  /** Monotonic claim generation; a stale sender cannot settle a newer claim. */
+  claimAttempt: number;
   attempts: number;
   firstAttemptAt: Date;
   providerMessageId?: string;
@@ -51,6 +53,8 @@ export interface ReserveDeliveryOptions {
 }
 
 export interface MarkDeliveryFailedOptions {
+  /** The claim generation that owns this state transition. */
+  claimAttempt?: number;
   /** Stop retrying: either a terminal provider error or the budget is spent. */
   terminal?: boolean;
   /**
@@ -62,6 +66,8 @@ export interface MarkDeliveryFailedOptions {
   /** When the next attempt becomes eligible. Backoff is computed by the caller. */
   nextAttemptAt?: Date;
 }
+
+export type DeliveryClaimSettlement = 'applied' | 'superseded';
 
 export interface ResumableDelivery {
   deliveryId: string;
@@ -80,12 +86,13 @@ export interface ChannelDeliveryRepoPort {
   markDelivered(
     deliveryId: string,
     providerMessageId: string | undefined,
-  ): Promise<Result<void, InfraError>>;
+    claimAttempt?: number,
+  ): Promise<Result<DeliveryClaimSettlement, InfraError>>;
   markFailed(
     deliveryId: string,
     error: unknown,
     options?: MarkDeliveryFailedOptions,
-  ): Promise<Result<void, InfraError>>;
+  ): Promise<Result<DeliveryClaimSettlement, InfraError>>;
   listRetryable(
     limit: number,
     options?: { channel?: string; now?: Date },
@@ -169,6 +176,7 @@ export class ChannelDeliveryRepository implements ChannelDeliveryRepoPort {
             outcome: 'reserved',
             record: {
               deliveryId: created.id,
+              claimAttempt: created.attempts,
               attempts: created.attempts,
               firstAttemptAt: created.firstAttemptAt,
             },
@@ -229,9 +237,10 @@ export class ChannelDeliveryRepository implements ChannelDeliveryRepoPort {
     if (existing.status === 'delivered') {
       return ok({
         outcome: 'delivered',
-        record: {
-          deliveryId: existing.id,
-          attempts: existing.attempts,
+          record: {
+            deliveryId: existing.id,
+            claimAttempt: existing.attempts,
+            attempts: existing.attempts,
           firstAttemptAt: existing.firstAttemptAt,
           ...(existing.providerMessageId
             ? { providerMessageId: existing.providerMessageId }
@@ -280,6 +289,7 @@ export class ChannelDeliveryRepository implements ChannelDeliveryRepoPort {
           outcome: 'delivered',
           record: {
             deliveryId: current.id,
+            claimAttempt: current.attempts,
             attempts: current.attempts,
             firstAttemptAt: current.firstAttemptAt,
             ...(current.providerMessageId
@@ -296,6 +306,7 @@ export class ChannelDeliveryRepository implements ChannelDeliveryRepoPort {
       outcome: 'reserved',
       record: {
         deliveryId: existing.id,
+        claimAttempt: existing.attempts + 1,
         attempts: existing.attempts + 1,
         firstAttemptAt: existing.firstAttemptAt,
       },
@@ -305,12 +316,15 @@ export class ChannelDeliveryRepository implements ChannelDeliveryRepoPort {
   async markDelivered(
     deliveryId: string,
     providerMessageId: string | undefined,
-  ): Promise<Result<void, InfraError>> {
+    claimAttempt?: number,
+  ): Promise<Result<DeliveryClaimSettlement, InfraError>> {
     try {
-      await this.db.channelDelivery.updateMany({
+      const updated = await this.db.channelDelivery.updateMany({
         // `abandoned` is deliberately overwritable: if a send that was given up
         // on turns out to have landed, the truth is that it was delivered.
-        where: { id: deliveryId, status: { not: 'delivered' } },
+        where: claimAttempt === undefined
+          ? { id: deliveryId, status: { not: 'delivered' } }
+          : { id: deliveryId, status: 'sending', attempts: claimAttempt },
         data: {
           status: 'delivered',
           deliveredAt: new Date(),
@@ -323,7 +337,7 @@ export class ChannelDeliveryRepository implements ChannelDeliveryRepoPort {
           ...(providerMessageId ? { providerMessageId } : {}),
         },
       });
-      return ok(undefined);
+      return ok(updated.count === 1 ? 'applied' : 'superseded');
     } catch (e) {
       return err(wrapInfra('prisma', 'channelDelivery.markDelivered', e));
     }
@@ -333,14 +347,16 @@ export class ChannelDeliveryRepository implements ChannelDeliveryRepoPort {
     deliveryId: string,
     error: unknown,
     options?: MarkDeliveryFailedOptions,
-  ): Promise<Result<void, InfraError>> {
+  ): Promise<Result<DeliveryClaimSettlement, InfraError>> {
     try {
-      await this.db.channelDelivery.updateMany({
-        where: options?.terminal
+      const updated = await this.db.channelDelivery.updateMany({
+        where: options?.claimAttempt === undefined
+          ? options?.terminal
           // A delivered row must never be walked back by a late failure from an
           // earlier attempt; anything else may be abandoned.
-          ? { id: deliveryId, status: { not: 'delivered' } }
-          : { id: deliveryId, status: { notIn: [...TERMINAL_STATUSES] } },
+            ? { id: deliveryId, status: { not: 'delivered' } }
+            : { id: deliveryId, status: { notIn: [...TERMINAL_STATUSES] } }
+          : { id: deliveryId, status: 'sending', attempts: options.claimAttempt },
         data: {
           status: options?.terminal ? 'abandoned' : 'failed',
           lastError: errorText(error),
@@ -348,7 +364,7 @@ export class ChannelDeliveryRepository implements ChannelDeliveryRepoPort {
           ...(options?.nextAttemptAt ? { nextAttemptAt: options.nextAttemptAt } : {}),
         },
       });
-      return ok(undefined);
+      return ok(updated.count === 1 ? 'applied' : 'superseded');
     } catch (e) {
       return err(wrapInfra('prisma', 'channelDelivery.markFailed', e));
     }

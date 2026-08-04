@@ -5,6 +5,19 @@ import { operationApiVersion, SemrushServiceError } from '../../application/semr
 const V3_API_URL = 'https://api.semrush.com/';
 /** Backlinks reports live on their own host path and take one target per call. */
 const ANALYTICS_V1_API_URL = 'https://api.semrush.com/analytics/v1/';
+const BACKLINKS_COLUMN_LABELS: Readonly<Record<string, string>> = {
+  target: 'Target',
+  ascore: 'Authority Score',
+  total: 'Backlinks',
+  domains_num: 'Referring Domains',
+  urls_num: 'Referring URLs',
+  ips_num: 'Referring IPs',
+  follows_num: 'Follow Links',
+  nofollows_num: 'Nofollow Links',
+  texts_num: 'Text Links',
+  images_num: 'Image Links',
+};
+const BACKLINKS_PROVIDER_DATA_STATUS_COLUMN = 'Provider Data Status';
 
 export class SemrushClient {
   constructor(private readonly deps: { timeoutMs: number; fetchImpl?: typeof fetch } ) {}
@@ -183,7 +196,8 @@ export class SemrushClient {
    * so the domain is stamped back onto its row or the comparison is unreadable.
    */
   private async backlinksComparison(apiKey: string, targets: readonly string[]): Promise<SemrushFetchedData> {
-    const rows: Array<Record<string, string>> = [];
+    const returnedRows: Array<Record<string, string>> = [];
+    const missingTargets: string[] = [];
     for (const target of targets) {
       const url = new URL(ANALYTICS_V1_API_URL);
       url.search = new URLSearchParams({
@@ -195,12 +209,39 @@ export class SemrushClient {
       }).toString();
       const text = await this.text(url, {});
       const parsed = readSemrushRows(text);
-      for (const row of parsed) rows.push({ ...row, target });
+      if (parsed.length === 0) {
+        missingTargets.push(target);
+        continue;
+      }
+      for (const row of parsed) {
+        returnedRows.push({
+          ...Object.fromEntries(Object.entries({ ...row, target }).map(([column, value]) => [
+            BACKLINKS_COLUMN_LABELS[column] ?? column,
+            value,
+          ])),
+          [BACKLINKS_PROVIDER_DATA_STATUS_COLUMN]: 'Returned',
+        });
+      }
     }
+    // Do not invent zero-valued metrics when a requested target has no report.
+    // A placeholder preserves comparison coverage and names the provider state.
+    const rows = [
+      ...returnedRows,
+      ...missingTargets.map(target => ({
+        Target: target,
+        [BACKLINKS_PROVIDER_DATA_STATUS_COLUMN]: 'No provider data',
+      })),
+    ];
     return {
       operation: 'backlinks_comparison',
       status: rows.length ? 'complete' : 'empty',
-      coverage: { apiVersion: 'analytics_v1', targets: [...targets], requestsBilled: targets.length },
+      coverage: {
+        apiVersion: 'analytics_v1',
+        targets: [...targets],
+        returnedTargets: targets.filter(target => !missingTargets.includes(target)),
+        ...(missingTargets.length > 0 ? { missingTargets } : {}),
+        requestsBilled: targets.length,
+      },
       rows,
     };
   }

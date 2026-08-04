@@ -35,6 +35,7 @@ describe('ChannelDeliveryRepository.reserve', () => {
     assert.equal(createInput.data.attempts, 1);
     assert.equal(createInput.data.idempotencyKey, 'corr-1:final:0');
     assert.ok(createInput.data.startedAt instanceof Date);
+    assert.equal(result.value.record.claimAttempt, 1);
   });
 
   it('reports an already-delivered segment instead of letting it send again', async () => {
@@ -171,6 +172,24 @@ describe('ChannelDeliveryRepository.markDelivered', () => {
     // arrived. If it turns out to have landed, that is the truth.
     assert.deepEqual(updateInput.where.status, { not: 'delivered' });
   });
+
+  it('does not let a stale claim settle a newer sender', async () => {
+    let updateInput: any;
+    const repo = new ChannelDeliveryRepository({
+      channelDelivery: {
+        updateMany: async (input: any) => { updateInput = input; return { count: 0 }; },
+      },
+    } as any);
+
+    const result = await repo.markDelivered('delivery-1', 'om_stale', 1);
+
+    assert.deepEqual(updateInput.where, {
+      id: 'delivery-1',
+      status: 'sending',
+      attempts: 1,
+    });
+    assert.deepEqual(result, { ok: true, value: 'superseded' });
+  });
 });
 
 describe('ChannelDeliveryRepository.markFailed', () => {
@@ -203,6 +222,24 @@ describe('ChannelDeliveryRepository.markFailed', () => {
 
     assert.equal(updateInput.data.status, 'abandoned');
     assert.deepEqual(updateInput.where.status, { not: 'delivered' });
+  });
+
+  it('does not let a stale claim mark a newer sender failed', async () => {
+    let updateInput: any;
+    const repo = new ChannelDeliveryRepository({
+      channelDelivery: {
+        updateMany: async (input: any) => { updateInput = input; return { count: 0 }; },
+      },
+    } as any);
+
+    const result = await repo.markFailed('delivery-1', new Error('too late'), { claimAttempt: 1 });
+
+    assert.deepEqual(updateInput.where, {
+      id: 'delivery-1',
+      status: 'sending',
+      attempts: 1,
+    });
+    assert.deepEqual(result, { ok: true, value: 'superseded' });
   });
 
   it('truncates a long provider error rather than storing it whole', async () => {

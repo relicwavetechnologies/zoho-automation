@@ -16,7 +16,7 @@ describe('SemrushService', () => {
       },
     } as any, 'server-key', logger);
 
-    assert.deepEqual(await service.preflight(args), { configured: true, operation: 'domain_overview', apiVersion: 'v3', limits: { maxRowsPerRequest: 1_000 } });
+    assert.deepEqual(await service.preflight(args), { configured: true, operation: 'domain_overview', apiVersion: 'v3', limits: { maxRowsPerRequest: 1 } });
     const result = await service.execute(args);
     assert.equal(result.status, 'complete');
     assert.deepEqual(calls, [{ apiKey: 'server-key', args }]);
@@ -27,6 +27,24 @@ describe('SemrushService', () => {
     await assert.rejects(
       () => service.execute(args),
       (error: unknown) => error instanceof SemrushServiceError && error.code === 'not_configured',
+    );
+  });
+
+  it('reports the Backlinks host and its per-target request shape before execution', async () => {
+    const service = new SemrushService(
+      { fetch: async () => ({ operation: 'backlinks_comparison', status: 'complete', coverage: {}, rows: [] }) } as any,
+      'server-key',
+      logger,
+    );
+
+    assert.deepEqual(
+      await service.preflight({ operation: 'backlinks_comparison', targets: ['a.com', 'b.com'] }),
+      {
+        configured: true,
+        operation: 'backlinks_comparison',
+        apiVersion: 'analytics_v1',
+        limits: { maxTargets: 10, requestsPerTarget: 1 },
+      },
     );
   });
 

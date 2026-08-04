@@ -8,6 +8,9 @@ import type { AirtableMcpSchemaCatalog } from './airtable-mcp-schema.catalog';
 
 export const AIRTABLE_MCP_DEFAULT_URL = 'https://mcp.airtable.com/mcp';
 
+const AIRTABLE_MCP_TOOL_PAGE_LIMIT = 1_000;
+const AIRTABLE_BASE_PREVIEW_MAX_BYTES = 24_000;
+
 /**
  * Thin transport adapter for Airtable's hosted MCP. Which capabilities exist is
  * decided by the Divo manifest, not by this class.
@@ -139,7 +142,8 @@ export class AirtableMcpClient implements AirtableMcpPort {
     return this.withClient(async (client) => {
       const collected: AirtableMcpToolDescription[] = [];
       let cursor: string | undefined;
-      do {
+      const seenCursors = new Set<string>();
+      for (let pageIndex = 0; pageIndex < AIRTABLE_MCP_TOOL_PAGE_LIMIT; pageIndex += 1) {
         const page = await client.listTools(cursor ? { cursor } : {});
         for (const tool of page.tools) {
           collected.push({
@@ -148,9 +152,15 @@ export class AirtableMcpClient implements AirtableMcpPort {
             inputSchema: tool.inputSchema,
           });
         }
-        cursor = page.nextCursor;
-      } while (cursor);
-      return collected;
+        const nextCursor = page.nextCursor?.trim() || undefined;
+        if (!nextCursor) return collected;
+        if (seenCursors.has(nextCursor)) {
+          throw new Error('Airtable MCP tool list pagination repeated a cursor');
+        }
+        seenCursors.add(nextCursor);
+        cursor = nextCursor;
+      }
+      throw new Error(`Airtable MCP tool list pagination exceeded ${AIRTABLE_MCP_TOOL_PAGE_LIMIT} pages`);
     });
   }
 
@@ -195,6 +205,7 @@ export function unwrapAirtableMcpResult(result: {
  * complete table index while replacing nested schemas with honest counts.
  */
 export function compactAirtableMcpResult(name: string, value: unknown): unknown {
+  if (name === 'list_bases') return compactListBasesResult(value);
   if (name !== 'list_tables_for_base' || !isRecord(value) || !Array.isArray(value['tables'])) {
     return value;
   }
@@ -213,6 +224,54 @@ export function compactAirtableMcpResult(name: string, value: unknown): unknown 
         ...(views ? { viewCount: views.length } : {}),
       };
     }),
+  };
+}
+
+function compactListBasesResult(value: unknown): unknown {
+  if (!isRecord(value) || !Array.isArray(value['bases'])) return value;
+
+  const bases = value['bases'].filter(isRecord).map((base, index) => ({
+    index,
+    base: {
+      ...(typeof base['id'] === 'string' ? { id: base['id'] } : {}),
+      ...(typeof base['name'] === 'string' ? { name: base['name'] } : {}),
+      ...(typeof base['permissionLevel'] === 'string' ? { permissionLevel: base['permissionLevel'] } : {}),
+      ...(typeof base['isFavorite'] === 'boolean' ? { isFavorite: base['isFavorite'] } : {}),
+      ...(typeof base['recentlyViewedTimestamp'] === 'string'
+        ? { recentlyViewedTimestamp: base['recentlyViewedTimestamp'] }
+        : {}),
+    },
+  }));
+  const preferred = [
+    ...bases.filter(candidate => candidate.base['isFavorite'] === true),
+    ...bases.filter(candidate => candidate.base['isFavorite'] !== true),
+  ];
+  const included = new Set<number>();
+  const fixed = Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'bases'));
+  for (const candidate of preferred) {
+    const next = bases
+      .filter(item => included.has(item.index) || item.index === candidate.index)
+      .map(item => item.base);
+    if (Buffer.byteLength(JSON.stringify({ ...fixed, bases: next }), 'utf8') > AIRTABLE_BASE_PREVIEW_MAX_BYTES) continue;
+    included.add(candidate.index);
+  }
+
+  const selected = bases
+    .filter(candidate => included.has(candidate.index))
+    .map(candidate => candidate.base);
+  const favoriteIndexes = bases
+    .filter(candidate => candidate.base['isFavorite'] === true)
+    .map(candidate => candidate.index);
+  return {
+    ...fixed,
+    bases: selected,
+    divoBasePreview: {
+      totalCount: bases.length,
+      returnedCount: selected.length,
+      omittedCount: bases.length - selected.length,
+      truncated: selected.length !== bases.length,
+      favoritesComplete: favoriteIndexes.every(index => included.has(index)),
+    },
   };
 }
 

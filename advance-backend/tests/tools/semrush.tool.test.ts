@@ -225,6 +225,35 @@ describe('semrush tool', () => {
     });
   });
 
+  it('names every requested backlinks target when Semrush has no provider report', async () => {
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'backlinks_comparison',
+          status: 'complete',
+          coverage: { missingTargets: ['missing-one.example', 'missing-two.example'] },
+          rows: [
+            { Target: 'missing-one.example', 'Provider Data Status': 'No provider data' },
+            { Target: 'missing-two.example', 'Provider Data Status': 'No provider data' },
+          ],
+        }),
+      },
+    });
+
+    const result = await tool.execute(
+      { operation: 'backlinks_comparison', targets: ['missing-one.example', 'missing-two.example'] },
+      makeCtx('semrush', ['read']),
+    );
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.match(result.value.message, /no backlink overview for: missing-one\.example, missing-two\.example/i);
+    assert.deepEqual(result.value.preview?.rows[1], {
+      Target: 'missing-two.example',
+      'Provider Data Status': 'No provider data',
+    });
+  });
+
   it('keeps the successful preview when optional offer persistence fails', async () => {
     const tool = createTool({
       service: {

@@ -81,6 +81,13 @@ export type DataExportWorkerJob = Pick<
   'id' | 'data' | 'attemptsMade' | 'opts' | 'updateData' | 'updateProgress'
 > & Partial<Pick<Job<DataExportJobPayload>, 'moveToDelayed' | 'token'>>;
 
+type DataExportTrackerProgress = {
+  readonly stage: 'reading' | 'writing';
+  readonly pagesRead: number;
+  readonly rowsRead: number;
+  readonly rowsWritten?: number;
+};
+
 export class DataExportWorker {
   private worker?: Worker<DataExportJobPayload>;
   private readonly log: Logger;
@@ -98,11 +105,11 @@ export class DataExportWorker {
       { connection: { url: this.deps.redisUrl }, concurrency },
     );
     this.worker.on('completed', (job) => {
-      this.log.info('data_export.worker.completed', { jobId: job.id });
+      this.log.info('data_export.worker.completed', dataExportRunLogContext(job));
     });
     this.worker.on('failed', (job, error) => {
       this.log.error('data_export.worker.failed', {
-        jobId: job?.id,
+        ...(job ? dataExportRunLogContext(job) : {}),
         errorType: dataExportErrorType(error),
       });
     });
@@ -114,6 +121,7 @@ export class DataExportWorker {
   }
 
   async processJob(job: DataExportWorkerJob): Promise<void> {
+    const run = dataExportRunLogContext(job);
     try {
       const runLeaseHolder = this.deps.runLeaseHolder;
       if (!runLeaseHolder) return await this.processJobUnderLease(job);
@@ -126,20 +134,20 @@ export class DataExportWorker {
       );
       if (outcome.outcome === 'deferred') {
         this.log.info('data_export.worker.lease_deferred', {
-          jobId: job.id,
+          ...run,
           ownerId: outcome.ownerId,
           expiresAt: outcome.expiresAt.toISOString(),
         });
         await this.deferRecovery(job, outcome.expiresAt.getTime() + 1_000);
       }
       if (outcome.outcome === 'lost') {
-        this.log.warn('data_export.worker.lease_lost', { jobId: job.id });
+        this.log.warn('data_export.worker.lease_lost', run);
         await this.deferRecovery(job);
       }
     } catch (error) {
       if (error instanceof DelayedError) throw error;
       if (isDataExportRunLeaseLostError(error)) {
-        this.log.warn('data_export.worker.lease_lost', { jobId: job.id });
+        this.log.warn('data_export.worker.lease_lost', run);
         await this.deferRecovery(job);
       }
       throw dataExportQueueError(error);
@@ -169,6 +177,7 @@ export class DataExportWorker {
   ): Promise<void> {
     let payload = job.data;
     let progressMessageId = payload.progressMessageId;
+    const run = dataExportRunLogContext(job);
     const assertLeaseHeld = async () => {
       if (runLease?.signal.aborted) throw new DataExportRunLeaseLostError();
       if (runLease && !await runLease.holdsLease()) throw new DataExportRunLeaseLostError();
@@ -189,7 +198,7 @@ export class DataExportWorker {
         payload = { ...payload, completedExport: completion };
         await job.updateData(payload);
         this.log.info('data_export.artifact.checkpointed', {
-          jobId: job.id,
+          ...run,
           artifactType: completion.artifactType,
           rowCount: completion.rowCount,
           coverageOutcome: completion.coverage?.outcome ?? null,
@@ -205,7 +214,7 @@ export class DataExportWorker {
         const finalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
         if (!finalAttempt) throw error;
         this.log.error('data_export.continuity_unavailable', {
-          jobId: job.id,
+          ...run,
           errorType: dataExportErrorType(error),
         });
         continuityAvailable = false;
@@ -221,8 +230,11 @@ export class DataExportWorker {
     } catch (error) {
       if (isDataExportRunLeaseLostError(error)) throw error;
       if (isDataExportPrivacyCleanupPendingError(error)) {
-        this.log.warn('data_export.privacy_cleanup_retry_deferred', { jobId: job.id });
+        this.log.warn('data_export.privacy_cleanup_retry_deferred', run);
         await this.deferRecovery(job, Date.now() + 60_000);
+      }
+      if (error instanceof DataExportDeliverySupersededError) {
+        await this.deferRecovery(job);
       }
       const finalAttempt = isUnrecoverableJobError(error)
         || job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
@@ -322,7 +334,7 @@ export class DataExportWorker {
         );
       }
       if (
-        part.kind === 'zoho_books'
+        (part.kind === 'zoho_books' || part.kind === 'zoho_crm')
         && permission.value.department?.zohoReadScope === 'personalized'
       ) {
         throw new PermanentDataExportError(
@@ -376,7 +388,9 @@ export class DataExportWorker {
     let pageCount = 0;
     let lastTrackerUpdateAt = 0;
     let limitNeedsProbe = false;
-    const updateProgressTracker = this.updateProgressTracker.bind(this);
+    const run = dataExportRunLogContext(job);
+    const updateProgressTracker = (progress: DataExportTrackerProgress) =>
+      this.updateProgressTracker(run, progressMessageId, progress);
     const markPartial = (
       cause: DataExportCoverageCause,
       options: { readonly knownOmittedRows?: number; readonly override?: boolean } = {},
@@ -470,7 +484,7 @@ export class DataExportWorker {
                 rowsRead: inputIndex,
               } as const;
               await job.updateProgress(progress);
-              await updateProgressTracker(progressMessageId, progress);
+              await updateProgressTracker(progress);
               lastTrackerUpdateAt = Date.now();
             }
             if (outputRows.length > 0) yield outputRows;
@@ -495,11 +509,12 @@ export class DataExportWorker {
         rowsRead: inputIndex,
       } as const;
       await job.updateProgress(progress);
-      await updateProgressTracker(progressMessageId, progress);
+      await updateProgressTracker(progress);
       lastTrackerUpdateAt = Date.now();
     })();
 
     this.log.info('data_export.worker.processing', {
+      ...run,
       companyId: payload.companyId,
       requestId: payload.requestId,
       source: payload.source.kind,
@@ -528,7 +543,7 @@ export class DataExportWorker {
             rowsWritten: progress.rowsProcessed,
           });
           if (Date.now() - lastTrackerUpdateAt >= 5_000 || progress.rowsProcessed === inputIndex) {
-            await updateProgressTracker(progressMessageId, {
+            await updateProgressTracker({
               stage: 'writing',
               pagesRead: pageCount,
               rowsRead: inputIndex,
@@ -570,6 +585,7 @@ export class DataExportWorker {
     progressMessageId: string,
     continuityAvailable = true,
   ): Promise<void> {
+    const run = dataExportRunLogContext(job);
     const warning = completion.coverage?.outcome === 'partial' || (!completion.coverage && completion.sourceTruncated)
       ? `\n\n⚠️ ${truncationWarning(completion.coverage)}`
       : '';
@@ -600,35 +616,43 @@ export class DataExportWorker {
       if (!reservation.ok) throw reservation.error;
       const claim = reservation.value;
       if (claim.outcome === 'delivered') {
-        this.log.info('data_export.delivery.already_completed', { jobId: job.id });
+        this.log.info('data_export.delivery.already_completed', run);
         return;
       }
       if (claim.outcome === 'inFlight') {
-        this.log.info('data_export.delivery.in_flight', { jobId: job.id });
+        this.log.info('data_export.delivery.in_flight', run);
         return this.deferRecovery(job, Date.now() + 61_000);
       }
       if (claim.outcome === 'abandoned') {
-        this.log.error('data_export.delivery.abandoned', { jobId: job.id });
+        this.log.error('data_export.delivery.abandoned', run);
         throw new PermanentDataExportError(
           'Divo could not deliver the export completion card. Please run the export again.',
           'Data export completion delivery was abandoned',
         );
       }
+      const claimAttempt = claim.record.claimAttempt;
       const updated = await this.deps.larkAdapter.updateMessageById(progressMessageId, card);
       if (!updated.ok) {
         const marked = await completionDelivery.markFailed(
           claim.record.deliveryId,
           new Error('Lark completion card update failed'),
-          { ambiguous: true, nextAttemptAt: new Date(Date.now() + 5_000) },
+          {
+            claimAttempt,
+            ambiguous: true,
+            nextAttemptAt: new Date(Date.now() + 5_000),
+          },
         );
         if (!marked.ok) {
           this.log.warn('data_export.delivery_failure_not_recorded', {
-            jobId: job.id,
+            ...run,
             errorType: dataExportErrorType(marked.error),
           });
+        } else if (marked.value === 'superseded') {
+          this.log.warn('data_export.delivery.superseded', { ...run, claimAttempt });
+          throw new DataExportDeliverySupersededError();
         }
         this.log.warn('data_export.delivery.retry_deferred', {
-          jobId: job.id,
+          ...run,
           errorType: dataExportErrorType(updated.error),
         });
         return this.deferRecovery(job, Date.now() + 5_000);
@@ -636,14 +660,19 @@ export class DataExportWorker {
       const marked = await completionDelivery.markDelivered(
         claim.record.deliveryId,
         progressMessageId,
+        claimAttempt,
       );
       if (!marked.ok) throw marked.error;
-      this.log.info('data_export.delivery.completed', { jobId: job.id });
+      if (marked.value === 'superseded') {
+        this.log.warn('data_export.delivery.superseded', { ...run, claimAttempt });
+        throw new DataExportDeliverySupersededError();
+      }
+      this.log.info('data_export.delivery.completed', run);
       return;
     }
     const updated = await this.deps.larkAdapter.updateMessageById(progressMessageId, card);
     if (updated.ok) {
-      this.log.info('data_export.delivery.completed', { jobId: job.id });
+      this.log.info('data_export.delivery.completed', run);
       return;
     }
     throw updated.error;
@@ -654,8 +683,9 @@ export class DataExportWorker {
     error: unknown,
     progressMessageId?: string,
   ): Promise<void> {
+    const run = dataExportRunLogContext(job);
     this.log.error('data_export.failure_delivered', {
-      jobId: job.id,
+      ...run,
       errorType: dataExportErrorType(error),
     });
     // "Try again shortly" is false for a disconnected destination or a recipe
@@ -673,7 +703,7 @@ export class DataExportWorker {
       const updated = await this.deps.larkAdapter.updateMessageById(progressMessageId, card);
       if (updated.ok) return;
       this.log.warn('data_export.failure_tracker_update_failed', {
-        jobId: job.id,
+        ...run,
         errorType: dataExportErrorType(updated.error),
       });
       return;
@@ -705,13 +735,9 @@ export class DataExportWorker {
   }
 
   private async updateProgressTracker(
+    run: DataExportRunLogContext,
     messageId: string,
-    progress: {
-      readonly stage: 'reading' | 'writing';
-      readonly pagesRead: number;
-      readonly rowsRead: number;
-      readonly rowsWritten?: number;
-    },
+    progress: DataExportTrackerProgress,
   ): Promise<void> {
     const detail = progress.stage === 'reading'
       ? `Read ${progress.rowsRead.toLocaleString('en-IN')} rows across ${progress.pagesRead.toLocaleString('en-IN')} pages.`
@@ -726,16 +752,49 @@ export class DataExportWorker {
     );
     if (!updated.ok) {
       this.log.warn('data_export.progress_update_failed', {
+        ...run,
         errorType: dataExportErrorType(updated.error),
       });
     }
   }
 }
 
+type DataExportRunLogContext = {
+  readonly jobId: string;
+  readonly exportKey: string;
+  readonly attempt: number;
+  readonly maxAttempts: number;
+  readonly runMode: 'initial' | 'source_rerun' | 'checkpoint_replay';
+};
+
+function dataExportRunLogContext(
+  job: Pick<DataExportWorkerJob, 'id' | 'data' | 'attemptsMade' | 'opts'>,
+): DataExportRunLogContext {
+  const exportKey = String(job.id ?? dataExportJobId(job.data));
+  return {
+    jobId: exportKey,
+    exportKey,
+    attempt: job.attemptsMade + 1,
+    maxAttempts: job.opts.attempts ?? 1,
+    runMode: job.data.completedExport
+      ? 'checkpoint_replay'
+      : job.attemptsMade > 0
+        ? 'source_rerun'
+        : 'initial',
+  };
+}
+
 class DataExportRunLeaseLostError extends Error {
   constructor() {
     super('Data export run lease was lost before publication could finish');
     this.name = 'DataExportRunLeaseLostError';
+  }
+}
+
+class DataExportDeliverySupersededError extends Error {
+  constructor() {
+    super('Data export completion delivery claim was superseded');
+    this.name = 'DataExportDeliverySupersededError';
   }
 }
 

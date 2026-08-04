@@ -12,6 +12,37 @@ export const XLSX_MAX_COLUMNS = 16_384;
 const XLSX_APPEND_ROWS = 500;
 const XLSX_MIN_COLUMN_WIDTH = 10;
 const XLSX_MAX_COLUMN_WIDTH = 40;
+type DataExportPresentation = ReturnType<typeof buildDataExportPresentation>;
+
+export function dataExportPresentationCellCount(
+  presentation: DataExportPresentation,
+  rowCount: number,
+): number {
+  const cellsPerDataRow = Math.max(
+    1,
+    presentation.mainColumns.length + (presentation.trends?.columns.length ?? 0),
+  );
+  const overviewCells = presentation.overviewRows?.reduce(
+    (count, row) => count + row.length,
+    0,
+  ) ?? 0;
+  return (rowCount + 1) * cellsPerDataRow + overviewCells;
+}
+
+export function dataExportPresentationRowLimit(
+  presentation: DataExportPresentation,
+  cellLimit: number,
+): number {
+  const cellsPerDataRow = Math.max(
+    1,
+    presentation.mainColumns.length + (presentation.trends?.columns.length ?? 0),
+  );
+  const overviewCells = presentation.overviewRows?.reduce(
+    (count, row) => count + row.length,
+    0,
+  ) ?? 0;
+  return Math.max(0, Math.floor((cellLimit - overviewCells) / cellsPerDataRow) - 1);
+}
 
 export async function writeXlsxArtifact(input: {
   readonly path: string;
@@ -36,12 +67,10 @@ export async function writeXlsxArtifact(input: {
     ...(input.coverage ? { coverage: input.coverage } : {}),
     sourceTruncated: input.sourceTruncated ?? false,
   });
-  const workbookColumns = presentation.mainColumns.length
-    + (presentation.trends?.columns.length ?? 0);
   if (
     input.rowCount > XLSX_MAX_ROWS
     || input.columns.length > XLSX_MAX_COLUMNS
-    || (input.rowCount + 1) * workbookColumns > XLSX_MAX_CELLS
+    || dataExportPresentationCellCount(presentation, input.rowCount) > XLSX_MAX_CELLS
   ) {
     throw new Error(
       `Excel export exceeds the ${XLSX_MAX_ROWS.toLocaleString('en-IN')}-row, ${XLSX_MAX_COLUMNS.toLocaleString('en-IN')}-column, or ${XLSX_MAX_CELLS.toLocaleString('en-IN')}-cell safety ceiling; use CSV`,

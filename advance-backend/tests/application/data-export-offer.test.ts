@@ -185,6 +185,19 @@ describe('dataset source recipes the provider would reject', () => {
   });
 });
 
+describe('direct data export source boundary', () => {
+  it('keeps Zoho CRM behind its provider-offer flow', () => {
+    const crmSource = {
+      kind: 'zoho_crm' as const,
+      connectionId: '11111111-2222-4333-8444-555555555555',
+      module: 'Deals' as const,
+    };
+
+    assert.equal(datasetSourceSchema.safeParse(crmSource).success, true);
+    assert.equal(directDatasetSourceSchema.safeParse(crmSource).success, false);
+  });
+});
+
 const unusedLoad: DataExportOfferRepositoryPort['loadForConfirmation'] = async () =>
   ok({ outcome: 'not_found' });
 
@@ -785,7 +798,6 @@ describe('DataExportOfferService', () => {
     const second = await service.confirmForActor(input);
 
     assert.deepEqual(second, {
-      exportJobId: dataExportJobId(payload),
       disposition: 'in_progress',
     });
     assert.equal(enqueueCount, 1);
@@ -878,6 +890,107 @@ describe('DataExportOfferService', () => {
       assert.equal(enqueueCount, 0);
     });
   }
+
+  it('confirms a natural-language format against the active chat offer', async () => {
+    const offer = confirmableOffer();
+    let lookupInput: unknown;
+    let loadedInput: unknown;
+    let claimInput: unknown;
+    let queuedPayload: DataExportJobPayload | undefined;
+    const service = new DataExportOfferService({
+      offers: {
+        create: async () => assert.fail('natural confirmation must not create an offer'),
+        findActiveForActor: async input => {
+          lookupInput = input;
+          return ok([offer]);
+        },
+        loadForConfirmation: async input => {
+          loadedInput = input;
+          return ok({ outcome: 'found', offer });
+        },
+        claimConfirmation: async input => {
+          claimInput = input;
+          return ok({ outcome: 'claimed', offer: { ...offer, status: 'confirming' } });
+        },
+        markConfirmed: async () => ok(true),
+      },
+      queue: {
+        enqueue: async input => {
+          queuedPayload = input;
+          return { jobId: 'job-x', added: true };
+        },
+      },
+      ...confirmationDeps,
+      now: () => NOW,
+    });
+
+    const result = await service.confirmLatestForActor({
+      companyId: payload.companyId,
+      userId: payload.userId,
+      chatId: payload.chatId,
+      destinationFormat: 'xlsx',
+    });
+
+    assert.deepEqual(result, {
+      disposition: 'queued',
+      offerId: offer.id,
+      exportJobId: 'job-x',
+    });
+    assert.deepEqual(lookupInput, {
+      companyId: payload.companyId,
+      userId: payload.userId,
+      chatId: payload.chatId,
+      now: NOW,
+    });
+    assert.deepEqual(loadedInput, {
+      offerId: offer.id,
+      companyId: payload.companyId,
+      userId: payload.userId,
+      now: NOW,
+    });
+    assert.equal((claimInput as { requestedJobId: string }).requestedJobId, dataExportJobId({
+      ...payload,
+      destination: { ...payload.destination, format: 'xlsx' },
+    }));
+    assert.equal(queuedPayload?.destination.format, 'xlsx');
+  });
+
+  it('refuses to guess when several active chat offers match', async () => {
+    const first = confirmableOffer({
+      payload: { ...payload, destination: { ...payload.destination, title: 'First' } },
+    });
+    const second = confirmableOffer({
+      id: 'offer-2',
+      createdAt: new Date(NOW.getTime() + 1_000),
+      payload: { ...payload, destination: { ...payload.destination, title: 'Second' } },
+    });
+    const service = new DataExportOfferService({
+      offers: {
+        create: async () => assert.fail('ambiguous confirmation must not create an offer'),
+        findActiveForActor: async () => ok([first, second]),
+        loadForConfirmation: async () => assert.fail('ambiguous confirmation must not load an offer'),
+        claimConfirmation: async () => assert.fail('ambiguous confirmation must not claim an offer'),
+        markConfirmed: async () => assert.fail('ambiguous confirmation must not mark an offer'),
+      },
+      queue: { enqueue: async () => assert.fail('ambiguous confirmation must not queue') },
+      ...confirmationDeps,
+      now: () => NOW,
+    });
+
+    assert.deepEqual(await service.confirmLatestForActor({
+      companyId: payload.companyId,
+      userId: payload.userId,
+      chatId: payload.chatId,
+      destinationFormat: 'csv',
+    }), {
+      disposition: 'ambiguous',
+      offers: [
+        { offerId: first.id, title: 'First', sourceKind: 'zoho_books', createdAt: NOW.toISOString() },
+        { offerId: second.id, title: 'Second', sourceKind: 'zoho_books', createdAt: new Date(NOW.getTime() + 1_000).toISOString() },
+      ],
+      moreAvailable: false,
+    });
+  });
 });
 
 describe('DataExportOfferRepository', () => {
@@ -961,6 +1074,37 @@ describe('DataExportOfferRepository', () => {
       companyId: payload.companyId,
       userId: payload.userId,
     });
+  });
+
+  it('finds active offers within the tenant, actor, and Lark chat', async () => {
+    let lookup: unknown;
+    const repository = new DataExportOfferRepository({
+      dataExportOffer: {
+        findMany: async (input: unknown) => {
+          lookup = input;
+          return [row()];
+        },
+      },
+    } as any);
+
+    const result = await repository.findActiveForActor({
+      companyId: payload.companyId,
+      userId: payload.userId,
+      chatId: payload.chatId,
+      now: NOW,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.value.length, 1);
+    assert.deepEqual((lookup as any).where, {
+      companyId: payload.companyId,
+      userId: payload.userId,
+      status: { in: ['pending', 'confirming', 'confirmed'] },
+      expiresAt: { gt: NOW },
+      payloadJson: { path: ['chatId'], equals: payload.chatId },
+    });
+    assert.deepEqual((lookup as any).orderBy, { createdAt: 'desc' });
+    assert.equal((lookup as any).take, 9);
   });
 
   it('claims a live offer with tenant and actor isolation', async () => {

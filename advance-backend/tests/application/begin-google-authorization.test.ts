@@ -143,6 +143,30 @@ describe('createBeginGoogleAuthorization', () => {
     });
   });
 
+  it('carries an export confirmation continuation into the OAuth intent', async () => {
+    const h = harness();
+    await h.runOrigins.remember('run-1', ORIGIN);
+
+    await h.begin({
+      toolId: 'dataExport',
+      reason: 'Connect Google for the Excel export.',
+      runContext: runContext({ runtimeRunId: 'run-1' }),
+      continuationPayload: {
+        kind: 'data_export_confirmation',
+        offerId: '11111111-1111-4111-8111-111111111111',
+        progressMessageId: 'om_request',
+        format: 'xlsx',
+      },
+    });
+
+    assert.deepEqual(h.issuedWith[0]?.continuationPayload, {
+      kind: 'data_export_confirmation',
+      offerId: '11111111-1111-4111-8111-111111111111',
+      progressMessageId: 'om_request',
+      format: 'xlsx',
+    });
+  });
+
   it('is unavailable for a run that carries no runtime run ID', async () => {
     // This is the desktop case, and it is also exactly the state every
     // production run was in while this path was dead: nothing to look up.

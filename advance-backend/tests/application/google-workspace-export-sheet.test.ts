@@ -478,6 +478,61 @@ it('selects Sheet or CSV for auto only after the final row and cell counts are k
   assert.deepEqual(selected, ['sheet:5001', 'csv:5001', 'csv:50001']);
 });
 
+it('counts Semrush Trends and Overview cells for auto selection and Sheet clipping', async t => {
+  t.mock.method(google, 'drive', () => ({
+    files: { list: async () => ({ data: { files: [] } }) },
+  }) as any);
+  const selected: string[] = [];
+  const sink = new GoogleWorkspaceExportSink();
+  t.mock.method(sink as any, 'createSheet', async (input: any) => {
+    selected.push(`sheet:${input.rowCount}`);
+    return completion('google_sheet', input.rowCount, input.sourceTruncated);
+  });
+  t.mock.method(sink as any, 'createAndUploadCsv', async (input: any) => {
+    selected.push(`csv:${input.rowCount}`);
+    return completion('csv', input.rowCount, input.sourceTruncated);
+  });
+
+  const columns = Array.from({ length: 99 }, (_, index) => index === 0
+    ? 'Keyword'
+    : index === 1
+      ? 'Url'
+      : index === 2
+        ? 'Trends'
+        : `column_${index}`);
+  const rows = Array.from({ length: 17_858 }, (_, index) => ({ id: index + 1 }));
+  const source = {
+    kind: 'semrush_snapshot' as const,
+    connectionId: 'backend_managed' as const,
+    args: {
+      operation: 'organic_positions' as const,
+      domain: 'example.com',
+      database: 'in' as const,
+    },
+  };
+
+  await sink.write({
+    auth: { accessToken: 'token', ownerEmail: 'member@gmail.com' },
+    readerEmail: 'member@gmail.com',
+    exportKey: 'auto-semrush-footprint',
+    source,
+    destination: { format: 'auto', title: 'Semrush footprint', columns },
+    rows: (async function* () { yield rows; })(),
+    sourceTruncated: () => false,
+  });
+  await sink.write({
+    auth: { accessToken: 'token', ownerEmail: 'member@gmail.com' },
+    readerEmail: 'member@gmail.com',
+    exportKey: 'sheet-semrush-footprint',
+    source,
+    destination: { format: 'google_sheet', title: 'Semrush footprint', columns },
+    rows: (async function* () { yield rows; })(),
+    sourceTruncated: () => false,
+  });
+
+  assert.deepEqual(selected, ['csv:17858', 'sheet:17855']);
+});
+
 it('delivers an explicit Sheet cell cap as a precise partial export', async t => {
   t.mock.method(google, 'drive', () => ({
     files: { list: async () => ({ data: { files: [] } }) },

@@ -451,7 +451,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ service: 'execution-query' }),
   });
   const auditService       = new AuditService(prisma, logger.child({ service: 'audit' }));
-  const menhoodQueryService = new MenhoodQueryService(env);
+  const menhoodQueryService = new MenhoodQueryService(
+    env,
+    undefined,
+    logger.child({ service: 'menhood-query' }),
+  );
   const tokenUsageService  = new TokenUsageService(prisma, logger.child({ service: 'token-usage' }));
   const proxyKeyStore = new ProxyKeyStore({
     prisma,
@@ -1521,6 +1525,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     if (
       confirmed.disposition === 'choose_destination'
       || confirmed.disposition === 'connect_required'
+      || confirmed.disposition === 'in_progress'
     ) {
       throw new Error('The connected Google account did not resolve the pending export destination.');
     }
@@ -1944,6 +1949,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   }));
   toolRegistry.register(createDataExportTool({
     offers: dataExportOfferService,
+    beginAuthorization: beginGoogleAuthorization,
   }));
   toolRegistry.register(createSemrushTool({
     service: semrushService,

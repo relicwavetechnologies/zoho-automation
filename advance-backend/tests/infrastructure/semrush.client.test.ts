@@ -163,7 +163,7 @@ describe('SemrushClient', () => {
     assert.equal(calls[1]?.searchParams.get('domains'), '*|or|a.com|*|or|b.com');
   });
 
-  it('bills one backlinks request per target and stamps the blank target column', async () => {
+  it('bills one backlinks request per target and presents the blank target column', async () => {
     const calls: URL[] = [];
     const client = new SemrushClient({
       timeoutMs: 1_000,
@@ -179,7 +179,48 @@ describe('SemrushClient', () => {
     assert.equal(calls[0]?.toString().split('?')[0], 'https://api.semrush.com/analytics/v1/');
     assert.equal(result.coverage.requestsBilled, 2);
     // Without the stamp both rows would be indistinguishable.
-    assert.deepEqual(result.rows.map(row => row.target), ['a.com', 'b.com']);
+    assert.deepEqual(result.rows.map(row => row.Target), ['a.com', 'b.com']);
+    assert.deepEqual(result.rows.map(row => row['Provider Data Status']), ['Returned', 'Returned']);
+    assert.equal(result.rows[0]?.['Authority Score'], '73');
+    assert.equal(result.rows[0]?.['Referring Domains'], '126236');
+  });
+
+  it('names a requested backlinks target with no provider data without inventing zero metrics', async () => {
+    let request = 0;
+    const client = new SemrushClient({
+      timeoutMs: 1_000,
+      fetchImpl: async () => {
+        request += 1;
+        return request === 1
+          ? new Response('target;ascore\n;73\n', { status: 200 })
+          : new Response('ERROR 50 :: NOTHING FOUND', { status: 200 });
+      },
+    });
+
+    const result = await client.fetch({ apiKey: 'k', args: { operation: 'backlinks_comparison', targets: ['a.com', 'b.com'] } });
+
+    assert.equal(result.status, 'complete');
+    assert.deepEqual(result.coverage.missingTargets, ['b.com']);
+    assert.deepEqual(result.rows, [
+      { Target: 'a.com', 'Authority Score': '73', 'Provider Data Status': 'Returned' },
+      { Target: 'b.com', 'Provider Data Status': 'No provider data' },
+    ]);
+  });
+
+  it('preserves every requested backlinks target when none has provider data', async () => {
+    const client = new SemrushClient({
+      timeoutMs: 1_000,
+      fetchImpl: async () => new Response('ERROR 50 :: NOTHING FOUND', { status: 200 }),
+    });
+
+    const result = await client.fetch({ apiKey: 'k', args: { operation: 'backlinks_comparison', targets: ['a.com', 'b.com'] } });
+
+    assert.equal(result.status, 'complete');
+    assert.deepEqual(result.coverage.missingTargets, ['a.com', 'b.com']);
+    assert.deepEqual(result.rows, [
+      { Target: 'a.com', 'Provider Data Status': 'No provider data' },
+      { Target: 'b.com', 'Provider Data Status': 'No provider data' },
+    ]);
   });
 
   it('treats NOTHING FOUND as an empty result rather than a provider failure', async () => {

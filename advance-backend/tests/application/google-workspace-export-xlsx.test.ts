@@ -2,6 +2,7 @@ import { it } from 'node:test';
 import assert from 'node:assert/strict';
 import { google } from 'googleapis';
 import { GoogleWorkspaceExportSink } from '../../src/application/data-export/google-workspace-export.sink.ts';
+import { writeXlsxArtifact } from '../../src/application/data-export/xlsx-export-file.ts';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -244,4 +245,24 @@ it('does not fall back from an explicitly requested oversized XLSX export', asyn
     })(),
     sourceTruncated: () => false,
   }), /Excel export exceeds the 5,000-row/);
+});
+
+it('rejects XLSX when Semrush Trends and Overview cells cross the cell cap', async () => {
+  let rowsRead = 0;
+  await assert.rejects(writeXlsxArtifact({
+    path: '/unused/export.xlsx',
+    title: 'Semrush footprint',
+    source: {
+      kind: 'semrush_snapshot',
+      connectionId: 'backend_managed',
+      args: { operation: 'organic_positions', domain: 'example.com', database: 'in' },
+    },
+    columns: ['Keyword', 'Url', 'Trends', 'Position', 'Search Volume', 'CPC', 'Date'],
+    rows: (async function* () {
+      rowsRead += 1;
+      yield {};
+    })(),
+    rowCount: 4_999,
+  }), /cell safety ceiling/i);
+  assert.equal(rowsRead, 0);
 });

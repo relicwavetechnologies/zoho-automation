@@ -23,8 +23,8 @@ describe('Menhood data system skill', () => {
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Choose `final_amount`, `collectable_value`, or `declared_value`/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Never page bulk rows.*synthesize an export offer/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /If a later tool result contains `preview\.exportOfferId`/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /preserve only that one opaque offer/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /do not ask again, call another export tool, or route it to Python/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /preserve that opaque offer/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /later names a format, call `dataExport` with `op=confirm`/);
   });
 
   it('contains the operational joins, enums, quality rules, and named recipes', () => {
@@ -54,6 +54,9 @@ describe('Menhood data system skill', () => {
     ]) {
       assert.ok(cookbook.includes(invariant), `missing cookbook invariant: ${invariant}`);
     }
+    assert.match(cookbook, /Grouped `order_status` and `payment_type` counts are order-line buckets/);
+    assert.match(cookbook, /final-amount\/gross order value/);
+    assert.match(cookbook, /do not silently call it “revenue”/);
     assert.match(cookbook, /trim.*remove non-digits.*six-digit.*join/s);
     assert.match(cookbook, /`menhood_advertisement_costs` is intentionally unavailable/);
     assert.match(cookbook, /never query it or make advertising-cost, ROAS, or spend claims/);

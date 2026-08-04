@@ -314,12 +314,18 @@ now takes the existing fenced database lease under
   start a new export rather than deleting or blindly replaying it. The full V2
   manifest/staging path is required to make that state automatically resumable.
 - The terminal Lark card has its own durable `ChannelDelivery` reservation,
-  keyed to the export job. A stale export worker cannot overwrite a newer card;
-  an active card publisher makes the retry defer without spending an attempt.
+  keyed to the export job. Its monotonic `attempts` counter is also the claim
+  generation: every `markDelivered` and `markFailed` transition is conditional
+  on the exact reserved generation. A worker that resumes after the 60-second
+  handoff cannot settle a newer publisher's card; it requeues the checkpointed
+  job and lets the current claim finish. The same fence protects ordinary Lark
+  final replies without a schema migration.
 - Lifecycle logs carry only job/export identity, safe artifact and coverage
-  fields, and bounded error class. Source rows, cursors, provider error text,
-  and arbitrary transform errors do not escape into logs or BullMQ failure
-  records. Cleanup failures are observable without replacing the export error.
+  fields, bounded error class, BullMQ attempt/max-attempts, and a run mode
+  (`initial`, `source_rerun`, or `checkpoint_replay`). Source rows, cursors,
+  provider error text, and arbitrary transform errors do not escape into logs
+  or BullMQ failure records. Cleanup failures are observable without replacing
+  the export error.
 - A proved privacy-policy failure (wrong owner, missing selected reader, or
   broader sharing) removes the Divo-created artifact before the member gets a
   terminal sharing-policy message. If Drive deletion fails, that remediation is
@@ -540,7 +546,8 @@ after-the-fact regression tests.
 | Offset/limit, multi-part sources, zero-row pages | window is applied once per part; no false partial |
 | Crash after Google file/tab creation | retry reuses the same artifact/tab |
 | Crash after verification, before or during completion receipt | retry promotes the verified receipt; no duplicate artifact or source reread |
-| Stale worker reaches the terminal card after lease loss | durable card reservation admits one publisher; the other defers or observes delivery |
+| Stale worker reaches the terminal card after lease loss | durable card reservation admits one publisher; a stale claim cannot settle the newer claim and requeues the checkpoint |
+| Retry and progress-card update fails | lifecycle logs carry the same job/export key plus attempt, maximum attempts, and run mode; no source data is logged |
 | Source/provider error contains rows, cursor, or token-like text | logs and queue failure record contain only a safe error class/message |
 | OAuth/RBAC revoked on retry | terminal failure, no stale credential use or partial publish |
 

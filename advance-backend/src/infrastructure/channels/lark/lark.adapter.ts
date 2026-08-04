@@ -402,7 +402,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
       }));
     }
 
-    const { deliveryId } = reservation.value.record;
+    const { deliveryId, claimAttempt } = reservation.value.record;
     const providerKey = toProviderIdempotencyKey(
       deliveryKey,
       input => createHash('sha256').update(input).digest('hex'),
@@ -411,12 +411,17 @@ export class LarkChannelAdapter implements ChannelAdapter {
     const result = await this.deliverFinalReply(conversation, reply, providerKey);
 
     if (result.ok) {
-      await repo.markDelivered(deliveryId, String(result.value.messageId) || undefined);
+      await repo.markDelivered(
+        deliveryId,
+        String(result.value.messageId) || undefined,
+        claimAttempt,
+      );
       return result;
     }
 
     const verdict = classifyDeliveryFailure(result.error.payload.cause ?? result.error);
     await repo.markFailed(deliveryId, result.error, {
+      claimAttempt,
       terminal: !verdict.retryable,
       ambiguous: verdict.ambiguous,
     });

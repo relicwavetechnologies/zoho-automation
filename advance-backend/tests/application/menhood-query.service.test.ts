@@ -143,6 +143,37 @@ describe('MenhoodQueryService', () => {
     assert.equal(test.ended, 1);
   });
 
+  it('logs structured details for an idle pool error', async () => {
+    let poolErrorHandler: ((error: unknown) => void) | undefined;
+    const events: Array<{ event: string; data?: Record<string, unknown> }> = [];
+    const service = new MenhoodQueryService(
+      env,
+      () => ({
+        on: (_event, handler) => { poolErrorHandler = handler; },
+        connect: async () => ({
+          query: async query => typeof query === 'string'
+            ? {}
+            : { fields: [], rows: [] },
+          release: () => {},
+        }),
+        end: async () => {},
+      }),
+      { error: (event, data) => { events.push({ event, data }); } },
+    );
+
+    await service.execute(companyId, { sql: 'SELECT 1' });
+    poolErrorHandler?.(Object.assign(new Error('connection reset'), { code: 'ECONNRESET' }));
+
+    assert.deepEqual(events, [{
+      event: 'menhood.db.pool_error',
+      data: {
+        errorName: 'Error',
+        errorMessage: 'connection reset',
+        errorCode: 'ECONNRESET',
+      },
+    }]);
+  });
+
   it('reads the 26th row only to report truncation', async () => {
     const test = harness({
       fields: [{ name: 'id', dataTypeID: 23 }],

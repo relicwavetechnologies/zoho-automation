@@ -2,6 +2,7 @@ import { performance } from 'node:perf_hooks';
 import { Pool, type PoolConfig } from 'pg';
 
 import type { TypedEnv } from '../../config/env';
+import { ConsoleLogger, type Logger } from '../../shared/logger';
 import {
   type MenhoodQueryErrorCode,
   type MenhoodQueryResult,
@@ -42,6 +43,7 @@ type MenhoodClient = {
 type MenhoodPool = {
   connect(): Promise<MenhoodClient>;
   end(): Promise<void>;
+  on?(event: 'error', listener: (error: unknown) => void): void;
 };
 
 export type MenhoodPoolFactory = (config: PoolConfig) => MenhoodPool;
@@ -61,11 +63,8 @@ export class MenhoodQueryService {
 
   constructor(
     private readonly env: MenhoodEnv,
-    private readonly poolFactory: MenhoodPoolFactory = config => {
-      const pool = new Pool(config);
-      pool.on('error', () => console.error('Menhood database pool error'));
-      return pool as unknown as MenhoodPool;
-    },
+    private readonly poolFactory: MenhoodPoolFactory | undefined = undefined,
+    private readonly logger: Pick<Logger, 'error'> = new ConsoleLogger({ service: 'menhood-query' }),
   ) {}
 
   preflight(companyId: string): void {
@@ -228,7 +227,9 @@ export class MenhoodQueryService {
   }
 
   private getPool(): MenhoodPool {
-    this.pool ??= this.poolFactory({
+    if (this.pool) return this.pool;
+
+    const config: PoolConfig = {
       host: this.env.MENHOOD_DB_HOST,
       port: this.env.MENHOOD_DB_PORT,
       database: this.env.MENHOOD_DB_NAME,
@@ -244,7 +245,14 @@ export class MenhoodQueryService {
       idleTimeoutMillis: 10_000,
       allowExitOnIdle: true,
       application_name: 'divo-menhood-readonly',
+    };
+    const pool = this.poolFactory
+      ? this.poolFactory(config)
+      : new Pool(config) as unknown as MenhoodPool;
+    pool.on?.('error', error => {
+      this.logger.error('menhood.db.pool_error', safeErrorMetadata(error));
     });
+    this.pool = pool;
     return this.pool;
   }
 }
@@ -301,4 +309,21 @@ function mapProviderError(error: unknown): MenhoodQueryServiceError {
     return new MenhoodQueryServiceError('unavailable_connection', 'Menhood database is unavailable');
   }
   return new MenhoodQueryServiceError('provider_failure', 'Menhood query failed');
+}
+
+function safeErrorMetadata(error: unknown): Record<string, unknown> {
+  const code = error && typeof error === 'object' && 'code' in error
+    ? String(error.code)
+    : undefined;
+  if (error instanceof Error) {
+    return {
+      errorName: error.name,
+      errorMessage: error.message,
+      ...(code ? { errorCode: code } : {}),
+    };
+  }
+  return {
+    errorMessage: String(error),
+    ...(code ? { errorCode: code } : {}),
+  };
 }

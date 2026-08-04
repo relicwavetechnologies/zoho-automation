@@ -8,6 +8,7 @@ import {
 	decodeAttachmentFileName,
 	prompt,
 	promptWithRuntimeLease,
+	runRuntimeSessionLifecycle,
 	reconcileOwnedContainers,
 	resolveRuntimeLease,
 	resolveStagedAttachments,
@@ -17,6 +18,7 @@ import {
 	validateAttachmentRequestId,
 	validateProfileName,
 	validateRuntimeModel,
+	validateSessionLifecycleOperation,
 	validateSessionScope,
 	validateThread,
 } from "./local-rpc-controller.mjs";
@@ -52,6 +54,7 @@ function admissionError(statusCode, code, message, retryAfterSeconds) {
 export function createAdmissionController({
 	execute = prompt,
 	executeRuntime = promptWithRuntimeLease,
+	executeSessionLifecycle = runRuntimeSessionLifecycle,
 	resolveLease = resolveRuntimeLease,
 	maxActiveRuns = DEFAULT_MAX_ACTIVE_RUNS,
 } = {}) {
@@ -148,6 +151,30 @@ export function createAdmissionController({
 					...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
 					...(onProgress ? { onProgress } : {}),
 				}),
+			);
+		},
+		async runSessionLifecycle({ backendUrl, runtimeLease, operation, signal }) {
+			let normalizedOperation;
+			try {
+				normalizedOperation = validateSessionLifecycleOperation(operation);
+			} catch (error) {
+				throw admissionError(400, "invalid_session_operation", error.message);
+			}
+			let runtime;
+			try {
+				runtime = await resolveLease({ backendUrl, lease: runtimeLease });
+			} catch (error) {
+				throw admissionError(401, "invalid_runtime_lease", error.message);
+			}
+			if (runtime.contextAudience !== "private" || runtime.ephemeral === true) {
+				throw admissionError(
+					400,
+					"invalid_session_scope",
+					"Session lifecycle operations are available only for private DMs",
+				);
+			}
+			return admit(runtime.profile, () =>
+				executeSessionLifecycle(runtime, normalizedOperation, { signal }),
 			);
 		},
 	};
@@ -345,7 +372,8 @@ export function createControllerServer(options = {}) {
 		const isFileUpload = request.method === "PUT" && request.url === "/v1/runtime-files";
 		const isManualRun = request.method === "POST" && request.url === "/v1/runs";
 		const isLarkRun = request.method === "POST" && request.url === "/v1/lark-runs";
-		if (!isFileUpload && !isManualRun && !isLarkRun) {
+		const isLarkSession = request.method === "POST" && request.url === "/v1/lark-sessions";
+		if (!isFileUpload && !isManualRun && !isLarkRun && !isLarkSession) {
 			sendJson(response, 404, {
 				error: { code: "not_found", message: "Route not found" },
 			});
@@ -367,6 +395,14 @@ export function createControllerServer(options = {}) {
 			response.once("close", () => {
 				if (!response.writableEnded) controller.abort();
 			});
+			if (isLarkSession) {
+				const result = await admission.runSessionLifecycle({
+					...body,
+					signal: controller.signal,
+				});
+				sendJson(response, 200, result);
+				return;
+			}
 			if (
 				isLarkRun
 				&& String(request.headers.accept ?? "").includes("application/x-ndjson")

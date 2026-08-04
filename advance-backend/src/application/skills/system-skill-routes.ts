@@ -87,9 +87,9 @@ Choose the exact approved specialist returned by this router.
 
 - One bounded provider lookup or preview → load that provider's specialist.
   If its result contains \`preview.exportOfferId\`, keep only that opaque offer
-  until the turn completes. In Lark, Divo's verified final-response card owns
-  the Sheet/CSV/XLSX choice and queue; do not ask again or call \`dataExport\`
-  for that offer.
+  and finish the answer with its verified card. If the member later chooses a
+  Sheet/CSV/XLSX format in natural language, call \`dataExport\` with
+  \`op=confirm\`; never rerun the provider query or create a new offer.
 - Produce a governed complete-data artifact without a provider offer →
   \`secure-data-export\`. Its direct recipes are only for supported Airtable
   and Zoho Books sources with exact backend-resolved identifiers.
@@ -111,8 +111,9 @@ Neither route carries a record set through the conversation.
 
 Keep each opaque handle in its owning route:
 
-- \`preview.exportOfferId\` → Divo's verified Lark final-response card; never a
-  second agent question or tool call.
+- \`preview.exportOfferId\` → Divo's verified Lark final-response card, then
+  \`dataExport\` \`op=confirm\` for an explicit later natural-language format;
+  never rebuild the provider request.
 - \`destinationReferenceId\` or \`resourceRef\` → \`google-sheets\` for the exact
   resolved or recent Sheet.
 - \`exportJobId\` → status and safe retry/resume only.
@@ -182,7 +183,7 @@ job, not this one.`,
 Choose the exact approved specialist returned by this router.
 
 - Current public facts and external verification → \`web-search\`.
-- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`. Its bounded preview may return an opaque \`preview.exportOfferId\`; preserve it, finish the response, and let Divo's verified Lark card own the export choice and queue. Never route that offer through another agent question, tool call, provider pagination, or local workflow.
+- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`. Its bounded preview may return an opaque \`preview.exportOfferId\`; preserve it, finish the response, and let Divo's verified Lark card own the initial export choice and queue. If the member later names a format, use \`dataExport\` \`op=confirm\`; never rerun the provider query, paginate in Pi, or use a local workflow.
 - Approved OMS publisher/site inventory → \`divo-oms-site-inventory\`.
 
 Never substitute web results for official Semrush or OMS data.

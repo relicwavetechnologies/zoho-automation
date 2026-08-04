@@ -169,6 +169,21 @@ export class LarkMessagingClient {
       }
     } catch { /* not a wrapper — send as-is */ }
 
+    if (msgType === 'text') {
+      try {
+        const parsedTextContent = JSON.parse(apiContent) as unknown;
+        if (
+          parsedTextContent === null
+          || typeof parsedTextContent !== 'object'
+          || Array.isArray(parsedTextContent)
+        ) {
+          apiContent = JSON.stringify({ text: apiContent });
+        }
+      } catch {
+        apiContent = JSON.stringify({ text: apiContent });
+      }
+    }
+
     const body: Record<string, unknown> = {
       content:  apiContent,
       msg_type: msgType,

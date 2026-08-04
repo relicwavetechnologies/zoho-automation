@@ -119,7 +119,6 @@ function refineDatasetSource(
 export const directDatasetSourceSchema = z.discriminatedUnion('kind', [
   airtableDatasetSourceSchema,
   zohoBooksDatasetSourceSchema,
-  zohoCrmDatasetSourceSchema,
 ]).superRefine(refineDatasetSource);
 
 export const datasetSourceSchema = datasetSourceUnion.superRefine(refineDatasetSource);

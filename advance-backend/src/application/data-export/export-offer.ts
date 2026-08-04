@@ -213,6 +213,17 @@ export interface DataExportOfferRepositoryPort {
     readonly userId: string;
     readonly now?: Date;
   }): Promise<Result<LoadDataExportOfferResult, Error>>;
+  /**
+   * Returns active offers for one authenticated Lark conversation. The method
+   * is optional so confirmation tests and non-Lark compositions do not need a
+   * second lookup path; the production repository implements it.
+   */
+  findActiveForActor?(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly chatId: string;
+    readonly now?: Date;
+  }): Promise<Result<readonly DataExportOfferRecord[], Error>>;
   claimConfirmation(input: {
     readonly offerId: string;
     readonly companyId: string;

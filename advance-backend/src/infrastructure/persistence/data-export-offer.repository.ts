@@ -197,6 +197,35 @@ export class DataExportOfferRepository implements DataExportOfferRepositoryPort 
     }
   }
 
+  async findActiveForActor(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly chatId: string;
+    readonly now?: Date;
+  }): Promise<Result<readonly DataExportOfferRecord[], Error>> {
+    const now = input.now ?? new Date();
+    try {
+      const rows = await this.db.dataExportOffer.findMany({
+        where: {
+          companyId: input.companyId,
+          userId: input.userId,
+          status: { in: ['pending', 'confirming', 'confirmed'] },
+          expiresAt: { gt: now },
+          payloadJson: { path: ['chatId'], equals: input.chatId },
+        },
+        orderBy: { createdAt: 'desc' },
+        // A natural-language format choice must not scan an unbounded export
+        // history. More than eight active offers is reported as ambiguous by
+        // the application layer rather than guessing at the oldest one.
+        take: 9,
+        select: offerSelect,
+      });
+      return ok(rows.map(toRecord));
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'dataExportOffer.findActiveForActor', cause));
+    }
+  }
+
   async claimConfirmation(input: {
     readonly offerId: string;
     readonly companyId: string;
@@ -268,6 +297,9 @@ export class DataExportOfferRepository implements DataExportOfferRepositoryPort 
             ? ok({ outcome: 'claimed', offer: reclaimedOffer })
             : ok({ outcome: 'not_found' });
         }
+        // The row does not persist the format held by the confirming worker.
+        // Do not manufacture the caller's requested job ID: it may be a
+        // different format that has not been queued at all.
         return ok({ outcome: 'in_progress', offer });
       }
       return ok({ outcome: 'not_found' });

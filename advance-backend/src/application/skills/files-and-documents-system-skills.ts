@@ -164,8 +164,9 @@ This skill owns files already in the workspace and artifacts Divo genuinely
 authors there. It does not own a complete export from a connected provider. If
 a provider result contains \`preview.exportOfferId\`, keep that opaque offer and
 finish the response. In Lark, Divo's verified final-response card owns the
-Sheet/CSV/XLSX choice and export queue; do not ask again, load/call
-\`dataExport\`, or copy rows into a locally rebuilt file. If the target is a
+initial Sheet/CSV/XLSX choice and export queue. If the member later chooses a
+format in natural language, call \`dataExport\` with \`op=confirm\`; do not
+rerun the provider query, or copy rows into a locally rebuilt file. If the target is a
 pasted or recent Google Sheet, load \`google-sheets\` and retain only Divo's
 opaque Sheet reference.
 

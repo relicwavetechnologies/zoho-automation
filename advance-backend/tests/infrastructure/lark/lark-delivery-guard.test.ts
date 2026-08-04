@@ -91,8 +91,8 @@ function makeRepo(reservation: unknown) {
         calls.reserved.push(input);
         return ok(reservation);
       },
-      markDelivered: async (id: string, providerMessageId?: string) => {
-        calls.delivered.push({ id, providerMessageId });
+      markDelivered: async (id: string, providerMessageId?: string, claimAttempt?: number) => {
+        calls.delivered.push({ id, providerMessageId, claimAttempt });
         return ok(undefined);
       },
       markFailed: async (id: string, error: unknown, opts?: unknown) => {
@@ -106,7 +106,7 @@ function makeRepo(reservation: unknown) {
 
 const RESERVED = {
   outcome: 'reserved',
-  record: { deliveryId: 'd-1', attempts: 1, firstAttemptAt: new Date() },
+  record: { deliveryId: 'd-1', claimAttempt: 1, attempts: 1, firstAttemptAt: new Date() },
 };
 
 describe('final reply duplicate guard', () => {
@@ -167,7 +167,7 @@ describe('final reply duplicate guard', () => {
 
     await adapter.sendFinalReply(conversation, reply);
 
-    assert.deepEqual(calls.delivered, [{ id: 'd-1', providerMessageId: 'om_new' }]);
+    assert.deepEqual(calls.delivered, [{ id: 'd-1', providerMessageId: 'om_new', claimAttempt: 1 }]);
     assert.deepEqual(calls.failed, []);
   });
 
@@ -225,6 +225,7 @@ describe('final reply failure recording', () => {
     assert.equal(calls.failed.length, 1);
     assert.equal(calls.failed[0].opts.terminal, true);
     assert.equal(calls.failed[0].opts.ambiguous, false);
+    assert.equal(calls.failed[0].opts.claimAttempt, 1);
     assert.deepEqual(calls.delivered, []);
   });
 

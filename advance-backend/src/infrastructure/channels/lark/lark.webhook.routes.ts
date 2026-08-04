@@ -9,6 +9,7 @@ import {
   LarkPiRuntimeError,
   type LarkPiProgressEvent,
   type LarkPiRuntimeAttachment,
+  type LarkPiRuntimeSessionInput,
   type LarkPiRuntimeService,
 } from '../../../application/runtime/lark-pi-runtime.service';
 import type {
@@ -143,7 +144,12 @@ import { SCHEDULED_SESSION_AUTH_PROVIDER } from '../../../application/scheduling
 
 type LarkPiRuntimePort =
   Pick<LarkPiRuntimeService, 'run'>
-  & Partial<Pick<LarkPiRuntimeService, 'hasActiveSession' | 'stagePendingAttachments'>>;
+  & Partial<Pick<LarkPiRuntimeService,
+    | 'hasActiveSession'
+    | 'stagePendingAttachments'
+    | 'preparePrivateSession'
+    | 'deletePrivateSession'
+  >>;
 
 const QUEUED_REQUEST_TEXT =
   'Your request is queued. I’ll start it as soon as your previous request finishes.';
@@ -566,6 +572,27 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function channelErrorLogFields(error: unknown): Record<string, unknown> {
+  const channelError = asRecord(error);
+  const payload = asRecord(channelError?.['payload']);
+  const cause = payload?.['cause'];
+  const causeRecord = asRecord(cause);
+  const fields: Record<string, unknown> = {
+    error: error instanceof Error ? error.message : String(error),
+  };
+  if (typeof payload?.['stage'] === 'string') fields.failureStage = payload['stage'];
+  if (typeof payload?.['reason'] === 'string') fields.failureReason = payload['reason'];
+  if (cause instanceof Error) {
+    fields.causeName = cause.name;
+    fields.causeMessage = cause.message;
+  } else if (cause !== undefined) {
+    fields.causeMessage = String(cause);
+  }
+  if (typeof causeRecord?.['status'] === 'number') fields.causeStatus = causeRecord['status'];
+  if (typeof causeRecord?.['code'] === 'number') fields.causeCode = causeRecord['code'];
+  return fields;
 }
 
 async function deliverDeferredDataExportResponse(
@@ -1057,9 +1084,7 @@ async function resumeLarkDelivery(
       : stored
         ? {}
         : {
-            replyInThread:
-              incoming.chatType === 'group'
-              && incoming.groupReplyMode !== 'inline',
+            replyInThread: replyInThreadForIncoming(incoming),
           }),
     correlationId: asCorrelationId(incoming.traceId),
   };
@@ -1216,11 +1241,15 @@ function conversationForIncoming(incoming: IncomingMessage): ConversationHandle 
     channel: 'lark',
     chatId: incoming.chatId,
     replyToMessageId: incoming.messageId,
-    replyInThread:
-      incoming.chatType === 'group'
-      && incoming.groupReplyMode !== 'inline',
+    replyInThread: replyInThreadForIncoming(incoming),
     correlationId: asCorrelationId(incoming.traceId),
   };
+}
+
+function replyInThreadForIncoming(
+  incoming: Pick<IncomingMessage, 'chatType' | 'groupReplyMode'>,
+): boolean {
+  return incoming.chatType === 'group' && incoming.groupReplyMode !== 'inline';
 }
 
 const DIVO_OWNED_THREAD_REF = 'divoOwnedThread';
@@ -2101,9 +2130,7 @@ async function processInBackground(
         text,
         String(incoming.messageId),
         undefined,
-        incoming.chatType === 'group'
-          ? incoming.groupReplyMode !== 'inline'
-          : undefined,
+        replyInThreadForIncoming(incoming),
       )
         .catch(e => log.warn('webhook.first_touch.notice_failed', {
           error: String(e), correlationId,
@@ -2136,9 +2163,7 @@ async function processInBackground(
           String(incoming.chatId),
           buildSignInCard({ name, url: login.url, ...(signInReason ? { reason: signInReason } : {}) }),
           incoming.chatType === 'group' ? String(incoming.messageId) : undefined,
-          incoming.chatType === 'group'
-            ? incoming.groupReplyMode !== 'inline'
-            : undefined,
+          replyInThreadForIncoming(incoming),
         );
         if (card.ok) {
           await recordSignInCardOnNonce(deps.cache, login.nonce, {
@@ -2220,9 +2245,7 @@ async function processInBackground(
         SIGN_IN_UNAVAILABLE,
         String(incoming.messageId),
         undefined,
-        incoming.chatType === 'group'
-          ? incoming.groupReplyMode !== 'inline'
-          : undefined,
+        replyInThreadForIncoming(incoming),
       );
       return;
     }
@@ -2233,9 +2256,7 @@ async function processInBackground(
       String(incoming.chatId),
       buildSignInCard({ name, url: login.url, reason }),
       incoming.chatType === 'group' ? String(incoming.messageId) : undefined,
-      incoming.chatType === 'group'
-        ? incoming.groupReplyMode !== 'inline'
-        : undefined,
+      replyInThreadForIncoming(incoming),
     );
     if (card.ok) {
       await recordSignInCardOnNonce(deps.cache, login.nonce, {
@@ -2249,9 +2270,7 @@ async function processInBackground(
         signInFallbackText({ name, url: login.url, reason }),
         String(incoming.messageId),
         undefined,
-        incoming.chatType === 'group'
-          ? incoming.groupReplyMode !== 'inline'
-          : undefined,
+        replyInThreadForIncoming(incoming),
       );
     }
     log.info('webhook.pi_session.login_prompt.sent', {
@@ -2321,9 +2340,7 @@ async function processInBackground(
     ...(mentionedLarkOpenIds.length > 0 ? { mentionedLarkOpenIds } : {}),
     chatId:         String(incoming.chatId),
     replyToMessageId: String(incoming.messageId),
-    replyInThread:
-      incoming.chatType === 'group'
-      && incoming.groupReplyMode !== 'inline',
+    replyInThread: replyInThreadForIncoming(incoming),
     ...(identity.activeDepartmentId ? { departmentId: asDepartmentId(identity.activeDepartmentId) } : {}),
     ...(identity.email ? { requesterEmail: identity.email } : {}),
   };
@@ -2898,22 +2915,54 @@ const isStopCommand = (text: string | undefined): boolean =>
 const isNewConversationCommand = (text: string | undefined): boolean =>
   (text ?? '').trim().toLowerCase() === NEW_CONVERSATION_COMMAND;
 
+function privateSessionLifecycleInput(
+  incoming: IncomingMessage,
+  identity: {
+    companyId: string;
+    userId: string;
+    aiRole: string;
+    activeDepartmentId?: string | null;
+  },
+  threadId: string,
+): LarkPiRuntimeSessionInput {
+  return {
+    incoming,
+    threadId,
+    runContext: {
+      companyId: asCompanyId(identity.companyId),
+      userId: asUserId(identity.userId),
+      companyRole: asCompanyRoleSlug(identity.aiRole),
+      channel: 'lark',
+      ...(incoming.tenantKey ? { tenantId: incoming.tenantKey } : {}),
+      userExternalId: incoming.userExternalId,
+      ...(identity.activeDepartmentId
+        ? { departmentId: asDepartmentId(identity.activeDepartmentId) }
+        : {}),
+    },
+  };
+}
+
 async function handleNewConversationBeforeLane(
   incoming: IncomingMessage,
-  deps: Pick<LarkWebhookDeps, 'adapter' | 'channelIdentityRepo' | 'prisma'>,
+  deps: Pick<LarkWebhookDeps, 'adapter' | 'channelIdentityRepo' | 'prisma' | 'piRuntime'>,
   log: Logger,
 ): Promise<void> {
+  const replyInThread = replyInThreadForIncoming(incoming);
   const reply = async (text: string): Promise<void> => {
     const sent = await deps.adapter.sendToChatId(
       String(incoming.chatId),
       text,
       String(incoming.messageId),
       undefined,
-      incoming.chatType === 'group'
-        ? incoming.groupReplyMode !== 'inline'
-        : undefined,
+      replyInThread,
     );
-    if (!sent.ok) log.warn('webhook.command.new.reply_failed', { error: sent.error.message });
+    if (!sent.ok) {
+      log.warn('webhook.command.new.reply_failed', {
+        ...channelErrorLogFields(sent.error),
+        replyInThread,
+        correlationId: incoming.traceId,
+      });
+    }
   };
 
   if (incoming.chatType === 'group') {
@@ -2956,35 +3005,84 @@ async function handleNewConversationBeforeLane(
     companyId: identity.value.companyId,
     aiRole: identity.value.aiRole,
   });
-  await deps.prisma.runtimeConversation.upsert({
-    where: {
-      companyId_channel_channelConversationKey: {
+  if (!deps.piRuntime.preparePrivateSession) {
+    log.error('webhook.command.new.session_prepare_unavailable', {
+      companyId: identity.value.companyId,
+      userId: identity.value.userId,
+      correlationId: incoming.traceId,
+    });
+    await reply('I could not start a new Divo chat just now. Please try again.');
+    return;
+  }
+  try {
+    await deps.piRuntime.preparePrivateSession(
+      privateSessionLifecycleInput(incoming, identity.value, sessionKey),
+    );
+  } catch (error) {
+    const message = error instanceof LarkPiRuntimeError
+      ? error.userMessage
+      : 'I could not start a new Divo chat just now. Please try again.';
+    log.error('webhook.command.new.session_prepare_failed', {
+      companyId: identity.value.companyId,
+      userId: identity.value.userId,
+      error: String(error),
+      correlationId: incoming.traceId,
+    });
+    await reply(message);
+    return;
+  }
+  try {
+    await deps.prisma.runtimeConversation.upsert({
+      where: {
+        companyId_channel_channelConversationKey: {
+          companyId: identity.value.companyId,
+          channel: 'lark',
+          channelConversationKey: conversationKey,
+        },
+      },
+      create: {
         companyId: identity.value.companyId,
         channel: 'lark',
         channelConversationKey: conversationKey,
+        rawChannelKey: String(incoming.chatId),
+        createdByUserId: identity.value.userId,
+        refsJson: {
+          chatType: incoming.chatType,
+          larkOpenId: incoming.userExternalId,
+          [ACTIVE_PRIVATE_SESSION_REF]: sessionKey,
+        },
       },
-    },
-    create: {
+      update: {
+        updatedAt: new Date(),
+        refsJson: { ...refs, [ACTIVE_PRIVATE_SESSION_REF]: sessionKey },
+      },
+    });
+  } catch (error) {
+    log.error('webhook.command.new.session_pointer_failed', {
       companyId: identity.value.companyId,
-      channel: 'lark',
-      channelConversationKey: conversationKey,
-      rawChannelKey: String(incoming.chatId),
-      createdByUserId: identity.value.userId,
-      refsJson: {
-        chatType: incoming.chatType,
-        larkOpenId: incoming.userExternalId,
-        [ACTIVE_PRIVATE_SESSION_REF]: sessionKey,
-      },
-    },
-    update: {
-      updatedAt: new Date(),
-      refsJson: { ...refs, [ACTIVE_PRIVATE_SESSION_REF]: sessionKey },
-    },
-  });
+      userId: identity.value.userId,
+      error: String(error),
+      correlationId: incoming.traceId,
+    });
+    if (deps.piRuntime.deletePrivateSession) {
+      await deps.piRuntime.deletePrivateSession(
+        privateSessionLifecycleInput(incoming, identity.value, sessionKey),
+      ).catch(cleanupError => log.error('webhook.command.new.session_cleanup_failed', {
+        error: String(cleanupError),
+        correlationId: incoming.traceId,
+      }));
+    }
+    await reply('I could not finish starting a new Divo chat. Please try again.');
+    return;
+  }
   log.info('webhook.command.new.ok', {
     companyId: identity.value.companyId,
     userId: identity.value.userId,
     conversationKey,
+    sessionPrepared: true,
+    earlierChatsPreserved: true,
+    replyInThread,
+    correlationId: incoming.traceId,
   });
   await reply('Started a new Divo chat. Your earlier chats are still available if you ask me to find something from them.');
 }
@@ -3007,9 +3105,7 @@ async function handleStopBeforeLane(
       'I could not verify who is trying to stop this run.',
       String(incoming.messageId),
       undefined,
-      incoming.chatType === 'group'
-        ? incoming.groupReplyMode !== 'inline'
-        : undefined,
+      replyInThreadForIncoming(incoming),
     );
     return;
   }
@@ -3032,9 +3128,7 @@ async function handleStopBeforeLane(
     text,
     String(incoming.messageId),
     undefined,
-    incoming.chatType === 'group'
-      ? incoming.groupReplyMode !== 'inline'
-      : undefined,
+    replyInThreadForIncoming(incoming),
   );
   if (!sent.ok) {
     log.warn('webhook.command.stop.reply_failed', { error: sent.error.message });
@@ -3056,6 +3150,7 @@ async function handleSlashCommand(args: {
   };
   deps: {
     adapter: LarkChannelAdapter;
+    piRuntime: LarkPiRuntimePort;
     channelIdentityRepo: ChannelIdentityRepoPort;
     conversationRepo: ConversationRepoPort;
     logger: Logger;
@@ -3139,70 +3234,6 @@ async function handleSlashCommand(args: {
     return;
   }
 
-  if (cmd === '/clear') {
-    const normalized = text.trim().toLowerCase();
-    const isRoomClear = normalized === '/clear room'
-      || normalized === '/clear room confirm';
-    const isAdmin = identity.aiRole === 'COMPANY_ADMIN'
-      || identity.aiRole === 'SUPER_ADMIN';
-
-    if (isRoomClear && incoming.chatType !== 'group') {
-      await reply('`/clear room` is only available inside a group chat.');
-      return;
-    }
-    if (isRoomClear && !isAdmin) {
-      await reply('Only a company admin can clear every Divo conversation in this group.');
-      return;
-    }
-    if (normalized === '/clear room') {
-      await reply(
-        'This clears Divo history for every thread in this group. '
-        + 'To confirm, send `/clear room confirm`.',
-      );
-      return;
-    }
-    if (
-      incoming.chatType === 'group'
-      && incoming.groupReplyMode !== 'inline'
-      && !incoming.rootMessageId
-      && !incoming.threadId
-      && !isRoomClear
-    ) {
-      await reply('Run `/clear` inside the thread you want to reset.');
-      return;
-    }
-
-    const scope = { companyId: identity.companyId, channel: 'lark' as const };
-    const conversationKey = conversationKeyForMessage(incoming);
-    const clearResult = normalized === '/clear room confirm'
-      ? await deps.conversationRepo.clearChatHistories(String(incoming.chatId), scope)
-      : await deps.conversationRepo.clearHistory(conversationKey, scope);
-    if (!clearResult.ok) {
-      log.warn('webhook.command.clear.failed', {
-        chatId:        incoming.chatId,
-        correlationId,
-        error:         clearResult.error.message,
-      });
-      await reply('Could not clear history — please try again.');
-      return;
-    }
-    if (normalized === '/clear room confirm' && deps.chatContextService) {
-      await deps.chatContextService.clear(identity.companyId, String(incoming.chatId));
-    }
-    log.info('webhook.command.clear.ok', {
-      chatId: incoming.chatId,
-      clearTarget: normalized === '/clear room confirm' ? 'room' : conversationKey,
-      cleared: clearResult.value,
-      correlationId,
-    });
-    await reply(
-      normalized === '/clear room confirm'
-        ? 'Done. Divo history for this group and all its threads is cleared.'
-        : 'Done. This conversation is cleared — I\'ll start fresh from here.',
-    );
-    return;
-  }
-
   // ── /login — hand them the web sign-in ─────────────────────────────────────
   //
   // The web page owns both the Divo session and, when needed, the full-scope
@@ -3228,9 +3259,7 @@ async function handleSlashCommand(args: {
       String(incoming.chatId),
       buildSignInCard({ name, url: login.url }),
       incoming.chatType === 'group' ? String(incoming.messageId) : undefined,
-      incoming.chatType === 'group'
-        ? incoming.groupReplyMode !== 'inline'
-        : undefined,
+      replyInThreadForIncoming(incoming),
     );
     if (card.ok) {
       await recordSignInCardOnNonce(deps.cache, login.nonce, {
@@ -3401,7 +3430,6 @@ async function handleSlashCommand(args: {
       '**Divo Commands**\n\n' +
       '**Conversation**\n' +
       '`/new` — Start a fresh private chat; earlier chats stay searchable.\n' +
-      '`/clear room` — Admin-only two-step reset for every thread in this group.\n' +
       '`/q` — Stop the active run in this conversation.\n' +
       '`/group-settings` — Admin-only group reply settings.\n' +
       '`/group-mode status` — Confirm that group replies stay in threads.\n' +
@@ -3449,6 +3477,8 @@ async function transcribeLarkVoiceNote(input: {
       String(incoming.chatId),
       text,
       String(incoming.messageId),
+      undefined,
+      replyInThreadForIncoming(incoming),
     );
     if (!sent.ok) log.warn('webhook.voice.notice_failed', { error: sent.error.message });
   };
