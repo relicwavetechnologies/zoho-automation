@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { RunEffectReceiptStore } from '../../src/application/runtime/run-effect-receipt.store.ts';
-import { ok } from '../../src/shared/result.ts';
+import { ok, err } from '../../src/shared/result.ts';
 
 const identity = {
   companyId: 'company-1',
@@ -211,14 +211,107 @@ describe('run effect receipt store', () => {
       userId: 'other-user',
       chatId: identity.chatId,
     }), null);
+  it('recovers an exact personal-memory receipt after the latest index write fails', async () => {
+    const fixture = createStore({ failLatestIndexOnce: true });
+    const input = {
+      actionId: 'memory-call-retry',
+      action: 'deleted' as const,
+      logicalKey: 'communication.answers.detail',
+      resourceId: '11111111-1111-4111-8111-111111111111',
+      resourceVersion: 3,
+      projection: 'queued' as const,
+      requestHash: 'request-hash-1',
+    };
+
+    await assert.rejects(fixture.store.recordPersonalMemory(identity, input), /latest index unavailable/i);
+    const recovered = await fixture.store.recordPersonalMemory(identity, input);
+
+    assert.equal(recovered.action, 'deleted');
+    assert.equal(await fixture.store.getPersonalMemory(identity, input.actionId) !== null, true);
+    assert.deepEqual(await fixture.store.getVerifiedMemoryEffect(identity), recovered);
+  });
+
+  it('does not let one action ID attest a different personal-memory command', async () => {
+    const fixture = createStore();
+    await fixture.store.recordPersonalMemory(identity, {
+      actionId: 'memory-call-bound',
+      action: 'updated',
+      logicalKey: 'communication.answers.detail',
+      resourceId: '11111111-1111-4111-8111-111111111111',
+      resourceVersion: 3,
+      projection: 'queued',
+      requestHash: 'request-hash-a',
+    });
+
+    await assert.rejects(
+      fixture.store.recordPersonalMemory(identity, {
+        actionId: 'memory-call-bound',
+        action: 'deleted',
+        logicalKey: 'communication.answers.detail',
+        resourceId: '11111111-1111-4111-8111-111111111111',
+        resourceVersion: 3,
+        projection: 'queued',
+        requestHash: 'request-hash-b',
+      }),
+      /different personal-memory command/i,
+    );
+  });
+
+  it('atomically fences concurrent personal-memory commands by action ID and hash', async () => {
+    const fixture = createStore();
+    const claimed = await fixture.store.reservePersonalMemory(identity, {
+      actionId: 'memory-call-race',
+      requestHash: 'request-hash-a',
+    });
+    assert.equal(claimed.status, 'claimed');
+    const applying = await fixture.store.reservePersonalMemory(identity, {
+      actionId: 'memory-call-race',
+      requestHash: 'request-hash-a',
+    });
+    assert.equal(applying.status, 'applying');
+    assert.equal(applying.reservationToken, claimed.reservationToken);
+    await assert.rejects(
+      fixture.store.reservePersonalMemory(identity, {
+        actionId: 'memory-call-race',
+        requestHash: 'request-hash-b',
+      }),
+      /different personal-memory command/i,
+    );
+
+    await fixture.store.releasePersonalMemory(identity, {
+      actionId: 'memory-call-race',
+      requestHash: 'request-hash-a',
+      reservationToken: 'stale-worker-token',
+    });
+    const stillApplying = await fixture.store.reservePersonalMemory(identity, {
+      actionId: 'memory-call-race',
+      requestHash: 'request-hash-a',
+    });
+    assert.equal(stillApplying.status, 'applying');
+    assert.equal(stillApplying.reservationToken, claimed.reservationToken);
+
+    await fixture.store.releasePersonalMemory(identity, {
+      actionId: 'memory-call-race',
+      requestHash: 'request-hash-a',
+      reservationToken: claimed.reservationToken,
+    });
+    assert.equal((await fixture.store.reservePersonalMemory(identity, {
+      actionId: 'memory-call-race',
+      requestHash: 'request-hash-a',
+    })).status, 'claimed');
   });
 });
 
-function createStore() {
+function createStore(options: { failLatestIndexOnce?: boolean } = {}) {
   const values = new Map<string, unknown>();
+  let failLatestIndexOnce = options.failLatestIndexOnce ?? false;
   const cache = {
     get: async <T>(key: string) => ok((values.get(key) as T | undefined) ?? null),
     set: async (key: string, value: unknown) => {
+      if (failLatestIndexOnce && key.includes('latest:personal_memory_applied')) {
+        failLatestIndexOnce = false;
+        return err(new Error('latest index unavailable'));
+      }
       values.set(key, value);
       return ok(undefined);
     },

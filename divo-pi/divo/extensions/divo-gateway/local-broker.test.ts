@@ -42,6 +42,7 @@ function activeCalls(signal?: AbortSignal): Map<string, ActiveBashCall> {
 			signal,
 			ui: { confirm: async () => true },
 		},
+		correlation,
 		nextBrokerCall: 0,
 	}]]);
 }
@@ -58,7 +59,7 @@ describe("Divo local broker protocol", () => {
 		}), /not exposed/);
 	});
 
-	it("sends the loaded skill with a scripted tool call as advisory provenance", async () => {
+	it("sends the loaded skill with a scripted tool call", async () => {
 		const gatewayRequests: GatewayRequestBody[] = [];
 		await executeLocalBrokerRequest({
 			version: 1,
@@ -76,38 +77,61 @@ describe("Divo local broker protocol", () => {
 		assert.equal((gatewayRequests[0]?.payload as { skillId?: string })?.skillId, "gmail-read");
 	});
 
-	it("allows a scripted tool call when no matching skill was loaded", async () => {
-		const gatewayRequests: GatewayRequestBody[] = [];
-		await executeLocalBrokerRequest({
-			version: 1,
-			request: { op: "tools.invoke", payload: { toolId: "googleGmail", args: {} } },
-		}, activeCalls(), {
-			resolveConfig: () => config,
-			readCorrelation: async () => correlation,
-			lookupLoadedSkill: () => undefined,
-			executeGateway: async (_resolved, request) => {
-				gatewayRequests.push(request);
-				return { body: { ok: true, status: "ok", data: {} }, httpStatus: 200 };
-			},
-		});
-		assert.equal((gatewayRequests[0]?.payload as { skillId?: string })?.skillId, undefined);
+	it("rejects a scripted tool call when no matching skill was loaded", async () => {
+		let gatewayCalls = 0;
+		await assert.rejects(
+			executeLocalBrokerRequest({
+				version: 1,
+				request: { op: "tools.invoke", payload: { toolId: "googleGmail", args: {} } },
+			}, activeCalls(), {
+				resolveConfig: () => config,
+				readCorrelation: async () => correlation,
+				lookupLoadedSkill: () => undefined,
+				executeGateway: async () => {
+					gatewayCalls += 1;
+					return { body: { ok: true, status: "ok", data: {} }, httpStatus: 200 };
+				},
+			}),
+			/Exact company skill required/,
+		);
+		assert.equal(gatewayCalls, 0);
 	});
 
-	it("does not attach stale skill provenance from an earlier run", async () => {
-		const gatewayRequests: GatewayRequestBody[] = [];
-		await executeLocalBrokerRequest({
+	it("rejects protected Shopify records before Bash can receive them", async () => {
+		let gatewayCalls = 0;
+		await assert.rejects(executeLocalBrokerRequest({
 			version: 1,
-			request: { op: "tools.invoke", payload: { toolId: "googleGmail", args: {} } },
+			request: { op: "tools.invoke", payload: { toolId: "shopifyOrders", args: {} } },
 		}, activeCalls(), {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
-			lookupLoadedSkill: () => ({ runId: "run-0", skillId: "gmail-read" }),
-			executeGateway: async (_resolved, request) => {
-				gatewayRequests.push(request);
-				return { body: { ok: true, status: "ok", data: {} }, httpStatus: 200 };
+			lookupLoadedSkill: loadedSkills("shopify-commerce"),
+			executeGateway: async () => {
+				gatewayCalls += 1;
+				return { body: { ok: true, status: "success" }, httpStatus: 200 };
 			},
-		});
-		assert.equal((gatewayRequests[0]?.payload as { skillId?: string })?.skillId, undefined);
+		}), /must be called directly through divo_gateway/);
+		assert.equal(gatewayCalls, 0);
+	});
+
+	it("rejects stale skill provenance from an earlier run", async () => {
+		let gatewayCalls = 0;
+		await assert.rejects(
+			executeLocalBrokerRequest({
+				version: 1,
+				request: { op: "tools.invoke", payload: { toolId: "googleGmail", args: {} } },
+			}, activeCalls(), {
+				resolveConfig: () => config,
+				readCorrelation: async () => correlation,
+				lookupLoadedSkill: () => ({ runId: "run-0", skillId: "gmail-read" }),
+				executeGateway: async () => {
+					gatewayCalls += 1;
+					return { body: { ok: true, status: "ok", data: {} }, httpStatus: 200 };
+				},
+			}),
+			/Exact company skill required/,
+		);
+		assert.equal(gatewayCalls, 0);
 	});
 
 	it("rejects calls that are not owned by one active approved Bash execution", async () => {
@@ -289,6 +313,23 @@ describe("Divo local broker protocol", () => {
 		disconnected.abort();
 		await assert.rejects(pending, /cancelled/);
 		assert.equal(observedSignal?.aborted, true);
+	});
+
+	it("rejects a run or department rotation after the owning Bash call starts", async () => {
+		let executions = 0;
+		await assert.rejects(executeLocalBrokerRequest({
+			version: 1,
+			request: { op: "tools.invoke", payload: { toolId: "googleGmail", args: { operation: "search" } } },
+		}, activeCalls(), {
+			resolveConfig: () => config,
+			readCorrelation: async () => ({ ...correlation, departmentId: "dept-2" }),
+			lookupLoadedSkill: loadedSkills(),
+			executeGateway: async () => {
+				executions += 1;
+				throw new Error("unreachable");
+			},
+		}), /context changed/i);
+		assert.equal(executions, 0);
 	});
 
 	it("installs a credential-free CLI, serves one active Bash call, and cleans up its process state", async () => {

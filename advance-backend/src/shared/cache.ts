@@ -4,6 +4,8 @@ import type { InfraError } from './errors';
 /** Generic cache port. Infrastructure implements this; application depends on it. */
 export interface CachePort {
   get<T>(key: string): Promise<Result<T | null, InfraError>>;
+  /** Atomically read and delete a value. Security workflows use this for one-time state. */
+  take?<T>(key: string): Promise<Result<T | null, InfraError>>;
   set<T>(key: string, value: T, ttlSeconds?: number): Promise<Result<void, InfraError>>;
   /** Set only if key does not exist. Returns true if the key was set, false if it already existed. */
   setNx(key: string, value: unknown, ttlSeconds: number): Promise<Result<boolean, InfraError>>;

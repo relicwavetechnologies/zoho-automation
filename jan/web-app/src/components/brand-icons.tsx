@@ -42,6 +42,18 @@ export function AirtableIcon({ title = 'Airtable', ...props }: BrandIconProps) {
   )
 }
 
+/** Shopify bag mark, bundled locally so the desktop catalogue works offline. */
+export function ShopifyIcon({ title = 'Shopify', ...props }: BrandIconProps) {
+  return (
+    <svg viewBox="0 0 48 48" role="img" aria-label={title} {...props}>
+      <path fill="#95BF47" d="m39.2 10.6-5.1-.4c-.1-.5-.5-.8-.9-.8-.2 0-.5.1-.7.2C31 5.4 28.6 3 25.8 3h-.4c-2 .1-3.7 1.4-5.1 3.7-1 .2-2 .5-3 .9-1-1.4-2.2-2-3.4-1.9-2.7.2-4.7 3.7-5.5 7.4l-4.1 1.3L8.1 43l24.8 2 10.8-2.7z" />
+      <path fill="#5E8E3E" d="M39.2 10.6 33 45l10.7-2.7z" />
+      <path fill="#fff" d="M29.5 15.7c-1.1-.6-2.5-.9-3.8-.8-3.1.2-3.2 2.2-3.2 2.7.2 2.7 7.2 2.7 7.6 8.5.3 4.6-2.4 7.9-6.4 8.2-4.8.3-7.5-2.3-7.5-2.3l1-4.2s2.7 2 4.9 1.8c1.5-.1 2-1.3 1.9-2.1-.2-3.5-5.9-3.3-6.3-8.6-.3-4.5 2.7-9.1 9.3-9.5 2.5-.2 3.8.5 3.8.5z" />
+      <path fill="#fff" d="M25.5 5.4h.3c1.7 0 3.3 1.7 4.4 4.6l-6.7.5c.6-2.6 1.4-4.5 2-5.1Zm-3.1 1.8c-.6 1.1-1.1 2.3-1.4 3.5l-3.6.7c1.1-2.2 2.9-3.6 5-4.2Zm-8.2.9c.5 0 1 .3 1.5.9a14.6 14.6 0 0 0-1.4 3.3l-3.5.9c.9-3 2.3-5 3.4-5.1Z" />
+    </svg>
+  )
+}
+
 /** Official Gmail 2026 product mark, bundled locally for offline desktop use. */
 export function GmailIcon({ title = 'Gmail', ...props }: BrandIconProps) {
   const gradientSuffix = useId().replaceAll(':', '')

@@ -101,13 +101,57 @@ test('real personal mutation resolves key drift and canonical recall survives se
     },
   });
 
+  const deleted = await commands.execute({
+    ...common,
+    sourceRef: 'run-1:delete-1',
+    evidence: { contract: 1, requestHash: 'delete-request-hash' },
+    command: {
+      action: 'delete',
+      subject: 'incident summary heading',
+      logicalKey: 'reports.incidentSummary.format',
+    },
+  });
+  const resurrected = await commands.execute({
+    ...common,
+    command: {
+      action: 'set',
+      subject: 'incident summary heading',
+      logicalKey: 'reports.incidentSummary.format',
+      facts: ['Recreated memories retain their original resource history.'],
+    },
+  });
+
   assert.equal(created.action, 'created');
   assert.equal(updated.action, 'updated');
   assert.equal(updated.resourceId, created.resourceId);
   assert.equal(updated.logicalKey, created.logicalKey);
+  assert.equal(deleted.action, 'deleted');
+  assert.equal(deleted.resourceId, created.resourceId);
+  assert.equal(resurrected.action, 'created');
+  assert.equal(resurrected.resourceId, created.resourceId);
+  assert.equal(resurrected.version, deleted.version + 1);
+  assert.deepEqual(await commands.recoverApplied({
+    companyId,
+    userId: ownerId,
+    sourceRef: 'run-1:delete-1',
+    requestHash: 'delete-request-hash',
+  }), {
+    action: 'deleted',
+    logicalKey: created.logicalKey,
+    resourceId: created.resourceId,
+    version: deleted.version,
+    projection: 'queued',
+  });
+  assert.equal(await commands.recoverApplied({
+    companyId,
+    userId: ownerId,
+    sourceRef: 'run-1:delete-1',
+    requestHash: 'different-request-hash',
+  }), null);
   assert.equal(await prisma!.knowledgeResource.count({
     where: { companyId, ownerUserId: ownerId, kind: 'memory', status: 'active' },
   }), 1);
+  assert.equal(await prisma!.knowledgeVersion.count({ where: { resourceId: created.resourceId } }), 3);
 
   const recall = new KnowledgeRecallService({
     permissions: { canInvoke: async () => ok(undefined) } as never,
@@ -116,12 +160,12 @@ test('real personal mutation resolves key drift and canonical recall survives se
     resources,
   });
   const recalled = await recall.recall({
-    query: 'incident summary heading',
+    query: 'recreated memories original resource history',
     ...common,
   });
   assert.equal(recalled.status, 'partial');
   assert.deepEqual(recalled.facts, [
-    { scope: 'personal', text: 'The incident summary heading is Green Falcon.' },
+    { scope: 'personal', text: 'Recreated memories retain their original resource history.' },
   ]);
 
   const leaked = await resources.searchMemories({

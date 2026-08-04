@@ -24,10 +24,9 @@ export function exactSkillReviewBlocks(input: {
     `**Exact content fingerprint (SHA-256):** \`${digest}\``,
     `**Complete procedure (${input.markdown.length} characters):**`,
   ].join('\n');
-  const escaped = escapeLarkMarkdown(input.markdown);
   const chunks: string[] = [];
-  for (let offset = 0; offset < escaped.length; offset += LARK_REVIEW_BLOCK_CHARS) {
-    chunks.push(escaped.slice(offset, offset + LARK_REVIEW_BLOCK_CHARS));
+  for (let offset = 0; offset < input.markdown.length; offset += LARK_REVIEW_BLOCK_CHARS) {
+    chunks.push(input.markdown.slice(offset, offset + LARK_REVIEW_BLOCK_CHARS));
   }
   return [prefix, ...(chunks.length > 0 ? chunks : ['_(empty)_'])];
 }

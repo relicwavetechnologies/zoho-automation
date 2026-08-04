@@ -14,7 +14,8 @@ import {
 	type GatewayRequestBody,
 	type GatewayResponseBody,
 } from "./gateway-client.ts";
-import { readDivoRunCorrelation } from "./run-correlation.ts";
+import { readDivoRunCorrelation, type DivoRunCorrelationV1 } from "./run-correlation.ts";
+import { authorizeToolInvocation, type LoadedSkillLookup } from "./skill-authorization.ts";
 
 const BROKER_PROTOCOL_VERSION = 1;
 const MAX_REQUEST_BYTES = 1_000_000;
@@ -57,6 +58,7 @@ export interface LocalBrokerResponseV1 {
 export interface ActiveBashCall {
 	toolCallId: string;
 	context: ApprovalContext;
+	correlation: DivoRunCorrelationV1;
 	nextBrokerCall: number;
 }
 
@@ -64,12 +66,14 @@ export interface LocalBrokerExecutionDependencies {
 	resolveConfig: typeof resolveDivoGatewayConfig;
 	readCorrelation: typeof readDivoRunCorrelation;
 	executeGateway: typeof executeGatewayRequest;
+	lookupLoadedSkill: LoadedSkillLookup;
 }
 
 const DEFAULT_EXECUTION_DEPENDENCIES: LocalBrokerExecutionDependencies = {
 	resolveConfig: resolveDivoGatewayConfig,
 	readCorrelation: readDivoRunCorrelation,
 	executeGateway: executeGatewayRequest,
+	lookupLoadedSkill: () => undefined,
 };
 
 function asRecord(value: unknown): JsonRecord | undefined {
@@ -139,15 +143,36 @@ export async function executeLocalBrokerRequest(
 		const config = dependencies.resolveConfig();
 		if ("error" in config) throw new Error(config.error);
 		const correlation = await dependencies.readCorrelation();
+		if (!sameCorrelation(correlation, active.correlation)) {
+			throw new Error("Divo run context changed after this Bash command started; the broker request was rejected.");
+		}
 		active.nextBrokerCall += 1;
 		const actionId = `${active.toolCallId}:broker:${active.nextBrokerCall}`;
 		const label = brokerLabel(input);
+		const payload = asRecord(input.request.payload);
+		if (
+			input.request.op === "tools.invoke"
+			&& (payload?.toolId === "shopifyOrders" || payload?.toolId === "shopifyCustomers")
+		) {
+			throw new Error("Protected Shopify record tools must be called directly through divo_gateway; divo-local cannot retain or print their results.");
+		}
+		const authorization = authorizeToolInvocation({
+			op: input.request.op,
+			toolId: payload?.toolId,
+			runId: correlation.runId,
+			lookup: dependencies.lookupLoadedSkill,
+			scheduling: payload?.toolId === "scheduledWorkflows",
+		});
+		if (authorization?.ok === false) throw new Error(authorization.message);
+		const authorizedPayload = authorization?.ok
+			? { ...(payload ?? {}), skillId: authorization.skillId }
+			: input.request.payload;
 		const request: GatewayRequestBody = {
 			op: input.request.op,
 			...(input.request.departmentId || correlation.departmentId
 				? { departmentId: input.request.departmentId ?? correlation.departmentId }
 				: {}),
-			...(Object.hasOwn(input.request, "payload") ? { payload: input.request.payload } : {}),
+			...(Object.hasOwn(input.request, "payload") ? { payload: authorizedPayload } : {}),
 			execution: {
 				version: 1,
 				threadId: correlation.threadId,
@@ -179,6 +204,13 @@ export async function executeLocalBrokerRequest(
 	} finally {
 		combinedSignal.dispose();
 	}
+}
+
+function sameCorrelation(left: DivoRunCorrelationV1, right: DivoRunCorrelationV1): boolean {
+	return left.threadId === right.threadId
+		&& left.runId === right.runId
+		&& left.departmentId === right.departmentId
+		&& left.channel === right.channel;
 }
 
 function combineAbortSignals(...signals: Array<AbortSignal | undefined>): {
@@ -275,11 +307,13 @@ export function registerLocalDivoBroker(
 		cliDirectory = undefined;
 	}
 
-	pi.on("tool_call", (event: ToolCallEvent, ctx) => {
+	pi.on("tool_call", async (event: ToolCallEvent, ctx) => {
 		if (event.toolName !== "bash") return undefined;
+		const correlation = await dependencies.readCorrelation();
 		activeCalls.set(event.toolCallId, {
 			toolCallId: event.toolCallId,
 			context: ctx,
+			correlation,
 			nextBrokerCall: 0,
 		});
 		return undefined;

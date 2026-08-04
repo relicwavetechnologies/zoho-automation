@@ -63,6 +63,10 @@ export interface LarkInteractiveMessageCard {
   readonly card: Record<string, unknown>;
 }
 
+export type LarkChatMode = 'p2p' | 'group' | 'topic';
+
+const MAX_CHAT_MEMBER_PAGES = 20;
+
 /**
  * SDK-backed client for Lark bot messaging APIs.
  * All business logic lives in LarkChannelAdapter, not here.
@@ -131,6 +135,63 @@ export class LarkMessagingClient {
       throw new Error('Lark interactive message did not include a valid card body');
     }
     return { chatId, card: parsed as Record<string, unknown> };
+  }
+
+  /** Resolve the provider-authoritative mode for one exact chat. */
+  async getChatMode(chatId: string): Promise<LarkChatMode> {
+    const data = await this.sdk.request<{ chat_mode?: string }>(
+      'GET',
+      `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}`,
+    );
+    const mode = data.chat_mode?.trim();
+    if (mode === 'p2p' || mode === 'group' || mode === 'topic') return mode;
+    throw new Error(`Lark chat response did not include a supported chat_mode for ${chatId}`);
+  }
+
+  /** Resolve an exact chat's live open-ID membership with bounded pagination. */
+  async listChatMemberOpenIds(chatId: string, limit = 1_000): Promise<string[]> {
+    const boundedLimit = Math.min(1_000, Math.max(1, limit));
+    const members = new Set<string>();
+    let pageToken: string | undefined;
+    let pageCount = 0;
+
+    while (members.size < boundedLimit) {
+      if (pageCount >= MAX_CHAT_MEMBER_PAGES) {
+        throw new Error(`Lark chat membership exceeded ${MAX_CHAT_MEMBER_PAGES} pages`);
+      }
+      pageCount += 1;
+      type ListMembersResponse = {
+        items?: Array<{ member_id?: string }>;
+        has_more?: boolean;
+        page_token?: string;
+      };
+      const data = await this.sdk.request<ListMembersResponse>(
+        'GET',
+        `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}/members`,
+        {
+          query: {
+            member_id_type: 'open_id',
+            page_size: Math.min(100, boundedLimit - members.size),
+            ...(pageToken ? { page_token: pageToken } : {}),
+          },
+        },
+      );
+      for (const item of data.items ?? []) {
+        const openId = item.member_id?.trim();
+        if (openId) members.add(openId);
+      }
+      if (!data.has_more) return [...members];
+      const nextPageToken = data.page_token?.trim();
+      if (!nextPageToken || nextPageToken === pageToken) {
+        throw new Error('Lark chat membership pagination did not advance');
+      }
+      pageToken = nextPageToken;
+    }
+
+    if (members.size >= boundedLimit) {
+      throw new Error(`Lark chat membership exceeds the bounded limit of ${boundedLimit}`);
+    }
+    return [...members];
   }
 
   /**

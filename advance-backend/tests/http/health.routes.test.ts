@@ -3,11 +3,16 @@ import { describe, it } from 'node:test';
 import type { Request, Response } from 'express';
 import { createHealthRoutes } from '../../src/http/health.routes.ts';
 
-function router(callback?: string, knowledgeHealth?: () => Promise<{ status: 'ok' | 'degraded' }>) {
+function router(
+  callback?: string,
+  knowledgeHealth?: () => Promise<{ status: 'ok' | 'degraded' }>,
+  callbackProbe?: (url: string) => Promise<boolean>,
+) {
   return createHealthRoutes({
     $queryRaw: async () => [{ ok: 1 }],
   } as any, {
     ...(callback ? { larkCardCallbackUrl: callback } : {}),
+    ...(callbackProbe ? { larkCardCallbackProbe: callbackProbe } : {}),
     ...(knowledgeHealth ? { knowledgeOperations: { health: knowledgeHealth } } : {}),
   });
 }
@@ -32,16 +37,35 @@ async function callGet(
 }
 
 describe('health routes', () => {
-  it('reports the configured human-card callback path without exposing its public host', async () => {
+  it('reports a reachable human-card callback without claiming provider-console verification', async () => {
     const response = await callGet(router(
       'https://example-tunnel.test/webhooks/lark/events',
+      undefined,
+      async () => true,
     ), '/lark-card-callback');
     assert.equal(response.status, 200);
     assert.deepEqual(response.body, {
-      status: 'ok',
+      status: 'reachable',
       callbackPath: '/webhooks/lark/events',
+      providerConfiguration: 'unverified',
     });
     assert.doesNotMatch(JSON.stringify(response.body), /example-tunnel/);
+  });
+
+  it('fails readiness when the configured callback URL is unreachable', async () => {
+    const response = await callGet(router(
+      'https://expired-tunnel.test/webhooks/lark/events',
+      undefined,
+      async () => false,
+    ), '/lark-card-callback');
+    assert.equal(response.status, 503);
+    assert.deepEqual(response.body, {
+      status: 'degraded',
+      reason: 'callback_url_unreachable',
+      callbackPath: '/webhooks/lark/events',
+      providerConfiguration: 'unverified',
+    });
+    assert.doesNotMatch(JSON.stringify(response.body), /expired-tunnel/);
   });
 
   it('fails readiness when interactive cards have no callback configuration', async () => {

@@ -91,6 +91,36 @@ describe('Share Memory provisioning', () => {
 });
 
 describe('Lark Share Memory review', () => {
+  it('never offers Personal from the shared-memory review when scope is omitted', async () => {
+    const fixture = createMemoryReviewFixture();
+    const result = await openMemoryReview(
+      fixture,
+      'proposal-shared-only',
+      ['Finance closes its weekly books every Friday.'],
+    );
+
+    assert.equal(result.opened, true);
+    const buttons = findCardButtons(parseCard(fixture.sentCards[0]));
+    assert.equal(buttons.some(button => button.text.content === 'Save to Personal'), false);
+    assert.ok(buttons.some(button => button.text.content === 'Save to Department: Finance'));
+    assert.ok(buttons.some(button => button.text.content === 'Save to Company'));
+  });
+
+  it('does not open a shared-memory card when Personal is the only authorized target', async () => {
+    const fixture = createMemoryReviewFixture({
+      knowledgeTargets: [{ scope: 'personal', label: 'Personal' }],
+    });
+    const result = await openMemoryReview(
+      fixture,
+      'proposal-personal-only',
+      ['Prefers concise weekly updates.'],
+    );
+
+    assert.equal(result.opened, false);
+    assert.match(result.message, /available shared memory target/i);
+    assert.equal(fixture.sentCards.length, 0);
+  });
+
   it('opens a department-only card for an explicit backend-routed department command', async () => {
     const fixture = createMemoryReviewFixture();
     const result = await openMemoryReview(
@@ -307,8 +337,10 @@ describe('Lark Share Memory review', () => {
       fixture.actor,
     );
 
-    assert.match(JSON.stringify(first.responseBody), /Memory decision received/);
-    assert.match(JSON.stringify(duplicate.responseBody), /Memory decision received/);
+    assert.deepEqual(first.responseBody, {
+      toast: { type: 'info', content: 'Memory decision received. Divo is processing it.' },
+    });
+    assert.deepEqual(duplicate.responseBody, first.responseBody);
     assert.deepEqual(fixture.enqueuedReviewIds, [value.reviewId]);
     assert.equal(fixture.publishCalls, 0);
 
@@ -318,6 +350,58 @@ describe('Lark Share Memory review', () => {
 
     await fixture.service.processQueuedDecision(value.reviewId);
     assert.equal(fixture.publishCalls, 1);
+  });
+
+  it('keeps a retryable queued decision durable until a later attempt succeeds', async () => {
+    const fixture = createMemoryReviewFixture({
+      queued: true,
+      retryablePublishFailures: 1,
+    });
+    await openMemoryReview(fixture, 'proposal-retry', ['Uses dark mode.']);
+    const button = findCardButtons(parseCard(fixture.sentCards[0]))
+      .find(candidate => candidate.text.content === 'Save to Department: Finance');
+    assert.ok(button);
+    const value = button.value as Record<string, string>;
+
+    await fixture.service.handle({ action: { value: button.value } }, fixture.actor);
+    await assert.rejects(
+      () => fixture.service.processQueuedDecision(value.reviewId),
+      /Retryable knowledge review decision failure/,
+    );
+    assert.equal(fixture.publishCalls, 1);
+    assert.equal(fixture.updatedCards.length, 0);
+
+    await fixture.service.processQueuedDecision(value.reviewId);
+    assert.equal(fixture.publishCalls, 2);
+    assert.match(JSON.stringify(parseCard(fixture.updatedCards.at(-1)!)), /Saved 1 reviewed fact/);
+
+    await fixture.service.processQueuedDecision(value.reviewId);
+    assert.equal(fixture.publishCalls, 2);
+  });
+
+  it('closes and clears a queued review only after retry exhaustion is finalized', async () => {
+    const fixture = createMemoryReviewFixture({ queued: true });
+    await openMemoryReview(fixture, 'proposal-exhausted', ['Uses dark mode.']);
+    const button = findCardButtons(parseCard(fixture.sentCards[0]))
+      .find(candidate => candidate.text.content === 'Save to Department: Finance');
+    assert.ok(button);
+    const value = button.value as Record<string, string>;
+
+    await fixture.service.handle({ action: { value: button.value } }, fixture.actor);
+    await fixture.service.finalizeQueuedDecisionFailure(
+      value.reviewId,
+      new Error('database unavailable'),
+    );
+
+    assert.match(JSON.stringify(parseCard(fixture.updatedCards.at(-1)!)), /Memory was not saved/);
+    await fixture.service.processQueuedDecision(value.reviewId);
+    assert.equal(fixture.publishCalls, 0);
+    const duplicate = await fixture.service.handle(
+      { action: { value: button.value } },
+      fixture.actor,
+    );
+    assert.equal(duplicate.ok, false);
+    assert.match(JSON.stringify(duplicate.responseBody), /expired or was already resolved/);
   });
 
   it('refreshes mutable role and department authority before a queued decision executes', async () => {
@@ -482,6 +566,7 @@ function createMemoryReviewFixture(options: {
   failCardUpdate?: boolean;
   queued?: boolean;
   callbacksConfigured?: boolean;
+  knowledgeTargets?: Array<Record<string, unknown>>;
   liveQueuedIdentity?: {
     userId: string;
     companyId: string;
@@ -489,6 +574,7 @@ function createMemoryReviewFixture(options: {
     channel: string;
     activeDepartmentId?: string;
   } | null;
+  retryablePublishFailures?: number;
 } = {}) {
   const values = new Map<string, unknown>();
   const sentCards: string[] = [];
@@ -563,7 +649,7 @@ function createMemoryReviewFixture(options: {
           toolId: 'knowledge',
           result: {
             operation: 'check_targets',
-            targets: [
+            targets: options.knowledgeTargets ?? [
               { scope: 'personal', label: 'Personal' },
               { scope: 'department', label: 'Finance', departmentId: 'dept-1' },
               { scope: 'department', label: 'Operations', departmentId: 'dept-2' },
@@ -589,6 +675,13 @@ function createMemoryReviewFixture(options: {
       publishRunContext = input.runContext;
       publishApprovalGate = input.approvalGate;
       if (options.publishGate) await options.publishGate;
+      if (publishCalls <= (options.retryablePublishFailures ?? 0)) {
+        return {
+          status: 'tool_error',
+          toolId: 'knowledge',
+          message: 'database unavailable',
+        };
+      }
       return {
         status: 'success',
         toolId: 'knowledge',
@@ -697,7 +790,23 @@ function findCardButtons(card: Record<string, any>): Array<{
   value: unknown;
   confirm?: unknown;
 }> {
-  return card.elements
-    .filter((element: Record<string, unknown>) => element['tag'] === 'action')
-    .flatMap((element: { actions: unknown[] }) => element.actions);
+  const buttons: Array<{ text: { content: string }; value: unknown; confirm?: unknown }> = [];
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    const element = value as Record<string, any>;
+    if (element.tag === 'button') {
+      buttons.push({
+        text: element.text,
+        value: element.value ?? element.behaviors?.[0]?.value,
+        ...(element.confirm ? { confirm: element.confirm } : {}),
+      });
+    }
+    Object.values(element).forEach(visit);
+  };
+  visit(card.body?.elements ?? card.elements ?? []);
+  return buttons;
 }

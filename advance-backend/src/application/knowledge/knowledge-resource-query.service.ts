@@ -33,6 +33,14 @@ export interface KnowledgeMemorySearchMatch {
   readonly coverage: number;
 }
 
+export interface CanonicalPersonalMemorySnapshotInput {
+  readonly companyId: string;
+  readonly userId: string;
+  readonly limit: number;
+  readonly maxFactChars: number;
+  readonly maxTotalChars: number;
+}
+
 /**
  * Read model for exact knowledge updates and governed-file retrieval.
  *
@@ -259,6 +267,68 @@ export class KnowledgeResourceQueryService {
       },
     });
   }
+}
+
+/**
+ * Read the Desktop boot snapshot from canonical Postgres state.
+ *
+ * This deliberately does not use the semantic-memory port. Boot context is
+ * identity-bound configuration, not a best-effort search result: only active
+ * personal resources owned by this user, with a matching current version and
+ * validated memory content, may cross this boundary.
+ */
+export async function getCanonicalPersonalMemorySnapshot(
+  prisma: PrismaClient,
+  input: CanonicalPersonalMemorySnapshotInput,
+): Promise<string[]> {
+  const limit = Math.max(1, Math.min(input.limit, 100));
+  const maxFactChars = Math.max(1, Math.min(input.maxFactChars, 500));
+  const maxTotalChars = Math.max(1, Math.min(input.maxTotalChars, 10_000));
+  const rows = await prisma.knowledgeResource.findMany({
+    where: {
+      companyId: input.companyId,
+      ownerUserId: input.userId,
+      scope: 'personal',
+      kind: 'memory',
+      status: 'active',
+    },
+    orderBy: { updatedAt: 'desc' },
+    take: MAX_CANDIDATES,
+    include: {
+      department: { select: { name: true } },
+      versions: {
+        orderBy: { version: 'desc' },
+        take: 1,
+        select: { version: true, contentJson: true },
+      },
+    },
+  });
+
+  const seen = new Set<string>();
+  const facts: string[] = [];
+  let totalChars = 0;
+  for (const row of rows) {
+    const detail = toDetail(row);
+    if (!detail || detail.kind !== 'memory') continue;
+    const content = knowledgeMemoryContentSchema.safeParse(detail.content);
+    if (!content.success) continue;
+    for (const rawFact of content.data.facts) {
+      const fact = rawFact.trim();
+      const key = normalizeSearch(fact);
+      if (
+        !key
+        || seen.has(key)
+        || fact.length > maxFactChars
+        || facts.length >= limit
+        || totalChars + fact.length > maxTotalChars
+      ) continue;
+      seen.add(key);
+      facts.push(fact);
+      totalChars += fact.length;
+    }
+    if (facts.length >= limit || totalChars >= maxTotalChars) break;
+  }
+  return facts;
 }
 
 type ResourceRow = Prisma.KnowledgeResourceGetPayload<{

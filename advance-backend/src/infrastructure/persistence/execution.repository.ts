@@ -171,6 +171,29 @@ export class ExecutionRepository {
   }
 
   /**
+   * Persist the run's protected-data classification as a monotonic latch.
+   * Once any batch observes protected data, later batches cannot clear it by
+   * omission. The returned value is the server-owned classification callers
+   * must use for trace redaction and learning decisions.
+   */
+  async observeProtectedData(executionId: string, observed: boolean): Promise<boolean> {
+    if (observed) {
+      const run = await this.prisma.executionRun.update({
+        where: { id: executionId },
+        data: { protectedDataObserved: true },
+        select: { protectedDataObserved: true },
+      });
+      return run.protectedDataObserved;
+    }
+
+    const run = await this.prisma.executionRun.findUniqueOrThrow({
+      where: { id: executionId },
+      select: { protectedDataObserved: true },
+    });
+    return run.protectedDataObserved;
+  }
+
+  /**
    * Append a structured event to the run's event stream.
    * Sequence numbers are managed by the caller (OrchestrationTracer).
    */

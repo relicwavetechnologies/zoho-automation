@@ -142,4 +142,6 @@ export interface FinalReply {
   readonly actions?:        readonly InteractiveAction[];
   readonly attachments?:    readonly { url: string; label?: string }[];
   readonly executionTrace?: string;
+  /** Protected replies may be delivered but must never be retained for replay. */
+  readonly retention?: 'transient';
 }

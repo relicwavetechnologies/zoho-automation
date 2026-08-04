@@ -352,10 +352,14 @@ export class LarkChannelAdapter implements ChannelAdapter {
       chatId: String(conversation.chatId),
       // Stored so a delivery that fails after the agent finished can be resent
       // without re-running the tools that produced it.
-      payload: buildLarkFinalDeliveryEnvelope(
-        conversation,
-        reply,
-      ) as unknown as Record<string, unknown>,
+      ...(reply.retention === 'transient'
+        ? {}
+        : {
+            payload: buildLarkFinalDeliveryEnvelope(
+              conversation,
+              reply,
+            ) as unknown as Record<string, unknown>,
+          }),
     });
 
     if (!reservation.ok) {

@@ -117,7 +117,7 @@ export class DefaultKnowledgeContentValidator implements KnowledgeContentValidat
       assetId: parsed.assetId,
       companyId: input.requester.companyId,
     });
-    if (!asset || asset.status === 'deleted' || asset.status === 'deleting') {
+    if (!asset || asset.status !== 'staged') {
       throw new KnowledgeMutationError('not_found', 'The staged file does not exist.');
     }
     if (asset.uploadedById !== input.requester.userId) {
@@ -129,7 +129,7 @@ export class DefaultKnowledgeContentValidator implements KnowledgeContentValidat
         'The staged file has no verified malware-scan evidence. Upload it again.',
       );
     }
-    if (asset.status === 'staged' && asset.expiresAt.getTime() <= Date.now()) {
+    if (asset.expiresAt.getTime() <= Date.now()) {
       throw new KnowledgeMutationError('conflict', 'The staged file expired. Upload it again.');
     }
     if (asset.knowledgeResourceId && asset.knowledgeResourceId !== input.existingResourceId) {

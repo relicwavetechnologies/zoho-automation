@@ -27,8 +27,8 @@ function resource(facts = ['The user prefers detailed answers.']) {
 
 function fixture(
   current: ReturnType<typeof resource> | null,
-  allow = true,
-  semanticMatches: ReturnType<typeof resource>[] = [],
+  allow: boolean | ((action: string) => boolean) = true,
+  semanticMatches?: ReturnType<typeof resource>[],
 ) {
   const proposals: any[] = [];
   const permissions: string[] = [];
@@ -37,7 +37,10 @@ function fixture(
     permissions: {
       canInvoke: async (_context, capability) => {
         permissions.push(String(capability.action));
-        return allow
+        const permitted = typeof allow === 'function'
+          ? allow(String(capability.action))
+          : allow;
+        return permitted
           ? ok(undefined)
           : err(new PermissionError({
               toolId: 'knowledge',
@@ -49,7 +52,7 @@ function fixture(
     },
     resources: {
       getPersonalMemoryByLogicalKey: async () => current,
-      searchMemories: async () => semanticMatches.map(match => ({
+      searchMemories: async () => (semanticMatches ?? (current ? [current] : [])).map(match => ({
         resource: match,
         score: 1,
         coverage: 1,
@@ -91,9 +94,9 @@ describe('personal memory command service', () => {
       logicalKey: 'communication.answers.detail',
       resourceId: '22222222-2222-4222-8222-222222222222',
       version: 1,
-      projection: 'completed',
+      projection: 'queued',
     });
-    assert.deepEqual(test.permissions, ['create']);
+    assert.deepEqual(test.permissions, ['read', 'create']);
     assert.equal(test.proposals[0].target.scope, 'personal');
     assert.equal(test.proposals[0].target.userId, 'user-1');
     assert.equal('baseVersion' in test.proposals[0], false);
@@ -113,7 +116,7 @@ describe('personal memory command service', () => {
     });
 
     assert.equal(result.action, 'updated');
-    assert.deepEqual(test.permissions, ['update']);
+    assert.deepEqual(test.permissions, ['read', 'update']);
     assert.equal(test.proposals[0].action, 'update');
     assert.equal(test.proposals[0].baseVersion, 2);
   });
@@ -159,8 +162,84 @@ describe('personal memory command service', () => {
       }),
       /more than one personal memory/i,
     );
-    assert.deepEqual(test.permissions, []);
+    assert.deepEqual(test.permissions, ['read']);
     assert.deepEqual(test.proposals, []);
+  });
+
+  it('denies an exact-facts no-op before returning its unchanged result', async () => {
+    const test = fixture(resource(), action => action === 'read');
+
+    await assert.rejects(
+      test.service.execute({
+        ...identity,
+        command: {
+          action: 'set',
+          subject: 'answer detail preference',
+          logicalKey: 'communication.answers.detail',
+          facts: ['The user prefers detailed answers.'],
+        },
+      }),
+      /denied/i,
+    );
+    assert.deepEqual(test.permissions, ['read', 'update']);
+    assert.deepEqual(test.proposals, []);
+  });
+
+  it('rejects a subject that resolves to a different exact logical key', async () => {
+    const current = resource();
+    const different = {
+      ...resource(['The user prefers concise answers.']),
+      resourceId: '33333333-3333-4333-8333-333333333333',
+      logicalKey: 'communication.response.detail',
+    };
+    const test = fixture(current, true, [different]);
+
+    await assert.rejects(
+      test.service.execute({
+        ...identity,
+        command: {
+          action: 'delete',
+          subject: 'concise response preference',
+          logicalKey: current.logicalKey,
+        },
+      }),
+      /logical key and subject do not identify the same/i,
+    );
+    assert.deepEqual(test.permissions, ['read']);
+    assert.deepEqual(test.proposals, []);
+  });
+
+  it('rejects an exact logical key when the supplied subject matches no memory', async () => {
+    const test = fixture(resource(), true, []);
+
+    await assert.rejects(
+      test.service.execute({
+        ...identity,
+        command: {
+          action: 'delete',
+          subject: 'an unrelated topic',
+          logicalKey: 'communication.answers.detail',
+        },
+      }),
+      /logical key and subject do not identify the same/i,
+    );
+    assert.deepEqual(test.permissions, ['read']);
+    assert.deepEqual(test.proposals, []);
+  });
+
+  it('does not claim immediate projection completion for a committed mutation', async () => {
+    const test = fixture(null);
+    const result = await test.service.execute({
+      ...identity,
+      command: {
+        action: 'set',
+        subject: 'answer detail preference',
+        logicalKey: 'communication.answers.detail',
+        facts: ['The user prefers detailed answers.'],
+      },
+    });
+
+    assert.equal(result.projection, 'queued');
   });
 
   it('returns a verified no-op for the exact existing facts', async () => {
@@ -176,7 +255,8 @@ describe('personal memory command service', () => {
     });
 
     assert.equal(result.action, 'unchanged');
-    assert.deepEqual(test.permissions, []);
+    assert.equal(result.projection, 'queued');
+    assert.deepEqual(test.permissions, ['read', 'update']);
     assert.deepEqual(test.proposals, []);
   });
 
@@ -192,7 +272,7 @@ describe('personal memory command service', () => {
     });
 
     assert.equal(result.action, 'deleted');
-    assert.deepEqual(test.permissions, ['delete']);
+    assert.deepEqual(test.permissions, ['read', 'delete']);
     assert.equal(test.proposals[0].action, 'delete');
     assert.equal(test.proposals[0].baseVersion, 2);
     assert.equal('content' in test.proposals[0], false);

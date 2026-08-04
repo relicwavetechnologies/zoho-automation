@@ -94,7 +94,7 @@ services:
     image: ${DIVO_BACKEND_IMAGE:?DIVO_BACKEND_IMAGE is required}
     env_file:
       - ${DIVO_ENV_FILE:-/dev/null}
-    command: ["pnpm", "prisma", "db", "push", "--skip-generate"]
+    command: ["pnpm", "schema:sync"]
     depends_on:
       divo-postgres:
         condition: service_healthy

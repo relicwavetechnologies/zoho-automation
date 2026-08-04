@@ -62,6 +62,7 @@ interface RunState {
 	seq: number;
 	buffer: TraceEvent[];
 	learningTools: Array<{ toolName: string; isError: boolean }>;
+	protectedDataObserved: boolean;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -137,6 +138,7 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 			seq: 0,
 			buffer: [],
 			learningTools: [],
+			protectedDataObserved: false,
 		};
 		pendingArgs.clear();
 		return run;
@@ -177,6 +179,7 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 				...(run.threadId ? { threadId: run.threadId } : {}),
 				...(run.runtimeChannel ? { runtimeChannel: run.runtimeChannel } : {}),
 				usageAuthority: run.proxyOwnsUsage ? "proxy" : "desktop",
+				...(run.protectedDataObserved ? { protectedDataObserved: true } : {}),
 				events: batch,
 			}),
 			signal: AbortSignal.timeout(POST_TIMEOUT_MS),
@@ -276,6 +279,7 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 		guard(() => {
 			const input = pendingArgs.get(event.toolCallId);
 			pendingArgs.delete(event.toolCallId);
+			if (isProtectedShopifyInvocation(event.toolName, input)) ensureRun().protectedDataObserved = true;
 			push({
 				kind: "tool",
 				toolName: event.toolName,
@@ -359,6 +363,14 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 			);
 		});
 	});
+}
+
+function isProtectedShopifyInvocation(toolName: string, input: unknown): boolean {
+	if (toolName !== "divo_gateway") return false;
+	const request = asRecord(input);
+	if (request?.op !== "tools.invoke") return false;
+	const toolId = asRecord(request.payload)?.toolId;
+	return toolId === "shopifyOrders" || toolId === "shopifyCustomers";
 }
 
 /** Extract only bounded text needed for the backend's manager-learning pass. */

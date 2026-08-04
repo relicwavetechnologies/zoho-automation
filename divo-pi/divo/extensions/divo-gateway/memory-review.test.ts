@@ -45,9 +45,10 @@ function reviewRequest(): MemoryReviewRequestV1 {
 
 function dependencies(options: {
 	onRequest?: (request: unknown) => void;
+	onOptions?: (options: { signal?: AbortSignal } | undefined) => void;
 	targets?: unknown[];
 	authorityError?: string;
-	commitError?: Error;
+	applyError?: Error;
 } = {}): MemoryReviewDependencies {
 	return {
 		resolveConfig: () => ({
@@ -55,8 +56,9 @@ function dependencies(options: {
 			memberToken: "member-token",
 		}),
 		resolveSkillId: () => "share-memory-skill",
-		callGateway: async (_config, gatewayRequest) => {
+		callGateway: async (_config, gatewayRequest, requestOptions) => {
 			options.onRequest?.(gatewayRequest);
+			options.onOptions?.(requestOptions);
 			if (gatewayRequest.op === "tools.invoke") {
 				const args = (gatewayRequest.payload as { args?: { operation?: string } }).args;
 				if (args?.operation === "check_targets") {
@@ -86,23 +88,16 @@ function dependencies(options: {
 				}
 				if (args?.operation === "propose") {
 					return {
-						httpStatus: 200,
+						httpStatus: 400,
 						body: {
-							ok: true,
-							status: "success",
-							data: {
-								result: {
-									operation: "propose",
-									mutationId: "00000000-0000-4000-8000-000000000001",
-									contentHash: "a".repeat(64),
-									status: "awaiting_requester_review",
-								},
-							},
+							ok: false,
+							status: "local_approval_required",
+							error: { message: "Direct mutation invocation requires local approval." },
 						},
 					};
 				}
 				if (args?.operation === "apply") {
-					if (options.commitError) throw options.commitError;
+					if (options.applyError) throw options.applyError;
 					return {
 						httpStatus: 200,
 						body: {
@@ -122,6 +117,39 @@ function dependencies(options: {
 					};
 				}
 				throw new Error(`unexpected knowledge operation: ${String(args?.operation)}`);
+			}
+			if (gatewayRequest.op === "tools.prepare") {
+				return {
+					httpStatus: 200,
+					body: {
+						ok: true,
+						status: "success",
+						data: {
+							intentId: "intent-1",
+							kind: "knowledge.memory.publish",
+							action: "create",
+							title: "Review shared memory",
+							presentation: { facts: proposal.bullets },
+						},
+					},
+				};
+			}
+			if (gatewayRequest.op === "tools.commit") {
+				return {
+					httpStatus: 200,
+					body: {
+						ok: true,
+						status: "success",
+						data: {
+							result: {
+								operation: "propose",
+								mutationId: "00000000-0000-4000-8000-000000000001",
+								contentHash: "a".repeat(64),
+								status: "awaiting_requester_review",
+							},
+						},
+					},
+				};
 			}
 			if (gatewayRequest.op === "knowledge.review.decide") {
 				return {
@@ -155,6 +183,21 @@ describe("memory review protocol", () => {
 	it("validates proposal-only input and rejects model-asserted targets", () => {
 		const validated = validateMemoryReviewProposal(proposal);
 		assert.equal(validated.bullets.length, 2);
+		assert.throws(
+			() => validateMemoryReviewProposal({ proposalId: "proposal-1", bullets: [] }),
+			/bounded bullet list/,
+		);
+		assert.throws(
+			() => validateMemoryReviewProposal({ ...proposal, unexpected: true }),
+			/unsupported fields/,
+		);
+		assert.throws(
+			() => validateMemoryReviewProposal({
+				...proposal,
+				bullets: [{ ...proposal.bullets[0], unexpected: true }],
+			}),
+			/bullets\[0\] contains unsupported fields/,
+		);
 		assert.equal(
 			validateMemoryReviewProposal({ ...proposal, requestedScope: "company" }).requestedScope,
 			"company",
@@ -201,16 +244,31 @@ describe("memory review protocol", () => {
 				),
 			/not allowed/,
 		);
+		assert.throws(
+			() => parseMemoryReviewResponse({
+				version: 1,
+				proposalId: "proposal-1",
+				decision: "cancel",
+				selectedTarget: null,
+				selectedBulletIds: [],
+				unexpected: true,
+			}, reviewRequest()),
+			/unsupported fields/,
+		);
 	});
 
 	it("renders only freshly backend-authorized targets and publishes the exact selection", async () => {
 		let title = "";
 		let cardRequest: MemoryReviewRequestV1 | undefined;
 		const calls: unknown[] = [];
+		const requestSignals: Array<AbortSignal | undefined> = [];
+		const controller = new AbortController();
 		const result = await executeMemoryReview(
+			"tool-call-1",
 			proposal,
 			{
 				ui: {
+					confirm: async () => true,
 					editor: async (nextTitle: string, prefill?: string) => {
 						title = nextTitle;
 						cardRequest = JSON.parse(prefill ?? "") as MemoryReviewRequestV1;
@@ -226,13 +284,19 @@ describe("memory review protocol", () => {
 						});
 					},
 				} as never,
+				signal: controller.signal,
 			},
-			dependencies({ onRequest: (call) => calls.push(call) }),
+			dependencies({
+				onRequest: (call) => calls.push(call),
+				onOptions: options => requestSignals.push(options?.signal),
+			}),
 		);
 
 		assert.equal(title, DIVO_MEMORY_REVIEW_PROTOCOL_TITLE);
 		assert.deepEqual(cardRequest?.runCorrelation, { version: 1, threadId: "thread-1", runId: "run-1" });
 		assert.deepEqual(cardRequest?.allowedTargets, canonicalTargets);
+		assert.ok(requestSignals.length > 0);
+		assert.ok(requestSignals.every(signal => signal === controller.signal));
 		assert.equal(
 			cardRequest?.allowedTargets.some(
 				(target) =>
@@ -258,7 +322,7 @@ describe("memory review protocol", () => {
 					},
 				},
 				{
-					op: "tools.invoke",
+					op: "tools.prepare",
 					departmentId: "dept-1",
 					payload: {
 						skillId: "share-memory-skill",
@@ -273,6 +337,11 @@ describe("memory review protocol", () => {
 							content: { facts: ["Acme uses net-60 payment terms."] },
 						},
 					},
+				},
+				{
+					op: "tools.commit",
+					departmentId: "dept-1",
+					payload: { intentId: "intent-1" },
 				},
 				{
 					op: "knowledge.review.decide",
@@ -312,10 +381,36 @@ describe("memory review protocol", () => {
 		assert.equal((result.details as { published?: boolean }).published, true);
 	});
 
+	it("requires local approval before committing the exact shared-memory proposal", async () => {
+		const calls: Array<{ op?: string }> = [];
+		const result = await executeMemoryReview(
+			"tool-call-approval",
+			proposal,
+			{
+				ui: {
+					editor: async () => JSON.stringify({
+						version: 1,
+						proposalId: "proposal-1",
+						decision: "approve",
+						selectedTarget: { scope: "department", departmentId: "dept-1" },
+						selectedBulletIds: ["fact-1"],
+					}),
+					confirm: async () => false,
+				} as never,
+			},
+			dependencies({ onRequest: (call) => calls.push(call as { op?: string }) }),
+		);
+
+		assert.deepEqual(calls.map((call) => call.op), ["tools.invoke", "tools.prepare"]);
+		assert.match(result.content[0]?.text ?? "", /cancelled.*nothing was saved/i);
+		assert.equal((result.details as { published?: boolean }).published, false);
+	});
+
 	it("does not open a card when the model supplies fabricated targets", async () => {
 		let editorCalls = 0;
 		let gatewayCalls = 0;
 		const result = await executeMemoryReview(
+			"tool-call-1",
 			{
 				...proposal,
 				allowedTargets: [{ scope: "company", label: "Fabricated" }],
@@ -346,6 +441,7 @@ describe("memory review protocol", () => {
 		const calls: unknown[] = [];
 		try {
 			const result = await executeMemoryReview(
+				"tool-call-1",
 				{ ...proposal, requestedScope: "company" },
 				{ ui: { editor: async () => { throw new Error("desktop editor must not open"); } } as never },
 				dependencies({ onRequest: (call) => calls.push(call) }),
@@ -379,9 +475,37 @@ describe("memory review protocol", () => {
 		}
 	});
 
+	it("requires an explicit shared scope before opening a Lark memory review", async () => {
+		writeFileSync(runContextPath, JSON.stringify({
+			version: 1,
+			threadId: "thread-1",
+			runId: "run-1",
+			channel: "lark",
+		}));
+		const calls: unknown[] = [];
+		try {
+			const result = await executeMemoryReview(
+				"tool-call-lark-scope",
+				proposal,
+				{ ui: { editor: async () => { throw new Error("desktop editor must not open"); } } as never },
+				dependencies({ onRequest: (call) => calls.push(call) }),
+			);
+			assert.equal(calls.length, 0);
+			assert.match(result.content[0]?.text ?? "", /explicit department or company scope/i);
+			assert.equal((result.details as { decision: string }).decision, "cancel");
+		} finally {
+			writeFileSync(runContextPath, JSON.stringify({
+				version: 1,
+				threadId: "thread-1",
+				runId: "run-1",
+			}));
+		}
+	});
+
 	it("does not open a card when backend storage is unavailable", async () => {
 		let editorCalls = 0;
 		const result = await executeMemoryReview(
+			"tool-call-1",
 			proposal,
 			{
 				ui: {
@@ -401,6 +525,7 @@ describe("memory review protocol", () => {
 	it("does not open a card when personal is the only backend target", async () => {
 		let editorCalls = 0;
 		const result = await executeMemoryReview(
+			"tool-call-1",
 			proposal,
 			{
 				ui: {
@@ -421,6 +546,7 @@ describe("memory review protocol", () => {
 		let editorCalls = 0;
 		let gatewayCalls = 0;
 		const result = await executeMemoryReview(
+			"tool-call-1",
 			{ ...proposal, departmentId: "dept-other" },
 			{
 				ui: {
@@ -444,6 +570,7 @@ describe("memory review protocol", () => {
 			onRequest: (call) => calls.push(call as { op?: string }),
 		});
 		const revised = await executeMemoryReview(
+			"tool-call-1",
 			proposal,
 			{
 				ui: {
@@ -463,6 +590,7 @@ describe("memory review protocol", () => {
 		assert.equal((revised.details as { decision: string }).decision, "revise");
 
 		const cancelled = await executeMemoryReview(
+			"tool-call-1",
 			proposal,
 			{ ui: { editor: async () => undefined } as never },
 			deps,
@@ -476,9 +604,11 @@ describe("memory review protocol", () => {
 
 	it("reports apply transport failure as indeterminate and preserves mutationId", async () => {
 		const result = await executeMemoryReview(
+			"tool-call-1",
 			proposal,
 			{
 				ui: {
+					confirm: async () => true,
 					editor: async () =>
 						JSON.stringify({
 							version: 1,
@@ -492,7 +622,7 @@ describe("memory review protocol", () => {
 						}),
 				} as never,
 			},
-			dependencies({ commitError: new Error("connection reset") }),
+			dependencies({ applyError: new Error("connection reset") }),
 		);
 
 		assert.match(result.content[0]?.text ?? "", /could not be confirmed/i);

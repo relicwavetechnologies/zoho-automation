@@ -5,10 +5,14 @@ import {
   KNOWLEDGE_REVIEW_DECISION_QUEUE_NAME,
   type KnowledgeReviewDecisionJobPayload,
 } from './knowledge-review-decision.queue';
+import { isUnrecoverableJobError } from '../../shared/queue-retry';
 
 export interface KnowledgeReviewDecisionWorkerDeps {
   redisUrl: string;
-  service: Pick<LarkKnowledgeReviewService, 'processQueuedDecision'>;
+  service: Pick<
+    LarkKnowledgeReviewService,
+    'processQueuedDecision' | 'finalizeQueuedDecisionFailure'
+  >;
   logger: Logger;
   concurrency?: number;
 }
@@ -25,7 +29,19 @@ export class KnowledgeReviewDecisionWorker {
     this.worker = new Worker<KnowledgeReviewDecisionJobPayload>(
       KNOWLEDGE_REVIEW_DECISION_QUEUE_NAME,
       async (job: Job<KnowledgeReviewDecisionJobPayload>) => {
-        await this.deps.service.processQueuedDecision(job.data.reviewId);
+        try {
+          await this.deps.service.processQueuedDecision(job.data.reviewId);
+        } catch (error) {
+          const finalAttempt = isUnrecoverableJobError(error)
+            || job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+          if (finalAttempt) {
+            await this.deps.service.finalizeQueuedDecisionFailure(
+              job.data.reviewId,
+              error,
+            );
+          }
+          throw error;
+        }
       },
       {
         connection: { url: this.deps.redisUrl },

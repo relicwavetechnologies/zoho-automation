@@ -54,6 +54,9 @@ export const DEPARTMENT_GRANT_ONLY_TOOLS: readonly CanonicalToolId[] = [
   // deliberate grant rather than something that already happened by default.
   'aitableDatasheets',
   'aitableFields',
+  'shopifyAnalytics',
+  'shopifyOrders',
+  'shopifyCustomers',
 ];
 
 /**

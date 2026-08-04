@@ -164,6 +164,46 @@ describe('KnowledgeDocumentSearchService', () => {
     assert.deepEqual(unavailable.results, []);
   });
 
+  it('reports canonical hydration failure explicitly and returns no unverified text', async () => {
+    const { service, documents } = build();
+    documents.keyword = [candidate('keyword', 0)];
+    documents.hydrateAuthorized = async () => {
+      throw new Error('canonical document store unavailable');
+    };
+
+    const result = await service.search(identity);
+
+    assert.equal(result.status, 'unavailable');
+    assert.equal(result.degradation, 'canonical_hydration_failed');
+    assert.deepEqual(result.results, []);
+  });
+
+  it('uses scope precedence only when reciprocal relevance ties and preserves provenance', async () => {
+    const { service, documents, semantic } = build();
+    documents.keyword = [candidate('personal', 0, 'personal')];
+    semantic!.results = [candidate('company', 0, 'company')];
+
+    const result = await service.search(identity);
+
+    assert.deepEqual(result.results.map(item => ({ resourceId: item.resourceId, scope: item.scope })), [
+      { resourceId: 'company', scope: 'company' },
+      { resourceId: 'personal', scope: 'personal' },
+    ]);
+  });
+
+  it('honors cancellation while document retrieval is pending', async () => {
+    const controller = new AbortController();
+    const documents = new FakeDocuments();
+    documents.keywordSearch = async () => new Promise<never>(() => {});
+    const { service } = build({ documents, semantic: null });
+
+    const pending = service.search({ ...identity, abortSignal: controller.signal });
+    controller.abort();
+
+    await assert.rejects(pending, (error: unknown) =>
+      error instanceof DOMException && error.name === 'AbortError');
+  });
+
   it('fails before membership or retrieval when the central permission authority denies read', async () => {
     const { service, documents, semantic } = build({ allowed: false });
     await assert.rejects(service.search(identity), /permission denied/);

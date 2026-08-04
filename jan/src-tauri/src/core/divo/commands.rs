@@ -154,14 +154,6 @@ pub(crate) async fn refresh_runtime_context<R: Runtime>(app: &AppHandle<R>) -> R
     }
     .await;
 
-    // A cached persona is authority-scoped data. Never keep it after its
-    // freshness or department binding can no longer be verified. The
-    // authenticated member's department names remain safe local context and
-    // must survive so recall can still rank them after a failed persona fetch.
-    if result.is_err() {
-        write_runtime_context(&context_path, &member_context)?;
-    }
-
     result
 }
 
@@ -686,6 +678,11 @@ pub async fn divo_set_session<R: Runtime>(
     save_divo_session(&app, &session)?;
     if let Err(error) = refresh_runtime_context(&app).await {
         log::warn!("divo.runtime_context.refresh_failed after=login error={error}");
+        sync_pi_divo_env(&app)?;
+        emit_divo_session_changed(&app, true);
+        return Err(format!(
+            "Divo signed in, but runtime context is unavailable: {error}"
+        ));
     }
     sync_pi_divo_env(&app)?;
     emit_divo_session_changed(&app, true);
@@ -768,6 +765,10 @@ pub async fn divo_validate_session<R: Runtime>(
         if is_runtime_context_access_denied(&error) {
             clear_unavailable_department(&app).await?;
             emit_divo_session_changed(&app, true);
+        } else {
+            return Err(format!(
+                "Divo session is valid, but runtime context is unavailable: {error}"
+            ));
         }
     }
 
@@ -779,7 +780,8 @@ mod tests {
     use super::{
         department_management_request, is_runtime_context_access_denied,
         member_departments_runtime_context, reconcile_session, thread_title_request_body,
-        DepartmentManagementOperation, DivoDepartment, DivoSession,
+        validated_connection_uuid, validated_shopify_domain, DepartmentManagementOperation,
+        DivoDepartment, DivoSession,
     };
     use serde_json::json;
 
@@ -820,6 +822,32 @@ mod tests {
         assert!(!is_runtime_context_access_denied(
             "Divo gateway returned HTTP 403 Forbidden: {}"
         ));
+    }
+
+    #[test]
+    fn validates_shopify_desktop_route_inputs_before_building_paths() {
+        assert_eq!(
+            validated_shopify_domain(" Nayab.MyShopify.com ").unwrap(),
+            "nayab.myshopify.com"
+        );
+        for invalid in [
+            "https://nayab.myshopify.com",
+            "-nayab.myshopify.com",
+            "nayab-.myshopify.com",
+            "nayab.example.com",
+            "a/b.myshopify.com",
+        ] {
+            assert!(
+                validated_shopify_domain(invalid).is_err(),
+                "accepted {invalid}"
+            );
+        }
+        assert_eq!(
+            validated_connection_uuid("11111111-1111-4111-8111-111111111111", "connectionId")
+                .unwrap(),
+            "11111111-1111-4111-8111-111111111111"
+        );
+        assert!(validated_connection_uuid("../other", "connectionId").is_err());
     }
 
     #[test]
@@ -1070,10 +1098,17 @@ pub async fn divo_set_department<R: Runtime>(
 
     session.department_id = next_department_id;
     save_divo_session(&app, &session)?;
-    // The previous department's prompt must not survive a failed refresh.
+    // The previous department's prompt must not survive a department change.
+    // If the new context cannot be verified, the command returns an error
+    // instead of silently presenting a successful switch with empty context.
     clear_cached_runtime_context(&app)?;
     if let Err(error) = refresh_runtime_context(&app).await {
         log::warn!("divo.runtime_context.refresh_failed after=department_change error={error}");
+        sync_pi_divo_env(&app)?;
+        emit_divo_session_changed(&app, true);
+        return Err(format!(
+            "Department changed, but runtime context is unavailable: {error}"
+        ));
     }
     sync_pi_divo_env(&app)?;
     emit_divo_session_changed(&app, true);
@@ -1084,12 +1119,20 @@ pub async fn divo_set_department<R: Runtime>(
 /// Re-write `pi-agent/divo.env` from stored session (e.g. before Pi start).
 #[tauri::command]
 pub async fn divo_sync_pi_env<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let mut refresh_error = None;
     if load_divo_session(&app)?.is_some() {
         if let Err(error) = refresh_runtime_context(&app).await {
             log::warn!("divo.runtime_context.refresh_failed before=pi_start error={error}");
+            refresh_error = Some(error);
         }
     }
-    sync_pi_divo_env(&app)
+    sync_pi_divo_env(&app)?;
+    if let Some(error) = refresh_error {
+        return Err(format!(
+            "Divo runtime context is unavailable; Pi was not started: {error}"
+        ));
+    }
+    Ok(())
 }
 
 /// Return the Divo home/workspace layout used by Pi.
@@ -1822,6 +1865,154 @@ pub async fn divo_airtable_disconnect_connection<R: Runtime>(
         &format!("/airtable/connections/{connection_id}"),
         None,
         "Airtable disconnect connection",
+    )
+    .await
+}
+
+fn validated_shopify_domain(value: &str) -> Result<String, String> {
+    let domain = value.trim().to_ascii_lowercase();
+    let store = domain
+        .strip_suffix(".myshopify.com")
+        .ok_or_else(|| "Use a valid *.myshopify.com store domain".to_string())?;
+    if store.is_empty()
+        || store.len() > 63
+        || !store.starts_with(|character: char| character.is_ascii_alphanumeric())
+        || !store.ends_with(|character: char| character.is_ascii_alphanumeric())
+        || !store.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        })
+    {
+        return Err("Use a valid *.myshopify.com store domain".into());
+    }
+    Ok(domain)
+}
+
+fn validated_connection_uuid(value: &str, label: &str) -> Result<String, String> {
+    Uuid::parse_str(value.trim())
+        .map(|id| id.to_string())
+        .map_err(|_| format!("{label} must be a valid UUID"))
+}
+
+/// Start or reconnect company-owned Shopify OAuth. The webview receives only
+/// the public provider URL; credentials remain in the backend.
+#[tauri::command]
+pub async fn divo_shopify_authorize_url<R: Runtime>(
+    app: AppHandle<R>,
+    shop_domain: Option<String>,
+    connection_id: Option<String>,
+) -> Result<String, String> {
+    let path = if let Some(connection_id) = connection_id.filter(|value| !value.trim().is_empty()) {
+        let connection_id = validated_connection_uuid(&connection_id, "connectionId")?;
+        format!("/shopify/connections/{connection_id}/authorize-url")
+    } else {
+        let shop_domain =
+            shop_domain.ok_or_else(|| "Shopify store domain is required".to_string())?;
+        let shop_domain = validated_shopify_domain(&shop_domain)?;
+        let mut url = reqwest::Url::parse("https://desktop.divo.invalid/shopify/authorize-url")
+            .map_err(|error| format!("Could not prepare Shopify authorize URL: {error}"))?;
+        url.query_pairs_mut()
+            .append_pair("shopDomain", &shop_domain);
+        format!("/shopify/authorize-url?{}", url.query().unwrap_or_default())
+    };
+    let parsed = divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        &path,
+        None,
+        "Shopify authorize URL",
+    )
+    .await?;
+    parsed
+        .get("data")
+        .and_then(|data| data.get("authorizeUrl"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            format!("Shopify authorize URL response missing data.authorizeUrl: {parsed}")
+        })
+}
+
+#[tauri::command]
+pub async fn divo_shopify_status<R: Runtime>(app: AppHandle<R>) -> Result<Value, String> {
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        "/shopify/status",
+        None,
+        "Shopify status",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn divo_shopify_manage_access<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+) -> Result<Value, String> {
+    let connection_id = validated_connection_uuid(&connection_id, "connectionId")?;
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        &format!("/connections/{connection_id}/manage"),
+        None,
+        "Shopify manage access",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn divo_shopify_grant_access<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+    grantee_type: String,
+    grantee_id: String,
+    access: String,
+) -> Result<Value, String> {
+    let connection_id = validated_connection_uuid(&connection_id, "connectionId")?;
+    if access != "read_only" {
+        return Err("Shopify grants must be read-only".into());
+    }
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::POST,
+        &format!("/connections/{connection_id}/grants"),
+        Some(json!({ "granteeType": grantee_type, "granteeId": grantee_id, "access": access })),
+        "Shopify grant access",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn divo_shopify_revoke_access<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+    grant_id: String,
+) -> Result<Value, String> {
+    let connection_id = validated_connection_uuid(&connection_id, "connectionId")?;
+    let grant_id = validated_connection_uuid(&grant_id, "grantId")?;
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::DELETE,
+        &format!("/connections/{connection_id}/grants/{grant_id}"),
+        None,
+        "Shopify revoke access",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn divo_shopify_disconnect_connection<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+) -> Result<Value, String> {
+    let connection_id = validated_connection_uuid(&connection_id, "connectionId")?;
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::DELETE,
+        &format!("/connections/{connection_id}"),
+        None,
+        "Shopify disconnect connection",
     )
     .await
 }

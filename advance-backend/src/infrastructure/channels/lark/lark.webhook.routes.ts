@@ -65,6 +65,7 @@ import {
   type LarkAudioAttachment,
 } from './lark-attachment.parser';
 import type { LarkChatContextService } from '../../../application/chat-context/lark-chat-context.service';
+import { isProtectedShopifyToolId } from '../../../application/shopify/shopify-protected-result';
 import type {
   GroupContextBlock,
   GroupContextHydrator,
@@ -1586,13 +1587,14 @@ export async function runPiAndDeliver(input: {
     channelDeliveryRepo?: ChannelDeliveryRepoPort;
     groupContextHydrator?: Pick<GroupContextHydrator, 'hydrate'>;
     prisma?: PrismaClient;
+    chatContextService?: Pick<LarkChatContextService, 'clear'>;
     onRetryableDelivery?: () => Promise<void>;
   };
   log: Logger;
   attachments?: readonly LarkPiRuntimeAttachment[];
   signal?: AbortSignal;
   rethrowRuntimeFailureAfterDelivery?: boolean;
-}): Promise<string | null> {
+}): Promise<{ text: string; protectedDataUsed: boolean } | null> {
   const { incoming, runContext, conversation, deps, log, attachments, signal } = input;
   const controller = new AbortController();
   const runtimeSignal = signal
@@ -1701,6 +1703,7 @@ export async function runPiAndDeliver(input: {
     error => log.warn('webhook.pi.status_failed', { error: String(error), correlationId }),
   );
   let nextProgressPublishAt = startedAtMs + 1_000;
+  let protectedDataUsed = false;
 
   const queueProgressStatus = (): void => {
     const now = Date.now();
@@ -1710,6 +1713,26 @@ export async function runPiAndDeliver(input: {
   };
 
   const reportProgress = (event: LarkPiProgressEvent): void => {
+    const beginsProtectedRead = event.type === 'tool_start'
+      && !!event.toolId
+      && isProtectedShopifyToolId(event.toolId);
+    if (beginsProtectedRead) {
+      protectedDataUsed = true;
+      ledger.clear();
+      declared = undefined;
+      actionCount = 0;
+    }
+    if (protectedDataUsed) {
+      // Tool arguments, progress details, model narration, and declared plans
+      // may all contain customer/order data. Keep only a generic live state
+      // once a protected read starts; the final reply is transient below.
+      phase = 'Working';
+      state = 'working';
+      liveLabel = 'Working…';
+      queueStatus();
+      return;
+    }
+
     if (event.type === 'starting') {
       phase = 'Thinking';
       state = 'thinking';
@@ -1804,6 +1827,7 @@ export async function runPiAndDeliver(input: {
     });
     text = result.text;
     actions = result.actions;
+    protectedDataUsed ||= result.protectedDataUsed === true;
   } catch (error) {
     runtimeFailure = error;
     if (runtimeSignal.aborted) {
@@ -1824,7 +1848,7 @@ export async function runPiAndDeliver(input: {
     deps.adapter.cleanupAbortController(correlationId);
   }
 
-  if (runtimeFailure && deps.conversationRepo) {
+  if (runtimeFailure && deps.conversationRepo && !protectedDataUsed) {
     const conversationKey = runtimeThreadId;
     const scope = { companyId: String(runContext.companyId), channel: 'lark' as const };
     const sourceMessageId = String(incoming.messageId);
@@ -1861,13 +1885,31 @@ export async function runPiAndDeliver(input: {
   queueStatus();
   await settleStatus();
 
-  const transcript = runTranscript([...ledger.values()]);
+  if (protectedDataUsed && incoming.chatType === 'group') {
+    if (!deps.chatContextService) {
+      throw new Error('Protected group delivery requires a chat-context erasure service');
+    }
+    const cleared = await deps.chatContextService.clear(
+      String(runContext.companyId),
+      String(incoming.chatId),
+    );
+    if (!cleared.ok) {
+      log.error('webhook.pi.protected_context_clear_failed', {
+        error: cleared.error.message,
+        correlationId: incoming.traceId,
+      });
+      throw cleared.error;
+    }
+  }
+
+  const transcript = protectedDataUsed ? undefined : runTranscript([...ledger.values()]);
   const delivered = await deps.adapter.sendFinalReply(conversation, {
     kind: 'final',
     text,
     format: 'markdown',
     ...(actions?.length ? { actions } : {}),
     ...(transcript ? { executionTrace: transcript } : {}),
+    ...(protectedDataUsed ? { retention: 'transient' as const } : {}),
   });
   if (!delivered.ok) {
     log.error('webhook.pi.delivery_failed', {
@@ -1880,7 +1922,7 @@ export async function runPiAndDeliver(input: {
   if (input.rethrowRuntimeFailureAfterDelivery && runtimeFailure) {
     throw runtimeFailure;
   }
-  return text;
+  return { text, protectedDataUsed };
 }
 
 /**
@@ -2585,7 +2627,7 @@ async function processInBackground(
       ...incoming,
       text: syntheticText,
     });
-    const replyText = await runPiAndDeliver({
+    const delivery = await runPiAndDeliver({
       incoming: withLarkSenderName(enrichedIncoming, identity),
       runContext,
       conversation,
@@ -2595,7 +2637,13 @@ async function processInBackground(
       ...(signal ? { signal } : {}),
     });
 
-    await storeGroupAssistantSnapshot({ incoming, identity, deps, replyText, log });
+    await storeGroupAssistantSnapshot({
+      incoming,
+      identity,
+      deps,
+      replyText: delivery?.protectedDataUsed ? null : delivery?.text ?? null,
+      log,
+    });
     return;
   }
 
@@ -2719,7 +2767,7 @@ async function processInBackground(
   // read `imageUrls`, so quote-replying an image asked Divo about something it
   // could not see, and it answered from the surrounding text.
   const quotedImages = quotedImageAttachments(parentRef?.imageUrls, log);
-  const replyText = await runPiAndDeliver({
+  const delivery = await runPiAndDeliver({
     incoming: withLarkSenderName(effectiveIncoming, identity),
     runContext,
     conversation,
@@ -2729,7 +2777,13 @@ async function processInBackground(
     ...(signal ? { signal } : {}),
   });
 
-  await storeGroupAssistantSnapshot({ incoming, identity, deps, replyText, log });
+  await storeGroupAssistantSnapshot({
+    incoming,
+    identity,
+    deps,
+    replyText: delivery?.protectedDataUsed ? null : delivery?.text ?? null,
+    log,
+  });
 }
 
 export async function bootstrapLarkFirstTouchIdentity(

@@ -5,7 +5,8 @@
  *   - Admin permission mutation routes (set/delete company or dept permissions)
  *   - Any future admin action (agent config changes, user overrides, etc.)
  *
- * All writes are fire-and-forget (non-fatal on DB failure).
+ * Administrative writes may be fire-and-forget. Sensitive data-access paths
+ * use recordRequired() and fail closed when the audit row cannot be persisted.
  * All reads are company-scoped.
  */
 
@@ -50,24 +51,25 @@ export class AuditService {
 
   /** Record an administrative action. Non-fatal — logs and swallows DB errors. */
   record(input: RecordAuditInput): void {
-    const safeMetadata = input.metadata
-      ? sanitizeMeta(input.metadata)
-      : undefined;
-
-    this.prisma.auditLog.create({
-      data: {
-        actorId:   input.actorId,
-        action:    input.action,
-        outcome:   input.outcome,
-        ...(input.companyId  ? { companyId: input.companyId }              : {}),
-        ...(safeMetadata     ? { metadata:  safeMetadata as object }       : {}),
-      },
-    }).catch(e => {
+    this.write(input).catch(e => {
       this.logger.warn('audit.record.failed', {
         action: input.action,
         error:  String(e),
       });
     });
+  }
+
+  /** Persist a compliance-critical audit row or reject the caller. */
+  async recordRequired(input: RecordAuditInput): Promise<void> {
+    try {
+      await this.write(input);
+    } catch (error) {
+      this.logger.error('audit.record_required.failed', {
+        action: input.action,
+        error: String(error),
+      });
+      throw error;
+    }
   }
 
   /** Query audit logs for a company, newest first. */
@@ -92,6 +94,19 @@ export class AuditService {
       metadata:  l.metadata,
       createdAt: l.createdAt.toISOString(),
     }));
+  }
+
+  private async write(input: RecordAuditInput): Promise<void> {
+    const safeMetadata = input.metadata ? sanitizeMeta(input.metadata) : undefined;
+    await this.prisma.auditLog.create({
+      data: {
+        actorId: input.actorId,
+        action: input.action,
+        outcome: input.outcome,
+        ...(input.companyId ? { companyId: input.companyId } : {}),
+        ...(safeMetadata ? { metadata: safeMetadata as object } : {}),
+      },
+    });
   }
 }
 

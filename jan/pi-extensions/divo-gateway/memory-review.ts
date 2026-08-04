@@ -13,6 +13,7 @@ import {
 	type GatewayRequestBody,
 	type GatewayResponseBody,
 } from "./gateway-client.ts";
+import { approvePreparedDivoIntent } from "./approval-gate.ts";
 import { readDivoRunCorrelation, type DivoRunCorrelationV1 } from "./run-correlation.ts";
 
 export const DIVO_MEMORY_REVIEW_PROTOCOL_TITLE = "divo_memory_review_v1";
@@ -65,13 +66,14 @@ export interface MemoryReviewDependencies {
 	callGateway: (
 		config: DivoGatewayConfig,
 		request: GatewayRequestBody,
+		options?: { signal?: AbortSignal },
 	) => Promise<{ body: GatewayResponseBody; httpStatus: number }>;
 }
 
 const DEFAULT_DEPENDENCIES: MemoryReviewDependencies = {
 	resolveConfig: resolveDivoGatewayConfig,
 	resolveSkillId: () => undefined,
-	callGateway: callDivoGateway,
+	callGateway: (config, request, options) => callDivoGateway(config, request, fetch, options),
 };
 
 const MEMORY_REVIEW_PARAMS = Type.Object({
@@ -82,8 +84,8 @@ const MEMORY_REVIEW_PARAMS = Type.Object({
 		Type.Object({
 			id: Type.String(),
 			text: Type.String(),
-		}),
-		{ maxItems: MAX_MEMORY_REVIEW_BULLETS },
+		}, { additionalProperties: false }),
+		{ minItems: 1, maxItems: MAX_MEMORY_REVIEW_BULLETS },
 	),
 	requestedScope: Type.Optional(Type.Union([
 		Type.Literal("department"),
@@ -92,7 +94,7 @@ const MEMORY_REVIEW_PARAMS = Type.Object({
 		description:
 			"Use only when the user explicitly asked for team/department or company memory. Department is bound by the backend to the authenticated active department.",
 	})),
-});
+}, { additionalProperties: false });
 
 function asRecord(value: unknown): JsonRecord | undefined {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -126,6 +128,9 @@ export function validateMemoryReviewProposal(value: unknown): MemoryReviewPropos
 			"departmentId must not be supplied; the extension uses the desktop-selected department",
 		);
 	}
+	if (Object.keys(record).some((key) => !["proposalId", "bullets", "requestedScope"].includes(key))) {
+		throw new Error("memory review request contains unsupported fields");
+	}
 	const proposalId = boundedString(record.proposalId, "proposalId", 200);
 	const requestedScope = record.requestedScope;
 	if (
@@ -135,13 +140,16 @@ export function validateMemoryReviewProposal(value: unknown): MemoryReviewPropos
 	) {
 		throw new Error("requestedScope must be department or company");
 	}
-	if (!Array.isArray(record.bullets) || record.bullets.length > MAX_MEMORY_REVIEW_BULLETS) {
+	if (!Array.isArray(record.bullets) || record.bullets.length < 1 || record.bullets.length > MAX_MEMORY_REVIEW_BULLETS) {
 		throw new Error("memory review must contain a bounded bullet list");
 	}
 	const bulletIds = new Set<string>();
 	const bullets = record.bullets.map((value, index) => {
 		const bullet = asRecord(value);
 		if (!bullet) throw new Error(`bullets[${index}] must be an object`);
+		if (Object.keys(bullet).some((key) => !["id", "text"].includes(key))) {
+			throw new Error(`bullets[${index}] contains unsupported fields`);
+		}
 		const id = boundedString(bullet.id, `bullets[${index}].id`, 200);
 		if (bulletIds.has(id)) throw new Error("memory bullet ids must be unique");
 		bulletIds.add(id);
@@ -208,6 +216,7 @@ async function buildAuthorizedReviewRequest(
 	execution: GatewayExecutionContext,
 	skillId: string,
 	dependencies: MemoryReviewDependencies,
+	signal?: AbortSignal,
 ): Promise<MemoryReviewPayloadV1> {
 	const authority = await dependencies.callGateway(config, {
 		op: "tools.invoke",
@@ -217,7 +226,7 @@ async function buildAuthorizedReviewRequest(
 			toolId: "knowledge",
 			args: { operation: "check_targets" },
 		},
-	});
+	}, signal ? { signal } : {});
 	if (!authority.body.ok || authority.body.status !== "success") {
 		throw new Error(formatGatewayResponse(authority.body).text);
 	}
@@ -248,6 +257,9 @@ export function parseMemoryReviewResponse(
 	if (!record || record.version !== 1) {
 		throw new Error("unsupported memory review response");
 	}
+	if (Object.keys(record).some((key) => !["version", "proposalId", "decision", "selectedTarget", "selectedBulletIds", "revision"].includes(key))) {
+		throw new Error("memory review response contains unsupported fields");
+	}
 	if (boundedString(record.proposalId, "proposalId", 200) !== request.proposalId) {
 		throw new Error("memory review response does not match its proposal");
 	}
@@ -270,6 +282,9 @@ export function parseMemoryReviewResponse(
 	if (record.selectedTarget !== null && record.selectedTarget !== undefined) {
 		const target = asRecord(record.selectedTarget);
 		if (!target) throw new Error("selectedTarget must be an object or null");
+		if (Object.keys(target).some((key) => !["scope", "departmentId"].includes(key))) {
+			throw new Error("selected target contains unsupported fields");
+		}
 		const scope = target.scope;
 		if (scope !== "department" && scope !== "company") {
 			throw new Error("selected target scope is invalid");
@@ -309,6 +324,7 @@ async function presentMemoryReview(
 	request: MemoryReviewPayloadV1,
 	runCorrelation: DivoRunCorrelationV1,
 ): Promise<MemoryReviewResponseV1> {
+	ctx.signal?.throwIfAborted();
 	const correlatedRequest: MemoryReviewRequestV1 = {
 		...request,
 		runCorrelation,
@@ -317,6 +333,7 @@ async function presentMemoryReview(
 		DIVO_MEMORY_REVIEW_PROTOCOL_TITLE,
 		JSON.stringify(correlatedRequest),
 	);
+	ctx.signal?.throwIfAborted();
 	if (raw === undefined) {
 		return {
 			version: 1,
@@ -336,11 +353,13 @@ async function presentMemoryReview(
 }
 
 async function publishApprovedMemory(
+	toolCallId: string,
 	request: MemoryReviewPayloadV1,
 	response: MemoryReviewResponseV1,
 	config: DivoGatewayConfig,
 	execution: GatewayExecutionContext,
 	skillId: string,
+	ctx: Pick<ExtensionContext, "ui" | "signal">,
 	dependencies: MemoryReviewDependencies,
 ): Promise<
 	| {
@@ -348,6 +367,7 @@ async function publishApprovedMemory(
 			body: GatewayResponseBody;
 			httpStatus: number;
 	  }
+	| { outcome: "cancelled"; error: string }
 	| { outcome: "indeterminate"; intentId: string; error: string }
 > {
 	const target = response.selectedTarget!;
@@ -357,8 +377,8 @@ async function publishApprovedMemory(
 		.map((bullet) => bullet.text);
 	const departmentId = target.scope === "department" ? target.departmentId : undefined;
 	const content = { facts };
-	const proposed = await dependencies.callGateway(config, {
-		op: "tools.invoke",
+	const prepared = await dependencies.callGateway(config, {
+		op: "tools.prepare",
 		execution,
 		...(departmentId ? { departmentId } : {}),
 		payload: {
@@ -374,11 +394,35 @@ async function publishApprovedMemory(
 				content,
 			},
 		},
-	});
-	if (!proposed.body.ok || proposed.body.status !== "success") {
-		return { outcome: "confirmed", ...proposed };
+	}, ctx.signal ? { signal: ctx.signal } : {});
+	if (!prepared.body.ok || prepared.body.status !== "success") {
+		return { outcome: "confirmed", ...prepared };
 	}
-	const proposalEnvelope = asRecord(proposed.body.data);
+
+	let intentId: string;
+	try {
+		intentId = await approvePreparedDivoIntent(toolCallId, prepared.body.data, {
+			ui: ctx.ui,
+			cwd: process.cwd(),
+			...(ctx.signal ? { signal: ctx.signal } : {}),
+		});
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		if (/did not approve/i.test(message)) {
+			return { outcome: "cancelled", error: message };
+		}
+		throw error;
+	}
+	const committed = await dependencies.callGateway(config, {
+		op: "tools.commit",
+		execution,
+		...(departmentId ? { departmentId } : {}),
+		payload: { intentId },
+	}, ctx.signal ? { signal: ctx.signal } : {});
+	if (!committed.body.ok || committed.body.status !== "success") {
+		return { outcome: "confirmed", ...committed };
+	}
+	const proposalEnvelope = asRecord(committed.body.data);
 	const proposalResult = asRecord(proposalEnvelope?.result);
 	const mutationId = typeof proposalResult?.mutationId === "string"
 		? proposalResult.mutationId
@@ -395,7 +439,7 @@ async function publishApprovedMemory(
 			contentHash: contentHash ?? null,
 			decision: "approve",
 		},
-	});
+	}, ctx.signal ? { signal: ctx.signal } : {});
 	if (!reviewed.body.ok || reviewed.body.status !== "success") {
 		return { outcome: "confirmed", ...reviewed };
 	}
@@ -418,7 +462,7 @@ async function publishApprovedMemory(
 					content,
 				},
 			},
-		});
+		}, ctx.signal ? { signal: ctx.signal } : {});
 		return { outcome: "confirmed", ...applied };
 	} catch (error) {
 		return {
@@ -435,7 +479,11 @@ async function openLarkMemoryReview(
 	execution: GatewayExecutionContext,
 	skillId: string,
 	dependencies: MemoryReviewDependencies,
+	signal?: AbortSignal,
 ) {
+	if (!proposal.requestedScope) {
+		throw new Error("Lark shared-memory review requires an explicit department or company scope");
+	}
 	const opened = await dependencies.callGateway(config, {
 		op: "knowledge.review.open",
 		execution,
@@ -448,7 +496,7 @@ async function openLarkMemoryReview(
 				? { requestedScope: proposal.requestedScope }
 				: {}),
 		},
-	});
+	}, signal ? { signal } : {});
 	const formatted = formatGatewayResponse(opened.body);
 	const data = asRecord(opened.body.data);
 	const message = typeof data?.message === "string" && data.message.trim()
@@ -469,8 +517,9 @@ async function openLarkMemoryReview(
 }
 
 export async function executeMemoryReview(
+	toolCallId: string,
 	params: unknown,
-	ctx: Pick<ExtensionContext, "ui">,
+	ctx: Pick<ExtensionContext, "ui" | "signal">,
 	dependencies: MemoryReviewDependencies = DEFAULT_DEPENDENCIES,
 ) {
 	let proposal: MemoryReviewProposalV1;
@@ -523,6 +572,7 @@ export async function executeMemoryReview(
 				execution,
 				skillId,
 				dependencies,
+				ctx.signal,
 			);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -542,6 +592,7 @@ export async function executeMemoryReview(
 			execution,
 			skillId,
 			dependencies,
+			ctx.signal,
 		);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -581,13 +632,21 @@ export async function executeMemoryReview(
 
 	try {
 		const published = await publishApprovedMemory(
+			toolCallId,
 			request,
 			response,
 			resolved,
 			execution,
 			skillId,
+			ctx,
 			dependencies,
 		);
+		if (published.outcome === "cancelled") {
+			return {
+				content: [{ type: "text" as const, text: "The memory change was cancelled. Nothing was saved." }],
+				details: { ...response, published: false, outcome: "cancelled" },
+			};
+		}
 		if (published.outcome === "indeterminate") {
 			return {
 				content: [
@@ -636,7 +695,7 @@ export function registerMemoryReviewTool(
 		name: "divo_memory_review",
 		label: "Review shared memory",
 		description:
-			"Review durable department or company facts against the desktop-selected department and publish only the exact approved selection. When the user explicitly names team/department or company scope, pass that requestedScope. Personal preferences use the private background-learning path without review; never claim their persistence in the same reply.",
+			"Review durable department or company facts against the desktop-selected department and publish only the exact approved selection. Always pass requestedScope for Lark reviews; Personal is never a shared-memory target. Personal saves use divo_memory and are synchronously confirmed by its verified result.",
 		promptSnippet:
 			"Use divo_memory_review only for department or company memory after the Manage Knowledge skill checks backend authority.",
 		promptGuidelines: [
@@ -645,8 +704,8 @@ export function registerMemoryReviewTool(
 			"If the result requests revision, create a new bounded proposal from the revision and call this tool again. If cancelled, save nothing.",
 		],
 		parameters: MEMORY_REVIEW_PARAMS,
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			return executeMemoryReview(params, ctx, {
+		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+			return executeMemoryReview(toolCallId, params, ctx, {
 				...DEFAULT_DEPENDENCIES,
 				resolveSkillId: options.resolveLoadedSkillId ?? DEFAULT_DEPENDENCIES.resolveSkillId,
 			});

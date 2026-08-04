@@ -838,6 +838,22 @@ describe('connection governance', () => {
     assert.equal((body as any).data.adminOverride.actions.send.requestsPerMinute, 10);
   });
 
+  it('rejects connection-owner approval for company-owned Shopify connections', async () => {
+    const shopify = { ...fakeGovernedConnection, provider: 'shopify', ownerType: 'company', ownerUserId: null };
+    const { status, body } = await callRoute(makeRouter({ integrationConnections: [shopify] }), 'PUT', '/connections/conn-1/governance', {
+      body: {
+        adminOverride: {
+          version: 1,
+          actions: {
+            read: { mode: 'enforced', approval: 'connection_owner' },
+          },
+        },
+      },
+    });
+    assert.equal(status, 400);
+    assert.match((body as any).message, /connection_owner.*not available.*shopify/i);
+  });
+
   it('exposes company capability policies and persists an admin update', async () => {
     const list = await callRoute(makeRouter(), 'GET', '/capability-governance');
     assert.equal(list.status, 200);

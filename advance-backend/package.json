@@ -15,6 +15,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:push": "prisma db push",
+    "db:bootstrap-empty": "tsx scripts/bootstrap-empty-database.ts",
+    "schema:sync": "tsx scripts/sync-schema.ts",
     "provision:knowledge": "tsx scripts/provision-knowledge.ts",
     "provision:lark-skills": "tsx scripts/provision-lark-skills.ts",
     "provision:google-workspace-skills": "tsx scripts/provision-google-workspace-skills.ts",

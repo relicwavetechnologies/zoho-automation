@@ -1,7 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { ok } from '../../src/shared/result.ts';
-import { KnowledgeResourceQueryService } from '../../src/application/knowledge/knowledge-resource-query.service.ts';
+import {
+  getCanonicalPersonalMemorySnapshot,
+  KnowledgeResourceQueryService,
+} from '../../src/application/knowledge/knowledge-resource-query.service.ts';
 
 function row(overrides: Record<string, unknown> = {}) {
   return {
@@ -191,5 +194,51 @@ describe('KnowledgeResourceQueryService', () => {
     assert.ok(rawQuery.values.includes('company'));
     assert.ok(rawQuery.values.includes('user'));
     assert.ok(rawQuery.values.includes('weekly report format'));
+  });
+
+  it('hydrates the Desktop snapshot from active owned resources and matching current versions', async () => {
+    const resources = await getCanonicalPersonalMemorySnapshot({
+      knowledgeResource: {
+        findMany: async (args: any) => {
+          assert.deepEqual(args.where, {
+            companyId: 'company',
+            ownerUserId: 'user',
+            scope: 'personal',
+            kind: 'memory',
+            status: 'active',
+          });
+          return [
+            row({
+              id: 'new-memory',
+              kind: 'memory',
+              currentVersion: 4,
+              updatedAt: new Date('2026-08-01T00:00:00.000Z'),
+              versions: [{ version: 4, contentJson: { facts: [
+                'User prefers concise summaries.',
+                'User prefers concise summaries.',
+                'User wants weekly reports on Friday.',
+              ] } }],
+            }),
+            row({
+              id: 'stale-memory',
+              kind: 'memory',
+              currentVersion: 5,
+              versions: [{ version: 4, contentJson: { facts: ['Old version must not be injected.'] } }],
+            }),
+          ];
+        },
+      },
+    } as any, {
+      companyId: 'company',
+      userId: 'user',
+      limit: 12,
+      maxFactChars: 500,
+      maxTotalChars: 2_200,
+    });
+
+    assert.deepEqual(resources, [
+      'User prefers concise summaries.',
+      'User wants weekly reports on Friday.',
+    ]);
   });
 });

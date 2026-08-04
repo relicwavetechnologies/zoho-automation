@@ -35,6 +35,8 @@ export interface MemoryService {
     limit: number;
     maxFactChars: number;
     maxTotalChars: number;
+    /** Shared audiences must set this false so personal storage is never queried. */
+    includePersonal?: boolean;
   }): Promise<MemoryRecallResult>;
 
   getPersonalSnapshot(params: {

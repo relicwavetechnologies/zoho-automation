@@ -66,6 +66,14 @@ export interface KnowledgeMutationStore {
     companyId: string;
   }): Promise<KnowledgeMutationRecord | null>;
 
+  /** Durable recovery anchor for an exact explicit command after cache loss. */
+  findAppliedBySourceRef?(input: {
+    companyId: string;
+    requesterId: string;
+    sourceRef: string;
+    requestHash: string;
+  }): Promise<AppliedKnowledgeMutation | null>;
+
   confirmRequesterReview(input: {
     mutationId: string;
     companyId: string;

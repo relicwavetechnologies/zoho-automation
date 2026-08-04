@@ -25,6 +25,7 @@ import { TokenUsageService } from '../../application/observability/token-usage.s
 import { PersonaLearningService } from '../../application/persona-learning/persona-learning.service';
 import type { PersonaLearningToolSummary } from '../../application/persona-learning/persona-learning.types';
 import type { KnowledgeLearningService } from '../../application/knowledge/knowledge-learning.service';
+import { isProtectedShopifyToolId } from '../../application/shopify/shopify-protected-result';
 
 export interface TraceIngestRoutesDeps {
   prisma: PrismaClient;
@@ -103,6 +104,9 @@ const batchSchema = z.object({
   // Trace ingest still stores the full timeline but must not learn it again.
   runtimeChannel: z.literal('lark').optional(),
   usageAuthority: z.enum(['desktop', 'proxy']).default('desktop'),
+  // Conservative client observation: it may only increase redaction. Exact
+  // gateway tool envelopes remain the server's classification authority.
+  protectedDataObserved: z.literal(true).optional(),
   events:      z.array(eventSchema).min(1).max(500),
 });
 
@@ -131,10 +135,85 @@ export interface TraceIdentity {
   companyRole: string;
 }
 
+export interface BackendTraceProvenance {
+  readonly runId: string;
+  readonly executionId?: string;
+  readonly backendIssued: true;
+}
+
 export interface IngestResult {
   executionId: string;
   accepted:    number;
   failed:      number;
+}
+
+/**
+ * Admit learning only for a run the backend has already established.
+ *
+ * Desktop run IDs originate in the local Pi lifecycle, so existence alone is
+ * not enough: a desktop run must already have authoritative proxy model usage
+ * while it is still live. Lark runs instead use the exact backend-issued Pi
+ * lease run ID. Trace ingestion never mints learning authority from the body.
+ */
+export async function resolveBackendTraceProvenance(
+  prisma: Pick<PrismaClient, 'executionRun' | 'aiTokenUsage'>,
+  identity: TraceIdentity,
+  input: {
+    readonly runId: string;
+    readonly runtimeChannel?: 'lark';
+    readonly runtimeRunId?: string;
+    readonly runtimeThreadId?: string;
+    readonly threadId?: string;
+  },
+): Promise<BackendTraceProvenance | null> {
+  if (input.runtimeChannel === 'lark' && !input.runtimeRunId) return null;
+  if (input.runtimeRunId && input.runId !== input.runtimeRunId) return null;
+  if (input.runtimeThreadId && input.threadId && input.runtimeThreadId !== input.threadId) return null;
+
+  const expectedChannel = input.runtimeChannel ?? 'desktop';
+  const run = await prisma.executionRun.findUnique({
+    where: { requestId: input.runId },
+    select: {
+      id: true,
+      companyId: true,
+      userId: true,
+      channel: true,
+      entrypoint: true,
+      status: true,
+    },
+  });
+
+  if (run) {
+    if (
+      run.companyId !== identity.companyId
+      || run.userId !== identity.userId
+      || run.channel !== expectedChannel
+      || run.entrypoint !== 'pi'
+      || run.status !== 'running'
+    ) return null;
+
+    if (input.runtimeRunId) {
+      return { runId: input.runId, executionId: run.id, backendIssued: true };
+    }
+
+    const usage = await prisma.aiTokenUsage.findFirst({
+      where: {
+        executionRunId: run.id,
+        companyId: identity.companyId,
+        userId: identity.userId,
+        channel: 'desktop',
+      },
+      select: { id: true },
+    });
+    if (!usage) return null;
+    return { runId: input.runId, executionId: run.id, backendIssued: true };
+  }
+
+  // A valid runtime lease is itself backend-issued provenance. The run may
+  // not have been persisted yet when the first Lark trace batch races it.
+  return input.runtimeRunId
+    ? { runId: input.runId, backendIssued: true }
+    : null;
 }
 
 /**
@@ -150,17 +229,24 @@ export async function ingestTraceBatch(
   batch: TraceBatch,
   personaLearning?: PersonaLearningService,
   knowledgeLearning?: Pick<KnowledgeLearningService, 'captureCompletedTurn'>,
+  provenance?: BackendTraceProvenance,
 ): Promise<IngestResult> {
-  const executionId = await runs.findOrCreateByRequestId({
+  const batchContainsProtectedShopifyData = batch.protectedDataObserved === true
+    || batch.events.some(isProtectedShopifyTraceEvent);
+  const executionId = provenance?.executionId ?? await runs.findOrCreateByRequestId({
     requestId:  batch.runId,
     companyId:  identity.companyId,
     userId:     identity.userId,
-    channel:    'desktop',
+    channel:    batch.runtimeChannel ?? 'desktop',
     entrypoint: 'pi',
     ...(batch.threadId    ? { threadId:    batch.threadId }    : {}),
     ...(batch.sessionId   ? { chatId:      batch.sessionId }   : {}),
     ...(batch.agentTarget ? { agentTarget: batch.agentTarget } : {}),
   });
+  const containsProtectedShopifyData = await runs.observeProtectedData(
+    executionId,
+    batchContainsProtectedShopifyData,
+  );
 
   const ctx = {
     executionId,
@@ -177,28 +263,31 @@ export async function ingestTraceBatch(
       ev,
       ctx,
       batch.usageAuthority,
+      containsProtectedShopifyData,
     )),
   );
   const failed = results.filter((r) => r.status === 'rejected').length;
   if (failed > 0) {
     log.warn('trace-ingest.partial', { runId: batch.runId, failed, total: batch.events.length });
   }
-  await Promise.all([
-    capturePersonaLearningEvidence(personaLearning, log, {
-      executionId,
-      companyId: identity.companyId,
-      userId: identity.userId,
-      ...(batch.threadId ? { threadId: batch.threadId } : {}),
-      events: batch.events,
-    }),
-    capturePersonalLearning(batch.runtimeChannel === 'lark' ? undefined : knowledgeLearning, log, {
-      executionId,
-      companyId: identity.companyId,
-      userId: identity.userId,
-      companyRole: identity.companyRole,
-      events: batch.events,
-    }),
-  ]);
+  if (provenance?.backendIssued && !containsProtectedShopifyData) {
+    await Promise.all([
+      capturePersonaLearningEvidence(personaLearning, log, {
+        executionId,
+        companyId: identity.companyId,
+        userId: identity.userId,
+        ...(batch.threadId ? { threadId: batch.threadId } : {}),
+        events: batch.events,
+      }),
+      capturePersonalLearning(batch.runtimeChannel === 'lark' ? undefined : knowledgeLearning, log, {
+        executionId,
+        companyId: identity.companyId,
+        userId: identity.userId,
+        companyRole: identity.companyRole,
+        events: batch.events,
+      }),
+    ]);
+  }
   return { executionId, accepted: batch.events.length - failed, failed };
 }
 
@@ -248,9 +337,15 @@ async function persistEvent(
   ev: TraceEvent,
   ctx: { executionId: string; companyId: string; userId: string; agentTarget?: string; threadId?: string },
   usageAuthority: 'desktop' | 'proxy',
+  protectedRun: boolean,
 ): Promise<void> {
   if (ev.kind === 'tool') {
       const success = ev.isError !== true;
+      const protectedShopify = protectedShopifyTraceMetadata(ev);
+      const storedInput = protectedShopify ?? capValue(ev.input, PREVIEW_CAP);
+      const storedOutput = protectedShopify
+        ? '[REDACTED: governed Shopify protected-data result]'
+        : capValue(ev.output, PREVIEW_CAP);
       await runs.appendEvent({
         executionId: ctx.executionId,
         sequence:    ev.seq,
@@ -260,10 +355,12 @@ async function persistEvent(
         actorKey:    ev.toolName,
         title:       ev.toolName,
         status:      success ? 'ok' : 'error',
-        ...(ev.summary ? { summary: ev.summary } : {}),
+        ...(protectedShopify
+          ? { summary: 'Protected Shopify result redacted' }
+          : ev.summary ? { summary: ev.summary } : {}),
         payload: {
-          input:  capValue(ev.input, PREVIEW_CAP),
-          output: capValue(ev.output, PREVIEW_CAP),
+          input: storedInput,
+          output: storedOutput,
           isError: ev.isError ?? false,
         },
       });
@@ -275,10 +372,14 @@ async function persistEvent(
         actorKey:    ev.toolName,
         success,
         status:      success ? 'ok' : 'error',
-        ...(ev.summary ? { summary: ev.summary } : {}),
+        ...(protectedShopify
+          ? { summary: 'Protected Shopify result redacted' }
+          : ev.summary ? { summary: ev.summary } : {}),
         rawOutput: {
-          input:  capValue(ev.input, RAW_CAP),
-          output: capValue(ev.output, RAW_CAP),
+          input: protectedShopify ?? capValue(ev.input, RAW_CAP),
+          output: protectedShopify
+            ? '[REDACTED: governed Shopify protected-data result]'
+            : capValue(ev.output, RAW_CAP),
         },
       });
       return;
@@ -352,17 +453,59 @@ async function persistEvent(
       eventType:   ev.kind,
       actorType:   'engine',
       title:       ev.title ?? ev.kind,
-      ...(ev.summary ? { summary: ev.summary } : {}),
+      ...(protectedRun
+        ? { summary: 'Protected Shopify run summary redacted' }
+        : ev.summary ? { summary: ev.summary } : {}),
       ...(ev.status  ? { status:  ev.status }  : {}),
     });
 
     if (ev.kind === 'run_end') {
       if (ev.status === 'error') {
-        await runs.fail(ctx.executionId, 'pi_run_error', ev.summary ?? 'Run failed');
+        await runs.fail(
+          ctx.executionId,
+          'pi_run_error',
+          protectedRun ? 'Protected Shopify run failed; details redacted' : ev.summary ?? 'Run failed',
+        );
       } else {
-        await runs.complete(ctx.executionId, ev.summary);
+        await runs.complete(
+          ctx.executionId,
+          protectedRun ? 'Protected Shopify run completed; details redacted' : ev.summary,
+        );
       }
     }
+}
+
+/**
+ * Desktop traces are client-authored diagnostics, not an authority for data
+ * classification. Recognize only the closed gateway envelope and let the
+ * backend tool ID decide whether result content must be suppressed.
+ */
+function protectedShopifyTraceMetadata(
+  event: TraceEvent,
+): { readonly provider: 'shopify'; readonly toolId: string; readonly operation: string | null; readonly connectionId: string | null } | null {
+  if (event.kind !== 'tool' || event.toolName !== 'divo_gateway') return null;
+  const input = asRecord(event.input);
+  if (input?.['op'] !== 'tools.invoke') return null;
+  const payload = asRecord(input['payload']);
+  const toolId = payload?.['toolId'];
+  if (typeof toolId !== 'string' || !isProtectedShopifyToolId(toolId)) return null;
+  const args = asRecord(payload?.['args']);
+  return {
+    provider: 'shopify',
+    toolId,
+    operation: typeof args?.['operation'] === 'string' ? args['operation'] : null,
+    connectionId: typeof args?.['connectionId'] === 'string' ? args['connectionId'] : null,
+  };
+}
+
+function isProtectedShopifyTraceEvent(event: TraceEvent): boolean {
+  return protectedShopifyTraceMetadata(event) !== null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 async function capturePersonaLearningEvidence(
@@ -443,11 +586,42 @@ export function createTraceIngestRoutes(deps: TraceIngestRoutesDeps): Router {
       return;
     }
 
-    // Legacy clients do not declare ownership. Preserve the old deployment
-    // switch for them, while new clients merge their detailed timeline into the
-    // proxy-correlated run and explicitly defer only token usage to the proxy.
+    // Legacy clients do not declare ownership. Preserve the deployment kill
+    // switch before provenance lookup: this path stores nothing and cannot
+    // invoke either learning pipeline.
     if (deps.proxyOwnsTrace && parsed.data.usageAuthority === 'desktop') {
       res.status(202).json({ success: true, data: { skipped: true } });
+      return;
+    }
+
+    let provenance: BackendTraceProvenance | null;
+    try {
+      provenance = await resolveBackendTraceProvenance(
+        deps.prisma,
+        { companyId, userId, companyRole },
+        {
+          runId: parsed.data.runId,
+          ...(parsed.data.runtimeChannel ? { runtimeChannel: parsed.data.runtimeChannel } : {}),
+          ...(res.locals['runtimeRunId'] ? { runtimeRunId: res.locals['runtimeRunId'] as string } : {}),
+          ...(res.locals['runtimeThreadId'] ? { runtimeThreadId: res.locals['runtimeThreadId'] as string } : {}),
+          ...(parsed.data.threadId ? { threadId: parsed.data.threadId } : {}),
+        },
+      );
+    } catch (error) {
+      log.error('trace-ingest.provenance_check_failed', { runId: parsed.data.runId, error: String(error) });
+      res.status(503).json({
+        success: false,
+        code: 'trace_provenance_unavailable',
+        message: 'Execution provenance is temporarily unavailable. Please retry.',
+      });
+      return;
+    }
+    if (!provenance) {
+      res.status(403).json({
+        success: false,
+        code: 'trace_provenance_required',
+        message: 'Trace was not issued by an active Divo execution.',
+      });
       return;
     }
 
@@ -460,6 +634,7 @@ export function createTraceIngestRoutes(deps: TraceIngestRoutesDeps): Router {
         parsed.data,
         deps.personaLearning,
         deps.knowledgeLearning,
+        provenance,
       );
       res.status(202).json({ success: true, data: result });
     } catch (e) {

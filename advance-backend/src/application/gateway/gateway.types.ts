@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { TOOL_FAMILY_IDS } from '../../domain/tools/tool-id';
+import { CONNECTION_PROVIDER_IDS } from '../../domain/connections/connection-provider';
 
 export const GATEWAY_OPS = [
   'capabilities.get',
@@ -225,7 +226,7 @@ export const teachContextGetPayloadSchema = z.object({
 }).strict();
 
 export const connectionsListPayloadSchema = z.object({
-  provider: z.enum(['google_workspace', 'zoho', 'canva', 'airtable', 'lark']),
+  provider: z.enum(CONNECTION_PROVIDER_IDS),
 }).strict();
 
 export const toolsListPayloadSchema = z.object({

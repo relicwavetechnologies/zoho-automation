@@ -17,6 +17,7 @@ import {
   assertLarkReviewableSkill,
   exactSkillReviewBlocks,
 } from './knowledge-review-presentation';
+import { buildCallbackCard } from '../../infrastructure/channels/lark/lark-card.builder';
 
 /**
  * One Lark review surface for every shared knowledge mutation. The card only
@@ -76,6 +77,10 @@ export interface AuthenticatedCardActor {
 export interface CardCallbackResult {
   ok: boolean;
   responseBody: Record<string, unknown>;
+}
+
+interface QueuedDecisionExecutionResult extends CardCallbackResult {
+  retryable?: true;
 }
 
 export const KNOWLEDGE_REVIEW_OPENED_MESSAGE =
@@ -430,7 +435,7 @@ export class LarkKnowledgeReviewService {
         action: decision.action,
         reused: !reserved.value,
       });
-      return knowledgeReviewImmediateCard(buildKnowledgeReviewProcessingCard(request));
+      return knowledgeReviewAcceptedToast(request);
     }
 
     const lock = await this.cache.setNx(
@@ -454,8 +459,10 @@ export class LarkKnowledgeReviewService {
   }
 
   /**
-   * Runs in the durable BullMQ worker. The callback stores an authenticated,
-   * idempotent decision and returns to Lark immediately.
+   * Runs in the BullMQ worker. The callback stores an authenticated,
+   * idempotent decision and returns to Lark immediately. Redis remains the
+   * workflow store for this path; PostgreSQL reconstruction is a separate
+   * durability requirement and must not be implied here.
    */
   async processQueuedDecision(reviewId: string): Promise<void> {
     const [requestResult, decisionResult] = await Promise.all([
@@ -464,6 +471,22 @@ export class LarkKnowledgeReviewService {
     ]);
     if (!requestResult.ok) throw requestResult.error;
     if (!decisionResult.ok) throw decisionResult.error;
+    if (!requestResult.value && decisionResult.value) {
+      const removed = await this.cache.del(knowledgeReviewDecisionKey(reviewId));
+      if (!removed.ok) throw removed.error;
+      this.log.warn('knowledge_review.worker.orphan_decision_removed', { reviewId });
+      return;
+    }
+    if (requestResult.value && !decisionResult.value) {
+      await this.finishRequest(
+        requestResult.value,
+        buildKnowledgeReviewResolvedCard('failed', requestResult.value),
+      );
+      const removed = await this.cache.del(knowledgeReviewKey(reviewId));
+      if (!removed.ok) throw removed.error;
+      this.log.error('knowledge_review.worker.missing_decision', { reviewId });
+      return;
+    }
     if (!requestResult.value || !decisionResult.value) {
       this.log.info('knowledge_review.worker.already_terminal', { reviewId });
       return;
@@ -472,29 +495,47 @@ export class LarkKnowledgeReviewService {
     const decision = decisionResult.value;
     if (!request.ready) {
       await this.finishRequest(request, buildKnowledgeReviewResolvedCard('failed', request));
-      const removed = await this.cache.del(knowledgeReviewKey(reviewId));
-      if (!removed.ok) throw removed.error;
+      await this.clearQueuedDecision(reviewId);
       return;
     }
 
     const actor = await this.resolveQueuedActor(decision.actor);
     if (!actor) {
       await this.finishRequest(request, buildKnowledgeReviewResolvedCard('denied', request));
-      const removed = await this.cache.del(knowledgeReviewKey(reviewId));
-      if (!removed.ok) throw removed.error;
+      await this.clearQueuedDecision(reviewId);
       return;
     }
 
-    await this.executeDecision(request, decision, actor);
-    const removed = await this.cache.del(knowledgeReviewKey(reviewId));
-    if (!removed.ok) throw removed.error;
+    const result = await this.executeDecision(request, decision, actor, true);
+    if (result.retryable) {
+      throw new Error(`Retryable knowledge review decision failure for ${reviewId}`);
+    }
+    await this.clearQueuedDecision(reviewId);
+  }
+
+  /** Close durable review state only after BullMQ has exhausted every retry. */
+  async finalizeQueuedDecisionFailure(reviewId: string, error: unknown): Promise<void> {
+    const requestResult = await this.cache.get<KnowledgeReviewRequest>(knowledgeReviewKey(reviewId));
+    if (!requestResult.ok) throw requestResult.error;
+    if (requestResult.value) {
+      await this.finishRequest(
+        requestResult.value,
+        buildKnowledgeReviewResolvedCard('failed', requestResult.value),
+      );
+    }
+    await this.clearQueuedDecision(reviewId);
+    this.log.error('knowledge_review.worker.exhausted', {
+      reviewId,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   private async executeDecision(
     request: KnowledgeReviewRequest,
     decision: Pick<KnowledgeReviewQueuedDecision, 'action' | 'targetKey'>,
     actor: AuthenticatedCardActor,
-  ): Promise<CardCallbackResult> {
+    allowRetry = false,
+  ): Promise<QueuedDecisionExecutionResult> {
     if (decision.action === 'knowledge_review_cancel') {
       await this.finishRequest(request, buildKnowledgeReviewResolvedCard('cancelled', request));
       return knowledgeReviewToast(true, cancelledReviewMessage(request));
@@ -502,8 +543,11 @@ export class LarkKnowledgeReviewService {
 
     const live = await this.resolveLiveAuthority(actor, request.chatId);
     if (!live.ok) {
-      await this.finishRequest(request, buildKnowledgeReviewResolvedCard('failed', request));
-      return knowledgeReviewToast(false, `${live.message} Nothing was saved; open a new review to retry.`);
+      return this.failedDecision(
+        request,
+        `${live.message} Nothing was saved; open a new review to retry.`,
+        allowRetry,
+      );
     }
     const liveTarget = live.targets.find(target => reviewTargetKey(target) === decision.targetKey);
     if (!liveTarget) {
@@ -528,8 +572,11 @@ export class LarkKnowledgeReviewService {
       expectedAction: request.action === 'publish' ? 'create' : request.action,
     });
     if (proposed.status !== 'success') {
-      await this.finishRequest(request, buildKnowledgeReviewResolvedCard('failed', request));
-      return knowledgeReviewToast(false, proposed.message ?? 'Knowledge proposal could not be saved safely.');
+      return this.failedDecision(
+        request,
+        proposed.message ?? 'Knowledge proposal could not be saved safely.',
+        allowRetry && isRetryableKnowledgeOutcome(proposed.status),
+      );
     }
     const proposalResult = proposed.result as Record<string, unknown> | undefined;
     const mutationId = proposalResult?.['mutationId'];
@@ -546,12 +593,15 @@ export class LarkKnowledgeReviewService {
         expectedContentHash: contentHash ?? null,
       });
     } catch (error) {
-      await this.finishRequest(request, buildKnowledgeReviewResolvedCard('failed', request));
       this.log.warn('knowledge_review.confirm_failed', {
         reviewId: request.reviewId,
         error: error instanceof Error ? error.message : String(error),
       });
-      return knowledgeReviewToast(false, 'The exact reviewed content could not be confirmed.');
+      return this.failedDecision(
+        request,
+        'The exact reviewed content could not be confirmed.',
+        allowRetry,
+      );
     }
 
     const args: Record<string, unknown> = {
@@ -586,12 +636,15 @@ export class LarkKnowledgeReviewService {
       );
     }
 
-    await this.finishRequest(request, buildKnowledgeReviewResolvedCard('failed', request));
     this.log.warn('knowledge_review.publish_failed', {
       reviewId: request.reviewId,
       status: outcome.status,
     });
-    return knowledgeReviewToast(false, outcome.message ?? `${titleCase(reviewNoun(request))} could not be changed.`);
+    return this.failedDecision(
+      request,
+      outcome.message ?? `${titleCase(reviewNoun(request))} could not be changed.`,
+      allowRetry && isRetryableKnowledgeOutcome(outcome.status),
+    );
   }
 
   private async checkAuthority(
@@ -705,6 +758,34 @@ export class LarkKnowledgeReviewService {
       }
     }
   }
+
+  private async failedDecision(
+    request: KnowledgeReviewRequest,
+    message: string,
+    retryable: boolean,
+  ): Promise<QueuedDecisionExecutionResult> {
+    if (retryable) {
+      this.log.warn('knowledge_review.retryable_failure', { reviewId: request.reviewId });
+      return { ...knowledgeReviewToast(false, message), retryable: true };
+    }
+    await this.finishRequest(request, buildKnowledgeReviewResolvedCard('failed', request));
+    return knowledgeReviewToast(false, message);
+  }
+
+  private async clearQueuedDecision(reviewId: string): Promise<void> {
+    const [requestRemoved, decisionRemoved] = await Promise.all([
+      this.cache.del(knowledgeReviewKey(reviewId)),
+      this.cache.del(knowledgeReviewDecisionKey(reviewId)),
+    ]);
+    if (!requestRemoved.ok) throw requestRemoved.error;
+    if (!decisionRemoved.ok) throw decisionRemoved.error;
+  }
+}
+
+function isRetryableKnowledgeOutcome(status: string): boolean {
+  return status === 'tool_error'
+    || status === 'rate_limited'
+    || status === 'rate_limit_unavailable';
 }
 
 function requestedMemoryTargets(
@@ -712,7 +793,10 @@ function requestedMemoryTargets(
   requestedScope: OpenMemoryReviewInput['requestedScope'],
   activeDepartmentId: string | undefined,
 ): KnowledgeReviewTarget[] {
-  if (!requestedScope) return [...targets];
+  // `divo_memory_review` is the shared-memory path. Personal facts use the
+  // dedicated synchronous personal-memory command, so an omitted scope may
+  // offer every authorized shared target but must never broaden into Personal.
+  if (!requestedScope) return targets.filter(target => target.scope !== 'personal');
   if (requestedScope === 'company') {
     return targets.filter(target => target.scope === 'company');
   }
@@ -793,75 +877,44 @@ function reviewTargetKey(target: KnowledgeReviewTarget): string {
 function buildKnowledgeReviewCard(request: KnowledgeReviewRequest): string {
   const detailBlocks = reviewDetailBlocks(request);
   const noun = reviewNoun(request);
-  const card = {
-    config: { wide_screen_mode: true, update_multi: true },
-    header: {
-      title: {
-        tag: 'plain_text',
-        content: `Review ${request.targets.every(target => target.scope === 'personal') ? 'personal' : 'shared'} ${noun} before ${reviewActionVerb(request)}`,
-      },
-      template: 'blue',
-    },
-    elements: [
-      ...detailBlocks.map(details => ({
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: details,
+  return buildCallbackCard({
+    title: `Review ${request.targets.every(target => target.scope === 'personal') ? 'personal' : 'shared'} ${noun} before ${reviewActionVerb(request)}`,
+    template: 'blue',
+    markdownBlocks: detailBlocks,
+    note: request.targets.every(target => target.scope === 'personal')
+      ? `Personal ${noun} stays private to you and is saved only after your review.`
+      : `Department ${noun} stays inside that department. Company ${noun} is company-wide. Shared targets require a different authorized approver.`,
+    actions: [
+      ...request.targets.map(target => ({
+        label: reviewTargetButtonLabel(request, target),
+        style: 'primary' as const,
+        value: {
+          action: 'knowledge_review_publish',
+          reviewId: request.reviewId,
+          targetKey: reviewTargetKey(target),
+        },
+        confirm: {
+          title: `Confirm ${target.scope === 'personal' ? 'personal' : 'shared'} ${noun} target`,
+          text: request.kind === 'memory'
+            ? target.scope === 'company'
+              ? 'Send these exact facts for company-admin approval?'
+              : `Send these exact facts for ${target.label} department-manager approval?`
+            : target.scope === 'personal'
+              ? `Save this exact ${noun} change to your private knowledge?`
+              : target.scope === 'company'
+                ? `Send this exact ${noun} change for company-administrator approval?`
+                : `Send this exact ${noun} change for ${target.label} department-manager approval?`,
         },
       })),
       {
-        tag: 'note',
-        elements: [{
-          tag: 'plain_text',
-          content: request.targets.every(target => target.scope === 'personal')
-            ? `Personal ${noun} stays private to you and is saved only after your review.`
-            : `Department ${noun} stays inside that department. Company ${noun} is company-wide. Shared targets require a different authorized approver.`,
-        }],
-      },
-      { tag: 'hr' },
-      {
-        tag: 'action',
-        actions: request.targets.map(target => ({
-          tag: 'button',
-          text: { tag: 'plain_text', content: reviewTargetButtonLabel(request, target) },
-          type: 'primary',
-          value: {
-            action: 'knowledge_review_publish',
-            reviewId: request.reviewId,
-            targetKey: reviewTargetKey(target),
-          },
-          confirm: {
-            title: { tag: 'plain_text', content: `Confirm shared ${noun} target` },
-            text: {
-              tag: 'plain_text',
-              content: request.kind === 'memory'
-                ? target.scope === 'company'
-                  ? 'Send these exact facts for company-admin approval?'
-                  : `Send these exact facts for ${target.label} department-manager approval?`
-                : target.scope === 'personal'
-                  ? `Save this exact ${noun} change to your private knowledge?`
-                  : target.scope === 'company'
-                    ? `Send this exact ${noun} change for company-administrator approval?`
-                    : `Send this exact ${noun} change for ${target.label} department-manager approval?`,
-            },
-          },
-        })),
-      },
-      {
-        tag: 'action',
-        actions: [{
-          tag: 'button',
-          text: { tag: 'plain_text', content: 'Cancel' },
-          value: {
-            action: 'knowledge_review_cancel',
-            reviewId: request.reviewId,
-          },
-        }],
+        label: 'Cancel',
+        value: {
+          action: 'knowledge_review_cancel',
+          reviewId: request.reviewId,
+        },
       },
     ],
-  };
-  return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(card) });
+  });
 }
 
 function reviewTargetButtonLabel(request: KnowledgeReviewRequest, target: KnowledgeReviewTarget): string {
@@ -872,24 +925,6 @@ function reviewTargetButtonLabel(request: KnowledgeReviewRequest, target: Knowle
     : target.scope === 'company'
       ? `${action} Company`
       : `${request.action === 'delete' ? 'Remove from' : 'Save to'} Personal`;
-}
-
-function buildKnowledgeReviewProcessingCard(request: KnowledgeReviewRequest): string {
-  const card = {
-    config: { wide_screen_mode: true, update_multi: true },
-    header: {
-      title: { tag: 'plain_text', content: `${titleCase(reviewNoun(request))} decision received` },
-      template: 'blue',
-    },
-    elements: [{
-      tag: 'div',
-      text: {
-        tag: 'plain_text',
-        content: `Processing the exact reviewed ${reviewNoun(request)} change. This card will update when Divo finishes.`,
-      },
-    }],
-  };
-  return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(card) });
 }
 
 function buildKnowledgeReviewResolvedCard(
@@ -911,14 +946,11 @@ function buildKnowledgeReviewResolvedCard(
           : request.kind === 'memory'
             ? 'Memory was not saved because the backend rejected or could not complete the request.'
             : `${titleCase(noun)} was not changed because the backend rejected or could not complete the request.`;
-  const card = {
-    header: {
-      title: { tag: 'plain_text', content: status === 'saved' ? `${titleCase(noun)} saved` : `${titleCase(noun)} review closed` },
-      template: status === 'saved' ? 'green' : status === 'pending' ? 'blue' : 'grey',
-    },
-    elements: [{ tag: 'div', text: { tag: 'plain_text', content: copy } }],
-  };
-  return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(card) });
+  return buildCallbackCard({
+    title: status === 'saved' ? `${titleCase(noun)} saved` : `${titleCase(noun)} review closed`,
+    template: status === 'saved' ? 'green' : status === 'pending' ? 'blue' : 'grey',
+    markdownBlocks: [copy],
+  });
 }
 
 function reviewNoun(request: KnowledgeReviewRequest): string {
@@ -1003,10 +1035,14 @@ function knowledgeReviewToast(ok: boolean, content: string): CardCallbackResult 
   };
 }
 
-function knowledgeReviewImmediateCard(cardEnvelope: string): CardCallbackResult {
-  const envelope = JSON.parse(cardEnvelope) as { card: string };
+function knowledgeReviewAcceptedToast(request: KnowledgeReviewRequest): CardCallbackResult {
   return {
     ok: true,
-    responseBody: JSON.parse(envelope.card) as Record<string, unknown>,
+    responseBody: {
+      toast: {
+        type: 'info',
+        content: `${titleCase(reviewNoun(request))} decision received. Divo is processing it.`,
+      },
+    },
   };
 }

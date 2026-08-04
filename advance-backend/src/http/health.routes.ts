@@ -6,6 +6,7 @@ export const createHealthRoutes = (
   prisma: PrismaClient,
   options: {
     larkCardCallbackUrl?: string;
+    larkCardCallbackProbe?: (url: string) => Promise<boolean>;
     knowledgeOperations?: Pick<KnowledgeOperationsService, 'health'>;
   } = {},
 ): Router => {
@@ -20,7 +21,7 @@ export const createHealthRoutes = (
     }
   });
 
-  router.get('/lark-card-callback', (_req, res) => {
+  router.get('/lark-card-callback', async (_req, res) => {
     if (!options.larkCardCallbackUrl) {
       res.status(503).json({
         status: 'degraded',
@@ -29,9 +30,23 @@ export const createHealthRoutes = (
       });
       return;
     }
+    const callbackPath = new URL(options.larkCardCallbackUrl).pathname;
+    const reachable = await (
+      options.larkCardCallbackProbe ?? probeConfiguredCallbackUrl
+    )(options.larkCardCallbackUrl).catch(() => false);
+    if (!reachable) {
+      res.status(503).json({
+        status: 'degraded',
+        reason: 'callback_url_unreachable',
+        callbackPath,
+        providerConfiguration: 'unverified',
+      });
+      return;
+    }
     res.json({
-      status: 'ok',
-      callbackPath: new URL(options.larkCardCallbackUrl).pathname,
+      status: 'reachable',
+      callbackPath,
+      providerConfiguration: 'unverified',
     });
   });
 
@@ -50,3 +65,14 @@ export const createHealthRoutes = (
 
   return router;
 };
+
+async function probeConfiguredCallbackUrl(url: string): Promise<boolean> {
+  const response = await fetch(url, {
+    method: 'GET',
+    redirect: 'manual',
+    signal: AbortSignal.timeout(3_000),
+  });
+  // Any HTTP response proves that the configured public route is reachable.
+  // It cannot prove what URL is stored in the Lark developer console.
+  return response.status > 0;
+}

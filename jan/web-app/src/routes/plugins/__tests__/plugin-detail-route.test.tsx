@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import type React from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const h = vi.hoisted(() => ({
   pluginId: 'google-workspace',
@@ -46,6 +46,7 @@ vi.mock('@/lib/plugins', () => ({
     canva: { id, name: 'Canva', description: 'Canva tools', icon: () => <svg aria-label="Canva provider logo" />, accentClassName: '', iconClassName: '' },
     zoho: { id, name: 'Zoho', description: 'Zoho tools', icon: () => <svg aria-label="Zoho provider logo" />, accentClassName: '', iconClassName: '' },
     lark: { id, name: 'Lark', description: 'Lark tools', icon: () => <svg aria-label="Lark provider logo" />, accentClassName: '', iconClassName: '' },
+    shopify: { id, name: 'Shopify', description: 'Shopify tools', icon: () => <svg aria-label="Shopify provider logo" />, accentClassName: '', iconClassName: '' },
   })[id] ?? null,
   googleWorkspaceServices: [],
 }))
@@ -97,11 +98,60 @@ const larkStatus = {
   },
 }
 
+const shopifyStatus = {
+  success: true,
+  data: {
+    connected: true,
+    canManage: true,
+    readOnlyEnforced: true,
+    connections: [{
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      label: 'Nayab store',
+      accountEmail: null,
+      accountName: 'nayab.myshopify.com',
+      ownerType: 'company',
+      access: 'read_only',
+      canManage: true,
+      readOnlyEnforced: true,
+      status: 'connected',
+      reconnectRequired: false,
+      scopes: ['read_reports', 'read_orders', 'read_customers'],
+      connectedAt: '2026-08-03T00:00:00.000Z',
+      lastUsedAt: null,
+    }],
+  },
+}
+
+const shopifyManage = {
+  success: true,
+  data: {
+    connection: {
+      connectionId: '11111111-1111-4111-8111-111111111111', label: 'Nayab store',
+      accountEmail: null, accountName: 'nayab.myshopify.com', ownerType: 'company', ownerUser: null,
+      access: 'read_only', scopes: ['read_reports', 'read_orders'], readOnlyEnforced: true,
+      connectedAt: '2026-08-03T00:00:00.000Z',
+    },
+    grants: [],
+    candidates: { users: [], departments: [], roles: [], company: { id: 'company-1', name: 'Acme' } },
+    accessLevels: [{ value: 'read_only', label: 'Read-only', description: 'Shopify reads only' }],
+    governance: {
+      approvalModes: ['none', 'company_admin'],
+      managerPolicy: { version: 1, actions: { read: { mode: 'inherit' } } },
+      managerConfiguredAt: null, adminOverride: null, adminOverriddenAt: null,
+      source: 'platform_default', version: 0,
+    },
+  },
+}
+
 function commandCalls(command: string) {
   return h.invoke.mock.calls.filter(([calledCommand]) => calledCommand === command)
 }
 
 describe('PluginDetailRoute inventory-gated presentation', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     h.pluginId = 'google-workspace'
@@ -211,6 +261,94 @@ describe('PluginDetailRoute inventory-gated presentation', () => {
     ]))
   })
 
+  it('connects, reconnects, and disconnects Shopify as a read-only managed store', async () => {
+    const openWindow = vi.spyOn(window, 'open').mockImplementation(() => null)
+    h.pluginId = 'shopify'
+    h.getInventory.mockResolvedValue({ tools: [{
+      ...baseTool,
+      tool: { ...baseTool.tool, toolId: 'shopifyAnalytics', name: 'Shopify Analytics', description: 'Commerce reports' },
+    }] })
+    h.invoke.mockImplementation((command: string) => {
+      if (command === 'divo_get_session_status') return Promise.resolve(connectedSession)
+      if (command === 'divo_shopify_status') return Promise.resolve(shopifyStatus)
+      if (command === 'divo_shopify_authorize_url') return Promise.resolve('https://nayab.myshopify.com/admin/oauth/authorize')
+      if (command === 'divo_shopify_disconnect_connection') return Promise.resolve({ success: true })
+      if (command === 'divo_shopify_manage_access') return Promise.resolve(shopifyManage)
+      return Promise.resolve({ success: true })
+    })
+    render(<PluginDetailRoute />)
+
+    expect((await screen.findAllByText('Nayab store')).length).toBeGreaterThan(0)
+    expect(screen.getByText('Reports (read)')).toBeInTheDocument()
+    expect(screen.getByText('Orders (read)')).toBeInTheDocument()
+    expect(screen.getAllByText('Read-only').length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: 'Manage Nayab store' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add connection' }))
+    expect(await screen.findByRole('heading', { name: 'Add Shopify connection' })).toBeInTheDocument()
+    const continueButton = screen.getByRole('button', { name: /Continue with Shopify/ })
+    expect(continueButton).toBeDisabled()
+    fireEvent.change(screen.getByPlaceholderText('your-store.myshopify.com'), { target: { value: 'Nayab.MyShopify.com' } })
+    expect(continueButton).toBeEnabled()
+    fireEvent.click(continueButton)
+    await waitFor(() => expect(commandCalls('divo_shopify_authorize_url')).toContainEqual([
+      'divo_shopify_authorize_url',
+      { shopDomain: 'nayab.myshopify.com', shop_domain: 'nayab.myshopify.com' },
+    ]))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect Nayab store' }))
+    await waitFor(() => expect(commandCalls('divo_shopify_authorize_url')).toContainEqual([
+      'divo_shopify_authorize_url',
+      { connectionId: '11111111-1111-4111-8111-111111111111', connection_id: '11111111-1111-4111-8111-111111111111' },
+    ]))
+    expect(openWindow).toHaveBeenCalledWith(
+      'https://nayab.myshopify.com/admin/oauth/authorize',
+      '_blank',
+      'noopener,noreferrer',
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect Nayab store' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect connection' }))
+    await waitFor(() => expect(commandCalls('divo_shopify_disconnect_connection')).toEqual([[
+      'divo_shopify_disconnect_connection',
+      { connectionId: '11111111-1111-4111-8111-111111111111', connection_id: '11111111-1111-4111-8111-111111111111' },
+    ]]))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Manage Nayab store' }))
+    expect(await screen.findByText('This provider is read-only. Every grant can use only permitted read tools; management authority stays separate.')).toBeInTheDocument()
+    expect(commandCalls('divo_shopify_manage_access')).toEqual([[
+      'divo_shopify_manage_access',
+      { connectionId: '11111111-1111-4111-8111-111111111111', connection_id: '11111111-1111-4111-8111-111111111111' },
+    ]])
+    expect(screen.queryByText('Connection owner on Lark')).not.toBeInTheDocument()
+  })
+
+  it('does not offer Shopify connection administration to an ordinary granted member', async () => {
+    h.pluginId = 'shopify'
+    h.getInventory.mockResolvedValue({ tools: [{
+      ...baseTool,
+      tool: { ...baseTool.tool, toolId: 'shopifyOrders', name: 'Shopify Orders', description: 'Orders' },
+    }] })
+    h.invoke.mockImplementation((command: string) => {
+      if (command === 'divo_get_session_status') return Promise.resolve({ ...connectedSession, role: 'MEMBER' })
+      if (command === 'divo_shopify_status') return Promise.resolve({
+        ...shopifyStatus,
+        data: {
+          ...shopifyStatus.data,
+          canManage: false,
+          connections: shopifyStatus.data.connections.map(connection => ({ ...connection, canManage: false })),
+        },
+      })
+      return Promise.resolve({ success: true })
+    })
+    render(<PluginDetailRoute />)
+
+    expect((await screen.findAllByText('Nayab store')).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: 'Add connection' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Manage Nayab store' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Disconnect Nayab store' })).not.toBeInTheDocument()
+  })
+
   it('surfaces Google auth remediation without retrying status in a loop', async () => {
     h.getInventory.mockResolvedValue({ tools: [baseTool] })
     h.invoke.mockImplementation((command: string) => {
@@ -282,6 +420,7 @@ describe('PluginDetailRoute inventory-gated presentation', () => {
 
     const reconnectButton = await screen.findByRole('button', { name: 'Reconnect Zoho Finance' })
     fireEvent.click(reconnectButton)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with Zoho' }))
     await waitFor(() => expect(openWindow).toHaveBeenCalledWith(
       'https://accounts.zoho.com/reconnect',
       '_blank',

@@ -11,6 +11,8 @@ import type { Clock } from '../../shared/clock';
 import type { ConnectionRateLimitService } from '../governance/connection-rate-limit.service';
 import type { ConnectionRegistryPort } from '../connections/connection-registry.port';
 import { publicConnectionChoices, selectAccessibleConnection } from '../connections/accessible-connection-selection';
+import { listAccessibleConnectionsFor } from './work-bootstrap.service';
+import { CONNECTION_PROVIDER_LABELS, type ConnectionProvider } from '../../domain/connections/connection-provider';
 import { asCompanyId, asDepartmentId, asToolId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import type { ToolActionGroup } from '../../domain/permissions/tool-action-group';
@@ -23,6 +25,12 @@ import type {
 import { gatewayFailure, gatewaySuccess } from './gateway.types';
 import { SCHEDULED_SESSION_AUTH_PROVIDER } from '../scheduling/scheduled-runtime-session';
 import { limitModelFacingResult } from './model-facing-result-limit';
+import {
+  classifyShopifyProtectedResult,
+  isProtectedShopifyToolId,
+  isShopifyToolId,
+  type ShopifyProtectedResult,
+} from '../shopify/shopify-protected-result';
 
 export interface ToolExecutorInput {
   readonly member: GatewayMemberContext;
@@ -44,6 +52,31 @@ export interface ToolExecutorDeps {
   readonly connectionRateLimits?: ConnectionRateLimitService;
   /** Resolves request-scoped connected accounts for backend-hosted channels. */
   readonly connectionRegistry?: ConnectionRegistryPort;
+  /**
+   * Server-owned monotonic classification for runs that invoke protected
+   * data tools. Production must wire this before protected tools are enabled.
+   */
+  readonly protectedDataRuns?: {
+    observe(input: {
+      readonly companyId: string;
+      readonly userId: string;
+      readonly channel: string;
+      readonly runId: string;
+      readonly threadId?: string;
+    }): Promise<void>;
+  };
+  /** Records exact tenant/shop provenance before a successful Shopify result is returned. */
+  readonly shopifyDataRuns?: {
+    record(input: {
+      readonly companyId: string;
+      readonly userId: string;
+      readonly channel: string;
+      readonly runId: string;
+      readonly threadId?: string;
+      readonly connectionId: string;
+      readonly toolId: string;
+    }): Promise<void>;
+  };
   readonly logger: Logger;
   readonly clock: Clock;
 }
@@ -79,6 +112,7 @@ export interface RuntimeToolExecutionOutcome {
   readonly result?: unknown;
   readonly message?: string;
   readonly approvalId?: string;
+  readonly protectedData?: ShopifyProtectedResult;
 }
 
 export interface RuntimeToolPreflightOutcome {
@@ -203,7 +237,24 @@ export class ToolExecutor {
     // A connection policy can require its owner even when the caller did not
     // select a department. The gate itself preserves the old no-department
     // behaviour for ordinary department-based approval rules.
-    if (this.deps.approvalGate) {
+    if (this.deps.approvalGate && isProtectedShopifyToolId(String(tool.id))) {
+      const requirement = await this.deps.approvalGate.inspect({
+        toolId: tool.id,
+        action,
+        args: validatedArgs,
+        perm,
+        runContext,
+      });
+      if (requirement.kind === 'required') {
+        return gatewayFailure(
+          'approval_misconfigured',
+          'Protected Shopify reads cannot be stored in a durable approval request. Grant direct read access or deny this capability.',
+        );
+      }
+      if (requirement.kind === 'misconfigured') {
+        return gatewayFailure('approval_misconfigured', requirement.message);
+      }
+    } else if (this.deps.approvalGate) {
       const argsSummary = buildArgsSummary(tool.id, action, validatedArgs);
       const decision = await this.deps.approvalGate.check({
         toolId: tool.id,
@@ -269,10 +320,27 @@ export class ToolExecutor {
       }
 
       if (decision.kind === 'completed') {
+        const replayed = validateToolResult(tool, decision.result);
+        if (!replayed.ok) return gatewayFailure('tool_error', replayed.message);
+        const provenanceFailure = await this.recordShopifyRun({
+          toolId: String(tool.id),
+          args: validatedArgs,
+          companyId: member.companyId,
+          userId: member.userId,
+          channel: member.channel ?? 'desktop',
+          ...(input.execution ? { execution: input.execution } : {}),
+        });
+        if (provenanceFailure) return gatewayFailure('tool_error', provenanceFailure);
+        const protectedData = classifyShopifyProtectedResult({
+          toolId: String(tool.id),
+          args: validatedArgs,
+          result: replayed.value,
+        });
         return gatewaySuccess({
           toolId: tool.id,
           action,
-          result: limitModelFacingResult(decision.result),
+          result: limitModelFacingResult(replayed.value),
+          ...(protectedData ? { protectedData } : {}),
           replayedApproval: {
             approvalId: decision.approvalId,
             status: 'completed',
@@ -282,6 +350,15 @@ export class ToolExecutor {
 
       executionGrant = decision.executionGrant;
     }
+
+    const protectionFailure = await this.observeProtectedRun({
+      toolId: String(tool.id),
+      companyId: member.companyId,
+      userId: member.userId,
+      channel: member.channel ?? 'desktop',
+      ...(input.execution ? { execution: input.execution } : {}),
+    });
+    if (protectionFailure) return gatewayFailure('tool_error', protectionFailure);
 
     const rateConsume = await this.consumeRateLimit({
       companyId: runContext.companyId,
@@ -294,6 +371,25 @@ export class ToolExecutor {
         if (!released) return approvalReleaseFailure(executionGrant.approvalId);
       }
       return rateConsume;
+    }
+
+    const initialProvenanceFailure = await this.recordShopifyRun({
+      toolId: String(tool.id),
+      args: validatedArgs,
+      companyId: member.companyId,
+      userId: member.userId,
+      channel: member.channel ?? 'desktop',
+      ...(input.execution ? { execution: input.execution } : {}),
+    });
+    if (initialProvenanceFailure) {
+      if (executionGrant) {
+        const finalized = await this.deps.approvalGate?.failExecution(executionGrant, {
+          status: 'tool_error',
+          message: initialProvenanceFailure,
+        });
+        if (!finalized) return approvalCheckpointFailure(executionGrant.approvalId);
+      }
+      return gatewayFailure('tool_error', initialProvenanceFailure);
     }
 
     const execCtx: ToolExecutionContext = {
@@ -330,18 +426,41 @@ export class ToolExecutor {
         return gatewayFailure(status, result.error.message);
       }
 
+      const validatedResult = validateToolResult(tool, result.value);
+      if (!validatedResult.ok) {
+        if (executionGrant) {
+          const finalized = await this.deps.approvalGate?.failExecution(executionGrant, {
+            status: 'tool_error',
+            message: validatedResult.message,
+          });
+          if (!finalized) return approvalCheckpointFailure(executionGrant.approvalId);
+        }
+        return gatewayFailure('tool_error', validatedResult.message);
+      }
+
       if (executionGrant) {
         const finalized = await this.deps.approvalGate?.completeExecution(executionGrant, {
           status: 'success',
-          result: result.value,
+          result: validatedResult.value,
         });
         if (!finalized) return approvalCheckpointFailure(executionGrant.approvalId);
       }
 
+      const provenanceFailure = await this.recordShopifyRun({
+        toolId: String(tool.id),
+        args: validatedArgs,
+        companyId: member.companyId,
+        userId: member.userId,
+        channel: member.channel ?? 'desktop',
+        ...(input.execution ? { execution: input.execution } : {}),
+      });
+      if (provenanceFailure) return gatewayFailure('tool_error', provenanceFailure);
+
       return gatewaySuccess({
         toolId: tool.id,
         action,
-        result: limitModelFacingResult(result.value),
+        result: limitModelFacingResult(validatedResult.value),
+        ...protectedResultField(tool.id, validatedArgs, validatedResult.value),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -414,6 +533,7 @@ export class ToolExecutor {
     if (!resolved.ok) return resolved.outcome;
     const { toolId, tool, args: validatedArgs, action } = resolved.value;
     const { runContext, perm } = input;
+    const execution = input.execution ?? runtimeExecutionContext(runContext);
 
     const ratePreflight = await this.preflightRateLimit({
       companyId: runContext.companyId,
@@ -426,7 +546,26 @@ export class ToolExecutor {
       approvalId: string;
       authority: 'connection_owner' | 'company_admin' | 'department_manager';
     } | undefined;
-    if (input.approvalGate && input.chatId) {
+    if (input.approvalGate && input.chatId && isProtectedShopifyToolId(toolId)) {
+      const requirement = await input.approvalGate.inspect({
+        toolId: tool.id,
+        action,
+        args: validatedArgs,
+        perm,
+        runContext,
+      });
+      if (requirement.kind === 'required') {
+        return runtimeFailure(
+          toolId,
+          'approval_misconfigured',
+          'Protected Shopify reads cannot be stored in a durable approval request. Grant direct read access or deny this capability.',
+          action,
+        );
+      }
+      if (requirement.kind === 'misconfigured') {
+        return runtimeFailure(toolId, 'approval_misconfigured', requirement.message, action);
+      }
+    } else if (input.approvalGate && input.chatId) {
       const decision = await input.approvalGate.check({
         toolId: tool.id,
         action,
@@ -456,15 +595,41 @@ export class ToolExecutor {
         return runtimeFailure(toolId, 'approval_misconfigured', decision.message, action);
       }
       if (decision.kind === 'completed') {
+        const replayed = validateToolResult(tool, decision.result);
+        if (!replayed.ok) return runtimeFailure(toolId, 'tool_error', replayed.message, action);
+        const provenanceFailure = await this.recordShopifyRun({
+          toolId,
+          args: validatedArgs,
+          companyId: String(runContext.companyId),
+          userId: String(runContext.userId),
+          channel: runContext.channel,
+          ...(execution ? { execution } : {}),
+        });
+        if (provenanceFailure) return runtimeFailure(toolId, 'tool_error', provenanceFailure, action);
+        const protectedData = classifyShopifyProtectedResult({
+          toolId: String(tool.id),
+          args: validatedArgs,
+          result: replayed.value,
+        });
         return {
           status: 'success',
           toolId,
           action,
-          result: decision.result,
+          result: limitModelFacingResult(replayed.value),
+          ...(protectedData ? { protectedData } : {}),
         };
       }
       executionGrant = decision.executionGrant;
     }
+
+    const protectionFailure = await this.observeProtectedRun({
+      toolId,
+      companyId: String(runContext.companyId),
+      userId: String(runContext.userId),
+      channel: runContext.channel,
+      ...(execution ? { execution } : {}),
+    });
+    if (protectionFailure) return runtimeFailure(toolId, 'tool_error', protectionFailure, action);
 
     const rateConsume = await this.consumeRateLimit({
       companyId: runContext.companyId,
@@ -485,6 +650,27 @@ export class ToolExecutor {
         }
       }
       return runtimeRateLimitFailure(toolId, rateConsume, action);
+    }
+
+    const initialProvenanceFailure = await this.recordShopifyRun({
+      toolId,
+      args: validatedArgs,
+      companyId: String(runContext.companyId),
+      userId: String(runContext.userId),
+      channel: runContext.channel,
+      ...(execution ? { execution } : {}),
+    });
+    if (initialProvenanceFailure) {
+      if (executionGrant) {
+        const finalized = await input.approvalGate?.failExecution(executionGrant, {
+          status: 'tool_error',
+          message: initialProvenanceFailure,
+        });
+        if (!finalized) {
+          return runtimeApprovalCheckpointFailure(toolId, action, executionGrant.approvalId);
+        }
+      }
+      return runtimeFailure(toolId, 'tool_error', initialProvenanceFailure, action);
     }
 
     const context: ToolExecutionContext = {
@@ -551,10 +737,24 @@ export class ToolExecutor {
         return runtimeFailure(toolId, status, result.error.message, action);
       }
 
+      const validatedResult = validateToolResult(tool, result.value);
+      if (!validatedResult.ok) {
+        if (executionGrant) {
+          const finalized = await input.approvalGate?.failExecution(executionGrant, {
+            status: 'tool_error',
+            message: validatedResult.message,
+          });
+          if (!finalized) {
+            return runtimeApprovalCheckpointFailure(toolId, action, executionGrant.approvalId);
+          }
+        }
+        return runtimeFailure(toolId, 'tool_error', validatedResult.message, action);
+      }
+
       if (executionGrant) {
         const finalized = await input.approvalGate?.completeExecution(executionGrant, {
           status: 'success',
-          result: result.value,
+          result: validatedResult.value,
         });
         if (!finalized) {
           return runtimeApprovalCheckpointFailure(toolId, action, executionGrant.approvalId);
@@ -565,11 +765,26 @@ export class ToolExecutor {
         action,
         correlationId: context.correlationId,
       });
+      const provenanceFailure = await this.recordShopifyRun({
+        toolId,
+        args: validatedArgs,
+        companyId: String(runContext.companyId),
+        userId: String(runContext.userId),
+        channel: runContext.channel,
+        ...(execution ? { execution } : {}),
+      });
+      if (provenanceFailure) return runtimeFailure(toolId, 'tool_error', provenanceFailure, action);
+      const protectedData = classifyShopifyProtectedResult({
+        toolId: String(tool.id),
+        args: validatedArgs,
+        result: validatedResult.value,
+      });
       return {
         status: 'success',
         toolId,
         action,
-        result: limitModelFacingResult(result.value),
+        result: limitModelFacingResult(validatedResult.value),
+        ...(protectedData ? { protectedData } : {}),
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -688,9 +903,11 @@ export class ToolExecutor {
       companyId: String(input.runContext.companyId),
       userId: String(input.runContext.userId),
     };
-    const accessible = provider === 'zoho'
-      ? await this.deps.connectionRegistry.listAccessibleZohoConnections(connectionInput)
-      : await this.deps.connectionRegistry.listAccessibleLarkConnections(connectionInput);
+    const accessible = await listAccessibleConnectionsFor(
+      this.deps.connectionRegistry,
+      connectionInput,
+      provider,
+    );
     if (!accessible.ok) {
       return {
         ok: false,
@@ -902,9 +1119,101 @@ export class ToolExecutor {
     if (!approvalGate) return false;
     return approvalGate.releaseExecution(grant);
   }
+
+  private async observeProtectedRun(input: {
+    readonly toolId: string;
+    readonly companyId: string;
+    readonly userId: string;
+    readonly channel: string;
+    readonly execution?: GatewayExecutionContext;
+  }): Promise<string | null> {
+    if (!isProtectedShopifyToolId(input.toolId)) return null;
+    if (!this.deps.protectedDataRuns || !input.execution) {
+      return 'Protected Shopify data is unavailable because durable run protection could not be established.';
+    }
+    try {
+      await this.deps.protectedDataRuns.observe({
+        companyId: input.companyId,
+        userId: input.userId,
+        channel: input.channel,
+        runId: input.execution.runId,
+        threadId: input.execution.threadId,
+      });
+      return null;
+    } catch (error) {
+      this.deps.logger.error('gateway.protected_run.observe_failed', {
+        companyId: input.companyId,
+        userId: input.userId,
+        runId: input.execution.runId,
+        toolId: input.toolId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return 'Protected Shopify data is unavailable because durable run protection could not be established.';
+    }
+  }
+
+  private async recordShopifyRun(input: {
+    readonly toolId: string;
+    readonly args: Record<string, unknown>;
+    readonly companyId: string;
+    readonly userId: string;
+    readonly channel: string;
+    readonly execution?: GatewayExecutionContext;
+  }): Promise<string | null> {
+    if (!isShopifyToolId(input.toolId)) return null;
+    const connectionId = input.args['connectionId'];
+    if (
+      !this.deps.shopifyDataRuns
+      || !input.execution
+      || typeof connectionId !== 'string'
+      || !connectionId
+    ) {
+      return 'Shopify data is unavailable because durable shop provenance could not be established.';
+    }
+    try {
+      await this.deps.shopifyDataRuns.record({
+        companyId: input.companyId,
+        userId: input.userId,
+        channel: input.channel,
+        runId: input.execution.runId,
+        threadId: input.execution.threadId,
+        connectionId,
+        toolId: input.toolId,
+      });
+      return null;
+    } catch (error) {
+      this.deps.logger.error('gateway.shopify_run.record_failed', {
+        companyId: input.companyId,
+        userId: input.userId,
+        runId: input.execution.runId,
+        toolId: input.toolId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return 'Shopify data is unavailable because durable shop provenance could not be established.';
+    }
+  }
 }
 
-type RuntimeConnectionProvider = 'zoho' | 'lark';
+function runtimeExecutionContext(runContext: RunContext): GatewayExecutionContext | undefined {
+  if (!runContext.traceId || !runContext.chatId) return undefined;
+  return {
+    version: 1,
+    runId: runContext.traceId,
+    threadId: runContext.chatId,
+    actionId: runContext.requestId ?? runContext.traceId,
+  };
+}
+
+function protectedResultField(
+  toolId: string,
+  args: Record<string, unknown>,
+  result: unknown,
+): { readonly protectedData?: ShopifyProtectedResult } {
+  const protectedData = classifyShopifyProtectedResult({ toolId, args, result });
+  return protectedData ? { protectedData } : {};
+}
+
+type RuntimeConnectionProvider = Extract<ConnectionProvider, 'zoho' | 'lark' | 'shopify'>;
 
 const LARK_USER_CONNECTION_TOOL_IDS = new Set([
   'larkTask',
@@ -918,12 +1227,28 @@ const LARK_USER_CONNECTION_TOOL_IDS = new Set([
 function runtimeConnectionProvider(toolId: string): RuntimeConnectionProvider | undefined {
   if (toolId === 'zohoCrm' || toolId === 'zohoBooks') return 'zoho';
   if (LARK_USER_CONNECTION_TOOL_IDS.has(toolId)) return 'lark';
+  if (toolId === 'shopifyAnalytics' || toolId === 'shopifyOrders' || toolId === 'shopifyCustomers') return 'shopify';
   return undefined;
 }
 
 function runtimeConnectionLabel(provider: RuntimeConnectionProvider): string {
-  if (provider === 'lark') return 'Lark';
-  return 'Zoho';
+  return CONNECTION_PROVIDER_LABELS[provider];
+}
+
+function validateToolResult(
+  tool: Tool<unknown, unknown>,
+  value: unknown,
+): { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly message: string } {
+  const parsed = tool.resultSchema.safeParse(value);
+  if (parsed.success) return { ok: true, value: parsed.data };
+  const issues = parsed.error.errors
+    .slice(0, 5)
+    .map(issue => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+    .join('; ');
+  return {
+    ok: false,
+    message: `Tool "${tool.id}" returned an invalid result${issues ? ` — ${issues}` : ''}.`,
+  };
 }
 
 function runtimeFailure(

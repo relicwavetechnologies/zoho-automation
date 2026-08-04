@@ -27,6 +27,12 @@ const PERSONAL_SNAPSHOT_QUERY = [
   'corrections and recurring choices',
 ].join(', ');
 
+// Hindsight 0.8.x processes exact-strategy batch items serially. Keeping each
+// request small makes the configured per-request timeout meaningful while the
+// stable document IDs keep a whole-event retry idempotent after partial work.
+const HINDSIGHT_RETAIN_BATCH_SIZE = 4;
+const HINDSIGHT_DOCUMENT_PAGE_SIZE = 100;
+
 export interface HindsightRecallEntry {
   readonly id: string;
   readonly text: string;
@@ -36,6 +42,8 @@ export interface HindsightRecallEntry {
 }
 
 export interface HindsightMemoryClient {
+  getVersion(options: { signal: AbortSignal }): Promise<{ readonly version?: string }>;
+
   ensureBank(bankId: string, options: {
     signal: AbortSignal;
   }): Promise<void>;
@@ -56,6 +64,20 @@ export interface HindsightMemoryClient {
     signal: AbortSignal;
   }): Promise<void>;
 
+  deleteBank(bankId: string, options: { signal: AbortSignal }): Promise<void>;
+
+  listDocuments(bankId: string, options: {
+    limit: number;
+    offset: number;
+    signal: AbortSignal;
+  }): Promise<readonly { readonly id: string; readonly metadata?: Record<string, unknown> }[]>;
+
+}
+
+export interface HindsightReadiness {
+  readonly status: 'ok' | 'degraded';
+  readonly version?: string;
+  readonly error?: string;
 }
 
 export interface HindsightMemoryServiceDeps {
@@ -106,8 +128,9 @@ export class HindsightMemoryService implements MemoryService, KnowledgeDocumentS
     limit: number;
     maxFactChars: number;
     maxTotalChars: number;
+    includePersonal?: boolean;
   }): Promise<MemoryRecallResult> {
-    const banks = this.recallBanks(params);
+    const banks = this.recallBanks(params, params.includePersonal !== false);
     const perScopeLimit = Math.min(this.deps.maxResults, params.limit);
     const settled = await mapSettledBounded(
       banks,
@@ -209,6 +232,18 @@ export class HindsightMemoryService implements MemoryService, KnowledgeDocumentS
     return facts;
   }
 
+  async readiness(): Promise<HindsightReadiness> {
+    try {
+      const version = await this.client.getVersion({ signal: this.signal() });
+      return {
+        status: 'ok',
+        ...(version.version ? { version: version.version } : {}),
+      };
+    } catch (error) {
+      return { status: 'degraded', error: errorMessage(error).slice(0, 500) };
+    }
+  }
+
   async projectExplicitResource(params: {
     resourceId: string;
     facts: readonly string[];
@@ -222,17 +257,7 @@ export class HindsightMemoryService implements MemoryService, KnowledgeDocumentS
     await this.client.ensureBank(bankId, { signal: this.signal() });
 
     // Every index has a stable document ID. Replacing a fact updates the same
-    // Hindsight document; shrinking the resource deletes only trailing docs.
-    for (let index = params.facts.length; index < params.previousFactCount; index += 1) {
-      try {
-        await this.client.deleteDocument(bankId, projectedDocumentId(params.resourceId, index), {
-          signal: this.signal(),
-        });
-      } catch (error) {
-        if (statusCode(error) !== 404) throw error;
-      }
-    }
-
+    // Hindsight document, so retrying completed batches is safe.
     const items: MemoryItemInput[] = params.facts.map((fact, index) => ({
       content: fact,
       context: 'Divo knowledge resource',
@@ -249,8 +274,16 @@ export class HindsightMemoryService implements MemoryService, KnowledgeDocumentS
       strategy: 'exact',
       update_mode: 'replace',
     }));
-    if (items.length > 0) {
-      await this.client.retainBatch(bankId, items, { signal: this.signal() });
+    await this.retainInBatches(bankId, items);
+    await this.removeMatchingDocuments(bankId, metadata =>
+      metadata['source'] === 'knowledge_core'
+      && metadata['resource_id'] === params.resourceId,
+      new Set(items.map(item => String(item.document_id))),
+    );
+    // Metadata is advisory during cleanup. Always delete every known trailing
+    // stable ID as well, including mixed pages containing metadata-less rows.
+    for (let index = params.facts.length; index < params.previousFactCount; index += 1) {
+      await this.deleteDocumentIfPresent(bankId, projectedDocumentId(params.resourceId, index));
     }
   }
 
@@ -263,15 +296,17 @@ export class HindsightMemoryService implements MemoryService, KnowledgeDocumentS
     departmentId?: string;
   }): Promise<void> {
     const bankId = scopedBankId(params.scope, params);
-    for (let index = 0; index < params.factCount; index += 1) {
-      try {
-        await this.client.deleteDocument(bankId, projectedDocumentId(params.resourceId, index), {
-          signal: this.signal(),
-        });
-      } catch (error) {
-        if (statusCode(error) !== 404) throw error;
+    const removed = await this.removeMatchingDocuments(
+      bankId,
+      metadata => metadata['source'] === 'knowledge_core' && metadata['resource_id'] === params.resourceId,
+      new Set(),
+    );
+    if (removed === 0) {
+      for (let index = 0; index < params.factCount; index += 1) {
+        await this.deleteDocumentIfPresent(bankId, projectedDocumentId(params.resourceId, index));
       }
     }
+    await this.deleteBankIfEmpty(bankId);
   }
 
   async projectDocument(params: {
@@ -307,7 +342,14 @@ export class HindsightMemoryService implements MemoryService, KnowledgeDocumentS
       strategy: 'exact',
       update_mode: 'replace',
     }));
-    if (items.length > 0) await this.client.retainBatch(bankId, items, { signal: this.signal() });
+    await this.retainInBatches(bankId, items);
+    const currentIds = new Set(items.map(item => String(item.document_id)));
+    await this.removeMatchingDocuments(
+      bankId,
+      metadata => metadata['source'] === 'knowledge_file'
+        && metadata['resource_id'] === params.resourceId,
+      currentIds,
+    );
   }
 
   async removeDocument(params: {
@@ -320,17 +362,22 @@ export class HindsightMemoryService implements MemoryService, KnowledgeDocumentS
     departmentId?: string;
   }): Promise<void> {
     const bankId = documentBankId(params);
-    for (let ordinal = 0; ordinal < params.chunkCount; ordinal += 1) {
-      try {
-        await this.client.deleteDocument(
+    const removed = await this.removeMatchingDocuments(
+      bankId,
+      metadata => metadata['source'] === 'knowledge_file'
+        && metadata['resource_id'] === params.resourceId
+        && metadata['resource_version'] === String(params.resourceVersion),
+      new Set(),
+    );
+    if (removed === 0) {
+      for (let ordinal = 0; ordinal < params.chunkCount; ordinal += 1) {
+        await this.deleteDocumentIfPresent(
           bankId,
           projectedFileDocumentId(params.resourceId, params.resourceVersion, ordinal),
-          { signal: this.signal() },
         );
-      } catch (error) {
-        if (statusCode(error) !== 404) throw error;
       }
     }
+    await this.deleteBankIfEmpty(bankId);
   }
 
   async searchDocuments(params: {
@@ -383,26 +430,104 @@ export class HindsightMemoryService implements MemoryService, KnowledgeDocumentS
     const results = await this.client.recall(bankId, query, {
       maxTokens: this.deps.recallMaxTokens,
       budget: this.deps.recallBudget,
+      tags: ['source:knowledge_core'],
+      tagsMatch: 'all_strict',
       signal: this.signal(),
     });
     return results.slice(0, limit);
+  }
+
+  private async retainInBatches(bankId: string, items: readonly MemoryItemInput[]): Promise<void> {
+    for (let offset = 0; offset < items.length; offset += HINDSIGHT_RETAIN_BATCH_SIZE) {
+      await this.client.retainBatch(
+        bankId,
+        items.slice(offset, offset + HINDSIGHT_RETAIN_BATCH_SIZE),
+        { signal: this.signal() },
+      );
+    }
   }
 
   private signal(): AbortSignal {
     return AbortSignal.timeout(this.deps.requestTimeoutMs);
   }
 
+  private async removeMatchingDocuments(
+    bankId: string,
+    matches: (metadata: Record<string, unknown>) => boolean,
+    preserve: ReadonlySet<string>,
+  ): Promise<number> {
+    // Projection cleanup is a storage concern and must not change when product
+    // recall limits are tuned. A fixed bounded page also guarantees that large
+    // resources exercise and retain correct pagination behavior.
+    const pageSize = HINDSIGHT_DOCUMENT_PAGE_SIZE;
+    let offset = 0;
+    const allDocuments: Array<{ readonly id: string; readonly metadata?: Record<string, unknown> }> = [];
+    for (;;) {
+      let documents: readonly { readonly id: string; readonly metadata?: Record<string, unknown> }[];
+      try {
+        documents = await this.client.listDocuments(bankId, {
+          limit: pageSize,
+          offset,
+          signal: this.signal(),
+        });
+      } catch (error) {
+        if (isNotFoundError(error)) return 0;
+        throw error;
+      }
+      if (documents.length === 0) break;
+      allDocuments.push(...documents);
+      if (documents.length < pageSize) break;
+      offset += documents.length;
+    }
+    let removed = 0;
+    for (const document of allDocuments) {
+      if (!preserve.has(document.id) && document.metadata && matches(document.metadata)) {
+        await this.deleteDocumentIfPresent(bankId, document.id);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  private async deleteDocumentIfPresent(bankId: string, documentId: string): Promise<void> {
+    try {
+      await this.client.deleteDocument(bankId, documentId, { signal: this.signal() });
+    } catch (error) {
+      if (!isNotFoundError(error)) throw error;
+    }
+  }
+
+  private async deleteBankIfEmpty(bankId: string): Promise<void> {
+    let documents: readonly { readonly id: string }[];
+    try {
+      documents = await this.client.listDocuments(bankId, {
+        limit: 1,
+        offset: 0,
+        signal: this.signal(),
+      });
+    } catch (error) {
+      if (isNotFoundError(error)) return;
+      throw error;
+    }
+    if (documents.length > 0) return;
+    try {
+      await this.client.deleteBank(bankId, { signal: this.signal() });
+    } catch (error) {
+      if (!isNotFoundError(error)) throw error;
+    }
+  }
+
   private recallBanks(params: {
     companyId: string;
     userId: string;
     departments: readonly MemoryRecallDepartment[];
-  }): ScopedBank[] {
+  }, includePersonal = true): ScopedBank[] {
     return [
-      {
+      ...(includePersonal ? [{
         bankId: personalBankId(params.companyId, params.userId),
-        scope: 'personal',
+        scope: 'personal' as const,
         label: 'User memory',
-      },
+      }] : []),
       ...params.departments.map(department => ({
         bankId: departmentBankId(params.companyId, department.id),
         scope: 'department' as const,
@@ -453,6 +578,11 @@ class SdkHindsightMemoryClient implements HindsightMemoryClient {
     });
   }
 
+  async getVersion(options: { signal: AbortSignal }): Promise<{ readonly version?: string }> {
+    const response = await this.sdk.getVersion({ signal: options.signal });
+    return { version: response.api_version };
+  }
+
   async ensureBank(bankId: string, options: {
     signal: AbortSignal;
   }): Promise<void> {
@@ -492,6 +622,29 @@ class SdkHindsightMemoryClient implements HindsightMemoryClient {
     signal: AbortSignal;
   }): Promise<void> {
     await this.sdk.deleteDocument(bankId, documentId, options);
+  }
+
+  async deleteBank(bankId: string, options: { signal: AbortSignal }): Promise<void> {
+    await this.sdk.deleteBank(bankId, options);
+  }
+
+  async listDocuments(bankId: string, options: {
+    limit: number;
+    offset: number;
+    signal: AbortSignal;
+  }): Promise<readonly { readonly id: string; readonly metadata?: Record<string, unknown> }[]> {
+    const response = await this.sdk.listDocuments(bankId, options);
+    return response.items.flatMap(item => {
+      const id = item['id'];
+      if (typeof id !== 'string') return [];
+      const metadata = item['document_metadata'];
+      return [{
+        id,
+        ...(metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+          ? { metadata: metadata as Record<string, unknown> }
+          : {}),
+      }];
+    });
   }
 
 }
@@ -667,4 +820,13 @@ function statusCode(error: unknown): number | undefined {
   if (!error || typeof error !== 'object') return undefined;
   const value = (error as Record<string, unknown>)['statusCode'];
   return typeof value === 'number' ? value : undefined;
+}
+
+function isNotFoundError(error: unknown): boolean {
+  const code = statusCode(error);
+  if (code === 404) return true;
+  const message = errorMessage(error);
+  return /(?:status|statusCode|httpStatus|code)[^0-9]{0,12}404\b/i.test(message)
+    || /\b404\b/.test(message) && /not found|does not exist|deleteDocument failed/i.test(message)
+    || /\b(?:document|bank)\s+(?:was\s+)?not found\b/i.test(message);
 }

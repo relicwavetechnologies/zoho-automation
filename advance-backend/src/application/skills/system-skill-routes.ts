@@ -84,6 +84,20 @@ AITable and Airtable are different products. Never route an Airtable request her
     sortOrder: 4,
   },
   {
+    slug: 'shopify-router',
+    name: 'Shopify Router',
+    summary: 'Routes Shopify sales, order, attribution, and customer analysis to the governed commerce specialist.',
+    markdown: `# Shopify Router
+
+Choose \`shopify-commerce\` for Shopify sales analytics, product and inventory performance, payment summaries, bounded order inspection, UTM/channel attribution, and protected customer metadata when granted.
+
+The Shopify specialist is read-only and routes every request through governed Divo tools. Store credentials, connection access, RBAC, protected-data handling, and approval policy remain backend-owned.`,
+    toolIds: [],
+    tags: ['shopify', 'router', 'commerce', 'sales', 'orders', 'attribution'],
+    aliases: ['shopify', 'shopify sales', 'store orders', 'shopify attribution', 'shopify customers'],
+    sortOrder: 10,
+  },
+  {
     slug: 'data-router',
     name: 'Data Work Router',
     summary: 'Routes data work between a scripted workflow, a governed export, and reading a file already in the workspace.',
@@ -287,6 +301,12 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
     routerSlug: 'aitable-router',
     targetSlugs: CONNECTED_PROVIDER_SYSTEM_SKILLS
       .filter(skill => skill.slug.startsWith('aitable-'))
+      .map(skill => skill.slug),
+  },
+  {
+    routerSlug: 'shopify-router',
+    targetSlugs: CONNECTED_PROVIDER_SYSTEM_SKILLS
+      .filter(skill => skill.slug.startsWith('shopify-'))
       .map(skill => skill.slug),
   },
   {

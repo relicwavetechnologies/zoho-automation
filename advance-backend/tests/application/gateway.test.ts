@@ -26,6 +26,7 @@ import type { GatewayMemberContext } from '../../src/application/gateway/gateway
 import type { MediaOcrService } from '../../src/application/gateway/media-ocr.service.ts';
 import type { Clock } from '../../src/shared/clock.ts';
 import { MODEL_FACING_RESULT_MAX_BYTES } from '../../src/application/gateway/model-facing-result-limit.ts';
+import { KnowledgeMutationError } from '../../src/application/knowledge/knowledge-mutation.errors.ts';
 
 const member: GatewayMemberContext = {
   companyId: 'co-test',
@@ -156,6 +157,52 @@ function makeLocalApprovals(
 }
 
 describe('ToolExecutor', () => {
+  it('fails closed when a tool returns data outside its declared result schema', async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      execute: async () => ok({ result: 42 } as never),
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(),
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const response = await executor.invoke({ member, toolId: 'fakeTool', args: { query: 'invalid output' } });
+
+    assert.equal(response.ok, false);
+    assert.equal(response.status, 'tool_error');
+    assert.match(response.error?.message ?? '', /returned an invalid result/);
+  });
+
+  it('fails closed on invalid runtime-channel tool output too', async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({ execute: async () => ok({ result: 42 } as never) }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(),
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const perm = makeAllowedPerm('fakeTool', ['read']);
+
+    const response = await executor.executeForRuntime({
+      toolId: 'fakeTool',
+      args: { query: 'invalid output' },
+      runContext: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        channel: 'lark',
+        requestId: 'request-1',
+      } as never,
+      perm,
+    });
+
+    assert.equal(response.status, 'tool_error');
+    assert.match(response.message ?? '', /returned an invalid result/);
+  });
+
   it('marks a scheduled run so tools know the runtime owns its delivery', async () => {
     // Pi runs in its container and calls back through the gateway, so this is
     // the run context every tool actually sees — the one the scheduler builds
@@ -1060,7 +1107,7 @@ describe('ToolExecutor', () => {
         check: async () => ({
           kind: 'completed',
           approvalId: 'approval-1',
-          result: { messageId: 'gmail-message-1' },
+          result: { result: 'gmail-message-1' },
         }),
         completeExecution: async () => true,
         failExecution: async () => true,
@@ -1078,7 +1125,7 @@ describe('ToolExecutor', () => {
 
     assert.equal(result.ok, true);
     assert.equal(executions, 0);
-    assert.deepEqual((result.data as any).result, { messageId: 'gmail-message-1' });
+    assert.deepEqual((result.data as any).result, { result: 'gmail-message-1' });
     assert.deepEqual((result.data as any).replayedApproval, {
       approvalId: 'approval-1',
       status: 'completed',
@@ -1966,6 +2013,7 @@ describe('GatewayDispatcher', () => {
   it('applies explicit personal memory synchronously and records the exact Lark run receipt', async () => {
     const commands: unknown[] = [];
     const receipts: unknown[] = [];
+    const audits: unknown[] = [];
     const registry = new ToolRegistry();
     const perm = makeAllowedPerm('knowledge', ['create', 'update', 'delete']);
     const dispatcher = new GatewayDispatcher({
@@ -1979,6 +2027,7 @@ describe('GatewayDispatcher', () => {
         clock: { now: () => new Date(), nowMs: () => Date.now() },
       }),
       personalMemoryCommands: {
+        recoverApplied: async () => null,
         execute: async input => {
           commands.push(input);
           return {
@@ -1994,10 +2043,15 @@ describe('GatewayDispatcher', () => {
         reserveKnowledgeReview: async () => ({ status: 'claimed' }),
         completeKnowledgeReview: async () => ({} as any),
         releaseKnowledgeReview: async () => {},
+        reservePersonalMemory: async () => ({ status: 'claimed', reservationToken: 'reservation-1' }),
+        releasePersonalMemory: async () => {},
         recordPersonalMemory: async (identity, input) => {
           receipts.push({ identity, input });
           return {} as any;
         },
+      },
+      auditService: {
+        record: (input: unknown) => audits.push(input),
       },
       logger: noopLogger,
     });
@@ -2037,23 +2091,98 @@ describe('GatewayDispatcher', () => {
       effect: { kind: 'personal_memory_applied', runId: 'run-1' },
     });
     assert.equal(commands.length, 1);
-    assert.deepEqual(receipts, [{
-      identity: {
-        companyId: 'co-test',
-        userId: 'user-test',
-        chatId: 'oc_source_chat',
-        threadId: 'thread-1',
-        runId: 'run-1',
-      },
-      input: {
-        actionId: 'personal-memory-1',
+    const recordedReceipt = receipts[0] as {
+      identity: Record<string, unknown>;
+      input: Record<string, unknown>;
+    };
+    const receiptInput = { ...recordedReceipt.input };
+    delete receiptInput.requestHash;
+    assert.deepEqual(recordedReceipt.identity, {
+      companyId: 'co-test',
+      userId: 'user-test',
+      chatId: 'oc_source_chat',
+      threadId: 'thread-1',
+      runId: 'run-1',
+    });
+    assert.deepEqual(receiptInput, {
+      actionId: 'personal-memory-1',
+      action: 'updated',
+      logicalKey: 'communication.answers.detail',
+      resourceId: '11111111-1111-4111-8111-111111111111',
+      resourceVersion: 3,
+      projection: 'completed',
+    });
+    assert.match(String(recordedReceipt.input.requestHash), /^[a-f0-9]{64}$/);
+    assert.deepEqual(audits, [{
+      actorId: 'user-test',
+      companyId: 'co-test',
+      action: 'gateway.personal_memory.mutate',
+      outcome: 'success',
+      metadata: {
+        channel: 'lark',
         action: 'updated',
         logicalKey: 'communication.answers.detail',
         resourceId: '11111111-1111-4111-8111-111111111111',
-        resourceVersion: 3,
+        version: 3,
         projection: 'completed',
+        recovered: false,
+        gatewayStatus: 'success',
       },
     }]);
+  });
+
+  it('audits denied and failed dedicated personal mutations without storing facts', async () => {
+    const audits: Array<Record<string, unknown>> = [];
+    const registry = new ToolRegistry();
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(makeAllowedPerm('knowledge', ['update'])),
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([]),
+      toolExecutor: {} as any,
+      personalMemoryCommands: {
+        execute: async ({ command }: { command: { action: string } }) => {
+          if (command.action === 'delete') {
+            throw new KnowledgeMutationError('permission_denied', 'not permitted');
+          }
+          throw new Error('database unavailable');
+        },
+      } as any,
+      auditService: {
+        record: (input: Record<string, unknown>) => audits.push(input),
+      },
+      logger: noopLogger,
+    });
+
+    const base = {
+      ...member,
+      channel: 'desktop' as const,
+    };
+    const denied = await dispatcher.dispatch({
+      op: 'memory.personal.mutate',
+      payload: {
+        action: 'delete',
+        subject: 'answer detail preference',
+        logicalKey: 'communication.answers.detail',
+      },
+    }, base);
+    const failed = await dispatcher.dispatch({
+      op: 'memory.personal.mutate',
+      payload: {
+        action: 'set',
+        subject: 'answer detail preference',
+        logicalKey: 'communication.answers.detail',
+        facts: ['private fact must not enter audit metadata'],
+      },
+    }, base);
+
+    assert.equal(denied.status, 'permission_denied');
+    assert.equal(failed.status, 'tool_error');
+    assert.deepEqual(audits.map(audit => audit['outcome']), ['failure', 'failure']);
+    assert.deepEqual(audits.map(audit => (audit['metadata'] as Record<string, unknown>)['reason']), [
+      'permission_denied',
+      'execution_failed',
+    ]);
+    assert.equal(JSON.stringify(audits).includes('private fact'), false);
   });
 
   it('rejects mismatched personal-memory run provenance before changing data', async () => {
@@ -2065,6 +2194,7 @@ describe('GatewayDispatcher', () => {
       skillCatalog: makeSkillCatalog([]),
       toolExecutor: {} as any,
       personalMemoryCommands: {
+        recoverApplied: async () => null,
         execute: async () => {
           executions++;
           throw new Error('must not execute');
@@ -2102,6 +2232,7 @@ describe('GatewayDispatcher', () => {
       skillCatalog: makeSkillCatalog([]),
       toolExecutor: {} as any,
       personalMemoryCommands: {
+        recoverApplied: async () => null,
         execute: async () => {
           executions++;
           return {
@@ -2117,6 +2248,8 @@ describe('GatewayDispatcher', () => {
         reserveKnowledgeReview: async () => ({ status: 'claimed' }),
         completeKnowledgeReview: async () => ({} as any),
         releaseKnowledgeReview: async () => {},
+        reservePersonalMemory: async () => ({ status: 'claimed', reservationToken: 'reservation-1' }),
+        releasePersonalMemory: async () => {},
         recordPersonalMemory: async () => { throw new Error('cache unavailable'); },
       },
       logger: noopLogger,
@@ -2142,6 +2275,145 @@ describe('GatewayDispatcher', () => {
     assert.equal(result.ok, false);
     assert.equal(result.status, 'tool_error');
     assert.match(result.error?.message ?? '', /memory changed.*receipt could not be recorded/i);
+  });
+
+  it('recovers a committed Lark delete from an ambiguous receipt write without re-running it', async () => {
+    let executions = 0;
+    let storedReceipt: Record<string, unknown> | null = null;
+    let firstRecord = true;
+    const registry = new ToolRegistry();
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(makeAllowedPerm('knowledge', ['delete'])),
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([]),
+      toolExecutor: {} as any,
+      personalMemoryCommands: {
+        recoverApplied: async () => null,
+        execute: async () => {
+          executions++;
+          return {
+            action: 'deleted',
+            logicalKey: 'communication.answers.detail',
+            resourceId: '11111111-1111-4111-8111-111111111111',
+            version: 3,
+            projection: 'queued',
+          };
+        },
+      } as any,
+      runEffectReceipts: {
+        reservePersonalMemory: async () => ({ status: 'claimed', reservationToken: 'reservation-1' }),
+        releasePersonalMemory: async () => {},
+        getPersonalMemory: async (_identity: unknown, actionId: string) =>
+          storedReceipt?.['actionId'] === actionId ? storedReceipt as any : null,
+        recordPersonalMemory: async (identity: Record<string, unknown>, input: Record<string, unknown>) => {
+          storedReceipt = {
+            ...identity,
+            ...input,
+            version: 1,
+            kind: 'personal_memory',
+            status: 'applied',
+            effectKind: 'personal_memory_applied',
+            appliedAt: new Date().toISOString(),
+          };
+          if (firstRecord) {
+            firstRecord = false;
+            throw new Error('cache response lost after write');
+          }
+          return storedReceipt as any;
+        },
+      } as any,
+      logger: noopLogger,
+    });
+    const larkMember: GatewayMemberContext = {
+      ...member,
+      channel: 'lark',
+      runtimeChatId: 'chat-1',
+      runtimeRunId: 'run-1',
+      runtimeThreadId: 'thread-1',
+    };
+    const request = {
+      op: 'memory.personal.mutate' as const,
+      execution: { version: 1 as const, runId: 'run-1', threadId: 'thread-1', actionId: 'delete-1' },
+      payload: {
+        action: 'delete' as const,
+        subject: 'answer detail preference',
+        logicalKey: 'communication.answers.detail',
+      },
+    };
+
+    const first = await dispatcher.dispatch(request, larkMember);
+    const retry = await dispatcher.dispatch(request, larkMember);
+
+    assert.equal(first.status, 'tool_error');
+    assert.equal(retry.ok, true);
+    assert.equal((retry.data as { action: string }).action, 'deleted');
+    assert.equal(executions, 1);
+  });
+
+  it('recovers a committed Lark delete from canonical evidence when its exact cache write was lost', async () => {
+    let executions = 0;
+    let recordAttempts = 0;
+    let reserved = false;
+    const durableResult = {
+      action: 'deleted' as const,
+      logicalKey: 'communication.answers.detail',
+      resourceId: '11111111-1111-4111-8111-111111111111',
+      version: 3,
+      projection: 'queued' as const,
+    };
+    const registry = new ToolRegistry();
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(makeAllowedPerm('knowledge', ['delete'])),
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([]),
+      toolExecutor: {} as any,
+      personalMemoryCommands: {
+        recoverApplied: async () => executions > 0 ? durableResult : null,
+        execute: async () => {
+          executions += 1;
+          return durableResult;
+        },
+      } as any,
+      runEffectReceipts: {
+        reservePersonalMemory: async () => {
+          if (reserved) return { status: 'applying', reservationToken: 'reservation-1' };
+          reserved = true;
+          return { status: 'claimed', reservationToken: 'reservation-1' };
+        },
+        releasePersonalMemory: async () => { reserved = false; },
+        getPersonalMemory: async () => { throw new Error('cache read unavailable'); },
+        recordPersonalMemory: async () => {
+          recordAttempts += 1;
+          if (recordAttempts === 1) throw new Error('exact cache write unavailable');
+          return {} as any;
+        },
+      } as any,
+      logger: noopLogger,
+    });
+    const larkMember: GatewayMemberContext = {
+      ...member,
+      channel: 'lark',
+      runtimeChatId: 'chat-1',
+      runtimeRunId: 'run-1',
+      runtimeThreadId: 'thread-1',
+    };
+    const request = {
+      op: 'memory.personal.mutate' as const,
+      execution: { version: 1 as const, runId: 'run-1', threadId: 'thread-1', actionId: 'delete-cache-lost' },
+      payload: {
+        action: 'delete' as const,
+        subject: 'answer detail preference',
+        logicalKey: 'communication.answers.detail',
+      },
+    };
+
+    const first = await dispatcher.dispatch(request, larkMember);
+    const retry = await dispatcher.dispatch(request, larkMember);
+
+    assert.equal(first.status, 'tool_error');
+    assert.equal(retry.status, 'success');
+    assert.equal(executions, 1);
+    assert.equal(recordAttempts, 2);
   });
 
   it('opens exact shared skill review through the backend-owned Lark card flow', async () => {

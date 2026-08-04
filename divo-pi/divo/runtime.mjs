@@ -460,6 +460,27 @@ export function resolveSessionPaths({
 	};
 }
 
+/** Delete exactly one durable thread session after a protected-data run. */
+export function deleteDurablePiSession({ dataDir, thread }) {
+	if (typeof dataDir !== "string" || !path.isAbsolute(dataDir)) {
+		throw new Error("A protected session cleanup requires an absolute data directory");
+	}
+	if (typeof thread !== "string" || !/^[A-Za-z0-9._-]+$/.test(thread)) {
+		throw new Error("Protected session thread is invalid");
+	}
+	const threadsRoot = path.resolve(dataDir, "threads");
+	const sessionDir = path.resolve(threadsRoot, thread);
+	if (path.dirname(sessionDir) !== threadsRoot) {
+		throw new Error("Protected session path escaped the threads directory");
+	}
+	const existed = fs.existsSync(sessionDir);
+	removeDirectory(sessionDir);
+	if (fs.existsSync(sessionDir)) {
+		throw new Error("Protected session cleanup did not remove the session directory");
+	}
+	return existed;
+}
+
 export function resolveRuntimeThreadId(thread, runtimeThreadId = thread) {
 	if (typeof runtimeThreadId !== "string" || !runtimeThreadId.trim()) {
 		throw new Error("Runtime thread ID is required");

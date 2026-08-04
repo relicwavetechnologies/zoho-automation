@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { ToolId } from '../../shared/ids';
+import type { ConnectionProvider } from '../connections/connection-provider';
 
 export const TOOL_FAMILY_IDS = [
   'lark',
@@ -8,6 +9,7 @@ export const TOOL_FAMILY_IDS = [
   'airtable',
   'aitable',
   'zoho',
+  'shopify',
   'context',
   'skills',
   'memory',
@@ -22,13 +24,7 @@ export const TOOL_FAMILY_IDS = [
 
 export type ToolFamily = typeof TOOL_FAMILY_IDS[number];
 
-export type CapabilityConnectionProvider =
-  | 'google_workspace'
-  | 'zoho'
-  | 'canva'
-  | 'airtable'
-  | 'aitable'
-  | 'lark';
+export type CapabilityConnectionProvider = ConnectionProvider;
 
 export type ToolFamilyDefinition = {
   readonly displayName: string;
@@ -45,6 +41,7 @@ export const TOOL_FAMILY_DEFINITIONS: Record<ToolFamily, ToolFamilyDefinition> =
   airtable:   { displayName: 'Airtable', connectionMode: 'member_selectable', connectionProvider: 'airtable', skillMode: 'optional', routingAliases: ['airtable'] },
   aitable:    { displayName: 'AITable', connectionMode: 'member_selectable', connectionProvider: 'aitable', skillMode: 'optional', routingAliases: ['aitable'] },
   zoho:       { displayName: 'Zoho', connectionMode: 'member_selectable', connectionProvider: 'zoho', skillMode: 'optional', routingAliases: ['zoho'] },
+  shopify:    { displayName: 'Shopify', connectionMode: 'member_selectable', connectionProvider: 'shopify', skillMode: 'optional', routingAliases: ['shopify', 'shopifyql', 'store sales', 'store orders', 'store customers'] },
   context:    { displayName: 'Search and context', connectionMode: 'none', skillMode: 'none', routingAliases: [] },
   skills:     { displayName: 'Skills', connectionMode: 'none', skillMode: 'optional', routingAliases: [] },
   memory:     { displayName: 'Memory', connectionMode: 'none', skillMode: 'optional', routingAliases: [] },
@@ -169,6 +166,13 @@ export const TOOL_CAPABILITY_DEFINITIONS = {
 
   zohoCrm:   defineCapability('zoho', ['read', 'create', 'update', 'delete']),
   zohoBooks: defineCapability('zoho', ['read', 'create', 'update', 'delete']),
+
+  // Shopify starts read-only and split by sensitivity. Keeping analytics,
+  // orders, and customers separate lets RBAC grant aggregate reporting without
+  // implicitly granting order-level or protected-customer access.
+  shopifyAnalytics: defineCapability('shopify', ['read']),
+  shopifyOrders:    defineCapability('shopify', ['read']),
+  shopifyCustomers: defineCapability('shopify', ['read']),
 
   webSearch:       defineCapability('context', ['read']),
   knowledge:       defineCapability('memory', ['read', 'create', 'update', 'delete']),

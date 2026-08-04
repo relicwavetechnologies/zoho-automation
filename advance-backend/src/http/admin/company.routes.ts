@@ -29,8 +29,10 @@ import type { ZohoTokenService } from '../../infrastructure/zoho/zoho-token.serv
 import type { ZohoConnectionRepository } from '../../infrastructure/zoho/zoho-connection.repository';
 import {
   COMPANY_CAPABILITIES,
+  approvalModesForConnectionProvider,
   companyCapabilityPolicySchema,
   connectionGovernancePolicySchema,
+  connectionPolicyIssueForProvider,
   defaultCompanyCapabilityPolicy,
   defaultConnectionGovernancePolicy,
   parseCompanyCapabilityPolicy,
@@ -174,6 +176,7 @@ function presentConnectionGovernance(connection: any) {
         : null,
     })),
     governance: {
+      approvalModes: approvalModesForConnectionProvider(connection.provider),
       managerPolicy,
       managerConfiguredBy: governance?.managerConfiguredBy ?? null,
       managerConfiguredAt: governance?.managerConfiguredAt?.toISOString() ?? null,
@@ -381,9 +384,11 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
     const actorId = res.locals['userId'] as string | null | undefined;
     const connection = await prisma.integrationConnection.findFirst({
       where: { id: connectionId, companyId, revokedAt: null },
-      select: { id: true },
+      select: { id: true, provider: true },
     });
     if (!connection) throw routeError(404, 'Connection not found');
+    const policyIssue = connectionPolicyIssueForProvider(connection.provider, payload.adminOverride);
+    if (policyIssue) throw routeError(400, policyIssue);
 
     const governance = await prisma.integrationConnectionGovernance.upsert({
       where: { connectionId },

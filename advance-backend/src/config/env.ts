@@ -229,6 +229,23 @@ export const EnvSchema = z.object({
   // api.apitable.com, and self-hosted APITable.
   AITABLE_BASE_URL:          z.string().default('https://aitable.ai'),
 
+  // ── Shopify Admin GraphQL + ShopifyQL ────────────────────────────────────
+  // Standalone Divo uses Shopify's authorization-code flow. Credentials and
+  // resulting shop tokens remain backend-only; Pi receives connection IDs.
+  SHOPIFY_CLIENT_ID:        z.string().optional(),
+  SHOPIFY_CLIENT_SECRET:    z.string().optional(),
+  SHOPIFY_REDIRECT_URI:     z.string().url().optional(),
+  SHOPIFY_SCOPES:           z.string().default('read_reports'),
+  SHOPIFY_PROTECTED_DATA_TOOLS_ENABLED: booleanStr.default('false'),
+  SHOPIFY_API_VERSION:      z.string().regex(/^20\d{2}-(01|04|07|10)$/).default('2026-07'),
+  SHOPIFY_TIMEOUT_MS:       positiveInt(20_000),
+  SHOPIFY_MAX_RETRIES:      z.coerce.number().int().min(0).max(5).default(2),
+  SHOPIFY_OAUTH_MAX_SKEW_SECONDS: positiveInt(300),
+
+  // Provider-neutral key for newly written integration credentials. Existing
+  // v1 rows continue to decrypt with ZOHO_TOKEN_ENCRYPTION_KEY during rollout.
+  INTEGRATION_TOKEN_ENCRYPTION_KEY: z.string().optional(),
+
   // ── Zoho OAuth ────────────────────────────────────────────────────────────
   ZOHO_CLIENT_ID:            z.string().optional(),
   ZOHO_CLIENT_SECRET:        z.string().optional(),
@@ -316,9 +333,13 @@ export const EnvSchema = z.object({
   // ── Member session auth ───────────────────────────────────────────────────
   MEMBER_JWT_SECRET: z.string().min(1).default('dev-member-secret-change-me'),
 
-  // ── HITL local testing ────────────────────────────────────────────────────
-  // Non-production only. Forces manager-owned actions through the approval card
-  // path so the Lark approval loop can be smoke-tested with one user.
+  // ── HITL approval policy ──────────────────────────────────────────────────
+  // Canonical deployment setting. When true, manager-owned actions also require
+  // a separate approval actor (four-eyes control), including in production.
+  DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS: booleanStr.default('false'),
+  // Legacy local-test setting. It is intentionally ignored by production
+  // composition; keep it only so older non-production deployments continue to
+  // exercise the approval-card path during migration.
   DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: booleanStr.default('false'),
 
   // Set to 0 to disable supervisor timeout (useful for local dev with slow models).
@@ -480,6 +501,48 @@ export const validateProductionEnv = (env: TypedEnv): string[] => {
   }
   if (!env.OPENROUTER_API_KEY) {
     issues.push('OPENROUTER_API_KEY is required to index approved images and scanned PDFs in production.');
+  }
+  if (!env.SHOPIFY_CLIENT_ID) {
+    issues.push('SHOPIFY_CLIENT_ID is required for Shopify OAuth in production.');
+  }
+  if (!env.SHOPIFY_CLIENT_SECRET) {
+    issues.push('SHOPIFY_CLIENT_SECRET is required for Shopify OAuth in production.');
+  }
+  if (!env.SHOPIFY_REDIRECT_URI) {
+    issues.push('SHOPIFY_REDIRECT_URI is required for Shopify OAuth in production.');
+  } else {
+    const redirect = new URL(env.SHOPIFY_REDIRECT_URI);
+    const hostname = redirect.hostname.toLowerCase();
+    if (redirect.protocol !== 'https:' || hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+      issues.push('SHOPIFY_REDIRECT_URI must use HTTPS on a non-loopback host in production.');
+    }
+  }
+  const shopifyScopes = new Set((env.SHOPIFY_SCOPES ?? '').split(',').map(scope => scope.trim()).filter(Boolean));
+  const supportedShopifyScopes = new Set([
+    'read_reports',
+    'read_orders',
+    'read_customers',
+    'read_all_orders',
+  ]);
+  for (const scope of shopifyScopes) {
+    if (!supportedShopifyScopes.has(scope)) {
+      issues.push(`SHOPIFY_SCOPES contains unsupported scope ${scope}.`);
+    }
+  }
+  if (!shopifyScopes.has('read_reports')) {
+    issues.push('SHOPIFY_SCOPES must include read_reports for Shopify analytics.');
+  }
+  if (env.SHOPIFY_PROTECTED_DATA_TOOLS_ENABLED) {
+    for (const required of ['read_orders', 'read_customers']) {
+      if (!shopifyScopes.has(required)) {
+        issues.push(`SHOPIFY_SCOPES must include ${required} when protected Shopify record tools are enabled.`);
+      }
+    }
+  } else if (shopifyScopes.has('read_orders') || shopifyScopes.has('read_customers') || shopifyScopes.has('read_all_orders')) {
+    issues.push('SHOPIFY_SCOPES must not request read_orders, read_all_orders, or read_customers while protected Shopify record tools are disabled in production.');
+  }
+  if (!env.INTEGRATION_TOKEN_ENCRYPTION_KEY || env.INTEGRATION_TOKEN_ENCRYPTION_KEY.length < 32) {
+    issues.push('INTEGRATION_TOKEN_ENCRYPTION_KEY must be at least 32 characters in production.');
   }
   return issues;
 };

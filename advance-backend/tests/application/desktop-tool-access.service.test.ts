@@ -30,6 +30,7 @@ function makeService(options: {
   larkConnections?: Array<unknown>;
   airtableConnections?: Array<unknown>;
   aitableConnections?: Array<unknown>;
+  shopifyConnections?: Array<unknown>;
   companyDepartments?: Array<{ id: string; name: string }>;
 } = {}) {
   const writes: Array<Record<string, unknown>> = [];
@@ -116,6 +117,7 @@ function makeService(options: {
       listAccessibleLarkConnections: async () => ({ ok: true as const, value: options.larkConnections ?? [] }),
       listAccessibleAirtableConnections: async () => ({ ok: true as const, value: options.airtableConnections ?? [] }),
       listAccessibleAitableConnections: async () => ({ ok: true as const, value: options.aitableConnections ?? [] }),
+      listAccessibleShopifyConnections: async () => ({ ok: true as const, value: options.shopifyConnections ?? [] }),
     } as any,
     toolRegistry: {
       byId: (toolId: string) => (options.runtimeToolIds ?? ['larkTask', 'knowledge', 'runCommand']).includes(toolId) ? {} : undefined,
@@ -185,6 +187,21 @@ describe('DesktopToolAccessService', () => {
       ),
       (error: unknown) => error instanceof DesktopToolAccessError && error.code === 'invalid',
     );
+  it('shows Shopify as separately governable and ready only with an accessible store', async () => {
+    const analytics = { ...tool, toolId: 'shopifyAnalytics', name: 'Shopify Analytics', category: 'commerce', domain: 'shopify' };
+    const runtimeToolIds = ['shopifyAnalytics'];
+    const disconnected = makeService({ registeredTools: [analytics], runtimeToolIds, companyRole: 'COMPANY_ADMIN' });
+    const disconnectedInventory = await disconnected.service.inventory({ ...actor, role: 'COMPANY_ADMIN' });
+    assert.equal(disconnectedInventory.tools[0]?.readiness, 'connection_required');
+    assert.ok(disconnectedInventory.tools[0]?.managementScopes.some(scope => scope.kind === 'global'));
+
+    const connected = makeService({
+      registeredTools: [analytics],
+      runtimeToolIds,
+      companyRole: 'COMPANY_ADMIN',
+      shopifyConnections: [{ connectionId: 'shopify-1', status: 'connected' }],
+    });
+    assert.equal((await connected.service.inventory({ ...actor, role: 'COMPANY_ADMIN' })).tools[0]?.readiness, 'ready');
   });
 
   // The Tools page is built from RegisteredTool rows, but a row alone is not

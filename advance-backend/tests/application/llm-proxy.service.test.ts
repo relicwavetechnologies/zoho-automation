@@ -86,3 +86,35 @@ test('creates Pi execution runs with their authenticated channel provenance', as
   assert.equal(data?.['channel'], 'lark');
   assert.equal(data?.['entrypoint'], 'pi');
 });
+
+test('never persists Shopify arguments or result payloads in proxy execution traces', async () => {
+  const events: Record<string, unknown>[] = [];
+  const steps: Record<string, unknown>[] = [];
+  const service = new LlmProxyService({
+    executionRun: { update: async () => ({ lastSequence: 1 }) },
+    executionEvent: { upsert: async (input: { create: Record<string, unknown> }) => { events.push(input.create); } },
+    stepResult: { upsert: async (input: { create: Record<string, unknown> }) => { steps.push(input.create); } },
+  } as any, logger);
+
+  await service.recordToolResults('execution-1', [
+    {
+      role: 'assistant',
+      tool_calls: [{
+        id: 'call-1',
+        function: {
+          name: 'divo',
+          arguments: JSON.stringify({
+            op: 'tools.invoke',
+            payload: { toolId: 'shopifyCustomers', args: { search: { field: 'email', value: 'private@example.test' } } },
+          }),
+        },
+      }],
+    },
+    { role: 'tool', tool_call_id: 'call-1', content: JSON.stringify({ data: { amountSpent: '999.00', tags: ['vip'] } }) },
+  ] as never);
+
+  const persisted = JSON.stringify({ events, steps });
+  assert.doesNotMatch(persisted, /private@example\.test|999\.00|vip/);
+  assert.match(persisted, /REDACTED: governed Shopify result/);
+  assert.match(persisted, /shopifyCustomers/);
+});

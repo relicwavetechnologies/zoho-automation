@@ -75,12 +75,17 @@ type CloudStatusConnection = {
   scopes: string[]
   connectedAt: string
   lastUsedAt: string | null
+  status?: string
+  reconnectRequired?: boolean
+  readOnlyEnforced?: boolean
+  canManage?: boolean
 }
 
 type CloudStatusResponse = {
   success: boolean
   data?: {
     connected: boolean
+    canManage?: boolean
     connections: CloudStatusConnection[]
   }
   message?: string
@@ -119,6 +124,7 @@ type GoogleManageData = {
     access: DivoConnectionAccess
     scopes: string[]
     connectedAt: string
+    readOnlyEnforced?: boolean
   }
   grants: GoogleManageGrant[]
   candidates: {
@@ -129,6 +135,7 @@ type GoogleManageData = {
   }
   accessLevels: Array<{ value: DivoConnectionAccess; label: string; description: string }>
   governance: {
+    approvalModes?: ConnectionApprovalMode[]
     managerPolicy: ConnectionGovernancePolicy
     managerConfiguredAt: string | null
     adminOverride: ConnectionGovernancePolicy | null
@@ -204,13 +211,13 @@ type GoogleDataExportProfileResponse = {
   message?: string
 }
 
-type ManageAccessProvider = 'google' | 'zoho' | 'canva' | 'lark' | 'airtable'
+type ManageAccessProvider = 'google' | 'zoho' | 'canva' | 'lark' | 'airtable' | 'shopify'
 
 type CloudProviderConfig = {
-  provider: Extract<ManageAccessProvider, 'google' | 'canva' | 'lark' | 'airtable'>
-  pluginId: 'google-workspace' | 'canva' | 'lark' | 'airtable'
-  label: 'Google Workspace' | 'Canva' | 'Lark' | 'Airtable'
-  connectionLabel: 'Google' | 'Canva' | 'Lark' | 'Airtable'
+  provider: Extract<ManageAccessProvider, 'google' | 'canva' | 'lark' | 'airtable' | 'shopify'>
+  pluginId: 'google-workspace' | 'canva' | 'lark' | 'airtable' | 'shopify'
+  label: 'Google Workspace' | 'Canva' | 'Lark' | 'Airtable' | 'Shopify'
+  connectionLabel: 'Google' | 'Canva' | 'Lark' | 'Airtable' | 'Shopify'
   accountFallback: string
   /**
    * Whether the backend's authorize-url accepts a `label`. These providers
@@ -218,6 +225,8 @@ type CloudProviderConfig = {
    * are creating; single-account providers have nothing to disambiguate.
    */
   supportsLabel?: boolean
+  supportsShopDomain?: boolean
+  reconnectUsesConnectionId?: boolean
   commands: {
     authorize: string
     patConnect?: string
@@ -284,6 +293,20 @@ export const cloudProviders: Record<CloudProviderConfig['pluginId'], CloudProvid
       disconnect: 'divo_airtable_disconnect_connection',
     },
   },
+  shopify: {
+    provider: 'shopify',
+    pluginId: 'shopify',
+    label: 'Shopify',
+    connectionLabel: 'Shopify',
+    accountFallback: 'Shopify store',
+    supportsShopDomain: true,
+    reconnectUsesConnectionId: true,
+    commands: {
+      authorize: 'divo_shopify_authorize_url',
+      status: 'divo_shopify_status',
+      disconnect: 'divo_shopify_disconnect_connection',
+    },
+  },
 }
 
 const canvaServices = [
@@ -303,6 +326,24 @@ const larkServices = [
   { name: 'Calendar & tasks', description: 'Read schedules and manage tasks when the shared connection and Divo policy allow it.', icon: CalendarDays },
   { name: 'Docs, Base & approvals', description: 'Work with authorised documents, Bases, and approval flows through Divo controls.', icon: KeyRound },
 ]
+
+const shopifyServices = [
+  { name: 'Analytics', description: 'Read sales, orders, attribution, product, inventory, and payment reports.', icon: CalendarDays },
+  { name: 'Orders & attribution', description: 'Inspect orders, line items, fulfillment, and first/last-touch customer journeys.', icon: KeyRound },
+  { name: 'Customers', description: 'Search customer profiles and commerce metadata with protected-data controls.', icon: Users },
+]
+
+const cloudProviderServices: Record<CloudProviderConfig['provider'], Array<{
+  name: string
+  description: string
+  icon: ComponentType<{ className?: string }>
+}>> = {
+  google: googleWorkspaceServices,
+  canva: canvaServices,
+  lark: larkServices,
+  airtable: airtableServices,
+  shopify: shopifyServices,
+}
 
 // Derived from the registry rather than a parallel list of ids: the previous
 // hardcoded check silently sent any unlisted provider to the generic tool-access
@@ -388,7 +429,8 @@ function isDivoAuthError(error: unknown): boolean {
 function toConnectionModel(connection: CloudStatusConnection, provider: CloudProviderConfig): DivoConnection {
   const account = connection.accountEmail ?? connection.accountName ?? provider.accountFallback
   const isShared = connection.ownerType === 'company'
-  const scopeLabels = formatGoogleScopes(connection.scopes)
+  const scopeLabels = formatProviderScopes(provider.provider, connection.scopes)
+  const access = connection.readOnlyEnforced ? 'read_only' : connection.access
 
   return {
     id: connection.connectionId,
@@ -396,14 +438,18 @@ function toConnectionModel(connection: CloudStatusConnection, provider: CloudPro
     label: connection.label || account,
     accountEmail: account,
     kind: isShared ? 'company_shared' : 'personal',
-    status: 'connected',
-    access: connection.access,
+    status: connection.reconnectRequired || (connection.status && connection.status !== 'connected')
+      ? 'needs_attention'
+      : 'connected',
+    access,
     owner: connection.accountName ?? account,
     scopes: scopeLabels.length ? scopeLabels : [provider.label],
     piAlias: connection.label || account,
-    recommendedFor: buildConnectionRecommendation(connection.access, scopeLabels, provider.label),
+    recommendedFor: buildConnectionRecommendation(access, scopeLabels, provider.label),
     lastUsedAt: formatRelativeDate(connection.lastUsedAt),
     connectedAt: connection.connectedAt,
+    canManage: connection.canManage ?? connection.access === 'admin',
+    readOnlyEnforced: connection.readOnlyEnforced,
   }
 }
 
@@ -467,6 +513,22 @@ function formatGoogleScopes(scopes: string[]): string[] {
   return labels.length ? labels : scopes
 }
 
+function formatProviderScopes(provider: CloudProviderConfig['provider'], scopes: string[]): string[] {
+  if (provider === 'google') return formatGoogleScopes(scopes)
+  if (provider !== 'shopify') return scopes
+  const labels: Record<string, string> = {
+    read_reports: 'Reports (read)',
+    read_orders: 'Orders (read)',
+    read_all_orders: 'Historical orders (read)',
+    read_customers: 'Customers (read)',
+    read_products: 'Products (read)',
+    read_inventory: 'Inventory (read)',
+    read_locations: 'Locations (read)',
+    read_payment_terms: 'Payment terms (read)',
+  }
+  return scopes.map(scope => labels[scope] ?? scope)
+}
+
 function formatRelativeDate(value: string | null): string {
   if (!value) return 'Never'
   const timestamp = new Date(value).getTime()
@@ -494,7 +556,7 @@ function pickPostOauthManageConnection(
   nextConnections: DivoConnection[]
 ): DivoConnection | null {
   const previousIds = new Set(previousConnections.map((connection) => connection.id))
-  const adminConnections = nextConnections.filter((connection) => connection.access === 'admin')
+  const adminConnections = nextConnections.filter((connection) => connection.canManage ?? connection.access === 'admin')
   return (
     adminConnections.find((connection) => !previousIds.has(connection.id)) ??
     [...adminConnections].sort((a, b) => connectedAtTime(b) - connectedAtTime(a))[0] ??
@@ -537,6 +599,7 @@ function PluginDetailContent() {
   })
   const [toolInventory, setToolInventory] = useState<DivoToolInventoryItem[] | null>(null)
   const [toolInventoryError, setToolInventoryError] = useState<string | null>(null)
+  const [providerCanManage, setProviderCanManage] = useState<boolean | null>(null)
   const inventoryRequestGeneration = useRef(0)
   const plugin = getPlugin(pluginId)
   const cloudProvider = getCloudProvider(pluginId)
@@ -615,6 +678,7 @@ function PluginDetailContent() {
       }
 
       const connections = (response.data?.connections ?? []).map(connection => toConnectionModel(connection, cloudProvider))
+      setProviderCanManage(response.data?.canManage ?? null)
       console.debug('[DivoPlugins] cloud_status.ok', {
         provider: cloudProvider.provider,
         connectionCount: connections.length,
@@ -642,6 +706,12 @@ function PluginDetailContent() {
     void loadConnections()
   }, [loadConnections])
 
+  useEffect(() => {
+    const refreshAfterBrowserOAuth = () => void loadConnections()
+    window.addEventListener('focus', refreshAfterBrowserOAuth)
+    return () => window.removeEventListener('focus', refreshAfterBrowserOAuth)
+  }, [loadConnections])
+
   const connections = connectionState.connections
 
   if (toolInventoryError) return <DetailInventoryState title="Could not load tools" description={toolInventoryError} onRetry={() => void loadToolInventory()} />
@@ -663,11 +733,12 @@ function PluginDetailContent() {
   const personalCount = connections.filter((connection) => connection.kind === 'personal').length
   const sharedCount = connections.filter((connection) => connection.kind === 'company_shared').length
   const activeCount = connections.filter((connection) => connection.status === 'connected').length
-  const adminConnections = connections.filter((connection) => connection.access === 'admin')
-  const canManageConnections = divoSession.status === 'connected'
+  const adminConnections = connections.filter((connection) => connection.canManage ?? connection.access === 'admin')
+  const canAddConnections = divoSession.status === 'connected'
+    && (cloudProvider.provider === 'shopify' ? providerCanManage === true : providerCanManage !== false)
   const openDivoSettings = () => navigate({ to: route.settings.divo } as any)
   const openManageConnection = (connection: DivoConnection) => {
-    if (connection.access !== 'admin') {
+    if (!(connection.canManage ?? connection.access === 'admin')) {
       toast.error('Admin access required', {
         description: 'Ask the connection owner or a company admin to manage sharing.',
       })
@@ -686,7 +757,12 @@ function PluginDetailContent() {
   const reconnectConnection = async (connection: DivoConnection) => {
     setConnectionActionId(connection.id)
     try {
-      const authorizeUrl = await invoke<string>(cloudProvider.commands.authorize)
+      const authorizeUrl = await invoke<string>(
+        cloudProvider.commands.authorize,
+        cloudProvider.reconnectUsesConnectionId
+          ? { connectionId: connection.id, connection_id: connection.id }
+          : undefined,
+      )
       await openExternalUrl(authorizeUrl)
       toast.success(`${cloudProvider.label} sign-in opened`, {
         description: `Choose ${connection.accountEmail} to reconnect this account.`,
@@ -741,13 +817,17 @@ function PluginDetailContent() {
                   <ChevronRight className="size-4" />
                 </Button>
               ) : null}
-              <Button
-                size="sm"
-                onClick={() => (canManageConnections ? setAddOpen(true) : openDivoSettings())}
-              >
-                <Plus className="size-4" />
-                {canManageConnections ? 'Add connection' : 'Connect Divo'}
-              </Button>
+              {divoSession.status !== 'connected' ? (
+                <Button size="sm" onClick={openDivoSettings}>
+                  <Plus className="size-4" />
+                  Connect Divo
+                </Button>
+              ) : canAddConnections ? (
+                <Button size="sm" onClick={() => setAddOpen(true)}>
+                  <Plus className="size-4" />
+                  Add connection
+                </Button>
+              ) : null}
             </div>
           </div>
 
@@ -795,14 +875,12 @@ function PluginDetailContent() {
                   <RotateCw className="size-4" />
                   Refresh
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => (canManageConnections ? setAddOpen(true) : openDivoSettings())}
-                >
-                  <Plus className="size-4" />
-                  {canManageConnections ? 'Add' : 'Connect Divo'}
-                </Button>
+                {canAddConnections ? (
+                  <Button variant="outline" size="sm" onClick={() => setAddOpen(true)}>
+                    <Plus className="size-4" />
+                    Add
+                  </Button>
+                ) : null}
               </div>
             </div>
 
@@ -842,8 +920,10 @@ function PluginDetailContent() {
               {divoSession.status === 'connected' && connectionState.status === 'ready' && connections.length === 0 ? (
                 <ConnectionListState
                   title={`No ${cloudProvider.connectionLabel} connections yet`}
-                  description={`Connect a ${cloudProvider.connectionLabel} account to make it available to Divo through the backend.`}
-                  action={<Button size="sm" onClick={() => setAddOpen(true)}>Add connection</Button>}
+                  description={canAddConnections
+                    ? `Connect a ${cloudProvider.connectionLabel} account to make it available to Divo through the backend.`
+                    : `Ask a company admin to connect and share a ${cloudProvider.connectionLabel} account.`}
+                  action={canAddConnections ? <Button size="sm" onClick={() => setAddOpen(true)}>Add connection</Button> : undefined}
                 />
               ) : null}
               {connections.map((connection) => (
@@ -853,6 +933,7 @@ function PluginDetailContent() {
                   onManage={() => openManageConnection(connection)}
                   onReconnect={() => void reconnectConnection(connection)}
                   onDisconnect={() => setDisconnectConnection(connection)}
+                  canManage={connection.canManage}
                   busy={connectionActionId === connection.id}
                 />
               ))}
@@ -863,7 +944,7 @@ function PluginDetailContent() {
             <div className="rounded-lg border border-border/70 bg-card/30 p-4">
               <h2 className="text-sm font-medium">Available services</h2>
               <div className="mt-3 space-y-3">
-                {(cloudProvider.provider === 'canva' ? canvaServices : cloudProvider.provider === 'lark' ? larkServices : cloudProvider.provider === 'airtable' ? airtableServices : googleWorkspaceServices).map((service) => {
+                {cloudProviderServices[cloudProvider.provider].map((service) => {
                   const ServiceIcon = service.icon
                   return (
                     <div key={service.name} className="flex gap-3">
@@ -1443,7 +1524,7 @@ function ZohoPluginDetail({
             )}
           </div>
 
-	          <aside className="space-y-4">
+          <aside className="space-y-4">
             <div className="rounded-lg border border-border/70 bg-card/30 p-4">
               <h2 className="text-sm font-medium">Available services</h2>
               <div className="mt-3 space-y-2 text-xs text-muted-foreground">
@@ -1451,13 +1532,13 @@ function ZohoPluginDetail({
                 <p className="rounded-md border border-border/70 bg-background/40 p-2">Zoho Books contacts, invoices, and expenses</p>
                 <p className="rounded-md border border-border/70 bg-background/40 p-2">Backend token refresh and encrypted storage</p>
               </div>
-	            </div>
+            </div>
 
-	            <PiContextCard connections={connections} />
-	          </aside>
-	        </section>
-	        {accessContent}
-	      </main>
+            <PiContextCard connections={connections} />
+          </aside>
+        </section>
+        {accessContent}
+      </main>
 
       <Dialog
         open={connectDialogOpen}
@@ -1562,23 +1643,23 @@ function ZohoPluginDetail({
       </Dialog>
 
       <ConnectionManagementSheet
-	        provider="zoho"
-	        connection={manageConnection}
-	        onOpenChange={(open) => {
-	          if (!open) setManageConnection(null)
-	        }}
-	        onChanged={() => void loadStatus()}
-	      />
-	      <DisconnectConnectionDialog
-	        providerLabel="Zoho"
-	        connection={disconnectConnection}
-	        busy={Boolean(disconnectConnection && connectionActionId === disconnectConnection.id)}
-	        onConfirm={() => void confirmDisconnectZoho()}
-	        onOpenChange={(open) => { if (!open) setDisconnectConnection(null) }}
-	      />
-	    </div>
-	  )
-	}
+        provider="zoho"
+        connection={manageConnection}
+        onOpenChange={(open) => {
+          if (!open) setManageConnection(null)
+        }}
+        onChanged={() => void loadStatus()}
+      />
+      <DisconnectConnectionDialog
+        providerLabel="Zoho"
+        connection={disconnectConnection}
+        busy={Boolean(disconnectConnection && connectionActionId === disconnectConnection.id)}
+        onConfirm={() => void confirmDisconnectZoho()}
+        onOpenChange={(open) => { if (!open) setDisconnectConnection(null) }}
+      />
+    </div>
+  )
+}
 
 function ConnectionListState({
   title,
@@ -1815,6 +1896,7 @@ function ConnectionManagementSheet({
     canva: { label: 'Canva', manage: 'divo_canva_manage_access', grant: 'divo_canva_grant_access', revoke: 'divo_canva_revoke_access' },
     lark: { label: 'Lark', manage: 'divo_lark_manage_access', grant: 'divo_lark_grant_access', revoke: 'divo_lark_revoke_access' },
     airtable: { label: 'Airtable', manage: 'divo_airtable_manage_access', grant: 'divo_airtable_grant_access', revoke: 'divo_airtable_revoke_access' },
+    shopify: { label: 'Shopify', manage: 'divo_shopify_manage_access', grant: 'divo_shopify_grant_access', revoke: 'divo_shopify_revoke_access' },
     google: { label: 'Google', manage: 'divo_google_manage_access', grant: 'divo_google_grant_access', revoke: 'divo_google_revoke_access' },
   }
   const providerAccess = PROVIDER_ACCESS[provider]
@@ -2014,6 +2096,7 @@ function ConnectionManagementSheet({
                       <ConnectionOperatingControls
                         governance={data.governance}
                         policy={managerPolicy}
+                        actions={data.connection.readOnlyEnforced ? connectionActions.filter(action => action.id === 'read') : connectionActions}
                         isSaving={isSaving}
                         onPolicyChange={updateActionPolicy}
                         onSave={() => void saveOperatingControls()}
@@ -2023,7 +2106,11 @@ function ConnectionManagementSheet({
 
                       <section className="rounded-lg border border-border/70 bg-card/30 p-4">
                         <h3 className="text-sm font-medium">Grant access</h3>
-                        <p className="mt-1 text-xs leading-5 text-muted-foreground">Read-only maps to read tools. Read/write maps to send, create, update, and delete tools. Admin can manage sharing.</p>
+                        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                          {data.connection.readOnlyEnforced
+                            ? 'This provider is read-only. Every grant can use only permitted read tools; management authority stays separate.'
+                            : 'Read-only maps to read tools. Read/write maps to send, create, update, and delete tools. Admin can manage sharing.'}
+                        </p>
 
                         <div className="mt-4 grid gap-3 sm:grid-cols-2">
                           <select className="h-9 rounded-md border border-border bg-background px-3 text-sm" value={granteeType} onChange={(event) => {
@@ -2086,12 +2173,14 @@ function ConnectionManagementSheet({
 function ConnectionOperatingControls({
   governance,
   policy,
+  actions,
   isSaving,
   onPolicyChange,
   onSave,
 }: {
   governance: GoogleManageData['governance']
   policy: ConnectionGovernancePolicy
+  actions: Array<{ id: ConnectionAction; label: string }>
   isSaving: boolean
   onPolicyChange: (action: ConnectionAction, update: Partial<ConnectionActionPolicy>) => void
   onSave: () => void
@@ -2108,12 +2197,13 @@ function ConnectionOperatingControls({
         {governance.adminOverride ? <Badge tone="amber">Company override active</Badge> : null}
       </div>
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        {connectionActions.map(({ id, label }) => (
+        {actions.map(({ id, label }) => (
           <ConnectionActionControl
             key={id}
             action={id}
             label={label}
             policy={policy.actions[id] ?? { mode: 'inherit' }}
+            approvalModes={governance.approvalModes ?? ['none', 'connection_owner', 'company_admin']}
             isSaving={isSaving}
             onPolicyChange={onPolicyChange}
           />
@@ -2135,12 +2225,14 @@ function ConnectionActionControl({
   action,
   label,
   policy,
+  approvalModes,
   isSaving,
   onPolicyChange,
 }: {
   action: ConnectionAction
   label: string
   policy: ConnectionActionPolicy
+  approvalModes: ConnectionApprovalMode[]
   isSaving: boolean
   onPolicyChange: (action: ConnectionAction, update: Partial<ConnectionActionPolicy>) => void
 }) {
@@ -2178,9 +2270,9 @@ function ConnectionActionControl({
           onChange={(event) => onPolicyChange(action, { approval: event.target.value as ConnectionApprovalMode })}
           disabled={!enforced || isSaving}
         >
-          <option value="none">No extra approval</option>
-          <option value="connection_owner">Connection owner on Lark</option>
-          <option value="company_admin">Company admin on Lark</option>
+          {approvalModes.includes('none') ? <option value="none">No extra approval</option> : null}
+          {approvalModes.includes('connection_owner') ? <option value="connection_owner">Connection owner on Lark</option> : null}
+          {approvalModes.includes('company_admin') ? <option value="company_admin">Company admin on Lark</option> : null}
         </select>
       </label>
     </div>
@@ -2377,6 +2469,11 @@ function GrantIcon({ type }: { type: GoogleManageGranteeType }) {
   return <Building2 className="size-4 text-muted-foreground" />
 }
 
+function normalizeShopDomainInput(value: string): string | null {
+  const domain = value.trim().toLowerCase()
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.myshopify\.com$/.test(domain) ? domain : null
+}
+
 function AddConnectionDialog({
   open,
   provider,
@@ -2396,12 +2493,14 @@ function AddConnectionDialog({
   const [isSavingPat, setIsSavingPat] = useState(false)
   const [connectMode, setConnectMode] = useState<'choose' | 'pat'>('choose')
   const [connectionLabel, setConnectionLabel] = useState('')
+  const [shopDomain, setShopDomain] = useState('')
   const [personalAccessToken, setPersonalAccessToken] = useState('')
   const [patAccessMode, setPatAccessMode] = useState<'read_only' | 'read_write'>('read_write')
 
   const closeDialog = () => {
     setConnectMode('choose')
     setPersonalAccessToken('')
+    setShopDomain('')
     onOpenChange(false)
   }
 
@@ -2417,9 +2516,23 @@ function AddConnectionDialog({
     setIsStartingOAuth(true)
     console.debug('[DivoPlugins] cloud_oauth.start', { provider: provider.provider })
     try {
+      const normalizedShopDomain = provider.supportsShopDomain
+        ? normalizeShopDomainInput(shopDomain)
+        : null
+      if (provider.supportsShopDomain && !normalizedShopDomain) {
+        toast.error('Enter a valid Shopify store domain', {
+          description: 'Use the permanent domain shown in Shopify, such as your-store.myshopify.com.',
+        })
+        return
+      }
       const authorizeUrl = provider.supportsLabel
         ? await invoke<string>(provider.commands.authorize, { label: connectionLabel.trim() || provider.accountFallback })
-        : await invoke<string>(provider.commands.authorize)
+        : normalizedShopDomain
+          ? await invoke<string>(provider.commands.authorize, {
+              shopDomain: normalizedShopDomain,
+              shop_domain: normalizedShopDomain,
+            })
+          : await invoke<string>(provider.commands.authorize)
       console.debug('[DivoPlugins] cloud_oauth.authorize_url_received', {
         provider: provider.provider,
         hasUrl: Boolean(authorizeUrl),
@@ -2490,6 +2603,7 @@ function AddConnectionDialog({
         if (!nextOpen) {
           setConnectMode('choose')
           setPersonalAccessToken('')
+          setShopDomain('')
         }
         onOpenChange(nextOpen)
       }}
@@ -2500,6 +2614,8 @@ function AddConnectionDialog({
           <DialogDescription>
             {isAirtable
               ? 'Use Airtable OAuth, or add an admin-owned personal access token from Builder Hub.'
+              : provider.supportsShopDomain
+                ? 'A company admin connects one Shopify store. Divo requests read scopes only and blocks GraphQL mutations at the backend transport.'
               : 'OAuth will be handled by Divo backend. This UI is ready for personal accounts and admin-shared company accounts.'}
           </DialogDescription>
         </DialogHeader>
@@ -2527,6 +2643,23 @@ function AddConnectionDialog({
                 placeholder="e.g. Brand team or Marketing workspace"
               />
               <span className="text-xs font-normal leading-5 text-muted-foreground">Use a name your team will recognize when selecting or sharing this connection.</span>
+            </label>
+          ) : null}
+          {provider.supportsShopDomain ? (
+            <label className="grid gap-1.5 text-sm font-medium">
+              Shopify store domain
+              <input
+                className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal outline-none"
+                value={shopDomain}
+                maxLength={255}
+                onChange={(event) => setShopDomain(event.target.value)}
+                autoCapitalize="none"
+                autoCorrect="off"
+                placeholder="your-store.myshopify.com"
+              />
+              <span className="text-xs font-normal leading-5 text-muted-foreground">
+                Use the permanent <code>.myshopify.com</code> domain, not the public storefront URL.
+              </span>
             </label>
           ) : null}
 
@@ -2628,7 +2761,10 @@ function AddConnectionDialog({
               </Button>
             </>
           ) : !isAirtable ? (
-            <Button onClick={() => void handleContinue()} disabled={isStartingOAuth}>
+            <Button
+              onClick={() => void handleContinue()}
+              disabled={isStartingOAuth || (provider.supportsShopDomain && !normalizeShopDomainInput(shopDomain))}
+            >
               <KeyRound className="size-4" />
               {divoSession.status !== 'connected'
                 ? 'Connect Divo first'

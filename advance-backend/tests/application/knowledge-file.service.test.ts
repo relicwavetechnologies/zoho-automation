@@ -1,4 +1,5 @@
 import { describe, it } from 'node:test';
+import { randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
 import {
   KnowledgeFileService,
@@ -60,22 +61,24 @@ class FakeAssets implements KnowledgeFileAssetRepository {
       || row.status !== 'staged'
       || row.knowledgeResourceId
     ) return null;
-    const deleting: ReadableKnowledgeFile = { ...row, status: 'deleting' };
+    const deleting: ReadableKnowledgeFile = { ...row, status: 'deleting', deletionLeaseToken: randomUUID() };
     this.rows.set(row.id, deleting);
     return deleting;
   }
 
-  async completeStagedDeletion(input: { assetId: string; companyId: string }) {
+  async completeStagedDeletion(input: { assetId: string; companyId: string; deletionLeaseToken: string }) {
     const row = this.rows.get(input.assetId);
-    if (!row || row.companyId !== input.companyId || row.status !== 'deleting' || row.knowledgeResourceId) return false;
-    this.rows.set(row.id, { ...row, status: 'deleted' });
+    if (!row || row.companyId !== input.companyId || row.status !== 'deleting'
+      || row.knowledgeResourceId || row.deletionLeaseToken !== input.deletionLeaseToken) return false;
+    this.rows.set(row.id, { ...row, status: 'deleted', deletionLeaseToken: null });
     return true;
   }
 
-  async releaseStagedDeletion(input: { assetId: string; companyId: string }) {
+  async releaseStagedDeletion(input: { assetId: string; companyId: string; deletionLeaseToken: string }) {
     const row = this.rows.get(input.assetId);
-    if (!row || row.companyId !== input.companyId || row.status !== 'deleting' || row.knowledgeResourceId) return false;
-    this.rows.set(row.id, { ...row, status: 'staged' });
+    if (!row || row.companyId !== input.companyId || row.status !== 'deleting'
+      || row.knowledgeResourceId || row.deletionLeaseToken !== input.deletionLeaseToken) return false;
+    this.rows.set(row.id, { ...row, status: 'staged', deletionLeaseToken: null });
     return true;
   }
 
@@ -85,7 +88,7 @@ class FakeAssets implements KnowledgeFileAssetRepository {
       && ((row.status === 'staged' && row.expiresAt <= input.now)
         || (row.status === 'deleting' && row.expiresAt <= input.staleDeletionBefore)),
     ).map(row => {
-      const claimed: ReadableKnowledgeFile = { ...row, status: 'deleting' };
+      const claimed: ReadableKnowledgeFile = { ...row, status: 'deleting', deletionLeaseToken: randomUUID() };
       this.rows.set(row.id, claimed);
       return claimed;
     });
@@ -99,31 +102,60 @@ class FakeAssets implements KnowledgeFileAssetRepository {
     );
   }
 
-  async claimAttachedDeletion(input: { assetId: string; companyId: string; resourceId: string }) {
+  async claimAttachedDeletion(input: {
+    assetId: string;
+    companyId: string;
+    resourceId: string;
+    staleDeletionBefore: Date;
+  }) {
     const row = this.rows.get(input.assetId);
     if (
       !row
       || row.companyId !== input.companyId
       || row.knowledgeResourceId !== input.resourceId
-      || (row.status !== 'attached' && row.status !== 'deleting')
+      || row.status !== 'attached'
     ) return null;
-    const claimed: ReadableKnowledgeFile = { ...row, status: 'deleting' };
+    const claimed: ReadableKnowledgeFile = { ...row, status: 'deleting', deletionLeaseToken: randomUUID() };
     this.rows.set(row.id, claimed);
     return claimed;
   }
 
-  async completeAttachedDeletion(input: { assetId: string; companyId: string; resourceId: string }) {
+  async completeAttachedDeletion(input: {
+    assetId: string;
+    companyId: string;
+    resourceId: string | null;
+    deletionLeaseToken: string;
+  }) {
     const row = this.rows.get(input.assetId);
-    if (!row || row.companyId !== input.companyId || row.knowledgeResourceId !== input.resourceId || row.status !== 'deleting') return false;
-    this.rows.set(row.id, { ...row, status: 'deleted' });
+    if (!row || row.companyId !== input.companyId || row.knowledgeResourceId !== input.resourceId
+      || row.status !== 'deleting' || row.deletionLeaseToken !== input.deletionLeaseToken) return false;
+    this.rows.set(row.id, { ...row, status: 'deleted', deletionLeaseToken: null });
     return true;
   }
 
-  async releaseAttachedDeletion(input: { assetId: string; companyId: string; resourceId: string }) {
+  async releaseAttachedDeletion(input: {
+    assetId: string;
+    companyId: string;
+    resourceId: string | null;
+    deletionLeaseToken: string;
+  }) {
     const row = this.rows.get(input.assetId);
-    if (!row || row.companyId !== input.companyId || row.knowledgeResourceId !== input.resourceId || row.status !== 'deleting') return false;
-    this.rows.set(row.id, { ...row, status: 'attached' });
+    if (!row || row.companyId !== input.companyId || row.knowledgeResourceId !== input.resourceId
+      || row.status !== 'deleting' || row.deletionLeaseToken !== input.deletionLeaseToken) return false;
+    this.rows.set(row.id, { ...row, status: 'attached', deletionLeaseToken: null });
     return true;
+  }
+
+  async claimRetiredDeletion() {
+    const retired = [...this.rows.values()].filter(row =>
+      (row.status === 'attached' && !row.isCurrentVersion) ||
+      (row.status === 'attached' && !row.knowledgeResourceId),
+    ).map(row => {
+      const claimed: ReadableKnowledgeFile = { ...row, status: 'deleting', deletionLeaseToken: randomUUID() };
+      this.rows.set(row.id, claimed);
+      return claimed;
+    });
+    return retired;
   }
 }
 
@@ -355,5 +387,36 @@ describe('KnowledgeFileService', () => {
       /object deletion failed/,
     );
     assert.equal(assets.rows.get(staged.id)?.status, 'attached');
+  });
+
+  it('cleans superseded attached assets and leaves the current asset untouched', async () => {
+    const { files, assets, objects } = service();
+    const current = await files.stage({
+      identity, fileName: 'current.pdf', mimeType: 'application/pdf', buffer: validPdf(),
+    });
+    const superseded = await files.stage({
+      identity, fileName: 'old.pdf', mimeType: 'application/pdf', buffer: validPdf(),
+    });
+    const orphan = await files.stage({
+      identity, fileName: 'orphan.pdf', mimeType: 'application/pdf', buffer: validPdf(),
+    });
+    const currentRow = assets.rows.get(current.id)!;
+    const oldRow = assets.rows.get(superseded.id)!;
+    assets.rows.set(current.id, {
+      ...currentRow, status: 'attached', knowledgeResourceId: 'resource-1', isCurrentVersion: true,
+    });
+    assets.rows.set(superseded.id, {
+      ...oldRow, status: 'attached', knowledgeResourceId: 'resource-1', isCurrentVersion: false,
+    });
+    const orphanRow = assets.rows.get(orphan.id)!;
+    assets.rows.set(orphan.id, {
+      ...orphanRow, status: 'attached', knowledgeResourceId: null, isCurrentVersion: false,
+    });
+
+    assert.equal(await files.cleanupExpired(), 2);
+    assert.equal(assets.rows.get(superseded.id)?.status, 'deleted');
+    assert.equal(assets.rows.get(orphan.id)?.status, 'deleted');
+    assert.equal(assets.rows.get(current.id)?.status, 'attached');
+    assert.deepEqual(objects.deleted, [oldRow.storageKey, orphanRow.storageKey]);
   });
 });

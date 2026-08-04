@@ -148,4 +148,42 @@ describe('knowledge tool canonical resource reads', () => {
       department: { name: 'Tech Testing' },
     });
   });
+
+  it('propagates parent cancellation into document and memory retrieval', async () => {
+    const controller = new AbortController();
+    const received: AbortSignal[] = [];
+    const instance = tool({
+      documents: {
+        search: async (input: { abortSignal?: AbortSignal }) => {
+          if (input.abortSignal) received.push(input.abortSignal);
+          return { status: 'available' as const, results: [] };
+        },
+      },
+      recall: {
+        recall: async (input: { abortSignal?: AbortSignal }) => {
+          if (input.abortSignal) received.push(input.abortSignal);
+          return {
+            status: 'available' as const,
+            coverage: {
+              personal: 'searched' as const,
+              departments: { searched: 0, failed: 0 },
+              company: 'searched' as const,
+            },
+            facts: [],
+          };
+        },
+      },
+    });
+    const ctx = { ...makeCtx('knowledge', ['read']), abortSignal: controller.signal };
+
+    assert.equal((await instance.execute(
+      { operation: 'documents.search', query: 'rollback' },
+      ctx,
+    )).ok, true);
+    assert.equal((await instance.execute(
+      { operation: 'recall', query: 'preference' },
+      ctx,
+    )).ok, true);
+    assert.deepEqual(received, [controller.signal, controller.signal]);
+  });
 });

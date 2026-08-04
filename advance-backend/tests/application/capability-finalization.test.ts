@@ -73,7 +73,9 @@ describe('capability catalogue reconciliation', () => {
 
   it('keeps connected-provider recipes on canonical tools in the matching family', () => {
     for (const skill of CONNECTED_PROVIDER_SYSTEM_SKILLS) {
-      const family = skill.slug.startsWith('aitable-') ? 'aitable' : 'airtable';
+      const family = skill.slug.startsWith('aitable-') ? 'aitable'
+        : skill.slug.startsWith('shopify-') ? 'shopify'
+          : 'airtable';
       assert(skill.toolIds.length > 0);
       assert(skill.toolIds.some(toolId => (
         isCanonicalToolId(toolId) && TOOL_FAMILY_MAP[toolId] === family
@@ -418,16 +420,20 @@ describe('Lark engine harness controls', () => {
       true,
     );
     assert.equal(
-      parseEngineHarnessArgs(['--no-delivery'], {}).deliverToLark,
+      parseEngineHarnessArgs(['--no-final-delivery'], {}).deliverToLark,
       false,
     );
     assert.throws(
-      () => parseEngineHarnessArgs(['--no-delivery', '--oauth-e2e'], {}),
+      () => parseEngineHarnessArgs(['--no-final-delivery', '--oauth-e2e'], {}),
       /cannot be combined/,
     );
     assert.throws(
-      () => parseEngineHarnessArgs(['--no-delivery', '--group'], {}),
+      () => parseEngineHarnessArgs(['--no-final-delivery', '--group'], {}),
       /supports p2p/,
+    );
+    assert.throws(
+      () => parseEngineHarnessArgs(['--no-delivery'], {}),
+      /falsely implied a side-effect-free run/,
     );
     assert.throws(
       () => parseEngineHarnessArgs(['--chat-id', 'oc_untrusted'], {}),

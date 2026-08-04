@@ -13,6 +13,7 @@ export const KNOWLEDGE_DOCUMENT_SEARCH_MAX_TOTAL_CHARS = 7_000;
 
 export interface KnowledgeDocumentSearchResult {
   readonly status: 'available' | 'partial' | 'unavailable';
+  readonly degradation?: 'canonical_hydration_failed';
   readonly results: readonly {
     readonly resourceId: string;
     readonly scope: 'personal' | 'department' | 'company';
@@ -40,19 +41,25 @@ export class KnowledgeDocumentSearchService {
     readonly userId: string;
     readonly companyRole: string;
     readonly channel: ChannelKey;
+    readonly abortSignal?: AbortSignal;
   }): Promise<KnowledgeDocumentSearchResult> {
+    const signal = input.abortSignal;
+    throwIfAborted(signal);
     const query = input.query.normalize('NFKC').trim();
     if (!query || query.length > KNOWLEDGE_DOCUMENT_SEARCH_MAX_QUERY_CHARS) {
       throw new Error('Document search query is empty or too long.');
     }
-    const allowed = await this.deps.permissions.canInvoke({
+    const allowed = await withAbort(this.deps.permissions.canInvoke({
       companyId: asCompanyId(input.companyId),
       userId: asUserId(input.userId),
       companyRole: asCompanyRoleSlug(input.companyRole),
       channel: input.channel,
-    }, { toolId: asToolId('knowledge'), action: 'read' });
+    }, { toolId: asToolId('knowledge'), action: 'read' }), signal);
     if (!allowed.ok) throw allowed.error;
-    const memberships = await this.deps.departments.listActiveMemberships(input.userId, input.companyId);
+    const memberships = await withAbort(
+      this.deps.departments.listActiveMemberships(input.userId, input.companyId),
+      signal,
+    );
     if (!memberships.ok) throw memberships.error;
     const departments = memberships.value.map(item => ({ id: item.departmentId, name: item.departmentName }));
     const base = {
@@ -62,7 +69,7 @@ export class KnowledgeDocumentSearchService {
       query,
       limit: KNOWLEDGE_DOCUMENT_SEARCH_MAX_RESULTS * 4,
     };
-    const [keywordAttempt, semanticAttempt] = await Promise.allSettled([
+    const [keywordAttempt, semanticAttempt] = await withAbort(Promise.allSettled([
       this.deps.documents.keywordSearch(base),
       this.deps.semantic
         ? this.deps.semantic.searchDocuments({
@@ -73,18 +80,30 @@ export class KnowledgeDocumentSearchService {
             limit: KNOWLEDGE_DOCUMENT_SEARCH_MAX_RESULTS * 4,
           })
         : Promise.reject(new Error('Semantic document search is unavailable.')),
-    ]);
+    ]), signal);
+    throwIfAborted(signal);
     const keyword = keywordAttempt.status === 'fulfilled' ? keywordAttempt.value : [];
     const semantic = semanticAttempt.status === 'fulfilled'
       ? semanticAttempt.value
       : { candidates: [], status: 'unavailable' as const };
     const fused = reciprocalRankFuse(keyword, semantic.candidates);
-    const hydrated = await this.deps.documents.hydrateAuthorized({
-      companyId: input.companyId,
-      userId: input.userId,
-      departmentIds: departments.map(department => department.id),
-      candidates: fused,
-    });
+    let hydrated: readonly CanonicalKnowledgeDocumentChunk[];
+    try {
+      hydrated = await withAbort(this.deps.documents.hydrateAuthorized({
+        companyId: input.companyId,
+        userId: input.userId,
+        departmentIds: departments.map(department => department.id),
+        candidates: fused,
+      }), signal);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      return {
+        status: 'unavailable',
+        degradation: 'canonical_hydration_failed',
+        results: [],
+      };
+    }
+    throwIfAborted(signal);
     const results = boundResults(hydrated);
     const keywordAvailable = keywordAttempt.status === 'fulfilled';
     return {
@@ -100,18 +119,37 @@ function reciprocalRankFuse(
   keyword: readonly KnowledgeDocumentSemanticCandidate[],
   semantic: readonly KnowledgeDocumentSemanticCandidate[],
 ): KnowledgeDocumentSemanticCandidate[] {
-  const scores = new Map<string, { candidate: KnowledgeDocumentSemanticCandidate; score: number }>();
+  const scores = new Map<string, {
+    candidate: KnowledgeDocumentSemanticCandidate;
+    score: number;
+    firstSeen: number;
+  }>();
+  let firstSeen = 0;
   for (const list of [keyword, semantic]) {
     list.forEach((candidate, rank) => {
       const key = `${candidate.resourceId}:${candidate.resourceVersion}:${candidate.chunkOrdinal}`;
       const current = scores.get(key);
       const score = (current?.score ?? 0) + 1 / (60 + rank + 1);
-      scores.set(key, { candidate, score });
+      scores.set(key, {
+        candidate,
+        score,
+        firstSeen: current?.firstSeen ?? firstSeen++,
+      });
     });
   }
   return [...scores.values()]
-    .sort((left, right) => right.score - left.score)
+    .sort((left, right) => {
+      const scoreDifference = right.score - left.score;
+      const relevanceOrder = Math.abs(scoreDifference) < 1e-9 ? 0 : scoreDifference;
+      return relevanceOrder
+      || documentScopeRank(right.candidate.scope) - documentScopeRank(left.candidate.scope)
+      || left.firstSeen - right.firstSeen;
+    })
     .map(({ candidate, score }) => ({ ...candidate, score }));
+}
+
+function documentScopeRank(scope: KnowledgeDocumentSemanticCandidate['scope']): number {
+  return scope === 'company' ? 3 : scope === 'department' ? 2 : 1;
 }
 
 function boundResults(candidates: readonly CanonicalKnowledgeDocumentChunk[]): KnowledgeDocumentSearchResult['results'] {
@@ -134,4 +172,30 @@ function boundResults(candidates: readonly CanonicalKnowledgeDocumentChunk[]): K
     });
   }
   return results;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException('The document search was interrupted.', 'AbortError');
+}
+
+function withAbort<T>(operation: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return operation;
+  throwIfAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException('The document search was interrupted.', 'AbortError'));
+    };
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then(
+      value => { cleanup(); resolve(value); },
+      error => { cleanup(); reject(error); },
+    );
+  });
 }

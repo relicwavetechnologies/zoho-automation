@@ -68,6 +68,15 @@ export class KnowledgeMutationService {
     return this.requireMutation(input.mutationId, input.companyId);
   }
 
+  async findAppliedBySourceRef(input: {
+    readonly companyId: string;
+    readonly requesterId: string;
+    readonly sourceRef: string;
+    readonly requestHash: string;
+  }): Promise<AppliedKnowledgeMutation | null> {
+    return this.store.findAppliedBySourceRef?.(input) ?? null;
+  }
+
   async propose(input: ProposeKnowledgeMutationInput): Promise<KnowledgeMutationRecord> {
     const target = knowledgeTargetIdentity(input.target);
     this.assertAuthenticatedTarget(target, input.requester);
@@ -89,14 +98,12 @@ export class KnowledgeMutationService {
       : parseOrThrow(sourceRefSchema, input.sourceRef, 'Invalid knowledge source reference.');
     const baseVersion = validateBaseVersion(action, input.baseVersion);
     const rawContent = validateContent(action, input.content);
-    const existingResourceId = kind === 'file'
-      ? await this.store.resolveResourceId?.({
-          companyId: target.companyId,
-          kind,
-          targetKey: target.targetKey,
-          logicalKey,
-        }) ?? null
-      : null;
+    const existingResourceId = await this.store.resolveResourceId?.({
+      companyId: target.companyId,
+      kind,
+      targetKey: target.targetKey,
+      logicalKey,
+    }) ?? null;
     const proposedContent = await this.contentValidator.validate({
       kind,
       action,
@@ -139,6 +146,9 @@ export class KnowledgeMutationService {
       scope: target.scope,
       targetKey: target.targetKey,
       logicalKey,
+      // First creation has no resource identity. A later resurrection of the
+      // same logical key does, so it cannot replay the pre-deletion create.
+      existingResourceId,
       action,
       baseVersion,
       proposedContentHash,

@@ -54,6 +54,7 @@ function file(overrides: Partial<ReadableKnowledgeFile> = {}): ReadableKnowledge
 function snapshot(overrides: Partial<KnowledgeFileDocumentSnapshot> = {}): KnowledgeFileDocumentSnapshot {
   return {
     id: 'document-1',
+    leaseToken: 'lease-1',
     companyId: 'company-1',
     resourceId: 'resource-1',
     resourceVersion: 2,
@@ -80,8 +81,8 @@ class FakeDocuments implements KnowledgeDocumentRepository {
   async replaceChunks(input: Parameters<KnowledgeDocumentRepository['replaceChunks']>[0]) {
     this.events.push('replace'); this.replacement = input;
   }
-  async markReady(id: string) { this.events.push(`ready:${id}`); }
-  async markFailed(id: string, error: { code: string; message: string }) {
+  async markReady(id: string, _leaseToken: string) { this.events.push(`ready:${id}`); }
+  async markFailed(id: string, _leaseToken: string, error: { code: string; message: string }) {
     this.events.push(`failed:${id}`); this.failures.push({ id, ...error });
   }
   async listOtherVersions() { this.events.push('previous'); return this.previous; }
@@ -175,6 +176,7 @@ describe('KnowledgeDocumentIndexService', () => {
 
     assert.equal(objects.reads, 1);
     assert.equal(documents.replacement?.parserVersion, 'test-v1');
+    assert.equal(documents.replacement?.leaseToken, 'lease-1');
     assert.equal(documents.replacement?.chunks.length, 1);
     assert.deepEqual(documents.events, [
       'begin', 'replace', 'semantic:1', 'previous', 'remove:1',

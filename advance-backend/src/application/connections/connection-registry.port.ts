@@ -1,7 +1,8 @@
 import type { InfraError } from '../../shared/errors';
 import type { Result } from '../../shared/result';
+import type { ConnectionProvider } from '../../domain/connections/connection-provider';
 
-export type ConnectionProvider = 'google_workspace' | 'zoho' | 'canva' | 'airtable' | 'aitable' | 'lark';
+export type { ConnectionProvider } from '../../domain/connections/connection-provider';
 export type ConnectionAccess = 'read_only' | 'read_write' | 'admin';
 export type ConnectionOwnerType = 'user' | 'company';
 
@@ -54,6 +55,11 @@ export interface ConnectionRegistryPort {
     readonly abortSignal?: AbortSignal;
   }): Promise<Result<AccessibleConnection[], InfraError>>;
   listAccessibleLarkConnections(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly abortSignal?: AbortSignal;
+  }): Promise<Result<AccessibleConnection[], InfraError>>;
+  listAccessibleShopifyConnections(input: {
     readonly companyId: string;
     readonly userId: string;
     readonly abortSignal?: AbortSignal;
