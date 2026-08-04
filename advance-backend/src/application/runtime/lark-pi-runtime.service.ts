@@ -116,6 +116,14 @@ export interface LarkPiRuntimeInput {
   readonly onProgress?: (event: LarkPiProgressEvent) => Promise<void> | void;
 }
 
+export interface LarkPiRuntimeSessionInput {
+  readonly incoming: IncomingMessage;
+  readonly runContext: RunContext;
+  readonly threadId: string;
+  readonly sessionId?: string;
+  readonly abortSignal?: AbortSignal;
+}
+
 /** A step's status, in the vocabulary the status card renders. */
 export type LarkPiStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
 
@@ -409,6 +417,114 @@ export class LarkPiRuntimeService {
     return Boolean(await this.findActiveSession(runContext));
   }
 
+  async preparePrivateSession(input: LarkPiRuntimeSessionInput): Promise<void> {
+    await this.runSessionLifecycle(input, 'prepare');
+  }
+
+  async clearPrivateSession(input: LarkPiRuntimeSessionInput): Promise<void> {
+    await this.runSessionLifecycle(input, 'reset');
+  }
+
+  async deletePrivateSession(input: LarkPiRuntimeSessionInput): Promise<void> {
+    await this.runSessionLifecycle(input, 'delete');
+  }
+
+  private async runSessionLifecycle(
+    input: LarkPiRuntimeSessionInput,
+    operation: 'prepare' | 'reset' | 'delete',
+  ): Promise<void> {
+    if (input.incoming.chatType !== 'p2p') {
+      throw new LarkPiRuntimeError(
+        'invalid_session_scope',
+        'Divo chat sessions can be managed only in a direct message.',
+      );
+    }
+    const session = await this.findActiveSession(input.runContext, input.sessionId);
+    if (!session) {
+      throw new LarkPiRuntimeError(
+        'runtime_session_missing',
+        'Your Divo cloud session is not active. Please sign in to Divo again, then retry.',
+      );
+    }
+    const runtimeLease = this.issueRuntimeLease(input, session);
+    const timeoutSignal = AbortSignal.timeout(this.deps.runTimeoutMs);
+    const signal = input.abortSignal
+      ? AbortSignal.any([input.abortSignal, timeoutSignal])
+      : timeoutSignal;
+    const correlationId = input.incoming.traceId;
+    this.log.info('pi.session.lifecycle.started', {
+      operation,
+      correlationId,
+      companyId: input.runContext.companyId,
+      userId: input.runContext.userId,
+    });
+    let response: Response;
+    try {
+      response = await (this.deps.fetch ?? globalThis.fetch)(
+        `${this.deps.controllerUrl.replace(/\/+$/, '')}/v1/lark-sessions`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            backendUrl: this.deps.backendUrl,
+            runtimeLease,
+            operation,
+          }),
+          signal,
+        },
+      );
+    } catch (error) {
+      this.log.error('pi.session.lifecycle.failed', {
+        operation,
+        correlationId,
+        companyId: input.runContext.companyId,
+        userId: input.runContext.userId,
+        error: String(error),
+      });
+      throw new LarkPiRuntimeError(
+        'controller_unavailable',
+        operation === 'reset'
+          ? 'Divo could not clear this chat right now. Please try again.'
+          : 'Divo could not prepare this chat right now. Please try again.',
+        String(error),
+      );
+    }
+    const value = await response.json().catch(() => null) as {
+      error?: { code?: unknown; message?: unknown };
+    } | null;
+    if (!response.ok) {
+      const code = typeof value?.error?.code === 'string'
+        ? value.error.code
+        : `controller_http_${response.status}`;
+      const detail = typeof value?.error?.message === 'string'
+        ? value.error.message
+        : undefined;
+      const userMessage = code === 'user_busy'
+        ? 'Divo is still finishing your previous request. Please try this command again when it finishes.'
+        : code === 'capacity_full'
+          ? 'Divo is busy right now. Please try this command again shortly.'
+          : operation === 'reset'
+            ? 'Divo could not clear this chat right now. Please try again.'
+            : 'Divo could not prepare this chat right now. Please try again.';
+      this.log.error('pi.session.lifecycle.failed', {
+        operation,
+        correlationId,
+        companyId: input.runContext.companyId,
+        userId: input.runContext.userId,
+        code,
+        status: response.status,
+        error: detail ?? `HTTP ${response.status}`,
+      });
+      throw new LarkPiRuntimeError(code, userMessage, detail ?? userMessage);
+    }
+    this.log.info('pi.session.lifecycle.succeeded', {
+      operation,
+      correlationId,
+      companyId: input.runContext.companyId,
+      userId: input.runContext.userId,
+    });
+  }
+
   /**
    * Lark is intentionally pinned independently of member proxy grants. Grants
    * authorize proxy use; they do not choose the channel's runtime model.
@@ -500,7 +616,7 @@ export class LarkPiRuntimeService {
   }
 
   private issueRuntimeLease(
-    input: LarkPiRuntimeInput,
+    input: Pick<LarkPiRuntimeInput, 'incoming' | 'runContext' | 'threadId'>,
     session: { readonly sessionId: string; readonly expiresAt: Date },
   ): string {
     const remainingSeconds = Math.floor((session.expiresAt.getTime() - Date.now()) / 1_000);

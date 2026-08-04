@@ -26,7 +26,11 @@ import {
   buildDataExportPresentation,
   type DataExportPresentation,
 } from './data-export-presentation';
-import { writeXlsxArtifact } from './xlsx-export-file';
+import {
+  dataExportPresentationCellCount,
+  dataExportPresentationRowLimit,
+  writeXlsxArtifact,
+} from './xlsx-export-file';
 import {
   DATA_EXPORT_CSV_ROW_LIMIT,
   DATA_EXPORT_GENERIC_SPOOL_BYTE_LIMIT,
@@ -129,10 +133,18 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       await once(rowStream, 'close');
 
       const columns = [...discoveredColumns];
+      const presentation = buildDataExportPresentation({
+        title: input.destination.title,
+        columns,
+        ...(input.source ? { source: input.source } : {}),
+        rowCount,
+        sourceTruncated: false,
+      });
       const sheetEligible = input.destination.format !== 'csv'
         && input.destination.format !== 'xlsx'
         && rowCount <= DATA_EXPORT_GOOGLE_SHEET_ROW_LIMIT
-        && (rowCount + 1) * Math.max(1, columns.length) <= DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT;
+        && dataExportPresentationCellCount(presentation, rowCount)
+          <= DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT;
       let format: 'google_sheet' | 'csv' | 'xlsx';
       if (existingSheet) format = 'google_sheet';
       else if (input.destination.format === 'xlsx') format = 'xlsx';
@@ -142,7 +154,13 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
       if (format === 'google_sheet' && rowCount > DATA_EXPORT_GOOGLE_SHEET_ROW_LIMIT) {
         throw new Error('Dataset is too large for the requested Google Sheet; use format=auto or csv');
       }
-      const destinationCellRowLimit = cellRowLimitFor(format, columns, input.source);
+      const destinationCellRowLimit = cellRowLimitFor(
+        format,
+        input.destination.title,
+        columns,
+        input.source,
+        rowCount,
+      );
       const rowsWritten = Math.min(rowCount, destinationCellRowLimit);
       const cellTruncated = rowsWritten < rowCount;
       const sourceCoverage = input.coverage?.(rowsWritten) ?? {
@@ -1134,25 +1152,28 @@ function existingSheetCompletion(
 
 function cellRowLimitFor(
   format: 'google_sheet' | 'csv' | 'xlsx',
+  title: string,
   columns: readonly string[],
   source: DataExportSource | undefined,
+  rowCount: number,
 ): number {
   if (format === 'csv') return Number.POSITIVE_INFINITY;
-  if (format === 'google_sheet') {
-    return Math.max(0, Math.floor(
-      DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT / Math.max(1, columns.length),
-    ) - 1);
+  const cellLimit = format === 'google_sheet'
+    ? DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT
+    : DATA_EXPORT_XLSX_CELL_LIMIT;
+  let candidateRowCount = rowCount;
+  while (true) {
+    const presentation = buildDataExportPresentation({
+      title,
+      columns,
+      ...(source ? { source } : {}),
+      rowCount: candidateRowCount,
+      sourceTruncated: false,
+    });
+    const rowLimit = dataExportPresentationRowLimit(presentation, cellLimit);
+    if (rowLimit >= candidateRowCount) return rowLimit;
+    candidateRowCount = rowLimit;
   }
-  const presentation = buildDataExportPresentation({
-    title: 'Export',
-    columns,
-    ...(source ? { source } : {}),
-    rowCount: 0,
-    sourceTruncated: false,
-  });
-  const workbookColumns = presentation.mainColumns.length
-    + (presentation.trends?.columns.length ?? 0);
-  return Math.max(0, Math.floor(DATA_EXPORT_XLSX_CELL_LIMIT / Math.max(1, workbookColumns)) - 1);
 }
 
 function existingSheetTabTitle(title: string, exportKey: string): string {

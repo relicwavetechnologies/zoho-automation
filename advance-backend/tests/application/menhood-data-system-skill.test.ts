@@ -54,6 +54,9 @@ describe('Menhood data system skill', () => {
     ]) {
       assert.ok(cookbook.includes(invariant), `missing cookbook invariant: ${invariant}`);
     }
+    assert.match(cookbook, /Grouped `order_status` and `payment_type` counts are order-line buckets/);
+    assert.match(cookbook, /final-amount\/gross order value/);
+    assert.match(cookbook, /do not silently call it “revenue”/);
     assert.match(cookbook, /trim.*remove non-digits.*six-digit.*join/s);
     assert.match(cookbook, /`menhood_advertisement_costs` is intentionally unavailable/);
     assert.match(cookbook, /never query it or make advertising-cost, ROAS, or spend claims/);

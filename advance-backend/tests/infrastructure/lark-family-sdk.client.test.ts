@@ -91,6 +91,28 @@ describe('Lark family clients through the official SDK boundary', () => {
     }]);
   });
 
+  it('encodes direct plain-text replies in Lark text-content JSON', async () => {
+    const { sdkClient, requests } = sdkStub(() => ({ message_id: 'om_reply' }));
+    const client = new LarkMessagingClient({
+      appId: 'app',
+      appSecret: 'secret',
+      logger: noopLogger,
+      sdkClient,
+    });
+
+    await client.sendMessage('oc_group', 'Started a new Divo chat.', 'om_trigger');
+
+    assert.deepEqual(requests[0], {
+      method: 'POST',
+      url: '/open-apis/im/v1/messages/om_trigger/reply',
+      data: {
+        content: JSON.stringify({ text: 'Started a new Divo chat.' }),
+        msg_type: 'text',
+        reply_in_thread: true,
+      },
+    });
+  });
+
   it('lists only one native thread when hydrating a bare mention', async () => {
     const { sdkClient, requests } = sdkStub(() => ({
       items: [{

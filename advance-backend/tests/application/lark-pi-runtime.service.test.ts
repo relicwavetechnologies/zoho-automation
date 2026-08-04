@@ -106,6 +106,50 @@ test('mints a scoped Lark lease and sends no caller-selected profile or approval
   assert.equal(claims.contextAudience, 'private');
 });
 
+test('uses the same signed private lease for chat-session preparation and reset', async () => {
+  const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    fetch: async (url, init) => {
+      calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+      return new Response('{}', { status: 200 });
+    },
+  });
+  const input = {
+    ...runtimeInput(),
+    incoming: { ...runtimeInput().incoming, chatType: 'p2p' },
+    threadId: 'oc_chat:session:0123456789abcdef01234567',
+  } as any;
+
+  await service.preparePrivateSession(input);
+  await service.clearPrivateSession(input);
+
+  assert.deepEqual(calls.map(call => call.url), [
+    'http://127.0.0.1:4317/v1/lark-sessions',
+    'http://127.0.0.1:4317/v1/lark-sessions',
+  ]);
+  assert.deepEqual(calls.map(call => call.body.operation), ['prepare', 'reset']);
+  const claims = JSON.parse(
+    Buffer.from(String(calls[0]!.body.runtimeLease).split('.')[1]!, 'base64url').toString('utf8'),
+  );
+  assert.equal(claims.contextAudience, 'private');
+  assert.equal(claims.threadId, input.threadId);
+});
+
 test('injects verified recent exports for the exact conversation without backend handles', async () => {
   let controllerBody: Record<string, unknown> | undefined;
   let historyLookup: unknown;

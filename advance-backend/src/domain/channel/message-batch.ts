@@ -25,7 +25,7 @@ export interface BatchableMessage {
   readonly hasAttachments: boolean;
   /** Whether this message may start an agent run. Never merge across this boundary. */
   readonly invokesAgent: boolean;
-  /** `/clear`, `/login` and friends act immediately and are never merged. */
+  /** `/new`, `/login` and friends act immediately and are never merged. */
   readonly isCommand: boolean;
   readonly acceptedAtMs: number;
 }

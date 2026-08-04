@@ -224,15 +224,13 @@ async function runWebhook(body: unknown, options: {
   const retainedMessages: Array<Record<string, unknown>> = [];
   const ingestionJobs: Array<Record<string, unknown>> = [];
   const appendedTurns: Array<Record<string, unknown>> = [];
-  const clearedHistoryKeys: string[] = [];
-  const clearedRoomChatIds: string[] = [];
-  const clearedRoomContexts: string[] = [];
   const acceptedPayloads: unknown[] = [];
   const acceptedLaneKeys: string[] = [];
   const acceptedCompanyIds: string[] = [];
   const engineInputs: unknown[] = [];
   const pendingAttachmentInputs: unknown[] = [];
   const piSessionContexts: unknown[] = [];
+  const sessionLifecycleCalls: Array<{ operation: string; input: unknown }> = [];
   const serializerKeys: string[] = [];
   const identityLookups: Array<{ openId?: string; userId?: string; tenantKey: string }> = [];
   const invalidatedIdentities: string[] = [];
@@ -322,6 +320,12 @@ async function runWebhook(body: unknown, options: {
         order.push('stage-pending');
         pendingAttachmentInputs.push(input);
       },
+      preparePrivateSession: async (input: unknown) => {
+        sessionLifecycleCalls.push({ operation: 'prepare', input });
+      },
+      deletePrivateSession: async (input: unknown) => {
+        sessionLifecycleCalls.push({ operation: 'delete', input });
+      },
     } as any,
     channelIdentityRepo: {
       resolveByLarkTenantIdentity: async (openId: string | undefined, tenantKey: string, userId?: string) => {
@@ -349,14 +353,6 @@ async function runWebhook(body: unknown, options: {
       appendTurn: async (key: string, turn: Record<string, unknown>) => {
         appendedTurns.push({ key, ...turn });
         return ok({ id: 't1', ...turn });
-      },
-      clearHistory: async (key: string) => {
-        clearedHistoryKeys.push(key);
-        return ok(true);
-      },
-      clearChatHistories: async (chatId: string) => {
-        clearedRoomChatIds.push(chatId);
-        return ok(3);
       },
     } as any,
     ingressReceiptRepo: {
@@ -407,10 +403,6 @@ async function runWebhook(body: unknown, options: {
         options.onRetain?.();
         retainedMessages.push(message);
         return ok(null);
-      },
-      clear: async (_companyId: string, chatId: string) => {
-        clearedRoomContexts.push(chatId);
-        return ok(undefined);
       },
     } as any,
     ingestionQueue: {
@@ -615,6 +607,7 @@ async function runWebhook(body: unknown, options: {
     engineInputs,
     pendingAttachmentInputs,
     piSessionContexts,
+    sessionLifecycleCalls,
     serializerKeys,
     identityLookups,
     invalidatedIdentities,
@@ -625,9 +618,6 @@ async function runWebhook(body: unknown, options: {
     retainedMessages,
     ingestionJobs,
     appendedTurns,
-    clearedHistoryKeys,
-    clearedRoomChatIds,
-    clearedRoomContexts,
     acceptedPayloads,
     acceptedLaneKeys,
     acceptedCompanyIds,
@@ -2357,88 +2347,6 @@ describe('Lark conversation commands', () => {
     assert.doesNotMatch(JSON.stringify(card), /admin.*change/i);
   });
 
-  it('clears only the active thread', async () => {
-    let adapter: any;
-    const result = await runWebhook(makeEvent({
-      chatType: 'group',
-      mentionsBot: true,
-      text: '/clear',
-      rootId: 'om_thread_root',
-    }), {
-      setupAdapter: value => { adapter = value; captureOutbound(value); },
-    });
-
-    assert.deepEqual(result.clearedHistoryKeys, ['oc_1:thread:om_thread_root']);
-    assert.deepEqual(result.clearedRoomChatIds, []);
-    assert.match(adapter.__finalReplies[0], /This conversation is cleared/i);
-  });
-
-  it('ignores a legacy inline override when clearing a group thread', async () => {
-    const result = await runWebhook(makeEvent({
-      chatType: 'group',
-      mentionsBot: true,
-      text: '/clear',
-    }), {
-      groupReplyMode: 'inline',
-      setupAdapter: captureOutbound,
-    });
-
-    assert.deepEqual(result.clearedHistoryKeys, ['oc_1:thread:om_root']);
-    assert.deepEqual(result.clearedRoomChatIds, []);
-  });
-
-  it('requires an admin confirmation before clearing the whole room', async () => {
-    let firstAdapter: any;
-    const first = await runWebhook(makeEvent({
-      chatType: 'group',
-      mentionsBot: true,
-      text: '/clear room',
-    }), {
-      identity: {
-        userId: 'admin-1',
-        companyId: 'company-1',
-        aiRole: 'COMPANY_ADMIN',
-        channel: 'lark',
-      },
-      setupAdapter: value => { firstAdapter = value; captureOutbound(value); },
-    });
-    assert.deepEqual(first.clearedRoomChatIds, []);
-    assert.match(firstAdapter.__finalReplies[0], /clear room confirm/i);
-
-    const confirmed = await runWebhook(makeEvent({
-      chatType: 'group',
-      mentionsBot: true,
-      text: '/clear room confirm',
-    }), {
-      identity: {
-        userId: 'admin-1',
-        companyId: 'company-1',
-        aiRole: 'COMPANY_ADMIN',
-        channel: 'lark',
-      },
-      setupAdapter: captureOutbound,
-    });
-    assert.deepEqual(confirmed.clearedRoomChatIds, ['oc_1']);
-    assert.deepEqual(confirmed.clearedRoomContexts, ['oc_1']);
-    assert.deepEqual(confirmed.clearedHistoryKeys, []);
-  });
-
-  it('keeps a top-level threaded clear from silently clearing the room', async () => {
-    let adapter: any;
-    const result = await runWebhook(makeEvent({
-      chatType: 'group',
-      mentionsBot: true,
-      text: '/clear',
-      rootId: null,
-    }), {
-      setupAdapter: value => { adapter = value; captureOutbound(value); },
-    });
-
-    assert.deepEqual(result.clearedHistoryKeys, []);
-    assert.deepEqual(result.clearedRoomChatIds, []);
-    assert.match(adapter.__finalReplies[0], /inside the thread/i);
-  });
-
   // Both spellings enter the same handler; `/q` is the one the card and /help
   // advertise, `/stop` is kept for the people who already learned it.
   for (const command of ['/q', '/stop']) {
@@ -2499,8 +2407,14 @@ describe('Lark conversation commands', () => {
     const sessionKey = runtimeSessionRefs.get('oc_1')?.activePrivateSessionKey;
     assert.equal(typeof sessionKey, 'string');
     assert.match(String(sessionKey), /^oc_1:session:[a-f0-9]{24}$/);
+    assert.deepEqual(created.sessionLifecycleCalls.map(call => call.operation), ['prepare']);
+    assert.equal((created.sessionLifecycleCalls[0]!.input as any).threadId, sessionKey);
     assert.match(noticesSent(adapter)[0], /Started a new Divo chat/i);
     assert.match(noticesSent(adapter)[0], /earlier chats are still available/i);
+    assert.deepEqual(adapter.__sentTextDeliveries, [{
+      replyToMessageId: 'om_1',
+      replyInThread: false,
+    }]);
 
     const next = await runWebhook(makeEvent({
       chatType: 'p2p',
@@ -2510,6 +2424,48 @@ describe('Lark conversation commands', () => {
       parentId: null,
     }), { runtimeSessionRefs });
     assert.equal((next.engineInputs[0] as any).threadId, sessionKey);
+  });
+
+  it('does not treat /clear as a built-in command', async () => {
+    const result = await runWebhook(makeEvent({ chatType: 'p2p', text: '/clear' }));
+
+    assert.deepEqual(result.sessionLifecycleCalls, []);
+    assert.equal(result.engineInputs.length, 0);
+  });
+
+  it('logs the underlying Lark error when the new-chat acknowledgement fails', async () => {
+    let adapter: any;
+    const upstreamError = Object.assign(new Error('reply rejected by Lark'), {
+      status: 503,
+      code: 99991663,
+    });
+    const result = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      text: '/new',
+      rootId: null,
+      parentId: null,
+    }), {
+      setupAdapter: value => {
+        adapter = value;
+        captureOutbound(value);
+        adapter.sendToChatId = async () => err(new ChannelError({
+          channel: 'lark',
+          stage: 'send_status',
+          reason: 'upstream_5xx',
+          cause: upstreamError,
+        }));
+      },
+    });
+
+    assert.equal(noticesSent(adapter).length, 0);
+    const failure = result.logEvents.find(entry => entry.event === 'webhook.command.new.reply_failed');
+    assert.ok(failure);
+    assert.equal(failure.fields.failureStage, 'send_status');
+    assert.equal(failure.fields.failureReason, 'upstream_5xx');
+    assert.equal(failure.fields.causeName, 'Error');
+    assert.equal(failure.fields.causeMessage, 'reply rejected by Lark');
+    assert.equal(failure.fields.causeStatus, 503);
+    assert.equal(failure.fields.causeCode, 99991663);
   });
 
   it('keeps group session boundaries native to Lark threads', async () => {

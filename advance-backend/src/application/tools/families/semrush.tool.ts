@@ -71,7 +71,7 @@ export const createSemrushTool = (deps: {
     'keyword_research: { keywords[1–25], database? }. Volume, CPC, competition and 12-month trend per keyword, batched into one request. Semrush omits keywords it has no data for, so compare coverage.requestedKeywords with returnedKeywords before saying a keyword has no volume.',
     'domain_comparison: { targets[2–5], database?, limit? }. Keywords the targets have in common, with each domain position in its own column.',
     'keyword_gap: { targets[2–5], database?, limit? }. THE FIRST TARGET IS THE ONE YOU OWN and is excluded; the result is what the remaining competitors rank for and it does not. Order matters — reversing it answers the opposite question.',
-    'backlinks_comparison: { targets[2–10] }. Authority score, total backlinks and referring domains per target. Costs one billed request per target, so ask for the domains that matter rather than a wide sweep.',
+    'backlinks_comparison: { targets[2–10] }. Authority score, total backlinks and referring domains per target. Costs one billed request per target. If Semrush has no report for a requested target, coverage.missingTargets and the export name it as no provider data rather than zero.',
     'Divo rejects arbitrary Semrush endpoints, headers, cookies, export columns, and API keys. Do not claim an unavailable operation has run.',
   ].join('\n'),
   permissionCheck(_args: SemrushToolArgs, perm: PermissionResult) {
@@ -125,6 +125,7 @@ export const createSemrushTool = (deps: {
           offer: offer.kind === 'offered',
           withdrawnReason: offer.kind === 'withdrawn' ? offer.reason : undefined,
           status: data.status,
+          missingTargets: stringValues(data.coverage.missingTargets),
         }),
       };
       deps.audit?.record({
@@ -182,13 +183,19 @@ function messageFor(input: {
   offer: boolean;
   withdrawnReason: string | undefined;
   status: Res['status'];
+  missingTargets: readonly string[];
 }): string {
   if (input.status === 'empty') return 'Semrush returned no matching data for this request.';
   const parts = [`Retrieved ${input.rowCount} row${input.rowCount === 1 ? '' : 's'}.`];
   if (input.rowCount > input.returnedRows) parts.push(`Showing the first ${input.returnedRows} rows in chat.`);
   if (input.offer) parts.push('A governed export covering every Semrush result in this request is available. It reruns those queries when the user confirms, so current provider data may differ from this preview.');
+  if (input.missingTargets.length > 0) parts.push(`Semrush returned no backlink overview for: ${input.missingTargets.join(', ')}.`);
   if (input.withdrawnReason) parts.push(exportWithdrawalMessage(input.withdrawnReason));
   return parts.join(' ');
+}
+
+function stringValues(value: unknown): readonly string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 }
 
 /** Names the combined file when one request looks up several subjects. */

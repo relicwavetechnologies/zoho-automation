@@ -756,6 +756,83 @@ test("Lark runs admit only the profile derived from a validated runtime lease", 
 	assert.equal(calls[1].options.signal, undefined);
 });
 
+test("session lifecycle admits only private leases and keeps the profile fenced", async () => {
+	const calls = [];
+	const admission = createAdmissionController({
+		resolveLease: async ({ backendUrl, lease }) => ({
+			profile: "cloud-derived",
+			thread: "lark-derived",
+			backendUrl,
+			token: lease,
+			userId: "user-1",
+			companyId: "company-1",
+			instanceId: "pi-local-1",
+			contextAudience: "private",
+		}),
+		executeSessionLifecycle: async (runtime, operation, options) => {
+			calls.push({ runtime, operation, options });
+			return { profile: runtime.profile, thread: runtime.thread, operation };
+		},
+	});
+
+	const result = await admission.runSessionLifecycle({
+		backendUrl: "https://backend.example",
+		runtimeLease: "signed-lease",
+		operation: "reset",
+		signal: undefined,
+	});
+
+	assert.deepEqual(result, {
+		profile: "cloud-derived",
+		thread: "lark-derived",
+		operation: "reset",
+	});
+	assert.equal(calls[0].operation, "reset");
+	await assert.rejects(
+		admission.runSessionLifecycle({
+			backendUrl: "https://backend.example",
+			runtimeLease: "signed-lease",
+			operation: "invalid",
+		}),
+		(error) => error.code === "invalid_session_operation" && error.statusCode === 400,
+	);
+});
+
+test("HTTP exposes the fenced private session lifecycle route", async (context) => {
+	const calls = [];
+	const admission = createAdmissionController({
+		resolveLease: async () => ({
+			profile: "cloud-derived",
+			thread: "lark-derived",
+			contextAudience: "private",
+		}),
+		executeSessionLifecycle: async (_runtime, operation) => {
+			calls.push(operation);
+			return { ok: true, operation };
+		},
+	});
+	const { server } = createControllerServer({ admission });
+	await new Promise((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", resolve);
+	});
+	context.after(() => server.close());
+	const { port } = server.address();
+	const response = await fetch(`http://127.0.0.1:${port}/v1/lark-sessions`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({
+			backendUrl: "https://backend.example",
+			runtimeLease: "signed-lease",
+			operation: "prepare",
+		}),
+	});
+
+	assert.equal(response.status, 200);
+	assert.deepEqual(await response.json(), { ok: true, operation: "prepare" });
+	assert.deepEqual(calls, ["prepare"]);
+});
+
 test("Lark runs stream progress and one final result as NDJSON", async (context) => {
 	const admission = createAdmissionController({
 		resolveLease: async ({ backendUrl, lease }) => ({

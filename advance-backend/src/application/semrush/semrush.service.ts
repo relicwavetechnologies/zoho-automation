@@ -29,8 +29,8 @@ export class SemrushService {
     return {
       configured: true,
       operation: args.operation,
-      apiVersion: 'v3',
-      limits: { maxRowsPerRequest: 1_000 },
+      apiVersion: operationApiVersion[args.operation],
+      limits: preflightLimits(args),
     };
   }
 
@@ -110,6 +110,18 @@ export class SemrushService {
 
   private invalidateWebhookApiKey(failedApiKey: string): void {
     if (this.cachedWebhookApiKey === failedApiKey) this.cachedWebhookApiKey = undefined;
+  }
+}
+
+function preflightLimits(args: SemrushToolArgs): Record<string, number> {
+  switch (args.operation) {
+    case 'domain_overview': return { maxRowsPerRequest: 1 };
+    case 'organic_positions': return { maxRowsPerRequest: 1_000, maxOffset: 9_000 };
+    case 'organic_position_trend': return { maxMonthsPerRequest: 120 };
+    case 'keyword_research': return { maxKeywordsPerRequest: 25 };
+    case 'domain_comparison':
+    case 'keyword_gap': return { maxRowsPerRequest: 1_000, maxTargets: 5 };
+    case 'backlinks_comparison': return { maxTargets: 10, requestsPerTarget: 1 };
   }
 }
 

@@ -451,7 +451,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ service: 'execution-query' }),
   });
   const auditService       = new AuditService(prisma, logger.child({ service: 'audit' }));
-  const menhoodQueryService = new MenhoodQueryService(env);
+  const menhoodQueryService = new MenhoodQueryService(
+    env,
+    undefined,
+    logger.child({ service: 'menhood-query' }),
+  );
   const tokenUsageService  = new TokenUsageService(prisma, logger.child({ service: 'token-usage' }));
   const proxyKeyStore = new ProxyKeyStore({
     prisma,

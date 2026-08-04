@@ -77,6 +77,16 @@ export function validateThread(value) {
 }
 
 export const SESSION_SCOPES = ["thread", "run"];
+export const SESSION_LIFECYCLE_OPERATIONS = ["prepare", "reset", "delete"];
+
+export function validateSessionLifecycleOperation(value) {
+	if (!SESSION_LIFECYCLE_OPERATIONS.includes(value)) {
+		throw new Error(
+			`operation must be one of: ${SESSION_LIFECYCLE_OPERATIONS.join(", ")}`,
+		);
+	}
+	return value;
+}
 
 /**
  * Which session a run reopens.
@@ -993,7 +1003,7 @@ async function waitUntilRunning(container, timeoutMs = 10_000) {
 	throw new Error(`Container did not start: ${container}`);
 }
 
-async function runVolumeCommand(volume, script, input = "") {
+async function runVolumeCommand(volume, script, input = "", destination = "/run/divo-auth") {
 	return new Promise((resolve, reject) => {
 		const child = spawn(
 			"docker",
@@ -1002,7 +1012,7 @@ async function runVolumeCommand(volume, script, input = "") {
 				"--rm",
 				"--interactive",
 				"--mount",
-				`type=volume,src=${volume},dst=/run/divo-auth`,
+				`type=volume,src=${volume},dst=${destination}`,
 				"--entrypoint",
 				"/bin/sh",
 				IMAGE,
@@ -1022,6 +1032,16 @@ async function runVolumeCommand(volume, script, input = "") {
 		});
 		child.stdin.end(input);
 	});
+}
+
+async function deleteDurableSession(volume, thread) {
+	const safeThread = validateThread(thread);
+	await runVolumeCommand(
+		volume,
+		`rm -rf -- ${shellQuote(`/data/state/data/threads/${safeThread}`)}`,
+		"",
+		"/data",
+	);
 }
 
 export function buildBootstrapWriteArgs(container) {
@@ -1847,8 +1867,13 @@ async function runPrompt({
 	signal,
 	onProgress,
 	ephemeral = false,
+	lifecycle,
 }) {
 	const normalizedSessionScope = validateSessionScope(sessionScope);
+	if (lifecycle !== undefined) validateSessionLifecycleOperation(lifecycle);
+	if (lifecycle !== undefined && normalizedSessionScope !== "thread") {
+		throw new Error("Session lifecycle operations require a thread-scoped session");
+	}
 	if (ephemeral && normalizedSessionScope !== "run") {
 		throw new Error("A shared runtime must use a run-scoped session");
 	}
@@ -1891,6 +1916,14 @@ async function runPrompt({
 			emitRuntimeProgress(onProgress, progress);
 		}
 		if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
+		if (lifecycle === "delete") {
+			await deleteDurableSession(resources.volume, thread);
+			completedSuccessfully = true;
+			return { profile, thread };
+		}
+		if (lifecycle === "reset") {
+			await deleteDurableSession(resources.volume, thread);
+		}
 		const startedAt = Date.now();
 		// `ensureRuntime` just inspected this container and verified it is ours,
 		// so its running state is already known here. Polling is only meaningful
@@ -1924,6 +1957,18 @@ async function runPrompt({
 			`Ready ${profile}/${thread} in ${Date.now() - startedAt}ms (session ${state.sessionId})`,
 		);
 		emitRuntimeProgress(onProgress, { type: "ready" });
+		if (lifecycle !== undefined) {
+			child.stdin.end();
+			const outcome = await exited;
+			if (outcome.error) throw outcome.error;
+			if (outcome.code !== 0) {
+				throw new Error(
+					`Divo runtime exited ${outcome.terminationSignal ? `with ${outcome.terminationSignal}` : `with code ${outcome.code}`}`,
+				);
+			}
+			completedSuccessfully = true;
+			return { profile, thread, sessionId: state.sessionId };
+		}
 		const completion = await promptWithTransientRetries({
 			rpc,
 			message: `${attachmentManifestBlock(attachments)}${message}`,
@@ -2046,6 +2091,18 @@ export async function promptWithRuntimeLease(runtime, message, options = {}) {
 		model: options.model,
 		signal: options.signal,
 		onProgress: options.onProgress,
+	});
+}
+
+export async function runRuntimeSessionLifecycle(runtime, operation, options = {}) {
+	const lifecycle = validateSessionLifecycleOperation(operation);
+	return runPrompt({
+		...runtime,
+		message: "",
+		answerRequest: createHeadlessExtensionResponder(),
+		sessionScope: "thread",
+		lifecycle,
+		signal: options.signal,
 	});
 }
 

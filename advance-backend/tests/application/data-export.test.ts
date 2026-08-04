@@ -155,6 +155,44 @@ describe('data export source adapters', () => {
     assert.equal(pages[0]?.requestedRows, 1);
   });
 
+  it('reads every Airtable REST page when no export window is requested', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const adapter = new AirtableDataExportSource(async () => ({
+      status: 'resolved' as const,
+      connection: {
+        client: {
+          describeTool: async () => null,
+          callTool: async () => { throw new Error('MCP should not handle this REST-compatible export'); },
+          listRecordsPage: async (input) => {
+            calls.push(input);
+            return input.offset
+              ? { records: [{ id: 'rec2', fields: { Name: 'second' } }] }
+              : { records: [{ id: 'rec1', fields: { Name: 'first' } }], nextCursor: 'next' };
+          },
+        },
+      },
+    }));
+    const pages = [];
+    for await (const page of adapter.read({
+      kind: 'airtable_records',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      toolId: 'airtableRecords',
+      nativeTool: 'list_records_for_table',
+      input: { baseId: 'app1', tableId: 'tbl1' },
+    }, { companyId: 'co-1', userId: 'user-1' })) {
+      pages.push(page);
+    }
+
+    assert.deepEqual(calls, [
+      { baseId: 'app1', tableId: 'tbl1' },
+      { baseId: 'app1', tableId: 'tbl1', offset: 'next' },
+    ]);
+    assert.deepEqual(pages, [
+      { rows: [{ 'Record ID': 'rec1', Name: 'first' }], hasMore: true },
+      { rows: [{ 'Record ID': 'rec2', Name: 'second' }] },
+    ]);
+  });
+
   it('keeps Airtable view filters on the governed MCP path', async () => {
     const calls: Array<{ nativeTool: string; input: Record<string, unknown> }> = [];
     const adapter = new AirtableDataExportSource(async () => ({
@@ -187,6 +225,47 @@ describe('data export source adapters', () => {
       input: { baseId: 'app1', tableId: 'tbl1', viewId: 'viw1', pageSize: 1_000 },
     }]);
     assert.deepEqual(rows, [{ 'Record ID': 'rec1', Name: 'Filtered' }]);
+  });
+
+  it('stops an Airtable MCP cursor loop and reports provider-limited coverage', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const adapter = new AirtableDataExportSource(async () => ({
+      status: 'resolved' as const,
+      connection: {
+        client: {
+          describeTool: async () => null,
+          callTool: async (_nativeTool, input) => {
+            calls.push(input);
+            return calls.length === 1
+              ? { records: [{ id: 'rec1', fields: { Name: 'first' } }], nextCursor: 'repeat' }
+              : { records: [{ id: 'rec2', fields: { Name: 'second' } }], nextCursor: 'repeat' };
+          },
+        },
+      },
+    }));
+    const pages = [];
+    for await (const page of adapter.read({
+      kind: 'airtable_records',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      toolId: 'airtableRecords',
+      nativeTool: 'list_records_for_table',
+      input: { baseId: 'app1', tableId: 'tbl1', viewId: 'viw1' },
+    }, { companyId: 'co-1', userId: 'user-1' })) {
+      pages.push(page);
+    }
+
+    assert.deepEqual(calls, [
+      { baseId: 'app1', tableId: 'tbl1', viewId: 'viw1', pageSize: 1_000 },
+      { baseId: 'app1', tableId: 'tbl1', viewId: 'viw1', pageSize: 1_000, cursor: 'repeat' },
+    ]);
+    assert.deepEqual(pages, [
+      { rows: [{ 'Record ID': 'rec1', Name: 'first' }], hasMore: true },
+      {
+        rows: [{ 'Record ID': 'rec2', Name: 'second' }],
+        hasMore: true,
+        coverage: { outcome: 'partial', cause: 'provider_limit' },
+      },
+    ]);
   });
 
   it('pages Zoho Books without using listAllRecords', async () => {
@@ -1426,6 +1505,68 @@ describe('data export worker', () => {
     assert.deepEqual(edits, []);
   });
 
+  it('requeues a terminal-card claim that was superseded during delivery', async () => {
+    let edits = 0;
+    let delayed = 0;
+    const worker = createWorker({
+      registry: new DatasetSourceRegistry(),
+      sink: { write: async () => assert.fail('a checkpointed export must not rerun') } as any,
+      completionDelivery: {
+        reserve: async () => ({
+          ok: true as const,
+          value: {
+            outcome: 'reserved' as const,
+            record: {
+              deliveryId: 'delivery-superseded',
+              claimAttempt: 1,
+              attempts: 1,
+              firstAttemptAt: new Date(),
+            },
+          },
+        }),
+        markDelivered: async () => ({ ok: true as const, value: 'superseded' as const }),
+        markFailed: async () => assert.fail('the successful card update must not be marked failed'),
+      },
+      larkAdapter: {
+        sendToChatId: async () => assert.fail('a tracker was already created'),
+        updateMessageById: async () => {
+          edits += 1;
+          return { ok: true as const, value: undefined };
+        },
+      },
+    });
+
+    await assert.rejects(
+      () => worker.processJob({
+        id: 'dtx_completion_superseded',
+        data: {
+          ...payload,
+          progressMessageId: 'om-progress',
+          completedExport: {
+            success: true,
+            artifactId: 'sheet-superseded',
+            artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-superseded/edit',
+            artifactType: 'google_sheet',
+            rowCount: 1,
+            sourceTruncated: false,
+            sharedWith: 'abhishek@emiactech.com (reader)',
+            verified: true,
+          },
+        },
+        token: 'worker-token',
+        attemptsMade: 2,
+        opts: { attempts: 3 },
+        updateData: async () => assert.fail('a checkpointed export must not be rewritten'),
+        updateProgress: async () => assert.fail('a checkpointed export must not report progress'),
+        moveToDelayed: async () => { delayed += 1; },
+      }),
+      { name: 'DelayedError' },
+    );
+
+    assert.equal(edits, 1);
+    assert.equal(delayed, 1);
+  });
+
   it('defers a final-attempt completion-card failure and later delivers the checkpoint', async () => {
     let updates = 0;
     let delayed = 0;
@@ -1641,6 +1782,109 @@ describe('data export worker', () => {
 
     assert.doesNotMatch(JSON.stringify(entries), new RegExp(secret));
     assert.ok(entries.some(entry => entry.event === 'data_export.failure_delivered'));
+  });
+
+  it('correlates retry and progress lifecycle logs to one export run', async () => {
+    const entries: Record<string, unknown>[] = [];
+    const logger: any = {
+      child: () => logger,
+      debug: (event: string, data?: Record<string, unknown>) => entries.push({ event, ...data }),
+      info: (event: string, data?: Record<string, unknown>) => entries.push({ event, ...data }),
+      warn: (event: string, data?: Record<string, unknown>) => entries.push({ event, ...data }),
+      error: (event: string, data?: Record<string, unknown>) => entries.push({ event, ...data }),
+    };
+    const registry = new DatasetSourceRegistry();
+    registry.register({
+      kind: 'airtable_records',
+      async *read() {
+        yield { rows: [{ Name: 'One' }] };
+      },
+    });
+    let updateAttempts = 0;
+    const worker = createWorker({
+      registry,
+      sink: {
+        write: async (input: any) => {
+          for await (const _page of input.rows) { /* consume the source */ }
+          return {
+            success: true as const,
+            artifactId: 'sheet-log-context',
+            artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-log-context/edit',
+            artifactType: 'google_sheet' as const,
+            rowCount: 1,
+            sourceTruncated: false,
+            sharedWith: 'abhishek@emiactech.com (reader)',
+            verified: true as const,
+          };
+        },
+      } as any,
+      larkAdapter: {
+        sendToChatId: async () => ({ ok: true as const, value: 'om-progress' }),
+        updateMessageById: async () => {
+          updateAttempts += 1;
+          return updateAttempts === 1
+            ? { ok: false as const, error: new Error('transient Lark error') }
+            : { ok: true as const, value: undefined };
+        },
+      },
+      logger: logger as any,
+    });
+    const run = (attemptsMade: number) => worker.processJob({
+      id: 'dtx_log_context',
+      data: payload,
+      attemptsMade,
+      opts: { attempts: 3 },
+      updateData: async () => undefined,
+      updateProgress: async () => undefined,
+    });
+
+    await run(0);
+    await run(1);
+
+    assert.deepEqual(
+      entries
+        .filter(entry => entry.event === 'data_export.worker.processing')
+        .map(({ jobId, exportKey, attempt, maxAttempts, runMode }) => ({
+          jobId,
+          exportKey,
+          attempt,
+          maxAttempts,
+          runMode,
+        })),
+      [
+        {
+          jobId: 'dtx_log_context',
+          exportKey: 'dtx_log_context',
+          attempt: 1,
+          maxAttempts: 3,
+          runMode: 'initial',
+        },
+        {
+          jobId: 'dtx_log_context',
+          exportKey: 'dtx_log_context',
+          attempt: 2,
+          maxAttempts: 3,
+          runMode: 'source_rerun',
+        },
+      ],
+    );
+    const progressFailure = entries.find(entry => entry.event === 'data_export.progress_update_failed');
+    assert.deepEqual(
+      {
+        jobId: progressFailure?.jobId,
+        exportKey: progressFailure?.exportKey,
+        attempt: progressFailure?.attempt,
+        maxAttempts: progressFailure?.maxAttempts,
+        runMode: progressFailure?.runMode,
+      },
+      {
+        jobId: 'dtx_log_context',
+        exportKey: 'dtx_log_context',
+        attempt: 1,
+        maxAttempts: 3,
+        runMode: 'initial',
+      },
+    );
   });
 
   it('revalidates the selected personal Google destination before writing', async () => {
