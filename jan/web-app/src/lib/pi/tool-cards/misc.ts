@@ -29,10 +29,11 @@ const documentRag: DescriptorTable = {
   listFiles: { verb: { present: 'Listing documents', past: 'Listed documents' }, countNoun: 'document' },
 }
 
-// operation: domain_overview | organic_positions
+// operation: domain_overview | backlinks_comparison | keyword_position_trend
 const semrush: DescriptorTable = {
   domain_overview: { verb: { present: 'Analysing', past: 'Analysed' }, subject: (a) => argString(a, 'domain', 'target') },
-  organic_positions: { verb: { present: 'Researching', past: 'Researched' }, countNoun: 'keyword', subject: (a) => argString(a, 'domain', 'target') },
+  backlinks_comparison: { verb: { present: 'Comparing', past: 'Compared' }, countNoun: 'domain', subject: (a) => argString(a, 'targets', 'target') },
+  keyword_position_trend: { verb: { present: 'Checking rank', past: 'Checked rank' }, subject: (a) => argString(a, 'keyword', 'domain') },
 }
 
 // Flat: runs a JavaScript transform over fetched data.

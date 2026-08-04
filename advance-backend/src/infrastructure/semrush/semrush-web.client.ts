@@ -5,6 +5,14 @@ import { SemrushServiceError } from '../../application/semrush/semrush.types';
 const DPA_RPC_URL = 'https://www.semrush.com/dpa/rpc';
 const BACKLINKS_WEBAPI_URL = 'https://www.semrush.com/backlinks/webapi2/';
 
+/**
+ * Semrush DPA dedupes on `params.request_id`. Senior curls use a UUID-shaped value
+ * (for example `898248e6-0c40-0ecf-f2a1-15f31a189833`); reusing one is rejected.
+ */
+export function nextSemrushDpaRequestId(): string {
+  return randomUUID();
+}
+
 const BACKLINKS_COLUMN_LABELS: Readonly<Record<string, string>> = {
   ascore: 'Authority Score',
   total: 'Backlinks',
@@ -21,73 +29,76 @@ const BACKLINKS_COLUMN_LABELS: Readonly<Record<string, string>> = {
 };
 
 /**
- * Divo-specific Semrush web-session workaround.
+ * Backend-owned Semrush web session integration (`www.semrush.com` only).
  *
- * Keep this wrapper intentionally separate from SemrushClient. The official
- * api.semrush.com reports can run out of units for shapes that still work
- * through the Semrush web app endpoints we validated manually. Do not collapse
- * this back into the official API client unless the product decision changes
- * and the private web contracts are removed from docs/SEMRUSH-VALIDATION-NOTES.
- *
- * Secrets stay backend-owned: callers pass tool args only, and this client reads
- * the configured web api key/cookie from env via composition.
+ * Each method maps to a senior-validated private recipe. Do not call
+ * `api.semrush.com` from this client.
  */
 export class SemrushWebClient {
   constructor(private readonly deps: {
-    readonly enabled: boolean;
     readonly apiKey?: string;
     readonly cookie?: string;
     readonly timeoutMs: number;
     readonly fetchImpl?: typeof fetch;
   }) {}
 
-  supports(args: SemrushToolArgs): boolean {
-    return this.configured()
-      && (args.operation === 'domain_overview' || args.operation === 'backlinks_comparison');
+  assertConfigured(): void {
+    if (!this.configured()) {
+      throw new SemrushServiceError(
+        'not_configured',
+        'Semrush web session is not configured. Set SEMRUSH_WEB_API_KEY and SEMRUSH_WEB_COOKIE in the backend environment.',
+      );
+    }
   }
 
   async fetch(args: SemrushToolArgs): Promise<SemrushFetchedData> {
-    if (!this.supports(args)) {
-      throw new SemrushServiceError('not_configured', 'Semrush web session is not configured on this backend.');
-    }
+    this.assertConfigured();
     switch (args.operation) {
       case 'domain_overview':
         return this.domainOverview(args.domain, args.database ?? 'in');
       case 'backlinks_comparison':
         return this.backlinksComparison(args.targets);
+      case 'keyword_position_trend':
+        return this.keywordPositionTrend(args);
       default:
-        throw new SemrushServiceError('capability_unavailable', `${args.operation} has no verified Semrush web contract yet.`);
+        throw new SemrushServiceError('capability_unavailable', `${(args as { operation: string }).operation} is not available through Semrush web.`);
     }
   }
 
   private configured(): boolean {
-    return this.deps.enabled
-      && Boolean(this.deps.apiKey?.trim())
-      && Boolean(this.deps.cookie?.trim());
+    return Boolean(this.deps.apiKey?.trim()) && Boolean(this.deps.cookie?.trim());
   }
 
-  private async domainOverview(domain: string, database: string): Promise<SemrushFetchedData> {
-    const payload = {
-      id: Date.now(),
+  private buildDpaRpcPayload(
+    method: string,
+    report: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return {
+      id: Math.trunc(Math.random() * 1_000_000_000),
       jsonrpc: '2.0',
-      method: 'ranks.Ranks',
+      method,
       params: {
-        request_id: randomUUID(),
-        report: 'organic.overview',
-        args: {
-          database,
-          searchItem: domain,
-          searchType: 'domain',
-          dateType: 'daily',
-          display: {
-            order: { field: 'positions', direction: 'desc' },
-            page: 1,
-            pageSize: 25,
-          },
-        },
+        request_id: nextSemrushDpaRequestId(),
+        report,
+        args,
         apiKey: this.deps.apiKey!.trim(),
       },
     };
+  }
+
+  private async domainOverview(domain: string, database: string): Promise<SemrushFetchedData> {
+    const payload = this.buildDpaRpcPayload('ranks.Ranks', 'organic.overview', {
+      database,
+      searchItem: domain,
+      searchType: 'domain',
+      dateType: 'daily',
+      display: {
+        order: { field: 'positions', direction: 'desc' },
+        page: 1,
+        pageSize: 200,
+      },
+    });
     const body = await this.jsonRpc(payload);
     const result = Array.isArray(body.result) ? body.result : [];
     const selected = result.find(row => objectValue(row, 'database') === database) ?? result[0];
@@ -104,6 +115,36 @@ export class SemrushWebClient {
         report: 'organic.overview',
       },
       rows: row ? [row] : [],
+    };
+  }
+
+  private async keywordPositionTrend(args: Extract<SemrushToolArgs, { operation: 'keyword_position_trend' }>): Promise<SemrushFetchedData> {
+    const database = args.database ?? 'in';
+    const payload = this.buildDpaRpcPayload('organic.KeywordPositionTrend', 'organic.positions', {
+      database,
+      searchItem: args.domain,
+      searchType: 'domain',
+      date: args.date,
+      dateType: args.dateType ?? 'daily',
+      keyword: args.keyword,
+      dateFormat: 'date',
+      positionsType: 'organic',
+    });
+    const body = await this.jsonRpc(payload);
+    const rows = normalizeRpcRows(body.result);
+    return {
+      operation: 'keyword_position_trend',
+      status: rows.length ? 'complete' : 'empty',
+      coverage: {
+        domain: args.domain,
+        keyword: args.keyword,
+        date: args.date,
+        database,
+        apiVersion: 'web_dpa',
+        report: 'organic.positions',
+        method: 'organic.KeywordPositionTrend',
+      },
+      rows,
     };
   }
 
@@ -144,7 +185,7 @@ export class SemrushWebClient {
     const missingTargets = targets.filter(target => !returned.has(target));
     return {
       operation: 'backlinks_comparison',
-      status: 'complete',
+      status: rows.length ? 'complete' : 'empty',
       coverage: {
         apiVersion: 'web_backlinks',
         targets: [...targets],
@@ -247,6 +288,32 @@ function backlinksRow(value: unknown): Record<string, unknown> | undefined {
     }).map(([key, metric]) => [BACKLINKS_COLUMN_LABELS[key] ?? key, metric])),
     'Provider Data Status': row.valid === false || row.status === 'not found' ? 'No provider data' : 'Returned',
   };
+}
+
+function normalizeRpcRows(result: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(result)) {
+    return result
+      .filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === 'object' && !Array.isArray(row))
+      .map(row => flattenRow(row));
+  }
+  if (result && typeof result === 'object') {
+    return [flattenRow(result as Record<string, unknown>)];
+  }
+  return [];
+}
+
+function flattenRow(row: Record<string, unknown>): Record<string, unknown> {
+  const output: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(row)) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      for (const [nestedKey, nestedValue] of Object.entries(value as Record<string, unknown>)) {
+        output[nestedKey] = nestedValue;
+      }
+      continue;
+    }
+    output[key] = value;
+  }
+  return output;
 }
 
 function objectValue(value: unknown, key: string): unknown {

@@ -104,7 +104,7 @@ it('creates a typed Semrush sheet in the company account and grants only the inv
       kind: 'semrush_snapshot',
       connectionId: 'backend_managed',
       args: {
-        operation: 'organic_positions',
+        operation: 'domain_overview',
         domain: 'example.com',
         database: 'in',
       },
@@ -505,7 +505,7 @@ it('counts Semrush Trends and Overview cells for auto selection and Sheet clippi
     kind: 'semrush_snapshot' as const,
     connectionId: 'backend_managed' as const,
     args: {
-      operation: 'organic_positions' as const,
+      operation: 'domain_overview' as const,
       domain: 'example.com',
       database: 'in' as const,
     },

@@ -10,10 +10,10 @@ export const DIVO_SEMRUSH_SKILL_SLUG = 'divo-semrush-seo-research';
 export const DIVO_SEMRUSH_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = {
   slug: DIVO_SEMRUSH_SKILL_SLUG,
   name: 'Divo Semrush SEO Research',
-  summary: 'Run Semrush domain and organic-search research through backend-configured Semrush operations.',
+  summary: 'Run Semrush domain and organic-search research through backend-configured Semrush web operations.',
   markdown: `# Divo Semrush SEO Research
 
-Use this skill for read-only Semrush SEO research available through Divo's backend-configured capability. The backend may use official Semrush APIs or a backend-owned Semrush web session; the model never receives endpoint credentials, cookies, API keys, or raw provider headers.
+Use this skill for read-only Semrush SEO research available through Divo's backend-configured capability. The backend uses a backend-owned Semrush web session; the model never receives endpoint credentials, cookies, API keys, or raw provider headers.
 
 ## Operating rules
 
@@ -36,19 +36,14 @@ Use this skill for read-only Semrush SEO research available through Divo's backe
 ## Supported backend operations
 
 - \`domain_overview\`: one bare domain and a supported country database. A single snapshot row.
-- \`organic_positions\`: which keywords a domain ranks for right now, with bounded pagination.
-- \`organic_position_trend\`: monthly authority and traffic history, newest first. This answers "is it growing", not "where does it rank today".
-- \`keyword_research\`: volume, CPC, competition and 12-month trend for up to 25 keywords in one request.
-- \`domain_comparison\`: keywords two to five domains share, each domain's position in its own column.
-- \`keyword_gap\`: what competitors rank for and you do not. **The first target is the domain you own** and is excluded from the result; the rest are the competitors. Reversing that order silently answers the opposite question, so confirm which domain is the user's before calling it.
-- \`backlinks_comparison\`: authority score, total backlinks and referring domains per target.
+- \`backlinks_comparison\`: authority score, total backlinks and referring domains per target (2–10 domains in one request).
+- \`keyword_position_trend\`: one domain, one keyword, and one date (YYYYMMDD). Use for "where did this keyword rank on this date", not for full keyword lists or monthly domain history.
 
 ## Cost and honesty rules for these operations
 
-1. \`backlinks_comparison\` costs one billed Semrush request per target. Compare the domains the user actually named; do not pad the list to be thorough.
-2. \`keyword_research\` silently omits keywords Semrush has no data for. Compare \`coverage.requestedKeywords\` with \`coverage.returnedKeywords\` and name the missing keywords as "no Semrush data" rather than "zero volume".
-3. A comparison of domains that share no keywords returns \`empty\`. That is a real answer — report it as no overlap, not as a Semrush failure.
-4. Never substitute one report for another. If the user asked for a gap and only a comparison is appropriate, say so rather than quietly returning the overlap.`,
+1. \`backlinks_comparison\` is one web request for all listed targets. Compare the domains the user actually named; do not pad the list to be thorough.
+2. If Semrush has no backlink overview for a requested target, \`coverage.missingTargets\` and the export name it as no provider data rather than zero.
+3. Never substitute one report for another. If the user asked for something outside these three operations, say it is not available through Divo Semrush yet.`,
   toolIds: ['semrush'],
   tags: ['divo', 'seo', 'semrush', 'organic', 'rankings', 'domain'],
   aliases: ['semrush', 'seo research', 'organic rankings', 'domain overview'],

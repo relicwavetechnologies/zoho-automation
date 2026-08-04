@@ -162,7 +162,10 @@ export class DataExportCandidateRepository implements DataExportCandidateReposit
         take: Math.min(limit * 2, 100),
         select: candidateSelect,
       });
-      const records = rows.map(row => toCandidateRecord(row));
+      const records = rows.flatMap(row => {
+        const record = tryToCandidateRecord(row);
+        return record ? [record] : [];
+      });
       const scoped = input.scope === 'run'
         ? records.filter(candidate => matchesRunScope(candidate, input))
         : records;
@@ -375,6 +378,14 @@ export class DataExportCandidateRepository implements DataExportCandidateReposit
     } catch (cause) {
       return err(wrapInfra('prisma', 'dataExportPlan.markFullQueued', cause));
     }
+  }
+}
+
+function tryToCandidateRecord(row: CandidateRow): DataExportCandidateRecord | null {
+  try {
+    return toCandidateRecord(row);
+  } catch {
+    return null;
   }
 }
 

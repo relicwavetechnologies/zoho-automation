@@ -82,7 +82,6 @@ import {
 } from './application/connections/accessible-connection-selection';
 import { CompanySerperConnectionRepository } from './infrastructure/persistence/company-serper-connection.repository';
 import { CompanySerperService } from './application/web-search/company-serper.service';
-import { SemrushClient } from './infrastructure/semrush/semrush.client';
 import { SemrushWebClient } from './infrastructure/semrush/semrush-web.client';
 import { SemrushService } from './application/semrush/semrush.service';
 import { MenhoodQueryService } from './application/menhood/menhood-query.service';
@@ -674,21 +673,15 @@ export async function buildContainer(
     logger.child({ service: 'company-serper' }),
     env.SERPER_API_KEY ?? '',
   );
-  // Custom Semrush web-session workaround. Keep credentials backend-owned and
-  // injected here; tool callers must never receive or choose the web key/cookie.
-  const semrushWebApiKey = env.SEMRUSH_WEB_API_KEY ?? env.SEMRUSH_API_KEY;
+  // Semrush uses validated www.semrush.com recipes only. Credentials stay
+  // backend-owned; tool callers must never receive the web key or cookie.
   const semrushService = new SemrushService(
-    new SemrushClient({ timeoutMs: env.SEMRUSH_TIMEOUT_MS }),
-    env.SEMRUSH_API_KEY,
-    logger.child({ service: 'semrush' }),
-    env.SEMRUSH_API_KEY_WEBHOOK_URL,
-    fetch,
     new SemrushWebClient({
-      enabled: env.SEMRUSH_WEB_ENABLED,
       timeoutMs: env.SEMRUSH_TIMEOUT_MS,
-      ...(semrushWebApiKey ? { apiKey: semrushWebApiKey } : {}),
+      ...(env.SEMRUSH_WEB_API_KEY ? { apiKey: env.SEMRUSH_WEB_API_KEY } : {}),
       ...(env.SEMRUSH_WEB_COOKIE ? { cookie: env.SEMRUSH_WEB_COOKIE } : {}),
     }),
+    logger.child({ service: 'semrush' }),
   );
   const companyOmsSiteDataService = new CompanyOmsSiteDataService(
     companyOmsConnectionRepo,

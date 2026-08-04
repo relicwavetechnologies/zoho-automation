@@ -138,7 +138,7 @@ export function datasetSourceToolId(source: DataExportSource): CanonicalToolId {
  * columns that were never meant to sit in one table.
  *
  * Kind alone is too coarse. A single Semrush run can mix `domain_overview`
- * (one row per domain) with `organic_positions` (many rows for one domain);
+ * (one row per domain) with `backlinks_comparison` (one row per target);
  * folding those together yields a sparse sheet nobody asked for. Parts merge
  * only when this key matches exactly.
  */
@@ -192,19 +192,7 @@ export function datasetSourceSelection(source: DataExportSource): DatasetSourceS
       ? { limit: maxRecords }
       : undefined;
   }
-  if (source.kind !== 'semrush_snapshot' || source.args.operation === 'organic_position_trend') {
-    return undefined;
-  }
-  const limit = 'limit' in source.args ? source.args.limit : undefined;
-  const offset = source.args.operation === 'organic_positions'
-    ? source.args.offset
-    : undefined;
-  return limit === undefined && offset === undefined
-    ? undefined
-    : {
-        ...(limit === undefined ? {} : { limit }),
-        ...(offset === undefined ? {} : { offset }),
-      };
+  return undefined;
 }
 
 export interface DataExportTransform {

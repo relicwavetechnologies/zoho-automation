@@ -80,23 +80,15 @@ export function exportCandidateArgsSummary(source: DataExportSource): string {
 function semrushExportTitle(args: SemrushToolArgs): string {
   const subject = 'domain' in args
     ? args.domain
-    : 'targets' in args
-      ? args.targets.join(', ')
-      : args.operation === 'keyword_research'
-        ? `${args.keywords.length} keywords`
-        : 'report';
+    : args.targets.join(', ');
   return `Semrush ${args.operation.replaceAll('_', ' ')} — ${subject}`;
 }
 
 function semrushArgsSummary(args: SemrushToolArgs): string {
   if ('domain' in args) {
-    return `${args.operation}: ${args.domain}`;
+    return args.operation === 'keyword_position_trend'
+      ? `${args.operation}: ${args.domain} / ${args.keyword} / ${args.date}`
+      : `${args.operation}: ${args.domain}`;
   }
-  if ('targets' in args) {
-    return `${args.operation}: ${args.targets.join(', ')}`;
-  }
-  if (args.operation === 'keyword_research') {
-    return `${args.operation}: ${args.keywords.join(', ')}`;
-  }
-  return 'semrush';
+  return `${args.operation}: ${args.targets.join(', ')}`;
 }

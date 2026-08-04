@@ -309,8 +309,8 @@ describe('DataExportOrchestrationService', () => {
     assert.equal(listed.length, 2);
     assert.equal(listed[0]!.candidateId, SEMRUSH_CANDIDATE_ID);
     assert.match(listed[0]!.label, /Semrush/i);
-    assert.match(listed[0]!.shapeKey, /organic_positions/);
-    assert.match(listed[0]!.argsSummary, /organic_positions/i);
+    assert.match(listed[0]!.shapeKey, /domain_overview/);
+    assert.match(listed[0]!.argsSummary, /domain_overview/i);
     assert.equal(listed[1]!.candidateId, ZOHO_CANDIDATE_ID);
   });
 
@@ -532,7 +532,7 @@ function semrushPayload(): DataExportOfferPayload {
       kind: 'semrush_snapshot',
       connectionId: 'backend_managed',
       args: {
-        operation: 'organic_positions',
+        operation: 'domain_overview',
         domain: 'example.com',
         database: 'us',
       },

@@ -120,7 +120,7 @@ describe('writeXlsxArtifact', () => {
         source: {
           kind: 'semrush_snapshot',
           connectionId: 'backend_managed',
-          args: { operation: 'organic_positions', domain: 'example.com', database: 'in' },
+          args: { operation: 'domain_overview', domain: 'example.com', database: 'in' },
         },
         columns: [
           'Keyword', 'Position', 'Search Volume', 'Url', 'Trends',

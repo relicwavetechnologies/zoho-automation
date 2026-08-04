@@ -221,7 +221,7 @@ For Semrush comparison prompts:
 Skill sources of truth:
 
 - `divo-semrush-seo-research` — operations, cost rules (`backlinks_comparison`
-  = one billed request **per target**), export follow-up copy.
+  = one web request for all targets), export follow-up copy.
 - `research-router` — Semrush vs web-search vs OMS routing.
 
 ### Performance and failure modes (learned in practice)
@@ -230,9 +230,9 @@ Skill sources of truth:
 | --- | --- | --- |
 | Shell hangs after JSON | Old CLI left BullMQ Redis sockets open | Fixed: forced exit after `shutdownAgentSeatContainer()` |
 | `turn begin && invoke` feels 2× slow | Each subcommand cold-starts the gateway | Run one command at a time; accept ~1–3s boot |
-| `invoke semrush` takes minutes | N targets ⇒ N **sequential** Semrush API calls (15s timeout each) | Normal; watch stderr timing |
+| `invoke semrush` slow | One web request per op (15s timeout default) | Normal; watch stderr timing |
 | `invalid_args` targets max 10 | Tool schema caps `backlinks_comparison` at 10 domains | Split batch, drop a domain, or tell the member — do not silently omit |
-| `provider_insufficient_units` | Dev Semrush key/web session out of units | Report `blocked` honestly per skill; fix env or use web path |
+| `blocked` / auth errors | Missing or expired `SEMRUSH_WEB_COOKIE` / `SEMRUSH_WEB_API_KEY` | Refresh web session in backend env |
 
 ### Example commands (shy Semrush export scenario)
 

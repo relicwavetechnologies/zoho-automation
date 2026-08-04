@@ -212,7 +212,7 @@ Choose the exact approved specialist returned by this router.
 - Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`. Prefer one main Semrush call and one main table (for example one \`backlinks_comparison\` for multi-domain ranking). Its bounded preview may return an \`exportCandidate\`; if the member asks for a file, use \`dataExport\` \`op=list_candidates\` when needed, then \`op=plan\` for the table you showed — never rerun the provider query, paginate in Pi, or use a local workflow.
 - Approved OMS publisher/site inventory → \`divo-oms-site-inventory\`.
 
-Never substitute web results for official Semrush or OMS data.
+Never substitute web search results for configured Semrush or OMS data.
 
 Files the user sent are not researched here — they are already in the
 workspace. Route those to \`files-router\`.`,
@@ -256,7 +256,7 @@ Do not route transient task state, secrets, unfinished teaching, one-off work, o
 
 Use \`webSearch\` for current public information and external verification.
 Prefer primary or official sources, verify time-sensitive claims, and include relevant URLs.
-Do not use public web search as a substitute for official Semrush or OMS data, or for a file the user has already sent.`,
+Do not use public web search as a substitute for configured Semrush or OMS data, or for a file the user has already sent.`,
     toolIds: ['webSearch'],
     tags: ['search', 'research', 'web', 'verification'],
     aliases: ['web search', 'internet research', 'current public information', 'verify online'],

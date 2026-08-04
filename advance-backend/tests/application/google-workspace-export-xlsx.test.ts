@@ -192,7 +192,7 @@ it('expands Semrush trends into explicit CSV columns', async t => {
     source: {
       kind: 'semrush_snapshot',
       connectionId: 'backend_managed',
-      args: { operation: 'organic_positions', domain: 'example.com', database: 'in' },
+      args: { operation: 'domain_overview', domain: 'example.com', database: 'in' },
     },
     destination: {
       format: 'csv',
@@ -255,7 +255,7 @@ it('rejects XLSX when Semrush Trends and Overview cells cross the cell cap', asy
     source: {
       kind: 'semrush_snapshot',
       connectionId: 'backend_managed',
-      args: { operation: 'organic_positions', domain: 'example.com', database: 'in' },
+      args: { operation: 'domain_overview', domain: 'example.com', database: 'in' },
     },
     columns: ['Keyword', 'Url', 'Trends', 'Position', 'Search Volume', 'CPC', 'Date'],
     rows: (async function* () {
