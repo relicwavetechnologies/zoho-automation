@@ -40,6 +40,7 @@ import { PermissionError, ToolError }      from '../../../shared/errors';
 import type { ToolActionGroup }            from '../../../domain/permissions/tool-action-group';
 import { asToolId }                        from '../../../shared/ids';
 import {
+  ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE,
   ZOHO_BOOKS_OUTSTANDING_RULE,
   ZOHO_BOOKS_ROW_CONTRACT,
 } from '../../../shared/zoho-books-row-contract';
@@ -236,6 +237,13 @@ const amountFields = new Set([
   'fc_balance',
   'outstanding',
   'totalOutstanding',
+  'outstanding_payable_amount',
+  'outstanding_receivable_amount',
+  'outstanding_ob_payable_amount',
+  'outstanding_ob_receivable_amount',
+  'opening_balance_amount',
+  'unused_credits_payable_amount',
+  'unused_credits_receivable_amount',
 ]);
 
 const dateFields = new Set([
@@ -591,10 +599,11 @@ export const createZohoBooksTool = (deps: {
     'script: JS code. Receives data (all records), args (extra params), schema (field hints). Must return a value.',
     `  ${ZOHO_BOOKS_ROW_CONTRACT}`,
     `  ${ZOHO_BOOKS_OUTSTANDING_RULE}`,
+    `  ${ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE}`,
     '  _amount/_total = original currency amount. _balance = original outstanding. _currency = ISO code or UNKNOWN; never label UNKNOWN as INR.',
     '  For INR sums: use _balance_inr or _amount_inr directly. For "show in USD": fromINR(total, "USD").',
     '  formatAmount(value, currency) and formatDate(iso) are available in the sandbox.',
-    '  Example: "const g={}; data.forEach(b=>{const v=b.vendor_name||\'Unknown\'; if(!g[v])g[v]={vendor:v,count:0,outstanding:0}; g[v].count++; g[v].outstanding+=b._balance_inr;}); return Object.values(g).sort((a,b)=>b.outstanding-a.outstanding)"',
+    '  Example (bill-balance ranking only — not contact payable total): "const g={}; data.forEach(b=>{const v=b.vendor_name||\'Unknown\'; if(!g[v])g[v]={vendor:v,count:0,billBalance:0}; g[v].count++; g[v].billBalance+=b._balance_inr;}); return Object.values(g).sort((a,b)=>b.billBalance-a.billBalance)"',
     'scriptArgs: extra parameters available as `args` in the script',
     `Script results stay bounded inline. For a governed auto-format source artifact of up to ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} rows, subject to provider availability, use exportAll=true or dataExport.`,
   ].join('\n'),
@@ -1023,6 +1032,8 @@ export const createZohoBooksTool = (deps: {
               { key: 'phone', header: 'Phone' },
               { key: 'status', header: 'Status' },
               commonColumns.currency,
+              { key: 'outstanding_payable_amount', header: 'Outstanding Payables' },
+              { key: 'outstanding_receivable_amount', header: 'Outstanding Receivables' },
             ],
           }));
 

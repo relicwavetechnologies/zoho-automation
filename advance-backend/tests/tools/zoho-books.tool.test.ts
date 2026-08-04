@@ -154,6 +154,42 @@ describe('zohoBooks expanded execution', () => {
     assert.equal(items[0].date, '2026-05-01');
   });
 
+  it('surfaces contact payable/receivable totals in list_contacts preview', async () => {
+    const booksClient = {
+      listRecords: async (input: { moduleName: string }) => ({
+        organizationId: 'org-1',
+        items: input.moduleName === 'contacts'
+          ? [{
+              contact_id: 'con-1',
+              contact_name: 'DIAMOND PRINTING PRESS',
+              company_name: 'DIAMOND PRINTING PRESS',
+              email: 'vendor@example.com',
+              phone: '',
+              status: 'active',
+              currency_code: 'INR',
+              outstanding_payable_amount: 195920.6,
+              outstanding_receivable_amount: 0,
+            }]
+          : [],
+        hasMore: false,
+        page: 1,
+      }),
+      listAllRecords: async () => ({ organizationId: 'org-1', items: [], truncated: false }),
+      getEndpoint: async () => ({ transactions: [] }),
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ booksClient });
+
+    const result = await tool.execute({ op: 'list_contacts', searchQuery: 'Diamond' }, ctx);
+
+    assert.equal(result.ok, true);
+    const columns = (result as any).value.preview.columns as string[];
+    assert.ok(columns.includes('outstanding_payable_amount'));
+    assert.ok(columns.includes('outstanding_receivable_amount'));
+    const row = (result as any).value.preview.rows[0];
+    assert.equal(row.outstanding_payable_amount, 195920.6);
+    assert.equal(row.outstanding_receivable_amount, 0);
+  });
+
   it('passes search text and date filters to search_transactions', async () => {
     const captures: { listInput?: any } = {};
     const tool = makeTool({ booksClient: makeBooksClient(captures) });

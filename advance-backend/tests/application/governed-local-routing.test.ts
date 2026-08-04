@@ -83,6 +83,7 @@ describe('governed local-workflow instruction contract', () => {
     assert.match(zohoBooksReadAnalysisSkill.instructions, /omit the limit argument unless the user explicitly requested a numeric maximum/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /When a list result is truncated, do not retry with a larger limit/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /Number\(_balance_inr\) > 0/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /outstanding_payable_amount or outstanding_receivable_amount from get_contact/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /reconcile it: every source page accounted for/);
   });
 

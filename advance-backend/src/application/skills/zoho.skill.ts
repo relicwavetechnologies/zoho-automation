@@ -1,5 +1,6 @@
 import type { Skill } from './skill.types';
 import {
+  ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE,
   ZOHO_BOOKS_OUTSTANDING_RULE,
   ZOHO_BOOKS_ROW_CONTRACT,
 } from '../../shared/zoho-books-row-contract';
@@ -93,12 +94,14 @@ READ ROUTING:
 - Human invoice number -> use zohoBooks op="get_invoice" with that exact number, or list_invoices with searchQuery and accept only an exact normalized invoice_number match before using its invoice_id. Never substitute a fuzzy result.
 - Exact whole-account or potentially large aggregate -> ${GOVERNED_LOCAL_DESKTOP_ONLY}, use the scripted workflow: fetch pages through divo-local, write them to a file, and aggregate over that file. On server channels there is no divo-local: stay on the governed zohoBooks operations and let the backend's export path own the complete set. Never go looking for a local CLI there. Either way, do not start with zohoBooks script mode; it is capped at 4,000 records, and pulling pages into context to add them up is how totals silently come out short.
 - Aging/overdue report -> use zohoBooks op="build_overdue_report".
+- Vendor or customer outstanding / payable / receivable balance for one contact -> list_contacts with searchQuery when needed, then get_contact with the contactId. Report outstanding_payable_amount or outstanding_receivable_amount from get_contact; that matches Zoho's Payables/Receivables UI. Bill or invoice balance sums are detail only and can be lower when opening balances exist.
 - Before describing a total as exact, reconcile it: every source page accounted for, and the row count you computed over stated alongside the figure.
 - Zoho customer-payment list rows may omit original currency. When _currency is UNKNOWN, do not call it INR or produce an original-currency breakdown. _amount_inr remains safe when populated from Zoho bcy_amount; otherwise state that original-currency analysis requires stronger evidence.
 
 ROW CONTRACT:
 ${ZOHO_BOOKS_ROW_CONTRACT}
 ${ZOHO_BOOKS_OUTSTANDING_RULE}
+${ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE}
 
 OUTPUT:
 - State the account used, material filters, count, total, and whether all pages were processed.
