@@ -150,7 +150,7 @@ describe('zohoCrm tool', () => {
      * The old path uploaded a CSV to Cloudinary and handed back a signed URL —
      * no offer, no destination governance, no owner approval. These cover the
      * replacement, and specifically the case where being wrong is silent: a
-     * personalized member must never be handed an offer, because the offer is
+     * personalized member must never be handed a candidate, because the export is
      * re-read later by a worker that has no requester identity to filter on and
      * would export the whole module.
      */
@@ -164,16 +164,19 @@ describe('zohoCrm tool', () => {
     });
     const CONNECTION = '11111111-1111-4111-8111-111111111111';
 
-    it('offers a governed export of the exact module instead of uploading a CSV', async () => {
-      const offers: any[] = [];
+    it('publishes a governed export candidate of the exact module instead of uploading a CSV', async () => {
+      const candidates: any[] = [];
       const tool = createZohoCrmTool({
         getClient: yesClient,
         crmClient: fakePaginatedCrmClient,
         crmOps: fakeCrmOps,
-        offers: {
-          appendAuthorizedPart: async (payload: any) => {
-            offers.push(payload);
-            return { outcome: 'appended', offerId: 'offer-1', partCount: 1 } as any;
+        exportCandidates: {
+          publishCandidate: async (payload: any) => {
+            candidates.push(payload);
+            return {
+              candidateId: '11111111-1111-4111-8111-111111111111',
+              expiresAt: new Date('2026-08-03T00:00:00.000Z'),
+            } as any;
           },
         } as any,
       });
@@ -186,9 +189,9 @@ describe('zohoCrm tool', () => {
       );
 
       assert.equal(r.ok, true);
-      assert.equal((r as any).value.preview.exportOfferId, 'offer-1');
-      assert.equal(offers.length, 1);
-      assert.deepEqual(offers[0].source, {
+      assert.equal((r as any).value.exportCandidate.candidateId, '11111111-1111-4111-8111-111111111111');
+      assert.equal(candidates.length, 1);
+      assert.deepEqual(candidates[0].source, {
         kind: 'zoho_crm',
         connectionId: CONNECTION,
         module: 'Deals',
@@ -197,14 +200,17 @@ describe('zohoCrm tool', () => {
       assert.equal('csvLink' in (r as any).value, false);
     });
 
-    it('never offers an export to a member restricted to their own records', async () => {
-      let offered = false;
+    it('never publishes an export candidate to a member restricted to their own records', async () => {
+      let published = false;
       const tool = createZohoCrmTool({
         getClient: yesClient,
         crmClient: fakePaginatedCrmClient,
         crmOps: fakeCrmOps,
-        offers: {
-          appendAuthorizedPart: async () => { offered = true; return { outcome: 'appended', offerId: 'offer-1', partCount: 1 } as any; },
+        exportCandidates: {
+          publishCandidate: async () => {
+            published = true;
+            return { candidateId: '11111111-1111-4111-8111-111111111111', expiresAt: new Date() } as any;
+          },
         } as any,
       });
       const personalized = makeCtx('zohoCrm', ['read'], {
@@ -220,8 +226,8 @@ describe('zohoCrm tool', () => {
       );
 
       assert.equal(r.ok, true);
-      assert.equal(offered, false);
-      assert.equal((r as any).value.preview.exportOfferId, undefined);
+      assert.equal(published, false);
+      assert.equal((r as any).value.exportCandidate, undefined);
     });
 
     it('search: ok with criteria', async () => {

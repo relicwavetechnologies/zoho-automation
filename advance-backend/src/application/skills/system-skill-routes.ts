@@ -35,6 +35,12 @@ Choose the exact approved specialist returned by this router.
 - Bases, tables, fields, schemas, and views → \`airtable-schema-ops\`.
 - Interfaces, forms, and automations → \`airtable-automation-ops\`.
 
+Airtable MCP is for ordinary record work, schema work, discovery, and bounded
+preview. Do not route broad analytics or full exports through Airtable MCP
+pagination; use the company-managed Menhood data source when the request is
+about synced Menhood data, otherwise ask for a bounded preview or a backend
+replayable export source.
+
 Airtable and AITable are different products. Never route an AITable request here.
 This router is instruction-only: loading it successfully means to load one specialist above next.`,
     toolIds: [],
@@ -86,13 +92,17 @@ AITable and Airtable are different products. Never route an Airtable request her
 Choose the exact approved specialist returned by this router.
 
 - One bounded provider lookup or preview → load that provider's specialist.
-  If its result contains \`preview.exportOfferId\`, keep only that opaque offer
-  and finish the answer with its verified card. If the member later chooses a
-  Sheet/CSV/XLSX format in natural language, call \`dataExport\` with
-  \`op=confirm\`; never rerun the provider query or create a new offer.
-- Produce a governed complete-data artifact without a provider offer →
-  \`secure-data-export\`. Its direct recipes are only for supported Airtable
-  and Zoho Books sources with exact backend-resolved identifiers.
+  If its result contains \`exportCandidate\`, keep only that opaque candidate.
+  If the member asks for Sheet/CSV/XLSX/all/full/export, call \`dataExport\`
+  with \`op=plan\`; never rerun the provider query or create a local file.
+  If the member did not ask for a file but the answer is a useful table,
+  ranking, report, or diagnostic with \`exportCandidate\`, the specialist may
+  ask one soft follow-up about exporting to Google Sheets, Excel, or CSV,
+  unless the member explicitly said not to export, not now, or chat-only.
+- Produce a governed complete-data artifact without a provider candidate →
+  \`secure-data-export\`. Its direct recipes are only for backend-replayable
+  sources with exact backend-resolved identifiers. Airtable MCP pagination is
+  not a full-export source.
 - Fetch across pages to calculate, group, join, reshape, or move data between
   connected products → \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`. Write one script,
   run it, edit and rerun it.
@@ -111,8 +121,10 @@ Neither route carries a record set through the conversation.
 
 Keep each opaque handle in its owning route:
 
-- \`preview.exportOfferId\` → Divo's verified Lark final-response card, then
+- legacy \`preview.exportOfferId\` → Divo's verified Lark final-response card, then
   \`dataExport\` \`op=confirm\` for an explicit later natural-language format;
+- \`exportCandidate\` → \`dataExport\` \`op=plan\`, then \`op=sample\` and
+  \`op=confirm_sample\` if the backend requires review before the full run;
   never rebuild the provider request.
 - \`destinationReferenceId\` or \`resourceRef\` → \`google-sheets\` for the exact
   resolved or recent Sheet.
@@ -123,16 +135,16 @@ Never turn one of these handles into provider IDs, source rows, or Python input.
 Examples:
 
 - “Show me our best keywords” → research specialist and bounded preview.
-- “Put the complete keyword result in a Sheet” → preserve the preview offer,
-  finish the answer, and let Divo's Lark card own the choice and export.
+- “Put the complete keyword result in a Sheet” → use the provider
+  \`exportCandidate\` with \`dataExport op=plan\`.
 - “Combine invoices with Airtable owners and calculate totals” → relevant
   provider specialists plus \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`.
 - A Sheet URL by itself → \`google-sheets\`, resolve metadata, then ask what the
   member wants to do.
 - “Add a Notes column to that Sheet” after a Divo export → \`google-sheets\`
   with its recent opaque resource reference and read-back verification.
-- No eligible Google destination → let Divo's card keep the same offer and run
-  connect-and-resume; never ask the member to repeat the request.
+- No eligible Google destination → let \`dataExport\` ask for an eligible
+  account or Google connection; never choose an account yourself.
 
 Never treat this router as permission to process or export data. Load the specialist first.`,
     toolIds: [],
@@ -183,7 +195,7 @@ job, not this one.`,
 Choose the exact approved specialist returned by this router.
 
 - Current public facts and external verification → \`web-search\`.
-- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`. Its bounded preview may return an opaque \`preview.exportOfferId\`; preserve it, finish the response, and let Divo's verified Lark card own the initial export choice and queue. If the member later names a format, use \`dataExport\` \`op=confirm\`; never rerun the provider query, paginate in Pi, or use a local workflow.
+- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`. Its bounded preview may return an \`exportCandidate\`; if the member asks for a file, use \`dataExport\` \`op=plan\`; never rerun the provider query, paginate in Pi, or use a local workflow.
 - Approved OMS publisher/site inventory → \`divo-oms-site-inventory\`.
 
 Never substitute web results for official Semrush or OMS data.

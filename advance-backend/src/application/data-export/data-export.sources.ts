@@ -18,6 +18,7 @@ import {
 import type { CompanyOmsSiteDataService } from '../oms/company-oms-site-data.service';
 import type { MenhoodQueryService } from '../menhood/menhood-query.service';
 import type { SemrushService } from '../semrush/semrush.service';
+import { SemrushServiceError } from '../semrush/semrush.types';
 import {
   type CurrencyConverter,
   getModuleSchema,
@@ -28,6 +29,7 @@ import type {
   DataExportSourceAdapter,
 } from './data-export.types';
 import type { DataExportSource } from './data-export.types';
+import { PermanentDataExportError } from './data-export.errors';
 
 type AirtableSource = Extract<DataExportSource, { kind: 'airtable_records' }>;
 type ZohoBooksSource = Extract<DataExportSource, { kind: 'zoho_books' }>;
@@ -289,7 +291,7 @@ export class SemrushSnapshotDataExportSource implements DataExportSourceAdapter<
   }): AsyncIterable<DataExportPage> {
     if (source.args.operation !== 'organic_positions') {
       context.signal?.throwIfAborted();
-      const result = await this.service.execute(source.args);
+      const result = await executeSemrushForExport(this.service, source.args);
       context.signal?.throwIfAborted();
       const requestedRows = semrushRequestedRows(source);
       const rows = requestedRows === undefined
@@ -315,7 +317,7 @@ export class SemrushSnapshotDataExportSource implements DataExportSourceAdapter<
     let remaining = source.args.limit;
     for (let page = 0; page < SEMRUSH_EXPORT_PAGE_LIMIT; page += 1) {
       context.signal?.throwIfAborted();
-      const result = await this.service.execute({
+      const result = await executeSemrushForExport(this.service, {
         ...source.args,
         limit: remaining === undefined
           ? SEMRUSH_EXPORT_PAGE_SIZE
@@ -348,6 +350,37 @@ export class SemrushSnapshotDataExportSource implements DataExportSourceAdapter<
       if (!hasMore || providerLimited) return;
       offset = nextOffset;
     }
+  }
+}
+
+async function executeSemrushForExport(
+  service: Pick<SemrushService, 'execute'>,
+  args: Parameters<SemrushService['execute']>[0],
+) {
+  try {
+    return await service.execute(args);
+  } catch (error) {
+    if (error instanceof SemrushServiceError) {
+      if (error.code === 'provider_insufficient_units') {
+        throw new PermanentDataExportError(
+          'Semrush export could not run because the configured Semrush API units are exhausted. Ask an administrator to refresh the Semrush key or web session, then retry.',
+          error.message,
+        );
+      }
+      if (error.code === 'provider_auth_failed' || error.code === 'not_configured') {
+        throw new PermanentDataExportError(
+          'Semrush export could not run because the configured Semrush credential or web session was rejected. Ask an administrator to refresh it, then retry.',
+          error.message,
+        );
+      }
+      if (error.code === 'capability_unavailable') {
+        throw new PermanentDataExportError(
+          'This Semrush report is not yet available for governed export.',
+          error.message,
+        );
+      }
+    }
+    throw error;
   }
 }
 

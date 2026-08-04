@@ -176,10 +176,14 @@ export const EnvSchema = z.object({
   // Encrypts company-owned Serper credentials. Falls back to the existing OAuth key.
   SERPER_CONNECTION_ENCRYPTION_KEY: z.string().optional(),
   SERPER_TIMEOUT_MS:             positiveInt(10_000),
-  // Semrush is a normal server-side integration. Its API key never reaches
-  // Desktop or Pi; the backend uses it only with fixed official endpoints.
+  // Semrush credentials never reach Desktop or Pi. The official key is used
+  // with api.semrush.com. The optional web session wraps the browser-backed
+  // www.semrush.com reports that the team validated separately.
   SEMRUSH_API_KEY: z.string().optional(),
   SEMRUSH_API_KEY_WEBHOOK_URL: z.string().url().optional(),
+  SEMRUSH_WEB_ENABLED: booleanStr.default('false'),
+  SEMRUSH_WEB_API_KEY: z.string().optional(),
+  SEMRUSH_WEB_COOKIE: z.string().optional(),
   SEMRUSH_TIMEOUT_MS:             positiveInt(15_000),
   // OMS Site Data keys are company-owned and persisted encrypted. The
   // composition fallback preserves existing deployments while allowing an

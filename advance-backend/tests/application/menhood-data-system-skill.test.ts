@@ -17,14 +17,20 @@ describe('Menhood data system skill', () => {
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /needs no Airtable connection ID/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /one `SELECT` or read-only `WITH \.\.\. SELECT`/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /bound parameters/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Context first, then query/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /SELECT \* FROM menhood_orders LIMIT 0/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /order-line grain/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /`menhood_advertisement_costs` is intentionally unavailable/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /bounded preview/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Choose `final_amount`, `collectable_value`, or `declared_value`/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Never page bulk rows.*synthesize an export offer/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /If a later tool result contains `preview\.exportOfferId`/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /preserve that opaque offer/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /later names a format, call `dataExport` with `op=confirm`/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Never page bulk rows.*synthesize an export/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /result contains `exportCandidate`/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /call `dataExport` with `op=plan`/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Want me to export this to Google Sheets, Excel, or CSV/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /not to export, not now, or chat-only/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /deterministic `ORDER BY`/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /ORDER BY o\.order_date, o\.order_number, o\.id/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /sample is only reviewable if the full replay returns rows in the same order/);
   });
 
   it('contains the operational joins, enums, quality rules, and named recipes', () => {
@@ -33,6 +39,8 @@ describe('Menhood data system skill', () => {
     for (const invariant of [
       'menhood_orders.customer_id = menhood_customers.id',
       'menhood_orders.product_id = menhood_products.id',
+      'menhood_customers.customer_name',
+      'menhood_products.product_name',
       'Count `DISTINCT order_number` for orders',
       '`menhood_customers` is one customer per `id`',
       '`menhood_products` is one product per `id`, not per SKU',
@@ -42,6 +50,8 @@ describe('Menhood data system skill', () => {
       'keep null as Unknown',
       '11 duplicate normalized-SKU groups',
       '`utm_source`, `utm_medium`, and `utm_campaign` are incomplete',
+      'Copy large numeric strings from `menhoodData` rows exactly in tables',
+      'show `107131011`, not `1,07,13,1011`',
       '`0999-01-01`',
       'Daily/monthly orders and delivered value',
       'Product/SKU performance',
@@ -60,6 +70,7 @@ describe('Menhood data system skill', () => {
     assert.match(cookbook, /trim.*remove non-digits.*six-digit.*join/s);
     assert.match(cookbook, /`menhood_advertisement_costs` is intentionally unavailable/);
     assert.match(cookbook, /never query it or make advertising-cost, ROAS, or spend claims/);
+    assert.match(cookbook, /Make at most one schema\/context probe and one corrected retry/);
   });
 
   it('prioritizes Menhood analytics without changing ordinary Airtable routes', () => {
@@ -72,6 +83,7 @@ describe('Menhood data system skill', () => {
     assert.ok(routes.targetSlugs.includes('airtable-schema-ops'));
     assert.ok(routes.targetSlugs.includes('airtable-automation-ops'));
     assert.match(router!.markdown, /joins, aggregates, cohorts, broad filtering, or bulk analysis/);
+    assert.match(router!.markdown, /Do not route broad analytics or full exports through Airtable MCP/);
     assert.match(router!.markdown, /does not use local Python/);
     assert.match(router!.markdown, /Ordinary Airtable records, comments, and CRUD/);
     assert.match(router!.markdown, /Interfaces, forms, and automations/);

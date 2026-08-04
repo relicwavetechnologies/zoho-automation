@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  menhoodQueryHasDeterministicReplayOrder,
   MenhoodQueryValidationError,
   validateMenhoodQuery,
 } from '../../src/application/menhood/menhood-query.ts';
@@ -29,6 +30,9 @@ describe('Menhood query validation', () => {
     assert.deepEqual(query.tables, ['menhood_orders', 'menhood_products']);
     assert.equal(query.fingerprint.length, 64);
     assert.equal(query.parameters[0], 'Delivered');
+    assert.equal(query.hasTopLevelOrderBy, true);
+    assert.deepEqual(query.topLevelOrderBySql, ['(1)']);
+    assert.equal(query.isTopLevelRowLevelSelect, false);
   });
 
   it('accepts read-only CTEs and the city lookup', () => {
@@ -36,6 +40,22 @@ describe('Menhood query validation', () => {
       sql: `WITH recent AS (SELECT pincode FROM menhood_customers) SELECT c.city FROM all_cities_with_pincode c JOIN recent r ON r.pincode = c.pincode`,
     });
     assert.deepEqual(query.tables, ['all_cities_with_pincode', 'menhood_customers']);
+    assert.equal(query.hasTopLevelOrderBy, false);
+  });
+
+  it('identifies deterministic replay order for truncated raw Menhood order rows', () => {
+    const unsafe = validateMenhoodQuery({
+      sql: 'SELECT o.order_number FROM menhood_orders o ORDER BY o.order_number',
+    });
+    assert.equal(unsafe.hasTopLevelOrderBy, true);
+    assert.equal(unsafe.isTopLevelRowLevelSelect, true);
+    assert.equal(menhoodQueryHasDeterministicReplayOrder(unsafe), false);
+
+    const safe = validateMenhoodQuery({
+      sql: 'SELECT o.order_number FROM menhood_orders o ORDER BY o.order_date, o.order_number, o.id',
+    });
+    assert.deepEqual(safe.topLevelOrderBySql, ['o .order_date', 'o .order_number', 'o .id']);
+    assert.equal(menhoodQueryHasDeterministicReplayOrder(safe), true);
   });
 
   it('rejects multiple statements and every direct write family', () => {

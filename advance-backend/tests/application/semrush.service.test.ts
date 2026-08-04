@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { SemrushService } from '../../src/application/semrush/semrush.service.ts';
 import { SemrushServiceError } from '../../src/application/semrush/semrush.types.ts';
 
-const logger = { info: () => undefined } as any;
+const logger = { info: () => undefined, warn: () => undefined } as any;
 const args = { operation: 'domain_overview', domain: 'example.com' } as const;
 
 describe('SemrushService', () => {
@@ -46,6 +46,72 @@ describe('SemrushService', () => {
         limits: { maxTargets: 10, requestsPerTarget: 1 },
       },
     );
+  });
+
+  it('prefers a configured Semrush web route without loading the official key', async () => {
+    let officialCalls = 0;
+    let webhookCalls = 0;
+    const service = new SemrushService(
+      {
+        fetch: async () => {
+          officialCalls += 1;
+          throw new Error('must not call official client');
+        },
+      } as any,
+      undefined,
+      logger,
+      'https://keys.example.test/semrush',
+      async () => {
+        webhookCalls += 1;
+        return Response.json({ api_key: 'official-key', status: 'active' });
+      },
+      {
+        supports: args => args.operation === 'backlinks_comparison',
+        fetch: async () => ({
+          operation: 'backlinks_comparison',
+          status: 'complete',
+          coverage: { apiVersion: 'web_backlinks' },
+          rows: [{ Target: 'a.com' }],
+        }),
+      },
+    );
+
+    assert.equal(
+      (await service.preflight({ operation: 'backlinks_comparison', targets: ['a.com', 'b.com'] })).apiVersion,
+      'web_private',
+    );
+    const result = await service.execute({ operation: 'backlinks_comparison', targets: ['a.com', 'b.com'] });
+
+    assert.equal(result.coverage.apiVersion, 'web_backlinks');
+    assert.equal(officialCalls, 0);
+    assert.equal(webhookCalls, 0);
+  });
+
+  it('falls back to the official client when the Semrush web route is rejected', async () => {
+    let officialCalls = 0;
+    const service = new SemrushService(
+      {
+        fetch: async () => {
+          officialCalls += 1;
+          return { operation: 'domain_overview', status: 'complete', coverage: { apiVersion: 'v3' }, rows: [{ Dn: 'example.com' }] };
+        },
+      } as any,
+      'official-key',
+      logger,
+      undefined,
+      fetch,
+      {
+        supports: args => args.operation === 'domain_overview',
+        fetch: async () => {
+          throw new SemrushServiceError('provider_auth_failed', 'Semrush web session was rejected.');
+        },
+      },
+    );
+
+    const result = await service.execute(args);
+
+    assert.equal(result.coverage.apiVersion, 'v3');
+    assert.equal(officialCalls, 1);
   });
 
   it('caches the active webhook key across operations', async () => {

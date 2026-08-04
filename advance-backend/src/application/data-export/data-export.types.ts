@@ -302,6 +302,11 @@ export interface DataExportJobPayload {
   readonly observedRowCount?: number;
   readonly transform?: DataExportTransform;
   readonly destination: DataExportDestination;
+  /** Sample jobs share the exporter but use different member-facing copy. */
+  readonly exportKind?: 'sample' | 'full';
+  /** Backend-set row ceiling for sample/preflight artifacts. */
+  readonly rowLimitOverride?: number;
+  readonly sampleOfPlanId?: string;
   readonly chatId: string;
   /** Backend-derived Pi conversation identity; absent only on legacy offers. */
   readonly conversationKey?: string;

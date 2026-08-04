@@ -48,6 +48,7 @@ import {
   DATA_EXPORT_RESOURCE_TTL_MS,
   type DataExportResourceRecord,
 } from './data-export-continuity';
+import type { DataExportCandidateRepositoryPort } from './export-candidate';
 
 export interface DataExportWorkerDeps {
   readonly redisUrl: string;
@@ -68,6 +69,7 @@ export interface DataExportWorkerDeps {
     ChannelDeliveryRepoPort,
     'reserve' | 'markDelivered' | 'markFailed'
   >;
+  readonly exportPlans?: Pick<DataExportCandidateRepositoryPort, 'markSampleReady'>;
   /** Fences one export job across replicas; its durable BullMQ job is the V2-lite run record. */
   readonly runLeaseHolder?: Pick<LaneLeaseHolder, 'withLane' | 'holdsLane'>;
   readonly logger: Logger;
@@ -227,6 +229,7 @@ export class DataExportWorker {
         progressMessageId,
         continuityAvailable,
       );
+      await this.markSampleReady(job, payload);
     } catch (error) {
       if (isDataExportRunLeaseLostError(error)) throw error;
       if (isDataExportPrivacyCleanupPendingError(error)) {
@@ -283,6 +286,31 @@ export class DataExportWorker {
       { dedupeKey: `data-export:${job.id}:resource` },
     );
     if (!appended.ok) throw appended.error;
+  }
+
+  private async markSampleReady(
+    job: DataExportWorkerJob,
+    payload: DataExportJobPayload,
+  ): Promise<void> {
+    if (payload.exportKind !== 'sample' || !payload.sampleOfPlanId || !this.deps.exportPlans) return;
+    const sampleJobId = String(job.id ?? dataExportJobId(payload));
+    const marked = await this.deps.exportPlans.markSampleReady({
+      planId: payload.sampleOfPlanId,
+      companyId: payload.companyId,
+      userId: payload.userId,
+      sampleJobId,
+    });
+    if (!marked.ok) throw marked.error;
+    if (!marked.value) {
+      throw new PermanentDataExportError(
+        'The sample was created, but its approval record is no longer active. Ask Divo to prepare it again.',
+        'Data export sample plan was unavailable or mismatched after completion',
+      );
+    }
+    this.log.info('data_export.sample.ready', {
+      ...dataExportRunLogContext(job),
+      planId: payload.sampleOfPlanId,
+    });
   }
 
   private async runExport(
@@ -375,7 +403,7 @@ export class DataExportWorker {
     const sandbox = new DataExportTransformSandbox(payload.transform);
     touch();
     const maxRows = resolvedExportRowLimit(payload, this.deps.maxRows);
-    const rowCapCause: DataExportCoverageCause = this.deps.maxRows === undefined
+    const rowCapCause: DataExportCoverageCause = this.deps.maxRows === undefined && payload.rowLimitOverride === undefined
       ? 'destination_row_cap'
       : 'export_row_cap';
     let partialCause: DataExportCoverageCause | undefined;
@@ -587,13 +615,16 @@ export class DataExportWorker {
   ): Promise<void> {
     const run = dataExportRunLogContext(job);
     const warning = completion.coverage?.outcome === 'partial' || (!completion.coverage && completion.sourceTruncated)
-      ? `\n\n⚠️ ${truncationWarning(completion.coverage)}`
+      ? `\n\n⚠️ ${truncationWarning(completion.coverage, payload.exportKind)}`
       : '';
     const card = buildFinalCard({
       markdown: [
-        '# Data export ready',
-        `Exported ${completion.rowCount} row${completion.rowCount === 1 ? '' : 's'} to a verified ${completion.artifactType === 'google_sheet' ? 'Google Sheet' : completion.artifactType === 'xlsx' ? 'Excel file in Google Drive' : 'CSV in Google Drive'}.`,
+        payload.exportKind === 'sample' ? '# Data export sample ready' : '# Data export ready',
+        `${payload.exportKind === 'sample' ? 'Exported a sample of' : 'Exported'} ${completion.rowCount} row${completion.rowCount === 1 ? '' : 's'} to a verified ${completion.artifactType === 'google_sheet' ? 'Google Sheet' : completion.artifactType === 'xlsx' ? 'Excel file in Google Drive' : 'CSV in Google Drive'}.`,
         `[Open export](${completion.artifactUrl})`,
+        ...(payload.exportKind === 'sample'
+          ? ['Review this sample. If it looks right, confirm and Divo will run the full export from the same plan.']
+          : []),
         `Access: ${completion.sharedWith}${warning}`,
         ...(continuityAvailable
           ? []
@@ -714,7 +745,7 @@ export class DataExportWorker {
     const sent = await this.deps.larkAdapter.sendToChatId(
       job.data.chatId,
       buildFinalCard({
-        markdown: '# Data export in progress\nPreparing the governed export in your resolved Google destination.',
+        markdown: `${job.data.exportKind === 'sample' ? '# Data export sample in progress' : '# Data export in progress'}\nPreparing the governed export in your resolved Google destination.`,
       }),
       job.data.replyToMessageId,
       deliveryKey('dtxp', job),
@@ -839,13 +870,16 @@ function resolvedExportRowLimit(
 ): number {
   return Math.max(
     1,
-    Math.floor(override ?? dataExportRowLimitForFormat(payload.destination.format)),
+    Math.floor(payload.rowLimitOverride ?? override ?? dataExportRowLimitForFormat(payload.destination.format)),
   );
 }
 
-function truncationWarning(coverage: DataExportCoverage | undefined): string {
+function truncationWarning(coverage: DataExportCoverage | undefined, exportKind: DataExportJobPayload['exportKind']): string {
   if (!coverage || !coverage.cause) {
     return 'This export may be partial because an earlier Divo version recorded omitted rows without their cause.';
+  }
+  if (exportKind === 'sample' && coverage.cause === 'export_row_cap') {
+    return 'This sample intentionally stops at 100 rows. The full export has not run yet.';
   }
   const cause = {
     provider_limit: 'The provider stopped this export before all upstream rows could be read.',

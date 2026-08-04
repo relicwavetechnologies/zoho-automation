@@ -247,6 +247,21 @@ describe('MenhoodQueryService', () => {
     assert.equal(failed.released, 1);
   });
 
+  it('surfaces sanitized schema SQL failures so the model can correct once instead of looping', async () => {
+    const undefinedColumn = Object.assign(new Error('column "name" does not exist'), { code: '42703' });
+    const test = harness(undefinedColumn);
+
+    await assert.rejects(
+      () => test.service.execute(companyId, { sql: 'SELECT name FROM menhood_customers' }),
+      (error: MenhoodQueryServiceError) => error.code === 'provider_failure'
+        && error.message.includes('column "name" does not exist')
+        && error.message.includes('Use the Menhood schema map')
+        && error.message.includes('at most one corrected retry'),
+    );
+    assert.equal(test.calls.at(-1), 'ROLLBACK');
+    assert.equal(test.released, 1);
+  });
+
   it('streams 1,001 ordered export rows with truthful page continuation', async () => {
     const firstRows = Array.from({ length: 1_000 }, (_, index) => [index + 1, `row-${index + 1}`]);
     const test = exportHarness([

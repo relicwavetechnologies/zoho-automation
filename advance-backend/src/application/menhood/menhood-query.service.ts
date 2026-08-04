@@ -308,7 +308,20 @@ function mapProviderError(error: unknown): MenhoodQueryServiceError {
   ) {
     return new MenhoodQueryServiceError('unavailable_connection', 'Menhood database is unavailable');
   }
-  return new MenhoodQueryServiceError('provider_failure', 'Menhood query failed');
+  return new MenhoodQueryServiceError('provider_failure', safeSqlFailureMessage(error, code));
+}
+
+function safeSqlFailureMessage(error: unknown, code: string): string {
+  if (!['42703', '42702', '42P01'].includes(code)) return 'Menhood query failed';
+  const message = error instanceof Error ? error.message : '';
+  const safeMessage = message
+    .replace(/\s+/g, ' ')
+    .replace(/[^\w\s."'_-]/g, '')
+    .trim()
+    .slice(0, 180);
+  return safeMessage
+    ? `Menhood SQL failed: ${safeMessage}. Use the Menhood schema map, then make at most one corrected retry.`
+    : 'Menhood SQL failed. Use the Menhood schema map, then make at most one corrected retry.';
 }
 
 function safeErrorMetadata(error: unknown): Record<string, unknown> {

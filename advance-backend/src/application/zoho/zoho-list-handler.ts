@@ -31,7 +31,7 @@ export interface HandleZohoListInput<T extends Record<string, unknown> = Record<
   readonly moduleLabel: string;
   readonly filters?: Record<string, unknown>;
   readonly query?: string;
-  readonly offerExportOnOverflow?: boolean;
+  readonly suggestExportOnOverflow?: boolean;
   readonly inlineThreshold?: number;
   readonly postFilter?: (items: readonly T[]) => T[];
   readonly summarize: (items: readonly T[], meta: { truncated: boolean; hasMore: boolean }) => string;
@@ -57,7 +57,7 @@ export async function handleZohoList<T extends Record<string, unknown> = Record<
   const firstItems = input.postFilter ? input.postFilter(fetchedItems) : fetchedItems;
   const visible = firstItems.slice(0, inlineThreshold);
   const hasOverflow = firstPage.hasMore || firstItems.length > inlineThreshold;
-  const suggestExport = hasOverflow && input.offerExportOnOverflow !== false;
+  const suggestExport = hasOverflow && input.suggestExportOnOverflow !== false;
   const baseSummary = input.summarize(visible, { truncated: hasOverflow, hasMore: firstPage.hasMore });
   const summary = suggestExport
     ? [

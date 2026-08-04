@@ -117,6 +117,21 @@ enum DataExportOfferStatus {
   cancelled
 }
 
+enum DataExportCandidateStatus {
+  active
+  expired
+  cancelled
+}
+
+enum DataExportPlanStatus {
+  planned
+  sample_queued
+  sample_ready
+  full_queued
+  expired
+  cancelled
+}
+
 // Manager-persona learning is deliberately isolated from personal memory.
 // These rows are evidence/candidates only in P1–P3; no active department
 // persona is written by this pipeline until the promotion phase exists.
@@ -247,6 +262,8 @@ model User {
   managerTeachSessions               ManagerTeachSession[]           @relation("ManagerTeachSessionManager")
   connectionAuthorizationIntents     ConnectionAuthorizationIntent[]
   dataExportOffers                   DataExportOffer[]
+  dataExportCandidates               DataExportCandidate[]
+  dataExportPlans                    DataExportPlan[]
   dataExportDestinationPreferences   DataExportDestinationPreference[]
   mailboxSubscriptions               MailboxSubscription[]
   mailAutomationRules                MailAutomationRule[]
@@ -316,6 +333,8 @@ model Company {
   managerTeachSessions            ManagerTeachSession[]
   connectionAuthorizationIntents  ConnectionAuthorizationIntent[]
   dataExportOffers                DataExportOffer[]
+  dataExportCandidates            DataExportCandidate[]
+  dataExportPlans                 DataExportPlan[]
   dataExportDestinationPreferences DataExportDestinationPreference[]
   mailboxSubscriptions            MailboxSubscription[]
   mailAutomationRules             MailAutomationRule[]
@@ -838,6 +857,8 @@ model Department {
   managerTeachSessions           ManagerTeachSession[]
   connectionAuthorizationIntents ConnectionAuthorizationIntent[]
   dataExportOffers               DataExportOffer[]
+  dataExportCandidates           DataExportCandidate[]
+  dataExportPlans                DataExportPlan[]
   mailAutomationRules            MailAutomationRule[]
   knowledgeResources             KnowledgeResource[]
   knowledgeMutations             KnowledgeMutation[]
@@ -1374,6 +1395,69 @@ model DataExportOffer {
   @@index([companyId, userId, status, expiresAt])
   @@index([status, expiresAt])
   @@index([companyId, sourceConnectionId])
+}
+
+/// Opaque server-owned handle for an exportable dataset a source tool already
+/// read in preview form. Google Drive stores sample/final files; this row is
+/// only the replay/control receipt.
+model DataExportCandidate {
+  id                 String                    @id @default(uuid())
+  companyId          String
+  company            Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId             String
+  user               User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  departmentId       String?
+  department         Department?               @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
+  chatId             String
+  conversationKey    String?
+  sourceKind         String
+  sourceConnectionId String
+  payloadJson        Json
+  payloadHash        String
+  schemaJson         Json?
+  previewRowCount    Int                       @default(0)
+  estimatedRows      Int?
+  coverageJson       Json?
+  status             DataExportCandidateStatus @default(active)
+  expiresAt          DateTime
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+
+  @@index([companyId, userId, chatId, status, expiresAt])
+  @@index([companyId, sourceKind, sourceConnectionId])
+  @@index([status, expiresAt])
+}
+
+/// Plan chosen by the model from one or more export candidates. It records the
+/// exact plan hash that a sample approved before Divo queues the full export.
+model DataExportPlan {
+  id                      String               @id @default(uuid())
+  companyId               String
+  company                 Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId                  String
+  user                    User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  departmentId            String?
+  department              Department?          @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
+  chatId                  String
+  conversationKey         String?
+  candidateIds            String[]
+  planJson                Json
+  planHash                String
+  destinationFormat       String
+  destinationConnectionId String?
+  status                  DataExportPlanStatus @default(planned)
+  sampleRows              Int?
+  sampleJobId             String?
+  sampleReadyAt           DateTime?
+  fullJobId               String?
+  sampleConfirmedAt       DateTime?
+  expiresAt               DateTime
+  createdAt               DateTime             @default(now())
+  updatedAt               DateTime             @updatedAt
+
+  @@unique([companyId, userId, chatId, planHash])
+  @@index([companyId, userId, chatId, status, expiresAt])
+  @@index([status, expiresAt])
 }
 
 /// Explicit personal Google destination chosen by one user inside one company.

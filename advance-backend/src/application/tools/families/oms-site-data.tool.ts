@@ -9,9 +9,12 @@ import { asToolId } from '../../../shared/ids';
 import type { AuditService } from '../../observability/audit.service';
 import { CompanyOmsSiteDataService } from '../../oms/company-oms-site-data.service';
 import { defaultSortDirection, excludesUnmeasuredSpamScore, OmsSiteDataServiceError, OmsSiteDataToolArgsSchema, type OmsSiteDataToolArgs } from '../../oms/oms-site-data.types';
-import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
+import type { DataExportOrchestrationService } from '../../data-export/data-export-orchestration.service';
 import type { DataExportOfferPayload } from '../../data-export/export-offer';
-import { contributeExportPart, exportWithdrawalMessage } from '../../data-export/tool-export-offer';
+import {
+  exportCandidateMetadata,
+  publishExportCandidate,
+} from '../../data-export/tool-export-candidate';
 import { dataExportRunRequestId } from '../../data-export/export-request-identity';
 import { createDatasetPreview, DATASET_PREVIEW_ROW_LIMIT } from '../../data-export/dataset-preview';
 
@@ -38,10 +41,14 @@ const ResultSchema = z.object({
       }),
       z.object({ kind: z.literal('unknown'), returnedRows: z.number().int().nonnegative() }),
     ]),
-    exportOfferId: z.string().optional(),
-    exportRowCount: z.number().int().nonnegative().optional(),
-    exportWithdrawn: z.literal(true).optional(),
   }).optional(),
+  exportCandidate: z.object({
+    candidateId: z.string().uuid(),
+    sourceKind: z.literal('oms_snapshot'),
+    previewRowCount: z.number().int().nonnegative(),
+    estimatedRows: z.number().int().nonnegative().optional(),
+    expiresAt: z.string(),
+  }).strict().optional(),
   message: z.string(),
 });
 
@@ -49,7 +56,7 @@ type Res = z.infer<typeof ResultSchema>;
 
 export const createOmsSiteDataTool = (deps: {
   service: CompanyOmsSiteDataService;
-  offers?: Pick<DataExportOfferService, 'appendAuthorizedPart'>;
+  exportCandidates?: Pick<DataExportOrchestrationService, 'publishCandidate'>;
   audit?: AuditService;
 }): Tool<OmsSiteDataToolArgs, Res> => ({
   id: asToolId('omsSiteData'),
@@ -89,15 +96,19 @@ export const createOmsSiteDataTool = (deps: {
     try {
       ctx.onProgress?.('Retrieving governed OMS site inventory…');
       const data = await deps.service.execute({ companyId: ctx.runContext.companyId, args });
-      const offer = await contributeExportPart({
-        offers: deps.offers,
+      const candidate = await publishExportCandidate({
+        candidates: deps.exportCandidates,
         eligible: data.rows.length > 0
           && ctx.runContext.channel === 'lark'
           && Boolean(ctx.runContext.chatId)
           && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true,
         payload: () => exportPayloadFor(args, ctx),
-        observedRowCount: data.rows.length,
-        collectionTitle: `OMS ${args.operation.replace(/_/g, ' ')}`,
+        metadata: exportCandidateMetadata({
+          columns: data.rows.length > 0 ? Object.keys(data.rows[0]!) : [],
+          previewRowCount: data.rows.length,
+          estimatedRows: data.status === 'complete' ? data.rows.length : undefined,
+          coverage: data.coverage,
+        }),
         logger: ctx.logger,
         scope: 'oms',
         correlationId: ctx.correlationId,
@@ -111,8 +122,6 @@ export const createOmsSiteDataTool = (deps: {
             ? 'oms_100_row_cap_without_pagination_or_total'
             : 'oms_snapshot_without_pagination_or_total',
         },
-        ...(offer.kind === 'offered' ? { exportOfferId: offer.offerId, exportRowCount: offer.observedRowCount } : {}),
-        ...(offer.kind === 'withdrawn' ? { exportWithdrawn: true as const } : {}),
       });
       const result: Res = {
         status: data.status,
@@ -120,12 +129,22 @@ export const createOmsSiteDataTool = (deps: {
         retrievedAt: new Date().toISOString(),
         coverage: data.coverage,
         preview,
+        ...(candidate.kind === 'published'
+          ? {
+              exportCandidate: {
+                candidateId: candidate.candidateId,
+                sourceKind: 'oms_snapshot' as const,
+                previewRowCount: data.rows.length,
+                ...(candidate.estimatedRows === undefined ? {} : { estimatedRows: candidate.estimatedRows }),
+                expiresAt: candidate.expiresAt.toISOString(),
+              },
+            }
+          : {}),
         message: messageFor(
           data.status,
           data.rows.length,
           preview.rows.length,
-          offer.kind === 'offered',
-          offer.kind === 'withdrawn' ? offer.reason : undefined,
+          candidate.kind === 'published',
           args,
         ),
       };
@@ -139,7 +158,7 @@ export const createOmsSiteDataTool = (deps: {
           status: result.status,
           rowCount: data.rows.length,
           returnedRowCount: preview.rows.length,
-          exportOfferId: offer.kind === 'offered' ? offer.offerId : null,
+          exportCandidateId: candidate.kind === 'published' ? candidate.candidateId : null,
           latencyMs: Date.now() - startedAt,
           correlationId: ctx.correlationId,
         },
@@ -185,8 +204,7 @@ function messageFor(
   status: 'complete' | 'empty' | 'partial',
   rowCount: number,
   returnedRows: number,
-  offer: boolean,
-  withdrawnReason: string | undefined,
+  hasCandidate: boolean,
   args: OmsSiteDataToolArgs,
 ): string {
   // Divo injects a spamScore >= 0 filter to drop the unmeasured sentinel, which
@@ -208,8 +226,7 @@ function messageFor(
 
   parts.push(`OMS never paginates and never reports a total count.${spamNote}`);
   if (rowCount > returnedRows) parts.push(`Showing the first ${returnedRows} rows in chat.`);
-  if (offer) parts.push('A governed export of the returned OMS snapshot is available.');
-  if (withdrawnReason) parts.push(exportWithdrawalMessage(withdrawnReason));
+  if (hasCandidate) parts.push('If the member asks for Sheet, Excel, or CSV, use the returned export candidate for this OMS snapshot.');
   return parts.join(' ');
 }
 

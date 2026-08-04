@@ -122,15 +122,16 @@ describe('governed local-workflow instruction contract', () => {
     );
   });
 
-  it('keeps one-source export offers out of the local Python path', () => {
+  it('keeps one-source export candidates out of the local Python path', () => {
     const dataRouter = ROUTING_SYSTEM_SKILLS.find(skill => skill.slug === 'data-router')!;
-    assert.match(dataRouter.markdown, /preview\.exportOfferId/);
+    assert.match(dataRouter.markdown, /exportCandidate/);
     assert.match(dataRouter.markdown, /more than one connected product/);
     assert.doesNotMatch(dataRouter.markdown, /whatever the row count/);
-    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /governed provider preview and export-offer path/);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /governed provider preview and `exportCandidate`/);
     assert.doesNotMatch(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /how data of any size is processed/);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /source result containing `preview\.exportOfferId` already creates/);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /later chooses Excel\/XL\/XLSX, CSV, or Sheet in natural\s+language, call `dataExport` with `op=confirm`/i);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Use a direct Airtable or Zoho Books\s+recipe only/);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /supported source tools return bounded chat evidence plus an\s+`exportCandidate`/s);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /call `dataExport` with `op="plan"`/i);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Use a direct `dataExport` recipe only.*backend-replayable source/s);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Airtable MCP is not\s+a bulk-export source/s);
   });
 });

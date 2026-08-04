@@ -13,6 +13,14 @@ const result = {
   queryFingerprint: 'a'.repeat(64),
 };
 
+const truncatedResult = {
+  columns: [{ name: 'order_number', dataTypeId: 25 }],
+  rows: Array.from({ length: 25 }, (_, index) => ({ order_number: `MR${index + 1}` })),
+  coverage: { returnedRows: 25, truncated: true },
+  elapsedMs: 12,
+  queryFingerprint: 'b'.repeat(64),
+};
+
 const createTool = (overrides: Record<string, unknown> = {}) => createMenhoodDataTool({
   service: {
     preflight: () => undefined,
@@ -22,6 +30,11 @@ const createTool = (overrides: Record<string, unknown> = {}) => createMenhoodDat
 } as Parameters<typeof createMenhoodDataTool>[0]);
 
 describe('Menhood Data tool', () => {
+  it('tells the model to keep row-level export order deterministic', () => {
+    assert.match(createTool().parameterDocs, /deterministic ORDER BY/);
+    assert.match(createTool().parameterDocs, /order_date, order_number, id/);
+  });
+
   it('requires inherited Menhood read permission', () => {
     const tool = createTool();
     const args = { sql: 'SELECT count(*) FROM menhood_orders' };
@@ -122,17 +135,16 @@ describe('Menhood Data tool', () => {
     assert.doesNotMatch(serialized, /SELECT|Delivered/);
   });
 
-  it('creates one opaque governed offer from the validated query without storing preview rows', async () => {
+  it('publishes one opaque export candidate from the validated query without storing preview rows', async () => {
     const payloads: unknown[] = [];
     const tool = createTool({
-      offers: {
-        appendAuthorizedPart: async (payload: unknown) => {
+      exportCandidates: {
+        publishCandidate: async (payload: unknown) => {
           payloads.push(payload);
           return {
-            outcome: 'appended' as const,
-            offerId: '11111111-1111-4111-8111-111111111111',
+            candidateId: '11111111-1111-4111-8111-111111111111',
             expiresAt: new Date(),
-            partCount: 1,
+            estimatedRows: 1,
           };
         },
       },
@@ -150,7 +162,9 @@ describe('Menhood Data tool', () => {
       ctx,
     );
     assert.equal(output.ok, true);
-    if (output.ok) assert.equal(output.value.preview.exportOfferId, '11111111-1111-4111-8111-111111111111');
+    if (output.ok) {
+      assert.equal(output.value.exportCandidate?.candidateId, '11111111-1111-4111-8111-111111111111');
+    }
     assert.equal(payloads.length, 1);
     const payload = payloads[0] as {
       source: { kind: string; connectionId: string; query: { sql: string; parameters: unknown[] }; queryFingerprint: string };
@@ -164,5 +178,79 @@ describe('Menhood Data tool', () => {
     assert.equal(payload.destination.title, 'Products');
     assert.equal(payload.requestId, 'run-1');
     assert.doesNotMatch(JSON.stringify(payload), /134418/);
+  });
+
+  it('withholds export candidates for truncated Menhood previews without deterministic ordering', async () => {
+    let published = 0;
+    const tool = createMenhoodDataTool({
+      service: {
+        preflight: () => undefined,
+        execute: async () => truncatedResult,
+      },
+      exportCandidates: {
+        publishCandidate: async () => {
+          published += 1;
+          return {
+            candidateId: '11111111-1111-4111-8111-111111111111',
+            expiresAt: new Date(),
+          };
+        },
+      },
+    });
+    const ctx = makeCtx('menhoodData', ['read'], {
+      chatId: 'chat-1',
+      requestId: 'request-1',
+      runtimeRunId: 'run-1',
+    });
+    ctx.perm.allowedToolIds.add('dataExport' as never);
+    ctx.perm.allowedActionsByTool.set('dataExport' as never, new Set(['create']));
+
+    const output = await tool.execute(
+      { sql: 'SELECT order_number FROM menhood_orders' },
+      ctx,
+    );
+
+    assert.equal(output.ok, true);
+    assert.equal(published, 0);
+    if (output.ok) {
+      assert.equal(output.value.exportCandidate, undefined);
+      assert.match(output.value.message, /deterministic ORDER BY/);
+      assert.match(output.value.message, /o\.order_date, o\.order_number, o\.id/);
+    }
+  });
+
+  it('withholds truncated Menhood order-line candidates without an id tie-breaker', async () => {
+    let published = 0;
+    const tool = createMenhoodDataTool({
+      service: {
+        preflight: () => undefined,
+        execute: async () => truncatedResult,
+      },
+      exportCandidates: {
+        publishCandidate: async () => {
+          published += 1;
+          return {
+            candidateId: '11111111-1111-4111-8111-111111111111',
+            expiresAt: new Date(),
+          };
+        },
+      },
+    });
+    const ctx = makeCtx('menhoodData', ['read'], {
+      chatId: 'chat-1',
+      requestId: 'request-1',
+      runtimeRunId: 'run-1',
+    });
+    ctx.perm.allowedToolIds.add('dataExport' as never);
+    ctx.perm.allowedActionsByTool.set('dataExport' as never, new Set(['create']));
+
+    const output = await tool.execute(
+      { sql: 'SELECT order_number FROM menhood_orders ORDER BY order_number' },
+      ctx,
+    );
+
+    assert.equal(output.ok, true);
+    assert.equal(published, 0);
+    if (output.ok) assert.equal(output.value.exportCandidate, undefined);
   });
 });
