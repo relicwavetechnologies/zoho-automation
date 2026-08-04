@@ -19,15 +19,21 @@ not a claim that all Semrush UI functionality is available through an API.
   public integration contract. Prefer a supported Semrush API entitlement for
   any production deployment.
 
-## Observed private recipes (not production API validation)
+## Observed private recipes
 
 | Capability | Request shape | Evidence | Wrapper decision |
 | --- | --- | --- | --- |
-| Backlinks comparison | `POST /backlinks/webapi2/`, `type=backlinks_comparison` | Browser-session endpoint returned data | Rejected: private endpoint |
-| Organic overview | `POST /dpa/rpc`, `ranks.Ranks`, `organic.overview` | Browser-session endpoint returned target-dependent results | Rejected: private endpoint |
-| Organic keyword-position trend | `POST /dpa/rpc`, `organic.KeywordPositionTrend`, `organic.positions` | Browser-session endpoint returned rows for tested targets | Rejected: private endpoint |
+| Backlinks comparison | `POST /backlinks/webapi2/`, `type=backlinks_comparison` | Browser-session endpoint returned data | Accepted for backend-owned env-session wrapper |
+| Organic overview | `POST /dpa/rpc`, `ranks.Ranks`, `organic.overview` | Browser-session endpoint returned target-dependent results | Accepted for backend-owned env-session wrapper |
+| Organic keyword-position trend | `POST /dpa/rpc`, `organic.KeywordPositionTrend`, `organic.positions` | Browser-session endpoint returned rows for tested targets | Not yet wired: needs tool args and response fixture |
 | Legacy backlink export | `POST /analytics/backlinks/webapi2`, `action=export`, `type=backlinks` | `Validation Error` both with and without the active Semrush session | Exclude until a corrected, validated recipe is supplied |
 | Organic growth/trend export | `POST /dpa/rpc`, `export.Get`, `organic.overviewtrendbatch` | Supplied payload is an n8n template with eight unresolved expressions, so it is not valid raw JSON | Exclude until the resolved API contract is supplied and tested |
+
+2026-08-04 update: Divo now has a server-side Semrush web wrapper gated by
+`SEMRUSH_WEB_ENABLED`, `SEMRUSH_WEB_API_KEY`, and `SEMRUSH_WEB_COOKIE`. It never
+exposes the cookie/key to Pi, Desktop, Lark, logs, or export artifacts. Only
+the two verified private routes above are wired; do not substitute
+`organic.overview` for a keyword-row export.
 
 ## DPA request-ID rule
 
@@ -35,8 +41,8 @@ The Lark guidance says a ranking request needs a random request ID; changing
 the final four characters is an accepted manual workaround. The supplied
 working requests use 36-character UUIDs, and fresh UUIDs were validated.
 
-**Implementation rule:** not applicable to Divo. Divo does not invoke private
-DPA routes.
+**Implementation rule:** Divo may invoke private DPA routes only through the
+backend-owned Semrush web wrapper, with a fresh request ID per call.
 
 ## Input behaviour observed
 

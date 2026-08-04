@@ -10,10 +10,10 @@ export const DIVO_SEMRUSH_SKILL_SLUG = 'divo-semrush-seo-research';
 export const DIVO_SEMRUSH_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = {
   slug: DIVO_SEMRUSH_SKILL_SLUG,
   name: 'Divo Semrush SEO Research',
-  summary: 'Run Semrush domain and organic-search research through backend-configured official API operations.',
+  summary: 'Run Semrush domain and organic-search research through backend-configured Semrush operations.',
   markdown: `# Divo Semrush SEO Research
 
-Use this skill for read-only Semrush SEO research available through Divo's backend-configured capability.
+Use this skill for read-only Semrush SEO research available through Divo's backend-configured capability. The backend may use official Semrush APIs or a backend-owned Semrush web session; the model never receives endpoint credentials, cookies, API keys, or raw provider headers.
 
 ## Operating rules
 
@@ -21,13 +21,13 @@ Use this skill for read-only Semrush SEO research available through Divo's backe
 2. Use only documented operation arguments. Never invent endpoint paths, report names, headers, cookies, credentials, export columns, or raw provider filters.
 3. Preflight the exact proposed call before invoking it. Preflight verifies backend configuration and operation support; it does not retrieve data.
 4. Treat result states precisely:
-   - \`complete\`: the returned official data covered this request.
+   - \`complete\`: the returned Semrush data covered this request.
    - \`empty\`: the request was valid but Semrush had no matching coverage.
    - \`partial\`: Semrush has another available page. State that limitation for the chat preview.
    - \`blocked\` or an invocation error: explain whether configuration, permission, unsupported capability, or provider availability prevented the lookup. Never invent the missing data.
-5. Summarize useful evidence in chat; the structured preview contains at most 25 rows. When \`preview.exportOfferId\` is present, preserve that opaque offer and present its governed Sheet/CSV/XLSX choice once instead of reproducing rows. A complete-data request still uses that preview-and-offer path. Do not manually follow \`nextPage\`, create or upload a CSV/XLSX/Sheet, run Python or a local workflow, or rerun the provider query after the member chooses a format: call \`dataExport\` with \`op=confirm\` for the existing offer. The central governed export owns provider pagination and artifact creation. Confirmation retrieves current Semrush data, so describe it as a current export rather than an immutable copy of the preview.
+5. Summarize useful evidence in chat; the structured preview contains at most 25 rows. When \`exportCandidate\` is present and the member asks for Sheet, Excel, CSV, all rows, or a full export, call \`dataExport\` with \`op=plan\` using that candidate instead of reproducing rows. If the member did not ask for a file but the result is a useful table, ranking, gap, or comparison with \`exportCandidate\`, end with one soft follow-up asking whether to export it to Google Sheets, Excel, or CSV, unless the member explicitly said not to export, not now, or chat-only. Do not manually follow \`nextPage\`, create or upload a CSV/XLSX/Sheet, run Python or a local workflow, or rerun the provider query after the member chooses a format. The central governed export owns provider pagination, sample/full decisions, destination access, and artifact creation. It retrieves current Semrush data, so describe it as a current export rather than an immutable copy of the preview.
 
-## Supported official operations
+## Supported backend operations
 
 - \`domain_overview\`: one bare domain and a supported country database. A single snapshot row.
 - \`organic_positions\`: which keywords a domain ranks for right now, with bounded pagination.

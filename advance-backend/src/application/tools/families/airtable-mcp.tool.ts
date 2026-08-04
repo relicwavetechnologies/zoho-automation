@@ -167,7 +167,7 @@ function createProductTool(
       'op: describe|call. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required operation whose schema is absent; input may be omitted for describe.',
       `nativeTool: one of ${nativeToolNames.join('|')}.`,
       `input: exact object accepted by the described MCP tool. ${AIRTABLE_MCP_AUTH_CONTRACT.agentGuidance}`,
-      'Record reads are capped to a byte-safe preview. For exact totals over a complete record set, page through this tool inside a scripted workflow and aggregate over the file it writes.',
+      'Record reads are capped to a byte-safe preview and do not expose continuation cursors. Do not use Airtable MCP pagination as a full export or broad analytics source; use Menhood Data for synced Menhood analysis, or dataExport only when an exact backend-replayable source is available.',
       'Inline exportAll is retired and rejected. Load the Data Work Router and use dataExport only when the member explicitly requests a file, sheet, CSV, or export artifact.',
     ].join(' '),
 
@@ -301,7 +301,7 @@ function createProductTool(
           nativeTool: args.nativeTool,
           data: modelData,
           message: RECORD_READ_OPERATIONS.has(args.nativeTool)
-            ? `${product.name} preview completed. For exact complete-data calculations, page the records into a file in a scripted workflow and compute over that file.`
+            ? `${product.name} preview completed. This MCP preview is not a full export or broad analytics source; use Menhood Data for synced Menhood analysis, or dataExport only with an exact backend-replayable source.`
             : `${product.name} operation completed`,
         });
       } catch (cause) {
@@ -335,8 +335,13 @@ function compactRecordResult(value: unknown): unknown {
     if (Buffer.byteLength(JSON.stringify(candidate), 'utf8') > RECORD_PREVIEW_MAX_BYTES) break;
     compactRecords.push(compact);
   }
+  // Keep MCP record reads as bounded previews. Do not leak nextCursor to the
+  // model, otherwise it can accidentally turn a preview into ungoverned bulk
+  // pagination. Backend-owned export replay uses AirtableDataExportSource and
+  // its server-side cursor handling instead.
+  const { nextCursor: _nextCursor, offset: _offset, ...previewValue } = value;
   return {
-    ...value,
+    ...previewValue,
     records: compactRecords,
     returnedRecordCount: compactRecords.length,
     omittedFromPreview: Math.max(0, records.length - compactRecords.length),
@@ -464,7 +469,7 @@ async function describeOperation(
 function inlineExportRetired(toolId: string): Result<never, ToolError> {
   return badArgs(
     toolId,
-    'Inline exportAll is unsupported. Do calculations in a scripted workflow over a file. Use dataExport only when the member explicitly requested a file, sheet, CSV, or export artifact.',
+    'Inline exportAll is unsupported. Airtable MCP is a bounded preview path, not a bulk export source. Use Menhood Data for synced Menhood analysis, or dataExport only when an exact backend-replayable Airtable source is available.',
   );
 }
 

@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { SemrushClient } from '../../src/infrastructure/semrush/semrush.client.ts';
+import { SemrushWebClient } from '../../src/infrastructure/semrush/semrush-web.client.ts';
 import { SemrushServiceError } from '../../src/application/semrush/semrush.types.ts';
 
 describe('SemrushClient', () => {
@@ -282,6 +283,94 @@ describe('SemrushClient', () => {
         (error: unknown) => error instanceof SemrushServiceError && error.code === code,
       );
     }
+  });
+
+  it('wraps the private DPA organic overview route without exposing its credential', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new SemrushWebClient({
+      enabled: true,
+      apiKey: 'web-key',
+      cookie: 'PHPSESSID=session; SSO-JWT=jwt',
+      timeoutMs: 1_000,
+      fetchImpl: async (url, init) => {
+        calls.push({ url: String(url), init });
+        return Response.json({
+          jsonrpc: '2.0',
+          id: 1,
+          result: [
+            { database: 'us', domain: 'example.com', rank: 9, organicPositions: 20 },
+            { database: 'in', domain: 'example.com', rank: 7, organicPositions: 30, organicTraffic: 4 },
+          ],
+        });
+      },
+    });
+
+    const result = await client.fetch({ operation: 'domain_overview', domain: 'example.com', database: 'in' });
+
+    assert.equal(calls[0]?.url, 'https://www.semrush.com/dpa/rpc');
+    assert.equal((calls[0]?.init?.headers as Record<string, string>).Cookie, 'PHPSESSID=session; SSO-JWT=jwt');
+    assert.equal(JSON.stringify(calls[0]?.init?.body).includes('web-key'), true);
+    assert.equal(JSON.stringify(result).includes('web-key'), false);
+    assert.equal(result.coverage.apiVersion, 'web_dpa');
+    assert.deepEqual(result.rows, [{
+      Database: 'in',
+      Domain: 'example.com',
+      Rank: 7,
+      'Organic Keywords': 30,
+      'Organic Traffic': 4,
+      'Organic Cost': undefined,
+      'Adwords Keywords': undefined,
+      'Adwords Traffic': undefined,
+      'Adwords Cost': undefined,
+      'PLA keywords': undefined,
+      'PLA uniques': undefined,
+    }]);
+  });
+
+  it('wraps the private backlinks comparison route as one web request', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new SemrushWebClient({
+      enabled: true,
+      apiKey: 'web-key',
+      cookie: 'session-cookie',
+      timeoutMs: 1_000,
+      fetchImpl: async (url, init) => {
+        calls.push({ url: String(url), init });
+        return Response.json({
+          status: 'SUCCESS',
+          data: [{
+            target: 'a.com',
+            valid: true,
+            counters: { ascore: 42, total: 100, domains: 9, follow: 7, nofollow: 2 },
+          }],
+        });
+      },
+    });
+
+    const result = await client.fetch({ operation: 'backlinks_comparison', targets: ['a.com', 'b.com'] });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.url, 'https://www.semrush.com/backlinks/webapi2/');
+    assert.match(String(calls[0]?.init?.body), /targets%5B%5D=a\.com/);
+    assert.deepEqual(result.coverage.missingTargets, ['b.com']);
+    assert.deepEqual(result.rows, [
+      {
+        Target: 'a.com',
+        'Authority Score': 42,
+        Backlinks: 100,
+        'Referring Domains': 9,
+        'Referring IPs': undefined,
+        'Follow Links': 7,
+        'Nofollow Links': 2,
+        'Text Links': undefined,
+        'Image Links': undefined,
+        'Form Links': undefined,
+        'Frame Links': undefined,
+        Traffic: undefined,
+        'Provider Data Status': 'Returned',
+      },
+      { Target: 'b.com', 'Provider Data Status': 'No provider data' },
+    ]);
   });
 
   it('maps provider failures and ambiguous timeouts without retrying', async () => {

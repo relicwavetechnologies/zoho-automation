@@ -319,6 +319,8 @@ describe('airtable execute', () => {
     assert.ok(Buffer.byteLength(JSON.stringify(value.data), 'utf8') <= 24_000);
     assert.match(value.data.records[0].cellValuesByFieldId.fldAttachment, /value omitted from preview/);
     assert.equal(value.data.hasMore, true);
+    assert.equal(value.data.nextCursor, undefined);
+    assert.match(value.message, /MCP preview is not a full export or broad analytics source/i);
   });
 
   it('rejects the retired inline export path before resolving a connection', async () => {
@@ -341,7 +343,7 @@ describe('airtable execute', () => {
     );
 
     assert.equal(result.ok, false);
-    assert.match(!result.ok ? result.error.message : '', /scripted workflow.*dataExport only when the member explicitly requested/i);
+    assert.match(!result.ok ? result.error.message : '', /MCP is a bounded preview path.*not a bulk export source/i);
     assert.equal(resolved, false);
   });
 

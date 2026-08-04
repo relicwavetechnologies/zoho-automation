@@ -56,7 +56,6 @@ export const MenhoodQueryResultSchema = z.object({
   coverage: z.object({ returnedRows: z.number().int().nonnegative(), truncated: z.boolean() }),
   elapsedMs: z.number().nonnegative(),
   queryFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-  exportOfferId: z.string().optional(),
 });
 
 export type MenhoodQueryResult = z.infer<typeof MenhoodQueryResultSchema>;
@@ -74,6 +73,9 @@ export type ValidatedMenhoodQuery = {
   readonly exportTitle?: string;
   readonly tables: readonly string[];
   readonly fingerprint: string;
+  readonly hasTopLevelOrderBy: boolean;
+  readonly topLevelOrderBySql: readonly string[];
+  readonly isTopLevelRowLevelSelect: boolean;
 };
 
 export function validateMenhoodQuery(input: unknown): ValidatedMenhoodQuery {
@@ -106,6 +108,8 @@ export function validateMenhoodQuery(input: unknown): ValidatedMenhoodQuery {
   }
 
   const normalizedSql = toSql.statement(statement);
+  const topLevel = topLevelSelect(statement);
+  const topLevelOrderBySql = topLevelOrderBySqlFor(topLevel);
   const parameterTypes = parameterValues.map(value => value === null ? 'null' : typeof value);
   const fingerprint = createHash('sha256')
     .update(JSON.stringify({ sql: normalizedSql, parameterTypes }))
@@ -115,8 +119,32 @@ export function validateMenhoodQuery(input: unknown): ValidatedMenhoodQuery {
     parameters: parameterValues,
     tables: [...tables].sort(),
     fingerprint,
+    hasTopLevelOrderBy: topLevelOrderBySql.length > 0,
+    topLevelOrderBySql,
+    isTopLevelRowLevelSelect: isRowLevelSelect(topLevel),
     ...(request.data.exportTitle ? { exportTitle: request.data.exportTitle } : {}),
   };
+}
+
+export function menhoodQueryHasDeterministicReplayOrder(query: ValidatedMenhoodQuery): boolean {
+  if (!query.hasTopLevelOrderBy) return false;
+  if (!query.tables.includes('menhood_orders') || !query.isTopLevelRowLevelSelect) return true;
+  return query.topLevelOrderBySql.some(expression => /(^|[^a-z0-9_])id([^a-z0-9_]|$)/i.test(expression));
+}
+
+function topLevelSelect(statement: Statement): Statement | null {
+  if (statement.type === 'with') return topLevelSelect(statement.in);
+  return statement.type === 'select' ? statement : null;
+}
+
+function topLevelOrderBySqlFor(statement: Statement | null): readonly string[] {
+  const orderBy = (statement as { readonly orderBy?: readonly { readonly by: Expr }[] } | null)?.orderBy ?? [];
+  return orderBy.map(order => toSql.expr(order.by));
+}
+
+function isRowLevelSelect(statement: Statement | null): boolean {
+  const select = statement as { readonly groupBy?: readonly unknown[]; readonly distinct?: unknown } | null;
+  return Boolean(statement && !select?.groupBy?.length && !select?.distinct);
 }
 
 function validateStatement(

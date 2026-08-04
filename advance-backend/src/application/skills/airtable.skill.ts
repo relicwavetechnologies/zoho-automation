@@ -34,7 +34,7 @@ const AIRTABLE_READ_CRAFT = `READING AND FILTERING:
 - list_records_for_table takes a structured filter object, not a formula string: an operator ("and"/"or") plus operands, each with its own comparison operator (=, !=, <, >, <=, >=, contains, doesNotContain, isAnyOf, isNoneOf, hasAnyOf, hasAllOf, isWithin, isEmpty, isNotEmpty). Build the filter tree; never hand-write or URL-encode a formula.
 - Match the operator to the field type: single select and single collaborator use =, !=, isAnyOf, isNoneOf; multiple selects and multiple collaborators use hasAnyOf, hasAllOf, =, doesNotContain; linked records use hasAnyOf, hasAllOf, =, isNoneOf, contains, doesNotContain.
 - Always pass fieldIds with only the fields the answer needs. Pulling every field on a wide table wastes the run's context for no benefit.
-- Continue with nextCursor only for a bounded answer or a scripted calculation that genuinely needs more pages. For a complete one-table CSV, Excel, or Google Sheet, load secure-data-export with the exact backend-resolved connection, base, table, operation, and filters; never carry pages through the conversation or build a local export.
+- Record reads are bounded previews. If a preview says more rows exist, do not keep paging through Airtable MCP for a total, broad analysis, CSV, Excel, or Google Sheet. For synced Menhood data use \`menhood-data\`; for other Airtable data, use \`secure-data-export\` only when an exact backend-replayable connection, base, table, operation, and filters are already resolved. Otherwise ask for a bounded preview or say the full export is not available through MCP.
 - Do not claim a total until the selected route has exhausted its source, and say so plainly when a bounded answer stopped early.
 - Prefer sort plus a small page over fetching everything when the member asked for a top-N answer.`;
 
@@ -58,12 +58,13 @@ ${AIRTABLE_READ_CRAFT}
 ${AIRTABLE_WRITE_SAFETY}
 
 ANALYSIS:
-- Airtable returns raw rows; it does not aggregate. For totals, grouping, ratios, or cross-table joins, pull the needed rows with narrow fieldIds in a scripted workflow, write them to a file, and compute over that file.
+- Airtable returns raw rows; it does not aggregate. For Menhood totals, grouping, ratios, cohorts, or cross-table joins, switch to \`menhood-data\` instead of paging Airtable MCP. For non-Menhood Airtable analysis, use MCP only when the member gave a narrow bounded scope; otherwise ask for a smaller preview or a backend-replayable export source.
 - Each Airtable row arrives with its fields nested. Flatten once when writing the file, then read plain column names; deciding row-by-row whether to reach for row.fields or row.cellValuesByFieldId is where these scripts go wrong.
 - Never estimate a number you did not compute, and never present a partial page as a complete total.
 
 EXPORTS:
-- A plain complete export from one Airtable table belongs to secure-data-export, not this skill's pagination loop or the Python workflow.
+- A plain complete export from one Airtable table belongs to secure-data-export only when the backend has an exact replayable Airtable source, not this skill's pagination loop or the Python workflow.
+- If a bounded Airtable preview is useful but no backend-replayable export source or \`exportCandidate\` exists, do not offer a full export. If an exact replayable source exists and the member has not asked for a file yet, you may ask one soft follow-up about exporting to Google Sheets, Excel, or CSV, unless the member explicitly said not to export, not now, or chat-only.
 - Use Python only when the request also needs calculation, transformation, joins, more than one connected product, or related destination writes.
 - Keep backend-returned export job IDs for status and safe resume only; never expose connection IDs, provider IDs, or bulk rows in the final answer.
 

@@ -45,16 +45,18 @@ describe('data export destination selection', () => {
       : [], ['personal-1', 'personal-2']);
   });
 
-  it('uses a still-eligible saved personal account when several exist', () => {
-    assert.deepEqual(selectDataExportDestination({
+  it('asks when several personal accounts exist even with a saved preference', () => {
+    const result = selectDataExportDestination({
       userId: 'user-1',
       accessible: [connection('personal-1'), connection('personal-2')],
       companyFallback: { connectionId: 'company-1' },
       preferredConnectionId: 'personal-2',
-    }), {
-      status: 'selected',
-      target: { kind: 'user_google', connectionId: 'personal-2' },
     });
+
+    assert.equal(result.status, 'choose_connection');
+    assert.deepEqual(result.status === 'choose_connection'
+      ? result.connections.map(choice => choice.connectionId)
+      : [], ['personal-1', 'personal-2']);
   });
 
   it('ignores a stale saved account and asks among the current personal accounts', () => {

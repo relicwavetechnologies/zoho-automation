@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createSemrushTool } from '../../src/application/tools/families/semrush.tool.ts';
 import { SemrushServiceError } from '../../src/application/semrush/semrush.types.ts';
 import { createDataExportTool } from '../../src/application/tools/families/data-export.tool.ts';
+import { PermanentDataExportError } from '../../src/application/data-export/data-export.errors.ts';
 import { SemrushSnapshotDataExportSource } from '../../src/application/data-export/data-export.sources.ts';
 import { datasetSourceToolId } from '../../src/application/data-export/data-export.types.ts';
 import { DatasetSourceRegistry } from '../../src/application/data-export/data-export.source-registry.ts';
@@ -50,12 +51,9 @@ describe('semrush tool', () => {
   });
 
 
-  it('folds one lookup per domain into a single offer covering the whole answer', async () => {
-    // Reproduces the reported failure: an answer built from many one-row
-    // lookups used to carry an export representing only the first one.
+  it('publishes an independent export candidate for each source lookup', async () => {
     const domains = ['a.com', 'b.com', 'c.com'];
-    const appended: unknown[] = [];
-    let parts = 0;
+    const published: unknown[] = [];
     const tool = createTool({
       service: {
         execute: async (args: any) => ({
@@ -65,21 +63,18 @@ describe('semrush tool', () => {
           rows: [{ domain: args.domain, rank: 1 }],
         }),
       },
-      offers: {
-        appendAuthorizedPart: async (payload: unknown) => {
-          appended.push(payload);
-          parts += 1;
+      exportCandidates: {
+        publishCandidate: async (payload: unknown) => {
+          published.push(payload);
           return {
-            outcome: 'appended' as const,
-            offerId: 'offer-one',
+            candidateId: `11111111-1111-4111-8111-11111111111${published.length}`,
             expiresAt: new Date('2026-08-03T00:00:00.000Z'),
-            partCount: parts,
           };
         },
       },
     });
 
-    const offerIds: (string | undefined)[] = [];
+    const candidateIds: (string | undefined)[] = [];
     for (const domain of domains) {
       const ctx = makeCtx('semrush', ['read'], {
         chatId: 'oc-chat',
@@ -90,19 +85,18 @@ describe('semrush tool', () => {
       const result = await tool.execute({ operation: 'domain_overview', domain }, ctx);
       assert.equal(result.ok, true);
       if (!result.ok) return;
-      offerIds.push(result.value.preview?.exportOfferId);
+      candidateIds.push(result.value.exportCandidate?.candidateId);
     }
 
-    assert.equal(appended.length, 3, 'every lookup contributes its rows');
-    assert.deepEqual(new Set(offerIds), new Set(['offer-one']), 'all three answer one offer');
-    // Each call must contribute its own domain, not re-send the first.
+    assert.equal(published.length, 3, 'every lookup publishes its own replay candidate');
+    assert.equal(new Set(candidateIds).size, 3, 'candidate handles stay independent');
     assert.deepEqual(
-      appended.map((p: any) => p.source.args.domain),
+      published.map((p: any) => p.source.args.domain),
       domains,
     );
   });
 
-  it('withdraws the export when a run mixes datasets that cannot share a file', async () => {
+  it('does not publish an export candidate without dataExport permission', async () => {
     const tool = createTool({
       service: {
         execute: async () => ({
@@ -112,16 +106,11 @@ describe('semrush tool', () => {
           rows: [{ keyword: 'x' }],
         }),
       },
-      offers: {
-        appendAuthorizedPart: async () => ({
-          outcome: 'withdrawn' as const,
-          reason: 'shape_mismatch' as const,
-          revokedOfferId: 'offer-one',
-        }),
+      exportCandidates: {
+        publishCandidate: async () => assert.fail('candidate must require dataExport:create'),
       },
     });
     const ctx = makeCtx('semrush', ['read'], { chatId: 'oc-chat', requestId: 'request-mixed' });
-    ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
 
     const result = await tool.execute(
       { operation: 'organic_positions', domain: 'a.com' },
@@ -130,13 +119,11 @@ describe('semrush tool', () => {
 
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    assert.equal(result.value.preview?.exportOfferId, undefined, 'no button may be offered');
-    assert.equal(result.value.preview?.exportWithdrawn, true, 'the gateway must revoke the bound offer');
-    assert.match(result.value.message, /combines datasets that cannot share one file/i);
+    assert.equal(result.value.exportCandidate, undefined);
   });
 
-  it('creates one opaque export offer without creating a production Cloudinary artifact', async () => {
-    const offers: unknown[] = [];
+  it('creates one opaque export candidate without creating a production Cloudinary artifact', async () => {
+    const candidates: unknown[] = [];
     const tool = createTool({
       service: {
         execute: async () => ({
@@ -147,14 +134,12 @@ describe('semrush tool', () => {
           nextPage: '1000',
         }),
       },
-      offers: {
-        appendAuthorizedPart: async (payload: unknown) => {
-          offers.push(payload);
+      exportCandidates: {
+        publishCandidate: async (payload: unknown) => {
+          candidates.push(payload);
           return {
-            outcome: 'appended' as const,
-            offerId: 'offer-opaque',
+            candidateId: '11111111-1111-4111-8111-111111111111',
             expiresAt: new Date('2026-08-03T00:00:00.000Z'),
-            partCount: 1,
           };
         },
       },
@@ -179,10 +164,10 @@ describe('semrush tool', () => {
       returnedRows: 1_000,
       reason: 'semrush_next_page_available',
     });
-    assert.equal(result.value.preview?.exportOfferId, 'offer-opaque');
+    assert.equal(result.value.exportCandidate?.candidateId, '11111111-1111-4111-8111-111111111111');
     assert.equal(result.value.nextPage, '1000');
-    assert.equal(offers.length, 1);
-    const payload = parseDataExportOfferPayload(offers[0]);
+    assert.equal(candidates.length, 1);
+    const payload = parseDataExportOfferPayload(candidates[0]);
     assert.deepEqual(payload.source, {
       kind: 'semrush_snapshot',
       connectionId: 'backend_managed',
@@ -190,20 +175,20 @@ describe('semrush tool', () => {
     });
     assert.equal(payload.requestId, 'runtime-run-1');
     assert.equal(payload.destination.title, 'Semrush organic positions — example.com');
-    assert.match(result.value.message, /reruns those queries when the user confirms/i);
+    assert.match(result.value.message, /returned export candidate/i);
 
     const withoutExportPermission = await tool.execute(
       { operation: 'organic_positions', domain: 'example.com', limit: 1_000 },
       makeCtx('semrush', ['read'], { chatId: 'oc-chat', requestId: 'request-2' }),
     );
-    assert.equal(withoutExportPermission.ok && withoutExportPermission.value.preview?.exportOfferId, undefined);
-    assert.equal(offers.length, 1);
+    assert.equal(withoutExportPermission.ok && withoutExportPermission.value.exportCandidate, undefined);
+    assert.equal(candidates.length, 1);
 
     const dataExport = createDataExportTool({ offers: {} as never });
     assert.equal(dataExport.argsSchema.safeParse({
       source: payload.source,
       destination: payload.destination,
-    }).success, false, 'Semrush exports must use the opaque offer, not a model-built recipe');
+    }).success, false, 'Semrush exports must use the opaque candidate, not a model-built recipe');
   });
 
   it('marks partial provider responses without pagination as provider-limited', async () => {
@@ -254,13 +239,13 @@ describe('semrush tool', () => {
     });
   });
 
-  it('keeps the successful preview when optional offer persistence fails', async () => {
+  it('keeps the successful preview when optional candidate persistence fails', async () => {
     const tool = createTool({
       service: {
         execute: async () => ({ operation: 'domain_overview', status: 'complete', coverage: {}, rows: [{ domain: 'example.com' }] }),
       },
-      offers: {
-        appendAuthorizedPart: async () => { throw new Error('database unavailable'); },
+      exportCandidates: {
+        publishCandidate: async () => { throw new Error('database unavailable'); },
       },
     });
     const ctx = makeCtx('semrush', ['read'], { chatId: 'oc-chat', requestId: 'request-3' });
@@ -271,11 +256,10 @@ describe('semrush tool', () => {
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.deepEqual(result.value.preview?.rows, [{ domain: 'example.com' }]);
-    assert.equal(result.value.preview?.exportOfferId, undefined);
-    assert.match(result.value.message, /could not safely prepare one/i);
+    assert.equal(result.value.exportCandidate, undefined);
   });
 
-  it('replays an opaque offer through the central Semrush source adapter', async () => {
+  it('replays an opaque Semrush snapshot through the central source adapter', async () => {
     const calls: unknown[] = [];
     const adapter = new SemrushSnapshotDataExportSource({
       execute: async (args) => {
@@ -307,6 +291,28 @@ describe('semrush tool', () => {
       { rows: [{ keyword: 'settlements' }] },
     ]);
     assert.equal(datasetSourceToolId(source), 'semrush');
+  });
+
+  it('turns exhausted Semrush units into a permanent export failure', async () => {
+    const adapter = new SemrushSnapshotDataExportSource({
+      execute: async () => {
+        throw new SemrushServiceError('provider_insufficient_units', 'Semrush reports insufficient API units.');
+      },
+    } as never);
+
+    await assert.rejects(
+      async () => {
+        for await (const _page of adapter.read({
+          kind: 'semrush_snapshot',
+          connectionId: 'backend_managed',
+          args: { operation: 'organic_positions', domain: 'example.com', limit: 50 },
+        }, { companyId: 'co-1', userId: 'user-1' })) {
+          // consume
+        }
+      },
+      (error: unknown) => error instanceof PermanentDataExportError
+        && /API units are exhausted/i.test(error.memberMessage),
+    );
   });
 
   it('reads the requested window from the args, not from the adapter page size', async () => {
@@ -363,9 +369,9 @@ describe('semrush tool', () => {
   });
 
   it('keeps each part of a multi-part export on its own window', async () => {
-    // Two organic_positions lookups in one run merge into one offer. The window
-    // belongs to the part that carries it: capping the merged dataset at the
-    // first part's limit would drop the second domain entirely.
+    // Two organic_positions lookups in one workbook keep separate windows. The
+    // window belongs to the part that carries it: capping the merged dataset at
+    // the first part's limit would drop the second domain entirely.
     const calls: { domain: string; limit?: number; offset?: number }[] = [];
     const adapter = new SemrushSnapshotDataExportSource({
       execute: async (args: any) => {
@@ -405,7 +411,7 @@ describe('semrush tool', () => {
 
 function createTool(overrides: {
   service?: Record<string, unknown>;
-  offers?: Record<string, unknown>;
+  exportCandidates?: Record<string, unknown>;
 } = {}) {
   const service = {
     preflight: async () => ({ configured: true }),
@@ -414,6 +420,6 @@ function createTool(overrides: {
   };
   return createSemrushTool({
     service: service as never,
-    ...(overrides.offers ? { offers: overrides.offers as never } : {}),
+    ...(overrides.exportCandidates ? { exportCandidates: overrides.exportCandidates as never } : {}),
   });
 }

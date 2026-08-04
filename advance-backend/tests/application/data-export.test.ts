@@ -1206,6 +1206,9 @@ describe('data export worker', () => {
       markDelivered: (...args: any[]) => Promise<any>;
       markFailed: (...args: any[]) => Promise<any>;
     };
+    exportPlans?: {
+      markSampleReady: (...args: any[]) => Promise<any>;
+    };
     logger?: typeof noopLogger;
     inactivityMs?: number;
     maxRows?: number;
@@ -1243,6 +1246,7 @@ describe('data export worker', () => {
     ...(input.conversationHistory ? { conversationHistory: input.conversationHistory as any } : {}),
     ...(input.runLeaseHolder ? { runLeaseHolder: input.runLeaseHolder as any } : {}),
     ...(input.completionDelivery ? { completionDelivery: input.completionDelivery as any } : {}),
+    ...(input.exportPlans ? { exportPlans: input.exportPlans as any } : {}),
     logger: input.logger ?? noopLogger,
     ...(input.inactivityMs === undefined ? {} : { inactivityMs: input.inactivityMs }),
     ...(input.maxRows === undefined ? {} : { maxRows: input.maxRows }),
@@ -1449,6 +1453,72 @@ describe('data export worker', () => {
     assert.equal(sinkWrites, 1);
     assert.match(delivered, /Data export ready/i);
     assert.match(delivered, /sheet-checked/i);
+  });
+
+  it('marks a delivered sample artifact ready for confirmation', async () => {
+    let delivered = '';
+    let markedInput: unknown;
+    const worker = createWorker({
+      registry: new DatasetSourceRegistry(),
+      sink: { write: async () => assert.fail('a checkpointed sample must not rerun') } as any,
+      larkAdapter: {
+        sendToChatId: async () => assert.fail('a checkpointed sample already has a progress card'),
+        updateMessageById: async (_messageId, content) => {
+          delivered = content;
+          return { ok: true as const, value: undefined };
+        },
+      },
+      exportPlans: {
+        markSampleReady: async input => {
+          markedInput = input;
+          return { ok: true as const, value: { id: input.planId } };
+        },
+      },
+    });
+    const samplePlanId = '33333333-3333-4333-8333-333333333333';
+    const samplePayload: DataExportJobPayload = {
+      ...payload,
+      requestId: `${samplePlanId}:sample`,
+      progressMessageId: 'om_sample_progress',
+      exportKind: 'sample',
+      rowLimitOverride: 100,
+      sampleOfPlanId: samplePlanId,
+      completedExport: {
+        success: true,
+        artifactId: 'sheet-sample',
+        artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-sample/edit',
+        artifactType: 'google_sheet',
+        rowCount: 100,
+        coverage: {
+          inputRowsRead: 101,
+          rowsWritten: 100,
+          outcome: 'partial',
+          cause: 'export_row_cap',
+        },
+        sourceTruncated: false,
+        sharedWith: 'abhishek@emiactech.com (reader)',
+        verified: true,
+      },
+    };
+
+    await worker.processJob({
+      id: 'dtx_sample_ready',
+      data: samplePayload,
+      attemptsMade: 0,
+      opts: { attempts: 1 },
+      updateData: async () => assert.fail('a checkpointed sample must not be rewritten'),
+      updateProgress: async () => assert.fail('a checkpointed sample must not report export progress'),
+    });
+
+    assert.match(delivered, /Data export sample ready/i);
+    assert.match(delivered, /sample intentionally stops at 100 rows/i);
+    assert.doesNotMatch(delivered, /Divo's export row cap stopped this export/i);
+    assert.deepEqual(markedInput, {
+      planId: samplePlanId,
+      companyId: 'company-1',
+      userId: 'user-1',
+      sampleJobId: 'dtx_sample_ready',
+    });
   });
 
   it('does not overwrite a completion card already claimed by another publisher', async () => {
@@ -2908,7 +2978,7 @@ describe('data export access contract', () => {
       exportQueued: true,
       status: 'queued',
       exportJobId: 'job-1',
-      message: 'Excel (.xlsx) export queued. Divo will deliver the verified private artifact to this Lark chat.',
+      message: 'Excel (.xlsx) export queued. Divo will deliver the verified private artifact to this Lark chat. Do not call it complete until the completion card reports final row coverage; Excel (.xlsx) caps still apply.',
     });
   });
 

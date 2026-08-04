@@ -99,19 +99,17 @@ describe('OMS Site Data tool', () => {
     assert.match(result.value.message, /arbitrary subset/i);
   });
 
-  it('creates one central provider-limited offer without using Cloudinary', async () => {
+  it('creates one central provider-limited export candidate without using Cloudinary', async () => {
     const rows = Array.from({ length: 100 }, (_, index) => ({ website: `site-${index}.com` }));
-    const offers: unknown[] = [];
+    const candidates: unknown[] = [];
     const tool = createTool({
       service: { execute: async () => ({ operation: 'search_sites', status: 'partial', coverage: {}, rows }) },
-      offers: {
-        appendAuthorizedPart: async (payload: unknown) => {
-          offers.push(payload);
+      exportCandidates: {
+        publishCandidate: async (payload: unknown) => {
+          candidates.push(payload);
           return {
-            outcome: 'appended' as const,
-            offerId: 'offer-opaque',
+            candidateId: '11111111-1111-4111-8111-111111111111',
             expiresAt: new Date('2026-08-03T00:00:00.000Z'),
-            partCount: 1,
           };
         },
       },
@@ -129,9 +127,9 @@ describe('OMS Site Data tool', () => {
       returnedRows: 100,
       reason: 'oms_100_row_cap_without_pagination_or_total',
     });
-    assert.equal(result.value.preview?.exportOfferId, 'offer-opaque');
-    assert.equal(offers.length, 1);
-    const payload = parseDataExportOfferPayload(offers[0]);
+    assert.equal(result.value.exportCandidate?.candidateId, '11111111-1111-4111-8111-111111111111');
+    assert.equal(candidates.length, 1);
+    const payload = parseDataExportOfferPayload(candidates[0]);
     assert.deepEqual(payload.source, {
       kind: 'oms_snapshot',
       connectionId: 'backend_managed',
@@ -143,17 +141,17 @@ describe('OMS Site Data tool', () => {
       { operation: 'search_sites', niche: 'Technology' },
       makeCtx('omsSiteData', ['read'], { chatId: 'oc-chat', requestId: 'request-2' }),
     );
-    assert.equal(withoutExportPermission.ok && withoutExportPermission.value.preview?.exportOfferId, undefined);
-    assert.equal(offers.length, 1);
+    assert.equal(withoutExportPermission.ok && withoutExportPermission.value.exportCandidate, undefined);
+    assert.equal(candidates.length, 1);
 
     const dataExport = createDataExportTool({ offers: {} as never });
     assert.equal(dataExport.argsSchema.safeParse({
       source: payload.source,
       destination: payload.destination,
-    }).success, false, 'OMS exports must use the opaque offer, not a model-built recipe');
+    }).success, false, 'OMS exports must use the opaque candidate, not a model-built recipe');
   });
 
-  it('keeps the successful preview when optional offer persistence fails', async () => {
+  it('keeps the successful preview when optional candidate persistence fails', async () => {
     const tool = createTool({
       service: {
         execute: async () => ({
@@ -163,8 +161,8 @@ describe('OMS Site Data tool', () => {
           rows: [{ website: 'example.com' }],
         }),
       },
-      offers: {
-        appendAuthorizedPart: async () => { throw new Error('database unavailable'); },
+      exportCandidates: {
+        publishCandidate: async () => { throw new Error('database unavailable'); },
       },
     });
     const ctx = makeCtx('omsSiteData', ['read'], { chatId: 'oc-chat', requestId: 'request-3' });
@@ -178,10 +176,10 @@ describe('OMS Site Data tool', () => {
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.deepEqual(result.value.preview?.rows, [{ website: 'example.com' }]);
-    assert.equal(result.value.preview?.exportOfferId, undefined);
+    assert.equal(result.value.exportCandidate, undefined);
   });
 
-  it('replays an OMS offer through the central snapshot source adapter', async () => {
+  it('replays an OMS snapshot through the central source adapter', async () => {
     const calls: unknown[] = [];
     const adapter = new OmsSnapshotDataExportSource({
       execute: async (input) => {
@@ -314,7 +312,7 @@ describe('OMS Site Data tool', () => {
 
 function createTool(overrides: {
   service?: Record<string, unknown>;
-  offers?: Record<string, unknown>;
+  exportCandidates?: Record<string, unknown>;
 } = {}) {
   const service = {
     preflight: async () => ({ configured: true }),
@@ -323,6 +321,6 @@ function createTool(overrides: {
   };
   return createOmsSiteDataTool({
     service: service as never,
-    ...(overrides.offers ? { offers: overrides.offers as never } : {}),
+    ...(overrides.exportCandidates ? { exportCandidates: overrides.exportCandidates as never } : {}),
   });
 }

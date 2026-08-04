@@ -196,6 +196,7 @@ export const createServer = (c: Container): DivoServerApplication => {
     larkAdapter: c.larkAdapter,
     conversationHistory: c.conversationRepo,
     completionDelivery: c.channelDeliveryRepo,
+    exportPlans: c.dataExportCandidateRepo,
     runLeaseHolder: c.laneLeaseHolder,
     logger: c.logger,
   });

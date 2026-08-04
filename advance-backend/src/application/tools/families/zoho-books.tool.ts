@@ -40,6 +40,7 @@ import { PermissionError, ToolError }      from '../../../shared/errors';
 import type { ToolActionGroup }            from '../../../domain/permissions/tool-action-group';
 import { asToolId }                        from '../../../shared/ids';
 import {
+  ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE,
   ZOHO_BOOKS_OUTSTANDING_RULE,
   ZOHO_BOOKS_ROW_CONTRACT,
 } from '../../../shared/zoho-books-row-contract';
@@ -52,14 +53,16 @@ import type { ZohoBooksPaginatedClient, ZohoBooksModule } from '../../../infrast
 import { getModuleSchema, injectSyntheticFields, toSchemaHint } from '../../../infrastructure/zoho/zoho-books-schema.cache';
 import { runInSandbox, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
 import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } from '../../../shared/zoho-personalization';
-import { contributeExportPart, exportWithdrawalMessage } from '../../data-export/tool-export-offer';
 import {
-  dataExportCallRequestId,
+  exportCandidateMetadata,
+  publishExportCandidate,
+} from '../../data-export/tool-export-candidate';
+import {
   dataExportRunRequestId,
 } from '../../data-export/export-request-identity';
 import { DATA_EXPORT_CSV_ROW_LIMIT } from '../../data-export/data-export-limits';
 import { datasetSourceSchema } from '../../data-export/data-export.types';
-import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
+import type { DataExportOrchestrationService } from '../../data-export/data-export-orchestration.service';
 import type { DataExportOfferPayload } from '../../data-export/export-offer';
 import {
   createDatasetPreview,
@@ -70,7 +73,6 @@ import {
 
 const Schema = z.object({
   connectionId: z.string().uuid(),
-  destinationConnectionId: z.string().uuid().optional(),
   op: z.enum([
     // CRUD
     'list_invoices',
@@ -119,7 +121,7 @@ const Schema = z.object({
   // Script mode — auto-escalates list ops to exhaustive fetch + VM sandbox
   script:     z.string().optional(),
   scriptArgs: z.record(z.unknown()).optional(),
-});
+}).strict();
 
 type Args = z.infer<typeof Schema>;
 
@@ -138,8 +140,6 @@ const ResultSchema = z.object({
   totalFetched:    z.number().optional(),
   moduleSchema:    z.unknown().optional(),
   sourceTruncated: z.boolean().optional(),
-  exportQueued: z.boolean().optional(),
-  exportJobId: z.string().optional(),
   preview: z.object({
     columns: z.array(z.string()),
     rows: z.array(z.record(z.unknown())).max(DATASET_PREVIEW_ROW_LIMIT),
@@ -158,10 +158,14 @@ const ResultSchema = z.object({
       }),
       z.object({ kind: z.literal('unknown'), returnedRows: z.number().int().nonnegative() }),
     ]),
-    exportOfferId: z.string().optional(),
-    exportRowCount: z.number().int().nonnegative().optional(),
-    exportWithdrawn: z.literal(true).optional(),
   }).optional(),
+  exportCandidate: z.object({
+    candidateId: z.string().uuid(),
+    sourceKind: z.literal('zoho_books'),
+    previewRowCount: z.number().int().nonnegative(),
+    estimatedRows: z.number().int().nonnegative().optional(),
+    expiresAt: z.string(),
+  }).strict().optional(),
 });
 
 type Res = z.infer<typeof ResultSchema>;
@@ -236,6 +240,13 @@ const amountFields = new Set([
   'fc_balance',
   'outstanding',
   'totalOutstanding',
+  'outstanding_payable_amount',
+  'outstanding_receivable_amount',
+  'outstanding_ob_payable_amount',
+  'outstanding_ob_receivable_amount',
+  'opening_balance_amount',
+  'unused_credits_payable_amount',
+  'unused_credits_receivable_amount',
 ]);
 
 const dateFields = new Set([
@@ -559,7 +570,7 @@ export const createZohoBooksTool = (deps: {
   booksClient:  ZohoBooksPaginatedClient;
   /** Finance ops service for deep report operations. */
   financeOps:   ZohoFinanceOps;
-  offers?: Pick<DataExportOfferService, 'appendAuthorizedPart' | 'submitAuthorized'>;
+  exportCandidates?: Pick<DataExportOrchestrationService, 'publishCandidate'>;
   inlineThreshold?: number;
 }): Tool<Args, Res> => ({
   id:           asToolId('zohoBooks'),
@@ -572,10 +583,10 @@ export const createZohoBooksTool = (deps: {
     'Access Zoho Books: 19 operations for invoices, bills, expenses, payments, contacts, bank transactions, and reports.',
     'Plain list operations fetch one bounded page and return only the requested limit.',
     'For custom analysis (grouping, aggregation, ranking), add a `script` parameter to fetch up to 4000 records with pre-converted INR fields (_amount_inr, _balance_inr, _total_inr).',
-    'For an exact aggregate that may require more than 4000 records, page through this tool inside a scripted workflow, write the rows to a file, and aggregate over that file.',
+    'For an exact aggregate that may require more than 4000 records, use a governed backend workflow; do not create a member-facing file from paged script rows.',
     'Use populated _amount_inr/_balance_inr for INR calculations; never infer an original currency when _currency is UNKNOWN.',
-    `Set exportAll=true for a governed auto-format export with a ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')}-row pipeline ceiling, subject to provider availability. If the user asks for more or every row, disclose the cap and never call the result complete.`,
-    'Export example: {"op":"list_invoices","dateFrom":"2026-07-01","dateTo":"2026-07-31","exportAll":true,"connectionId":"<exact Zoho UUID>"}. If Divo returns eligible Google destination choices, retry with the same arguments plus destinationConnectionId="<chosen Google UUID>". Keep every field top-level.',
+    'Set exportAll=true only to publish a replayable export candidate; use dataExport op=plan to choose Sheet, Excel, CSV, destination account, direct queue, or sample-first flow.',
+    'Export example: first call {"op":"list_invoices","dateFrom":"2026-07-01","dateTo":"2026-07-31","exportAll":true,"connectionId":"<exact Zoho UUID>"}, then call dataExport op=plan with the returned exportCandidate.candidateId.',
   ].join(' '),
 
   parameterDocs: [
@@ -591,12 +602,13 @@ export const createZohoBooksTool = (deps: {
     'script: JS code. Receives data (all records), args (extra params), schema (field hints). Must return a value.',
     `  ${ZOHO_BOOKS_ROW_CONTRACT}`,
     `  ${ZOHO_BOOKS_OUTSTANDING_RULE}`,
+    `  ${ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE}`,
     '  _amount/_total = original currency amount. _balance = original outstanding. _currency = ISO code or UNKNOWN; never label UNKNOWN as INR.',
     '  For INR sums: use _balance_inr or _amount_inr directly. For "show in USD": fromINR(total, "USD").',
     '  formatAmount(value, currency) and formatDate(iso) are available in the sandbox.',
-    '  Example: "const g={}; data.forEach(b=>{const v=b.vendor_name||\'Unknown\'; if(!g[v])g[v]={vendor:v,count:0,outstanding:0}; g[v].count++; g[v].outstanding+=b._balance_inr;}); return Object.values(g).sort((a,b)=>b.outstanding-a.outstanding)"',
+    '  Example (bill-balance ranking only — not contact payable total): "const g={}; data.forEach(b=>{const v=b.vendor_name||\'Unknown\'; if(!g[v])g[v]={vendor:v,count:0,billBalance:0}; g[v].count++; g[v].billBalance+=b._balance_inr;}); return Object.values(g).sort((a,b)=>b.billBalance-a.billBalance)"',
     'scriptArgs: extra parameters available as `args` in the script',
-    `Script results stay bounded inline. For a governed auto-format source artifact of up to ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} rows, subject to provider availability, use exportAll=true or dataExport.`,
+    'Script results stay bounded inline. For a governed artifact, publish an export candidate with exportAll=true and let dataExport own the destination and queue.',
   ].join('\n'),
 
   permissionCheck(args, perm) {
@@ -679,9 +691,6 @@ export const createZohoBooksTool = (deps: {
 
     const scopeFilter: Record<string, unknown> = personalizedScope ? { email: requesterEmail! } : {};
 
-    // `exportAll` queues one artifact per call through `submitAuthorized`, while
-    // a bounded list contributes a part to the run's merged offer. Those want
-    // opposite identity scopes, so the caller states which it is.
     const exportPayloadFor = (
       moduleName: ZohoBooksModule,
       requestId: string,
@@ -732,7 +741,7 @@ export const createZohoBooksTool = (deps: {
         }));
       }
       if (
-        !deps.offers
+        !deps.exportCandidates
         || ctx.runContext.channel !== 'lark'
         || !ctx.runContext.chatId
         || !args.connectionId
@@ -740,7 +749,7 @@ export const createZohoBooksTool = (deps: {
         return err(new ToolError({
           toolId: 'zohoBooks',
           reason: 'bad_args',
-          message: `Governed Zoho exports of up to ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} rows require an exact connection UUID and a Lark chat for delivery`,
+          message: 'Governed Zoho exports require an exact connection UUID and a Lark chat so Divo can prepare an export candidate.',
         }));
       }
       // exportAll returns before the per-op switch, so the guards on the
@@ -753,7 +762,7 @@ export const createZohoBooksTool = (deps: {
       }
       const payload = exportPayloadFor(
         exportModule,
-        dataExportCallRequestId(ctx.runContext, ctx.correlationId),
+        dataExportRunRequestId(ctx.runContext, ctx.correlationId),
       );
       const recipe = datasetSourceSchema.safeParse(payload.source);
       if (!recipe.success) {
@@ -763,25 +772,37 @@ export const createZohoBooksTool = (deps: {
           message: `This export cannot be run as asked — ${recipe.error.errors.map(issue => issue.message).join('; ')}`,
         }));
       }
-      try {
-        const exportJobId = await deps.offers.submitAuthorized(
-          payload,
-          args.destinationConnectionId,
-        );
-        return ok({
-          success: true,
-          exportQueued: true,
-          exportJobId,
-          message: `Zoho Books export queued through dataExport with the ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')}-row auto-format pipeline ceiling, subject to provider availability. I will deliver the verified private Google artifact to this Lark chat. If more rows exist, they will be omitted and the result will not be described as complete.`,
-        });
-      } catch (cause) {
+      const candidate = await publishExportCandidate({
+        candidates: deps.exportCandidates,
+        eligible: true,
+        payload: () => payload,
+        metadata: exportCandidateMetadata({
+          columns: [],
+          previewRowCount: 0,
+          coverage: { kind: 'unknown', returnedRows: 0 },
+        }),
+        logger: ctx.logger,
+        scope: 'zoho_books',
+        correlationId: ctx.correlationId,
+      });
+      if (candidate.kind !== 'published') {
         return err(new ToolError({
           toolId: 'dataExport',
           reason: 'upstream_failure',
-          cause,
-          message: `Could not queue Zoho Books export: ${cause instanceof Error ? cause.message : String(cause)}`,
+          message: 'Could not prepare a Zoho Books export candidate. Ask Divo to retry.',
         }));
       }
+      return ok({
+        success: true,
+        exportCandidate: {
+          candidateId: candidate.candidateId,
+          sourceKind: 'zoho_books' as const,
+          previewRowCount: 0,
+          ...(candidate.estimatedRows === undefined ? {} : { estimatedRows: candidate.estimatedRows }),
+          expiresAt: candidate.expiresAt.toISOString(),
+        },
+        message: 'Zoho Books export candidate is ready. Use dataExport op=plan with this candidate to choose Sheet, Excel, CSV, destination account, direct export, or sample-first review.',
+      });
     }
 
     // ── Script mode (auto-escalate list ops to exhaustive fetch + sandbox) ──
@@ -839,9 +860,9 @@ export const createZohoBooksTool = (deps: {
         columns: readonly ZohoListCsvColumn<Record<string, unknown>>[];
       },
     ) => {
-      const canOfferExport = args.limit === undefined
+      const canPublishExportCandidate = args.limit === undefined
         && !personalizedScope
-        && deps.offers !== undefined
+        && deps.exportCandidates !== undefined
         && ctx.runContext.channel === 'lark'
         && Boolean(ctx.runContext.chatId)
         && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true;
@@ -853,7 +874,7 @@ export const createZohoBooksTool = (deps: {
         ...(args.organizationId ? { organizationId: args.organizationId } : {}),
         filters: { ...scopeFilter, ...moduleFilters(moduleName, args), ...options.filters },
         ...(options.query ? { query: options.query } : {}),
-        offerExportOnOverflow: canOfferExport,
+        suggestExportOnOverflow: canPublishExportCandidate,
         inlineThreshold: Math.min(
           args.limit ?? deps.inlineThreshold ?? DATASET_PREVIEW_ROW_LIMIT,
           DATASET_PREVIEW_ROW_LIMIT,
@@ -872,15 +893,19 @@ export const createZohoBooksTool = (deps: {
       });
       const modelItems = projectListItems(result.items, options.columns);
       const formattedItems = formatZohoResult(modelItems) as Record<string, unknown>[];
-      const offer = await contributeExportPart({
-        offers: deps.offers,
-        eligible: result.suggestExport && canOfferExport,
+      const candidate = await publishExportCandidate({
+        candidates: deps.exportCandidates,
+        eligible: result.suggestExport && canPublishExportCandidate,
         payload: () => exportPayloadFor(
           moduleName,
           dataExportRunRequestId(ctx.runContext, ctx.correlationId),
         ),
-        observedRowCount: formattedItems.length,
-        collectionTitle: `Zoho Books ${moduleName}`,
+        metadata: exportCandidateMetadata({
+          columns: formattedItems.length > 0 ? Object.keys(formattedItems[0]!) : [],
+          previewRowCount: formattedItems.length,
+          estimatedRows: result.coverage.kind === 'complete' ? formattedItems.length : undefined,
+          coverage: result.coverage,
+        }),
         logger: ctx.logger,
         scope: 'zoho_books',
         correlationId: ctx.correlationId,
@@ -888,16 +913,25 @@ export const createZohoBooksTool = (deps: {
       const preview = createDatasetPreview({
         rows: formattedItems,
         coverage: result.coverage,
-        ...(offer.kind === 'offered' ? { exportOfferId: offer.offerId, exportRowCount: offer.observedRowCount } : {}),
-        ...(offer.kind === 'withdrawn' ? { exportWithdrawn: true as const } : {}),
       });
 
       return {
         success: true,
-        message: offer.kind === 'withdrawn'
-          ? `${result.summary} ${exportWithdrawalMessage(offer.reason)}`
+        message: candidate.kind === 'published'
+          ? `${result.summary} Use dataExport op=plan with the returned export candidate if the member wants a file.`
           : result.summary,
         preview,
+        ...(candidate.kind === 'published'
+          ? {
+              exportCandidate: {
+                candidateId: candidate.candidateId,
+                sourceKind: 'zoho_books' as const,
+                previewRowCount: formattedItems.length,
+                ...(candidate.estimatedRows === undefined ? {} : { estimatedRows: candidate.estimatedRows }),
+                expiresAt: candidate.expiresAt.toISOString(),
+              },
+            }
+          : {}),
         report: {
           returnedCount: result.items.length,
           ...(result.totalCount !== undefined ? { totalCount: result.totalCount } : {}),
@@ -1023,6 +1057,8 @@ export const createZohoBooksTool = (deps: {
               { key: 'phone', header: 'Phone' },
               { key: 'status', header: 'Status' },
               commonColumns.currency,
+              { key: 'outstanding_payable_amount', header: 'Outstanding Payables' },
+              { key: 'outstanding_receivable_amount', header: 'Outstanding Receivables' },
             ],
           }));
 

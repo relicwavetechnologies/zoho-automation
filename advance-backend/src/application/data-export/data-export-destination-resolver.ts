@@ -67,16 +67,6 @@ export function selectDataExportDestination(input: {
     };
   }
 
-  const preferred = personal.find(connection =>
-    connection.connectionId === input.preferredConnectionId,
-  );
-  if (preferred) {
-    return {
-      status: 'selected',
-      target: { kind: 'user_google', connectionId: preferred.connectionId },
-    };
-  }
-
   if (personal.length === 1) {
     return {
       status: 'selected',

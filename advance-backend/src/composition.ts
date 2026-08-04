@@ -76,6 +76,7 @@ import {
 import { CompanySerperConnectionRepository } from './infrastructure/persistence/company-serper-connection.repository';
 import { CompanySerperService } from './application/web-search/company-serper.service';
 import { SemrushClient } from './infrastructure/semrush/semrush.client';
+import { SemrushWebClient } from './infrastructure/semrush/semrush-web.client';
 import { SemrushService } from './application/semrush/semrush.service';
 import { MenhoodQueryService } from './application/menhood/menhood-query.service';
 import { CompanyOmsConnectionRepository } from './infrastructure/persistence/company-oms-connection.repository';
@@ -125,6 +126,7 @@ import { ChatMessageSerializer } from './application/channels/chat-message-seria
 // Data export and async ingress
 import { DataExportQueue } from './application/data-export/data-export.queue';
 import { DataExportOfferService } from './application/data-export/data-export-offer.service';
+import { DataExportOrchestrationService } from './application/data-export/data-export-orchestration.service';
 import { WorkbookConversionQueue } from './application/data-export/workbook-conversion.queue';
 import { WorkbookConversionConfirmationService } from './application/data-export/workbook-conversion.service';
 import { GoogleDriveXlsxConversionWorker } from './application/data-export/google-drive-xlsx-conversion.worker';
@@ -150,6 +152,7 @@ import { parseGoogleSheetReference } from './application/data-export/google-shee
 import { GoogleSheetResourceResolver } from './application/data-export/google-sheet-resource-resolver';
 import { GoogleSheetResourceProbeClient } from './infrastructure/google/google-sheet-resource-probe';
 import { DataExportOfferRepository } from './infrastructure/persistence/data-export-offer.repository';
+import { DataExportCandidateRepository } from './infrastructure/persistence/data-export-candidate.repository';
 import { DataExportDestinationPreferenceRepository } from './infrastructure/persistence/data-export-destination-preference.repository';
 import { getDataExportProfile } from './application/data-export/data-export.profile';
 import { PermanentDataExportError } from './application/data-export/data-export.errors';
@@ -354,6 +357,7 @@ export interface Container {
   approvalResumer: ApprovalResumerService;
   approvalInbox: ApprovalInboxService;
   dataExportQueue: DataExportQueue;
+  dataExportCandidateRepo: DataExportCandidateRepository;
   workbookConversionQueue: WorkbookConversionQueue;
   workbookConversionWorker: GoogleDriveXlsxConversionConsumer;
   dataExportSources: DatasetSourceRegistry;
@@ -587,11 +591,21 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger.child({ service: 'company-serper' }),
     env.SERPER_API_KEY ?? '',
   );
+  // Custom Semrush web-session workaround. Keep credentials backend-owned and
+  // injected here; tool callers must never receive or choose the web key/cookie.
+  const semrushWebApiKey = env.SEMRUSH_WEB_API_KEY ?? env.SEMRUSH_API_KEY;
   const semrushService = new SemrushService(
     new SemrushClient({ timeoutMs: env.SEMRUSH_TIMEOUT_MS }),
     env.SEMRUSH_API_KEY,
     logger.child({ service: 'semrush' }),
     env.SEMRUSH_API_KEY_WEBHOOK_URL,
+    fetch,
+    new SemrushWebClient({
+      enabled: env.SEMRUSH_WEB_ENABLED,
+      timeoutMs: env.SEMRUSH_TIMEOUT_MS,
+      ...(semrushWebApiKey ? { apiKey: semrushWebApiKey } : {}),
+      ...(env.SEMRUSH_WEB_COOKIE ? { cookie: env.SEMRUSH_WEB_COOKIE } : {}),
+    }),
   );
   const companyOmsSiteDataService = new CompanyOmsSiteDataService(
     companyOmsConnectionRepo,
@@ -1487,22 +1501,36 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   const dataExportQueue = new DataExportQueue(queueRedisUrl);
   const workbookConversionQueue = new WorkbookConversionQueue(queueRedisUrl);
+  const rememberDataExportDestination = async (input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId: string;
+  }): Promise<void> => {
+    const saved = await dataExportDestinationPreferenceRepo.save(input);
+    if (!saved.ok) {
+      logger.warn('Could not remember the selected data export destination', {
+        companyId: input.companyId,
+        userId: input.userId,
+        error: saved.error.message,
+      });
+    }
+  };
+  const dataExportCandidateRepo = new DataExportCandidateRepository(prisma);
   const dataExportOfferService = new DataExportOfferService({
     offers: new DataExportOfferRepository(prisma),
     queue: dataExportQueue,
     identityRepo: channelIdentityRepo,
     permissions,
     resolveDestination: resolveDataExportDestination,
-    rememberDestination: async input => {
-      const saved = await dataExportDestinationPreferenceRepo.save(input);
-      if (!saved.ok) {
-        logger.warn('Could not remember the selected data export destination', {
-          companyId: input.companyId,
-          userId: input.userId,
-          error: saved.error.message,
-        });
-      }
-    },
+    rememberDestination: rememberDataExportDestination,
+  });
+  const dataExportOrchestrationService = new DataExportOrchestrationService({
+    candidates: dataExportCandidateRepo,
+    offers: dataExportOfferService,
+    identityRepo: channelIdentityRepo,
+    permissions,
+    resolveDestination: resolveDataExportDestination,
+    rememberDestination: rememberDataExportDestination,
   });
   const resumeDataExportAfterGoogleConnection = async (input: {
     readonly offerId: string;
@@ -1929,13 +1957,13 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     getClient:   getZohoCrmClient,
     crmClient:   zohoPaginatedCrmClient,
     crmOps:      zohoCrmOps,
-    offers:      dataExportOfferService,
+    exportCandidates: dataExportOrchestrationService,
   }));
   toolRegistry.register(createZohoBooksTool({
     getClient:       getZohoBooksClient,
     booksClient:     zohoPaginatedBooksClient,
     financeOps:      zohoFinanceOps,
-    offers:          dataExportOfferService,
+    exportCandidates: dataExportOrchestrationService,
     inlineThreshold: env.ZOHO_BOOKS_CSV_INLINE_THRESHOLD,
   }));
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
@@ -1949,22 +1977,23 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   }));
   toolRegistry.register(createDataExportTool({
     offers: dataExportOfferService,
+    orchestration: dataExportOrchestrationService,
     beginAuthorization: beginGoogleAuthorization,
   }));
   toolRegistry.register(createSemrushTool({
     service: semrushService,
-    offers: dataExportOfferService,
+    exportCandidates: dataExportOrchestrationService,
     audit: auditService,
     apiKeyExhaustion: apiKeyExhaustionFacade,
   }));
   toolRegistry.register(createOmsSiteDataTool({
     service: companyOmsSiteDataService,
-    offers: dataExportOfferService,
+    exportCandidates: dataExportOrchestrationService,
     audit: auditService,
   }));
   toolRegistry.register(createMenhoodDataTool({
     service: menhoodQueryService,
-    offers: dataExportOfferService,
+    exportCandidates: dataExportOrchestrationService,
     audit: auditService,
   }));
   toolRegistry.register(createRunCommandTool());
@@ -2564,6 +2593,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     approvalInbox,
     // Data export and async ingress
     dataExportQueue,
+    dataExportCandidateRepo,
     workbookConversionQueue,
     workbookConversionWorker,
     dataExportSources,

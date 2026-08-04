@@ -74,7 +74,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          sparse-checkout: advance-backend
+          sparse-checkout: |
+            advance-backend
+            divo-pi/divo/runtime-models.mjs
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4

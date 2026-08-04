@@ -83,13 +83,13 @@ function makeTool(overrides: {
   simpleClient?: ZohoBooksClientPort | null;
   booksClient?:  ZohoBooksPaginatedClient;
   financeOps?:   ZohoFinanceOps;
-  offers?: Parameters<typeof createZohoBooksTool>[0]['offers'];
+  exportCandidates?: Parameters<typeof createZohoBooksTool>[0]['exportCandidates'];
 } = {}) {
   return createZohoBooksTool({
     getClient:       async () => overrides.simpleClient ?? fakeSimpleClient,
     booksClient:     overrides.booksClient ?? makeBooksClient(),
     financeOps:      overrides.financeOps ?? (fakeFinanceOps as ZohoFinanceOps),
-    ...(overrides.offers ? { offers: overrides.offers } : {}),
+    ...(overrides.exportCandidates ? { exportCandidates: overrides.exportCandidates } : {}),
     inlineThreshold: 25,
   });
 }
@@ -152,6 +152,42 @@ describe('zohoBooks expanded execution', () => {
     assert.equal(items[0].total, '120.50');
     assert.equal(items[0].totalFormatted, '₹120.50');
     assert.equal(items[0].date, '2026-05-01');
+  });
+
+  it('surfaces contact payable/receivable totals in list_contacts preview', async () => {
+    const booksClient = {
+      listRecords: async (input: { moduleName: string }) => ({
+        organizationId: 'org-1',
+        items: input.moduleName === 'contacts'
+          ? [{
+              contact_id: 'con-1',
+              contact_name: 'DIAMOND PRINTING PRESS',
+              company_name: 'DIAMOND PRINTING PRESS',
+              email: 'vendor@example.com',
+              phone: '',
+              status: 'active',
+              currency_code: 'INR',
+              outstanding_payable_amount: 195920.6,
+              outstanding_receivable_amount: 0,
+            }]
+          : [],
+        hasMore: false,
+        page: 1,
+      }),
+      listAllRecords: async () => ({ organizationId: 'org-1', items: [], truncated: false }),
+      getEndpoint: async () => ({ transactions: [] }),
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ booksClient });
+
+    const result = await tool.execute({ op: 'list_contacts', searchQuery: 'Diamond' }, ctx);
+
+    assert.equal(result.ok, true);
+    const columns = (result as any).value.preview.columns as string[];
+    assert.ok(columns.includes('outstanding_payable_amount'));
+    assert.ok(columns.includes('outstanding_receivable_amount'));
+    const row = (result as any).value.preview.rows[0];
+    assert.equal(row.outstanding_payable_amount, 195920.6);
+    assert.equal(row.outstanding_receivable_amount, 0);
   });
 
   it('passes search text and date filters to search_transactions', async () => {
@@ -374,8 +410,8 @@ describe('zohoBooks expanded execution', () => {
     assert.ok(JSON.stringify(result.value).length < 5_000);
   });
 
-  it('returns one persisted opaque offer for a default list overflow without queueing', async () => {
-    let offeredPayload: any;
+  it('returns one persisted opaque export candidate for a default list overflow without queueing', async () => {
+    let candidatePayload: any;
     const booksClient = {
       listRecords: async () => ({
         organizationId: 'org-1',
@@ -391,26 +427,24 @@ describe('zohoBooks expanded execution', () => {
     } as unknown as ZohoBooksPaginatedClient;
     const tool = makeTool({
       booksClient,
-      offers: {
-        appendAuthorizedPart: async (input) => {
-          offeredPayload = input;
+      exportCandidates: {
+        publishCandidate: async (input) => {
+          candidatePayload = input;
           return {
-            outcome: 'appended' as const,
-            offerId: 'offer-opaque',
+            candidateId: '11111111-1111-4111-8111-111111111111',
             expiresAt: new Date('2026-08-03T00:00:00.000Z'),
-            partCount: 1,
           };
         },
       },
     });
-    const offerCtx = makeCtx('zohoBooks', ['read'], {
+    const candidateCtx = makeCtx('zohoBooks', ['read'], {
       chatId: 'oc_test',
       replyToMessageId: 'om_thread_root',
       replyInThread: true,
       requestId: 'om_preview',
     });
-    offerCtx.perm.allowedToolIds.add(asToolId('dataExport'));
-    offerCtx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
+    candidateCtx.perm.allowedToolIds.add(asToolId('dataExport'));
+    candidateCtx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
 
     const result = await tool.execute({
       op: 'list_invoices',
@@ -418,31 +452,31 @@ describe('zohoBooks expanded execution', () => {
       dateFrom: '2026-07-01',
       dateTo: '2026-07-31',
       status: 'partially paid',
-    }, offerCtx);
+    }, candidateCtx);
 
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.equal(result.value.preview?.rows.length, 25);
     assert.equal(result.value.preview?.coverage.kind, 'truncated');
-    assert.equal(result.value.preview?.exportOfferId, 'offer-opaque');
+    assert.equal(result.value.exportCandidate?.candidateId, '11111111-1111-4111-8111-111111111111');
     assert.match(result.value.message ?? '', /Showing 25 invoices/);
     assert.equal((result.value.report as any).returnedCount, 25);
     assert.equal((result.value.report as any).totalCount, undefined);
     assert.equal(result.value.data, undefined);
-    assert.equal(offeredPayload.source.kind, 'zoho_books');
-    assert.equal(offeredPayload.source.module, 'invoices');
-    assert.equal(offeredPayload.source.connectionId, '11111111-1111-4111-8111-111111111111');
-    assert.deepEqual(offeredPayload.source.filters, {
+    assert.equal(candidatePayload.source.kind, 'zoho_books');
+    assert.equal(candidatePayload.source.module, 'invoices');
+    assert.equal(candidatePayload.source.connectionId, '11111111-1111-4111-8111-111111111111');
+    assert.deepEqual(candidatePayload.source.filters, {
       date_start: '2026-07-01',
       date_end: '2026-07-31',
       status: 'partially_paid',
     });
-    assert.equal(offeredPayload.replyToMessageId, 'om_thread_root');
-    assert.equal(offeredPayload.replyInThread, true);
-    assert.equal('rows' in offeredPayload, false);
+    assert.equal(candidatePayload.replyToMessageId, 'om_thread_root');
+    assert.equal(candidatePayload.replyInThread, true);
+    assert.equal('rows' in candidatePayload, false);
   });
 
-  it('does not create an offer when any offer guard is missing', async () => {
+  it('does not create an export candidate when any candidate guard is missing', async () => {
     const booksClient = {
       listRecords: async () => ({
         organizationId: 'org-1',
@@ -457,11 +491,11 @@ describe('zohoBooks expanded execution', () => {
         page: 1,
       }),
     } as unknown as ZohoBooksPaginatedClient;
-    let offerCalls = 0;
-    const offers = {
-      appendAuthorizedPart: async () => {
-        offerCalls += 1;
-        return { offerId: 'unexpected', expiresAt: new Date() };
+    let candidateCalls = 0;
+    const exportCandidates = {
+      publishCandidate: async () => {
+        candidateCalls += 1;
+        return { candidateId: '11111111-1111-4111-8111-111111111111', expiresAt: new Date() };
       },
     };
     const cases = [
@@ -470,14 +504,14 @@ describe('zohoBooks expanded execution', () => {
         args: { limit: 5 },
         chatId: 'oc_test',
         allowExport: true,
-        offersEnabled: true,
+        candidatesEnabled: true,
       },
       {
         name: 'personalized scope',
         args: {},
         chatId: 'oc_test',
         allowExport: true,
-        offersEnabled: true,
+        candidatesEnabled: true,
         personalized: true,
       },
       {
@@ -485,28 +519,28 @@ describe('zohoBooks expanded execution', () => {
         args: {},
         chatId: 'oc_test',
         allowExport: false,
-        offersEnabled: true,
+        candidatesEnabled: true,
       },
       {
         name: 'missing Lark chat',
         args: {},
         allowExport: true,
-        offersEnabled: true,
+        candidatesEnabled: true,
       },
       {
-        name: 'missing offer service',
+        name: 'missing candidate service',
         args: {},
         chatId: 'oc_test',
         allowExport: true,
-        offersEnabled: false,
+        candidatesEnabled: false,
       },
     ] as const;
 
     for (const testCase of cases) {
-      const before = offerCalls;
+      const before = candidateCalls;
       const tool = makeTool({
         booksClient,
-        ...(testCase.offersEnabled ? { offers } : {}),
+        ...(testCase.candidatesEnabled ? { exportCandidates } : {}),
       });
       const guardedCtx = makeCtx('zohoBooks', ['read'], {
         ...(testCase.chatId ? { chatId: testCase.chatId } : {}),
@@ -533,8 +567,8 @@ describe('zohoBooks expanded execution', () => {
       }, guardedCtx);
 
       assert.equal(result.ok, true, testCase.name);
-      assert.equal(result.ok && result.value.preview?.exportOfferId, undefined, testCase.name);
-      assert.equal(offerCalls, before, testCase.name);
+      assert.equal(result.ok && result.value.exportCandidate, undefined, testCase.name);
+      assert.equal(candidateCalls, before, testCase.name);
     }
   });
 
@@ -567,19 +601,19 @@ describe('zohoBooks expanded execution', () => {
     assert.equal((voided as any).value.id, 'inv-1');
   });
 
-  it('exports every list operation through the tool contract when exportAll=true', async () => {
-    const jobs: any[] = [];
-    const destinations: Array<string | undefined> = [];
+  it('publishes every list operation through the export candidate contract when exportAll=true', async () => {
+    const candidates: any[] = [];
     const tool = createZohoBooksTool({
       getClient: async () => fakeSimpleClient,
       booksClient: makeBooksClient(),
       financeOps: fakeFinanceOps as ZohoFinanceOps,
-      offers: {
-        appendAuthorizedPart: async () => assert.fail('explicit export must queue immediately'),
-        submitAuthorized: async (payload, destinationConnectionId) => {
-          jobs.push(payload);
-          destinations.push(destinationConnectionId);
-          return `dtx-${jobs.length}`;
+      exportCandidates: {
+        publishCandidate: async (payload) => {
+          candidates.push(payload);
+          return {
+            candidateId: `11111111-1111-4111-8111-${String(candidates.length).padStart(12, '0')}`,
+            expiresAt: new Date('2026-08-03T00:00:00.000Z'),
+          };
         },
       },
       inlineThreshold: 25,
@@ -608,12 +642,11 @@ describe('zohoBooks expanded execution', () => {
         exportAll: true,
       }, ctx);
       assert.equal(result.ok, true);
-      assert.equal((result as any).value.exportQueued, true);
-      assert.match((result as any).value.message, /10,00,000-row auto-format pipeline ceiling/i);
-      assert.match((result as any).value.message, /not be described as complete/i);
+      assert.match((result as any).value.exportCandidate.candidateId, /^11111111-1111-4111-8111-/);
+      assert.match((result as any).value.message, /export candidate is ready/i);
     }
 
-    assert.deepEqual(jobs.map(job => job.source.module), [
+    assert.deepEqual(candidates.map(job => job.source.module), [
       'invoices',
       'bills',
       'customerpayments',
@@ -622,20 +655,21 @@ describe('zohoBooks expanded execution', () => {
       'banktransactions',
       'banktransactions',
     ]);
-    assert.ok(jobs.every(job => job.source.kind === 'zoho_books'));
-    assert.ok(jobs.every(job => job.destination.format === 'auto'));
-    assert.deepEqual(destinations, Array(ops.length).fill(undefined));
+    assert.ok(candidates.every(job => job.source.kind === 'zoho_books'));
+    assert.ok(candidates.every(job => job.destination.format === 'auto'));
   });
 
   // exportAll returns before the per-op switch, so the guards on the individual
-  // bank-transaction cases never see it. This is the one path that queues an
-  // export directly, and it was still submitting a recipe the provider rejects
-  // while telling the member the export was queued.
+  // bank-transaction cases never see it. This candidate path must still refuse
+  // a replay recipe the provider rejects.
   it('refuses an exportAll bank transaction recipe the provider would reject', async () => {
-    let submitted = 0;
+    let published = 0;
     const tool = makeTool({
-      offers: {
-        submitAuthorized: async () => { submitted += 1; return 'job-should-not-exist'; },
+      exportCandidates: {
+        publishCandidate: async () => {
+          published += 1;
+          return { candidateId: '11111111-1111-4111-8111-111111111111', expiresAt: new Date() };
+        },
       } as any,
     });
     const ctx = makeCtx('zohoBooks', ['read'], { chatId: 'oc_test', requestId: 'om_export_all' });
@@ -651,14 +685,17 @@ describe('zohoBooks expanded execution', () => {
 
     assert.equal(result.ok, false);
     assert.match(String((result as any).error.message), /accountId/);
-    assert.equal(submitted, 0, 'no offer row may be written for a recipe that cannot run');
+    assert.equal(published, 0, 'no candidate may be written for a recipe that cannot run');
   });
 
-  it('queues an exportAll bank transaction recipe once the account is named', async () => {
-    const jobs: any[] = [];
+  it('publishes an exportAll bank transaction candidate once the account is named', async () => {
+    const candidates: any[] = [];
     const tool = makeTool({
-      offers: {
-        submitAuthorized: async (payload: any) => { jobs.push(payload); return 'job-1'; },
+      exportCandidates: {
+        publishCandidate: async (payload: any) => {
+          candidates.push(payload);
+          return { candidateId: '11111111-1111-4111-8111-111111111111', expiresAt: new Date() };
+        },
       } as any,
     });
     const ctx = makeCtx('zohoBooks', ['read'], { chatId: 'oc_test', requestId: 'om_export_all_ok' });
@@ -674,52 +711,19 @@ describe('zohoBooks expanded execution', () => {
     }, ctx);
 
     assert.equal(result.ok, true);
-    assert.equal(jobs.length, 1);
-    assert.equal(jobs[0].source.filters.account_id, '3846597000009355454');
-    assert.equal(jobs[0].source.filters.status, 'uncategorized');
+    assert.equal(candidates.length, 1);
+    assert.equal(candidates[0].source.filters.account_id, '3846597000009355454');
+    assert.equal(candidates[0].source.filters.status, 'uncategorized');
   });
 
-  it('retries an ambiguous Zoho export with a separately selected Google destination', async () => {
-    const destinationId = '22222222-2222-4222-8222-222222222222';
-    const calls: Array<string | undefined> = [];
-    const tool = createZohoBooksTool({
-      getClient: async () => fakeSimpleClient,
-      booksClient: makeBooksClient(),
-      financeOps: fakeFinanceOps as ZohoFinanceOps,
-      offers: {
-        appendAuthorizedPart: async () => assert.fail('explicit export must queue immediately'),
-        submitAuthorized: async (_payload, destinationConnectionId) => {
-          calls.push(destinationConnectionId);
-          if (!destinationConnectionId) {
-            throw new Error(`Choose one Google export account and retry: Work (${destinationId})`);
-          }
-          return 'dtx-selected';
-        },
-      },
-    });
-    const exportCtx = makeCtx('zohoBooks', ['read'], {
-      chatId: 'oc_test',
-      requestId: 'om_test_ambiguous',
-    });
-    exportCtx.perm.allowedToolIds.add(asToolId('dataExport'));
-    exportCtx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
-    const baseArgs = {
+  it('keeps Google destination selection out of the Zoho Books tool schema', () => {
+    const tool = makeTool();
+    assert.equal(tool.argsSchema.safeParse({
       op: 'list_invoices' as const,
       connectionId: '11111111-1111-4111-8111-111111111111',
       exportAll: true,
-    };
-
-    const ambiguous = await tool.execute(baseArgs, exportCtx);
-    assert.equal(ambiguous.ok, false);
-    assert.match((ambiguous as any).error.payload.message, /choose one Google export account/i);
-
-    const selected = await tool.execute({
-      ...baseArgs,
-      destinationConnectionId: destinationId,
-    }, exportCtx);
-    assert.equal(selected.ok, true);
-    assert.equal((selected as any).value.exportJobId, 'dtx-selected');
-    assert.deepEqual(calls, [undefined, destinationId]);
+      destinationConnectionId: '22222222-2222-4222-8222-222222222222',
+    }).success, false);
   });
 
   it('bounds script results inline and leaves complete artifacts to dataExport', async () => {

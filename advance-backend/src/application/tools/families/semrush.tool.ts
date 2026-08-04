@@ -10,10 +10,13 @@ import type { AuditService } from '../../observability/audit.service';
 import { SemrushService } from '../../semrush/semrush.service';
 import { SemrushServiceError, SemrushToolArgsSchema, type SemrushFetchedData, type SemrushToolArgs } from '../../semrush/semrush.types';
 import type { ApiKeyExhaustionNotifierPort } from '../../governance/api-key-exhaustion.notifier';
-import type { DataExportOfferService } from '../../data-export/data-export-offer.service';
+import type { DataExportOrchestrationService } from '../../data-export/data-export-orchestration.service';
 import type { DataExportOfferPayload } from '../../data-export/export-offer';
 import { createDatasetPreview, DATASET_PREVIEW_ROW_LIMIT, type DatasetCoverage } from '../../data-export/dataset-preview';
-import { contributeExportPart, exportWithdrawalMessage } from '../../data-export/tool-export-offer';
+import {
+  exportCandidateMetadata,
+  publishExportCandidate,
+} from '../../data-export/tool-export-candidate';
 import { dataExportRunRequestId } from '../../data-export/export-request-identity';
 
 const MAX_TASK_ROWS = 1_000;
@@ -41,10 +44,14 @@ const ResultSchema = z.object({
       }),
       z.object({ kind: z.literal('unknown'), returnedRows: z.number().int().nonnegative() }),
     ]),
-    exportOfferId: z.string().optional(),
-    exportRowCount: z.number().int().nonnegative().optional(),
-    exportWithdrawn: z.literal(true).optional(),
   }).optional(),
+  exportCandidate: z.object({
+    candidateId: z.string().uuid(),
+    sourceKind: z.literal('semrush_snapshot'),
+    previewRowCount: z.number().int().nonnegative(),
+    estimatedRows: z.number().int().nonnegative().optional(),
+    expiresAt: z.string(),
+  }).strict().optional(),
   nextPage: z.string().optional(),
   message: z.string(),
 });
@@ -53,7 +60,7 @@ type Res = z.infer<typeof ResultSchema>;
 
 export const createSemrushTool = (deps: {
   service: SemrushService;
-  offers?: Pick<DataExportOfferService, 'appendAuthorizedPart'>;
+  exportCandidates?: Pick<DataExportOrchestrationService, 'publishCandidate'>;
   audit?: AuditService;
   apiKeyExhaustion?: ApiKeyExhaustionNotifierPort;
 }): Tool<SemrushToolArgs, Res> => ({
@@ -93,15 +100,19 @@ export const createSemrushTool = (deps: {
       ctx.onProgress?.('Retrieving Semrush data…');
       const data = await deps.service.execute(args);
       const allRows = data.rows.slice(0, MAX_TASK_ROWS);
-      const offer = await contributeExportPart({
-        offers: deps.offers,
+      const candidate = await publishExportCandidate({
+        candidates: deps.exportCandidates,
         eligible: allRows.length > 0
           && ctx.runContext.channel === 'lark'
           && Boolean(ctx.runContext.chatId)
           && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true,
         payload: () => exportPayloadFor(args, ctx),
-        observedRowCount: allRows.length,
-        collectionTitle: semrushCollectionTitle(args),
+        metadata: exportCandidateMetadata({
+          columns: allRows.length > 0 ? Object.keys(allRows[0]!) : [],
+          previewRowCount: allRows.length,
+          estimatedRows: data.status === 'complete' || data.status === 'empty' ? allRows.length : undefined,
+          coverage: data.coverage,
+        }),
         logger: ctx.logger,
         scope: 'semrush',
         correlationId: ctx.correlationId,
@@ -109,8 +120,6 @@ export const createSemrushTool = (deps: {
       const preview = createDatasetPreview({
         rows: allRows,
         coverage: previewCoverageFor(data, allRows.length),
-        ...(offer.kind === 'offered' ? { exportOfferId: offer.offerId, exportRowCount: offer.observedRowCount } : {}),
-        ...(offer.kind === 'withdrawn' ? { exportWithdrawn: true as const } : {}),
       });
       const result: Res = {
         status: data.status,
@@ -118,12 +127,22 @@ export const createSemrushTool = (deps: {
         retrievedAt: new Date().toISOString(),
         coverage: data.coverage,
         preview,
+        ...(candidate.kind === 'published'
+          ? {
+              exportCandidate: {
+                candidateId: candidate.candidateId,
+                sourceKind: 'semrush_snapshot' as const,
+                previewRowCount: allRows.length,
+                ...(candidate.estimatedRows === undefined ? {} : { estimatedRows: candidate.estimatedRows }),
+                expiresAt: candidate.expiresAt.toISOString(),
+              },
+            }
+          : {}),
         ...(data.nextPage ? { nextPage: data.nextPage } : {}),
         message: messageFor({
           rowCount: allRows.length,
           returnedRows: preview.rows.length,
-          offer: offer.kind === 'offered',
-          withdrawnReason: offer.kind === 'withdrawn' ? offer.reason : undefined,
+          hasCandidate: candidate.kind === 'published',
           status: data.status,
           missingTargets: stringValues(data.coverage.missingTargets),
         }),
@@ -138,7 +157,7 @@ export const createSemrushTool = (deps: {
           status: result.status,
           rowCount: allRows.length,
           returnedRowCount: preview.rows.length,
-          exportOfferId: offer.kind === 'offered' ? offer.offerId : null,
+          exportCandidateId: candidate.kind === 'published' ? candidate.candidateId : null,
           latencyMs: Date.now() - startedAt,
           correlationId: ctx.correlationId,
         },
@@ -180,27 +199,20 @@ export const createSemrushTool = (deps: {
 function messageFor(input: {
   rowCount: number;
   returnedRows: number;
-  offer: boolean;
-  withdrawnReason: string | undefined;
+  hasCandidate: boolean;
   status: Res['status'];
   missingTargets: readonly string[];
 }): string {
   if (input.status === 'empty') return 'Semrush returned no matching data for this request.';
   const parts = [`Retrieved ${input.rowCount} row${input.rowCount === 1 ? '' : 's'}.`];
   if (input.rowCount > input.returnedRows) parts.push(`Showing the first ${input.returnedRows} rows in chat.`);
-  if (input.offer) parts.push('A governed export covering every Semrush result in this request is available. It reruns those queries when the user confirms, so current provider data may differ from this preview.');
+  if (input.hasCandidate) parts.push('If the member asks for Sheet, Excel, or CSV, use the returned export candidate; Divo reruns current provider data for the file.');
   if (input.missingTargets.length > 0) parts.push(`Semrush returned no backlink overview for: ${input.missingTargets.join(', ')}.`);
-  if (input.withdrawnReason) parts.push(exportWithdrawalMessage(input.withdrawnReason));
   return parts.join(' ');
 }
 
 function stringValues(value: unknown): readonly string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
-}
-
-/** Names the combined file when one request looks up several subjects. */
-function semrushCollectionTitle(args: SemrushToolArgs): string {
-  return `Semrush ${args.operation.replace(/_/g, ' ')}`;
 }
 
 function previewCoverageFor(data: SemrushFetchedData, rowCount: number): DatasetCoverage {

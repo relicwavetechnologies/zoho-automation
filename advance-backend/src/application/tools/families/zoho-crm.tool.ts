@@ -35,10 +35,13 @@ import { asToolId }                        from '../../../shared/ids';
 import type { ZohoCrmOps }                 from '../../zoho/zoho-crm-ops';
 import { mapZohoError }                    from '../../zoho/zoho-error.utils';
 import type { ZohoCrmPaginatedClient, ZohoCrmModule } from '../../../infrastructure/zoho/zoho-crm-paginated.client';
-import { contributeExportPart, exportWithdrawalMessage } from '../../data-export/tool-export-offer';
 import { dataExportRunRequestId } from '../../data-export/export-request-identity';
-import type { DataExportOfferService }     from '../../data-export/data-export-offer.service';
+import type { DataExportOrchestrationService } from '../../data-export/data-export-orchestration.service';
 import type { DataExportOfferPayload }     from '../../data-export/export-offer';
+import {
+  exportCandidateMetadata,
+  publishExportCandidate,
+} from '../../data-export/tool-export-candidate';
 import {
   createDatasetPreview,
   DATASET_PREVIEW_ROW_LIMIT,
@@ -106,10 +109,14 @@ const ResultSchema = z.object({
       }),
       z.object({ kind: z.literal('unknown'), returnedRows: z.number().int().nonnegative() }),
     ]),
-    exportOfferId: z.string().optional(),
-    exportRowCount: z.number().int().nonnegative().optional(),
-    exportWithdrawn: z.literal(true).optional(),
   }).optional(),
+  exportCandidate: z.object({
+    candidateId: z.string().uuid(),
+    sourceKind: z.literal('zoho_crm'),
+    previewRowCount: z.number().int().nonnegative(),
+    estimatedRows: z.number().int().nonnegative().optional(),
+    expiresAt: z.string(),
+  }).strict().optional(),
 });
 
 type Res = z.infer<typeof ResultSchema>;
@@ -250,7 +257,7 @@ export const createZohoCrmTool = (deps: {
   getClient:  (companyId: string, userId: string, connectionId?: string) => Promise<ZohoCrmClientPort | null>;
   crmClient:  ZohoCrmPaginatedClient;
   crmOps:     ZohoCrmOps;
-  offers?:    Pick<DataExportOfferService, 'appendAuthorizedPart'>;
+  exportCandidates?: Pick<DataExportOrchestrationService, 'publishCandidate'>;
 }): Tool<Args, Res> => ({
   id:           asToolId('zohoCrm'),
   family:       'zoho',
@@ -263,7 +270,7 @@ export const createZohoCrmTool = (deps: {
     'Search uses Zoho criteria syntax: (Field:operator:value) with and/or.',
     'Reports: build_pipeline_summary (deals by stage), build_lead_report (funnel by source), build_deal_forecast (closing deals).',
     'For data analysis, add a `script` parameter to the list operation — fetches ALL records and runs JS in sandbox.',
-    'Large list results return a 25-row preview plus a governed export offer the member confirms in chat.',
+    'Large list results return a 25-row preview plus an export candidate; use dataExport op=plan if the member asks for Sheet, Excel, or CSV.',
   ].join(' '),
 
   parameterDocs: [
@@ -279,7 +286,7 @@ export const createZohoCrmTool = (deps: {
     'limit: max records to return (1-200, default 25)',
     'sortBy: field name to sort by (e.g., Created_Time, Amount)',
     'sortOrder: asc|desc',
-    'exportAll: true to exhaust all pages and offer a governed export of the full module',
+    'exportAll: true to exhaust all pages and publish an export candidate for dataExport planning',
     '',
     'REPORT PARAMS:',
     'build_deal_forecast: closingFrom, closingTo (ISO dates or natural: "this month", "this quarter")',
@@ -334,14 +341,14 @@ export const createZohoCrmTool = (deps: {
     }
 
     /*
-     * A governed export offer replaces the old Cloudinary CSV upload. Refused
-     * under a personalized scope: the offer is confirmed later and re-read by
-     * the worker, which has no requester identity to filter the module down to
-     * that member's own records, so offering one would export everybody's.
+     * A governed export candidate replaces the old direct CSV/upload route.
+     * Refused under a personalized scope: the final export is re-read by the
+     * worker, which has no requester identity to filter the module down to that
+     * member's own records, so publishing one would export everybody's.
      */
-    const canOfferExport = (moduleName: string): boolean =>
+    const canPublishExportCandidate = (moduleName: string): boolean =>
       !personalizedScope
-      && deps.offers !== undefined
+      && deps.exportCandidates !== undefined
       && CRM_EXPORT_MODULES.includes(moduleName as ZohoCrmModule)
       && ctx.runContext.channel === 'lark'
       && Boolean(ctx.runContext.chatId)
@@ -470,12 +477,19 @@ export const createZohoCrmTool = (deps: {
             });
 
             const items = personalizedScope ? filterZohoRecordsByEmail(sourceItems, requesterEmail!) : sourceItems;
-            const offer = await contributeExportPart({
-              offers: deps.offers,
-              eligible: canOfferExport(mod),
+            const formattedItems = formatCrmResult(items) as Record<string, unknown>[];
+            const candidate = await publishExportCandidate({
+              candidates: deps.exportCandidates,
+              eligible: canPublishExportCandidate(mod),
               payload: () => exportPayloadFor(mod as ZohoCrmModule),
-              observedRowCount: items.length,
-              collectionTitle: `Zoho CRM ${mod}`,
+              metadata: exportCandidateMetadata({
+                columns: formattedItems.length > 0 ? Object.keys(formattedItems[0]!) : [],
+                previewRowCount: formattedItems.length,
+                estimatedRows: truncated ? undefined : formattedItems.length,
+                coverage: truncated
+                  ? { kind: 'provider_limited', returnedRows: formattedItems.length, reason: 'crm_pagination_limit' }
+                  : { kind: 'complete', totalRows: formattedItems.length },
+              }),
               logger: ctx.logger,
               scope: 'zoho_crm',
               correlationId: ctx.correlationId,
@@ -485,7 +499,7 @@ export const createZohoCrmTool = (deps: {
             let message = `Found ${items.length} ${mod} record(s).`;
             if (items.length > inline.length) message += ` Showing ${inline.length} inline.`;
             if (truncated) message += ' Pagination limit reached — additional records may exist.';
-            if (offer.kind === 'withdrawn') message += ` ${exportWithdrawalMessage(offer.reason)}`;
+            if (candidate.kind === 'published') message += ' Use dataExport op=plan to create the requested Sheet, Excel, or CSV.';
 
             return ok({
               success: true,
@@ -493,13 +507,22 @@ export const createZohoCrmTool = (deps: {
               message,
               truncated,
               preview: createDatasetPreview({
-                rows: formatCrmResult(items) as Record<string, unknown>[],
+                rows: formattedItems,
                 coverage: truncated
                   ? { kind: 'provider_limited', returnedRows: items.length, reason: 'crm_pagination_limit' }
                   : { kind: 'complete', totalRows: items.length },
-                ...(offer.kind === 'offered' ? { exportOfferId: offer.offerId, exportRowCount: offer.observedRowCount } : {}),
-                ...(offer.kind === 'withdrawn' ? { exportWithdrawn: true as const } : {}),
               }),
+              ...(candidate.kind === 'published'
+                ? {
+                    exportCandidate: {
+                      candidateId: candidate.candidateId,
+                      sourceKind: 'zoho_crm' as const,
+                      previewRowCount: formattedItems.length,
+                      ...(candidate.estimatedRows === undefined ? {} : { estimatedRows: candidate.estimatedRows }),
+                      expiresAt: candidate.expiresAt.toISOString(),
+                    },
+                  }
+                : {}),
             });
           }
 

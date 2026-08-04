@@ -18,7 +18,7 @@ test('allows Luna for an unblocked member without an explicit policy', async () 
 
   assert.deepEqual(
     await service.allowedModelsFor('user-1'),
-    ['deepseek-v4-flash', 'gpt-5.6-luna'],
+    ['deepseek-v4-flash', 'deepseek-v4-pro', 'gpt-5.6-luna'],
   );
 });
 

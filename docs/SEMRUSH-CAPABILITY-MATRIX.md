@@ -7,9 +7,9 @@ or private web endpoint for a missing row.
 
 | Divo operation | Team workflow | API/version | Probe / UI variance | Runtime status |
 | --- | --- | --- | --- | --- |
-| `domain_overview` | Domain Overview / Organic snapshot | Standard API v3 `domain_ranks` | Compare 2–3 approved domains and database semantics | Implemented; backend environment key |
+| `domain_overview` | Domain Overview / Organic snapshot | Standard API v3 `domain_ranks`; private web `dpa/rpc` `ranks.Ranks` / `organic.overview` when `SEMRUSH_WEB_ENABLED` is configured | Compare 2–3 approved domains and database semantics | Implemented; backend environment key; private web fallback/preference available |
 | `organic_positions` | Organic Research rankings | Standard API v3 `domain_organic` | Compare rows, offsets, and database coverage | Implemented; backend environment key |
-| `backlinks_comparison` | Bulk Backlink Analysis | Official API contract still required | Compare 2–10 approved root domains | Explicitly unavailable |
+| `backlinks_comparison` | Bulk Backlink Analysis | Standard analytics v1 `backlinks_overview`; private web `backlinks/webapi2` `backlinks_comparison` when `SEMRUSH_WEB_ENABLED` is configured | Compare 2–10 approved root domains | Implemented; private web wrapper preferred when configured |
 | `organic_position_trend` | Position Tracking trend | Official Projects API contract required | Validate campaign ownership and historical output | Explicitly unavailable |
 | `domain_comparison` | Domain comparison | Official endpoint/response fixture required | Validate team workflow | Explicitly unavailable |
 | `keyword_gap` | Keyword Gap | Official endpoint/response fixture required | Validate team workflow | Explicitly unavailable |
