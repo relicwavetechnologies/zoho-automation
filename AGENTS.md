@@ -6,7 +6,9 @@
 If `AGENTS.local.md` exists at the repository root, read it before starting
 local infrastructure, using local credentials, or running cloud-Pi/Lark E2E
 tests. It is intentionally ignored and contains local-only operational context;
-never copy its secrets into tracked files or output.
+never copy its secrets into tracked files or output. New teammates: copy
+`AGENTS.local.example.md` to `AGENTS.local.md`, then fill secrets from a team
+lead and `advance-backend/.env.example`.
 
 ## Prime Directive
 
@@ -141,6 +143,115 @@ Backend gateway work needs focused tests:
 - HITL pending response when approval is required.
 
 Run the narrowest relevant tests first. Broaden only when the blast radius warrants it.
+
+## Agent Seat harness (skill and tool testing without Pi)
+
+Use Agent Seat when **you are the runtime agent**: load real skills from the
+gateway, invoke real tools under a named user's RBAC, and walk multi-turn flows
+**without** cloud Pi, Lark webhooks, or the Vercel orchestration engine.
+
+This is the right path for validating **skill clarity**, **tool graphs**, shy
+answer behavior, and export planning before asking Pi to comply.
+
+### References
+
+| What | Where |
+| --- | --- |
+| CLI entry | `advance-backend/scripts/agent-seat.ts` |
+| Service + session | `advance-backend/src/application/agent-seat/` |
+| Slim container (skips Lark init) | `advance-backend/src/application/agent-seat/agent-seat-container.ts` |
+| Delivery chat resolution | `advance-backend/src/application/agent-seat/agent-seat-delivery-chat.ts` |
+| Full harness doc | `advance-backend/docs/cloud-pi-testing/06-agent-seat.md` |
+| Shy Semrush + export scenario | `advance-backend/scenarios/agent-seat/shy-semrush-export.yaml` |
+| Export orchestration spec | `plans/ai-controlled-data-export-orchestration.md` |
+| Cloud-Pi harness comparison | `advance-backend/docs/cloud-pi-testing/02-lark-dm-harness.md` |
+
+### Prerequisites
+
+1. Read `AGENTS.local.md` for local DB tunnel and secrets (never commit it).
+2. Set **`AGENT_SEAT_DELIVERY_CHAT_ID`** in `advance-backend/.env` (your Lark
+   DM with Divo or a test group) **or** pass `--chat-id` on `init`.
+3. Start infra: `cd advance-backend && pnpm dev:e2e` (Development DB on
+   `127.0.0.1:15432` + Redis).
+4. Pi controller and `pnpm dev` are **not** required — Agent Seat calls
+   `GatewayDispatcher` in-process.
+
+### Session rules
+
+- **No default user.** Always `init --user <email|name|open_id>` first.
+- **No default delivery chat.** Set `AGENT_SEAT_DELIVERY_CHAT_ID` in local
+  `advance-backend/.env` or pass `init --chat-id <oc_…>`. Use your own Lark DM
+  with Divo or a test group — **never commit personal chat ids to git**. The
+  bound `chatId` is stored in gitignored `.agent-seat/session.json`.
+- Session state: `advance-backend/.agent-seat/session.json` (gitignored).
+- One CLI command = one Node process (~1–3s boot). Progress on **stderr**
+  (`[agent-seat] container ready …`); JSON on stdout. Commands exit immediately
+  after work (do not chain with `tail` expecting streaming).
+
+### Think like the agent (manual seat workflow)
+
+Do **not** improvise tool calls from memory. Follow the same steps Pi should:
+
+1. **`init --user …`** — bind a real Development identity and RBAC.
+2. **`turn begin`** — new turn + trace id before each simulated user prompt.
+3. **`skill research-router`** — route to the specialist skill slug.
+4. **`skill <specialist>`** — read instructions and tool recipe (e.g.
+   `divo-semrush-seo-research` for Semrush).
+5. **`invoke <toolId> '<json>'`** — one governed call matching the skill; use
+   preflight mentally (schema + skill limits) before invoking.
+6. **Answer shy** — one main table in chat; at most 25 preview rows; soft
+   export follow-up only when `exportCandidate` exists and the member did not
+   refuse export.
+7. **Turn 2 (e.g. "excel")** — `invoke dataExport` with `op=list_candidates`
+   only when unsure, then `op=plan` with one dataset. Never show candidate
+   UUIDs or picker tables to the member.
+8. **`note "…"`** — record skill gaps, schema surprises, or provider blocks for
+   the next engineer.
+
+### Shy answer + model-planned export (what we are proving)
+
+For Semrush comparison prompts:
+
+- **Do:** one `backlinks_comparison` with all targets the user named (within
+  schema max).
+- **Do not:** fan out `domain_overview` per domain.
+- **Do not:** rerun Semrush after the member picks a format — `dataExport`
+  `op=plan` owns pagination and artifact creation.
+
+Skill sources of truth:
+
+- `divo-semrush-seo-research` — operations, cost rules (`backlinks_comparison`
+  = one billed request **per target**), export follow-up copy.
+- `research-router` — Semrush vs web-search vs OMS routing.
+
+### Performance and failure modes (learned in practice)
+
+| Symptom | Cause | What to do |
+| --- | --- | --- |
+| Shell hangs after JSON | Old CLI left BullMQ Redis sockets open | Fixed: forced exit after `shutdownAgentSeatContainer()` |
+| `turn begin && invoke` feels 2× slow | Each subcommand cold-starts the gateway | Run one command at a time; accept ~1–3s boot |
+| `invoke semrush` takes minutes | N targets ⇒ N **sequential** Semrush API calls (15s timeout each) | Normal; watch stderr timing |
+| `invalid_args` targets max 10 | Tool schema caps `backlinks_comparison` at 10 domains | Split batch, drop a domain, or tell the member — do not silently omit |
+| `provider_insufficient_units` | Dev Semrush key/web session out of units | Report `blocked` honestly per skill; fix env or use web path |
+
+### Example commands (shy Semrush export scenario)
+
+```bash
+cd advance-backend
+# once per machine: AGENT_SEAT_DELIVERY_CHAT_ID=oc_... in .env
+pnpm tsx scripts/agent-seat.ts init --user "you@company.com"
+pnpm tsx scripts/agent-seat.ts turn begin
+pnpm tsx scripts/agent-seat.ts skill divo-semrush-seo-research
+pnpm tsx scripts/agent-seat.ts invoke semrush '{"operation":"backlinks_comparison","targets":["a.com","b.com"]}'
+# turn 2:
+pnpm tsx scripts/agent-seat.ts turn begin
+pnpm tsx scripts/agent-seat.ts invoke dataExport '{"op":"list_candidates","scope":"run"}'
+pnpm tsx scripts/agent-seat.ts invoke dataExport '{"op":"plan","datasets":[{"candidateId":"..."}],"destination":{"format":"xlsx","title":"..."},"userIntent":"explicit_export"}'
+pnpm tsx scripts/agent-seat.ts scenario show shy-semrush-export
+```
+
+Automated tests for the harness:
+`advance-backend/tests/application/agent-seat.service.test.ts`.
 
 ## When In Doubt
 

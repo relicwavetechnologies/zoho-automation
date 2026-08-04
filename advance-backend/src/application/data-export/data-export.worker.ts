@@ -24,6 +24,7 @@ import type {
   DataExportCoverage,
   DataExportCoverageCause,
   DataExportJobPayload,
+  DataExportSource,
 } from './data-export.types';
 import {
   dataExportParts,
@@ -352,7 +353,9 @@ export class DataExportWorker {
     }
     // Every part is re-authorized, not just part 0: one revoked tool must not
     // ride along inside an export that another part still permits.
-    const parts = dataExportParts(payload);
+    const parts = payload.workbookTabs?.length
+      ? payload.workbookTabs.map(tab => tab.source)
+      : dataExportParts(payload);
     for (const part of parts) {
       const sourceToolId = datasetSourceToolId(part);
       if (!permission.value.allowedActionsByTool.get(asToolId(sourceToolId))?.has('read')) {
@@ -419,6 +422,45 @@ export class DataExportWorker {
     const run = dataExportRunLogContext(job);
     const updateProgressTracker = (progress: DataExportTrackerProgress) =>
       this.updateProgressTracker(run, progressMessageId, progress);
+    if (payload.workbookTabs?.length) {
+      touch();
+      const workbookTabs = payload.workbookTabs.map(tab => ({
+        tabName: tab.tabName,
+        source: tab.source,
+        rows: this.readWorkbookTabRows({
+          tab,
+          adapters: this.deps.sources,
+          payload,
+          sandbox,
+          maxRows,
+          touch,
+          abortSignal: abortController.signal,
+        }),
+      }));
+      const sinkCompletion = await this.deps.sink.write({
+        auth: googleAuth,
+        readerEmail,
+        exportKey: String(job.id ?? dataExportJobId(payload)),
+        source: payload.source,
+        destination: payload.destination,
+        rows: emptyRowPages(),
+        workbookTabs,
+        coverage: (rowsWritten) => ({
+          inputRowsRead: rowsWritten,
+          rowsWritten,
+          outcome: 'complete' as const,
+        }),
+        sourceTruncated: () => false,
+        signal: abortController.signal,
+      });
+      await job.updateProgress({
+        stage: 'completed',
+        pagesRead: payload.workbookTabs.length,
+        rowsRead: sinkCompletion.rowCount,
+        rowsExported: sinkCompletion.rowCount,
+      });
+      return sinkCompletion;
+    }
     const markPartial = (
       cause: DataExportCoverageCause,
       options: { readonly knownOmittedRows?: number; readonly override?: boolean } = {},
@@ -604,6 +646,39 @@ export class DataExportWorker {
       if (inactivityTimer) clearTimeout(inactivityTimer);
       await sandbox.close();
     }
+  }
+
+  private readWorkbookTabRows(input: {
+    readonly tab: { readonly source: DataExportSource };
+    readonly adapters: DatasetSourceRegistry;
+    readonly payload: DataExportJobPayload;
+    readonly sandbox: DataExportTransformSandbox;
+    readonly maxRows: number;
+    readonly touch: () => void;
+    readonly abortSignal: AbortSignal;
+  }): AsyncIterable<readonly Record<string, unknown>[]> {
+    const adapter = input.adapters.resolve(input.tab.source);
+    const context = {
+      companyId: input.payload.companyId,
+      userId: input.payload.userId,
+      signal: input.abortSignal,
+    };
+    return (async function* () {
+      let inputIndex = 0;
+      let outputIndex = 0;
+      for await (const page of adapter.read(input.tab.source, context)) {
+        input.touch();
+        const remainingInput = input.maxRows - inputIndex;
+        const inputRows = page.rows.slice(0, remainingInput);
+        const transformed = await input.sandbox.transformPage(inputRows, inputIndex);
+        inputIndex += inputRows.length;
+        const remainingOutput = input.maxRows - outputIndex;
+        const outputRows = transformed.slice(0, remainingOutput);
+        outputIndex += outputRows.length;
+        if (outputRows.length > 0) yield outputRows;
+        if (inputIndex >= input.maxRows) break;
+      }
+    })();
   }
 
   private async deliverCompletion(
@@ -872,6 +947,10 @@ function resolvedExportRowLimit(
     1,
     Math.floor(payload.rowLimitOverride ?? override ?? dataExportRowLimitForFormat(payload.destination.format)),
   );
+}
+
+function emptyRowPages(): AsyncIterable<readonly Record<string, unknown>[]> {
+  return (async function* () {})();
 }
 
 function truncationWarning(coverage: DataExportCoverage | undefined, exportKind: DataExportJobPayload['exportKind']): string {

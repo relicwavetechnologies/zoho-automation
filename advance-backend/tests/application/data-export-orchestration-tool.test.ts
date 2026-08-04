@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { dataExportRunRequestId } from '../../src/application/data-export/export-request-identity.ts';
 import { createDataExportTool } from '../../src/application/tools/families/data-export.tool.ts';
 import { makeCtx } from '../tools/tool-test.helpers.ts';
 
@@ -135,5 +136,65 @@ describe('dataExport candidate orchestration tool contract', () => {
     assert.equal(confirm.ok, true);
     assert.equal(confirm.ok && confirm.value.operation, 'confirm_sample');
     assert.equal(confirm.ok && confirm.value.planId, planId);
+  });
+
+  it('routes list_candidates through orchestration with run scope defaults', async () => {
+    const calls: unknown[] = [];
+    const orchestrationTool = createDataExportTool({
+      offers: {
+        submitAuthorized: async () => 'unused',
+      },
+      orchestration: {
+        planForActor: async () => ({
+          status: 'blocked' as const,
+          reason: 'unused',
+          message: 'unused',
+        }),
+        queueSample: async () => ({
+          status: 'blocked' as const,
+          reason: 'unused',
+          message: 'unused',
+        }),
+        confirmSample: async () => ({
+          status: 'blocked' as const,
+          reason: 'unused',
+          message: 'unused',
+        }),
+        listCandidatesForActor: async input => {
+          calls.push(input);
+          return [{
+            candidateId: '11111111-1111-4111-8111-111111111111',
+            label: 'Semrush backlinks comparison — a.com, b.com',
+            previewRowCount: 2,
+            estimatedRows: 2,
+            columns: ['Domain', 'Backlinks'],
+            shapeKey: 'semrush_snapshot:backlinks_comparison',
+            sourceKind: 'semrush_snapshot',
+            argsSummary: 'backlinks_comparison: a.com, b.com',
+            createdAt: '2026-08-04T00:00:00.000Z',
+          }];
+        },
+      },
+    });
+    const ctx = makeCtx('dataExport', ['create'], {
+      chatId: 'oc_chat',
+      runtimeRunId: 'run-123',
+      traceId: 'trace-123',
+    });
+
+    const listed = await orchestrationTool.execute({ op: 'list_candidates' }, ctx);
+
+    assert.equal(listed.ok, true);
+    assert.equal(listed.ok && listed.value.operation, 'list_candidates');
+    assert.equal(listed.ok && listed.value.candidates.length, 1);
+    assert.match(listed.ok ? listed.value.message : '', /Found 1 active export candidate/i);
+    assert.deepEqual(calls, [{
+      companyId: 'co-test',
+      userId: 'user-test',
+      chatId: 'oc_chat',
+      scope: 'run',
+      runRequestId: dataExportRunRequestId(ctx.runContext, ctx.correlationId),
+      traceId: 'trace-123',
+    }]);
   });
 });

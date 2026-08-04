@@ -316,6 +316,15 @@ export interface DataExportJobPayload {
   readonly traceId?: string;
   readonly progressMessageId?: string;
   readonly completedExport?: DataExportCompletion;
+  /**
+   * When the model plans a multi-tab workbook, each entry is replayed into its
+   * own Sheet tab or Excel worksheet. Mutually exclusive with flat
+   * `additionalParts` merging for the same job.
+   */
+  readonly workbookTabs?: readonly {
+    readonly source: DataExportSource;
+    readonly tabName: string;
+  }[];
 }
 
 /** Every source this payload reads, in the order the run produced them. */

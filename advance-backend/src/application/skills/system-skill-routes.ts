@@ -195,7 +195,7 @@ job, not this one.`,
 Choose the exact approved specialist returned by this router.
 
 - Current public facts and external verification → \`web-search\`.
-- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`. Its bounded preview may return an \`exportCandidate\`; if the member asks for a file, use \`dataExport\` \`op=plan\`; never rerun the provider query, paginate in Pi, or use a local workflow.
+- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`. Prefer one main Semrush call and one main table (for example one \`backlinks_comparison\` for multi-domain ranking). Its bounded preview may return an \`exportCandidate\`; if the member asks for a file, use \`dataExport\` \`op=list_candidates\` when needed, then \`op=plan\` for the table you showed — never rerun the provider query, paginate in Pi, or use a local workflow.
 - Approved OMS publisher/site inventory → \`divo-oms-site-inventory\`.
 
 Never substitute web results for official Semrush or OMS data.

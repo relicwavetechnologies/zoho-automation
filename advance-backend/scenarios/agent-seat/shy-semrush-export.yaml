@@ -1,0 +1,25 @@
+name: shy-semrush-export
+description: >
+  Walkthrough for shy Semrush answering and model-planned export.
+  Use with agent-seat: init, turn begin, invoke tools, note findings.
+turns:
+  - prompt: Compare backlinks for up to ten domains and rank them by authority.
+    expect:
+      tools:
+        - one semrush backlinks_comparison with all targets (max 10 per call)
+      avoid:
+        - domain_overview per domain
+        - listing export candidates to the member
+        - more than ten targets in a single backlinks_comparison call
+    notes: >
+      Answer with one main table. Optional follow-up only if member wants overview fields.
+  - prompt: excel
+    expect:
+      tools:
+        - dataExport op=list_candidates when unsure
+        - dataExport op=plan with one dataset matching the table shown
+      avoid:
+        - candidate picker table in chat
+        - dumping shape keys or UUIDs to the member
+    notes: >
+      User-facing copy should say Divo will send the file when ready.

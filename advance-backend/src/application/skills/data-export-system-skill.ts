@@ -23,10 +23,26 @@ In Lark, supported source tools return bounded chat evidence plus an
 \`exportCandidate\` when the same backend-held recipe can be replayed as a
 private file. Preserve that opaque candidate and do not mention its ID to the
 member. If the member asks for Excel/XL/XLSX, CSV, Sheet, all rows, full data,
-or an export artifact, call \`dataExport\` with \`op="plan"\` using the returned
-candidate ID, requested format, and a clear title. Do not rerun the source
-query, page source rows manually, build a local file, call Google tools, or
-reconstruct provider filters.
+or an export artifact, plan the export from the **table you showed** in your
+last answer:
+
+1. Export only after the member names a format or asks for a file.
+2. Identify which \`exportCandidate\` matches that table — not every tool call
+   in the run.
+3. If unsure, call \`dataExport\` \`op=list_candidates\` (scope \`run\` when the
+   answer spans this turn), then \`op=plan\` with one dataset by default.
+4. Use multiple \`datasets[]\` only when the member explicitly asked for
+   multiple tables earlier in the thread; assign \`tabName\` per dataset for
+   Sheet or Excel.
+5. Never list \`exportCandidate\` IDs, shape keys, or internal dataset picker
+   tables to the member.
+6. Tell the member plainly: "Exporting [what they saw] to Excel/Sheet — Divo
+   will send the file here when ready."
+7. If \`op=plan\` returns \`ambiguous\`, repair the plan (one dataset, or explicit
+   \`tabName\` per dataset) — do not dump candidates on the member.
+
+Do not rerun the source query, page source rows manually, build a local file,
+call Google tools, or reconstruct provider filters.
 
 If a source result has \`exportCandidate\` but the member did not ask for a
 file, the provider skill may end with one concise follow-up such as “Want me to

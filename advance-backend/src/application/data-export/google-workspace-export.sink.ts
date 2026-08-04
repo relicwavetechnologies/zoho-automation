@@ -29,6 +29,7 @@ import {
 import {
   dataExportPresentationCellCount,
   dataExportPresentationRowLimit,
+  writeMultiTabXlsxArtifact,
   writeXlsxArtifact,
 } from './xlsx-export-file';
 import {
@@ -67,6 +68,9 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
   } = {}) {}
 
   async write(input: DataExportDestinationWriteInput): Promise<DataExportCompletion> {
+    if (input.workbookTabs && input.workbookTabs.length > 0) {
+      return this.writeWorkbookTabs(input);
+    }
     const existingSheet = input.destination.target?.kind === 'existing_google_sheet'
       ? input.destination.target
       : undefined;
@@ -515,6 +519,380 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         await cleanupArtifact(drive, spreadsheetId, {
           exportKey: input.exportKey,
           artifactType: 'google_sheet',
+          reason: 'write_failed',
+          logger: this.options.logger,
+        });
+      }
+      throw error;
+    }
+  }
+
+  private async writeWorkbookTabs(input: DataExportDestinationWriteInput): Promise<DataExportCompletion> {
+    const tabs = input.workbookTabs ?? [];
+    if (tabs.length === 0) {
+      throw new Error('Workbook export requires at least one tab');
+    }
+    const format = input.destination.format;
+    if (format === 'csv') {
+      throw new Error('CSV exports can contain one dataset. Use Google Sheet or Excel for a workbook.');
+    }
+    const access = artifactAccess(input.auth, input.readerEmail);
+    const drive = google.drive({ version: 'v3', auth: oauth(input.auth.accessToken) });
+    const recovered = await recoverCompletedExport(
+      drive,
+      input.exportKey,
+      access,
+      input.signal,
+      this.options.logger,
+    );
+    if (recovered) return recovered;
+
+    const tempDirectory = await mkdtemp(join(
+      this.options.temporaryDirectoryRoot ?? tmpdir(),
+      'divo-export-wb-',
+    ));
+    const spooledTabs: Array<{
+      readonly tabName: string;
+      readonly source: DataExportSource;
+      readonly rowsPath: string;
+      readonly columns: readonly string[];
+      readonly rowCount: number;
+    }> = [];
+
+    try {
+      for (const [index, tab] of tabs.entries()) {
+        const rowsPath = join(tempDirectory, `tab-${index}.ndjson`);
+        const rowStream = createWriteStream(rowsPath, { encoding: 'utf8' });
+        const discoveredColumns = new Set<string>();
+        let rowCount = 0;
+        let spooledBytes = 0;
+        const spoolByteLimit = tab.source.kind === 'menhood_query'
+          ? this.options.menhoodSpoolByteLimit ?? DATA_EXPORT_MENHOOD_SPOOL_BYTE_LIMIT
+          : DATA_EXPORT_GENERIC_SPOOL_BYTE_LIMIT;
+
+        spoolPages: for await (const page of tab.rows) {
+          input.signal?.throwIfAborted();
+          for (const row of page) {
+            const line = JSON.stringify(row);
+            const lineBytes = Buffer.byteLength(line, 'utf8') + 2;
+            if (
+              tab.source.kind === 'menhood_query'
+              && spooledBytes + lineBytes > spoolByteLimit
+            ) {
+              break spoolPages;
+            }
+            if (
+              rowCount >= DATA_EXPORT_CSV_ROW_LIMIT
+              || spooledBytes + lineBytes > spoolByteLimit
+            ) {
+              throw new Error('Data export exceeds the 1,000,000-row or 1 GB safety ceiling');
+            }
+            for (const column of Object.keys(row)) discoveredColumns.add(column);
+            await writeLine(rowStream, line);
+            spooledBytes += lineBytes;
+            rowCount += 1;
+          }
+        }
+        rowStream.end();
+        await once(rowStream, 'close');
+        spooledTabs.push({
+          tabName: safeWorkbookTabName(tab.tabName, index),
+          source: tab.source,
+          rowsPath,
+          columns: [...discoveredColumns],
+          rowCount,
+        });
+      }
+
+      const totalRows = spooledTabs.reduce((sum, tab) => sum + tab.rowCount, 0);
+      const coverage = input.coverage?.(totalRows) ?? {
+        inputRowsRead: totalRows,
+        rowsWritten: totalRows,
+        outcome: 'complete' as const,
+      };
+      const sourceTruncated = input.sourceTruncated();
+
+      if (format === 'xlsx') {
+        const xlsxPath = join(tempDirectory, 'workbook.xlsx');
+        await writeMultiTabXlsxArtifact({
+          path: xlsxPath,
+          tabs: spooledTabs.map(tab => ({
+            tabName: tab.tabName,
+            columns: tab.columns,
+            source: tab.source,
+            rows: readRows(tab.rowsPath, tab.rowCount),
+            rowCount: tab.rowCount,
+          })),
+          ...(input.signal ? { signal: input.signal } : {}),
+          ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+        });
+        return this.uploadPreparedXlsx({
+          auth: input.auth,
+          access,
+          exportKey: input.exportKey,
+          title: input.destination.title,
+          xlsxPath,
+          rowCount: totalRows,
+          coverage,
+          sourceTruncated,
+          ...(input.signal ? { signal: input.signal } : {}),
+        });
+      }
+
+      return this.createMultiTabSheet({
+        auth: input.auth,
+        access,
+        exportKey: input.exportKey,
+        title: input.destination.title,
+        tabs: spooledTabs,
+        rowCount: totalRows,
+        coverage,
+        sourceTruncated,
+        ...(input.signal ? { signal: input.signal } : {}),
+        ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+      });
+    } finally {
+      await rm(tempDirectory, { recursive: true, force: true });
+    }
+  }
+
+  private async createMultiTabSheet(input: {
+    readonly auth: GoogleExportAuth;
+    readonly access: DataExportArtifactAccess;
+    readonly exportKey: string;
+    readonly title: string;
+    readonly tabs: readonly {
+      readonly tabName: string;
+      readonly source: DataExportSource;
+      readonly rowsPath: string;
+      readonly columns: readonly string[];
+      readonly rowCount: number;
+    }[];
+    readonly rowCount: number;
+    readonly coverage: DataExportCoverage;
+    readonly sourceTruncated: boolean;
+    readonly signal?: AbortSignal;
+    readonly onProgress?: (progress: DataExportDestinationWriteProgress) => Promise<void>;
+  }): Promise<DataExportCompletion> {
+    const auth = oauth(input.auth.accessToken);
+    const sheets = google.sheets({ version: 'v4', auth });
+    const drive = google.drive({ version: 'v3', auth });
+    let spreadsheetId: string | undefined;
+    let contentAndAccessVerified = false;
+    try {
+      const created = await drive.files.create({
+        ignoreDefaultVisibility: true,
+        requestBody: {
+          name: safeTitle(input.title),
+          mimeType: 'application/vnd.google-apps.spreadsheet',
+          appProperties: writingProperties(input.exportKey),
+        },
+        fields: 'id',
+      }, requestOptions(input.signal));
+      spreadsheetId = created.data.id ?? undefined;
+      if (!spreadsheetId) throw new Error('Google Sheets did not return a spreadsheet ID');
+
+      const metadata = await sheets.spreadsheets.get({
+        spreadsheetId,
+        fields: 'sheets.properties',
+      }, requestOptions(input.signal));
+      const sheetIds = metadata.data.sheets?.map(sheet => sheet.properties?.sheetId) ?? [];
+      const requests: Array<Record<string, unknown>> = [];
+      if (sheetIds[0] !== undefined) {
+        requests.push({
+          updateSheetProperties: {
+            properties: {
+              sheetId: sheetIds[0],
+              title: input.tabs[0]!.tabName,
+            },
+            fields: 'title',
+          },
+        });
+      }
+      for (const [index, tab] of input.tabs.slice(1).entries()) {
+        requests.push({
+          addSheet: {
+            properties: { title: tab.tabName, index: index + 1 },
+          },
+        });
+      }
+      if (requests.length > 0) {
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId,
+          requestBody: { requests },
+        }, requestOptions(input.signal));
+      }
+
+      let rowsProcessed = 0;
+      for (const tab of input.tabs) {
+        const presentation = buildDataExportPresentation({
+          title: tab.tabName,
+          columns: tab.columns,
+          source: tab.source,
+          rowCount: tab.rowCount,
+          coverage: input.coverage,
+          sourceTruncated: input.sourceTruncated,
+        });
+        const quotedTitle = quoteSheetTitle(tab.tabName);
+        let values: unknown[][] = [[...presentation.mainColumns]];
+        let writtenRows = 0;
+        for await (const row of readRows(tab.rowsPath, tab.rowCount)) {
+          input.signal?.throwIfAborted();
+          values.push([...presentation.mainRow(row)]);
+          if (values.length < SHEET_APPEND_ROWS) continue;
+          await sheets.spreadsheets.values.append({
+            spreadsheetId,
+            range: `${quotedTitle}!A1`,
+            valueInputOption: 'RAW',
+            insertDataOption: 'INSERT_ROWS',
+            requestBody: { values },
+          }, requestOptions(input.signal));
+          writtenRows += values.length - (writtenRows === 0 ? 1 : 0);
+          rowsProcessed += values.length - (writtenRows === values.length ? 1 : 0);
+          await input.onProgress?.({ stage: 'writing', rowsProcessed });
+          values = [];
+        }
+        if (values.length > 0) {
+          await sheets.spreadsheets.values.append({
+            spreadsheetId,
+            range: `${quotedTitle}!A1`,
+            valueInputOption: 'RAW',
+            insertDataOption: 'INSERT_ROWS',
+            requestBody: { values },
+          }, requestOptions(input.signal));
+          writtenRows += values.length - (writtenRows === 0 ? 1 : 0);
+          rowsProcessed += values.length;
+          await input.onProgress?.({ stage: 'writing', rowsProcessed });
+        }
+        const verified = await sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range: `${quotedTitle}!1:1`,
+        }, requestOptions(input.signal));
+        if ((verified.data.values?.[0]?.length ?? 0) !== presentation.mainColumns.length) {
+          throw new Error(`Google Sheet verification failed: header width differs for tab "${tab.tabName}"`);
+        }
+      }
+
+      await ensureArtifactAccess(drive, spreadsheetId, input.access, input.signal);
+      await verifyArtifactAccess(drive, spreadsheetId, input.access, input.signal);
+      contentAndAccessVerified = true;
+      const artifact: PersistedArtifact = {
+        exportKey: input.exportKey,
+        artifactType: 'google_sheet',
+        rowCount: input.rowCount,
+        coverage: input.coverage,
+        sourceTruncated: input.sourceTruncated,
+      };
+      await markVerifiedExport(drive, spreadsheetId, artifact, input.signal);
+      await markCompletedExport(drive, spreadsheetId, artifact, input.signal);
+      this.options.logger?.info('data_export.artifact.completed', {
+        exportKey: input.exportKey,
+        artifactType: artifact.artifactType,
+        rowCount: artifact.rowCount,
+        coverageOutcome: artifact.coverage?.outcome ?? null,
+        coverageCause: artifact.coverage?.cause ?? null,
+      });
+      return {
+        success: true,
+        artifactId: spreadsheetId,
+        artifactUrl: `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/edit`,
+        artifactType: 'google_sheet',
+        rowCount: input.rowCount,
+        coverage: input.coverage,
+        sourceTruncated: input.sourceTruncated,
+        sharedWith: accessLabel(input.access),
+        verified: true,
+      };
+    } catch (error) {
+      if (spreadsheetId && !contentAndAccessVerified) {
+        await cleanupArtifact(drive, spreadsheetId, {
+          exportKey: input.exportKey,
+          artifactType: 'google_sheet',
+          reason: 'write_failed',
+          logger: this.options.logger,
+        });
+      }
+      throw error;
+    }
+  }
+
+  private async uploadPreparedXlsx(input: {
+    readonly auth: GoogleExportAuth;
+    readonly access: DataExportArtifactAccess;
+    readonly exportKey: string;
+    readonly title: string;
+    readonly xlsxPath: string;
+    readonly rowCount: number;
+    readonly coverage: DataExportCoverage;
+    readonly sourceTruncated: boolean;
+    readonly signal?: AbortSignal;
+  }): Promise<DataExportCompletion> {
+    const drive = google.drive({ version: 'v3', auth: oauth(input.auth.accessToken) });
+    let fileId: string | undefined;
+    let contentAndAccessVerified = false;
+    try {
+      const created = await drive.files.create({
+        ignoreDefaultVisibility: true,
+        requestBody: {
+          name: `${safeTitle(input.title)}.xlsx`,
+          mimeType: XLSX_MIME_TYPE,
+          appProperties: writingProperties(input.exportKey),
+        },
+        media: {
+          mimeType: XLSX_MIME_TYPE,
+          body: createReadStream(input.xlsxPath),
+        },
+        fields: 'id,webViewLink,size,mimeType',
+      }, requestOptions(input.signal));
+      fileId = created.data.id ?? undefined;
+      if (!fileId) throw new Error('Google Drive did not return a file ID');
+      await ensureArtifactAccess(drive, fileId, input.access, input.signal);
+      const localSize = (await stat(input.xlsxPath)).size;
+      const verified = await drive.files.get(
+        { fileId, fields: 'id,size,mimeType,webViewLink' },
+        requestOptions(input.signal),
+      );
+      if (Number(verified.data.size ?? -1) !== localSize) {
+        throw new Error('Google Drive verification failed: uploaded Excel size differs from source');
+      }
+      if (verified.data.mimeType !== XLSX_MIME_TYPE) {
+        throw new Error('Google Drive verification failed: uploaded Excel MIME type changed');
+      }
+      await verifyArtifactAccess(drive, fileId, input.access, input.signal);
+      contentAndAccessVerified = true;
+      const artifact: PersistedArtifact = {
+        exportKey: input.exportKey,
+        artifactType: 'xlsx',
+        rowCount: input.rowCount,
+        coverage: input.coverage,
+        sourceTruncated: input.sourceTruncated,
+      };
+      await markVerifiedExport(drive, fileId, artifact, input.signal);
+      await markCompletedExport(drive, fileId, artifact, input.signal);
+      this.options.logger?.info('data_export.artifact.completed', {
+        exportKey: input.exportKey,
+        artifactType: artifact.artifactType,
+        rowCount: artifact.rowCount,
+        coverageOutcome: artifact.coverage?.outcome ?? null,
+        coverageCause: artifact.coverage?.cause ?? null,
+      });
+      return {
+        success: true,
+        artifactId: fileId,
+        artifactUrl: verified.data.webViewLink
+          ?? `https://drive.google.com/file/d/${encodeURIComponent(fileId)}/view`,
+        artifactType: 'xlsx',
+        rowCount: input.rowCount,
+        coverage: input.coverage,
+        sourceTruncated: input.sourceTruncated,
+        sharedWith: accessLabel(input.access),
+        verified: true,
+      };
+    } catch (error) {
+      if (fileId && !contentAndAccessVerified) {
+        await cleanupArtifact(drive, fileId, {
+          exportKey: input.exportKey,
+          artifactType: 'xlsx',
           reason: 'write_failed',
           logger: this.options.logger,
         });
@@ -1671,6 +2049,11 @@ function escapeCsvCell(value: unknown): string {
 function safeTitle(value: string): string {
   const title = value.trim().replace(/[\\/:*?"<>|]+/g, '-').slice(0, 120);
   return title || `Divo export ${new Date().toISOString().slice(0, 10)}`;
+}
+
+function safeWorkbookTabName(value: string, index: number): string {
+  const title = value.trim().replace(/[\\/*?:[\]]+/g, '-').slice(0, 31).trim();
+  return title || `Tab ${index + 1}`;
 }
 
 async function* readRows(

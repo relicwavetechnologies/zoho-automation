@@ -418,7 +418,15 @@ export interface Container {
   larkPiRuntime: import('./application/runtime/lark-pi-runtime.service').LarkPiRuntimeService;
 }
 
-export async function buildContainer(env: TypedEnv): Promise<Container> {
+export interface BuildContainerOptions {
+  /** Skip Lark bot-identity network call (safe for in-process harness CLIs). */
+  readonly skipLarkInitialize?: boolean;
+}
+
+export async function buildContainer(
+  env: TypedEnv,
+  options: BuildContainerOptions = {},
+): Promise<Container> {
   const logger = createPinoLogger({
     isDev:   env.NODE_ENV !== 'production',
     level:   env.LOG_LEVEL,
@@ -2094,7 +2102,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ channel: 'lark' }),
     deliveryRepo: channelDeliveryRepo,
   });
-  await larkAdapter.initialize();
+  if (!options.skipLarkInitialize) {
+    await larkAdapter.initialize();
+  }
   deliverGoogleConnect = async (input) => {
     const card = await larkAdapter.sendCardToChat(
       input.chatId,

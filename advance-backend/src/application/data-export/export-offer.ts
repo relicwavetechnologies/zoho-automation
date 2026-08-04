@@ -43,6 +43,10 @@ export const dataExportOfferPayloadSchema = z.object({
   replyInThread: z.boolean().optional(),
   requestId: z.string().min(1),
   traceId: z.string().min(1).optional(),
+  workbookTabs: z.array(z.object({
+    source: datasetSourceSchema,
+    tabName: z.string().min(1).max(80),
+  }).strict()).max(10).optional(),
 }).strict();
 
 /**
