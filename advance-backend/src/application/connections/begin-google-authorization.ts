@@ -67,6 +67,9 @@ export function createBeginGoogleAuthorization(
       ...(origin.groupReplyMode ? { groupReplyMode: origin.groupReplyMode } : {}),
       originalRequest: origin.originalRequest,
       requestedToolIds: [input.toolId],
+      ...(input.continuationPayload
+        ? { continuationPayload: input.continuationPayload }
+        : {}),
     });
     // A Connect action for this exact request is already pending. Issuing a
     // second URL would give the member two continuations for the same ask.

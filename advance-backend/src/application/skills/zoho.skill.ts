@@ -87,7 +87,7 @@ export const zohoBooksReadAnalysisSkill: Skill = {
 READ ROUTING:
 - Bounded lookup or preview -> use the matching zohoBooks read operation with narrow filters.
 - For a list request, omit the limit argument unless the user explicitly requested a numeric maximum. The backend keeps the model preview bounded and may attach governed export actions when additional rows exist.
-- When a list result is truncated, do not retry with a larger limit, fetch source pages manually, or switch to a scripted workflow merely to enumerate the remaining rows. Summarize the bounded preview; when preview.exportOfferId is present in Lark, finish the response and let Divo's verified Sheet/CSV/XLSX card own the choice and queue. Do not ask again or load/call dataExport for that offer.
+- When a list result is truncated, do not retry with a larger limit, fetch source pages manually, or switch to a scripted workflow merely to enumerate the remaining rows. Summarize the bounded preview; when preview.exportOfferId is present in Lark, finish the response and let Divo's verified Sheet/CSV/XLSX card own the initial choice and queue. If the member later names a format, call dataExport with op=confirm for that offer instead of rerunning the list.
 - For an explicit complete-data request that genuinely returned no provider offer, load secure-data-export only when the exact backend-resolved Zoho source identifiers are available. Never rebuild the Zoho query, copy rows, or use Python merely to create that one-source artifact.
 - Latest/recent bounded invoices -> use zohoBooks op="list_invoices" with the requested limit; it is already sorted by invoice date newest-first. Do not scan or sort thousands of rows.
 - Human invoice number -> use zohoBooks op="get_invoice" with that exact number, or list_invoices with searchQuery and accept only an exact normalized invoice_number match before using its invoice_id. Never substitute a fuzzy result.
@@ -104,7 +104,7 @@ OUTPUT:
 - State the account used, material filters, count, total, and whether all pages were processed.
 - Preserve Zoho identifiers exactly as returned, including invoice numbers; never add, remove, or reformat identifier characters.
 - Report only figures returned by the tool computation. Do not add uncomputed remainders, percentages, or other derived claims.
-- Never create, update, delete, schedule, message, email, or save anything in Zoho for a read-only request. Presenting the bounded preview is allowed; only Divo's verified Lark card callback may confirm its governed export offer. The central export owns pagination, destination access, delivery, and verification.`,
+- Never create, update, delete, schedule, message, email, or save anything in Zoho for a read-only request. Presenting the bounded preview is allowed; Divo's verified Lark card owns the initial export choice and queue. If the member later names a format, call \`dataExport\` with \`op=confirm\` for that existing offer instead of rerunning Zoho. The central export owns pagination, destination access, delivery, and verification.`,
 };
 
 const ZOHO_BOOKS_BILL_WORKFLOW = `ZOHO BOOKS BILL RECORDING:

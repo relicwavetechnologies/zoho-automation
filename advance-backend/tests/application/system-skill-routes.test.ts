@@ -29,8 +29,8 @@ describe('system skill routes', () => {
     const research = ROUTING_SYSTEM_SKILLS.find(skill => skill.slug === 'research-router');
     assert.ok(research);
     assert.match(research.markdown, /preview\.exportOfferId/);
-    assert.match(research.markdown, /verified Lark card own the export choice and queue/);
-    assert.match(research.markdown, /Never route that offer through another agent question, tool call/);
+    assert.match(research.markdown, /verified Lark card own the initial export choice and queue/);
+    assert.match(research.markdown, /use `dataExport` `op=confirm`/);
   });
 
   it('routes pasted Google Sheets and Drive Excel workbooks through the data router', () => {
@@ -58,19 +58,19 @@ describe('system skill routes', () => {
     const sheets = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find(skill => skill.slug === 'google-sheets')!;
 
     assert.match(data.markdown, /preview\.exportOfferId.*verified Lark final-response card/s);
-    assert.match(data.markdown, /do not ask again or call `dataExport`/);
+    assert.match(data.markdown, /later chooses a\s+Sheet\/CSV\/XLSX format.*call `dataExport` with\s+`op=confirm`/s);
     assert.match(data.markdown, /destinationReferenceId.*resourceRef.*google-sheets/s);
     assert.match(data.markdown, /No eligible Google destination.*connect-and-resume/s);
     assert.match(airtableCoreSkill.instructions, /complete one-table CSV, Excel, or Google Sheet.*secure-data-export/s);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /verified Sheet\/CSV\/XLSX card own the choice and queue/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /verified Sheet\/CSV\/XLSX card own the initial choice and queue/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /returned no provider offer.*secure-data-export/s);
     assert.match(CREATE_FILES_SYSTEM_SKILL.markdown, /does not own a complete export from a connected provider/i);
-    assert.match(CREATE_FILES_SYSTEM_SKILL.markdown, /do not ask again, load\/call\s+`dataExport`/s);
+    assert.match(CREATE_FILES_SYSTEM_SKILL.markdown, /later chooses a\s+format in natural language.*call\s+`dataExport` with `op=confirm`/s);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /Never use `preview\.exportOfferId`, `destinationReferenceId`, or `resourceRef`/);
     assert.equal(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.aliases.includes('export data'), false);
     assert.match(sheets.markdown, /Before generic web search/);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /verified Google Sheet, CSV, and Excel buttons/);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Do not mention its ID,\s+ask a second export question, load or call `dataExport`/s);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /If the member later chooses Excel\/XL\/XLSX, CSV, or Sheet in natural\s+language, call `dataExport` with `op=confirm`/s);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /direct `dataExport` recipe only.*Airtable or Zoho Books.*no provider offer/s);
   });
 

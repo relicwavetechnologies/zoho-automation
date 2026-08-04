@@ -1525,6 +1525,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     if (
       confirmed.disposition === 'choose_destination'
       || confirmed.disposition === 'connect_required'
+      || confirmed.disposition === 'in_progress'
     ) {
       throw new Error('The connected Google account did not resolve the pending export destination.');
     }
@@ -1948,6 +1949,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   }));
   toolRegistry.register(createDataExportTool({
     offers: dataExportOfferService,
+    beginAuthorization: beginGoogleAuthorization,
   }));
   toolRegistry.register(createSemrushTool({
     service: semrushService,

@@ -23,8 +23,8 @@ describe('Menhood data system skill', () => {
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Choose `final_amount`, `collectable_value`, or `declared_value`/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Never page bulk rows.*synthesize an export offer/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /If a later tool result contains `preview\.exportOfferId`/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /preserve only that one opaque offer/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /do not ask again, call another export tool, or route it to Python/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /preserve that opaque offer/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /later names a format, call `dataExport` with `op=confirm`/);
   });
 
   it('contains the operational joins, enums, quality rules, and named recipes', () => {

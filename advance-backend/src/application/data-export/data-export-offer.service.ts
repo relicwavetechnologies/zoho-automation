@@ -38,6 +38,41 @@ const CONFLICT_MESSAGE =
 /** Bounded because every retry means a concurrent append already succeeded. */
 const APPEND_RETRY_LIMIT = 8;
 
+export type DataExportFormat = 'google_sheet' | 'csv' | 'xlsx';
+
+export type DataExportConfirmationResult =
+  | {
+      readonly exportJobId: string;
+      readonly disposition: 'queued' | 'already_confirmed';
+    }
+  | {
+      readonly disposition: 'in_progress';
+      readonly exportJobId?: string;
+    }
+  | {
+      readonly disposition: 'choose_destination';
+      readonly connections: readonly DataExportDestinationChoice[];
+    }
+  | {
+      readonly disposition: 'connect_required';
+      readonly replyInThread: boolean;
+      readonly replyToMessageId?: string;
+    };
+
+export type NaturalLanguageDataExportConfirmationResult =
+  | (DataExportConfirmationResult & { readonly offerId: string })
+  | { readonly disposition: 'no_pending_offer' }
+  | {
+      readonly disposition: 'ambiguous';
+      readonly offers: readonly {
+        readonly offerId: string;
+        readonly title: string;
+        readonly sourceKind: string;
+        readonly createdAt: string;
+      }[];
+      readonly moreAvailable: boolean;
+    };
+
 export type AppendDataExportPartWithdrawal =
   | 'shape_mismatch'
   | 'too_many_parts'
@@ -90,6 +125,9 @@ export class DataExportOfferService {
     });
     const prepared = await this.persistAuthorized(payload);
     const queued = await this.claimAndQueue(prepared.offer, prepared.now, { target });
+    if (queued.disposition === 'in_progress') {
+      throw new Error('This data export is already being confirmed.');
+    }
     return queued.exportJobId;
   }
 
@@ -99,25 +137,11 @@ export class DataExportOfferService {
     readonly userId: string;
     readonly chatId: string;
     readonly progressMessageId?: string;
-    readonly destinationFormat?: 'google_sheet' | 'csv' | 'xlsx';
+    readonly destinationFormat?: DataExportFormat;
     readonly destinationConnectionId?: string;
     readonly destinationTarget?: DataExportDestinationTarget;
     readonly rememberExplicitPersonalDestination?: boolean;
-  }): Promise<
-    | {
-        readonly exportJobId: string;
-        readonly disposition: 'queued' | 'already_confirmed' | 'in_progress';
-      }
-    | {
-        readonly disposition: 'choose_destination';
-        readonly connections: readonly DataExportDestinationChoice[];
-      }
-    | {
-        readonly disposition: 'connect_required';
-        readonly replyInThread: boolean;
-        readonly replyToMessageId?: string;
-      }
-  > {
+  }): Promise<DataExportConfirmationResult> {
     const now = this.deps.now?.() ?? new Date();
     const loaded = await this.deps.offers.loadForConfirmation({
       offerId: input.offerId,
@@ -217,6 +241,72 @@ export class DataExportOfferService {
     return result;
   }
 
+  /**
+   * Confirm the active export implied by a plain-language format choice. The
+   * lookup is scoped to the authenticated member and current Lark chat; the
+   * selected persisted recipe still goes through confirmForActor for fresh
+   * permission, destination, and idempotency checks.
+   */
+  async confirmLatestForActor(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly chatId: string;
+    readonly destinationFormat: DataExportFormat;
+    readonly progressMessageId?: string;
+    readonly destinationConnectionId?: string;
+  }): Promise<NaturalLanguageDataExportConfirmationResult> {
+    if (!this.deps.offers.findActiveForActor) {
+      throw new Error('Natural-language data export confirmation is unavailable.');
+    }
+    const now = this.deps.now?.() ?? new Date();
+    const found = await this.deps.offers.findActiveForActor({
+      companyId: input.companyId,
+      userId: input.userId,
+      chatId: input.chatId,
+      now,
+    });
+    if (!found.ok) throw found.error;
+
+    const active = found.value.filter(offer => (
+      (offer.status === 'pending' || offer.status === 'confirming' || offer.status === 'confirmed')
+      && offer.payload.chatId === input.chatId
+      && offer.expiresAt.getTime() > now.getTime()
+    ));
+    // Prefer an offer that has not started confirmation yet. This keeps a
+    // stale completed export from stealing a format choice meant for the
+    // newest pending request, while still allowing another format on a
+    // previously confirmed offer when it is the only active one.
+    const pending = active.filter(offer => offer.status === 'pending' || offer.status === 'confirming');
+    const candidates = pending.length > 0 ? pending : active;
+    if (candidates.length === 0) return { disposition: 'no_pending_offer' };
+    if (candidates.length > 1) {
+      return {
+        disposition: 'ambiguous',
+        offers: candidates.slice(0, 8).map(offer => ({
+          offerId: offer.id,
+          title: offer.payload.destination.title,
+          sourceKind: offer.sourceKind,
+          createdAt: offer.createdAt.toISOString(),
+        })),
+        moreAvailable: candidates.length > 8,
+      };
+    }
+
+    const offer = candidates[0]!;
+    const result = await this.confirmForActor({
+      offerId: offer.id,
+      companyId: input.companyId,
+      userId: input.userId,
+      chatId: input.chatId,
+      ...(input.progressMessageId ? { progressMessageId: input.progressMessageId } : {}),
+      destinationFormat: input.destinationFormat,
+      ...(input.destinationConnectionId
+        ? { destinationConnectionId: input.destinationConnectionId }
+        : {}),
+    });
+    return { ...result, offerId: offer.id };
+  }
+
   private async claimAndQueue(
     expected: DataExportOfferRecord,
     now: Date,
@@ -227,7 +317,9 @@ export class DataExportOfferService {
     },
   ): Promise<{
     readonly exportJobId: string;
-    readonly disposition: 'queued' | 'already_confirmed' | 'in_progress';
+    readonly disposition: 'queued' | 'already_confirmed';
+  } | {
+    readonly disposition: 'in_progress';
   }> {
     // The artifact this click is asking for. One offer can legitimately produce
     // a Sheet, a CSV and an Excel file; each is its own job, and only a repeat
@@ -252,7 +344,7 @@ export class DataExportOfferService {
       return { exportJobId: claimed.value.queueJobId, disposition: 'already_confirmed' };
     }
     if (claimed.value.outcome === 'in_progress') {
-      return { exportJobId: requestedJobId, disposition: 'in_progress' };
+      return { disposition: 'in_progress' };
     }
     if (claimed.value.outcome === 'expired') {
       throw new Error('This data export offer has expired. Ask Divo to prepare it again.');

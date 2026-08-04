@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import Ajv from 'ajv';
 import type { Tool } from '../tool.contract';
+import type { ConnectionContinuationPayload } from '../../connections/connection-authorization-intent';
 import type { Result } from '../../../shared/result';
 import { err, ok } from '../../../shared/result';
 import { PermissionError, ToolError } from '../../../shared/errors';
@@ -122,6 +123,7 @@ export type BeginGoogleWorkspaceAuthorization = (input: {
   readonly toolId: string;
   readonly reason: string;
   readonly runContext: import('../../../domain/orchestration/run-context').RunContext;
+  readonly continuationPayload?: ConnectionContinuationPayload;
 }) => Promise<
   | { readonly status: 'sent'; readonly intentId: string }
   | { readonly status: 'already_pending'; readonly intentId: string }

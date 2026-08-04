@@ -20,7 +20,7 @@ Use this skill for analytical questions over the company-managed Menhood Airtabl
 1. Query only through the Divo \`menhoodData\` tool. Never connect to PostgreSQL directly, expose database details, or route Menhood analysis through local Python.
 2. Send one \`SELECT\` or read-only \`WITH ... SELECT\`. Put every user value in bound parameters such as \`$1\`; never interpolate it into SQL.
 3. Use only \`menhood_orders\`, \`menhood_customers\`, \`menhood_products\`, and \`all_cities_with_pincode\`. \`menhood_advertisement_costs\` is intentionally unavailable: never query it or make advertising-cost, ROAS, or spend claims from it.
-4. Keep chat results to the bounded preview and disclose \`coverage.truncated\`. Never page bulk rows through the conversation or synthesize an export offer. If a later tool result contains \`preview.exportOfferId\`, preserve only that one opaque offer for Divo's existing private Sheet/CSV/XLSX choice; do not ask again, call another export tool, or route it to Python.
+4. Keep chat results to the bounded preview and disclose \`coverage.truncated\`. Never page bulk rows through the conversation or synthesize an export offer. If a later tool result contains \`preview.exportOfferId\`, preserve that opaque offer for Divo's private Sheet/CSV/XLSX choice. If the member later names a format, call \`dataExport\` with \`op=confirm\`; never rerun the query or route it to Python.
 
 ## Data model and quality
 

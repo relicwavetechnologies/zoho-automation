@@ -2856,15 +2856,128 @@ describe('data export access contract', () => {
     }).success, false);
   });
 
-  it('rejects provider offer confirmation from the agent-callable tool', () => {
+  it('accepts canonical natural-language confirmation without exposing a recipe', () => {
     const offerId = '11111111-1111-4111-8111-111111111111';
     assert.equal(tool.argsSchema.safeParse({ offerId }).success, false);
     assert.equal(tool.argsSchema.safeParse({ offerId, ...base }).success, false);
     assert.equal(tool.argsSchema.safeParse({ offerId, companyId: 'company-other' }).success, false);
+    assert.equal(tool.argsSchema.safeParse({ op: 'confirm', format: 'xlsx' }).success, true);
+    assert.equal(tool.argsSchema.safeParse({ op: 'confirm', format: 'xl' }).success, false);
     assert.equal(tool.argsSchema.safeParse({
-      offerId,
-      destinationReferenceId: '22222222-2222-4222-8222-222222222222',
+      op: 'confirm',
+      format: 'xlsx',
+      source: base.source,
     }).success, false);
+  });
+
+  it('confirms the active offer and reports only a real queue outcome', async () => {
+    let confirmationInput: unknown;
+    const confirmTool = createDataExportTool({
+      offers: {
+        submitAuthorized: async () => 'unused',
+        confirmLatestForActor: async input => {
+          confirmationInput = input;
+          return {
+            disposition: 'queued' as const,
+            offerId: 'offer-1',
+            exportJobId: 'job-1',
+          };
+        },
+      },
+    });
+
+    const result = await confirmTool.execute(
+      { op: 'confirm', format: 'xlsx' },
+      makeCtx('dataExport', ['create'], {
+        chatId: 'oc_chat',
+        replyToMessageId: 'om_user',
+      }),
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(confirmationInput, {
+      companyId: 'co-test',
+      userId: 'user-test',
+      chatId: 'oc_chat',
+      destinationFormat: 'xlsx',
+      progressMessageId: 'om_user',
+    });
+    assert.deepEqual(result.value, {
+      operation: 'confirm',
+      success: true,
+      exportQueued: true,
+      status: 'queued',
+      exportJobId: 'job-1',
+      message: 'Excel (.xlsx) export queued. Divo will deliver the verified private artifact to this Lark chat.',
+    });
+  });
+
+  it('does not promise an export when the active offer is gone', async () => {
+    const confirmTool = createDataExportTool({
+      offers: {
+        submitAuthorized: async () => 'unused',
+        confirmLatestForActor: async () => ({ disposition: 'no_pending_offer' as const }),
+      },
+    });
+
+    const result = await confirmTool.execute(
+      { op: 'confirm', format: 'csv' },
+      makeCtx('dataExport', ['create'], { chatId: 'oc_chat' }),
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.value, {
+      operation: 'confirm',
+      success: false,
+      exportQueued: false,
+      status: 'no_pending_offer',
+      message: 'I could not find an active export offer in this Divo conversation. Ask me to prepare the data again, then choose the format.',
+    });
+  });
+
+  it('reports a truthful connect-and-resume outcome', async () => {
+    let authorizationInput: unknown;
+    const confirmTool = createDataExportTool({
+      offers: {
+        submitAuthorized: async () => 'unused',
+        confirmLatestForActor: async () => ({
+          disposition: 'connect_required' as const,
+          replyInThread: false,
+          offerId: '11111111-1111-4111-8111-111111111111',
+        }),
+      },
+      beginAuthorization: async input => {
+        authorizationInput = input;
+        return { status: 'sent' as const, intentId: 'intent-1' };
+      },
+    });
+
+    const result = await confirmTool.execute(
+      { op: 'confirm', format: 'google_sheet' },
+      makeCtx('dataExport', ['create'], {
+        chatId: 'oc_chat',
+        replyToMessageId: 'om_user',
+      }),
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.value.status, 'connect_pending');
+    assert.equal(result.value.exportQueued, false);
+    assert.match(result.value.message, /connection card was sent/i);
+    assert.deepEqual(authorizationInput, {
+      toolId: 'dataExport',
+      reason: 'Connect a writable Google account to create this Google Sheet export.',
+      continuationPayload: {
+        kind: 'data_export_confirmation',
+        offerId: '11111111-1111-4111-8111-111111111111',
+        progressMessageId: 'om_user',
+        format: 'google_sheet',
+      },
+      runContext: makeCtx('dataExport', ['create'], {
+        chatId: 'oc_chat',
+        replyToMessageId: 'om_user',
+      }).runContext,
+    });
   });
 
   it('pins a direct recipe to the backend-derived Lark reply address', async () => {
