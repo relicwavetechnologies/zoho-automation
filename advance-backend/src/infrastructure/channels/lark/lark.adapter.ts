@@ -18,7 +18,7 @@ import {
   LarkStatusCoordinator,
   LarkStatusDrainTimeoutError,
 } from './lark-status.coordinator';
-import { buildFinalCard, planFinalCards } from './lark-card.builder';
+import { buildFinalCard, planFinalCards, stripMarkdownInline } from './lark-card.builder';
 import { buildLarkFinalDeliveryEnvelope } from './lark-final-delivery';
 
 interface LarkRunIdentity {
@@ -532,11 +532,12 @@ export class LarkChannelAdapter implements ChannelAdapter {
           if (continuationResult.ambiguous) {
             deliveryIncomplete = true;
           } else {
-            const fallback = await this.sendPlainTextFallback(
+            const fallback = await this.sendRenderedFallback(
               conversation,
               continuationSegments
                 .slice(continuationResult.sentCount)
                 .map(segment => segment.markdown),
+              reply.branding,
               corrId,
             );
             deliveryIncomplete = !fallback.complete;
@@ -557,7 +558,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
         );
       }
 
-      // Try 3: Last resort — send plain text (bypasses card rendering entirely)
+      // Try 3: Re-render as smaller cards, with plain text only as the last resort.
       if (!messageId) {
         if (stuckCardId) {
           await this.updateStuckStatusCard(
@@ -567,9 +568,10 @@ export class LarkChannelAdapter implements ChannelAdapter {
             corrId,
           );
         }
-        const fallback = await this.sendPlainTextFallback(
+        const fallback = await this.sendRenderedFallback(
           conversation,
           segments.map(segment => segment.markdown),
+          reply.branding,
           corrId,
         );
         messageId = fallback.messageId;
@@ -869,6 +871,59 @@ export class LarkChannelAdapter implements ChannelAdapter {
     }));
   }
 
+  private async sendRenderedFallback(
+    conversation: ConversationHandle,
+    messages: readonly string[],
+    branding: FinalReply['branding'],
+    correlationId: string,
+  ): Promise<{ messageId: string | undefined; complete: boolean; ambiguous: boolean }> {
+    let firstMessageId: string | undefined;
+    let sentCount = 0;
+    const segments = planFinalCards({
+      markdown: messages.join('\n\n'),
+      ...(branding ? { branding } : {}),
+    }, { maxTablesPerCard: 1 });
+    try {
+      for (const segment of segments) {
+        const result = await this.messagingClient.sendMessage(
+          conversation.chatId,
+          segment.payload,
+          conversation.replyToMessageId,
+          conversation.replyInThread,
+        );
+        firstMessageId ??= result.messageId;
+        sentCount += 1;
+      }
+      if (firstMessageId) {
+        this.logger.info('lark.adapter.rendered_fallback_sent', {
+          correlationId,
+          segmentCount: segments.length,
+        });
+      }
+      return { messageId: firstMessageId, complete: true, ambiguous: false };
+    } catch (e) {
+      this.logger.warn('lark.adapter.rendered_fallback_failed', {
+        error: e instanceof Error ? e.message : String(e),
+        correlationId,
+        deliveredCount: sentCount,
+        totalCount: segments.length,
+      });
+      if (isAmbiguousDeliveryFailure(e)) {
+        return { messageId: firstMessageId, complete: false, ambiguous: true };
+      }
+      const fallback = await this.sendPlainTextFallback(
+        conversation,
+        segments.slice(sentCount).map(segment => segment.markdown),
+        correlationId,
+      );
+      return {
+        messageId: firstMessageId ?? fallback.messageId,
+        complete: fallback.complete,
+        ambiguous: fallback.ambiguous,
+      };
+    }
+  }
+
   private async sendPlainTextFallback(
     conversation: ConversationHandle,
     messages: readonly string[],
@@ -876,7 +931,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
   ): Promise<{ messageId: string | undefined; complete: boolean; ambiguous: boolean }> {
     let firstMessageId: string | undefined;
     let sentCount = 0;
-    const chunks = splitPlainTextMessages(messages.join('\n\n'));
+    const chunks = splitPlainTextMessages(toPlainFallbackText(messages.join('\n\n')));
     try {
       for (const chunk of chunks) {
         const textContent = JSON.stringify({
@@ -1020,6 +1075,29 @@ export const isLarkHumanMessage = (incoming: IncomingMessage): boolean =>
 export const shouldStartLarkAgent = (incoming: IncomingMessage): boolean =>
   isLarkHumanMessage(incoming)
   && (incoming.chatType === 'p2p' || incoming.mentionsSelf);
+
+function toPlainFallbackText(text: string): string {
+  return text
+    .split('\n')
+    .map(line => {
+      const trimmed = line.trim();
+      if (!trimmed) return '';
+      if (/^\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?$/.test(trimmed)) return '';
+      if (trimmed.includes('|')) {
+        return trimmed
+          .replace(/^\|/, '')
+          .replace(/\|$/, '')
+          .split('|')
+          .map(cell => stripMarkdownInline(cell))
+          .filter(Boolean)
+          .join(' · ');
+      }
+      return stripMarkdownInline(trimmed.replace(/^#{1,6}\s+/, '').replace(/^-{3,}$/, ''));
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
 
 function splitPlainTextMessages(text: string, maxChars = 3500): string[] {
   const normalized = text.trim();

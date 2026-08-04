@@ -44,6 +44,12 @@ function parseCardPayload(payload: string): Record<string, unknown> {
   return JSON.parse(outer.card) as Record<string, unknown>;
 }
 
+function cardTableCount(payload: string): number {
+  if (payload.includes('"msg_type":"text"')) return 0;
+  const card = parseCardPayload(payload);
+  return JSON.stringify(card['body']).match(/"tag":"table"/g)?.length ?? 0;
+}
+
 function financeFixture(tableCount: number): string {
   const sections = ['# Finance Update', 'Structured finance summary'];
   for (let i = 1; i <= tableCount; i += 1) {
@@ -839,7 +845,7 @@ describe('LarkChannelAdapter delivery timing', () => {
     assert.equal(result.ok, false);
     if (result.ok) return;
     assert.equal(result.error.payload.reason, 'ambiguous_delivery');
-    assert.equal(calls, 2);
+    assert.equal(calls, 3);
   });
 
   it('reports partial delivery when continuation cards and their text fallback fail', async () => {
@@ -881,6 +887,7 @@ describe('LarkChannelAdapter delivery timing', () => {
     const expectedSegments = planFinalCards({ markdown: reply.text, branding: reply.branding });
     assert.ok(expectedSegments.length >= 3, 'fixture produces multiple continuations');
     let cardCalls = 0;
+    const fallbackCards: string[] = [];
     const fallbackText: string[] = [];
     (adapter as any).messagingClient = {
       sendMessage: async (_chatId: string, payload: string) => {
@@ -891,6 +898,7 @@ describe('LarkChannelAdapter delivery timing', () => {
         }
         cardCalls += 1;
         if (cardCalls === 3) throw new LarkApiError('continuation unavailable', 500);
+        if (cardCalls > 3) fallbackCards.push(payload);
         return { messageId: `om_card_${cardCalls}` };
       },
       updateMessage: async () => undefined,
@@ -900,9 +908,10 @@ describe('LarkChannelAdapter delivery timing', () => {
     const result = await adapter.sendFinalReply(makeConversation(), reply);
 
     assert.equal(result.ok, true);
-    const fallback = fallbackText.join('\n');
-    assert.equal(fallback.includes(expectedSegments[1]!.markdown.slice(0, 80)), false);
-    assert.equal(fallback.includes(expectedSegments[2]!.markdown.slice(0, 80)), true);
+    assert.equal(fallbackText.length, 0);
+    const fallback = fallbackCards.map(parseCardPayload).map(card => JSON.stringify(card['body'])).join('\n');
+    assert.equal(fallback.includes('Client 4'), false);
+    assert.equal(fallback.includes('Client 7'), true);
   });
 
   it('reports partial delivery when plain-text fallback fails after its first chunk', async () => {
@@ -1107,6 +1116,42 @@ describe('LarkChannelAdapter.sendFinalReply', () => {
     assert.match(redirectBody, /Response sent below due to card limits/i);
   });
 
+  it('uses rendered fallback cards before plain text when a multi-table card is rejected', async () => {
+    const adapter = makeAdapter();
+    const sendCalls: unknown[][] = [];
+    const updateCalls: unknown[][] = [];
+
+    (adapter as any).messagingClient = {
+      sendMessage: async (...args: unknown[]) => {
+        sendCalls.push(args);
+        const payload = String(args[1]);
+        assert.equal(payload.includes('"msg_type":"text"'), false);
+        if (cardTableCount(payload) > 1) {
+          throw new LarkApiError('card table number over limit', 400);
+        }
+        return { messageId: `om_rendered_${sendCalls.length}` };
+      },
+      updateMessage: async (...args: unknown[]) => {
+        updateCalls.push(args);
+      },
+      addReaction: async () => undefined,
+    };
+
+    (adapter as any).coordinators.set('corr-1', {
+      getStatusMessageId: () => 'om_status',
+      finalizeMessage: async () => {
+        throw new LarkApiError('Lark update failed', 500);
+      },
+    });
+
+    const result = await adapter.sendFinalReply(makeConversation(), makeReply(financeFixture(4)));
+
+    assert.equal(result.ok, true);
+    assert.ok(sendCalls.length > 1);
+    assert.equal(updateCalls.length, 1);
+    assert.ok(sendCalls.slice(1).every(call => cardTableCount(String(call[1])) <= 1));
+  });
+
   it('updates the old status card before plain-text fallback when interactive card delivery fails', async () => {
     const adapter = makeAdapter();
     const sendCalls: unknown[][] = [];
@@ -1137,6 +1182,14 @@ describe('LarkChannelAdapter.sendFinalReply', () => {
     if (!result.ok) return;
     assert.equal(result.value.messageId, 'om_text');
     assert.ok(sendCalls.some(call => String(call[1]).includes('"msg_type":"text"')));
+    const textCall = sendCalls.find(call => String(call[1]).includes('"msg_type":"text"'));
+    assert.ok(textCall);
+    const outer = JSON.parse(String(textCall[1])) as { content: string };
+    const text = (JSON.parse(outer.content) as { text: string }).text;
+    assert.match(text, /Customer · Amount · Status/);
+    assert.doesNotMatch(text, /\|\s*Customer\s*\|/);
+    assert.doesNotMatch(text, /\|---/);
+    assert.doesNotMatch(text, /\*\*/);
     for (const call of sendCalls) {
       assert.equal(call[2], 'om_parent');
       assert.equal(call[3], true);
