@@ -172,6 +172,7 @@ jobs:
       - name: Require successful Dev push CI for this commit
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           passed="$(gh run list --workflow ci.yml --branch dev --event push \
             --commit "${GITHUB_SHA}" --status success --limit 1 \
@@ -289,7 +290,14 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - docker-build
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.deploy_development == true
+    if: >-
+      ${{
+        always() &&
+        github.event_name == 'workflow_dispatch' &&
+        github.ref == 'refs/heads/dev' &&
+        inputs.deploy_development == true &&
+        needs.docker-build.result == 'success'
+      }}
     permissions:
       contents: read
       packages: write
@@ -396,7 +404,14 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - publish-development-images
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.deploy_development == true
+    if: >-
+      ${{
+        always() &&
+        github.event_name == 'workflow_dispatch' &&
+        github.ref == 'refs/heads/dev' &&
+        inputs.deploy_development == true &&
+        needs.publish-development-images.result == 'success'
+      }}
     permissions:
       contents: read
       packages: read
