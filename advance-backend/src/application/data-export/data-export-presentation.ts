@@ -14,6 +14,8 @@ const SEMRUSH_DOMAIN_METRIC_COLUMNS = new Set([
 const SEMRUSH_BACKLINKS_NUMERIC_COLUMNS = new Set([
   'Authority Score', 'Backlinks', 'Referring Domains', 'Referring URLs', 'Referring IPs',
   'Follow Links', 'Nofollow Links', 'Text Links', 'Image Links',
+  'ascore', 'total', 'domains_num', 'urls_num', 'ips_num',
+  'follows_num', 'nofollows_num', 'texts_num', 'images_num',
 ]);
 const SEMRUSH_GAP_TEXT_COLUMNS = new Set([
   'Keyword', 'Search Volume', 'CPC', 'Competition',

@@ -1617,7 +1617,7 @@ describe('desktop /me reports the department role', () => {
         locals: { userId: 'user-1', companyId: 'company-1' },
       });
 
-      assert.deepEqual(result.body.data.allowedModels, ['deepseek-v4-flash', 'gpt-5.6-luna']);
+      assert.deepEqual(result.body.data.allowedModels, ['deepseek-v4-flash', 'deepseek-v4-pro', 'gpt-5.6-luna']);
       assert.equal((result.body.data.models as { label: string }[])[0]!.label.length > 0, true);
     });
   });
