@@ -258,7 +258,10 @@ export class ApprovalResumerService {
       runContext,
       perm: permissionResult.value,
       approvalGate: this.deps.approvalGate,
-      chatId: storedChatId ?? chatId,
+      // Replay with the unscoped conversation id. metadata.chatId is already
+      // approval-scoped; passing it back through the gate would double-scope and
+      // miss the approved grant.
+      chatId,
       expectedAction: approval.actionGroup as ToolActionGroup,
       ...(execution ? { execution } : {}),
     });

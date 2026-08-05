@@ -248,10 +248,7 @@ describe('ApprovalResumerService', () => {
 
     assert.deepEqual(harness.executed, [{ title: 'Approved document' }]);
     assert.equal(harness.completions.length, 1);
-    assert.equal(
-      harness.getResumedChatId(),
-      'chat-1:approval:department:dept-1:manager:user-manager',
-    );
+    assert.equal(harness.getResumedChatId(), 'chat-1');
     assert.equal(resolvedTenantKey, 'tenant-1');
     assert.deepEqual(harness.getResumedExecution(), execution);
     assert.match(harness.finalTexts[0] ?? '', /Approved action completed/);
