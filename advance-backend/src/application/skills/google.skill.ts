@@ -33,7 +33,7 @@ ${operationIndex}
 
 COMMON WORKFLOWS:
 - Gmail: search_gmail_messages -> get_gmail_message_content -> send_gmail_message for a grounded reply. Use draft_gmail_message when review was requested.
-- Drive: search_drive_files or list_drive_items -> get_drive_file_content. Use get_drive_file_download_url only when an actual download is needed.
+- Drive: search_drive_files or list_drive_items -> get_drive_file_content. Use get_drive_file_download_url only when an actual download is needed. Pasted spreadsheet/Drive URL that may be an Office workbook or Divo export -> get_drive_file_content for read-only inspection before Sheets resolve/convert.
 - Calendar: get_events for schedules; manage_event for create/update/delete; query_freebusy before scheduling when availability matters.
 - Docs: create_doc -> modify_doc_text/insert_doc_elements -> get_doc_as_markdown to verify. Return the canonical document URL from tool output.
 - Sheets: get_spreadsheet_info -> read_sheet_values -> modify_sheet_values -> read_sheet_values to verify. Use the read result's structured values/counts rather than parsing prose, and use create_spreadsheet for a new workbook.

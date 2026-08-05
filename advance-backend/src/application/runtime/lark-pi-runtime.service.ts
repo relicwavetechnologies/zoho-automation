@@ -1064,6 +1064,8 @@ export class LarkPiRuntimeService {
         )),
         'Use these only when the user refers to a recent export. Resource references never bypass backend permissions.',
         'For a google_sheet follow-up, invoke googleSheets with op=call_exported_sheet and resourceRef from this list. Do not resolve its URL, choose an account, or supply connection/spreadsheet IDs.',
+        'For xlsx or csv, invoke google-drive with get_drive_file_content using the file ID from artifactUrl; do not use Sheets API or call_exported_sheet.',
+        'Never answer from an earlier provider query when the member references one of these exports.',
       ].join('\n');
     } catch (error) {
       this.log.warn('pi.data-export-context.unavailable', {
