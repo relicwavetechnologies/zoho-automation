@@ -139,7 +139,7 @@ export class DesktopToolAccessService {
   async inventory(actor: Actor) {
     const liveRole = await this.liveCompanyRole(actor);
     if (!liveRole) throw new DesktopToolAccessError('forbidden');
-    const [registered, memberships, google, canva, zoho, lark, airtable, aitable] = await Promise.all([
+    const [registered, memberships, google, canva, zoho, lark, airtable, aitable, shopify] = await Promise.all([
       this.deps.prisma.registeredTool.findMany({
         where: { deprecated: false },
         select: { toolId: true, name: true, description: true, category: true, domain: true, hitlRequired: true },
@@ -156,6 +156,7 @@ export class DesktopToolAccessService {
       this.deps.connectionRepo.listAccessibleLarkConnections({ companyId: actor.companyId, userId: actor.userId }),
       this.deps.connectionRepo.listAccessibleAirtableConnections({ companyId: actor.companyId, userId: actor.userId }),
       this.deps.connectionRepo.listAccessibleAitableConnections({ companyId: actor.companyId, userId: actor.userId }),
+      this.deps.connectionRepo.listAccessibleShopifyConnections({ companyId: actor.companyId, userId: actor.userId }),
     ]);
     const companyResult = await this.deps.permissions.resolve({ companyId: asCompanyId(actor.companyId), userId: asUserId(actor.userId), companyRole: liveRole as any, channel: 'desktop' });
     if (!companyResult.ok) throw new DesktopToolAccessError('internal');
@@ -176,6 +177,7 @@ export class DesktopToolAccessService {
     // serve a call, so it must not count towards readiness — otherwise the
     // screen reports "ready" for a tool that fails on its next use.
     const aitableReady = aitable.ok && aitable.value.some(connection => connection.status !== CONNECTION_NEEDS_KEY);
+    const shopifyReady = shopify.ok && shopify.value.length > 0;
     const canManageGlobal = COMPANY_ADMIN_ROLES.has(liveRole);
     const managedDepartments = new Set(memberships.filter(m => m.role.slug === 'MANAGER').map(m => m.departmentId));
     // A company admin governs every department, not only the ones they happen
@@ -227,6 +229,8 @@ export class DesktopToolAccessService {
             ? (LARK_USER_CONNECTION_TOOL_IDS.has(tool.toolId)
               ? (larkReady ? 'ready' : 'connection_required')
               : 'ready')
+        : tool.toolId.startsWith('shopify')
+          ? (shopifyReady ? 'ready' : 'connection_required')
           : 'not_applicable';
       tools.push({
         tool,

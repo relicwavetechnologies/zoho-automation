@@ -7,9 +7,19 @@ import type { Turn } from '../../domain/conversation/turn';
 import type { CachePort } from '../../shared/cache';
 import type { ConversationScope } from '../../domain/conversation/conversation-scope';
 import { conversationCacheKey, conversationUniqueKey } from '../../domain/conversation/conversation-scope';
+import {
+  SHOPIFY_ERASURE_LOCK_NAMESPACE,
+  shopifyErasureLockKey,
+  shopifyErasureSourceId,
+} from '../../application/shopify/shopify-erasure-fence';
 
 const HISTORY_CACHE_TTL = 300; // 5 min; invalidated on every appendTurn
 const HISTORY_CACHE_WINDOW = 60;
+
+interface CachedConversationHistory {
+  readonly revision: number;
+  readonly turns: Turn[];
+}
 
 function latestTurns(turns: readonly Turn[], limit: number): Turn[] {
   return turns.slice(Math.max(0, turns.length - limit));
@@ -64,6 +74,8 @@ export interface ConversationTurnMetadata {
   /** Stable channel/run key. Re-delivery returns the existing turn. */
   readonly dedupeKey?: string;
   readonly sourceMessageId?: string;
+  /** Backend-issued Pi run ID used only for exact provider-erasure correlation. */
+  readonly sourceRunId?: string;
 }
 
 /**
@@ -76,6 +88,34 @@ export interface ConversationTurnMetadata {
 const escapeLikePrefix = (value: string): string =>
   value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
 
+async function findOrCreateUnscopedConversation(
+  store: Pick<PrismaClient, 'runtimeConversation'>,
+  chatId: string,
+  companyId: string,
+  channel: string,
+) {
+  const existing = await store.runtimeConversation.findFirst({
+    where: { channelConversationKey: chatId },
+  });
+  if (existing) return existing;
+  try {
+    return await store.runtimeConversation.create({
+      data: {
+        companyId,
+        channel,
+        channelConversationKey: chatId,
+        rawChannelKey: chatId,
+      },
+    });
+  } catch (cause) {
+    const raced = await store.runtimeConversation.findFirst({
+      where: { channelConversationKey: chatId },
+    });
+    if (raced) return raced;
+    throw cause;
+  }
+}
+
 export class ConversationRepository implements ConversationRepoPort {
   constructor(
     private readonly db: PrismaClient,
@@ -84,11 +124,30 @@ export class ConversationRepository implements ConversationRepoPort {
 
   async getHistory(chatId: string, limit = 40, scope?: ConversationScope): Promise<Result<Turn[], InfraError>> {
     const cacheKey = conversationCacheKey(chatId, scope);
-    // Cache read — cache stores the full window; apply limit in memory.
+    // A cache hit is accepted only after checking the durable generation. A
+    // privacy erasure increments it in the same PostgreSQL transaction as the
+    // deletes, so an old Redis value cannot be served after commit.
     if (this.cache) {
-      const cached = await this.cache.get<Turn[]>(cacheKey);
+      const cached = await this.cache.get<CachedConversationHistory | Turn[]>(cacheKey);
       if (cached.ok && cached.value !== null) {
-        return ok(latestTurns(cached.value, limit));
+        const current = scope
+          ? await this.db.runtimeConversation.findUnique({
+            where: { companyId_channel_channelConversationKey: conversationUniqueKey(chatId, scope) },
+            select: { historyRevision: true },
+          })
+          : await this.db.runtimeConversation.findFirst({
+            where: { channelConversationKey: chatId },
+            select: { historyRevision: true },
+          });
+        if (!current) return ok([]);
+        const cachedRevision = Array.isArray(cached.value) ? 0 : cached.value.revision;
+        const cachedTurns = Array.isArray(cached.value) ? cached.value : cached.value.turns;
+        const currentRevision = Number.isInteger(current.historyRevision)
+          ? current.historyRevision
+          : 0;
+        if (cachedRevision === currentRevision) {
+          return ok(latestTurns(cachedTurns, limit));
+        }
       }
     }
 
@@ -123,7 +182,10 @@ export class ConversationRepository implements ConversationRepoPort {
       });
       // Populate cache — fire-and-forget; don't block the caller.
       if (this.cache && turns.length > 0) {
-        void this.cache.set(cacheKey, turns, HISTORY_CACHE_TTL);
+        void this.cache.set(cacheKey, {
+          revision: conv.historyRevision,
+          turns,
+        } satisfies CachedConversationHistory, HISTORY_CACHE_TTL);
       }
       return ok(latestTurns(turns, limit));
     } catch (e) {
@@ -218,76 +280,92 @@ export class ConversationRepository implements ConversationRepoPort {
       const companyId = scope?.companyId ?? 'system';
       const channel = scope?.channel ?? 'lark';
       const cacheKey = conversationCacheKey(chatId, scope);
-
-      // Find or create the conversation
-      let conv = scope
-        ? await this.db.runtimeConversation.findUnique({
-          where: { companyId_channel_channelConversationKey: conversationUniqueKey(chatId, scope) },
-        })
-        : await this.db.runtimeConversation.findFirst({ where: { channelConversationKey: chatId } });
-
-      if (!conv) {
-        try {
-          conv = await this.db.runtimeConversation.create({
-            data: {
+      const persist = async (store: Pick<
+        PrismaClient,
+        'runtimeConversation' | 'runtimeConversationMessage'
+      >) => {
+        const conv = scope
+          ? await store.runtimeConversation.upsert({
+            where: { companyId_channel_channelConversationKey: conversationUniqueKey(chatId, scope) },
+            create: {
               companyId,
               channel,
               channelConversationKey: chatId,
               rawChannelKey: chatId,
             },
+            update: {},
+          })
+          : await findOrCreateUnscopedConversation(store, chatId, companyId, channel);
+
+        if (metadata?.dedupeKey) {
+          const existing = await store.runtimeConversationMessage.findUnique({
+            where: {
+              conversationId_dedupeKey: {
+                conversationId: conv.id,
+                dedupeKey: metadata.dedupeKey,
+              },
+            },
           });
-        } catch {
-          // Race: another concurrent request created the conversation first — re-fetch.
-          const refetched = scope
-            ? await this.db.runtimeConversation.findUnique({
-              where: { companyId_channel_channelConversationKey: conversationUniqueKey(chatId, scope) },
-            })
-            : await this.db.runtimeConversation.findFirst({ where: { channelConversationKey: chatId } });
-          if (!refetched) throw new Error(`conversation_repo: failed to find or create conv for chatId=${chatId}`);
-          conv = refetched;
+          if (existing) return existing;
         }
-      }
 
-      // Atomically claim the next sequence number. This single UPDATE is the only
-      // writer of lastMessageSequence, so concurrent calls always get distinct values
-      // and the unique constraint on (conversationId, sequence) can never be violated.
-      const claimed = await this.db.runtimeConversation.update({
-        where: { id: conv.id },
-        data:  { lastMessageSequence: { increment: 1 } },
-        select: { lastMessageSequence: true },
-      });
-      const sequence = claimed.lastMessageSequence;
-
-      let row;
-      try {
-        row = await this.db.runtimeConversationMessage.create({
+        // The conversation-row update serializes sequence allocation. For a
+        // provider-correlated turn it shares the erasure transaction's source
+        // advisory lock, so append-first is swept and erase-first is rejected.
+        const claimed = await store.runtimeConversation.update({
+          where: { id: conv.id },
           data: {
-            conversationId: conv.id,
-            sequence,
-            role: turn.role,
-            messageKind: turn.role === 'tool' ? 'tool_result' : 'text',
-            sourceChannel: channel,
-            contentText: turn.content,
-            ...(metadata?.dedupeKey ? { dedupeKey: metadata.dedupeKey } : {}),
-            ...(metadata?.sourceMessageId ? { sourceMessageId: metadata.sourceMessageId } : {}),
-            ...(turn.toolName !== undefined ? { toolCallJson: { name: turn.toolName } } : {}),
-            ...(turn.toolOutcome !== undefined ? { toolResultJson: turn.toolOutcome as object } : {}),
+            lastMessageSequence: { increment: 1 },
+            historyRevision: { increment: 1 },
           },
+          select: { lastMessageSequence: true },
         });
-      } catch (cause) {
-        if (!metadata?.dedupeKey || (cause as { code?: string }).code !== 'P2002') throw cause;
-        const existing = await this.db.runtimeConversationMessage.findUnique({
+        const data = {
+          conversationId: conv.id,
+          sequence: claimed.lastMessageSequence,
+          role: turn.role,
+          messageKind: turn.role === 'tool' ? 'tool_result' : 'text',
+          sourceChannel: channel,
+          contentText: turn.content,
+          ...(metadata?.dedupeKey ? { dedupeKey: metadata.dedupeKey } : {}),
+          ...(metadata?.sourceMessageId ? { sourceMessageId: metadata.sourceMessageId } : {}),
+          ...(metadata?.sourceRunId ? { sourceRunId: metadata.sourceRunId } : {}),
+          ...(turn.toolName !== undefined ? { toolCallJson: { name: turn.toolName } } : {}),
+          ...(turn.toolOutcome !== undefined ? { toolResultJson: turn.toolOutcome as object } : {}),
+        };
+        if (!metadata?.dedupeKey) {
+          return store.runtimeConversationMessage.create({ data });
+        }
+        return store.runtimeConversationMessage.upsert({
           where: {
             conversationId_dedupeKey: {
               conversationId: conv.id,
               dedupeKey: metadata.dedupeKey,
             },
           },
+          create: data,
+          update: {},
         });
-        if (!existing) throw cause;
-        row = existing;
-      }
-      // No separate lastMessageSequence update needed — already incremented above.
+      };
+
+      const row = scope && metadata?.sourceRunId
+        ? await this.db.$transaction(async tx => {
+          const sourceId = shopifyErasureSourceId(channel, metadata.sourceRunId!);
+          const lockKey = shopifyErasureLockKey(companyId, sourceId);
+          await tx.$queryRaw`
+            SELECT pg_advisory_xact_lock(
+              hashtext(${SHOPIFY_ERASURE_LOCK_NAMESPACE}),
+              hashtext(${lockKey})
+            )::text AS lock_result
+          `;
+          const erased = await tx.shopifyRunErasureFence.findUnique({
+            where: { companyId_sourceId: { companyId, sourceId } },
+            select: { id: true },
+          });
+          if (erased) throw new Error('Provider-derived conversation turn was erased before persistence.');
+          return persist(tx);
+        })
+        : await persist(this.db);
 
       const appended: Turn = {
         id: row.id,
@@ -329,6 +407,7 @@ export class ConversationRepository implements ConversationRepoPort {
             summaryJson: Prisma.JsonNull,
             summaryUpdatedAt: null,
             lastSummarizedSequence: 0,
+            historyRevision: { increment: 1 },
           },
         });
       }
@@ -376,6 +455,7 @@ export class ConversationRepository implements ConversationRepoPort {
             summaryJson: Prisma.JsonNull,
             summaryUpdatedAt: null,
             lastSummarizedSequence: 0,
+            historyRevision: { increment: 1 },
           },
         });
       }

@@ -130,7 +130,7 @@ describe('governed local-workflow instruction contract', () => {
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /governed provider preview and `exportCandidate`/);
     assert.doesNotMatch(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /how data of any size is processed/);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /supported source tools return bounded chat evidence plus an\s+`exportCandidate`/s);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /call `dataExport` with `op="plan"`/i);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /`op=plan`/i);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Use a direct `dataExport` recipe only.*backend-replayable source/s);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Airtable MCP is not\s+a bulk-export source/s);
   });

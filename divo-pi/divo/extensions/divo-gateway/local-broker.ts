@@ -15,7 +15,7 @@ import {
 	type GatewayRequestBody,
 	type GatewayResponseBody,
 } from "./gateway-client.ts";
-import { readDivoRunCorrelation } from "./run-correlation.ts";
+import { readDivoRunCorrelation, type DivoRunCorrelationV1 } from "./run-correlation.ts";
 
 const BROKER_PROTOCOL_VERSION = 1;
 const MAX_REQUEST_BYTES = 1_000_000;
@@ -58,6 +58,7 @@ export interface LocalBrokerResponseV1 {
 export interface ActiveBashCall {
 	toolCallId: string;
 	context: ApprovalContext;
+	correlation: DivoRunCorrelationV1;
 	nextBrokerCall: number;
 }
 
@@ -149,6 +150,9 @@ export async function executeLocalBrokerRequest(
 		const config = dependencies.resolveConfig();
 		if ("error" in config) throw new Error(config.error);
 		const correlation = await dependencies.readCorrelation();
+		if (!sameCorrelation(correlation, active.correlation)) {
+			throw new Error("Divo run context changed after this Bash command started; the broker request was rejected.");
+		}
 		active.nextBrokerCall += 1;
 		const actionId = `${active.toolCallId}:broker:${active.nextBrokerCall}`;
 		const label = brokerLabel(input);
@@ -156,6 +160,12 @@ export async function executeLocalBrokerRequest(
 		// through this socket has no more authority than the model calling the
 		// tool directly, and the skillId is taken from what was actually loaded.
 		const payload = asRecord(input.request.payload);
+		if (
+			input.request.op === "tools.invoke"
+			&& (payload?.["toolId"] === "shopifyOrders" || payload?.["toolId"] === "shopifyCustomers")
+		) {
+			throw new Error("Protected Shopify record tools must be called directly through divo_gateway; divo-local cannot retain or print their results.");
+		}
 		const authorization = authorizeToolInvocation({
 			op: input.request.op,
 			toolId: payload?.["toolId"],
@@ -211,6 +221,13 @@ export async function executeLocalBrokerRequest(
 	} finally {
 		combinedSignal.dispose();
 	}
+}
+
+function sameCorrelation(left: DivoRunCorrelationV1, right: DivoRunCorrelationV1): boolean {
+	return left.threadId === right.threadId
+		&& left.runId === right.runId
+		&& left.departmentId === right.departmentId
+		&& left.channel === right.channel;
 }
 
 function combineAbortSignals(...signals: Array<AbortSignal | undefined>): {
@@ -327,11 +344,13 @@ export function registerLocalDivoBroker(
 		cliDirectory = undefined;
 	}
 
-	pi.on("tool_call", (event: ToolCallEvent, ctx) => {
+	pi.on("tool_call", async (event: ToolCallEvent, ctx) => {
 		if (event.toolName !== "bash") return undefined;
+		const correlation = await dependencies.readCorrelation();
 		activeCalls.set(event.toolCallId, {
 			toolCallId: event.toolCallId,
 			context: ctx,
+			correlation,
 			nextBrokerCall: 0,
 		});
 		return undefined;

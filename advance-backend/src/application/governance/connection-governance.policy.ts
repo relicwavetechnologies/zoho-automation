@@ -36,6 +36,31 @@ export const connectionGovernancePolicySchema = z.object({
 
 export type ConnectionGovernancePolicy = z.infer<typeof connectionGovernancePolicySchema>;
 
+export const approvalModesForConnectionProvider = (
+  provider: string,
+): readonly ConnectionApprovalMode[] => provider === 'shopify'
+  ? ['none', 'company_admin']
+  : CONNECTION_APPROVAL_MODES;
+
+/**
+ * Company-owned providers have no user owner who could approve an action.
+ * Validate that invariant once at every policy write boundary instead of
+ * allowing a policy that can only fail later during execution.
+ */
+export function connectionPolicyIssueForProvider(
+  provider: string,
+  policy: ConnectionGovernancePolicy,
+): string | null {
+  const allowed = new Set(approvalModesForConnectionProvider(provider));
+  for (const action of CONNECTION_ACTIONS) {
+    const approval = policy.actions[action]?.approval;
+    if (approval && !allowed.has(approval)) {
+      return `Approval mode ${approval} is not available for ${provider} connections.`;
+    }
+  }
+  return null;
+}
+
 export const defaultConnectionGovernancePolicy = (): ConnectionGovernancePolicy => ({
   version: 1,
   actions: Object.fromEntries(

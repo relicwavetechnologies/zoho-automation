@@ -38,8 +38,13 @@ function signTestState(payload: Record<string, unknown>): string {
 }
 
 function makeDeps(overrides: Record<string, unknown> = {}) {
+  const { prisma: overridePrismaValue, ...rest } = overrides;
+  const overridePrisma = (overridePrismaValue ?? {}) as Record<string, unknown>;
   return {
-    prisma: {} as any,
+    prisma: {
+      knowledgeResource: { findMany: async () => [] },
+      ...overridePrisma,
+    } as any,
     larkOAuthService: new LarkOAuthService(
       'cli_test',
       'secret',
@@ -47,6 +52,12 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
     ),
     googleOAuthService: {} as any,
     canvaMcpOAuthService: {} as any,
+    shopifyAuthorizationService: {
+      isConfigured: () => true,
+      begin: async () => ({ authorizeUrl: 'https://demo.myshopify.com/admin/oauth/authorize' }),
+      beginReconnect: async () => ({ authorizeUrl: 'https://demo.myshopify.com/admin/oauth/authorize' }),
+      listCompanyConnections: async () => [],
+    } as any,
     larkUserAuthLinkRepo: {} as any,
     connectionRepo: {
       listAccessibleZohoConnections: async () => ({ ok: true, value: [] }),
@@ -70,7 +81,7 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
     backendPublicUrl: 'https://backend.example.com',
     appBaseUrl: 'https://app.example.com',
     sessionTtlMinutes: 480,
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -102,6 +113,7 @@ async function callRoute(
     const res = {
       locals: opts.locals ?? {},
       status: (s: number) => { status = s; return res; },
+      setHeader: () => res,
       json: (b: unknown) => { body = b; resolve({ status, body }); return res; },
       send: (b: unknown) => { body = b; resolve({ status, body }); return res; },
       redirect: (s: number, location: string) => { status = s; body = location; resolve({ status, body }); return res; },
@@ -237,7 +249,7 @@ describe('desktop auth routes', () => {
     });
 
     assert.equal(result.status, 200);
-    assert.deepEqual(revoked, [{ companyId: 'company-1', connectionId: 'google_workspace-1', provider: 'google_workspace' }]);
+    assert.deepEqual(revoked, [{ companyId: 'company-1', connectionId: 'google_workspace-1', provider: 'google_workspace', actorId: 'user-1' }]);
   });
 
   it('disconnects only the selected Zoho connection for an admin accessor', async () => {
@@ -256,7 +268,7 @@ describe('desktop auth routes', () => {
     });
 
     assert.equal(result.status, 200);
-    assert.deepEqual(revoked, [{ companyId: 'company-1', connectionId: 'zoho-1', provider: 'zoho' }]);
+    assert.deepEqual(revoked, [{ companyId: 'company-1', connectionId: 'zoho-1', provider: 'zoho', actorId: 'user-1' }]);
   });
 
   it('marks a manually provisioned Zoho connection as manageable by its creator', async () => {
@@ -313,7 +325,167 @@ describe('desktop auth routes', () => {
     });
 
     assert.equal(result.status, 200);
-    assert.deepEqual(revoked, [{ companyId: 'company-1', connectionId: 'canva-1', provider: 'canva' }]);
+    assert.deepEqual(revoked, [{ companyId: 'company-1', connectionId: 'canva-1', provider: 'canva', actorId: 'user-1' }]);
+  });
+
+  it('manages Shopify through the provider-neutral RBAC surface with read-only grants', async () => {
+    const grants: unknown[] = [];
+    const connection = {
+      id: 'shopify-1', provider: 'shopify', status: 'connected', label: 'Demo store', accountEmail: null,
+      accountName: 'Demo', ownerType: 'company', ownerUserId: null, createdBy: 'installer-1', scopes: ['read_orders'],
+      connectedAt: new Date('2026-08-01T00:00:00.000Z'), ownerUser: null, grants: [], governance: null, tokenMetadata: {},
+    };
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: {
+        integrationConnection: { findFirst: async () => connection },
+        adminMembership: { findMany: async () => [{ role: 'MEMBER', user: { id: 'member-1', email: 'member@example.test', name: 'Member' } }] },
+        department: { findMany: async () => [{ id: 'commerce-1', name: 'Commerce', slug: 'commerce' }] },
+        departmentRole: { findMany: async () => [] },
+        company: { findUnique: async () => ({ id: 'company-1', name: 'Acme' }) },
+      },
+      connectionRepo: {
+        listAccessibleShopifyConnections: async () => ({ ok: true, value: [] }),
+        grantConnection: async (input: unknown) => { grants.push(input); return { ok: true, value: undefined }; },
+      },
+    }));
+    const locals = { userId: 'admin-1', companyId: 'company-1', aiRole: 'COMPANY_ADMIN' };
+
+    const manage = await callRoute(router, 'GET', '/connections/:connectionId/manage', {
+      params: { connectionId: 'shopify-1' }, locals,
+    });
+    assert.equal(manage.status, 200);
+    assert.equal(manage.body.data.connection.readOnlyEnforced, true);
+    assert.deepEqual(manage.body.data.accessLevels.map((level: any) => level.value), ['read_only']);
+
+    const deniedWrite = await callRoute(router, 'POST', '/connections/:connectionId/grants', {
+      params: { connectionId: 'shopify-1' }, locals,
+      body: { granteeType: 'department', granteeId: 'commerce-1', access: 'read_write' },
+    });
+    assert.equal(deniedWrite.status, 400);
+    assert.equal(grants.length, 0);
+
+    const granted = await callRoute(router, 'POST', '/connections/:connectionId/grants', {
+      params: { connectionId: 'shopify-1' }, locals,
+      body: { granteeType: 'department', granteeId: 'commerce-1', access: 'read_only' },
+    });
+    assert.equal(granted.status, 200);
+    assert.deepEqual(grants, [{
+      companyId: 'company-1', connectionId: 'shopify-1', granteeType: 'department',
+      granteeId: 'commerce-1', access: 'read_only', grantedBy: 'admin-1',
+    }]);
+  });
+
+  it('starts desktop Shopify OAuth only for company admins using signed parameter state', async () => {
+    const starts: unknown[] = [];
+    const router = createDesktopAuthRoutes(makeDeps({
+      shopifyAuthorizationService: {
+        isConfigured: () => true,
+        begin: async (input: unknown) => {
+          starts.push(input);
+          return { authorizeUrl: 'https://demo.myshopify.com/admin/oauth/authorize?state=signed' };
+        },
+      },
+    }));
+    const member = await callRoute(router, 'GET', '/shopify/authorize-url', {
+      query: { shopDomain: 'demo.myshopify.com' },
+      locals: { userId: 'member-1', companyId: 'company-1', aiRole: 'MEMBER' },
+    });
+    assert.equal(member.status, 403);
+    assert.equal(starts.length, 0);
+
+    const admin = await callRoute(router, 'GET', '/shopify/authorize-url', {
+      query: { shopDomain: ' Demo.MyShopify.com ' },
+      locals: { userId: 'admin-1', companyId: 'company-1', aiRole: 'COMPANY_ADMIN' },
+    });
+    assert.equal(admin.status, 200);
+    assert.equal(admin.body.data.authorizeUrl, 'https://demo.myshopify.com/admin/oauth/authorize?state=signed');
+    assert.deepEqual(starts, [{
+      companyId: 'company-1', userId: 'admin-1', shopDomain: 'demo.myshopify.com',
+      stateTransport: 'signed_parameter',
+    }]);
+  });
+
+  it('returns read-only Shopify status and keeps stale stores visible to company admins', async () => {
+    const connectedAt = new Date('2026-08-01T00:00:00.000Z');
+    const router = createDesktopAuthRoutes(makeDeps({
+      connectionRepo: {
+        listAccessibleShopifyConnections: async () => ({ ok: true, value: [{
+          connectionId: 'shopify-live', provider: 'shopify', label: 'Live store', accountName: 'Live',
+          ownerType: 'company', access: 'admin', scopes: ['read_orders'], connectedAt,
+        }] }),
+      },
+      shopifyAuthorizationService: {
+        isConfigured: () => true,
+        listCompanyConnections: async () => [{
+          connectionId: 'shopify-stale', shopDomain: 'stale.myshopify.com', label: 'Stale store',
+          status: 'reauthorization_required', connectedAt,
+        }],
+      },
+    }));
+    const result = await callRoute(router, 'GET', '/shopify/status', {
+      locals: { userId: 'admin-1', companyId: 'company-1', aiRole: 'COMPANY_ADMIN' },
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(result.body.data.canManage, true);
+    assert.equal(result.body.data.readOnlyEnforced, true);
+    assert.equal(result.body.data.connections.length, 2);
+    assert.deepEqual(result.body.data.connections.map((connection: any) => ({
+      id: connection.connectionId,
+      access: connection.access,
+      canManage: connection.canManage,
+      reconnectRequired: connection.reconnectRequired,
+    })), [
+      { id: 'shopify-live', access: 'read_only', canManage: true, reconnectRequired: false },
+      { id: 'shopify-stale', access: 'read_only', canManage: true, reconnectRequired: true },
+    ]);
+  });
+
+  it('returns only granted live Shopify stores to a member without management authority', async () => {
+    const connectedAt = new Date('2026-08-01T00:00:00.000Z');
+    const router = createDesktopAuthRoutes(makeDeps({
+      connectionRepo: {
+        listAccessibleShopifyConnections: async () => ({ ok: true, value: [{
+          connectionId: 'shopify-granted', provider: 'shopify', label: 'Granted store',
+          ownerType: 'company', access: 'read_only', scopes: ['read_reports'], connectedAt,
+        }] }),
+      },
+      shopifyAuthorizationService: {
+        isConfigured: () => true,
+        listCompanyConnections: async () => { throw new Error('members must not list ungranted stores'); },
+      },
+    }));
+    const result = await callRoute(router, 'GET', '/shopify/status', {
+      locals: { userId: 'member-1', companyId: 'company-1', aiRole: 'MEMBER' },
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(result.body.data.canManage, false);
+    assert.deepEqual(result.body.data.connections.map((connection: any) => ({
+      id: connection.connectionId, access: connection.access, canManage: connection.canManage,
+    })), [{ id: 'shopify-granted', access: 'read_only', canManage: false }]);
+  });
+
+  it('does not let a demoted Shopify installer retain implicit connection-admin authority', async () => {
+    const connection = {
+      id: 'shopify-1', provider: 'shopify', status: 'connected', label: 'Demo store', accountEmail: null,
+      accountName: 'Demo', ownerType: 'company', ownerUserId: null, createdBy: 'installer-1', scopes: ['read_orders'],
+      connectedAt: new Date('2026-08-01T00:00:00.000Z'), ownerUser: null, grants: [], governance: null, tokenMetadata: {},
+    };
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: { integrationConnection: { findFirst: async () => connection } },
+      connectionRepo: {
+        listAccessibleShopifyConnections: async () => ({ ok: true, value: [{
+          connectionId: 'shopify-1', access: 'read_only', ownerType: 'company', label: 'Demo store',
+          scopes: ['read_orders'], connectedAt: new Date('2026-08-01T00:00:00.000Z'),
+        }] }),
+      },
+    }));
+    const result = await callRoute(router, 'GET', '/connections/:connectionId/manage', {
+      params: { connectionId: 'shopify-1' },
+      locals: { userId: 'installer-1', companyId: 'company-1', aiRole: 'MEMBER' },
+    });
+    assert.equal(result.status, 403);
   });
 
   it('lets a company admin verify and store an Airtable PAT without returning the secret', async () => {
@@ -1195,13 +1367,29 @@ describe('desktop auth routes', () => {
     });
   });
 
-  it('returns a bounded backend personal snapshot without requiring a selected department', async () => {
+  it('returns only active, current, user-owned personal memory without requiring a department', async () => {
     const calls: unknown[] = [];
     const router = createDesktopAuthRoutes(makeDeps({
-      memory: {
-        getPersonalSnapshot: async (input: unknown) => {
-          calls.push(input);
-          return ['User prefers concise weekly summaries.'];
+      prisma: {
+        knowledgeResource: {
+          findMany: async (input: unknown) => {
+            calls.push(input);
+            return [{
+              id: 'memory-1',
+              companyId: 'company-1',
+              kind: 'memory',
+              scope: 'personal',
+              logicalKey: 'communication.summary',
+              status: 'active',
+              currentVersion: 2,
+              updatedAt: new Date('2026-08-01T00:00:00.000Z'),
+              department: null,
+              versions: [{
+                version: 2,
+                contentJson: { facts: ['User prefers concise weekly summaries.'] },
+              }],
+            }];
+          },
         },
       },
     }));
@@ -1217,13 +1405,34 @@ describe('desktop auth routes', () => {
       version: null,
       personalMemory: ['User prefers concise weekly summaries.'],
     });
-    assert.deepEqual(calls, [{
-      userId: 'user-1',
+    assert.equal(calls.length, 1);
+    assert.deepEqual((calls[0] as any).where, {
       companyId: 'company-1',
-      limit: 12,
-      maxFactChars: 500,
-      maxTotalChars: 2_200,
-    }]);
+      ownerUserId: 'user-1',
+      scope: 'personal',
+      kind: 'memory',
+      status: 'active',
+    });
+  });
+
+  it('makes canonical personal-memory failure visible instead of returning an empty snapshot', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: {
+        knowledgeResource: {
+          findMany: async () => { throw new Error('database unavailable'); },
+        },
+      },
+    }));
+    const result = await callRoute(router, 'GET', '/runtime-context', {
+      locals: { userId: 'user-1', companyId: 'company-1' },
+    });
+
+    assert.equal(result.status, 503);
+    assert.deepEqual(result.body, {
+      success: false,
+      code: 'runtime_context_unavailable',
+      message: 'Could not load canonical desktop runtime context. Please retry.',
+    });
   });
 
   it('does not expose a persona for an inaccessible department', async () => {

@@ -1044,6 +1044,30 @@ async function deleteDurableSession(volume, thread) {
 	);
 }
 
+export async function deleteProtectedRuntimeSession(runtime, dependencies = {}) {
+	const profile = validateProfileName(runtime?.profile);
+	const thread = validateThread(runtime?.thread);
+	const volume = resourcesFor(profile).volume;
+	const inspectVolume = dependencies.inspectVolume ?? (async (name) => {
+		const result = await docker(["volume", "inspect", name]);
+		return JSON.parse(result.stdout)?.[0];
+	});
+	const metadata = await inspectVolume(volume);
+	if (metadata?.Labels?.["dev.divo.profile"] !== profile) {
+		throw new Error("Refusing protected cleanup for an unowned runtime volume");
+	}
+	const sessionDir = `/data/state/data/threads/${thread}`;
+	const removeSession = dependencies.removeSession ?? (async (name, directory) => {
+		await runVolumeCommand(
+			name,
+			`rm -rf -- ${shellQuote(directory)}\ntest ! -e ${shellQuote(directory)}`,
+			"",
+			"/data",
+		);
+	});
+	await removeSession(volume, sessionDir);
+}
+
 export function buildBootstrapWriteArgs(container) {
 	return [
 		"exec",

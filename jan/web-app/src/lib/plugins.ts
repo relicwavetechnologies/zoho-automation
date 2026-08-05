@@ -29,6 +29,7 @@ import {
   AirtableIcon,
   CanvaIcon,
   LarkIcon,
+  ShopifyIcon,
   ZohoIcon,
 } from '@/components/brand-icons'
 
@@ -69,6 +70,8 @@ export type DivoConnection = {
   recommendedFor: string
   lastUsedAt: string
   connectedAt?: string
+  canManage?: boolean
+  readOnlyEnforced?: boolean
 }
 
 export type DivoPluginSkill = {
@@ -117,6 +120,16 @@ export const divoPlugins: DivoPlugin[] = [
     category: 'connector',
     description: 'Connect Airtable bases so Divo can read and edit records, schema, and automations.',
     icon: AirtableIcon,
+    accentClassName: 'bg-card border-border/70',
+    featured: true,
+    enabled: true,
+  },
+  {
+    id: 'shopify',
+    name: 'Shopify',
+    category: 'connector',
+    description: 'Read Shopify analytics, orders, customers, inventory, payments, and attribution through Divo.',
+    icon: ShopifyIcon,
     accentClassName: 'bg-card border-border/70',
     featured: true,
     enabled: true,
@@ -266,12 +279,14 @@ export const pluginAutomationCards = [
 ]
 
 /**
- * Tool groups a member without management scope may connect for themselves.
+ * Connection groups a member without tool-policy management may still open.
+ * Some are self-connected; company-owned providers such as Shopify expose
+ * only granted usage unless the live backend role is company admin.
  * Kept here, beside the plugin catalogue, because the connect flow is spread
  * across three registries and each one that drifted silently cost a provider
  * its Connect button.
  */
-export const PERSONAL_CONNECTABLE_PLUGIN_IDS: readonly string[] = ['google-workspace', 'canva', 'airtable']
+export const MEMBER_CONNECTION_PLUGIN_IDS: readonly string[] = ['google-workspace', 'canva', 'airtable', 'shopify']
 
 export function getPlugin(pluginId: string) {
   return divoPlugins.find((plugin) => plugin.id === pluginId)

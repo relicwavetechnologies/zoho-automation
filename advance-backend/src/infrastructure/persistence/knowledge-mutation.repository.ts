@@ -25,7 +25,16 @@ const LIVE_MUTATION_STATUSES: KnowledgeMutationStatus[] = [
 ];
 
 export class PrismaKnowledgeMutationStore implements KnowledgeMutationStore {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly requireThreatScan: boolean;
+
+  constructor(
+    private readonly prisma: PrismaClient,
+    options: { readonly requireThreatScan?: boolean } = {},
+  ) {
+    // Production is fail-closed. Tests or explicitly disabled local environments
+    // may opt out, but a caller must make that relaxation explicit.
+    this.requireThreatScan = options.requireThreatScan ?? true;
+  }
 
   async resolveResourceId(input: {
     companyId: string;
@@ -73,6 +82,7 @@ export class PrismaKnowledgeMutationStore implements KnowledgeMutationStore {
     try {
       return await this.prisma.$transaction(async tx => {
         await advisoryLock(tx, 'knowledge-idempotency', input.idempotencyKey);
+        await lockAutomaticLearningSource(tx, input);
         await assertLiveKnowledgeAuthority(tx, input);
         const existing = await tx.knowledgeMutation.findUnique({
           where: { idempotencyKey: input.idempotencyKey },
@@ -111,7 +121,7 @@ export class PrismaKnowledgeMutationStore implements KnowledgeMutationStore {
           );
         }
 
-        const resourceId = validateResourcePrecondition(resource, input.action, input.baseVersion);
+        const resourceId = validateResourcePrecondition(resource, input);
         const created = await tx.knowledgeMutation.create({
           data: {
             companyId: input.companyId,
@@ -158,6 +168,36 @@ export class PrismaKnowledgeMutationStore implements KnowledgeMutationStore {
       return row ? toMutation(row) : null;
     } catch (cause) {
       throw storageFailure('read mutation', cause);
+    }
+  }
+
+  async findAppliedBySourceRef(input: {
+    companyId: string;
+    requesterId: string;
+    sourceRef: string;
+    requestHash: string;
+  }): Promise<AppliedKnowledgeMutation | null> {
+    try {
+      return await this.prisma.$transaction(async tx => {
+        const mutation = await tx.knowledgeMutation.findFirst({
+          where: {
+            companyId: input.companyId,
+            requesterId: input.requesterId,
+            kind: 'memory',
+            scope: 'personal',
+            sourceType: 'user_explicit',
+            sourceRef: input.sourceRef,
+            status: 'applied',
+            evidenceJson: {
+              equals: { contract: 1, requestHash: input.requestHash },
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+        return mutation ? replayApplied(tx, mutation) : null;
+      });
+    } catch (cause) {
+      throw preserveOrWrap('recover applied mutation', cause);
     }
   }
 
@@ -287,8 +327,14 @@ export class PrismaKnowledgeMutationStore implements KnowledgeMutationStore {
       return await this.prisma.$transaction(async tx => {
         await advisoryLock(tx, 'knowledge-mutation', input.mutationId);
         let mutation = await requireMutation(tx, input.mutationId, input.companyId);
+        await lockAutomaticLearningSource(tx, mutation);
         if (mutation.status === 'applied') return replayApplied(tx, mutation);
         if (mutation.status !== 'approved') invalidState('Mutation is not approved for application.');
+        await advisoryLock(
+          tx,
+          'knowledge-target',
+          `${mutation.companyId}:${mutation.kind}:${mutation.targetKey}:${mutation.logicalKey}`,
+        );
 
         const approval = mutation.runtimeApprovalId
           ? await tx.runtimeApproval.findUnique({
@@ -377,7 +423,7 @@ export class PrismaKnowledgeMutationStore implements KnowledgeMutationStore {
           ? await prepareExistingResource(tx, existingResource, mutation)
           : await createResource(tx, mutation);
         if (mutation.kind === 'file') {
-          await bindFileAsset(tx, mutation, resource.id);
+          await bindFileAsset(tx, mutation, resource.id, this.requireThreatScan);
         }
         const currentVersion = resource.currentVersion > 0
           ? await tx.knowledgeVersion.findUnique({
@@ -514,9 +560,23 @@ export class PrismaKnowledgeMutationStore implements KnowledgeMutationStore {
         if (!['awaiting_requester_review', 'awaiting_approval', 'approved'].includes(row.status)) {
           invalidState('Mutation can no longer be cancelled.');
         }
+        const decidedAt = new Date();
+        if (row.runtimeApprovalId) {
+          await tx.runtimeApproval.updateMany({
+            where: {
+              id: row.runtimeApprovalId,
+              status: { in: ['dispatching', 'pending', 'approved'] },
+            },
+            data: {
+              status: 'rejected',
+              rejectedAt: decidedAt,
+              resolutionReason: 'The requester cancelled the linked knowledge proposal.',
+            },
+          });
+        }
         const updated = await tx.knowledgeMutation.update({
           where: { id: row.id },
-          data: { status: 'cancelled', decidedAt: new Date() },
+          data: { status: 'cancelled', decidedAt },
         });
         return toMutation(updated);
       });
@@ -694,6 +754,30 @@ async function advisoryLock(tx: Tx, namespace: string, key: string): Promise<voi
   `;
 }
 
+async function lockAutomaticLearningSource(
+  tx: Tx,
+  input: {
+    readonly companyId: string;
+    readonly requesterId: string;
+    readonly sourceType: string;
+    readonly sourceRef: string | null;
+  },
+): Promise<void> {
+  if (input.sourceType !== 'automatic_learning') return;
+  if (!input.sourceRef) invalidState('Automatic learning has no durable source job.');
+  const rows = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT job."id"
+    FROM "KnowledgeLearningJob" AS job
+    WHERE job."companyId" = ${input.companyId}
+      AND job."userId" = ${input.requesterId}
+      AND job."sourceId" = ${input.sourceRef}
+    FOR UPDATE
+  `;
+  if (rows.length !== 1) {
+    invalidState('Automatic learning source was erased or is no longer available.');
+  }
+}
+
 async function requireMutation(tx: Tx, mutationId: string, companyId: string) {
   const row = await tx.knowledgeMutation.findFirst({ where: { id: mutationId, companyId } });
   if (!row) throw new KnowledgeMutationError('not_found', 'Knowledge mutation not found.');
@@ -702,11 +786,11 @@ async function requireMutation(tx: Tx, mutationId: string, companyId: string) {
 
 function validateResourcePrecondition(
   resource: ResourceRow | null,
-  action: CreateKnowledgeProposalInput['action'],
-  baseVersion: number | null,
+  input: CreateKnowledgeProposalInput,
 ): string | null {
-  if (action === 'create' || (action === 'publish' && baseVersion === null)) {
+  if (input.action === 'create' || (input.action === 'publish' && input.baseVersion === null)) {
     if (resource) {
+      if (isPersonalMemoryResurrection(resource, input)) return resource.id;
       throw new KnowledgeMutationError('conflict', 'This knowledge resource already exists; update it by version.');
     }
     return null;
@@ -714,11 +798,12 @@ function validateResourcePrecondition(
   if (!resource || resource.status === 'deleted') {
     throw new KnowledgeMutationError('not_found', 'The knowledge resource does not exist or is deleted.');
   }
-  if (resource.currentVersion !== baseVersion) staleVersion();
+  if (resource.currentVersion !== input.baseVersion) staleVersion();
   return resource.id;
 }
 
 async function prepareExistingResource(tx: Tx, resource: ResourceRow, mutation: NonNullable<MutationRow>) {
+  if (mutation.action === 'create' && isPersonalMemoryResurrection(resource, mutation)) return resource;
   if (mutation.action === 'create' || (mutation.action === 'publish' && mutation.baseVersion === null)) {
     throw new KnowledgeMutationError('conflict', 'This knowledge resource already exists.');
   }
@@ -749,6 +834,7 @@ async function bindFileAsset(
   tx: Tx,
   mutation: NonNullable<MutationRow>,
   resourceId: string,
+  requireThreatScan: boolean,
 ): Promise<void> {
   const assetId = mutation.fileAssetId;
   if (!assetId) {
@@ -761,11 +847,36 @@ async function bindFileAsset(
   if (!asset || asset.status === 'deleted' || asset.status === 'deleting') {
     throw new KnowledgeMutationError('not_found', 'The staged file no longer exists.');
   }
+  if (asset.status !== 'staged') {
+    throw new KnowledgeMutationError('conflict', 'The governed file is no longer an attachable staged asset.');
+  }
+  if (asset.expiresAt.getTime() <= Date.now()) {
+    throw new KnowledgeMutationError('conflict', 'The staged file expired before final attachment.');
+  }
   if (asset.uploadedById !== mutation.requesterId) {
     throw new KnowledgeMutationError('permission_denied', 'The requester does not own this staged file.');
   }
   if (asset.knowledgeResourceId && asset.knowledgeResourceId !== resourceId) {
     throw new KnowledgeMutationError('conflict', 'The staged file is already attached elsewhere.');
+  }
+  if (requireThreatScan && (!asset.threatScanProvider || !asset.threatScannedAt)) {
+    throw new KnowledgeMutationError(
+      'storage_failure',
+      'The staged file has no verified malware-scan evidence at final attachment.',
+    );
+  }
+  const content = asRecord(mutation.proposedContentJson);
+  if (
+    content['assetId'] !== asset.id
+    || content['fileName'] !== asset.fileName
+    || content['mimeType'] !== asset.mimeType
+    || content['sizeBytes'] !== asset.sizeBytes
+    || content['sha256'] !== asset.sha256
+  ) {
+    throw new KnowledgeMutationError(
+      'conflict',
+      'The governed file metadata changed before final attachment.',
+    );
   }
   await tx.knowledgeFileAsset.update({
     where: { id: asset.id },
@@ -777,6 +888,22 @@ async function bindFileAsset(
   });
 }
 
+function isPersonalMemoryResurrection(
+  resource: ResourceRow,
+  input: Pick<CreateKnowledgeProposalInput, 'kind' | 'scope' | 'targetKey' | 'ownerUserId' | 'departmentId' | 'requesterId'>,
+): boolean {
+  // The command layer intentionally keeps its public action vocabulary small:
+  // an explicit create against this exact tombstone is the resurrection
+  // operation. The target advisory lock and the immutable next version keep it
+  // from creating a second resource or rewriting prior history.
+  return resource.status === 'deleted'
+    && input.kind === 'memory'
+    && input.scope === 'personal'
+    && input.targetKey === `personal:${input.requesterId}`
+    && input.ownerUserId === input.requesterId
+    && input.departmentId === null;
+}
+
 async function replayApplied(tx: Tx, mutation: NonNullable<MutationRow>): Promise<AppliedKnowledgeMutation> {
   if (!mutation.resourceId) invalidState('Applied mutation has no resource.');
   const resource = await tx.knowledgeResource.findUnique({ where: { id: mutation.resourceId! } });
@@ -784,12 +911,18 @@ async function replayApplied(tx: Tx, mutation: NonNullable<MutationRow>): Promis
     where: { mutationId: mutation.id },
     orderBy: { createdAt: 'desc' },
   });
+  const appliedVersion = mutation.appliedVersionId
+    ? await tx.knowledgeVersion.findUnique({
+        where: { id: mutation.appliedVersionId },
+        select: { version: true },
+      })
+    : null;
   if (!resource || !outbox) invalidState('Applied mutation is missing its durable result.');
   return {
     mutation: toMutation(mutation),
     resourceId: resource!.id,
     versionId: mutation.appliedVersionId,
-    version: resource!.currentVersion,
+    version: appliedVersion?.version ?? mutation.baseVersion ?? resource!.currentVersion,
     outboxEventId: outbox!.id,
   };
 }

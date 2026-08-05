@@ -60,6 +60,13 @@ import { AirtableMcpOAuthService } from './infrastructure/airtable/airtable-mcp-
 import { AirtableMcpClient } from './infrastructure/airtable/airtable-mcp.client';
 import { AirtableMcpSchemaCatalog } from './infrastructure/airtable/airtable-mcp-schema.catalog';
 import { AitableClient } from './infrastructure/aitable/aitable.client';
+import { ShopifyOAuthService } from './infrastructure/shopify/shopify-oauth.service';
+import { ShopifyAdminClient } from './infrastructure/shopify/shopify-admin.client';
+import { ShopifyConnectionService } from './application/shopify/shopify-connection.service';
+import { ShopifyService } from './application/shopify/shopify.service';
+import { ShopifyAuthorizationService } from './application/shopify/shopify-authorization.service';
+import { IntegrationOAuthAttemptRepository } from './infrastructure/persistence/integration-oauth-attempt.repository';
+import { ShopifyRunProvenanceRepository } from './infrastructure/persistence/shopify-run-provenance.repository';
 import { createAitableKeyVerifier, type AitableKeyVerifier } from './application/aitable/aitable-connect.service';
 import { selectAitableConnection } from './application/aitable/aitable-connection-selection';
 import { IntegrationConnectionRepository } from './infrastructure/persistence/integration-connection.repository';
@@ -75,7 +82,6 @@ import {
 } from './application/connections/accessible-connection-selection';
 import { CompanySerperConnectionRepository } from './infrastructure/persistence/company-serper-connection.repository';
 import { CompanySerperService } from './application/web-search/company-serper.service';
-import { SemrushClient } from './infrastructure/semrush/semrush.client';
 import { SemrushWebClient } from './infrastructure/semrush/semrush-web.client';
 import { SemrushService } from './application/semrush/semrush.service';
 import { MenhoodQueryService } from './application/menhood/menhood-query.service';
@@ -253,6 +259,7 @@ import {
 import { createSemrushTool } from './application/tools/families/semrush.tool';
 import { createOmsSiteDataTool } from './application/tools/families/oms-site-data.tool';
 import { createMenhoodDataTool } from './application/tools/families/menhood-data.tool';
+import { createShopifyTools } from './application/tools/families/shopify.tool';
 import { ScheduledLarkDmChannelAdapter } from './infrastructure/channels/lark/scheduled-lark-dm.adapter';
 import { LarkMessagingClient } from './infrastructure/channels/lark/clients/lark-messaging.client';
 import { ToolExecutor } from './application/gateway/tool-executor';
@@ -284,6 +291,26 @@ type ZohoBooksOrganizationPayload = {
 };
 
 const GATEWAY_PROVIDER_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Resolve the one approval-policy switch used by the runtime composition.
+ *
+ * The canonical setting is deployable in every environment. The old variable
+ * remains a non-production compatibility shim only; it cannot weaken or alter
+ * production policy.
+ */
+export const resolveApprovalGateOptions = (
+  env: Pick<
+    TypedEnv,
+    | 'NODE_ENV'
+    | 'DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS'
+    | 'DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS'
+  >,
+): { disableManagerSelfBypass: boolean } => ({
+  disableManagerSelfBypass:
+    env.DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS
+    || (env.NODE_ENV !== 'production' && env.DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS),
+});
 
 
 export interface Container {
@@ -334,6 +361,7 @@ export interface Container {
   /** AITable has no OAuth; this proves a pasted API key before it is stored. */
   aitableKeyVerifier: AitableKeyVerifier;
   integrationConnectionRepo: IntegrationConnectionRepository;
+  shopifyAuthorizationService: ShopifyAuthorizationService;
   companySerperConnectionRepo: CompanySerperConnectionRepository;
   companySerperService: CompanySerperService;
   semrushService: SemrushService;
@@ -418,7 +446,15 @@ export interface Container {
   larkPiRuntime: import('./application/runtime/lark-pi-runtime.service').LarkPiRuntimeService;
 }
 
-export async function buildContainer(env: TypedEnv): Promise<Container> {
+export interface BuildContainerOptions {
+  /** Skip Lark bot-identity network call (safe for in-process harness CLIs). */
+  readonly skipLarkInitialize?: boolean;
+}
+
+export async function buildContainer(
+  env: TypedEnv,
+  options: BuildContainerOptions = {},
+): Promise<Container> {
   const logger = createPinoLogger({
     isDev:   env.NODE_ENV !== 'production',
     level:   env.LOG_LEVEL,
@@ -450,6 +486,52 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   // ── Observability ──────────────────────────────────────────────────────
   const executionRepo      = new ExecutionRepository(prisma);
+  const shopifyRunProvenanceRepo = new ShopifyRunProvenanceRepository(prisma);
+  const protectedDataRuns = {
+    observe: async (input: {
+      readonly companyId: string;
+      readonly userId: string;
+      readonly channel: string;
+      readonly runId: string;
+      readonly threadId?: string;
+    }): Promise<void> => {
+      const executionId = await executionRepo.findOrCreateByRequestId({
+        requestId: input.runId,
+        companyId: input.companyId,
+        userId: input.userId,
+        channel: input.channel,
+        entrypoint: 'pi',
+        ...(input.threadId ? { threadId: input.threadId } : {}),
+      });
+      await executionRepo.observeProtectedData(executionId, true);
+    },
+  };
+  const shopifyDataRuns = {
+    record: async (input: {
+      readonly companyId: string;
+      readonly userId: string;
+      readonly channel: string;
+      readonly runId: string;
+      readonly threadId?: string;
+      readonly connectionId: string;
+      readonly toolId: string;
+    }): Promise<void> => {
+      const executionId = await executionRepo.findOrCreateByRequestId({
+        requestId: input.runId,
+        companyId: input.companyId,
+        userId: input.userId,
+        channel: input.channel,
+        entrypoint: 'pi',
+        ...(input.threadId ? { threadId: input.threadId } : {}),
+      });
+      await shopifyRunProvenanceRepo.record({
+        companyId: input.companyId,
+        executionRunId: executionId,
+        connectionId: input.connectionId,
+        toolId: input.toolId,
+      });
+    },
+  };
   const executionQueryService = new ExecutionQueryService({
     repo:   executionRepo,
     logger: logger.child({ service: 'execution-query' }),
@@ -591,21 +673,15 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger.child({ service: 'company-serper' }),
     env.SERPER_API_KEY ?? '',
   );
-  // Custom Semrush web-session workaround. Keep credentials backend-owned and
-  // injected here; tool callers must never receive or choose the web key/cookie.
-  const semrushWebApiKey = env.SEMRUSH_WEB_API_KEY ?? env.SEMRUSH_API_KEY;
+  // Semrush uses validated www.semrush.com recipes only. Credentials stay
+  // backend-owned; tool callers must never receive the web key or cookie.
   const semrushService = new SemrushService(
-    new SemrushClient({ timeoutMs: env.SEMRUSH_TIMEOUT_MS }),
-    env.SEMRUSH_API_KEY,
-    logger.child({ service: 'semrush' }),
-    env.SEMRUSH_API_KEY_WEBHOOK_URL,
-    fetch,
     new SemrushWebClient({
-      enabled: env.SEMRUSH_WEB_ENABLED,
       timeoutMs: env.SEMRUSH_TIMEOUT_MS,
-      ...(semrushWebApiKey ? { apiKey: semrushWebApiKey } : {}),
+      ...(env.SEMRUSH_WEB_API_KEY ? { apiKey: env.SEMRUSH_WEB_API_KEY } : {}),
       ...(env.SEMRUSH_WEB_COOKIE ? { cookie: env.SEMRUSH_WEB_COOKIE } : {}),
     }),
+    logger.child({ service: 'semrush' }),
   );
   const companyOmsSiteDataService = new CompanyOmsSiteDataService(
     companyOmsConnectionRepo,
@@ -635,6 +711,38 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   // ── Google OAuth + connection registry ───────────────────────────────────
   const integrationConnectionRepo = new IntegrationConnectionRepository(prisma, env);
+  const shopifyScopes = [...new Set(env.SHOPIFY_SCOPES.split(',').map(scope => scope.trim()).filter(Boolean))];
+  const shopifyOAuthService = new ShopifyOAuthService({
+    ...(env.SHOPIFY_CLIENT_ID ? { clientId: env.SHOPIFY_CLIENT_ID } : {}),
+    ...(env.SHOPIFY_CLIENT_SECRET ? { clientSecret: env.SHOPIFY_CLIENT_SECRET } : {}),
+    redirectUri: env.SHOPIFY_REDIRECT_URI ?? `${env.BACKEND_PUBLIC_URL}/api/shopify/auth/callback`,
+    scopes: shopifyScopes,
+    timeoutMs: env.SHOPIFY_TIMEOUT_MS,
+    maxRetries: env.SHOPIFY_MAX_RETRIES,
+    maxCallbackSkewSeconds: env.SHOPIFY_OAUTH_MAX_SKEW_SECONDS,
+  });
+  const shopifyAdminClient = new ShopifyAdminClient({
+    apiVersion: env.SHOPIFY_API_VERSION,
+    timeoutMs: env.SHOPIFY_TIMEOUT_MS,
+    maxRetries: env.SHOPIFY_MAX_RETRIES,
+  });
+  const shopifyAuthorizationService = new ShopifyAuthorizationService({
+    oauth: shopifyOAuthService,
+    adminClient: shopifyAdminClient,
+    attempts: new IntegrationOAuthAttemptRepository(prisma),
+    connections: integrationConnectionRepo,
+    scopes: shopifyScopes,
+    apiVersion: env.SHOPIFY_API_VERSION,
+  });
+  const shopifyConnectionService = new ShopifyConnectionService({
+    repository: integrationConnectionRepo,
+    oauth: shopifyOAuthService,
+  });
+  const shopifyService = new ShopifyService({
+    connections: shopifyConnectionService,
+    client: shopifyAdminClient,
+    apiVersion: env.SHOPIFY_API_VERSION,
+  });
   const googleOAuthService        = new GoogleOAuthService({ env, cache, logger: logger.child({ service: 'google-oauth' }) });
   const googleCallbackBase = new URL(
     env.GOOGLE_OAUTH_REDIRECT_URI ?? env.BACKEND_PUBLIC_URL,
@@ -1769,7 +1877,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const knowledgeOperations = new KnowledgeOperationsService(prisma, {
     pendingAgeWarningMs: env.KNOWLEDGE_HEALTH_PENDING_AGE_WARNING_SECONDS * 1_000,
     processingLeaseMs: env.KNOWLEDGE_PROJECTION_PROCESSING_LEASE_SECONDS * 1_000,
-  });
+  }, hindsightService ? { hindsight: hindsightService } : {});
   const knowledgeResources = new KnowledgeResourceQueryService({
     prisma,
     departments: deptRepo,
@@ -1996,6 +2104,12 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     exportCandidates: dataExportOrchestrationService,
     audit: auditService,
   }));
+  const [shopifyAnalyticsTool, shopifyOrdersTool, shopifyCustomersTool] = createShopifyTools({ service: shopifyService, audit: auditService });
+  toolRegistry.register(shopifyAnalyticsTool);
+  if (env.SHOPIFY_PROTECTED_DATA_TOOLS_ENABLED) {
+    toolRegistry.register(shopifyOrdersTool);
+    toolRegistry.register(shopifyCustomersTool);
+  }
   toolRegistry.register(createRunCommandTool());
   toolRegistry.register(createScheduledWorkflowsTool({ prisma }));
 
@@ -2039,6 +2153,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     permissions,
     connectionRateLimits,
     connectionRegistry: integrationConnectionRepo,
+    protectedDataRuns,
+    shopifyDataRuns,
     logger: logger.child({ service: 'lark-runtime-tool-executor' }),
     clock: systemClock,
   });
@@ -2087,6 +2203,22 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     knowledgeRecall,
     runOrigins,
     ...(env.KNOWLEDGE_LEARNING_ENABLED ? { knowledgeLearning: knowledgeLearningService } : {}),
+    allowedModelsFor: (userId) => llmProxyService.allowedModelsFor(userId),
+    onProtectedRun: notice => auditService.recordRequired({
+      actorId: notice.userId,
+      companyId: notice.companyId,
+      action: 'shopify.protected_run.session_deleted',
+      outcome: 'success',
+      metadata: {
+        runId: notice.runId,
+        threadId: notice.threadId,
+        chatId: notice.chatId,
+        sessionDeletionRequested: notice.sessionDeletionRequested,
+        referenceCount: notice.references.length,
+        connectionIds: [...new Set(notice.references.map(reference => reference.connectionId))],
+        resourceTypes: [...new Set(notice.references.map(reference => reference.resourceType))],
+      },
+    }),
   });
 
   const larkAdapter = new LarkChannelAdapter({
@@ -2094,7 +2226,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ channel: 'lark' }),
     deliveryRepo: channelDeliveryRepo,
   });
-  await larkAdapter.initialize();
+  if (!options.skipLarkInitialize) {
+    await larkAdapter.initialize();
+  }
   deliverGoogleConnect = async (input) => {
     const card = await larkAdapter.sendCardToChat(
       input.chatId,
@@ -2281,16 +2415,16 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   });
   companySerperService.bindExhaustionNotifier(apiKeyExhaustionNotifier);
   companyOmsSiteDataService.bindExhaustionNotifier(apiKeyExhaustionNotifier);
-  const disableManagerSelfBypass = env.NODE_ENV !== 'production' && env.DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS;
-  if (disableManagerSelfBypass) {
-    logger.warn('approval.gate.manager_self_bypass_disabled_for_test');
+  const approvalGateOptions = resolveApprovalGateOptions(env);
+  if (approvalGateOptions.disableManagerSelfBypass) {
+    logger.warn('approval.gate.manager_self_bypass_disabled');
   }
   const approvalGate     = new ApprovalGateService(
     approvalRepo,
     approvalResolver,
     larkAdapter,
     logger.child({ service: 'approval-gate' }),
-    { disableManagerSelfBypass, knowledgeMutations },
+    { ...approvalGateOptions, knowledgeMutations },
     connectionRateLimits,
   );
   const gatewayToolExecutor = new ToolExecutor({
@@ -2298,6 +2432,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     permissions,
     approvalGate,
     connectionRateLimits,
+    connectionRegistry: integrationConnectionRepo,
+    protectedDataRuns,
+    shopifyDataRuns,
     logger: logger.child({ service: 'gateway-tool-executor' }),
     clock:  systemClock,
   });
@@ -2569,6 +2706,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     airtableMcpOAuthService,
     aitableKeyVerifier,
     integrationConnectionRepo,
+    shopifyAuthorizationService,
     companySerperConnectionRepo,
     companySerperService,
     semrushService,

@@ -24,6 +24,16 @@ export class RedisCache implements CachePort {
     }
   }
 
+  async take<T>(key: string): Promise<Result<T | null, InfraError>> {
+    try {
+      const raw = await this.redis.call('GETDEL', key) as string | null;
+      if (raw === null) return ok(null);
+      try { return ok(JSON.parse(raw) as T); } catch { return ok(null); }
+    } catch (e) {
+      return err(wrapInfra('redis', `getdel:${key}`, e));
+    }
+  }
+
   async set<T>(key: string, value: T, ttlSeconds = DEFAULT_TTL_SECONDS): Promise<Result<void, InfraError>> {
     try {
       await this.redis.set(key, JSON.stringify(value), 'EX', ttlSeconds);

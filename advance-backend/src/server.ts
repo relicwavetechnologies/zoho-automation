@@ -19,6 +19,11 @@ import { GooglePubSubPushVerifier } from './infrastructure/google/google-pubsub-
 import { createZohoAuthRoutes } from './http/zoho/zoho-auth.routes';
 import { createLarkAuthRoutes } from './http/lark/lark-auth.routes';
 import { buildSignInConnectedCard } from './infrastructure/channels/lark/lark-signin';
+import { createShopifyAuthRoutes } from './http/shopify/shopify-auth.routes';
+import { createShopifyWebhookRoutes } from './http/shopify/shopify-webhook.routes';
+import { ShopifyWebhookRepository } from './infrastructure/persistence/shopify-webhook.repository';
+import { PrismaShopifyPrivacyRepository } from './infrastructure/persistence/shopify-privacy.repository';
+import { drainExpiredShopifyPrivacyRequests } from './application/shopify/shopify-privacy-retention.service';
 import { createExecutionRoutes } from './http/executions/execution.routes';
 import { createAdminAuthMiddleware } from './http/middleware/admin-auth.middleware';
 import { createMemberAuthMiddleware, MEMBER_SESSION_TTL_MINUTES } from './http/middleware/member-auth.middleware';
@@ -32,6 +37,7 @@ import { createSkillRegistryRoutes } from './http/admin/skill-registry.routes';
 import { createMemoryRoutes } from './http/admin/memory.routes';
 import { createCompanyRoutes } from './http/admin/company.routes';
 import { createAuditRoutes } from './http/admin/audit.routes';
+import { createShopifyPrivacyRoutes } from './http/admin/shopify-privacy.routes';
 import { createControlsRoutes } from './http/admin/controls.routes';
 import { createRbacRoutes } from './http/admin/rbac.routes';
 import { createAiModelsRoutes } from './http/admin/ai-models.routes';
@@ -73,6 +79,10 @@ export type DivoServerApplication = Express & {
 
 export const createServer = (c: Container): DivoServerApplication => {
   const app = express() as DivoServerApplication;
+  const shopifyPrivacyRepository = new PrismaShopifyPrivacyRepository(
+    c.prisma,
+    c.env.INTEGRATION_TOKEN_ENCRYPTION_KEY ?? c.env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '',
+  );
   const gmailPubsubConfig = getGmailPubSubConfig(c.env);
   const allowedOrigins = new Set(
     [
@@ -147,7 +157,7 @@ export const createServer = (c: Container): DivoServerApplication => {
       identityRepo: c.channelIdentityRepo,
       connectionRepo: c.integrationConnectionRepo,
       resumeDataExport: c.resumeDataExportAfterGoogleConnection,
-      runPi: input => runPiAndDeliver({
+      runPi: async input => (await runPiAndDeliver({
         ...input,
         deps: {
           adapter: input.channelAdapter,
@@ -155,11 +165,12 @@ export const createServer = (c: Container): DivoServerApplication => {
           conversationRepo: c.conversationRepo,
           channelDeliveryRepo: c.channelDeliveryRepo,
           groupContextHydrator: c.groupContextHydrator,
+          chatContextService: c.chatContextService,
         },
         log: c.logger,
         ...(input.abortSignal ? { signal: input.abortSignal } : {}),
         rethrowRuntimeFailureAfterDelivery: true,
-      }),
+      }))?.text ?? null,
       channelAdapter: c.larkAdapter,
       laneLeaseHolder: c.laneLeaseHolder,
       logger: c.logger,
@@ -318,6 +329,32 @@ export const createServer = (c: Container): DivoServerApplication => {
     c.env.TRACE_RETENTION_INTERVAL_HOURS * 3_600_000,
   );
   traceRetentionTimer.unref?.();
+
+  let shopifyPrivacyRetentionRunning = false;
+  const runShopifyPrivacyRetention = () => {
+    if (shopifyPrivacyRetentionRunning) return;
+    shopifyPrivacyRetentionRunning = true;
+    void drainExpiredShopifyPrivacyRequests({ repository: shopifyPrivacyRepository })
+      .then(result => {
+        if (result.affected > 0 || result.hasMore) {
+          c.logger.info('shopify.privacy.retention.completed', result);
+        }
+        if (result.hasMore) {
+          c.logger.warn('shopify.privacy.retention.budget_exhausted', { affected: result.affected });
+        }
+      })
+      .catch(error => {
+        c.logger.warn('shopify.privacy.retention.failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        shopifyPrivacyRetentionRunning = false;
+      });
+  };
+  runShopifyPrivacyRetention();
+  const shopifyPrivacyRetentionTimer = setInterval(runShopifyPrivacyRetention, 3_600_000);
+  shopifyPrivacyRetentionTimer.unref?.();
 
   app.use((req, res, next) => {
     const origin = req.headers.origin;
@@ -524,6 +561,33 @@ export const createServer = (c: Container): DivoServerApplication => {
     }),
   );
 
+  // Shopify connect is member-authenticated; the provider callback remains
+  // public but requires signed HMAC, a signed browser cookie, and one-time state.
+  app.use(
+    '/api/shopify/auth',
+    createShopifyAuthRoutes({
+      authenticate: createMemberAuthMiddleware({
+        prisma: c.prisma,
+        jwtSecret: c.env.MEMBER_JWT_SECRET,
+        logger: c.logger,
+      }),
+      authorization: c.shopifyAuthorizationService,
+      logger: c.logger,
+      frontendBaseUrl: c.env.APP_BASE_URL,
+    }),
+  );
+  app.use(
+    '/webhooks/shopify',
+    createShopifyWebhookRoutes({
+      ...(c.env.SHOPIFY_CLIENT_SECRET ? { clientSecret: c.env.SHOPIFY_CLIENT_SECRET } : {}),
+      repository: new ShopifyWebhookRepository(
+        c.prisma,
+        shopifyPrivacyRepository,
+      ),
+      logger: c.logger,
+    }),
+  );
+
   // Execution trace routes (read-only observability, admin-auth required)
   const adminAuth = createAdminAuthMiddleware({
     prisma:          c.prisma,
@@ -670,6 +734,7 @@ export const createServer = (c: Container): DivoServerApplication => {
       canvaMcpOAuthService:   c.canvaMcpOAuthService,
       airtableMcpOAuthService: c.airtableMcpOAuthService,
       aitableKeyVerifier:      c.aitableKeyVerifier,
+      shopifyAuthorizationService: c.shopifyAuthorizationService,
       zohoTokenService:       c.zohoTokenService,
       zohoConnectionRepo:     c.zohoConnectionRepo,
       connectionRepo:         c.integrationConnectionRepo,
@@ -679,7 +744,6 @@ export const createServer = (c: Container): DivoServerApplication => {
       skillCatalog:           c.skillCatalog,
       skillAccessEnforcement: c.skillAccessEnforcement,
       managerPersonaRuntime:  c.managerPersonaRuntimeService,
-      ...(c.memoryService ? { memory: c.memoryService } : {}),
       logger:                 c.logger,
       env:                    c.env,
       memberJwtSecret:        c.env.MEMBER_JWT_SECRET,
@@ -799,6 +863,12 @@ export const createServer = (c: Container): DivoServerApplication => {
   // Audit logs
   app.use('/api/admin/audit', adminAuth, createAuditRoutes({ auditService: c.auditService, logger: c.logger }));
 
+  app.use(
+    '/api/admin/shopify/privacy',
+    adminAuth,
+    createShopifyPrivacyRoutes({ repository: shopifyPrivacyRepository }),
+  );
+
   // Admin controls
   app.use('/api/admin/controls', adminAuth, createControlsRoutes({ prisma: c.prisma, logger: c.logger, env: c.env, audit: c.auditService }));
 
@@ -850,6 +920,7 @@ export const createServer = (c: Container): DivoServerApplication => {
       clearInterval(knowledgeFileCleanupTimer);
       clearInterval(cloudinaryCleanupTimer);
       clearInterval(traceRetentionTimer);
+      clearInterval(shopifyPrivacyRetentionTimer);
       c.mailOpsWorker.stop();
       c.scheduledWorkflowService.stop();
 

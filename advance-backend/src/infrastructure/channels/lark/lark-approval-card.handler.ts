@@ -220,7 +220,7 @@ export class LarkApprovalCardHandler {
     const resolveResult = await this.approvalRepo.atomicResolve(
       approvalId,
       decision as 'approved' | 'rejected',
-      actor.openId,
+      actor.userId,
     );
 
     if (!resolveResult.ok || !resolveResult.value) {

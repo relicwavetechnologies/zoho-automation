@@ -33,9 +33,14 @@ class StubHindsightClient implements HindsightMemoryClient {
   }> = [];
   readonly batches: Array<{ bankId: string; items: readonly MemoryItemInput[] }> = [];
   readonly deletedDocuments: Array<{ bankId: string; documentId: string }> = [];
+  readonly deletedBanks: string[] = [];
   recallFailureBank: string | undefined;
   includeRetiredLegacyEntry = false;
   includeDocumentEntries = false;
+
+  async getVersion(_options: { signal: AbortSignal }): Promise<{ readonly version?: string }> {
+    return { version: 'test' };
+  }
 
   async ensureBank(bankId: string, _options: { signal: AbortSignal }): Promise<void> {
     this.ensuredBanks.push(bankId);
@@ -134,6 +139,18 @@ class StubHindsightClient implements HindsightMemoryClient {
     this.deletedDocuments.push({ bankId, documentId });
   }
 
+  async listDocuments(_bankId: string, _options: {
+    limit: number;
+    offset: number;
+    signal: AbortSignal;
+  }): Promise<readonly { readonly id: string; readonly metadata?: Record<string, unknown> }[]> {
+    return [];
+  }
+
+  async deleteBank(bankId: string, _options: { signal: AbortSignal }): Promise<void> {
+    this.deletedBanks.push(bankId);
+  }
+
 }
 
 function makeService(client = new StubHindsightClient(), recallConcurrency = 2) {
@@ -153,6 +170,11 @@ function makeService(client = new StubHindsightClient(), recallConcurrency = 2) 
 }
 
 describe('HindsightMemoryService', () => {
+  it('reports Hindsight readiness through the client health endpoint', async () => {
+    const { service } = makeService();
+    assert.deepEqual(await service.readiness(), { status: 'ok', version: 'test' });
+  });
+
   it('derives isolated opaque banks for company, department, and personal scope', () => {
     const personal = personalBankId('co-1', 'user-1');
     const department = departmentBankId('co-1', 'dept-finance');
@@ -199,6 +221,28 @@ describe('HindsightMemoryService', () => {
       departmentBankId('co-1', 'dept-sales'),
       companyBankId('co-1'),
     ]);
+    assert.ok(client.recalls.every(call =>
+      call.tagsMatch === 'all_strict'
+      && call.tags?.length === 1
+      && call.tags[0] === 'source:knowledge_core'));
+  });
+
+  it('does not open the personal bank when personal recall is excluded', async () => {
+    const { service, client } = makeService();
+    const result = await service.searchForRecall({
+      query: 'shared policy',
+      userId: 'user-1',
+      companyId: 'co-1',
+      departments: [{ id: 'dept-finance', name: 'Finance' }],
+      includePersonal: false,
+      limit: 12,
+      maxFactChars: 500,
+      maxTotalChars: 3_000,
+    });
+
+    assert.equal(client.recalls.some(call => call.bankId === personalBankId('co-1', 'user-1')), false);
+    assert.equal(result.coverage.personal, 'failed');
+    assert.equal(result.status, 'available');
   });
 
   it('bounds concurrent scope recalls without skipping any authorized department', async () => {
@@ -307,6 +351,109 @@ describe('HindsightMemoryService', () => {
       client.batches[0]?.items[0]?.document_id,
       client.batches[0]?.items[1]?.document_id,
     );
+  });
+
+  it('retains large resources in timeout-bounded idempotent batches', async () => {
+    const { service, client } = makeService();
+    await service.projectExplicitResource({
+      resourceId: 'resource-batched',
+      facts: Array.from({ length: 9 }, (_, index) => `Fact ${index}.`),
+      previousFactCount: 0,
+      scope: 'personal',
+      userId: 'user-1',
+      companyId: 'co-1',
+    });
+
+    assert.deepEqual(client.batches.map(batch => batch.items.length), [4, 4, 1]);
+    assert.equal(new Set(client.batches.flatMap(batch =>
+      batch.items.map(item => item.document_id))).size, 9);
+  });
+
+  it('cleans trailing projected documents discovered from Hindsight metadata', async () => {
+    class ListingClient extends StubHindsightClient {
+      override async listDocuments() {
+        const current = this.batches[0]?.items[0]?.document_id;
+        return [
+          { id: String(current), metadata: { source: 'knowledge_core', resource_id: 'resource-1' } },
+          { id: 'stale-document', metadata: { source: 'knowledge_core', resource_id: 'resource-1' } },
+          { id: 'other-resource', metadata: { source: 'knowledge_core', resource_id: 'resource-2' } },
+        ];
+      }
+    }
+    const client = new ListingClient();
+    const { service } = makeService(client);
+
+    await service.projectExplicitResource({
+      resourceId: 'resource-1',
+      facts: ['Current fact.'],
+      previousFactCount: 0,
+      scope: 'company',
+      userId: 'user-1',
+      companyId: 'co-1',
+    });
+
+    assert.deepEqual(client.deletedDocuments.map(item => item.documentId), ['stale-document']);
+  });
+
+  it('deletes known trailing IDs even when mixed list metadata is incomplete', async () => {
+    class MixedMetadataClient extends StubHindsightClient {
+      override async listDocuments() {
+        return [
+          { id: 'metadata-free' },
+          { id: 'other-resource', metadata: { source: 'knowledge_core', resource_id: 'resource-2' } },
+        ];
+      }
+    }
+    const client = new MixedMetadataClient();
+    const { service } = makeService(client);
+
+    await service.projectExplicitResource({
+      resourceId: 'resource-1',
+      facts: ['Current fact.'],
+      previousFactCount: 3,
+      scope: 'company',
+      userId: 'user-1',
+      companyId: 'co-1',
+    });
+
+    assert.equal(client.deletedDocuments.length, 2);
+    assert.ok(client.deletedDocuments.every(item =>
+      item.bankId === companyBankId('co-1')
+      && /^divo-knowledge-[a-f0-9]{64}$/u.test(item.documentId)));
+  });
+
+  it('treats SDK-shaped 404 delete errors as idempotently complete', async () => {
+    class NotFoundClient extends StubHindsightClient {
+      override async deleteDocument(): Promise<void> {
+        throw new Error('deleteDocument failed: {"status":404,"detail":"not found"}');
+      }
+    }
+    const { service } = makeService(new NotFoundClient());
+
+    await service.removeProjectedResource({
+      resourceId: 'resource-1',
+      factCount: 2,
+      companyId: 'co-1',
+      userId: 'user-1',
+      scope: 'company',
+    });
+  });
+
+  it('treats Hindsight message-only document-not-found deletes as idempotently complete', async () => {
+    class MessageOnlyNotFoundClient extends StubHindsightClient {
+      override async deleteDocument(): Promise<void> {
+        throw new Error('deleteDocument failed: {"detail":"Document not found"}');
+      }
+    }
+    const { service } = makeService(new MessageOnlyNotFoundClient());
+
+    await service.removeProjectedResource({
+      resourceId: 'resource-message-only-not-found',
+      factCount: 2,
+      companyId: 'co-1',
+      userId: 'user-1',
+      scope: 'company',
+    });
   });
 
   it('returns a bounded personal snapshot for the desktop hot context', async () => {

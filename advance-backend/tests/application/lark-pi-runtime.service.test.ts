@@ -247,6 +247,9 @@ test('binds a group run to a shared audience in the signed runtime lease', async
 
 test('turns a verified export offer receipt into explicit governed format choices', async () => {
   const offerId = '11111111-1111-4111-8111-111111111111';
+test('never injects personal recall into a group prompt and preserves retrieval metadata', async () => {
+  let controllerBody: Record<string, unknown> | undefined;
+  let recallInput: Record<string, unknown> | undefined;
   const service = new LarkPiRuntimeService({
     prisma: {
       memberSession: {
@@ -412,6 +415,46 @@ test('turns a run-bound Google authorization into a direct final-card action', a
     url: 'https://accounts.google.com/o/oauth2/auth?state=opaque',
     style: 'primary',
   }]);
+    knowledgeRecall: {
+      recall: async input => {
+        recallInput = input as unknown as Record<string, unknown>;
+        return {
+          status: 'partial' as const,
+          coverage: {
+            personal: 'searched' as const,
+            departments: { searched: 2, failed: 1 },
+            company: 'searched' as const,
+          },
+          degradation: 'canonical_hydration_failed' as const,
+          facts: [
+            { scope: 'personal' as const, text: 'Private fact.' },
+            { scope: 'company' as const, text: 'Company fact.' },
+          ],
+        };
+      },
+    },
+    fetch: async (_url, init) => {
+      controllerBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ text: 'Finished' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+
+  await service.run({
+    ...runtimeInput(),
+    incoming: { ...runtimeInput().incoming, chatType: 'group' },
+  } as any);
+
+  const message = String(controllerBody?.['message']);
+  assert.equal(recallInput?.['audience'], 'shared');
+  assert.ok(message.includes('RETRIEVAL_STATUS: partial'));
+  assert.ok(message.includes('personal=skipped'));
+  assert.ok(message.includes('departments=2 searched, 1 failed'));
+  assert.ok(message.includes('[Company] "Company fact."'));
+  assert.ok(!message.includes('Private fact.'));
+  assert.ok(message.includes('canonical hydration failed'));
 });
 
 test('delivers a natural personal-preference acknowledgement and captures learning once', async () => {
@@ -525,6 +568,118 @@ test('persists private turns idempotently and teaches from the recent human conv
     'Start with a summary.',
     'Then include a detailed table.',
   ]);
+});
+
+test('a protected run is neither persisted nor learned and emits cleanup-confirmed provenance', async () => {
+  let persisted = 0;
+  let learned = 0;
+  let receiptLookups = 0;
+  const notices: unknown[] = [];
+  const protectedResponses: Array<unknown[]> = [];
+  const reference = {
+    provider: 'shopify' as const,
+    connectionId: '11111111-1111-4111-8111-111111111111',
+    resourceType: 'customer' as const,
+    resourceId: 'gid://shopify/Customer/123456789',
+  };
+  protectedResponses.push([reference], []);
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts: {
+      getVerifiedKnowledgeEffect: async () => {
+        receiptLookups++;
+        return null;
+      },
+    },
+    conversationHistory: {
+      appendTurn: async () => {
+        persisted++;
+        return { ok: true as const, value: {} as any };
+      },
+      getHistory: async () => ({ ok: true as const, value: [] }),
+    },
+    knowledgeLearning: {
+      captureCompletedTurn: async () => { learned++; },
+    },
+    onProtectedRun: async notice => { notices.push(notice); },
+    fetch: async () => new Response(`${JSON.stringify({
+      type: 'result',
+      text: 'Customer account is active.',
+      protectedDataUsed: true,
+      protectedRefs: protectedResponses.shift(),
+    })}\n`, {
+      status: 200,
+      headers: { 'content-type': 'application/x-ndjson' },
+    }),
+  });
+
+  const result = await service.run({
+    ...runtimeInput(),
+    incoming: {
+      ...runtimeInput().incoming,
+      chatType: 'p2p',
+      messageId: 'om-protected-1',
+      timestamp: '2026-08-03T00:00:00.000Z',
+    },
+  });
+
+  assert.deepEqual(result, {
+    text: 'Customer account is active.',
+    protectedDataUsed: true,
+    protectedReferences: [reference],
+  });
+  const emptyResult = await service.run({
+    ...runtimeInput(),
+    incoming: {
+      ...runtimeInput().incoming,
+      traceId: 'trace-2',
+      chatType: 'p2p',
+      messageId: 'om-protected-2',
+      timestamp: '2026-08-03T00:01:00.000Z',
+      text: 'Count matching customers',
+    },
+  });
+  assert.deepEqual(emptyResult, {
+    text: 'Customer account is active.',
+    protectedDataUsed: true,
+    protectedReferences: [],
+  });
+  assert.equal(persisted, 0);
+  assert.equal(learned, 0);
+  assert.equal(receiptLookups, 0);
+  assert.deepEqual(notices, [{
+    companyId: 'company-1',
+    userId: 'user-1',
+    chatId: 'chat-1',
+    threadId: 'lark:chat-1:user-1',
+    runId: 'trace-1',
+    protectedDataUsed: true,
+    references: [reference],
+    sessionDeletionRequested: true,
+  }, {
+    companyId: 'company-1',
+    userId: 'user-1',
+    chatId: 'chat-1',
+    threadId: 'lark:chat-1:user-1',
+    runId: 'trace-2',
+    protectedDataUsed: true,
+    references: [],
+    sessionDeletionRequested: true,
+  }]);
 });
 
 test('allows a verified explicit personal save and does not enqueue duplicate implicit learning', async () => {

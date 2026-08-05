@@ -111,6 +111,80 @@ test('real Postgres keyword index and canonical hydration enforce live scope and
   assert.equal(ownerHits.some(hit => hit.resourceId === personal.resourceId), true);
 });
 
+test('real document leases reject concurrent owners and fence a reclaimed worker', {
+  skip: !enabled ? 'Set RUN_DATABASE_INTEGRATION=1 with DATABASE_URL to run.' : false,
+  timeout: 30_000,
+}, async () => {
+  const resource = await prisma!.knowledgeResource.create({
+    data: {
+      companyId,
+      kind: 'file',
+      scope: 'company',
+      targetKey: 'company',
+      logicalKey: `integration.lease.${suffix}`,
+      status: 'active',
+      currentVersion: 1,
+      createdById: ownerId,
+    },
+  });
+  const content = `lease-${suffix}`;
+  const asset = await prisma!.knowledgeFileAsset.create({
+    data: {
+      companyId,
+      uploadedById: ownerId,
+      knowledgeResourceId: resource.id,
+      provider: 'integration',
+      storageKey: `integration/${suffix}/${randomUUID()}`,
+      resourceType: 'raw',
+      deliveryType: 'authenticated',
+      fileName: 'lease.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: content.length,
+      sha256: createHash('sha256').update(content).digest('hex'),
+      status: 'attached',
+      expiresAt: new Date(Date.now() + 60_000),
+      attachedAt: new Date(),
+    },
+  });
+  const repository = new PrismaKnowledgeDocumentRepository(prisma!, 60_000);
+  const first = await repository.beginIndex({
+    companyId,
+    resourceId: resource.id,
+    resourceVersion: 1,
+    fileAssetId: asset.id,
+    sourceSha256: asset.sha256,
+    mimeType: asset.mimeType,
+    parserVersion: 'lease-v1',
+  });
+  await assert.rejects(repository.beginIndex({
+    companyId,
+    resourceId: resource.id,
+    resourceVersion: 1,
+    fileAssetId: asset.id,
+    sourceSha256: asset.sha256,
+    mimeType: asset.mimeType,
+    parserVersion: 'lease-v1',
+  }), /already owned/);
+
+  await prisma!.knowledgeFileDocument.update({
+    where: { id: first.id },
+    data: { lockedAt: new Date(Date.now() - 120_000) },
+  });
+  const second = await repository.beginIndex({
+    companyId,
+    resourceId: resource.id,
+    resourceVersion: 1,
+    fileAssetId: asset.id,
+    sourceSha256: asset.sha256,
+    mimeType: asset.mimeType,
+    parserVersion: 'lease-v2',
+  });
+  assert.notEqual(first.leaseToken, second.leaseToken);
+  await assert.rejects(repository.markReady(first.id, first.leaseToken!), /lease was lost/);
+  await repository.markFailed(second.id, second.leaseToken!, { code: 'test', message: 'fenced' });
+  assert.equal((await prisma!.knowledgeFileDocument.findUniqueOrThrow({ where: { id: second.id } })).status, 'failed');
+});
+
 async function createResourceWithAsset(input: {
   scope: 'personal' | 'company';
   targetKey: string;
@@ -161,6 +235,7 @@ async function createResourceWithAsset(input: {
   });
   await repository.replaceChunks({
     documentId: document.id,
+    leaseToken: document.leaseToken!,
     pageCount: 4,
     parserVersion: 'integration-v1',
     warnings: [],
@@ -175,6 +250,6 @@ async function createResourceWithAsset(input: {
       sectionPath: ['Rollback'],
     }],
   });
-  await repository.markReady(document.id);
+  await repository.markReady(document.id, document.leaseToken!);
   return { resourceId: resource.id };
 }

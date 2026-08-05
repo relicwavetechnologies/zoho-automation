@@ -127,6 +127,16 @@ export interface UpsertDataExportPlanInput {
 
 export interface DataExportCandidateRepositoryPort {
   createCandidate(input: CreateDataExportCandidateInput): Promise<Result<DataExportCandidateRecord, Error>>;
+  listActiveForActor(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly chatId: string;
+    readonly scope?: 'chat' | 'run';
+    readonly runRequestId?: string;
+    readonly traceId?: string;
+    readonly limit?: number;
+    readonly now?: Date;
+  }): Promise<Result<readonly DataExportCandidateRecord[], Error>>;
   loadCandidatesForPlan(input: {
     readonly candidateIds: readonly string[];
     readonly companyId: string;

@@ -31,6 +31,11 @@ export interface DataExportDestinationWriteInput {
   readonly source?: DataExportSource;
   readonly destination: DataExportDestination;
   readonly rows: AsyncIterable<readonly Record<string, unknown>[]>;
+  readonly workbookTabs?: readonly {
+    readonly tabName: string;
+    readonly source: DataExportSource;
+    readonly rows: AsyncIterable<readonly Record<string, unknown>[]>;
+  }[];
   /** Finalizes source/worker coverage once the destination knows rows written. */
   readonly coverage?: (rowsWritten: number) => DataExportCoverage;
   /** Compatibility for older sinks; new sinks must return `coverage`. */

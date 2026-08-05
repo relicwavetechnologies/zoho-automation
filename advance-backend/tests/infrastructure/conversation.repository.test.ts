@@ -131,11 +131,11 @@ describe('ConversationRepository.getHistory', () => {
     assert.ok(cache.store.has(CACHE_KEY), 'cache should be populated after DB query');
   });
 
-  it('cache hit: returns cached turns without querying Prisma', async () => {
+  it('cache hit: validates the durable history generation before returning cached turns', async () => {
     let dbCalls = 0;
     const db = makeDb({
       runtimeConversation: {
-        findFirst: async () => { dbCalls++; return null; },
+        findFirst: async () => { dbCalls++; return { historyRevision: 0 }; },
         create: async () => ({ id: 'conv-1' }),
         update: async () => ({ lastMessageSequence: 1 }),
       },
@@ -148,7 +148,31 @@ describe('ConversationRepository.getHistory', () => {
 
     assert.ok(result.ok);
     assert.equal(result.value.length, 2);
-    assert.equal(dbCalls, 0, 'DB should not be queried on cache hit');
+    assert.equal(dbCalls, 1, 'cache hits must validate the durable generation');
+  });
+
+  it('never serves a pre-erasure cache generation after the durable generation advances', async () => {
+    let dbCalls = 0;
+    const db = makeDb({
+      runtimeConversation: {
+        findFirst: async () => {
+          dbCalls += 1;
+          return dbCalls === 1
+            ? { id: 'conv-1', historyRevision: 1 }
+            : { id: 'conv-1', historyRevision: 1, messages: [] };
+        },
+        create: async () => ({ id: 'conv-1', historyRevision: 1 }),
+        update: async () => ({ lastMessageSequence: 1 }),
+      },
+    });
+    const cache = makeCache(new Map([[CACHE_KEY, { revision: 0, turns: [turn1, turn2] }]]));
+    const repo = new ConversationRepository(db as any, cache);
+
+    const result = await repo.getHistory(CHAT_KEY);
+
+    assert.ok(result.ok);
+    assert.deepEqual(result.value, []);
+    assert.equal(dbCalls, 2);
   });
 
   it('cache hit: respects the limit param by returning newest cached turns', async () => {
@@ -277,7 +301,7 @@ describe('ConversationRepository.appendTurn', () => {
     const cache = makeCache(new Map([[scopedCacheKey, [turn1]], [CACHE_KEY, [turn1]]]));
     const db = makeDb({
       runtimeConversation: {
-        findUnique: async (input: unknown) => { lookup = input; return { id: 'company-conv' }; },
+        upsert: async (input: unknown) => { lookup = input; return { id: 'company-conv' }; },
         findFirst: async () => { throw new Error('unscoped lookup must not run'); },
         create: async () => ({ id: 'company-conv' }),
         update: async () => ({ lastMessageSequence: 2 }),
@@ -308,7 +332,7 @@ describe('ConversationRepository.appendTurn', () => {
   });
 
   it('binds a channel dedupe key and returns the existing turn on redelivery', async () => {
-    let createInput: any = null;
+    let upsertInput: any = null;
     const existing = {
       id: 'existing-msg',
       role: 'user',
@@ -320,16 +344,14 @@ describe('ConversationRepository.appendTurn', () => {
     };
     const db = makeDb({
       runtimeConversation: {
-        findUnique: async () => ({ id: 'company-conv' }),
+        upsert: async () => ({ id: 'company-conv' }),
         create: async () => ({ id: 'company-conv' }),
         update: async () => ({ lastMessageSequence: 2 }),
       },
       runtimeConversationMessage: {
-        create: async (input: unknown) => {
-          createInput = input;
-          throw Object.assign(new Error('unique violation'), { code: 'P2002' });
-        },
-        findUnique: async (input: any) => {
+        findUnique: async () => null,
+        upsert: async (input: any) => {
+          upsertInput = input;
           assert.deepEqual(input.where.conversationId_dedupeKey, {
             conversationId: 'company-conv',
             dedupeKey: 'lark:om-1:user',
@@ -352,8 +374,8 @@ describe('ConversationRepository.appendTurn', () => {
 
     assert.ok(result.ok);
     assert.equal(result.value.id, 'existing-msg');
-    assert.equal(createInput.data.dedupeKey, 'lark:om-1:user');
-    assert.equal(createInput.data.sourceMessageId, 'om-1');
+    assert.equal(upsertInput.create.dedupeKey, 'lark:om-1:user');
+    assert.equal(upsertInput.create.sourceMessageId, 'om-1');
   });
 });
 

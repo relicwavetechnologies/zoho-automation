@@ -2,6 +2,8 @@ import type { KnowledgeDocumentChunkInput, KnowledgeDocumentSemanticCandidate } 
 
 export interface KnowledgeFileDocumentSnapshot {
   readonly id: string;
+  /** Opaque lease owner token. Non-null only while status is processing. */
+  readonly leaseToken: string | null;
   readonly companyId: string;
   readonly resourceId: string;
   readonly resourceVersion: number;
@@ -42,14 +44,15 @@ export interface KnowledgeDocumentRepository {
 
   replaceChunks(input: {
     readonly documentId: string;
+    readonly leaseToken: string;
     readonly pageCount?: number;
     readonly parserVersion: string;
     readonly warnings: readonly string[];
     readonly chunks: readonly KnowledgeDocumentChunkInput[];
   }): Promise<void>;
 
-  markReady(documentId: string): Promise<void>;
-  markFailed(documentId: string, error: { readonly code: string; readonly message: string }): Promise<void>;
+  markReady(documentId: string, leaseToken: string): Promise<void>;
+  markFailed(documentId: string, leaseToken: string, error: { readonly code: string; readonly message: string }): Promise<void>;
   listOtherVersions(resourceId: string, currentVersion: number): Promise<readonly KnowledgeFileDocumentSnapshot[]>;
   listByResource(resourceId: string): Promise<readonly KnowledgeFileDocumentSnapshot[]>;
   markSuperseded(documentId: string): Promise<void>;

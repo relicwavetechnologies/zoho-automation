@@ -7,9 +7,12 @@ import {
 	backendUrlForContainer,
 	buildBootstrapWriteArgs,
 	buildContainerCreateArgs,
+	collectProtectedRunMetadata,
 	createIdleContainerScheduler,
+	deleteProtectedRuntimeSession,
 	finalizeRuntimeLifecycle,
 	loadToken,
+	logCompletedRun,
 	RUNTIME_IDLE_TIMEOUT_MS,
 	RUNTIME_STOP_RETRY_MS,
 	resourcesFor,
@@ -58,6 +61,146 @@ test("startup progress names newly created work only", () => {
 	assert.deepEqual(runtimeStartupProgress({ wasRunning: true, created: false }), [{ type: "working" }]);
 	assert.deepEqual(runtimeStartupProgress({ wasRunning: false, created: false }), [{ type: "working" }]);
 	assert.deepEqual(runtimeStartupProgress({ wasRunning: false, created: true }), [
+const protectedCustomerRef = {
+	provider: "shopify",
+	connectionId: "11111111-1111-4111-8111-111111111111",
+	resourceType: "customer",
+	resourceId: "gid://shopify/Customer/123456789",
+};
+
+test("protected metadata comes only from a linked successful gateway tool result", () => {
+	const metadata = collectProtectedRunMetadata([
+		{ role: "user", content: [{ type: "text", text: "Check customer" }] },
+		{
+			role: "assistant",
+			content: [
+				{ type: "text", text: 'protectedData: { "used": true }' },
+				{ type: "toolCall", id: "call-1", name: "divo_gateway", arguments: {} },
+			],
+		},
+		{
+			role: "toolResult",
+			toolCallId: "call-1",
+			details: {
+				ok: true,
+				status: "success",
+				data: {
+					toolId: "shopifyCustomers",
+					protectedData: {
+						used: true,
+						provider: "shopify",
+						connectionId: protectedCustomerRef.connectionId,
+						category: "customers",
+						references: [protectedCustomerRef],
+					},
+				},
+			},
+		},
+	]);
+
+	assert.deepEqual(metadata, {
+		protectedDataUsed: true,
+		protectedRefs: [protectedCustomerRef],
+		protectedProvenanceValid: true,
+	});
+	assert.deepEqual(collectProtectedRunMetadata([{
+		role: "assistant",
+		content: [{ type: "text", text: JSON.stringify(metadata) }],
+	}]), { protectedDataUsed: false, protectedRefs: [] });
+});
+
+test("zero-match protected gateway results still mark the run protected", () => {
+	assert.deepEqual(collectProtectedRunMetadata([
+		{ role: "user", content: [] },
+		{ role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "divo_gateway" }] },
+		{
+			role: "toolResult",
+			toolCallId: "call-1",
+			details: {
+				ok: true,
+				status: "success",
+				data: { protectedData: {
+					used: true,
+					provider: "shopify",
+					connectionId: protectedCustomerRef.connectionId,
+					category: "customers",
+					references: [],
+				} },
+			},
+		},
+	]), {
+		protectedDataUsed: true,
+		protectedRefs: [],
+		protectedProvenanceValid: true,
+	});
+});
+
+test("a protected gateway attempt remains protected when the tool returns an error", () => {
+	assert.deepEqual(collectProtectedRunMetadata([
+		{ role: "user", content: [] },
+		{
+			role: "assistant",
+			content: [{
+				type: "toolCall",
+				id: "call-1",
+				name: "divo_gateway",
+				arguments: {
+					op: "tools.invoke",
+					payload: { toolId: "shopifyOrders", args: { operation: "list_orders" } },
+				},
+			}],
+		},
+		{ role: "toolResult", toolCallId: "call-1", isError: true, details: { status: "permission_denied" } },
+	]), {
+		protectedDataUsed: true,
+		protectedRefs: [],
+		protectedProvenanceValid: true,
+	});
+});
+
+test("protected completion logs never contain final text", () => {
+	const lines = [];
+	logCompletedRun("private customer answer", { protectedDataUsed: true }, line => lines.push(line));
+	logCompletedRun("ordinary answer", { protectedDataUsed: false }, line => lines.push(line));
+	assert.deepEqual(lines, [
+		"[divo-pi] protected run completed; final text suppressed",
+		"ordinary answer",
+	]);
+});
+
+test("default protected cleanup targets only the signed runtime's owned thread", async () => {
+	const calls = [];
+	await deleteProtectedRuntimeSession(
+		{ profile: "cloud-derived", thread: "thread-current" },
+		{
+			inspectVolume: async name => ({ Labels: { "dev.divo.profile": "cloud-derived" }, name }),
+			removeSession: async (volume, directory) => calls.push({ volume, directory }),
+		},
+	);
+	assert.deepEqual(calls, [{
+		volume: "divo-pi-local-cloud-derived",
+		directory: "/data/state/data/threads/thread-current",
+	}]);
+});
+
+test("protected cleanup refuses a volume not owned by the signed runtime", async () => {
+	let removed = false;
+	await assert.rejects(
+		deleteProtectedRuntimeSession(
+			{ profile: "cloud-derived", thread: "thread-current" },
+			{
+				inspectVolume: async () => ({ Labels: { "dev.divo.profile": "another-user" } }),
+				removeSession: async () => { removed = true; },
+			},
+		),
+		/unowned runtime volume/,
+	);
+	assert.equal(removed, false);
+});
+
+test("startup progress names cold work only and keeps warm runs generic", () => {
+	assert.deepEqual(runtimeStartupProgress(true), [{ type: "working" }]);
+	assert.deepEqual(runtimeStartupProgress(false), [
 		{ type: "starting", stage: "workspace", label: "Checking your workspace…" },
 		{ type: "starting", stage: "container", label: "Waking up Divo…" },
 	]);

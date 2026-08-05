@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Prisma, type PrismaClient } from '../../generated/prisma';
 import type {
   CanonicalKnowledgeDocumentChunk,
@@ -10,7 +11,10 @@ import type {
 } from '../../application/knowledge/knowledge-document.port';
 
 export class PrismaKnowledgeDocumentRepository implements KnowledgeDocumentRepository {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly processingLeaseMs = 5 * 60_000,
+  ) {}
 
   async beginIndex(input: {
     companyId: string;
@@ -34,6 +38,13 @@ export class PrismaKnowledgeDocumentRepository implements KnowledgeDocumentRepos
       || existing.mimeType !== input.mimeType
     )) throw new Error('An immutable file version cannot be re-indexed from different source bytes.');
 
+    if (existing?.status === 'processing' && existing.lockedAt) {
+      const leaseExpiresAt = existing.lockedAt.getTime() + this.processingLeaseMs;
+      if (leaseExpiresAt > Date.now()) {
+        throw new Error('Document index lease is already owned by another worker.');
+      }
+    }
+    const leaseToken = randomUUID();
     const row = existing
       ? await this.prisma.knowledgeFileDocument.update({
           where: { id: existing.id },
@@ -42,6 +53,7 @@ export class PrismaKnowledgeDocumentRepository implements KnowledgeDocumentRepos
             parserVersion: input.parserVersion,
             attempts: { increment: 1 },
             lockedAt: new Date(),
+            lockToken: leaseToken,
             failureCode: null,
             failureMessage: null,
           },
@@ -53,6 +65,7 @@ export class PrismaKnowledgeDocumentRepository implements KnowledgeDocumentRepos
             status: 'processing',
             attempts: 1,
             lockedAt: new Date(),
+            lockToken: leaseToken,
           },
           include: { resource: true },
         });
@@ -61,14 +74,17 @@ export class PrismaKnowledgeDocumentRepository implements KnowledgeDocumentRepos
 
   async replaceChunks(input: {
     documentId: string;
+    leaseToken: string;
     pageCount?: number;
     parserVersion: string;
     warnings: readonly string[];
     chunks: readonly KnowledgeDocumentChunkInput[];
   }): Promise<void> {
     await this.prisma.$transaction(async tx => {
-      const document = await tx.knowledgeFileDocument.findUnique({ where: { id: input.documentId } });
-      if (!document || document.status !== 'processing') throw new Error('Document index lease is no longer active.');
+      const document = await tx.knowledgeFileDocument.findFirst({
+        where: { id: input.documentId, status: 'processing', lockToken: input.leaseToken },
+      });
+      if (!document) throw new Error('Document index lease is no longer active.');
       await tx.knowledgeFileChunk.deleteMany({ where: { documentId: document.id } });
       if (input.chunks.length > 0) {
         await tx.knowledgeFileChunk.createMany({
@@ -107,13 +123,14 @@ export class PrismaKnowledgeDocumentRepository implements KnowledgeDocumentRepos
     });
   }
 
-  async markReady(documentId: string): Promise<void> {
+  async markReady(documentId: string, leaseToken: string): Promise<void> {
     const updated = await this.prisma.knowledgeFileDocument.updateMany({
-      where: { id: documentId, status: 'processing' },
+      where: { id: documentId, status: 'processing', lockToken: leaseToken },
       data: {
         status: 'ready',
         indexedAt: new Date(),
         lockedAt: null,
+        lockToken: null,
         failureCode: null,
         failureMessage: null,
       },
@@ -121,12 +138,13 @@ export class PrismaKnowledgeDocumentRepository implements KnowledgeDocumentRepos
     if (updated.count !== 1) throw new Error('Document index lease was lost before completion.');
   }
 
-  async markFailed(documentId: string, error: { code: string; message: string }): Promise<void> {
+  async markFailed(documentId: string, leaseToken: string, error: { code: string; message: string }): Promise<void> {
     await this.prisma.knowledgeFileDocument.updateMany({
-      where: { id: documentId, status: 'processing' },
+      where: { id: documentId, status: 'processing', lockToken: leaseToken },
       data: {
         status: 'failed',
         lockedAt: null,
+        lockToken: null,
         failureCode: error.code.slice(0, 120),
         failureMessage: error.message.slice(0, 2_000),
       },
@@ -156,7 +174,7 @@ export class PrismaKnowledgeDocumentRepository implements KnowledgeDocumentRepos
       await tx.knowledgeFileChunk.deleteMany({ where: { documentId } });
       await tx.knowledgeFileDocument.updateMany({
         where: { id: documentId, status: { not: 'deleted' } },
-        data: { status: 'superseded', lockedAt: null },
+        data: { status: 'superseded', lockedAt: null, lockToken: null },
       });
     });
   }
@@ -166,7 +184,7 @@ export class PrismaKnowledgeDocumentRepository implements KnowledgeDocumentRepos
       await tx.knowledgeFileChunk.deleteMany({ where: { documentId } });
       await tx.knowledgeFileDocument.updateMany({
         where: { id: documentId },
-        data: { status: 'deleted', lockedAt: null },
+        data: { status: 'deleted', lockedAt: null, lockToken: null },
       });
     });
   }
@@ -232,6 +250,18 @@ export class PrismaKnowledgeDocumentRepository implements KnowledgeDocumentRepos
     candidates: readonly KnowledgeDocumentSemanticCandidate[];
   }): Promise<readonly CanonicalKnowledgeDocumentChunk[]> {
     if (input.candidates.length === 0) return [];
+    // The search service's membership snapshot may be older than this hydration
+    // query. Re-read live membership at the final authorization boundary so a
+    // revocation during retrieval cannot authorize a department document.
+    const liveMemberships = await this.prisma.departmentMembership.findMany({
+      where: {
+        userId: input.userId,
+        status: 'active',
+        department: { companyId: input.companyId, status: 'active' },
+      },
+      select: { departmentId: true },
+    });
+    const liveDepartmentIds = liveMemberships.map(row => row.departmentId);
     const rows = await this.prisma.knowledgeFileChunk.findMany({
       where: {
         companyId: input.companyId,
@@ -249,8 +279,8 @@ export class PrismaKnowledgeDocumentRepository implements KnowledgeDocumentRepos
             OR: [
               { scope: 'company' },
               { scope: 'personal', ownerUserId: input.userId },
-              ...(input.departmentIds.length > 0
-                ? [{ scope: 'department' as const, departmentId: { in: [...input.departmentIds] } }]
+              ...(liveDepartmentIds.length > 0
+                ? [{ scope: 'department' as const, departmentId: { in: liveDepartmentIds } }]
                 : []),
             ],
           },
@@ -297,6 +327,7 @@ type DocumentWithResource = Prisma.KnowledgeFileDocumentGetPayload<{ include: { 
 function toSnapshot(row: DocumentWithResource): KnowledgeFileDocumentSnapshot {
   return {
     id: row.id,
+    leaseToken: row.lockToken,
     companyId: row.companyId,
     resourceId: row.resourceId,
     resourceVersion: row.resourceVersion,

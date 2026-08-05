@@ -26,6 +26,11 @@ export interface KnowledgeOperationsHealth {
     readonly staleProcessing: number;
     readonly oldestQueuedAgeMs: number | null;
   };
+  readonly hindsight: {
+    readonly status: 'ok' | 'degraded' | 'disabled';
+    readonly version?: string;
+    readonly error?: string;
+  };
 }
 
 /** Operational read and repair surface for the canonical knowledge pipeline. */
@@ -33,6 +38,15 @@ export class KnowledgeOperationsService {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly options: KnowledgeOperationsOptions,
+    private readonly dependencies: {
+      readonly hindsight?: {
+        readiness(): Promise<{
+          readonly status: 'ok' | 'degraded';
+          readonly version?: string;
+          readonly error?: string;
+        }>;
+      };
+    } = {},
   ) {}
 
   async health(now = new Date(), companyId?: string): Promise<KnowledgeOperationsHealth> {
@@ -48,6 +62,7 @@ export class KnowledgeOperationsService {
       staleDocuments,
       staleLearning,
       oldestLearning,
+      hindsight,
     ] = await Promise.all([
       this.prisma.knowledgeOutbox.groupBy({ by: ['status'], where: outboxWhere, _count: { _all: true } }),
       this.prisma.knowledgeOutbox.findFirst({
@@ -71,6 +86,7 @@ export class KnowledgeOperationsService {
         orderBy: { createdAt: 'asc' },
         select: { createdAt: true },
       }),
+      this.dependencies.hindsight?.readiness() ?? Promise.resolve({ status: 'degraded' as const, error: 'not_configured' }),
     ]);
     const outbox = countByStatus(outboxGroups);
     const documents = countByStatus(documentGroups);
@@ -88,7 +104,8 @@ export class KnowledgeOperationsService {
       || staleDocuments > 0
       || (learning['failed'] ?? 0) > 0
       || staleLearning > 0
-      || (oldestQueuedAgeMs !== null && oldestQueuedAgeMs > this.options.pendingAgeWarningMs);
+      || (oldestQueuedAgeMs !== null && oldestQueuedAgeMs > this.options.pendingAgeWarningMs)
+      || (this.dependencies.hindsight !== undefined && hindsight.status === 'degraded');
 
     return {
       status: degraded ? 'degraded' : 'ok',
@@ -111,6 +128,9 @@ export class KnowledgeOperationsService {
         staleProcessing: staleLearning,
         oldestQueuedAgeMs,
       },
+      hindsight: this.dependencies.hindsight
+        ? hindsight
+        : { status: 'disabled' },
     };
   }
 

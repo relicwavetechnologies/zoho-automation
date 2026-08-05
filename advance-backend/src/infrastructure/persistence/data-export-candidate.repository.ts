@@ -137,6 +137,44 @@ export class DataExportCandidateRepository implements DataExportCandidateReposit
     }
   }
 
+  async listActiveForActor(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly chatId: string;
+    readonly scope?: 'chat' | 'run';
+    readonly runRequestId?: string;
+    readonly traceId?: string;
+    readonly limit?: number;
+    readonly now?: Date;
+  }): Promise<Result<readonly DataExportCandidateRecord[], Error>> {
+    const now = input.now ?? new Date();
+    const limit = input.limit ?? 50;
+    try {
+      const rows = await this.db.dataExportCandidate.findMany({
+        where: {
+          companyId: input.companyId,
+          userId: input.userId,
+          chatId: input.chatId,
+          status: 'active',
+          expiresAt: { gt: now },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: Math.min(limit * 2, 100),
+        select: candidateSelect,
+      });
+      const records = rows.flatMap(row => {
+        const record = tryToCandidateRecord(row);
+        return record ? [record] : [];
+      });
+      const scoped = input.scope === 'run'
+        ? records.filter(candidate => matchesRunScope(candidate, input))
+        : records;
+      return ok(scoped.slice(0, limit));
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'dataExportCandidate.listActiveForActor', cause));
+    }
+  }
+
   async loadCandidatesForPlan(input: {
     readonly candidateIds: readonly string[];
     readonly companyId: string;
@@ -343,6 +381,14 @@ export class DataExportCandidateRepository implements DataExportCandidateReposit
   }
 }
 
+function tryToCandidateRecord(row: CandidateRow): DataExportCandidateRecord | null {
+  try {
+    return toCandidateRecord(row);
+  } catch {
+    return null;
+  }
+}
+
 function toCandidateRecord(row: CandidateRow): DataExportCandidateRecord {
   const payload = parseExportCandidatePayload(row.payloadJson);
   if (row.sourceKind !== payload.source.kind) {
@@ -445,4 +491,17 @@ function parseDestinationFormat(value: string): DataExportPlanRecord['destinatio
     default:
       throw new Error(`Unknown data export plan destination format: ${value}`);
   }
+}
+
+function matchesRunScope(
+  candidate: DataExportCandidateRecord,
+  input: { readonly runRequestId?: string; readonly traceId?: string },
+): boolean {
+  if (input.runRequestId && candidate.payload.requestId === input.runRequestId) {
+    return true;
+  }
+  if (input.traceId && candidate.payload.traceId === input.traceId) {
+    return true;
+  }
+  return !input.runRequestId && !input.traceId;
 }

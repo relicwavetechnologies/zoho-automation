@@ -22,7 +22,7 @@ import type {
   DataExportOrchestrationService,
   DataExportPlanResult,
 } from '../../data-export/data-export-orchestration.service';
-import { dataExportCallRequestId } from '../../data-export/export-request-identity';
+import { dataExportCallRequestId, dataExportRunRequestId } from '../../data-export/export-request-identity';
 import {
   DATA_EXPORT_CSV_ROW_LIMIT,
   DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT,
@@ -69,13 +69,26 @@ const ConfirmSampleSchema = z.object({
   sampleRunId: z.string().uuid(),
 }).strict();
 
-const Schema = z.union([RecipeSchema, ConfirmSchema, PlanSchema, SampleSchema, ConfirmSampleSchema]);
+const ListCandidatesSchema = z.object({
+  op: z.literal('list_candidates'),
+  scope: z.enum(['chat', 'run']).optional(),
+}).strict();
+
+const Schema = z.union([
+  RecipeSchema,
+  ConfirmSchema,
+  PlanSchema,
+  SampleSchema,
+  ConfirmSampleSchema,
+  ListCandidatesSchema,
+]);
 
 type Args = z.infer<typeof Schema>;
 type ConfirmArgs = z.infer<typeof ConfirmSchema>;
 type PlanArgs = z.infer<typeof PlanSchema>;
 type SampleArgs = z.infer<typeof SampleSchema>;
 type ConfirmSampleArgs = z.infer<typeof ConfirmSampleSchema>;
+type ListCandidatesArgs = z.infer<typeof ListCandidatesSchema>;
 
 const CreateResultSchema = z.object({
   success: z.boolean(),
@@ -143,7 +156,29 @@ const OrchestrationResultSchema = z.object({
   }).strict()).optional(),
 }).strict();
 
-const ResultSchema = z.union([CreateResultSchema, ConfirmResultSchema, OrchestrationResultSchema]);
+const ListCandidatesResultSchema = z.object({
+  operation: z.literal('list_candidates'),
+  success: z.literal(true),
+  candidates: z.array(z.object({
+    candidateId: z.string().uuid(),
+    label: z.string(),
+    previewRowCount: z.number().int().nonnegative(),
+    estimatedRows: z.number().int().nonnegative().optional(),
+    columns: z.array(z.string()),
+    shapeKey: z.string(),
+    sourceKind: z.string(),
+    argsSummary: z.string(),
+    createdAt: z.string(),
+  }).strict()),
+  message: z.string(),
+}).strict();
+
+const ResultSchema = z.union([
+  CreateResultSchema,
+  ConfirmResultSchema,
+  OrchestrationResultSchema,
+  ListCandidatesResultSchema,
+]);
 
 type Res = z.infer<typeof ResultSchema>;
 
@@ -151,7 +186,7 @@ type DataExportOffers = Pick<DataExportOfferService, 'submitAuthorized'>
   & Partial<Pick<DataExportOfferService, 'confirmForActor' | 'confirmLatestForActor'>>;
 type DataExportOrchestration = Pick<
   DataExportOrchestrationService,
-  'planForActor' | 'queueSample' | 'confirmSample'
+  'planForActor' | 'queueSample' | 'confirmSample' | 'listCandidatesForActor'
 >;
 
 export function createDataExportTool(deps: {
@@ -170,7 +205,8 @@ export function createDataExportTool(deps: {
     parameterDocs: [
       `Format limits: Excel ${DATA_EXPORT_XLSX_ROW_LIMIT.toLocaleString('en-IN')} rows/${DATA_EXPORT_XLSX_CELL_LIMIT.toLocaleString('en-IN')} cells; Google Sheets ${DATA_EXPORT_GOOGLE_SHEET_ROW_LIMIT.toLocaleString('en-IN')} rows/${DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT.toLocaleString('en-IN')} cells; CSV/auto ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} rows. If the user requests more or every row, disclose the applicable cap and never call a truncated result complete.`,
       'When a source result returns exportCandidate, use op=plan to export that candidate. If the user did not ask for a file, do not call dataExport.',
-      'op=plan: use one or more backend-returned candidate IDs plus the requested format/title. The backend may queue directly, ask for a Google account, require Google connection, require a 100-row sample, or block unsafe plans.',
+      'op=list_candidates: list active export candidates for this chat or current run so you can plan op=plan from the table you showed. Never show candidate IDs to the member.',
+      'op=plan: use one or more backend-returned candidate IDs plus the requested format/title. Assign tabName per dataset when exporting multiple tables to Sheet or Excel. The backend may queue directly, ask for a Google account, require Google connection, require a 100-row sample, or block unsafe plans.',
       'op=sample: queue the backend-held 100-row sample for a plan that returned sample_required. op=confirm_sample: queue the full export after the member confirms the sample.',
       'Legacy op=confirm remains only for old provider offers that returned preview.exportOfferId. Do not use it for exportCandidate results.',
       'op=confirm.format: use google_sheet for Google Sheet/Sheet, csv for CSV, and xlsx for Excel/XL/XLSX. Do not invent source rows, filters, accounts, or a new offer. The backend resolves the active offer in the current authenticated Lark chat when offerId is omitted.',
@@ -188,7 +224,7 @@ export function createDataExportTool(deps: {
       if (!perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')) {
         return err(new PermissionError({ toolId: 'dataExport', action: 'create', reason: 'not_allowed' }));
       }
-      if (isConfirmArgs(args) || isPlanArgs(args) || isSampleArgs(args) || isConfirmSampleArgs(args)) {
+      if (isConfirmArgs(args) || isPlanArgs(args) || isSampleArgs(args) || isConfirmSampleArgs(args) || isListCandidatesArgs(args)) {
         return ok('create' as ToolActionGroup);
       }
       const sourceToolId = datasetSourceToolId(args.source);
@@ -210,6 +246,7 @@ export function createDataExportTool(deps: {
       if (isPlanArgs(args)) return executePlan(args, ctx, deps);
       if (isSampleArgs(args)) return executeSample(args, ctx, deps);
       if (isConfirmSampleArgs(args)) return executeConfirmSample(args, ctx, deps);
+      if (isListCandidatesArgs(args)) return executeListCandidates(args, ctx, deps);
       try {
         const source: DataExportOfferPayload['source'] = args.source.kind === 'airtable_records'
           ? { ...args.source }
@@ -288,6 +325,59 @@ function isSampleArgs(args: Args): args is SampleArgs {
 
 function isConfirmSampleArgs(args: Args): args is ConfirmSampleArgs {
   return 'op' in args && args.op === 'confirm_sample';
+}
+
+function isListCandidatesArgs(args: Args): args is ListCandidatesArgs {
+  return 'op' in args && args.op === 'list_candidates';
+}
+
+async function executeListCandidates(
+  args: ListCandidatesArgs,
+  ctx: ToolExecutionContext,
+  deps: {
+    readonly orchestration?: DataExportOrchestration;
+  },
+): Promise<Result<Res, ToolError>> {
+  if (!deps.orchestration) {
+    return err(new ToolError({
+      toolId: 'dataExport',
+      reason: 'upstream_failure',
+      message: 'Export candidate listing is not available in this environment.',
+    }));
+  }
+  try {
+    const scope = args.scope ?? 'run';
+    const candidates = await deps.orchestration.listCandidatesForActor({
+      companyId: ctx.runContext.companyId,
+      userId: ctx.runContext.userId,
+      chatId: ctx.runContext.chatId!,
+      scope,
+      ...(scope === 'run'
+        ? {
+            runRequestId: dataExportRunRequestId(ctx.runContext, ctx.correlationId),
+            ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
+          }
+        : {}),
+    });
+    return ok({
+      operation: 'list_candidates',
+      success: true,
+      candidates: candidates.map(candidate => ({
+        ...candidate,
+        columns: [...candidate.columns],
+      })),
+      message: candidates.length === 0
+        ? 'No active export candidates are available in this conversation. Prepare the data again before planning an export.'
+        : `Found ${candidates.length} active export candidate${candidates.length === 1 ? '' : 's'} for planning.`,
+    });
+  } catch (cause) {
+    return err(new ToolError({
+      toolId: 'dataExport',
+      reason: 'upstream_failure',
+      cause,
+      message: `Could not list export candidates: ${cause instanceof Error ? cause.message : String(cause)}`,
+    }));
+  }
 }
 
 async function executePlan(

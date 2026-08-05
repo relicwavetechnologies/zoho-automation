@@ -60,6 +60,8 @@ export class KnowledgeDocumentIndexService {
       mimeType: input.file.mimeType,
       parserVersion: 'pending',
     });
+    if (!document.leaseToken) throw new Error('Document index lease has no owner token.');
+    const leaseToken = document.leaseToken;
     const signal = AbortSignal.timeout(this.deps.parseTimeoutMs);
     try {
       const buffer = await this.deps.objects.read({
@@ -79,6 +81,7 @@ export class KnowledgeDocumentIndexService {
       const chunks = chunkKnowledgeDocument(parsed, this.deps.chunking);
       await this.deps.documents.replaceChunks({
         documentId: document.id,
+        leaseToken,
         ...(parsed.pageCount === undefined ? {} : { pageCount: parsed.pageCount }),
         parserVersion: parsed.parserVersion,
         warnings: parsed.warnings,
@@ -97,7 +100,7 @@ export class KnowledgeDocumentIndexService {
         });
       }
       await this.retirePreviousVersions(input.resource.id, input.version);
-      await this.deps.documents.markReady(document.id);
+      await this.deps.documents.markReady(document.id, leaseToken);
       this.log.info('knowledge_document.indexed', {
         resourceId: input.resource.id,
         resourceVersion: input.version,
@@ -106,7 +109,7 @@ export class KnowledgeDocumentIndexService {
         semantic: Boolean(this.deps.semantic),
       });
     } catch (cause) {
-      await this.deps.documents.markFailed(document.id, classifyFailure(cause)).catch(() => undefined);
+      await this.deps.documents.markFailed(document.id, leaseToken, classifyFailure(cause)).catch(() => undefined);
       throw cause;
     }
   }

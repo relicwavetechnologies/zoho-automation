@@ -32,6 +32,12 @@ import {
   datasetSourceShapeKey,
   datasetSourceToolId,
 } from './data-export.types';
+import {
+  summarizeExportCandidate,
+  type ExportCandidateListItem,
+} from './data-export-candidate-summary';
+
+export type { ExportCandidateListItem };
 
 export type DataExportPlanResult =
   | {
@@ -123,6 +129,29 @@ export class DataExportOrchestrationService {
       expiresAt: created.value.expiresAt,
       ...(created.value.estimatedRows === undefined ? {} : { estimatedRows: created.value.estimatedRows }),
     };
+  }
+
+  async listCandidatesForActor(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly chatId: string;
+    readonly scope?: 'chat' | 'run';
+    readonly runRequestId?: string;
+    readonly traceId?: string;
+    readonly limit?: number;
+  }): Promise<readonly ExportCandidateListItem[]> {
+    const loaded = await this.deps.candidates.listActiveForActor({
+      companyId: input.companyId,
+      userId: input.userId,
+      chatId: input.chatId,
+      ...(input.scope ? { scope: input.scope } : {}),
+      ...(input.runRequestId ? { runRequestId: input.runRequestId } : {}),
+      ...(input.traceId ? { traceId: input.traceId } : {}),
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(this.deps.now ? { now: this.deps.now() } : {}),
+    });
+    if (!loaded.ok) throw loaded.error;
+    return loaded.value.map(summarizeExportCandidate);
   }
 
   async planForActor(input: {
@@ -449,10 +478,17 @@ export class DataExportOrchestrationService {
     const shapeKeys = new Set(candidates.flatMap(candidate =>
       dataExportParts(candidate.payload).map(datasetSourceShapeKey)
     ));
-    if (shapeKeys.size > 1) {
+    const plannedWorkbook = isPlannedWorkbook(plan, candidates);
+    if (shapeKeys.size > 1 && !plannedWorkbook) {
       return {
         status: 'ambiguous',
-        message: 'This export combines datasets with different shapes. Ask which dataset to export, or use a workbook flow once multi-tab export is enabled.',
+        message: 'This export combines datasets with different shapes. Plan one dataset, or assign a tabName to every dataset for a Sheet or Excel workbook.',
+      };
+    }
+    if (plannedWorkbook && candidates.length !== plan.datasets.length) {
+      return {
+        status: 'ambiguous',
+        message: 'Every workbook tab needs a matching export candidate in the plan.',
       };
     }
     return null;
@@ -513,12 +549,15 @@ export class DataExportOrchestrationService {
     const title = kind === 'sample'
       ? `Sample - ${destination.title}`.slice(0, 120)
       : destination.title;
+    const workbookTabs = plannedWorkbookTabs(prepared);
     return {
       ...first.payload,
       source: first.payload.source,
-      ...(prepared.candidates.length > 1
-        ? { additionalParts: prepared.candidates.slice(1).map(candidate => candidate.payload.source) }
-        : {}),
+      ...(workbookTabs
+        ? { workbookTabs }
+        : prepared.candidates.length > 1
+          ? { additionalParts: prepared.candidates.slice(1).map(candidate => candidate.payload.source) }
+          : {}),
       observedRowCount: prepared.candidates.reduce((total, candidate) => total + candidate.previewRowCount, 0),
       destination: {
         format: destination.format,
@@ -573,7 +612,6 @@ function sampleRequirement(
   readonly reason: PreparedPlan['sampleReason'];
 } {
   if (plan.userIntent === 'sample_then_confirm') return { required: true, reason: 'explicit_sample' };
-  if (candidates.length > 1) return { required: true, reason: 'multi_dataset' };
   const estimatedRows = candidates.every(candidate => candidate.estimatedRows !== undefined)
     ? candidates.reduce((total, candidate) => total + candidate.estimatedRows!, 0)
     : undefined;
@@ -607,4 +645,26 @@ function candidateLooksTruncated(candidate: DataExportCandidateRecord): boolean 
   const coverage = candidate.coverage as { readonly truncated?: unknown } | undefined;
   return coverage?.truncated === true
     || (candidate.previewRowCount >= 25 && candidate.estimatedRows === undefined);
+}
+
+function isPlannedWorkbook(
+  plan: ExportPlanRequest,
+  candidates: readonly DataExportCandidateRecord[],
+): boolean {
+  if (candidates.length <= 1) return false;
+  if (plan.destination.format !== 'google_sheet' && plan.destination.format !== 'xlsx') {
+    return false;
+  }
+  return plan.datasets.length === candidates.length
+    && plan.datasets.every(dataset => Boolean(dataset.tabName));
+}
+
+function plannedWorkbookTabs(
+  prepared: PreparedPlan,
+): DataExportOfferPayload['workbookTabs'] | undefined {
+  if (!isPlannedWorkbook(prepared.plan, prepared.candidates)) return undefined;
+  return prepared.candidates.map((candidate, index) => ({
+    source: candidate.payload.source,
+    tabName: prepared.plan.datasets[index]!.tabName!,
+  }));
 }

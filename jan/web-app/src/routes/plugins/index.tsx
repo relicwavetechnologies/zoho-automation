@@ -29,7 +29,7 @@ import {
   type DepartmentManagementSnapshot,
   type DivoToolInventoryItem,
 } from '@/lib/divo-tools'
-import { PERSONAL_CONNECTABLE_PLUGIN_IDS } from '@/lib/plugins'
+import { MEMBER_CONNECTION_PLUGIN_IDS } from '@/lib/plugins'
 import { isInUse } from '@/lib/tool-access-model'
 import { readToolAccessScope, writeToolAccessScope } from '@/lib/tool-scope'
 import { groupToolInventory, type ToolPresentationGroup } from '@/lib/tool-presentation'
@@ -118,7 +118,7 @@ export function PluginsRoute() {
   const allGroups = useMemo(() => groupToolInventory(inventory ?? []), [inventory])
   const hasManagementAccess = (inventory ?? []).some(item => item.managementScopes.length > 0)
   const personalGroups = useMemo(
-    () => allGroups.filter(group => PERSONAL_CONNECTABLE_PLUGIN_IDS.includes(group.id)),
+    () => allGroups.filter(group => MEMBER_CONNECTION_PLUGIN_IDS.includes(group.id)),
     [allGroups],
   )
   const searchQuery = search.trim().toLocaleLowerCase()
@@ -323,7 +323,7 @@ function PersonalToolsView({ groups, onOpenDetails }: { groups: ToolPresentation
     <section className="flex max-w-xl flex-col gap-3" aria-label="Your tools">
       <div>
         <h2 className="text-base font-medium">Your connections</h2>
-        <p className="mt-1 text-sm text-muted-foreground">Connect and manage the services you use with Divo.</p>
+        <p className="mt-1 text-sm text-muted-foreground">View the services you use with Divo and connect accounts where your role allows it.</p>
       </div>
       {groups.length > 0 ? (
         <div className="grid gap-3 sm:grid-cols-2">

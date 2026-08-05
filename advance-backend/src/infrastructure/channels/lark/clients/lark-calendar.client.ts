@@ -39,12 +39,15 @@ export class LarkCalendarClient implements LarkCalendarClientPort {
 
   async listEvents(calendarId: string, limit?: number): Promise<unknown[]> {
     type ListResponse = { items?: EventRecord[] };
+    const resultLimit = Math.min(50, Math.max(1, limit ?? 50));
     const data = await this.http.request<ListResponse>(
       'GET',
       `/open-apis/calendar/v4/calendars/${encodeURIComponent(calendarId)}/events`,
-      { query: { page_size: Math.min(50, Math.max(1, limit ?? 50)) } },
+      // Lark Calendar v4 rejects page_size below 50. Fetch one valid provider
+      // page and enforce Divo's smaller caller limit after normalization.
+      { query: { page_size: 50 } },
     );
-    return (data.items ?? []).map(normalizeEvent);
+    return (data.items ?? []).slice(0, resultLimit).map(normalizeEvent);
   }
 
   async getEvent(calendarId: string, eventId: string): Promise<unknown> {

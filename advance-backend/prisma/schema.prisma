@@ -132,6 +132,15 @@ enum DataExportPlanStatus {
   cancelled
 }
 
+enum ShopifyPrivacyRequestState {
+  received
+  ready
+  delivered
+  expired
+  redacted
+  failed
+}
+
 // Manager-persona learning is deliberately isolated from personal memory.
 // These rows are evidence/candidates only in P1–P3; no active department
 // persona is written by this pipeline until the promotion phase exists.
@@ -273,7 +282,8 @@ model User {
   knowledgeMutationsRequested        KnowledgeMutation[]             @relation("KnowledgeMutationRequester")
   knowledgeMutationTargets           KnowledgeMutation[]             @relation("KnowledgeMutationOwner")
   knowledgeLearningJobs              KnowledgeLearningJob[]
-  knowledgeFileAssetsUploaded        KnowledgeFileAsset[]             @relation("KnowledgeFileAssetUploadedBy")
+  knowledgeFileAssetsUploaded        KnowledgeFileAsset[]            @relation("KnowledgeFileAssetUploadedBy")
+  integrationOAuthAttempts           IntegrationOAuthAttempt[]
 }
 
 model Company {
@@ -346,6 +356,10 @@ model Company {
   knowledgeFileAssets             KnowledgeFileAsset[]
   knowledgeFileDocuments          KnowledgeFileDocument[]
   knowledgeFileChunks             KnowledgeFileChunk[]
+  integrationOAuthAttempts        IntegrationOAuthAttempt[]
+  shopifyPrivacyRequests          ShopifyPrivacyRequest[]
+  shopifyRunProvenance            ShopifyRunProvenance[]
+  shopifyRunErasureFences         ShopifyRunErasureFence[]
 }
 
 model RegisteredTool {
@@ -1285,6 +1299,9 @@ model IntegrationConnection {
   refreshTokenEncrypted String?
   tokenType             String?
   tokenCipherVersion    Int                              @default(1)
+  tokenVersion          Int                              @default(0)
+  refreshLeaseOwner     String?
+  refreshLeaseExpiresAt DateTime?
   accessTokenExpiresAt  DateTime?
   refreshTokenExpiresAt DateTime?
   tokenMetadata         Json?
@@ -1307,7 +1324,102 @@ model IntegrationConnection {
   @@index([companyId, ownerUserId])
 }
 
-/// One browser authorization attempt plus the exact continuation target.
+/// Durable one-time state for provider OAuth callbacks.
+model IntegrationOAuthAttempt {
+  id                String    @id @default(uuid())
+  stateHash         String    @unique
+  provider          String
+  companyId         String
+  company           Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId            String
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  externalAccountId String
+  requestedScopes   String[]
+  returnTo          String?
+  status            String    @default("pending")
+  expiresAt         DateTime
+  claimedAt         DateTime?
+  completedAt       DateTime?
+  failureCode       String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([companyId, provider, status, expiresAt])
+  @@index([status, expiresAt])
+}
+
+model IntegrationWebhookReceipt {
+  id         String   @id @default(uuid())
+  provider   String
+  webhookId  String
+  topic      String
+  accountId  String
+  receivedAt DateTime @default(now())
+
+  @@unique([provider, webhookId])
+  @@index([provider, accountId, receivedAt])
+}
+
+/// Bounded lifecycle for Shopify mandatory privacy requests. Protected export
+/// content is AES-GCM encrypted; audit rows contain only this row's opaque id
+/// and lifecycle state.
+model ShopifyPrivacyRequest {
+  id                     String                     @id @default(uuid())
+  companyId              String
+  company                Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  shopDomain             String
+  requestId              String
+  customerIdHash         String?
+  orderIdHashes          String[]                   @default([])
+  state                  ShopifyPrivacyRequestState @default(received)
+  exportPayloadEncrypted String?
+  exportCipherVersion    Int?
+  failureCode            String?
+  deadlineAt             DateTime
+  expiresAt              DateTime
+  readyAt                DateTime?
+  deliveredAt            DateTime?
+  redactedAt             DateTime?
+  createdAt              DateTime                   @default(now())
+  updatedAt              DateTime                   @updatedAt
+
+  @@unique([companyId, shopDomain, requestId])
+  @@index([companyId, shopDomain, state, createdAt])
+  @@index([companyId, customerIdHash, state])
+  @@index([state, expiresAt])
+}
+
+/// Backend-issued provenance for one successful Shopify read. The shop domain
+/// is copied from the verified server-side connection so privacy erasure never
+/// has to infer ownership from client-authored trace JSON or approval rows.
+model ShopifyRunProvenance {
+  id             String       @id @default(uuid())
+  companyId      String
+  company        Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  executionRunId String
+  executionRun   ExecutionRun @relation(fields: [executionRunId], references: [id], onDelete: Cascade)
+  connectionId   String
+  shopDomain     String
+  toolId         String
+  createdAt      DateTime     @default(now())
+
+  @@unique([executionRunId, connectionId, toolId])
+  @@index([companyId, shopDomain, createdAt])
+  @@index([connectionId, createdAt])
+}
+
+model ShopifyRunErasureFence {
+  id        String   @id @default(uuid())
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sourceId  String
+  createdAt DateTime @default(now())
+
+  @@unique([companyId, sourceId])
+  @@index([createdAt])
+}
+
+/// One browser authorization attempt plus the exact agent continuation target.
 ///
 /// Only a hash of the browser state is persisted. The callback claims the row
 /// once, then a separate worker either starts a fresh agent run from the stored
@@ -2000,6 +2112,7 @@ model ExecutionRun {
   errorCode               String?
   errorMessage            String?
   lastSequence            Int                      @default(0)
+  protectedDataObserved   Boolean                  @default(false)
   startedAt               DateTime                 @default(now())
   finishedAt              DateTime?
   createdAt               DateTime                 @default(now())
@@ -2007,6 +2120,7 @@ model ExecutionRun {
   events                  ExecutionEvent[]
   stepResults             StepResult[]
   personaLearningEvidence PersonaLearningEvidence?
+  shopifyProvenance       ShopifyRunProvenance[]
 
   @@index([companyId, startedAt])
   @@index([userId, startedAt])
@@ -2349,6 +2463,7 @@ model RuntimeConversation {
   status                 String                       @default("active")
   refsJson               Json?
   lastMessageSequence    Int                          @default(0)
+  historyRevision        Int                          @default(0)
   summaryJson            Json?
   summaryUpdatedAt       DateTime?
   lastSummarizedSequence Int                          @default(0)
@@ -2375,6 +2490,7 @@ model RuntimeConversationMessage {
   messageKind     String
   sourceChannel   String
   sourceMessageId String?
+  sourceRunId     String?
   dedupeKey       String?
   contentText     String?
   contentJson     Json?
@@ -2388,6 +2504,7 @@ model RuntimeConversationMessage {
   @@unique([conversationId, dedupeKey])
   @@index([conversationId, createdAt])
   @@index([runId, createdAt])
+  @@index([sourceRunId, createdAt])
   @@index([dedupeKey])
 }
 
@@ -2395,7 +2512,7 @@ model RuntimeConversationMessage {
 // This durable pointer is consumed by the next private run; bytes remain in the
 // user's private Docker volume and expire there independently.
 model RuntimePendingAttachment {
-  id              String   @id @default(uuid())
+  id              String    @id @default(uuid())
   companyId       String
   userId          String
   channel         String
@@ -2405,7 +2522,7 @@ model RuntimePendingAttachment {
   descriptorJson  Json
   expiresAt       DateTime
   consumedAt      DateTime?
-  createdAt       DateTime @default(now())
+  createdAt       DateTime  @default(now())
 
   @@unique([companyId, userId, channel, conversationKey, requestId, fileId], map: "RuntimePendingAttachment_identity_file_key")
   @@index([companyId, userId, channel, conversationKey, consumedAt, expiresAt])
@@ -2505,8 +2622,10 @@ model KnowledgeResource {
   projectedSkill Skill?
   fileAssets     KnowledgeFileAsset[]
   fileDocuments  KnowledgeFileDocument[]
+  fileChunks     KnowledgeFileChunk[]
 
   @@unique([companyId, kind, targetKey, logicalKey])
+  @@unique([id, companyId], map: "KnowledgeResource_id_companyId_key")
   @@index([companyId, scope, status, updatedAt])
   @@index([ownerUserId, kind, status, updatedAt])
   @@index([departmentId, kind, status, updatedAt])
@@ -2542,6 +2661,7 @@ model KnowledgeFileAsset {
   expiresAt           DateTime
   attachedAt          DateTime?
   deletedAt           DateTime?
+  deletionLeaseToken  String?
   createdAt           DateTime                 @default(now())
   updatedAt           DateTime                 @updatedAt
   document            KnowledgeFileDocument?
@@ -2556,31 +2676,34 @@ model KnowledgeFileAsset {
 // governed file version. The original private object and KnowledgeVersion stay
 // canonical; failed parsing never changes file visibility or approval state.
 model KnowledgeFileDocument {
-  id                 String                      @id @default(uuid())
-  companyId          String
-  company            Company                     @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  resourceId         String
-  resource           KnowledgeResource           @relation(fields: [resourceId], references: [id], onDelete: Cascade)
-  resourceVersion    Int
-  fileAssetId        String                      @unique
-  fileAsset          KnowledgeFileAsset           @relation(fields: [fileAssetId], references: [id], onDelete: Cascade)
-  sourceSha256       String
-  mimeType           String
-  parserVersion      String
-  status             KnowledgeFileDocumentStatus @default(processing)
-  pageCount          Int?
-  chunkCount         Int                         @default(0)
-  warningsJson       Json?
-  attempts           Int                         @default(0)
-  lockedAt           DateTime?
-  indexedAt          DateTime?
-  failureCode        String?
-  failureMessage     String?
-  createdAt          DateTime                    @default(now())
-  updatedAt          DateTime                    @updatedAt
-  chunks             KnowledgeFileChunk[]
+  id              String                      @id @default(uuid())
+  companyId       String
+  company         Company                     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  resourceId      String
+  resource        KnowledgeResource           @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  resourceVersion Int
+  fileAssetId     String                      @unique
+  fileAsset       KnowledgeFileAsset          @relation(fields: [fileAssetId], references: [id], onDelete: Cascade)
+  sourceSha256    String
+  mimeType        String
+  parserVersion   String
+  status          KnowledgeFileDocumentStatus @default(processing)
+  pageCount       Int?
+  chunkCount      Int                         @default(0)
+  warningsJson    Json?
+  attempts        Int                         @default(0)
+  lockedAt        DateTime?
+  lockToken       String?
+  indexedAt       DateTime?
+  failureCode     String?
+  failureMessage  String?
+  createdAt       DateTime                    @default(now())
+  updatedAt       DateTime                    @updatedAt
+  chunks          KnowledgeFileChunk[]
 
   @@unique([resourceId, resourceVersion])
+  @@unique([id, companyId], map: "KnowledgeFileDocument_id_companyId_key")
+  @@unique([id, companyId, resourceId, resourceVersion], map: "KnowledgeFileDocument_tenant_binding_key")
   @@index([companyId, status, updatedAt])
   @@index([resourceId, status, resourceVersion])
 }
@@ -2589,23 +2712,24 @@ model KnowledgeFileDocument {
 // populated by the repository so Prisma db push and SQL migrations behave the
 // same; Hindsight remains the semantic/reranking projection.
 model KnowledgeFileChunk {
-  id              String                @id @default(uuid())
+  id              String                   @id @default(uuid())
   companyId       String
-  company         Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company         Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   documentId      String
-  document        KnowledgeFileDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  document        KnowledgeFileDocument    @relation(fields: [documentId, companyId, resourceId, resourceVersion], references: [id, companyId, resourceId, resourceVersion], onDelete: Cascade)
   resourceId      String
+  resource        KnowledgeResource        @relation(fields: [resourceId, companyId], references: [id, companyId], onDelete: Cascade)
   resourceVersion Int
   ordinal         Int
   pageStart       Int?
   pageEnd         Int?
-  sectionPath     String[]              @default([])
+  sectionPath     String[]                 @default([])
   text            String
   textHash        String
   charCount       Int
   tokenEstimate   Int
   searchVector    Unsupported("tsvector")?
-  createdAt       DateTime              @default(now())
+  createdAt       DateTime                 @default(now())
 
   @@unique([documentId, ordinal])
   @@index([companyId, resourceId, resourceVersion, ordinal])
@@ -2616,9 +2740,9 @@ model KnowledgeFileChunk {
 // Content versions are immutable. The hash is over canonical JSON and is also
 // bound into requester review, human approval, and projection idempotency.
 model KnowledgeVersion {
-  id                 String              @id @default(uuid())
+  id                 String                   @id @default(uuid())
   resourceId         String
-  resource           KnowledgeResource   @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  resource           KnowledgeResource        @relation(fields: [resourceId], references: [id], onDelete: Cascade)
   version            Int
   contentJson        Json
   contentHash        String
@@ -2630,9 +2754,9 @@ model KnowledgeVersion {
   sourceType         String
   sourceRef          String?
   createdById        String
-  createdBy          User                @relation("KnowledgeVersionCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
-  createdAt          DateTime            @default(now())
-  appliedByMutations KnowledgeMutation[] @relation("KnowledgeMutationAppliedVersion")
+  createdBy          User                     @relation("KnowledgeVersionCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt          DateTime                 @default(now())
+  appliedByMutations KnowledgeMutation[]      @relation("KnowledgeMutationAppliedVersion")
 
   @@unique([resourceId, version])
   @@unique([resourceId, contentHash])
@@ -2730,6 +2854,7 @@ model KnowledgeOutbox {
   attempts    Int                   @default(0)
   availableAt DateTime              @default(now())
   lockedAt    DateTime?
+  leaseToken  String?
   completedAt DateTime?
   lastError   String?
   createdAt   DateTime              @default(now())

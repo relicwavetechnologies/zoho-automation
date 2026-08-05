@@ -4,8 +4,10 @@ import type { TypedEnv } from '../../config/env';
 import { encryptToken, decryptToken } from '../shared/token.crypto';
 import { err, ok, type Result } from '../../shared/result';
 import { wrapInfra, type InfraError } from '../../shared/errors';
+import type { ConnectionProvider } from '../../domain/connections/connection-provider';
+import { normalizeShopDomain } from '../../domain/shopify/shopify-shop';
 
-export type IntegrationProvider = 'google_workspace' | 'zoho' | 'canva' | 'airtable' | 'aitable' | 'lark';
+export type IntegrationProvider = ConnectionProvider;
 
 /**
  * A connection whose stored credential no longer works and cannot be repaired
@@ -18,6 +20,7 @@ export type IntegrationProvider = 'google_workspace' | 'zoho' | 'canva' | 'airta
  * problem and repeats forever.
  */
 export const CONNECTION_NEEDS_KEY = 'needs_key';
+export const CONNECTION_REAUTHORIZATION_REQUIRED = 'reauthorization_required';
 
 /** Statuses a connection can hold and still be worth showing to its owner. */
 const LISTABLE_STATUSES = ['connected', CONNECTION_NEEDS_KEY];
@@ -49,6 +52,7 @@ export interface DecryptedIntegrationConnection {
   readonly tokenType?: string;
   readonly accessTokenExpiresAt?: Date;
   readonly refreshTokenExpiresAt?: Date;
+  readonly tokenVersion: number;
   readonly tokenMetadata?: Record<string, unknown>;
   /** Decrypted only in backend memory for this Zoho connection's refresh call. */
   readonly zohoClientCredentials?: {
@@ -76,6 +80,14 @@ export interface ConnectionSummary {
   readonly lastUsedAt?: Date;
   /** Only set by providers that list unusable connections — see CONNECTION_NEEDS_KEY. */
   readonly status?: string;
+}
+
+export interface ManageableShopifyConnection {
+  readonly connectionId: string;
+  readonly shopDomain: string;
+  readonly label: string;
+  readonly status: 'connected' | typeof CONNECTION_REAUTHORIZATION_REQUIRED;
+  readonly connectedAt: Date;
 }
 
 export interface UpsertGoogleConnectionInput {
@@ -167,6 +179,26 @@ export interface UpsertAitableConnectionInput {
   readonly initialAccess?: IntegrationGrantAccess;
 }
 
+/** One Shopify shop installation. The canonical myshopify domain is the account ID. */
+export interface UpsertShopifyConnectionInput {
+  readonly companyId: string;
+  readonly ownerType: IntegrationOwnerType;
+  readonly ownerUserId?: string;
+  readonly createdBy?: string;
+  readonly label?: string;
+  readonly shopDomain: string;
+  readonly shopName?: string;
+  readonly shopGraphqlId?: string;
+  readonly accessToken: string;
+  readonly refreshToken?: string;
+  readonly accessTokenExpiresAt?: Date;
+  readonly refreshTokenExpiresAt?: Date;
+  readonly scopes: string[];
+  readonly apiVersion: string;
+  /** Atomically completes this claimed OAuth attempt and writes its audit row. */
+  readonly authorizationAttemptId?: string;
+}
+
 /** A user-authorised Lark account. One Divo member may own multiple accounts. */
 export interface UpsertLarkConnectionInput {
   readonly companyId: string;
@@ -194,6 +226,8 @@ const CANVA_PROVIDER: IntegrationProvider = 'canva';
 const AIRTABLE_PROVIDER: IntegrationProvider = 'airtable';
 const AITABLE_PROVIDER: IntegrationProvider = 'aitable';
 const LARK_PROVIDER: IntegrationProvider = 'lark';
+const SHOPIFY_PROVIDER: IntegrationProvider = 'shopify';
+const COMPANY_ROLE_GRANTEES = new Set(['MEMBER', 'COMPANY_ADMIN', 'SUPER_ADMIN']);
 
 const splitScopes = (scope?: string | null): string[] =>
   scope?.split(' ').map(s => s.trim()).filter(Boolean) ?? [];
@@ -239,6 +273,10 @@ export class IntegrationConnectionRepository {
     return this.env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '';
   }
 
+  private get integrationKey(): string {
+    return this.env.INTEGRATION_TOKEN_ENCRYPTION_KEY ?? this.key;
+  }
+
   private decrypt(record: {
     id: string;
     companyId: string;
@@ -254,8 +292,10 @@ export class IntegrationConnectionRepository {
     accessTokenEncrypted?: string | null;
     refreshTokenEncrypted?: string | null;
     tokenType?: string | null;
+    tokenCipherVersion: number;
     accessTokenExpiresAt?: Date | null;
     refreshTokenExpiresAt?: Date | null;
+    tokenVersion: number;
     tokenMetadata?: unknown;
     connectedAt: Date;
     lastUsedAt?: Date | null;
@@ -289,6 +329,7 @@ export class IntegrationConnectionRepository {
       }
     }
 
+    const credentialKey = record.tokenCipherVersion >= 2 ? this.integrationKey : this.key;
     return {
       id:          record.id,
       companyId:   record.companyId,
@@ -301,11 +342,12 @@ export class IntegrationConnectionRepository {
       ...(record.externalAccountId ? { externalAccountId: record.externalAccountId } : {}),
       status:      record.status,
       scopes:      record.scopes,
-      ...(record.accessTokenEncrypted ? { accessToken: decryptToken(record.accessTokenEncrypted, this.key) } : {}),
-      ...(record.refreshTokenEncrypted ? { refreshToken: decryptToken(record.refreshTokenEncrypted, this.key) } : {}),
+      ...(record.accessTokenEncrypted ? { accessToken: decryptToken(record.accessTokenEncrypted, credentialKey) } : {}),
+      ...(record.refreshTokenEncrypted ? { refreshToken: decryptToken(record.refreshTokenEncrypted, credentialKey) } : {}),
       ...(record.tokenType ? { tokenType: record.tokenType } : {}),
       ...(record.accessTokenExpiresAt ? { accessTokenExpiresAt: record.accessTokenExpiresAt } : {}),
       ...(record.refreshTokenExpiresAt ? { refreshTokenExpiresAt: record.refreshTokenExpiresAt } : {}),
+      tokenVersion: record.tokenVersion,
       ...(tokenMetadata ? { tokenMetadata } : {}),
       ...(zohoClientCredentials ? { zohoClientCredentials } : {}),
       connectedAt: record.connectedAt,
@@ -775,32 +817,80 @@ export class IntegrationConnectionRepository {
     readonly granteeType: IntegrationGranteeType;
     readonly granteeId: string;
     readonly access: IntegrationGrantAccess;
-    readonly grantedBy?: string;
+    readonly grantedBy: string;
   }): Promise<Result<void, InfraError>> {
     try {
-      if (!input.granteeId.trim()) return ok(undefined);
-      await this.db.integrationConnectionGrant.upsert({
-        where: {
-          connectionId_granteeType_granteeId: {
+      if (!input.granteeId.trim()) throw new Error('Connection grantee is required.');
+      await this.db.$transaction(async tx => {
+        const connection = await tx.integrationConnection.findFirst({
+          where: { id: input.connectionId, companyId: input.companyId, revokedAt: null },
+          select: { provider: true },
+        });
+        if (!connection) throw new Error('Connection does not belong to this company.');
+        if (connection.provider === SHOPIFY_PROVIDER && input.access !== 'read_only') {
+          throw new Error('Shopify connections expose read-only grants.');
+        }
+        const granteeExists = input.granteeType === 'company'
+          ? Boolean(await tx.company.findUnique({ where: { id: input.granteeId }, select: { id: true } })
+            && input.granteeId === input.companyId)
+          : input.granteeType === 'user'
+            ? Boolean(await tx.adminMembership.findFirst({
+              where: { companyId: input.companyId, userId: input.granteeId, isActive: true },
+              select: { id: true },
+            }))
+            : input.granteeType === 'department'
+              ? Boolean(await tx.department.findFirst({
+                where: { id: input.granteeId, companyId: input.companyId, status: 'active' },
+                select: { id: true },
+              }))
+              : COMPANY_ROLE_GRANTEES.has(input.granteeId) || Boolean(await tx.departmentRole.findFirst({
+                where: { id: input.granteeId, department: { companyId: input.companyId, status: 'active' } },
+                select: { id: true },
+              }));
+        if (!granteeExists) throw new Error('Connection grantee does not belong to this company.');
+        const grantor = await tx.adminMembership.findFirst({
+          where: { companyId: input.companyId, userId: input.grantedBy, isActive: true },
+          select: { id: true },
+        });
+        if (!grantor) throw new Error('Connection grantor is not an active company member.');
+        await tx.integrationConnectionGrant.upsert({
+          where: {
+            connectionId_granteeType_granteeId: {
+              connectionId: input.connectionId,
+              granteeType: input.granteeType,
+              granteeId: input.granteeId,
+            },
+          },
+          create: {
+            companyId: input.companyId,
             connectionId: input.connectionId,
             granteeType: input.granteeType,
-            granteeId:   input.granteeId,
+            granteeId: input.granteeId,
+            access: input.access,
+            grantedBy: input.grantedBy,
           },
-        },
-        create: {
-          companyId:    input.companyId,
-          connectionId: input.connectionId,
-          granteeType:  input.granteeType,
-          granteeId:    input.granteeId,
-          access:       input.access,
-          grantedBy:    input.grantedBy ?? null,
-        },
-        update: {
-          access:    input.access,
-          grantedBy: input.grantedBy ?? null,
-          grantedAt: new Date(),
-          revokedAt: null,
-        },
+          update: {
+            access: input.access,
+            grantedBy: input.grantedBy,
+            grantedAt: new Date(),
+            revokedAt: null,
+          },
+        });
+        await tx.auditLog.create({
+            data: {
+              actorId: input.grantedBy,
+              companyId: input.companyId,
+              action: 'connection.grant.created',
+              outcome: 'success',
+              metadata: {
+                connectionId: input.connectionId,
+                provider: connection.provider,
+                granteeType: input.granteeType,
+                granteeId: input.granteeId,
+                access: input.access,
+              },
+            },
+          });
       });
       return ok(undefined);
     } catch (e) {
@@ -812,16 +902,35 @@ export class IntegrationConnectionRepository {
     readonly companyId: string;
     readonly connectionId: string;
     readonly grantId: string;
+    readonly actorId: string;
   }): Promise<Result<void, InfraError>> {
     try {
-      await this.db.integrationConnectionGrant.updateMany({
-        where: {
-          id:           input.grantId,
-          companyId:    input.companyId,
-          connectionId: input.connectionId,
-          revokedAt:    null,
-        },
-        data: { revokedAt: new Date() },
+      await this.db.$transaction(async tx => {
+        const connection = await tx.integrationConnection.findFirst({
+          where: { id: input.connectionId, companyId: input.companyId, revokedAt: null },
+          select: { provider: true },
+        });
+        if (!connection) throw new Error('Connection does not belong to this company.');
+        const revoked = await tx.integrationConnectionGrant.updateMany({
+          where: {
+            id: input.grantId,
+            companyId: input.companyId,
+            connectionId: input.connectionId,
+            revokedAt: null,
+          },
+          data: { revokedAt: new Date() },
+        });
+        if (revoked.count > 0) {
+          await tx.auditLog.create({
+            data: {
+              actorId: input.actorId,
+              companyId: input.companyId,
+              action: 'connection.grant.revoked',
+              outcome: 'success',
+              metadata: { connectionId: input.connectionId, provider: connection.provider, grantId: input.grantId },
+            },
+          });
+        }
       });
       return ok(undefined);
     } catch (e) {
@@ -833,21 +942,366 @@ export class IntegrationConnectionRepository {
     readonly companyId: string;
     readonly connectionId: string;
     readonly provider: IntegrationProvider;
+    readonly actorId: string;
   }): Promise<Result<boolean, InfraError>> {
     try {
-      const result = await this.db.integrationConnection.updateMany({
-        where: {
-          id:        input.connectionId,
-          companyId: input.companyId,
-          provider:  input.provider,
-          status:    'connected',
-          revokedAt: null,
-        },
-        data: { status: 'revoked', revokedAt: new Date() },
+      const changed = await this.db.$transaction(async tx => {
+        const result = await tx.integrationConnection.updateMany({
+          where: {
+            id: input.connectionId,
+            companyId: input.companyId,
+            provider: input.provider,
+            status: { in: ['connected', CONNECTION_NEEDS_KEY, CONNECTION_REAUTHORIZATION_REQUIRED] },
+            revokedAt: null,
+          },
+          data: { status: 'revoked', revokedAt: new Date() },
+        });
+        if (result.count > 0) {
+          await tx.auditLog.create({
+            data: {
+              actorId: input.actorId,
+              companyId: input.companyId,
+              action: 'connection.disconnected',
+              outcome: 'success',
+              metadata: { connectionId: input.connectionId, provider: input.provider },
+            },
+          });
+        }
+        return result.count > 0;
       });
-      return ok(result.count > 0);
+      return ok(changed);
     } catch (e) {
       return err(wrapInfra('prisma', 'IntegrationConnection.revokeConnection', e));
+    }
+  }
+
+  async upsertShopifyConnection(
+    input: UpsertShopifyConnectionInput,
+  ): Promise<Result<DecryptedIntegrationConnection, InfraError>> {
+    try {
+      if (input.ownerType !== 'company') {
+        throw new Error('Shopify installations are company-owned; member access must use connection grants.');
+      }
+      const shopDomain = normalizeShopDomain(input.shopDomain);
+      if (!shopDomain) throw new Error('Invalid Shopify myshopify domain.');
+      const encryptedAccess = encryptToken(input.accessToken, this.integrationKey).cipherText;
+      const encryptedRefresh = input.refreshToken
+        ? encryptToken(input.refreshToken, this.integrationKey).cipherText
+        : null;
+      const key = dedupeKey({
+        provider: SHOPIFY_PROVIDER,
+        ownerType: input.ownerType,
+        ownerUserId: input.ownerUserId,
+        externalAccountId: shopDomain,
+      });
+      const label = input.label?.trim() || input.shopName?.trim() || shopDomain;
+      const tokenMetadata: Prisma.InputJsonValue = {
+        apiVersion: input.apiVersion,
+        shopDomain,
+        ...(input.shopGraphqlId ? { shopGraphqlId: input.shopGraphqlId } : {}),
+      };
+
+      const record = await this.db.$transaction(async tx => {
+        const saved = await tx.integrationConnection.upsert({
+          where: { companyId_dedupeKey: { companyId: input.companyId, dedupeKey: key } },
+          create: {
+            companyId: input.companyId,
+            provider: SHOPIFY_PROVIDER,
+            ownerType: input.ownerType,
+            ownerUserId: input.ownerType === 'user' ? input.ownerUserId ?? null : null,
+            label,
+            accountName: input.shopName?.trim() || shopDomain,
+            externalAccountId: shopDomain,
+            dedupeKey: key,
+            status: 'connected',
+            scopes: input.scopes,
+            accessTokenEncrypted: encryptedAccess,
+            refreshTokenEncrypted: encryptedRefresh,
+            tokenType: 'offline',
+            tokenCipherVersion: 2,
+            accessTokenExpiresAt: input.accessTokenExpiresAt ?? null,
+            refreshTokenExpiresAt: input.refreshTokenExpiresAt ?? null,
+            tokenMetadata,
+            createdBy: input.createdBy ?? input.ownerUserId ?? null,
+            connectedAt: new Date(),
+          },
+          update: {
+            label,
+            accountName: input.shopName?.trim() || shopDomain,
+            externalAccountId: shopDomain,
+            status: 'connected',
+            scopes: input.scopes,
+            accessTokenEncrypted: encryptedAccess,
+            refreshTokenEncrypted: encryptedRefresh,
+            tokenType: 'offline',
+            tokenCipherVersion: 2,
+            accessTokenExpiresAt: input.accessTokenExpiresAt ?? null,
+            refreshTokenExpiresAt: input.refreshTokenExpiresAt ?? null,
+            tokenMetadata,
+            tokenVersion: { increment: 1 },
+            revokedAt: null,
+            connectedAt: new Date(),
+          },
+        });
+
+        const initialUserGrant = input.ownerType === 'user' ? input.ownerUserId : input.createdBy;
+        if (initialUserGrant) {
+          await tx.integrationConnectionGrant.upsert({
+            where: {
+              connectionId_granteeType_granteeId: {
+                connectionId: saved.id,
+                granteeType: 'user',
+                granteeId: initialUserGrant,
+              },
+            },
+            create: {
+              companyId: input.companyId,
+              connectionId: saved.id,
+              granteeType: 'user',
+              granteeId: initialUserGrant,
+              access: 'read_only',
+              grantedBy: input.createdBy ?? initialUserGrant,
+            },
+            update: {
+              access: 'read_only',
+              grantedBy: input.createdBy ?? initialUserGrant,
+              grantedAt: new Date(),
+              revokedAt: null,
+            },
+          });
+        }
+        if (input.authorizationAttemptId) {
+          const authorizationActor = input.createdBy;
+          if (!authorizationActor) throw new Error('Shopify OAuth completion requires an authenticated actor.');
+          await tx.auditLog.create({
+            data: {
+              actorId: authorizationActor,
+              companyId: input.companyId,
+              action: 'shopify.connection.created',
+              outcome: 'success',
+              metadata: { connectionId: saved.id, ownerType: 'company', scopes: input.scopes },
+            },
+          });
+          const completed = await tx.integrationOAuthAttempt.updateMany({
+            where: {
+              id: input.authorizationAttemptId,
+              provider: SHOPIFY_PROVIDER,
+              companyId: input.companyId,
+              userId: authorizationActor,
+              externalAccountId: shopDomain,
+              status: 'exchanging',
+            },
+            data: { status: 'completed', completedAt: new Date(), failureCode: null },
+          });
+          if (completed.count !== 1) {
+            throw new Error('Shopify OAuth attempt is not in an exchangeable state.');
+          }
+        }
+        return saved;
+      });
+      return ok(this.decrypt(record));
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.upsertShopifyConnection', e));
+    }
+  }
+
+  async listAccessibleShopifyConnections(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly abortSignal?: AbortSignal;
+  }): Promise<Result<ConnectionSummary[], InfraError>> {
+    return this.listAccessibleProviderConnections(input, SHOPIFY_PROVIDER);
+  }
+
+  async listManageableShopifyConnections(input: {
+    readonly companyId: string;
+  }): Promise<Result<ManageableShopifyConnection[], InfraError>> {
+    try {
+      const records = await this.db.integrationConnection.findMany({
+        where: {
+          companyId: input.companyId,
+          provider: SHOPIFY_PROVIDER,
+          ownerType: 'company',
+          revokedAt: null,
+          status: { in: ['connected', CONNECTION_REAUTHORIZATION_REQUIRED] },
+        },
+        select: { id: true, externalAccountId: true, label: true, status: true, connectedAt: true },
+        orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+      });
+      const connections: ManageableShopifyConnection[] = [];
+      for (const record of records) {
+        const shopDomain = normalizeShopDomain(record.externalAccountId ?? '');
+        if (!shopDomain) continue;
+        connections.push({
+          connectionId: record.id,
+          shopDomain,
+          label: record.label,
+          status: record.status as ManageableShopifyConnection['status'],
+          connectedAt: record.connectedAt,
+        });
+      }
+      return ok(connections);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.listManageableShopifyConnections', e));
+    }
+  }
+
+  async findShopifyConnectionForReconnect(input: {
+    readonly companyId: string;
+    readonly connectionId: string;
+  }): Promise<Result<ManageableShopifyConnection | null, InfraError>> {
+    const listed = await this.listManageableShopifyConnections({ companyId: input.companyId });
+    if (!listed.ok) return listed;
+    return ok(listed.value.find(connection => connection.connectionId === input.connectionId) ?? null);
+  }
+
+  async findAccessibleShopifyConnection(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId: string;
+    readonly minimumAccess: IntegrationGrantAccess;
+    readonly abortSignal?: AbortSignal;
+  }): Promise<Result<DecryptedIntegrationConnection | null, InfraError>> {
+    try {
+      input.abortSignal?.throwIfAborted();
+      const accessible = await this.listAccessibleShopifyConnections(input);
+      if (!accessible.ok) return accessible;
+      const summary = accessible.value.find(connection => connection.connectionId === input.connectionId);
+      if (!summary || accessRank[summary.access] < accessRank[input.minimumAccess]) return ok(null);
+      const record = await this.db.integrationConnection.findFirst({
+        where: {
+          id: input.connectionId,
+          companyId: input.companyId,
+          provider: SHOPIFY_PROVIDER,
+          revokedAt: null,
+          status: 'connected',
+        },
+      });
+      input.abortSignal?.throwIfAborted();
+      return ok(record ? this.decrypt(record) : null);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.findAccessibleShopifyConnection', e));
+    }
+  }
+
+  /**
+   * Persists one rotating Shopify token pair only if no other process already
+   * refreshed the same version. The loser must reload and use the winner.
+   */
+  async compareAndSwapShopifyTokens(input: {
+    readonly companyId: string;
+    readonly connectionId: string;
+    readonly expectedTokenVersion: number;
+    readonly accessToken: string;
+    readonly refreshToken: string;
+    readonly accessTokenExpiresAt: Date;
+    readonly refreshTokenExpiresAt: Date;
+    readonly scopes: string[];
+  }): Promise<Result<boolean, InfraError>> {
+    try {
+      const updated = await this.db.integrationConnection.updateMany({
+        where: {
+          id: input.connectionId,
+          companyId: input.companyId,
+          provider: SHOPIFY_PROVIDER,
+          tokenVersion: input.expectedTokenVersion,
+          status: 'connected',
+          revokedAt: null,
+        },
+        data: {
+          accessTokenEncrypted: encryptToken(input.accessToken, this.integrationKey).cipherText,
+          refreshTokenEncrypted: encryptToken(input.refreshToken, this.integrationKey).cipherText,
+          tokenCipherVersion: 2,
+          accessTokenExpiresAt: input.accessTokenExpiresAt,
+          refreshTokenExpiresAt: input.refreshTokenExpiresAt,
+          scopes: input.scopes,
+          tokenVersion: { increment: 1 },
+          lastUsedAt: new Date(),
+        },
+      });
+      return ok(updated.count === 1);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.compareAndSwapShopifyTokens', e));
+    }
+  }
+
+  async acquireShopifyRefreshLease(input: {
+    readonly companyId: string;
+    readonly connectionId: string;
+    readonly leaseOwner: string;
+    readonly expiresAt: Date;
+  }): Promise<Result<boolean, InfraError>> {
+    try {
+      const now = new Date();
+      const updated = await this.db.integrationConnection.updateMany({
+        where: {
+          id: input.connectionId,
+          companyId: input.companyId,
+          provider: SHOPIFY_PROVIDER,
+          status: 'connected',
+          revokedAt: null,
+          OR: [
+            { refreshLeaseExpiresAt: null },
+            { refreshLeaseExpiresAt: { lte: now } },
+          ],
+        },
+        data: {
+          refreshLeaseOwner: input.leaseOwner,
+          refreshLeaseExpiresAt: input.expiresAt,
+        },
+      });
+      return ok(updated.count === 1);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.acquireShopifyRefreshLease', e));
+    }
+  }
+
+  async releaseShopifyRefreshLease(input: {
+    readonly companyId: string;
+    readonly connectionId: string;
+    readonly leaseOwner: string;
+  }): Promise<Result<void, InfraError>> {
+    try {
+      await this.db.integrationConnection.updateMany({
+        where: {
+          id: input.connectionId,
+          companyId: input.companyId,
+          provider: SHOPIFY_PROVIDER,
+          refreshLeaseOwner: input.leaseOwner,
+        },
+        data: { refreshLeaseOwner: null, refreshLeaseExpiresAt: null },
+      });
+      return ok(undefined);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.releaseShopifyRefreshLease', e));
+    }
+  }
+
+  async markShopifyReauthorizationRequired(input: {
+    readonly companyId: string;
+    readonly connectionId: string;
+  }): Promise<Result<void, InfraError>> {
+    try {
+      await this.db.integrationConnection.updateMany({
+        where: {
+          id: input.connectionId,
+          companyId: input.companyId,
+          provider: SHOPIFY_PROVIDER,
+          revokedAt: null,
+        },
+        data: {
+          status: CONNECTION_REAUTHORIZATION_REQUIRED,
+          accessTokenEncrypted: null,
+          refreshTokenEncrypted: null,
+          accessTokenExpiresAt: null,
+          refreshTokenExpiresAt: null,
+          refreshLeaseOwner: null,
+          refreshLeaseExpiresAt: null,
+        },
+      });
+      return ok(undefined);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.markShopifyReauthorizationRequired', e));
     }
   }
 

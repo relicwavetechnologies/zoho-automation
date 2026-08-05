@@ -239,6 +239,29 @@ describe("Divo trace correlation", () => {
 		}]);
 	});
 
+	it("marks every later batch after a protected Shopify invocation", async () => {
+		const { batches, handlers } = await traceHarness("run-shopify-protected");
+		await handlers.get("agent_start")?.({ type: "agent_start" }, {});
+		handlers.get("tool_execution_start")?.({
+			toolCallId: "call-1",
+			args: {
+				op: "tools.invoke",
+				payload: { toolId: "shopifyCustomers", args: { operation: "count_customers" } },
+			},
+		}, {});
+		handlers.get("tool_execution_end")?.({
+			toolCallId: "call-1",
+			toolName: "divo_gateway",
+			result: { data: { count: 0 } },
+			isError: false,
+		}, {});
+		handlers.get("turn_end")?.({ turnIndex: 0 }, {});
+		handlers.get("agent_end")?.({ messages: [SUCCESS_MESSAGE] }, {});
+
+		assert.equal(batches.length, 2);
+		assert.ok(batches.every(batch => batch.protectedDataObserved === true));
+	});
+
 	it("emits one failure after the 413 recovery retry produces no real continuation", async () => {
 		const { batches, handlers } = await traceHarness("run-recovery-exhausted");
 

@@ -176,6 +176,89 @@ export async function writeXlsxArtifact(input: {
   );
 }
 
+export async function writeMultiTabXlsxArtifact(input: {
+  readonly path: string;
+  readonly tabs: readonly {
+    readonly tabName: string;
+    readonly columns: readonly string[];
+    readonly source?: DataExportSource;
+    readonly rows: AsyncIterable<Record<string, unknown>>;
+    readonly rowCount: number;
+  }[];
+  readonly signal?: AbortSignal;
+  readonly onProgress?: (progress: DataExportDestinationWriteProgress) => Promise<void>;
+}): Promise<void> {
+  if (input.tabs.length === 0) {
+    throw new Error('Excel workbook export requires at least one tab');
+  }
+  const workbook = XLSX.utils.book_new();
+  let rowsProcessed = 0;
+  for (const tab of input.tabs) {
+    if (tab.columns.length === 0) {
+      throw new Error(`Excel tab "${tab.tabName}" requires at least one output column`);
+    }
+    const presentation = buildDataExportPresentation({
+      title: tab.tabName,
+      columns: tab.columns,
+      ...(tab.source ? { source: tab.source } : {}),
+      rowCount: tab.rowCount,
+      sourceTruncated: false,
+    });
+    if (
+      tab.rowCount > XLSX_MAX_ROWS
+      || tab.columns.length > XLSX_MAX_COLUMNS
+      || dataExportPresentationCellCount(presentation, tab.rowCount) > XLSX_MAX_CELLS
+    ) {
+      throw new Error(
+        `Excel tab "${tab.tabName}" exceeds the ${XLSX_MAX_ROWS.toLocaleString('en-IN')}-row, ${XLSX_MAX_COLUMNS.toLocaleString('en-IN')}-column, or ${XLSX_MAX_CELLS.toLocaleString('en-IN')}-cell safety ceiling`,
+      );
+    }
+    const sheet = XLSX.utils.aoa_to_sheet([[...presentation.mainColumns]]);
+    const columnWidths = presentation.mainColumns.map(column => visibleWidth(column));
+    let batch: unknown[][] = [];
+    let writtenRows = 0;
+    for await (const row of tab.rows) {
+      input.signal?.throwIfAborted();
+      const values = [...presentation.mainRow(row)];
+      values.forEach((value, index) => {
+        columnWidths[index] = Math.max(columnWidths[index] ?? 0, visibleWidth(value));
+      });
+      batch.push(values);
+      writtenRows += 1;
+      if (batch.length < XLSX_APPEND_ROWS) continue;
+      XLSX.utils.sheet_add_aoa(sheet, batch, { origin: -1 });
+      rowsProcessed += batch.length;
+      batch = [];
+      await input.onProgress?.({ stage: 'writing', rowsProcessed });
+    }
+    if (batch.length > 0) {
+      XLSX.utils.sheet_add_aoa(sheet, batch, { origin: -1 });
+      rowsProcessed += batch.length;
+    }
+    await input.onProgress?.({ stage: 'writing', rowsProcessed });
+    if (writtenRows !== tab.rowCount) {
+      throw new Error(`Excel export verification failed: tab "${tab.tabName}" row count changed while writing`);
+    }
+    sheet['!cols'] = columnWidths.map(width => ({
+      wch: Math.min(XLSX_MAX_COLUMN_WIDTH, Math.max(XLSX_MIN_COLUMN_WIDTH, width + 2)),
+    }));
+    sheet['!autofilter'] = {
+      ref: XLSX.utils.encode_range({
+        s: { c: 0, r: 0 },
+        e: { c: presentation.mainColumns.length - 1, r: writtenRows },
+      }),
+    };
+    applyNumberFormats(sheet, presentation.mainColumns, writtenRows, presentation.numberFormats);
+    XLSX.utils.book_append_sheet(workbook, sheet, safeXlsxTabName(tab.tabName));
+  }
+  await writeWorkbook(input.path, workbook);
+}
+
+function safeXlsxTabName(value: string): string {
+  const cleaned = value.trim().replace(/[\\/*?:[\]]+/g, '-').slice(0, 31).trim();
+  return cleaned || 'Export';
+}
+
 function applyNumberFormats(
   sheet: XLSX.WorkSheet,
   columns: readonly string[],

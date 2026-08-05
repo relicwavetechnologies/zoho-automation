@@ -2,10 +2,6 @@ import { normalizeExportCell } from './data-export-cell';
 import type { DataExportCoverage, DataExportSource } from './data-export.types';
 import type { SemrushOperation } from '../semrush/semrush.types';
 
-const SEMRUSH_NUMERIC_COLUMNS = new Set([
-  'Position', 'Previous Position', 'Position Difference', 'Search Volume',
-  'CPC', 'Traffic (%)', 'Traffic Cost (%)', 'Competition', 'Number of Results',
-]);
 const SEMRUSH_DOMAIN_METRIC_COLUMNS = new Set([
   'Rank', 'Organic Keywords', 'Organic Traffic', 'Organic Cost',
   'Adwords Keywords', 'Adwords Traffic', 'Adwords Cost',
@@ -17,23 +13,11 @@ const SEMRUSH_BACKLINKS_NUMERIC_COLUMNS = new Set([
   'ascore', 'total', 'domains_num', 'urls_num', 'ips_num',
   'follows_num', 'nofollows_num', 'texts_num', 'images_num',
 ]);
-const SEMRUSH_GAP_TEXT_COLUMNS = new Set([
-  'Keyword', 'Search Volume', 'CPC', 'Competition',
-]);
 const SEMRUSH_SHEET_TITLES: Record<SemrushOperation, string> = {
   domain_overview: 'Domain Overview',
-  organic_positions: 'Organic Positions',
-  organic_position_trend: 'Position Trend',
-  keyword_research: 'Keyword Research',
-  domain_comparison: 'Domain Comparison',
-  keyword_gap: 'Keyword Gap',
   backlinks_comparison: 'Backlinks Comparison',
+  keyword_position_trend: 'Keyword Position Trend',
 };
-const TREND_PERIOD_COUNT = 12;
-const TREND_COLUMNS = Array.from(
-  { length: TREND_PERIOD_COUNT },
-  (_, index) => `Trend Period ${String(index + 1).padStart(2, '0')}`,
-);
 
 export interface DataExportPresentation {
   readonly dataSheetTitle: string;
@@ -42,13 +26,8 @@ export interface DataExportPresentation {
   readonly overviewRows?: readonly (readonly unknown[])[];
   readonly numberFormats: Readonly<Record<string, string>>;
   readonly columnWidths: Readonly<Record<string, number>>;
-  readonly trends?: {
-    readonly title: string;
-    readonly columns: readonly string[];
-  };
   mainRow(row: Readonly<Record<string, unknown>>): readonly unknown[];
   flatRow(row: Readonly<Record<string, unknown>>): readonly unknown[];
-  trendRow(row: Readonly<Record<string, unknown>>): readonly unknown[];
 }
 
 export function buildDataExportPresentation(input: {
@@ -60,19 +39,7 @@ export function buildDataExportPresentation(input: {
   readonly sourceTruncated: boolean;
 }): DataExportPresentation {
   const semrushSource = input.source?.kind === 'semrush_snapshot' ? input.source : undefined;
-  const hasTrends = semrushSource !== undefined && input.columns.includes('Trends');
-  const trendIdentityColumns = hasTrends
-    ? [
-      ...(input.columns.includes('Keyword') ? ['Keyword'] as const : []),
-      ...(input.columns.includes('Url') ? ['Url'] as const : []),
-    ]
-    : [];
-  const mainColumns = hasTrends
-    ? input.columns.filter(column => column !== 'Trends')
-    : [...input.columns];
-  const flatColumns = hasTrends
-    ? input.columns.flatMap(column => column === 'Trends' ? TREND_COLUMNS : [column])
-    : [...input.columns];
+  const mainColumns = [...input.columns];
   const overviewRows = semrushSource ? semrushOverviewRows(input) : undefined;
 
   return {
@@ -80,18 +47,9 @@ export function buildDataExportPresentation(input: {
       ? SEMRUSH_SHEET_TITLES[semrushSource.args.operation]
       : 'Export',
     mainColumns,
-    flatColumns,
+    flatColumns: mainColumns,
     ...(overviewRows ? { overviewRows } : {}),
     numberFormats: {
-      Position: '#,##0',
-      'Previous Position': '#,##0',
-      'Position Difference': '#,##0;[Red]-#,##0',
-      'Search Volume': '#,##0',
-      CPC: '0.00',
-      'Traffic (%)': '0.00"%"',
-      'Traffic Cost (%)': '0.00"%"',
-      Competition: '0.00',
-      'Number of Results': '#,##0',
       Rank: '#,##0',
       'Organic Keywords': '#,##0',
       'Organic Traffic': '#,##0',
@@ -110,38 +68,20 @@ export function buildDataExportPresentation(input: {
       'Nofollow Links': '#,##0',
       'Text Links': '#,##0',
       'Image Links': '#,##0',
-      ...Object.fromEntries(TREND_COLUMNS.map(column => [column, '0.00'])),
+      Position: '#,##0',
     },
     columnWidths: {
       Keyword: 240,
       Position: 90,
-      'Previous Position': 120,
-      'Position Difference': 130,
-      'Search Volume': 120,
-      CPC: 90,
-      Url: 380,
-      'Traffic (%)': 110,
-      'Traffic Cost (%)': 130,
-      Competition: 105,
-      'Number of Results': 135,
-      'SERP Features by Keyword': 220,
-      'SERP Features by Position': 220,
       Target: 180,
+      Domain: 180,
       'Authority Score': 110,
       'Referring Domains': 140,
       'Referring URLs': 120,
       'Provider Data Status': 160,
-      ...Object.fromEntries(TREND_COLUMNS.map(column => [column, 105])),
     },
-    ...(hasTrends ? { trends: { title: 'Trends', columns: [...trendIdentityColumns, ...TREND_COLUMNS] } } : {}),
     mainRow: row => mainColumns.map(column => normalizeSourceCell(row[column], column, input.source)),
-    flatRow: row => flatColumns.map(column => trendIndex(column) === undefined
-      ? normalizeSourceCell(row[column], column, input.source)
-      : trendValues(row.Trends)[trendIndex(column) ?? 0]),
-    trendRow: row => [
-      ...trendIdentityColumns.map(column => normalizeSourceCell(row[column], column, input.source)),
-      ...trendValues(row.Trends),
-    ],
+    flatRow: row => mainColumns.map(column => normalizeSourceCell(row[column], column, input.source)),
   };
 }
 
@@ -156,14 +96,10 @@ function semrushOverviewRows(input: {
   const args = input.source.args;
   const subject = 'domain' in args
     ? args.domain
-    : 'targets' in args
-      ? args.targets.join(', ')
-      : args.operation === 'keyword_research'
-        ? args.keywords.join(', ')
-        : 'Semrush report';
+    : args.targets.join(', ');
   const rows: unknown[][] = [
     [input.title],
-    ['Source', 'Semrush API'],
+    ['Source', 'Semrush web'],
     ['Report', args.operation.replaceAll('_', ' ')],
     ['Subject', subject],
     ['Database', 'database' in args ? args.database ?? 'in' : 'Not applicable'],
@@ -172,51 +108,20 @@ function semrushOverviewRows(input: {
     ['Completeness', coverageLabel(input.coverage, input.sourceTruncated)],
   ];
 
-  if (args.operation === 'keyword_gap' && 'targets' in args) {
-    rows.push([
-      'Gap note',
-      `The first target (${args.targets[0]}) is excluded. Rows are keywords the remaining targets rank for that it does not.`,
-    ]);
-  }
   if (args.operation === 'backlinks_comparison') {
     rows.push([
       'Billing note',
-      'Semrush bills one backlinks_overview request per target in this comparison.',
+      'One Semrush web request covers all targets in this comparison.',
     ]);
   }
-  if (args.operation === 'keyword_research' && args.keywords.length > input.rowCount) {
+  if (args.operation === 'keyword_position_trend') {
     rows.push([
-      'Keyword note',
-      `Semrush returned data for ${input.rowCount} of ${args.keywords.length} requested keyword(s); omitted keywords had no provider data.`,
-    ]);
-  }
-  if (args.operation === 'organic_position_trend') {
-    rows.push([
-      'History note',
-      'Monthly domain-rank history from Semrush domain_rank_history, newest month first.',
-    ]);
-  }
-  if (usesCpcColumn(args.operation)) {
-    rows.push([
-      'Metric note',
-      'CPC is kept currency-neutral because this report does not identify a currency.',
-    ]);
-  }
-  if (args.operation === 'organic_positions' || args.operation === 'keyword_research') {
-    rows.push([
-      'Trend note',
-      'Trend Period 01–12 preserve Semrush provider order; 1.00 is the row peak and lower values are relative interest.',
+      'Scope note',
+      `Keyword "${args.keyword}" on ${args.date} for ${args.domain}.`,
     ]);
   }
 
   return rows;
-}
-
-function usesCpcColumn(operation: SemrushOperation): boolean {
-  return operation === 'organic_positions'
-    || operation === 'keyword_research'
-    || operation === 'domain_comparison'
-    || operation === 'keyword_gap';
 }
 
 function coverageLabel(
@@ -250,25 +155,17 @@ function normalizeSourceCell(
   if (
     source?.kind === 'semrush_snapshot'
     && typeof value === 'string'
-    && isSemrushNumericColumn(column, source)
+    && isSemrushNumericColumn(column)
   ) {
     return semrushNumericValue(value);
   }
   return normalizeExportCell(value);
 }
 
-function isSemrushNumericColumn(
-  column: string,
-  source: Extract<DataExportSource, { readonly kind: 'semrush_snapshot' }>,
-): boolean {
-  if (SEMRUSH_NUMERIC_COLUMNS.has(column)
-    || SEMRUSH_DOMAIN_METRIC_COLUMNS.has(column)
-    || SEMRUSH_BACKLINKS_NUMERIC_COLUMNS.has(column)) {
-    return true;
-  }
-  const operation = source.args.operation;
-  return (operation === 'keyword_gap' || operation === 'domain_comparison')
-    && !SEMRUSH_GAP_TEXT_COLUMNS.has(column);
+function isSemrushNumericColumn(column: string): boolean {
+  return SEMRUSH_DOMAIN_METRIC_COLUMNS.has(column)
+    || SEMRUSH_BACKLINKS_NUMERIC_COLUMNS.has(column)
+    || column === 'Position';
 }
 
 function semrushNumericValue(value: string): unknown {
@@ -284,19 +181,4 @@ function formatSemrushDate(value: string): string | undefined {
   const match = /^(\d{4})(\d{2})(\d{2})$/.exec(value.trim());
   if (!match) return undefined;
   return `${match[1]}-${match[2]}-${match[3]}`;
-}
-
-function trendValues(value: unknown): readonly unknown[] {
-  const values = typeof value === 'string' ? value.split(',') : [];
-  return TREND_COLUMNS.map((_, index) => {
-    const raw = values[index]?.trim() ?? '';
-    if (raw === '') return '';
-    const numeric = Number(raw);
-    return Number.isFinite(numeric) ? numeric : normalizeExportCell(raw);
-  });
-}
-
-function trendIndex(column: string): number | undefined {
-  const index = TREND_COLUMNS.indexOf(column);
-  return index >= 0 ? index : undefined;
 }

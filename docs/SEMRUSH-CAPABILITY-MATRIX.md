@@ -1,25 +1,16 @@
 # Semrush capability matrix
 
-This is the release gate for Divo's `semrush` tool. A row can be placed in the
-backend implementation only after its official API, entitlement, response
-fixture, and UI-parity probe are recorded. Never substitute a browser-session
-or private web endpoint for a missing row.
+Divo Semrush is **web-session only** (`www.semrush.com`). No `api.semrush.com` path.
 
-| Divo operation | Team workflow | API/version | Probe / UI variance | Runtime status |
-| --- | --- | --- | --- | --- |
-| `domain_overview` | Domain Overview / Organic snapshot | Standard API v3 `domain_ranks`; private web `dpa/rpc` `ranks.Ranks` / `organic.overview` when `SEMRUSH_WEB_ENABLED` is configured | Compare 2–3 approved domains and database semantics | Implemented; backend environment key; private web fallback/preference available |
-| `organic_positions` | Organic Research rankings | Standard API v3 `domain_organic` | Compare rows, offsets, and database coverage | Implemented; backend environment key |
-| `backlinks_comparison` | Bulk Backlink Analysis | Standard analytics v1 `backlinks_overview`; private web `backlinks/webapi2` `backlinks_comparison` when `SEMRUSH_WEB_ENABLED` is configured | Compare 2–10 approved root domains | Implemented; private web wrapper preferred when configured |
-| `organic_position_trend` | Position Tracking trend | Official Projects API contract required | Validate campaign ownership and historical output | Explicitly unavailable |
-| `domain_comparison` | Domain comparison | Official endpoint/response fixture required | Validate team workflow | Explicitly unavailable |
-| `keyword_gap` | Keyword Gap | Official endpoint/response fixture required | Validate team workflow | Explicitly unavailable |
-| `keyword_research` | Keyword Overview / Magic | Official endpoint/response fixture required | Validate team workflow | Explicitly unavailable |
-| AI Visibility / Prompt Research / Topic Opportunity / citations | UI-only AI workflows | Official API/SKU not confirmed | Obtain written Semrush API contract first | Not registered as a callable operation |
+**Required env:** `SEMRUSH_WEB_API_KEY`, `SEMRUSH_WEB_COOKIE`, `SEMRUSH_TIMEOUT_MS`
 
-## Completion record for each row
+| Divo operation | Semrush recipe | Status |
+| --- | --- | --- |
+| `domain_overview` | `POST /dpa/rpc` · `ranks.Ranks` · `organic.overview` | Wired |
+| `backlinks_comparison` | `POST /backlinks/webapi2/` · `type=backlinks_comparison` | Wired |
+| `keyword_position_trend` | `POST /dpa/rpc` · `organic.KeywordPositionTrend` · `organic.positions` | Wired |
+| `organic_growth_export` / compare-periods | `POST /dpa/rpc` · `export.Get` · `organic.overviewtrendbatch` | Not wired — live probe returns `Unknown report name` |
+| `organic_positions`, `domain_comparison`, `keyword_gap`, `keyword_research`, `organic_position_trend` | Official API (removed) | Removed |
+| AI Visibility / Prompt Research / etc. | UI-only | Not registered |
 
-Record the date, account/key version, exact official documentation link, request
-shape with credentials removed, test domains, UI comparison screenshots/values,
-empty/partial behavior, and reviewer. The backend then enables only those
-fixed operations. Normal Divo RBAC controls discovery and invocation; keys are
-kept exclusively in the backend environment.
+**Also wired:** `semrush` gateway tool, `divo-semrush-seo-research` skill, governed `dataExport` replay (`semrush_snapshot`), `scripts/validate-semrush-web.ts`

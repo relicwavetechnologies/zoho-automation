@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { CachePort } from '../../shared/cache';
 
 const RUN_EFFECT_TTL_SECONDS = 15 * 60;
@@ -51,6 +51,8 @@ export interface AppliedPersonalMemoryEffect extends LarkRunEffectIdentity {
   readonly resourceId: string;
   readonly resourceVersion: number;
   readonly projection: 'completed' | 'queued';
+  /** Stable fingerprint of the exact gateway command that produced this effect. */
+  readonly requestHash?: string;
   readonly appliedAt: string;
 }
 
@@ -100,6 +102,20 @@ export type ReserveKnowledgeReviewEffectResult =
   | { readonly status: 'claimed' }
   | { readonly status: 'opening' }
   | { readonly status: 'opened'; readonly effect: OpenedKnowledgeReviewEffect };
+
+interface PersonalMemoryReservation extends LarkRunEffectIdentity {
+  readonly version: 1;
+  readonly kind: 'personal_memory_reservation';
+  readonly status: 'applying';
+  readonly actionId: string;
+  readonly requestHash: string;
+  readonly reservationToken: string;
+  readonly createdAt: string;
+}
+
+export type ReservePersonalMemoryResult =
+  | { readonly status: 'claimed'; readonly reservationToken: string }
+  | { readonly status: 'applying'; readonly reservationToken: string };
 
 /**
  * Backend-owned, run-scoped evidence for user-visible effects created by Pi.
@@ -204,6 +220,53 @@ export class RunEffectReceiptStore {
       ?? await this.readIndex(identity, 'knowledge_review_opened');
   }
 
+  async reservePersonalMemory(
+    identity: LarkRunEffectIdentity,
+    input: { readonly actionId: string; readonly requestHash: string },
+  ): Promise<ReservePersonalMemoryResult> {
+    const reservation: PersonalMemoryReservation = {
+      version: 1,
+      kind: 'personal_memory_reservation',
+      status: 'applying',
+      ...identity,
+      ...input,
+      reservationToken: randomUUID(),
+      createdAt: new Date().toISOString(),
+    };
+    const reserved = await this.cache.setNx(
+      personalMemoryReservationKey(identity, input.actionId),
+      reservation,
+      RUN_EFFECT_TTL_SECONDS,
+    );
+    if (!reserved.ok) throw reserved.error;
+    if (reserved.value) return { status: 'claimed', reservationToken: reservation.reservationToken };
+
+    const existing = await this.readPersonalMemoryReservation(identity, input.actionId);
+    if (!existing) throw new Error('Personal-memory reservation disappeared.');
+    if (existing.requestHash !== input.requestHash) {
+      throw new Error('This action ID is already bound to a different personal-memory command.');
+    }
+    return { status: 'applying', reservationToken: existing.reservationToken };
+  }
+
+  async releasePersonalMemory(
+    identity: LarkRunEffectIdentity,
+    input: {
+      readonly actionId: string;
+      readonly requestHash: string;
+      readonly reservationToken: string;
+    },
+  ): Promise<void> {
+    const existing = await this.readPersonalMemoryReservation(identity, input.actionId);
+    if (!existing) return;
+    if (existing.requestHash !== input.requestHash) {
+      throw new Error('Personal-memory reservation belongs to a different command.');
+    }
+    if (existing.reservationToken !== input.reservationToken) return;
+    const removed = await this.cache.del(personalMemoryReservationKey(identity, input.actionId));
+    if (!removed.ok) throw removed.error;
+  }
+
   async recordPersonalMemory(
     identity: LarkRunEffectIdentity,
     input: Omit<
@@ -220,12 +283,31 @@ export class RunEffectReceiptStore {
       ...input,
       appliedAt: new Date().toISOString(),
     };
-    const stored = await this.cache.set(
-      runEffectIndexKey(identity, effect.effectKind),
+
+    // The exact action receipt is the recovery anchor. Write it before the
+    // latest-result index so a timeout or ambiguous cache failure can be
+    // repaired by retrying the same action without re-running the mutation.
+    const existing = await this.readPersonalMemoryForAction(identity, effect.actionId);
+    if (existing) {
+      assertSamePersonalMemoryRequest(existing, effect);
+      await this.writePersonalMemoryReceipt(identity, existing);
+      return existing;
+    }
+
+    const latest = await this.readPersonalMemory(identity);
+    if (latest?.actionId === effect.actionId) {
+      assertSamePersonalMemoryRequest(latest, effect);
+      await this.writePersonalMemoryReceipt(identity, latest);
+      return latest;
+    }
+
+    const exactStored = await this.cache.set(
+      personalMemoryEffectKey(identity, effect.actionId),
       effect,
       RUN_EFFECT_TTL_SECONDS,
     );
-    if (!stored.ok) throw stored.error;
+    if (!exactStored.ok) throw exactStored.error;
+    await this.writePersonalMemoryReceipt(identity, effect);
     return effect;
   }
 
@@ -472,6 +554,18 @@ export class RunEffectReceiptStore {
     return effect;
   }
 
+  /**
+   * Looks up the receipt for one exact action invocation. The action ID is
+   * still checked against the run-bound cache namespace by the key and again
+   * inside the value before it is returned.
+   */
+  async getPersonalMemory(
+    identity: LarkRunEffectIdentity,
+    actionId: string,
+  ): Promise<AppliedPersonalMemoryEffect | null> {
+    return this.readPersonalMemoryForAction(identity, actionId);
+  }
+
   async getVerifiedMemoryEffect(
     identity: LarkRunEffectIdentity,
   ): Promise<VerifiedKnowledgeEffect | null> {
@@ -532,16 +626,61 @@ export class RunEffectReceiptStore {
     if (!result.ok) throw result.error;
     const effect = result.value;
     if (!effect) return null;
-    if (
-      effect.version !== 1
-      || effect.kind !== 'personal_memory'
-      || effect.status !== 'applied'
-      || effect.effectKind !== 'personal_memory_applied'
-    ) {
-      throw new Error('Personal-memory effect index is invalid.');
+    return validatePersonalMemoryEffect(effect, identity);
+  }
+
+  private async readPersonalMemoryForAction(
+    identity: LarkRunEffectIdentity,
+    actionId: string,
+  ): Promise<AppliedPersonalMemoryEffect | null> {
+    const result = await this.cache.get<AppliedPersonalMemoryEffect>(
+      personalMemoryEffectKey(identity, actionId),
+    );
+    if (!result.ok) throw result.error;
+    if (!result.value) return null;
+    const effect = validatePersonalMemoryEffect(result.value, identity);
+    if (effect.actionId !== actionId) {
+      throw new Error('Personal-memory effect action does not match its receipt key.');
     }
-    assertSameIdentity(effect, identity);
     return effect;
+  }
+
+  private async readPersonalMemoryReservation(
+    identity: LarkRunEffectIdentity,
+    actionId: string,
+  ): Promise<PersonalMemoryReservation | null> {
+    const result = await this.cache.get<PersonalMemoryReservation>(
+      personalMemoryReservationKey(identity, actionId),
+    );
+    if (!result.ok) throw result.error;
+    const reservation = result.value;
+    if (!reservation) return null;
+    if (
+      reservation.version !== 1
+      || reservation.kind !== 'personal_memory_reservation'
+      || reservation.status !== 'applying'
+      || reservation.actionId !== actionId
+      || typeof reservation.requestHash !== 'string'
+      || reservation.requestHash.length === 0
+      || typeof reservation.reservationToken !== 'string'
+      || reservation.reservationToken.length === 0
+    ) {
+      throw new Error('Personal-memory reservation is invalid.');
+    }
+    assertSameIdentity(reservation, identity);
+    return reservation;
+  }
+
+  private async writePersonalMemoryReceipt(
+    identity: LarkRunEffectIdentity,
+    effect: AppliedPersonalMemoryEffect,
+  ): Promise<void> {
+    const stored = await this.cache.set(
+      runEffectIndexKey(identity, effect.effectKind),
+      effect,
+      RUN_EFFECT_TTL_SECONDS,
+    );
+    if (!stored.ok) throw stored.error;
   }
 }
 
@@ -568,6 +707,14 @@ function runEffectIndexKey(
   return `${runEffectPrefix(identity)}latest:${effectKind}`;
 }
 
+function personalMemoryEffectKey(identity: LarkRunEffectIdentity, actionId: string): string {
+  return `${runEffectPrefix(identity)}personal:${sha256(actionId)}`;
+}
+
+function personalMemoryReservationKey(identity: LarkRunEffectIdentity, actionId: string): string {
+  return `${runEffectPrefix(identity)}personal-reservation:${sha256(actionId)}`;
+}
+
 function runEffectPrefix(identity: LarkRunEffectIdentity): string {
   const digest = createHash('sha256')
     .update([
@@ -589,6 +736,7 @@ function assertSameIdentity(
   effect:
     | KnowledgeReviewRunEffect
     | AppliedPersonalMemoryEffect
+    | PersonalMemoryReservation
     | OfferedDataExportEffect
     | GoogleSheetDestinationEffect
     | OfferedWorkbookConversionEffect,
@@ -627,4 +775,34 @@ function isSpreadsheetId(value: string): boolean {
 function isSheetGid(value: string | undefined): boolean {
   return value === undefined
     || (/^(?:0|[1-9][0-9]{0,19})$/.test(value) && Number.isSafeInteger(Number(value)));
+}
+
+function validatePersonalMemoryEffect(
+  effect: AppliedPersonalMemoryEffect,
+  identity: LarkRunEffectIdentity,
+): AppliedPersonalMemoryEffect {
+  if (
+    effect.version !== 1
+    || effect.kind !== 'personal_memory'
+    || effect.status !== 'applied'
+    || effect.effectKind !== 'personal_memory_applied'
+  ) {
+    throw new Error('Personal-memory effect is invalid.');
+  }
+  assertSameIdentity(effect, identity);
+  return effect;
+}
+
+function assertSamePersonalMemoryRequest(
+  existing: AppliedPersonalMemoryEffect,
+  requested: AppliedPersonalMemoryEffect,
+): void {
+  if (
+    existing.actionId !== requested.actionId
+    || (existing.requestHash !== undefined
+      && requested.requestHash !== undefined
+      && existing.requestHash !== requested.requestHash)
+  ) {
+    throw new Error('This action ID is already bound to a different personal-memory command.');
+  }
 }

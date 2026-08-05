@@ -135,6 +135,49 @@ describe('Menhood export offer source', () => {
   });
 });
 
+describe('parseDataExportOfferPayload workbook tabs', () => {
+  it('round-trips workbookTabs for multi-tab workbook exports', () => {
+    const workbookPayload = {
+      ...payload,
+      source: {
+        kind: 'semrush_snapshot' as const,
+        connectionId: 'backend_managed' as const,
+        args: { operation: 'backlinks_comparison' as const, targets: ['a.com', 'b.com'] },
+      },
+      workbookTabs: [
+        {
+          tabName: 'Backlinks',
+          source: {
+            kind: 'semrush_snapshot' as const,
+            connectionId: 'backend_managed' as const,
+            args: { operation: 'backlinks_comparison' as const, targets: ['a.com', 'b.com'] },
+          },
+        },
+        {
+          tabName: 'Overview — a.com',
+          source: {
+            kind: 'semrush_snapshot' as const,
+            connectionId: 'backend_managed' as const,
+            args: { operation: 'domain_overview' as const, domain: 'a.com', database: 'in' as const },
+          },
+        },
+      ],
+      exportKind: 'sample' as const,
+      rowLimitOverride: 100,
+    };
+
+    const parsed = parseDataExportOfferPayload(workbookPayload);
+
+    assert.equal(parsed.workbookTabs?.length, 2);
+    assert.equal(parsed.workbookTabs?.[0]?.tabName, 'Backlinks');
+    assert.equal(parsed.workbookTabs?.[1]?.tabName, 'Overview — a.com');
+    assert.equal(parsed.workbookTabs?.[0]?.source.args.operation, 'backlinks_comparison');
+    assert.equal(parsed.workbookTabs?.[1]?.source.args.operation, 'domain_overview');
+    assert.equal(parsed.exportKind, 'sample');
+    assert.equal(parsed.rowLimitOverride, 100);
+  });
+});
+
 describe('dataset source recipes the provider would reject', () => {
   const bankTransactions = {
     kind: 'zoho_books' as const,
@@ -1336,7 +1379,7 @@ describe('Multi-call exports fold into one offer', () => {
       source: {
         kind: 'semrush_snapshot',
         connectionId: 'backend_managed',
-        args: { operation: 'organic_positions', domain: 'site-a.com' },
+        args: { operation: 'domain_overview', domain: 'site-a.com' },
       },
       destination: { format: 'auto', title: 'Domain overviews' },
     }, { observedRowCount: 100 });

@@ -26,6 +26,8 @@ describe("personal memory tool", () => {
 
 	it("sends one closed personal command with exact run provenance", async () => {
 		const requests: unknown[] = [];
+		const controller = new AbortController();
+		let observedSignal: AbortSignal | undefined;
 		const result = await executePersonalMemory({
 			action: "set",
 			subject: "answer detail preference",
@@ -34,8 +36,9 @@ describe("personal memory tool", () => {
 		}, {
 			resolveConfig: () => config,
 			readRunCorrelation: async () => ({ threadId: "thread-1", runId: "run-1" }),
-			callGateway: async (_config, request) => {
+			callGateway: async (_config, request, options) => {
 				requests.push(request);
+				observedSignal = options?.signal;
 				return {
 					httpStatus: 200,
 					body: {
@@ -53,9 +56,12 @@ describe("personal memory tool", () => {
 					},
 				};
 			},
-		}, "call-1");
+		}, "call-1", controller.signal);
 
 		assert.equal(result.details.outcome, "success");
+		assert.equal((result.details as { action: string }).action, "updated");
+		assert.equal((result.details as { scope: string }).scope, "personal");
+		assert.doesNotMatch(result.content[0]!.text, /communication\.answers\.detail|resource-1|version|projection/i);
 		assert.deepEqual(requests, [{
 			op: "memory.personal.mutate",
 			execution: { version: 1, threadId: "thread-1", runId: "run-1", actionId: "call-1" },
@@ -67,6 +73,29 @@ describe("personal memory tool", () => {
 			},
 		}]);
 		assert.match(result.content[0]!.text, /truthfully acknowledge/i);
+		assert.equal(observedSignal, controller.signal);
+	});
+
+	it("does not contact the gateway when already cancelled", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		let gatewayCalls = 0;
+		const result = await executePersonalMemory({
+			action: "delete",
+			subject: "answer detail preference",
+			logicalKey: "communication.answers.detail",
+		}, {
+			resolveConfig: () => config,
+			readRunCorrelation: async () => ({ threadId: "thread-1", runId: "run-1" }),
+			callGateway: async () => {
+				gatewayCalls += 1;
+				throw new Error("unreachable");
+			},
+		}, "cancelled-call", controller.signal);
+
+		assert.equal(gatewayCalls, 0);
+		assert.equal(result.details.outcome, "error");
+		assert.doesNotMatch(result.content[0]!.text, /was (?:saved|created|updated|deleted)/i);
 	});
 
 	it("rejects fields that could select another scope or identity", () => {

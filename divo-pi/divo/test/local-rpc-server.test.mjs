@@ -20,6 +20,13 @@ function deferred() {
 	return { promise, resolve };
 }
 
+const protectedCustomerRef = {
+	provider: "shopify",
+	connectionId: "11111111-1111-4111-8111-111111111111",
+	resourceType: "customer",
+	resourceId: "gid://shopify/Customer/123456789",
+};
+
 test("final delivery excludes progress narration before the terminal answer", () => {
 	assert.equal(
 		collectRunAssistantText([
@@ -215,6 +222,34 @@ test("a transient retry waits until the Pi runtime is idle", async () => {
 
 	assert.equal(stateChecks, 3);
 	assert.equal(prompts.length, 2);
+});
+
+test("cancellation interrupts transient retry backoff before another prompt", async () => {
+	const controller = new AbortController();
+	const sent = [];
+	const rpc = {
+		waitFor: () => Promise.resolve({
+			messages: [{
+				role: "assistant",
+				stopReason: "error",
+				errorMessage: "502: Upstream unreachable",
+				content: [],
+			}],
+		}),
+		send: async (command) => sent.push(command),
+	};
+
+	await assert.rejects(
+		promptWithTransientRetries({
+			rpc,
+			message: "Original request",
+			retryDelayMs: 60_000,
+			signal: controller.signal,
+			onRetry: () => controller.abort(new Error("request disconnected")),
+		}),
+		/request disconnected/,
+	);
+	assert.equal(sent.length, 1);
 });
 
 test("a transient failure after a completed gateway action is not retried", async () => {
@@ -488,6 +523,41 @@ test("exhausted transient retries fail instead of delivering earlier narration",
 	);
 });
 
+test("terminal model failure preserves protected-attempt metadata for cleanup", async () => {
+	const rpc = {
+		send: async () => undefined,
+		waitFor: async () => ({
+			messages: [
+				{ role: "user", content: [] },
+				{
+					role: "assistant",
+					content: [{
+						type: "toolCall",
+						id: "call-shopify",
+						name: "divo_gateway",
+						arguments: {
+							op: "tools.invoke",
+							payload: { toolId: "shopifyCustomers", args: { operation: "count_customers" } },
+						},
+					}],
+					stopReason: "error",
+					errorMessage: "provider failed",
+				},
+			],
+		}),
+	};
+
+	await assert.rejects(
+		promptWithTransientRetries({ rpc, message: "count", maxRetries: 0 }),
+		(error) => {
+			assert.equal(error.code, "model_continuation_failed");
+			assert.equal(error.protectedDataUsed, true);
+			assert.deepEqual(error.protectedRefs, []);
+			return true;
+		},
+	);
+});
+
 test("subagent children ride the details the extension already streams", () => {
 	const update = projectRuntimeProgress({
 		type: "tool_execution_update",
@@ -671,6 +741,25 @@ test("admission isolates profiles, rejects overload, and accepts a retry", async
 	assert.equal(admission.activeCount, 0);
 });
 
+test("manual admission forwards the request disconnect signal to Pi execution", async () => {
+	const controller = new AbortController();
+	let receivedOptions;
+	const admission = createAdmissionController({
+		execute: async (_profile, _message, options) => {
+			receivedOptions = options;
+			return { text: "done" };
+		},
+	});
+
+	await admission.run({
+		profile: "anish",
+		message: "work",
+		signal: controller.signal,
+	});
+
+	assert.equal(receivedOptions.signal, controller.signal);
+});
+
 test("HTTP overload response is immediate, friendly, and retryable", async (context) => {
 	const gate = deferred();
 	const { admission, server } = createControllerServer({
@@ -831,6 +920,209 @@ test("HTTP exposes the fenced private session lifecycle route", async (context) 
 	assert.equal(response.status, 200);
 	assert.deepEqual(await response.json(), { ok: true, operation: "prepare" });
 	assert.deepEqual(calls, ["prepare"]);
+test("a protected thread run requests exact session cleanup before returning provenance", async () => {
+	const cleanup = [];
+	const runtime = {
+		profile: "cloud-derived",
+		thread: "lark-derived",
+		backendUrl: "https://backend.example",
+		token: "signed-lease",
+		userId: "user-1",
+		companyId: "company-1",
+		instanceId: "pi-local-1",
+	};
+	const admission = createAdmissionController({
+		resolveLease: async () => runtime,
+		executeRuntime: async () => ({
+			text: "Customer account is active.",
+			protectedDataUsed: true,
+			protectedRefs: [protectedCustomerRef],
+		}),
+		cleanupProtectedSession: async (request) => { cleanup.push(request); },
+	});
+
+	const result = await admission.runRuntime({
+		backendUrl: runtime.backendUrl,
+		runtimeLease: runtime.token,
+		message: "Check this customer",
+	});
+
+	assert.deepEqual(cleanup, [{
+		runtime,
+		references: [protectedCustomerRef],
+		provenanceValid: true,
+	}]);
+	assert.deepEqual(result, {
+		text: "Customer account is active.",
+		protectedDataUsed: true,
+		protectedRefs: [protectedCustomerRef],
+	});
+});
+
+test("a protected durable run fails closed when session cleanup is not wired", async () => {
+	const admission = createAdmissionController({
+		resolveLease: async () => ({ profile: "cloud-derived" }),
+		executeRuntime: async () => ({
+			text: "Sensitive",
+			protectedDataUsed: true,
+			protectedRefs: [protectedCustomerRef],
+		}),
+	});
+
+	await assert.rejects(
+		admission.runRuntime({
+			backendUrl: "https://backend.example",
+			runtimeLease: "signed-lease",
+			message: "Check this customer",
+		}),
+		(error) => {
+			assert.equal(error.code, "protected_session_cleanup_unavailable");
+			assert.equal(error.statusCode, 503);
+			return true;
+		},
+	);
+});
+
+test("malformed protected provenance still deletes the session before rejection", async () => {
+	const cleanup = [];
+	const admission = createAdmissionController({
+		resolveLease: async () => ({ profile: "cloud-derived", thread: "lark-derived" }),
+		executeRuntime: async () => ({
+			text: "Sensitive",
+			protectedDataUsed: true,
+			protectedRefs: [{ ...protectedCustomerRef, resourceId: "not-a-shopify-id" }],
+		}),
+		cleanupProtectedSession: async (request) => { cleanup.push(request); },
+	});
+
+	await assert.rejects(
+		admission.runRuntime({
+			backendUrl: "https://backend.example",
+			runtimeLease: "signed-lease",
+			message: "Check this customer",
+		}),
+		(error) => error.code === "invalid_protected_run_references",
+	);
+	assert.equal(cleanup.length, 1);
+	assert.deepEqual(cleanup[0].references, []);
+	assert.equal(cleanup[0].provenanceValid, false);
+});
+
+test("a protected call followed by runtime failure still requests session cleanup", async () => {
+	const cleanup = [];
+	const admission = createAdmissionController({
+		resolveLease: async () => ({ profile: "cloud-derived", thread: "lark-derived" }),
+		executeRuntime: async (_runtime, _message, { onProgress }) => {
+			onProgress({
+				type: "tool_start",
+				callId: "call-1",
+				toolName: "divo_gateway",
+				toolId: "shopifyOrders",
+			});
+			throw Object.assign(new Error("model failed"), { code: "model_continuation_failed" });
+		},
+		cleanupProtectedSession: async request => { cleanup.push(request); },
+	});
+
+	await assert.rejects(
+		admission.runRuntime({
+			backendUrl: "https://backend.example",
+			runtimeLease: "signed-lease",
+			message: "Find an order",
+		}),
+		(error) => {
+			assert.equal(error.code, "model_continuation_failed");
+			assert.equal(error.statusCode, 500);
+			assert.equal(error.message, "Protected run failed after its durable session was removed");
+			assert.doesNotMatch(error.message, /model failed/);
+			return true;
+		},
+	);
+	assert.equal(cleanup.length, 1);
+	assert.deepEqual(cleanup[0].references, []);
+});
+
+test("attached protected terminal metadata is cleaned before a safe error is rethrown", async () => {
+	const cleanup = [];
+	const cleanupGate = deferred();
+	let rejected = false;
+	const admission = createAdmissionController({
+		resolveLease: async () => ({ profile: "cloud-derived", thread: "lark-derived" }),
+		executeRuntime: async () => {
+			throw Object.assign(new Error("private customer output must not escape"), {
+				code: "model_continuation_failed",
+				statusCode: 502,
+				protectedDataUsed: true,
+				protectedRefs: [protectedCustomerRef],
+				protectedProvenanceValid: true,
+			});
+		},
+		cleanupProtectedSession: async request => {
+			cleanup.push(request);
+			await cleanupGate.promise;
+		},
+	});
+
+	const run = admission.runRuntime({
+		backendUrl: "https://backend.example",
+		runtimeLease: "signed-lease",
+		message: "Check customer",
+	}).catch((error) => {
+		rejected = true;
+		throw error;
+	});
+	while (cleanup.length === 0) await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(rejected, false);
+	cleanupGate.resolve();
+	await assert.rejects(
+		run,
+		(error) => {
+			assert.equal(error.code, "model_continuation_failed");
+			assert.equal(error.statusCode, 502);
+			assert.equal(error.message, "Protected run failed after its durable session was removed");
+			assert.doesNotMatch(error.message, /private customer output/);
+			return true;
+		},
+	);
+	assert.equal(cleanup.length, 1);
+	assert.deepEqual(cleanup[0].references, [protectedCustomerRef]);
+});
+
+test("protected cleanup failure is surfaced instead of returning protected content", async () => {
+	const admission = createAdmissionController({
+		resolveLease: async () => ({ profile: "cloud-derived", thread: "lark-derived" }),
+		executeRuntime: async () => ({
+			text: "must not be returned",
+			protectedDataUsed: true,
+			protectedRefs: [],
+		}),
+		cleanupProtectedSession: async () => { throw new Error("disk failure"); },
+	});
+
+	await assert.rejects(
+		admission.runRuntime({
+			backendUrl: "https://backend.example",
+			runtimeLease: "signed-lease",
+			message: "Count customers",
+		}),
+		(error) => error.code === "protected_session_cleanup_failed" && error.statusCode === 503,
+	);
+});
+
+test("a normal thread run does not request session cleanup", async () => {
+	let cleanupCalls = 0;
+	const admission = createAdmissionController({
+		resolveLease: async () => ({ profile: "cloud-derived" }),
+		executeRuntime: async () => ({ text: "Ordinary answer" }),
+		cleanupProtectedSession: async () => { cleanupCalls++; },
+	});
+
+	assert.deepEqual(await admission.runRuntime({
+		backendUrl: "https://backend.example",
+		runtimeLease: "signed-lease",
+		message: "Ordinary question",
+	}), { text: "Ordinary answer" });
+	assert.equal(cleanupCalls, 0);
 });
 
 test("Lark runs stream progress and one final result as NDJSON", async (context) => {
@@ -902,6 +1194,45 @@ test("Lark runs stream progress and one final result as NDJSON", async (context)
 		},
 		{ type: "result", text: "Finished" },
 	]);
+});
+
+test("protected provenance crosses the NDJSON boundary only after cleanup", async (context) => {
+	let cleaned = false;
+	const { server } = createControllerServer({
+		resolveLease: async () => ({ profile: "cloud-derived", thread: "lark-derived" }),
+		executeRuntime: async () => ({
+			text: "Customer account is active.",
+			protectedDataUsed: true,
+			protectedRefs: [protectedCustomerRef],
+		}),
+		cleanupProtectedSession: async () => { cleaned = true; },
+	});
+	await new Promise((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", resolve);
+	});
+	context.after(() => server.close());
+	const { port } = server.address();
+	const response = await fetch(`http://127.0.0.1:${port}/v1/lark-runs`, {
+		method: "POST",
+		headers: {
+			"content-type": "application/json",
+			accept: "application/x-ndjson",
+		},
+		body: JSON.stringify({
+			backendUrl: "https://backend.example",
+			runtimeLease: "signed-lease",
+			message: "Check this customer",
+		}),
+	});
+
+	assert.equal(cleaned, true);
+	assert.deepEqual(JSON.parse((await response.text()).trim()), {
+		type: "result",
+		text: "Customer account is active.",
+		protectedDataUsed: true,
+		protectedRefs: [protectedCustomerRef],
+	});
 });
 
 test("Lark run streams stay alive while the runtime is silent", async (context) => {

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { ingestTraceBatch } from '../../src/http/desktop/trace-ingest.routes';
+import {
+  ingestTraceBatch,
+  resolveBackendTraceProvenance,
+} from '../../src/http/desktop/trace-ingest.routes';
 import { ExecutionRepository } from '../../src/infrastructure/persistence/execution.repository';
 import type { TokenUsageService } from '../../src/application/observability/token-usage.service';
 import type { Logger } from '../../src/shared/logger';
@@ -18,17 +21,38 @@ function harness() {
   const events: unknown[] = [];
   const completions: unknown[] = [];
   const failures: unknown[] = [];
+  const stepResults: unknown[] = [];
+  const protectedObservations: boolean[] = [];
+  let protectedDataObserved = false;
   const runs = {
     findOrCreateByRequestId: async () => 'execution-1',
+    observeProtectedData: async (_executionId: string, observed: boolean) => {
+      protectedObservations.push(observed);
+      protectedDataObserved ||= observed;
+      return protectedDataObserved;
+    },
     appendEvent: async (event: unknown) => { events.push(event); },
-    appendStepResult: async () => {},
+    appendStepResult: async (result: unknown) => { stepResults.push(result); },
     complete: async (...args: unknown[]) => { completions.push(args); },
     fail: async (...args: unknown[]) => { failures.push(args); },
   } as unknown as ExecutionRepository;
   const tokens = {
     recordForRun: async (usage: unknown) => { tokenWrites.push(usage); },
   } as unknown as TokenUsageService;
-  return { runs, tokens, tokenWrites, events, completions, failures };
+  return {
+    runs,
+    tokens,
+    tokenWrites,
+    events,
+    completions,
+    failures,
+    stepResults,
+    protectedObservations,
+  };
+}
+
+function provenance(runId: string) {
+  return { runId, executionId: 'execution-1', backendIssued: true as const };
 }
 
 describe('desktop trace usage ownership', () => {
@@ -105,9 +129,234 @@ describe('execution run correlation ownership', () => {
       /different authenticated principal/,
     );
   });
+
+  it('promotes protected-data state to true without exposing a clearing write', async () => {
+    const writes: unknown[] = [];
+    const repository = new ExecutionRepository({
+      executionRun: {
+        update: async (input: unknown) => {
+          writes.push(input);
+          return { protectedDataObserved: true };
+        },
+      },
+    } as never);
+
+    assert.equal(await repository.observeProtectedData('execution-1', true), true);
+    assert.deepEqual(writes, [{
+      where: { id: 'execution-1' },
+      data: { protectedDataObserved: true },
+      select: { protectedDataObserved: true },
+    }]);
+  });
+
+  it('reads the server-owned protected-data state when a batch omits the marker', async () => {
+    const repository = new ExecutionRepository({
+      executionRun: {
+        findUniqueOrThrow: async () => ({ protectedDataObserved: true }),
+        update: async () => { throw new Error('false observations must not write'); },
+      },
+    } as never);
+
+    assert.equal(await repository.observeProtectedData('execution-1', false), true);
+  });
+
+  it('rejects a desktop run that has no backend-recorded model execution', async () => {
+    const result = await resolveBackendTraceProvenance(
+      {
+        executionRun: {
+          findUnique: async () => ({
+            id: 'execution-1',
+            companyId: 'company-1',
+            userId: 'user-1',
+            channel: 'desktop',
+            entrypoint: 'pi',
+            status: 'running',
+          }),
+        },
+        aiTokenUsage: { findFirst: async () => null },
+      } as any,
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
+      { runId: 'fabricated-run' },
+    );
+
+    assert.equal(result, null);
+  });
+
+  it('accepts only a live desktop run with authoritative proxy usage', async () => {
+    const result = await resolveBackendTraceProvenance(
+      {
+        executionRun: {
+          findUnique: async () => ({
+            id: 'execution-1',
+            companyId: 'company-1',
+            userId: 'user-1',
+            channel: 'desktop',
+            entrypoint: 'pi',
+            status: 'running',
+          }),
+        },
+        aiTokenUsage: { findFirst: async () => ({ id: 'usage-1' }) },
+      } as any,
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
+      { runId: 'backend-run' },
+    );
+
+    assert.deepEqual(result, {
+      runId: 'backend-run',
+      executionId: 'execution-1',
+      backendIssued: true,
+    });
+  });
 });
 
 describe('desktop trace terminal status', () => {
+  it('redacts protected Shopify tool I/O and excludes the run from both learning pipelines', async () => {
+    const test = harness();
+    const personaCaptured: unknown[] = [];
+    const personalCaptured: unknown[] = [];
+
+    await ingestTraceBatch(
+      test.runs,
+      test.tokens,
+      noopLogger,
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
+      {
+        runId: 'run-protected-shopify',
+        usageAuthority: 'desktop',
+        events: [
+          {
+            kind: 'tool',
+            seq: 1,
+            toolName: 'divo_gateway',
+            input: {
+              op: 'tools.invoke',
+              payload: {
+                toolId: 'shopifyCustomers',
+                args: {
+                  operation: 'get_customer',
+                  connectionId: '11111111-1111-4111-8111-111111111111',
+                  customerId: 'gid://shopify/Customer/42',
+                },
+              },
+            },
+            output: { data: { id: 'gid://shopify/Customer/42', tags: ['vip'] } },
+            summary: 'VIP customer gid://shopify/Customer/42',
+          },
+          {
+            kind: 'learning_context',
+            seq: 2,
+            userMessages: ['Find this customer'],
+            assistantResponse: 'The customer is tagged VIP.',
+            toolSummary: [{ toolName: 'shopifyCustomers', isError: false }],
+          },
+          { kind: 'run_end', seq: 3, status: 'ok' },
+        ],
+      },
+      { captureCompletedManagerRun: async (input: unknown) => { personaCaptured.push(input); } } as any,
+      { captureCompletedTurn: async (input: unknown) => { personalCaptured.push(input); } },
+      provenance('run-protected-shopify'),
+    );
+
+    const event = test.events[0] as Record<string, any>;
+    assert.deepEqual(event.payload, {
+      input: {
+        provider: 'shopify',
+        toolId: 'shopifyCustomers',
+        operation: 'get_customer',
+        connectionId: '11111111-1111-4111-8111-111111111111',
+      },
+      output: '[REDACTED: governed Shopify protected-data result]',
+      isError: false,
+    });
+    assert.equal(event.summary, 'Protected Shopify result redacted');
+    assert.deepEqual((test.stepResults[0] as Record<string, any>).rawOutput, {
+      input: {
+        provider: 'shopify',
+        toolId: 'shopifyCustomers',
+        operation: 'get_customer',
+        connectionId: '11111111-1111-4111-8111-111111111111',
+      },
+      output: '[REDACTED: governed Shopify protected-data result]',
+    });
+    assert.deepEqual(personaCaptured, []);
+    assert.deepEqual(personalCaptured, []);
+  });
+
+  it('keeps later trace batches protected after the tool batch was flushed and the marker is omitted', async () => {
+    const test = harness();
+    const personaCaptured: unknown[] = [];
+    const personalCaptured: unknown[] = [];
+
+    await ingestTraceBatch(
+      test.runs,
+      test.tokens,
+      noopLogger,
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
+      {
+        runId: 'run-protected-split',
+        usageAuthority: 'desktop',
+        events: [{
+          kind: 'tool',
+          seq: 4,
+          toolName: 'divo_gateway',
+          input: {
+            op: 'tools.invoke',
+            payload: {
+              toolId: 'shopifyCustomers',
+              args: {
+                operation: 'search_customers',
+                connectionId: '11111111-1111-4111-8111-111111111111',
+              },
+            },
+          },
+          output: { data: [{ email: 'private@example.test' }] },
+        }],
+      },
+      undefined,
+      undefined,
+      provenance('run-protected-split'),
+    );
+
+    await ingestTraceBatch(
+      test.runs,
+      test.tokens,
+      noopLogger,
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
+      {
+        runId: 'run-protected-split',
+        usageAuthority: 'desktop',
+        events: [
+          {
+            kind: 'learning_context',
+            seq: 5,
+            userMessages: ['Find private@example.test'],
+            assistantResponse: 'Protected customer answer',
+            toolSummary: [{ toolName: 'divo_gateway', isError: false }],
+          },
+          {
+            kind: 'run_end',
+            seq: 6,
+            status: 'ok',
+            summary: 'Protected customer answer',
+          },
+        ],
+      },
+      { captureCompletedManagerRun: async input => { personaCaptured.push(input); } } as any,
+      { captureCompletedTurn: async input => { personalCaptured.push(input); } },
+      provenance('run-protected-split'),
+    );
+
+    assert.deepEqual(personaCaptured, []);
+    assert.deepEqual(personalCaptured, []);
+    assert.deepEqual(test.protectedObservations, [true, false]);
+    assert.deepEqual(test.completions, [[
+      'execution-1',
+      'Protected Shopify run completed; details redacted',
+    ]]);
+    assert.equal(JSON.stringify(test.events).includes('private@example.test'), false);
+    assert.equal(JSON.stringify(test.events).includes('Protected customer answer'), false);
+  });
+
   it('fails rather than completes a run when Pi emits an error terminal event', async () => {
     const test = harness();
 
@@ -174,6 +423,8 @@ describe('desktop trace terminal status', () => {
         ],
       },
       personaLearning,
+      undefined,
+      provenance('run-learning'),
     );
 
     assert.deepEqual(captured, [{
@@ -257,6 +508,7 @@ describe('desktop trace terminal status', () => {
       },
       undefined,
       knowledgeLearning,
+      provenance('run-personal-memory'),
     );
 
     assert.deepEqual(retained, [{
@@ -301,6 +553,7 @@ describe('desktop trace terminal status', () => {
       },
       undefined,
       knowledgeLearning,
+      provenance('run-lark-personal-memory'),
     );
 
     assert.equal(result.failed, 0, 'the Lark timeline is still persisted');
@@ -340,5 +593,43 @@ describe('desktop trace terminal status', () => {
     );
 
     assert.deepEqual(retained, []);
+  });
+
+  it('never captures learning from an unverified direct ingest call', async () => {
+    const test = harness();
+    const personaCaptured: unknown[] = [];
+    const personalCaptured: unknown[] = [];
+    const personaLearning = {
+      captureCompletedManagerRun: async (input: unknown) => { personaCaptured.push(input); },
+    } as any;
+    const knowledgeLearning = {
+      captureCompletedTurn: async (input: unknown) => { personalCaptured.push(input); },
+    };
+
+    await ingestTraceBatch(
+      test.runs,
+      test.tokens,
+      noopLogger,
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
+      {
+        runId: 'unverified-run',
+        usageAuthority: 'desktop',
+        events: [
+          {
+            kind: 'learning_context',
+            seq: 1,
+            userMessages: ['Fabricated evidence'],
+            assistantResponse: 'Fabricated response',
+            toolSummary: [],
+          },
+          { kind: 'run_end', seq: 2, status: 'ok' },
+        ],
+      },
+      personaLearning,
+      knowledgeLearning,
+    );
+
+    assert.deepEqual(personaCaptured, []);
+    assert.deepEqual(personalCaptured, []);
   });
 });

@@ -726,6 +726,87 @@ export interface FinalCardSegment {
   usedCondensedFallback: boolean;
 }
 
+export interface CallbackCardAction {
+  label: string;
+  value: Record<string, unknown>;
+  style?: 'default' | 'primary' | 'danger';
+  confirm?: {
+    title: string;
+    text: string;
+  };
+}
+
+export interface CallbackCardInput {
+  title: string;
+  template?: 'default' | 'blue' | 'green' | 'grey' | 'red' | 'orange' | 'purple' | 'turquoise';
+  markdownBlocks: readonly string[];
+  note?: string;
+  actions?: readonly CallbackCardAction[];
+}
+
+/**
+ * Builds interactive Card 2.0 payloads through the same markdown and action
+ * primitives as ordinary Divo replies. Callback values are authenticated by
+ * the webhook; this function owns presentation only.
+ */
+export function buildCallbackCard(input: CallbackCardInput): string {
+  const elements: Record<string, unknown>[] = [];
+  for (const block of input.markdownBlocks) {
+    for (const chunk of splitMarkdown(softenHeadings(block))) {
+      elements.push(mdElement(chunk, elements.length > 0 ? { margin: '8px 0 0 0' } : undefined));
+    }
+  }
+  if (input.note?.trim()) {
+    elements.push(mdElement(`_${input.note.trim()}_`, { margin: '12px 0 0 0' }));
+  }
+  if (input.actions?.length) {
+    elements.push({
+      tag: 'column_set',
+      element_id: 'callback_actions',
+      margin: '12px 0 0 0',
+      flex_mode: 'flow',
+      horizontal_spacing: '8px',
+      columns: input.actions.map((action, index) => ({
+        tag: 'column',
+        width: 'auto',
+        elements: [{
+          tag: 'button',
+          element_id: `callback_action_${index + 1}`,
+          text: { tag: 'plain_text', content: action.label },
+          type: action.style ?? 'default',
+          behaviors: [{ type: 'callback', value: action.value }],
+          ...(action.confirm ? {
+            confirm: {
+              title: { tag: 'plain_text', content: action.confirm.title },
+              text: { tag: 'plain_text', content: action.confirm.text },
+            },
+          } : {}),
+        }],
+      })),
+    });
+  }
+
+  const card = {
+    schema: '2.0',
+    config: {
+      width_mode: 'fill',
+      update_multi: true,
+      enable_forward: false,
+      summary: { content: buildSummary(input.title, input.markdownBlocks.join('\n\n')) },
+    },
+    header: {
+      title: { tag: 'plain_text', content: input.title },
+      template: input.template ?? 'default',
+    },
+    body: {
+      vertical_spacing: '8px',
+      padding: '12px 12px 12px 12px',
+      elements,
+    },
+  };
+  return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(card) });
+}
+
 interface BuildFinalCardResult {
   payload: string;
   tableCount: number;

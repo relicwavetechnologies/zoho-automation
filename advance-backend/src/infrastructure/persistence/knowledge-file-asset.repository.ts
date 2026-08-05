@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Prisma, PrismaClient } from '../../generated/prisma';
 import type {
   KnowledgeFileAssetRepository,
@@ -107,7 +108,7 @@ export class PrismaKnowledgeFileAssetRepository implements KnowledgeFileAssetRep
           status: 'staged',
           knowledgeResourceId: null,
         },
-        data: { status: 'deleting' },
+        data: { status: 'deleting', deletionLeaseToken: randomUUID() },
       });
       if (updated.count !== 1) return null;
       const row = await tx.knowledgeFileAsset.findUnique({ where: { id: input.assetId } });
@@ -115,18 +116,36 @@ export class PrismaKnowledgeFileAssetRepository implements KnowledgeFileAssetRep
     });
   }
 
-  async completeStagedDeletion(input: { assetId: string; companyId: string }): Promise<boolean> {
+  async completeStagedDeletion(input: {
+    assetId: string;
+    companyId: string;
+    deletionLeaseToken: string;
+  }): Promise<boolean> {
     const updated = await this.prisma.knowledgeFileAsset.updateMany({
-      where: { id: input.assetId, companyId: input.companyId, status: 'deleting' },
-      data: { status: 'deleted', deletedAt: new Date() },
+      where: {
+        id: input.assetId,
+        companyId: input.companyId,
+        status: 'deleting',
+        deletionLeaseToken: input.deletionLeaseToken,
+      },
+      data: { status: 'deleted', deletedAt: new Date(), deletionLeaseToken: null },
     });
     return updated.count === 1;
   }
 
-  async releaseStagedDeletion(input: { assetId: string; companyId: string }): Promise<boolean> {
+  async releaseStagedDeletion(input: {
+    assetId: string;
+    companyId: string;
+    deletionLeaseToken: string;
+  }): Promise<boolean> {
     const updated = await this.prisma.knowledgeFileAsset.updateMany({
-      where: { id: input.assetId, companyId: input.companyId, status: 'deleting' },
-      data: { status: 'staged', deletedAt: null },
+      where: {
+        id: input.assetId,
+        companyId: input.companyId,
+        status: 'deleting',
+        deletionLeaseToken: input.deletionLeaseToken,
+      },
+      data: { status: 'staged', deletedAt: null, deletionLeaseToken: null },
     });
     return updated.count === 1;
   }
@@ -157,14 +176,14 @@ export class PrismaKnowledgeFileAssetRepository implements KnowledgeFileAssetRep
               )
           )
         ORDER BY "expiresAt" ASC
-        FOR UPDATE SKIP LOCKED
         LIMIT ${Math.max(1, Math.min(input.limit, 500))}
+        FOR UPDATE SKIP LOCKED
       `;
       if (rows.length === 0) return [];
       const ids = rows.map(row => row.id);
       await tx.knowledgeFileAsset.updateMany({
         where: { id: { in: ids }, status: { in: ['staged', 'deleting'] }, knowledgeResourceId: null },
-        data: { status: 'deleting' },
+        data: { status: 'deleting', deletionLeaseToken: randomUUID() },
       });
       const claimed = await tx.knowledgeFileAsset.findMany({ where: { id: { in: ids } } });
       return claimed.map(toAsset);
@@ -191,25 +210,46 @@ export class PrismaKnowledgeFileAssetRepository implements KnowledgeFileAssetRep
     companyId: string;
     assetId: string;
     resourceId: string;
+    staleDeletionBefore: Date;
   }): Promise<StagedKnowledgeFile | null> {
     return this.prisma.$transaction(async tx => {
-      await tx.knowledgeFileAsset.updateMany({
+      const retired = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT asset."id"
+        FROM "KnowledgeFileAsset" asset
+        JOIN "KnowledgeResource" resource
+          ON resource."id" = asset."knowledgeResourceId"
+         AND resource."companyId" = asset."companyId"
+        WHERE asset."id" = ${input.assetId}
+          AND asset."companyId" = ${input.companyId}
+          AND asset."knowledgeResourceId" = ${input.resourceId}
+          AND (
+            asset."status" = 'attached'
+            OR (asset."status" = 'deleting' AND asset."updatedAt" <= ${input.staleDeletionBefore})
+          )
+          AND (
+            resource."status" = 'deleted'
+            OR NOT EXISTS (
+              SELECT 1
+              FROM "KnowledgeVersion" current_version
+              WHERE current_version."resourceId" = resource."id"
+                AND current_version."version" = resource."currentVersion"
+                AND current_version."contentJson"->>'assetId' = asset."id"
+            )
+          )
+        FOR UPDATE OF asset
+      `;
+      if (retired.length !== 1) return null;
+      const updated = await tx.knowledgeFileAsset.updateMany({
         where: {
           id: input.assetId,
           companyId: input.companyId,
           knowledgeResourceId: input.resourceId,
-          status: 'attached',
+          status: { in: ['attached', 'deleting'] },
         },
-        data: { status: 'deleting' },
+        data: { status: 'deleting', deletionLeaseToken: randomUUID() },
       });
-      const row = await tx.knowledgeFileAsset.findFirst({
-        where: {
-          id: input.assetId,
-          companyId: input.companyId,
-          knowledgeResourceId: input.resourceId,
-          status: 'deleting',
-        },
-      });
+      if (updated.count !== 1) return null;
+      const row = await tx.knowledgeFileAsset.findUnique({ where: { id: input.assetId } });
       return row ? toAsset(row) : null;
     });
   }
@@ -217,7 +257,8 @@ export class PrismaKnowledgeFileAssetRepository implements KnowledgeFileAssetRep
   async completeAttachedDeletion(input: {
     companyId: string;
     assetId: string;
-    resourceId: string;
+    resourceId: string | null;
+    deletionLeaseToken: string;
   }): Promise<boolean> {
     const updated = await this.prisma.knowledgeFileAsset.updateMany({
       where: {
@@ -225,8 +266,9 @@ export class PrismaKnowledgeFileAssetRepository implements KnowledgeFileAssetRep
         companyId: input.companyId,
         knowledgeResourceId: input.resourceId,
         status: 'deleting',
+        deletionLeaseToken: input.deletionLeaseToken,
       },
-      data: { status: 'deleted', deletedAt: new Date() },
+      data: { status: 'deleted', deletedAt: new Date(), deletionLeaseToken: null },
     });
     return updated.count === 1;
   }
@@ -234,7 +276,8 @@ export class PrismaKnowledgeFileAssetRepository implements KnowledgeFileAssetRep
   async releaseAttachedDeletion(input: {
     companyId: string;
     assetId: string;
-    resourceId: string;
+    resourceId: string | null;
+    deletionLeaseToken: string;
   }): Promise<boolean> {
     const updated = await this.prisma.knowledgeFileAsset.updateMany({
       where: {
@@ -242,10 +285,52 @@ export class PrismaKnowledgeFileAssetRepository implements KnowledgeFileAssetRep
         companyId: input.companyId,
         knowledgeResourceId: input.resourceId,
         status: 'deleting',
+        deletionLeaseToken: input.deletionLeaseToken,
       },
-      data: { status: 'attached', deletedAt: null },
+      data: { status: 'attached', deletedAt: null, deletionLeaseToken: null },
     });
     return updated.count === 1;
+  }
+
+  async claimRetiredDeletion(input: {
+    limit: number;
+    staleDeletionBefore: Date;
+  }): Promise<readonly StagedKnowledgeFile[]> {
+    return this.prisma.$transaction(async tx => {
+      const rows = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT asset."id"
+        FROM "KnowledgeFileAsset" asset
+        LEFT JOIN "KnowledgeResource" resource
+          ON resource."id" = asset."knowledgeResourceId"
+         AND resource."companyId" = asset."companyId"
+        WHERE (
+          asset."status" = 'attached'
+          OR (asset."status" = 'deleting' AND asset."updatedAt" <= ${input.staleDeletionBefore})
+        )
+          AND (
+            asset."knowledgeResourceId" IS NULL
+            OR resource."status" = 'deleted'
+            OR NOT EXISTS (
+              SELECT 1
+              FROM "KnowledgeVersion" current_version
+              WHERE current_version."resourceId" = resource."id"
+                AND current_version."version" = resource."currentVersion"
+                AND current_version."contentJson"->>'assetId' = asset."id"
+            )
+          )
+        ORDER BY asset."createdAt" ASC
+        LIMIT ${Math.max(1, Math.min(input.limit, 500))}
+        FOR UPDATE OF asset SKIP LOCKED
+      `;
+      if (rows.length === 0) return [];
+      const ids = rows.map(row => row.id);
+      await tx.knowledgeFileAsset.updateMany({
+        where: { id: { in: ids }, status: { in: ['attached', 'deleting'] } },
+        data: { status: 'deleting', deletionLeaseToken: randomUUID() },
+      });
+      const claimed = await tx.knowledgeFileAsset.findMany({ where: { id: { in: ids } } });
+      return claimed.map(toAsset);
+    });
   }
 }
 
@@ -268,6 +353,7 @@ function toAsset(row: AssetRow): StagedKnowledgeFile {
     threatScanProvider: row.threatScanProvider,
     threatScanVersion: row.threatScanVersion,
     threatScannedAt: row.threatScannedAt,
+    deletionLeaseToken: row.deletionLeaseToken,
     status: row.status,
     expiresAt: row.expiresAt,
   };

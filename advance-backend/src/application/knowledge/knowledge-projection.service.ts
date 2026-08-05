@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Prisma, PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import type { MemoryService } from './semantic-memory.port';
@@ -58,67 +59,128 @@ export class KnowledgeProjectionService {
       select: { id: true },
     });
     for (const event of eventIds) {
-      if (await this.claimOne(event.id)) await this.projectClaimed(event.id);
+      const claim = await this.claimOne(event.id);
+      if (claim) await this.projectClaimed(claim);
     }
   }
 
   async drain(): Promise<number> {
-    const ids = await this.claimBatch();
+    const claims = await this.claimBatch();
     // One poisoned projection must not prevent unrelated outbox rows from
     // completing. Each failure has already been made durable by
     // projectClaimed before allSettled observes it.
-    await Promise.allSettled(ids.map(id => this.projectClaimed(id)));
-    return ids.length;
+    await Promise.allSettled(claims.map(claim => this.projectClaimed(claim)));
+    return claims.length;
   }
 
-  private async claimOne(id: string): Promise<boolean> {
-    const updated = await this.deps.prisma.knowledgeOutbox.updateMany({
-      where: {
-        id,
-        status: { in: ['pending', 'failed'] },
-        availableAt: { lte: new Date() },
-        attempts: { lt: this.options.maxAttempts },
-      },
-      data: {
-        status: 'processing',
-        attempts: { increment: 1 },
-        lockedAt: new Date(),
-      },
-    });
-    return updated.count === 1;
-  }
-
-  private async claimBatch(): Promise<string[]> {
+  private async claimOne(id: string): Promise<ProjectionClaim | null> {
     return this.deps.prisma.$transaction(async tx => {
       const staleBefore = new Date(Date.now() - this.options.processingLeaseMs);
       const rows = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT "id"
-        FROM "KnowledgeOutbox"
-        WHERE "attempts" < ${this.options.maxAttempts}
-          AND "availableAt" <= NOW()
+        SELECT outbox."id"
+        FROM "KnowledgeOutbox" AS outbox
+        JOIN "KnowledgeMutation" AS mutation ON mutation."id" = outbox."mutationId"
+        WHERE outbox."id" = ${id}
+          AND mutation."resourceId" IS NOT NULL
+          AND outbox."attempts" < ${this.options.maxAttempts}
+          AND outbox."availableAt" <= NOW()
           AND (
-            "status" IN ('pending', 'failed')
-            OR ("status" = 'processing' AND "lockedAt" < ${staleBefore})
+            outbox."status" IN ('pending', 'failed')
+            OR (outbox."status" = 'processing' AND outbox."lockedAt" < ${staleBefore})
           )
-        ORDER BY "createdAt" ASC
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "KnowledgeOutbox" AS earlier_outbox
+            JOIN "KnowledgeMutation" AS earlier_mutation
+              ON earlier_mutation."id" = earlier_outbox."mutationId"
+            WHERE earlier_mutation."resourceId" = mutation."resourceId"
+              AND earlier_outbox."status" IN ('pending', 'processing', 'failed')
+              AND (
+                earlier_outbox."createdAt" < outbox."createdAt"
+                OR (
+                  earlier_outbox."createdAt" = outbox."createdAt"
+                  AND earlier_outbox."id" < outbox."id"
+                )
+              )
+          )
+        FOR UPDATE
+      `;
+      if (rows.length === 0) return null;
+      const leaseToken = randomUUID();
+      const updated = await tx.knowledgeOutbox.updateMany({
+        where: {
+          id,
+          OR: [
+            { status: { in: ['pending', 'failed'] as const } },
+            { status: 'processing', lockedAt: { lt: staleBefore } },
+          ],
+        },
+        data: { status: 'processing', attempts: { increment: 1 }, lockedAt: new Date(), leaseToken },
+      });
+      return updated.count === 1 ? { id, leaseToken } : null;
+    });
+  }
+
+  private async claimBatch(): Promise<ProjectionClaim[]> {
+    return this.deps.prisma.$transaction(async tx => {
+      const staleBefore = new Date(Date.now() - this.options.processingLeaseMs);
+      const rows = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT outbox."id"
+        FROM "KnowledgeOutbox" AS outbox
+        JOIN "KnowledgeMutation" AS mutation ON mutation."id" = outbox."mutationId"
+        WHERE mutation."resourceId" IS NOT NULL
+          AND outbox."attempts" < ${this.options.maxAttempts}
+          AND outbox."availableAt" <= NOW()
+          AND (
+            outbox."status" IN ('pending', 'failed')
+            OR (outbox."status" = 'processing' AND outbox."lockedAt" < ${staleBefore})
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "KnowledgeOutbox" AS earlier_outbox
+            JOIN "KnowledgeMutation" AS earlier_mutation
+              ON earlier_mutation."id" = earlier_outbox."mutationId"
+            WHERE earlier_mutation."resourceId" = mutation."resourceId"
+              AND earlier_outbox."status" IN ('pending', 'processing', 'failed')
+              AND (
+                earlier_outbox."createdAt" < outbox."createdAt"
+                OR (
+                  earlier_outbox."createdAt" = outbox."createdAt"
+                  AND earlier_outbox."id" < outbox."id"
+                )
+              )
+          )
+        ORDER BY outbox."createdAt" ASC, outbox."id" ASC
         FOR UPDATE SKIP LOCKED
         LIMIT ${this.options.batchSize}
       `;
       if (rows.length === 0) return [];
-      const ids = rows.map(row => row.id);
-      await tx.knowledgeOutbox.updateMany({
-        where: { id: { in: ids } },
-        data: {
-          status: 'processing',
-          attempts: { increment: 1 },
-          lockedAt: new Date(),
-        },
-      });
-      return ids;
+      const claims: ProjectionClaim[] = [];
+      for (const row of rows) {
+        const leaseToken = randomUUID();
+        const updated = await tx.knowledgeOutbox.updateMany({
+          where: {
+            id: row.id,
+            OR: [
+              { status: { in: ['pending', 'failed'] as const } },
+              { status: 'processing', lockedAt: { lt: staleBefore } },
+            ],
+          },
+          data: {
+            status: 'processing',
+            attempts: { increment: 1 },
+            lockedAt: new Date(),
+            leaseToken,
+          },
+        });
+        if (updated.count === 1) claims.push({ id: row.id, leaseToken });
+      }
+      return claims;
     });
   }
 
-  private async projectClaimed(eventId: string): Promise<void> {
+  private async projectClaimed(claim: ProjectionClaim): Promise<void> {
+    const { id: eventId, leaseToken } = claim;
     try {
       const event = await this.deps.prisma.knowledgeOutbox.findUnique({
         where: { id: eventId },
@@ -131,9 +193,17 @@ export class KnowledgeProjectionService {
           },
         },
       });
-      if (!event || event.status !== 'processing') return;
+      if (!event || event.status !== 'processing' || event.leaseToken !== leaseToken) return;
       const { mutation } = event;
       if (!mutation.resource) throw new Error('Projection mutation has no resource.');
+
+      // The relation loaded above is a snapshot. Re-read the authority immediately
+      // before any side effect so an older update cannot overwrite the current
+      // semantic projection, and a delete cannot be resurrected by a slow worker.
+      if (!(await this.isCurrentProjection(mutation.resource.id, mutation.appliedVersion?.version, event.eventType))) {
+        await this.completeClaim(claim);
+        return;
+      }
 
       if (mutation.kind === 'memory') {
         await this.projectMemory(event.eventType, mutation);
@@ -144,22 +214,40 @@ export class KnowledgeProjectionService {
       }
 
       const completed = await this.deps.prisma.knowledgeOutbox.updateMany({
-        where: { id: event.id, status: 'processing' },
+        where: { id: event.id, status: 'processing', leaseToken },
         data: {
           status: 'completed',
           completedAt: new Date(),
           lockedAt: null,
+          leaseToken: null,
           lastError: null,
         },
       });
       if (completed.count !== 1) throw new Error('Projection lease was lost before completion.');
     } catch (cause) {
-      await this.recordFailure(eventId, cause);
+      await this.recordFailure(eventId, leaseToken, cause);
       // Direct callers need to know that the query projection is not ready;
       // otherwise a successfully committed mutation could be falsely reported
       // as immediately recallable.
       throw cause;
     }
+  }
+
+  private async completeClaim(claim: ProjectionClaim): Promise<void> {
+    await this.deps.prisma.knowledgeOutbox.updateMany({
+      where: { id: claim.id, status: 'processing', leaseToken: claim.leaseToken },
+      data: { status: 'completed', completedAt: new Date(), lockedAt: null, leaseToken: null, lastError: null },
+    });
+  }
+
+  private async isCurrentProjection(resourceId: string, version: number | undefined, eventType: string): Promise<boolean> {
+    const resource = await this.deps.prisma.knowledgeResource.findUnique({
+      where: { id: resourceId },
+      select: { status: true, currentVersion: true },
+    });
+    if (!resource) return false;
+    if (eventType === 'knowledge.resource.deleted') return resource.status === 'deleted';
+    return resource.status === 'active' && version !== undefined && resource.currentVersion === version;
   }
 
   private async projectMemory(
@@ -224,6 +312,11 @@ export class KnowledgeProjectionService {
     const resource = mutation.resource!;
     const existing = await this.deps.prisma.skill.findUnique({
       where: { knowledgeResourceId: resource.id },
+      include: {
+        accessGrants: {
+          select: { granteeType: true, granteeId: true },
+        },
+      },
     });
     if (eventType === 'knowledge.resource.deleted') {
       if (!existing || existing.status === 'archived') return;
@@ -247,6 +340,14 @@ export class KnowledgeProjectionService {
     if (unknown.length > 0) throw new Error(`Unknown projected skill tools: ${unknown.join(', ')}`);
     const languageError = larkSkillEnglishOnlyError(content);
     if (languageError) throw new Error(languageError);
+
+    const projectedStatus = resource.status === 'active' ? 'active' : 'draft';
+    if (existing && skillProjectionMatches(existing, content, projectedStatus, resource)) {
+      // A worker may crash after the atomic Skill/grant/registry transaction
+      // but before completing its outbox row. Retrying that event must not
+      // manufacture another skill revision or registry revision.
+      return;
+    }
 
     const collision = await this.deps.prisma.skill.findFirst({
       where: {
@@ -274,7 +375,7 @@ export class KnowledgeProjectionService {
               markdown: content.markdown,
               toolIds: content.toolIds,
               tags: content.tags,
-              status: resource.status === 'active' ? 'active' : 'draft',
+              status: projectedStatus,
               revision: { increment: 1 },
               updatedBy: mutation.requesterId,
             },
@@ -291,7 +392,7 @@ export class KnowledgeProjectionService {
               markdown: content.markdown,
               toolIds: content.toolIds,
               tags: content.tags,
-              status: resource.status === 'active' ? 'active' : 'draft',
+              status: projectedStatus,
               createdBy: mutation.requesterId,
               updatedBy: mutation.requesterId,
             },
@@ -366,7 +467,7 @@ export class KnowledgeProjectionService {
     });
   }
 
-  private async recordFailure(eventId: string, cause: unknown): Promise<void> {
+  private async recordFailure(eventId: string, leaseToken: string, cause: unknown): Promise<void> {
     const row = await this.deps.prisma.knowledgeOutbox.findUnique({
       where: { id: eventId },
       select: { attempts: true },
@@ -378,11 +479,12 @@ export class KnowledgeProjectionService {
       15 * 60_000,
     );
     await this.deps.prisma.knowledgeOutbox.updateMany({
-      where: { id: eventId, status: 'processing' },
+      where: { id: eventId, status: 'processing', leaseToken },
       data: {
         status: terminal ? 'failed' : 'pending',
         availableAt: new Date(Date.now() + delay),
         lockedAt: null,
+        leaseToken: null,
         lastError: safeError(cause),
       },
     });
@@ -398,6 +500,77 @@ export class KnowledgeProjectionService {
 type ProjectionMutation = Prisma.KnowledgeMutationGetPayload<{
   include: { resource: true; appliedVersion: true };
 }>;
+
+interface ProjectionClaim {
+  readonly id: string;
+  readonly leaseToken: string;
+}
+
+interface ProjectedSkillGrant {
+  readonly granteeType: 'user' | 'department' | 'company';
+  readonly granteeId: string;
+}
+
+function projectedSkillGrant(
+  resource: NonNullable<ProjectionMutation['resource']>,
+): ProjectedSkillGrant | null {
+  if (resource.scope === 'personal' && resource.ownerUserId) {
+    return { granteeType: 'user', granteeId: resource.ownerUserId };
+  }
+  if (resource.scope === 'department' && resource.departmentId) {
+    return { granteeType: 'department', granteeId: resource.departmentId };
+  }
+  if (resource.scope === 'company') {
+    return { granteeType: 'company', granteeId: resource.companyId };
+  }
+  return null;
+}
+
+function skillProjectionMatches(
+  existing: {
+    readonly scope: string;
+    readonly departmentId: string | null;
+    readonly name: string;
+    readonly slug: string;
+    readonly summary: string;
+    readonly markdown: string;
+    readonly toolIds: readonly string[];
+    readonly tags: readonly string[];
+    readonly status: string;
+    readonly accessGrants: readonly { readonly granteeType: string; readonly granteeId: string }[];
+  },
+  content: {
+    readonly name: string;
+    readonly slug: string;
+    readonly summary: string;
+    readonly markdown: string;
+    readonly toolIds: readonly string[];
+    readonly tags: readonly string[];
+  },
+  status: string,
+  resource: NonNullable<ProjectionMutation['resource']>,
+): boolean {
+  const expectedGrant = projectedSkillGrant(resource);
+  const grantsMatch = expectedGrant
+    ? existing.accessGrants.length === 1
+      && existing.accessGrants[0]?.granteeType === expectedGrant.granteeType
+      && existing.accessGrants[0]?.granteeId === expectedGrant.granteeId
+    : existing.accessGrants.length === 0;
+  return grantsMatch
+    && existing.scope === resource.scope
+    && existing.departmentId === resource.departmentId
+    && existing.name === content.name
+    && existing.slug === content.slug
+    && existing.summary === content.summary
+    && existing.markdown === content.markdown
+    && arraysEqual(existing.toolIds, content.toolIds)
+    && arraysEqual(existing.tags, content.tags)
+    && existing.status === status;
+}
+
+function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
 
 function safeError(cause: unknown): string {
   const message = cause instanceof Error ? cause.message : String(cause);

@@ -259,6 +259,8 @@ export function listAccessibleConnectionsFor(
       return registry.listAccessibleAitableConnections(input);
     case 'lark':
       return registry.listAccessibleLarkConnections(input);
+    case 'shopify':
+      return registry.listAccessibleShopifyConnections(input);
   }
 }
 

@@ -84,6 +84,20 @@ AITable and Airtable are different products. Never route an Airtable request her
     sortOrder: 4,
   },
   {
+    slug: 'shopify-router',
+    name: 'Shopify Router',
+    summary: 'Routes Shopify sales, order, attribution, and customer analysis to the governed commerce specialist.',
+    markdown: `# Shopify Router
+
+Choose \`shopify-commerce\` for Shopify sales analytics, product and inventory performance, payment summaries, bounded order inspection, UTM/channel attribution, and protected customer metadata when granted.
+
+The Shopify specialist is read-only and routes every request through governed Divo tools. Store credentials, connection access, RBAC, protected-data handling, and approval policy remain backend-owned.`,
+    toolIds: [],
+    tags: ['shopify', 'router', 'commerce', 'sales', 'orders', 'attribution'],
+    aliases: ['shopify', 'shopify sales', 'store orders', 'shopify attribution', 'shopify customers'],
+    sortOrder: 10,
+  },
+  {
     slug: 'data-router',
     name: 'Data Work Router',
     summary: 'Routes data work between a scripted workflow, a governed export, and reading a file already in the workspace.',
@@ -195,10 +209,10 @@ job, not this one.`,
 Choose the exact approved specialist returned by this router.
 
 - Current public facts and external verification → \`web-search\`.
-- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`. Its bounded preview may return an \`exportCandidate\`; if the member asks for a file, use \`dataExport\` \`op=plan\`; never rerun the provider query, paginate in Pi, or use a local workflow.
+- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`. Prefer one main Semrush call and one main table (for example one \`backlinks_comparison\` for multi-domain ranking). Its bounded preview may return an \`exportCandidate\`; if the member asks for a file, use \`dataExport\` \`op=list_candidates\` when needed, then \`op=plan\` for the table you showed — never rerun the provider query, paginate in Pi, or use a local workflow.
 - Approved OMS publisher/site inventory → \`divo-oms-site-inventory\`.
 
-Never substitute web results for official Semrush or OMS data.
+Never substitute web search results for configured Semrush or OMS data.
 
 Files the user sent are not researched here — they are already in the
 workspace. Route those to \`files-router\`.`,
@@ -242,7 +256,7 @@ Do not route transient task state, secrets, unfinished teaching, one-off work, o
 
 Use \`webSearch\` for current public information and external verification.
 Prefer primary or official sources, verify time-sensitive claims, and include relevant URLs.
-Do not use public web search as a substitute for official Semrush or OMS data, or for a file the user has already sent.`,
+Do not use public web search as a substitute for configured Semrush or OMS data, or for a file the user has already sent.`,
     toolIds: ['webSearch'],
     tags: ['search', 'research', 'web', 'verification'],
     aliases: ['web search', 'internet research', 'current public information', 'verify online'],
@@ -287,6 +301,12 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
     routerSlug: 'aitable-router',
     targetSlugs: CONNECTED_PROVIDER_SYSTEM_SKILLS
       .filter(skill => skill.slug.startsWith('aitable-'))
+      .map(skill => skill.slug),
+  },
+  {
+    routerSlug: 'shopify-router',
+    targetSlugs: CONNECTED_PROVIDER_SYSTEM_SKILLS
+      .filter(skill => skill.slug.startsWith('shopify-'))
       .map(skill => skill.slug),
   },
   {

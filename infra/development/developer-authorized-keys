@@ -1,1 +1,2 @@
-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIObCvw6vc05dI9ZderEEPHZhGhQIdgiS87iF1R2sBCwt codex-gateway-deploy
+# Local developers use password tunneling (DB_TUNNEL_SSH_PASSWORD in .env).
+# CI deploy still uses DIVO_DEV_SSH_KEY; do not add personal keys here.

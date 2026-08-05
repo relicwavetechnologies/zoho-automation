@@ -338,6 +338,7 @@ export const createKnowledgeTool = (deps: {
           userId: String(ctx.runContext.userId),
           companyRole: String(ctx.runContext.companyRole),
           channel: ctx.runContext.channel,
+          ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
         });
         return ok({
           operation: 'documents.search',
@@ -356,6 +357,7 @@ export const createKnowledgeTool = (deps: {
           userId: String(ctx.runContext.userId),
           companyRole: String(ctx.runContext.companyRole),
           channel: ctx.runContext.channel,
+          ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
           ...(args.departmentPreferences
             ? { departmentPreferences: args.departmentPreferences }
             : {}),

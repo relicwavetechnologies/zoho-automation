@@ -78,6 +78,14 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(ROUTER_SKILL, /never omit `provider`/i);
 	});
 
+	it("treats Shopify as an exact governed connection family", () => {
+		assert.equal(Check(DIVO_GATEWAY_PARAMS, {
+			op: "connections.list",
+			payload: { provider: "shopify" },
+		}), true);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /shopify for Shopify/i);
+	});
+
 	it("uses one persistent local Python file and never routes through the retired inline-code tool", () => {
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, new RegExp(DIVO_GOVERNED_DIRECT_ACTION_CRITERION));
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, new RegExp(DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION));

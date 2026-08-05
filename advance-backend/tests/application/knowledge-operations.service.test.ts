@@ -80,4 +80,21 @@ describe('KnowledgeOperationsService', () => {
     assert.equal(update?.['attempts'], 0);
     assert.equal(update?.['lastError'], null);
   });
+
+  it('surfaces Hindsight readiness and degrades when the projection backend is unavailable', async () => {
+    const service = new KnowledgeOperationsService({
+      knowledgeOutbox: { groupBy: async () => [], findFirst: async () => null, count: async () => 0 },
+      knowledgeFileDocument: { groupBy: async () => [], count: async () => 0 },
+      knowledgeLearningJob: { groupBy: async () => [], count: async () => 0, findFirst: async () => null },
+    } as never, {
+      pendingAgeWarningMs: 300_000,
+      processingLeaseMs: 300_000,
+    }, {
+      hindsight: { readiness: async () => ({ status: 'degraded', error: 'connection refused' }) },
+    });
+
+    const health = await service.health(NOW);
+    assert.equal(health.status, 'degraded');
+    assert.deepEqual(health.hindsight, { status: 'degraded', error: 'connection refused' });
+  });
 });

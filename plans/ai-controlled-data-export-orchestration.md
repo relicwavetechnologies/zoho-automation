@@ -58,9 +58,43 @@ Current implemented scope:
   `sample_queued`.
 - Google account choice is centralized in `dataExport`; provider tools no
   longer accept destination account knobs for export planning.
-- Multi-shape/multi-tab workbook execution is not enabled yet. The backend
-  safely returns `ambiguous` instead of blending incompatible datasets or
-  inventing tabs.
+- Multi-shape/multi-tab workbook execution is enabled when the model assigns
+  `tabName` on every dataset in an Excel or Google Sheet plan. Mixed shapes
+  without explicit tabs still return `ambiguous`.
+- `dataExport op=list_candidates` lists active export candidates for the
+  current chat or run so the model can plan without exposing handles to the
+  member.
+
+## Shy answer + export planning, 2026-08-05
+
+The model plans exports; the backend validates and executes. There is no
+backend `op=auto` that picks candidates for the member.
+
+### Answer phase (default)
+
+- Present one main table in chat when one provider call is sufficient.
+- Do not fan out into multiple provider calls or export candidates unless the
+  member explicitly asked for that breadth.
+- Example: multi-domain backlinks ranking uses one `backlinks_comparison` with
+  all named targets, not `domain_overview` per domain.
+
+### Expand phase
+
+- Add extra provider calls or tables only after explicit member follow-up in the
+  same thread ("also show traffic", "add overview for the top three").
+- Stay shy: add only what was requested.
+
+### Export phase
+
+- Export only after the member names a format or asks for a file.
+- Map the table shown in chat to the matching `exportCandidate`(s).
+- Call `dataExport op=list_candidates` when unsure which candidate matches the
+  table, then `dataExport op=plan` with one dataset by default.
+- Use multiple `datasets[]` only when the member previously asked for multiple
+  tables in the thread.
+- Assign `tabName` per dataset when exporting multiple tables to Sheet or Excel.
+- Never show candidate IDs, shape keys, or internal dataset picker tables to the
+  member.
 
 ## Live E2E issues observed, 2026-08-04
 

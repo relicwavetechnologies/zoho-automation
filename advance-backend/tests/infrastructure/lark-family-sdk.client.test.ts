@@ -48,6 +48,38 @@ describe('Lark family clients through the official SDK boundary', () => {
     assert.deepEqual(requests[0], { method: 'GET', url: '/open-apis/bot/v3/info' });
   });
 
+  it('resolves only supported provider chat modes and fails closed otherwise', async () => {
+    const modes = ['p2p', 'group', 'topic'] as const;
+    const valid = sdkStub(request => ({
+      chat_mode: modes[valid.requests.length - 1],
+    }));
+    const client = new LarkMessagingClient({
+      appId: 'app',
+      appSecret: 'secret',
+      logger: noopLogger,
+      sdkClient: valid.sdkClient,
+    });
+
+    for (const mode of modes) {
+      assert.equal(await client.getChatMode('oc/test'), mode);
+    }
+    assert.deepEqual(valid.requests, modes.map(() => ({
+      method: 'GET',
+      url: '/open-apis/im/v1/chats/oc%2Ftest',
+    })));
+
+    const unknown = sdkStub(() => ({ chat_mode: 'private' }));
+    await assert.rejects(
+      () => new LarkMessagingClient({
+        appId: 'app',
+        appSecret: 'secret',
+        logger: noopLogger,
+        sdkClient: unknown.sdkClient,
+      }).getChatMode('oc_1'),
+      /did not include a supported chat_mode/,
+    );
+  });
+
   it('uses the reply endpoint for threaded and inline replies', async () => {
     const { sdkClient, requests } = sdkStub(() => ({ message_id: 'om_reply' }));
     const client = new LarkMessagingClient({
@@ -162,6 +194,19 @@ describe('Lark family clients through the official SDK boundary', () => {
         body: { content: JSON.stringify(card) },
       }],
     }));
+  it('paginates live chat membership as open IDs without accepting a stalled cursor', async () => {
+    const { sdkClient, requests } = sdkStub(request => {
+      const params = request.params as Record<string, unknown> | undefined;
+      return params?.['page_token'] ? {
+          items: [{ member_id: 'ou_2' }, { member_id: 'ou_1' }],
+          has_more: false,
+        }
+      : {
+          items: [{ member_id: 'ou_1' }],
+          has_more: true,
+          page_token: 'next-page',
+        };
+    });
     const client = new LarkMessagingClient({
       appId: 'app',
       appSecret: 'secret',
@@ -177,6 +222,56 @@ describe('Lark family clients through the official SDK boundary', () => {
       method: 'GET',
       url: '/open-apis/im/v1/messages/om_export',
     });
+    assert.deepEqual(await client.listChatMemberOpenIds('oc/test'), ['ou_1', 'ou_2']);
+    assert.deepEqual(requests, [{
+      method: 'GET',
+      url: '/open-apis/im/v1/chats/oc%2Ftest/members',
+      params: {
+        member_id_type: 'open_id',
+        page_size: 100,
+      },
+    }, {
+      method: 'GET',
+      url: '/open-apis/im/v1/chats/oc%2Ftest/members',
+      params: {
+        member_id_type: 'open_id',
+        page_size: 100,
+        page_token: 'next-page',
+      },
+    }]);
+
+    const stalled = sdkStub(() => ({
+      items: [{ member_id: 'ou_1' }],
+      has_more: true,
+      page_token: 'same-page',
+    }));
+    const stalledClient = new LarkMessagingClient({
+      appId: 'app',
+      appSecret: 'secret',
+      logger: noopLogger,
+      sdkClient: stalled.sdkClient,
+    });
+    await assert.rejects(
+      () => stalledClient.listChatMemberOpenIds('oc_1'),
+      /pagination did not advance/,
+    );
+
+    let duplicatePage = 0;
+    const advancingDuplicates = sdkStub(() => ({
+      items: [{ member_id: 'ou_1' }],
+      has_more: true,
+      page_token: `page-${++duplicatePage}`,
+    }));
+    await assert.rejects(
+      () => new LarkMessagingClient({
+        appId: 'app',
+        appSecret: 'secret',
+        logger: noopLogger,
+        sdkClient: advancingDuplicates.sdkClient,
+      }).listChatMemberOpenIds('oc_1'),
+      /exceeded 20 pages/,
+    );
+    assert.equal(advancingDuplicates.requests.length, 20);
   });
 
   it('maps task records while preserving the documented SDK request', async () => {
@@ -284,6 +379,25 @@ describe('Lark family clients through the official SDK boundary', () => {
       end_time: { timestamp: '1784113200', timezone: 'UTC' },
       attendees: [{ type: 'user', user_id: 'ou_1' }],
     });
+  });
+
+  it('uses Lark\'s minimum valid event page and applies the smaller caller limit locally', async () => {
+    const { sdkClient, requests } = sdkStub(() => ({
+      items: [
+        { event_id: 'event-1', summary: 'Review' },
+        { event_id: 'event-2', summary: 'Planning' },
+      ],
+    }));
+
+    assert.deepEqual(
+      await new LarkCalendarClient(deps(sdkClient)).listEvents('primary', 1),
+      [{ eventId: 'event-1', summary: 'Review', startTime: undefined, endTime: undefined }],
+    );
+    assert.deepEqual(requests, [{
+      method: 'GET',
+      url: '/open-apis/calendar/v4/calendars/primary/events',
+      params: { page_size: 50 },
+    }]);
   });
 
   it('uses the Calendar attendee batch-delete method and a valid UTC recurrence timestamp', async () => {

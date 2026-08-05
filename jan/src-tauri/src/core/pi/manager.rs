@@ -1,7 +1,8 @@
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
@@ -34,7 +35,9 @@ const DIVO_MEMORY_REVIEW_PROTOCOL_TITLE: &str = "divo_memory_review_v1";
 const DIVO_TEACH_CLARIFICATION_PROTOCOL_TITLE: &str = "divo_teach_clarification_v1";
 const MAX_MEMORY_REVIEW_MESSAGE_BYTES: usize = 16_000;
 const MAX_TEACH_CLARIFICATION_MESSAGE_BYTES: usize = 24_000;
+const COMPANY_SESSION_FILE: &str = "pi-session.jsonl";
 const CODING_SESSION_FILE: &str = "pi-coding-session.jsonl";
+const MAX_PROTECTED_RUN_REFERENCES: usize = 50;
 /// Pi's Divo lifecycle signal remains active through post-turn compaction and
 /// queued continuations. Poll it rather than guessing from an `agent_end`
 /// timing window.
@@ -82,6 +85,195 @@ fn runtime_session_path(
     match mode {
         PiRuntimeMode::Company => company_path,
         PiRuntimeMode::Coding => company_path.with_file_name(CODING_SESSION_FILE),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ProtectedRunMetadata {
+    used: bool,
+    provenance_valid: bool,
+}
+
+fn valid_shopify_resource_id(value: &str, resource_type: &str) -> bool {
+    let graphql_type = match resource_type {
+        "customer" => "Customer",
+        "order" => "Order",
+        _ => return false,
+    };
+    let Some(id) = value.strip_prefix(&format!("gid://shopify/{graphql_type}/")) else {
+        return false;
+    };
+    !id.is_empty() && !id.starts_with('0') && id.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Read protection only from structured current-run gateway calls/results.
+/// Assistant text is never evidence. A protected Shopify call attempt is
+/// sufficient because its query and arguments are already in the Pi session.
+fn protected_run_metadata(event: &serde_json::Value) -> ProtectedRunMetadata {
+    let Some(messages) = event.get("messages").and_then(|value| value.as_array()) else {
+        return ProtectedRunMetadata::default();
+    };
+    let current_start = messages
+        .iter()
+        .rposition(|message| message.get("role").and_then(|value| value.as_str()) == Some("user"))
+        .map_or(0, |index| index + 1);
+    let current = &messages[current_start..];
+    let mut gateway_calls = HashSet::new();
+    let mut metadata = ProtectedRunMetadata {
+        used: false,
+        provenance_valid: true,
+    };
+
+    for message in current {
+        if message.get("role").and_then(|value| value.as_str()) != Some("assistant") {
+            continue;
+        }
+        let Some(content) = message.get("content").and_then(|value| value.as_array()) else {
+            continue;
+        };
+        for item in content {
+            if item.get("type").and_then(|value| value.as_str()) != Some("toolCall")
+                || item.get("name").and_then(|value| value.as_str()) != Some("divo_gateway")
+            {
+                continue;
+            }
+            let arguments = item.get("arguments");
+            let protected_attempt = arguments
+                .and_then(|value| value.get("op"))
+                .and_then(|value| value.as_str())
+                == Some("tools.invoke")
+                && matches!(
+                    arguments
+                        .and_then(|value| value.get("payload"))
+                        .and_then(|value| value.get("toolId"))
+                        .and_then(|value| value.as_str()),
+                    Some("shopifyOrders" | "shopifyCustomers")
+                );
+            metadata.used |= protected_attempt;
+            if let Some(call_id) = item.get("id").and_then(|value| value.as_str()) {
+                gateway_calls.insert(call_id.to_string());
+            }
+        }
+    }
+
+    for message in current {
+        if message.get("role").and_then(|value| value.as_str()) != Some("toolResult")
+            || message.get("isError").and_then(|value| value.as_bool()) == Some(true)
+            || !message
+                .get("toolCallId")
+                .and_then(|value| value.as_str())
+                .is_some_and(|call_id| gateway_calls.contains(call_id))
+        {
+            continue;
+        }
+        let Some(details) = message.get("details") else {
+            continue;
+        };
+        let Some(data) = details.get("data") else {
+            continue;
+        };
+        let Some(protected_data) = data.get("protectedData") else {
+            continue;
+        };
+        metadata.used = true;
+
+        let category = protected_data
+            .get("category")
+            .and_then(|value| value.as_str());
+        let connection_id = protected_data
+            .get("connectionId")
+            .and_then(|value| value.as_str());
+        let references = protected_data
+            .get("references")
+            .and_then(|value| value.as_array());
+        let marker_valid = details.get("ok").and_then(|value| value.as_bool()) == Some(true)
+            && details.get("status").and_then(|value| value.as_str()) == Some("success")
+            && protected_data.get("used").and_then(|value| value.as_bool()) == Some(true)
+            && protected_data
+                .get("provider")
+                .and_then(|value| value.as_str())
+                == Some("shopify")
+            && connection_id.is_some_and(|value| Uuid::parse_str(value).is_ok())
+            && matches!(category, Some("customers" | "orders"))
+            && references.is_some_and(|values| values.len() <= MAX_PROTECTED_RUN_REFERENCES);
+        if !marker_valid {
+            metadata.provenance_valid = false;
+            continue;
+        }
+
+        let connection_id = connection_id.expect("validated connection id");
+        let resource_type = if category == Some("customers") {
+            "customer"
+        } else {
+            "order"
+        };
+        for reference in references.expect("validated references") {
+            let valid = reference.get("provider").and_then(|value| value.as_str())
+                == Some("shopify")
+                && reference
+                    .get("connectionId")
+                    .and_then(|value| value.as_str())
+                    == Some(connection_id)
+                && reference
+                    .get("resourceType")
+                    .and_then(|value| value.as_str())
+                    == Some(resource_type)
+                && reference
+                    .get("resourceId")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|value| valid_shopify_resource_id(value, resource_type));
+            metadata.provenance_valid &= valid;
+        }
+    }
+    metadata
+}
+
+fn remove_current_company_session(session_path: &Path, thread_id: &str) -> Result<(), String> {
+    let mut thread_components = Path::new(thread_id).components();
+    if !matches!(thread_components.next(), Some(Component::Normal(_)))
+        || thread_components.next().is_some()
+    {
+        return Err("Protected Pi session cleanup received an invalid thread id".into());
+    }
+    let thread_dir = session_path
+        .parent()
+        .ok_or("Protected Pi session path has no thread directory")?;
+    if session_path.file_name().and_then(|value| value.to_str()) != Some(COMPANY_SESSION_FILE)
+        || thread_dir.file_name().and_then(|value| value.to_str()) != Some(thread_id)
+        || thread_dir
+            .parent()
+            .and_then(|value| value.file_name())
+            .and_then(|value| value.to_str())
+            != Some("threads")
+    {
+        return Err("Protected Pi session path is outside the current company thread".into());
+    }
+    match fs::symlink_metadata(thread_dir) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err("Protected Pi thread directory cannot be a symbolic link".into())
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("Failed to inspect protected Pi session: {error}")),
+    }
+    match fs::remove_file(session_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("Failed to delete protected Pi session: {error}")),
+    }
+    match fs::symlink_metadata(session_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err("Protected Pi session still exists after cleanup".into()),
+        Err(error) => Err(format!(
+            "Failed to verify protected Pi session cleanup: {error}"
+        )),
+    }
+}
+
+fn sanitize_protected_terminal_event(event: &mut serde_json::Value) {
+    if let Some(object) = event.as_object_mut() {
+        object.remove("messages");
+        object.insert("protectedDataUsed".into(), serde_json::Value::Bool(true));
     }
 }
 
@@ -810,6 +1002,13 @@ fn can_enable_full_access(pending: &PendingExtensionUiRequest, confirmed: bool) 
 
 struct RuntimeState {
     process: Option<PiProcess>,
+    /// Present only for a company-mode child. Protected cleanup captures this
+    /// exact path before stopping the child and never derives a broader target.
+    company_session_path: Option<PathBuf>,
+    /// Department captured when this child was spawned. The environment is
+    /// immutable for a running child, so a changed selection must recycle an
+    /// idle process before admitting the next prompt.
+    process_department_id: Option<String>,
     active_run: Option<RunOwner>,
     /// A recovered continuation is being handed to Pi with its atomic
     /// `prompt`/`followUp` behaviour. If the original turn ends in the small
@@ -844,6 +1043,15 @@ struct RuntimeSlot {
     context_slot_id: String,
     state: Arc<StdMutex<RuntimeState>>,
     lifecycle: Arc<Mutex<()>>,
+}
+
+fn department_context_requires_restart(
+    process_exists: bool,
+    active_run: bool,
+    current: Option<&str>,
+    requested: Option<&str>,
+) -> bool {
+    process_exists && !active_run && current != requested
 }
 
 enum ExtensionUiRegistration {
@@ -1003,6 +1211,8 @@ impl RuntimeSlot {
             context_slot_id: Uuid::new_v4().to_string(),
             state: Arc::new(StdMutex::new(RuntimeState {
                 process: None,
+                company_session_path: None,
+                process_department_id: None,
                 active_run: None,
                 continuation_transition_owner: None,
                 pending_terminal_event: None,
@@ -1542,8 +1752,10 @@ impl PiManager {
         reason: &str,
     ) -> Result<(), String> {
         let config = self.config().await?;
+        let department_id = slot.state.lock().unwrap().process_department_id.clone();
         Self::stop_slot_locked(slot, Some(&config.app), reason);
         Self::spawn_slot(slot, &config, self.capacity_changed.clone()).await?;
+        slot.state.lock().unwrap().process_department_id = department_id;
         self.wake_capacity();
         Ok(())
     }
@@ -1574,10 +1786,60 @@ impl PiManager {
         }
     }
 
-    fn emit_terminal_completion(app: &AppHandle, completion: TerminalCompletion, reason: &str) {
+    /// Caller holds the slot lifecycle lock. Protected company turns stop the
+    /// child and delete its exact session before any terminal response leaves
+    /// Rust; the next prompt therefore starts on a fresh session.
+    fn emit_terminal_completion(
+        slot: &Arc<RuntimeSlot>,
+        app: &AppHandle,
+        mut completion: TerminalCompletion,
+        reason: &str,
+    ) -> Result<bool, String> {
+        let protected = protected_run_metadata(&completion.event);
+        if protected.used {
+            let session_path = slot.state.lock().unwrap().company_session_path.clone();
+            Self::stop_slot_locked(slot, Some(app), "protected_session_rotated");
+            let cleanup = session_path
+                .as_deref()
+                .ok_or_else(|| "Protected run did not own a company session".to_string())
+                .and_then(|path| remove_current_company_session(path, &completion.owner.thread_id));
+            if let Err(error) = cleanup {
+                log::error!(
+                    "divo.pi.protected_session.cleanup_failed thread_id={} run_id={} error={}",
+                    completion.owner.thread_id,
+                    completion.owner.run_id,
+                    error
+                );
+                clear_run_context_path(completion.run_context_path);
+                Self::emit_reconciliations(app, completion.reconciliations, reason);
+                Self::emit(
+                    app,
+                    Some(&completion.owner),
+                    serde_json::json!({
+                        "type": "pi_process_exit",
+                        "message": "Divo removed this protected run from memory, but could not verify local session cleanup. Please retry after restarting Divo."
+                    }),
+                );
+                return Err("Protected Pi session cleanup could not be verified".into());
+            }
+            if !protected.provenance_valid {
+                log::warn!(
+                    "divo.pi.protected_session.invalid_provenance thread_id={} run_id={}",
+                    completion.owner.thread_id,
+                    completion.owner.run_id
+                );
+            }
+            sanitize_protected_terminal_event(&mut completion.event);
+            log::info!(
+                "divo.pi.protected_session.rotated thread_id={} run_id={}",
+                completion.owner.thread_id,
+                completion.owner.run_id
+            );
+        }
         clear_run_context_path(completion.run_context_path);
         Self::emit_reconciliations(app, completion.reconciliations, reason);
         Self::emit(app, Some(&completion.owner), completion.event);
+        Ok(protected.used)
     }
 
     fn defer_terminal_completion(
@@ -1620,6 +1882,7 @@ impl PiManager {
                 match state {
                     Ok(state) if runtime_is_busy(&state) => {}
                     Ok(_) => {
+                        let _lifecycle = slot.lifecycle.lock().await;
                         if let Some(completion) = take_pending_terminal_event(&slot, None) {
                             log::debug!(
                                 "divo.pi.lifecycle.terminal_settled thread_id={} run_id={} slot_thread_id={}",
@@ -1627,7 +1890,12 @@ impl PiManager {
                                 owner.run_id,
                                 slot.thread_id
                             );
-                            Self::emit_terminal_completion(&app, completion, "agent_ended");
+                            let _ = Self::emit_terminal_completion(
+                                &slot,
+                                &app,
+                                completion,
+                                "agent_ended",
+                            );
                             capacity_changed.notify_waiters();
                         }
                         return;
@@ -1735,6 +2003,8 @@ impl PiManager {
         {
             let mut state = slot.state.lock().unwrap();
             state.process = Some(PiProcess { child, stdin });
+            state.company_session_path =
+                (config.mode == PiRuntimeMode::Company).then(|| session_path.clone());
             state.run_context_path = Some(run_context_path);
             state.run_context_owner = None;
             state.stdout_buffer.clear();
@@ -1795,6 +2065,8 @@ impl PiManager {
                     let reconciliations =
                         drain_pending_extension_ui(&mut state.pending_extension_ui, None);
                     state.process = None;
+                    state.company_session_path = None;
+                    state.process_department_id = None;
                     state.browser_cdp_fingerprint = None;
                     (owner, reconciliations, run_context_path, true)
                 }
@@ -1868,6 +2140,8 @@ impl PiManager {
         let (process, reconciliations, run_context_path) = {
             let mut state = slot.state.lock().unwrap();
             let process = state.process.take();
+            state.company_session_path = None;
+            state.process_department_id = None;
             state.active_run = None;
             state.continuation_transition_owner = None;
             state.pending_terminal_event = None;
@@ -1883,6 +2157,7 @@ impl PiManager {
         clear_run_context_path(run_context_path);
         if let Some(mut process) = process {
             let _ = process.child.kill();
+            let _ = process.child.wait();
         }
         if let Some(app) = app {
             Self::emit_reconciliations(app, reconciliations, reason);
@@ -2301,6 +2576,29 @@ impl PiManager {
             );
             return Err("Pi prompt was cancelled during runtime admission".into());
         }
+        let department_mismatch = {
+            let state = slot.state.lock().unwrap();
+            state.active_run.is_some()
+                && state.process_department_id.as_deref() != department_id.as_deref()
+        };
+        if department_mismatch {
+            return Err(
+                "Cannot change the Divo department while this chat is still running. Please wait for it to finish and try again.".into(),
+            );
+        }
+        let department_context_changed = {
+            let state = slot.state.lock().unwrap();
+            department_context_requires_restart(
+                state.process.is_some(),
+                state.active_run.is_some(),
+                state.process_department_id.as_deref(),
+                department_id.as_deref(),
+            )
+        };
+        if department_context_changed {
+            let config = self.config().await?;
+            Self::stop_slot_locked(&slot, Some(&config.app), "department_context_changed");
+        }
         if slot.state.lock().unwrap().process.is_none() {
             log::info!(
                 "divo.pi.prompt.runtime_start thread_id={} run_id={} slot_thread_id={}",
@@ -2309,6 +2607,7 @@ impl PiManager {
                 slot.thread_id
             );
             Self::spawn_slot(&slot, &self.config().await?, self.capacity_changed.clone()).await?;
+            slot.state.lock().unwrap().process_department_id = department_id.clone();
         }
         loop {
             let active_owner = slot.state.lock().unwrap().active_run.clone();
@@ -2439,6 +2738,10 @@ impl PiManager {
                             let restart =
                                 Self::spawn_slot(&slot, &config, self.capacity_changed.clone())
                                     .await;
+                            if restart.is_ok() {
+                                slot.state.lock().unwrap().process_department_id =
+                                    department_id.clone();
+                            }
                             self.wake_capacity();
                             return match restart {
                                 Ok(()) => Err(format!(
@@ -2509,11 +2812,18 @@ impl PiManager {
                     // This keeps the UI's old run lifecycle complete even when
                     // the grace timer has not fired yet.
                     if let Some(completion) = take_pending_terminal_event(&slot, Some(false)) {
-                        Self::emit_terminal_completion(
+                        let rotated = Self::emit_terminal_completion(
+                            &slot,
                             &self.config().await?.app,
                             completion,
                             "agent_ended",
-                        );
+                        )?;
+                        if rotated {
+                            let config = self.config().await?;
+                            Self::spawn_slot(&slot, &config, self.capacity_changed.clone()).await?;
+                            slot.state.lock().unwrap().process_department_id =
+                                department_id.clone();
+                        }
                     }
                     let (reconciliations, run_context_path) = {
                         let mut state = slot.state.lock().unwrap();
@@ -3111,23 +3421,27 @@ impl PiManager {
 mod tests {
     use super::{
         approval_source, can_enable_always_allow_bash, clear_active_run_if_matches,
-        defer_terminal_event, drain_pending_extension_ui, event_owner_payload, fail_pending_rpc,
-        idle_runtime_thread, is_divo_approval_request, is_divo_memory_review_request,
-        is_divo_teach_clarification_request, mark_pending_terminal_compaction,
-        reconcile_lifecycle_event, require_active_run, response_clears_active_run,
+        defer_terminal_event, department_context_requires_restart, drain_pending_extension_ui,
+        event_owner_payload, fail_pending_rpc, idle_runtime_thread, is_divo_approval_request,
+        is_divo_memory_review_request, is_divo_teach_clarification_request,
+        mark_pending_terminal_compaction, protected_run_metadata, reconcile_lifecycle_event,
+        remove_current_company_session, require_active_run, response_clears_active_run,
         revoke_slot_approval_rules, runtime_is_busy, runtime_is_compacting, runtime_is_streaming,
-        runtime_prompt_lifecycle_active, runtime_session_path, should_auto_allow_bash,
-        take_pending_confirm, take_pending_memory_review, take_pending_teach_clarification,
-        take_pending_terminal_event, valid_memory_review_response,
-        valid_teach_clarification_response, validate_runtime_pool_capacity, ApprovalSource,
-        ExtensionUiProtocol, PendingExtensionUiRequest, PendingRpc, PiManager, PiRuntimeMode,
-        RunOwner, RuntimeSlot, DIVO_APPROVAL_PROTOCOL_TITLE, DIVO_MEMORY_REVIEW_PROTOCOL_TITLE,
+        runtime_prompt_lifecycle_active, runtime_session_path, sanitize_protected_terminal_event,
+        should_auto_allow_bash, take_pending_confirm, take_pending_memory_review,
+        take_pending_teach_clarification, take_pending_terminal_event,
+        valid_memory_review_response, valid_teach_clarification_response,
+        validate_runtime_pool_capacity, ApprovalSource, ExtensionUiProtocol,
+        PendingExtensionUiRequest, PendingRpc, PiManager, PiRuntimeMode, RunOwner, RuntimeSlot,
+        DIVO_APPROVAL_PROTOCOL_TITLE, DIVO_MEMORY_REVIEW_PROTOCOL_TITLE,
         DIVO_TEACH_CLARIFICATION_PROTOCOL_TITLE, MAX_RUNTIME_POOL_CAPACITY,
     };
     use std::collections::{HashMap, HashSet};
+    use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use tokio::runtime::Runtime;
+    use uuid::Uuid;
 
     fn owner(thread_id: &str, run_id: &str) -> RunOwner {
         RunOwner::new(thread_id.to_string(), run_id.to_string()).unwrap()
@@ -3144,6 +3458,108 @@ mod tests {
             coding.file_name().and_then(|name| name.to_str()),
             Some("pi-coding-session.jsonl")
         );
+    }
+
+    #[test]
+    fn zero_result_shopify_metadata_still_marks_the_current_run_protected() {
+        let event = serde_json::json!({
+            "type": "agent_end",
+            "messages": [
+                {"role":"user","content":[{"type":"text","text":"count customers"}]},
+                {"role":"assistant","content":[{
+                    "type":"toolCall",
+                    "id":"call-1",
+                    "name":"divo_gateway",
+                    "arguments":{"op":"tools.invoke","payload":{"toolId":"shopifyCustomers"}}
+                }]},
+                {"role":"toolResult","toolCallId":"call-1","details":{
+                    "ok":true,
+                    "status":"success",
+                    "data":{"protectedData":{
+                        "used":true,
+                        "provider":"shopify",
+                        "connectionId":"11111111-1111-4111-8111-111111111111",
+                        "category":"customers",
+                        "references":[]
+                    }}
+                }}
+            ]
+        });
+
+        let protected = protected_run_metadata(&event);
+        assert!(protected.used);
+        assert!(protected.provenance_valid);
+    }
+
+    #[test]
+    fn protected_call_attempt_and_malformed_marker_both_fail_closed() {
+        let attempted = protected_run_metadata(&serde_json::json!({
+            "messages": [
+                {"role":"user","content":[]},
+                {"role":"assistant","content":[{
+                    "type":"toolCall",
+                    "id":"call-1",
+                    "name":"divo_gateway",
+                    "arguments":{"op":"tools.invoke","payload":{"toolId":"shopifyOrders"}}
+                }]},
+                {"role":"toolResult","toolCallId":"call-1","isError":true}
+            ]
+        }));
+        assert!(attempted.used);
+        assert!(attempted.provenance_valid);
+
+        let malformed = protected_run_metadata(&serde_json::json!({
+            "messages": [
+                {"role":"user","content":[]},
+                {"role":"assistant","content":[{
+                    "type":"toolCall","id":"call-2","name":"divo_gateway","arguments":{}
+                }]},
+                {"role":"toolResult","toolCallId":"call-2","details":{
+                    "ok":true,
+                    "status":"success",
+                    "data":{"protectedData":{"used":true,"provider":"shopify","references":[]}}
+                }}
+            ]
+        }));
+        assert!(malformed.used);
+        assert!(!malformed.provenance_valid);
+
+        let model_text = protected_run_metadata(&serde_json::json!({
+            "messages":[{"role":"assistant","content":[{
+                "type":"text","text":"protectedDataUsed=true"
+            }]}]
+        }));
+        assert!(!model_text.used);
+    }
+
+    #[test]
+    fn protected_cleanup_deletes_only_the_current_company_session() {
+        let root = std::env::temp_dir().join(format!("jan-protected-session-{}", Uuid::new_v4()));
+        let current_company = runtime_session_path(&root, "thread-a", PiRuntimeMode::Company);
+        let current_coding = runtime_session_path(&root, "thread-a", PiRuntimeMode::Coding);
+        let sibling_company = runtime_session_path(&root, "thread-b", PiRuntimeMode::Company);
+        for path in [&current_company, &current_coding, &sibling_company] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "session").unwrap();
+        }
+
+        remove_current_company_session(&current_company, "thread-a").unwrap();
+
+        assert!(!current_company.exists());
+        assert!(current_coding.exists());
+        assert!(sibling_company.exists());
+
+        let mut terminal = serde_json::json!({"type":"agent_end","messages":[{"private":true}]});
+        sanitize_protected_terminal_event(&mut terminal);
+        assert_eq!(
+            terminal.get("protectedDataUsed"),
+            Some(&serde_json::json!(true))
+        );
+        assert!(terminal.get("messages").is_none());
+
+        assert!(remove_current_company_session(&current_company, "../thread-b").is_err());
+        assert!(sibling_company.exists());
+        let _ = fs::remove_dir_all(root);
     }
 
     fn pending(method: &str, thread_id: &str, run_id: &str) -> PendingExtensionUiRequest {
@@ -3622,6 +4038,28 @@ mod tests {
         assert!(!runtime_is_streaming(&serde_json::json!({})));
         assert!(!runtime_is_compacting(&serde_json::json!({})));
         assert!(!runtime_prompt_lifecycle_active(&serde_json::json!({})));
+    }
+
+    #[test]
+    fn idle_reused_process_is_restarted_when_department_changes() {
+        assert!(department_context_requires_restart(
+            true,
+            false,
+            Some("finance"),
+            Some("operations"),
+        ));
+        assert!(!department_context_requires_restart(
+            true,
+            true,
+            Some("finance"),
+            Some("operations"),
+        ));
+        assert!(!department_context_requires_restart(
+            true,
+            false,
+            Some("finance"),
+            Some("finance"),
+        ));
     }
 
     #[test]

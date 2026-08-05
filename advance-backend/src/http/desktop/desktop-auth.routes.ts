@@ -9,8 +9,15 @@ import type { CanvaMcpOAuthService } from '../../infrastructure/canva/canva-mcp-
 import type { AirtableMcpOAuthService } from '../../infrastructure/airtable/airtable-mcp-oauth.service';
 import type { ZohoTokenService } from '../../infrastructure/zoho/zoho-token.service';
 import type { ZohoConnectionRepository } from '../../infrastructure/zoho/zoho-connection.repository';
-import { apiKeyFingerprint, CONNECTION_NEEDS_KEY, type IntegrationConnectionRepository } from '../../infrastructure/persistence/integration-connection.repository';
+import {
+  apiKeyFingerprint,
+  CONNECTION_NEEDS_KEY,
+  CONNECTION_REAUTHORIZATION_REQUIRED,
+  type IntegrationConnectionRepository,
+} from '../../infrastructure/persistence/integration-connection.repository';
 import type { AitableKeyVerifier } from '../../application/aitable/aitable-connect.service';
+import { ShopifyAuthorizationError, type ShopifyAuthorizationService } from '../../application/shopify/shopify-authorization.service';
+import { normalizeShopDomain } from '../../domain/shopify/shopify-shop';
 import { AIRTABLE_REQUESTED_SCOPES, AIRTABLE_SCOPE } from '../../application/airtable/airtable-mcp-manifest';
 import type { Logger } from '../../shared/logger';
 import type { TypedEnv } from '../../config/env';
@@ -21,11 +28,15 @@ import type { SkillCatalogService } from '../../application/skills/skill-catalog
 import type { SkillAccessEnforcementPort } from '../../application/skills/skill-access.port';
 import type { ManagerPersonaRuntimeService } from '../../application/persona-learning/manager-persona-runtime.service';
 import type { MemoryService } from '../../application/knowledge/semantic-memory.port';
+import { getCanonicalPersonalMemorySnapshot } from '../../application/knowledge/knowledge-resource-query.service';
 import { buildDesktopCapabilityBootstrap, isFinanceDepartment } from '../../application/desktop/desktop-capability-bootstrap';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
 import { DEFAULT_ALLOWED_MODELS, PROXY_MODEL_SPECS, RUNTIME_MODEL_PREFERENCE } from '../../application/observability/pricing';
+import { CONNECTION_PROVIDER_IDS } from '../../domain/connections/connection-provider';
 import {
+  approvalModesForConnectionProvider,
+  connectionPolicyIssueForProvider,
   connectionGovernancePolicySchema,
   defaultConnectionGovernancePolicy,
   parseConnectionGovernancePolicy,
@@ -43,6 +54,7 @@ export interface DesktopAuthRoutesDeps {
   airtableMcpOAuthService: AirtableMcpOAuthService;
   /** Proves a pasted AITable key before it is stored. AITable has no OAuth. */
   aitableKeyVerifier:     AitableKeyVerifier;
+  shopifyAuthorizationService: ShopifyAuthorizationService;
   zohoTokenService:       ZohoTokenService;
   zohoConnectionRepo:     ZohoConnectionRepository;
   connectionRepo:         IntegrationConnectionRepository;
@@ -100,9 +112,9 @@ const DESKTOP_PROTOCOL = 'cursorr';
 const HANDOFF_TTL_MS   = 5 * 60 * 1000;
 const CONNECTION_GRANT_ACCESSES = new Set(['read_only', 'read_write', 'admin']);
 /** Providers whose connections expose the shared manage/grant/disconnect surface. */
-const MANAGEABLE_CONNECTION_PROVIDERS = ['google_workspace', 'zoho', 'canva', 'airtable', 'aitable', 'lark'] as const;
+const MANAGEABLE_CONNECTION_PROVIDERS = CONNECTION_PROVIDER_IDS;
 /** Statuses whose grants and governance are still worth showing and editing. */
-const MANAGEABLE_STATUSES = ['connected', CONNECTION_NEEDS_KEY];
+const MANAGEABLE_STATUSES = ['connected', CONNECTION_NEEDS_KEY, CONNECTION_REAUTHORIZATION_REQUIRED];
 type ManageableConnectionProvider = typeof MANAGEABLE_CONNECTION_PROVIDERS[number];
 
 function isManageableConnectionProvider(value: string): value is ManageableConnectionProvider {
@@ -387,6 +399,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       airtable:         () => deps.connectionRepo.listAccessibleAirtableConnections({ userId, companyId }),
       aitable:          () => deps.connectionRepo.listAccessibleAitableConnections({ userId, companyId }),
       lark:             () => deps.connectionRepo.listAccessibleLarkConnections({ userId, companyId }),
+      shopify:          () => deps.connectionRepo.listAccessibleShopifyConnections({ userId, companyId }),
     };
     const accessible = await listAccessibleByProvider[provider]();
     if (!accessible.ok) throw new Error(accessible.error.message);
@@ -398,10 +411,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         companyId,
         provider,
         revokedAt: null,
-        // AITable is the only provider that can hold a listed-but-unusable
-        // connection. Restricting this to 'connected' made the manage view
-        // 404 for exactly the connection an admin is being told to repair.
-        status:    provider === 'aitable' ? { in: MANAGEABLE_STATUSES } : 'connected',
+        // Repairable API-key and OAuth states remain visible to their
+        // administrators even though execution correctly excludes them.
+        status:    provider === 'aitable' || provider === 'shopify'
+          ? { in: MANAGEABLE_STATUSES }
+          : 'connected',
       },
       include: {
         ownerUser: { select: { id: true, email: true, name: true } },
@@ -425,13 +439,14 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         },
       },
     });
-    if (!connection || !summary) return null;
+    if (!connection) return null;
 
     const canManage =
       connection.ownerUserId === userId ||
-      connection.createdBy === userId ||
-      summary.access === 'admin' ||
+      (connection.provider !== 'shopify' && connection.createdBy === userId) ||
+      summary?.access === 'admin' ||
       COMPANY_ADMIN_ROLES.has(role);
+    if (!summary && !canManage) return null;
     if (!canManage) return { forbidden: true as const };
 
     const [memberships, departments, departmentRoles, company] = await Promise.all([
@@ -484,11 +499,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       && !Array.isArray(connection.tokenMetadata)
       ? connection.tokenMetadata as Record<string, unknown>
       : {};
-    const zohoReadOnlyEnforced = provider === 'zoho'
+    const readOnlyEnforced = provider === 'shopify' || (provider === 'zoho'
       && (
         tokenMetadata['enforcedAccess'] === 'read_only'
         || (connection.scopes.length > 0 && connection.scopes.every(scope => /\.READ$/i.test(scope)))
-      );
+      ));
 
     return {
       connection: {
@@ -498,9 +513,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         accountName:  connection.accountName ?? null,
         ownerType:    connection.ownerType,
         ownerUser:    connection.ownerUser ?? null,
-        access:       summary.access,
+        access:       summary?.access ?? 'admin',
         scopes:       connection.scopes,
-        readOnlyEnforced: zohoReadOnlyEnforced,
+        status:       connection.status,
+        reconnectRequired: connection.status === CONNECTION_REAUTHORIZATION_REQUIRED,
+        readOnlyEnforced,
         connectedAt:  connection.connectedAt.toISOString(),
       },
       grants: connection.grants.map(grant => {
@@ -545,11 +562,13 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         ],
         company: company ? { id: company.id, name: company.name } : null,
       },
-      accessLevels: zohoReadOnlyEnforced
+      accessLevels: readOnlyEnforced
         ? [{
             value: 'read_only',
             label: 'Read-only',
-            description: 'Can read Zoho CRM and Books data allowed by Zoho scopes.',
+            description: provider === 'shopify'
+              ? 'Can read Shopify data allowed by this store connection and Divo RBAC.'
+              : 'Can read Zoho CRM and Books data allowed by Zoho scopes.',
           }]
         : [
         {
@@ -573,6 +592,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         { value: 'admin', label: 'Admin', description: 'Can use the connection and manage who else has access.' },
       ],
       governance: {
+        approvalModes: approvalModesForConnectionProvider(provider),
         managerPolicy: connection.governance?.managerPolicyJson
           ? parseConnectionGovernancePolicy(connection.governance.managerPolicyJson)
           : defaultConnectionGovernancePolicy(),
@@ -590,6 +610,131 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       },
     };
   };
+
+  const providerForManageableConnection = async (
+    connectionId: string,
+    companyId: string,
+  ): Promise<ManageableConnectionProvider | null> => {
+    const row = await deps.prisma.integrationConnection.findFirst({
+      where: {
+        id: connectionId,
+        companyId,
+        revokedAt: null,
+        status: { in: MANAGEABLE_STATUSES },
+      },
+      select: { provider: true },
+    });
+    return row && isManageableConnectionProvider(row.provider) ? row.provider : null;
+  };
+
+  // Provider-neutral connection administration. Provider-specific legacy
+  // endpoints remain compatible, while new integrations use one RBAC surface.
+  router.get('/connections/:connectionId/manage', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const provider = await providerForManageableConnection(connectionId, companyId);
+      if (!provider) { res.status(404).json({ success: false, message: 'Connection not found' }); return; }
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role, provider);
+      if (!payload) { res.status(404).json({ success: false, message: 'Connection not found' }); return; }
+      if ('forbidden' in payload) { res.status(403).json({ success: false, message: 'You do not have admin access to this connection' }); return; }
+      res.json({ success: true, data: payload });
+    } catch (error) {
+      log.error('connection.manage.read.error', { error: String(error) });
+      res.status(500).json({ success: false, message: 'Could not load connection access' });
+    }
+  });
+
+  router.post('/connections/:connectionId/grants', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const parsed = z.object({
+        granteeType: z.enum(['user', 'department', 'role', 'company']),
+        granteeId: z.string().trim().min(1),
+        access: z.enum(['read_only', 'read_write', 'admin']),
+      }).strict().safeParse(req.body ?? {});
+      if (!parsed.success) { res.status(400).json({ success: false, message: 'Invalid connection grant' }); return; }
+      const provider = await providerForManageableConnection(connectionId, companyId);
+      if (!provider) { res.status(404).json({ success: false, message: 'Connection not found' }); return; }
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role, provider);
+      if (!manageable) { res.status(404).json({ success: false, message: 'Connection not found' }); return; }
+      if ('forbidden' in manageable) { res.status(403).json({ success: false, message: 'You do not have admin access to this connection' }); return; }
+      if (manageable.connection.readOnlyEnforced && parsed.data.access !== 'read_only') {
+        res.status(400).json({ success: false, message: 'This connection exposes read-only access' });
+        return;
+      }
+      const candidates = manageable.candidates;
+      const known = parsed.data.granteeType === 'user'
+        ? candidates.users.some(candidate => candidate.id === parsed.data.granteeId)
+        : parsed.data.granteeType === 'department'
+          ? candidates.departments.some(candidate => candidate.id === parsed.data.granteeId)
+          : parsed.data.granteeType === 'role'
+            ? candidates.roles.some(candidate => candidate.id === parsed.data.granteeId)
+            : candidates.company?.id === parsed.data.granteeId;
+      if (!known) { res.status(400).json({ success: false, message: 'Selected grantee is not part of this company' }); return; }
+      const granted = await deps.connectionRepo.grantConnection({
+        companyId,
+        connectionId,
+        ...parsed.data,
+        grantedBy: userId,
+      });
+      if (!granted.ok) { res.status(500).json({ success: false, message: granted.error.message }); return; }
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role, provider);
+      res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
+    } catch (error) {
+      log.error('connection.manage.grant.error', { error: String(error) });
+      res.status(500).json({ success: false, message: 'Could not update connection access' });
+    }
+  });
+
+  router.delete('/connections/:connectionId/grants/:grantId', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const grantId = String(req.params['grantId'] ?? '');
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      if (!connectionId || !grantId) { res.status(400).json({ success: false, message: 'connectionId and grantId are required' }); return; }
+      const provider = await providerForManageableConnection(connectionId, companyId);
+      if (!provider) { res.status(404).json({ success: false, message: 'Connection not found' }); return; }
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role, provider);
+      if (!manageable) { res.status(404).json({ success: false, message: 'Connection not found' }); return; }
+      if ('forbidden' in manageable) { res.status(403).json({ success: false, message: 'You do not have admin access to this connection' }); return; }
+      const revoked = await deps.connectionRepo.revokeConnectionGrant({ companyId, connectionId, grantId, actorId: userId });
+      if (!revoked.ok) { res.status(500).json({ success: false, message: revoked.error.message }); return; }
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role, provider);
+      res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
+    } catch (error) {
+      log.error('connection.manage.revoke_grant.error', { error: String(error) });
+      res.status(500).json({ success: false, message: 'Could not revoke connection access' });
+    }
+  });
+
+  router.delete('/connections/:connectionId', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const provider = await providerForManageableConnection(connectionId, companyId);
+      if (!provider) { res.status(404).json({ success: false, message: 'Connection not found' }); return; }
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role, provider);
+      if (!manageable) { res.status(404).json({ success: false, message: 'Connection not found' }); return; }
+      if ('forbidden' in manageable) { res.status(403).json({ success: false, message: 'You do not have admin access to this connection' }); return; }
+      const revoked = await deps.connectionRepo.revokeConnection({ companyId, connectionId, provider, actorId: userId });
+      if (!revoked.ok) { res.status(500).json({ success: false, message: revoked.error.message }); return; }
+      if (!revoked.value) { res.status(404).json({ success: false, message: 'Connection not found' }); return; }
+      res.json({ success: true, message: 'Connection disconnected' });
+    } catch (error) {
+      log.error('connection.manage.disconnect.error', { error: String(error) });
+      res.status(500).json({ success: false, message: 'Could not disconnect connection' });
+    }
+  });
 
   /**
    * Connection owners and connection admins set the baseline operating policy
@@ -614,6 +759,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       });
       if (!connection || !isManageableConnectionProvider(connection.provider)) {
         res.status(404).json({ success: false, message: 'Connection not found' });
+        return;
+      }
+      const policyIssue = connectionPolicyIssueForProvider(connection.provider, parsed.data.managerPolicy);
+      if (policyIssue) {
+        res.status(400).json({ success: false, message: policyIssue });
         return;
       }
 
@@ -1243,6 +1393,130 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     }
   });
 
+  // Shopify is company-owned and read-only. Desktop starts OAuth with a
+  // signed state parameter because its API client and system browser do not
+  // share cookies; the callback still claims the same one-time backend nonce.
+  router.get('/shopify/authorize-url', memberAuth, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!COMPANY_ADMIN_ROLES.has((res.locals['aiRole'] as string | undefined) ?? 'MEMBER')) {
+      res.status(403).json({ success: false, message: 'A company admin must connect Shopify' });
+      return;
+    }
+    if (!deps.shopifyAuthorizationService.isConfigured()) {
+      res.status(503).json({ success: false, message: 'Shopify OAuth is not configured' });
+      return;
+    }
+    const shopDomain = normalizeShopDomain(typeof req.query['shopDomain'] === 'string' ? req.query['shopDomain'] : '');
+    if (!shopDomain) {
+      res.status(400).json({ success: false, message: 'Use a valid *.myshopify.com store domain' });
+      return;
+    }
+    try {
+      const started = await deps.shopifyAuthorizationService.begin({
+        companyId: res.locals['companyId'] as string,
+        userId: res.locals['userId'] as string,
+        shopDomain,
+        stateTransport: 'signed_parameter',
+      });
+      res.json({ success: true, data: { authorizeUrl: started.authorizeUrl } });
+    } catch (error) {
+      log.error('shopify.desktop.authorize.error', { error: String(error) });
+      res.status(503).json({ success: false, message: 'Could not start Shopify authorization' });
+    }
+  });
+
+  router.get('/shopify/connections/:connectionId/authorize-url', memberAuth, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!COMPANY_ADMIN_ROLES.has((res.locals['aiRole'] as string | undefined) ?? 'MEMBER')) {
+      res.status(403).json({ success: false, message: 'A company admin must reconnect Shopify' });
+      return;
+    }
+    if (!deps.shopifyAuthorizationService.isConfigured()) {
+      res.status(503).json({ success: false, message: 'Shopify OAuth is not configured' });
+      return;
+    }
+    try {
+      const started = await deps.shopifyAuthorizationService.beginReconnect({
+        companyId: res.locals['companyId'] as string,
+        userId: res.locals['userId'] as string,
+        connectionId: String(req.params['connectionId'] ?? ''),
+        stateTransport: 'signed_parameter',
+      });
+      res.json({ success: true, data: { authorizeUrl: started.authorizeUrl } });
+    } catch (error) {
+      if (error instanceof ShopifyAuthorizationError && error.code === 'not_found') {
+        res.status(404).json({ success: false, message: 'Shopify connection not found' });
+        return;
+      }
+      log.error('shopify.desktop.reconnect.error', { error: String(error) });
+      res.status(503).json({ success: false, message: 'Could not start Shopify reconnection' });
+    }
+  });
+
+  router.get('/shopify/status', memberAuth, async (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const userId = res.locals['userId'] as string;
+    const companyId = res.locals['companyId'] as string;
+    const canManage = COMPANY_ADMIN_ROLES.has((res.locals['aiRole'] as string | undefined) ?? 'MEMBER');
+    try {
+      const accessible = await deps.connectionRepo.listAccessibleShopifyConnections({ userId, companyId });
+      if (!accessible.ok) {
+        res.status(500).json({ success: false, message: accessible.error.message });
+        return;
+      }
+      const manageable = canManage
+        ? await deps.shopifyAuthorizationService.listCompanyConnections(companyId)
+        : [];
+      const manageableById = new Map(manageable.map(connection => [connection.connectionId, connection]));
+      const visible = new Map(accessible.value.map(connection => [connection.connectionId, {
+        connectionId: connection.connectionId,
+        label: connection.label,
+        accountEmail: connection.accountEmail ?? null,
+        accountName: connection.accountName ?? null,
+        ownerType: connection.ownerType,
+        access: 'read_only' as const,
+        canManage,
+        scopes: connection.scopes,
+        status: manageableById.get(connection.connectionId)?.status ?? 'connected',
+        reconnectRequired: false,
+        readOnlyEnforced: true,
+        connectedAt: connection.connectedAt.toISOString(),
+        lastUsedAt: connection.lastUsedAt?.toISOString() ?? null,
+      }]));
+      for (const connection of manageable) {
+        if (visible.has(connection.connectionId)) continue;
+        visible.set(connection.connectionId, {
+          connectionId: connection.connectionId,
+          label: connection.label,
+          accountEmail: null,
+          accountName: connection.shopDomain,
+          ownerType: 'company',
+          access: 'read_only',
+          canManage: true,
+          scopes: [],
+          status: connection.status,
+          reconnectRequired: connection.status === 'reauthorization_required',
+          readOnlyEnforced: true,
+          connectedAt: connection.connectedAt.toISOString(),
+          lastUsedAt: null,
+        });
+      }
+      const connections = [...visible.values()];
+      res.json({
+        success: true,
+        data: {
+          connected: connections.some(connection => connection.status === 'connected'),
+          canManage,
+          readOnlyEnforced: true,
+          connections,
+        },
+      });
+    } catch (error) {
+      log.error('shopify.desktop.status.error', { error: String(error) });
+      res.status(500).json({ success: false, message: 'Could not load Shopify connections' });
+    }
+  });
+
   /**
    * The LLM models this member is allowed to use through the proxy. Drives the
    * desktop model toggle: the client shows a switch only when more than one
@@ -1302,12 +1576,6 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     const userId = res.locals['userId'] as string;
     const companyId = res.locals['companyId'] as string;
     const departmentId = parsed.data.departmentId;
-    // Started, not awaited. This is a vector recall against the memory backend
-    // and the membership lookup below is a database read — neither needs the
-    // other's answer, and awaiting them in turn put a full network round trip
-    // in front of every runtime bootstrap. Resolves to `[]` rather than
-    // rejecting: personal memory is advisory context, and an unavailable memory
-    // backend must not block authentication or department capability bootstrap.
     const personalMemoryLoad: Promise<string[]> = deps.memory
       ? deps.memory.getPersonalSnapshot({
         userId,
@@ -1649,7 +1917,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'lark');
       if (!manageable) { res.status(404).json({ success: false, message: 'Lark connection not found' }); return; }
       if ('forbidden' in manageable) { res.status(403).json({ success: false, message: 'You do not have admin access to this Lark connection' }); return; }
-      const revoked = await deps.connectionRepo.revokeConnectionGrant({ companyId, connectionId, grantId: String(req.params['grantId'] ?? '') });
+      const revoked = await deps.connectionRepo.revokeConnectionGrant({ companyId, connectionId, grantId: String(req.params['grantId'] ?? ''), actorId: userId });
       if (!revoked.ok) { res.status(500).json({ success: false, message: revoked.error.message }); return; }
       const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'lark');
       res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
@@ -1668,7 +1936,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'lark');
       if (!manageable) { res.status(404).json({ success: false, message: 'Lark connection not found' }); return; }
       if ('forbidden' in manageable) { res.status(403).json({ success: false, message: 'You do not have admin access to this Lark connection' }); return; }
-      const revoked = await deps.connectionRepo.revokeConnection({ companyId, connectionId, provider: 'lark' });
+      const revoked = await deps.connectionRepo.revokeConnection({ companyId, connectionId, provider: 'lark', actorId: userId });
       if (!revoked.ok) { res.status(500).json({ success: false, message: revoked.error.message }); return; }
       res.json({ success: true, message: 'Lark connection disconnected' });
     } catch (e) {
@@ -1983,7 +2251,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
 
-      const result = await deps.connectionRepo.revokeConnectionGrant({ companyId, connectionId, grantId });
+      const result = await deps.connectionRepo.revokeConnectionGrant({ companyId, connectionId, grantId, actorId: userId });
       if (!result.ok) {
         res.status(500).json({ success: false, message: result.error.message });
         return;
@@ -2022,6 +2290,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         companyId,
         connectionId,
         provider: 'google_workspace',
+        actorId: userId,
       });
       if (!result.ok) {
         res.status(500).json({ success: false, message: result.error.message });
@@ -2263,7 +2532,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         res.status(403).json({ success: false, message: 'You do not have admin access to this Canva connection' });
         return;
       }
-      const revoked = await deps.connectionRepo.revokeConnectionGrant({ companyId, connectionId, grantId });
+      const revoked = await deps.connectionRepo.revokeConnectionGrant({ companyId, connectionId, grantId, actorId: userId });
       if (!revoked.ok) {
         res.status(500).json({ success: false, message: revoked.error.message });
         return;
@@ -2291,7 +2560,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         res.status(403).json({ success: false, message: 'You do not have admin access to this Canva connection' });
         return;
       }
-      const revoked = await deps.connectionRepo.revokeConnection({ companyId, connectionId, provider: 'canva' });
+      const revoked = await deps.connectionRepo.revokeConnection({ companyId, connectionId, provider: 'canva', actorId: userId });
       if (!revoked.ok) {
         res.status(500).json({ success: false, message: revoked.error.message });
         return;
@@ -2573,6 +2842,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
       const companyId = res.locals['companyId'] as string;
+      const userId = res.locals['userId'] as string;
       const connectionId = String(req.params['connectionId'] ?? '');
       const body = req.body as { apiKey?: unknown };
 
@@ -2661,8 +2931,9 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
       const companyId = res.locals['companyId'] as string;
+      const userId = res.locals['userId'] as string;
       const connectionId = String(req.params['connectionId'] ?? '');
-      const revoked = await deps.connectionRepo.revokeConnection({ companyId, connectionId, provider: 'aitable' });
+      const revoked = await deps.connectionRepo.revokeConnection({ companyId, connectionId, provider: 'aitable', actorId: userId });
       if (!revoked.ok) {
         res.status(500).json({ success: false, message: revoked.error.message });
         return;
@@ -2798,7 +3069,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         res.status(403).json({ success: false, message: 'You do not have admin access to this Airtable connection' });
         return;
       }
-      const revoked = await deps.connectionRepo.revokeConnectionGrant({ companyId, connectionId, grantId });
+      const revoked = await deps.connectionRepo.revokeConnectionGrant({ companyId, connectionId, grantId, actorId: userId });
       if (!revoked.ok) {
         res.status(500).json({ success: false, message: revoked.error.message });
         return;
@@ -2826,7 +3097,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         res.status(403).json({ success: false, message: 'You do not have admin access to this Airtable connection' });
         return;
       }
-      const revoked = await deps.connectionRepo.revokeConnection({ companyId, connectionId, provider: 'airtable' });
+      const revoked = await deps.connectionRepo.revokeConnection({ companyId, connectionId, provider: 'airtable', actorId: userId });
       if (!revoked.ok) {
         res.status(500).json({ success: false, message: revoked.error.message });
         return;
@@ -3253,7 +3524,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
 
-      const result = await deps.connectionRepo.revokeConnectionGrant({ companyId, connectionId, grantId });
+      const result = await deps.connectionRepo.revokeConnectionGrant({ companyId, connectionId, grantId, actorId: userId });
       if (!result.ok) {
         res.status(500).json({ success: false, message: result.error.message });
         return;
@@ -3292,6 +3563,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         companyId,
         connectionId,
         provider: 'zoho',
+        actorId: userId,
       });
       if (!result.ok) {
         res.status(500).json({ success: false, message: result.error.message });

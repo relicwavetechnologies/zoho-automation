@@ -312,6 +312,7 @@ async function runWebhook(body: unknown, options: {
           return {
             text: result?.value?.finalReply?.text ?? result?.text ?? 'done',
             ...(result?.actions ? { actions: result.actions } : {}),
+            protectedDataUsed: result?.value?.protectedDataUsed ?? result?.protectedDataUsed,
           };
         }
         return { text: 'done' };
@@ -1366,6 +1367,294 @@ describe('Lark webhook admission', () => {
     assert.equal((persisted[1] as any[])[1].role, 'assistant');
     assert.equal((persisted[0] as any[])[3].dedupeKey, 'lark:om_1:user');
     assert.equal((persisted[1] as any[])[3].dedupeKey, 'lark:om_1:assistant');
+  });
+
+  it('does not persist failure turns after a protected Shopify tool starts', async () => {
+    const persisted: unknown[] = [];
+    let finalReply: Record<string, unknown> | undefined;
+    const failure = new Error('runtime crashed after protected read');
+
+    await runPiAndDeliver({
+      incoming: {
+        channel: 'lark', messageId: 'om_protected_failure', chatId: 'oc_1', chatType: 'p2p',
+        userExternalId: 'ou_sender', text: 'Find customer alice@example.test', attachments: [],
+        timestamp: new Date().toISOString(), traceId: 'trace-protected-failure',
+        mentions: [], mentionsSelf: true, raw: {},
+      } as any,
+      runContext: {
+        companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER', channel: 'lark',
+      } as any,
+      conversation: {
+        channel: 'lark', chatId: 'oc_1', correlationId: 'trace-protected-failure',
+      } as any,
+      deps: {
+        adapter: {
+          registerAbortController() {}, cleanupAbortController() {},
+          sendStatus: async (conversation: any) => ok({
+            channel: 'lark', messageId: 'om_status', correlationId: conversation.correlationId,
+          }),
+          editStatus: async (handle: any) => ok(handle),
+          sendFinalReply: async (_conversation: unknown, reply: Record<string, unknown>) => {
+            finalReply = reply;
+            return ok({ channel: 'lark', messageId: 'om_status' });
+          },
+        } as any,
+        piRuntime: {
+          run: async (runtimeInput: any) => {
+            runtimeInput.onProgress({
+              type: 'tool_start', callId: 'call-1', toolName: 'divo_gateway',
+              toolId: 'shopifyCustomers', detail: 'alice@example.test',
+            });
+            throw failure;
+          },
+        },
+        conversationRepo: {
+          appendTurn: async (...args: unknown[]) => {
+            persisted.push(args);
+            return ok({});
+          },
+        } as any,
+      },
+      log: noopLogger,
+    });
+
+    assert.deepEqual(persisted, []);
+    assert.equal(finalReply?.['retention'], 'transient');
+    assert.equal(finalReply?.['executionTrace'], undefined);
+    assert.equal(
+      finalReply?.['text'],
+      'Divo could not complete this request (run_failed). No fallback agent was run.',
+    );
+  });
+
+  it('scrubs protected progress and clears group context before failure delivery', async () => {
+    const order: string[] = [];
+    const persisted: unknown[] = [];
+    const statusUpdates: unknown[] = [];
+    let finalReply: Record<string, unknown> | undefined;
+
+    await runPiAndDeliver({
+      incoming: {
+        channel: 'lark', messageId: 'om_group_failure', chatId: 'oc_1', chatType: 'group',
+        userExternalId: 'ou_sender', text: 'Find order #SECRET-42', attachments: [],
+        timestamp: new Date().toISOString(), traceId: 'trace-protected-group-failure',
+        mentions: [], mentionsSelf: true, raw: {},
+      } as any,
+      runContext: {
+        companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER', channel: 'lark',
+      } as any,
+      conversation: {
+        channel: 'lark', chatId: 'oc_1', correlationId: 'trace-protected-group-failure',
+      } as any,
+      deps: {
+        adapter: {
+          registerAbortController() {}, cleanupAbortController() {},
+          sendStatus: async (conversation: any, update: unknown) => {
+            statusUpdates.push(update);
+            return ok({
+              channel: 'lark', messageId: 'om_status', correlationId: conversation.correlationId,
+            });
+          },
+          editStatus: async (handle: any, update: unknown) => {
+            statusUpdates.push(update);
+            return ok(handle);
+          },
+          sendFinalReply: async (_conversation: unknown, reply: Record<string, unknown>) => {
+            finalReply = reply;
+            order.push('deliver');
+            return ok({ channel: 'lark', messageId: 'om_status' });
+          },
+        } as any,
+        piRuntime: {
+          run: async (runtimeInput: any) => {
+            runtimeInput.onProgress({
+              type: 'tool_start', callId: 'call-1', toolName: 'divo_gateway',
+              toolId: 'shopifyOrders', detail: 'order #SECRET-42',
+            });
+            runtimeInput.onProgress({
+              type: 'tool_progress', callId: 'call-1', toolName: 'divo_gateway',
+              detail: 'Customer Alice, total INR 42,000',
+              children: [{ label: 'alice@example.test', status: 'done' }],
+              todos: [{ title: 'Return SECRET-42', status: 'running' }],
+            });
+            runtimeInput.onProgress({
+              type: 'say', index: 0, text: 'Private order output must remain transient.',
+            });
+            throw new Error('runtime crashed after protected progress');
+          },
+        },
+        conversationRepo: {
+          appendTurn: async (...args: unknown[]) => {
+            persisted.push(args);
+            return ok({});
+          },
+        } as any,
+        chatContextService: {
+          clear: async () => {
+            order.push('clear');
+            return ok(undefined);
+          },
+        },
+      },
+      log: noopLogger,
+    });
+
+    assert.deepEqual(persisted, []);
+    assert.deepEqual(order, ['clear', 'deliver']);
+    assert.equal(finalReply?.['retention'], 'transient');
+    assert.equal(finalReply?.['executionTrace'], undefined);
+    assert.doesNotMatch(
+      JSON.stringify(statusUpdates),
+      /SECRET-42|Alice|42,000|alice@example\.test|Private order output/,
+    );
+  });
+
+  it('marks a protected Pi answer transient before channel delivery', async () => {
+    let finalReply: Record<string, unknown> | undefined;
+    const adapter = {
+      registerAbortController() {},
+      cleanupAbortController() {},
+      sendStatus: async (conversation: any) => ok({
+        channel: 'lark', messageId: 'om_status', correlationId: conversation.correlationId,
+      }),
+      editStatus: async (handle: any) => ok(handle),
+      sendFinalReply: async (_conversation: unknown, reply: Record<string, unknown>) => {
+        finalReply = reply;
+        return ok({ channel: 'lark', messageId: 'om_status' });
+      },
+    };
+
+    await runPiAndDeliver({
+      incoming: {
+        channel: 'lark', messageId: 'om_1', chatId: 'oc_1', chatType: 'p2p',
+        userExternalId: 'ou_sender', text: 'Find the order', attachments: [],
+        timestamp: new Date().toISOString(), traceId: 'trace-protected',
+        mentions: [], mentionsSelf: true, raw: {},
+      } as any,
+      runContext: {
+        companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER', channel: 'lark',
+      } as any,
+      conversation: { channel: 'lark', chatId: 'oc_1', correlationId: 'trace-protected' } as any,
+      deps: {
+        adapter: adapter as any,
+        piRuntime: { run: async () => ({ text: 'Protected answer', protectedDataUsed: true as const }) },
+      },
+      log: noopLogger,
+    });
+
+    assert.equal(finalReply?.['retention'], 'transient');
+  });
+
+  it('erases group context before delivering protected data', async () => {
+    const order: string[] = [];
+    const statusUpdates: unknown[] = [];
+    let finalReply: Record<string, unknown> | undefined;
+    const adapter = {
+      registerAbortController() {},
+      cleanupAbortController() {},
+      sendStatus: async (conversation: any, update: unknown) => {
+        statusUpdates.push(update);
+        return ok({
+          channel: 'lark', messageId: 'om_status', correlationId: conversation.correlationId,
+        });
+      },
+      editStatus: async (handle: any, update: unknown) => {
+        statusUpdates.push(update);
+        return ok(handle);
+      },
+      sendFinalReply: async (_conversation: unknown, reply: Record<string, unknown>) => {
+        finalReply = reply;
+        order.push('deliver');
+        return ok({ channel: 'lark', messageId: 'om_status' });
+      },
+    };
+
+    const result = await runPiAndDeliver({
+      incoming: {
+        channel: 'lark', messageId: 'om_1', chatId: 'oc_1', chatType: 'group',
+        userExternalId: 'ou_sender', text: 'Find the customer', attachments: [],
+        timestamp: new Date().toISOString(), traceId: 'trace-protected-group',
+        mentions: [], mentionsSelf: true, raw: {},
+      } as any,
+      runContext: {
+        companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER', channel: 'lark',
+      } as any,
+      conversation: {
+        channel: 'lark', chatId: 'oc_1', correlationId: 'trace-protected-group',
+      } as any,
+      deps: {
+        adapter: adapter as any,
+        piRuntime: {
+          run: async (runtimeInput: any) => {
+            runtimeInput.onProgress({
+              type: 'say', index: 0, text: 'I will check the customer.',
+            });
+            runtimeInput.onProgress({
+              type: 'tool_start', callId: 'call-1', toolName: 'divo_gateway',
+              toolId: 'shopifyCustomers', detail: 'tools.invoke',
+            });
+            runtimeInput.onProgress({
+              type: 'say', index: 1, text: 'Private customer output must not persist.',
+            });
+            return { text: 'Protected answer', protectedDataUsed: true as const };
+          },
+        },
+        chatContextService: {
+          clear: async (companyId: string, chatId: string) => {
+            assert.equal(companyId, 'company-1');
+            assert.equal(chatId, 'oc_1');
+            order.push('clear');
+            return ok(undefined);
+          },
+        },
+      },
+      log: noopLogger,
+    });
+
+    assert.deepEqual(result, { text: 'Protected answer', protectedDataUsed: true });
+    assert.deepEqual(order, ['clear', 'deliver']);
+    assert.equal(finalReply?.['retention'], 'transient');
+    assert.equal(finalReply?.['executionTrace'], undefined);
+    assert.doesNotMatch(JSON.stringify(statusUpdates), /Private customer output must not persist/);
+    assert.doesNotMatch(JSON.stringify(statusUpdates.at(-1)), /I will check the customer/);
+  });
+
+  it('fails closed when protected group context cannot be erased', async () => {
+    let delivered = false;
+    const clearFailure = new Error('context store unavailable');
+    await assert.rejects(runPiAndDeliver({
+      incoming: {
+        channel: 'lark', messageId: 'om_1', chatId: 'oc_1', chatType: 'group',
+        userExternalId: 'ou_sender', text: 'Find the customer', attachments: [],
+        timestamp: new Date().toISOString(), traceId: 'trace-protected-clear-failure',
+        mentions: [], mentionsSelf: true, raw: {},
+      } as any,
+      runContext: {
+        companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER', channel: 'lark',
+      } as any,
+      conversation: {
+        channel: 'lark', chatId: 'oc_1', correlationId: 'trace-protected-clear-failure',
+      } as any,
+      deps: {
+        adapter: {
+          registerAbortController() {}, cleanupAbortController() {},
+          sendStatus: async (conversation: any) => ok({
+            channel: 'lark', messageId: 'om_status', correlationId: conversation.correlationId,
+          }),
+          editStatus: async (handle: any) => ok(handle),
+          sendFinalReply: async () => {
+            delivered = true;
+            return ok({ channel: 'lark', messageId: 'om_status' });
+          },
+        } as any,
+        piRuntime: {
+          run: async () => ({ text: 'Protected answer', protectedDataUsed: true as const }),
+        },
+        chatContextService: { clear: async () => err(clearFailure as any) },
+      },
+      log: noopLogger,
+    }), error => error === clearFailure);
+    assert.equal(delivered, false);
   });
 
   it('delivers an explicit Pi failure and lets the next same-chat message run', async () => {
@@ -3830,6 +4119,25 @@ describe('Lark untagged policy per company', () => {
 });
 
 describe('Lark room transcript boundaries', () => {
+  it('clears the room transcript and never snapshots a protected assistant reply', async () => {
+    const result = await runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      text: 'Find the customer by email alice@example.test',
+    }), {
+      engineRun: async () => ({
+        text: 'Alice protected profile',
+        protectedDataUsed: true,
+      }),
+    });
+
+    assert.deepEqual(result.clearedRoomContexts, ['oc_1']);
+    assert.equal(
+      result.retainedMessages.some(message => message['role'] === 'assistant'),
+      false,
+    );
+  });
+
   it('does not write hydrated quote content into the room-wide transcript', async () => {
     // Stubbed: this path quote-hydrates through Lark, and the assertion is
     // about which object is recorded, not about the fetch succeeding.

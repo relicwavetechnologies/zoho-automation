@@ -1,7 +1,7 @@
 /**
  * token.crypto — AES-256-GCM token encryption/decryption.
  *
- * Shared by Google OAuth and Zoho OAuth token storage.
+ * Shared by backend-owned integration credential storage.
  *
  * Key derivation:
  *   - If the raw key starts with "base64:" → parse the remainder as base64 (must be 32 bytes).
@@ -9,8 +9,9 @@
  *
  * Cipher text format: `v1:<iv_b64>:<tag_b64>:<ciphertext_b64>`
  *
- * The encryption key env var is ZOHO_TOKEN_ENCRYPTION_KEY (same key used by both
- * Google and Zoho in production — matches the old backend).
+ * Legacy v1 integration rows use ZOHO_TOKEN_ENCRYPTION_KEY. New provider rows
+ * may use INTEGRATION_TOKEN_ENCRYPTION_KEY, selected by their persisted
+ * tokenCipherVersion so key rotation does not make existing ciphertext unreadable.
  */
 
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';

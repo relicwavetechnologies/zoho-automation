@@ -23,3 +23,16 @@ test('fails closed when Lark cannot display the complete procedure', () => {
   assert.match(assertLarkReviewableSkill(markdown) ?? '', /too large for an exact Lark review/i);
   assert.throws(() => exactSkillReviewBlocks({ name: 'Too large', summary: '', markdown }), /too large/);
 });
+
+test('preserves procedure markdown for the centralized Lark renderer', () => {
+  const blocks = exactSkillReviewBlocks({
+    name: 'Button test',
+    summary: 'Two rendered steps',
+    markdown: '# Button test\n\n1. Reply with **STARTED**\n2. Reply with `FINISHED`',
+  });
+  const procedure = blocks.slice(1).join('');
+  assert.match(procedure, /^# Button test/);
+  assert.match(procedure, /\*\*STARTED\*\*/);
+  assert.match(procedure, /`FINISHED`/);
+  assert.doesNotMatch(procedure, /\\\*|\\`/);
+});

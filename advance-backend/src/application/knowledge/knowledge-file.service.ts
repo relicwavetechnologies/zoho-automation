@@ -30,6 +30,8 @@ export interface StagedKnowledgeFile extends KnowledgeFileAssetSnapshot {
   readonly resourceType: string;
   readonly deliveryType: 'private' | 'authenticated';
   readonly threatScanVersion: string | null;
+  /** Opaque owner token for an in-flight object deletion. Never model-controlled. */
+  readonly deletionLeaseToken: string | null;
 }
 
 export interface ReadableKnowledgeFile extends StagedKnowledgeFile {
@@ -49,17 +51,36 @@ export interface KnowledgeFileAssetRepository extends KnowledgeFileAssetReader {
   getForAccess(input: { assetId: string; companyId: string }): Promise<ReadableKnowledgeFile | null>;
   isActiveDepartmentMember(input: { companyId: string; departmentId: string; userId: string }): Promise<boolean>;
   claimStagedDeletion(input: { assetId: string; companyId: string; uploadedById: string }): Promise<StagedKnowledgeFile | null>;
-  completeStagedDeletion(input: { assetId: string; companyId: string }): Promise<boolean>;
-  releaseStagedDeletion(input: { assetId: string; companyId: string }): Promise<boolean>;
+  completeStagedDeletion(input: { assetId: string; companyId: string; deletionLeaseToken: string }): Promise<boolean>;
+  releaseStagedDeletion(input: { assetId: string; companyId: string; deletionLeaseToken: string }): Promise<boolean>;
   claimExpired(input: {
     limit: number;
     now: Date;
     staleDeletionBefore: Date;
   }): Promise<readonly StagedKnowledgeFile[]>;
   listDeletableForResource(input: { companyId: string; resourceId: string }): Promise<readonly StagedKnowledgeFile[]>;
-  claimAttachedDeletion(input: { companyId: string; assetId: string; resourceId: string }): Promise<StagedKnowledgeFile | null>;
-  completeAttachedDeletion(input: { companyId: string; assetId: string; resourceId: string }): Promise<boolean>;
-  releaseAttachedDeletion(input: { companyId: string; assetId: string; resourceId: string }): Promise<boolean>;
+  claimAttachedDeletion(input: {
+    companyId: string;
+    assetId: string;
+    resourceId: string;
+    staleDeletionBefore: Date;
+  }): Promise<StagedKnowledgeFile | null>;
+  completeAttachedDeletion(input: {
+    companyId: string;
+    assetId: string;
+    resourceId: string | null;
+    deletionLeaseToken: string;
+  }): Promise<boolean>;
+  releaseAttachedDeletion(input: {
+    companyId: string;
+    assetId: string;
+    resourceId: string | null;
+    deletionLeaseToken: string;
+  }): Promise<boolean>;
+  claimRetiredDeletion(input: {
+    limit: number;
+    staleDeletionBefore: Date;
+  }): Promise<readonly StagedKnowledgeFile[]>;
 }
 
 export interface KnowledgePrivateObjectStore {
@@ -222,6 +243,7 @@ export class KnowledgeFileService {
         threatScanProvider,
         threatScanVersion,
         threatScannedAt,
+        deletionLeaseToken: null,
         expiresAt: new Date(Date.now() + this.deps.stagingTtlMs),
       });
       return {
@@ -286,6 +308,7 @@ export class KnowledgeFileService {
       if (!await this.deps.assets.completeStagedDeletion({
         assetId: asset.id,
         companyId: asset.companyId,
+        deletionLeaseToken: requireDeletionLease(asset),
       })) {
         throw new Error('Staged file deletion lease was lost.');
       }
@@ -293,6 +316,7 @@ export class KnowledgeFileService {
       await this.deps.assets.releaseStagedDeletion({
         assetId: asset.id,
         companyId: asset.companyId,
+        deletionLeaseToken: requireDeletionLease(asset),
       }).catch(() => undefined);
       throw cause;
     }
@@ -317,19 +341,48 @@ export class KnowledgeFileService {
         await this.deps.assets.releaseStagedDeletion({
           assetId: asset.id,
           companyId: asset.companyId,
+          deletionLeaseToken: requireDeletionLease(asset),
         });
         return false;
       }
       const completed = await this.deps.assets.completeStagedDeletion({
         assetId: asset.id,
         companyId: asset.companyId,
+        deletionLeaseToken: requireDeletionLease(asset),
       });
       if (!completed) {
         this.log.warn('knowledge_file.cleanup_completion_lost', { assetId: asset.id });
       }
       return completed;
     }));
-    return results.filter(Boolean).length;
+    const retired = await this.deps.assets.claimRetiredDeletion({
+      limit,
+      staleDeletionBefore: new Date(now.getTime() - (this.deps.deletionLeaseMs ?? 5 * 60_000)),
+    });
+    const retiredResults = await Promise.all(retired.map(async asset => {
+      try {
+        await this.deps.objects.delete(asset);
+        return await this.deps.assets.completeAttachedDeletion({
+          companyId: asset.companyId,
+          assetId: asset.id,
+          resourceId: asset.knowledgeResourceId,
+          deletionLeaseToken: requireDeletionLease(asset),
+        });
+      } catch (cause) {
+        this.log.warn('knowledge_file.retired_cleanup_delete_failed', {
+          assetId: asset.id,
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
+        await this.deps.assets.releaseAttachedDeletion({
+          companyId: asset.companyId,
+          assetId: asset.id,
+          resourceId: asset.knowledgeResourceId,
+          deletionLeaseToken: requireDeletionLease(asset),
+        }).catch(() => undefined);
+        return false;
+      }
+    }));
+    return results.filter(Boolean).length + retiredResults.filter(Boolean).length;
   }
 
   /** Projection-only hard deletion after an approved resource delete. */
@@ -341,6 +394,7 @@ export class KnowledgeFileService {
         companyId: input.companyId,
         assetId: asset.id,
         resourceId: input.resourceId,
+        staleDeletionBefore: new Date(Date.now() - (this.deps.deletionLeaseMs ?? 5 * 60_000)),
       });
       if (!claimed) continue;
       try {
@@ -350,6 +404,7 @@ export class KnowledgeFileService {
           companyId: input.companyId,
           assetId: claimed.id,
           resourceId: input.resourceId,
+          deletionLeaseToken: requireDeletionLease(claimed),
         }).catch(() => undefined);
         throw cause;
       }
@@ -357,6 +412,7 @@ export class KnowledgeFileService {
         companyId: input.companyId,
         assetId: claimed.id,
         resourceId: input.resourceId,
+        deletionLeaseToken: requireDeletionLease(claimed),
       })) {
         throw new Error('Attached file deletion lease was lost.');
       }
@@ -397,6 +453,11 @@ export class KnowledgeFileService {
     }, { toolId: asToolId('knowledge'), action });
     if (!permission.ok) throw permission.error;
   }
+}
+
+function requireDeletionLease(asset: StagedKnowledgeFile): string {
+  if (!asset.deletionLeaseToken) throw new Error('Knowledge file deletion lease is missing.');
+  return asset.deletionLeaseToken;
 }
 
 function normalizeFileName(value: string): string {

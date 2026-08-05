@@ -29,7 +29,18 @@ describe('system skill routes', () => {
     const research = ROUTING_SYSTEM_SKILLS.find(skill => skill.slug === 'research-router');
     assert.ok(research);
     assert.match(research.markdown, /exportCandidate/);
-    assert.match(research.markdown, /use `dataExport` `op=plan`/);
+    assert.match(research.markdown, /`op=list_candidates`/);
+    assert.match(research.markdown, /`op=plan`/);
+    assert.match(research.markdown, /one main Semrush call/);
+  });
+
+  it('teaches shy Semrush answering and model-planned export', () => {
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Shy answering/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /backlinks_comparison/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Do not also call `domain_overview` per domain/);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /table you showed/);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /op=list_candidates/);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Never list `exportCandidate` IDs/);
   });
 
   it('routes pasted Google Sheets and Drive Excel workbooks through the data router', () => {
@@ -78,7 +89,7 @@ describe('system skill routes', () => {
     assert.equal(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.aliases.includes('export data'), false);
     assert.match(sheets.markdown, /Before generic web search/);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /supported source tools return bounded chat evidence plus an\s+`exportCandidate`/s);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /call `dataExport` with `op="plan"`/);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /`op=plan`/);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /source result has `exportCandidate`.*one concise follow-up/s);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /direct `dataExport` recipe only.*backend-replayable source.*no\s+provider candidate/s);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Airtable MCP is not\s+a bulk-export source/s);

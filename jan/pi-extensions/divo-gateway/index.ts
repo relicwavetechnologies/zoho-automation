@@ -25,6 +25,7 @@ import {
 	formatGatewayResponse,
 	isGatewayApprovalStatus,
 	resolveDivoGatewayConfig,
+	type GatewayResponseBody,
 } from "./gateway-client.ts";
 import { executeGatewayRequest } from "./gateway-execution.ts";
 import { registerLocalDivoBroker } from "./local-broker.ts";
@@ -36,8 +37,22 @@ import { registerDivoSkillView } from "./skill-view.ts";
 import { registerTraceCapture } from "./trace.ts";
 import { readDivoRunCorrelation } from "./run-correlation.ts";
 import { registerTeachClarificationTool } from "./teach-clarification.ts";
+import { authorizeToolInvocation } from "./skill-authorization.ts";
 
 const SCHEDULE_DIVO_WORK_SKILL_SLUG = "schedule-divo-work";
+
+/** Preserve backend-authored result metadata without interpreting it in Pi. */
+export function gatewayToolResultDetails(body: GatewayResponseBody, httpStatus: number) {
+	return {
+		configured: true,
+		httpStatus,
+		status: body.status,
+		ok: body.ok,
+		approval: body.approval,
+		error: body.error,
+		data: body.data,
+	};
+}
 
 export function resolvedScheduleDivoWork(result: {
 	results: Array<{ slug?: string }>;
@@ -100,6 +115,7 @@ export const DIVO_GATEWAY_PARAMS = Type.Object({
 			"canva",
 			"airtable",
 			"lark",
+			"shopify",
 		] as const, {
 			description: "connections.list only. Required exact provider; never omit it or substitute a different family.",
 		})),
@@ -222,7 +238,7 @@ For a question about text buried inside a previously approved file, use the back
 
 Use divo_knowledge_review for every personal, department, or company skill mutation and every governed-file visibility change. When the user clearly finishes teaching a reusable procedure, prepare the corrected complete version and open the same review in the naturally implied scope; the user does not need to know internal architecture terms. Never call knowledge propose/apply directly and never use an admin CRUD route as a publishing fallback.
 
-For every connection-backed Google, Zoho, Canva, Airtable, or user-scoped Lark call, select one exact UUID returned by the current run bootstrap or by a single connections.list call and pass it as args.connectionId. Reuse a bootstrap account without rediscovering it. This is mandatory even when only one account is available: it is how backend RBAC, connection policy, approvals, and rate limits are applied. For connections.list, always include exactly one provider: google_workspace for Gmail, Drive, and Calendar; zoho for Zoho CRM and Books; canva for Canva; airtable for Airtable; lark for Lark. Never omit provider and never use google.
+For every connection-backed Google, Zoho, Canva, Airtable, Shopify, or user-scoped Lark call, select one exact UUID returned by the current run bootstrap or by a single connections.list call and pass it as args.connectionId. Reuse a bootstrap account without rediscovering it. This is mandatory even when only one account is available: it is how backend RBAC, connection policy, approvals, and rate limits are applied. For connections.list, always include exactly one provider: google_workspace for Gmail, Drive, and Calendar; zoho for Zoho CRM and Books; canva for Canva; airtable for Airtable; lark for Lark; shopify for Shopify. Never omit provider and never use google.
 
 Scheduling is a direct core capability in both normal and Teach conversations. Before invoking scheduledWorkflows, load the exact Schedule Divo Work recipe from the compact catalogue with divo_skill_view; use divo_skill_resolve only if that recipe is absent from the catalogue. The gateway refuses scheduledWorkflows invocation unless the recipe was loaded during the current run. Use scheduledWorkflows for agent work, reminders, reports, or monitoring that must run later or repeatedly. Use a calendar skill for meetings, invitations, free/busy checks, or reserving time. If "schedule" is ambiguous, ask whether the user means a calendar event or Divo work. Follow the scheduling skill's exact envelopes; keep every scheduler field inside payload.args. The future intent must be self-contained. Use list, pause, resume, cancel, and run_now to manage existing schedules, and never call a pending approval or drafted payload completed.
 
@@ -282,7 +298,12 @@ Report persona, skill, and scheduling outcomes separately. Say exactly what was 
 export default function divoGatewayExtension(pi: ExtensionAPI) {
 	const loadedSkillByTool = new Map<string, { runId: string; skillId: string }>();
 	registerApprovalGate(pi);
-	registerLocalDivoBroker(pi);
+	registerLocalDivoBroker(pi, {
+		resolveConfig: resolveDivoGatewayConfig,
+		readCorrelation: readDivoRunCorrelation,
+		executeGateway: executeGatewayRequest,
+		lookupLoadedSkill: (toolId) => loadedSkillByTool.get(toolId),
+	});
 	registerMemoryRecallTool(pi);
 	registerPersonalMemoryTool(pi);
 	registerMemoryReviewTool(pi, {
@@ -363,7 +384,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			"Do not include visible user-facing pre-tool text about resolver, gateway, backend, routing, enum, or tool mechanics. Call the tool directly or use plain wording like \"I'll check that.\"",
 			"Unless the user asks about security or architecture, final answers should only cover connected accounts, available actions, approval/permission status, and the next useful choice. Use service names like Gmail, Drive, Calendar, Docs, Sheets, Slides, Zoho CRM, and Zoho Books instead of internal tool IDs.",
 			"Follow backend skill recipes exactly. When the current run bootstrap already returned an accessible account, reuse its exact connectionId even if an older recipe says to call connections.list. Otherwise call connections.list once before tools.invoke and never guess connection IDs.",
-			"For connections.list, always include one exact backend provider: google_workspace for all Google Workspace products, zoho for Zoho CRM/Books, canva for Canva, airtable for Airtable, or lark for Lark. Never omit provider and never use google.",
+			"For connections.list, always include one exact backend provider: google_workspace for all Google Workspace products, zoho for Zoho CRM/Books, canva for Canva, airtable for Airtable, lark for Lark, or shopify for Shopify. Never omit provider and never use google.",
 			"For every connection-backed Google, Zoho, Canva, Airtable, or user-scoped Lark call, reuse one exact UUID from the current run bootstrap. Call connections.list only when that bootstrap explicitly lacks the required account. Put the UUID in args.connectionId even when only one account is available; this is mandatory for backend RBAC, connection policy, approvals, and rate limits.",
 			DIVO_DIRECT_WEB_SEARCH_POLICY,
 			"For one-time or recurring Divo work, call tools.list with payload { toolId: \"scheduledWorkflows\" }, then invoke that exact tool with create/list/pause/resume/cancel/run_now. Schedule intent must be self-contained. Ask only for material missing timing, timezone, monitoring, autonomy, or failure details.",
@@ -387,19 +408,18 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				payload?: Record<string, unknown>;
 			};
 			const correlation = await readDivoRunCorrelation();
-			if (request.op === "tools.invoke") {
-				const toolId = typeof request.payload?.toolId === "string"
-					? request.payload.toolId
-					: undefined;
-				const loaded = toolId ? loadedSkillByTool.get(toolId) : undefined;
-				if (!toolId || !loaded || loaded.runId !== correlation.runId) {
-					const scheduling = isScheduledWorkflowInvocation(request);
+			const authorization = authorizeToolInvocation({
+				op: request.op,
+				toolId: request.payload?.toolId,
+				runId: correlation.runId,
+				lookup: (toolId) => loadedSkillByTool.get(toolId),
+				scheduling: isScheduledWorkflowInvocation(request),
+			});
+			if (authorization?.ok === false) {
 					return {
 						content: [{
 							type: "text",
-							text: scheduling
-								? "Scheduling recipe required. Load the exact Schedule Divo Work skillId from the injected catalogue with divo_skill_view, then retry."
-								: "Exact company skill required. Load the relevant DB skill with divo_skill_view, then retry this tool call.",
+							text: authorization.message,
 						}],
 						details: {
 							configured: true,
@@ -408,8 +428,9 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 						},
 						isError: true,
 					};
-				}
-				request.payload = { ...request.payload, skillId: loaded.skillId };
+			}
+			if (authorization?.ok) {
+				request.payload = { ...request.payload, skillId: authorization.skillId };
 			}
 			const resolved = resolveDivoGatewayConfig();
 			if ("error" in resolved) {
@@ -430,15 +451,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				}, toolCallId, ctx);
 
 				const formatted = formatGatewayResponse(body);
-				const details = {
-					configured: true,
-					httpStatus,
-					status: body.status,
-					ok: body.ok,
-					approval: body.approval,
-					error: body.error,
-					data: body.data,
-				};
+				const details = gatewayToolResultDetails(body, httpStatus);
 
 				// Preserve backend HITL responses as structured errors. The action has
 				// not run, so Pi must still mark the call failed; preserving details lets

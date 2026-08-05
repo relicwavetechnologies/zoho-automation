@@ -1,6 +1,7 @@
 import type { DepartmentRepoPort } from '../../infrastructure/persistence/department.repository';
 import type {
   MemoryRecallFact,
+  MemoryRecallScopeStatus,
   MemoryRecallResult,
   MemoryService,
 } from './semantic-memory.port';
@@ -18,14 +19,28 @@ export const KNOWLEDGE_RECALL_MAX_TOTAL_CHARS = 3_000;
 export const KNOWLEDGE_RECALL_MAX_DEPARTMENT_PREFERENCES = 5;
 export const KNOWLEDGE_RECALL_MAX_DEPARTMENT_NAME_CHARS = 120;
 
-export type KnowledgeRecallResult = MemoryRecallResult | {
+export type KnowledgeRecallAudience = 'private' | 'shared';
+
+type KnowledgeRecallCoverage = {
+  readonly personal: MemoryRecallScopeStatus;
+  readonly departments: { readonly searched: number; readonly failed: number };
+  readonly company: MemoryRecallScopeStatus;
+};
+
+type KnowledgeRecallDegradation = 'canonical_hydration_failed';
+
+export type KnowledgeRecallResult = {
+  readonly facts: MemoryRecallFact[];
+  readonly coverage: KnowledgeRecallCoverage;
+  readonly status: MemoryRecallResult['status'];
+  readonly personalScope?: 'skipped';
+  readonly degradation?: KnowledgeRecallDegradation;
+} | {
   readonly facts: [];
-  readonly coverage: {
-    readonly personal: 'failed';
-    readonly departments: { readonly searched: 0; readonly failed: number };
-    readonly company: 'failed';
-  };
+  readonly coverage: KnowledgeRecallCoverage;
   readonly status: 'storage_unavailable';
+  readonly personalScope?: 'skipped';
+  readonly degradation?: KnowledgeRecallDegradation;
 };
 
 /**
@@ -48,8 +63,14 @@ export class KnowledgeRecallService {
     readonly companyRole: string;
     readonly channel: ChannelKey;
     readonly departmentPreferences?: readonly string[];
+    /** Derived by the trusted channel runtime; callers cannot select scope IDs. */
+    readonly audience?: KnowledgeRecallAudience;
+    readonly abortSignal?: AbortSignal;
   }): Promise<KnowledgeRecallResult> {
-    const allowed = await this.deps.permissions.canInvoke({
+    const signal = input.abortSignal;
+    throwIfAborted(signal);
+    const audience = input.audience ?? 'private';
+    const allowed = await withAbort(this.deps.permissions.canInvoke({
       companyId: asCompanyId(input.companyId),
       userId: asUserId(input.userId),
       companyRole: asCompanyRoleSlug(input.companyRole),
@@ -57,20 +78,20 @@ export class KnowledgeRecallService {
     }, {
       toolId: asToolId('knowledge'),
       action: 'read',
-    });
+    }), signal);
     if (!allowed.ok) throw allowed.error;
 
-    const memberships = await this.deps.departments.listActiveMemberships(
+    const memberships = await withAbort(this.deps.departments.listActiveMemberships(
       input.userId,
       input.companyId,
-    );
+    ), signal);
     if (!memberships.ok) throw memberships.error;
 
     const departments = memberships.value.map(membership => ({
       id: membership.departmentId,
       name: membership.departmentName,
     }));
-    const [keywordAttempt, semanticAttempt] = await Promise.allSettled([
+    const [keywordAttempt, semanticAttempt] = await withAbort(Promise.allSettled([
       this.deps.resources.searchMemories({
         companyId: input.companyId,
         userId: input.userId,
@@ -82,6 +103,7 @@ export class KnowledgeRecallService {
             query: input.query,
             userId: input.userId,
             companyId: input.companyId,
+            includePersonal: audience !== 'shared',
             departments,
             ...(input.departmentPreferences
               ? { departmentPreferences: input.departmentPreferences }
@@ -91,28 +113,41 @@ export class KnowledgeRecallService {
             maxTotalChars: KNOWLEDGE_RECALL_MAX_TOTAL_CHARS,
           })
         : Promise.reject(new Error('Semantic memory is unavailable.')),
-    ]);
+    ]), signal);
     if (keywordAttempt.status === 'rejected' && semanticAttempt.status === 'rejected') {
       return {
         facts: [],
-        coverage: {
-          personal: 'failed',
-          departments: { searched: 0, failed: departments.length },
-          company: 'failed',
-        },
+        coverage: failedCoverage(departments.length),
         status: 'storage_unavailable',
+        ...(audience === 'shared' ? { personalScope: 'skipped' as const } : {}),
       };
     }
     const semantic = semanticAttempt.status === 'fulfilled'
       ? semanticAttempt.value
       : null;
-    const semanticFacts = semantic
-      ? await this.hydrateCanonicalFacts(input, semantic.facts)
-      : [];
+    let semanticFacts: MemoryRecallFact[] = [];
+    let hydrationFailed = false;
+    if (semantic) {
+      try {
+        const authorizedFacts = audience === 'shared'
+          ? semantic.facts.filter(fact => fact.scope !== 'personal')
+          : semantic.facts;
+        semanticFacts = await withAbort(
+          this.hydrateCanonicalFacts(input, authorizedFacts),
+          signal,
+        );
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        hydrationFailed = true;
+      }
+    }
     const keywordFacts = keywordAttempt.status === 'fulfilled'
-      ? keywordAttempt.value.flatMap(match => canonicalResourceFacts(match.resource))
+      ? keywordAttempt.value
+        .filter(match => audience !== 'shared' || match.resource.scope !== 'personal')
+        .flatMap(match => canonicalResourceFacts(match.resource))
       : [];
     const bothAvailable = semantic !== null
+      && !hydrationFailed
       && semantic.status === 'available'
       && keywordAttempt.status === 'fulfilled';
     return {
@@ -122,7 +157,11 @@ export class KnowledgeRecallService {
         departments: { searched: departments.length, failed: 0 },
         company: 'searched',
       },
-      status: bothAvailable ? 'available' : 'partial',
+      ...(audience === 'shared' ? { personalScope: 'skipped' as const } : {}),
+      status: bothAvailable
+        ? 'available'
+        : keywordAttempt.status === 'fulfilled' ? 'partial' : 'unavailable',
+      ...(hydrationFailed ? { degradation: 'canonical_hydration_failed' as const } : {}),
     };
   }
 
@@ -155,19 +194,22 @@ export class KnowledgeRecallService {
       const content = knowledgeMemoryContentSchema.safeParse(resource.content);
       if (!content.success) continue;
       for (const text of content.data.facts) {
-        if (resource.scope === 'personal') expanded.push({ scope: 'personal', text });
-        else if (resource.scope === 'company') expanded.push({ scope: 'company', text });
-        else if (resource.department) {
+        if (resource.scope === 'personal') {
+          expanded.push({ scope: 'personal', text, resourceId: resource.resourceId });
+        } else if (resource.scope === 'company') {
+          expanded.push({ scope: 'company', text, resourceId: resource.resourceId });
+        } else if (resource.department) {
           expanded.push({
             scope: 'department',
             text,
             department: { name: resource.department.name },
+            resourceId: resource.resourceId,
           });
         }
       }
     }
 
-    return boundCanonicalFacts(expanded);
+    return expanded;
   }
 }
 
@@ -178,13 +220,16 @@ function canonicalResourceFacts(
   if (!content.success) return [];
   const facts: MemoryRecallFact[] = [];
   for (const text of content.data.facts) {
-    if (resource.scope === 'personal') facts.push({ scope: 'personal', text });
-    else if (resource.scope === 'company') facts.push({ scope: 'company', text });
-    else if (resource.department) {
+    if (resource.scope === 'personal') {
+      facts.push({ scope: 'personal', text, resourceId: resource.resourceId });
+    } else if (resource.scope === 'company') {
+      facts.push({ scope: 'company', text, resourceId: resource.resourceId });
+    } else if (resource.department) {
       facts.push({
         scope: 'department',
         text,
         department: { name: resource.department.name },
+        resourceId: resource.resourceId,
       });
     }
   }
@@ -218,9 +263,46 @@ function boundCanonicalFacts(candidates: readonly MemoryRecallFact[]): MemoryRec
     return true;
   };
 
-  for (const scope of ['personal', 'department', 'company'] as const) {
+  // Reserve one result per scope in policy precedence order. The second pass
+  // keeps the original relevance order, so precedence cannot erase useful
+  // facts merely because a higher-priority scope had many matches.
+  for (const scope of ['company', 'department', 'personal'] as const) {
     candidates.some(candidate => candidate.scope === scope && add(candidate));
   }
   for (const candidate of candidates) add(candidate);
   return result;
+}
+
+function failedCoverage(departmentCount: number): KnowledgeRecallResult['coverage'] {
+  return {
+    personal: 'failed',
+    departments: { searched: 0, failed: departmentCount },
+    company: 'failed',
+  };
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException('The knowledge retrieval was interrupted.', 'AbortError');
+}
+
+function withAbort<T>(operation: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return operation;
+  throwIfAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException('The knowledge retrieval was interrupted.', 'AbortError'));
+    };
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then(
+      value => { cleanup(); resolve(value); },
+      error => { cleanup(); reject(error); },
+    );
+  });
 }

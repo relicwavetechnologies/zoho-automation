@@ -172,18 +172,21 @@ export class LlmProxyService {
       if (!m || m.role !== 'tool') continue;
       const call = m.tool_call_id ? calls.get(m.tool_call_id) : undefined;
       const toolName = call?.function?.name ?? m.name ?? 'tool';
-      const output = asText(m.content);
+      const input = safeJson(call?.function?.arguments);
+      const sensitive = isShopifyInvocation(toolName, input);
+      const output = sensitive ? '[REDACTED: governed Shopify result]' : asText(m.content);
+      const storedInput = sensitive ? shopifyTraceMetadata(input) : input;
       const isError = /"?error"?\s*[:=]/i.test(output) && /error/i.test(output.slice(0, 200));
       const seq = await this.repo.nextSequence(executionId);
       await this.repo.appendEvent({
         executionId, sequence: seq, phase: 'execute', eventType: 'tool_result',
         actorType: 'tool', actorKey: toolName, title: toolName, status: isError ? 'error' : 'ok',
-        payload: { input: safeJson(call?.function?.arguments), output, isError },
+        payload: { input: storedInput, output, isError },
       });
       await this.repo.appendStepResult({
         executionId, sequence: seq, toolName, actorKey: toolName, success: !isError,
         status: isError ? 'error' : 'ok',
-        rawOutput: { input: safeJson(call?.function?.arguments), output },
+        rawOutput: { input: storedInput, output },
       });
     }
   }
@@ -327,4 +330,26 @@ export class LlmProxyService {
       this.logger.warn('proxy.audit.record_failed', { error: String(e) });
     }
   }
+}
+
+function isShopifyInvocation(toolName: string, input: Record<string, unknown>): boolean {
+  const payload = input['payload'];
+  const payloadToolId = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>)['toolId']
+    : undefined;
+  return [toolName, input['toolId'], payloadToolId]
+    .some(value => typeof value === 'string' && value.startsWith('shopify'));
+}
+
+function shopifyTraceMetadata(input: Record<string, unknown>): Record<string, unknown> {
+  const payload = input['payload'];
+  const payloadToolId = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>)['toolId']
+    : undefined;
+  const toolId = typeof input['toolId'] === 'string' ? input['toolId'] : payloadToolId;
+  return {
+    ...(typeof input['op'] === 'string' ? { op: input['op'] } : {}),
+    ...(typeof toolId === 'string' ? { toolId } : {}),
+    redacted: true,
+  };
 }

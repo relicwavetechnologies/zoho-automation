@@ -1583,7 +1583,7 @@ describe('LarkApprovalCardHandler', () => {
     // Approval atomically resolved
     const resolved = repo.store.get(approval.id)!;
     assert.equal(resolved.status, 'approved');
-    assert.equal(resolved.approvedBy, MANAGER_OID);
+    assert.equal(resolved.approvedBy, String(MANAGER));
 
     // The callback response updates immediately; PATCH remains async recovery.
     await new Promise<void>(resolve => setImmediate(resolve));

@@ -288,6 +288,140 @@ describe('DataExportOrchestrationService', () => {
     assert.equal(result.status, 'blocked');
     assert.equal(result.status === 'blocked' && result.reason, 'menhood_unordered_candidate');
   });
+
+  it('lists active candidates with safe planning metadata', async () => {
+    const repo = new InMemoryCandidateRepo([
+      candidate(SEMRUSH_CANDIDATE_ID, semrushPayload()),
+      candidate(ZOHO_CANDIDATE_ID, zohoBooksPayload(), { sourceKind: 'zoho_books' }),
+    ]);
+    const service = serviceWith({
+      repo,
+      permission: permissionFor(['dataExport:create', 'semrush:read', 'zohoBooks:read']),
+      submitAuthorized: async () => 'unused',
+    });
+
+    const listed = await service.listCandidatesForActor({
+      companyId: COMPANY_ID,
+      userId: USER_ID,
+      chatId: CHAT_ID,
+    });
+
+    assert.equal(listed.length, 2);
+    assert.equal(listed[0]!.candidateId, SEMRUSH_CANDIDATE_ID);
+    assert.match(listed[0]!.label, /Semrush/i);
+    assert.match(listed[0]!.shapeKey, /domain_overview/);
+    assert.match(listed[0]!.argsSummary, /domain_overview/i);
+    assert.equal(listed[1]!.candidateId, ZOHO_CANDIDATE_ID);
+  });
+
+  it('returns ambiguous when mixed-shape plans omit tabName assignments', async () => {
+    const backlinksId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const overviewId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const repo = new InMemoryCandidateRepo([
+      candidate(backlinksId, semrushBacklinksPayload()),
+      candidate(overviewId, semrushDomainOverviewPayload()),
+    ]);
+    const service = serviceWith({
+      repo,
+      permission: permissionFor(['dataExport:create', 'semrush:read']),
+      submitAuthorized: async () => 'should-not-queue',
+    });
+
+    const result = await service.planForActor({
+      companyId: COMPANY_ID,
+      userId: USER_ID,
+      chatId: CHAT_ID,
+      plan: {
+        datasets: [
+          { candidateId: backlinksId },
+          { candidateId: overviewId },
+        ],
+        destination: { format: 'xlsx', title: 'Semrush workbook' },
+        userIntent: 'explicit_export',
+      },
+    });
+
+    assert.equal(result.status, 'ambiguous');
+    assert.match(result.status === 'ambiguous' ? result.message : '', /tabName/i);
+  });
+
+  it('plans mixed-shape workbook exports when every dataset has tabName', async () => {
+    const backlinksId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const overviewId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const repo = new InMemoryCandidateRepo([
+      candidate(backlinksId, semrushBacklinksPayload()),
+      candidate(overviewId, semrushDomainOverviewPayload()),
+    ]);
+    const submitted: DataExportOfferPayload[] = [];
+    const service = serviceWith({
+      repo,
+      permission: permissionFor(['dataExport:create', 'semrush:read']),
+      submitAuthorized: async payload => {
+        submitted.push(payload);
+        return 'job-1';
+      },
+    });
+
+    const result = await service.planForActor({
+      companyId: COMPANY_ID,
+      userId: USER_ID,
+      chatId: CHAT_ID,
+      plan: {
+        datasets: [
+          { candidateId: backlinksId, tabName: 'Backlinks' },
+          { candidateId: overviewId, tabName: 'Overview' },
+        ],
+        destination: { format: 'xlsx', title: 'Semrush workbook' },
+        userIntent: 'explicit_export',
+      },
+    });
+
+    assert.equal(result.status, 'direct_queue');
+    assert.equal(result.status === 'direct_queue' && result.exportJobId, 'job-1');
+    assert.equal(submitted.length, 1);
+    assert.equal(submitted[0]!.workbookTabs?.length, 2);
+    assert.equal(submitted[0]!.workbookTabs?.[0]?.tabName, 'Backlinks');
+    assert.equal(submitted[0]!.workbookTabs?.[1]?.tabName, 'Overview');
+    assert.equal(
+      submitted[0]!.workbookTabs?.[0]?.source.args.operation,
+      'backlinks_comparison',
+    );
+    assert.equal(
+      submitted[0]!.workbookTabs?.[1]?.source.args.operation,
+      'domain_overview',
+    );
+  });
+
+  it('requires a sample when combined estimated rows exceed the threshold', async () => {
+    const backlinksId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const overviewId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const repo = new InMemoryCandidateRepo([
+      candidate(backlinksId, semrushBacklinksPayload(), { estimatedRows: 3_000 }),
+      candidate(overviewId, semrushDomainOverviewPayload(), { estimatedRows: 3_000 }),
+    ]);
+    const service = serviceWith({
+      repo,
+      permission: permissionFor(['dataExport:create', 'semrush:read']),
+      submitAuthorized: async () => 'should-not-queue',
+    });
+
+    const result = await service.planForActor({
+      companyId: COMPANY_ID,
+      userId: USER_ID,
+      chatId: CHAT_ID,
+      plan: {
+        datasets: [
+          { candidateId: backlinksId, tabName: 'Backlinks' },
+          { candidateId: overviewId, tabName: 'Overview' },
+        ],
+        destination: { format: 'xlsx', title: 'Large Semrush workbook' },
+        userIntent: 'explicit_export',
+      },
+    });
+
+    assert.equal(result.status, 'sample_required');
+    assert.equal(result.status === 'sample_required' && result.reason, 'estimated_rows_above_threshold');
+  });
 });
 
 describe('DataExportCandidateRepository sample readiness', () => {
@@ -424,7 +558,7 @@ function semrushPayload(): DataExportOfferPayload {
       kind: 'semrush_snapshot',
       connectionId: 'backend_managed',
       args: {
-        operation: 'organic_positions',
+        operation: 'domain_overview',
         domain: 'example.com',
         database: 'us',
       },
@@ -432,6 +566,37 @@ function semrushPayload(): DataExportOfferPayload {
     destination: { format: 'auto', title: 'Semrush export' },
     chatId: CHAT_ID,
     requestId: 'semrush-request',
+  };
+}
+
+function semrushBacklinksPayload(): DataExportOfferPayload {
+  return {
+    ...semrushPayload(),
+    source: {
+      kind: 'semrush_snapshot',
+      connectionId: 'backend_managed',
+      args: {
+        operation: 'backlinks_comparison',
+        targets: ['a.com', 'b.com'],
+      },
+    },
+    requestId: 'semrush-backlinks-request',
+  };
+}
+
+function semrushDomainOverviewPayload(): DataExportOfferPayload {
+  return {
+    ...semrushPayload(),
+    source: {
+      kind: 'semrush_snapshot',
+      connectionId: 'backend_managed',
+      args: {
+        operation: 'domain_overview',
+        domain: 'a.com',
+        database: 'us',
+      },
+    },
+    requestId: 'semrush-overview-request',
   };
 }
 
@@ -500,6 +665,35 @@ class InMemoryCandidateRepo implements DataExportCandidateRepositoryPort {
       );
       return found ? [found] : [];
     }));
+  }
+
+  async listActiveForActor(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly chatId: string;
+    readonly scope?: 'chat' | 'run';
+    readonly runRequestId?: string;
+    readonly traceId?: string;
+    readonly limit?: number;
+    readonly now?: Date;
+  }) {
+    const now = input.now ?? new Date();
+    const filtered = this.candidates.filter(candidate =>
+      candidate.companyId === input.companyId
+      && candidate.userId === input.userId
+      && candidate.chatId === input.chatId
+      && candidate.status === 'active'
+      && candidate.expiresAt > now
+      && (input.scope === 'run'
+        ? (
+          (input.runRequestId && candidate.payload.requestId === input.runRequestId)
+          || (input.traceId && candidate.payload.traceId === input.traceId)
+          || (!input.runRequestId && !input.traceId)
+        )
+        : true)
+    );
+    const limit = input.limit ?? filtered.length;
+    return ok(filtered.slice(0, limit));
   }
 
   async upsertPlan(input: UpsertDataExportPlanInput) {

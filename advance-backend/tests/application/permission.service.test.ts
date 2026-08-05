@@ -232,6 +232,15 @@ describe('PermissionService', () => {
       assert.equal(result.value.allowedToolIds.has(asToolId('semrush')), false);
     });
 
+    it('does not expose any Shopify data surface without an explicit department grant', async () => {
+      const result = await new PermissionServiceImpl(buildDeps()).resolve(baseQuery({ companyRole: 'MEMBER' as any }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedToolIds.has(asToolId('shopifyAnalytics')), false);
+      assert.equal(result.value.allowedToolIds.has(asToolId('shopifyOrders')), false);
+      assert.equal(result.value.allowedToolIds.has(asToolId('shopifyCustomers')), false);
+    });
+
     it('keeps the company Semrush switch authoritative as a ceiling', async () => {
       const toolPermRepo: ToolPermissionRepoPort = {
         getForCompany: async () => ok([
@@ -824,6 +833,49 @@ describe('PermissionService', () => {
 
       assert.ok(result.ok);
       assert.equal(result.value.allowedToolIds.has(asToolId('semrush')), false);
+    });
+
+    it('grants Shopify analytics without implicitly granting orders or customers', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_001', toolId: 'shopifyAnalytics', actionGroup: 'read', allowed: true },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const result = await new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      })).resolve(baseQuery({ companyRole: 'MEMBER' as any, departmentId: DEPT_ID as any }));
+
+      assert.ok(result.ok);
+      assert.deepEqual([...(result.value.allowedActionsByTool.get(asToolId('shopifyAnalytics')) ?? [])], ['read']);
+      assert.equal(result.value.allowedToolIds.has(asToolId('shopifyOrders')), false);
+      assert.equal(result.value.allowedToolIds.has(asToolId('shopifyCustomers')), false);
+    });
+
+    it('lets an exact user override revoke protected Shopify customers while retaining department analytics', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_001', toolId: 'shopifyAnalytics', actionGroup: 'read', allowed: true },
+          { departmentId: DEPT_ID, roleId: 'role_001', toolId: 'shopifyCustomers', actionGroup: 'read', allowed: true },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const deptUserOverrideRepo: DeptUserOverrideRepoPort = {
+        getForUser: async () => ok([
+          { departmentId: DEPT_ID, userId: USER_ID, toolId: 'shopifyCustomers', actionGroup: 'read', allowed: false },
+        ]),
+      };
+      const result = await new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+        deptUserOverrideRepo,
+      })).resolve(baseQuery({ companyRole: 'MEMBER' as any, departmentId: DEPT_ID as any }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedToolIds.has(asToolId('shopifyAnalytics')), true);
+      assert.equal(result.value.allowedToolIds.has(asToolId('shopifyCustomers')), false);
     });
 
     it('honours an explicit department grant of AITable for an ordinary member', async () => {

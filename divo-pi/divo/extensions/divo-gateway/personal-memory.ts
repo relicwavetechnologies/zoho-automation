@@ -36,13 +36,14 @@ export interface PersonalMemoryDependencies {
 	callGateway: (
 		config: DivoGatewayConfig,
 		request: GatewayRequestBody,
+		options?: { signal?: AbortSignal },
 	) => Promise<{ body: GatewayResponseBody; httpStatus: number }>;
 }
 
 const DEFAULT_DEPENDENCIES: PersonalMemoryDependencies = {
 	resolveConfig: resolveDivoGatewayConfig,
 	readRunCorrelation: readDivoRunCorrelation,
-	callGateway: callDivoGateway,
+	callGateway: (config, request, options) => callDivoGateway(config, request, fetch, options),
 };
 
 const PERSONAL_MEMORY_PARAMS = Type.Object({
@@ -131,16 +132,11 @@ function parsePersonalMemoryResult(value: unknown): PersonalMemoryResult {
 
 function formatSuccess(result: PersonalMemoryResult): string {
 	const state = result.action === "unchanged"
-		? "already matched durable personal memory"
-		: `was ${result.action} in durable personal memory`;
+		? "already matched your personal memory"
+		: `was ${result.action} in your personal memory`;
 	return [
 		`The requested personal memory ${state}.`,
-		`Canonical subject: ${result.logicalKey}`,
-		`Version: ${result.version}`,
-		result.projection === "queued"
-			? "The canonical write is complete; semantic recall projection is queued."
-			: "The canonical write and semantic recall projection are complete.",
-		"You may now truthfully acknowledge the personal memory result. Do not describe it as department or company memory.",
+		"You may now truthfully acknowledge the result. Do not describe it as department or company memory.",
 	].join("\n");
 }
 
@@ -155,6 +151,7 @@ export async function executePersonalMemory(
 	params: unknown,
 	dependencies: PersonalMemoryDependencies = DEFAULT_DEPENDENCIES,
 	actionId = "personal-memory",
+	signal?: AbortSignal,
 ) {
 	let command: PersonalMemoryCommand;
 	try {
@@ -167,7 +164,9 @@ export async function executePersonalMemory(
 	if ("error" in config) return failure(config.error, { outcome: "unconfigured", error: config.error });
 
 	try {
+		signal?.throwIfAborted();
 		const correlation = await dependencies.readRunCorrelation();
+		signal?.throwIfAborted();
 		const execution: GatewayExecutionContext = {
 			version: 1,
 			threadId: correlation.threadId,
@@ -178,7 +177,7 @@ export async function executePersonalMemory(
 			op: "memory.personal.mutate",
 			execution,
 			payload: command,
-		});
+		}, signal ? { signal } : {});
 		if (!response.body.ok || response.body.status !== "success") {
 			const message = response.body.error?.message ?? response.body.status;
 			return failure(message, {
@@ -191,7 +190,12 @@ export async function executePersonalMemory(
 		const result = parsePersonalMemoryResult(response.body.data);
 		return {
 			content: [{ type: "text" as const, text: formatSuccess(result) }],
-			details: { outcome: "success", httpStatus: response.httpStatus, ...result },
+			details: {
+				outcome: "success",
+				action: result.action,
+				scope: result.scope,
+				httpStatus: response.httpStatus,
+			},
 		};
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -215,8 +219,8 @@ export function registerPersonalMemoryTool(pi: ExtensionAPI) {
 			"Do not expose logical keys, resource IDs, versions, projections, gateway details, or internal architecture in the user-facing answer.",
 		],
 		parameters: PERSONAL_MEMORY_PARAMS,
-		async execute(toolCallId, params) {
-			return executePersonalMemory(params, DEFAULT_DEPENDENCIES, toolCallId);
+		async execute(toolCallId, params, signal) {
+			return executePersonalMemory(params, DEFAULT_DEPENDENCIES, toolCallId, signal);
 		},
 	});
 }

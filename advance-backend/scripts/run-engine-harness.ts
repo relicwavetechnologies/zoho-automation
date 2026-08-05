@@ -12,13 +12,13 @@
  *   pnpm tsx scripts/run-engine-harness.ts                     # Abhishek → Abhishek DM
  *   pnpm tsx scripts/run-engine-harness.ts "your prompt here"
  *   pnpm tsx scripts/run-engine-harness.ts --model luna "your prompt"
- *   pnpm tsx scripts/run-engine-harness.ts --allow-impersonation --user "Anish Suman" "your prompt"
- *   pnpm tsx scripts/run-engine-harness.ts --fresh-context --allow-impersonation --user "Shivam Bhateja" "your prompt"
+ *   pnpm tsx scripts/run-engine-harness.ts --allow-impersonation --user "Anish Suman" --chat-id oc_anish "your prompt"
+ *   pnpm tsx scripts/run-engine-harness.ts --fresh-context --allow-impersonation --user "Shivam Bhateja" --chat-id oc_shivam "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --group "your prompt" # seeds a real Lark thread
  *   pnpm tsx scripts/run-engine-harness.ts --group --thread-root om_x "follow-up prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --group --group-mode inline "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --backend-url http://127.0.0.1:8000 "your prompt"
- *   pnpm tsx scripts/run-engine-harness.ts --no-delivery "your prompt" # print locally
+ *   pnpm tsx scripts/run-engine-harness.ts --no-final-delivery "your prompt" # suppress status/final cards; tools remain live
  *
  * `--user` selects a DB-linked Lark identity by exact email, exact display
  * name, or open_id. It changes the authenticated principal, never exposes or
@@ -42,6 +42,16 @@ import type { ConversationHandle } from '../src/application/channels/channel.ada
 import type { LarkPiRuntimeService } from '../src/application/runtime/lark-pi-runtime.service';
 import { conversationKeyForMessage } from '../src/domain/conversation/conversation-key';
 import { runPiAndDeliver } from '../src/infrastructure/channels/lark/lark.webhook.routes';
+import {
+  resolveHarnessOpenId,
+  resolveHarnessTenantKey,
+} from '../src/application/agent-seat/harness-identity.ts';
+import {
+  LarkMessagingClient,
+  type LarkChatMode,
+} from '../src/infrastructure/channels/lark/clients/lark-messaging.client';
+
+export { resolveHarnessOpenId, resolveHarnessTenantKey };
 
 const HARNESS_MODEL_IDS = {
   flash: 'deepseek-v4-flash',
@@ -107,6 +117,31 @@ export function isolateHarnessPiThread(
   };
 }
 
+/**
+ * Bind the selected principal to the provider-authoritative chat before any
+ * model or tool execution. A configured label is not proof of either chat
+ * type or membership, so both facts fail closed.
+ */
+export function assertHarnessChatBinding(input: {
+  readonly chatId: string;
+  readonly expectedChatType: 'p2p' | 'group';
+  readonly actualMode: LarkChatMode;
+  readonly selectedOpenId: string;
+  readonly memberOpenIds: readonly string[];
+}): void {
+  const actualChatType = input.actualMode === 'p2p' ? 'p2p' : 'group';
+  if (actualChatType !== input.expectedChatType) {
+    throw new Error(
+      `Refusing harness run: chat ${input.chatId} has provider mode ${input.actualMode}, not configured ${input.expectedChatType}.`,
+    );
+  }
+  if (!input.memberOpenIds.includes(input.selectedOpenId)) {
+    throw new Error(
+      `Refusing harness run: selected Lark principal ${input.selectedOpenId} is not a live member of chat ${input.chatId}.`,
+    );
+  }
+}
+
 export function parseEngineHarnessArgs(
   args: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
@@ -160,6 +195,12 @@ export function parseEngineHarnessArgs(
       continue;
     }
     if (value === '--no-delivery') {
+      throw new Error(
+        '--no-delivery was removed because it falsely implied a side-effect-free run. '
+        + 'Use --no-final-delivery to suppress only status/final cards; tool, review, approval, and provider side effects remain enabled.',
+      );
+    }
+    if (value === '--no-final-delivery') {
       deliverToLark = false;
       continue;
     }
@@ -220,6 +261,15 @@ export function parseEngineHarnessArgs(
   ) {
     throw new Error('Selecting a non-default Lark principal requires --allow-impersonation');
   }
+  if (
+    userSelector.toLowerCase() !== DEFAULT_USER_SELECTOR.toLowerCase()
+    && !explicitChatId
+  ) {
+    throw new Error(
+      'Selecting a non-default Lark principal requires an explicit --chat-id. '
+      + 'This is required even with --no-final-delivery because tools can send review cards.',
+    );
+  }
   if (threadRootMessageId && chatType !== 'group') {
     throw new Error('--thread-root requires a group chat');
   }
@@ -233,10 +283,10 @@ export function parseEngineHarnessArgs(
     throw new Error('--oauth-e2e currently requires a p2p Lark chat');
   }
   if (!deliverToLark && oauthE2e) {
-    throw new Error('--no-delivery cannot be combined with --oauth-e2e');
+    throw new Error('--no-final-delivery cannot be combined with --oauth-e2e');
   }
   if (!deliverToLark && chatType !== 'p2p') {
-    throw new Error('--no-delivery currently supports p2p harness runs only');
+    throw new Error('--no-final-delivery currently supports p2p harness runs only');
   }
   const resolvedChatId = explicitChatId
     ?? (chatType === 'group'
@@ -289,69 +339,6 @@ export function assertPiHarnessOptions(options: EngineHarnessOptions): void {
   if (options.oauthE2e) {
     throw new Error('--oauth-e2e is not supported by the direct cloud Pi harness');
   }
-}
-
-type HarnessIdentityStore = {
-  channelIdentity: {
-    findMany(input: unknown): Promise<Array<{
-      larkOpenId: string | null;
-      displayName: string | null;
-      email: string | null;
-    }>>;
-  };
-};
-
-type HarnessTenantStore = {
-  channelIdentity: {
-    findMany(input: unknown): Promise<Array<{ externalTenantId: string }>>;
-  };
-};
-
-export async function resolveHarnessOpenId(
-  db: HarnessIdentityStore,
-  selector: string,
-): Promise<string> {
-  const normalized = selector.trim();
-  const selectorFilter = normalized.startsWith('ou_')
-    ? [{ larkOpenId: normalized }]
-    : [
-        { email: { equals: normalized, mode: 'insensitive' } },
-        { displayName: { equals: normalized, mode: 'insensitive' } },
-      ];
-  const matches = await db.channelIdentity.findMany({
-    where: {
-      channel: 'lark',
-      larkOpenId: { not: null },
-      OR: selectorFilter,
-    },
-    select: { larkOpenId: true, displayName: true, email: true },
-    orderBy: { updatedAt: 'desc' },
-    take: 2,
-  });
-  if (matches.length === 0) {
-    throw new Error(`No DB-linked Lark identity matches ${JSON.stringify(normalized)}`);
-  }
-  if (matches.length > 1) {
-    throw new Error(`Lark identity ${JSON.stringify(normalized)} is ambiguous; pass its exact open_id`);
-  }
-  return matches[0]!.larkOpenId!;
-}
-
-export async function resolveHarnessTenantKey(
-  db: HarnessTenantStore,
-  companyId: string,
-  larkOpenId: string,
-): Promise<string> {
-  const matches = await db.channelIdentity.findMany({
-    where: { companyId, channel: 'lark', larkOpenId },
-    select: { externalTenantId: true },
-    distinct: ['externalTenantId'],
-    take: 2,
-  });
-  if (matches.length !== 1) {
-    throw new Error(`Expected one Lark tenant for openId=${larkOpenId}; found ${matches.length}`);
-  }
-  return matches[0]!.externalTenantId;
 }
 
 export function buildHarnessTextMessage(text: string): string {
@@ -645,7 +632,7 @@ async function printPersistedTrace(input: {
 async function main() {
   const options = parseEngineHarnessArgs(process.argv.slice(2));
   if (options.help) {
-    console.log('Usage: pnpm tsx scripts/run-engine-harness.ts [--model flash|pro|luna] [--backend-url <local-backend-url>] [--fresh-context] [--no-delivery] [--allow-impersonation --user <email|name|open_id>] [--chat-id <allowed-id>] [--chat-type p2p|group] [--group] [--group-mode threaded|inline] [--thread-root <message-id>] [--no-trace] [prompt]');
+    console.log('Usage: pnpm tsx scripts/run-engine-harness.ts [--model flash|pro|luna] [--backend-url <local-backend-url>] [--fresh-context] [--no-final-delivery] [--allow-impersonation --user <email|name|open_id>] [--chat-id <allowed-id>] [--chat-type p2p|group] [--group] [--group-mode threaded|inline] [--thread-root <message-id>] [--no-trace] [prompt]');
     return;
   }
   assertPiHarnessOptions(options);
@@ -655,7 +642,7 @@ async function main() {
   if (options.chatType === 'group') console.log(`group reply mode: ${options.groupReplyMode}`);
   console.log(`expected model: ${options.model ?? 'member policy'}`);
   console.log(`user selector: ${options.userSelector}`);
-  console.log(`delivery: ${options.deliverToLark ? `Lark chat ${options.chatId}` : 'local only'}`);
+  console.log(`final delivery: ${options.deliverToLark ? `Lark chat ${options.chatId}` : 'suppressed; tool/provider side effects remain enabled'}`);
   console.log(`fresh context: ${options.freshContext}`);
   console.log(`oauth e2e: ${options.oauthE2e}`);
   console.log(`prompt: ${JSON.stringify(options.prompt)}`);
@@ -688,6 +675,23 @@ async function main() {
   }
   const identity = identityResult.value;
   const tenantKey = await resolveHarnessTenantKey(prisma, identity.companyId, userOpenId);
+  const harnessMessagingClient = new LarkMessagingClient({
+    appId: env.LARK_APP_ID,
+    appSecret: env.LARK_APP_SECRET,
+    logger: container.logger,
+    ...(env.LARK_API_BASE_URL ? { apiBaseUrl: env.LARK_API_BASE_URL } : {}),
+  });
+  const [actualChatMode, liveChatMembers] = await Promise.all([
+    harnessMessagingClient.getChatMode(options.chatId),
+    harnessMessagingClient.listChatMemberOpenIds(options.chatId),
+  ]);
+  assertHarnessChatBinding({
+    chatId: options.chatId,
+    expectedChatType: options.chatType,
+    actualMode: actualChatMode,
+    selectedOpenId: userOpenId,
+    memberOpenIds: liveChatMembers,
+  });
   const activeModelId = await piRuntime.modelFor(identity.userId);
   const expectedModelId = options.model ? HARNESS_MODEL_IDS[options.model] : undefined;
   if (expectedModelId && activeModelId !== expectedModelId) {
@@ -832,7 +836,7 @@ async function main() {
   console.log(`Pi thread:     ${runtimeThreadId}`);
   console.log('piRuntime.run starting…\n');
   const start = Date.now();
-  const resultText = options.deliverToLark
+  const delivery = options.deliverToLark
     ? await runPiAndDeliver({
         incoming,
         runContext,
@@ -844,6 +848,9 @@ async function main() {
         log: container.logger,
         rethrowRuntimeFailureAfterDelivery: true,
       })
+    : null;
+  const resultText = options.deliverToLark
+    ? delivery?.text ?? null
     : (await piRuntime.run({
         incoming,
         runContext,
@@ -860,7 +867,7 @@ async function main() {
   if (options.deliverToLark) {
     console.log('delivered to Lark through the production status/final card flow');
   } else {
-    console.log('delivery skipped (--no-delivery)');
+    console.log('status/final delivery skipped (--no-final-delivery); tool/provider side effects remained enabled');
   }
 
   if (options.trace) {

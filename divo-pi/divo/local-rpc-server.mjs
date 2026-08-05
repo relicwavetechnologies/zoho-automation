@@ -6,6 +6,7 @@ import {
 	MAX_RUNTIME_ATTACHMENT_BYTES,
 	MAX_RUNTIME_REQUEST_BYTES,
 	decodeAttachmentFileName,
+	deleteProtectedRuntimeSession,
 	prompt,
 	promptWithRuntimeLease,
 	runRuntimeSessionLifecycle,
@@ -30,9 +31,56 @@ const DEFAULT_STREAM_HEARTBEAT_MS = 15_000;
 const MAX_BODY_BYTES = 64 * 1024;
 const RETRY_AFTER_SECONDS = 60;
 const UPLOAD_BUDGET_TTL_MS = 15 * 60_000;
+const MAX_PROTECTED_RUN_REFERENCES = 100;
+const SHOPIFY_RESOURCE_ID = /^gid:\/\/shopify\/(Customer|Order)\/[1-9][0-9]*$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const CAPACITY_MESSAGE =
 	"Divo is a little busy right now—everyone’s agents are hard at work. Your request hasn’t started, and your workspace is safe. Please try again in about a minute.";
+
+export function validateProtectedRunReferences(value) {
+	if (value === undefined) return [];
+	if (!Array.isArray(value) || value.length > MAX_PROTECTED_RUN_REFERENCES) {
+		throw admissionError(
+			502,
+			"invalid_protected_run_references",
+			"Pi returned invalid protected-data provenance",
+		);
+	}
+	return value.map((entry) => {
+		const record = entry && typeof entry === "object" && !Array.isArray(entry)
+			? entry
+			: {};
+		const expectedGraphqlType = record.resourceType === "customer" ? "Customer" : "Order";
+		if (
+			record.provider !== "shopify"
+			|| typeof record.connectionId !== "string"
+			|| !UUID.test(record.connectionId)
+			|| !["customer", "order"].includes(record.resourceType)
+			|| typeof record.resourceId !== "string"
+			|| !SHOPIFY_RESOURCE_ID.test(record.resourceId)
+			|| !record.resourceId.startsWith(`gid://shopify/${expectedGraphqlType}/`)
+		) {
+			throw admissionError(
+				502,
+				"invalid_protected_run_references",
+				"Pi returned invalid protected-data provenance",
+			);
+		}
+		return {
+			provider: "shopify",
+			connectionId: record.connectionId,
+			resourceType: record.resourceType,
+			resourceId: record.resourceId,
+		};
+	});
+}
+
+function isProtectedShopifyProgress(progress) {
+	return progress?.type === "tool_start"
+		&& progress.toolName === "divo_gateway"
+		&& ["shopifyOrders", "shopifyCustomers"].includes(progress.toolId);
+}
 
 function positiveInteger(value, fallback, name) {
 	if (value === undefined) return fallback;
@@ -56,6 +104,7 @@ export function createAdmissionController({
 	executeRuntime = promptWithRuntimeLease,
 	executeSessionLifecycle = runRuntimeSessionLifecycle,
 	resolveLease = resolveRuntimeLease,
+	cleanupProtectedSession,
 	maxActiveRuns = DEFAULT_MAX_ACTIVE_RUNS,
 } = {}) {
 	const limit = positiveInteger(maxActiveRuns, DEFAULT_MAX_ACTIVE_RUNS, "maxActiveRuns");
@@ -102,11 +151,11 @@ export function createAdmissionController({
 		get activeProfileNames() {
 			return [...activeProfiles];
 		},
-		async run({ profile: profileName, message, thread, approve = false }) {
+		async run({ profile: profileName, message, thread, approve = false, signal }) {
 			const profile = validateProfileName(profileName);
 			const normalizedMessage = validateMessage(message);
 			if (thread !== undefined) validateThread(thread);
-			return admit(profile, () => execute(profile, normalizedMessage, { thread, approve }));
+			return admit(profile, () => execute(profile, normalizedMessage, { thread, approve, signal }));
 		},
 		async runRuntime({
 			backendUrl,
@@ -143,15 +192,94 @@ export function createAdmissionController({
 				throw admissionError(400, "invalid_attachments", error.message);
 			}
 			const runtime = await resolveLease({ backendUrl, lease: runtimeLease });
-			return admit(runtime.profile, () =>
-				executeRuntime(runtime, normalizedMessage, {
-					signal,
-					sessionScope: normalizedSessionScope,
-					...(model ? { model } : {}),
-					...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
-					...(onProgress ? { onProgress } : {}),
-				}),
-			);
+			return admit(runtime.profile, async () => {
+				const cleanup = async (references, provenanceValid) => {
+					if (normalizedSessionScope !== "thread") return;
+					if (!cleanupProtectedSession) {
+						throw admissionError(
+							503,
+							"protected_session_cleanup_unavailable",
+							"Protected run session cleanup is not configured",
+						);
+					}
+					try {
+						await cleanupProtectedSession({ runtime, references, provenanceValid });
+					} catch {
+						throw admissionError(
+							503,
+							"protected_session_cleanup_failed",
+							"Protected run session cleanup failed",
+						);
+					}
+				};
+				let protectedCallAttempted = false;
+				let result;
+				try {
+					result = await executeRuntime(runtime, normalizedMessage, {
+						signal,
+						sessionScope: normalizedSessionScope,
+						...(model ? { model } : {}),
+						...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
+						onProgress: (progress) => {
+							if (isProtectedShopifyProgress(progress)) protectedCallAttempted = true;
+							return onProgress?.(progress);
+						},
+					});
+				} catch (error) {
+					if (protectedCallAttempted || error?.protectedDataUsed === true) {
+						let references = [];
+						let provenanceValid = error?.protectedProvenanceValid !== false;
+						try {
+							references = validateProtectedRunReferences(error?.protectedRefs);
+						} catch {
+							provenanceValid = false;
+						}
+						await cleanup(references, provenanceValid);
+						throw admissionError(
+							Number.isInteger(error?.statusCode) ? error.statusCode : 500,
+							typeof error?.code === "string" ? error.code : "protected_run_failed",
+							"Protected run failed after its durable session was removed",
+						);
+					}
+					throw error;
+				}
+				const rawProtectedRefs = result?.protectedRefs;
+				const protectedDataUsed = result?.protectedDataUsed;
+				const metadataPresent = protectedDataUsed !== undefined
+					|| rawProtectedRefs !== undefined
+					|| result?.protectedProvenanceValid !== undefined;
+				let protectedRefs;
+				try {
+					protectedRefs = validateProtectedRunReferences(rawProtectedRefs);
+				} catch (error) {
+					// Invalid provenance must not leave the possibly protected transcript
+					// durable merely because its subject references were malformed.
+					if (metadataPresent) await cleanup([], false);
+					throw error;
+				}
+				if (protectedDataUsed === true) {
+					const provenanceValid = result?.protectedProvenanceValid !== false;
+					await cleanup(protectedRefs, provenanceValid);
+					if (!provenanceValid) {
+						throw admissionError(
+							502,
+							"invalid_protected_run_references",
+							"Pi returned invalid protected-data provenance",
+						);
+					}
+					const { protectedProvenanceValid: _internal, ...publicResult } = result;
+					return { ...publicResult, protectedDataUsed: true, protectedRefs };
+				}
+				if (metadataPresent && (protectedDataUsed !== false || protectedRefs.length > 0)) {
+					await cleanup([], false);
+					throw admissionError(
+						502,
+						"invalid_protected_run_references",
+						"Pi returned inconsistent protected-data provenance",
+					);
+				}
+				return result;
+			});
 		},
 		async runSessionLifecycle({ backendUrl, runtimeLease, operation, signal }) {
 			let normalizedOperation;
@@ -350,7 +478,10 @@ export function createControllerServer(options = {}) {
 		options.admission ??
 		createAdmissionController({
 			execute: options.execute,
+			executeRuntime: options.executeRuntime,
 			resolveLease,
+			cleanupProtectedSession:
+				options.cleanupProtectedSession ?? deleteProtectedRuntimeSession,
 			maxActiveRuns: options.maxActiveRuns,
 		});
 	const stageFile = options.stageFile ?? stageRuntimeFile;
@@ -425,7 +556,18 @@ export function createControllerServer(options = {}) {
 						onProgress: (progress) =>
 							sendNdjson(response, { type: "progress", progress }),
 					});
-					sendNdjson(response, { type: "result", text: result.text });
+					sendNdjson(response, {
+						type: "result",
+						text: result.text,
+						...(result.protectedDataUsed === true
+							? {
+								protectedDataUsed: true,
+								...(result.protectedRefs?.length > 0
+									? { protectedRefs: result.protectedRefs }
+									: {}),
+							}
+							: {}),
+					});
 				} finally {
 					clearInterval(heartbeat);
 				}
@@ -434,7 +576,7 @@ export function createControllerServer(options = {}) {
 			}
 			const result = isLarkRun
 				? await admission.runRuntime({ ...body, signal: controller.signal })
-				: await admission.run(body);
+				: await admission.run({ ...body, signal: controller.signal });
 			sendJson(response, 200, result);
 		} catch (error) {
 			const statusCode = error.statusCode ?? 500;

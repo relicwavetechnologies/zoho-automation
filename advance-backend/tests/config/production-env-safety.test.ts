@@ -4,6 +4,7 @@ import {
   validateProductionEnv,
   type TypedEnv,
 } from '../../src/config/env.ts';
+import { resolveApprovalGateOptions } from '../../src/composition.ts';
 
 const production = (overrides: Partial<TypedEnv> = {}): TypedEnv => ({
   NODE_ENV: 'production',
@@ -13,6 +14,8 @@ const production = (overrides: Partial<TypedEnv> = {}): TypedEnv => ({
   LARK_WEBHOOK_SIGNING_SECRET: 'lark-signing-secret',
   LARK_ENCRYPT_KEY: undefined,
   LARK_VERIFICATION_TOKEN: undefined,
+  DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS: false,
+  DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: false,
   PI_LARK_CONTROLLER_URL: 'http://divo-pi-controller:4317',
   HINDSIGHT_ENABLED: true,
   HINDSIGHT_API_KEY: 'private-hindsight-key',
@@ -20,6 +23,12 @@ const production = (overrides: Partial<TypedEnv> = {}): TypedEnv => ({
   CLOUDINARY_CLOUD_NAME: 'private-cloud',
   CLOUDINARY_API_KEY: 'private-key',
   CLOUDINARY_API_SECRET: 'private-secret',
+  SHOPIFY_CLIENT_ID: 'shopify-client-id',
+  SHOPIFY_CLIENT_SECRET: 'shopify-client-secret',
+  SHOPIFY_REDIRECT_URI: 'https://backend.example.test/api/shopify/auth/callback',
+  SHOPIFY_SCOPES: 'read_reports',
+  SHOPIFY_PROTECTED_DATA_TOOLS_ENABLED: false,
+  INTEGRATION_TOKEN_ENCRYPTION_KEY: 'integration-'.padEnd(40, 'k'),
   ...overrides,
 } as TypedEnv);
 
@@ -49,5 +58,70 @@ describe('production environment safety', () => {
 
   it('does not impose production-only topology checks in local test mode', () => {
     assert.deepEqual(validateProductionEnv(production({ NODE_ENV: 'test' })), []);
+  });
+
+  it('uses the canonical four-eyes setting in production and ignores the legacy test switch there', () => {
+    const productionPolicy = production({
+      DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS: true,
+      DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: true,
+    });
+    assert.deepEqual(resolveApprovalGateOptions(productionPolicy), {
+      disableManagerSelfBypass: true,
+    });
+    assert.deepEqual(validateProductionEnv(productionPolicy), []);
+
+    assert.deepEqual(resolveApprovalGateOptions(production({
+      DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS: false,
+      DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: true,
+    })), { disableManagerSelfBypass: false });
+
+    assert.deepEqual(resolveApprovalGateOptions({
+      NODE_ENV: 'test',
+      DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS: false,
+      DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: true,
+    }), { disableManagerSelfBypass: true });
+  });
+
+  it('fails startup for incomplete, insecure, or non-encrypting Shopify production configuration', () => {
+    const issues = validateProductionEnv(production({
+      SHOPIFY_CLIENT_ID: undefined,
+      SHOPIFY_CLIENT_SECRET: undefined,
+      SHOPIFY_REDIRECT_URI: 'http://127.0.0.1:3000/api/shopify/auth/callback',
+      INTEGRATION_TOKEN_ENCRYPTION_KEY: 'short',
+    }));
+    assert.ok(issues.some(issue => issue.includes('SHOPIFY_CLIENT_ID')));
+    assert.ok(issues.some(issue => issue.includes('SHOPIFY_CLIENT_SECRET')));
+    assert.ok(issues.some(issue => issue.includes('SHOPIFY_REDIRECT_URI must use HTTPS')));
+    assert.ok(issues.some(issue => issue.includes('INTEGRATION_TOKEN_ENCRYPTION_KEY')));
+  });
+
+  it('fails startup when the Shopify production callback is absent', () => {
+    const issues = validateProductionEnv(production({ SHOPIFY_REDIRECT_URI: undefined }));
+    assert.ok(issues.some(issue => issue.includes('SHOPIFY_REDIRECT_URI is required')));
+  });
+
+  it('allows protected Shopify tools only with their exact provider scopes', () => {
+    assert.deepEqual(validateProductionEnv(production({
+      SHOPIFY_PROTECTED_DATA_TOOLS_ENABLED: true,
+      SHOPIFY_SCOPES: 'read_reports,read_orders,read_customers',
+    })), []);
+
+    const missing = validateProductionEnv(production({
+      SHOPIFY_PROTECTED_DATA_TOOLS_ENABLED: true,
+      SHOPIFY_SCOPES: 'read_reports,read_orders',
+    }));
+    assert.ok(missing.some(issue => issue.includes('must include read_customers')));
+
+    const overScoped = validateProductionEnv(production({
+      SHOPIFY_PROTECTED_DATA_TOOLS_ENABLED: false,
+      SHOPIFY_SCOPES: 'read_reports,read_orders,read_customers',
+    }));
+    assert.ok(overScoped.some(issue => issue.includes('SHOPIFY_SCOPES must not request')));
+
+    const writeScoped = validateProductionEnv(production({
+      SHOPIFY_PROTECTED_DATA_TOOLS_ENABLED: true,
+      SHOPIFY_SCOPES: 'read_reports,read_orders,read_customers,write_orders',
+    }));
+    assert.ok(writeScoped.some(issue => issue.includes('unsupported scope write_orders')));
   });
 });

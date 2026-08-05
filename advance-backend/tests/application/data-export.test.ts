@@ -327,29 +327,25 @@ describe('data export source adapters', () => {
     ]);
   });
 
-  it('treats a satisfied non-paged Semrush row request as an intentional window', async () => {
+  it('reads a Semrush snapshot in one provider fetch', async () => {
     const adapter = new SemrushSnapshotDataExportSource({
       execute: async () => ({
-        operation: 'keyword_gap',
-        status: 'partial',
+        operation: 'backlinks_comparison',
+        status: 'complete',
         coverage: {},
-        rows: Array.from({ length: 250 }, (_, index) => ({ keyword: `term-${index}` })),
+        rows: [{ Target: 'example.com' }],
       }),
     } as any);
     const pages = [];
     for await (const page of adapter.read({
       kind: 'semrush_snapshot',
       connectionId: 'backend_managed',
-      args: { operation: 'keyword_gap', targets: ['a.com', 'b.com'], limit: 250 },
+      args: { operation: 'backlinks_comparison', targets: ['a.com', 'b.com'] },
     }, {})) {
       pages.push(page);
     }
 
-    assert.equal(pages[0]?.requestedRows, 250);
-    assert.deepEqual(pages[0]?.coverage, {
-      outcome: 'requested_window_satisfied',
-      requestedRows: 250,
-    });
+    assert.deepEqual(pages, [{ rows: [{ Target: 'example.com' }] }]);
   });
 
   it('does not claim truncation when the CRM returned the whole module', async () => {
@@ -524,18 +520,18 @@ describe('data export source registry', () => {
     );
   });
 
-  it('centrally applies each part row window, including an offset an adapter ignored', async () => {
+  it('returns every row from a single-page Semrush snapshot adapter', async () => {
     const registry = new DatasetSourceRegistry();
     registry.register({
       kind: 'semrush_snapshot' as const,
       async *read() {
-        yield { rows: [{ id: 0 }, { id: 1 }, { id: 2 }], hasMore: true };
+        yield { rows: [{ id: 0 }, { id: 1 }, { id: 2 }] };
       },
     });
     const source = {
       kind: 'semrush_snapshot' as const,
       connectionId: 'backend_managed' as const,
-      args: { operation: 'organic_positions' as const, domain: 'example.com', offset: 1, limit: 1 },
+      args: { operation: 'domain_overview' as const, domain: 'example.com' },
     };
 
     const pages = [];
@@ -543,12 +539,8 @@ describe('data export source registry', () => {
       pages.push(page);
     }
 
-    assert.deepEqual(datasetSourceSelection(source), { offset: 1, limit: 1 });
-    assert.deepEqual(pages, [{
-      rows: [{ id: 1 }],
-      requestedRows: 1,
-      coverage: { outcome: 'requested_window_satisfied', requestedRows: 1 },
-    }]);
+    assert.equal(datasetSourceSelection(source), undefined);
+    assert.deepEqual(pages, [{ rows: [{ id: 0 }, { id: 1 }, { id: 2 }] }]);
   });
 
   it('does not skip an offset that an adapter already applied', async () => {
@@ -562,7 +554,7 @@ describe('data export source registry', () => {
     const source = {
       kind: 'semrush_snapshot' as const,
       connectionId: 'backend_managed' as const,
-      args: { operation: 'organic_positions' as const, domain: 'example.com', offset: 1, limit: 1 },
+      args: { operation: 'domain_overview' as const, domain: 'example.com' },
     };
 
     const pages = [];
@@ -570,7 +562,7 @@ describe('data export source registry', () => {
       pages.push(page);
     }
 
-    assert.deepEqual(pages, [{ rows: [{ id: 1 }], appliedOffset: 1, requestedRows: 1 }]);
+    assert.deepEqual(pages, [{ rows: [{ id: 1 }], appliedOffset: 1 }]);
   });
 });
 

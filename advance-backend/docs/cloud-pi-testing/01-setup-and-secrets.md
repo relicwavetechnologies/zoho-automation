@@ -31,13 +31,20 @@ uvx --version
 ## Missing credential rule
 
 The database tunnel defaults to `deploy@103.172.92.187`, forwards local port
-`15432` to VPS loopback port `15433`, and first tries normal SSH key/agent
-authentication.
+`15432` to VPS loopback port `15433`, and supports two auth modes:
 
-If key authentication is unavailable and neither `DB_TUNNEL_SSH_PASSWORD` nor
-`SSHPASS` is already provided, stop and ask the human for the development VPS
-password. Do not search the repository, old messages, shell history, or logs
-for it.
+1. **SSH key (preferred):** set `DB_TUNNEL_SSH_IDENTITY_FILE` in local
+   `advance-backend/.env` to the private key path you were given.
+2. **Password:** set `DB_TUNNEL_SSH_PASSWORD` in local `.env` only (requires
+   `sshpass`; `brew install sshpass` on macOS). Leave
+   `DB_TUNNEL_SSH_IDENTITY_FILE` unset in this mode.
+
+Use SSH user **`deploy`**, not `root`. The VPS provider's root/panel password is
+not the same as the deploy SSH password used by `scripts/db-tunnel.sh`.
+
+If neither key nor `DB_TUNNEL_SSH_PASSWORD` / `SSHPASS` is available, stop and
+ask the human for the deploy-user password or a deploy SSH key. Do not search the
+repository, old messages, shell history, or logs for it.
 
 For an interactive human shell, this avoids printing the password or putting
 it in shell history:

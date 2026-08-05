@@ -1,0 +1,11 @@
+# Link the real Partner app first with `shopify app config link`; keep the
+# generated client_id/name/application_url values from that command and merge
+# this webhook section into the linked shopify.app.toml.
+
+[webhooks]
+api_version = "2026-07"
+
+[[webhooks.subscriptions]]
+topics = ["app/uninstalled"]
+compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+uri = "/webhooks/shopify"

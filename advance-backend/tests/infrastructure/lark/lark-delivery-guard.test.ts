@@ -124,6 +124,23 @@ describe('final reply duplicate guard', () => {
     assert.equal(sent.length, 1, 'the reply was sent once');
   });
 
+  it('does not retain a protected reply in the retry outbox', async () => {
+    const { repo, calls } = makeRepo(RESERVED);
+    const { adapter, sent } = makeAdapter({ deliveryRepo: repo });
+
+    const result = await adapter.sendFinalReply(conversation, {
+      kind: 'final',
+      text: 'protected customer answer',
+      format: 'text',
+      retention: 'transient',
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(sent.length, 1);
+    assert.equal(Object.hasOwn(calls.reserved[0], 'payload'), false);
+    assert.equal(JSON.stringify(calls.reserved).includes('protected customer answer'), false);
+  });
+
   it('does not send again when the segment was already delivered', async () => {
     const { repo } = makeRepo({
       outcome: 'delivered',

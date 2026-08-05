@@ -39,18 +39,22 @@ The current default resolves Abhishek's DB identity and delivers to the
 configured/default Abhishek-Divo DM. The container should start on demand,
 deliver status updates and the final answer, then stop.
 
-## Local-only proof
+## Suppress only status/final delivery
 
-Use this when Lark delivery itself is not under test:
+Use this only when the harness status/final cards are not under test. Governed
+tools remain live and may still send review/approval cards or perform provider
+side effects:
 
 ```bash
 pnpm tsx scripts/run-engine-harness.ts \
   --model luna \
-  --no-delivery \
+  --no-final-delivery \
   "Reply with exactly: LOCAL PI LIVE"
 ```
 
-`--no-delivery` currently supports only the p2p harness path.
+`--no-final-delivery` currently supports only the p2p harness path. The removed
+`--no-delivery` spelling is rejected because it falsely implied a local-only,
+side-effect-free run.
 
 ## Another named user or DM
 
@@ -72,6 +76,13 @@ pnpm tsx scripts/run-engine-harness.ts \
   --chat-id oc_target \
   "Reply with exactly: NAMED USER PI LIVE"
 ```
+
+The harness requires `--chat-id` for every non-default principal, including
+`--no-final-delivery` runs because a governed tool can still send an approval or
+review card. Immediately before execution it also reads the live Lark chat
+mode and membership. It refuses the run unless the configured audience matches
+the provider (`p2p`, or `group` including topic-mode groups) and the selected
+principal belongs to that exact chat.
 
 `--fresh-context` creates a fresh conversation key and disables Mem0 for the
 run. It does not erase the user's durable Docker workspace.
@@ -144,7 +155,8 @@ rg -n 'model_call|tool_call|specialist|run_complete|run_failed' \
 - `--backend-url <url>`: defaults to local port `8000`.
 - `--fresh-context`: fresh conversational context; durable workspace remains.
 - `--no-trace`: skip persisted trace output.
-- `--no-delivery`: print locally instead of sending to Lark.
+- `--no-final-delivery`: suppress only harness status/final cards. Tool,
+  review, approval, and provider side effects remain enabled.
 - `--allow-impersonation --user <selector>`: explicit non-default DB identity.
 - `--chat-id <allowed-id>`: explicit allowlisted destination.
 - `--group`, `--thread-root`, `--group-mode`: group-thread harness controls.

@@ -9,6 +9,7 @@ import {
 	buildChildEnvironment,
 	buildPiArguments,
 	buildRunCorrelationContext,
+	deleteDurablePiSession,
 	imagePolicyFor,
 	resolveRuntimeThreadId,
 	prepareSessionDirectories,
@@ -237,6 +238,40 @@ describe("Pi session scope", () => {
 			sessionScope: "run",
 		});
 		assert.ok(paths.sessionPath.startsWith(path.join(os.tmpdir(), "divo-sessions")));
+	});
+});
+
+describe("Protected durable session cleanup", () => {
+	it("deletes exactly the requested thread and preserves its siblings", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "divo-protected-session-"));
+		const dataDir = path.join(root, "data");
+		const target = path.join(dataDir, "threads", "lark-protected");
+		const sibling = path.join(dataDir, "threads", "lark-normal");
+		for (const directory of [target, sibling]) {
+			fs.mkdirSync(directory, { recursive: true });
+			fs.writeFileSync(path.join(directory, "pi-session.jsonl"), "private\n");
+		}
+
+		assert.equal(deleteDurablePiSession({ dataDir, thread: "lark-protected" }), true);
+		assert.equal(fs.existsSync(target), false);
+		assert.equal(fs.existsSync(path.join(sibling, "pi-session.jsonl")), true);
+		assert.equal(deleteDurablePiSession({ dataDir, thread: "lark-protected" }), false);
+		fs.rmSync(root, { recursive: true, force: true });
+	});
+
+	it("rejects a path-like thread before deleting anything", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "divo-protected-session-"));
+		const dataDir = path.join(root, "data");
+		const sibling = path.join(dataDir, "threads", "lark-normal");
+		fs.mkdirSync(sibling, { recursive: true });
+		fs.writeFileSync(path.join(sibling, "pi-session.jsonl"), "private\n");
+
+		assert.throws(
+			() => deleteDurablePiSession({ dataDir, thread: "../lark-normal" }),
+			/is invalid/,
+		);
+		assert.equal(fs.existsSync(path.join(sibling, "pi-session.jsonl")), true);
+		fs.rmSync(root, { recursive: true, force: true });
 	});
 });
 

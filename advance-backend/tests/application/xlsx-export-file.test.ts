@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import * as XLSX from 'xlsx';
 import {
   XLSX_MAX_CELLS,
+  writeMultiTabXlsxArtifact,
   writeXlsxArtifact,
 } from '../../src/application/data-export/xlsx-export-file.ts';
 
@@ -60,6 +61,55 @@ describe('writeXlsxArtifact', () => {
     assert.equal(rowsRead, 0);
   });
 
+  it('writes a multi-tab workbook with one sheet per planned tab', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'divo-xlsx-workbook-test-'));
+    const path = join(directory, 'workbook.xlsx');
+    try {
+      await writeMultiTabXlsxArtifact({
+        path,
+        tabs: [
+          {
+            tabName: 'Backlinks',
+            columns: ['Domain', 'Backlinks'],
+            rows: rows([
+              { Domain: 'a.com', Backlinks: '10' },
+              { Domain: 'b.com', Backlinks: '8' },
+            ]),
+            rowCount: 2,
+          },
+          {
+            tabName: 'Overview',
+            columns: ['Domain', 'Rank'],
+            rows: rows([
+              { Domain: 'a.com', Rank: '1000' },
+            ]),
+            rowCount: 1,
+          },
+        ],
+      });
+
+      const workbook = XLSX.readFile(path, { cellStyles: true });
+      assert.deepEqual(workbook.SheetNames, ['Backlinks', 'Overview']);
+      assert.deepEqual(
+        XLSX.utils.sheet_to_json(workbook.Sheets.Backlinks!, { header: 1, raw: true, defval: '' }),
+        [
+          ['Domain', 'Backlinks'],
+          ['a.com', '10'],
+          ['b.com', '8'],
+        ],
+      );
+      assert.deepEqual(
+        XLSX.utils.sheet_to_json(workbook.Sheets.Overview!, { header: 1, raw: true, defval: '' }),
+        [
+          ['Domain', 'Rank'],
+          ['a.com', '1000'],
+        ],
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('separates Semrush trend values into a typed worksheet', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'divo-xlsx-semrush-test-'));
     const path = join(directory, 'organic.xlsx');
@@ -70,7 +120,7 @@ describe('writeXlsxArtifact', () => {
         source: {
           kind: 'semrush_snapshot',
           connectionId: 'backend_managed',
-          args: { operation: 'organic_positions', domain: 'example.com', database: 'in' },
+          args: { operation: 'domain_overview', domain: 'example.com', database: 'in' },
         },
         columns: [
           'Keyword', 'Position', 'Search Volume', 'Url', 'Trends',

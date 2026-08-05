@@ -11,7 +11,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }))
 
 const { cloudProviders } = await import('../$pluginId')
-const { getPlugin, PERSONAL_CONNECTABLE_PLUGIN_IDS } = await import('@/lib/plugins')
+const { getPlugin, MEMBER_CONNECTION_PLUGIN_IDS } = await import('@/lib/plugins')
 
 /**
  * The detail page draws the connect flow only when `cloudProviders` and the
@@ -32,13 +32,20 @@ describe('connect flow registries', () => {
     expect(mismatched).toEqual([])
   })
 
-  it('offers a personally connectable group only where a connect flow exists', () => {
-    const unreachable = PERSONAL_CONNECTABLE_PLUGIN_IDS.filter(pluginId => !providerIds.includes(pluginId))
+  it('offers a member-visible connection group only where a detail flow exists', () => {
+    const unreachable = MEMBER_CONNECTION_PLUGIN_IDS.filter(pluginId => !providerIds.includes(pluginId))
     expect(unreachable).toEqual([])
   })
 
   it('reaches Airtable through both registries', () => {
     expect(cloudProviders.airtable.commands.authorize).toBe('divo_airtable_authorize_url')
     expect(getPlugin('airtable')?.name).toBe('Airtable')
+  })
+
+  it('reaches read-only Shopify through both registries', () => {
+    expect(cloudProviders.shopify.commands.authorize).toBe('divo_shopify_authorize_url')
+    expect(cloudProviders.shopify.commands.status).toBe('divo_shopify_status')
+    expect(cloudProviders.shopify.supportsShopDomain).toBe(true)
+    expect(getPlugin('shopify')?.name).toBe('Shopify')
   })
 })

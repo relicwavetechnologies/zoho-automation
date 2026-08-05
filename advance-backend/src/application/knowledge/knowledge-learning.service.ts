@@ -9,6 +9,10 @@ import type {
   KnowledgeLearningObservation,
 } from './knowledge-learning.extractor';
 import type { KnowledgeLearningQueuePort } from './knowledge-learning.queue';
+import {
+  SHOPIFY_ERASURE_LOCK_NAMESPACE,
+  shopifyErasureLockKey,
+} from '../shopify/shopify-erasure-fence';
 
 export const KNOWLEDGE_LEARNING_PIPELINE_VERSION = 1;
 const MAX_USER_MESSAGES = 12;
@@ -119,50 +123,45 @@ export class KnowledgeLearningService {
       .slice(-MAX_USER_MESSAGES);
     if (!sourceId || userMessages.length === 0) return;
 
-    let job = await this.deps.prisma.knowledgeLearningJob.findUnique({
-      where: {
-        companyId_userId_sourceId_pipelineVersion: {
-          companyId: input.companyId,
-          userId: input.userId,
-          sourceId,
-          pipelineVersion: KNOWLEDGE_LEARNING_PIPELINE_VERSION,
-        },
-      },
-      select: { id: true, status: true },
-    });
-    if (!job) {
-      try {
-        job = await this.deps.prisma.knowledgeLearningJob.create({
-          data: {
+    const lockKey = shopifyErasureLockKey(input.companyId, sourceId);
+    const job = await this.deps.prisma.$transaction(async tx => {
+      await tx.$queryRaw`
+        SELECT pg_advisory_xact_lock(
+          hashtext(${SHOPIFY_ERASURE_LOCK_NAMESPACE}),
+          hashtext(${lockKey})
+        )::text AS lock_result
+      `;
+      const erased = await tx.shopifyRunErasureFence.findUnique({
+        where: { companyId_sourceId: { companyId: input.companyId, sourceId } },
+        select: { id: true },
+      });
+      if (erased) return null;
+      return tx.knowledgeLearningJob.upsert({
+        where: {
+          companyId_userId_sourceId_pipelineVersion: {
             companyId: input.companyId,
             userId: input.userId,
             sourceId,
-            channel: input.channel,
-            companyRole: input.companyRole,
-            userMessages,
-            ...(input.assistantText
-              ? { assistantText: sanitizeText(input.assistantText, MAX_ASSISTANT_CHARS) }
-              : {}),
             pipelineVersion: KNOWLEDGE_LEARNING_PIPELINE_VERSION,
-            status: 'queued',
           },
-          select: { id: true, status: true },
-        });
-      } catch (cause) {
-        if ((cause as { code?: string }).code !== 'P2002') throw cause;
-        job = await this.deps.prisma.knowledgeLearningJob.findUnique({
-          where: {
-            companyId_userId_sourceId_pipelineVersion: {
-              companyId: input.companyId,
-              userId: input.userId,
-              sourceId,
-              pipelineVersion: KNOWLEDGE_LEARNING_PIPELINE_VERSION,
-            },
-          },
-          select: { id: true, status: true },
-        });
-      }
-    }
+        },
+        create: {
+          companyId: input.companyId,
+          userId: input.userId,
+          sourceId,
+          channel: input.channel,
+          companyRole: input.companyRole,
+          userMessages,
+          ...(input.assistantText
+            ? { assistantText: sanitizeText(input.assistantText, MAX_ASSISTANT_CHARS) }
+            : {}),
+          pipelineVersion: KNOWLEDGE_LEARNING_PIPELINE_VERSION,
+          status: 'queued',
+        },
+        update: {},
+        select: { id: true, status: true },
+      });
+    });
     if (job?.status === 'queued') await this.enqueueSafely(job.id);
   }
 

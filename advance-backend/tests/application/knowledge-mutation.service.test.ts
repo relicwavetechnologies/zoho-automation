@@ -20,7 +20,12 @@ const NOW = new Date('2026-07-31T00:00:00.000Z');
 class FakeKnowledgeStore implements KnowledgeMutationStore {
   readonly mutations = new Map<string, KnowledgeMutationRecord>();
   readonly receipts = new Map<string, KnowledgeApprovalReceipt>();
+  resolvedResourceId: string | null = null;
   private nextId = 1;
+
+  async resolveResourceId() {
+    return this.resolvedResourceId;
+  }
 
   async resolvePolicy(input: Parameters<KnowledgeMutationStore['resolvePolicy']>[0]) {
     const shared = input.scope !== 'personal';
@@ -325,6 +330,27 @@ describe('KnowledgeMutationService', () => {
 
     assert.equal(replay.id, first.id);
     assert.notEqual(changed.id, first.id);
+  });
+
+  it('does not replay the original create when the same key is later resurrected', async () => {
+    const store = new FakeKnowledgeStore();
+    const service = new KnowledgeMutationService(store);
+    const input = {
+      target: personalTarget('co-1', 'user-a'),
+      requester: { companyId: 'co-1', userId: 'user-a' },
+      kind: 'memory' as const,
+      logicalKey: 'report-format',
+      action: 'create' as const,
+      content: { facts: ['Two columns.'] },
+      sourceType: 'user_explicit' as const,
+    };
+
+    const original = await service.propose(input);
+    store.resolvedResourceId = 'deleted-resource-1';
+    const resurrection = await service.propose(input);
+
+    assert.notEqual(resurrection.id, original.id);
+    assert.notEqual(resurrection.idempotencyKey, original.idempotencyKey);
   });
 
   it('requires optimistic base versions for update and delete', async () => {

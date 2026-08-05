@@ -69,16 +69,12 @@ export const createSemrushTool = (deps: {
   actionGroups: new Set(['read']),
   argsSchema: SemrushToolArgsSchema,
   resultSchema: ResultSchema,
-  description: 'Run read-only Semrush SEO research through official backend-configured APIs. Supports only explicit operations.',
+  description: 'Run read-only Semrush SEO research through backend-configured Semrush web operations. Supports only explicit operations.',
   parameterDocs: [
-    'operation: domain_overview, organic_positions, organic_position_trend, keyword_research, domain_comparison, keyword_gap, or backlinks_comparison.',
+    'operation: domain_overview, backlinks_comparison, or keyword_position_trend.',
     'domain_overview: { domain, database? }. One-row snapshot of rank, organic/paid keywords, traffic and cost.',
-    'organic_positions: { domain, database?, limit?, offset? }. limit is 1–1000; Divo returns at most 25 preview rows in chat and can offer a governed export.',
-    'organic_position_trend: { domain, database?, limit? }. Monthly history, newest month first; limit is months (default 24). Use it for "is this domain growing", never for current position.',
-    'keyword_research: { keywords[1–25], database? }. Volume, CPC, competition and 12-month trend per keyword, batched into one request. Semrush omits keywords it has no data for, so compare coverage.requestedKeywords with returnedKeywords before saying a keyword has no volume.',
-    'domain_comparison: { targets[2–5], database?, limit? }. Keywords the targets have in common, with each domain position in its own column.',
-    'keyword_gap: { targets[2–5], database?, limit? }. THE FIRST TARGET IS THE ONE YOU OWN and is excluded; the result is what the remaining competitors rank for and it does not. Order matters — reversing it answers the opposite question.',
-    'backlinks_comparison: { targets[2–10] }. Authority score, total backlinks and referring domains per target. Costs one billed request per target. If Semrush has no report for a requested target, coverage.missingTargets and the export name it as no provider data rather than zero.',
+    'backlinks_comparison: { targets[2–10] }. Authority score, total backlinks and referring domains per target in one web request. If Semrush has no report for a requested target, coverage.missingTargets and the export name it as no provider data rather than zero.',
+    'keyword_position_trend: { domain, keyword, date, database?, dateType? }. One domain, one keyword, one date (YYYYMMDD). Use for rank on a specific date, not for full keyword lists.',
     'Divo rejects arbitrary Semrush endpoints, headers, cookies, export columns, and API keys. Do not claim an unavailable operation has run.',
   ].join('\n'),
   permissionCheck(_args: SemrushToolArgs, perm: PermissionResult) {
@@ -173,15 +169,6 @@ export const createSemrushTool = (deps: {
         outcome: 'failure',
         metadata: { operation: args.operation, failureCode: normalized.code, latencyMs: Date.now() - startedAt, correlationId: ctx.correlationId },
       });
-      if (normalized.code === 'provider_insufficient_units') {
-        void deps.apiKeyExhaustion?.notifyIfExhausted({
-          companyId: ctx.runContext.companyId,
-          provider: 'semrush',
-          code: normalized.code,
-          message: normalized.message,
-          source: 'semrush.tool',
-        });
-      }
       if (['not_configured', 'capability_unavailable'].includes(normalized.code)) {
         return ok({
           status: 'blocked',
@@ -255,12 +242,11 @@ function exportPayloadFor(
 function semrushExportTitle(args: SemrushToolArgs): string {
   const subject = 'domain' in args
     ? args.domain
-    : 'targets' in args
+    : args.targets.length <= 3
       ? args.targets.join(', ')
-      : args.operation === 'keyword_research'
-        ? `${args.keywords.length} keywords`
-        : 'report';
-  return `Semrush ${args.operation.replaceAll('_', ' ')} — ${subject}`;
+      : `${args.targets.slice(0, 2).join(', ')} +${args.targets.length - 2} more`;
+  const title = `Semrush ${args.operation.replaceAll('_', ' ')} — ${subject}`;
+  return title.length <= 120 ? title : `${title.slice(0, 117)}...`;
 }
 
 function toToolError(error: unknown): ToolError {

@@ -45,9 +45,6 @@ const ZOHO_PAGE_LIMIT = 1_000;
 /** 200 records per CRM page, bounded to the central 5,000-row export ceiling. */
 const ZOHO_CRM_EXPORT_PAGE_LIMIT = 25;
 const ZOHO_CRM_EXPORT_CHUNK = 500;
-const SEMRUSH_EXPORT_PAGE_SIZE = 1_000;
-const SEMRUSH_EXPORT_PAGE_LIMIT = 10;
-
 export class AirtableDataExportSource implements DataExportSourceAdapter<AirtableSource> {
   readonly kind = 'airtable_records' as const;
 
@@ -289,67 +286,15 @@ export class SemrushSnapshotDataExportSource implements DataExportSourceAdapter<
   async *read(source: SemrushSnapshotSource, context: {
     readonly signal?: AbortSignal;
   }): AsyncIterable<DataExportPage> {
-    if (source.args.operation !== 'organic_positions') {
-      context.signal?.throwIfAborted();
-      const result = await executeSemrushForExport(this.service, source.args);
-      context.signal?.throwIfAborted();
-      const requestedRows = semrushRequestedRows(source);
-      const rows = requestedRows === undefined
-        ? result.rows
-        : result.rows.slice(0, requestedRows);
-      const coverage = result.status !== 'partial'
-        ? undefined
-        : requestedRows !== undefined && rows.length >= requestedRows
-          ? { outcome: 'requested_window_satisfied' as const, requestedRows }
-          : { outcome: 'partial' as const, cause: 'provider_limit' as const };
-      yield {
-        rows,
-        ...(requestedRows === undefined ? {} : { requestedRows }),
-        ...(coverage ? { coverage } : {}),
-      };
-      return;
-    }
-
-    // The member's window, which the adapter's page size must never overwrite:
-    // `limit` is how many rows were asked for, `SEMRUSH_EXPORT_PAGE_SIZE` is
-    // only how many the provider is asked for at a time.
-    let offset = source.args.offset ?? 0;
-    let remaining = source.args.limit;
-    for (let page = 0; page < SEMRUSH_EXPORT_PAGE_LIMIT; page += 1) {
-      context.signal?.throwIfAborted();
-      const result = await executeSemrushForExport(this.service, {
-        ...source.args,
-        limit: remaining === undefined
-          ? SEMRUSH_EXPORT_PAGE_SIZE
-          : Math.min(SEMRUSH_EXPORT_PAGE_SIZE, remaining),
-        offset,
-      });
-      context.signal?.throwIfAborted();
-      const rows = remaining === undefined ? result.rows : result.rows.slice(0, remaining);
-      if (remaining !== undefined) remaining -= rows.length;
-      const nextOffset = result.status === 'partial'
-        ? Number(result.nextPage)
-        : NaN;
-      const hasMore = Number.isInteger(nextOffset) && nextOffset > offset;
-      const requestedLimitReached = remaining === 0;
-      const providerLimited = !requestedLimitReached && result.status === 'partial'
-        && (!hasMore || page === SEMRUSH_EXPORT_PAGE_LIMIT - 1);
-      const coverage = requestedLimitReached && result.status === 'partial'
-        ? { outcome: 'requested_window_satisfied' as const, requestedRows: source.args.limit! }
-        : providerLimited
-          ? { outcome: 'partial' as const, cause: 'provider_limit' as const }
-          : undefined;
-      yield {
-        rows,
-        ...(hasMore && !requestedLimitReached ? { hasMore: true } : {}),
-        ...(source.args.offset === undefined ? {} : { appliedOffset: source.args.offset }),
-        ...(source.args.limit === undefined ? {} : { requestedRows: source.args.limit }),
-        ...(coverage ? { coverage } : {}),
-      };
-      if (requestedLimitReached) return;
-      if (!hasMore || providerLimited) return;
-      offset = nextOffset;
-    }
+    context.signal?.throwIfAborted();
+    const result = await executeSemrushForExport(this.service, source.args);
+    context.signal?.throwIfAborted();
+    yield {
+      rows: result.rows,
+      ...(result.status === 'partial'
+        ? { coverage: { outcome: 'partial' as const, cause: 'provider_limit' as const } }
+        : {}),
+    };
   }
 }
 
@@ -361,12 +306,6 @@ async function executeSemrushForExport(
     return await service.execute(args);
   } catch (error) {
     if (error instanceof SemrushServiceError) {
-      if (error.code === 'provider_insufficient_units') {
-        throw new PermanentDataExportError(
-          'Semrush export could not run because the configured Semrush API units are exhausted. Ask an administrator to refresh the Semrush key or web session, then retry.',
-          error.message,
-        );
-      }
       if (error.code === 'provider_auth_failed' || error.code === 'not_configured') {
         throw new PermanentDataExportError(
           'Semrush export could not run because the configured Semrush credential or web session was rejected. Ask an administrator to refresh it, then retry.',
@@ -382,11 +321,6 @@ async function executeSemrushForExport(
     }
     throw error;
   }
-}
-
-function semrushRequestedRows(source: SemrushSnapshotSource): number | undefined {
-  if (source.args.operation === 'organic_position_trend') return undefined;
-  return 'limit' in source.args ? source.args.limit : undefined;
 }
 
 function normalizeZohoFilters(

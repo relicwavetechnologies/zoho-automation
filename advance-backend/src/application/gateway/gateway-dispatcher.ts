@@ -27,12 +27,14 @@ import type { KnowledgeMutationService } from '../knowledge/knowledge-mutation.s
 import type { PersonalMemoryCommandService } from '../knowledge/personal-memory-command.service';
 import { KnowledgeMutationError } from '../knowledge/knowledge-mutation.errors';
 import type {
+  AppliedPersonalMemoryEffect,
   KnowledgeReviewEffectKind,
   LarkRunEffectIdentity,
   ReserveKnowledgeReviewEffectResult,
   RunEffectReceiptStore,
 } from '../runtime/run-effect-receipt.store';
 import { managerTeachLearningApplySchema } from '../persona-learning/manager-teach-persona.types';
+import { sha256CanonicalJson } from '../../shared/hash';
 import type {
   GatewayExecutionContext,
   GatewayMemberContext,
@@ -128,7 +130,18 @@ export interface GatewayDispatcherDeps {
   }) => Promise<unknown>;
   readonly runEffectReceipts?: Pick<
     RunEffectReceiptStore,
-    'reserveKnowledgeReview' | 'completeKnowledgeReview' | 'releaseKnowledgeReview' | 'recordPersonalMemory' | 'recordDataExportOffer' | 'clearDataExportOffer' | 'recordGoogleSheetDestination' | 'getVerifiedGoogleSheetDestination' | 'recordWorkbookConversionOffer'
+    | 'reserveKnowledgeReview'
+    | 'completeKnowledgeReview'
+    | 'releaseKnowledgeReview'
+    | 'recordPersonalMemory'
+    | 'getPersonalMemory'
+    | 'reservePersonalMemory'
+    | 'releasePersonalMemory'
+    | 'recordDataExportOffer'
+    | 'clearDataExportOffer'
+    | 'recordGoogleSheetDestination'
+    | 'getVerifiedGoogleSheetDestination'
+    | 'recordWorkbookConversionOffer'
   >;
   readonly logger: Logger;
 }
@@ -1252,13 +1265,30 @@ export class GatewayDispatcher {
       const issues = parsed.error.errors
         .map(error => `${error.path.join('.') || '(root)'}: ${error.message}`)
         .join('; ');
-      return gatewayFailure('bad_request', `Invalid personal-memory command — ${issues}`);
+      const response = gatewayFailure('bad_request', `Invalid personal-memory command — ${issues}`);
+      this.recordPersonalMemoryAudit(member, 'failure', {
+        reason: 'invalid_payload',
+        gatewayStatus: response.status,
+      });
+      return response;
     }
     if (member.authProvider === 'scheduled_workflow') {
-      return this.permissionDenied('Scheduled work cannot change personal memory.');
+      const response = this.permissionDenied('Scheduled work cannot change personal memory.');
+      this.recordPersonalMemoryAudit(member, 'failure', {
+        action: parsed.data.action,
+        reason: 'scheduled_workflow',
+        gatewayStatus: response.status,
+      });
+      return response;
     }
     if (!this.deps.personalMemoryCommands) {
-      return gatewayFailure('tool_error', 'Personal memory commands are not configured.');
+      const response = gatewayFailure('tool_error', 'Personal memory commands are not configured.');
+      this.recordPersonalMemoryAudit(member, 'failure', {
+        action: parsed.data.action,
+        reason: 'not_configured',
+        gatewayStatus: response.status,
+      });
+      return response;
     }
     if (
       member.channel === 'lark'
@@ -1271,54 +1301,169 @@ export class GatewayDispatcher {
         || execution.threadId !== member.runtimeThreadId
       )
     ) {
-      return this.permissionDenied(
+      const response = this.permissionDenied(
         'Personal-memory provenance does not match the backend-issued Pi runtime lease.',
       );
+      this.recordPersonalMemoryAudit(member, 'failure', {
+        action: parsed.data.action,
+        reason: 'provenance_mismatch',
+        gatewayStatus: response.status,
+      });
+      return response;
     }
 
-    try {
-      const result = await this.deps.personalMemoryCommands.execute({
+    const requestHash = sha256CanonicalJson(parsed.data);
+    const effectIdentity = member.channel === 'lark'
+      ? {
         companyId: member.companyId,
         userId: member.userId,
-        companyRole: member.aiRole,
-        channel: member.channel ?? 'desktop',
-        command: parsed.data,
-        ...(execution ? { sourceRef: execution.runId } : {}),
-      });
+        chatId: member.runtimeChatId!,
+        threadId: execution!.threadId,
+        runId: execution!.runId,
+      }
+      : undefined;
+    const durableSourceRef = effectIdentity
+      ? `${execution!.runId}:${execution!.actionId}`
+      : execution?.runId;
+    const runEffectReceipts = this.deps.runEffectReceipts;
 
-      if (member.channel === 'lark') {
-        if (!this.deps.runEffectReceipts) {
-          return gatewayFailure(
-            'tool_error',
-            'Personal memory changed, but its verified run receipt could not be recorded.',
-          );
-        }
+    // Refuse the mutation before commit when the backend cannot attest the
+    // Lark effect. This removes a known post-commit failure mode for a missing
+    // receipt dependency while preserving retry recovery for ambiguous cache
+    // writes handled by RunEffectReceiptStore.
+    if (member.channel === 'lark' && !runEffectReceipts) {
+      const response = gatewayFailure(
+        'tool_error',
+        'Personal memory cannot be changed because its verified run receipt is unavailable.',
+      );
+      this.recordPersonalMemoryAudit(member, 'failure', {
+        action: parsed.data.action,
+        reason: 'receipt_store_missing',
+        gatewayStatus: response.status,
+      });
+      return response;
+    }
+
+    let receiptWriteAttempted = false;
+    let personalMemoryReservationToken: string | undefined;
+    try {
+      let recovered = false;
+      let result: {
+        readonly action: 'created' | 'updated' | 'unchanged' | 'deleted';
+        readonly logicalKey: string;
+        readonly resourceId: string;
+        readonly version: number;
+        readonly projection: 'completed' | 'queued';
+      };
+
+      let existing: AppliedPersonalMemoryEffect | null = null;
+      if (effectIdentity && runEffectReceipts?.getPersonalMemory) {
         try {
-          await this.deps.runEffectReceipts.recordPersonalMemory({
-            companyId: member.companyId,
-            userId: member.userId,
-            chatId: member.runtimeChatId!,
-            threadId: execution!.threadId,
-            runId: execution!.runId,
-          }, {
-            actionId: execution!.actionId,
-            action: result.action,
-            logicalKey: result.logicalKey,
-            resourceId: result.resourceId,
-            resourceVersion: result.version,
-            projection: result.projection,
-          });
+          existing = await runEffectReceipts.getPersonalMemory(effectIdentity, execution!.actionId);
         } catch (error) {
-          this.deps.logger.error('gateway.personal_memory.receipt_failed', {
-            companyId: member.companyId,
-            userId: member.userId,
+          // PostgreSQL evidence below is the durable recovery anchor. A cache
+          // read outage must not force a second committed mutation.
+          this.deps.logger.warn('gateway.personal_memory.receipt_read_failed', {
             runId: execution!.runId,
+            actionId: execution!.actionId,
             error: safeGatewayMessage(error),
           });
-          return gatewayFailure(
-            'tool_error',
-            'Personal memory changed, but its verified run receipt could not be recorded. Retry the same request before reporting completion.',
-          );
+        }
+      }
+      if (existing) {
+        if (existing.requestHash !== requestHash) {
+          throw new Error('This action ID is already bound to a different personal-memory command.');
+        }
+        recovered = true;
+        result = {
+          action: existing.action,
+          logicalKey: existing.logicalKey,
+          resourceId: existing.resourceId,
+          version: existing.resourceVersion,
+          projection: existing.projection,
+        };
+      } else {
+        let reservationRecovery: Awaited<ReturnType<PersonalMemoryCommandService['recoverApplied']>> = null;
+        if (effectIdentity) {
+          const reservation = await runEffectReceipts!.reservePersonalMemory(effectIdentity, {
+            actionId: execution!.actionId,
+            requestHash,
+          });
+          personalMemoryReservationToken = reservation.reservationToken;
+          if (reservation.status === 'applying') {
+            reservationRecovery = durableSourceRef
+              ? await this.deps.personalMemoryCommands.recoverApplied({
+                  companyId: member.companyId,
+                  userId: member.userId,
+                  sourceRef: durableSourceRef,
+                  requestHash,
+                })
+              : null;
+            if (!reservationRecovery) {
+              const response = gatewayFailure(
+                'tool_error',
+                'This personal-memory action is already being applied. Retry the exact same request shortly.',
+              );
+              this.recordPersonalMemoryAudit(member, 'failure', {
+                action: parsed.data.action,
+                reason: 'action_in_progress',
+                gatewayStatus: response.status,
+              });
+              return response;
+            }
+          }
+        }
+        const durableRecovery = reservationRecovery ?? (effectIdentity && durableSourceRef
+          ? await this.deps.personalMemoryCommands.recoverApplied({
+              companyId: member.companyId,
+              userId: member.userId,
+              sourceRef: durableSourceRef,
+              requestHash,
+            })
+          : null);
+        if (durableRecovery) {
+          recovered = true;
+          result = durableRecovery;
+        } else {
+          result = await this.deps.personalMemoryCommands.execute({
+            companyId: member.companyId,
+            userId: member.userId,
+            companyRole: member.aiRole,
+            channel: member.channel ?? 'desktop',
+            command: parsed.data,
+            ...(durableSourceRef ? { sourceRef: durableSourceRef } : {}),
+            ...(effectIdentity ? { evidence: { contract: 1, requestHash } } : {}),
+          });
+        }
+      }
+
+      if (member.channel === 'lark') {
+        receiptWriteAttempted = true;
+        // This is idempotent for a recovered action and repairs the latest
+        // index if the first response was lost after the exact receipt write.
+        await runEffectReceipts!.recordPersonalMemory({
+          ...effectIdentity!,
+        }, {
+          actionId: execution!.actionId,
+          action: result.action,
+          logicalKey: result.logicalKey,
+          resourceId: result.resourceId,
+          resourceVersion: result.version,
+          projection: result.projection,
+          requestHash,
+        });
+        if (personalMemoryReservationToken) {
+          await runEffectReceipts!.releasePersonalMemory(effectIdentity!, {
+            actionId: execution!.actionId,
+            requestHash,
+            reservationToken: personalMemoryReservationToken,
+          }).catch(error => {
+            this.deps.logger.warn('gateway.personal_memory.reservation_release_failed', {
+              runId: execution!.runId,
+              actionId: execution!.actionId,
+              error: safeGatewayMessage(error),
+            });
+          });
         }
       }
 
@@ -1329,8 +1474,9 @@ export class GatewayDispatcher {
         logicalKey: result.logicalKey,
         version: result.version,
         projection: result.projection,
+        recovered,
       });
-      return gatewaySuccess({
+      const response = gatewaySuccess({
         status: 'applied',
         scope: 'personal',
         ...result,
@@ -1338,21 +1484,60 @@ export class GatewayDispatcher {
           ? { kind: 'personal_memory_applied', runId: execution!.runId }
           : null,
       });
+      this.recordPersonalMemoryAudit(member, 'success', {
+        action: result.action,
+        logicalKey: result.logicalKey,
+        resourceId: result.resourceId,
+        version: result.version,
+        projection: result.projection,
+        recovered,
+        gatewayStatus: response.status,
+      });
+      return response;
     } catch (error) {
       if (error instanceof KnowledgeMutationError) {
+        if (
+          personalMemoryReservationToken
+          && effectIdentity
+          && ['permission_denied', 'invalid_request', 'not_found', 'conflict', 'stale_version'].includes(error.code)
+        ) {
+          await runEffectReceipts!.releasePersonalMemory(effectIdentity, {
+            actionId: execution!.actionId,
+            requestHash,
+            reservationToken: personalMemoryReservationToken,
+          }).catch(() => undefined);
+        }
         const status = error.code === 'permission_denied'
           ? 'permission_denied'
           : ['invalid_request', 'not_found', 'conflict', 'stale_version'].includes(error.code)
             ? 'bad_request'
             : 'tool_error';
-        return gatewayFailure(status, error.message);
+        const response = gatewayFailure(status, error.message);
+        this.recordPersonalMemoryAudit(member, 'failure', {
+          action: parsed.data.action,
+          reason: error.code,
+          gatewayStatus: response.status,
+        });
+        return response;
       }
       this.deps.logger.error('gateway.personal_memory.failed', {
         companyId: member.companyId,
         userId: member.userId,
         error: safeGatewayMessage(error),
       });
-      return gatewayFailure('tool_error', 'Personal memory could not be changed safely.');
+      const receiptFailure = receiptWriteAttempted && member.channel === 'lark';
+      const response = gatewayFailure(
+        'tool_error',
+        receiptFailure
+          ? 'Personal memory changed, but its verified run receipt could not be recorded. Retry the exact same request; the backend will recover the committed result when the receipt write is available.'
+          : 'Personal memory could not be changed safely.',
+      );
+      this.recordPersonalMemoryAudit(member, 'failure', {
+        action: parsed.data.action,
+        reason: receiptFailure ? 'receipt_write_failed' : 'execution_failed',
+        gatewayStatus: response.status,
+      });
+      return response;
     }
   }
 
@@ -1926,6 +2111,23 @@ export class GatewayDispatcher {
       action,
       outcome,
       metadata,
+    });
+  }
+
+  private recordPersonalMemoryAudit(
+    member: GatewayMemberContext,
+    outcome: 'success' | 'failure',
+    metadata: Record<string, unknown>,
+  ): void {
+    this.deps.auditService?.record({
+      actorId: member.userId,
+      companyId: member.companyId,
+      action: 'gateway.personal_memory.mutate',
+      outcome,
+      metadata: {
+        channel: member.channel ?? 'desktop',
+        ...metadata,
+      },
     });
   }
 

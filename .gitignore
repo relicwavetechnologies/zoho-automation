@@ -13,6 +13,7 @@ advance-backend/pnpm-workspace.yaml
 
 # graphify knowledge graph (local only, never commit)
 graphify-out/
+.agent-seat/
 
 # External reference codebases used for local research only
 research/

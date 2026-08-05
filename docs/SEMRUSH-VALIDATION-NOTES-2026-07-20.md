@@ -29,11 +29,10 @@ not a claim that all Semrush UI functionality is available through an API.
 | Legacy backlink export | `POST /analytics/backlinks/webapi2`, `action=export`, `type=backlinks` | `Validation Error` both with and without the active Semrush session | Exclude until a corrected, validated recipe is supplied |
 | Organic growth/trend export | `POST /dpa/rpc`, `export.Get`, `organic.overviewtrendbatch` | Supplied payload is an n8n template with eight unresolved expressions, so it is not valid raw JSON | Exclude until the resolved API contract is supplied and tested |
 
-2026-08-04 update: Divo now has a server-side Semrush web wrapper gated by
-`SEMRUSH_WEB_ENABLED`, `SEMRUSH_WEB_API_KEY`, and `SEMRUSH_WEB_COOKIE`. It never
-exposes the cookie/key to Pi, Desktop, Lark, logs, or export artifacts. Only
-the two verified private routes above are wired; do not substitute
-`organic.overview` for a keyword-row export.
+2026-08-04 update: Divo Semrush is web-only via `SEMRUSH_WEB_API_KEY` and
+`SEMRUSH_WEB_COOKIE`. It never exposes the cookie/key to Pi, Desktop, Lark,
+logs, or export artifacts. Only the validated private routes in the matrix
+are wired.
 
 ## DPA request-ID rule
 
@@ -66,16 +65,22 @@ recipe has been supplied:
 
 ## Implemented safe gateway contract
 
-Expose only the official `domain_overview` and `organic_positions` operations
-through one backend-owned Semrush capability. For each invocation:
+Expose only these web-session operations through one backend-owned Semrush
+capability:
+
+- `domain_overview`
+- `backlinks_comparison`
+- `keyword_position_trend`
+
+For each invocation:
 
 1. Authenticate the Divo member and enforce capability RBAC in the backend.
 2. Validate a whitelisted operation and a strict operation-specific payload.
-3. Use a fixed official Semrush endpoint and server-held environment key.
-4. Apply strict operation-specific payload validation, short timeouts, and
-   structured audit logging with secrets redacted.
+3. Call validated `www.semrush.com` recipes with `SEMRUSH_WEB_API_KEY` and
+   `SEMRUSH_WEB_COOKIE` held only in the backend.
+4. Apply short timeouts and structured audit logging with secrets redacted.
 5. Return structured JSON to the Divo gateway. Never return raw cookies or
    credential-bearing request details.
 
-This document should be updated whenever another official Semrush API operation
-is validated or invalidated.
+This document should be updated whenever another Semrush web recipe is
+validated or invalidated.
