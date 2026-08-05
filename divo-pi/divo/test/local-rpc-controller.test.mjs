@@ -61,6 +61,11 @@ test("startup progress names newly created work only", () => {
 	assert.deepEqual(runtimeStartupProgress({ wasRunning: true, created: false }), [{ type: "working" }]);
 	assert.deepEqual(runtimeStartupProgress({ wasRunning: false, created: false }), [{ type: "working" }]);
 	assert.deepEqual(runtimeStartupProgress({ wasRunning: false, created: true }), [
+		{ type: "starting", stage: "workspace", label: "Checking your workspace…" },
+		{ type: "starting", stage: "container", label: "Waking up Divo…" },
+	]);
+});
+
 const protectedCustomerRef = {
 	provider: "shopify",
 	connectionId: "11111111-1111-4111-8111-111111111111",
@@ -199,8 +204,8 @@ test("protected cleanup refuses a volume not owned by the signed runtime", async
 });
 
 test("startup progress names cold work only and keeps warm runs generic", () => {
-	assert.deepEqual(runtimeStartupProgress(true), [{ type: "working" }]);
-	assert.deepEqual(runtimeStartupProgress(false), [
+	assert.deepEqual(runtimeStartupProgress({ wasRunning: true, created: false }), [{ type: "working" }]);
+	assert.deepEqual(runtimeStartupProgress({ wasRunning: false, created: true }), [
 		{ type: "starting", stage: "workspace", label: "Checking your workspace…" },
 		{ type: "starting", stage: "container", label: "Waking up Divo…" },
 	]);

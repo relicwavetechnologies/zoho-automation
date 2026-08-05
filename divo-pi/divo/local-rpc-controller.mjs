@@ -1321,10 +1321,88 @@ export function collectRunAssistantText(messages) {
 	return chunks.join("\n\n");
 }
 
-function terminalRunError(terminal) {
+const PROTECTED_SHOPIFY_TOOLS = new Set(["shopifyOrders", "shopifyCustomers"]);
+
+function gatewayToolId(call, result) {
+	const payloadToolId = call?.arguments?.payload?.toolId;
+	if (typeof payloadToolId === "string") return payloadToolId;
+	const dataToolId = result?.details?.data?.toolId;
+	return typeof dataToolId === "string" ? dataToolId : undefined;
+}
+
+export function collectProtectedRunMetadata(messages) {
+	if (!Array.isArray(messages)) {
+		return { protectedDataUsed: false, protectedRefs: [] };
+	}
+	const lastUserIndex = messages.findLastIndex((message) => message?.role === "user");
+	const currentRun = messages.slice(lastUserIndex + 1);
+	const gatewayCalls = currentRun.flatMap((message) =>
+		message?.role === "assistant" && Array.isArray(message.content)
+			? message.content.filter((content) =>
+				content?.type === "toolCall" && content.name === "divo_gateway")
+			: [],
+	);
+	if (gatewayCalls.length === 0) {
+		return { protectedDataUsed: false, protectedRefs: [] };
+	}
+
+	let protectedDataUsed = false;
+	let protectedRefs = [];
+	let protectedProvenanceValid = true;
+
+	for (const call of gatewayCalls) {
+		const result = currentRun.find((message) =>
+			message?.role === "toolResult" && message.toolCallId === call.id);
+		const toolId = gatewayToolId(call, result);
+		if (toolId && PROTECTED_SHOPIFY_TOOLS.has(toolId)) {
+			protectedDataUsed = true;
+		}
+
+		const protectedData = result?.details?.data?.protectedData;
+		if (protectedData?.used === true) {
+			protectedDataUsed = true;
+			if (result?.isError !== true) {
+				const refs = protectedData.references;
+				if (Array.isArray(refs)) {
+					protectedRefs = refs;
+				} else if (refs !== undefined) {
+					protectedProvenanceValid = false;
+				}
+			}
+		}
+	}
+
+	if (!protectedDataUsed) {
+		return { protectedDataUsed: false, protectedRefs: [] };
+	}
+
+	return {
+		protectedDataUsed: true,
+		protectedRefs,
+		protectedProvenanceValid,
+	};
+}
+
+export function logCompletedRun(text, metadata, logger) {
+	if (metadata?.protectedDataUsed === true) {
+		logger("[divo-pi] protected run completed; final text suppressed");
+		return;
+	}
+	logger(text);
+}
+
+function terminalRunError(terminal, messages) {
 	const error = new Error(terminal.summary ?? "The model continuation did not complete.");
 	error.code = "model_continuation_failed";
 	error.statusCode = 502;
+	const metadata = messages ? collectProtectedRunMetadata(messages) : undefined;
+	if (metadata?.protectedDataUsed) {
+		error.protectedDataUsed = true;
+		error.protectedRefs = metadata.protectedRefs;
+		if (!metadata.protectedProvenanceValid) {
+			error.protectedProvenanceValid = false;
+		}
+	}
 	return error;
 }
 
@@ -1407,8 +1485,10 @@ export async function promptWithTransientRetries({
 	retryDelayMs = 1_000,
 	waitForIdle = waitForRpcIdle,
 	onRetry,
+	signal,
 }) {
 	for (let retry = 0; ; retry += 1) {
+		signal?.throwIfAborted();
 		const completed = rpc.waitFor("agent_end");
 		await rpc.send(
 			{ type: "prompt", message: retry === 0 ? message : MODEL_RETRY_PROMPT },
@@ -1418,7 +1498,7 @@ export async function promptWithTransientRetries({
 		const terminal = classifyDivoRunTerminal(completion?.messages);
 		if (terminal.status === "ok") return completion;
 		if (!isTransientDivoRunFailure(completion?.messages) || retry >= maxRetries) {
-			throw terminalRunError(terminal);
+			throw terminalRunError(terminal, completion?.messages);
 		}
 		const actionState = gatewayActionState(completion?.messages);
 		if (actionState === "mutation_then_read" || actionState === "completed_mutation") {
@@ -1432,8 +1512,16 @@ export async function promptWithTransientRetries({
 		}
 		const attempt = retry + 1;
 		onRetry?.({ attempt, maxRetries, summary: terminal.summary });
+		signal?.throwIfAborted();
 		if (retryDelayMs > 0) {
-			await new Promise((resolve) => setTimeout(resolve, retryDelayMs * 2 ** retry));
+			await new Promise((resolve, reject) => {
+				const timer = setTimeout(resolve, retryDelayMs * 2 ** retry);
+				if (!signal) return;
+				signal.addEventListener("abort", () => {
+					clearTimeout(timer);
+					reject(signal.reason ?? new Error("request disconnected"));
+				}, { once: true });
+			});
 		}
 		await waitForIdle(rpc);
 	}
