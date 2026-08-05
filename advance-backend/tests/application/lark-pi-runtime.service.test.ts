@@ -247,9 +247,6 @@ test('binds a group run to a shared audience in the signed runtime lease', async
 
 test('turns a verified export offer receipt into explicit governed format choices', async () => {
   const offerId = '11111111-1111-4111-8111-111111111111';
-test('never injects personal recall into a group prompt and preserves retrieval metadata', async () => {
-  let controllerBody: Record<string, unknown> | undefined;
-  let recallInput: Record<string, unknown> | undefined;
   const service = new LarkPiRuntimeService({
     prisma: {
       memberSession: {
@@ -415,6 +412,28 @@ test('turns a run-bound Google authorization into a direct final-card action', a
     url: 'https://accounts.google.com/o/oauth2/auth?state=opaque',
     style: 'primary',
   }]);
+});
+
+test('never injects personal recall into a group prompt and preserves retrieval metadata', async () => {
+  let controllerBody: Record<string, unknown> | undefined;
+  let recallInput: Record<string, unknown> | undefined;
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts,
     knowledgeRecall: {
       recall: async input => {
         recallInput = input as unknown as Record<string, unknown>;

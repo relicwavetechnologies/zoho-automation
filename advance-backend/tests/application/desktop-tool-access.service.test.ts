@@ -187,6 +187,8 @@ describe('DesktopToolAccessService', () => {
       ),
       (error: unknown) => error instanceof DesktopToolAccessError && error.code === 'invalid',
     );
+  });
+
   it('shows Shopify as separately governable and ready only with an accessible store', async () => {
     const analytics = { ...tool, toolId: 'shopifyAnalytics', name: 'Shopify Analytics', category: 'commerce', domain: 'shopify' };
     const runtimeToolIds = ['shopifyAnalytics'];

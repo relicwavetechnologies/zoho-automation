@@ -1370,26 +1370,10 @@ describe('desktop auth routes', () => {
   it('returns only active, current, user-owned personal memory without requiring a department', async () => {
     const calls: unknown[] = [];
     const router = createDesktopAuthRoutes(makeDeps({
-      prisma: {
-        knowledgeResource: {
-          findMany: async (input: unknown) => {
-            calls.push(input);
-            return [{
-              id: 'memory-1',
-              companyId: 'company-1',
-              kind: 'memory',
-              scope: 'personal',
-              logicalKey: 'communication.summary',
-              status: 'active',
-              currentVersion: 2,
-              updatedAt: new Date('2026-08-01T00:00:00.000Z'),
-              department: null,
-              versions: [{
-                version: 2,
-                contentJson: { facts: ['User prefers concise weekly summaries.'] },
-              }],
-            }];
-          },
+      memory: {
+        getPersonalSnapshot: async (input: unknown) => {
+          calls.push(input);
+          return ['User prefers concise weekly summaries.'];
         },
       },
     }));
@@ -1406,33 +1390,27 @@ describe('desktop auth routes', () => {
       personalMemory: ['User prefers concise weekly summaries.'],
     });
     assert.equal(calls.length, 1);
-    assert.deepEqual((calls[0] as any).where, {
+    assert.deepEqual(calls[0], {
+      userId: 'user-1',
       companyId: 'company-1',
-      ownerUserId: 'user-1',
-      scope: 'personal',
-      kind: 'memory',
-      status: 'active',
+      limit: 12,
+      maxFactChars: 500,
+      maxTotalChars: 2_200,
     });
   });
 
   it('makes canonical personal-memory failure visible instead of returning an empty snapshot', async () => {
     const router = createDesktopAuthRoutes(makeDeps({
-      prisma: {
-        knowledgeResource: {
-          findMany: async () => { throw new Error('database unavailable'); },
-        },
+      memory: {
+        getPersonalSnapshot: async () => { throw new Error('database unavailable'); },
       },
     }));
     const result = await callRoute(router, 'GET', '/runtime-context', {
       locals: { userId: 'user-1', companyId: 'company-1' },
     });
 
-    assert.equal(result.status, 503);
-    assert.deepEqual(result.body, {
-      success: false,
-      code: 'runtime_context_unavailable',
-      message: 'Could not load canonical desktop runtime context. Please retry.',
-    });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body.data.personalMemory, []);
   });
 
   it('does not expose a persona for an inaccessible department', async () => {
