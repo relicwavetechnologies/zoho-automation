@@ -140,7 +140,7 @@ function createAnalyticsTool(deps: {
     id: asToolId('shopifyAnalytics'),
     family: 'shopify',
     actionGroups: new Set(['read']),
-    argsSchema: ShopifyAnalyticsArgsSchema,
+    argsSchema: ShopifyAnalyticsArgsSchema as z.ZodType<ShopifyAnalyticsArgs>,
     resultSchema: analyticsResultSchema,
     description: 'Run bounded, read-only Shopify sales, customer, product, inventory, payment, and attribution reports through server-compiled ShopifyQL.',
     parameterDocs: [
@@ -239,7 +239,7 @@ function createAnalyticsTool(deps: {
           returnedRows: preview?.rows.length ?? 0,
           hasCandidate: candidate.kind === 'published',
           status: result.status,
-          coverage: preview?.coverage,
+          ...(preview?.coverage !== undefined ? { coverage: preview.coverage } : {}),
         }),
       };
 
