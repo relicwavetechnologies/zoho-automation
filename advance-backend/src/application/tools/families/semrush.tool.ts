@@ -242,8 +242,11 @@ function exportPayloadFor(
 function semrushExportTitle(args: SemrushToolArgs): string {
   const subject = 'domain' in args
     ? args.domain
-    : args.targets.join(', ');
-  return `Semrush ${args.operation.replaceAll('_', ' ')} — ${subject}`;
+    : args.targets.length <= 3
+      ? args.targets.join(', ')
+      : `${args.targets.slice(0, 2).join(', ')} +${args.targets.length - 2} more`;
+  const title = `Semrush ${args.operation.replaceAll('_', ' ')} — ${subject}`;
+  return title.length <= 120 ? title : `${title.slice(0, 117)}...`;
 }
 
 function toToolError(error: unknown): ToolError {

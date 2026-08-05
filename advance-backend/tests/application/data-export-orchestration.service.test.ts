@@ -376,14 +376,9 @@ describe('DataExportOrchestrationService', () => {
       },
     });
 
-    assert.equal(result.status, 'sample_required');
-    const sample = await service.queueSample({
-      planId: PLAN_ID,
-      companyId: COMPANY_ID,
-      userId: USER_ID,
-      chatId: CHAT_ID,
-    });
-    assert.equal(sample.status, 'sample_queued');
+    assert.equal(result.status, 'direct_queue');
+    assert.equal(result.status === 'direct_queue' && result.exportJobId, 'job-1');
+    assert.equal(submitted.length, 1);
     assert.equal(submitted[0]!.workbookTabs?.length, 2);
     assert.equal(submitted[0]!.workbookTabs?.[0]?.tabName, 'Backlinks');
     assert.equal(submitted[0]!.workbookTabs?.[1]?.tabName, 'Overview');
@@ -395,6 +390,37 @@ describe('DataExportOrchestrationService', () => {
       submitted[0]!.workbookTabs?.[1]?.source.args.operation,
       'domain_overview',
     );
+  });
+
+  it('requires a sample when combined estimated rows exceed the threshold', async () => {
+    const backlinksId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const overviewId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const repo = new InMemoryCandidateRepo([
+      candidate(backlinksId, semrushBacklinksPayload(), { estimatedRows: 3_000 }),
+      candidate(overviewId, semrushDomainOverviewPayload(), { estimatedRows: 3_000 }),
+    ]);
+    const service = serviceWith({
+      repo,
+      permission: permissionFor(['dataExport:create', 'semrush:read']),
+      submitAuthorized: async () => 'should-not-queue',
+    });
+
+    const result = await service.planForActor({
+      companyId: COMPANY_ID,
+      userId: USER_ID,
+      chatId: CHAT_ID,
+      plan: {
+        datasets: [
+          { candidateId: backlinksId, tabName: 'Backlinks' },
+          { candidateId: overviewId, tabName: 'Overview' },
+        ],
+        destination: { format: 'xlsx', title: 'Large Semrush workbook' },
+        userIntent: 'explicit_export',
+      },
+    });
+
+    assert.equal(result.status, 'sample_required');
+    assert.equal(result.status === 'sample_required' && result.reason, 'estimated_rows_above_threshold');
   });
 });
 

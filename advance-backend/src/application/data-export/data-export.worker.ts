@@ -111,10 +111,11 @@ export class DataExportWorker {
       this.log.info('data_export.worker.completed', dataExportRunLogContext(job));
     });
     this.worker.on('failed', (job, error) => {
-      this.log.error('data_export.worker.failed', {
-        ...(job ? dataExportRunLogContext(job) : {}),
-        errorType: dataExportErrorType(error),
-      });
+    this.log.error('data_export.worker.failed', {
+      ...(job ? dataExportRunLogContext(job) : {}),
+      errorType: dataExportErrorType(error),
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
     });
     this.log.info('data_export.worker.started', { queueName, concurrency });
   }
@@ -793,6 +794,7 @@ export class DataExportWorker {
     this.log.error('data_export.failure_delivered', {
       ...run,
       errorType: dataExportErrorType(error),
+      errorMessage: error instanceof Error ? error.message : String(error),
     });
     // "Try again shortly" is false for a disconnected destination or a recipe
     // the provider rejects — the member retries, waits, and fails identically.

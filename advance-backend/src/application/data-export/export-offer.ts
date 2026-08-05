@@ -93,6 +93,10 @@ export function parseDataExportOfferPayload(value: unknown): DataExportOfferPayl
   const parsed = dataExportOfferPayloadSchema.parse(value);
   const source = normalizeDatasetSource(parsed.source);
   const additionalParts = parsed.additionalParts?.map(normalizeDatasetSource);
+  const workbookTabs = parsed.workbookTabs?.map(tab => ({
+    tabName: tab.tabName,
+    source: normalizeDatasetSource(tab.source),
+  }));
   const transform: DataExportOfferPayload['transform'] = parsed.transform
     ? {
         script: parsed.transform.script,
@@ -110,6 +114,7 @@ export function parseDataExportOfferPayload(value: unknown): DataExportOfferPayl
     ...(parsed.departmentId ? { departmentId: parsed.departmentId } : {}),
     source,
     ...(additionalParts && additionalParts.length > 0 ? { additionalParts } : {}),
+    ...(workbookTabs && workbookTabs.length > 0 ? { workbookTabs } : {}),
     ...(parsed.observedRowCount !== undefined
       ? { observedRowCount: parsed.observedRowCount }
       : {}),

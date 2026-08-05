@@ -612,7 +612,6 @@ function sampleRequirement(
   readonly reason: PreparedPlan['sampleReason'];
 } {
   if (plan.userIntent === 'sample_then_confirm') return { required: true, reason: 'explicit_sample' };
-  if (candidates.length > 1) return { required: true, reason: 'multi_dataset' };
   const estimatedRows = candidates.every(candidate => candidate.estimatedRows !== undefined)
     ? candidates.reduce((total, candidate) => total + candidate.estimatedRows!, 0)
     : undefined;

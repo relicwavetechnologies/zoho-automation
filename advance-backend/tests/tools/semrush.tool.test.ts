@@ -119,6 +119,56 @@ describe('semrush tool', () => {
     }).success, false);
   });
 
+  it('keeps export payload titles within the 120-character destination limit for large target lists', async () => {
+    const targets = [
+      'whatmycarworth.com',
+      'giztrendzone.com',
+      'iphone-s.com',
+      'technewsera.com',
+      'theedgesearch.com',
+      'fiz-x.com',
+      'gamengadgets.com',
+      'tierraandlava.com',
+      'travelexperta.com',
+      'manvsclock.com',
+    ];
+    const candidates: unknown[] = [];
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'backlinks_comparison',
+          status: 'complete',
+          coverage: {},
+          rows: targets.map(target => ({ Target: target })),
+        }),
+      },
+      exportCandidates: {
+        publishCandidate: async (payload: unknown) => {
+          candidates.push(payload);
+          return {
+            candidateId: '11111111-1111-4111-8111-111111111111',
+            expiresAt: new Date('2026-08-03T00:00:00.000Z'),
+          };
+        },
+      },
+    });
+    const ctx = makeCtx('semrush', ['read'], {
+      chatId: 'oc-chat',
+      requestId: 'request-ten',
+      runtimeRunId: 'runtime-run-ten',
+    });
+    ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
+
+    const result = await tool.execute({ operation: 'backlinks_comparison', targets }, ctx);
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.ok(result.value.exportCandidate?.candidateId);
+    const payload = parseDataExportOfferPayload(candidates[0]);
+    assert.ok(payload.destination.title.length <= 120);
+    assert.match(payload.destination.title, /\+8 more/);
+  });
+
   it('names every requested backlinks target when Semrush has no provider report', async () => {
     const tool = createTool({
       service: {

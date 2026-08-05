@@ -614,19 +614,33 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
 
       if (format === 'xlsx') {
         const xlsxPath = join(tempDirectory, 'workbook.xlsx');
-        await writeMultiTabXlsxArtifact({
-          path: xlsxPath,
-          tabs: spooledTabs.map(tab => ({
-            tabName: tab.tabName,
-            columns: tab.columns,
-            source: tab.source,
-            rows: readRows(tab.rowsPath, tab.rowCount),
-            rowCount: tab.rowCount,
-          })),
-          ...(input.signal ? { signal: input.signal } : {}),
-          ...(input.onProgress ? { onProgress: input.onProgress } : {}),
-        });
-        return this.uploadPreparedXlsx({
+        try {
+          await writeMultiTabXlsxArtifact({
+            path: xlsxPath,
+            tabs: spooledTabs.map(tab => ({
+              tabName: tab.tabName,
+              columns: tab.columns,
+              source: tab.source,
+              rows: readRows(tab.rowsPath, tab.rowCount),
+              rowCount: tab.rowCount,
+            })),
+            ...(input.signal ? { signal: input.signal } : {}),
+            ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+          });
+        } catch (error) {
+          this.options.logger?.error('data_export.workbook.xlsx_write_failed', {
+            exportKey: input.exportKey,
+            tabCount: spooledTabs.length,
+            tabs: spooledTabs.map(tab => ({
+              tabName: tab.tabName,
+              rowCount: tab.rowCount,
+              columnCount: tab.columns.length,
+            })),
+            errorMessage: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
+        }
+        return await this.uploadPreparedXlsx({
           auth: input.auth,
           access,
           exportKey: input.exportKey,
@@ -639,7 +653,7 @@ export class GoogleWorkspaceExportSink implements DataExportDestinationSink {
         });
       }
 
-      return this.createMultiTabSheet({
+      return await this.createMultiTabSheet({
         auth: input.auth,
         access,
         exportKey: input.exportKey,
