@@ -920,6 +920,8 @@ test("HTTP exposes the fenced private session lifecycle route", async (context) 
 	assert.equal(response.status, 200);
 	assert.deepEqual(await response.json(), { ok: true, operation: "prepare" });
 	assert.deepEqual(calls, ["prepare"]);
+});
+
 test("a protected thread run requests exact session cleanup before returning provenance", async () => {
 	const cleanup = [];
 	const runtime = {
