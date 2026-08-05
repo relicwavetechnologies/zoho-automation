@@ -8,7 +8,7 @@ void main().catch(error => {
 async function main(): Promise<void> {
   // CI/deploy has no interactive Prisma prompt. Tenant-integrity unique indexes and
   // other additive constraints may require this flag even when no rows are deleted.
-  await run(['exec', 'prisma', 'db', 'push', '--skip-generate', '--accept-data-loss']);
+  await run(['exec', 'prisma', 'db', 'push', '--', '--skip-generate', '--accept-data-loss']);
   await run([
     'exec',
     'prisma',
