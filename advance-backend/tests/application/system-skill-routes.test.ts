@@ -47,11 +47,16 @@ describe('system skill routes', () => {
     const data = SYSTEM_SKILL_ROUTE_SEEDS.find(seed => seed.routerSlug === 'data-router');
     assert.ok(data);
     assert.ok(data.targetSlugs.includes('google-sheets'));
+    assert.ok(data.targetSlugs.includes('google-drive'));
     const router = ROUTING_SYSTEM_SKILLS.find(skill => skill.slug === 'data-router')!;
     assert.match(router.markdown, /drive\.google\.com\/file\/d/);
-    assert.match(router.markdown, /before Google Drive/);
-    assert.match(router.markdown, /never request a download URL or import it directly/);
+    assert.match(router.markdown, /`google-drive` first/);
+    assert.match(router.markdown, /get_drive_file_content/);
+    assert.match(router.markdown, /`google-sheets`/);
+    assert.match(router.markdown, /never\s+request a download URL or import it directly/);
     assert.ok(router.aliases.includes('convert excel to google sheet'));
+    assert.ok(router.aliases.includes('read spreadsheet link'));
+    assert.ok(router.aliases.includes('check row in export'));
   });
 
   it('keeps provider previews, candidates, scripts, Sheets, and attached files on distinct data routes', () => {
@@ -60,6 +65,7 @@ describe('system skill routes', () => {
     assert.ok(data.targetSlugs.includes(DATA_EXPORT_SYSTEM_SKILL.slug));
     assert.ok(data.targetSlugs.includes('divo-python-automation'));
     assert.ok(data.targetSlugs.includes('google-sheets'));
+    assert.ok(data.targetSlugs.includes('google-drive'));
     assert.ok(data.targetSlugs.includes('read-understand-files'));
   });
 
@@ -74,6 +80,7 @@ describe('system skill routes', () => {
     assert.match(data.markdown, /`op=sample`/);
     assert.match(data.markdown, /`op=confirm_sample`/);
     assert.match(data.markdown, /destinationReferenceId.*resourceRef.*google-sheets/s);
+    assert.match(data.markdown, /xlsx[\s\S]*csv[\s\S]*google-drive/);
     assert.match(data.markdown, /No eligible Google destination.*Google connection/s);
     assert.match(airtableCoreSkill.instructions, /Record reads are bounded previews.*do not keep paging through Airtable MCP/s);
     assert.match(airtableCoreSkill.instructions, /Menhood.*switch to `menhood-data` instead of paging Airtable MCP/s);

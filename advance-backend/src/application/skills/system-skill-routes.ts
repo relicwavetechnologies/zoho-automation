@@ -120,12 +120,18 @@ Choose the exact approved specialist returned by this router.
 - Fetch across pages to calculate, group, join, reshape, or move data between
   connected products → \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`. Write one script,
   run it, edit and rerun it.
-- An exact pasted \`https://docs.google.com/spreadsheets/d/...\` Sheet URL or
-  \`https://drive.google.com/file/d/...\` Excel workbook URL → \`google-sheets\`
-  before Google Drive or generic web search. Resolve the reference first. A
-  Sheet URL alone proves only metadata/access, so ask what the member wants to
-  do next. A resolved Excel workbook prepares the Lark confirmation for a new
-  Google Sheet copy; never request a download URL or import it directly.
+- Read, inspect, or look up a row or value from an exact pasted
+  \`https://docs.google.com/spreadsheets/d/...\` URL or
+  \`https://drive.google.com/file/d/...\` URL → \`google-drive\` first. Use
+  \`get_drive_file_content\` with the file ID from the URL or from
+  \`RECENT DIVO EXPORTS\` \`artifactUrl\`. Never answer from an earlier
+  provider query when the member references that link.
+- Edit as a native Sheet, add columns, or convert an Excel workbook to Google
+  Sheet from a pasted \`spreadsheets/d/...\` or \`drive.google.com/file/d/...\`
+  URL → \`google-sheets\`. Resolve the reference first. A Sheet URL alone proves
+  only metadata/access, so ask what the member wants to do next. A resolved Excel
+  workbook prepares the Lark confirmation for a new Google Sheet copy; never
+  request a download URL or import it directly.
 - Read or analyse a file that is already in the workspace → \`${READ_FILES_SKILL_SLUG}\`.
 
 Use the provider preview and governed export path for one source's complete
@@ -140,8 +146,10 @@ Keep each opaque handle in its owning route:
 - \`exportCandidate\` → \`dataExport\` \`op=plan\`, then \`op=sample\` and
   \`op=confirm_sample\` if the backend requires review before the full run;
   never rebuild the provider request.
-- \`destinationReferenceId\` or \`resourceRef\` → \`google-sheets\` for the exact
-  resolved or recent Sheet.
+- \`destinationReferenceId\` or \`resourceRef\` for a **google_sheet** →
+  \`google-sheets\` for the exact resolved or recent Sheet.
+- \`RECENT DIVO EXPORTS\` **xlsx** or **csv** read/inspect → \`google-drive\`
+  with \`get_drive_file_content\` and the file ID from \`artifactUrl\`.
 - \`exportJobId\` → status and safe retry/resume only.
 
 Never turn one of these handles into provider IDs, source rows, or Python input.
@@ -153,8 +161,10 @@ Examples:
   \`exportCandidate\` with \`dataExport op=plan\`.
 - “Combine invoices with Airtable owners and calculate totals” → relevant
   provider specialists plus \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`.
-- A Sheet URL by itself → \`google-sheets\`, resolve metadata, then ask what the
-  member wants to do.
+- A pasted spreadsheet or Drive file URL to **read or inspect** → \`google-drive\`
+  and \`get_drive_file_content\`.
+- A Sheet URL by itself with no read intent yet → \`google-sheets\`, resolve
+  metadata, then ask what the member wants to do.
 - “Add a Notes column to that Sheet” after a Divo export → \`google-sheets\`
   with its recent opaque resource reference and read-back verification.
 - No eligible Google destination → let \`dataExport\` ask for an eligible
@@ -167,6 +177,7 @@ Never treat this router as permission to process or export data. Load the specia
       'data processing', 'calculate data', 'analyze rows', 'export data', 'csv export',
       'move data', 'transfer records', 'sync between tools', 'python workflow',
       'excel workbook url', 'drive.google.com/file', 'convert excel to google sheet',
+      'read spreadsheet link', 'check row in export',
     ],
     sortOrder: 5,
   },
@@ -314,6 +325,7 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
     targetSlugs: [
       DIVO_LOCAL_PYTHON_SKILL_SLUG,
       DATA_EXPORT_SYSTEM_SKILL.slug,
+      'google-drive',
       'google-sheets',
       READ_FILES_SKILL_SLUG,
     ],

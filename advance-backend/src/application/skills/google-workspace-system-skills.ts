@@ -26,7 +26,7 @@ export interface GoogleWorkspaceSystemSkillDefinition {
 
 const GOOGLE_SKILL_ALIASES: Record<GoogleWorkspaceProductDefinition['service'], readonly string[]> = {
   gmail: ['google email', 'inbox', 'mail'],
-  drive: ['google files', 'cloud files', 'shared drive'],
+  drive: ['google files', 'cloud files', 'shared drive', 'read export url', 'check row in spreadsheet link'],
   calendar: ['google events', 'schedule', 'availability'],
   docs: ['google document', 'word processor'],
   sheets: ['google sheet', 'google sheet url', 'docs.google.com/spreadsheets', 'drive.google.com/file', 'excel workbook url', 'convert excel to google sheet', 'spreadsheet', 'workbook', 'cells', 'dropdown', 'data validation', 'freeze header'],
@@ -295,6 +295,26 @@ A search/read task is complete only after the requested message or thread conten
 5. Use \`copy_drive_file\` before modifying a copy. Use \`update_drive_file\` for metadata or placement changes supported by its described schema.
 6. Inspect permissions with \`get_drive_file_permissions\` or \`check_drive_file_public_access\` before changing access. Use \`manage_drive_access\` / \`set_drive_file_permissions\` only for the exact recipient and role requested; never make a file public merely to obtain a link.
 
+## Pasted workbook or Divo export URL (read-only)
+
+\`https://docs.google.com/spreadsheets/d/<id>\` and
+\`https://drive.google.com/file/d/<id>\` may point to a native Google Sheet
+**or** an Office file stored in Drive (Divo xlsx/csv exports often use either
+URL shape).
+
+When the member wants to **read, inspect, look up a row or column, or verify a
+value** in a pasted link or a \`RECENT DIVO EXPORTS\` \`artifactUrl\`:
+
+1. Extract the Drive file ID from the URL path segment after \`/d/\`.
+2. Call \`get_drive_file_content\` with that \`file_id\` **before** any Sheets
+   API call or Excel-to-Sheet conversion.
+3. Answer only from the returned file content. Cite the row/column from that
+   result.
+
+Never answer from an earlier Menhood, Semrush, or other provider table when the
+member references a file link or recent export. If \`get_drive_file_content\`
+succeeds, that result is the only evidence for the answer.
+
 ### Completion contract
 
 Creation, import, copy, or sharing is complete only when the successful response identifies the exact file and requested permission outcome. Preserve the returned file ID and canonical Drive URL/shareable link. If a creation response lacks an ID, do not blindly create a second copy—search the intended folder first, then report a real blocker if the resource cannot be identified.`;
@@ -336,11 +356,20 @@ A create/edit task is complete only when the final content is verified and the r
 
 ## Pasted Google Sheet or Excel workbook URL
 
-Before generic web search or a native Sheets operation, route an exact pasted
-\`https://docs.google.com/spreadsheets/d/...\` Sheet URL or
-\`https://drive.google.com/file/d/...\` Excel workbook URL through Divo's
-governed reference resolver. Do not fetch it as a public web page, derive an ID
-from the URL yourself, request a download URL, or call
+**Branch on intent before choosing a tool:**
+
+- **Read-only** (inspect, look up a row/column, verify a value, summarize rows)
+  → load \`google-drive\` and follow its read-only pasted-URL recipe with
+  \`get_drive_file_content\`. Do **not** run \`resolve_reference\` or a
+  conversion flow for read-only work.
+- **Edit as a native Sheet or convert Excel to Google Sheet** → use the
+  \`resolve_reference\` flow below.
+
+Before generic web search or a native Sheets operation for **edit/convert**
+intent, route an exact pasted \`https://docs.google.com/spreadsheets/d/...\`
+Sheet URL or \`https://drive.google.com/file/d/...\` Excel workbook URL through
+Divo's governed reference resolver. Do not fetch it as a public web page, derive
+an ID from the URL yourself, request a download URL, or call
 \`import_to_google_sheets\` directly:
 
 \`\`\`json
@@ -387,9 +416,11 @@ to create a new Google Sheet copy. The original workbook stays unchanged. In
 Lark, stop after the successful resolver call: the backend delivers the
 confirmation card and owns conversion after the member clicks it.
 
-When RECENT DIVO EXPORTS identifies a Google Sheet, use its opaque reference
-for every read or edit in Lark. Never copy an ID from its URL and never supply a
-connection or spreadsheet ID:
+When RECENT DIVO EXPORTS lists a recent artifact:
+
+- **\`google_sheet\`** → use its opaque \`resourceRef\` for every read or edit
+  in Lark. Never copy an ID from its URL and never supply a connection or
+  spreadsheet ID:
 
 \`\`\`json
 {
@@ -403,12 +434,21 @@ connection or spreadsheet ID:
 }
 \`\`\`
 
-For follow-up edits, inspect workbook metadata or the exact header range first,
-perform the narrow requested native operation through \`call_exported_sheet\`,
-then read the exact changed range back through the same opaque reference. Divo
-revalidates the original Google account and workbook on every call. CSV and
-Excel exports are not editable through this reference; ask the member to use a
-Google Sheet destination instead.
+- **\`xlsx\` or \`csv\`** → load \`google-drive\` and call
+  \`get_drive_file_content\` with the file ID from that row's \`artifactUrl\`.
+  Do **not** use Sheets API, \`resolve_reference\`, or
+  \`call_exported_sheet\` for these artifact types.
+
+Never answer from an earlier provider query when the member references a recent
+export or pastes its \`artifactUrl\`.
+
+For follow-up **edits** on a \`google_sheet\` export, inspect workbook metadata
+or the exact header range first, perform the narrow requested native operation
+through \`call_exported_sheet\`, then read the exact changed range back through
+the same opaque reference. Divo revalidates the original Google account and
+workbook on every call. \`xlsx\` and \`csv\` exports are not editable through
+\`call_exported_sheet\`; for read-only inspection use \`google-drive\`. For
+editing, ask the member to use a Google Sheet destination instead.
 
 For a new structured spreadsheet, use this order:
 

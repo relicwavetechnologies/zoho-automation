@@ -11,6 +11,8 @@ import {
 } from '../../src/application/skills/governed-local-routing';
 
 describe('Google Workspace system skills', () => {
+  // After deploy, run `pnpm tsx scripts/reconcile-capabilities.ts` on each environment
+  // so provisioned Skill.markdown rows match these source definitions.
   it('keeps product skills and gateway tools in exact sync', () => {
     assert.deepEqual(
       GOOGLE_WORKSPACE_SYSTEM_SKILLS.flatMap((skill) => [...skill.toolIds]),
@@ -59,12 +61,15 @@ describe('Google Workspace system skills', () => {
     assert.match(sheets.markdown, /URL-only request resolves metadata and access only/);
     assert.match(sheets.markdown, /RECENT DIVO EXPORTS/);
     assert.match(sheets.markdown, /"op": "call_exported_sheet"/);
-    assert.match(sheets.markdown, /never supply a\s+connection or spreadsheet ID/s);
+    assert.match(sheets.markdown, /never supply a\s+connection or\s+spreadsheet ID/s);
     assert.match(sheets.markdown, /read the exact changed range back/);
     assert.match(sheets.markdown, /drive\.google\.com\/file\/d/);
     assert.match(sheets.markdown, /request a download URL/);
     assert.match(sheets.markdown, /import_to_google_sheets` directly/);
     assert.match(sheets.markdown, /backend delivers the\s+confirmation card and owns conversion/s);
+    assert.match(sheets.markdown, /Read-only.*google-drive/s);
+    assert.match(sheets.markdown, /xlsx[\s\S]*csv[\s\S]*get_drive_file_content/);
+    assert.match(sheets.markdown, /Never answer from an earlier provider query when the member references a recent\s+export/);
   });
 
   it('gives the six upgraded products complete Divo-native workflows', () => {
@@ -88,6 +93,8 @@ describe('Google Workspace system skills', () => {
         'get_drive_file_content',
         'check_drive_file_public_access',
         'do not blindly create a second copy',
+        'Pasted workbook or Divo export URL (read-only)',
+        'Never answer from an earlier Menhood',
       ],
       'google-calendar': [
         'query_freebusy',
