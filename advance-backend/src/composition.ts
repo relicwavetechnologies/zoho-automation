@@ -148,6 +148,7 @@ import {
   MenhoodQueryDataExportSource,
   OmsSnapshotDataExportSource,
   SemrushSnapshotDataExportSource,
+  ShopifySnapshotDataExportSource,
   ZohoBooksDataExportSource,
   ZohoCrmDataExportSource,
 } from './application/data-export/data-export.sources';
@@ -1743,6 +1744,7 @@ export async function buildContainer(
   dataExportSources.register(new ZohoCrmDataExportSource(zohoPaginatedCrmClient));
   dataExportSources.register(new OmsSnapshotDataExportSource(companyOmsSiteDataService));
   dataExportSources.register(new SemrushSnapshotDataExportSource(semrushService));
+  dataExportSources.register(new ShopifySnapshotDataExportSource(shopifyService));
   dataExportSources.register(new MenhoodQueryDataExportSource(menhoodQueryService));
   const googleWorkspaceExportSink = new GoogleWorkspaceExportSink({
     logger: logger.child({ service: 'google-workspace-export-sink' }),
@@ -2104,7 +2106,11 @@ export async function buildContainer(
     exportCandidates: dataExportOrchestrationService,
     audit: auditService,
   }));
-  const [shopifyAnalyticsTool, shopifyOrdersTool, shopifyCustomersTool] = createShopifyTools({ service: shopifyService, audit: auditService });
+  const [shopifyAnalyticsTool, shopifyOrdersTool, shopifyCustomersTool] = createShopifyTools({
+    service: shopifyService,
+    audit: auditService,
+    exportCandidates: dataExportOrchestrationService,
+  });
   toolRegistry.register(shopifyAnalyticsTool);
   if (env.SHOPIFY_PROTECTED_DATA_TOOLS_ENABLED) {
     toolRegistry.register(shopifyOrdersTool);

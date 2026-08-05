@@ -4,8 +4,11 @@ import { describe, it } from 'node:test';
 import {
   createShopifyTools,
 } from '../../src/application/tools/families/shopify.tool.ts';
+import { ShopifySnapshotDataExportSource } from '../../src/application/data-export/data-export.sources.ts';
+import { parseDataExportOfferPayload } from '../../src/application/data-export/export-offer.ts';
 import { ShopifyServiceError } from '../../src/application/shopify/shopify.service.ts';
 import type { ShopifyOperationResult } from '../../src/application/shopify/shopify.service.ts';
+import { asToolId } from '../../src/shared/ids.ts';
 import { makeAllowedPerm, makeCtx } from './tool-test.helpers.ts';
 
 const connectionId = '11111111-1111-4111-8111-111111111111';
@@ -47,8 +50,19 @@ function makeService(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
-function makeTools(service = makeService(), audit = makeAudit()) {
-  return { tools: createShopifyTools({ service, audit: audit.service }), audit };
+function makeTools(
+  service = makeService(),
+  audit = makeAudit(),
+  exportCandidates?: Parameters<typeof createShopifyTools>[0]['exportCandidates'],
+) {
+  return {
+    tools: createShopifyTools({
+      service,
+      audit: audit.service,
+      ...(exportCandidates ? { exportCandidates } : {}),
+    }),
+    audit,
+  };
 }
 
 const validAnalyticsArgs = {
@@ -123,6 +137,10 @@ describe('Shopify tool contracts', () => {
     const result = await tools[0]!.execute(validAnalyticsArgs, makeCtx('shopifyAnalytics', ['read']));
 
     assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.value.preview?.rows.length, 1);
+    assert.equal(result.value.preview?.rows[0]?.['Total sales'], '123.45');
+    assert.equal('data' in result.value, false);
     assert.equal(audit.calls.length, 1);
     const auditInput = audit.calls[0] as any;
     assert.equal(auditInput.outcome, 'success');
@@ -168,6 +186,70 @@ describe('Shopify tool contracts', () => {
       assert.equal((audit.calls[0] as any).outcome, 'failure');
       assert.equal((audit.calls[0] as any).metadata.failureCode, code);
     }
+  });
+
+  it('publishes an export candidate for analytics on Lark when dataExport create is granted', async () => {
+    const candidates: unknown[] = [];
+    const { tools } = makeTools(makeService(), makeAudit(), {
+      publishCandidate: async (payload: unknown) => {
+        candidates.push(payload);
+        return {
+          candidateId: '11111111-1111-4111-8111-111111111111',
+          expiresAt: new Date('2026-08-03T00:00:00.000Z'),
+        };
+      },
+    });
+    const ctx = makeCtx('shopifyAnalytics', ['read'], { chatId: 'oc-chat' });
+    ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
+
+    const result = await tools[0]!.execute(validAnalyticsArgs, ctx);
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.value.exportCandidate?.candidateId, '11111111-1111-4111-8111-111111111111');
+    assert.equal(result.value.preview?.rows.length, 1);
+    assert.ok(result.value.preview!.rows.length <= 25);
+    const payload = parseDataExportOfferPayload(candidates[0]);
+    assert.equal(payload.source.kind, 'shopify_snapshot');
+    assert.equal(payload.source.connectionId, connectionId);
+    assert.equal(payload.source.toolId, 'shopifyAnalytics');
+    assert.equal(payload.source.args.operation, 'sales_summary');
+  });
+
+  it('omits export candidate without dataExport create permission', async () => {
+    const { tools } = makeTools(makeService(), makeAudit(), {
+      publishCandidate: async () => ({
+        candidateId: '11111111-1111-4111-8111-111111111111',
+        expiresAt: new Date('2026-08-03T00:00:00.000Z'),
+      }),
+    });
+    const result = await tools[0]!.execute(
+      validAnalyticsArgs,
+      makeCtx('shopifyAnalytics', ['read'], { chatId: 'oc-chat' }),
+    );
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.value.exportCandidate, undefined);
+  });
+
+  it('replays analytics exports through the shopify snapshot adapter', async () => {
+    const adapter = new ShopifySnapshotDataExportSource({
+      analytics: async () => completed,
+    });
+    const pages: Array<{ rows: Record<string, unknown>[] }> = [];
+    for await (const page of adapter.read({
+      kind: 'shopify_snapshot',
+      connectionId,
+      toolId: 'shopifyAnalytics',
+      args: validAnalyticsArgs,
+    }, {
+      companyId: 'co-test',
+      userId: 'user-test',
+    })) {
+      pages.push({ rows: [...page.rows] });
+    }
+    assert.deepEqual(pages, [{ rows: [{ 'Total sales': '123.45' }] }]);
   });
 
   it('fails closed when failure auditing fails instead of exposing an upstream result', async () => {

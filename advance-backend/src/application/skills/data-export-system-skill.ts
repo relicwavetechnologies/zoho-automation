@@ -21,7 +21,8 @@ export const DATA_EXPORT_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = {
 
 In Lark, supported source tools return bounded chat evidence plus an
 \`exportCandidate\` when the same backend-held recipe can be replayed as a
-private file. Preserve that opaque candidate and do not mention its ID to the
+private file. This includes Shopify analytics (\`shopify_snapshot\`) as well as
+Semrush, OMS, Menhood, and Zoho governed exports. Preserve that opaque candidate and do not mention its ID to the
 member. If the member asks for Excel/XL/XLSX, CSV, Sheet, all rows, full data,
 or an export artifact, plan the export from the **table you showed** in your
 last answer:
@@ -126,6 +127,7 @@ The backend re-checks dataExport permission, source read permission, invoker acc
     'google sheet export',
     'airtable export',
     'zoho books export',
+    'shopify export',
   ],
   sortOrder: 29,
 };
