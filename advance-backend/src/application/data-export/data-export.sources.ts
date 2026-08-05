@@ -19,6 +19,18 @@ import type { CompanyOmsSiteDataService } from '../oms/company-oms-site-data.ser
 import type { MenhoodQueryService } from '../menhood/menhood-query.service';
 import type { SemrushService } from '../semrush/semrush.service';
 import { SemrushServiceError } from '../semrush/semrush.types';
+import type { ShopifyService } from '../shopify/shopify.service';
+import { ShopifyServiceError } from '../shopify/shopify.service';
+import {
+  flattenShopifyAnalyticsRows,
+  previewCoverageForAnalytics,
+  readShopifyAnalyticsTable,
+} from '../shopify/shopify-export';
+import type { ShopifyAnalyticsArgs } from '../shopify/shopify.types';
+import { asCompanyId, asUserId } from '../../shared/ids';
+import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
+import type { ToolExecutionContext } from '../tools/tool.contract';
+import type { Logger } from '../../shared/logger';
 import {
   type CurrencyConverter,
   getModuleSchema,
@@ -27,6 +39,7 @@ import {
 import type {
   DataExportPage,
   DataExportSourceAdapter,
+  DataExportSourceContext,
 } from './data-export.types';
 import type { DataExportSource } from './data-export.types';
 import { PermanentDataExportError } from './data-export.errors';
@@ -37,6 +50,15 @@ type ZohoCrmSource = Extract<DataExportSource, { kind: 'zoho_crm' }>;
 type OmsSnapshotSource = Extract<DataExportSource, { kind: 'oms_snapshot' }>;
 type SemrushSnapshotSource = Extract<DataExportSource, { kind: 'semrush_snapshot' }>;
 type MenhoodQuerySource = Extract<DataExportSource, { kind: 'menhood_query' }>;
+type ShopifySnapshotSource = Extract<DataExportSource, { kind: 'shopify_snapshot' }>;
+
+const exportReplayLogger: Logger = {
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  debug: () => {},
+  child: () => exportReplayLogger,
+};
 
 const AIRTABLE_REST_KEYS = new Set(['baseId', 'tableId', 'fieldIds']);
 const AIRTABLE_PAGE_LIMIT = 20_000;
@@ -298,6 +320,38 @@ export class SemrushSnapshotDataExportSource implements DataExportSourceAdapter<
   }
 }
 
+export class ShopifySnapshotDataExportSource implements DataExportSourceAdapter<ShopifySnapshotSource> {
+  readonly kind = 'shopify_snapshot' as const;
+
+  constructor(
+    private readonly service: Pick<ShopifyService, 'analytics'>,
+  ) {}
+
+  async *read(source: ShopifySnapshotSource, context: DataExportSourceContext): AsyncIterable<DataExportPage> {
+    context.signal?.throwIfAborted();
+    if (source.toolId !== 'shopifyAnalytics') {
+      throw new PermanentDataExportError(
+        'This Shopify export source is not yet supported for governed replay.',
+      );
+    }
+    const result = await executeShopifyAnalyticsForExport(
+      this.service,
+      source.args,
+      shopifyExportContext(context),
+    );
+    context.signal?.throwIfAborted();
+    const table = readShopifyAnalyticsTable(result.data);
+    const rows = table ? flattenShopifyAnalyticsRows(table.columns, table.rows) : [];
+    const coverage = previewCoverageForAnalytics(source.args, rows.length);
+    yield {
+      rows,
+      ...(coverage.kind === 'provider_limited'
+        ? { coverage: { outcome: 'partial' as const, cause: 'provider_limit' as const } }
+        : {}),
+    };
+  }
+}
+
 async function executeSemrushForExport(
   service: Pick<SemrushService, 'execute'>,
   args: Parameters<SemrushService['execute']>[0],
@@ -321,6 +375,47 @@ async function executeSemrushForExport(
     }
     throw error;
   }
+}
+
+async function executeShopifyAnalyticsForExport(
+  service: Pick<ShopifyService, 'analytics'>,
+  args: ShopifyAnalyticsArgs,
+  ctx: ToolExecutionContext,
+) {
+  try {
+    return await service.analytics(args, ctx);
+  } catch (error) {
+    if (error instanceof ShopifyServiceError) {
+      if (error.code === 'inaccessible' || error.code === 'authorization_required' || error.code === 'missing_scope') {
+        throw new PermanentDataExportError(
+          'Shopify export could not run because the store connection is inaccessible or missing required scopes. Ask an administrator to reconnect the store or grant access, then retry.',
+          error.message,
+        );
+      }
+    }
+    throw error;
+  }
+}
+
+function shopifyExportContext(context: DataExportSourceContext): ToolExecutionContext {
+  const now = new Date();
+  return {
+    runContext: {
+      companyId: asCompanyId(context.companyId),
+      userId: asUserId(context.userId),
+      companyRole: asCompanyRoleSlug('MEMBER'),
+      channel: 'lark',
+    },
+    perm: {
+      allowedToolIds: new Set(),
+      allowedActionsByTool: new Map(),
+      decisions: [],
+    },
+    correlationId: 'data-export',
+    logger: exportReplayLogger,
+    clock: { now: () => now, nowMs: () => now.getTime() },
+    ...(context.signal ? { abortSignal: context.signal } : {}),
+  };
 }
 
 function normalizeZohoFilters(

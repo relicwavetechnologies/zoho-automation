@@ -1,4 +1,5 @@
 import type { SemrushToolArgs } from '../semrush/semrush.types';
+import { shopifyAnalyticsArgsSummary } from '../shopify/shopify-export';
 import type { DataExportCandidateRecord } from './export-candidate';
 import {
   datasetSourceShapeKey,
@@ -44,6 +45,9 @@ export function exportCandidateLabel(source: DataExportSource): string {
   if (source.kind === 'menhood_query') {
     return 'Menhood query';
   }
+  if (source.kind === 'shopify_snapshot') {
+    return `Shopify ${source.args.operation.replaceAll('_', ' ')}`;
+  }
   if (source.kind === 'zoho_books') {
     return `Zoho Books ${source.module}`;
   }
@@ -66,6 +70,9 @@ export function exportCandidateArgsSummary(source: DataExportSource): string {
   }
   if (source.kind === 'menhood_query') {
     return 'sql';
+  }
+  if (source.kind === 'shopify_snapshot') {
+    return shopifyAnalyticsArgsSummary(source.args);
   }
   if (source.kind === 'zoho_books' || source.kind === 'zoho_crm') {
     return source.module;

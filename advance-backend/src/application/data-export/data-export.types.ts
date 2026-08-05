@@ -5,6 +5,8 @@ import type { ZohoCrmModule } from '../../infrastructure/zoho/zoho-crm-paginated
 import { MenhoodQueryRequestSchema } from '../menhood/menhood-query';
 import { OmsSiteDataToolArgsSchema } from '../oms/oms-site-data.types';
 import { SemrushToolArgsSchema } from '../semrush/semrush.types';
+import { ShopifyAnalyticsArgsSchema } from '../shopify/shopify.types';
+import { shopifyArgsFingerprint } from '../shopify/shopify-export';
 
 export {
   DATA_EXPORT_CSV_ROW_LIMIT as DATA_EXPORT_ROW_LIMIT,
@@ -57,6 +59,12 @@ const menhoodQueryDatasetSourceSchema = z.object({
   query: MenhoodQueryRequestSchema,
   queryFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
+const shopifySnapshotDatasetSourceSchema = z.object({
+  kind: z.literal('shopify_snapshot'),
+  connectionId: z.string().uuid(),
+  toolId: z.literal('shopifyAnalytics'),
+  args: ShopifyAnalyticsArgsSchema,
+}).strict();
 
 /**
  * Filter keys a provider refuses to honour on their own.
@@ -96,6 +104,7 @@ const datasetSourceUnion = z.discriminatedUnion('kind', [
   omsSnapshotDatasetSourceSchema,
   semrushSnapshotDatasetSourceSchema,
   menhoodQueryDatasetSourceSchema,
+  shopifySnapshotDatasetSourceSchema,
 ]);
 
 function refineDatasetSource(
@@ -130,6 +139,7 @@ export function datasetSourceToolId(source: DataExportSource): CanonicalToolId {
   if (source.kind === 'zoho_books') return 'zohoBooks';
   if (source.kind === 'zoho_crm') return 'zohoCrm';
   if (source.kind === 'menhood_query') return 'menhoodData';
+  if (source.kind === 'shopify_snapshot') return source.toolId;
   return source.kind === 'oms_snapshot' ? 'omsSiteData' : 'semrush';
 }
 
@@ -168,6 +178,8 @@ export function datasetSourceShapeKey(source: DataExportSource): string {
       return `${scope}:${source.args.operation}`;
     case 'menhood_query':
       return `${scope}:${source.queryFingerprint}`;
+    case 'shopify_snapshot':
+      return `${scope}:${source.toolId}:${source.args.operation}:${shopifyArgsFingerprint(source.args)}`;
   }
 }
 

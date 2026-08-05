@@ -82,6 +82,12 @@ function normalizeDatasetSource(source: DataExportSource): DataExportSource {
         query: source.query,
         queryFingerprint: source.queryFingerprint,
       }
+    : source.kind === 'shopify_snapshot' ? {
+        kind: source.kind,
+        connectionId: source.connectionId,
+        toolId: source.toolId,
+        args: source.args,
+      }
     : {
         kind: source.kind,
         connectionId: source.connectionId,
