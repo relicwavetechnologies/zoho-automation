@@ -1,0 +1,45 @@
+name: shopify-commerce-read
+description: >
+  Manual Agent Seat walkthrough for governed Shopify read: analytics, orders,
+  and customers under real RBAC. Proves skill routing, connection selection,
+  and protected-data tool paths without cloud Pi.
+prerequisites:
+  - advance-backend/.env with Development DB tunnel
+  - SHOPIFY_E2E_SHOP and SHOPIFY_E2E_ACCESS_TOKEN for dev token seed (local only)
+  - SHOPIFY_PROTECTED_DATA_TOOLS_ENABLED=true for orders/customers phases
+  - pnpm tsx scripts/seed-shopify-token-connection.ts --session
+  - pnpm capabilities:reconcile so shopify-commerce skill is provisioned
+turns:
+  - prompt: What were total sales and order count for my Shopify store in the last 30 days?
+    setup:
+      - skill shopify-router
+      - skill shopify-commerce
+      - gateway connections.list with provider shopify
+    expect:
+      tools:
+        - shopifyAnalytics operation sales_summary period -30d..today
+      avoid:
+        - raw ShopifyQL or GraphQL in chat
+        - guessing connectionId when multiple stores exist
+    notes: >
+      State store name, period, metrics, and any empty/partial caveat from the result.
+  - prompt: Show me the top 10 products by net sales last month.
+    expect:
+      tools:
+        - shopifyAnalytics operation product_performance
+      avoid:
+        - claiming the page is a full catalog export
+  - prompt: List the 10 most recent paid orders.
+    expect:
+      tools:
+        - shopifyOrders operation list_orders with financialStatus paid
+      avoid:
+        - divo-local or Bash for protected order rows
+    notes: >
+      Protected tool path; mention pagination if hasNextPage is true.
+  - prompt: How many customers do we have in total?
+    expect:
+      tools:
+        - shopifyCustomers operation count_customers
+      avoid:
+        - returning email, phone, or names (never returned by design)
