@@ -1379,7 +1379,7 @@ describe('Multi-call exports fold into one offer', () => {
       source: {
         kind: 'semrush_snapshot',
         connectionId: 'backend_managed',
-        args: { operation: 'domain_overview', domain: 'site-a.com' },
+        args: { operation: 'backlinks_comparison', targets: ['site-a.com'] },
       },
       destination: { format: 'auto', title: 'Domain overviews' },
     }, { observedRowCount: 100 });

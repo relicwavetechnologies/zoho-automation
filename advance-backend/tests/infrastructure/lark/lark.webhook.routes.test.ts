@@ -222,6 +222,7 @@ async function runWebhook(body: unknown, options: {
 } = {}) {
   const order: string[] = [];
   const retainedMessages: Array<Record<string, unknown>> = [];
+  const clearedRoomContexts: string[] = [];
   const ingestionJobs: Array<Record<string, unknown>> = [];
   const appendedTurns: Array<Record<string, unknown>> = [];
   const acceptedPayloads: unknown[] = [];
@@ -404,6 +405,10 @@ async function runWebhook(body: unknown, options: {
         options.onRetain?.();
         retainedMessages.push(message);
         return ok(null);
+      },
+      clear: async (companyId: string, chatId: string) => {
+        clearedRoomContexts.push(chatId);
+        return ok(undefined);
       },
     } as any,
     ingestionQueue: {
@@ -617,6 +622,7 @@ async function runWebhook(body: unknown, options: {
     departmentPreferenceUpdates,
     logEvents,
     retainedMessages,
+    clearedRoomContexts,
     ingestionJobs,
     appendedTurns,
     acceptedPayloads,
@@ -1423,7 +1429,7 @@ describe('Lark webhook admission', () => {
     assert.equal(finalReply?.['executionTrace'], undefined);
     assert.equal(
       finalReply?.['text'],
-      'Divo could not complete this request (run_failed). No fallback agent was run.',
+      'Divo hit a temporary problem while finishing this request. Please try again.',
     );
   });
 

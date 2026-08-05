@@ -186,8 +186,18 @@ function semrushOverviewRows(input: {
       'Trend Period 01–12 preserve Semrush provider order; 1.00 is the row peak and lower values are relative interest.',
     ]);
   }
+  if (usesCpcColumn(args.operation)) {
+    rows.push([
+      'Metric note',
+      'CPC is kept currency-neutral because this report does not identify a currency.',
+    ]);
+  }
 
   return rows;
+}
+
+function usesCpcColumn(operation: string): boolean {
+  return operation === 'domain_overview' || operation === 'keyword_position_trend';
 }
 
 function coverageLabel(

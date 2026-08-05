@@ -194,6 +194,23 @@ describe('Lark family clients through the official SDK boundary', () => {
         body: { content: JSON.stringify(card) },
       }],
     }));
+    const client = new LarkMessagingClient({
+      appId: 'app',
+      appSecret: 'secret',
+      logger: noopLogger,
+      sdkClient,
+    });
+
+    assert.deepEqual(await client.getInteractiveMessageCard('om_export'), {
+      chatId: 'oc_export',
+      card,
+    });
+    assert.deepEqual(requests[0], {
+      method: 'GET',
+      url: '/open-apis/im/v1/messages/om_export',
+    });
+  });
+
   it('paginates live chat membership as open IDs without accepting a stalled cursor', async () => {
     const { sdkClient, requests } = sdkStub(request => {
       const params = request.params as Record<string, unknown> | undefined;
@@ -214,14 +231,6 @@ describe('Lark family clients through the official SDK boundary', () => {
       sdkClient,
     });
 
-    assert.deepEqual(await client.getInteractiveMessageCard('om_export'), {
-      chatId: 'oc_export',
-      card,
-    });
-    assert.deepEqual(requests[0], {
-      method: 'GET',
-      url: '/open-apis/im/v1/messages/om_export',
-    });
     assert.deepEqual(await client.listChatMemberOpenIds('oc/test'), ['ou_1', 'ou_2']);
     assert.deepEqual(requests, [{
       method: 'GET',

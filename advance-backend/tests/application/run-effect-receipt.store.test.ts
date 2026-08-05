@@ -211,6 +211,8 @@ describe('run effect receipt store', () => {
       userId: 'other-user',
       chatId: identity.chatId,
     }), null);
+  });
+
   it('recovers an exact personal-memory receipt after the latest index write fails', async () => {
     const fixture = createStore({ failLatestIndexOnce: true });
     const input = {
