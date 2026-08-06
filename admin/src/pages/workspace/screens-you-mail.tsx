@@ -14,12 +14,15 @@
  * rules would otherwise be sitting in looking individually fine.
  */
 import { useMemo, useState } from 'react'
-import { Clock, Inbox, Mail, MailWarning, ShieldAlert, TriangleAlert } from 'lucide-react'
+import {
+  Check, Clock, Inbox, Mail, MailWarning, MessageSquare, ShieldAlert, TriangleAlert,
+} from 'lucide-react'
 import {
   leavesOrganisation, matchClauses, readDestination,
-  useMailAutomations, useMailDeliveries,
-  type MailRule, type MailRuleState, type MailboxHealth,
+  useMailAutomations, useMailDeliveries, useMailRuleDryRun,
+  type MailRule, type MailRuleDryRun, type MailRuleState, type MailboxHealth,
 } from './data/use-mail-automations'
+import { useConnections } from './data/use-connections'
 import {
   Drawer, Empty, Fade, PageHeader, Panel, Seg, SkelRows, useStaged,
 } from './ui'
@@ -79,6 +82,12 @@ export function YouMailRules({ replay }: ScreenProps) {
             stale mailbox banner and a stale list of externally-forwarding
             rules render directly beneath a banner saying nothing was read. */}
         {ready && !error && anyMailboxBroken ? <MailboxBanner mailboxes={mailboxes} /> : null}
+
+        {/* Nothing is being watched yet. Until this, the page answered that
+            with an empty list and the sentence "ask Divo" — which leaves out
+            the step that actually has to happen first and the button that does
+            it, on a different screen the member has no reason to have found. */}
+        {ready && !error && mailboxes.length === 0 ? <GettingStarted /> : null}
 
         {ready && !error && leaving.length > 0 ? (
           <Panel
@@ -206,6 +215,90 @@ export function YouMailRules({ replay }: ScreenProps) {
 }
 
 /**
+ * The two steps that have to happen before this page can ever show anything.
+ *
+ * A member can arrive here wanting one thing — forward this sender to that
+ * address — and the screen's own empty state used to tell them to ask Divo,
+ * which fails until Gmail is connected, on a screen they were never sent to.
+ * Both steps are stated here, in order, with the first one actionable where
+ * they are standing.
+ *
+ * Connecting from here asks Google only for mail. The general Connected apps
+ * screen still means "all of Google" because that is what it says; this button
+ * means what this page is about, and the consent screen says so too.
+ */
+function GettingStarted() {
+  const { byProvider, loading, connecting, connect } = useConnections()
+  const [failed, setFailed] = useState<string | null>(null)
+  const google = byProvider.get('google_workspace')
+  const connected = Boolean(google?.connected)
+
+  const onConnect = async () => {
+    setFailed(null)
+    try {
+      await connect('google_workspace', { forTools: ['mailAutomations'] })
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : 'The connect window could not be opened.')
+    }
+  }
+
+  return (
+    <Panel
+      title="Setting up your first mail rule"
+      description="Two steps. Divo watches your Gmail and passes matching messages on — it never rewrites them."
+    >
+      <div className="ws-rows">
+        <div className="ws-row">
+          <span className="ws-ic">{connected ? <Check size={14} /> : <Mail size={14} />}</span>
+          <div className="ws-row-main">
+            <b>Connect the Gmail account you want watched</b>
+            <p>
+              {connected
+                ? `Connected as ${google?.connections[0]?.accountEmail ?? 'your Google account'}. Divo can read this inbox and send on its behalf.`
+                : 'Google will ask for your mail only — not Drive, Calendar or anything else.'}
+            </p>
+          </div>
+          <div className="ws-row-act">
+            {connected ? (
+              <span className="badge b-ok"><span className="dot" />Connected</span>
+            ) : (
+              <button
+                type="button"
+                className="btn"
+                disabled={loading || connecting === 'google_workspace'}
+                onClick={() => { void onConnect() }}
+              >
+                {connecting === 'google_workspace' ? 'Waiting for Google…' : 'Connect Gmail'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="ws-row">
+          <span className="ws-ic"><MessageSquare size={14} /></span>
+          <div className="ws-row-main">
+            <b>Ask Divo for the rule in a sentence</b>
+            <p>
+              Rules are created in chat, not on this page — say something like
+              {' '}<i>&ldquo;forward anything from billing@acme.com to me on Lark&rdquo;</i>.
+              It will appear here once it exists, and you can check it before trusting it.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {failed ? (
+        <div className="ws-panel-foot"><TriangleAlert size={13} /> {failed}</div>
+      ) : (
+        <div className="ws-panel-foot">
+          Nothing is watched until a rule exists — connecting Gmail on its own does not start anything.
+        </div>
+      )}
+    </Panel>
+  )
+}
+
+/**
  * Three outcomes, not two.
  *
  * "Watching" and "Not watching" hid the case that actually happens most: the
@@ -252,6 +345,7 @@ function MailboxBanner({ mailboxes }: { mailboxes: MailboxHealth[] }) {
 
 function RuleDrawer({ rule, onClose }: { rule: MailRule; onClose: () => void }) {
   const { deliveries, loading } = useMailDeliveries(rule.ruleId)
+  const dryRun = useMailRuleDryRun()
   const destination = readDestination(rule.destination)
   const clauses = matchClauses(rule.match)
   const badge = STATE_BADGE[rule.state]
@@ -299,6 +393,42 @@ function RuleDrawer({ rule, onClose }: { rule: MailRule; onClose: () => void }) 
               ))}
             </ul>
           )}
+        </div>
+
+        {/* The question a waiting rule cannot answer about itself. A rule is
+            written in a sentence and then sits there, and "Waiting" is the
+            same badge whether it was described correctly or not. This replays
+            it over mail already recorded and sends nothing. */}
+        <div>
+          <div className="ws-lbl">Would it have caught anything?</div>
+          <div className="ws-row" style={{ padding: '8px 0', border: 0 }}>
+            <span className="ws-sub" style={{ flex: 1 }}>
+              Checks this rule against mail Divo has already seen for this mailbox. Nothing is sent.
+            </span>
+            <button
+              type="button"
+              className="btn"
+              disabled={dryRun.running}
+              onClick={() => { void dryRun.run(rule.ruleId) }}
+            >
+              {dryRun.running ? 'Checking…' : dryRun.result ? 'Check again' : 'Check this rule'}
+            </button>
+          </div>
+
+          {dryRun.error ? (
+            <p className="ws-sub" style={{ marginTop: 6 }}>{dryRun.error}</p>
+          ) : null}
+
+          {dryRun.result && !dryRun.result.valid ? (
+            <div className="ws-ceiling">
+              <TriangleAlert size={14} />
+              <div><b>This rule cannot be read.</b> {dryRun.result.invalidReason}</div>
+            </div>
+          ) : null}
+
+          {dryRun.result?.valid ? (
+            <DryRunResult result={dryRun.result} />
+          ) : null}
         </div>
 
         <div className="ws-kv">
@@ -357,6 +487,60 @@ function RuleDrawer({ rule, onClose }: { rule: MailRule; onClose: () => void }) 
         </div>
       </div>
     </Drawer>
+  )
+}
+
+/**
+ * What the replay found, with its three qualifications kept apart.
+ *
+ * Rolling them into one number would be the easier read and the wrong one: a
+ * match older than the rule will never be delivered, and a message whose body
+ * retention has taken cannot be judged at all. Counting either as a match
+ * promises mail that is not coming; counting either as a miss sends somebody
+ * rewriting a rule that was right.
+ */
+function DryRunResult({ result }: { result: MailRuleDryRun }) {
+  const considered = result.consideredCount ?? 0
+  const matched = result.matchedCount ?? 0
+  const predating = result.predatingCount ?? 0
+  const unreadable = result.bodyUnavailableCount ?? 0
+  const live = (result.matched ?? []).filter((hit) => !hit.predatesRule)
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <p className="ws-sub">
+        {considered === 0
+          ? 'There is no stored mail for this mailbox to check against yet.'
+          : <>Read {considered} message{considered === 1 ? '' : 's'}, and {matched === 0 ? 'none matched' : <><b>{matched} matched</b></>}.</>}
+      </p>
+
+      {predating > 0 ? (
+        <p className="ws-sub" style={{ marginTop: 6 }}>
+          {predating} of those arrived before this rule started, so the rule would not have acted on them.
+        </p>
+      ) : null}
+
+      {unreadable > 0 ? (
+        <p className="ws-sub" style={{ marginTop: 6 }}>
+          {unreadable} could not be judged — this rule reads the message body, and those bodies have
+          since been discarded. They are neither a match nor a miss.
+        </p>
+      ) : null}
+
+      {live.length > 0 ? (
+        <div className="ws-rows" style={{ marginTop: 8 }}>
+          {live.map((hit) => (
+            <div className="ws-row" key={hit.eventId}>
+              <span className="ws-ic"><Mail size={14} /></span>
+              <div className="ws-row-main">
+                <b>{hit.subject ?? 'Message without a subject'}</b>
+                <p>{hit.from ?? 'Unknown sender'} · {onDate(hit.occurredAt)}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
   )
 }
 

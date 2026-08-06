@@ -25,7 +25,6 @@ import {
   CompanyAiOps, CompanyAudit, CompanyConnections, CompanyDepartments, CompanyGuardrails,
   CompanyHome, CompanyPeople, CompanyPolicy,
 } from "@/pages/workspace/screens-company"
-import { ConnectFlow } from "@/pages/workspace/screens-connect"
 import { Artifacts } from "@/pages/workspace/screens-artifacts"
 import {
   CompanyDepartmentDetail, CompanyPersonDetail, CompanyRunDetail,
@@ -121,7 +120,6 @@ const MeHome = routed(YouHome)
 const MeApprovals = routed(YouApprovals)
 const MeArtifacts = routed(Artifacts)
 const MeConnections = routed(YouConnections)
-const MeConnectFlow = routed(ConnectFlow)
 const MeAccess = routed(YouAccess)
 const MeMailRules = routed(YouMailRules)
 const MeSkills = routed(YouSkills)
@@ -178,7 +176,6 @@ export function App() {
           <Route path="me/approvals" element={<MeApprovals />} />
           <Route path="me/artifacts" element={<MeArtifacts />} />
           <Route path="me/connections" element={<MeConnections />} />
-          <Route path="me/connections/lark-flow" element={<MeConnectFlow />} />
           <Route path="me/access" element={<MeAccess />} />
           <Route path="me/mail-rules" element={<MeMailRules />} />
           <Route path="me/skills" element={<MeSkills />} />

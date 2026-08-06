@@ -109,7 +109,27 @@ describe('GoogleConnectionAuthorizationService', () => {
     assert.deepEqual(authorizeInput, {
       state: 'opaque-state',
       redirectUri: 'http://localhost:8000/api/google/connection/callback',
+      // A mail rule asks for mail. `gmail.send` is named in its own right
+      // because Google's `gmail.modify` does not carry it, and a forward that
+      // cannot send is the failure this narrowing would otherwise introduce.
+      scopes: [
+        'openid',
+        'https://www.googleapis.com/auth/userinfo.email',
+        'https://www.googleapis.com/auth/userinfo.profile',
+        'https://www.googleapis.com/auth/gmail.modify',
+        'https://www.googleapis.com/auth/gmail.send',
+        'https://www.googleapis.com/auth/gmail.labels',
+      ],
     });
+    // The point of the whole change: somebody who asked for a mail rule is
+    // never shown Drive, Calendar or Apps Script on the consent screen.
+    for (const absent of ['drive', 'calendar', 'documents', 'spreadsheets', 'script']) {
+      assert.equal(
+        (authorizeInput.scopes as string[]).some(scope => scope.includes(absent)),
+        false,
+        `mail authorization should not request ${absent}`,
+      );
+    }
     assert.equal(issued.authorizeUrl.includes('company-1'), false);
     assert.equal(issued.authorizeUrl.includes('user-1'), false);
   });

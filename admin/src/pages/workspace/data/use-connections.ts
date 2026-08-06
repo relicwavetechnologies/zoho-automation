@@ -273,7 +273,10 @@ export function useConnections() {
    * database — so the honest signal that something may have changed is the
    * window going away.
    */
-  const connect = useCallback(async (provider: Provider, options?: { label?: string }) => {
+  const connect = useCallback(async (
+    provider: Provider,
+    options?: { label?: string; forTools?: readonly string[] },
+  ) => {
     if (!token) return
     const authorizePath = AUTHORIZE_PATH[provider]
     if (!authorizePath) {
@@ -281,11 +284,16 @@ export function useConnections() {
     }
     setConnecting(provider)
     try {
+      const query = new URLSearchParams()
       // Only where the backend accepts it. Sending `label` to a provider that
       // holds one account per company would be a name nothing ever reads.
-      const named = options?.label && LABELLED.includes(provider)
-        ? `${authorizePath}?label=${encodeURIComponent(options.label)}`
-        : authorizePath
+      if (options?.label && LABELLED.includes(provider)) query.set('label', options.label)
+      // What the member is connecting this account *to do*. The backend
+      // narrows the consent screen to it, so somebody who came to forward mail
+      // is not asked for Drive and Calendar on the way. Omitted means the
+      // general "connect this app" sense, which is still everything.
+      if (options?.forTools?.length) query.set('for', options.forTools.join(','))
+      const named = query.size > 0 ? `${authorizePath}?${query.toString()}` : authorizePath
       const { authorizeUrl } = await api.get<{ authorizeUrl: string }>(
         named,
         token,
