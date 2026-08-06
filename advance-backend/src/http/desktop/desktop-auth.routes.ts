@@ -34,6 +34,7 @@ import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
 import { DEFAULT_ALLOWED_MODELS, PROXY_MODEL_SPECS, RUNTIME_MODEL_PREFERENCE } from '../../application/observability/pricing';
 import { CONNECTION_PROVIDER_IDS } from '../../domain/connections/connection-provider';
+import { googleScopesToRequestForToolIds } from '../../application/google/google-scope-request';
 import {
   approvalModesForConnectionProvider,
   connectionPolicyIssueForProvider,
@@ -1963,7 +1964,25 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         600,
       );
 
-      const authorizeUrl = deps.googleOAuthService.getAuthorizeUrl({ state, redirectUri });
+      // `for` names what the member is connecting Google *to do*, and narrows
+      // the consent screen to that. Somebody arriving from Mail rules should
+      // be asked for their mail, not for Drive, Calendar, Contacts and Apps
+      // Script as well — a request for everything is what makes a consent
+      // screen unreadable, and an unreadable one is right to be refused.
+      //
+      // Omitting it keeps the full Workspace set, which is what the general
+      // "Connected apps" screen still means by connecting Google.
+      const requestedFor = String(req.query['for'] ?? '')
+        .split(',')
+        .map(value => value.trim())
+        .filter(Boolean);
+      const scopes = googleScopesToRequestForToolIds(requestedFor);
+
+      const authorizeUrl = deps.googleOAuthService.getAuthorizeUrl({
+        state,
+        redirectUri,
+        ...(scopes.length > 0 ? { scopes: [...scopes] } : {}),
+      });
 
       res.json({ success: true, data: { authorizeUrl, redirectUri } });
     } catch (e) {

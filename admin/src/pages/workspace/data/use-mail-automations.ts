@@ -171,6 +171,79 @@ export function useMailDeliveries(ruleId?: string) {
   return { deliveries, loading }
 }
 
+export type MailRuleDryRun = {
+  ruleId: string
+  name: string
+  valid: boolean
+  invalidReason?: string | null
+  mailboxEmail?: string
+  /** How many stored messages were actually readable and judged. */
+  consideredCount?: number
+  matchedCount?: number
+  /**
+   * Matched, but older than the rule. The runtime never goes back for these,
+   * so they are reported apart from `matchedCount` — folding them in would
+   * read as a promise to deliver mail that will never be delivered.
+   */
+  predatingCount?: number
+  /**
+   * Needed a body to judge and the body has since been discarded by retention.
+   * Neither a match nor a non-match; counting it as either states a certainty
+   * nobody has.
+   */
+  bodyUnavailableCount?: number
+  matched?: Array<{
+    eventId: string
+    occurredAt: string
+    from: string | null
+    subject: string | null
+    predatesRule: boolean
+  }>
+}
+
+/**
+ * "Would this rule have caught anything?"
+ *
+ * A mail rule is written in a sentence and then waits, and until it fires
+ * there is nothing to tell its owner whether they described the mail they
+ * meant. This replays the rule over messages already recorded for the mailbox
+ * and answers that without sending anything.
+ *
+ * Triggered rather than fetched on open: it is a question somebody asks, and a
+ * dry run that ran on every drawer open would be doing work nobody wanted and
+ * showing an answer nobody had asked for.
+ */
+export function useMailRuleDryRun() {
+  const { token } = useAdminAuth()
+  const [result, setResult] = useState<MailRuleDryRun | null>(null)
+  const [running, setRunning] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const run = useCallback(async (ruleId: string) => {
+    if (!token) return
+    setRunning(true)
+    setError(null)
+    try {
+      const data = await api.post<MailRuleDryRun>(
+        `${BASE}/rules/${ruleId}/test`, {}, token, { quiet: true },
+      )
+      setResult(data)
+    } catch {
+      // Distinct from "nothing matched". A test that could not run tells you
+      // nothing about the rule, and reporting it as zero matches would send
+      // somebody rewriting a rule that was never the problem.
+      setError('The test could not run. This says nothing about the rule itself.')
+      setResult(null)
+    } finally {
+      setRunning(false)
+    }
+  }, [token])
+
+  const reset = useCallback(() => { setResult(null); setError(null) }, [])
+
+  return { result, running, error, run, reset }
+}
+
 /* ── Reading the stored rule ──────────────────────────
    `match`, `action` and `destination` arrive as opaque JSON because that is
    how they are stored. Everything below reads them defensively: a rule written
@@ -190,9 +263,16 @@ const str = (source: Record<string, unknown>, key: string): string | null => {
 export function matchClauses(match: Record<string, unknown>): string[] {
   const clauses: string[] = []
   const from = str(match, 'from')
-  // A leading @ matches the domain exactly — `@acme.com` will not match
-  // `mail.acme.com`, which reads like a bug unless the phrasing says so.
-  if (from) clauses.push(from.startsWith('@') ? `sent from an address ending ${from}` : `sent by ${from}`)
+  // A leading @ covers the domain and everything under it: `@acme.com` matches
+  // `billing@acme.com` and `receipts@mail.acme.com` alike. This screen said the
+  // opposite until the matcher was changed and nobody came back for the
+  // sentence — so a member reading their own rule was told it would miss
+  // exactly the transactional mail it was written to catch.
+  if (from) {
+    clauses.push(from.startsWith('@')
+      ? `sent from ${from.slice(1)} or any of its subdomains`
+      : `sent by ${from}`)
+  }
   const to = str(match, 'to')
   if (to) clauses.push(`addressed to ${to}`)
   const subject = str(match, 'subjectContains')

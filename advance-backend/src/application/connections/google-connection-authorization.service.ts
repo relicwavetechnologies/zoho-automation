@@ -2,6 +2,10 @@ import {
   GOOGLE_WORKSPACE_OAUTH_SCOPES,
   hasGoogleScopeGroups,
 } from '../../domain/google/google-workspace-scope';
+import {
+  googleScopeGroupsForToolIds,
+  googleScopesToRequestForToolIds,
+} from '../google/google-scope-request';
 import type { GoogleOAuthService } from '../../infrastructure/google/google-oauth.service';
 import type { IntegrationConnectionRepository } from '../../infrastructure/persistence/integration-connection.repository';
 import type {
@@ -55,6 +59,22 @@ type ConnectionRepo = Pick<
 
 const REQUIRED_SCOPE_GROUPS = GOOGLE_WORKSPACE_OAUTH_SCOPES.map(scope => [scope] as const);
 
+/**
+ * What a grant has to contain for this intent to be worth saving.
+ *
+ * The two sides have to agree or the flow deadlocks: whatever the authorize
+ * URL asked for is exactly what the callback may insist on. Deriving both from
+ * the same tool ids is what keeps them from drifting — a group added to the
+ * request without being added here would be requested and never checked, and
+ * the reverse would reject every grant Divo itself asked for.
+ */
+function requiredScopeGroupsFor(
+  requestedToolIds: readonly string[],
+): readonly (readonly string[])[] {
+  const groups = googleScopeGroupsForToolIds(requestedToolIds);
+  return groups.length > 0 ? groups : REQUIRED_SCOPE_GROUPS;
+}
+
 export class GoogleConnectionAuthorizationService {
   private readonly log: Logger;
 
@@ -81,6 +101,12 @@ export class GoogleConnectionAuthorizationService {
       authorizeUrl: this.deps.googleOAuth.getAuthorizeUrl({
         state: created.value.state,
         redirectUri: this.deps.callbackUrl,
+        // Only what this blocked request needs. An empty list means no group
+        // mapped, and `getAuthorizeUrl` then falls back to the full Workspace
+        // set — the behaviour every authorization had before scopes were
+        // narrowed, so an unmapped tool degrades to the old screen rather than
+        // to a connection that cannot do anything.
+        scopes: [...googleScopesToRequestForToolIds(input.requestedToolIds)],
       }),
       expiresAt: created.value.expiresAt,
       correlationId: created.value.correlationId,
@@ -176,8 +202,15 @@ export class GoogleConnectionAuthorizationService {
       ?.split(' ')
       .map(scope => scope.trim())
       .filter(Boolean) ?? [];
-    if (!hasGoogleScopeGroups(grantedScopes, REQUIRED_SCOPE_GROUPS)) {
-      throw new Error('Google did not grant the complete Workspace scope set.');
+    // Judged against what this intent asked for, not against everything Divo
+    // can ever use. The old check demanded the complete forty-scope set on
+    // every callback, so the first narrowed authorization would have thrown
+    // here and the member would have consented for nothing — the connection
+    // silently never saved. An unmapped tool still falls back to the full set,
+    // matching what its authorize URL requested.
+    const requiredGroups = requiredScopeGroupsFor(intent.requestedToolIds);
+    if (!hasGoogleScopeGroups(grantedScopes, requiredGroups)) {
+      throw new Error('Google did not grant the scopes this request needed.');
     }
     if (!tokens.refreshToken) {
       throw new Error('Google returned no offline refresh credential.');

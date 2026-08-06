@@ -89,10 +89,16 @@ export const GOOGLE_WORKSPACE_OAUTH_SCOPES = Object.freeze([
 ]);
 
 const SCOPE_IMPLICATIONS = new Map<string, readonly string[]>([
+  // Deliberately not `gmailSend` or `gmailCompose`. Google's `gmail.modify`
+  // covers reading and changing messages and their labels; it does not permit
+  // sending, which needs `gmail.send` (or `gmail.compose`) in its own right.
+  // While every authorization asked for all forty scopes the difference could
+  // never show, because send was always granted anyway. Narrowed grants are
+  // exactly the case that exposes it: a mail rule would be accepted as able to
+  // forward, reserve a delivery, and only then fail at the send with a
+  // permission error the member has no way to act on.
   [GOOGLE_SCOPE.gmailModify, [
     GOOGLE_SCOPE.gmailReadonly,
-    GOOGLE_SCOPE.gmailCompose,
-    GOOGLE_SCOPE.gmailSend,
     GOOGLE_SCOPE.gmailLabels,
   ]],
   [GOOGLE_SCOPE.driveFull, [GOOGLE_SCOPE.driveReadonly, GOOGLE_SCOPE.driveFile]],
