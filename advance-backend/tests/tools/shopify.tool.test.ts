@@ -41,11 +41,39 @@ function makeAudit(overrides: { readonly recordRequired?: (input: unknown) => Pr
   };
 }
 
+const orderNode = {
+  id: 'gid://shopify/Order/1',
+  name: '#1001',
+  createdAt: '2026-08-01T00:00:00Z',
+  updatedAt: '2026-08-02T00:00:00Z',
+  displayFinancialStatus: 'PAID',
+  displayFulfillmentStatus: 'FULFILLED',
+  sourceName: 'web',
+  currentTotalPriceSet: { shopMoney: { amount: '99.00', currencyCode: 'USD' } },
+};
+
+const customerNode = {
+  id: 'gid://shopify/Customer/1',
+  state: 'ENABLED',
+  tags: ['vip'],
+  createdAt: '2026-01-01T00:00:00Z',
+  updatedAt: '2026-08-01T00:00:00Z',
+  amountSpent: { amount: '500.00', currencyCode: 'USD' },
+};
+
 function makeService(overrides: Record<string, unknown> = {}) {
   return {
     analytics: async () => completed,
-    orders: async () => ({ ...completed, operation: 'list_orders' }),
-    customers: async () => ({ ...completed, operation: 'list_customers' }),
+    orders: async () => ({
+      ...completed,
+      operation: 'list_orders',
+      data: [orderNode],
+    }),
+    customers: async () => ({
+      ...completed,
+      operation: 'list_customers',
+      data: [customerNode],
+    }),
     ...overrides,
   } as any;
 }
@@ -250,6 +278,81 @@ describe('Shopify tool contracts', () => {
       pages.push({ rows: [...page.rows] });
     }
     assert.deepEqual(pages, [{ rows: [{ 'Total sales': '123.45' }] }]);
+  });
+
+  it('publishes an export candidate for list_orders on Lark when dataExport create is granted', async () => {
+    const candidates: unknown[] = [];
+    const { tools } = makeTools(makeService(), makeAudit(), {
+      publishCandidate: async (payload: unknown) => {
+        candidates.push(payload);
+        return {
+          candidateId: '22222222-2222-4222-8222-222222222222',
+          expiresAt: new Date('2026-08-03T00:00:00.000Z'),
+        };
+      },
+    });
+    const ctx = makeCtx('shopifyOrders', ['read'], { chatId: 'oc-chat' });
+    ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
+
+    const result = await tools[1]!.execute(validOrdersArgs, ctx);
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.value.exportCandidate?.candidateId, '22222222-2222-4222-8222-222222222222');
+    assert.equal(result.value.preview?.rows.length, 1);
+    assert.equal(result.value.preview?.rows[0]?.Order, '#1001');
+    assert.ok(Array.isArray(result.value.data));
+    const payload = parseDataExportOfferPayload(candidates[0]);
+    assert.equal(payload.source.toolId, 'shopifyOrders');
+    assert.equal(payload.source.args.operation, 'list_orders');
+    assert.equal(payload.source.args.first, 100);
+    assert.equal('after' in payload.source.args, false);
+  });
+
+  it('replays paginated order exports through the shopify snapshot adapter', async () => {
+    let call = 0;
+    const adapter = new ShopifySnapshotDataExportSource({
+      analytics: async () => completed,
+      orders: async () => {
+        call += 1;
+        if (call === 1) {
+          return {
+            ...completed,
+            operation: 'list_orders',
+            data: [orderNode],
+            pageInfo: { hasNextPage: true, endCursor: 'cursor-2' },
+          };
+        }
+        return {
+          ...completed,
+          operation: 'list_orders',
+          data: [{ ...orderNode, name: '#1002' }],
+          pageInfo: { hasNextPage: false },
+        };
+      },
+      customers: async () => ({
+        ...completed,
+        operation: 'list_customers',
+        data: [customerNode],
+      }),
+    });
+    const pages: Array<{ rows: Record<string, unknown>[]; hasMore?: boolean }> = [];
+    for await (const page of adapter.read({
+      kind: 'shopify_snapshot',
+      connectionId,
+      toolId: 'shopifyOrders',
+      args: { connectionId, operation: 'list_orders', first: 100 },
+    }, {
+      companyId: 'co-test',
+      userId: 'user-test',
+    })) {
+      pages.push({ rows: [...page.rows], ...(page.hasMore ? { hasMore: page.hasMore } : {}) });
+    }
+    assert.equal(call, 2);
+    assert.equal(pages.length, 2);
+    assert.equal(pages[0]?.hasMore, true);
+    assert.equal(pages[0]?.rows[0]?.Order, '#1001');
+    assert.equal(pages[1]?.rows[0]?.Order, '#1002');
   });
 
   it('fails closed when failure auditing fails instead of exposing an upstream result', async () => {

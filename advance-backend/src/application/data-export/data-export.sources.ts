@@ -19,12 +19,15 @@ import type { CompanyOmsSiteDataService } from '../oms/company-oms-site-data.ser
 import type { MenhoodQueryService } from '../menhood/menhood-query.service';
 import type { SemrushService } from '../semrush/semrush.service';
 import { SemrushServiceError } from '../semrush/semrush.types';
-import type { ShopifyService } from '../shopify/shopify.service';
+import type { ShopifyOperationResult, ShopifyService } from '../shopify/shopify.service';
 import { ShopifyServiceError } from '../shopify/shopify.service';
 import {
   flattenShopifyAnalyticsRows,
+  flattenShopifyCustomerRows,
+  flattenShopifyOrderRows,
   previewCoverageForAnalytics,
   readShopifyAnalyticsTable,
+  readShopifyListNodes,
 } from '../shopify/shopify-export';
 import type { ShopifyAnalyticsArgs } from '../shopify/shopify.types';
 import { asCompanyId, asUserId } from '../../shared/ids';
@@ -324,31 +327,51 @@ export class ShopifySnapshotDataExportSource implements DataExportSourceAdapter<
   readonly kind = 'shopify_snapshot' as const;
 
   constructor(
-    private readonly service: Pick<ShopifyService, 'analytics'>,
+    private readonly service: Pick<ShopifyService, 'analytics' | 'orders' | 'customers'>,
   ) {}
 
   async *read(source: ShopifySnapshotSource, context: DataExportSourceContext): AsyncIterable<DataExportPage> {
     context.signal?.throwIfAborted();
-    if (source.toolId !== 'shopifyAnalytics') {
-      throw new PermanentDataExportError(
-        'This Shopify export source is not yet supported for governed replay.',
+    const ctx = shopifyExportContext(context);
+    if (source.toolId === 'shopifyAnalytics') {
+      const result = await executeShopifyAnalyticsForExport(
+        this.service,
+        source.args,
+        ctx,
       );
+      context.signal?.throwIfAborted();
+      const table = readShopifyAnalyticsTable(result.data);
+      const rows = table ? flattenShopifyAnalyticsRows(table.columns, table.rows) : [];
+      const coverage = previewCoverageForAnalytics(source.args, rows.length);
+      yield {
+        rows,
+        ...(coverage.kind === 'provider_limited'
+          ? { coverage: { outcome: 'partial' as const, cause: 'provider_limit' as const } }
+          : {}),
+      };
+      return;
     }
-    const result = await executeShopifyAnalyticsForExport(
-      this.service,
-      source.args,
-      shopifyExportContext(context),
+    if (source.toolId === 'shopifyOrders') {
+      const args = source.args;
+      yield* streamShopifyListForExport({
+        fetchPage: after => this.service.orders(after ? { ...args, after } : args, ctx),
+        flattenRows: data => flattenShopifyOrderRows(readShopifyListNodes(data)),
+        ...(context.signal ? { signal: context.signal } : {}),
+      });
+      return;
+    }
+    if (source.toolId === 'shopifyCustomers') {
+      const args = source.args;
+      yield* streamShopifyListForExport({
+        fetchPage: after => this.service.customers(after ? { ...args, after } : args, ctx),
+        flattenRows: data => flattenShopifyCustomerRows(readShopifyListNodes(data)),
+        ...(context.signal ? { signal: context.signal } : {}),
+      });
+      return;
+    }
+    throw new PermanentDataExportError(
+      'This Shopify export source is not yet supported for governed replay.',
     );
-    context.signal?.throwIfAborted();
-    const table = readShopifyAnalyticsTable(result.data);
-    const rows = table ? flattenShopifyAnalyticsRows(table.columns, table.rows) : [];
-    const coverage = previewCoverageForAnalytics(source.args, rows.length);
-    yield {
-      rows,
-      ...(coverage.kind === 'provider_limited'
-        ? { coverage: { outcome: 'partial' as const, cause: 'provider_limit' as const } }
-        : {}),
-    };
   }
 }
 
@@ -385,16 +408,59 @@ async function executeShopifyAnalyticsForExport(
   try {
     return await service.analytics(args, ctx);
   } catch (error) {
-    if (error instanceof ShopifyServiceError) {
-      if (error.code === 'inaccessible' || error.code === 'authorization_required' || error.code === 'missing_scope') {
-        throw new PermanentDataExportError(
-          'Shopify export could not run because the store connection is inaccessible or missing required scopes. Ask an administrator to reconnect the store or grant access, then retry.',
-          error.message,
-        );
-      }
-    }
-    throw error;
+    throw mapShopifyExportError(error);
   }
+}
+
+const SHOPIFY_EXPORT_PAGE_LIMIT = 500;
+
+/**
+ * Walks a Shopify cursor list until the provider stops handing out pages. A
+ * repeated cursor or the page cap ends the stream as provider-limited, so a
+ * store that keeps replaying the same page cannot spin the export forever.
+ */
+async function* streamShopifyListForExport(input: {
+  readonly fetchPage: (after: string | undefined) => Promise<ShopifyOperationResult>;
+  readonly flattenRows: (data: unknown) => Record<string, unknown>[];
+  readonly signal?: AbortSignal | undefined;
+}): AsyncIterable<DataExportPage> {
+  const seenCursors = new Set<string>();
+  let after: string | undefined;
+  for (let page = 0; page < SHOPIFY_EXPORT_PAGE_LIMIT; page += 1) {
+    input.signal?.throwIfAborted();
+    let result: ShopifyOperationResult;
+    try {
+      result = await input.fetchPage(after);
+    } catch (error) {
+      throw mapShopifyExportError(error);
+    }
+    input.signal?.throwIfAborted();
+    const rows = input.flattenRows(result.data);
+    const next = result.pageInfo?.hasNextPage && result.pageInfo.endCursor
+      ? result.pageInfo.endCursor
+      : undefined;
+    const providerLimited = Boolean(next && (seenCursors.has(next) || page === SHOPIFY_EXPORT_PAGE_LIMIT - 1));
+    yield {
+      rows,
+      ...(next ? { hasMore: true } : {}),
+      ...(providerLimited ? { coverage: { outcome: 'partial' as const, cause: 'provider_limit' as const } } : {}),
+    };
+    if (!next || providerLimited) return;
+    seenCursors.add(next);
+    after = next;
+  }
+}
+
+function mapShopifyExportError(error: unknown): unknown {
+  if (error instanceof ShopifyServiceError) {
+    if (error.code === 'inaccessible' || error.code === 'authorization_required' || error.code === 'missing_scope') {
+      return new PermanentDataExportError(
+        'Shopify export could not run because the store connection is inaccessible or missing required scopes. Ask an administrator to reconnect the store or grant access, then retry.',
+        error.message,
+      );
+    }
+  }
+  return error;
 }
 
 function shopifyExportContext(context: DataExportSourceContext): ToolExecutionContext {

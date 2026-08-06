@@ -61,6 +61,22 @@ describe('Shopify protected result classification', () => {
     }), undefined);
   });
 
+  it('collects references from list results that include preview and data', () => {
+    const classified = classifyShopifyProtectedResult({
+      toolId: 'shopifyOrders',
+      args: { connectionId: '11111111-1111-4111-8111-111111111111', operation: 'list_orders' },
+      result: {
+        data: [{ id: 'gid://shopify/Order/7' }],
+        preview: {
+          rows: [{ 'Shopify order ID': 'gid://shopify/Order/7' }],
+        },
+      },
+    });
+    assert.deepEqual(classified?.references.map(reference => reference.resourceId), [
+      'gid://shopify/Order/7',
+    ]);
+  });
+
   it('covers a full 100-row page and explicitly marks larger payloads truncated', () => {
     const connectionId = '11111111-1111-4111-8111-111111111111';
     const fullPage = classifyShopifyProtectedResult({
