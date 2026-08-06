@@ -5,7 +5,11 @@ import type { ZohoCrmModule } from '../../infrastructure/zoho/zoho-crm-paginated
 import { MenhoodQueryRequestSchema } from '../menhood/menhood-query';
 import { OmsSiteDataToolArgsSchema } from '../oms/oms-site-data.types';
 import { SemrushToolArgsSchema } from '../semrush/semrush.types';
-import { ShopifyAnalyticsArgsSchema } from '../shopify/shopify.types';
+import {
+  ShopifyAnalyticsArgsSchema,
+  ShopifyCustomersListExportArgsSchema,
+  ShopifyOrdersListExportArgsSchema,
+} from '../shopify/shopify.types';
 import { shopifyArgsFingerprint } from '../shopify/shopify-export';
 
 export {
@@ -59,11 +63,23 @@ const menhoodQueryDatasetSourceSchema = z.object({
   query: MenhoodQueryRequestSchema,
   queryFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
-const shopifySnapshotDatasetSourceSchema = z.object({
+const shopifyAnalyticsSnapshotSourceSchema = z.object({
   kind: z.literal('shopify_snapshot'),
   connectionId: z.string().uuid(),
   toolId: z.literal('shopifyAnalytics'),
   args: ShopifyAnalyticsArgsSchema,
+}).strict();
+const shopifyOrdersSnapshotSourceSchema = z.object({
+  kind: z.literal('shopify_snapshot'),
+  connectionId: z.string().uuid(),
+  toolId: z.literal('shopifyOrders'),
+  args: ShopifyOrdersListExportArgsSchema,
+}).strict();
+const shopifyCustomersSnapshotSourceSchema = z.object({
+  kind: z.literal('shopify_snapshot'),
+  connectionId: z.string().uuid(),
+  toolId: z.literal('shopifyCustomers'),
+  args: ShopifyCustomersListExportArgsSchema,
 }).strict();
 
 /**
@@ -97,14 +113,16 @@ const ZOHO_BOOKS_FILTER_COMPANIONS: readonly {
   },
 ];
 
-const datasetSourceUnion = z.discriminatedUnion('kind', [
+const datasetSourceUnion = z.union([
   airtableDatasetSourceSchema,
   zohoBooksDatasetSourceSchema,
   zohoCrmDatasetSourceSchema,
   omsSnapshotDatasetSourceSchema,
   semrushSnapshotDatasetSourceSchema,
   menhoodQueryDatasetSourceSchema,
-  shopifySnapshotDatasetSourceSchema,
+  shopifyAnalyticsSnapshotSourceSchema,
+  shopifyOrdersSnapshotSourceSchema,
+  shopifyCustomersSnapshotSourceSchema,
 ]);
 
 function refineDatasetSource(

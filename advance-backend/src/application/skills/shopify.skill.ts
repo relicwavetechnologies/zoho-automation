@@ -50,7 +50,7 @@ const SHOPIFY_ANALYTICS_CRAFT = `ANALYTICS (shopifyAnalytics):
 
 const SHOPIFY_ORDERS_CRAFT = `ORDERS (shopifyOrders):
 - Call shopifyOrders only as a direct divo_gateway tool invocation. Never invoke it from divo-local, Bash, or a generated script. Protected record results must stay on the runtime path that deletes the session and suppresses learning.
-- list_orders returns at most 100 records plus an endCursor. Follow cursors for more; never claim a page is a complete export.
+- list_orders returns at most 100 records plus an endCursor on each page. When exportCandidate is present, use dataExport op=plan for a full export instead of manually paging cursors in chat.
 - Unless the connection has Shopify-approved read_all_orders, list_orders enforces a created_at floor of the last 60 days. Older windows require that approval and an explicit older createdAtMin.
 - get_order, get_order_by_identifier, get_order_attribution, and list_order_line_items omit orders older than the same 60-day floor when includeHistorical=false even if read_all_orders is present. Set includeHistorical=true only when the member explicitly needs an older order and the connection is approved.
 - Resolve a customer-facing order name with get_order_by_identifier before guessing a GraphQL order ID.
@@ -62,6 +62,7 @@ const SHOPIFY_CUSTOMERS_CRAFT = `CUSTOMERS (shopifyCustomers):
 - Use this tool only when customer-level metadata is necessary. Prefer shopifyAnalytics customer_acquisition for aggregate acquisition trends.
 - search_customers accepts exactly one structured field: email, phone, or name. Arbitrary Shopify search syntax is not accepted. includeContact is rejected; names, email, and phone are never returned.
 - Treat every result—including IDs, tags, account state, dates, and spend—as protected customer data. Minimize repetition of identifiers in the final answer.
+- list_customers and search_customers return at most 100 or 50 records plus an endCursor on each page. When exportCandidate is present, use dataExport op=plan for a full export instead of manually paging cursors in chat.
 - count_customers is bounded (default limit 10,000). If the count hits the limit, say the true total may be higher.`;
 
 const SHOPIFY_ATTRIBUTION = `ATTRIBUTION (do not conflate these):
@@ -70,13 +71,13 @@ const SHOPIFY_ATTRIBUTION = `ATTRIBUTION (do not conflate these):
 - sourceName / app on an order: the order-creation channel (POS, Online Store, app, etc.). This is not UTM data and not ShopifyQL credited sales.
 - If customerJourneySummary.ready is false, say attribution is still pending. Empty UTM values mean Shopify did not establish UTM attribution; do not invent a source, medium, or campaign.`;
 
-const SHOPIFY_EXPORT = `EXPORT (shopifyAnalytics only):
-- shopifyAnalytics may return exportCandidate for replayable analytics tables. shopifyOrders and shopifyCustomers do not expose exportCandidate yet; bounded order/customer lists stay in chat only.
-- Summarize useful evidence in chat; the structured preview contains at most 25 rows. Present one main table when one operation is enough. preview.coverage may be truncated (chat cap), provider_limited (ranked top-N below schema max), or complete. The governed export replays Shopify and may contain more rows than the chat preview (for example a 90-day daily timeseries).
+const SHOPIFY_EXPORT = `EXPORT (shopifyAnalytics, shopifyOrders list_orders, shopifyCustomers list/search):
+- shopifyAnalytics, shopifyOrders list_orders, and shopifyCustomers list_customers/search_customers may return exportCandidate for replayable tables. Single-record lookups and count_customers do not.
+- Summarize useful evidence in chat; the structured preview contains at most 25 rows. Present one main table when one operation is enough. preview.coverage may be truncated (chat cap or more Shopify pages available), provider_limited (ranked analytics top-N below schema max), or complete. The governed export replays Shopify and may contain more rows than the chat preview (for example additional order pages or a 90-day daily timeseries).
 - When exportCandidate is present and the member asks for Google Sheets, Excel, CSV, all rows, or a full export, load secure-data-export and use dataExport op=plan with the candidate that matches the table you showed — not every candidate from the run. If unsure which candidate matches, call dataExport op=list_candidates first, then plan.
 - If the member did not ask for a file but the result is a useful table with exportCandidate, end with one soft follow-up asking whether to export it to Google Sheets, Excel, or CSV, unless the member said not to export, not now, or chat-only. Skip the follow-up for empty results, errors, or one-number answers.
-- Never rerun shopifyAnalytics, manually page Shopify rows, create or upload a CSV/XLSX/Sheet, or run Python or a local workflow after the member chooses a format. The central governed export owns replay, destination access, and artifact creation. Describe exports as current Shopify data, not an immutable copy of the chat preview.
-- Ranked analytics exports replay the same bounded recipe and schema limits. Say so honestly if the member asked for an exhaustive catalog beyond Shopify's ranked window.`;
+- Never rerun shopifyAnalytics, shopifyOrders, or shopifyCustomers, manually page Shopify rows with endCursor, create or upload a CSV/XLSX/Sheet, or run Python or a local workflow after the member chooses a format. The central governed export owns replay, destination access, and artifact creation. Describe exports as current Shopify data for the member's filters, not an immutable copy of the chat preview.
+- Ranked analytics exports replay the same bounded recipe and schema limits. Say so honestly if the member asked for an exhaustive catalog beyond Shopify's ranked window. Order and customer list exports replay the same filter/search recipe and paginate through Shopify until the export row cap or the provider ends the list.`;
 
 const SHOPIFY_PRESENTATION = `PRESENTATION:
 - Lead with the business answer: what happened, for which store, over which period, and what is still unknown.

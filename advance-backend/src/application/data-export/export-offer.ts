@@ -53,6 +53,33 @@ export const dataExportOfferPayloadSchema = z.object({
  * Rebuilds a source with only its declared fields, so a persisted payload can
  * never smuggle an extra key back through a later confirmation.
  */
+function normalizeShopifySnapshotSource(
+  source: Extract<DataExportSource, { kind: 'shopify_snapshot' }>,
+): Extract<DataExportSource, { kind: 'shopify_snapshot' }> {
+  if (source.toolId === 'shopifyAnalytics') {
+    return {
+      kind: source.kind,
+      connectionId: source.connectionId,
+      toolId: source.toolId,
+      args: source.args,
+    };
+  }
+  if (source.toolId === 'shopifyOrders') {
+    return {
+      kind: source.kind,
+      connectionId: source.connectionId,
+      toolId: source.toolId,
+      args: source.args,
+    };
+  }
+  return {
+    kind: source.kind,
+    connectionId: source.connectionId,
+    toolId: source.toolId,
+    args: source.args,
+  };
+}
+
 function normalizeDatasetSource(source: DataExportSource): DataExportSource {
   return source.kind === 'airtable_records'
     ? { ...source }
@@ -82,12 +109,7 @@ function normalizeDatasetSource(source: DataExportSource): DataExportSource {
         query: source.query,
         queryFingerprint: source.queryFingerprint,
       }
-    : source.kind === 'shopify_snapshot' ? {
-        kind: source.kind,
-        connectionId: source.connectionId,
-        toolId: source.toolId,
-        args: source.args,
-      }
+    : source.kind === 'shopify_snapshot' ? normalizeShopifySnapshotSource(source)
     : {
         kind: source.kind,
         connectionId: source.connectionId,

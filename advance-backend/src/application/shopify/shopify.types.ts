@@ -230,9 +230,33 @@ export const ShopifyCustomersArgsSchema = z.discriminatedUnion('operation', [
   }).strict(),
 ]);
 
+export const ShopifyOrdersListExportArgsSchema = z.object({
+  connectionId,
+  operation: z.literal('list_orders'),
+  first: z.number().int().min(1).max(100).default(100),
+  filters: orderFilters.optional(),
+}).strict();
+
+export const ShopifyCustomersListExportArgsSchema = z.discriminatedUnion('operation', [
+  z.object({
+    connectionId,
+    operation: z.literal('list_customers'),
+    first: z.number().int().min(1).max(100).default(100),
+    filters: customerFilters.optional(),
+  }).strict(),
+  z.object({
+    connectionId,
+    operation: z.literal('search_customers'),
+    search: customerSearch,
+    first: z.number().int().min(1).max(50).default(50),
+  }).strict(),
+]);
+
 export type ShopifyAnalyticsArgs = z.infer<typeof ShopifyAnalyticsArgsSchema>;
 export type ShopifyOrdersArgs = z.infer<typeof ShopifyOrdersArgsSchema>;
 export type ShopifyCustomersArgs = z.infer<typeof ShopifyCustomersArgsSchema>;
+export type ShopifyOrdersListExportArgs = z.infer<typeof ShopifyOrdersListExportArgsSchema>;
+export type ShopifyCustomersListExportArgs = z.infer<typeof ShopifyCustomersListExportArgsSchema>;
 
 function periodSpanDays(period: z.infer<typeof ShopifyPeriodSchema>): number | undefined {
   if (period.kind !== 'range') return undefined;
