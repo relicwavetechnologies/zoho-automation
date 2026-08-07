@@ -197,7 +197,10 @@ export function createMailRuleWriter(deps: MailRuleWriterDeps) {
     }
 
     // A named chat is grounded here, in code, once — not on every delivery, and
-    // not by asking the model nicely in prompt text.
+    // not by asking the model nicely in prompt text. A `lark_dm` destination
+    // is not grounded because it carries no caller-supplied id to ground: the
+    // open id comes from the signed-in session, so its single recipient is
+    // already known to be the person who owns the mailbox.
     if (request.destination.type === 'lark_chat' && deps.authorizeLarkChat) {
       const verdict = await deps.authorizeLarkChat({
         companyId: request.companyId,

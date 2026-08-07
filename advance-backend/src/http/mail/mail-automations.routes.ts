@@ -72,6 +72,17 @@ const createRuleBodySchema = z.object({
   destination: z.discriminatedUnion('type', [
     z.object({ type: z.literal('email'), email: z.string().trim().email() }).strict(),
     z.object({ type: z.literal('lark_chat'), chatId: z.string().trim().min(1) }).strict(),
+    /*
+     * No id, deliberately.
+     *
+     * The DM target is the signed-in member's own open id, which the server
+     * reads from the session below. Letting a browser name one would mean a
+     * member could forward their mail to a colleague's DM by pasting an id —
+     * which is precisely the class of thing `authorizeLarkChat` exists to stop
+     * for rooms, and which is better prevented by having no input at all than
+     * by validating one.
+     */
+    z.object({ type: z.literal('lark_dm') }).strict(),
     z.object({
       type: z.literal('organize'),
       label: z.string().trim().min(1).max(225).optional(),
@@ -471,12 +482,29 @@ export function createMailAutomationsRoutes(
 
     const body = parsed.data;
     try {
+      // Read from the session, never from the request.
+      const openId = typeof res.locals['larkOpenId'] === 'string'
+        ? String(res.locals['larkOpenId'])
+        : null;
+      if (body.destination.type === 'lark_dm' && !openId) {
+        res.status(409).json({
+          success: false,
+          code: 'lark_not_linked',
+          message:
+            'Divo reaches you through Lark, and your Lark account is not linked yet. '
+            + 'Link it once and this rule can message you directly.',
+        });
+        return;
+      }
+
       const destination: MailRuleDestination =
         body.destination.type === 'email'
           ? { type: 'email', email: body.destination.email }
           : body.destination.type === 'lark_chat'
             ? { type: 'lark_chat', chatId: body.destination.chatId }
-            : { type: 'none' };
+            : body.destination.type === 'lark_dm'
+              ? { type: 'lark_dm', openId: openId! }
+              : { type: 'none' };
 
       const action: MailRuleAction = body.destination.type === 'organize'
         ? {

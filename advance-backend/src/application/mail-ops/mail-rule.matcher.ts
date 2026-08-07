@@ -369,6 +369,7 @@ const ActionSchema = z.union([
 const DestinationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('email'), email: z.string().email() }),
   z.object({ type: z.literal('lark_chat'), chatId: z.string().trim().min(1) }),
+  z.object({ type: z.literal('lark_dm'), openId: z.string().trim().min(1) }),
   z.object({ type: z.literal('none') }),
 ]);
 
@@ -446,8 +447,12 @@ export function parseMailRuleDelivery(input: {
   if (action.type === 'forward' && destination.type !== 'email') {
     throw new Error('Forward rules require an email destination.');
   }
-  if (action.type === 'deliver' && destination.type !== 'lark_chat') {
-    throw new Error('Delivery rules require a Lark chat destination.');
+  if (
+    action.type === 'deliver'
+    && destination.type !== 'lark_chat'
+    && destination.type !== 'lark_dm'
+  ) {
+    throw new Error('Delivery rules require a Lark chat or DM destination.');
   }
   // An `organize` rule never leaves the mailbox, so a destination on one is not
   // a harmless extra field — it is a rule whose author believed mail was being

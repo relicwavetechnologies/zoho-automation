@@ -512,6 +512,7 @@ export function rateLimitClause(action: Record<string, unknown>): string | null 
 export type MailDestination =
   | { kind: 'email'; email: string; label: string }
   | { kind: 'lark'; chatId: string; label: string }
+  | { kind: 'lark_dm'; label: string }
   | { kind: 'organize'; label: string }
   | { kind: 'unknown'; label: string }
 
@@ -533,6 +534,9 @@ export function readDestination(
     const chatId = str(destination, 'chatId')
     if (chatId) return { kind: 'lark', chatId, label: 'a Lark chat' }
   }
+  // Said as "you", not as an id. The open id is meaningless to read and the
+  // only fact that matters about this destination is that nobody else sees it.
+  if (type === 'lark_dm') return { kind: 'lark_dm', label: 'you, on Lark' }
 
   if (type === 'none' && action) {
     const read = readAction(action)
@@ -587,6 +591,9 @@ export type MailRuleDraft = {
   destination:
     | { type: 'email'; email: string }
     | { type: 'lark_chat'; chatId: string }
+    /* No id. The server substitutes the signed-in member's own open id, so a
+       browser cannot name somebody else's DM. */
+    | { type: 'lark_dm' }
     | { type: 'organize'; label?: string; archive?: boolean; markRead?: boolean }
   rateLimitPerHour?: number
 }

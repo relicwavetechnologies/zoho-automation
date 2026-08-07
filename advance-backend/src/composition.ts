@@ -2410,6 +2410,18 @@ export async function buildContainer(
     },
     authorizeLarkChat: authorizeMailOpsLarkChat,
     connectionRateLimits,
+    // The rule owner's own DM. Same adapter, same idempotency key; only the
+    // receive-id type differs, because Lark takes an open id directly and a DM
+    // therefore needs no chat to have been created first.
+    deliverLarkDm: async input => {
+      const sent = await larkAdapter.sendDmToOpenId(
+        input.openId,
+        input.text,
+        input.idempotencyKey,
+      );
+      if (!sent.ok) throw sent.error;
+      return sent.value;
+    },
     deliverLark: async input => {
       const sent = await larkAdapter.sendToChatId(
         input.chatId,

@@ -27,6 +27,12 @@ import type {
 const destinationSchema = z.union([
   z.object({ type: z.literal('email'), email: z.string().email() }).strict(),
   z.object({ type: z.literal('current_lark_chat') }).strict(),
+  /**
+   * The requester's own Lark DM. No id, because the runtime supplies it from
+   * the run's own identity — a model naming an open id would be naming a
+   * person, and the one person this may ever reach is whoever asked.
+   */
+  z.object({ type: z.literal('lark_dm') }).strict(),
   z.object({
     type: z.literal('lark_chat'),
     chatId: z.string().trim().min(1),
@@ -768,11 +774,23 @@ function resolveDestination(
 ):
   | { type: 'email'; email: string }
   | { type: 'lark_chat'; chatId: string }
+  | { type: 'lark_dm'; openId: string }
   | { type: 'none' } {
   if (input.type === 'email') return input;
   if (input.type === 'organize') return { type: 'none' };
   if (input.type === 'lark_chat') {
     return { type: 'lark_chat', chatId: input.chatId };
+  }
+  if (input.type === 'lark_dm') {
+    // From the run, never from arguments. `userExternalId` is whoever made this
+    // request, so the destination cannot be pointed at a colleague by a model
+    // that misread a name.
+    if (!ctx.runContext.userExternalId) {
+      throw new Error(
+        'lark_dm requires a request from someone with a linked Lark account.',
+      );
+    }
+    return { type: 'lark_dm', openId: ctx.runContext.userExternalId };
   }
   if (ctx.runContext.channel !== 'lark' || !ctx.runContext.chatId) {
     throw new Error(

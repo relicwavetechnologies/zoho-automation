@@ -109,7 +109,7 @@ const FIELDS: Field[] = [
    Three, matching the three the backend actually runs. Each states the one
    thing about it that a member cannot infer. */
 
-type DestinationKind = 'email' | 'lark_chat' | 'organize'
+type DestinationKind = 'email' | 'lark_dm' | 'organize'
 
 const DESTINATIONS: Array<{
   kind: DestinationKind
@@ -117,8 +117,6 @@ const DESTINATIONS: Array<{
   title: string
   body: string
   note: string
-  /** Selectable so the choice is visible, but it cannot be turned on. */
-  soon?: boolean
 }> = [
   {
     kind: 'email', icon: Mail,
@@ -127,25 +125,10 @@ const DESTINATIONS: Array<{
     note: 'Divo never rewrites or summarises a forward. It is the mail you would have got.',
   },
   {
-    /*
-     * Chooseable, and not yet creatable.
-     *
-     * The destination itself is decided — your own DM, addressed by open id,
-     * exactly as scheduled work is already delivered. Two things in the
-     * delivery path still assume a group chat: `deliverLark` sends through
-     * `sendToChatId`, which hardcodes `receive_id_type: 'chat_id'`, and
-     * `authorizeLarkChat` grounds a chat id against rooms Divo has observed as
-     * groups, so an open id comes back `unknown_chat` and is refused.
-     *
-     * Offering it as though it worked would create rules that are accepted and
-     * then silently never deliver, which is the exact failure Mail Ops exists
-     * to have stopped.
-     */
-    kind: 'lark_chat', icon: MessageSquare,
+    kind: 'lark_dm', icon: MessageSquare,
     title: 'Send it to me on Lark',
     body: 'Divo messages you directly. Nobody else sees it.',
-    note: 'Not wired up yet — Divo can address your DM, but the delivery path still assumes a group chat.',
-    soon: true,
+    note: 'Your own DM, addressed the same way Divo already delivers scheduled work. No chat to pick, and nowhere else it can go.',
   },
   {
     kind: 'organize', icon: Tag,
@@ -171,6 +154,10 @@ export function MailRuleNew({ replay }: ScreenProps) {
   const [archive, setArchive] = useState(false)
   const [markRead, setMarkRead] = useState(false)
   const creating = useCreateMailRule()
+  const { session } = useAdminAuth()
+  // Divo reaches somebody through Lark or not at all; password sign-in mints no
+  // Lark identity, so this is a real precondition rather than a formality.
+  const larkLinked = Boolean(session?.larkLinked)
   void replay
 
   const clauses = useMemo(() => matchClauses(draft), [draft])
@@ -219,8 +206,7 @@ export function MailRuleNew({ replay }: ScreenProps) {
     && destination !== null
     && (destination !== 'email' || address.trim().length > 0)
     && (destination !== 'organize' || organizeChosen)
-    // Lark DM is chooseable but not yet creatable — see DESTINATIONS.
-    && destination !== 'lark_chat'
+    && (destination !== 'lark_dm' || larkLinked)
 
   const onCreate = async () => {
     if (!mailbox || !destination) return
@@ -230,7 +216,9 @@ export function MailRuleNew({ replay }: ScreenProps) {
       match: draft,
       destination: destination === 'email'
         ? { type: 'email', email: address.trim() }
-        : {
+        : destination === 'lark_dm'
+          ? { type: 'lark_dm' }
+          : {
               type: 'organize',
               ...(label.length > 0 ? { label } : {}),
               ...(archive ? { archive: true } : {}),
@@ -403,7 +391,6 @@ export function MailRuleNew({ replay }: ScreenProps) {
                       <p>{option.body}</p>
                     </div>
                     <div className="ws-row-act">
-                      {option.soon ? <span className="badge">Coming soon</span> : null}
                       {destination === option.kind ? <span className="badge b-ok"><span className="dot" />Chosen</span> : null}
                     </div>
                   </button>
@@ -458,7 +445,7 @@ export function MailRuleNew({ replay }: ScreenProps) {
               </Panel>
             ) : null}
 
-            {destination === 'lark_chat' ? <LarkDelivery /> : null}
+            {destination === 'lark_dm' ? <LarkDelivery /> : null}
 
             {destination === 'organize' ? (
               <Panel title="What to do with it">
@@ -521,7 +508,7 @@ export function MailRuleNew({ replay }: ScreenProps) {
                   ? 'No destination chosen yet — go back a step.'
                   : destination === 'organize'
                     ? 'The message stays in your mailbox and is organised there.'
-                    : destination === 'lark_chat'
+                    : destination === 'lark_dm'
                       ? 'The message is sent to you directly in Lark.'
                       : `The whole message is forwarded, unchanged, to ${address || 'an address you have not entered yet'}.`}
               </div>
@@ -959,7 +946,7 @@ function blockedReason(
     return 'Add at least one condition — with none, this would act on every message that arrives.'
   }
   if (destination === null) return 'Choose what Divo should do with matching mail.'
-  if (destination === 'lark_chat') return 'Sending to Lark is not wired up yet.'
+  if (destination === 'lark_dm') return 'Link your Lark account first — Divo cannot reach you otherwise.'
   if (destination === 'email' && address.trim().length === 0) return 'Enter the address to forward to.'
   return 'Say what to do with the message: label it, archive it, or mark it read.'
 }
