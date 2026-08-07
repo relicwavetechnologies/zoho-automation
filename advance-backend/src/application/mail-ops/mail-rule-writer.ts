@@ -22,6 +22,7 @@
  * Approval before destination, because a refusal there ends the attempt and
  * there is no reason to have grounded a chat first.
  */
+import type { MailOpsConnectionState } from '../tools/families/mail-automations.tool';
 import { parseMailRule } from './mail-rule.matcher';
 import {
   mailRuleDedupeKey,
@@ -80,7 +81,7 @@ export type MailRuleWriteResult =
   | {
       readonly status: 'connection_unavailable';
       readonly reason: string;
-      readonly connectionState?: 'none_accessible' | 'insufficient_access' | 'requested_not_accessible';
+      readonly connectionState?: MailOpsConnectionState;
     }
   /** The connection's owner gates background execution. Refused, not deferred. */
   | { readonly status: 'approval_required' }
@@ -101,7 +102,7 @@ export interface MailRuleConnectionResolution {
   mailboxEmail?: string;
   connections?: readonly unknown[];
   reason?: string;
-  connectionState?: 'none_accessible' | 'insufficient_access' | 'requested_not_accessible';
+  connectionState?: MailOpsConnectionState;
 }
 
 export interface MailRuleWriterDeps {

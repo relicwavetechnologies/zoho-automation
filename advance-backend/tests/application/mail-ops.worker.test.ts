@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { MailOpsWorker } from '../../src/application/mail-ops/mail-ops.worker.ts';
+import { MailOpsConnectionUnavailableError } from '../../src/application/mail-ops/mail-ops.types.ts';
 import { GmailApiError, MailTooLargeError } from '../../src/infrastructure/google/gmail-history.client.ts';
 
 const logger = {
@@ -467,6 +468,42 @@ describe('MailOpsWorker', () => {
     // "permission" in a Divo-side error used to stamp the mailbox
     // `scope_missing` and send its owner to reconnect a healthy account.
     assert.equal(recorded, 'provider_sync_failed');
+  });
+
+  it('keeps the reconnect remedy once a revoked account stops being listed', async () => {
+    /*
+     * The regression this guards is created by the fix it belongs to.
+     *
+     * A revoked account used to reach here as Google's own "Token has been
+     * expired or revoked.", and was filed as `connection_unavailable` for the
+     * accidental reason that the word "token" is in it — which is what puts
+     * "Your Google connection is no longer valid. Reconnect it to resume." on
+     * the mailbox. Now that a rejected grant is marked on the connection, the
+     * account is simply absent from the accessible list and the failure becomes
+     * "Mail Ops Google connection is unavailable." — no trigger word in it at
+     * all. Left untyped that lands on `provider_sync_failed`, whose remedy is
+     * null, and the mailbox silently loses the one instruction that fixes it.
+     */
+    let recorded = '';
+    const worker = new MailOpsWorker({
+      repo: syncRepo({
+        markSyncFailed: async (_claim: any, code: string) => {
+          recorded = code;
+          return { ok: true, value: true };
+        },
+      }),
+      gmail: syncGmail,
+      resolveAccessToken: async () => {
+        throw new MailOpsConnectionUnavailableError();
+      },
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'lark-message',
+      logger,
+    } as any);
+
+    await worker.runOnce();
+
+    assert.equal(recorded, 'connection_unavailable');
   });
 
   it('drops a message over the rule ceiling and records what it cost', async () => {

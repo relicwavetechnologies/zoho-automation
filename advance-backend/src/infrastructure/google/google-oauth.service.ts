@@ -69,6 +69,39 @@ async function tryParseJson(res: Response): Promise<unknown> {
   try { return await res.json(); } catch { return {}; }
 }
 
+/**
+ * A refresh that failed, and whether the stored grant is the thing that failed.
+ *
+ * The distinction is the whole point of the type. `refresh_rejected` means
+ * Google has thrown this particular grant away and no retry will ever succeed —
+ * the person has to consent again. Everything else is Divo's problem or the
+ * network's, and marking a connection dead for one of those would tell somebody
+ * to reconnect an account that was never broken, over and over.
+ */
+export class GoogleTokenRefreshError extends Error {
+  constructor(
+    readonly code: 'refresh_rejected' | 'provider_failure',
+    message: string,
+    readonly status?: number,
+  ) {
+    super(message);
+    this.name = 'GoogleTokenRefreshError';
+  }
+}
+
+/**
+ * Only `invalid_grant` says the refresh token itself is dead.
+ *
+ * Google answers 400 for several unrelated things. `invalid_client` and
+ * `unauthorized_client` are this deployment's client id and secret being wrong,
+ * which is not repairable by the account owner and applies to *every*
+ * connection at once — classifying either as a dead grant would flip the whole
+ * company to "reconnect" on a single bad env var, and reconnecting would not
+ * fix any of them. So the code is matched exactly rather than the status.
+ */
+const isRefreshRejected = (payload: GoogleTokenResponse | null | undefined): boolean =>
+  payload?.error?.trim().toLowerCase() === 'invalid_grant';
+
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 export class GoogleOAuthService {
@@ -219,9 +252,19 @@ export class GoogleOAuthService {
 
     const payload = (await tryParseJson(res)) as GoogleTokenResponse;
     if (!res.ok) {
-      const reason = readErrorMessage(payload, 'Google access token refresh failed');
-      this.log.warn('google.oauth.refresh.failed', { status: res.status, reason });
-      throw new Error(reason);
+      const reason   = readErrorMessage(payload, 'Google access token refresh failed');
+      const rejected = isRefreshRejected(payload);
+      this.log.warn('google.oauth.refresh.failed', {
+        status: res.status,
+        reason,
+        error:  payload?.error ?? null,
+        rejected,
+      });
+      throw new GoogleTokenRefreshError(
+        rejected ? 'refresh_rejected' : 'provider_failure',
+        reason,
+        res.status,
+      );
     }
 
     const accessToken = payload.access_token?.trim();
@@ -282,6 +325,27 @@ export class GoogleOAuthService {
     });
 
     return refreshed.accessToken;
+  }
+
+  /**
+   * Drops a cached access token that is known to be worthless.
+   *
+   * Without this, reconnecting appears not to work. Revoking a grant kills the
+   * access tokens issued under it, but the cache is only ever consulted for
+   * expiry — so the dead token keeps being served for the rest of its hour,
+   * including to the first calls made *after* a successful reconnect. Somebody
+   * would sign in again, watch mail keep failing, and reasonably conclude the
+   * reconnect had not taken.
+   *
+   * Failure is swallowed: this is called while handling an error the caller is
+   * about to rethrow, and a cache that cannot be reached is not worth replacing
+   * that error with. The entry expires on its own within the hour regardless.
+   */
+  async forgetCachedToken(companyId: string, userId: string): Promise<void> {
+    const dropped = await this.cache.del(buildCacheKey(companyId, userId));
+    if (!dropped.ok) {
+      this.log.warn('google.oauth.token_cache.drop_failed', { companyId, userId });
+    }
   }
 
   // ── User info ────────────────────────────────────────────────────────────

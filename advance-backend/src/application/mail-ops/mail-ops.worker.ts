@@ -21,6 +21,7 @@ import {
   MAIL_RETENTION_MAX_BATCHES,
   MAIL_RETENTION_SWEEP_INTERVAL_MS,
   mailDeliveryIdempotencyKey,
+  MailOpsConnectionUnavailableError,
   type MailMessageMetadata,
   type MailRuleAction,
   type PendingMailDeliveryPayload,
@@ -1521,6 +1522,11 @@ function normalizeReason(reason: string | undefined): string {
 function syncFailureCode(error: unknown): string {
   if (error instanceof AuthorizationUnavailableError) {
     return 'authorization_unavailable';
+  }
+  // Ahead of the Gmail branch: this is raised before any Gmail call is made,
+  // because there was no usable account to make one with.
+  if (error instanceof MailOpsConnectionUnavailableError) {
+    return 'connection_unavailable';
   }
   if (error instanceof HistoryBacklogStalledError) {
     return 'history_backlog_stalled';

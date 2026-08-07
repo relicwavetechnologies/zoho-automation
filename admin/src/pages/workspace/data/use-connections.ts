@@ -103,6 +103,16 @@ export type LiveConnection = {
   scopes?: string[]
   connectedAt?: string
   lastUsedAt?: string | null
+  /**
+   * The provider threw this account's authorisation away, and only consenting
+   * again brings it back. Nothing here can be used until it does — so anything
+   * offering this account as a choice has to exclude it, and anything showing it
+   * has to say so rather than render a working-looking row.
+   *
+   * Absent for providers that never report it, which is why the check is always
+   * `=== true` rather than a truthiness test on an optional field.
+   */
+  reconnectRequired?: boolean
 }
 
 export type ProviderStatus = {

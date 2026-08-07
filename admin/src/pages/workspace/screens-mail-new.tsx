@@ -273,10 +273,14 @@ export function MailRuleNew({ replay }: ScreenProps) {
 
   if (resolution.status === 'loading') return <div className="page"><SkelRows n={4} /></div>
 
-  // Three states, three remedies — the same three the tool distinguishes. They
+  // Four states, four remedies — the same ones the tool distinguishes. They
   // used to share one sentence, which sent somebody with a scope-limited
   // account off to connect an account they already had.
-  if (resolution.status === 'none' || resolution.status === 'insufficient') {
+  if (
+    resolution.status === 'none'
+    || resolution.status === 'insufficient'
+    || resolution.status === 'reconnect'
+  ) {
     return <NoMailbox resolution={resolution} onBack={() => navigate('/me/mail')} />
   }
 
@@ -730,18 +734,30 @@ function MailboxPicker({
 }
 
 /**
- * No usable account, said two different ways.
+ * No usable account, said three different ways.
  *
  * "Connect Google" is the wrong instruction for somebody who already has,
  * and who needs to grant Gmail access on the account they have — they would
- * connect a second one, hit the same wall, and have two.
+ * connect a second one, hit the same wall, and have two. It is equally wrong
+ * for somebody whose account Google simply logged out: nothing about that
+ * account needs changing, it needs signing into.
  */
 function NoMailbox({
   resolution, onBack,
-}: { resolution: { status: 'none' } | { status: 'insufficient'; options: MailboxOption[] }; onBack: () => void }) {
+}: {
+  resolution:
+    | { status: 'none' }
+    | { status: 'insufficient'; options: MailboxOption[] }
+    | { status: 'reconnect'; options: MailboxOption[] }
+  onBack: () => void
+}) {
   const { loading, connecting, connect } = useConnections()
   const [failed, setFailed] = useState<string | null>(null)
   const insufficient = resolution.status === 'insufficient'
+  const revoked = resolution.status === 'reconnect'
+  const accounts = resolution.status === 'none'
+    ? ''
+    : resolution.options.map((o) => o.accountEmail).join(', ')
 
   const onConnect = async () => {
     setFailed(null)
@@ -763,13 +779,17 @@ function NoMailbox({
         title="New rule"
       />
       <Empty
-        icon={insufficient ? ShieldAlert : Inbox}
-        title={insufficient
-          ? 'Your Google account cannot be used for mail yet'
-          : 'Connect the inbox you want watched'}
-        body={insufficient
-          ? `${resolution.options.map((o) => o.accountEmail).join(', ')} is connected, but shared read-only or missing Gmail access. Divo has to read, watch and send with it to run a rule. Reconnect it and grant the full Gmail access.`
-          : 'A rule watches one Gmail inbox. Google will ask for your mail only — not Drive, Calendar or anything else.'}
+        icon={insufficient || revoked ? ShieldAlert : Inbox}
+        title={revoked
+          ? 'Google signed Divo out of your account'
+          : insufficient
+            ? 'Your Google account cannot be used for mail yet'
+            : 'Connect the inbox you want watched'}
+        body={revoked
+          ? `${accounts} is still listed, but Google has ended the authorisation — a password change, a revoked app, or simply long enough since you last signed in. No rule can be built on it until you sign in again. Your existing rules are untouched and resume the moment you do.`
+          : insufficient
+            ? `${accounts} is connected, but shared read-only or missing Gmail access. Divo has to read, watch and send with it to run a rule. Reconnect it and grant the full Gmail access.`
+            : 'A rule watches one Gmail inbox. Google will ask for your mail only — not Drive, Calendar or anything else.'}
         action={
           <button
             type="button"
@@ -779,7 +799,7 @@ function NoMailbox({
           >
             {connecting === 'google_workspace'
               ? 'Waiting for Google…'
-              : insufficient ? 'Reconnect Google' : 'Connect Gmail'}
+              : insufficient || revoked ? 'Reconnect Google' : 'Connect Gmail'}
           </button>
         }
       />

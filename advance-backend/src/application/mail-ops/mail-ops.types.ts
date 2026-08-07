@@ -1,5 +1,24 @@
 import { sha256 } from '../../shared/hash';
 
+/**
+ * Raised when the Google account behind a mailbox is no longer usable.
+ *
+ * A named type rather than a plain Error because the worker's failure
+ * classifier has to recognise it, and its only other way of doing so is
+ * matching words in the message. It used to reach that classifier as "Token has
+ * been expired or revoked." and be filed as `connection_unavailable` purely
+ * because the word "token" happened to be in it. Once a revoked grant is marked
+ * on the connection, the account simply stops being listed and the message
+ * becomes one with no such word — which would have been filed as a generic
+ * provider fault, and the mailbox would have lost the one remedy that fixes it.
+ */
+export class MailOpsConnectionUnavailableError extends Error {
+  constructor(message = 'Mail Ops Google connection is unavailable.') {
+    super(message);
+    this.name = 'MailOpsConnectionUnavailableError';
+  }
+}
+
 export const MAILBOX_RECONCILIATION_INTERVAL_MS = 60 * 60_000;
 export const MAILBOX_CLAIM_STALE_AFTER_MS = 10 * 60_000;
 

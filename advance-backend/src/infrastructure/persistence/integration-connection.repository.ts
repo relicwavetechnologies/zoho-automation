@@ -1305,9 +1305,57 @@ export class IntegrationConnectionRepository {
     }
   }
 
+  /**
+   * Records that Google has thrown this connection's grant away.
+   *
+   * Called only for `invalid_grant`, which is Google saying the refresh token is
+   * gone for good. Until this existed nothing ever wrote that fact down: the row
+   * kept saying `connected` forever, so Connected apps showed a healthy account
+   * while every background refresh failed, and the only place that told the
+   * truth was whichever feature happened to surface its own last error.
+   *
+   * The tokens are deliberately left in place, unlike Shopify's equivalent.
+   * Shopify rotates refresh tokens, so a rejected one is certainly garbage.
+   * Google's do not rotate, and keeping the ciphertext costs nothing while
+   * leaving a misclassification recoverable — `status` alone is what every read
+   * path filters on.
+   */
+  async markGoogleReauthorizationRequired(input: {
+    readonly companyId: string;
+    readonly connectionId: string;
+  }): Promise<Result<void, InfraError>> {
+    try {
+      await this.db.integrationConnection.updateMany({
+        // Scoped to `connected` so this is idempotent under the concurrent
+        // refreshes it is reached from: six call sites can race on one dead
+        // token, and only the first should move the row.
+        where: {
+          id:        input.connectionId,
+          companyId: input.companyId,
+          provider:  GOOGLE_PROVIDER,
+          revokedAt: null,
+          status:    'connected',
+        },
+        data: { status: CONNECTION_REAUTHORIZATION_REQUIRED },
+      });
+      return ok(undefined);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.markGoogleReauthorizationRequired', e));
+    }
+  }
+
+  /**
+   * @param includeReauthorizationRequired - list accounts Google has revoked
+   *   alongside the working ones, each carrying its `status`. Off by default:
+   *   every execution path calls this to pick an account to *act* with, and a
+   *   dead one must never be picked. Only the status surface asks for them, so
+   *   that Connected apps can say "reconnect abhishek@…" instead of dropping the
+   *   row and claiming the account was never connected.
+   */
   async listAccessibleGoogleConnections(input: {
     readonly companyId: string;
     readonly userId: string;
+    readonly includeReauthorizationRequired?: boolean;
     readonly abortSignal?: AbortSignal;
   }): Promise<Result<ConnectionSummary[], InfraError>> {
     try {
@@ -1337,7 +1385,9 @@ export class IntegrationConnectionRepository {
           companyId: input.companyId,
           provider:  GOOGLE_PROVIDER,
           revokedAt: null,
-          status:    'connected',
+          status:    input.includeReauthorizationRequired
+            ? { in: ['connected', CONNECTION_REAUTHORIZATION_REQUIRED] }
+            : 'connected',
           OR: [
             { ownerUserId: input.userId },
             { grants: { some: { revokedAt: null, OR: grantOr } } },
@@ -1368,6 +1418,7 @@ export class IntegrationConnectionRepository {
           scopes:       row.scopes,
           connectedAt:  row.connectedAt,
           ...(row.lastUsedAt ? { lastUsedAt: row.lastUsedAt } : {}),
+          status:       row.status,
         };
       }));
     } catch (e) {

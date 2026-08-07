@@ -317,6 +317,11 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
                   const status = byProvider.get(def.provider)
                   const accounts = status?.connections ?? []
                   const canAdd = def.memberCanConnect
+                  // Counted rather than derived from `accounts.length`: the
+                  // header's job is to say how many of these actually work, and
+                  // "2 accounts" over one live and one revoked is the sentence
+                  // this whole change exists to stop printing.
+                  const dead = accounts.filter((c) => c.reconnectRequired === true).length
 
                   /*
                    * Provider is a group, accounts are its rows.
@@ -339,7 +344,9 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
                               ? status.error
                               : accounts.length === 0
                                 ? def.blurb
-                                : `${accounts.length} account${accounts.length === 1 ? '' : 's'}`}
+                                : dead === accounts.length
+                                  ? `Not connected — ${dead === 1 ? 'this account needs' : `all ${dead} accounts need`} reconnecting`
+                                  : `${accounts.length} account${accounts.length === 1 ? '' : 's'}${dead > 0 ? ` · ${dead} needs reconnecting` : ''}`}
                           </p>
                         </div>
                         {canAdd ? (
@@ -370,9 +377,16 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
                                   {conn.accountEmail ?? conn.label}
                                   {conn.ownerType === 'company' ? <span className="ws-tag">Company</span> : null}
                                 </b>
-                                <p>Last used {since(conn.lastUsedAt)}</p>
+                                <p>
+                                  {conn.reconnectRequired === true
+                                    ? `${def.name} ended this authorisation. Nothing can run on it until you sign in again.`
+                                    : `Last used ${since(conn.lastUsedAt)}`}
+                                </p>
                               </div>
                               <div className="ws-row-act">
+                                {conn.reconnectRequired === true ? (
+                                  <span className="badge b-err"><span className="dot" />Reconnect</span>
+                                ) : null}
                                 <span className="ws-sub">Manage</span>
                                 <ChevronRight size={14} className="muted" />
                               </div>
@@ -393,13 +407,14 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
             <div className="ws-ceiling">
               <TriangleAlert size={14} />
               <div>
-                <b>Divo cannot currently tell you when a connection has gone stale.</b>{' '}
-                Token expiry is stored but never checked, so a dead connection keeps showing as healthy until a task fails.
-                A "Reconnect" state needs that check adding first.
+                <b>A connection is marked "Reconnect" the first time the provider refuses it — not before.</b>{' '}
+                Google and Shopify say outright when they have ended an authorisation, and Divo writes that down the
+                moment it hears it, so the account above stops claiming to work. The other providers give no such
+                answer yet: theirs stay listed as working until something run against them fails.
               </div>
             </div>
           </div>
-          <div className="ws-panel-foot"><DataNote source="reconnect" /> Designed, not yet buildable</div>
+          <div className="ws-panel-foot"><DataNote source="reconnect" /> Live for Google and Shopify</div>
         </Panel>
 
         <Panel>

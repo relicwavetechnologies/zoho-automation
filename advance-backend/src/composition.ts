@@ -50,7 +50,7 @@ import { LarkBaseClient } from './infrastructure/channels/lark/clients/lark-base
 import { LarkApprovalClient } from './infrastructure/channels/lark/clients/lark-approval.client';
 import { SerperClient } from './infrastructure/ai/search/serper.client';
 import { LarkOAuthService } from './infrastructure/lark/lark-oauth.service';
-import { GoogleOAuthService } from './infrastructure/google/google-oauth.service';
+import { GoogleOAuthService, GoogleTokenRefreshError } from './infrastructure/google/google-oauth.service';
 import { GoogleWorkspaceMcpClient } from './infrastructure/google/google-workspace-mcp.client';
 import { GoogleWorkspaceMcpSchemaCatalog } from './infrastructure/google/google-workspace-mcp-schema.catalog';
 import { GoogleWorkspaceGatewayClient } from './infrastructure/google/google-workspace-gateway.client';
@@ -69,7 +69,10 @@ import { IntegrationOAuthAttemptRepository } from './infrastructure/persistence/
 import { ShopifyRunProvenanceRepository } from './infrastructure/persistence/shopify-run-provenance.repository';
 import { createAitableKeyVerifier, type AitableKeyVerifier } from './application/aitable/aitable-connect.service';
 import { selectAitableConnection } from './application/aitable/aitable-connection-selection';
-import { IntegrationConnectionRepository } from './infrastructure/persistence/integration-connection.repository';
+import {
+  CONNECTION_REAUTHORIZATION_REQUIRED,
+  IntegrationConnectionRepository,
+} from './infrastructure/persistence/integration-connection.repository';
 import { ConnectionAuthorizationRepository } from './infrastructure/persistence/connection-authorization.repository';
 import { ChannelDeliveryRepository } from './infrastructure/persistence/channel-delivery.repository';
 import { ExecutionLaneLeaseRepository } from './infrastructure/persistence/execution-lane-lease.repository';
@@ -182,6 +185,7 @@ import {
   type DeliverGoogleConnectCard,
 } from './application/connections/begin-google-authorization';
 import { MailOpsWorker } from './application/mail-ops/mail-ops.worker';
+import { MailOpsConnectionUnavailableError } from './application/mail-ops/mail-ops.types';
 import { GmailHistoryClient } from './infrastructure/google/gmail-history.client';
 import { MailOpsRepository } from './infrastructure/persistence/mail-ops.repository';
 import { MailOpsReadRepository } from './infrastructure/persistence/mail-ops-read.repository';
@@ -751,6 +755,69 @@ export async function buildContainer(
     apiVersion: env.SHOPIFY_API_VERSION,
   });
   const googleOAuthService        = new GoogleOAuthService({ env, cache, logger: logger.child({ service: 'google-oauth' }) });
+
+  /**
+   * The one way anything in Divo turns a stored Google grant into an access
+   * token, so that a grant Google has revoked is written down exactly once.
+   *
+   * Every caller used to reach `getValidAccessToken` directly and rethrow, which
+   * meant a revoked account was rediscovered on every tick and never recorded:
+   * `IntegrationConnection.status` stayed `connected` forever while Mail Ops
+   * failed every five minutes and Connected apps showed a green card. Routing
+   * all of them through here makes the first rejection the one that marks it,
+   * and every surface that filters on status then tells the same story.
+   *
+   * The error is still rethrown unchanged — this observes, it does not swallow.
+   */
+  const googleAccessTokenFor = async (input: {
+    readonly companyId:    string;
+    readonly connectionId: string;
+    readonly refreshToken: string;
+    /** Cache partition. Distinct per use so a scoped token is not reused elsewhere. */
+    readonly cacheUserId:  string;
+    readonly abortSignal?: AbortSignal;
+  }): Promise<string> => {
+    try {
+      return await googleOAuthService.getValidAccessToken({
+        companyId:    input.companyId,
+        userId:       input.cacheUserId,
+        refreshToken: input.refreshToken,
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+      });
+    } catch (error) {
+      if (error instanceof GoogleTokenRefreshError && error.code === 'refresh_rejected') {
+        // Every cache partition this connection can occupy, not just the one
+        // that happened to fail. A dead grant's access tokens are dead too, and
+        // one left behind under the other prefix would be served to the first
+        // call after the reconnect that was supposed to fix all of this.
+        await Promise.all(
+          [`connection:${input.connectionId}`, `data-export:${input.connectionId}`]
+            .map(cacheUserId => googleOAuthService.forgetCachedToken(input.companyId, cacheUserId)),
+        );
+        const marked = await integrationConnectionRepo.markGoogleReauthorizationRequired({
+          companyId:    input.companyId,
+          connectionId: input.connectionId,
+        });
+        // A failed write is logged and not thrown: the caller's own failure is
+        // the more useful one to report, and the next refresh retries the mark.
+        if (!marked.ok) {
+          logger.error('google.connection.reauth_mark_failed', {
+            companyId:    input.companyId,
+            connectionId: input.connectionId,
+            reason:       marked.error.message,
+          });
+        } else {
+          logger.warn('google.connection.reauthorization_required', {
+            companyId:    input.companyId,
+            connectionId: input.connectionId,
+            reason:       error.message,
+          });
+        }
+      }
+      throw error;
+    }
+  };
+
   const googleCallbackBase = new URL(
     env.GOOGLE_OAUTH_REDIRECT_URI ?? env.BACKEND_PUBLIC_URL,
   );
@@ -862,9 +929,10 @@ export async function buildContainer(
     }
 
     try {
-      const token = await googleOAuthService.getValidAccessToken({
+      const token = await googleAccessTokenFor({
         companyId:    input.companyId,
-        userId:       `connection:${selectedConnectionId}`,
+        connectionId: selectedConnectionId,
+        cacheUserId:  `connection:${selectedConnectionId}`,
         refreshToken: connection.value.refreshToken,
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       });
@@ -944,9 +1012,10 @@ export async function buildContainer(
       ) {
         throw new Error('Selected personal Google account is no longer eligible for this file');
       }
-      const token = await googleOAuthService.getValidAccessToken({
+      const token = await googleAccessTokenFor({
         companyId: input.companyId,
-        userId: `connection:${connectionId}`,
+        connectionId,
+        cacheUserId: `connection:${connectionId}`,
         refreshToken: connection.refreshToken,
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       });
@@ -986,8 +1055,13 @@ export async function buildContainer(
         reason: 'Google OAuth is not configured for Divo.',
       };
     }
+    // Revoked accounts are asked for and then set aside, rather than never
+    // fetched. They must not be selectable — a rule built on one can never
+    // fire — but they are the difference between "reconnect Google" and "you
+    // have no Google account", and the second is a lie told to somebody looking
+    // straight at the account in their Connected apps list.
     const accessible = await integrationConnectionRepo
-      .listAccessibleGoogleConnections(input);
+      .listAccessibleGoogleConnections({ ...input, includeReauthorizationRequired: true });
     input.abortSignal?.throwIfAborted();
     if (!accessible.ok) {
       return {
@@ -995,7 +1069,15 @@ export async function buildContainer(
         reason: 'Google connections could not be loaded.',
       };
     }
-    const owned = accessible.value.filter(connection =>
+    const live = accessible.value.filter(
+      connection => connection.status !== CONNECTION_REAUTHORIZATION_REQUIRED,
+    );
+    const revokedOwned = accessible.value.filter(connection =>
+      connection.status === CONNECTION_REAUTHORIZATION_REQUIRED
+      && connection.ownerType === 'user'
+      && connection.ownerUserId === input.userId,
+    );
+    const owned = live.filter(connection =>
       connection.ownerType === 'user'
       && connection.ownerUserId === input.userId,
     );
@@ -1008,7 +1090,7 @@ export async function buildContainer(
     );
     const selection = selectAccessibleConnection({
       connections: eligible,
-      filteredOut: accessible.value.filter(
+      filteredOut: live.filter(
         connection => !eligible.includes(connection),
       ),
       ...(input.connectionId ? { connectionId: input.connectionId } : {}),
@@ -1021,6 +1103,17 @@ export async function buildContainer(
       };
     }
     if (selection.status === 'unavailable') {
+      // Only when nothing usable was found at all. Somebody with a working
+      // account and a second, revoked one has an ordinary scope or access
+      // problem on the working one, and telling them to reconnect the other
+      // would send them to fix the account that is not the obstacle.
+      if (eligible.length === 0 && revokedOwned.length > 0) {
+        return {
+          status: 'unavailable' as const,
+          connectionState: 'reauthorization_required' as const,
+          reason: mailOpsConnectionUnavailableMessage('reauthorization_required'),
+        };
+      }
       return {
         status: 'unavailable' as const,
         connectionState: selection.reason,
@@ -1191,9 +1284,10 @@ export async function buildContainer(
           'Selected personal Google export connection no longer has Drive and Sheets write scopes',
         );
       }
-      const accessToken = await googleOAuthService.getValidAccessToken({
+      const accessToken = await googleAccessTokenFor({
         companyId,
-        userId: `data-export:${connection.id}`,
+        connectionId: connection.id,
+        cacheUserId: `data-export:${connection.id}`,
         refreshToken,
       });
       await integrationConnectionRepo.touchLastUsed(connection.id);
@@ -1211,9 +1305,10 @@ export async function buildContainer(
         'Configured company Google export destination changed before execution',
       );
     }
-    const accessToken = await googleOAuthService.getValidAccessToken({
+    const accessToken = await googleAccessTokenFor({
       companyId,
-      userId: `data-export:${company.connectionId}`,
+      connectionId: company.connectionId,
+      cacheUserId: `data-export:${company.connectionId}`,
       refreshToken: company.refreshToken,
     });
     await integrationConnectionRepo.touchLastUsed(company.connectionId);
@@ -2313,11 +2408,16 @@ export async function buildContainer(
       });
       if (!connection.ok) throw connection.error;
       if (!connection.value?.refreshToken) {
-        throw new Error('Mail Ops Google connection is unavailable.');
+        // Also the path a revoked account now takes: once marked, it stops
+        // being listed as accessible, so it arrives here rather than as a
+        // refresh failure. Typed so the worker still files it as
+        // `connection_unavailable` and the mailbox keeps its reconnect remedy.
+        throw new MailOpsConnectionUnavailableError();
       }
-      return googleOAuthService.getValidAccessToken({
+      return googleAccessTokenFor({
         companyId: input.companyId,
-        userId: `connection:${input.connectionId}`,
+        connectionId: input.connectionId,
+        cacheUserId: `connection:${input.connectionId}`,
         refreshToken: connection.value.refreshToken,
       });
     },
@@ -2624,9 +2724,10 @@ export async function buildContainer(
       ) {
         throw new Error('The selected personal Google account is no longer eligible.');
       }
-      const token = await googleOAuthService.getValidAccessToken({
+      const token = await googleAccessTokenFor({
         companyId: input.companyId,
-        userId: `connection:${input.connectionId}`,
+        connectionId: input.connectionId,
+        cacheUserId: `connection:${input.connectionId}`,
         refreshToken: connection.value.refreshToken,
       });
       await integrationConnectionRepo.touchLastUsed(input.connectionId);

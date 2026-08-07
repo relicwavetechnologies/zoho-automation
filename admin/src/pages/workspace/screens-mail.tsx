@@ -35,6 +35,7 @@ import {
   type MailDelivery, type MailRule, type MailRuleDryRun, type MailRuleState, type MailboxHealth,
 } from './data/use-mail-automations'
 import { useConnections } from './data/use-connections'
+import { isLive } from './data/mailbox-resolution'
 import { ago } from './data/use-approvals'
 import { DetailPage, RailChip, RailEmpty, RailRow, RailSection } from './detail'
 import { DataNote, Empty, Fade, PageHeader, Panel, Seg, SkelRows, useStaged } from './ui'
@@ -313,7 +314,12 @@ function GettingStarted() {
   const { byProvider, loading, connecting, connect } = useConnections()
   const [failed, setFailed] = useState<string | null>(null)
   const google = byProvider.get('google_workspace')
+  // `connected` counts working accounts only, so a revoked one lands here
+  // rather than in the tick. Which is right — the step genuinely is not done —
+  // but the instruction has to change, because there is nothing to connect.
   const connected = Boolean(google?.connected)
+  const live = (google?.connections ?? []).filter(isLive)
+  const revoked = !connected && (google?.connections?.length ?? 0) > 0
 
   const onConnect = async () => {
     setFailed(null)
@@ -333,11 +339,13 @@ function GettingStarted() {
         <div className="ws-row">
           <span className="ws-ic">{connected ? <Check size={14} /> : <Mail size={14} />}</span>
           <div className="ws-row-main">
-            <b>Connect the Gmail account you want watched</b>
+            <b>{revoked ? 'Sign in to the Gmail account you want watched' : 'Connect the Gmail account you want watched'}</b>
             <p>
               {connected
-                ? `Connected as ${google?.connections[0]?.accountEmail ?? 'your Google account'}. Divo can read this inbox and send on its behalf.`
-                : 'Google will ask for your mail only — not Drive, Calendar or anything else.'}
+                ? `Connected as ${live[0]?.accountEmail ?? 'your Google account'}. Divo can read this inbox and send on its behalf.`
+                : revoked
+                  ? `${google?.connections.map((c) => c.accountEmail ?? c.label).join(', ')} is connected, but Google has ended the authorisation. Signing in again restores it — you are not connecting a new account.`
+                  : 'Google will ask for your mail only — not Drive, Calendar or anything else.'}
             </p>
           </div>
           <div className="ws-row-act">
@@ -350,7 +358,9 @@ function GettingStarted() {
                 disabled={loading || connecting === 'google_workspace'}
                 onClick={() => { void onConnect() }}
               >
-                {connecting === 'google_workspace' ? 'Waiting for Google…' : 'Connect Gmail'}
+                {connecting === 'google_workspace'
+                  ? 'Waiting for Google…'
+                  : revoked ? 'Reconnect Google' : 'Connect Gmail'}
               </button>
             )}
           </div>
