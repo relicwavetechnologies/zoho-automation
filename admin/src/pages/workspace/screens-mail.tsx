@@ -27,7 +27,7 @@ import { useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Archive, Check, Inbox, Mail, MailWarning, MessageSquare, Pause, Pencil, Play,
-  Plus, ShieldAlert, Tag, TriangleAlert,
+  Plus, RefreshCw, ShieldAlert, Tag, TriangleAlert,
 } from 'lucide-react'
 import {
   leavesOrganisation, matchClauses, rateLimitClause, readAction, readDestination,
@@ -111,7 +111,7 @@ function ruleLine(rule: MailRule): string | null {
 export function MailRules({ replay, go }: ScreenProps) {
   const [r1] = useStaged([320], replay)
   const [scope, setScope] = useState<'active' | 'all'>('active')
-  const { rules, mailboxes, anyMailboxBroken, loading, error } = useMailAutomations(scope === 'all')
+  const { rules, mailboxes, anyMailboxBroken, loading, error, refresh } = useMailAutomations(scope === 'all')
   const navigate = useNavigate()
   void go
 
@@ -153,7 +153,7 @@ export function MailRules({ replay, go }: ScreenProps) {
             reload leaves the previous response in state, so without this a
             stale mailbox line and a stale list of externally-forwarding rules
             render directly beneath a banner saying nothing was read. */}
-        {settled && anyMailboxBroken ? <MailboxBanner mailboxes={mailboxes} /> : null}
+        {settled && anyMailboxBroken ? <MailboxBanner mailboxes={mailboxes} onReconnected={refresh} /> : null}
 
         {/* The mailbox comes first now. It used to be a panel at the foot of the
             page, below a box of general notes — so the one thing that can take
@@ -400,21 +400,75 @@ function GettingStarted() {
  * connected mailbox the address is the reassurance that this is about them, and
  * with several it is the only way to know which one to go and fix.
  */
-function MailboxBanner({ mailboxes }: { mailboxes: MailboxHealth[] }) {
+/**
+ * The two failures a member can actually fix, and the only two that get a
+ * button.
+ *
+ * Every other code the health assessment can carry ends in "wait" or "this
+ * needs a Divo operator" — and a Reconnect button under those sentences is an
+ * instruction to go and fix an account that is working. So the list is the
+ * codes whose remedy already says to reconnect, and nothing else.
+ */
+const RECONNECTABLE = new Set(['connection_unavailable', 'scope_missing'])
+
+function MailboxBanner({
+  mailboxes, onReconnected,
+}: {
+  mailboxes: MailboxHealth[]
+  onReconnected: () => void
+}) {
+  const { loading, connecting, connect } = useConnections()
+  const [failed, setFailed] = useState<string | null>(null)
   const broken = mailboxes.filter((m) => !m.rulesCanFire && m.state !== 'paused')
   if (broken.length === 0) return null
+
+  /* The banner already says "reconnect it to resume". Until now that was the
+     whole of it: a remedy in prose, with nowhere to do it. Somebody reading
+     this has been told what is wrong, told what fixes it, and left to find the
+     Connections page and guess which account. */
+  const reconnectable = broken.some((m) => m.failureCode && RECONNECTABLE.has(m.failureCode))
+
+  const onConnect = async () => {
+    setFailed(null)
+    try {
+      // Mail alone — the same six scopes the new-rule flow asks for, not the
+      // forty the general Connected apps flow requests. Reconnecting to fix
+      // mail should not widen what Divo can reach.
+      await connect('google_workspace', { forTools: ['mailAutomations'] })
+      // The rules did not change; what changed is whether they can run. So the
+      // page is re-read rather than navigated away from.
+      onReconnected()
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : 'The Google window could not be opened.')
+    }
+  }
+
   return (
     <div className="ws-ceiling">
       <MailWarning size={14} />
-      <div>
-        <b>
+      <div className="ws-mb-banner">
+        <div>
+          <b>
+            {broken.length === 1
+              ? `Divo is not watching ${broken[0]!.mailboxEmail}.`
+              : `Divo is not watching ${broken.length} of your mailboxes.`}
+          </b>{' '}
           {broken.length === 1
-            ? `Divo is not watching ${broken[0]!.mailboxEmail}.`
-            : `Divo is not watching ${broken.length} of your mailboxes.`}
-        </b>{' '}
-        {broken.length === 1
-          ? `${broken[0]!.summary}${broken[0]!.remedy ? ` ${broken[0]!.remedy}` : ''} Until that is fixed, no rule on this mailbox can fire — however healthy it looks below.`
-          : 'Until that is fixed, no rule on those mailboxes can fire — however healthy they look below.'}
+            ? `${broken[0]!.summary}${broken[0]!.remedy ? ` ${broken[0]!.remedy}` : ''} Until that is fixed, no rule on this mailbox can fire — however healthy it looks below.`
+            : 'Until that is fixed, no rule on those mailboxes can fire — however healthy they look below.'}
+        </div>
+        {reconnectable ? (
+          <button
+            type="button"
+            className="btn primary"
+            disabled={loading || connecting === 'google_workspace'}
+            onClick={() => { void onConnect() }}
+          >
+            <RefreshCw size={13} />
+            {connecting === 'google_workspace' ? 'Opening Google…' : 'Reconnect Google'}
+          </button>
+        ) : null}
+        {failed ? <p className="ws-sub">{failed}</p> : null}
       </div>
     </div>
   )

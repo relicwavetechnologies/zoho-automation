@@ -206,6 +206,12 @@
 .cur .ws-ceiling svg { color: var(--ws-warning); flex-shrink: 0; margin-top: 1px; }
 .cur .ws-ceiling b { color: var(--cur-ink); font-weight: 500; }
 
+/* The remedy sits under the sentence that explains it, not beside it: what is
+   wrong is two lines of prose, and a button floated next to that reads as an
+   action on the page rather than the answer to what was just said. */
+.cur .ws-mb-banner { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.cur .ws-mb-banner .btn { flex-shrink: 0; }
+
 /* Waiting on a person, which is not a warning and must not read as one.
    Same shape as `.ws-ceiling` so it sits in the same place in the flow, and a
    deliberately quiet surface: nothing here is wrong, and there is nothing to
