@@ -343,9 +343,31 @@ function asExecutionContext(value: unknown): GatewayExecutionContext | undefined
   return { version: 1, threadId, runId, actionId };
 }
 
+/**
+ * What to tell somebody whose approved action just ran.
+ *
+ * This path does not go through the model — the approval came back long after
+ * the run that asked for it, and re-running a model to describe a completed
+ * write would risk it describing one that did not happen. So whatever this
+ * returns is read verbatim by a person.
+ *
+ * It used to be the tool's whole return value as a JSON code block. A member
+ * who approved a mail rule was shown twenty-three lines of `ruleId`,
+ * `connectionId` and nested `destination` objects to say one sentence's worth
+ * of thing. Tools already write that sentence — `message` is where it goes —
+ * and it is the tool's own words rather than an interpretation of them.
+ *
+ * The JSON stays as the fallback, because a result with no `message` is one
+ * nobody has written a sentence for, and showing its fields is still better
+ * than showing nothing.
+ */
 function renderResult(value: unknown): string {
   if (value === undefined || value === null) return '';
   if (typeof value === 'string') return value;
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    const message = (value as Record<string, unknown>)['message'];
+    if (typeof message === 'string' && message.trim()) return message.trim();
+  }
   const serialized = JSON.stringify(value, null, 2);
   if (!serialized) return '';
   return `Result:\n\n\`\`\`json\n${serialized.slice(0, 3_500)}\n\`\`\``;

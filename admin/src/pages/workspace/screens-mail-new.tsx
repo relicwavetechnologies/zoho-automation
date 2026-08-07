@@ -1027,20 +1027,21 @@ function StepBar({ step, onPick }: { step: number; onPick: (n: number) => void }
 /**
  * A name nobody has to think of.
  *
- * Built from the rule itself, so the placeholder is already the right answer
- * for most rules and the field can simply be left alone. Naming is the last
- * thing between somebody and a working rule, and it is the least interesting.
+ * Named for what the rule *does*, not for what it matches — every screen that
+ * shows the name already prints the conditions directly beneath it, so a name
+ * built from the first clause is the same sentence twice with the second copy
+ * truncated. The destination is the one thing those lines do not already say.
  */
 function suggestedName(
   clauses: string[],
   destination: DestinationKind | null,
   address: string,
 ): string {
-  const first = clauses[0] ?? 'Matching mail'
-  const head = first.charAt(0).toUpperCase() + first.slice(1)
-  if (destination === 'organize') return `${head} — filed`
-  if (destination === 'email' && address.trim().length > 0) return `${head} → ${address.trim()}`
-  return head
+  void clauses
+  if (destination === 'organize') return 'File it in Gmail'
+  if (destination === 'lark_dm') return 'Send it to me on Lark'
+  if (destination === 'email' && address.trim().length > 0) return `Forward to ${address.trim()}`
+  return 'Mail rule'
 }
 
 /** Why the button is refusing, in the order somebody would fix them. */

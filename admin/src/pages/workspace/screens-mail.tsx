@@ -64,7 +64,12 @@ const STATE_BADGE: Record<MailRuleState, { label: string; tone: string }> = {
   working: { label: 'Working', tone: 'b-ok' },
   waiting: { label: 'Waiting', tone: '' },
   broken: { label: 'Broken', tone: 'b-err' },
+  /* Refused by permission — about this rule. */
   blocked: { label: 'Blocked', tone: 'b-err' },
+  /* Fine in itself, but nothing reaches it. Named for the cause rather than
+     sharing "Blocked", which reads as a permission problem and is contradicted
+     by the refused count of zero sitting beside it. */
+  mailbox_down: { label: 'Not running', tone: 'b-err' },
   paused: { label: 'Paused', tone: '' },
   archived: { label: 'Archived', tone: '' },
 }

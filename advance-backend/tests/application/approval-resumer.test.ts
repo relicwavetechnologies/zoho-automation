@@ -43,7 +43,11 @@ function approvedRow(
   } as any;
 }
 
-function makeExecutableResumer(row: unknown, channelIdentityRepo: unknown) {
+function makeExecutableResumer(
+  row: unknown,
+  channelIdentityRepo: unknown,
+  toolResult: unknown = { documentUrl: 'https://example.test/doc-1' },
+) {
   const registry = new ToolRegistry();
   const executed: unknown[] = [];
   let resumedRunContext: any;
@@ -59,7 +63,7 @@ function makeExecutableResumer(row: unknown, channelIdentityRepo: unknown) {
     execute: async (args: unknown, ctx: any) => {
       executed.push(args);
       resumedRunContext = ctx?.runContext;
-      return ok({ documentUrl: 'https://example.test/doc-1' });
+      return ok(toolResult);
     },
   } as any);
   const executor = new ToolExecutor({
@@ -368,5 +372,56 @@ describe('ApprovalResumerService', () => {
     await service.resume('approval-1', 'rejected');
 
     assert.match(finalTexts[0] ?? '', /nothing was changed/i);
+  });
+});
+
+describe('what an approved action reports back', () => {
+  const identity = {
+    resolveByLarkTenantIdentity: async () => ok({
+      userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER', channel: 'lark',
+      larkOpenId: 'ou-user-1', activeDepartmentId: 'dept-1',
+    }),
+  };
+
+  it('says the tool\'s own sentence rather than dumping its return value', async () => {
+    // This path does not go through the model — the approval comes back long
+    // after the run that asked for it — so whatever is rendered here is read
+    // verbatim by a person. It used to be the whole result as a JSON block:
+    // somebody who approved a mail rule was shown twenty-three lines of
+    // `ruleId`, `connectionId` and nested `destination` objects to say one
+    // sentence's worth of thing.
+    const harness = makeExecutableResumer(
+      approvedRow('approved'),
+      identity,
+      {
+        success: true,
+        operation: 'create',
+        rule: { ruleId: 'rule-1', connectionId: 'conn-1', destination: { type: 'email' } },
+        message: 'Mail automation is active. Matching mail is now forwarded whole to a@b.com.',
+      },
+    );
+
+    await harness.service.resume('approval-1', 'approved');
+
+    const text = harness.dmDeliveries[0]?.text ?? harness.finalTexts[0] ?? '';
+    assert.match(text, /Approved action completed/);
+    assert.match(text, /forwarded whole to a@b\.com/);
+    assert.equal(text.includes('```json'), false, 'the raw result was shown as well');
+    assert.equal(text.includes('connectionId'), false, 'internal ids reached the reader');
+  });
+
+  it('still shows the fields when a tool wrote no sentence', async () => {
+    // A result with no `message` is one nobody has written a sentence for, and
+    // showing its fields is better than showing nothing.
+    const harness = makeExecutableResumer(
+      approvedRow('approved'),
+      identity,
+      { documentUrl: 'https://example.test/doc-1' },
+    );
+
+    await harness.service.resume('approval-1', 'approved');
+
+    const text = harness.dmDeliveries[0]?.text ?? harness.finalTexts[0] ?? '';
+    assert.match(text, /documentUrl/);
   });
 });
