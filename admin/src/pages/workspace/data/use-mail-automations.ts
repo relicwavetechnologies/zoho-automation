@@ -512,6 +512,7 @@ export function rateLimitClause(action: Record<string, unknown>): string | null 
 export type MailDestination =
   | { kind: 'email'; email: string; label: string }
   | { kind: 'lark'; chatId: string; label: string }
+  | { kind: 'lark_dm'; label: string }
   | { kind: 'organize'; label: string }
   | { kind: 'unknown'; label: string }
 
@@ -533,6 +534,9 @@ export function readDestination(
     const chatId = str(destination, 'chatId')
     if (chatId) return { kind: 'lark', chatId, label: 'a Lark chat' }
   }
+  // Said as "you", not as an id. The open id is meaningless to read and the
+  // only fact that matters about this destination is that nobody else sees it.
+  if (type === 'lark_dm') return { kind: 'lark_dm', label: 'you, on Lark' }
 
   if (type === 'none' && action) {
     const read = readAction(action)
@@ -587,6 +591,9 @@ export type MailRuleDraft = {
   destination:
     | { type: 'email'; email: string }
     | { type: 'lark_chat'; chatId: string }
+    /* No id. The server substitutes the signed-in member's own open id, so a
+       browser cannot name somebody else's DM. */
+    | { type: 'lark_dm' }
     | { type: 'organize'; label?: string; archive?: boolean; markRead?: boolean }
   rateLimitPerHour?: number
 }
@@ -630,4 +637,136 @@ export function useCreateMailRule() {
   }, [token])
 
   return { ...state, create }
+}
+
+/**
+ * Pause, resume, archive.
+ *
+ * Archive rather than delete, and the word is the honest one: an archived rule
+ * keeps its identity, so re-creating the identical rule brings that row back
+ * rather than making a second one beside it. Calling it "delete" would promise
+ * a disappearance that does not happen — the rule is still there under All.
+ */
+export type MailRuleChange = 'pause' | 'resume' | 'archive'
+
+export function useMailRuleStatus() {
+  const { token } = useAdminAuth()
+  const [pending, setPending] = useState<MailRuleChange | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const change = useCallback(async (ruleId: string, next: MailRuleChange): Promise<boolean> => {
+    if (!token) return false
+    setPending(next)
+    setError(null)
+    try {
+      if (next === 'archive') {
+        await api.delete(`${BASE}/rules/${ruleId}`, {}, token, { quiet: true })
+      } else {
+        await api.post(`${BASE}/rules/${ruleId}/${next}`, {}, token, { quiet: true })
+      }
+      return true
+    } catch (e) {
+      // The server distinguishes "not yours", "not real" and "nothing would
+      // poll this mailbox anyway", and only its sentence knows which.
+      setError(e instanceof Error && e.message.length > 0
+        ? e.message
+        : 'That change could not be saved.')
+      return false
+    } finally {
+      setPending(null)
+    }
+  }, [token])
+
+  return { pending, error, change }
+}
+
+/* ── Describing a rule, and testing it before it exists ── */
+
+export type MailRuleCompiled = {
+  status: 'compiled'
+  name: string
+  match: Record<string, unknown>
+  destination:
+    | { type: 'email'; email: string }
+    | { type: 'lark_dm' }
+    | { type: 'organize'; label?: string; archive?: boolean; markRead?: boolean }
+  rateLimitPerHour?: number
+  /** What Divo deliberately dropped from the sentence. */
+  notes?: string[]
+} | { status: 'unclear'; reason: string } | { status: 'unavailable'; reason: string }
+
+/**
+ * One sentence in, a draft out — and never a guess.
+ *
+ * `unclear` is a first-class answer, not a failure: Divo names the piece it
+ * needs ("say the domain, e.g. @amazon.in") rather than inventing one. A
+ * guessed rule is wrong while being reported as right, which is the one thing
+ * this whole screen exists to avoid.
+ */
+export function useCompileMailRule() {
+  const { token } = useAdminAuth()
+  const [result, setResult] = useState<MailRuleCompiled | null>(null)
+  const [running, setRunning] = useState(false)
+
+  const compile = useCallback(async (sentence: string, connectionId?: string) => {
+    if (!token) return
+    setRunning(true)
+    try {
+      const data = await api.post<MailRuleCompiled>(
+        `${BASE}/compile`,
+        { sentence, ...(connectionId ? { connectionId } : {}) },
+        token,
+        { quiet: true },
+      )
+      setResult(data)
+    } catch {
+      setResult({ status: 'unavailable', reason: 'Divo could not read that just now.' })
+    } finally {
+      setRunning(false)
+    }
+  }, [token])
+
+  return { result, running, compile, reset: useCallback(() => setResult(null), []) }
+}
+
+export type MailRulePreview = {
+  /** False when Divo has never watched this inbox — no evidence either way. */
+  watched: boolean
+  consideredCount: number
+  matchedCount: number
+  bodyUnavailableCount: number
+  matched: Array<{ eventId: string; occurredAt: string; from: string; subject: string }>
+}
+
+/** Replays unsaved conditions over mail Divo has already seen. Sends nothing. */
+export function usePreviewMailRule() {
+  const { token } = useAdminAuth()
+  const [result, setResult] = useState<MailRulePreview | null>(null)
+  const [running, setRunning] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const preview = useCallback(async (match: Record<string, unknown>, connectionId?: string) => {
+    if (!token) return
+    setRunning(true)
+    setError(null)
+    try {
+      const data = await api.post<MailRulePreview>(
+        `${BASE}/preview`,
+        { match, ...(connectionId ? { connectionId } : {}) },
+        token,
+        { quiet: true },
+      )
+      setResult(data)
+    } catch (e) {
+      // A test that could not run says nothing about the conditions, and
+      // reporting it as zero matches would send somebody rewriting a rule that
+      // was never the problem.
+      setError(e instanceof Error && e.message ? e.message : 'The check could not run.')
+      setResult(null)
+    } finally {
+      setRunning(false)
+    }
+  }, [token])
+
+  return { result, running, error, preview }
 }

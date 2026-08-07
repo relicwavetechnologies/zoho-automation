@@ -795,6 +795,42 @@ export class LarkChannelAdapter implements ChannelAdapter {
     }
   }
 
+  /**
+   * A direct message to one person, by their Lark open id.
+   *
+   * The sibling of `sendToChatId`, and the only difference is the receive-id
+   * type — which is also the whole point: a DM has exactly one recipient and
+   * needs no chat to have been created first.
+   */
+  async sendDmToOpenId(
+    openId: string,
+    content: string,
+    idempotencyKey?: string,
+  ): Promise<Result<string, ChannelError>> {
+    try {
+      const result = await this.messagingClient.sendMessage(
+        openId,
+        content,
+        undefined,
+        undefined,
+        idempotencyKey,
+        'open_id',
+      );
+      return ok(result.messageId);
+    } catch (e) {
+      // Classified the same way `sendToChatId` classifies its own failures:
+      // reporting every one as a transient upstream fault hid causes that were
+      // permanent and ours, and named no reason anybody could act on.
+      return err(new ChannelError({
+        channel: 'lark',
+        stage: 'send_status',
+        reason: directCardFailureReason(e),
+        cause: e,
+        message: `Channel lark error at send_status: ${larkFailureDetail(e)}`,
+      }));
+    }
+  }
+
   // ── sendToChatId ──────────────────────────────────────────────────────
   // Sends a message to a chatId. Pass replyToMessageId to quote-reply a specific message.
 

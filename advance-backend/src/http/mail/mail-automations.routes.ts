@@ -24,8 +24,11 @@ import {
 } from '../../application/mail-ops/mail-ops-health';
 import { dryRunMailRule } from '../../application/mail-ops/mail-rule-dry-run';
 import { summariseCorrespondents } from '../../application/mail-ops/mail-correspondents';
+import type { MailRuleCompilation } from '../../application/mail-ops/mail-rule-compiler';
 import {
   actionForDestination,
+  type MailRuleStatusChange,
+  type MailRuleStatusResult,
   type MailRuleWriteRequest,
   type MailRuleWriteResult,
 } from '../../application/mail-ops/mail-rule-writer';
@@ -72,6 +75,17 @@ const createRuleBodySchema = z.object({
   destination: z.discriminatedUnion('type', [
     z.object({ type: z.literal('email'), email: z.string().trim().email() }).strict(),
     z.object({ type: z.literal('lark_chat'), chatId: z.string().trim().min(1) }).strict(),
+    /*
+     * No id, deliberately.
+     *
+     * The DM target is the signed-in member's own open id, which the server
+     * reads from the session below. Letting a browser name one would mean a
+     * member could forward their mail to a colleague's DM by pasting an id —
+     * which is precisely the class of thing `authorizeLarkChat` exists to stop
+     * for rooms, and which is better prevented by having no input at all than
+     * by validating one.
+     */
+    z.object({ type: z.literal('lark_dm') }).strict(),
     z.object({
       type: z.literal('organize'),
       label: z.string().trim().min(1).max(225).optional(),
@@ -133,6 +147,24 @@ const REFUSALS: Record<Exclude<MailRuleWriteResult['status'], 'created'>, {
   unavailable: { code: 500, message: 'That rule could not be created. Try again shortly.' },
 };
 
+const compileBodySchema = z.object({
+  sentence: z.string().trim().min(3).max(1_000),
+  connectionId: z.string().uuid().optional(),
+}).strict();
+
+/*
+ * Testing conditions that are not a rule yet.
+ *
+ * The existing dry run replays a rule that already exists, which is no use at
+ * the moment it would help most — before anybody commits to one. This takes the
+ * conditions instead.
+ */
+const previewBodySchema = z.object({
+  match: mailRuleMatchSchema,
+  connectionId: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(MAX_DRY_RUN_EVENTS).optional(),
+}).strict();
+
 const suggestionsQuerySchema = z.object({
   connectionId: z.string().uuid().optional(),
 });
@@ -160,10 +192,21 @@ export interface MailAutomationsRouteDeps {
    * the same reason as above: the router still mounts where nothing can write,
    * and says so plainly rather than pretending.
    */
-  writeRule?: (
-    request: MailRuleWriteRequest,
-    action: MailRuleAction,
-  ) => Promise<MailRuleWriteResult>;
+  writeRule?: {
+    create: (
+      request: MailRuleWriteRequest,
+      action: MailRuleAction,
+    ) => Promise<MailRuleWriteResult>;
+    setStatus: (
+      input: { companyId: string; userId: string; ruleId: string },
+      change: MailRuleStatusChange,
+    ) => Promise<MailRuleStatusResult>;
+  };
+  /** Turns one sentence into a draft rule. Absent where no model is configured. */
+  compileRule?: (input: {
+    sentence: string;
+    mailboxEmail: string;
+  }) => Promise<MailRuleCompilation>;
   logger: Logger;
 }
 
@@ -471,12 +514,29 @@ export function createMailAutomationsRoutes(
 
     const body = parsed.data;
     try {
+      // Read from the session, never from the request.
+      const openId = typeof res.locals['larkOpenId'] === 'string'
+        ? String(res.locals['larkOpenId'])
+        : null;
+      if (body.destination.type === 'lark_dm' && !openId) {
+        res.status(409).json({
+          success: false,
+          code: 'lark_not_linked',
+          message:
+            'Divo reaches you through Lark, and your Lark account is not linked yet. '
+            + 'Link it once and this rule can message you directly.',
+        });
+        return;
+      }
+
       const destination: MailRuleDestination =
         body.destination.type === 'email'
           ? { type: 'email', email: body.destination.email }
           : body.destination.type === 'lark_chat'
             ? { type: 'lark_chat', chatId: body.destination.chatId }
-            : { type: 'none' };
+            : body.destination.type === 'lark_dm'
+              ? { type: 'lark_dm', openId: openId! }
+              : { type: 'none' };
 
       const action: MailRuleAction = body.destination.type === 'organize'
         ? {
@@ -487,7 +547,7 @@ export function createMailAutomationsRoutes(
           }
         : actionForDestination(destination, body.rateLimitPerHour);
 
-      const outcome = await deps.writeRule({
+      const outcome = await deps.writeRule.create({
         ...actor(res),
         ...(res.locals['runtimeDepartmentId']
           ? { departmentId: String(res.locals['runtimeDepartmentId']) }
@@ -524,6 +584,185 @@ export function createMailAutomationsRoutes(
       });
     } catch (error) {
       fail(res, 'create', error);
+    }
+  });
+
+  /*
+   * Off, on, and away.
+   *
+   * `POST` for pause and resume, `DELETE` for archive — and archive really is
+   * what DELETE does here, because an archived rule keeps its identity so that
+   * re-creating the same rule revives that row rather than making a second one
+   * beside it. A hard delete would leave two rules forwarding every matching
+   * message twice, which is the collision the dedupe key exists to prevent.
+   */
+  const statusRoute = (change: MailRuleStatusChange) =>
+    async (req: import('express').Request, res: Response): Promise<void> => {
+      if (!deps.writeRule) {
+        res.status(503).json({
+          success: false,
+          message: 'Mail rules cannot be changed in this environment.',
+        });
+        return;
+      }
+      const ruleId = z.string().uuid().safeParse(req.params['ruleId']);
+      if (!ruleId.success) {
+        res.status(400).json({ success: false, message: 'Invalid rule ID.' });
+        return;
+      }
+      try {
+        const outcome = await deps.writeRule.setStatus(
+          { ...actor(res), ruleId: ruleId.data },
+          change,
+        );
+        if (outcome.status === 'changed') {
+          log.info('mail_automations.rule_status_changed', {
+            companyId: res.locals['companyId'],
+            ruleId: ruleId.data,
+            change,
+          });
+          res.json({ success: true, data: { ruleId: ruleId.data, change } });
+          return;
+        }
+        if (outcome.status === 'not_found') {
+          // Not yours and not real are deliberately indistinguishable: the
+          // repository enforces ownership inside the query, so answering them
+          // differently would confirm that somebody else's rule exists.
+          res.status(404).json({
+            success: false,
+            message: 'That mail rule was not found in your account.',
+          });
+          return;
+        }
+        if (outcome.status === 'not_configured') {
+          res.status(503).json({
+            success: false,
+            code: 'not_configured',
+            message:
+              'Mail automation is not running in this environment, so resuming this rule would '
+              + 'not start it firing again.',
+          });
+          return;
+        }
+        res.status(500).json({ success: false, message: outcome.reason });
+      } catch (error) {
+        fail(res, change, error);
+      }
+    };
+
+  router.post('/rules/:ruleId/pause', statusRoute('pause'));
+  router.post('/rules/:ruleId/resume', statusRoute('resume'));
+  router.delete('/rules/:ruleId', statusRoute('archive'));
+
+  /**
+   * One sentence in, a draft rule out. Creates nothing.
+   *
+   * The draft comes back as the same editable conditions somebody would have
+   * filled in by hand, so describing and building are one object rather than
+   * two modes — and what they approve is what they can still change.
+   */
+  router.post('/compile', async (req, res) => {
+    if (!deps.compileRule) {
+      res.status(503).json({
+        success: false,
+        message: 'Divo cannot read a rule from a sentence in this environment.',
+      });
+      return;
+    }
+    const parsed = compileBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ success: false, message: 'Say what the rule should do.' });
+      return;
+    }
+    try {
+      // The mailbox is named to the model so "me" and "my inbox" resolve to
+      // something concrete rather than being guessed at.
+      const found = await deps.readRepo.listRecentEventsForMailbox({
+        ...actor(res),
+        ...(parsed.data.connectionId ? { connectionId: parsed.data.connectionId } : {}),
+        limit: 1,
+      });
+      if (!found.ok) throw found.error;
+
+      const outcome = await deps.compileRule({
+        sentence: parsed.data.sentence,
+        mailboxEmail: found.value?.mailboxEmail ?? String(res.locals['email'] ?? 'your inbox'),
+      });
+      res.json({ success: true, data: outcome });
+    } catch (error) {
+      fail(res, 'compile', error);
+    }
+  });
+
+  /**
+   * "Would these conditions have caught anything?" — before a rule exists.
+   *
+   * Every message is judged, with nothing counted as predating, because there
+   * is no rule yet for anything to predate. The honest question here is what it
+   * *would* have caught had it existed, and that is what this answers.
+   */
+  router.post('/preview', async (req, res) => {
+    const parsed = previewBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({
+        success: false,
+        message: parsed.error.issues[0]?.message ?? 'Those conditions could not be read.',
+      });
+      return;
+    }
+    try {
+      const found = await deps.readRepo.listRecentEventsForMailbox({
+        ...actor(res),
+        ...(parsed.data.connectionId ? { connectionId: parsed.data.connectionId } : {}),
+        limit: parsed.data.limit ?? DEFAULT_DRY_RUN_EVENTS,
+      });
+      if (!found.ok) throw found.error;
+      if (found.value === null) {
+        // Nothing stored, which is the ordinary state before a first rule —
+        // not a failure, and not evidence the conditions are wrong.
+        res.json({
+          success: true,
+          data: { watched: false, consideredCount: 0, matchedCount: 0, bodyUnavailableCount: 0, matched: [] },
+        });
+        return;
+      }
+
+      const outcome = dryRunMailRule({
+        rule: {
+          match: parsed.data.match,
+          action: { type: 'organize', markRead: true },
+          destination: { type: 'none' },
+          // Epoch: with no rule, nothing can predate one. Using the
+          // subscription's own date would mark old mail as missed by a rule
+          // that never existed to miss it.
+          activatedAt: new Date(0),
+        },
+        events: found.value.events,
+      });
+
+      if (outcome.status === 'rule_invalid') {
+        res.status(400).json({ success: false, message: outcome.reason });
+        return;
+      }
+
+      res.json({
+        success: true,
+        data: {
+          watched: true,
+          mailboxEmail: found.value.mailboxEmail,
+          consideredCount: outcome.consideredCount,
+          matchedCount: outcome.matched.length,
+          bodyUnavailableCount: outcome.bodyUnavailableCount,
+          matched: outcome.matched.slice(0, 10).map(hit => ({
+            eventId: hit.eventId,
+            occurredAt: hit.occurredAt.toISOString(),
+            from: hit.from,
+            subject: hit.subject,
+          })),
+        },
+      });
+    } catch (error) {
+      fail(res, 'preview', error);
     }
   });
 

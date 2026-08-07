@@ -215,6 +215,12 @@ export class MailOpsWorker {
       connectionId: string;
       departmentId?: string;
     }): Promise<RuleAuthorization>;
+    /** A direct message to the rule's owner, addressed by their open id. */
+    deliverLarkDm(input: {
+      openId: string;
+      idempotencyKey: string;
+      text: string;
+    }): Promise<string>;
     deliverLark(input: {
       chatId: string;
       text: string;
@@ -1118,6 +1124,27 @@ export class MailOpsWorker {
         nothingWasSent = false;
         providerMessageId = await this.deps.deliverLark({
           chatId: chat,
+          idempotencyKey: payload.idempotencyKey,
+          text: formatLarkDelivery(payload),
+        });
+      } else if (
+        payload.action.type === 'deliver'
+        && payload.destination.type === 'lark_dm'
+      ) {
+        /*
+         * No chat authorisation, and that is not a check being skipped.
+         *
+         * `authorizeLarkChat` exists because a chat id is caller-supplied and
+         * names a room that may hold anyone, including — where one Lark install
+         * serves two Divo companies — another company's people. An open id on a
+         * `lark_dm` destination was never supplied by a caller: it is written
+         * from the signed-in session at creation, so the recipient is provably
+         * the person who owns the mailbox. There is no room and no third party,
+         * so there is nothing for the guard to have an opinion about.
+         */
+        nothingWasSent = false;
+        providerMessageId = await this.deps.deliverLarkDm({
+          openId: payload.destination.openId,
           idempotencyKey: payload.idempotencyKey,
           text: formatLarkDelivery(payload),
         });

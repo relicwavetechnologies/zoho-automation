@@ -26,12 +26,12 @@
 import { useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
-  Archive, Check, Inbox, Mail, MailWarning, MessageSquare, Pencil, Plus,
-  ShieldAlert, Tag, Trash2, TriangleAlert,
+  Archive, Check, Inbox, Mail, MailWarning, MessageSquare, Pause, Pencil, Play,
+  Plus, ShieldAlert, Tag, TriangleAlert,
 } from 'lucide-react'
 import {
   leavesOrganisation, matchClauses, rateLimitClause, readAction, readDestination,
-  useMailAutomations, useMailDeliveries, useMailRuleDryRun,
+  useMailAutomations, useMailDeliveries, useMailRuleDryRun, useMailRuleStatus,
   type MailDelivery, type MailRule, type MailRuleDryRun, type MailRuleState, type MailboxHealth,
 } from './data/use-mail-automations'
 import { useConnections } from './data/use-connections'
@@ -49,8 +49,15 @@ type ScreenProps = { persona: Persona; replay: number; toast: Toast; go: (screen
  * still made and changed by asking Divo, and every control that would say
  * otherwise carries this instead of a handler.
  */
-const NO_WRITE =
-  'Mail rules can only be changed by asking Divo — the web app has no route for this yet.'
+const NO_EDIT =
+  'Editing a rule is still done by asking Divo — a change can collide with another rule on the '
+  + 'same mailbox, and answering that needs a screen this page does not have yet.'
+
+const CHANGE_DONE: Record<'pause' | 'resume' | 'archive', string> = {
+  pause: 'Paused. Nothing will be forwarded until you resume it.',
+  resume: 'Resumed. Mail arriving from now on will be acted on.',
+  archive: 'Archived. It keeps its place — creating the same rule brings it back.',
+}
 
 /** How each state is labelled and toned. `waiting` is healthy, just untriggered. */
 const STATE_BADGE: Record<MailRuleState, { label: string; tone: string }> = {
@@ -414,9 +421,21 @@ function MailboxBanner({ mailboxes }: { mailboxes: MailboxHealth[] }) {
 export function MailRuleDetail({ toast }: ScreenProps) {
   const { ruleId } = useParams()
   const navigate = useNavigate()
-  const { rules, mailboxes, loading, error } = useMailAutomations(true)
+  const { rules, mailboxes, loading, error, refresh } = useMailAutomations(true)
   const rule = rules.find((r) => r.ruleId === ruleId) ?? null
-  void toast
+  const status = useMailRuleStatus()
+
+  const onChange = async (change: 'pause' | 'resume' | 'archive') => {
+    if (!rule) return
+    const done = await status.change(rule.ruleId, change)
+    if (!done) return
+    toast(CHANGE_DONE[change])
+    // Archiving leaves the page describing a rule that is no longer in the
+    // active list, so it goes back; the other two stay and re-read, because the
+    // point of pausing is to look at what you just stopped.
+    if (change === 'archive') navigate('/me/mail')
+    else void refresh()
+  }
 
   if (loading) return <div className="page"><SkelRows n={4} /></div>
 
@@ -442,6 +461,7 @@ export function MailRuleDetail({ toast }: ScreenProps) {
   const ceiling = rateLimitClause(rule.action)
   const mailbox = mailboxes.find((m) => m.mailboxEmail === rule.mailboxEmail) ?? null
   const paused = rule.state === 'paused'
+  const archived = rule.state === 'archived'
 
   return (
     <DetailPage
@@ -451,20 +471,61 @@ export function MailRuleDetail({ toast }: ScreenProps) {
       meta={`Created ${ago(rule.createdAt)}`}
       actions={
         <>
-          <button type="button" className="btn" disabled title={NO_WRITE}>
+          {/* Editing is still the tool's alone: `replaceRule` can collide with
+              another rule on the same mailbox, and answering that well needs a
+              screen this page does not have yet. */}
+          <button type="button" className="btn" disabled title={NO_EDIT}>
             <Pencil size={14} /> Edit
           </button>
-          <button type="button" className="btn" disabled title={NO_WRITE}>
-            <Archive size={14} /> {paused ? 'Resume' : 'Pause'}
-          </button>
-          <button type="button" className="btn" disabled title={NO_WRITE}>
-            <Trash2 size={14} /> Delete
-          </button>
+          {archived ? null : (
+            <button
+              type="button"
+              className="btn"
+              disabled={status.pending !== null}
+              onClick={() => { void onChange(paused ? 'resume' : 'pause') }}
+            >
+              {paused ? <Play size={14} /> : <Pause size={14} />}
+              {status.pending === 'pause' ? 'Pausing…'
+                : status.pending === 'resume' ? 'Resuming…'
+                  : paused ? 'Resume' : 'Pause'}
+            </button>
+          )}
+          {archived ? null : (
+            /* Archive, not delete. The rule keeps its place — re-creating the
+               identical rule revives this row rather than making a second one
+               — so promising a disappearance would be a lie you find out about
+               under All. */
+            <button
+              type="button"
+              className="btn"
+              disabled={status.pending !== null}
+              onClick={() => { void onChange('archive') }}
+            >
+              <Archive size={14} /> {status.pending === 'archive' ? 'Archiving…' : 'Archive'}
+            </button>
+          )}
         </>
       }
       rail={<RuleRail rule={rule} mailbox={mailbox} />}
     >
       <DataNote source="mailRules" />
+
+      {status.error ? (
+        <div className="ws-ceiling">
+          <TriangleAlert size={14} />
+          <div><b>That change was not saved.</b> {status.error}</div>
+        </div>
+      ) : null}
+
+      {archived ? (
+        <div className="ws-ceiling">
+          <Archive size={14} />
+          <div>
+            <b>This rule is archived.</b> It will not fire again. Creating the same rule brings this
+            one back rather than making a second — it keeps its place in the meantime.
+          </div>
+        </div>
+      ) : null}
 
       {rule.invalidReason ? (
         <div className="ws-ceiling">

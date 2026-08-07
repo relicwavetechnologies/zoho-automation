@@ -25,14 +25,14 @@
  * the rule on the list and on its detail page, so what somebody approves here
  * is literally the text they will come back and read months later.
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Check, Inbox, Mail, MessageSquare, Plus, ShieldAlert, Tag, TriangleAlert, X,
 } from 'lucide-react'
 import {
-  matchClauses, useCreateMailRule, useMailboxOptions,
-  type MailRuleDraft, type MailboxOption,
+  matchClauses, useCompileMailRule, useCreateMailRule, useMailboxOptions, usePreviewMailRule,
+  type MailRuleDraft, type MailRulePreview, type MailboxOption,
 } from './data/use-mail-automations'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useConnections } from './data/use-connections'
@@ -109,7 +109,7 @@ const FIELDS: Field[] = [
    Three, matching the three the backend actually runs. Each states the one
    thing about it that a member cannot infer. */
 
-type DestinationKind = 'email' | 'lark_chat' | 'organize'
+type DestinationKind = 'email' | 'lark_dm' | 'organize'
 
 const DESTINATIONS: Array<{
   kind: DestinationKind
@@ -117,8 +117,6 @@ const DESTINATIONS: Array<{
   title: string
   body: string
   note: string
-  /** Selectable so the choice is visible, but it cannot be turned on. */
-  soon?: boolean
 }> = [
   {
     kind: 'email', icon: Mail,
@@ -127,25 +125,10 @@ const DESTINATIONS: Array<{
     note: 'Divo never rewrites or summarises a forward. It is the mail you would have got.',
   },
   {
-    /*
-     * Chooseable, and not yet creatable.
-     *
-     * The destination itself is decided — your own DM, addressed by open id,
-     * exactly as scheduled work is already delivered. Two things in the
-     * delivery path still assume a group chat: `deliverLark` sends through
-     * `sendToChatId`, which hardcodes `receive_id_type: 'chat_id'`, and
-     * `authorizeLarkChat` grounds a chat id against rooms Divo has observed as
-     * groups, so an open id comes back `unknown_chat` and is refused.
-     *
-     * Offering it as though it worked would create rules that are accepted and
-     * then silently never deliver, which is the exact failure Mail Ops exists
-     * to have stopped.
-     */
-    kind: 'lark_chat', icon: MessageSquare,
+    kind: 'lark_dm', icon: MessageSquare,
     title: 'Send it to me on Lark',
     body: 'Divo messages you directly. Nobody else sees it.',
-    note: 'Not wired up yet — Divo can address your DM, but the delivery path still assumes a group chat.',
-    soon: true,
+    note: 'Your own DM, addressed the same way Divo already delivers scheduled work. No chat to pick, and nowhere else it can go.',
   },
   {
     kind: 'organize', icon: Tag,
@@ -171,6 +154,12 @@ export function MailRuleNew({ replay }: ScreenProps) {
   const [archive, setArchive] = useState(false)
   const [markRead, setMarkRead] = useState(false)
   const creating = useCreateMailRule()
+  const compiling = useCompileMailRule()
+  const preview = usePreviewMailRule()
+  const { session } = useAdminAuth()
+  // Divo reaches somebody through Lark or not at all; password sign-in mints no
+  // Lark identity, so this is a real precondition rather than a formality.
+  const larkLinked = Boolean(session?.larkLinked)
   void replay
 
   const clauses = useMemo(() => matchClauses(draft), [draft])
@@ -188,6 +177,30 @@ export function MailRuleNew({ replay }: ScreenProps) {
   // connection so choosing the other account re-reads that inbox's senders
   // rather than offering the first one's.
   const suggestions = useMailSuggestions(mailbox?.connectionId ?? null)
+
+  /*
+   * The compiled draft lands in the same state a hand-built rule uses.
+   *
+   * In an effect rather than inline in the click handler because the fields are
+   * the single source of truth: once this runs there is no "compiled rule" any
+   * more, only conditions — which is what makes correcting one a chip edit
+   * rather than re-describing the whole sentence.
+   */
+  useEffect(() => {
+    const compiled = compiling.result
+    if (compiled?.status !== 'compiled') return
+    setDraft(compiled.match)
+    setAdded(FIELDS.filter((f) => f.key in compiled.match).map((f) => f.key))
+    setName(compiled.name)
+    setDestination(compiled.destination.type)
+    if (compiled.destination.type === 'email') setAddress(compiled.destination.email)
+    if (compiled.destination.type === 'organize') {
+      setLabel(compiled.destination.label ?? '')
+      setArchive(compiled.destination.archive === true)
+      setMarkRead(compiled.destination.markRead === true)
+    }
+    setCeiling(compiled.rateLimitPerHour ? String(compiled.rateLimitPerHour) : '')
+  }, [compiling.result])
 
   const setField = (key: string, value: unknown) => {
     setDraft((prev) => {
@@ -219,8 +232,18 @@ export function MailRuleNew({ replay }: ScreenProps) {
     && destination !== null
     && (destination !== 'email' || address.trim().length > 0)
     && (destination !== 'organize' || organizeChosen)
-    // Lark DM is chooseable but not yet creatable — see DESTINATIONS.
-    && destination !== 'lark_chat'
+    && (destination !== 'lark_dm' || larkLinked)
+
+  /**
+   * Describing and building are one object, not two modes.
+   *
+   * The compiled result lands in exactly the fields somebody would have filled
+   * in by hand — so it can be corrected chip by chip, and what they approve at
+   * the end is the same text the rule is read back as for the rest of its life.
+   */
+  const onCompile = async () => {
+    await compiling.compile(intent, mailbox?.connectionId)
+  }
 
   const onCreate = async () => {
     if (!mailbox || !destination) return
@@ -230,7 +253,9 @@ export function MailRuleNew({ replay }: ScreenProps) {
       match: draft,
       destination: destination === 'email'
         ? { type: 'email', email: address.trim() }
-        : {
+        : destination === 'lark_dm'
+          ? { type: 'lark_dm' }
+          : {
               type: 'organize',
               ...(label.length > 0 ? { label } : {}),
               ...(archive ? { archive: true } : {}),
@@ -313,14 +338,35 @@ export function MailRuleNew({ replay }: ScreenProps) {
                   placeholder="forward anything from acme.com with an invoice attached to books@vendor-cpa.com, but skip their noreply address"
                 />
                 <div className="ws-mk-act">
-                  {/* Deliberately inert. Compiling a sentence into conditions is
-                      the model's job, and a browser-side guess would produce a
-                      rule that is wrong while being presented as understood. */}
-                  <button type="button" className="btn primary" disabled title="Reading a sentence back as conditions is not built yet.">
-                    Read it back
+                  <button
+                    type="button"
+                    className="btn primary"
+                    disabled={compiling.running || intent.trim().length < 3}
+                    onClick={() => { void onCompile() }}
+                  >
+                    {compiling.running ? 'Reading…' : 'Read it back'}
                   </button>
-                  <span className="ws-sub">Not wired yet — set the conditions below in the meantime.</span>
+                  <span className="ws-sub">Divo fills the conditions below. Nothing runs until you turn it on.</span>
                 </div>
+
+                {/* An answer, not a failure. Divo names the piece it needs
+                    rather than inventing one, because a guessed rule is wrong
+                    while being reported as right. */}
+                {compiling.result && compiling.result.status !== 'compiled' ? (
+                  <div className="ws-ceiling">
+                    <TriangleAlert size={14} />
+                    <div>
+                      <b>{compiling.result.status === 'unclear' ? 'Divo needs one more thing.' : 'Divo could not read that.'}</b>{' '}
+                      {compiling.result.reason}
+                    </div>
+                  </div>
+                ) : null}
+
+                {compiling.result?.status === 'compiled' && compiling.result.notes?.length ? (
+                  <p className="ws-mk-src">
+                    Divo left out: {compiling.result.notes.join(' · ')}
+                  </p>
+                ) : null}
               </div>
             </Panel>
 
@@ -403,7 +449,6 @@ export function MailRuleNew({ replay }: ScreenProps) {
                       <p>{option.body}</p>
                     </div>
                     <div className="ws-row-act">
-                      {option.soon ? <span className="badge">Coming soon</span> : null}
                       {destination === option.kind ? <span className="badge b-ok"><span className="dot" />Chosen</span> : null}
                     </div>
                   </button>
@@ -458,7 +503,7 @@ export function MailRuleNew({ replay }: ScreenProps) {
               </Panel>
             ) : null}
 
-            {destination === 'lark_chat' ? <LarkDelivery /> : null}
+            {destination === 'lark_dm' ? <LarkDelivery /> : null}
 
             {destination === 'organize' ? (
               <Panel title="What to do with it">
@@ -521,7 +566,7 @@ export function MailRuleNew({ replay }: ScreenProps) {
                   ? 'No destination chosen yet — go back a step.'
                   : destination === 'organize'
                     ? 'The message stays in your mailbox and is organised there.'
-                    : destination === 'lark_chat'
+                    : destination === 'lark_dm'
                       ? 'The message is sent to you directly in Lark.'
                       : `The whole message is forwarded, unchanged, to ${address || 'an address you have not entered yet'}.`}
               </div>
@@ -532,14 +577,16 @@ export function MailRuleNew({ replay }: ScreenProps) {
               description="Replays these conditions over mail Divo has already seen for this mailbox. Nothing is sent."
             >
               <div className="ws-panel-body">
-                <button type="button" className="btn" disabled title="Testing an unsaved rule needs a route that takes conditions rather than a rule id.">
-                  Check these conditions
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={preview.running || clauses.length === 0}
+                  onClick={() => { void preview.preview(draft, mailbox.connectionId) }}
+                >
+                  {preview.running ? 'Checking…' : preview.result ? 'Check again' : 'Check these conditions'}
                 </button>
-                <p className="ws-sub">
-                  Not wired yet. The existing test endpoint replays a rule that already exists, so this
-                  step needs one that takes conditions instead — and it is the step that would tell you
-                  whether you described the mail you meant.
-                </p>
+                {preview.error ? <p className="ws-sub">{preview.error}</p> : null}
+                {preview.result ? <PreviewResult result={preview.result} /> : null}
               </div>
             </Panel>
           </>
@@ -743,6 +790,53 @@ function NoMailbox({
         </div>
       ) : null}
     </>
+  )
+}
+
+/**
+ * What the replay found, with its qualifications kept apart.
+ *
+ * Nothing is counted as predating here — there is no rule yet for anything to
+ * predate, so the honest question is what these conditions *would* have caught
+ * had they existed, and that is what this answers. Messages whose body has
+ * aged out are still reported separately: they are neither a match nor a miss,
+ * and folding them either way states a certainty nobody has.
+ */
+function PreviewResult({ result }: { result: MailRulePreview }) {
+  if (!result.watched) {
+    return (
+      <p className="ws-sub">
+        Divo has not watched this inbox before, so there is no stored mail to check against. This
+        says nothing about the conditions — your first rule starts the watch.
+      </p>
+    )
+  }
+  return (
+    <div className="dt-dry">
+      <p className="ws-sub">
+        Read {result.consideredCount} message{result.consideredCount === 1 ? '' : 's'}, and{' '}
+        {result.matchedCount === 0 ? 'none matched' : <b>{result.matchedCount} matched</b>}.
+      </p>
+      {result.bodyUnavailableCount > 0 ? (
+        <p className="ws-sub">
+          {result.bodyUnavailableCount} could not be judged — these conditions read the message body,
+          and those bodies have since been discarded. Neither a match nor a miss.
+        </p>
+      ) : null}
+      {result.matched.length > 0 ? (
+        <div className="ws-rows dt-hits">
+          {result.matched.map((hit) => (
+            <div className="ws-row" key={hit.eventId}>
+              <span className="ws-ic"><Mail size={14} /></span>
+              <div className="ws-row-main">
+                <b>{hit.subject || 'Message without a subject'}</b>
+                <p>{hit.from || 'Unknown sender'}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -959,7 +1053,7 @@ function blockedReason(
     return 'Add at least one condition — with none, this would act on every message that arrives.'
   }
   if (destination === null) return 'Choose what Divo should do with matching mail.'
-  if (destination === 'lark_chat') return 'Sending to Lark is not wired up yet.'
+  if (destination === 'lark_dm') return 'Link your Lark account first — Divo cannot reach you otherwise.'
   if (destination === 'email' && address.trim().length === 0) return 'Enter the address to forward to.'
   return 'Say what to do with the message: label it, archive it, or mark it read.'
 }

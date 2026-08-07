@@ -53,6 +53,25 @@ export interface MailRuleWriteRequest {
  * remedies into "it did not work" — and the remedy is the only part of a
  * refusal a member can act on.
  */
+/**
+ * Turning a rule off, back on, or away.
+ *
+ * `archived` rather than deleted, and that is the domain's choice rather than a
+ * softer word for the same thing: an archived rule keeps its identity, so
+ * re-creating the identical rule revives that row instead of making a second
+ * one. A hard delete would break that and leave two rules forwarding every
+ * matching message twice.
+ */
+export type MailRuleStatusChange = 'pause' | 'resume' | 'archive';
+
+export type MailRuleStatusResult =
+  | { readonly status: 'changed' }
+  /** Not yours, or not real. The repository makes the two indistinguishable. */
+  | { readonly status: 'not_found' }
+  /** Resuming into an environment where nothing would poll the mailbox. */
+  | { readonly status: 'not_configured' }
+  | { readonly status: 'unavailable'; readonly reason: string };
+
 export type MailRuleWriteResult =
   | { readonly status: 'created'; readonly ruleId: string; readonly mailboxEmail: string }
   /** Mail Ops is not configured, or its workers are switched off. */
@@ -106,6 +125,15 @@ export interface MailRuleWriterDeps {
     chatId: string;
   }): Promise<LarkChatDestinationVerdict>;
   repo: {
+    setRuleStatus(input: {
+      companyId: string;
+      userId: string;
+      ruleId: string;
+      status: 'active' | 'paused' | 'archived';
+    }): Promise<
+      | { ok: true; value: boolean }
+      | { ok: false; error: { message: string } }
+    >;
     createRuleForMailbox(input: {
       companyId: string;
       createdByUserId: string;
@@ -147,7 +175,32 @@ export function actionForDestination(
 }
 
 export function createMailRuleWriter(deps: MailRuleWriterDeps) {
-  return async function writeMailRule(
+  /**
+   * Pause, resume, archive.
+   *
+   * Only resume asks whether Mail Ops is running, and only resume needs to: it
+   * is the one that claims a rule will start firing again, and saying that into
+   * an environment with no worker is the silent failure this subsystem exists
+   * to have stopped. Pausing and archiving are true whatever the workers are
+   * doing — they make a rule do less.
+   */
+  const setStatus = async (
+    input: { companyId: string; userId: string; ruleId: string },
+    change: MailRuleStatusChange,
+  ): Promise<MailRuleStatusResult> => {
+    if (change === 'resume' && !(deps.runtime.pubsubConfigured && deps.runtime.workersEnabled)) {
+      return { status: 'not_configured' };
+    }
+    const status = change === 'resume'
+      ? 'active' as const
+      : change === 'pause' ? 'paused' as const : 'archived' as const;
+
+    const changed = await deps.repo.setRuleStatus({ ...input, status });
+    if (!changed.ok) return { status: 'unavailable', reason: changed.error.message };
+    return changed.value ? { status: 'changed' } : { status: 'not_found' };
+  };
+
+  const create = async function writeMailRule(
     request: MailRuleWriteRequest,
     action: MailRuleAction,
   ): Promise<MailRuleWriteResult> {
@@ -197,7 +250,10 @@ export function createMailRuleWriter(deps: MailRuleWriterDeps) {
     }
 
     // A named chat is grounded here, in code, once — not on every delivery, and
-    // not by asking the model nicely in prompt text.
+    // not by asking the model nicely in prompt text. A `lark_dm` destination
+    // is not grounded because it carries no caller-supplied id to ground: the
+    // open id comes from the signed-in session, so its single recipient is
+    // already known to be the person who owns the mailbox.
     if (request.destination.type === 'lark_chat' && deps.authorizeLarkChat) {
       const verdict = await deps.authorizeLarkChat({
         companyId: request.companyId,
@@ -256,6 +312,8 @@ export function createMailRuleWriter(deps: MailRuleWriterDeps) {
       mailboxEmail: connection.mailboxEmail,
     };
   };
+
+  return { create, setStatus };
 }
 
 /**

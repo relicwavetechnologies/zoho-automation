@@ -238,6 +238,10 @@ export class LarkMessagingClient {
     replyToMessageId?: string,
     replyInThread?: boolean,
     idempotencyKey?: string,
+    // Lark takes either a chat id or a person's open id as the receive id, and
+    // a DM therefore needs no chat to exist first. Defaulted so every existing
+    // caller keeps addressing a chat exactly as before.
+    receiveIdType: 'chat_id' | 'open_id' = 'chat_id',
   ): Promise<SendMessageResult> {
     // The adapter builders embed { msg_type, content|card } in the content string.
     // Parse it here so the Lark API gets the right msg_type and the correct inner content.
@@ -297,7 +301,7 @@ export class LarkMessagingClient {
       path,
       replyToMessageId
         ? { body }
-        : { query: { receive_id_type: 'chat_id' }, body },
+        : { query: { receive_id_type: receiveIdType }, body },
     );
     return { messageId: data.message_id ?? '' };
   }

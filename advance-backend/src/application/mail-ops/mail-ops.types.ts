@@ -209,6 +209,21 @@ export type MailRuleAction =
 export type MailRuleDestination =
   | { type: 'email'; email: string }
   | { type: 'lark_chat'; chatId: string }
+  /**
+   * The rule owner's own Lark DM, addressed by their open id.
+   *
+   * Kept apart from `lark_chat` rather than stored as one, because the two have
+   * opposite trust properties. A chat id names a room that has to be grounded
+   * against the rooms Divo has actually been in — it is caller-supplied, and a
+   * wrong one sends somebody's mail into a room they never meant, possibly in
+   * another company. An open id here is never supplied by a caller at all: it
+   * is read from the signed-in session, so the destination has exactly one
+   * recipient and that recipient is provably the person who owns the mailbox.
+   *
+   * Same addressing scheme scheduled work already delivers on — Lark's send API
+   * takes an open id as a receive id, so a DM needs no chat to exist first.
+   */
+  | { type: 'lark_dm'; openId: string }
   /** An `organize` rule acts on the message where it already is. */
   | { type: 'none' };
 
@@ -301,8 +316,12 @@ export function mailRuleDedupeKey(input: MailRuleIdentity): string {
     input.destination.type,
     input.destination.type === 'email'
       ? input.destination.email.toLowerCase()
-      : input.destination.type === 'lark_chat'
-        ? input.destination.chatId
+      : input.destination.type === 'lark_dm'
+        // Not lowercased. An open id is opaque and case-sensitive, exactly as a
+        // chat id is; folding it would merge two different people's rules.
+        ? input.destination.openId
+        : input.destination.type === 'lark_chat'
+          ? input.destination.chatId
         : null,
   ]))}`;
 }

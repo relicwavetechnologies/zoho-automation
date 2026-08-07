@@ -130,11 +130,24 @@ export class ApprovalGateService {
       requesterId,
     );
     const idemKey       = computeIdempotencyKey(scopedChatId, toolId, action, argsHash);
+    // Always look under the run's own namespace as well as this caller's chat.
+    // The request and the execution of the approved action come through
+    // different call sites holding different chat ids, and only this one is the
+    // same on both — see `executionApprovalChatId`.
+    const executionScopes = execution
+      ? [approvalScopeKey(
+          executionApprovalChatId(runContext, execution),
+          requirement,
+          departmentId,
+          requesterId,
+        )]
+      : [];
     const compatibilityScopes = approvalCompatibilityScopes(
       chatId,
       requirement,
       departmentId,
       scopedChatId,
+      executionScopes,
     );
     const expectedApproval = {
       toolId,
@@ -1111,11 +1124,57 @@ function approvalScopeKey(
   ].join(':');
 }
 
+/**
+ * The approval namespace a run owns, independent of which chat id the caller
+ * happened to hold.
+ *
+ * The gateway scopes an approval by run — `gateway:company:…:thread:…:run:…` —
+ * so one manager decision cannot be spent by a different turn. The runtime
+ * executor that runs the *approved* action scopes by the plain conversation id
+ * instead. Both are reached through the same tool executor, in that order, for
+ * every Lark request.
+ *
+ * So the two never agreed on where to look, and the exact-match check compares
+ * the stored scope. An approval requested through the gateway could therefore
+ * never be claimed: the manager approved it, execution asked the gate again,
+ * the gate found nothing under its own scope and opened a second request —
+ * which the requester was then told to wait for, forever. Anish's first mail
+ * rule produced three approval rows in sixty-five seconds, identical in every
+ * field including `argsHash` and `runId`, differing only here.
+ *
+ * Derived from `execution`, which both paths already carry, so it is the one
+ * name the request and its execution can agree on.
+ */
+function executionApprovalChatId(
+  runContext: RunContext,
+  execution: NonNullable<ApprovalGateInput['execution']>,
+): string {
+  return [
+    'gateway',
+    'company',
+    String(runContext.companyId),
+    'requester',
+    String(runContext.userId),
+    'thread',
+    execution.threadId,
+    'run',
+    execution.runId,
+  ].join(':');
+}
+
 function approvalCompatibilityScopes(
   chatId: string,
   requirement: Extract<ApprovalRequirement, { kind: 'required' }>,
   departmentId: string | null,
   currentChatId: string,
+  /**
+   * Already-scoped ids to look under as well as this chat's own.
+   *
+   * These arrive through `approvalScopeKey` like the primary, so they carry
+   * the same authority, requester and department binding — a wider search, not
+   * a weaker check.
+   */
+  extraScopedChatIds: readonly string[] = [],
 ): ApprovalCompatibilityScope[] {
   const authority = `${requirement.authority}:${requirement.approver.userId}`;
   const previousWaveChatId = requirement.connectionScope
@@ -1139,6 +1198,10 @@ function approvalCompatibilityScopes(
     : chatId;
 
   const scopes: ApprovalCompatibilityScope[] = [
+    ...extraScopedChatIds.map(scoped => ({
+      chatId: scoped,
+      legacyAuthorityMetadata: false,
+    })),
     { chatId: previousWaveChatId, legacyAuthorityMetadata: false },
     { chatId: legacyChatId, legacyAuthorityMetadata: true },
   ];
