@@ -7,7 +7,7 @@ import {
 } from '../../../application/mail-ops/mail-ops.types';
 import { wrapInfra, type InfraError } from '../../../shared/errors';
 import { err, ok, type Result } from '../../../shared/result';
-import { errorText } from './shared';
+import { errorText, MAIL_CLAIM_CONTENTION_ATTEMPTS } from './shared';
 
 type MailDeliveryDb = Pick<PrismaClient, 'mailDelivery'>;
 
@@ -224,44 +224,62 @@ export class MailDeliveryRepository {
         },
         data: { status: 'pending', nextAttemptAt: now },
       });
-      const due = await this.db.mailDelivery.findFirst({
-        where: {
-          status: 'pending',
-          attempts: { lt: MAIL_DELIVERY_MAX_ATTEMPTS },
-          OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
-        },
-        orderBy: [{ nextAttemptAt: 'asc' }, { id: 'asc' }],
-        select: {
-          id: true,
-          attempts: true,
-          nextAttemptAt: true,
-          payloadJson: true,
-          providerDraftId: true,
-        },
-      });
-      if (!due?.payloadJson) return ok(null);
-      const claimed = await this.db.mailDelivery.updateMany({
-        where: {
-          id: due.id,
-          status: 'pending',
-          attempts: due.attempts,
-          nextAttemptAt: due.nextAttemptAt,
-        },
-        data: {
-          status: 'sending',
-          attempts: { increment: 1 },
-          startedAt: now,
-        },
-      });
-      if (claimed.count !== 1) return ok(null);
-      return ok({
-        deliveryId: due.id,
-        attempts: due.attempts + 1,
-        payload: due.payloadJson as Record<string, unknown>,
-        // Present only on a retry of an attempt that got as far as staging.
-        // Whether that attempt also sent is the question the worker asks Gmail.
-        ...(due.providerDraftId ? { providerDraftId: due.providerDraftId } : {}),
-      });
+      // Retried rather than returned empty on a lost race: see
+      // MAIL_CLAIM_CONTENTION_ATTEMPTS. A row another lane just took is
+      // `sending`, so it drops out of the search and the next pass reads the
+      // delivery behind it.
+      for (
+        let attempt = 0;
+        attempt < MAIL_CLAIM_CONTENTION_ATTEMPTS;
+        attempt++
+      ) {
+        const due = await this.db.mailDelivery.findFirst({
+          where: {
+            status: 'pending',
+            attempts: { lt: MAIL_DELIVERY_MAX_ATTEMPTS },
+            OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
+          },
+          orderBy: [{ nextAttemptAt: 'asc' }, { id: 'asc' }],
+          select: {
+            id: true,
+            attempts: true,
+            nextAttemptAt: true,
+            payloadJson: true,
+            providerDraftId: true,
+          },
+        });
+        // A row with no payload is not contention and retrying cannot mend it:
+        // nothing about the next pass would read it differently, and the search
+        // is ordered, so looking again returns the same unusable row until the
+        // attempts run out. Left alone, as before.
+        if (!due?.payloadJson) return ok(null);
+        const claimed = await this.db.mailDelivery.updateMany({
+          where: {
+            id: due.id,
+            status: 'pending',
+            attempts: due.attempts,
+            nextAttemptAt: due.nextAttemptAt,
+          },
+          data: {
+            status: 'sending',
+            attempts: { increment: 1 },
+            startedAt: now,
+          },
+        });
+        if (claimed.count !== 1) continue;
+        return ok({
+          deliveryId: due.id,
+          attempts: due.attempts + 1,
+          payload: due.payloadJson as Record<string, unknown>,
+          // Present only on a retry of an attempt that got as far as staging.
+          // Whether that attempt also sent is the question the worker asks
+          // Gmail.
+          ...(due.providerDraftId
+            ? { providerDraftId: due.providerDraftId }
+            : {}),
+        });
+      }
+      return ok(null);
     } catch (cause) {
       return err(wrapInfra('prisma', 'mailOps.claimNextDueDelivery', cause));
     }

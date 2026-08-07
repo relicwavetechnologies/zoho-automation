@@ -815,7 +815,23 @@ export class LarkChannelAdapter implements ChannelAdapter {
       );
       return ok(result.messageId);
     } catch (e) {
-      return err(new ChannelError({ channel: 'lark', stage: 'send_status', reason: 'upstream_5xx', cause: e }));
+      // Classified rather than assumed, and carrying what Lark said.
+      //
+      // Every failure here used to be reported as `upstream_5xx` with the
+      // reason discarded into `cause`, which nothing logs. So a Mail Ops rule
+      // delivering into a Lark chat failed with "Channel lark error at
+      // send_status: upstream_5xx" — a sentence that names no cause and
+      // implies a transient fault at Lark. What Lark had actually said was
+      // `uuid: the max len is 50`: permanent, ours, and fixed in a line. It
+      // took a live probe against the API to find out, because the failing
+      // request described itself in the logs as a passing thundercloud.
+      return err(new ChannelError({
+        channel: 'lark',
+        stage: 'send_status',
+        reason: directCardFailureReason(e),
+        cause: e,
+        message: `Channel lark error at send_status: ${larkFailureDetail(e)}`,
+      }));
     }
   }
 
@@ -992,6 +1008,21 @@ export class LarkChannelAdapter implements ChannelAdapter {
     }
   }
 
+}
+
+/**
+ * What Lark said, in a form that survives into a log line.
+ *
+ * `ChannelError`'s default sentence is built from the stage and the reason, so
+ * a refusal and an outage read identically once the cause is dropped. This
+ * keeps Lark's own code and text, which is usually the entire diagnosis.
+ */
+function larkFailureDetail(error: unknown): string {
+  if (error instanceof LarkApiError) {
+    const code = error.code !== undefined ? ` code=${error.code}` : '';
+    return `${directCardFailureReason(error)} status=${error.status}${code} ${error.message}`;
+  }
+  return `upstream_5xx ${error instanceof Error ? error.message : String(error)}`;
 }
 
 function directCardFailureReason(error: unknown): 'upstream_4xx' | 'upstream_5xx' | 'rate_limited' {

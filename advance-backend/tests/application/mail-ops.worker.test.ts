@@ -2528,6 +2528,11 @@ describe('MailOpsWorker', () => {
       authorizeRule: async () => ({ verdict: 'allowed' }),
       deliverLark: async () => 'unused',
       logger,
+      // One lane, so the count below stays a statement about reruns. With the
+      // default four every pass makes four claims and the number stops saying
+      // anything about the wake this test is here to prove.
+      mailboxLanes: 1,
+      deliveryLanes: 1,
     } as any);
 
     const running = worker.runOnce();
@@ -2537,5 +2542,123 @@ describe('MailOpsWorker', () => {
     await running;
 
     assert.equal(claims, 2);
+  });
+});
+
+describe('MailOpsWorker lanes', () => {
+  /**
+   * A worker whose only work is mailboxes, each of which blocks until told.
+   *
+   * `inFlight` is the whole point: serially it can never exceed one, so it is
+   * the one observation that separates lanes from a faster loop.
+   */
+  function blockingMailboxWorker(input: {
+    mailboxes: number;
+    lanes: number;
+  }) {
+    let handed = 0;
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const release: Array<() => void> = [];
+    const worker = new MailOpsWorker({
+      repo: {
+        claimNextDueMailbox: async () => {
+          if (handed >= input.mailboxes) return { ok: true, value: null };
+          handed++;
+          return {
+            ok: true,
+            value: {
+              subscriptionId: `sub-${handed}`,
+              companyId: 'c1',
+              userId: 'u1',
+              connectionId: 'conn-1',
+              mailboxEmail: `box${handed}@example.com`,
+              signalVersion: 1,
+              claimToken: `tok-${handed}`,
+            },
+          };
+        },
+        claimNextDueDelivery: async () => ({ ok: true, value: null }),
+        recordEvents: async () => {
+          inFlight++;
+          peakInFlight = Math.max(peakInFlight, inFlight);
+          await new Promise<void>(resolve => release.push(resolve));
+          inFlight--;
+          return { ok: true, value: [] };
+        },
+        listActiveRules: async () => ({ ok: true, value: [] }),
+        advanceCursor: async () => ({ ok: true, value: true }),
+        markSyncFailed: async () => ({ ok: true, value: true }),
+        isRuleSendable: async () => ({ ok: true, value: true }),
+      },
+      gmail: {
+        sync: async () => ({ events: [], nextHistoryId: '2', truncated: false }),
+      },
+      resolveAccessToken: async () => 'token',
+      authorizeRule: async () => ({ verdict: 'allowed' }),
+      deliverLark: async () => 'unused',
+      logger,
+      mailboxLanes: input.lanes,
+      deliveryLanes: input.lanes,
+    } as any);
+    return {
+      worker,
+      release,
+      peak: () => peakInFlight,
+      handed: () => handed,
+    };
+  }
+
+  it('works several mailboxes at once rather than one behind another', async () => {
+    // The failure this replaced: one mailbox uploading a large attachment held
+    // every other mailbox for as long as it took.
+    const harness = blockingMailboxWorker({ mailboxes: 4, lanes: 4 });
+    const running = harness.worker.runOnce();
+
+    // Let the lanes reach their blocked call before releasing any of them.
+    for (let turn = 0; turn < 50; turn++) await Promise.resolve();
+    assert.equal(harness.peak(), 4, 'four lanes should hold four mailboxes');
+
+    harness.release.forEach(resolve => resolve());
+    await running;
+  });
+
+  it('runs strictly one at a time when configured with a single lane', async () => {
+    // The escape hatch has to actually be one, or it is not an escape hatch.
+    const harness = blockingMailboxWorker({ mailboxes: 4, lanes: 1 });
+    const running = harness.worker.runOnce();
+
+    for (let turn = 0; turn < 50; turn++) await Promise.resolve();
+    assert.equal(harness.peak(), 1);
+
+    // Released as they arrive, since with one lane they queue up behind it.
+    for (let step = 0; step < 10; step++) {
+      harness.release.forEach(resolve => resolve());
+      for (let turn = 0; turn < 20; turn++) await Promise.resolve();
+    }
+    await running;
+  });
+
+  it('shares one batch budget across lanes instead of giving each its own', async () => {
+    // Lanes are meant to change how fast a tick drains, never how much it
+    // does. Per-lane budgets would quietly quadruple every ceiling above.
+    const harness = blockingMailboxWorker({ mailboxes: 10_000, lanes: 4 });
+    const running = harness.worker.runOnce();
+    for (let step = 0; step < 200; step++) {
+      harness.release.forEach(resolve => resolve());
+      harness.release.length = 0;
+      for (let turn = 0; turn < 20; turn++) await Promise.resolve();
+      if (harness.handed() >= 10_000) break;
+    }
+    harness.release.forEach(resolve => resolve());
+    await running;
+
+    // MAILBOX_BATCH_SIZE is 20 and a saturated drain asks for up to
+    // MAX_TICK_PASSES more, so 400 is the ceiling — nowhere near 4 x unbounded.
+    assert.ok(
+      harness.handed() <= 400,
+      `a tick claimed ${harness.handed()} mailboxes, past its own budget`,
+    );
+    assert.ok(harness.handed() >= 20, 'a saturated tick should keep going');
   });
 });
