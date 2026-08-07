@@ -31,12 +31,34 @@ const EXPORT_CURSOR = 'menhood_export_cursor';
 const MATURITY_DAYS = 30;
 const COVERAGE_CACHE_MS = 10 * 60 * 1000;
 
+/**
+ * Supplying the boundary dates alone was not enough. Given `maturedThrough` and
+ * nothing else, the model produced its own figure — "roughly 40-60% of those
+ * orders may still be unreported" — against a measured 21-40%. It will describe
+ * the shortfall either way, so the honest numbers have to be in the result
+ * rather than left as an inference.
+ */
+const MATURITY_CURVE = [
+  { days: 7, arrivedPct: '60-68' },
+  { days: 14, arrivedPct: '79-90' },
+  { days: 30, arrivedPct: '95-99' },
+] as const;
+
 export type MenhoodCoverageWindow = {
   /** Latest `order_date` present. Nothing after this exists yet, at any count. */
   readonly ordersThrough: string | null;
   /** On/before this date counts are ~fully settled; after it they undercount. */
   readonly maturedThrough: string;
   readonly maturityDays: number;
+  /** Measured arrival curve, so the shortfall is never estimated freehand. */
+  readonly maturityCurve: ReadonlyArray<{ readonly days: number; readonly arrivedPct: string }>;
+  /**
+   * This source carries orders, customers, products and locations. It holds no
+   * advertising spend, cost, or margin figure of any kind, and the one dead
+   * table that once did stops in March 2025. Absence stated as a fact, because
+   * absence left silent was read as licence to infer a budget narrative.
+   */
+  readonly containsNoSpendOrCostData: true;
 };
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -180,7 +202,13 @@ export class MenhoodQueryService {
       this.logger.error('menhood.coverage_window.failed', { error });
     }
 
-    const window: MenhoodCoverageWindow = { ordersThrough, maturedThrough, maturityDays: MATURITY_DAYS };
+    const window: MenhoodCoverageWindow = {
+      ordersThrough,
+      maturedThrough,
+      maturityDays: MATURITY_DAYS,
+      maturityCurve: MATURITY_CURVE,
+      containsNoSpendOrCostData: true,
+    };
     this.coverageCache = { window, readAt: now.getTime() };
     return window;
   }

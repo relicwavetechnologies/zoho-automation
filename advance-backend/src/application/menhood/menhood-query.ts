@@ -76,6 +76,15 @@ export type ValidatedMenhoodQuery = {
   readonly hasTopLevelOrderBy: boolean;
   readonly topLevelOrderBySql: readonly string[];
   readonly isTopLevelRowLevelSelect: boolean;
+  /**
+   * The caller's own `LIMIT n`, when it wrote one. A grouped query carrying a
+   * LIMIT returns the top n of an unknown total, and the rows it returns look
+   * exactly like a complete breakdown — nothing in the result set says the tail
+   * was cut. Asked for channel performance, a `LIMIT 10` over 27 utm_source
+   * values was rendered as the channel mix, missing bucket and all, and the
+   * recommendation to cut a channel followed from it.
+   */
+  readonly topLevelLimit?: number;
 };
 
 export function validateMenhoodQuery(input: unknown): ValidatedMenhoodQuery {
@@ -110,6 +119,7 @@ export function validateMenhoodQuery(input: unknown): ValidatedMenhoodQuery {
   const normalizedSql = toSql.statement(statement);
   const topLevel = topLevelSelect(statement);
   const topLevelOrderBySql = topLevelOrderBySqlFor(topLevel);
+  const topLevelLimit = topLevelLimitOf(topLevel);
   const parameterTypes = parameterValues.map(value => value === null ? 'null' : typeof value);
   const fingerprint = createHash('sha256')
     .update(JSON.stringify({ sql: normalizedSql, parameterTypes }))
@@ -122,8 +132,17 @@ export function validateMenhoodQuery(input: unknown): ValidatedMenhoodQuery {
     hasTopLevelOrderBy: topLevelOrderBySql.length > 0,
     topLevelOrderBySql,
     isTopLevelRowLevelSelect: isRowLevelSelect(topLevel),
+    ...(topLevelLimit === undefined ? {} : { topLevelLimit }),
     ...(request.data.exportTitle ? { exportTitle: request.data.exportTitle } : {}),
   };
+}
+
+/** Only a literal integer LIMIT is reportable; an expression or parameter is not a number we can name back. */
+function topLevelLimitOf(statement: Statement | null | undefined): number | undefined {
+  if (!statement || statement.type !== 'select') return undefined;
+  const limit = statement.limit?.limit;
+  if (!limit || limit.type !== 'integer') return undefined;
+  return limit.value;
 }
 
 export function menhoodQueryHasDeterministicReplayOrder(query: ValidatedMenhoodQuery): boolean {

@@ -5,7 +5,13 @@ import { MenhoodQueryServiceError } from '../../src/application/menhood/menhood-
 import { createMenhoodDataTool } from '../../src/application/tools/families/menhood-data.tool.ts';
 import { makeAllowedPerm, makeCtx, makeDeniedPerm } from './tool-test.helpers.ts';
 
-const COVERAGE = { ordersThrough: '2026-07-30', maturedThrough: '2026-07-08', maturityDays: 30 };
+const COVERAGE = {
+  ordersThrough: '2026-07-30',
+  maturedThrough: '2026-07-08',
+  maturityDays: 30,
+  maturityCurve: [{ days: 7, arrivedPct: '60-68' }],
+  containsNoSpendOrCostData: true as const,
+};
 
 const result = {
   columns: [{ name: 'orders', dataTypeId: 20 }],
@@ -140,6 +146,36 @@ describe('Menhood Data tool', () => {
     if (!output.ok) return;
     assert.equal(output.value.freshness.ordersThrough, null);
     assert.match(output.value.message, /do not describe any count here as complete/);
+  });
+
+  it('names a caller-written LIMIT as truncation so top-N cannot pass as a breakdown', async () => {
+    const output = await createTool().execute(
+      {
+        sql: 'SELECT utm_source, count(*) AS orders FROM menhood_orders GROUP BY 1 ORDER BY 2 DESC LIMIT 10',
+      },
+      makeCtx('menhoodData', ['read']),
+    );
+    assert.equal(output.ok, true);
+    if (!output.ok) return;
+    assert.equal(output.value.queryLimit?.rows, 10);
+    assert.match(output.value.queryLimit!.note, /top 10 rows of an unknown total/);
+    assert.match(output.value.queryLimit!.note, /never as a complete breakdown or distribution/);
+    assert.match(output.value.queryLimit!.note, /never compute a share, percentage of total/);
+  });
+
+  it('stays silent about limits when the caller did not write one', async () => {
+    const output = await tool_execute_ok();
+    assert.equal(output.queryLimit, undefined);
+  });
+
+  it('supplies the measured maturity curve so the shortfall is never estimated freehand', async () => {
+    const output = await tool_execute_ok();
+    assert.deepEqual(output.freshness.maturityCurve, COVERAGE.maturityCurve);
+  });
+
+  it('states the absence of spend data as a fact rather than leaving it silent', async () => {
+    const output = await tool_execute_ok();
+    assert.equal(output.freshness.containsNoSpendOrCostData, true);
   });
 
   it('maps disabled, wrong-company, timeout, and provider failures to stable tool errors', async () => {
