@@ -7,6 +7,37 @@ import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 import type { Logger } from '../../../../shared/logger';
 import { planFinalCards } from '../lark-card.builder';
 import { extractInteractiveCardText } from '../lark-message-content';
+import { sha256 } from '../../../../shared/hash';
+
+/**
+ * Lark's own ceiling on the de-duplication key it accepts.
+ *
+ * Documented as `uuid`, "the max len is 50". Over it Lark refuses the whole
+ * request with `99992402 field validation failed` before looking at anything
+ * else.
+ */
+const LARK_MESSAGE_UUID_MAX_LENGTH = 50;
+
+/**
+ * A caller's idempotency key, made into something Lark will accept.
+ *
+ * Callers key their own retries however suits them, and Mail Ops keys a
+ * delivery as `mail:` plus a sha256 — sixty-nine characters. Passed through
+ * whole that is nineteen characters past Lark's limit, so every Lark delivery
+ * a mail rule ever attempted was refused outright, five times over, from the
+ * feature's first day. Nothing about it was intermittent: the request never
+ * reached the point of having a message to send.
+ *
+ * Hashed rather than truncated, because a prefix is only unique if the caller's
+ * keys happen to differ early, and that is a property of somebody else's key
+ * scheme rather than something this boundary can promise. The digest is
+ * deterministic, so a retry of the same delivery still de-duplicates against
+ * the attempt before it — which is the whole reason the key is sent at all.
+ */
+export function larkMessageUuid(idempotencyKey: string): string {
+  if (idempotencyKey.length <= LARK_MESSAGE_UUID_MAX_LENGTH) return idempotencyKey;
+  return sha256(idempotencyKey).slice(0, LARK_MESSAGE_UUID_MAX_LENGTH);
+}
 
 /**
  * Accept either a raw card body or the `{ msg_type, card }` envelope the card
@@ -255,7 +286,7 @@ export class LarkMessagingClient {
       body['receive_id'] = receiveId;
     }
     if (idempotencyKey) {
-      body['uuid'] = idempotencyKey;
+      body['uuid'] = larkMessageUuid(idempotencyKey);
     }
 
     const path = replyToMessageId
