@@ -196,10 +196,16 @@ describe('Gmail Pub/Sub ingestion', () => {
     assert.ok(sentRaw);
     const rendered = sentRaw.toString('latin1');
     const originalBody = originalRaw.subarray(originalRaw.indexOf('\r\n\r\n') + 4);
-    assert.match(rendered, /^From: user@example\.com\r\n/);
+    // The mailbox sends, so the address must be the mailbox or the message
+    // fails DMARC; the original sender rides in the display name and in
+    // Reply-To, which is where a reply has to land.
+    assert.match(rendered, /^From: Anthropic via Divo <user@example\.com>\r\n/);
+    assert.match(rendered, /\r\nReply-To: Anthropic <no-reply@mail\.anthropic\.com>\r\n/);
     assert.match(rendered, /\r\nTo: owner@example\.com\r\n/);
     assert.match(rendered, /\r\nSubject: Fwd: Claude login\r\n/);
     assert.doesNotMatch(rendered, /DKIM-Signature: source-signature/);
+    // The original's own structure, at the top level rather than nested inside
+    // a container of Divo's — which is what makes it render as itself.
     assert.match(rendered, /Content-Type: multipart\/mixed; boundary="source-mixed"/);
     assert.equal(sentRaw.includes(originalBody), true);
   });
