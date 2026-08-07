@@ -74,7 +74,7 @@ For `connections.list`, always include exactly one provider. Provider ids are ex
 
 ## Lark Is Governed
 
-Every Lark request must use Divo's governed route, including document creation and editing. Use `divo_gateway` directly for one straightforward, independently meaningful action. Use credential-free `divo-local` from one persistent Python file only when the work has pagination, a record set plus parsing/transformation/grouping/deduplication/joining, related writes, or more than one connected product; it invokes the same governed Divo route. Never run `lark-cli`, install a Lark CLI/package, call Lark OpenAPI over Bash/curl, use an MCP server that holds Lark credentials locally, or ask the member for a Lark token. The Divo runtime intentionally includes no Lark CLI. Divo resolves the selected personal/shared Lark connection and enforces RBAC, approvals, token refresh, and audit on the server.
+Every Lark request must use Divo's governed route, including document creation and editing. Use `divo_gateway` directly for one straightforward, independently meaningful action. Where the runtime `<divo_local_execution>` block says the client exists, use credential-free `divo-local` from one persistent Python file only when the work has pagination, a record set plus parsing/transformation/grouping/deduplication/joining, related writes, or more than one connected product; it invokes the same governed Divo route. Where that block says no such client exists, do not look for it and do not substitute a hand-built record set. Never run `lark-cli`, install a Lark CLI/package, call Lark OpenAPI over Bash/curl, use an MCP server that holds Lark credentials locally, or ask the member for a Lark token. The Divo runtime intentionally includes no Lark CLI. Divo resolves the selected personal/shared Lark connection and enforces RBAC, approvals, token refresh, and audit on the server.
 
 For a Lark document create result, preserve the returned `url` and present it as a clickable link. Do not derive a URL from `docToken`, search for the document after creation, or use Bash to recover a link. If a successful response is missing `url`, report the incomplete result instead of inventing a host.
 
@@ -100,6 +100,8 @@ Durable memory, skills, and governed files are backend-owned:
 Use the department id only when the user has selected or implied a department context. Otherwise omit it and let runtime/backend defaults apply.
 
 ## Local Python Workflows
+
+> **The runtime `<divo_local_execution>` block is authoritative about whether this path exists at all.** This file is shared across channels; the runtime knows which one you are on. When that block says there is no `divo-local` client here, this whole section does not apply — use a governed source that aggregates server-side, or the backend export pipeline, and never rebuild a record set by copying rows out of earlier tool results.
 
 Use `divo_gateway` directly for one straightforward, independently meaningful connected-service action. Use one persistent Python workflow only when work has pagination, a record set plus parsing/transformation/grouping/deduplication/joining, related writes, or more than one connected product. Gmail/CRM → Sheets is always this local-workflow path:
 

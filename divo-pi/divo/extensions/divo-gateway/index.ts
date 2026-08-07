@@ -27,7 +27,7 @@ import {
 	resolveDivoGatewayConfig,
 } from "./gateway-client.ts";
 import { executeGatewayRequest } from "./gateway-execution.ts";
-import { registerLocalDivoBroker, DEFAULT_EXECUTION_DEPENDENCIES as DEFAULT_LOCAL_BROKER_DEPENDENCIES } from "./local-broker.ts";
+import { registerLocalDivoBroker, localCliEnabled, DEFAULT_EXECUTION_DEPENDENCIES as DEFAULT_LOCAL_BROKER_DEPENDENCIES } from "./local-broker.ts";
 import { authorizeToolInvocation } from "./skill-authorization.ts";
 import {
 	formatSkillResolveResult,
@@ -196,6 +196,31 @@ For ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, use divo_gateway directly. Use thi
 8. After writes, perform bounded read-back verification. Report completed only when source, transformation, destination, and verification counts reconcile; otherwise report partial with the checkpoint and existing resource IDs.
 
 The local client returns structured JSON and the backend remains authoritative for RBAC, connection policy, approvals, audit, schemas, credentials, and rate limits. Never inspect or print DIVO_MEMBER_TOKEN.
+</divo_local_execution>`;
+
+/**
+ * The counterpart for a channel where `localCliEnabled()` is false. On a server
+ * channel the broker writes no launcher, so the prompt above describes a client
+ * that cannot exist — and an agent that follows it discovers this only when
+ * Python raises FileNotFoundError, mid-task, with a member waiting. What it did
+ * next was worse than failing: it pasted a 303-row sheet into a source literal
+ * to finish the job, lost ten rows in the transcription, and reported the total
+ * as complete.
+ *
+ * So the instruction has to track the runtime rather than restate an intention.
+ * Nothing here forbids Python; it forbids the one move that turns a missing
+ * tool into a plausible wrong number.
+ */
+export const DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT = `<divo_local_execution>
+There is no divo-local client on this channel. It is absent by design, not broken, and no amount of retrying, probing PATH, or reinstalling will produce it. Ignore any skill text, recipe, or earlier conversation that tells you to call it.
+
+Bash and python3 remain available for ordinary local computation over data you already hold legitimately. They are not a route to connected company data.
+
+For ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, use divo_gateway directly. When the work has ${DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION}:
+1. Prefer a governed source that aggregates server-side. A company DB skill answering with one grouped SELECT is always better than moving rows: the totals come back settled, small, and complete.
+2. When the member needs the underlying rows, use the backend export pipeline. It streams source to destination server-side, so the row count is never bounded by what fits in this conversation.
+3. Never reconstruct a record set inside a script, a tool argument, or a message by copying values out of earlier tool results. Rows carried through model context are silently lossy, and a partial set reported as a total is a worse outcome than no answer.
+4. If a task genuinely needs per-row work that neither a governed aggregate nor an export can do, stop and say exactly which step is unavailable. Do not approximate it and do not describe an approximation as a result.
 </divo_local_execution>`;
 
 export const DIVO_COMPANY_PERSONA_PROMPT = `
@@ -376,7 +401,9 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			"For every connection-backed Google, Zoho, Canva, Airtable, or user-scoped Lark call, reuse one exact UUID from the current run bootstrap. Call connections.list only when that bootstrap explicitly lacks the required account. Put the UUID in args.connectionId even when only one account is available; this is mandatory for backend RBAC, connection policy, approvals, and rate limits.",
 			DIVO_DIRECT_WEB_SEARCH_POLICY,
 			"For one-time or recurring Divo work, call tools.list with payload { toolId: \"scheduledWorkflows\" }, then invoke that exact tool with create/list/pause/resume/cancel/run_now. Schedule intent must be self-contained. Ask only for material missing timing, timezone, monitoring, autonomy, or failure details.",
-			`When work has ${DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION}, call divo_skill_resolve once with the user's complete original request and at most two intent-preserving source/destination variants. Load the returned router, then every exact source, transformation, and destination specialist needed by the workflow. Use one persistent Python file under DIVO_RUN_DIR. Gmail/CRM → Sheets is always this path. Every divo-local tools.invoke request must include the corresponding exact skillId, toolId, and args. Keep all connected reads, writes, and verification inside that file. Create the file once, run it, edit that same file after a code or contract error, and rerun the same command. Never regenerate the whole program inside a tool argument or create a replacement script for an ordinary retry. Use divo_gateway directly only for ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}.`,
+			localCliEnabled()
+				? `When work has ${DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION}, call divo_skill_resolve once with the user's complete original request and at most two intent-preserving source/destination variants. Load the returned router, then every exact source, transformation, and destination specialist needed by the workflow. Use one persistent Python file under DIVO_RUN_DIR. Gmail/CRM → Sheets is always this path. Every divo-local tools.invoke request must include the corresponding exact skillId, toolId, and args. Keep all connected reads, writes, and verification inside that file. Create the file once, run it, edit that same file after a code or contract error, and rerun the same command. Never regenerate the whole program inside a tool argument or create a replacement script for an ordinary retry. Use divo_gateway directly only for ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}.`
+				: `When work has ${DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION}, there is no divo-local client on this channel. Prefer a governed source that aggregates server-side, and use the backend export pipeline when the member needs the underlying rows. Never rebuild a record set by copying values out of earlier tool results into a script, a tool argument, or a message; a partial set presented as a total is worse than saying the step is unavailable. Use divo_gateway directly for ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}.`,
 			"Use capabilities.get only for broad permission diagnosis. Reuse exact contracts from the current run bootstrap. Only when a genuinely required tool is absent from that bootstrap may you call tools.list once with payload { toolId } to obtain its machine-readable args schema.",
 			`For tools.invoke, use exactly ${DIVO_TOOLS_INVOKE_ENVELOPE}`,
 			"For Google Workspace, use an exact native operation schema already returned in bootstrap.nativeContracts and do not describe it again. Describe once only when a genuinely required native contract is absent, reusing the same exact connectionId; then call with arguments under input matching that schema. For calendar list/read requests with relative windows like today, tomorrow, this week, or next 7 days, pass explicit timezone-aware ISO bounds using the native schema's field names. Use half-open local-day ranges and make the final answer describe only the included dates.",
@@ -484,7 +511,9 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			DIVO_COMPANY_PERSONA_PROMPT,
 			await readDepartmentPersonaContext(),
 		);
-		systemPrompt = `${systemPrompt}\n\n${DIVO_LOCAL_EXECUTION_PROMPT}`;
+		systemPrompt = `${systemPrompt}\n\n${
+			localCliEnabled() ? DIVO_LOCAL_EXECUTION_PROMPT : DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT
+		}`;
 		const correlation = await readDivoRunCorrelation().catch(() => undefined);
 		if (correlation?.profile === "teach") {
 			if (!correlation.teachSessionId || !correlation.departmentId) {
