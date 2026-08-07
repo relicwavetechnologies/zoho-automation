@@ -175,6 +175,7 @@ import {
 } from './application/connections/google-connection-authorization.service';
 import { RunOriginStore } from './application/connections/run-origin.store';
 import { createLarkChatDestinationAuthorizer } from './application/mail-ops/lark-chat-destination';
+import { createMailRuleWriter } from './application/mail-ops/mail-rule-writer';
 import {
   createBeginGoogleAuthorization,
   type DeliverGoogleConnectCard,
@@ -356,6 +357,8 @@ export interface Container {
   connectionAuthorizationRepo: ConnectionAuthorizationRepository;
   mailOpsRepo: MailOpsRepository;
   mailOpsReadRepo: MailOpsReadRepository;
+  /** The one create path for a mail rule, shared by the tool and the web route. */
+  writeMailRule: ReturnType<typeof createMailRuleWriter>;
   mailOpsWorker: MailOpsWorker;
   canvaMcpOAuthService: CanvaMcpOAuthService;
   airtableMcpOAuthService: AirtableMcpOAuthService;
@@ -2051,6 +2054,23 @@ export async function buildContainer(
     // touch a lease, a cursor, or a rule status even by accident.
     dryRun: input => mailOpsReadRepo.loadRuleForDryRun(input),
   }));
+  /*
+   * The one create path, shared by the agent's tool and the web route.
+   *
+   * Built from exactly the dependencies the tool above is given, so the two
+   * callers cannot drift into disagreeing about what a rule may be.
+   */
+  const writeMailRule = createMailRuleWriter({
+    repo: mailOpsRepo,
+    runtime: {
+      pubsubConfigured: Boolean(gmailPubsubConfig),
+      workersEnabled: env.DIVO_AUTONOMOUS_WORKERS_ENABLED,
+    },
+    resolveConnection: resolveMailAutomationGoogleConnection,
+    authorizeLarkChat: authorizeMailOpsLarkChat,
+    connectionApproval: input => connectionRateLimits.approval(input),
+  });
+
   toolRegistry.register(createCanvaDesignTool({ getClient: getCanvaMcpClient }));
   for (const tool of createAirtableMcpTools({
     getConnection: getAirtableMcpConnection,
@@ -2709,6 +2729,7 @@ export async function buildContainer(
     connectionAuthorizationRepo,
     mailOpsRepo,
     mailOpsReadRepo,
+    writeMailRule,
     mailOpsWorker,
     canvaMcpOAuthService,
     airtableMcpOAuthService,

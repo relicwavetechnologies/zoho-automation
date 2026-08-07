@@ -78,7 +78,7 @@ export function ConnectionGovernancePage() {
   const data = connection.data
   return (
     <div className="page">
-      <div className="crumbs"><Link to="/people">People</Link> › <Link to={`/people/${userId}`}>Member</Link> › <span>{data.label}</span></div>
+      <div className="crumbs"><Link to="/settings/company/people">Members</Link> › <Link to={`/settings/company/people/${userId}`}>Member</Link> › <span>{data.label}</span></div>
       <div className="profile">
         <div className="pic"><ShieldCheck size={21} /></div>
         <div style={{ flex: 1 }}>

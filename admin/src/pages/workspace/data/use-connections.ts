@@ -35,7 +35,7 @@ export const CONNECTABLE: Provider[] = [
  * while its `Provider` id is `google_workspace`, which is the one place the two
  * vocabularies disagree.
  */
-const SEGMENT: Record<Provider, string> = {
+export const SEGMENT: Record<Provider, string> = {
   google_workspace: 'google',
   lark: 'lark',
   canva: 'canva',

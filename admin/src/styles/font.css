@@ -2,7 +2,10 @@
    Loaded from Google Fonts for now; TODO self-host under /fonts/jetbrains-mono
    to match Inter/Studio and drop the network dependency. @import must stay
    first (before any @font-face) per the CSS spec. */
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+/* Geist — the UI family. Matches the reference design's letterforms (large
+   x-height, single-storey g, squared terminals). Inter stays loaded below as
+   the fallback and for anything that still asks for it by name. */
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 /* Inter */
 @font-face {

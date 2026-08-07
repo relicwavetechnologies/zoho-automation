@@ -69,7 +69,7 @@ export function OAuthCallbackPage({ provider }: OAuthCallbackPageProps) {
         <AuthError message={error} />
         {/* Was /settings — that page is the audit log, and this flow belongs
             with the company's connections. */}
-        <Link className="btn primary" to="/connections" style={{ justifyContent: "center" }}>
+        <Link className="btn primary" to="/settings/connections" style={{ justifyContent: "center" }}>
           {done ? "Go to connections" : "Back to connections"}
         </Link>
       </div>

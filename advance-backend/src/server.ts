@@ -685,6 +685,9 @@ export const createServer = (c: Container): DivoServerApplication => {
       // The one write on this router, and deliberately the narrowest possible
       // one: it moves a poll schedule forward and touches nothing else.
       requestReconciliation: input => c.mailOpsRepo.requestReconciliation(input),
+      // Creating a rule runs the same sequence the agent's tool runs, because
+      // it is literally the same function.
+      writeRule: c.writeMailRule,
       memberAuth: {
         prisma: c.prisma,
         jwtSecret: c.env.MEMBER_JWT_SECRET,

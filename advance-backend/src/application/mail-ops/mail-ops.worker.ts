@@ -1345,13 +1345,82 @@ function readDeliveryPayload(
   };
 }
 
-function formatLarkDelivery(payload: PendingMailDeliveryPayload): string {
-  return [
-    `New mail from ${payload.message.from || 'unknown sender'}`,
-    `Subject: ${payload.message.subject || '(no subject)'}`,
+/** How much of a mail's text is worth reading in a chat before opening it. */
+const LARK_PREVIEW_CHARS = 700;
+
+/**
+ * A mail, said in a chat.
+ *
+ * This used to paste the whole plain-text body in, up to twenty thousand
+ * characters. For a real marketing mail that is unreadable: the plain-text
+ * alternative of an HTML mail is the layout flattened into ragged half
+ * sentences, and every link in it is a tracking URL that runs for a thousand
+ * characters of encoded campaign parameters. One notification filled a chat
+ * screen and said less than its own subject line did.
+ *
+ * So this is a notification and not a copy of the mail. The subject and the
+ * sender are what a person reads to decide whether to care; a short preview
+ * tells them what it is about; and the link opens the real message, with its
+ * formatting, its images and its attachments, where those things work. Nothing
+ * here is a summary — no model runs, no meaning is inferred — it is the mail's
+ * own words, cut short.
+ */
+export function formatLarkDelivery(payload: PendingMailDeliveryPayload): string {
+  const { message } = payload;
+  const sender = formatSender(message.from);
+  const lines = [
+    message.subject?.trim() || '(no subject)',
+    `From: ${sender}`,
+  ];
+  if (message.hasAttachment) lines.push('Has attachments');
+  const preview = previewText(message.bodyText || message.snippet);
+  if (preview) lines.push('', preview);
+  // Where the mail actually is. A chat cannot render HTML, inline images or an
+  // attachment, and pretending otherwise is what made the old format useless.
+  //
+  // Addressed by mailbox rather than by `u/0`. The index is a position in
+  // whatever order that person happens to be signed into Google accounts, so
+  // for anyone with more than one it opens the wrong mailbox and reports the
+  // message as missing.
+  lines.push(
     '',
-    payload.message.bodyText || payload.message.snippet,
-  ].join('\n').slice(0, 20_000);
+    'Open in Gmail: https://mail.google.com/mail/u/'
+      + `${encodeURIComponent(payload.mailboxEmail)}/#all/${payload.sourceMessageId}`,
+  );
+  return lines.join('\n');
+}
+
+/** `"Naukri" <a@b.com>` said the way a person would say it. */
+function formatSender(from: string): string {
+  const raw = (from ?? '').trim();
+  if (!raw) return 'unknown sender';
+  const match = /^(.*?)\s*<([^>]+)>\s*$/.exec(raw);
+  if (!match) return raw;
+  const name = (match[1] ?? '').replace(/^"|"$/g, '').trim();
+  const address = (match[2] ?? '').trim();
+  return name ? `${name} (${address})` : address;
+}
+
+/**
+ * The readable part of a mail body.
+ *
+ * URLs go first and are not shortened or labelled: a tracking link is a
+ * thousand characters of campaign parameters, and leaving even its host behind
+ * puts a live link in a chat that nobody meant to click. Runs of blank lines
+ * collapse because the plain-text twin of an HTML mail is mostly blank lines.
+ */
+function previewText(body: string): string {
+  const cleaned = (body ?? '')
+    .replace(/<?https?:\/\/[^\s>]+>?/gi, '')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{2,}/g, '\n')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+  if (cleaned.length <= LARK_PREVIEW_CHARS) return cleaned;
+  return `${cleaned.slice(0, LARK_PREVIEW_CHARS).trimEnd()}…`;
 }
 
 /**

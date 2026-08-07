@@ -1374,7 +1374,7 @@ describe('MailOpsWorker', () => {
       gmail: {
         ...syncGmail,
         createForwardDraft: async () => {
-          throw new MailTooLargeError(26 * 1024 * 1024, 25 * 1024 * 1024);
+          throw new MailTooLargeError(37 * 1024 * 1024, 36_700_160);
         },
       },
       resolveAccessToken: async () => 'access-token',
@@ -1386,7 +1386,13 @@ describe('MailOpsWorker', () => {
     await worker.runOnce();
 
     assert.equal(failed, false);
-    assert.match(abandoned?.reason, /Gmail will not send anything over 25 MB/);
+    // Both sizes to one decimal place. Rounded to whole megabytes this read
+    // "This message is 25 MB, and Gmail will not send anything over 25 MB",
+    // which is true and tells a person nothing but that Divo is broken.
+    assert.match(
+      abandoned?.reason,
+      /is 37\.0 MB and Gmail will not send anything over 35\.0 MB/,
+    );
     // The draft is built before anything is staged, so a message refused for
     // its size never reached Gmail — the member should not be told it might
     // be sitting in somebody's inbox.

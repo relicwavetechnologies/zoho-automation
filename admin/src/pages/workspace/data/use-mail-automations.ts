@@ -11,9 +11,10 @@
  * No userId anywhere. Every query is pinned server-side to the signed-in
  * member, so there is nothing to pass and nothing to get wrong.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
+import { useConnections, type LiveConnection } from './use-connections'
 
 const BASE = '/api/mail-automations'
 
@@ -171,6 +172,90 @@ export function useMailDeliveries(ruleId?: string) {
   return { deliveries, loading }
 }
 
+/* ── Which mailbox a rule can watch ───────────────────
+   Mirrors `MailAutomationConnectionResolution` on the tool side, which is the
+   authority on this and already got it right: a rule needs a Google account
+   **you own** with read, watch and send access; `connectionId` may be omitted
+   only when exactly one such account exists; and several is a normal step
+   rather than a failure.
+
+   The mistake this replaces was reading `MailboxSubscription` rows instead. A
+   subscription is created *by* the first rule, so gating rule creation on one
+   meant the first rule could never be made — the page told somebody with Gmail
+   connected that they had no mailbox. */
+
+export type MailboxOption = {
+  connectionId: string
+  /** The address, or the connection's label when Google gave us no email. */
+  accountEmail: string
+  accountName: string | null
+  access: string
+  /** A subscription already exists, i.e. Divo is watching this inbox today. */
+  watched: boolean
+  activeRuleCount: number
+}
+
+export type MailboxResolution =
+  | { status: 'loading' }
+  /** No Google account you own. `none_accessible`. */
+  | { status: 'none' }
+  /** Owned, but shared read-only or missing Gmail scopes. `insufficient_access`. */
+  | { status: 'insufficient'; options: MailboxOption[] }
+  | { status: 'one'; option: MailboxOption }
+  /** `google_workspace_connection_selection_required`. */
+  | { status: 'choose'; options: MailboxOption[] }
+
+/**
+ * Read, watch and send. A connection shared with this person read-only can be
+ * used to look at mail and not to forward any, which is a different problem
+ * from having no account and has a different remedy — so it is not filtered
+ * away silently, it is reported as its own state.
+ */
+const canRunMail = (connection: LiveConnection): boolean =>
+  connection.ownerType === 'user' && connection.access !== 'read_only'
+
+export function useMailboxOptions(): MailboxResolution {
+  const { byProvider, loading: connectionsLoading } = useConnections()
+  const { mailboxes, loading: mailLoading } = useMailAutomations()
+
+  return useMemo<MailboxResolution>(() => {
+    if (connectionsLoading || mailLoading) return { status: 'loading' }
+
+    const google = byProvider.get('google_workspace')
+    const owned = (google?.connections ?? []).filter((c) => c.ownerType === 'user')
+    const usable = owned.filter(canRunMail)
+
+    if (usable.length === 0) {
+      return owned.length > 0
+        ? { status: 'insufficient', options: owned.map((c) => toOption(c, mailboxes)) }
+        : { status: 'none' }
+    }
+
+    const options = usable.map((c) => toOption(c, mailboxes))
+    // Watched inboxes first: somebody with two accounts almost always means the
+    // one Divo is already working on, and it is the only ordering here that
+    // carries information rather than reproducing whatever Google returned.
+    options.sort((a, b) => Number(b.watched) - Number(a.watched))
+
+    return options.length === 1 ? { status: 'one', option: options[0]! } : { status: 'choose', options }
+  }, [byProvider, connectionsLoading, mailboxes, mailLoading])
+}
+
+function toOption(connection: LiveConnection, mailboxes: MailboxHealth[]): MailboxOption {
+  const email = connection.accountEmail ?? connection.label
+  const health = mailboxes.find(
+    (m) => m.mailboxEmail.toLowerCase() === email.toLowerCase(),
+  )
+  return {
+    connectionId: connection.connectionId,
+    accountEmail: email,
+    accountName: connection.accountName,
+    access: connection.access,
+    watched: health !== undefined,
+    activeRuleCount: health?.activeRuleCount ?? 0,
+  }
+}
+
 export type MailRuleDryRun = {
   ruleId: string
   name: string
@@ -256,41 +341,189 @@ const str = (source: Record<string, unknown>, key: string): string | null => {
 }
 
 /**
+ * A phrase field is one string, or a list of them any one of which counts.
+ *
+ * `MailRulePhrase = string | readonly string[]`, and this screen read only the
+ * string half — so a rule written as `subjectContains: ["invoice", "receipt"]`
+ * rendered no subject line at all, and its owner was shown a rule that matched
+ * on strictly less than the one they had asked for.
+ */
+function phrase(source: Record<string, unknown>, key: string): string[] {
+  const value = source[key]
+  if (typeof value === 'string') return value.length > 0 ? [value] : []
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === 'string' && item.length > 0)
+}
+
+/** `["a"]` → `"a"` · `["a","b","c"]` → `"a", "b" or "c"`. */
+function anyOf(values: string[]): string {
+  const quoted = values.map((value) => `"${value}"`)
+  if (quoted.length === 1) return quoted[0]!
+  return `${quoted.slice(0, -1).join(', ')} or ${quoted[quoted.length - 1]}`
+}
+
+const WEEKDAY_LABEL: Record<string, string> = {
+  mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun',
+}
+const WEEKDAYS = ['mon', 'tue', 'wed', 'thu', 'fri'] as const
+
+/**
+ * "on weekdays between 09:00 and 18:00 (Asia/Kolkata)".
+ *
+ * The window is half-open and an `end` at or before `start` wraps past
+ * midnight, which is the only way to say "outside office hours" — so a wrapped
+ * window has to say so, or it reads as an empty range that could never match.
+ */
+function windowClause(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object') return null
+  const window = raw as Record<string, unknown>
+  const start = str(window, 'start')
+  const end = str(window, 'end')
+  const zone = str(window, 'timeZone')
+  if (!start || !end || !zone) return null
+
+  const days = Array.isArray(window['days'])
+    ? window['days'].filter((d): d is string => typeof d === 'string' && d in WEEKDAY_LABEL)
+    : []
+  const weekdaysOnly = days.length === 5 && WEEKDAYS.every((d) => days.includes(d))
+  const when = days.length === 0 || days.length === 7
+    ? 'any day'
+    : weekdaysOnly
+      ? 'on weekdays'
+      : days.length === 2 && days.includes('sat') && days.includes('sun')
+        ? 'at weekends'
+        : `on ${days.map((d) => WEEKDAY_LABEL[d]).join(', ')}`
+
+  // Half-open, and the string comparison is safe because both sides are HH:MM.
+  const wraps = end <= start
+  return wraps
+    ? `arrives ${when} after ${start} or before ${end} (${zone})`
+    : `arrives ${when} between ${start} and ${end} (${zone})`
+}
+
+/**
  * The rule's conditions as sentence fragments, in the order a person reads
  * them. Every condition must hold — the matcher is AND-only, with no way to
- * express "or", which is worth showing rather than implying.
+ * express "or" between clauses, which is worth showing rather than implying.
+ *
+ * All eight stored conditions are rendered. Four of them used to be dropped
+ * silently, which is worse than showing nothing: a rule carrying `notFrom` and
+ * a rate limit was displayed as an unrestricted forward of everything from the
+ * domain, so the screen stated a rule its owner had never written.
  */
 export function matchClauses(match: Record<string, unknown>): string[] {
   const clauses: string[] = []
-  const from = str(match, 'from')
+
   // A leading @ covers the domain and everything under it: `@acme.com` matches
   // `billing@acme.com` and `receipts@mail.acme.com` alike. This screen said the
   // opposite until the matcher was changed and nobody came back for the
   // sentence — so a member reading their own rule was told it would miss
   // exactly the transactional mail it was written to catch.
+  const from = str(match, 'from')
   if (from) {
     clauses.push(from.startsWith('@')
       ? `sent from ${from.slice(1)} or any of its subdomains`
       : `sent by ${from}`)
   }
+
+  // Matches the union of To, Cc, Bcc and Delivered-To as whole mailboxes.
+  // Rules stored before that change carry `to` alone and degrade to it.
   const to = str(match, 'to')
   if (to) clauses.push(`addressed to ${to}`)
-  const subject = str(match, 'subjectContains')
-  if (subject) clauses.push(`subject contains "${subject}"`)
-  const body = str(match, 'bodyContains')
-  if (body) clauses.push(`body contains "${body}"`)
+
+  const subject = phrase(match, 'subjectContains')
+  if (subject.length > 0) clauses.push(`subject contains ${anyOf(subject)}`)
+
+  const body = phrase(match, 'bodyContains')
+  if (body.length > 0) clauses.push(`body contains ${anyOf(body)}`)
+
   if (typeof match['hasAttachment'] === 'boolean') {
     clauses.push(match['hasAttachment'] ? 'has an attachment' : 'has no attachment')
   }
+
+  const window = windowClause(match['activeWindow'])
+  if (window) clauses.push(window)
+
+  // Exclusions last, and phrased as exceptions rather than conditions. They can
+  // only ever narrow what a rule catches, and an unreadable `From` header fails
+  // the exclusion rather than passing it.
+  const notFrom = str(match, 'notFrom')
+  if (notFrom) {
+    clauses.push(notFrom.startsWith('@')
+      ? `not from ${notFrom.slice(1)} or any of its subdomains`
+      : `not from ${notFrom}`)
+  }
+
+  const notSubject = phrase(match, 'notSubjectContains')
+  if (notSubject.length > 0) clauses.push(`subject does not contain ${anyOf(notSubject)}`)
+
   return clauses
+}
+
+/**
+ * What the rule does once something matches.
+ *
+ * `organize` is an action rather than a destination — it acts on the message
+ * where it already is, and its destination is stored as `{ type: 'none' }`.
+ * Reading the destination alone therefore reported every organize rule as
+ * pointing "somewhere Divo can no longer read", which is the sentence reserved
+ * for genuine corruption.
+ */
+export type MailAction =
+  | { kind: 'forward'; rateLimitPerHour: number | null }
+  | { kind: 'deliver'; rateLimitPerHour: number | null }
+  | { kind: 'organize'; label: string | null; archive: boolean; markRead: boolean }
+  | { kind: 'unknown' }
+
+export function readAction(action: Record<string, unknown>): MailAction {
+  const type = str(action, 'type')
+  const ceiling = typeof action['rateLimitPerHour'] === 'number' && action['rateLimitPerHour'] > 0
+    ? action['rateLimitPerHour']
+    : null
+
+  if (type === 'forward') return { kind: 'forward', rateLimitPerHour: ceiling }
+  if (type === 'deliver') return { kind: 'deliver', rateLimitPerHour: ceiling }
+  if (type === 'organize') {
+    return {
+      kind: 'organize',
+      label: str(action, 'label'),
+      archive: action['archive'] === true,
+      markRead: action['markRead'] === true,
+    }
+  }
+  return { kind: 'unknown' }
+}
+
+/**
+ * The ceiling, stated with its consequence.
+ *
+ * Over the limit a message is **dropped**, not held — so "at most 5 an hour"
+ * on its own would be read as a queue, and somebody would go looking for the
+ * sixth message that was never coming. `organize` carries no ceiling: it sends
+ * nothing, so a burst is the correct response to a burst.
+ */
+export function rateLimitClause(action: Record<string, unknown>): string | null {
+  const read = readAction(action)
+  if (read.kind === 'organize' || read.kind === 'unknown') return null
+  if (read.rateLimitPerHour === null) return null
+  return `at most ${read.rateLimitPerHour} an hour — over that, mail is dropped rather than queued`
 }
 
 export type MailDestination =
   | { kind: 'email'; email: string; label: string }
   | { kind: 'lark'; chatId: string; label: string }
+  | { kind: 'organize'; label: string }
   | { kind: 'unknown'; label: string }
 
-export function readDestination(destination: Record<string, unknown>): MailDestination {
+/**
+ * Where a match ends up, read from the destination and the action together.
+ * Neither is sufficient alone — an organize rule's destination says `none`,
+ * and a forward's action says nothing about the address.
+ */
+export function readDestination(
+  destination: Record<string, unknown>,
+  action?: Record<string, unknown>,
+): MailDestination {
   const type = str(destination, 'type')
   if (type === 'email') {
     const email = str(destination, 'email')
@@ -300,6 +533,25 @@ export function readDestination(destination: Record<string, unknown>): MailDesti
     const chatId = str(destination, 'chatId')
     if (chatId) return { kind: 'lark', chatId, label: 'a Lark chat' }
   }
+
+  if (type === 'none' && action) {
+    const read = readAction(action)
+    if (read.kind === 'organize') {
+      const done: string[] = []
+      if (read.label) done.push(`labelled “${read.label}”`)
+      if (read.archive) done.push('archived')
+      if (read.markRead) done.push('marked read')
+      return {
+        kind: 'organize',
+        // An organize rule with nothing switched on is a real stored shape and
+        // it does nothing at all, which is worth saying outright.
+        label: done.length === 0
+          ? 'kept in your inbox, untouched'
+          : `${done.join(' and ')} in your Gmail`,
+      }
+    }
+  }
+
   return { kind: 'unknown', label: 'somewhere Divo can no longer read' }
 }
 
@@ -320,4 +572,62 @@ export function leavesOrganisation(rule: MailRule): boolean {
   const to = domainOf(destination.email)
   const mailbox = domainOf(rule.mailboxEmail)
   return to.length > 0 && mailbox.length > 0 && to !== mailbox
+}
+
+/* ── Creating a rule ──────────────────────────────────
+   `POST /rules` runs the same sequence the agent's tool runs — it is literally
+   the same function — so every refusal below is one the agent would also give,
+   worded the same way. The server's sentence is preferred over anything this
+   file could invent, because it is the one that knows which check failed. */
+
+export type MailRuleDraft = {
+  connectionId?: string
+  name: string
+  match: Record<string, unknown>
+  destination:
+    | { type: 'email'; email: string }
+    | { type: 'lark_chat'; chatId: string }
+    | { type: 'organize'; label?: string; archive?: boolean; markRead?: boolean }
+  rateLimitPerHour?: number
+}
+
+export type MailRuleCreateState = {
+  saving: boolean
+  /** The server's own sentence. Null until something is refused. */
+  error: string | null
+  /** Which check refused, for the rare case the UI should act rather than tell. */
+  code: string | null
+}
+
+export function useCreateMailRule() {
+  const { token } = useAdminAuth()
+  const [state, setState] = useState<MailRuleCreateState>({
+    saving: false, error: null, code: null,
+  })
+
+  const create = useCallback(async (draft: MailRuleDraft): Promise<string | null> => {
+    if (!token) return null
+    setState({ saving: true, error: null, code: null })
+    try {
+      const data = await api.post<{ ruleId: string; mailboxEmail: string }>(
+        `${BASE}/rules`, draft, token, { quiet: true },
+      )
+      setState({ saving: false, error: null, code: null })
+      return data.ruleId
+    } catch (error) {
+      // Six refusals with six different remedies, and the remedy is the only
+      // part a member can act on — so the server's message is shown verbatim
+      // rather than replaced with a generic failure.
+      const message = error instanceof Error && error.message.length > 0
+        ? error.message
+        : 'That rule could not be created.'
+      const code = typeof (error as { code?: unknown })?.code === 'string'
+        ? (error as { code: string }).code
+        : null
+      setState({ saving: false, error: message, code })
+      return null
+    }
+  }, [token])
+
+  return { ...state, create }
 }

@@ -18,47 +18,59 @@ import type { Toast } from './ui'
 
 /** Screen ids used inside the screens map onto real paths here. */
 const PATHS: Record<string, string> = {
+  /* Work — the app shell. */
   home: '/me',
+  'mail-rules': '/me/mail',
   approvals: '/me/approvals',
   artifacts: '/me/artifacts',
-  connections: '/me/connections',
-  access: '/me/access',
-  'mail-rules': '/me/mail-rules',
-  skills: '/me/skills',
-  memory: '/me/memory',
-  usage: '/me/usage',
-  settings: '/me/settings',
+  automations: '/me/automations',
+  /* Drill-in: a screen passes `automation:<id>`. */
+  automation: '/me/automations',
   'team-home': '/team',
-  'team-people': '/team/people',
-  'team-roles': '/team/roles',
-  'team-approvals': '/team/approvals',
-  'team-usage': '/team/usage',
   'co-home': '/home',
-  'co-people': '/people',
-  'co-departments': '/departments',
-  'co-policy': '/policy',
-  'co-connections': '/connections',
-  'co-audit': '/activity',
   'co-aiops': '/ai-ops',
-  'co-skills': '/skills',
-  'co-memory': '/memories',
-  'co-guardrails': '/guardrails',
-  'co-web-search': '/connections/web-search',
+  'co-audit': '/activity',
+
+  /* Configuration — the Settings takeover. */
+  connections: '/settings/connections',
+  'connect-flow': '/settings/connections/lark-flow',
+  access: '/settings/access',
+  skills: '/settings/skills',
+  memory: '/settings/memory',
+  usage: '/settings/usage',
+  settings: '/settings/profile',
+  'team-people': '/settings/team/people',
+  /* TeamHome's "Manage" button passes `people`, not `team-people`. There has
+     never been an entry for it, so `resolvePath` fell through to its `/me`
+     default and the button quietly took a manager to their own home page. */
+  people: '/settings/team/people',
+  'team-roles': '/settings/team/roles',
+  'team-approvals': '/settings/team/approvals',
+  'team-usage': '/settings/team/usage',
+  'co-people': '/settings/company/people',
+  'co-departments': '/settings/company/departments',
+  'co-policy': '/settings/company/policy',
+  'co-connections': '/settings/company/connections',
+  'co-skills': '/settings/company/skills',
+  'co-memory': '/settings/company/memory',
+  'co-guardrails': '/settings/company/guardrails',
+  'co-web-search': '/settings/company/connections/web-search',
   /* Drill-ins. A screen passes `co-run:<id>`; the id is appended to the base
      path below. Without one it lands on the list, which is a worse answer than
      the detail but never a wrong one. */
   'co-run': '/ai-ops/runs',
-  'co-person': '/people',
-  'co-department': '/departments',
-  'co-skill': '/skills',
+  'co-person': '/settings/company/people',
+  'co-department': '/settings/company/departments',
+  'co-skill': '/settings/company/skills',
 }
 
 /** Falls back to the list route when a screen passes no id. */
 const LIST_FALLBACK: Record<string, string> = {
+  automation: '/me/automations',
   'co-run': '/ai-ops',
-  'co-person': '/people',
-  'co-department': '/departments',
-  'co-skill': '/skills',
+  'co-person': '/settings/company/people',
+  'co-department': '/settings/company/departments',
+  'co-skill': '/settings/company/skills',
 }
 
 /**

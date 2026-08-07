@@ -65,8 +65,19 @@ const readStoredToken = (): string | null => {
 
 /** The scopes this person can actually reach, from real membership. */
 export const scopesFor = (session: Session): Scope[] => {
+  /*
+   * "You" was accurate and read as a placeholder — the switcher's top row is
+   * the most prominent label in the app, and a two-letter pronoun next to a
+   * company name and a department name looked like something had failed to
+   * load. It names the workspace the way the other two scopes do.
+   */
+  const firstName = (session.name ?? session.email ?? '').split(/[\s@]/)[0];
   const scopes: Scope[] = [
-    { kind: 'you', label: 'You', detail: session.email ?? 'Your workspace' },
+    {
+      kind: 'you',
+      label: firstName ? `${firstName}'s workspace` : 'Your workspace',
+      detail: session.email ?? 'Your workspace',
+    },
   ];
 
   // Managing a department is its own axis. A company admin who leads no

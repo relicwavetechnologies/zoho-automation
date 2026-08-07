@@ -34,9 +34,10 @@
    individual and a lead — so scope is explicit rather than implied by
    ambiguous nav labels ("Connections": mine, or theirs?). Members never see
    the control; they only ever have one scope. */
-.cur .ws-scope { position: relative; margin: 0 2px 4px; }
+/* The switcher shares its row with the "+" button, as in the reference. */
+.cur .ws-scope { position: relative; margin: 0 0 6px; display: flex; align-items: center; gap: 6px; }
 .cur .ws-scope-btn {
-  width: 100%; display: flex; align-items: center; gap: 9px; height: 46px; padding: 0 9px;
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; height: 36px; padding: 0 7px;
   border-radius: var(--cur-r-cta); border: 1px solid transparent; background: transparent;
   cursor: pointer; text-align: left; color: var(--cur-ink);
 }
@@ -45,14 +46,25 @@
 .cur .ws-scope-btn[data-static="true"] { cursor: default; }
 .cur .ws-scope-btn[data-static="true"]:hover { background: transparent; }
 .cur .ws-scope-ic {
-  width: 28px; height: 28px; border-radius: var(--cur-r-cta); flex-shrink: 0;
+  width: 23px; height: 23px; border-radius: 6px; flex-shrink: 0;
   display: grid; place-items: center;
   background: var(--cur-surface-strong); color: var(--cur-body);
 }
+/* Divo's mark, where the reference puts the workspace initial. */
+.cur .ws-scope-ic[data-tone="brand"] { background: var(--cur-primary); color: var(--cur-on-primary); }
+.cur .ws-scope-new {
+  width: 28px; height: 28px; border-radius: var(--cur-r-cta); flex-shrink: 0;
+  display: grid; place-items: center; cursor: pointer;
+  border: 1px solid var(--cur-hairline); background: var(--cur-surface-strong); color: var(--cur-body);
+}
+.cur .ws-scope-new:hover { color: var(--cur-ink); border-color: var(--cur-hairline-strong); }
 .cur .ws-scope-btn.open .ws-scope-ic,
 .cur .ws-scope-ic[data-tone="ink"] { background: var(--cur-ink); color: var(--cur-canvas); }
-.cur .ws-scope-txt { flex: 1; min-width: 0; }
-.cur .ws-scope-txt b { display: block; font-size: 13px; font-weight: 500; letter-spacing: -0.01em; }
+.cur .ws-scope-txt { min-width: 0; }
+.cur .ws-scope-txt b {
+  display: block; font-size: 13px; font-weight: 500; letter-spacing: -0.005em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .cur .ws-scope-txt span {
   display: block; font-size: 11px; color: var(--cur-muted); margin-top: 1px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -71,7 +83,11 @@
 .cur .ws-scope-opt .ck { margin-left: auto; color: var(--cur-primary); }
 
 /* ── Sidebar additions ───────────────────────────────── */
-.cur .ws-nav { display: flex; flex-direction: column; gap: 1px; overflow-y: auto; flex: 1; margin: 0 -2px; padding: 0 2px; }
+/* Sizes to its own rows and no further. It used to be `flex: 1`, which handed
+   the nav every spare pixel in the rail and pushed Recent all the way to the
+   bottom, where it sat directly on top of Settings looking like part of the
+   foot. The free space belongs to Recent — that is the list that grows. */
+.cur .ws-nav { display: flex; flex-direction: column; gap: 1px; flex: 0 0 auto; margin: 0 -2px; padding: 0 2px; }
 .cur .ws-acct {
   width: 100%; display: flex; align-items: center; gap: 9px; padding: 6px 8px; border: 0;
   background: none; border-radius: var(--cur-r-cta); cursor: pointer; text-align: left; color: var(--cur-ink);
@@ -925,3 +941,552 @@
    which a dozen read-only notices already use and should keep looking the
    way they do — without this the button stretches to the banner's height. */
 .cur .ws-ceiling > .btn { align-self: center; flex-shrink: 0; margin-left: auto; }
+
+/* ══════════════════════════════════════════════════════
+   HOME — the composer-first landing.
+
+   Structure copied from the reference: a composer, an onboarding carousel,
+   then the work. Everything below is layout only; colour comes from the
+   `--cur-*` tokens, so light and dark both fall out of cursor.css and no hex
+   appears in this block. That is the rule for the whole re-skin.
+   ══════════════════════════════════════════════════════ */
+
+/* The Home column is narrower than a data page. The composer is a writing
+   surface and long measure hurts it, so the page is centred and capped rather
+   than filling a 1600px monitor. */
+.cur .ws-home { max-width: 940px; margin: 0 auto; padding-bottom: 40px; }
+
+/* ── Composer ─────────────────────────────────────────
+   UI only for now — no send handler, no run is created. The disabled state is
+   real rather than cosmetic: a box that accepts text and silently drops it is
+   worse than one that says it is not ready. */
+.cur .ws-comp {
+  background: var(--cur-surface); border: 1px solid var(--cur-hairline-strong);
+  border-radius: var(--cur-r-card); padding: 15px 16px 12px;
+  box-shadow: var(--cur-shadow-card);
+}
+.cur .ws-comp:focus-within { border-color: var(--cur-muted-soft); }
+.cur .ws-comp textarea {
+  width: 100%; border: 0; background: none; resize: none; outline: none;
+  font-family: inherit; font-size: 14px; line-height: 1.55; color: var(--cur-ink);
+  min-height: 56px;
+}
+.cur .ws-comp textarea::placeholder { color: var(--cur-muted); }
+.cur .ws-comp-foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.cur .ws-comp-sp { flex: 1; }
+/* Chips read as settings that belong to the message, so they sit on the
+   composer's own surface rather than being outlined like buttons. */
+.cur .ws-comp-chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px;
+  border-radius: var(--cur-r-cta); border: 1px solid transparent; background: transparent;
+  font-family: inherit; font-size: 12.5px; color: var(--cur-body); cursor: pointer;
+}
+.cur .ws-comp-chip:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
+.cur .ws-comp-chip:disabled { cursor: default; }
+.cur .ws-comp-chip:disabled:hover { background: transparent; color: var(--cur-body); }
+.cur .ws-comp-send {
+  width: 32px; height: 32px; border-radius: var(--cur-r-cta); border: 0; flex-shrink: 0;
+  background: var(--cur-cta); color: var(--cur-on-cta); display: grid; place-items: center; cursor: pointer;
+}
+.cur .ws-comp-send:hover { background: var(--cur-cta-hover); }
+.cur .ws-comp-send:disabled { background: var(--cur-surface-strong); color: var(--cur-muted-soft); cursor: default; }
+/* Under the composer: what the disabled send button would have told you, said
+   out loud instead of only on hover. */
+.cur .ws-soon {
+  display: flex; align-items: center; gap: 10px; margin-top: 11px; padding: 10px 13px;
+  border: 1px solid var(--cur-featured-ring); border-radius: 10px;
+  background: linear-gradient(var(--cur-featured-from), var(--cur-featured-to));
+  color: var(--cur-body);
+}
+.cur .ws-soon svg { flex-shrink: 0; color: var(--cur-muted); }
+.cur .ws-soon p { flex: 1; margin: 0; font-size: 12.5px; line-height: 1.55; }
+.cur .ws-soon b { color: var(--cur-ink); font-weight: 500; }
+
+/* ── Section header ───────────────────────────────────
+   Title + subtitle left, controls right. Used by every band on Home. */
+.cur .ws-band { margin-top: 34px; }
+.cur .ws-band-hd { display: flex; align-items: flex-end; gap: 14px; margin-bottom: 14px; }
+.cur .ws-band-hd h2 { font-size: 15px; font-weight: 500; letter-spacing: -0.01em; color: var(--cur-ink); }
+.cur .ws-band-hd p { font-size: 12.5px; color: var(--cur-muted); margin-top: 2px; }
+.cur .ws-band-act { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.cur .ws-band-nav {
+  width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center;
+  border: 1px solid var(--cur-hairline-strong); background: var(--cur-surface);
+  color: var(--cur-body); cursor: pointer;
+}
+.cur .ws-band-nav:hover:not(:disabled) { border-color: var(--cur-muted-soft); color: var(--cur-ink); }
+.cur .ws-band-nav:disabled { opacity: 0.4; cursor: default; }
+
+/* ── Get started carousel ─────────────────────────────
+   A scroller, not a grid: the reference clips the next card at the right edge
+   so the row reads as continuing. Scroll snapping keeps the arrows honest. */
+.cur .ws-gs {
+  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 274px);
+  gap: 14px; overflow-x: auto; scroll-snap-type: x mandatory;
+  scrollbar-width: none; padding-bottom: 2px;
+}
+.cur .ws-gs::-webkit-scrollbar { display: none; }
+.cur .ws-gs-card {
+  scroll-snap-align: start; position: relative; display: flex; flex-direction: column;
+  background: var(--cur-surface); border: 1px solid var(--cur-hairline);
+  border-radius: var(--cur-r-card); padding: 16px; box-shadow: var(--cur-shadow-card);
+}
+/* The one warm surface in the app. Exactly one card per view may wear it. */
+.cur .ws-gs-card[data-featured="true"] {
+  background: linear-gradient(168deg, var(--cur-featured-from), var(--cur-featured-to) 72%);
+  border-color: var(--cur-featured-ring);
+}
+.cur .ws-gs-mark {
+  width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;
+  background: var(--cur-surface-strong); color: var(--cur-body);
+  font-size: 12.5px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 12px;
+}
+.cur .ws-gs-card[data-featured="true"] .ws-gs-mark { background: transparent; font-size: 20px; }
+.cur .ws-gs-card h3 { font-size: 13.5px; font-weight: 500; letter-spacing: -0.01em; color: var(--cur-ink); }
+.cur .ws-gs-card p {
+  font-size: 12px; line-height: 1.5; color: var(--cur-muted); margin-top: 6px;
+  /* Fixed measure so a row of cards has one baseline for its buttons. */
+  min-height: 54px;
+}
+.cur .ws-gs-card > .btn { margin-top: 14px; }
+.cur .ws-gs-x {
+  position: absolute; top: 10px; right: 10px; width: 22px; height: 22px; border-radius: 6px;
+  display: grid; place-items: center; border: 0; background: none;
+  color: var(--cur-muted-soft); cursor: pointer;
+}
+.cur .ws-gs-x:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
+
+/* ── Sidebar: recent + onboarding checklist ─────────
+   Compact, not roomy. Each recent entry is two tight lines — the title and a
+   short age — because this list is scanned rather than read, and at the
+   previous spacing five of them ate the whole rail. */
+/* The rail's elastic middle: it takes the space the nav no longer claims and
+   scrolls once the list outgrows it, which keeps Getting started and the foot
+   pinned to the bottom where they belong. */
+.cur .ws-recent { padding: 0 2px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.cur .ws-recent-item {
+  display: block; width: 100%; text-align: left; border: 0; background: none; cursor: pointer;
+  font-family: inherit; padding: 5px 10px; border-radius: var(--cur-r-cta); color: var(--cur-body);
+}
+.cur .ws-recent-item:hover { background: var(--cur-surface-strong); }
+.cur .ws-recent-item b {
+  display: block; font-size: 13px; line-height: 1.35; font-weight: 400; color: var(--cur-ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cur .ws-recent-item span { display: block; font-size: 11.5px; line-height: 1.25; color: var(--cur-muted); }
+.cur .ws-recent-empty { padding: 4px 10px; font-size: 12px; color: var(--cur-muted-soft); line-height: 1.5; }
+
+.cur .ws-onb {
+  flex-shrink: 0; margin: 12px 2px 0; padding: 12px;
+  border-radius: var(--cur-r-card); border: 1px solid var(--cur-hairline); background: var(--cur-surface);
+}
+/* Row one is the title and the fold control. The percentage belongs with the
+   bar it describes, on row two — putting all three on one line squeezed the
+   title and left the number floating unattached to anything. */
+.cur .ws-onb-hd { display: flex; align-items: center; gap: 8px; }
+.cur .ws-onb-hd b { flex: 1; font-size: 13px; font-weight: 500; color: var(--cur-ink); }
+.cur .ws-onb-tog {
+  width: 22px; height: 22px; border-radius: 6px; flex-shrink: 0;
+  border: 0; background: var(--cur-surface-strong); color: var(--cur-muted);
+  cursor: pointer; display: grid; place-items: center;
+}
+.cur .ws-onb-tog:hover { color: var(--cur-ink); }
+.cur .ws-onb-prog { display: flex; align-items: center; gap: 9px; margin: 10px 0 2px; }
+.cur .ws-onb-bar { flex: 1; height: 4px; border-radius: 999px; background: var(--cur-surface-strong); overflow: hidden; }
+.cur .ws-onb-bar i { display: block; height: 100%; background: var(--cur-accent); transition: width .3s ease; }
+.cur .ws-onb-prog span { font-size: 11.5px; color: var(--cur-muted); flex-shrink: 0; }
+.cur .ws-onb-list { margin-top: 6px; }
+.cur .ws-onb-li { display: flex; align-items: center; gap: 9px; padding: 4px 0; font-size: 12.5px; color: var(--cur-muted); }
+.cur .ws-onb-li[data-done="true"] { color: var(--cur-ink); }
+.cur .ws-onb-li svg { flex-shrink: 0; color: var(--cur-muted-soft); }
+.cur .ws-onb-li[data-done="true"] svg { color: var(--cur-accent); }
+/* An incomplete step is the one thing here you can act on, so it is a button —
+   but it must not look like a link in a list of plain labels. */
+.cur .ws-onb-go {
+  border: 0; background: none; padding: 0; cursor: pointer;
+  font-family: inherit; font-size: 12.5px; color: inherit; text-align: left;
+}
+.cur .ws-onb-go:hover { color: var(--cur-ink); }
+
+
+/* ── Sidebar foot + recent header ─────────────────────
+   Quiet rows, no boxed account card. `.nav-item` is reused verbatim so these
+   sit on exactly the same rhythm as the nav above them. */
+.cur .sidebar-foot { margin-top: 12px; padding-top: 6px; }
+.cur .sidebar-foot .nav-item {
+  width: 100%; border: 0; background: none; font-family: inherit; font-size: 13px; text-align: left;
+}
+.cur .ws-recent-hd { display: flex; align-items: center; }
+.cur .ws-recent-hd .nav-label { flex: 1; padding-left: 10px; }
+.cur .ws-recent-ic {
+  width: 24px; height: 24px; border-radius: 6px; display: grid; place-items: center;
+  border: 0; background: none; color: var(--cur-muted); cursor: pointer; margin-top: 8px;
+}
+.cur .ws-recent-ic:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
+
+/* Page title where the reference puts one — small, quiet, no breadcrumb. */
+.cur .ws-crumb-now { font-size: 13.5px; font-weight: 400; color: var(--cur-body); }
+
+/* ── Centred content column ───────────────────────────
+   The shell is a fixed sidebar plus everything else, so a max-width page hugs
+   the sidebar and leaves a wide empty gutter on the right on any large screen.
+   Centring the column costs nothing on a laptop and is the whole difference on
+   a 27". The topbar is centred on the same measure so a page title stays over
+   its own content rather than drifting to the far left. */
+.cur .page { margin-inline: auto; }
+.cur .topbar { width: 100%; max-width: 1160px; margin-inline: auto; padding-inline: 34px; }
+
+/*
+  Focus rings, on the tokens.
+
+  global.css applies `ring-2 ring-ring ring-offset-2` to every `:focus-visible`,
+  and `--ring` resolves to the brand orange — so clicking a nav row left a
+  bright orange halo around it that read as a selected state rather than as
+  keyboard focus. Inside `.cur` it becomes a quiet outline, still clearly
+  visible to a keyboard user and no longer shouting at a mouse user.
+*/
+.cur :focus-visible {
+  box-shadow: none;
+  outline: 2px solid var(--cur-muted-soft);
+  outline-offset: 1px;
+}
+.cur .nav-item:focus-visible { outline-offset: -2px; }
+
+/* ══════════════════════════════════════════════════════
+   SETTINGS TAKEOVER
+
+   A full page, not a panel. Rail on the left grouped by scope; on the right a
+   column of statements, each with its control beside it. Rows are separated by
+   rules rather than boxed into cards — a settings page is one continuous list,
+   and card borders around every three rows chop it into nothing.
+   ══════════════════════════════════════════════════════ */
+.cur.set { display: flex; height: 100vh; overflow: hidden; }
+
+.cur .set-rail {
+  width: 262px; flex-shrink: 0; display: flex; flex-direction: column;
+  padding: 10px 10px 12px; overflow-y: auto;
+  border-right: 1px solid var(--cur-hairline); background: var(--cur-sidebar);
+}
+.cur .set-back {
+  display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; margin-bottom: 6px;
+  border: 0; border-radius: var(--cur-r-cta); background: none; cursor: pointer;
+  font-family: inherit; font-size: 13.5px; color: var(--cur-body);
+}
+.cur .set-back:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
+.cur .set-rail-nav { display: flex; flex-direction: column; gap: 1px; }
+
+.cur .set-body { flex: 1; min-width: 0; overflow-y: auto; }
+/*
+  The column is wide; the FORM is narrow.
+
+  Capping the column itself at a reading measure looked right on Profile and
+  broke every data screen behind it. `.ws-skills` and `.ws-cols` drop to one
+  column at `max-width: 1080px` — and a media query measures the VIEWPORT, not
+  the container. On a wide monitor those grids stayed two-up inside a 652px
+  box, so the Skills detail pane got ~344px: its header wrapped one word per
+  line and its Rename/Archive buttons overflowed the panel entirely.
+
+  So the column is sized for the widest thing it hosts, and the settings
+  primitives below carry the reading measure themselves. Pages that want width
+  get it; pages that are a list of statements still read as one column.
+*/
+.cur .set-col { max-width: 1180px; margin: 0 auto; padding: 46px 34px 90px; }
+
+.cur .set-h, .cur .set-row, .cur .set-note { max-width: 720px; }
+.cur .set-h { margin-bottom: 30px; }
+.cur .set-h h1 { font-size: 26px; font-weight: 500; letter-spacing: -0.02em; color: var(--cur-ink); }
+.cur .set-h p { font-size: 13.5px; color: var(--cur-muted); margin-top: 7px; line-height: 1.5; }
+
+.cur .set-row {
+  display: flex; align-items: center; gap: 24px;
+  padding: 15px 0; border-top: 1px solid var(--cur-hairline);
+}
+.cur .set-row-t { min-width: 0; flex: 1; }
+.cur .set-row-t b { display: block; font-size: 13.5px; font-weight: 500; color: var(--cur-ink); }
+.cur .set-row-t span { display: block; font-size: 12.5px; color: var(--cur-muted); margin-top: 3px; line-height: 1.5; }
+.cur .set-row-c { flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+.cur .set-val { font-size: 13px; color: var(--cur-body); text-align: right; }
+
+/* Separates groups of rows. The next row draws its own top rule, so this is
+   space rather than a second line. */
+.cur .set-gap { height: 26px; }
+
+.cur .set-note {
+  display: flex; align-items: flex-start; gap: 8px; margin-top: 26px;
+  font-size: 12.5px; color: var(--cur-muted); line-height: 1.55;
+}
+.cur .set-note svg { flex-shrink: 0; margin-top: 2px; }
+
+/* The takeover hosts screens written for the app shell, which wrap themselves
+   in `.page`. Inside the settings column that padding is applied twice. */
+.cur .set-col .page { padding: 0; max-width: none; }
+
+/* `b-ok` and `b-err` existed; a "not linked yet" state is neither. */
+.cur .b-warn { color: var(--ws-warning); background: color-mix(in srgb, var(--ws-warning) 14%, transparent); }
+
+/*
+  One header inside the takeover.
+
+  Seventeen screens moved in here still render `PageHeader`, which is the app's
+  30px title over an uppercase letterspaced eyebrow. Next to the settings pages
+  written for this shell, that read as two different products stitched
+  together. Rather than edit every screen, the takeover restyles the header it
+  is given — so any page moved in here from now on lands looking correct.
+
+  The eyebrow stays, quietly. On a list page it repeats the rail's group and is
+  merely redundant; on a detail page ("Department" over a department's name) it
+  is the only breadcrumb there is, and dropping it would strand the reader.
+*/
+.cur .set-col .ws-ph { margin-bottom: 30px; align-items: flex-start; }
+.cur .set-col .ws-ph h1 { font-size: 26px; font-weight: 500; letter-spacing: -0.02em; }
+.cur .set-col .ws-ph p { font-size: 13.5px; color: var(--cur-muted); margin-top: 7px; }
+.cur .set-col .ws-ph .eyebrow {
+  font-size: 12px; font-weight: 400; text-transform: none; letter-spacing: 0;
+  color: var(--cur-muted);
+}
+.cur .set-col .ws-ph h1 { margin-top: 2px; }
+
+/* The team selector in the rail. Full width so it reads as part of the group
+   heading rather than as a control floating beside the links. */
+.cur .set-picker { padding: 2px 10px 8px; }
+.cur .set-picker .select { width: 100%; height: 30px; font-size: 12.5px; }
+
+/* ══════════════════════════════════════════════════════
+   DETAIL PAGE — header, body, inspector rail.
+
+   The other arrangement for a detail screen: the thing itself in the body,
+   everything *about* it in a rail on the right. Shared, not automation-
+   specific — person, department and run detail are the next tenants.
+   ══════════════════════════════════════════════════════ */
+.cur .dt { display: flex; flex-direction: column; min-height: 100%; }
+
+.cur .dt-hd {
+  display: flex; align-items: center; gap: 10px; padding-bottom: 16px;
+  border-bottom: 1px solid var(--cur-hairline); margin-bottom: 22px;
+}
+.cur .dt-back {
+  width: 28px; height: 28px; border-radius: 7px; flex-shrink: 0; display: grid; place-items: center;
+  border: 0; background: none; color: var(--cur-muted); cursor: pointer;
+}
+.cur .dt-back:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
+.cur .dt-hd h1 {
+  font-size: 17px; font-weight: 500; letter-spacing: -0.015em; color: var(--cur-ink);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cur .dt-hd-r { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.cur .dt-meta { font-size: 12px; color: var(--cur-muted-soft); margin-right: 4px; }
+
+/* Rail is fixed; body takes the rest. Below 1080 they stack, and the rail goes
+   underneath — on a narrow window the thing matters more than its metadata. */
+.cur .dt-split { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 28px; align-items: start; }
+@media (max-width: 1080px) { .cur .dt-split { grid-template-columns: 1fr; } }
+
+.cur .dt-block { margin-bottom: 26px; }
+.cur .dt-block h2 { font-size: 13.5px; font-weight: 500; color: var(--cur-ink); }
+.cur .dt-sub { font-size: 12.5px; color: var(--cur-muted); margin-top: 4px; line-height: 1.5; }
+.cur .dt-prose {
+  margin-top: 12px; padding: 15px 16px; border-radius: var(--cur-r-card);
+  border: 1px solid var(--cur-hairline); background: var(--cur-surface);
+  font-size: 13.5px; line-height: 1.6; color: var(--cur-body); white-space: pre-wrap;
+}
+.cur .dt-prose-empty { color: var(--cur-muted); border-style: dashed; background: none; }
+
+/* ── Rail ─────────────────────────────────────────────── */
+.cur .dt-rail { display: flex; flex-direction: column; gap: 10px; }
+.cur .dt-sec { border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card); background: var(--cur-surface); }
+.cur .dt-sec-hd { display: flex; align-items: center; padding-right: 10px; }
+.cur .dt-sec-t {
+  flex: 1; display: flex; align-items: center; gap: 7px; padding: 11px 12px;
+  border: 0; background: none; cursor: pointer; font-family: inherit;
+  font-size: 12.5px; font-weight: 500; color: var(--cur-ink); text-align: left;
+}
+.cur .dt-chev { color: var(--cur-muted); transition: transform .15s ease; transform: rotate(-90deg); }
+.cur .dt-chev.open { transform: rotate(0deg); }
+.cur .dt-sec-count { font-size: 11.5px; color: var(--cur-muted); }
+.cur .dt-sec-b { padding: 2px 12px 12px; }
+
+.cur .dt-row { display: flex; align-items: center; gap: 12px; padding: 5px 0; }
+.cur .dt-row-l { font-size: 12.5px; color: var(--cur-muted); flex-shrink: 0; }
+.cur .dt-row-v { margin-left: auto; min-width: 0; text-align: right; }
+.cur .dt-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 6px;
+  border: 1px solid var(--cur-hairline); background: var(--cur-canvas-soft);
+  font-size: 12px; color: var(--cur-ink);
+}
+/* Prose in a pill reads as pressable. Values that are facts, not settings,
+   drop the chip entirely. */
+.cur .dt-chip[data-tone="plain"] { border-color: transparent; background: none; padding: 4px 0; color: var(--cur-body); }
+.cur .dt-empty { font-size: 12px; color: var(--cur-muted); line-height: 1.5; padding: 2px 0 4px; }
+.cur .dt-caps { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
+
+.cur .dt-runs { display: flex; flex-direction: column; gap: 2px; }
+.cur .dt-run { border-radius: 7px; }
+.cur .dt-run-hd {
+  width: 100%; display: flex; align-items: flex-start; gap: 9px; padding: 7px 8px;
+  border: 0; border-radius: 7px; background: none; cursor: pointer; font-family: inherit; text-align: left;
+}
+.cur .dt-run-hd:hover { background: var(--cur-canvas-soft); }
+.cur .dt-run-ic { flex-shrink: 0; color: var(--cur-muted); margin-top: 1px; }
+.cur .dt-run[data-tone="ok"] .dt-run-ic { color: var(--cur-success); }
+.cur .dt-run[data-tone="err"] .dt-run-ic { color: var(--cur-error); }
+.cur .dt-run-t { min-width: 0; }
+.cur .dt-run-t b { display: block; font-size: 12.5px; font-weight: 400; color: var(--cur-ink); line-height: 1.4; }
+.cur .dt-run-t span { display: block; font-size: 11.5px; color: var(--cur-muted); margin-top: 2px; }
+.cur .dt-run-b { padding: 2px 8px 10px 30px; }
+.cur .dt-run-err { font-size: 12px; color: var(--cur-muted); line-height: 1.5; margin-bottom: 8px; }
+
+/* An automation row is a button, so it needs the row's own geometry back. */
+.cur .ws-row.auto-row {
+  width: 100%; border: 0; border-top: 1px solid var(--cur-hairline-soft);
+  background: none; font-family: inherit; text-align: left; cursor: pointer;
+}
+.cur .ws-row.auto-row:hover { background: var(--cur-canvas-soft); }
+.cur .b-off { color: var(--cur-muted); background: color-mix(in srgb, var(--cur-muted) 12%, transparent); }
+
+/* Recent's header sits on the same left edge as the nav rows above it. */
+.cur .ws-recent-hd .nav-label { padding-left: 10px; }
+
+
+/* ══ Mail ══════════════════════════════════════════════
+   The mailbox line, the rule builder, and the clause list they share. */
+
+/* One line per watched mailbox, at the top of the page. It was a panel at the
+   foot, below a box of general notes — so the one thing that can take every
+   rule down at once was the last thing anybody read. */
+.cur .ws-mbx { display: flex; flex-direction: column; gap: 6px; }
+.cur .ws-mbx-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 9px 13px; font-size: 12.5px; color: var(--cur-body);
+  border: 1px solid var(--cur-hairline); border-radius: 10px; background: var(--cur-surface);
+}
+.cur .ws-mbx-row b { font-size: 13px; font-weight: 500; color: var(--cur-ink); }
+.cur .ws-mbx-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--cur-muted-soft); }
+.cur .ws-mbx-row[data-tone="ok"] .ws-mbx-dot { background: var(--cur-success); }
+.cur .ws-mbx-row[data-tone="err"] .ws-mbx-dot { background: var(--cur-error); }
+.cur .ws-mbx-row[data-tone="warn"] .ws-mbx-dot { background: var(--ws-warning, #b4451f); }
+.cur .ws-mbx-state { color: var(--cur-body); }
+.cur .ws-mbx-row[data-tone="err"] .ws-mbx-state { color: var(--cur-error); }
+.cur .ws-mbx-sep { color: var(--cur-muted-soft); }
+.cur .ws-mbx-when { margin-left: auto; color: var(--cur-muted); }
+
+/* The rule's conditions. A list rather than a paragraph because every line is
+   a separate thing that has to hold, and prose hides that. */
+.cur .dt-clauses { margin: 10px 0 0; padding-left: 18px; }
+.cur .dt-clauses li { font-size: 13.5px; line-height: 1.75; color: var(--cur-body); }
+.cur .dt-clauses li::marker { color: var(--cur-muted-soft); }
+.cur .dt-act { margin-top: 12px; }
+.cur .dt-dry { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.cur .dt-hits { margin-top: 12px; border: 1px solid var(--cur-hairline); border-radius: 10px; overflow: hidden; }
+.cur .dt-hits .ws-row:first-child { border-top: 0; }
+
+/* ── The builder ─────────────────────────────────────── */
+.cur .ws-crumb-back {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 0; background: none; padding: 0; cursor: pointer;
+  font-family: inherit; font-size: 12px; color: var(--cur-muted); text-transform: none; letter-spacing: 0;
+}
+.cur .ws-crumb-back:hover { color: var(--cur-ink); }
+
+.cur .ws-mk-steps { display: flex; gap: 6px; }
+.cur .ws-mk-steps button {
+  display: flex; align-items: center; gap: 7px; padding: 7px 12px;
+  border: 1px solid var(--cur-hairline); border-radius: 999px; background: var(--cur-surface);
+  font: inherit; font-size: 12.5px; color: var(--cur-muted); cursor: pointer;
+}
+.cur .ws-mk-steps button i {
+  width: 17px; height: 17px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--cur-surface-strong); color: var(--cur-muted); font-style: normal; font-size: 10.5px;
+}
+.cur .ws-mk-steps button[data-on] { color: var(--cur-ink); border-color: var(--cur-hairline-strong); }
+.cur .ws-mk-steps button[data-on] i { background: var(--cur-cta); color: var(--cur-on-cta); }
+.cur .ws-mk-steps button[data-done] i { background: var(--cur-accent); color: var(--cur-on-accent); }
+
+.cur .ws-comp-box {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 76px;
+  padding: 11px 12px; border-radius: 9px; border: 1px solid var(--cur-hairline-strong);
+  background: var(--cur-surface); font: inherit; font-size: 13.5px; color: var(--cur-ink); line-height: 1.6;
+}
+.cur .ws-comp-box::placeholder { color: var(--cur-muted-soft); }
+.cur .ws-mk-act { display: flex; align-items: center; gap: 10px; margin-top: 11px; flex-wrap: wrap; }
+
+.cur .ws-mk-fields { display: flex; flex-direction: column; gap: 14px; }
+.cur .ws-mk-field {
+  padding: 12px 13px; border-radius: 10px;
+  border: 1px solid var(--cur-hairline); background: var(--cur-canvas-soft);
+}
+/* An exclusion is a different kind of clause — it can only ever take mail
+   away — so it does not look like one more thing being asked for. */
+.cur .ws-mk-field[data-neg="true"] { background: var(--cur-featured-from); border-color: var(--cur-featured-ring); }
+.cur .ws-mk-field-hd { display: flex; align-items: center; margin-bottom: 7px; }
+.cur .ws-mk-field-hd .ws-lbl { flex: 1; }
+.cur .ws-mk-x {
+  width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
+  border: 0; background: none; color: var(--cur-muted-soft); cursor: pointer;
+}
+.cur .ws-mk-x:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
+.cur .ws-mk-field .input { width: 100%; box-sizing: border-box; }
+.cur .ws-mk-note { margin: 7px 0 0; font-size: 12px; line-height: 1.55; color: var(--cur-muted); }
+
+.cur .ws-mk-seg { display: flex; gap: 6px; }
+.cur .ws-mk-seg button {
+  padding: 7px 13px; border-radius: var(--cur-r-cta); cursor: pointer;
+  border: 1px solid var(--cur-hairline-strong); background: var(--cur-surface);
+  font: inherit; font-size: 12.5px; color: var(--cur-body);
+}
+.cur .ws-mk-seg button[data-on] { background: var(--cur-cta); color: var(--cur-on-cta); border-color: transparent; }
+.cur .ws-mk-win { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cur .ws-mk-win .input { flex: 1; min-width: 96px; }
+.cur .ws-mk-win span { font-size: 12.5px; color: var(--cur-muted); }
+
+.cur .ws-mk-add { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+.cur .ws-mk-chip {
+  display: inline-flex; align-items: center; gap: 5px; padding: 6px 11px;
+  border: 1px dashed var(--cur-hairline-strong); border-radius: 999px; background: none;
+  font: inherit; font-size: 12.5px; color: var(--cur-muted); cursor: pointer;
+}
+.cur .ws-mk-chip:hover { color: var(--cur-ink); border-color: var(--cur-muted-soft); }
+.cur .ws-mk-chip[data-neg="true"] { border-color: var(--cur-featured-ring); }
+
+.cur .ws-mk-lim { display: flex; align-items: center; gap: 9px; margin-top: 14px; font-size: 13px; }
+.cur .ws-mk-lim .input { width: 72px; }
+.cur .ws-mk-org { display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+.cur .ws-mk-org label { display: flex; align-items: center; gap: 9px; }
+.cur .ws-mk-org .input { max-width: 260px; }
+.cur .ws-mk-nav { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* The rule read back in the same words it will be shown in for the rest of its
+   life — `matchClauses` renders this, the list row and the detail page. */
+.cur .ws-readback {
+  margin: 0 16px 16px; padding: 13px 15px; border-radius: 10px;
+  background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline-soft);
+  font-size: 13.5px; line-height: 1.75; color: var(--cur-body);
+}
+.cur .ws-readback b { color: var(--cur-ink); font-weight: 500; }
+.cur .ws-quote {
+  margin: 0; padding-left: 13px; border-left: 2px solid var(--cur-hairline-strong);
+  font-size: 13.5px; line-height: 1.7; color: var(--cur-body);
+}
+.cur .ws-row.auto-row[data-picked="true"] { background: var(--cur-canvas-soft); }
+
+/* ── Sender suggestions ───────────────────────────────
+   A list under a text field, not a select: every one of these fields accepts
+   values the list will never hold, so the typed value always wins. */
+.cur .ws-sg { position: relative; }
+.cur .ws-sg .input { width: 100%; box-sizing: border-box; }
+.cur .ws-sg-list {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 30;
+  max-height: 260px; overflow-y: auto; padding: 4px;
+  background: var(--cur-surface); border: 1px solid var(--cur-hairline);
+  border-radius: 10px; box-shadow: var(--ws-float);
+}
+.cur .ws-sg-opt {
+  width: 100%; display: flex; align-items: baseline; gap: 10px; padding: 7px 9px;
+  border: 0; background: none; border-radius: 7px; cursor: pointer;
+  font: inherit; text-align: left; color: var(--cur-ink);
+}
+.cur .ws-sg-opt[data-on] { background: var(--cur-surface-strong); }
+.cur .ws-sg-v { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The evidence, pushed right and kept quiet — it decides the pick without
+   competing with the address for the first read. */
+.cur .ws-sg-m { margin-left: auto; flex-shrink: 0; font-size: 11.5px; color: var(--cur-muted); }
+.cur .ws-mk-src { margin: 14px 0 0; font-size: 12px; line-height: 1.55; color: var(--cur-muted); }

@@ -410,13 +410,24 @@ describe('GmailHistoryClient forward stamping', () => {
     assert.equal(calls[0]!.contentType, 'application/json');
   });
 
+  it('carries a message Gmail will carry, however large it looks', async () => {
+    // 26 MB was refused until the ceiling was measured rather than assumed.
+    // Gmail's published 25 MB is about attachments composed in its interface;
+    // this path measures assembled MIME, which base64 makes a third larger. A
+    // 26 MB draft was accepted by the live API, and sent.
+    await stageForward(26 * 1024 * 1024);
+  });
+
   it('refuses a message larger than Gmail will ever carry, by name', async () => {
     // No amount of retrying makes this send. Left to become a provider error,
     // it burned five attempts and ended abandoned with a `lastError` reading
     // like a transient fault — nothing said the message was the reason.
     await assert.rejects(
-      stageForward(26 * 1024 * 1024),
-      /Gmail will not send anything over 25 MB/,
+      // Past Gmail's own `Media is too large. Limit: 36700160`.
+      stageForward(37 * 1024 * 1024),
+      // To one decimal place, or a 35.2 MB message against a 35 MB ceiling
+      // reports both as "35 MB" and reads as a bug rather than as a limit.
+      /is 37\.0 MB and Gmail will not send anything over 35\.0 MB/,
     );
   });
 
