@@ -27,6 +27,17 @@ export interface ClaimedMailDelivery {
    * whether the last attempt's send completed.
    */
   providerDraftId?: string;
+  /**
+   * The AI step's answer from an earlier attempt, when there was one.
+   *
+   * Present so the step is asked **once per message**, not once per attempt. A
+   * delivery can be re-claimed several times — a failed send, a connection
+   * budget deferral, a worker that died mid-attempt — and re-running the model
+   * each time would bill a member repeatedly for the same question and, worse,
+   * could answer it differently on the retry than on the attempt whose verdict
+   * is already on the row and already on their screen.
+   */
+  judgeVerdict?: Record<string, unknown>;
 }
 
 /**
@@ -87,10 +98,17 @@ export class MailDeliveryRepository {
   /**
    * How many messages this rule has already sent, or is about to, in the window.
    *
-   * `blocked` and `abandoned` rows are excluded because neither is a message
-   * anybody received: counting a refusal against the ceiling would mean a rule
-   * that hit its limit once could never recover, since the refusals it then
-   * recorded would keep it at the limit forever.
+   * `blocked`, `held` and `abandoned` rows are excluded because none of them is
+   * a message anybody received: counting a refusal against the ceiling would
+   * mean a rule that hit its limit once could never recover, since the refusals
+   * it then recorded would keep it at the limit forever.
+   *
+   * `held` is what makes it safe for the ceiling to be checked at sync time,
+   * before the AI step has run at delivery time. A message that reaches the
+   * step and is rejected leaves a `held` row, which this query does not count —
+   * so it never occupied a slot. On a noisy mailbox that is the difference
+   * between a rule spending its whole hourly allowance on marketing mail the
+   * step was about to reject, and having room left when the invoice arrives.
    *
    * Counted once per message rather than once per attempt: the window is keyed
    * on the mail's own arrival time, so a retry an hour later still falls in the
@@ -107,7 +125,7 @@ export class MailDeliveryRepository {
       return ok(await this.db.mailDelivery.count({
         where: {
           ruleId: input.ruleId,
-          status: { notIn: ['blocked', 'abandoned'] },
+          status: { notIn: ['blocked', 'held', 'abandoned'] },
           // The message being judged never counts against its own ceiling. It
           // is excluded by identity rather than by keeping the window open
           // above it, because a retry of an event that already has a row would
@@ -192,6 +210,84 @@ export class MailDeliveryRepository {
     }
   }
 
+  /**
+   * The AI step read this message and the rule is going ahead anyway.
+   *
+   * Written on the way *through*, not only on a refusal, so a member reading
+   * what Divo caught sees the reasoning behind mail that was forwarded as well
+   * as behind mail that was not. If only rejections carried a verdict, the step
+   * would read as something that exclusively gets in the way.
+   *
+   * Scoped to `sending` so it can only be written by the lane currently holding
+   * the claim.
+   */
+  async recordJudgeVerdict(input: {
+    deliveryId: string;
+    attempts: number;
+    verdict: Record<string, unknown>;
+  }): Promise<Result<boolean, InfraError>> {
+    try {
+      const written = await this.db.mailDelivery.updateMany({
+        where: {
+          id: input.deliveryId,
+          status: 'sending',
+          attempts: input.attempts,
+        },
+        data: { judgeVerdictJson: input.verdict as Prisma.InputJsonObject },
+      });
+      return ok(written.count === 1);
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'mailOps.recordJudgeVerdict', cause));
+    }
+  }
+
+  /**
+   * The AI step read this message and the rule is not acting on it.
+   *
+   * Terminal, and deliberately not on the retry ladder: the rule did exactly
+   * what it was asked to, and asking the same question again in ten minutes
+   * costs money to reach the same answer. `nextAttemptAt` is cleared so nothing
+   * can pick the row up again, and `attempts` is left untouched because no
+   * attempt was spent — nothing was sent and nothing failed.
+   *
+   * `lastError` carries the model's reason. It is not an error, and the column
+   * name is wrong for it, but every surface that reads a non-delivered row
+   * already reads that field — writing the reason somewhere new would mean a
+   * held message showed no explanation anywhere those surfaces look.
+   *
+   * Scoped on `attempts` as well as `status`, exactly as `markDeliveryAbandoned`
+   * is, and it answers whether it won. A worker that stalls long enough for the
+   * stale sweep to return its row to `pending` can wake up after a second worker
+   * has already forwarded the message; without this it would write `held` over
+   * that, and the member would be told a message was held back while it sat in
+   * the recipient's inbox.
+   */
+  async markDeliveryHeld(input: {
+    deliveryId: string;
+    attempts: number;
+    verdict: Record<string, unknown>;
+    reason: string;
+  }): Promise<Result<boolean, InfraError>> {
+    try {
+      const held = await this.db.mailDelivery.updateMany({
+        where: {
+          id: input.deliveryId,
+          status: 'sending',
+          attempts: input.attempts,
+        },
+        data: {
+          status: 'held',
+          nextAttemptAt: null,
+          lastError: input.reason.slice(0, 500),
+          judgeVerdictJson: input.verdict as Prisma.InputJsonObject,
+        },
+      });
+      return ok(held.count === 1);
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'mailOps.markDeliveryHeld', cause));
+    }
+  }
+
   async claimNextDueDelivery(
     now = new Date(),
   ): Promise<Result<ClaimedMailDelivery | null, InfraError>> {
@@ -246,6 +342,7 @@ export class MailDeliveryRepository {
             nextAttemptAt: true,
             payloadJson: true,
             providerDraftId: true,
+            judgeVerdictJson: true,
           },
         });
         // A row with no payload is not contention and retrying cannot mend it:
@@ -276,6 +373,12 @@ export class MailDeliveryRepository {
           // Gmail.
           ...(due.providerDraftId
             ? { providerDraftId: due.providerDraftId }
+            : {}),
+          ...(due.judgeVerdictJson
+            ? {
+                judgeVerdict:
+                  due.judgeVerdictJson as unknown as Record<string, unknown>,
+              }
             : {}),
         });
       }
@@ -459,7 +562,13 @@ export class MailDeliveryRepository {
       // everything ever delivered, and the worker's tick is waiting on it.
       const doomed = await this.db.mailDelivery.findMany({
         where: {
-          status: { in: ['delivered', 'abandoned', 'blocked'] },
+          // `held` belongs here as much as the other three, and on a mailbox
+          // with an AI step it is usually the commonest terminal state of all —
+          // so leaving it out kept a verbatim copy of every message the step
+          // rejected, forever, past every retention window Mail Ops otherwise
+          // honours. The matching `MailEvent` rows were already being swept, so
+          // the body survived only in this column.
+          status: { in: ['delivered', 'abandoned', 'blocked', 'held'] },
           updatedAt: { lt: before },
           payloadJson: { not: Prisma.DbNull },
         },

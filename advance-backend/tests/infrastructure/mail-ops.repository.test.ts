@@ -5,6 +5,7 @@ import {
   mailRuleDedupeKey,
 } from '../../src/application/mail-ops/mail-ops.types.ts';
 import { MailOpsRepository } from '../../src/infrastructure/persistence/mail-ops.repository.ts';
+import { Prisma } from '../../src/generated/prisma/index.js';
 
 const dueMailbox = {
   id: 'mailbox-1',
@@ -29,6 +30,9 @@ describe('MailOpsRepository', () => {
         },
       },
       mailAutomationRule: {
+        // Read before the upsert so the caller can be told whether this made a
+        // rule or woke one. Nothing is stored here, so this is a real create.
+        findUnique: async () => null,
         updateMany: async () => ({ count: 0 }),
         upsert: async (input: any) => {
           ruleUpsert = input;
@@ -52,12 +56,13 @@ describe('MailOpsRepository', () => {
       match: { from: 'alerts@example.com' },
       action: { type: 'forward' },
       destination: { type: 'email', email: 'owner@example.com' },
+      judge: null,
       dedupeKey: 'mail-rule:key',
     });
 
     assert.deepEqual(result, {
       ok: true,
-      value: { ruleId: 'rule-1', subscriptionId: 'mailbox-1' },
+      value: { ruleId: 'rule-1', subscriptionId: 'mailbox-1', existing: null },
     });
     assert.equal(subscriptionUpsert.where.connectionId, 'connection-1');
     assert.equal(subscriptionUpsert.create.userId, 'user-1');
@@ -451,8 +456,13 @@ describe('MailOpsRepository', () => {
     const result = await repo.dropTerminalPayloads(before, 500);
 
     assert.deepEqual(result, { ok: true, value: 1 });
+    // Every terminal status, and `held` is the one that matters most: on a rule
+    // with an AI step it is the commonest of the four, and leaving it out kept a
+    // verbatim copy of every rejected message forever — past every retention
+    // window Mail Ops otherwise honours, and after the matching event row had
+    // already been swept.
     assert.deepEqual(findInput.where.status, {
-      in: ['delivered', 'abandoned', 'blocked'],
+      in: ['delivered', 'abandoned', 'blocked', 'held'],
     });
     assert.deepEqual(findInput.where.updatedAt, { lt: before });
     assert.equal(findInput.take, 500);
@@ -488,8 +498,14 @@ describe('MailOpsRepository', () => {
     assert.equal(countInput.where.ruleId, 'rule-1');
     // A refusal is not a message anybody received. Counted, a rule that hit its
     // limit once could never recover.
+    //
+    // `held` is in the same list and matters most: the ceiling is checked at
+    // sync time, before the AI step runs at delivery time, so a rule with a step
+    // on a noisy mailbox would otherwise spend its whole hourly allowance on
+    // mail the step is about to reject and have none left for the one message it
+    // exists to catch.
     assert.deepEqual(countInput.where.status, {
-      notIn: ['blocked', 'abandoned'],
+      notIn: ['blocked', 'held', 'abandoned'],
     });
     assert.deepEqual(countInput.where.eventId, { not: 'event-1' });
     // Through the event, so a retry an hour later still falls in the hour the
@@ -1069,6 +1085,7 @@ describe('MailOpsRepository', () => {
         $transaction: async (fn: any) => fn({
           mailboxSubscription: { upsert: async () => ({ id: 'mailbox-1' }) },
           mailAutomationRule: {
+            findUnique: async () => null,
             updateMany: async () => {
               calls.push('revive');
               return { count: 0 };
@@ -1165,6 +1182,10 @@ describe('MailOpsRepository', () => {
       $transaction: async (fn: any) => fn({
         mailboxSubscription: { upsert: async () => ({ id: 'mailbox-1' }) },
         mailAutomationRule: {
+          // Archived before this call, which is the whole subject of the test —
+          // and now also what the caller is told, so "created" stops being said
+          // about a rule that already had a history.
+          findUnique: async () => ({ status: 'archived' }),
           updateMany: async (input: any) => {
             calls.push('revive');
             revivals.push(input);
@@ -1195,16 +1216,22 @@ describe('MailOpsRepository', () => {
 
     assert.deepEqual(created, {
       ok: true,
-      value: { ruleId: 'rule-1', subscriptionId: 'mailbox-1' },
+      value: { ruleId: 'rule-1', subscriptionId: 'mailbox-1', existing: 'archived' },
     });
     // The dedupe key is content-derived, so re-asking for a rule that is
-    // already running lands on the upsert's update branch. It gets its name and
-    // its action and nothing else: the action can differ only in
-    // `rateLimitPerHour`, which is the one field left out of the key, and
-    // moving the floor would discard backlog nobody asked to stop.
+    // already running lands on the upsert's update branch. It gets its name, its
+    // action and its judge and nothing else: those three are the fields left out
+    // of the key, and moving the floor would discard backlog nobody asked to
+    // stop.
+    //
+    // `judgeJson: DbNull` rather than an absent key is the point of this
+    // assertion. The request carried no AI step, and an omitted key would leave
+    // whichever question the archived rule was holding — so "create this rule
+    // again, without the step" would quietly revive it with the step still on.
     assert.deepEqual(upserts[0].update, {
       name: 'Forward OTP',
       actionJson: { type: 'forward' },
+      judgeJson: Prisma.DbNull,
     });
     assert.equal(upserts[0].create.activatedAt, undefined);
     // Coming back to life and starting a fresh watch are one statement, so a
@@ -1250,6 +1277,7 @@ describe('MailOpsRepository', () => {
       match: { from: 'alerts@example.com' },
       action: { type: 'forward' as const },
       destination: { type: 'email', email: 'owner@example.com' },
+      judge: null,
       dedupeKey: 'mail-rule:key',
     };
     const before = Date.now();

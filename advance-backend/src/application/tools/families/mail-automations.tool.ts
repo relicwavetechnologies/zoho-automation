@@ -17,7 +17,9 @@ import {
   dryRunMailRule,
   type MailRuleDryRunEvent,
 } from '../../mail-ops/mail-rule-dry-run';
-import { mailRuleDedupeKey } from '../../mail-ops/mail-ops.types';
+import {
+  mailRuleDedupeKey, mailRuleJudgeSchema,
+} from '../../mail-ops/mail-ops.types';
 import type { MailRuleAction, MailRuleIdentity } from '../../mail-ops/mail-ops.types';
 import type {
   AuthorizeLarkChatDestination,
@@ -66,6 +68,17 @@ const destinationSchema = z.union([
  */
 const rateLimitPerHourSchema = z.number().int().min(1).max(1000).optional();
 
+/**
+ * The rule's optional AI step, offered on the same terms the browser offers it.
+ *
+ * Here rather than only on the web route because the two surfaces have to be
+ * able to build the same rule. A member who asks Divo in Lark to "forward real
+ * invoices, not the marketing ones" and gets a rule with no step would have
+ * been given a rule that forwards the marketing ones — and no way to tell,
+ * short of watching their finance inbox fill up.
+ */
+const judgeSchema = mailRuleJudgeSchema.optional();
+
 export const mailAutomationsArgsSchema = z.discriminatedUnion('operation', [
   z.object({
     operation: z.literal('create'),
@@ -74,6 +87,7 @@ export const mailAutomationsArgsSchema = z.discriminatedUnion('operation', [
     match: mailRuleMatchSchema,
     destination: destinationSchema,
     rateLimitPerHour: rateLimitPerHourSchema,
+    judge: judgeSchema,
   }).strict(),
   z.object({
     operation: z.literal('list'),
@@ -92,6 +106,7 @@ export const mailAutomationsArgsSchema = z.discriminatedUnion('operation', [
     match: mailRuleMatchSchema,
     destination: destinationSchema,
     rateLimitPerHour: rateLimitPerHourSchema,
+    judge: judgeSchema,
   }).strict(),
   z.object({
     operation: z.literal('pause'),
@@ -118,6 +133,17 @@ const ruleSummarySchema = z.object({
   match: z.record(z.unknown()),
   action: z.record(z.unknown()),
   destination: z.record(z.unknown()),
+  /**
+   * The rule's AI step, and it must be listed here or it does not survive.
+   *
+   * Every tool result is re-parsed against this schema and the *parsed* value is
+   * what the model sees, so zod's default strip silently drops any key missing
+   * from it. Left out, `list` would answer without `judge` while the tool's own
+   * instructions tell the model to read it from `list` and carry it forward —
+   * so renaming a rule in Lark would delete the question that was doing the
+   * work, with nothing anywhere saying so.
+   */
+  judge: z.record(z.unknown()).nullable().optional(),
   createdAt: z.string(),
   valid: z.boolean(),
   invalidReason: z.string().optional(),
@@ -387,7 +413,7 @@ export function createMailAutomationsTool(deps: {
       'Use this only for arrival-triggered mail rules: "whenever/when a matching email arrives".',
       'Use googleGmail for immediate mail reading, searching, drafting, sending, or one-time forwarding.',
       'Use scheduledWorkflows for time-triggered inbox work such as a daily summary.',
-      'A rule delivers the entire message and never reads it. It cannot extract a code, link, amount, or any part of the mail. When the user asks for "just the OTP" or similar, say the whole email arrives instead and continue; do not look for another Divo path that extracts it, because none exists.',
+      'A rule delivers the entire message. It cannot extract a code, link, amount, or any part of the mail, and nothing it delivers is ever rewritten or summarised. When the user asks for "just the OTP" or similar, say the whole email arrives instead and continue; do not look for another Divo path that extracts it, because none exists. The optional judge below reads a message to decide yes or no, and that is the only reading any rule does.',
       'Only mail arriving in the INBOX triggers a rule. Mail that a Gmail filter archives, or that lands in Spam, is never seen.',
       'create requires name, a deterministic match, and one destination. Match supports from, to, subjectContains, bodyContains, hasAttachment, notFrom, notSubjectContains, and activeWindow; at least one of from, to, subjectContains, or bodyContains is required. from, to, and notFrom must each be one exact mailbox address or an exact @domain, never a brand or display-name substring.',
       'Match fields are combined with AND. There is no OR.',
@@ -409,7 +435,15 @@ export function createMailAutomationsTool(deps: {
       'rateLimitPerHour caps how many messages one rule may send in a rolling hour, 1-1000. It applies to email and Lark destinations only. Over the cap the message is dropped and recorded, not queued, so nothing is delivered late in a burst. Offer it when a rule could match a busy sender or a mailing list.',
       'test replays a rule against mail Divo already recorded for that mailbox and reports what it would have matched. It sends nothing and changes nothing. Use it before telling the user a new or edited rule is right, and when they ask why a rule is quiet. An empty result on a new mailbox means Divo has no recorded mail yet, not that the rule is wrong.',
       'connectionId is optional only when exactly one eligible user-owned Google account exists. If several exist the tool returns google_workspace_connection_selection_required with a connections list; that is a normal step, not a failure. Retry with one exact returned connectionId.',
-      'No LLM runs for matching or delivery. Do not request per-message approval after the user creates the rule.',
+      'No LLM runs for matching or delivery unless the rule has a judge. Do not request per-message approval after the user creates the rule.',
+      'judge is an optional AI step that runs after the match and before the action: {question, onFailure?}. Divo asks the question of each matched message and only acts when the answer is yes. A rejected message is recorded as held with the reason, and is visible to the user; nothing is sent.',
+      'Offer judge whenever the user describes what they want in terms a substring cannot express — "real invoices, not marketing", "actual customer complaints", "only the ones that need me to reply". A match alone will catch the wrong mail there, and the user will not find out until it has been forwarding for a week.',
+      'Write question as one closed yes/no question about a single message, in the user\'s own terms: "Is this a real invoice addressed to us, rather than marketing, a quote, or a reminder for something already paid?" Never write an instruction, a list of steps, or anything that asks for a value out of the message.',
+      'The judge sees only headers and a short preview, never the full body and never attachments. Do not promise the user it can answer questions that need the whole document, such as "is the total over 50,000".',
+      'The judge cannot change where mail goes, and cannot pick a recipient. It only decides whether the rule acts at all.',
+      'onFailure says what happens when the model cannot answer — open acts anyway, closed sends nothing. It defaults to closed. Use open only when the rule exists to cut noise and the user would rather have a false forward than a missed message; never use open on a rule whose destination is outside the company.',
+      'A judge costs a model call per matched message, so narrow the match first. Adding notFrom for a noisy no-reply address is free and stops those messages before the judge ever runs.',
+      'update replaces judge too rather than merging it, so a rule that had one loses it unless you re-send it. Read the current value from that rule\'s judge in list and carry it forward unless the user asked to change or remove it.',
       'list returns valid for every rule, plus invalidReason when valid is false, meaning that rule matches no mail and needs repair. Report those instead of presenting them as working.',
       'list hides paused and archived rules unless includeInactive is true.',
       'list, pause, resume, and archive operate only on rules owned by the authenticated user. Never invent ruleId.',
@@ -696,6 +730,10 @@ export function createMailAutomationsTool(deps: {
             match: { ...parsed.match },
             action: { ...parsed.action },
             destination: { ...parsed.destination },
+            // Omitted means removed, matching how `update` already treats the
+            // rate limit and the match: this operation replaces the whole rule
+            // rather than merging into it.
+            judge: args.judge ? { ...args.judge } : null,
             dedupeKey: mailRuleDedupeKey(identity),
           });
           if (!updated.ok) throw updated.error;
@@ -748,6 +786,7 @@ export function createMailAutomationsTool(deps: {
           match: { ...parsed.match },
           action: { ...parsed.action },
           destination: { ...parsed.destination },
+          judge: args.judge ? { ...args.judge } : null,
           dedupeKey: mailRuleDedupeKey(identity),
         });
         if (!created.ok) throw created.error;

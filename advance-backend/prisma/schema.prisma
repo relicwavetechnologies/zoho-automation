@@ -276,6 +276,7 @@ model User {
   dataExportDestinationPreferences   DataExportDestinationPreference[]
   mailboxSubscriptions               MailboxSubscription[]
   mailAutomationRules                MailAutomationRule[]
+  mailBriefs                         MailBrief[]
   knowledgeResourcesOwned            KnowledgeResource[]             @relation("KnowledgeResourceOwner")
   knowledgeResourcesCreated          KnowledgeResource[]             @relation("KnowledgeResourceCreatedBy")
   knowledgeVersionsCreated           KnowledgeVersion[]              @relation("KnowledgeVersionCreatedBy")
@@ -350,6 +351,7 @@ model Company {
   mailAutomationRules             MailAutomationRule[]
   mailEvents                      MailEvent[]
   mailDeliveries                  MailDelivery[]
+  mailBriefs                      MailBrief[]
   mailboxReconciliations          MailboxReconciliation[]
   knowledgeResources              KnowledgeResource[]
   knowledgeMutations              KnowledgeMutation[]
@@ -1637,6 +1639,7 @@ model MailboxSubscription {
   rules               MailAutomationRule[]
   events              MailEvent[]
   reconciliations     MailboxReconciliation[]
+  briefs              MailBrief[]
 
   @@unique([connectionId, companyId, userId])
   @@unique([id, companyId])
@@ -1662,6 +1665,15 @@ model MailAutomationRule {
   matchJson       Json
   actionJson      Json
   destinationJson Json
+  /// The rule's optional AI step: one question asked of every matched message,
+  /// and what to do when the model cannot answer it.
+  ///
+  /// Its own column rather than a key inside `actionJson` because it is not part
+  /// of the action — it decides whether the action happens at all — and because
+  /// `mailRuleDedupeKey` reads `actionJson`'s fields by name, so burying it
+  /// there would invite somebody to fold it into the rule's identity. It must
+  /// not be: see the note on `rateLimitPerHour` in `mail-ops.types.ts`.
+  judgeJson       Json?
   dedupeKey       String?             @unique
   version         Int                 @default(1)
   pausedAt        DateTime?
@@ -1728,6 +1740,59 @@ model MailEvent {
 }
 
 /// Durable, idempotent execution of one rule against one discovered event.
+/// A standing summary of one mailbox, delivered to its owner's Lark DM.
+///
+/// Its own table rather than a `ScheduledWorkflow`, deliberately. That model is
+/// shaped for agent runs — five of its columns are required and describe a
+/// compiled prompt and a capability grant — and its service calls the Pi runtime
+/// for every row that comes due, inside the member's own container, competing
+/// with their interactive turns. A brief is a query and one summarising call; it
+/// has no business holding a container open twice a day for every member in a
+/// company.
+///
+/// What it does borrow is the two genuinely hard parts, and it borrows them as
+/// code rather than as a table: `schedule-calculator.ts` for timezone and DST
+/// arithmetic, and the mail worker's existing Lark DM delivery, which is the
+/// same path a `lark_dm` mail rule already uses.
+model MailBrief {
+  id             String              @id @default(uuid())
+  companyId      String
+  company        Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscriptionId String
+  subscription   MailboxSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  /// Local times of day, e.g. `["09:00","16:00"]`.
+  ///
+  /// A list rather than a single time because twice a day is the default and the
+  /// point of the feature. Two rows would have been the alternative, and would
+  /// have shown the member two things to manage where they asked for one.
+  timesJson      Json
+  /// IANA name. Required, never guessed — a brief an hour out is worse than none.
+  timeZone       String
+  /// Weekdays it runs on, as `MO`…`SU`.
+  daysJson       Json
+  status         String              @default("active")
+  nextRunAt      DateTime?
+  lastRunAt      DateTime?
+  /// The instant the last delivered brief covered up to.
+  ///
+  /// The next one starts here rather than at "now minus twelve hours", so a run
+  /// missed to an outage widens the following brief instead of silently dropping
+  /// the mail in the gap. That gap is exactly when somebody most needs to be told.
+  coveredThrough DateTime?
+  claimToken     String?
+  claimedAt      DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  /// One brief per mailbox per person. Asking for a second is editing the first.
+  @@unique([userId, subscriptionId])
+  @@index([status, nextRunAt])
+  @@index([companyId, userId])
+  @@index([claimedAt])
+}
+
 model MailDelivery {
   id                String             @id @default(uuid())
   companyId         String
@@ -1747,6 +1812,14 @@ model MailDelivery {
   /// — did the previous attempt actually send? — using an identifier Divo owns,
   /// rather than a search index that lags the send by seconds.
   providerDraftId   String?
+  /// What the rule's AI step decided about this message, and why.
+  ///
+  /// Deliberately its own column rather than a key inside `payloadJson`: that
+  /// payload is swept off terminal rows by age, and on a message the step held
+  /// back the verdict is the *only* record of why nothing was forwarded. Losing
+  /// it would leave a member with a rule that silently drops mail and no way to
+  /// find out what it objected to.
+  judgeVerdictJson  Json?
   lastError         String?
   ambiguous         Boolean            @default(false)
   firstAttemptAt    DateTime           @default(now())

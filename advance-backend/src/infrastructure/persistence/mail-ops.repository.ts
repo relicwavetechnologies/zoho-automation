@@ -19,6 +19,7 @@ import {
 } from './mail-ops/rule.repository';
 import { MailEventRepository } from './mail-ops/event.repository';
 import { MailDeliveryRepository } from './mail-ops/delivery.repository';
+import { MailBriefRepository } from './mail-ops/brief.repository';
 import {
   MailboxSubscriptionRepository,
 } from './mail-ops/subscription.repository';
@@ -37,6 +38,7 @@ export type {
   ClaimedMailDelivery,
   MailDeliveryReservation,
 } from './mail-ops/delivery.repository';
+export type { ClaimedMailBrief } from './mail-ops/brief.repository';
 export {
   MailAutomationRuleRepository,
   MailDeliveryRepository,
@@ -49,6 +51,7 @@ export class MailOpsRepository {
   private readonly rules: MailAutomationRuleRepository;
   private readonly events: MailEventRepository;
   private readonly deliveries: MailDeliveryRepository;
+  private readonly briefs: MailBriefRepository;
 
   // The mailbox.
   readonly claimNextDueMailbox: MailboxSubscriptionRepository['claimNextDueMailbox'];
@@ -80,6 +83,8 @@ export class MailOpsRepository {
   readonly countRecentDeliveries: MailDeliveryRepository['countRecentDeliveries'];
   readonly recordBlockedDelivery: MailDeliveryRepository['recordBlockedDelivery'];
   readonly claimNextDueDelivery: MailDeliveryRepository['claimNextDueDelivery'];
+  readonly recordJudgeVerdict: MailDeliveryRepository['recordJudgeVerdict'];
+  readonly markDeliveryHeld: MailDeliveryRepository['markDeliveryHeld'];
   readonly stageDeliveryDraft: MailDeliveryRepository['stageDeliveryDraft'];
   readonly markDeliveryDelivered: MailDeliveryRepository['markDeliveryDelivered'];
   readonly markDeliveryFailed: MailDeliveryRepository['markDeliveryFailed'];
@@ -87,13 +92,23 @@ export class MailOpsRepository {
   readonly markDeliveryAbandoned: MailDeliveryRepository['markDeliveryAbandoned'];
   readonly dropTerminalPayloads: MailDeliveryRepository['dropTerminalPayloads'];
 
+  // The standing summary of a mailbox, sent to its owner twice a day.
+  readonly claimNextDueBrief: MailBriefRepository['claimNextDueBrief'];
+  readonly ensureBrief: MailBriefRepository['ensureBrief'];
+  readonly completeBrief: MailBriefRepository['completeBrief'];
+  readonly releaseBrief: MailBriefRepository['releaseBrief'];
+  readonly readBriefWindow: MailBriefRepository['readBriefWindow'];
+  readonly readBriefForUser: MailBriefRepository['readBriefForUser'];
+  readonly updateBriefForUser: MailBriefRepository['updateBriefForUser'];
+
   constructor(db: MailOpsDb) {
     this.subscriptions = new MailboxSubscriptionRepository(db);
     this.rules = new MailAutomationRuleRepository(db);
     this.events = new MailEventRepository(db);
     this.deliveries = new MailDeliveryRepository(db);
+    this.briefs = new MailBriefRepository(db);
 
-    const { subscriptions, rules, events, deliveries } = this;
+    const { subscriptions, rules, events, deliveries, briefs } = this;
     this.claimNextDueMailbox = subscriptions.claimNextDueMailbox.bind(subscriptions);
     this.advanceCursor = subscriptions.advanceCursor.bind(subscriptions);
     this.signalMailbox = subscriptions.signalMailbox.bind(subscriptions);
@@ -123,11 +138,21 @@ export class MailOpsRepository {
     this.countRecentDeliveries = deliveries.countRecentDeliveries.bind(deliveries);
     this.recordBlockedDelivery = deliveries.recordBlockedDelivery.bind(deliveries);
     this.claimNextDueDelivery = deliveries.claimNextDueDelivery.bind(deliveries);
+    this.recordJudgeVerdict = deliveries.recordJudgeVerdict.bind(deliveries);
+    this.markDeliveryHeld = deliveries.markDeliveryHeld.bind(deliveries);
     this.stageDeliveryDraft = deliveries.stageDeliveryDraft.bind(deliveries);
     this.markDeliveryDelivered = deliveries.markDeliveryDelivered.bind(deliveries);
     this.markDeliveryFailed = deliveries.markDeliveryFailed.bind(deliveries);
     this.rescheduleDelivery = deliveries.rescheduleDelivery.bind(deliveries);
     this.markDeliveryAbandoned = deliveries.markDeliveryAbandoned.bind(deliveries);
     this.dropTerminalPayloads = deliveries.dropTerminalPayloads.bind(deliveries);
+
+    this.claimNextDueBrief = briefs.claimNextDueBrief.bind(briefs);
+    this.ensureBrief = briefs.ensureBrief.bind(briefs);
+    this.completeBrief = briefs.completeBrief.bind(briefs);
+    this.releaseBrief = briefs.releaseBrief.bind(briefs);
+    this.readBriefWindow = briefs.readBriefWindow.bind(briefs);
+    this.readBriefForUser = briefs.readBriefForUser.bind(briefs);
+    this.updateBriefForUser = briefs.updateBriefForUser.bind(briefs);
   }
 }

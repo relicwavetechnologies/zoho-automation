@@ -1,4 +1,68 @@
+import { z } from 'zod';
 import { sha256 } from '../../shared/hash';
+
+/**
+ * A rule's optional AI step: one question, asked of every matched message.
+ *
+ * The shape lives here rather than beside the evaluator because three layers
+ * need it and only one of them ever calls a model — the matcher parses it off
+ * the stored row, the payload carries it to the worker, and the evaluator asks
+ * it. Putting it next to `generateText` would have made the matcher import the
+ * model client to read a column.
+ *
+ * `question` is bounded at 500 because this is a question, not an instruction
+ * set: a paragraph here is somebody writing a second rule inside the first one.
+ *
+ * `onFailure` decides what happens when the model cannot answer, and it belongs
+ * to the rule's author because the right answer differs per rule — a rule that
+ * cuts noise should keep working when the model is unreachable, and a rule that
+ * stops the wrong mail leaving the company must not. Default `closed`.
+ */
+export const mailRuleJudgeSchema = z.object({
+  question: z.string().trim().min(8).max(500),
+  /**
+   * Optional rather than defaulted in the schema, deliberately. A zod
+   * `.default()` makes the parser's input and output types differ, and the tool
+   * declares its argument schema as one type in both directions — so defaulting
+   * here would have made the whole `mailAutomations` schema unassignable. The
+   * default lives in `judgeFailurePolicy` instead, which is the only thing that
+   * reads it.
+   */
+  onFailure: z.enum(['open', 'closed']).optional(),
+}).strict();
+
+export type MailRuleJudge = z.infer<typeof mailRuleJudgeSchema>;
+
+/**
+ * What an unanswerable question means for this rule. Absent is `closed`.
+ *
+ * Closed is the default because the failure it produces is silence, and the
+ * other one is mail. A rule nobody configured carefully should, when the model
+ * cannot be reached, do nothing rather than forward everything it matched — the
+ * member notices mail that did not arrive, and does not notice mail that
+ * arrived somewhere it should not have.
+ */
+export const judgeFailurePolicy = (judge: MailRuleJudge): 'open' | 'closed' =>
+  judge.onFailure ?? 'closed';
+
+export interface MailJudgeVerdict {
+  decision: 'passed' | 'rejected' | 'unavailable';
+  /** Always present. A verdict without a reason is not reviewable. */
+  reason: string;
+  confidence?: number;
+  /** Set only on `unavailable`, so a member can see which way the policy sent it. */
+  appliedFailure?: 'open' | 'closed';
+}
+
+/**
+ * Whether a verdict lets the rule act.
+ *
+ * Stated once, here, so the worker and every test agree without either of them
+ * needing a model or a mailbox to find out.
+ */
+export const judgeAllowsDelivery = (verdict: MailJudgeVerdict): boolean =>
+  verdict.decision === 'passed'
+  || (verdict.decision === 'unavailable' && verdict.appliedFailure === 'open');
 
 /**
  * Raised when the Google account behind a mailbox is no longer usable.
@@ -111,6 +175,18 @@ export type MailDeliveryStatus =
   | 'delivered'
   /** Matched, then refused — no permission, or over the rule's hourly ceiling. */
   | 'blocked'
+  /**
+   * Matched, read by the rule's AI step, and deliberately not acted on.
+   *
+   * Kept apart from `blocked` because they are opposite answers to a member
+   * asking why nothing arrived: `blocked` is Divo unable to act, `held` is Divo
+   * deciding not to. Sharing one status would make a working rule's normal
+   * behaviour indistinguishable from a permission fault.
+   *
+   * A held message consumes no rate-limit budget — see the reservation query in
+   * `delivery.repository.ts`, which counts neither this nor `blocked`.
+   */
+  | 'held'
   | 'abandoned';
 
 export interface NewMailEvent {
@@ -259,6 +335,19 @@ export interface PendingMailDeliveryPayload {
   idempotencyKey: string;
   action: MailRuleAction;
   destination: MailRuleDestination;
+  /**
+   * The rule's AI step, frozen with the rest of the rule at reserve time.
+   *
+   * Read from here rather than re-fetched at delivery, so a message is judged
+   * against the question that was in force when it arrived. The alternative —
+   * reading the live rule — means editing a rule's question retroactively
+   * changes the verdict on mail already queued behind it, which is the one
+   * thing a member editing a question does not expect.
+   *
+   * `isRuleSendable` is re-read live and deliberately so: pause promises to
+   * stop mail *already* queued, which is the opposite requirement.
+   */
+  judge?: MailRuleJudge;
   message: MailMessageMetadata;
 }
 
@@ -366,4 +455,33 @@ function activeWindowIdentity(
     window.end,
     window.timeZone,
   ];
+}
+
+/**
+ * A stored event's metadata, read back as a message.
+ *
+ * Lives here rather than in the worker because three things now read it — the
+ * matcher's caller, the delivery payload, and the brief — and a second copy of
+ * the `bodyText` rule below is how one of them starts disagreeing with the
+ * others about which stored events are readable at all.
+ */
+export function readMessageMetadata(
+  value: Record<string, unknown>,
+): MailMessageMetadata | null {
+  if (
+    typeof value['from'] !== 'string'
+    || typeof value['to'] !== 'string'
+    || typeof value['subject'] !== 'string'
+    || typeof value['snippet'] !== 'string'
+    || typeof value['hasAttachment'] !== 'boolean'
+  ) return null;
+  // `bodyText` is the one field that legitimately goes missing: retention
+  // strips it at 30 days and leaves the event standing. Requiring it made a
+  // stripped event unreadable, which quietly dropped it out of matching
+  // altogether — so a rule tested against older mail matched nothing, and the
+  // member was told the rule was wrong when the body was simply gone.
+  return {
+    ...value,
+    bodyText: typeof value['bodyText'] === 'string' ? value['bodyText'] : '',
+  } as MailMessageMetadata;
 }
