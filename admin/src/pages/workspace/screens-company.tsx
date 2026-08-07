@@ -31,6 +31,7 @@ import {
 } from './data/use-company'
 import { useCompanyDaily, useCompanyScope, useDirectory, useSpendByModel, useSpendMembers } from '@/cursor/use-spend'
 import { KEY_PROVIDERS, useProxyStatus, useSaveProxyKey, type KeyScope } from '@/cursor/use-proxy'
+import { useCompanyForwards } from './data/use-mail-governance'
 import { useProxyPolicies, useSaveProxyPolicy } from '@/cursor/use-proxy-policy'
 
 /** The cursor hooks take a token and a company; every screen here needs both. */
@@ -1530,6 +1531,12 @@ export function CompanyGuardrails({ replay, toast }: Props) {
         description="Provider keys, and what each person is allowed to spend. This is the only limit that actually stops work."
       />
       <div className="ws-stack">
+        {/* The other export nobody was watching. Spend is capped and a key can
+            be pulled; a mail forward is a standing copy of whatever matches it,
+            leaving the company every hour of every day, set up in one sentence
+            to Divo. It belongs on the page about limits. */}
+        <ExternalForwards token={token ?? undefined} />
+
         <Panel title="Provider keys" description="Held encrypted by the backend, never returned to any client">
           {!r1 ? <SkelRows n={2} /> : (
             <Fade>
@@ -1677,5 +1684,98 @@ export function CompanyGuardrails({ replay, toast }: Props) {
         />
       ) : null}
     </>
+  )
+}
+
+/**
+ * Whose mail leaves the company, and where it goes.
+ *
+ * Every other limit on this page is something Divo enforces — a budget, a rate,
+ * a blocked member. This one is a standing export that nobody is enforcing
+ * anything about: a mail rule forwards the whole message, unchanged, every hour
+ * of every day, and it is set up by asking Divo in one sentence. Each member can
+ * see their own; until this, nobody could see all of them.
+ *
+ * Read-only, deliberately. Turning one off is the owner's action or an
+ * administrator's, taken with the rule and its history in front of them — a
+ * bulk switch on an audit page is how the rule carrying the invoices gets
+ * turned off by somebody tidying up.
+ */
+function ExternalForwards({ token }: { token?: string }) {
+  const [scope, setScope] = useState<'external' | 'all'>('external')
+  const { forwards, totalForwards, externalCount, loading, error } =
+    useCompanyForwards(token, { scope, includeInactive: true })
+
+  return (
+    <Panel
+      title="Mail leaving the company"
+      description="Rules that forward whole messages — headers, body and attachments — to an address."
+      aside={
+        <Seg
+          value={scope}
+          onChange={setScope}
+          options={[
+            { value: 'external', label: `Outside · ${externalCount}` },
+            { value: 'all', label: `All forwards · ${totalForwards}` },
+          ]}
+        />
+      }
+    >
+      {error ? (
+        <div className="ws-ceiling">
+          <TriangleAlert size={14} />
+          <div><b>{error}</b> Treat this as unknown rather than as nothing.</div>
+        </div>
+      ) : null}
+
+      {loading ? <SkelRows n={2} /> : forwards.length === 0 ? (
+        <Empty
+          icon={ShieldCheck}
+          title={scope === 'external' ? 'No mail leaves the company' : 'No forwarding rules'}
+          /* The two zeroes mean different things, and an auditor needs to know
+             which one they are looking at. */
+          body={scope === 'external' && totalForwards > 0
+            ? `${totalForwards} forwarding rule${totalForwards === 1 ? '' : 's'} exist, and every one of them stays inside its own domain.`
+            : 'Nobody has a rule that forwards mail to an address.'}
+        />
+      ) : (
+        <Fade>
+          <div className="ws-rows">
+            {forwards.map((f) => (
+              <div className="ws-row" key={f.ruleId}>
+                <span className="ws-ic" data-tone={f.external ? 'err' : undefined}>
+                  <ShieldCheck size={14} />
+                </span>
+                <div className="ws-row-main">
+                  <b>
+                    {f.mailboxEmail} → {f.destinationEmail}
+                    {f.external ? <span className="ws-tag" data-tone="warn">Outside</span> : null}
+                    {f.status !== 'active'
+                      ? <span className="ws-tag">{f.status === 'paused' ? 'Paused' : 'Archived'}</span>
+                      : null}
+                  </b>
+                  <p>
+                    {f.ownerName ?? f.ownerEmail ?? 'Unknown owner'} · “{f.name}” · set up {ago(f.createdAt)}
+                  </p>
+                </div>
+                <div className="ws-row-act">
+                  <span className="ws-sub">
+                    {/* Whole life, not a window — an export that ran for a year
+                        and stopped is still an export that ran for a year. */}
+                    {f.deliveredCount} sent
+                    {f.lastDeliveredAt ? ` · last ${ago(f.lastDeliveredAt)}` : ''}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Fade>
+      )}
+
+      <div className="ws-panel-foot">
+        A forward outside the company needs a manager's approval before it starts. This is the
+        standing list of the ones that were approved, and the ones that predate that rule.
+      </div>
+    </Panel>
   )
 }

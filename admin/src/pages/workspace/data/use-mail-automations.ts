@@ -8,6 +8,10 @@
  * (a mailbox whose watch never registered takes every rule on it down at once),
  * and `/rules/:id/deliveries` answers "what did it actually do".
  *
+ * `/caught` answers the one a member actually arrives with — what has Divo been
+ * doing with my mail — across every rule at once, including the messages a
+ * rule's AI step read and decided not to act on.
+ *
  * No userId anywhere. Every query is pinned server-side to the signed-in
  * member, so there is nothing to pass and nothing to get wrong.
  */
@@ -46,6 +50,8 @@ export type MailRule = {
   match: Record<string, unknown>
   action: Record<string, unknown>
   destination: Record<string, unknown>
+  /** The rule's AI step, or null. The edit form seeds from this. */
+  judge: { question: string; onFailure?: 'open' | 'closed' } | null
   createdAt: string
   lastDeliveredAt: string | null
   /** Counts over the last 30 days, not all time. */
@@ -54,6 +60,15 @@ export type MailRule = {
   abandonedCount: number
   /** Matched the rule, then was refused. Recorded rather than dropped. */
   blockedCount: number
+  /**
+   * Matched, read by the AI step, and deliberately not acted on.
+   *
+   * Kept apart from `blockedCount` because it is the rule working rather than
+   * the rule being stopped — on a rule with a step this is usually the biggest
+   * of the four counts, and folding it into refusals would make a healthy rule
+   * read as one that fails constantly.
+   */
+  heldCount: number
   lastError: string | null
   lastErrorAt: string | null
 }
@@ -171,6 +186,63 @@ export function useMailDeliveries(ruleId?: string) {
   }, [token, ruleId])
 
   return { deliveries, loading }
+}
+
+/**
+ * What the AI step decided about one message.
+ *
+ * `held` is a working rule doing its job, not a fault, which is why the reason
+ * is always present: a member looking at mail that did not arrive is owed the
+ * sentence the model actually wrote, not a label.
+ */
+export type MailJudgeVerdict = {
+  decision: 'passed' | 'rejected' | 'unavailable'
+  reason: string
+  /** Absent when the model could not be reached at all. */
+  confidence?: number
+  /** Which way the rule's own failure setting sent it, when it came to that. */
+  appliedFailure?: 'open' | 'closed'
+}
+
+export type MailCaught = MailDelivery & {
+  ruleId: string
+  ruleName: string
+  action: Record<string, unknown>
+  destination: Record<string, unknown>
+  verdict: MailJudgeVerdict | null
+}
+
+/**
+ * Everything Divo did with this member's mail, across every rule.
+ *
+ * Failure is carried rather than swallowed. An empty feed and a feed that could
+ * not be read look identical, and the first one means "Divo has done nothing",
+ * which is the one conclusion this screen must never state without evidence.
+ */
+export function useCaught(limit = 50) {
+  const { token } = useAdminAuth()
+  const [caught, setCaught] = useState<MailCaught[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    if (!token) return
+    try {
+      const data = await api.get<{ caught: MailCaught[] }>(
+        `${BASE}/caught?limit=${limit}`, token, { quiet: true },
+      )
+      setCaught(data.caught ?? [])
+      setError(null)
+    } catch {
+      setError('This could not be read, so it is blank rather than empty.')
+    } finally {
+      setLoading(false)
+    }
+  }, [token, limit])
+
+  useEffect(() => { void load() }, [load])
+
+  return { caught, loading, error, refresh: load }
 }
 
 /* ── Which mailbox a rule can watch ───────────────────
@@ -537,6 +609,13 @@ export type MailRuleDraft = {
     | { type: 'lark_dm' }
     | { type: 'organize'; label?: string; archive?: boolean; markRead?: boolean }
   rateLimitPerHour?: number
+  /**
+   * The rule's AI step. Absent means it has none — and on an edit that means
+   * *remove* it, because both routes take the whole rule rather than a patch.
+   * The form always sends what is on screen, so this is only ever wrong if the
+   * form forgets to seed it from the stored rule.
+   */
+  judge?: { question: string; onFailure?: 'open' | 'closed' }
 }
 
 export type MailRuleCreateState = {
@@ -562,7 +641,17 @@ export type MailRuleCreateState = {
  * the wizard navigating to a rule that was never created.
  */
 export type MailRuleCreateOutcome =
-  | { kind: 'created'; ruleId: string }
+  /**
+   * `existing` is what the member could not otherwise know.
+   *
+   * Creating is an upsert on a key derived from the rule's own content, so
+   * asking for a rule that already exists returns it, and asking for one that
+   * was archived brings it back. Both are the right behaviour and neither used
+   * to be said — so somebody who archived a rule in March and built the same
+   * one in August landed on a "new" rule already carrying five months of
+   * deliveries.
+   */
+  | { kind: 'created'; ruleId: string; existing: 'active' | 'paused' | 'archived' | null }
   | { kind: 'pending_approval'; approverName: string; destination: string; reused: boolean }
   | { kind: 'refused' }
 
@@ -583,6 +672,7 @@ export function useCreateMailRule() {
         approverName?: string
         destination?: string
         reused?: boolean
+        existing?: 'active' | 'paused' | 'archived' | null
       }>(`${BASE}/rules`, draft, token, { quiet: true })
 
       // Read from the body rather than the status code: `api.post` hands back
@@ -601,7 +691,7 @@ export function useCreateMailRule() {
 
       setState({ saving: false, error: null, code: null, pending: null })
       return data.ruleId
-        ? { kind: 'created', ruleId: data.ruleId }
+        ? { kind: 'created', ruleId: data.ruleId, existing: data.existing ?? null }
         : { kind: 'refused' }
     } catch (error) {
       // Six refusals with six different remedies, and the remedy is the only
@@ -619,6 +709,93 @@ export function useCreateMailRule() {
   }, [token])
 
   return { ...state, create }
+}
+
+/* ── Changing a rule that already exists ──────────────
+   The same form that creates a rule edits one, so the same draft shape goes up.
+   What differs is the ending: an edit can land on top of another rule watching
+   the same mailbox, and that collision has two shapes worth telling apart —
+   the rule it collides with may be live, or it may be sitting archived where
+   nobody would think to look for it. */
+
+export type MailRuleUpdateOutcome =
+  | { kind: 'saved'; ruleId: string }
+  /** The edit changed the destination to somewhere outside the company. */
+  | { kind: 'pending_approval'; approverName: string; destination: string; reused: boolean }
+  /**
+   * These conditions already belong to another rule on this mailbox.
+   *
+   * `archived` is not a detail. A collision with a live rule is something the
+   * member can see and reason about; a collision with an archived one is a
+   * rule they cannot see from here at all, and "that already exists" without
+   * the word archived reads as Divo being wrong.
+   */
+  | { kind: 'duplicate'; ruleId: string; name: string; archived: boolean }
+  | { kind: 'refused' }
+
+export type MailRuleUpdateState = {
+  saving: boolean
+  error: string | null
+  pending: { approverName: string; destination: string; reused: boolean } | null
+  duplicate: { ruleId: string; name: string; archived: boolean } | null
+}
+
+export function useUpdateMailRule() {
+  const { token } = useAdminAuth()
+  const [state, setState] = useState<MailRuleUpdateState>({
+    saving: false, error: null, pending: null, duplicate: null,
+  })
+
+  const update = useCallback(async (
+    ruleId: string, draft: MailRuleDraft,
+  ): Promise<MailRuleUpdateOutcome> => {
+    if (!token) return { kind: 'refused' }
+    setState({ saving: true, error: null, pending: null, duplicate: null })
+    try {
+      const data = await api.put<{
+        ruleId?: string
+        status?: string
+        approverName?: string
+        destination?: string
+        reused?: boolean
+        conflictRuleId?: string
+        conflictRuleName?: string
+        conflictArchived?: boolean
+      }>(`${BASE}/rules/${ruleId}`, draft, token, { quiet: true })
+
+      if (data.status === 'pending_approval') {
+        const pending = {
+          approverName: data.approverName ?? 'your manager',
+          destination: data.destination
+            ?? (draft.destination.type === 'email' ? draft.destination.email : ''),
+          reused: data.reused === true,
+        }
+        setState({ saving: false, error: null, pending, duplicate: null })
+        return { kind: 'pending_approval', ...pending }
+      }
+
+      if (data.status === 'duplicate' || data.status === 'duplicate_archived') {
+        const duplicate = {
+          ruleId: data.conflictRuleId ?? '',
+          name: data.conflictRuleName ?? 'another rule',
+          archived: data.status === 'duplicate_archived' || data.conflictArchived === true,
+        }
+        setState({ saving: false, error: null, pending: null, duplicate })
+        return { kind: 'duplicate', ...duplicate }
+      }
+
+      setState({ saving: false, error: null, pending: null, duplicate: null })
+      return { kind: 'saved', ruleId: data.ruleId ?? ruleId }
+    } catch (error) {
+      const message = error instanceof Error && error.message.length > 0
+        ? error.message
+        : 'That change could not be saved.'
+      setState({ saving: false, error: message, pending: null, duplicate: null })
+      return { kind: 'refused' }
+    }
+  }, [token])
+
+  return { ...state, update }
 }
 
 /**
