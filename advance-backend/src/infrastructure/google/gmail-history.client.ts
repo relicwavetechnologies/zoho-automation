@@ -22,8 +22,19 @@ const GMAIL_JSON_DRAFT_LIMIT_BYTES = 3 * 1024 * 1024;
  * Refused here, by name, rather than left to become a provider error five
  * retries later: the mail is too big for Gmail and no amount of trying changes
  * that, so the honest answer is to say so once and stop.
+ *
+ * The number is Gmail's own, quoted back from a `413`:
+ * `Media is too large. Limit: 36700160`. It used to be 25 MiB — the figure
+ * Google publishes for *attachments* composed in the Gmail interface, which is
+ * not what this measures. This measures assembled MIME, and base64 makes that
+ * about a third larger than the attachment inside it, so the old ceiling
+ * refused mail at roughly 19 MB of actual content. Two real forwards were
+ * turned away at 26.3 MB, and Gmail was then asked directly: it accepted a
+ * 26 MB, a 30 MB and a 34 MB draft, refused at 36 MB, and sent a 26.5 MB
+ * message end to end. Google documents no size on any of these endpoints, so
+ * this was measured rather than looked up.
  */
-const GMAIL_MAX_MESSAGE_BYTES = 25 * 1024 * 1024;
+const GMAIL_MAX_MESSAGE_BYTES = 36_700_160;
 const MAX_HISTORY_PAGES = 10;
 /**
  * The window a stale-cursor recovery sweeps, and how much of it it will read.
@@ -615,9 +626,9 @@ export class MailTooLargeError extends Error {
     const mb = (value: number) => (value / 1024 / 1024).toFixed(1);
     super(
       `This message is ${mb(bytes)} MB and Gmail will not send anything over `
-        + `${mb(limit)} MB, so it could not be forwarded. Gmail accepts mail up `
-        + 'to twice that size but refuses to send it on, which is why the '
-        + 'message arrived but the forward could not leave.',
+        + `${mb(limit)} MB, so it could not be forwarded. Gmail accepts larger `
+        + 'mail than it will send on, which is why the message arrived but the '
+        + 'forward could not leave.',
     );
     this.name = 'MailTooLargeError';
   }
