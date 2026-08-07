@@ -1,0 +1,110 @@
+# Local stack, production database.
+#
+# Everything here runs on this machine: backend, Pi controller, the Pi
+# containers it spawns, Redis, and the Google Workspace MCP. The only thing
+# reached remotely is Postgres — through the SSH tunnel opened by
+# advance-backend/scripts/prod-stack-tunnel.sh, which publishes the production
+# database on 127.0.0.1:15434.
+#
+# Redis is local and empty on purpose. Pointing it at production would make this
+# stack a second consumer of production's BullMQ queues, and a real inbound Lark
+# message could be picked up here instead of there.
+#
+#   advance-backend/scripts/prod-stack-tunnel.sh up
+#   docker compose -f docker-compose.localprod.yml up -d
+#
+# The images are linux/amd64 only, so on Apple Silicon every service below runs
+# under emulation. It works; it is not fast.
+
+name: divo-localprod
+
+x-amd64: &amd64
+  platform: linux/amd64
+
+networks:
+  local-internal:
+    name: divo-localprod-internal
+  local-agent-control:
+    name: divo-localprod-agent-control
+
+services:
+  redis-cache:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks: [local-internal]
+
+  redis-queue:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks: [local-internal]
+
+  redis-memory:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks: [local-internal]
+
+  google-workspace-mcp:
+    image: ghcr.io/taylorwilsdon/google_workspace_mcp:1.22.0
+    <<: *amd64
+    env_file: [advance-backend/.env.localprod.local]
+    environment:
+      MCP_ENABLE_OAUTH21: "true"
+      EXTERNAL_OAUTH21_PROVIDER: "true"
+      WORKSPACE_MCP_STATELESS_MODE: "true"
+      WORKSPACE_MCP_TOOL_TIER: complete
+      WORKSPACE_MCP_TOOLS: gmail,drive,calendar,docs,sheets,slides,forms,tasks,contacts,chat,appscript
+      TOOL_TIER: complete
+      TOOLS: gmail drive calendar docs sheets slides forms tasks contacts chat appscript
+      ALLOWED_FILE_DIRS: /tmp/divo-no-local-files
+    networks: [local-internal]
+
+  pi-controller:
+    image: ghcr.io/relicwavetechnologies/zoho-automation/pi-controller:main-latest
+    <<: *amd64
+    user: "0:0"
+    environment:
+      DIVO_CONTROLLER_HOST: 0.0.0.0
+      DIVO_CONTROLLER_PORT: 4317
+      DIVO_PI_IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/pi:main-latest
+      # A distinct prefix so a stray container here is never mistaken for one of
+      # production's, and never matches its cleanup globs.
+      DIVO_PI_RESOURCE_PREFIX: divo-pi-localprod
+      # Production sets this false because its Pi containers reach the backend
+      # over the public URL. Here the backend is a container on this machine, so
+      # the spawned Pi needs a route to the host to call it back.
+      DIVO_PI_ADD_HOST_GATEWAY: "true"
+      MAX_ACTIVE_RUNS: 2
+      HOME: /tmp
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [local-agent-control]
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4317/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+
+  backend:
+    image: ghcr.io/relicwavetechnologies/zoho-automation/backend:main-latest
+    <<: *amd64
+    # The image's `pnpm start` runs `prestart: capabilities:reconcile`, which
+    # reseeds skills, routes, and RegisteredTool rows. Against the production
+    # database that is a write nobody asked for, so the entrypoint is bypassed
+    # and the server started directly.
+    command: ["node", "--import", "tsx", "src/index.ts"]
+    env_file: [advance-backend/.env.localprod.local]
+    ports:
+      - "127.0.0.1:3001:3001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      pi-controller:
+        condition: service_healthy
+      redis-cache:
+        condition: service_started
+      redis-queue:
+        condition: service_started
+      redis-memory:
+        condition: service_started
+    networks: [local-internal, local-agent-control]
