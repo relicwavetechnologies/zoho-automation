@@ -2688,7 +2688,7 @@ export async function buildContainer(
     deliverLarkDm: async input => {
       const sent = await larkAdapter.sendDmToOpenId(
         input.openId,
-        input.text,
+        input.content,
         input.idempotencyKey,
       );
       if (!sent.ok) throw sent.error;

@@ -49,11 +49,17 @@ export interface MailBriefRunnerDeps {
     }): Promise<{ ok: boolean; error?: { message: string } }>;
   };
   compose(window: MailBriefWindow): Promise<MailBrief>;
-  /** The same Lark DM path a `lark_dm` mail rule already delivers on. */
+  /**
+   * The same Lark DM path a `lark_dm` mail rule already delivers on.
+   *
+   * `content` rather than `text` because what travels here is a card envelope,
+   * and the Lark client decides the message type by reading it. Calling the
+   * parameter `text` is what would make handing it plain markdown look correct.
+   */
   deliverLarkDm(input: {
     openId: string;
     idempotencyKey: string;
-    text: string;
+    content: string;
   }): Promise<string>;
   resolveLarkOpenId(input: {
     userId: string;
@@ -181,7 +187,11 @@ export function createMailBriefRunner(deps: MailBriefRunnerDeps) {
         // after Lark accepted the card cannot deliver the same brief twice.
         // Lark caps this at 50 characters — see the adapter.
         idempotencyKey: `brief-${claim.briefId.slice(0, 8)}-${claim.scheduledFor.getTime()}`,
-        text: brief.text,
+        // The card, not `brief.text`. The Lark client reads the `msg_type` out
+        // of this string and sends it as an interactive card; handed the raw
+        // markdown it would fall through to `msg_type: 'text'`, which Lark does
+        // not interpret, and the member would read the asterisks.
+        content: brief.card,
       });
 
       const done = await deps.repo.completeBrief({

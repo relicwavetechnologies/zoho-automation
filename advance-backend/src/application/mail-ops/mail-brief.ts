@@ -116,13 +116,60 @@ export interface MailBriefDeps {
 }
 
 export interface MailBrief {
-  /** Lark markdown, ready to send. */
+  /**
+   * The brief as markdown.
+   *
+   * Not what gets sent — see `card`. This is the same content in a form that
+   * can be logged, tested, or carried to a surface that has no cards, and it
+   * is the single source the card is rendered from.
+   */
   readonly text: string;
+  /**
+   * The brief as a Lark interactive card, ready for `deliverLarkDm`.
+   *
+   * A DM sent as `msg_type: 'text'` is not interpreted by Lark: `**Your mail**`
+   * arrives with the asterisks showing. Every other place Divo speaks in Lark
+   * builds a card for exactly this reason, and a standing twice-daily report
+   * that renders as punctuation is one people learn to ignore.
+   */
+  readonly card: string;
   /** How many messages were named. Zero is a valid, deliverable brief. */
   readonly wantCount: number;
   /** True when the model could not be reached, so the first section is absent. */
   readonly degraded: boolean;
 }
+
+/**
+ * The brief, as Lark renders it.
+ *
+ * `markdown` elements rather than `plain_text` so the bold and the links in the
+ * composed sections mean what they say. Schema 2.0 to match every other card
+ * Divo builds — a 1.0 card beside them renders at a different width.
+ */
+const briefCard = (input: {
+  readonly headline: string;
+  readonly sections: string[];
+}): string => JSON.stringify({
+  msg_type: 'interactive',
+  card: JSON.stringify({
+    schema: '2.0',
+    config: { width_mode: 'fill', update_multi: false, enable_forward: true },
+    header: {
+      template: 'blue',
+      title: { tag: 'plain_text', content: 'Your mail' },
+      subtitle: { tag: 'plain_text', content: input.headline },
+    },
+    body: {
+      vertical_spacing: '8px',
+      padding: '12px 12px 12px 12px',
+      elements: input.sections.flatMap((section, i) => (
+        i === 0
+          ? [{ tag: 'markdown', content: section }]
+          : [{ tag: 'hr' }, { tag: 'markdown', content: section }]
+      )),
+    },
+  }),
+});
 
 export function createMailBriefComposer(deps: MailBriefDeps) {
   /**
@@ -193,41 +240,49 @@ export function createMailBriefComposer(deps: MailBriefDeps) {
       .slice(0, MAX_MESSAGES_READ);
 
     const wants = await readWants(recent, window.timeZone);
-    const lines: string[] = [];
 
-    lines.push(
-      `**Your mail** · ${timeIn(window.from, window.timeZone)}–`
-      + `${timeIn(window.to, window.timeZone)} · ${window.mailboxEmail}`,
-    );
-    lines.push('');
+    /*
+     * One section per idea, rendered twice.
+     *
+     * The card puts a rule between sections and the markdown puts a blank line,
+     * so neither can say something the other does not. Assembling the two
+     * independently is how a fix to one of them quietly stops applying to the
+     * other.
+     */
+    const headline = `${timeIn(window.from, window.timeZone)}–`
+      + `${timeIn(window.to, window.timeZone)} · ${window.mailboxEmail}`;
+    const sections: string[] = [];
 
     if (wants === null) {
       // Said out loud rather than rendered as "nothing needs you". An empty
       // section and an unread mailbox look identical, and only one of them is
       // safe to act on.
-      lines.push(
+      sections.push(
         `Divo could not read your mail this time, so this brief covers only what `
         + `your rules did. ${plural(recent.length, 'message', 'messages')} arrived.`,
       );
     } else if (wants.length === 0) {
-      lines.push(
+      sections.push(
         recent.length === 0
           ? 'No mail arrived in this window.'
           : `Nothing is waiting on you. `
             + `${plural(recent.length, 'message', 'messages')} arrived.`,
       );
     } else {
-      lines.push(`**${plural(wants.length, 'message needs', 'messages need')} you**`);
+      const waiting: string[] = [
+        `**${plural(wants.length, 'message needs', 'messages need')} you**`,
+      ];
       for (const { message, want } of wants) {
-        lines.push(
+        waiting.push(
           `· **${senderName(message.from)}** — ${message.subject}`,
           `  ${want} _(${timeIn(message.occurredAt, window.timeZone)})_`,
         );
       }
       const rest = recent.length - wants.length;
       if (rest > 0) {
-        lines.push('', `${plural(rest, 'other message', 'other messages')} arrived and none of them needs a reply.`);
+        waiting.push('', `${plural(rest, 'other message', 'other messages')} arrived and none of them needs a reply.`);
       }
+      sections.push(waiting.join('\n'));
     }
 
     /*
@@ -239,19 +294,21 @@ export function createMailBriefComposer(deps: MailBriefDeps) {
       r => r.delivered + r.held + r.blocked + r.failed > 0,
     );
     if (acted.length > 0) {
-      lines.push('', '**What Divo handled**');
+      const handled: string[] = ['**What Divo handled**'];
       for (const rule of acted) {
         const parts: string[] = [];
         if (rule.delivered > 0) parts.push(`${rule.delivered} passed on`);
         if (rule.held > 0) parts.push(`${rule.held} held back`);
         if (rule.blocked > 0) parts.push(`${rule.blocked} over the limit`);
         if (rule.failed > 0) parts.push(`${rule.failed} failed`);
-        lines.push(`· **${rule.ruleName}** — ${parts.join(', ')}`);
+        handled.push(`· **${rule.ruleName}** — ${parts.join(', ')}`);
       }
+      sections.push(handled.join('\n'));
     }
 
     return {
-      text: lines.join('\n'),
+      text: [`**Your mail** · ${headline}`, ...sections].join('\n\n'),
+      card: briefCard({ headline, sections }),
       wantCount: wants?.length ?? 0,
       degraded: wants === null,
     };

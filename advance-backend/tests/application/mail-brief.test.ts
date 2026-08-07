@@ -230,6 +230,67 @@ describe('composing a brief', () => {
     assert.match(brief.text, /Vendor invoices → Finance/);
   });
 
+  /*
+   * The first brief that ever reached a real Lark DM arrived reading
+   * `**Your mail** · 16:36–04:36`, asterisks and all, because the composer
+   * produced markdown and the delivery path sent it as `msg_type: 'text'` —
+   * which Lark does not interpret. The card is what makes the bold mean bold,
+   * so it is asserted on rather than trusted.
+   */
+  it('sends a card, so Lark renders the brief instead of printing its markup', async () => {
+    const compose = createMailBriefComposer({
+      model: modelReturning('{"wants":[]}') as never,
+    });
+
+    const brief = await compose(window);
+    const envelope = JSON.parse(brief.card) as { msg_type: string; card: string };
+    assert.equal(envelope.msg_type, 'interactive');
+
+    const card = JSON.parse(envelope.card) as {
+      schema: string;
+      header: { subtitle: { content: string } };
+      body: { elements: Array<{ tag: string; content?: string }> };
+    };
+    assert.equal(card.schema, '2.0');
+    // The window and mailbox belong to the header, so the body opens on what
+    // the brief actually says rather than on its own timestamp.
+    assert.match(card.header.subtitle.content, /rahul@emiactech\.com/);
+
+    const markdown = card.body.elements.filter(e => e.tag === 'markdown');
+    assert.ok(markdown.length > 0, 'the brief must reach Lark as markdown elements');
+    assert.ok(
+      markdown.some(e => /Nothing is waiting on you/.test(e.content ?? '')),
+      'the card must carry the same sections as the text',
+    );
+    assert.ok(
+      markdown.some(e => /\*\*Vendor invoices → Finance\*\*/.test(e.content ?? '')),
+      'the rules section must survive into the card',
+    );
+  });
+
+  it('says the same thing in the card as in the text', async () => {
+    // Two renderings of one set of sections. If a section is ever added to one
+    // path only, this is what notices.
+    const compose = createMailBriefComposer({
+      model: modelReturning(JSON.stringify({
+        wants: [{ index: 0, want: 'Wants the revised cap confirmed before Friday.' }],
+      })) as never,
+    });
+
+    const brief = await compose(window);
+    const card = JSON.parse(
+      (JSON.parse(brief.card) as { card: string }).card,
+    ) as { body: { elements: Array<{ tag: string; content?: string }> } };
+
+    const fromCard = card.body.elements
+      .filter(e => e.tag === 'markdown')
+      .map(e => e.content)
+      .join('\n\n');
+    // The text carries one extra leading line — the headline the card shows in
+    // its header instead — and the rest must match exactly.
+    assert.equal(brief.text.split('\n\n').slice(1).join('\n\n'), fromCard);
+  });
+
   it('leaves out rules that did nothing', async () => {
     const compose = createMailBriefComposer({
       model: modelReturning('{"wants":[]}') as never,
