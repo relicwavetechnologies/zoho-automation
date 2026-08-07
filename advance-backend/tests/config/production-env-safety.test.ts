@@ -67,19 +67,52 @@ describe('production environment safety', () => {
     });
     assert.deepEqual(resolveApprovalGateOptions(productionPolicy), {
       disableManagerSelfBypass: true,
+      suppressCardDelivery: false,
     });
     assert.deepEqual(validateProductionEnv(productionPolicy), []);
 
     assert.deepEqual(resolveApprovalGateOptions(production({
       DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS: false,
       DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: true,
-    })), { disableManagerSelfBypass: false });
+    })), { disableManagerSelfBypass: false, suppressCardDelivery: false });
 
     assert.deepEqual(resolveApprovalGateOptions({
       NODE_ENV: 'test',
       DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS: false,
       DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: true,
-    }), { disableManagerSelfBypass: true });
+    }), { disableManagerSelfBypass: true, suppressCardDelivery: false });
+  });
+
+  it('will not silence approval cards in production, whatever the switch says', () => {
+    /*
+     * The one property that makes a testing convenience safe to ship. An
+     * approval nobody is told about is an approval nobody answers, and the tool
+     * call waiting on it simply stops — so the switch is honoured outside
+     * production and ignored inside it.
+     */
+    assert.equal(
+      resolveApprovalGateOptions(production({ DIVO_APPROVAL_CARDS_ENABLED: false }))
+        .suppressCardDelivery,
+      false,
+    );
+    assert.equal(
+      resolveApprovalGateOptions({
+        NODE_ENV: 'development',
+        DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS: false,
+        DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: false,
+        DIVO_APPROVAL_CARDS_ENABLED: false,
+      }).suppressCardDelivery,
+      true,
+    );
+    // Absent reads as "send them", never as silence.
+    assert.equal(
+      resolveApprovalGateOptions({
+        NODE_ENV: 'development',
+        DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS: false,
+        DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: false,
+      }).suppressCardDelivery,
+      false,
+    );
   });
 
   it('fails startup for incomplete, insecure, or non-encrypting Shopify production configuration', () => {

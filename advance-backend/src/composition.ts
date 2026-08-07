@@ -313,11 +313,22 @@ export const resolveApprovalGateOptions = (
     | 'NODE_ENV'
     | 'DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS'
     | 'DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS'
+    | 'DIVO_APPROVAL_CARDS_ENABLED'
   >,
-): { disableManagerSelfBypass: boolean } => ({
+): { disableManagerSelfBypass: boolean; suppressCardDelivery: boolean } => ({
   disableManagerSelfBypass:
     env.DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS
     || (env.NODE_ENV !== 'production' && env.DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS),
+  /*
+   * Never in production. An approval nobody is told about is an approval
+   * nobody answers, and the tool call waiting on it simply stops.
+   *
+   * Suppressed only on an explicit `false`, not on absence: the schema supplies
+   * the default, and a caller who hands over a partial env should get cards,
+   * not silence.
+   */
+  suppressCardDelivery:
+    env.NODE_ENV !== 'production' && env.DIVO_APPROVAL_CARDS_ENABLED === false,
 });
 
 

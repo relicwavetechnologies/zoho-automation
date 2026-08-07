@@ -57,6 +57,15 @@ export interface ApprovalGateInput {
 
 export interface ApprovalGateOptions {
   readonly disableManagerSelfBypass?: boolean;
+  /**
+   * Write the request and skip the card, leaving it in the approval inbox.
+   *
+   * For testing the flow without messaging a colleague on every attempt. It
+   * suppresses delivery only: the row is still written, still bound to exactly
+   * one approver, and still answerable — nothing about who may decide changes.
+   * The composition refuses to set it in production.
+   */
+  readonly suppressCardDelivery?: boolean;
   readonly knowledgeMutations?: Pick<
     KnowledgeMutationService,
     'get' | 'attachRuntimeApproval'
@@ -224,9 +233,13 @@ export class ApprovalGateService {
           execution: execution ?? null,
         },
         // How this request will reach the approver. Lark when Divo can card
-        // them, the desktop approval inbox when it cannot. The row is the
-        // source of truth either way; delivery is a side effect of it.
-        channel:        manager.larkOpenId ? 'lark' : 'desktop',
+        // them, the desktop approval inbox when it cannot — or when delivery is
+        // suppressed, which is the same thing from the approver's side and must
+        // not be recorded as a card that was never sent. The row is the source
+        // of truth either way; delivery is a side effect of it.
+        channel:        manager.larkOpenId && !this.options.suppressCardDelivery
+          ? 'lark'
+          : 'desktop',
         requestedBy:    requesterId,
         idempotencyKey: idemKey,
         expiresAt:      new Date(Date.now() + 24 * 60 * 60 * 1000),
@@ -277,12 +290,18 @@ export class ApprovalGateService {
     // inbox. This used to be `misconfigured`, which failed the tool call
     // outright and made a Lark account a precondition for approvals working
     // at all.
-    if (!manager.larkOpenId) {
+    //
+    // Suppressed delivery lands here too, on purpose: it is the same state, and
+    // it is a state the system already handles rather than a new half-sent one.
+    if (!manager.larkOpenId || this.options.suppressCardDelivery) {
       this.logger.info('approval.gate.pending_created_inbox', {
         approvalId: approval.id,
         toolId,
         action,
         approver: manager.displayName,
+        // Which of the two reasons, so a quiet approval is never mistaken for a
+        // colleague who has not connected Lark.
+        reason: manager.larkOpenId ? 'card_delivery_suppressed' : 'no_lark_account',
       });
       return pendingDecision(
         approval.id,

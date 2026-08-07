@@ -337,6 +337,17 @@ export const EnvSchema = z.object({
   // composition; keep it only so older non-production deployments continue to
   // exercise the approval-card path during migration.
   DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: booleanStr.default('false'),
+  /*
+   * Whether a resolved approver is sent a Lark card, or only left a request in
+   * their approval inbox.
+   *
+   * For testing an approval flow without messaging a real colleague every
+   * attempt. It suppresses the *delivery*, never the decision: the row is still
+   * written, still authorised to exactly one person, and still answerable —
+   * which is what makes this safe to have at all. Ignored in production, where
+   * an approval nobody is told about is an approval nobody answers.
+   */
+  DIVO_APPROVAL_CARDS_ENABLED: booleanStr.default('true'),
 
   // Set to 0 to disable supervisor timeout (useful for local dev with slow models).
   // Active timeouts are clamped so an older 5-minute deployment value cannot
