@@ -2036,3 +2036,93 @@ describe('LarkApprovalCardHandler audit trail', () => {
     assert.deepEqual(audited, []);
   });
 });
+
+describe('an approval requested through the gateway and executed through the runtime', () => {
+  /**
+   * The gateway scopes an approval by run — `gateway:company:...:run:...` — so
+   * one manager decision cannot be spent by another turn. The runtime executor
+   * that runs the *approved* action scopes by the plain conversation id
+   * instead. Both are reached through the same tool executor, in that order,
+   * for every Lark request, and the exact-match check compares the stored
+   * scope.
+   *
+   * So an approval requested through the gateway could never be claimed. On
+   * prod this produced three approval rows in sixty-five seconds for one mail
+   * rule, identical in every field including `argsHash` and `runId` and
+   * differing only in that scope: the manager approved, execution asked the
+   * gate again, the gate found nothing under its own name and opened a second
+   * request — which the requester was told to wait for, forever.
+   */
+  const EXECUTION = {
+    version: 1 as const,
+    threadId: 'oc_test_chat:session:sess-1',
+    runId: 'run-abc-123',
+    actionId: 'call_1',
+  };
+  const GATEWAY_CHAT_ID = [
+    'gateway', 'company', String(COMPANY_ID),
+    'requester', String(REQUESTER),
+    'thread', EXECUTION.threadId,
+    'run', EXECUTION.runId,
+  ].join(':');
+
+  const request = (chatId: string) => ({
+    toolId: String(TOOL_ID),
+    action: 'send' as const,
+    args: { op: 'send', to: ['boss@company.com'], subject: 'Q2 Report' },
+    perm: makePermission(),
+    runContext: makeRunContext(),
+    chatId,
+    argsSummary: 'Send email to boss@company.com: Q2 Report',
+    execution: EXECUTION,
+  });
+
+  it('is claimed by the execution that follows it, not asked for a second time', async () => {
+    const repo = makeApprovalRepo();
+    const gate = new ApprovalGateService(
+      repo as any, makeResolver() as any, makeLarkAdapter() as any, makeLogger(),
+    );
+
+    const asked = await gate.check(request(GATEWAY_CHAT_ID));
+    assert.equal(asked.kind, 'pending');
+
+    // The manager approves.
+    const approval = [...repo.store.values()][0]!;
+    approval.status = 'approved';
+    approval.approvedBy = String(MANAGER);
+    approval.approvedAt = new Date();
+
+    // The approved action now runs, through the call site that holds the plain
+    // conversation id rather than the run-scoped one.
+    const claimed = await gate.check(request(CHAT_ID));
+
+    assert.equal(claimed.kind, 'allowed', `expected the grant to be claimed, got ${claimed.kind}`);
+    assert.equal(
+      repo.store.size, 1,
+      'the execution opened a second approval instead of claiming the first',
+    );
+  });
+
+  it('still refuses a grant from a different run', async () => {
+    // The run scope is what stops one manager decision being spent by an
+    // unrelated turn. Widening the search must not cost that.
+    const repo = makeApprovalRepo();
+    const gate = new ApprovalGateService(
+      repo as any, makeResolver() as any, makeLarkAdapter() as any, makeLogger(),
+    );
+
+    await gate.check(request(GATEWAY_CHAT_ID));
+    const approval = [...repo.store.values()][0]!;
+    approval.status = 'approved';
+    approval.approvedBy = String(MANAGER);
+    approval.approvedAt = new Date();
+
+    const otherRun = await gate.check({
+      ...request(CHAT_ID),
+      execution: { ...EXECUTION, runId: 'run-somebody-else' },
+    });
+
+    assert.notEqual(otherRun.kind, 'allowed');
+    assert.equal(repo.store.size, 2, 'a different run should open its own request');
+  });
+});
