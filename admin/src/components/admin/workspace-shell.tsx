@@ -17,12 +17,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
-  Activity, Bell, Brain, Building2, Check, ChevronsUpDown, Diamond, FileClock, FileStack,
-  Gauge, Grid2X2, KeyRound, Library, Link2, LogOut, Mail, Moon, Search, Settings, ShieldCheck,
-  Sun, Users, UserSquare, type LucideIcon,
+  Activity, Bot, Building2, Check, ChevronsUpDown, CircleCheck, CircleDashed, Diamond, FileClock,
+  FileStack, Grid2X2, LogOut, Mail, Minus, Moon, Plus, Search, Settings, ShieldCheck, Sun,
+  Users, UserSquare, type LucideIcon,
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useManagedDepartments } from '@/pages/workspace/data/use-team'
+import { useOnboarding, useRecentRuns } from '@/pages/workspace/data/use-onboarding'
+import { RAIL } from '@/components/admin/settings-shell'
 import { RoleProvider } from '@/cursor/role-context'
 import { useTheme } from '@/lib/use-theme'
 import '@/styles/workspace.css'
@@ -31,71 +33,38 @@ type ScopeKind = 'you' | 'team' | 'company'
 type NavItem = { to: string; label: string; icon: LucideIcon; end?: boolean }
 type NavGroup = { label?: string; items: NavItem[] }
 
+/*
+ * The work surface, and only that.
+ *
+ * Everything a person *sets up* moved to the Settings takeover, which is why
+ * this list is now short enough to read at a glance. It used to run to ten
+ * rows for a member, most of them configuration they open once a quarter, and
+ * the two things they actually came to do were lost among them.
+ */
 const NAV: Record<ScopeKind, NavGroup[]> = {
   you: [
     {
       items: [
         { to: '/me', label: 'Home', icon: Grid2X2, end: true },
+        /* Work, not configuration: a mail rule is Divo acting on your behalf
+           every hour of every day, and you come back to check it still is. */
+        { to: '/me/mail', label: 'Mail', icon: Mail },
         { to: '/me/approvals', label: 'Approvals', icon: ShieldCheck },
-      ],
-    },
-    {
-      label: 'Your setup',
-      items: [
+        { to: '/me/automations', label: 'Automations', icon: Bot },
         { to: '/me/artifacts', label: 'Things Divo made', icon: FileStack },
-        { to: '/me/connections', label: 'Connected apps', icon: Link2 },
-        { to: '/me/access', label: 'What Divo can do', icon: KeyRound },
-        { to: '/me/mail-rules', label: 'Mail rules', icon: Mail },
-        { to: '/me/skills', label: 'Skills', icon: Library },
-        { to: '/me/memory', label: 'Memory', icon: Brain },
-      ],
-    },
-    {
-      label: 'Account',
-      items: [
-        { to: '/me/usage', label: 'Usage', icon: Gauge },
-        { to: '/me/settings', label: 'Settings', icon: Settings },
       ],
     },
   ],
   team: [
-    {
-      items: [
-        { to: '/team', label: 'Overview', icon: Grid2X2, end: true },
-        { to: '/team/people', label: 'People', icon: Users },
-      ],
-    },
-    {
-      label: 'Access',
-      items: [
-        { to: '/team/roles', label: 'Roles', icon: UserSquare },
-        { to: '/team/approvals', label: 'Ask me first', icon: ShieldCheck },
-      ],
-    },
-    { label: 'Account', items: [{ to: '/team/usage', label: 'Usage', icon: Gauge }] },
+    { items: [{ to: '/team', label: 'Overview', icon: Grid2X2, end: true }] },
   ],
   company: [
     {
       items: [
         { to: '/home', label: 'Overview', icon: Grid2X2 },
-        { to: '/people', label: 'Everyone', icon: Users },
-        { to: '/departments', label: 'Departments', icon: Building2 },
-      ],
-    },
-    {
-      label: 'Operations',
-      items: [
+        /* Watching the company is work. Governing it is configuration, and
+           that half now lives behind Settings. */
         { to: '/ai-ops', label: 'AI Ops', icon: Activity },
-        { to: '/skills', label: 'Skills', icon: Library },
-        { to: '/memories', label: 'Memory', icon: Brain },
-      ],
-    },
-    {
-      label: 'Governance',
-      items: [
-        { to: '/policy', label: 'Company ceiling', icon: KeyRound },
-        { to: '/connections', label: 'Connections', icon: Link2 },
-        { to: '/guardrails', label: 'Guardrails', icon: Gauge },
         { to: '/activity', label: 'Activity', icon: FileClock },
       ],
     },
@@ -106,18 +75,6 @@ const scopeOfPath = (pathname: string): ScopeKind =>
   pathname.startsWith('/me') ? 'you' : pathname.startsWith('/team') ? 'team' : 'company'
 
 const HOME: Record<ScopeKind, string> = { you: '/me', team: '/team', company: '/home' }
-
-/** Two letters from a name, falling back to the email's local part. */
-const initialsOf = (name?: string | null, email?: string | null): string => {
-  const source = name?.trim() || email?.split('@')[0] || ''
-  const parts = source.split(/[\s._-]+/).filter(Boolean)
-  if (parts.length === 0) return '·'
-  const letters = parts.length === 1 ? parts[0].slice(0, 2) : parts[0][0] + parts[parts.length - 1][0]
-  return letters.toUpperCase()
-}
-
-const roleLabel = (role?: string): string =>
-  role === 'SUPER_ADMIN' ? 'Super admin' : role === 'COMPANY_ADMIN' ? 'Company admin' : 'Member'
 
 export function WorkspaceShell() {
   const { session, scopes, logout } = useAdminAuth()
@@ -168,15 +125,34 @@ export function WorkspaceShell() {
   )) ?? scopes.find((s) => s.kind === scope) ?? scopes[0]
   const ScopeIcon = scope === 'you' ? UserSquare : scope === 'team' ? Users : Building2
 
+  /*
+   * Everywhere this person can go, both surfaces.
+   *
+   * The palette used to list the current scope's nav and nothing else. Now that
+   * configuration lives behind Settings, that would be three rows — so it spans
+   * both shells, filtered to the scopes the session actually holds. The same
+   * filter the rail uses, for the same reason: never offer a door that will be
+   * shut in your face.
+   */
+  const paletteItems = useMemo(() => {
+    const held = new Set(scopes.map((s) => s.kind))
+    return [
+      ...Object.values(NAV).flat().flatMap((g) => g.items),
+      ...RAIL.filter((g) => held.has(g.scope)).flatMap((g) => g.items),
+    ].filter((item, i, all) => all.findIndex((x) => x.to === item.to) === i)
+  }, [scopes])
+
   return (
     <RoleProvider>
       <div className="cur app">
         <aside className="sidebar">
-          <div className="brand">
-            <span className="mark"><Diamond size={13} fill="currentColor" strokeWidth={0} /></span>
-            <b className="display">Divo</b>
-          </div>
-
+          {/*
+            No separate brand row. The reference folds identity into the
+            workspace switcher — one row that says both who you are and which
+            workspace you are in — and a "Divo" wordmark above a scope selector
+            was two rows saying nearly the same thing. The mark lives inside the
+            switcher now.
+          */}
           <div className="ws-scope" ref={scopeRef}>
             <button
               type="button"
@@ -184,14 +160,34 @@ export function WorkspaceShell() {
               data-static={scopes.length === 1}
               onClick={scopes.length === 1 ? undefined : () => setScopeOpen((v) => !v)}
             >
-              <span className="ws-scope-ic" data-tone={scopes.length === 1 ? 'ink' : undefined}>
-                <ScopeIcon size={14} />
+              <span className="ws-scope-ic" data-tone="brand">
+                <Diamond size={12} fill="currentColor" strokeWidth={0} />
               </span>
               <span className="ws-scope-txt">
                 <b>{active.label}</b>
-                <span>{active.detail}</span>
               </span>
-              {scopes.length > 1 ? <ChevronsUpDown size={14} className="muted" /> : null}
+              {scopes.length > 1 ? <ChevronsUpDown size={13} className="muted" /> : null}
+            </button>
+
+            {/* The reference's top-right "+". It starts a new session there; the
+                nearest honest thing here is the composer, so it goes to Home and
+                puts the cursor in it rather than being a button that does
+                nothing until chat exists. */}
+            <button
+              type="button"
+              className="ws-scope-new"
+              title="Ask Divo something"
+              aria-label="Ask Divo something"
+              onClick={() => {
+                navigate('/me')
+                // After the route paints. The composer marks itself so the shell
+                // does not have to know anything else about Home.
+                window.setTimeout(() => {
+                  document.querySelector<HTMLTextAreaElement>('[data-composer]')?.focus()
+                }, 60)
+              }}
+            >
+              <Plus size={16} />
             </button>
 
             {scopeOpen && scopes.length > 1 ? (
@@ -243,49 +239,56 @@ export function WorkspaceShell() {
             ))}
           </nav>
 
+          {/* Personal to whoever is signed in, so they belong to the You scope
+              and nowhere else — a manager reading their team's page does not
+              want their own half-finished setup in the corner of it. */}
+          {scope === 'you' ? (
+            <>
+              <RecentRuns onOpen={() => navigate('/me')} onSearch={() => setPalette(true)} />
+              <GettingStarted onGo={(to) => navigate(to)} />
+            </>
+          ) : null}
+
+          {/*
+            Bottom rail, as in the reference: quiet rows rather than a boxed
+            account card. Appearance sits here because there is no Settings
+            takeover to hold it yet — when that page lands it moves inside and
+            this row goes away.
+          */}
           <div className="sidebar-foot">
-            {/* The person, not their rank. Members sign in here now, and
-                "Company admin" was printed for everyone regardless. */}
-            <button type="button" className="ws-acct" onClick={() => logout()}>
-              <span className="avatar">{initialsOf(session?.name, session?.email)}</span>
-              <span className="ws-acct-txt">
-                <b>{session?.name ?? session?.email ?? 'Signed in'}</b>
-                <span>{roleLabel(session?.role)}</span>
-              </span>
-              <LogOut size={14} className="muted" />
+            <NavLink to="/settings/profile" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+              <span className="g"><Settings size={16} /></span>
+              Settings
+            </NavLink>
+            <button
+              type="button"
+              className="nav-item"
+              onClick={() => setTheme(resolved === 'dark' ? 'light' : 'dark')}
+            >
+              <span className="g">{resolved === 'dark' ? <Sun size={16} /> : <Moon size={16} />}</span>
+              {resolved === 'dark' ? 'Light mode' : 'Dark mode'}
+            </button>
+            {/* No name trailing this row. The switcher at the top already reads
+                "<first name>'s workspace", so repeating it here only crowded a
+                row that is one word wide. */}
+            <button type="button" className="nav-item" onClick={() => logout()}>
+              <span className="g"><LogOut size={16} /></span>
+              Sign out
             </button>
           </div>
         </aside>
 
         <div className="shell">
+          {/*
+            The reference has no top chrome — a page begins with its own title
+            and nothing else. Search moved to the Recent header and appearance
+            to the sidebar foot, so nothing was lost; the bell went with them
+            because it had no handler and never had one.
+          */}
           <header className="topbar">
-            <div className="ws-crumb">
-              <button type="button" onClick={() => navigate(HOME[scope])}>{active.label}</button>
-              <span>/</span>
-              <b>{groups.flatMap((g) => g.items).find((i) => i.to === location.pathname)?.label ?? 'Detail'}</b>
-            </div>
-
-            <button
-              type="button"
-              className="search"
-              onClick={() => setPalette(true)}
-              style={{ maxWidth: 240, cursor: 'pointer' }}
-            >
-              <Search size={14} />
-              <span style={{ flex: 1, textAlign: 'left' }}>Search</span>
-              <span className="ws-kbd">⌘K</span>
-            </button>
-
-            <button
-              type="button"
-              className="icon-btn"
-              title={resolved === 'dark' ? 'Switch to light' : 'Switch to dark'}
-              onClick={() => setTheme(resolved === 'dark' ? 'light' : 'dark')}
-            >
-              {resolved === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
-            </button>
-
-            <button type="button" className="icon-btn" title="Notifications"><Bell size={15} /></button>
+            <b className="ws-crumb-now">
+              {groups.flatMap((g) => g.items).find((i) => i.to === location.pathname)?.label ?? active.label}
+            </b>
           </header>
 
           <div className="content">
@@ -297,13 +300,126 @@ export function WorkspaceShell() {
 
         {palette ? (
           <Palette
-            items={groups.flatMap((g) => g.items)}
+            items={paletteItems}
             onClose={() => setPalette(false)}
             onPick={(to) => { navigate(to); setPalette(false) }}
           />
         ) : null}
       </div>
     </RoleProvider>
+  )
+}
+
+/**
+ * Recent runs, in the sidebar.
+ *
+ * There is nowhere to open a single run from the You scope yet — run detail is
+ * an admin route — so a row goes to All activity rather than pretending to
+ * deep-link. It will point at the run itself once that page exists for members.
+ */
+/**
+ * "16h", not "16 hours ago".
+ *
+ * The rail's own second line, under a title it belongs to — there is no
+ * sentence for the long form to complete, and at five entries the words were
+ * wider than the run names above them. `ago()` stays for the pages, where a row
+ * is read rather than scanned.
+ */
+function shortAgo(iso: string): string {
+  const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60_000))
+  if (mins < 1) return 'now'
+  if (mins < 60) return `${mins}m`
+  const hours = Math.round(mins / 60)
+  if (hours < 24) return `${hours}h`
+  const days = Math.round(hours / 24)
+  if (days < 7) return `${days}d`
+  return `${Math.round(days / 7)}w`
+}
+
+function RecentRuns({ onOpen, onSearch }: { onOpen: () => void; onSearch: () => void }) {
+  const { runs, loading } = useRecentRuns(5)
+
+  // Nothing at all is not worth a heading. A person who has never asked Divo
+  // anything is served by the Getting started card below, not by an empty list.
+  if (loading || runs.length === 0) return null
+
+  return (
+    <div className="ws-recent">
+      <div className="ws-recent-hd">
+        <span className="nav-label">Recent</span>
+        {/* The reference pairs this with a filter control. There is nothing to
+            filter a five-item list by yet, so only the one that works is here. */}
+        <button type="button" className="ws-recent-ic" onClick={onSearch} title="Search (⌘K)" aria-label="Search">
+          <Search size={14} />
+        </button>
+      </div>
+      {runs.map((run) => (
+        <button type="button" className="ws-recent-item" key={run.id} onClick={onOpen}>
+          <b>{run.summary ?? run.entrypoint}</b>
+          <span>{shortAgo(run.startedAt)}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * Onboarding progress.
+ *
+ * Retires itself the moment every step is done rather than sitting at 100%
+ * forever, and can be collapsed before then. Both are remembered locally —
+ * nothing on the backend stores either.
+ */
+function GettingStarted({ onGo }: { onGo: (to: string) => void }) {
+  const { steps, percent, complete, loading } = useOnboarding()
+  const [collapsed, setCollapsed] = useState(
+    () => window.localStorage.getItem('divo.onboarding.collapsed') === '1',
+  )
+
+  const toggle = () => {
+    setCollapsed((v) => {
+      const next = !v
+      try { window.localStorage.setItem('divo.onboarding.collapsed', next ? '1' : '0') } catch { /* private mode */ }
+      return next
+    })
+  }
+
+  if (loading || complete) return null
+
+  return (
+    <div className="ws-onb">
+      <div className="ws-onb-hd">
+        <b>Getting started</b>
+        <button
+          type="button"
+          className="ws-onb-tog"
+          onClick={toggle}
+          aria-label={collapsed ? 'Expand getting started' : 'Collapse getting started'}
+        >
+          {collapsed ? <Plus size={14} /> : <Minus size={14} />}
+        </button>
+      </div>
+      <div className="ws-onb-prog">
+        <div className="ws-onb-bar"><i style={{ width: `${percent}%` }} /></div>
+        <span>{percent}%</span>
+      </div>
+      {collapsed ? null : (
+        <div className="ws-onb-list">
+          {steps.map((step) => (
+            <div className="ws-onb-li" data-done={step.done ? 'true' : 'false'} key={step.id}>
+              {/* Dashed for "not yet", solid for done — the reference's own
+                  distinction, and a clearer one than two shades of one ring. */}
+              {step.done ? <CircleCheck size={15} /> : <CircleDashed size={15} />}
+              {step.to && !step.done ? (
+                <button type="button" className="ws-onb-go" onClick={() => onGo(step.to!)}>{step.label}</button>
+              ) : (
+                <span>{step.label}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 

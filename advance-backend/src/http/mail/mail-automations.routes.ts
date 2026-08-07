@@ -23,6 +23,17 @@ import {
   type MailboxHealth,
 } from '../../application/mail-ops/mail-ops-health';
 import { dryRunMailRule } from '../../application/mail-ops/mail-rule-dry-run';
+import { summariseCorrespondents } from '../../application/mail-ops/mail-correspondents';
+import {
+  actionForDestination,
+  type MailRuleWriteRequest,
+  type MailRuleWriteResult,
+} from '../../application/mail-ops/mail-rule-writer';
+import { mailRuleMatchSchema } from '../../application/mail-ops/mail-rule.matcher';
+import type {
+  MailRuleAction,
+  MailRuleDestination,
+} from '../../application/mail-ops/mail-ops.types';
 import type { InfraError } from '../../shared/errors';
 import type { Result } from '../../shared/result';
 
@@ -36,6 +47,94 @@ const dryRunBodySchema = z.object({
 
 const listQuerySchema = z.object({
   includeInactive: z.enum(['true', 'false']).optional(),
+});
+
+/**
+ * How many stored messages the summary reads.
+ *
+ * Enough that a domain's real volume shows against the noise, and small
+ * enough that the query stays a bounded index read on one subscription. The
+ * counts are relative to this window, not to all time, and the response says
+ * so.
+ */
+const SUGGESTION_EVENTS = 1_000;
+
+/*
+ * The same `.strict()` match schema the agent's tool validates against, reused
+ * rather than restated — a second definition of what a rule may say is a second
+ * thing to keep in step, and the one that falls behind is whichever has fewer
+ * eyes on it.
+ */
+const createRuleBodySchema = z.object({
+  connectionId: z.string().uuid().optional(),
+  name: z.string().trim().min(1).max(120),
+  match: mailRuleMatchSchema,
+  destination: z.discriminatedUnion('type', [
+    z.object({ type: z.literal('email'), email: z.string().trim().email() }).strict(),
+    z.object({ type: z.literal('lark_chat'), chatId: z.string().trim().min(1) }).strict(),
+    z.object({
+      type: z.literal('organize'),
+      label: z.string().trim().min(1).max(225).optional(),
+      archive: z.boolean().optional(),
+      markRead: z.boolean().optional(),
+    }).strict(),
+  ]),
+  rateLimitPerHour: z.number().int().min(1).max(1000).optional(),
+}).strict().superRefine((value, ctx) => {
+  // On the outer object rather than the branch: a `.refine` inside a
+  // discriminated union turns the branch into a ZodEffects, which the union
+  // will not accept. An organize rule with nothing switched on is a real
+  // stored shape that does nothing at all, so it is refused at the door.
+  if (
+    value.destination.type === 'organize'
+    && value.destination.label === undefined
+    && value.destination.archive !== true
+    && value.destination.markRead !== true
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['destination'],
+      message: 'Say what to do with the message: label it, archive it, or mark it read.',
+    });
+  }
+});
+
+/*
+ * A status code and a default sentence per refusal.
+ *
+ * 409 for the two that are about the account rather than the request: nothing
+ * about the rule is wrong, and a 400 would send somebody rewriting it.
+ */
+const REFUSALS: Record<Exclude<MailRuleWriteResult['status'], 'created'>, {
+  code: number;
+  message: string;
+}> = {
+  not_configured: {
+    code: 503,
+    message:
+      'Mail automation is not running in this environment, so a rule created now would never fire.',
+  },
+  choose_connection: {
+    code: 409,
+    message: 'Choose which of your Google accounts this rule should watch.',
+  },
+  connection_unavailable: {
+    code: 409,
+    message: 'Divo needs a Google account you own, with Gmail read, watch and send access.',
+  },
+  approval_required: {
+    code: 403,
+    message:
+      'The owner of this Google connection requires approval before it runs anything in the '
+      + 'background, and a mail rule runs with nobody present to approve it. Ask them to allow '
+      + 'background execution on this connection first.',
+  },
+  destination_refused: { code: 400, message: 'Divo will not send mail to that destination.' },
+  unavailable: { code: 500, message: 'That rule could not be created. Try again shortly.' },
+};
+
+const suggestionsQuerySchema = z.object({
+  connectionId: z.string().uuid().optional(),
 });
 
 const deliveriesQuerySchema = z.object({
@@ -56,6 +155,15 @@ export interface MailAutomationsRouteDeps {
     companyId: string;
     userId: string;
   }) => Promise<Result<number, InfraError>>;
+  /**
+   * Creates a rule, running the same checks the agent's tool runs. Optional for
+   * the same reason as above: the router still mounts where nothing can write,
+   * and says so plainly rather than pretending.
+   */
+  writeRule?: (
+    request: MailRuleWriteRequest,
+    action: MailRuleAction,
+  ) => Promise<MailRuleWriteResult>;
   logger: Logger;
 }
 
@@ -323,6 +431,154 @@ export function createMailAutomationsRoutes(
       res.json({ success: true, data: { mailboxCount: requested.value } });
     } catch (error) {
       fail(res, 'reconcile', error);
+    }
+  });
+
+  /**
+   * Create a rule from the web.
+   *
+   * The first write on this router that makes something. Everything it does
+   * before writing lives in `createMailRuleWriter`, shared with the agent's
+   * tool — a route that reimplemented those checks beside the tool would be two
+   * paths agreeing on the day they were written and not for long after.
+   *
+   * Not gated on `mailAutomations.create`, deliberately. `execute` is
+   * re-checked by the worker on every single delivery, so a rule made by
+   * somebody who may not run one never delivers; enforcement at the point of
+   * action also survives access being removed after the rule exists, which a
+   * create-time check does not.
+   *
+   * Every refusal below carries its own remedy. "It did not work" is the one
+   * answer a member can do nothing with.
+   */
+  router.post('/rules', async (req, res) => {
+    if (!deps.writeRule) {
+      res.status(503).json({
+        success: false,
+        message: 'Mail rules cannot be created in this environment.',
+      });
+      return;
+    }
+
+    const parsed = createRuleBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({
+        success: false,
+        message: parsed.error.issues[0]?.message ?? 'That rule could not be read.',
+      });
+      return;
+    }
+
+    const body = parsed.data;
+    try {
+      const destination: MailRuleDestination =
+        body.destination.type === 'email'
+          ? { type: 'email', email: body.destination.email }
+          : body.destination.type === 'lark_chat'
+            ? { type: 'lark_chat', chatId: body.destination.chatId }
+            : { type: 'none' };
+
+      const action: MailRuleAction = body.destination.type === 'organize'
+        ? {
+            type: 'organize',
+            ...(body.destination.label !== undefined ? { label: body.destination.label } : {}),
+            ...(body.destination.archive !== undefined ? { archive: body.destination.archive } : {}),
+            ...(body.destination.markRead !== undefined ? { markRead: body.destination.markRead } : {}),
+          }
+        : actionForDestination(destination, body.rateLimitPerHour);
+
+      const outcome = await deps.writeRule({
+        ...actor(res),
+        ...(res.locals['runtimeDepartmentId']
+          ? { departmentId: String(res.locals['runtimeDepartmentId']) }
+          : {}),
+        ...(body.connectionId ? { connectionId: body.connectionId } : {}),
+        name: body.name,
+        // The schema is the tool's own, so the value is already right; the cast
+        // only bridges `exactOptionalPropertyTypes`, where zod's `string |
+        // undefined` output does not satisfy an optional-but-not-undefined field.
+        match: body.match as MailRuleWriteRequest['match'],
+        destination,
+        ...(body.rateLimitPerHour !== undefined ? { rateLimitPerHour: body.rateLimitPerHour } : {}),
+      }, action);
+
+      if (outcome.status === 'created') {
+        log.info('mail_automations.rule_created', {
+          companyId: res.locals['companyId'],
+          ruleId: outcome.ruleId,
+          destination: destination.type,
+        });
+        res.status(201).json({ success: true, data: outcome });
+        return;
+      }
+
+      const refusal = REFUSALS[outcome.status];
+      res.status(refusal.code).json({
+        success: false,
+        code: outcome.status,
+        message: 'reason' in outcome && outcome.reason ? outcome.reason : refusal.message,
+        ...(outcome.status === 'choose_connection' ? { connections: outcome.connections } : {}),
+        ...(outcome.status === 'connection_unavailable' && outcome.connectionState
+          ? { connectionState: outcome.connectionState }
+          : {}),
+      });
+    } catch (error) {
+      fail(res, 'create', error);
+    }
+  });
+
+  /**
+   * Who writes to this mailbox, for the rule builder's From and To fields.
+   *
+   * A mail rule written from memory fails silently: the sender is typed as the
+   * brand somebody knows, the invoices arrive from a subdomain nobody has
+   * heard of, and the rule waits for ever while looking perfectly healthy.
+   * This is the only fix — not validation, which has nothing to object to.
+   *
+   * Reads events Divo has already stored, so it costs no Gmail call and no
+   * quota. The trade is that a mailbox nobody has watched yet has nothing
+   * stored, and answers with empty sets and `watched: false` rather than
+   * pretending — a first rule is exactly the one written blind, and closing
+   * that gap needs a Gmail scan this route deliberately does not do inline.
+   */
+  router.get('/suggestions', async (req, res) => {
+    try {
+      const parsed = suggestionsQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        res.status(400).json({ success: false, error: 'Invalid connectionId.' });
+        return;
+      }
+
+      const found = await deps.readRepo.listRecentEventsForMailbox({
+        ...actor(res),
+        ...(parsed.data.connectionId ? { connectionId: parsed.data.connectionId } : {}),
+        limit: SUGGESTION_EVENTS,
+      });
+      if (!found.ok) throw found.error;
+
+      if (found.value === null) {
+        res.json({
+          success: true,
+          data: { from: [], to: [], window: '', watched: false },
+        });
+        return;
+      }
+
+      const summary = summariseCorrespondents(found.value.events, found.value.mailboxEmail);
+      res.json({
+        success: true,
+        data: {
+          ...summary,
+          // Stated as a count rather than a period. Events are kept for ninety
+          // days but a mailbox watched since Tuesday has three days of them,
+          // and "the last 90 days" would be a claim about coverage this route
+          // cannot make.
+          window: `from the last ${found.value.events.length} messages Divo has seen`,
+          watched: true,
+        },
+      });
+    } catch (error) {
+      fail(res, 'suggestions', error);
     }
   });
 

@@ -490,7 +490,16 @@ export const DATA_SOURCES: Record<string, { state: DataState; note: string }> = 
   artifactSharing: { state: 'needs-backend', note: 'An artifact has no owner or grants today — it is only a file path.' },
   artifactHistory: { state: 'needs-backend', note: 'No versioned storage; the workspace file is overwritten in place.' },
   reconnect: { state: 'needs-backend', note: 'Token expiry is stored but never evaluated — there is no needs_reauth state to read.' },
-  mailRules: { state: 'live', note: 'GET /api/mail-automations/rules + /health — real today. Read-only: pausing or deleting a rule is still done by asking Divo.' },
+  /**
+   * The domain is complete and the UI is fabricated, which is an unusual pair.
+   * ScheduledWorkflow / Run / Message are real Prisma models and
+   * ScheduledWorkflowControlService already implements create, list, pause,
+   * resume, cancel and runNow. None of it is reachable from a browser: there is
+   * no HTTP route for scheduled workflows anywhere in src/http, and create()
+   * refuses any channel that is not desktop or lark. So the rows are invented.
+   */
+  automations: { state: 'not-wired', note: 'The rows are invented. ScheduledWorkflowControlService is real and complete, but no HTTP route reaches it — automations are created by asking Divo, and nothing here was read from anywhere.' },
+  mailRules: { state: 'live', note: 'Reads and creation are real — /api/mail-automations rules, health, deliveries, suggestions and POST /rules. Pausing, editing and deleting a rule are still done by asking Divo.' },
 }
 
 /* ── Scopes per persona ──────────────────────────────── */

@@ -607,7 +607,13 @@ function senderMatches(fromHeader: string, criterion: string): boolean {
   return address !== undefined && addressMatches(address, criterion);
 }
 
-function senderAddress(fromHeader: string): string | undefined {
+/**
+ * Exported for the correspondent summary, which needs the same answer this
+ * gives the matcher. Re-implementing it there would mean a second, softer
+ * parser deciding who a message is from — and the two disagreeing is exactly
+ * how a suggestion offers a sender that no rule can then match.
+ */
+export function senderAddress(fromHeader: string): string | undefined {
   const entries = splitRecipients(fromHeader);
   const first = addressIn(entries[0] ?? '');
   if (first) return first;
@@ -705,7 +711,7 @@ function domainCovers(criterion: string, domain: string): boolean {
 }
 
 /** Every address in one recipient header, one entry at a time. */
-function addressesIn(header: string): string[] {
+export function addressesIn(header: string): string[] {
   return splitRecipients(header)
     .map(entry => addressIn(entry))
     .filter((address): address is string => address !== undefined);

@@ -73,7 +73,10 @@ export const Fade = ({ children }: { children: ReactNode }) => <div className="w
 /* ── Page furniture ──────────────────────────────────── */
 export function PageHeader({
   eyebrow, title, description, actions,
-}: { eyebrow?: string; title: string; description?: string; actions?: ReactNode }) {
+  // `eyebrow` is a node rather than a string so a sub-page can put its way back
+  // where the section name would otherwise sit — a wizard's breadcrumb belongs
+  // above its own title, not in a rail the wizard has replaced.
+}: { eyebrow?: ReactNode; title: string; description?: string; actions?: ReactNode }) {
   return (
     <div className="ws-ph">
       <div>

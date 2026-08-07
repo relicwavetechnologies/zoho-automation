@@ -8,22 +8,55 @@
 */
 
 .cur {
-  /* brand */
+  /* brand — the only chromatic thing in the app */
   --cur-primary: #f54e00; --cur-primary-active: #d04200; --cur-on-primary: #ffffff;
-  /* surface */
-  --cur-canvas: #f7f7f4; --cur-canvas-soft: #fafaf7; --cur-surface: #ffffff; --cur-surface-strong: #e6e5e0;
+  /*
+    Surfaces are NEUTRAL grey, not warm.
+
+    They used to carry a olive/cream cast (#f7f7f4 over #26251e ink) inherited
+    from the Cursor mock. Against the reference that reads as a different
+    product — everything looks faintly yellow, and the orange brand mark has
+    nothing cool to sit against. These are true greys now, so the one warm
+    thing on screen is the brand.
+  */
+  --cur-canvas: #f6f6f5; --cur-canvas-soft: #fbfbfa; --cur-surface: #ffffff; --cur-surface-strong: #ededec;
+  /* The sidebar is its own plane, a shade off the canvas with a divider. */
+  --cur-sidebar: #fafafa;
   /* hairlines */
-  --cur-hairline: #e6e5e0; --cur-hairline-soft: #efeee8; --cur-hairline-strong: #cfcdc4;
+  --cur-hairline: #e5e5e3; --cur-hairline-soft: #eeeeec; --cur-hairline-strong: #d8d8d5;
   /* text */
-  --cur-ink: #26251e; --cur-body: #5a5852; --cur-muted: #807d72; --cur-muted-soft: #a09c92;
+  --cur-ink: #1a1a1a; --cur-body: #4a4a4a; --cur-muted: #767674; --cur-muted-soft: #a0a09d;
+  /*
+    Progress and completion are BLUE, not orange.
+
+    The reference marks "done" with blue and keeps orange for one promoted
+    action. Both live here rather than sharing `--cur-primary`, so a filled
+    checkbox can never be mistaken for the thing you are being asked to press.
+  */
+  --cur-accent: #3b82f6; --cur-on-accent: #ffffff;
   /* timeline pastels (agent trace only) */
   --cur-tl-thinking: #dfa88f; --cur-tl-grep: #9fc9a2; --cur-tl-read: #9fbbe0; --cur-tl-edit: #c0a8dd; --cur-tl-done: #c08532;
   /* semantic */
   --cur-success: #1f8a65; --cur-error: #cf2d56;
-  --cur-r-cta: 8px; --cur-r-card: 12px;
-  --cur-sidebar-w: 232px;
+  /*
+    Primary CTA is INK, not orange.
 
-  font-family: Inter, system-ui, "Helvetica Neue", Arial, sans-serif;
+    Orange used to fill every primary button, which made a page with four
+    panels shout four times and left nothing to mark the one action that
+    matters. Ink carries the default CTA; orange is now scarce enough to mean
+    something — the brand mark, cost figures, the focus ring, and the single
+    featured onboarding card.
+  */
+  --cur-cta: #1c1c1b; --cur-cta-hover: #000000; --cur-on-cta: #fcfcfc;
+  /* Featured card — the one warm surface in the app. Onboarding's first card. */
+  --cur-featured-from: #fff8ee; --cur-featured-to: #ffffff; --cur-featured-ring: #f0e2ce;
+  /* Cards sit on the page, they do not float above it — so this is a hairline
+     with a hint of lift, not a drop shadow. `--ws-float` remains the real one. */
+  --cur-shadow-card: 0 1px 2px rgba(38, 37, 30, 0.045);
+  --cur-r-cta: 8px; --cur-r-card: 12px;
+  --cur-sidebar-w: 252px;
+
+  font-family: Geist, Inter, system-ui, "Helvetica Neue", Arial, sans-serif;
   background: var(--cur-canvas); color: var(--cur-ink);
   font-size: 14px; -webkit-font-smoothing: antialiased;
   font-feature-settings: "calt" 1;
@@ -46,22 +79,23 @@
 /* ── Layout ──────────────────────────────────────────── */
 .cur.app { display: flex; height: 100vh; overflow: hidden; }
 .cur .sidebar { width: var(--cur-sidebar-w); flex-shrink: 0; display: flex; flex-direction: column;
-  padding: 16px 12px; border-right: 1px solid var(--cur-hairline); background: var(--cur-canvas); }
+  padding: 10px 8px 12px; border-right: 1px solid var(--cur-hairline); background: var(--cur-sidebar); }
 .cur .brand { display: flex; align-items: center; gap: 9px; padding: 4px 8px 18px; }
 .cur .brand .mark { width: 26px; height: 26px; border-radius: 6px; background: var(--cur-primary); color: #fff; display: grid; place-items: center; font-size: 15px; }
 .cur .brand b { font-size: 15px; font-weight: 500; letter-spacing: -0.02em; }
-.cur .nav-label { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em; color: var(--cur-muted-soft); padding: 16px 10px 5px; }
-.cur .nav-item { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border-radius: var(--cur-r-cta);
-  font-size: 13.5px; color: var(--cur-body); cursor: pointer; user-select: none; text-decoration: none; }
+.cur .nav-label { font-size: 12px; font-weight: 400; letter-spacing: 0; color: var(--cur-muted); padding: 18px 10px 6px; }
+.cur .nav-item { display: flex; align-items: center; gap: 10px; height: 30px; padding: 0 10px; border-radius: var(--cur-r-cta);
+  font-size: 13px; color: var(--cur-body); cursor: pointer; user-select: none; text-decoration: none; }
 .cur .nav-item:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
-.cur .nav-item.active { background: var(--cur-surface); color: var(--cur-ink); font-weight: 500; box-shadow: inset 0 0 0 1px var(--cur-hairline); }
-.cur .nav-item .g { width: 16px; text-align: center; opacity: .8; }
-.cur .sidebar-foot { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--cur-hairline); }
+/* A flat fill, no ring. The reference's active row is simply a lighter block. */
+.cur .nav-item.active { background: var(--cur-surface-strong); color: var(--cur-ink); font-weight: 400; }
+.cur .nav-item .g { width: 16px; display: grid; place-items: center; opacity: .85; }
+.cur .sidebar-foot { margin-top: auto; padding-top: 10px; }
 .cur .acct { display: flex; align-items: center; gap: 9px; padding: 6px 8px; }
 .cur .avatar { width: 27px; height: 27px; border-radius: 50%; background: var(--cur-surface-strong); color: var(--cur-ink); display: grid; place-items: center; font-size: 11px; font-weight: 600; flex-shrink: 0; }
 
 .cur .shell { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.cur .topbar { height: 58px; display: flex; align-items: center; gap: 10px; padding: 0 26px; border-bottom: 1px solid var(--cur-hairline); flex-shrink: 0; }
+.cur .topbar { height: 46px; display: flex; align-items: center; gap: 10px; padding: 0 22px; flex-shrink: 0; }
 .cur .search { flex: 1; max-width: 380px; height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 13px;
   border-radius: var(--cur-r-cta); border: 1px solid var(--cur-hairline-strong); background: var(--cur-surface); color: var(--cur-muted); font-size: 13px; }
 .cur .role-pill { display: flex; align-items: center; gap: 7px; height: 36px; padding: 0 13px; border-radius: var(--cur-r-cta);
@@ -120,9 +154,14 @@
 .cur .btn { height: 36px; padding: 0 15px; border-radius: var(--cur-r-cta); font-size: 13px; font-weight: 500; cursor: pointer;
   border: 1px solid var(--cur-hairline-strong); background: var(--cur-surface); color: var(--cur-ink); display: inline-flex; align-items: center; gap: 7px; }
 .cur .btn:hover { border-color: var(--cur-muted-soft); }
-.cur .btn.primary { background: var(--cur-primary); color: var(--cur-on-primary); border-color: transparent; }
-.cur .btn.primary:hover { background: var(--cur-primary-active); }
-.cur .btn.ink { background: var(--cur-ink); color: var(--cur-canvas); border-color: var(--cur-ink); }
+/* Default primary is ink. See the note on --cur-cta for why it stopped being orange. */
+.cur .btn.primary { background: var(--cur-cta); color: var(--cur-on-cta); border-color: transparent; }
+.cur .btn.primary:hover { background: var(--cur-cta-hover); }
+/* The scarce one. Reserved for the featured onboarding card — if a second one
+   appears in a view, one of them is not actually the most important thing. */
+.cur .btn.accent { background: var(--cur-primary); color: var(--cur-on-primary); border-color: transparent; }
+.cur .btn.accent:hover { background: var(--cur-primary-active); }
+.cur .btn.wide { width: 100%; justify-content: center; }
 .cur .select, .cur .input { height: 34px; padding: 0 12px; border-radius: var(--cur-r-cta); border: 1px solid var(--cur-hairline-strong); background: var(--cur-surface); font-size: 13px; color: var(--cur-ink); }
 .cur .filters { display: flex; gap: 9px; flex-wrap: wrap; margin-bottom: 16px; align-items: center; }
 
@@ -169,8 +208,17 @@
    warm near-black. `.dark .cur` outranks `.cur`, so the tokens flip cleanly. */
 .dark .cur {
   --cur-primary: #fb5613; --cur-primary-active: #d8460a; --cur-on-primary: #ffffff;
-  --cur-canvas: #1a1917; --cur-canvas-soft: #201f1c; --cur-surface: #242320; --cur-surface-strong: #302e2a;
-  --cur-hairline: #302e2a; --cur-hairline-soft: #2a2825; --cur-hairline-strong: #3d3b36;
-  --cur-ink: #ece9e2; --cur-body: #b7b3a9; --cur-muted: #8d8a7f; --cur-muted-soft: #6b685f;
+  /* Near-black neutral. Deep enough that a card at #171717 reads as raised
+     without a shadow, which is how the reference separates its planes. */
+  --cur-canvas: #0f0f0f; --cur-canvas-soft: #151515; --cur-surface: #1a1a1a; --cur-surface-strong: #262626;
+  --cur-sidebar: #0d0d0d;
+  --cur-hairline: #262626; --cur-hairline-soft: #1e1e1e; --cur-hairline-strong: #333333;
+  --cur-ink: #e8e8e8; --cur-body: #b4b4b4; --cur-muted: #8f8f8f; --cur-muted-soft: #6a6a6a;
+  --cur-accent: #3b82f6; --cur-on-accent: #ffffff;
   --cur-success: #35b083; --cur-error: #e35a7d;
+  /* Ink is the page background in dark, so the CTA cannot be ink — it inverts
+     to a raised neutral instead, which is what reads as "pressable" here. */
+  --cur-cta: #3a3a3a; --cur-cta-hover: #474747; --cur-on-cta: #e8e8e8;
+  --cur-featured-from: #241d14; --cur-featured-to: #1a1a1a; --cur-featured-ring: #33291d;
+  --cur-shadow-card: none;
 }

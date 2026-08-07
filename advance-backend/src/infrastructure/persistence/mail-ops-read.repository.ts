@@ -398,6 +398,60 @@ export class MailOpsReadRepository {
   }
 
   /**
+   * Recent mail for one of this member's mailboxes, for the correspondent
+   * summary behind the rule builder's suggestions.
+   *
+   * Scoped by `userId` through the subscription, so this can only ever read
+   * the caller's own mail — the same pinning every other read here uses, and
+   * the reason there is no userId parameter on the route.
+   *
+   * Only `metadataJson` is selected, and the caller keeps nothing but counted
+   * addresses. Bodies are in that column too; pulling a thousand of them to
+   * count senders would be an expensive way to read somebody's mail for no
+   * purpose, so the row cap is deliberately modest.
+   */
+  async listRecentEventsForMailbox(input: {
+    companyId: string;
+    userId: string;
+    connectionId?: string;
+    limit: number;
+  }): Promise<Result<{
+    mailboxEmail: string;
+    events: Array<{ metadata: Record<string, unknown> }>;
+  } | null, InfraError>> {
+    try {
+      const subscription = await this.db.mailboxSubscription.findFirst({
+        where: {
+          companyId: input.companyId,
+          userId: input.userId,
+          ...(input.connectionId ? { connectionId: input.connectionId } : {}),
+        },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, mailboxEmail: true },
+      });
+      // Not an error. A mailbox with no subscription is simply one Divo has
+      // never watched, which is the ordinary state before a first rule.
+      if (!subscription) return ok(null);
+
+      const events = await this.db.mailEvent.findMany({
+        where: { subscriptionId: subscription.id, companyId: input.companyId },
+        orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+        take: input.limit,
+        select: { metadataJson: true },
+      });
+
+      return ok({
+        mailboxEmail: subscription.mailboxEmail,
+        events: events.map(event => ({
+          metadata: (event.metadataJson ?? {}) as Record<string, unknown>,
+        })),
+      });
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'mailOpsRead.listRecentEventsForMailbox', cause));
+    }
+  }
+
+  /**
    * One mailbox by ID, for the worker's post-operation health review. Returns
    * null when the subscription has been removed mid-flight.
    */

@@ -1,0 +1,277 @@
+/**
+ * Creating a mail rule, as one sequence rather than two.
+ *
+ * Until now the only way to make a rule was the agent's tool, and the six
+ * checks it runs before writing a row live inside that tool's executor. A web
+ * route needed all six too — and a route that reimplemented them beside the
+ * tool would be two paths that agree on the day they are written and not for
+ * long after, with the newer one having no reviewer watching it.
+ *
+ * So the sequence moved here and both call it.
+ *
+ * WHAT IT DOES NOT DO: resolve permission. That is deliberate and it is not an
+ * omission. `mailAutomations.execute` is re-checked by the worker on **every
+ * single delivery** (`authorizeRule`), so a rule created by somebody who may
+ * not run one simply never delivers — enforcement sits at the point of action,
+ * which is the strongest place for it and the only place that keeps working
+ * when access is removed after the rule already exists.
+ *
+ * The order of the checks is load-bearing. Readiness before connection,
+ * because a mailbox is irrelevant if no worker will ever poll it. Connection
+ * before approval, because the approval question is *about* a connection.
+ * Approval before destination, because a refusal there ends the attempt and
+ * there is no reason to have grounded a chat first.
+ */
+import { parseMailRule } from './mail-rule.matcher';
+import {
+  mailRuleDedupeKey,
+  type MailRuleAction,
+  type MailRuleDestination,
+  type MailRuleIdentity,
+  type MailRuleMatch,
+} from './mail-ops.types';
+import type { LarkChatDestinationVerdict } from './lark-chat-destination';
+
+/** What the caller asks for, already validated against the shared schema. */
+export interface MailRuleWriteRequest {
+  readonly companyId: string;
+  readonly userId: string;
+  readonly departmentId?: string;
+  /** Optional only when the member owns exactly one eligible Google account. */
+  readonly connectionId?: string;
+  readonly name: string;
+  readonly match: MailRuleMatch;
+  readonly destination: MailRuleDestination;
+  /** Ignored for `organize`, which sends nothing and so floods nobody. */
+  readonly rateLimitPerHour?: number;
+}
+
+/**
+ * Every way this ends, named.
+ *
+ * A single boolean would collapse six different situations with six different
+ * remedies into "it did not work" — and the remedy is the only part of a
+ * refusal a member can act on.
+ */
+export type MailRuleWriteResult =
+  | { readonly status: 'created'; readonly ruleId: string; readonly mailboxEmail: string }
+  /** Mail Ops is not configured, or its workers are switched off. */
+  | { readonly status: 'not_configured' }
+  | { readonly status: 'choose_connection'; readonly connections: readonly unknown[] }
+  | {
+      readonly status: 'connection_unavailable';
+      readonly reason: string;
+      readonly connectionState?: 'none_accessible' | 'insufficient_access' | 'requested_not_accessible';
+    }
+  /** The connection's owner gates background execution. Refused, not deferred. */
+  | { readonly status: 'approval_required' }
+  | { readonly status: 'destination_refused'; readonly reason: string }
+  | { readonly status: 'unavailable'; readonly reason: string };
+
+/*
+ * No duplicate outcome, and that is a property of create rather than an
+ * omission: `createRuleForMailbox` is an upsert on the canonical dedupe key, so
+ * re-creating a rule that already exists returns the same rule and re-creating
+ * an archived one revives it. `duplicate` and `duplicate_archived` belong to
+ * `replaceRule`, where editing a rule *into* another one is a real collision.
+ */
+
+export interface MailRuleConnectionResolution {
+  status: 'resolved' | 'choose_connection' | 'unavailable';
+  connectionId?: string;
+  mailboxEmail?: string;
+  connections?: readonly unknown[];
+  reason?: string;
+  connectionState?: 'none_accessible' | 'insufficient_access' | 'requested_not_accessible';
+}
+
+export interface MailRuleWriterDeps {
+  readonly runtime: { readonly pubsubConfigured: boolean; readonly workersEnabled: boolean };
+  resolveConnection(input: {
+    companyId: string;
+    userId: string;
+    connectionId?: string;
+  }): Promise<MailRuleConnectionResolution>;
+  /** Absent in compositions with no rate-limit service; the check is skipped. */
+  connectionApproval?(input: {
+    companyId: string;
+    connectionId: string;
+    action: 'execute';
+    // `not_governed` is a real answer — the connection has no policy at all —
+    // and only `required` and `unavailable` change what happens, so the rest
+    // pass through rather than being enumerated here.
+  }): Promise<{ kind: string; message?: string }>;
+  authorizeLarkChat?(input: {
+    companyId: string;
+    chatId: string;
+  }): Promise<LarkChatDestinationVerdict>;
+  repo: {
+    createRuleForMailbox(input: {
+      companyId: string;
+      createdByUserId: string;
+      departmentId?: string;
+      connectionId: string;
+      mailboxEmail: string;
+      name: string;
+      match: Record<string, unknown>;
+      action: Record<string, unknown>;
+      destination: Record<string, unknown>;
+      dedupeKey: string;
+    }): Promise<
+      | { ok: true; value: { ruleId: string; subscriptionId: string } }
+      | { ok: false; error: { message: string } }
+    >;
+  };
+}
+
+/**
+ * The action a destination implies, plus its ceiling.
+ *
+ * `organize` never carries one: labelling and archiving act on the member's own
+ * mailbox, where a burst is the correct response to a burst.
+ */
+export function actionForDestination(
+  destination: MailRuleDestination,
+  rateLimitPerHour: number | undefined,
+): MailRuleAction {
+  if (destination.type === 'none') {
+    // An organize action's detail rides on the request, not the destination —
+    // callers build it directly. Reaching here means a `none` destination with
+    // no organize action, which parseMailRule refuses.
+    return { type: 'organize' };
+  }
+  return {
+    type: destination.type === 'email' ? 'forward' : 'deliver',
+    ...(rateLimitPerHour !== undefined ? { rateLimitPerHour } : {}),
+  };
+}
+
+export function createMailRuleWriter(deps: MailRuleWriterDeps) {
+  return async function writeMailRule(
+    request: MailRuleWriteRequest,
+    action: MailRuleAction,
+  ): Promise<MailRuleWriteResult> {
+    // Nothing polls a mailbox when the workers are off, so a rule created here
+    // would sit looking healthy and never fire. This is the flag that took Mail
+    // Ops down silently in production for weeks; refusing loudly is the point.
+    if (!deps.runtime.pubsubConfigured || !deps.runtime.workersEnabled) {
+      return { status: 'not_configured' };
+    }
+
+    const connection = await deps.resolveConnection({
+      companyId: request.companyId,
+      userId: request.userId,
+      ...(request.connectionId ? { connectionId: request.connectionId } : {}),
+    });
+
+    if (connection.status === 'choose_connection') {
+      return { status: 'choose_connection', connections: connection.connections ?? [] };
+    }
+    if (connection.status === 'unavailable' || !connection.connectionId || !connection.mailboxEmail) {
+      return {
+        status: 'connection_unavailable',
+        reason: connection.reason ?? 'No usable Google account.',
+        ...(connection.connectionState ? { connectionState: connection.connectionState } : {}),
+      };
+    }
+
+    // Creating a rule is not one action — it authorises unbounded future
+    // background execution on this connection. A policy that gates `execute`
+    // has to gate the act of granting it, or the gate means nothing: approval
+    // is asked per interactive call, and a rule makes calls nobody is present
+    // for. So this refuses rather than queueing an approval that would have
+    // nobody to answer it.
+    if (deps.connectionApproval) {
+      const policy = await deps.connectionApproval({
+        companyId: request.companyId,
+        connectionId: connection.connectionId,
+        action: 'execute',
+      });
+      if (policy.kind === 'required') return { status: 'approval_required' };
+      if (policy.kind === 'unavailable') {
+        return {
+          status: 'unavailable',
+          reason: policy.message ?? 'Divo could not read the connection policy.',
+        };
+      }
+    }
+
+    // A named chat is grounded here, in code, once — not on every delivery, and
+    // not by asking the model nicely in prompt text.
+    if (request.destination.type === 'lark_chat' && deps.authorizeLarkChat) {
+      const verdict = await deps.authorizeLarkChat({
+        companyId: request.companyId,
+        chatId: request.destination.chatId,
+      });
+      if (verdict.status !== 'allowed') {
+        return { status: 'destination_refused', reason: larkRefusal(verdict) };
+      }
+    }
+
+    let parsed: { match: MailRuleMatch; action: MailRuleAction; destination: MailRuleDestination };
+    try {
+      // Cast at the boundary: `parseMailRule` takes the stored, opaque shape
+      // because it is what re-reads rows written by older builds. The request
+      // is already the typed one, so this narrows nothing and loses nothing.
+      parsed = parseMailRule({
+        match: request.match as Record<string, unknown>,
+        action: action as Record<string, unknown>,
+        destination: request.destination as Record<string, unknown>,
+      });
+    } catch (cause) {
+      return {
+        status: 'unavailable',
+        reason: cause instanceof Error ? cause.message : 'That rule could not be read.',
+      };
+    }
+
+    // Built once, so the canonical key and the key this rule would have carried
+    // before canonicalisation describe the very same request.
+    const identity: MailRuleIdentity = {
+      companyId: request.companyId,
+      userId: request.userId,
+      connectionId: connection.connectionId,
+      ...parsed,
+    };
+
+    const created = await deps.repo.createRuleForMailbox({
+      companyId: request.companyId,
+      createdByUserId: request.userId,
+      ...(request.departmentId ? { departmentId: request.departmentId } : {}),
+      connectionId: connection.connectionId,
+      mailboxEmail: connection.mailboxEmail,
+      name: request.name,
+      match: { ...parsed.match } as Record<string, unknown>,
+      action: { ...parsed.action } as Record<string, unknown>,
+      destination: { ...parsed.destination } as Record<string, unknown>,
+      dedupeKey: mailRuleDedupeKey(identity),
+    });
+    if (!created.ok) {
+      return { status: 'unavailable', reason: created.error.message };
+    }
+
+    return {
+      status: 'created',
+      ruleId: created.value.ruleId,
+      mailboxEmail: connection.mailboxEmail,
+    };
+  };
+}
+
+/**
+ * Two refusals, kept apart.
+ *
+ * `unknown_chat` is ordinary — Divo has simply never been in that room, and the
+ * member can fix it. `other_company` means one Lark installation serves more
+ * than one Divo company and the named room belongs to a different one; that is
+ * never the member's mistake and never theirs to fix.
+ */
+function larkRefusal(verdict: LarkChatDestinationVerdict): string {
+  if (verdict.status === 'other_company') {
+    return 'That Lark chat belongs to a different company, so Divo will not send your mail there.';
+  }
+  if (verdict.status === 'unavailable') {
+    return verdict.reason;
+  }
+  return 'Divo has never been in that Lark chat, so it cannot send mail there. Add Divo to it first.';
+}

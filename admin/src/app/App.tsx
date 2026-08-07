@@ -1,4 +1,4 @@
-import { Link, Navigate, Route, Routes } from "react-router-dom"
+import { Link, Navigate, Route, Routes, useParams } from "react-router-dom"
 import { Toaster } from "@/components/ui/sonner"
 import { WorkspaceShell } from "@/components/admin/workspace-shell"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
@@ -13,11 +13,18 @@ import { MemoriesPage } from "@/pages/MemoriesPage"
 import { CompanySkills } from "@/pages/workspace/screens-company-skills"
 import { LinkLarkPage } from "@/pages/LinkLarkPage"
 import { routed } from "@/pages/workspace/routes"
+import { SettingsShell } from "@/components/admin/settings-shell"
+import {
+  SettingsModels, SettingsPreferences, SettingsProfile,
+} from "@/pages/workspace/screens-settings"
 import { NoAccess } from "@/pages/workspace/ui"
 import {
-  YouAccess, YouApprovals, YouConnections, YouHome, YouMemory, YouSettings, YouSkills, YouUsage,
+  YouAccess, YouApprovals, YouConnections, YouMemory, YouSkills, YouUsage,
 } from "@/pages/workspace/screens-you"
-import { YouMailRules } from "@/pages/workspace/screens-mail"
+import { WorkspaceHome } from "@/pages/workspace/screens-home"
+import { AutomationDetail, Automations } from "@/pages/workspace/screens-automations"
+import { MailRuleDetail, MailRules } from "@/pages/workspace/screens-mail"
+import { MailRuleNew } from "@/pages/workspace/screens-mail-new"
 import {
   TeamApprovalPolicy, TeamHome, TeamPeople, TeamRoles, TeamUsage,
 } from "@/pages/workspace/screens-team"
@@ -90,6 +97,16 @@ const Protected = ({ children }: ProtectedProps) => {
  */
 const DefaultProtectedRoute = () => <Navigate to="/me" replace />
 
+/* Params have to survive a redirect, so these two cannot be a bare <Navigate>. */
+const RedirectPerson = () => {
+  const { userId } = useParams()
+  return <Navigate to={`/settings/company/people/${userId}`} replace />
+}
+const RedirectDepartment = () => {
+  const { departmentId } = useParams()
+  return <Navigate to={`/settings/company/departments/${departmentId}`} replace />
+}
+
 /**
  * Guards a scope this person may not have.
  *
@@ -116,16 +133,19 @@ const RequireScope = ({ kind, children }: { kind: ScopeKind; children: JSX.Eleme
 
 /* Workspace screens, adapted to routes. Live, apart from the few panels
    that mark themselves as sample data. */
-const MeHome = routed(YouHome)
+const MeHome = routed(WorkspaceHome)
 const MeApprovals = routed(YouApprovals)
 const MeArtifacts = routed(Artifacts)
+const MeAutomations = routed(Automations)
+const MeAutomationDetail = routed(AutomationDetail)
 const MeConnections = routed(YouConnections)
 const MeAccess = routed(YouAccess)
-const MeMailRules = routed(YouMailRules)
+const MeMail = routed(MailRules)
+const MeMailNew = routed(MailRuleNew)
+const MeMailDetail = routed(MailRuleDetail)
 const MeSkills = routed(YouSkills)
 const MeMemory = routed(YouMemory)
 const MeUsage = routed(YouUsage)
-const MeSettings = routed(YouSettings)
 const TeamOverview = routed(TeamHome)
 const TeamPeopleRoute = routed(TeamPeople)
 const TeamRolesRoute = routed(TeamRoles)
@@ -169,46 +189,100 @@ export function App() {
         >
           <Route index element={<DefaultProtectedRoute />} />
 
-          {/* ── You ─────────────────────────────────────────
-              Live, apart from skills, memory and artifacts — those panels
-              carry their own marker. */}
+          {/* ── You — the work surface only ─────────────────
+              Everything you *configure* moved to /settings. What stays is what
+              you came here to do: ask, decide, and read what came back. */}
           <Route path="me" element={<MeHome />} />
+          <Route path="me/mail" element={<MeMail />} />
+          {/* `new` before `:ruleId`, or the wizard is read as a rule id. */}
+          <Route path="me/mail/new" element={<MeMailNew />} />
+          <Route path="me/mail/:ruleId" element={<MeMailDetail />} />
           <Route path="me/approvals" element={<MeApprovals />} />
           <Route path="me/artifacts" element={<MeArtifacts />} />
-          <Route path="me/connections" element={<MeConnections />} />
-          <Route path="me/access" element={<MeAccess />} />
-          <Route path="me/mail-rules" element={<MeMailRules />} />
-          <Route path="me/skills" element={<MeSkills />} />
-          <Route path="me/memory" element={<MeMemory />} />
-          <Route path="me/usage" element={<MeUsage />} />
-          <Route path="me/settings" element={<MeSettings />} />
+          <Route path="me/automations" element={<MeAutomations />} />
+          <Route path="me/automations/:automationId" element={<MeAutomationDetail />} />
+
+          {/* Where the configuration pages used to live. Kept as redirects
+              rather than deleted: these paths are in people's history and in
+              links they have already sent each other, and a 404 for a page that
+              still exists somewhere else is the rudest possible answer. */}
+          <Route path="me/connections" element={<Navigate to="/settings/connections" replace />} />
+          <Route path="me/access" element={<Navigate to="/settings/access" replace />} />
+          <Route path="me/mail-rules" element={<Navigate to="/me/mail" replace />} />
+          <Route path="me/skills" element={<Navigate to="/settings/skills" replace />} />
+          <Route path="me/memory" element={<Navigate to="/settings/memory" replace />} />
+          <Route path="me/usage" element={<Navigate to="/settings/usage" replace />} />
+          <Route path="me/settings" element={<Navigate to="/settings/profile" replace />} />
 
           {/* ── Your team ─────────────────────────────────── */}
           <Route path="team" element={<RequireScope kind="team"><TeamOverview /></RequireScope>} />
+          <Route path="team/people" element={<Navigate to="/settings/team/people" replace />} />
+          <Route path="team/roles" element={<Navigate to="/settings/team/roles" replace />} />
+          <Route path="team/approvals" element={<Navigate to="/settings/team/approvals" replace />} />
+          <Route path="team/usage" element={<Navigate to="/settings/team/usage" replace />} />
+
+          {/* ── Company ─────────────────────────────────────
+              The Workspace screens, on the admin API the old pages used. */}
+          <Route path="home" element={<RequireScope kind="company"><CompanyHomeRoute /></RequireScope>} />
+          {/* Watching the company is work, not configuration, so AI Ops and the
+              audit log stay on this side of the door. */}
+          <Route path="ai-ops" element={<RequireScope kind="company"><CompanyAiOpsRoute /></RequireScope>} />
+          <Route path="ai-ops/runs/:runId" element={<RequireScope kind="company"><CompanyRunDetailRoute /></RequireScope>} />
+          <Route path="activity" element={<RequireScope kind="company"><CompanyAuditRoute /></RequireScope>} />
+
+          <Route path="people" element={<Navigate to="/settings/company/people" replace />} />
+          <Route path="people/:userId" element={<RedirectPerson />} />
+          <Route path="departments" element={<Navigate to="/settings/company/departments" replace />} />
+          <Route path="departments/:departmentId" element={<RedirectDepartment />} />
+          <Route path="skills" element={<Navigate to="/settings/company/skills" replace />} />
+          <Route path="memories" element={<Navigate to="/settings/company/memory" replace />} />
+          <Route path="guardrails" element={<Navigate to="/settings/company/guardrails" replace />} />
+          <Route path="policy" element={<Navigate to="/settings/company/policy" replace />} />
+          <Route path="connections" element={<Navigate to="/settings/company/connections" replace />} />
+          <Route path="connections/web-search" element={<Navigate to="/settings/company/connections/web-search" replace />} />
+        </Route>
+
+        {/* ── Settings takeover ─────────────────────────────
+            Its own layout, not a route inside the app shell — that is what
+            makes it a takeover. Scope guards are unchanged: the rail hides a
+            group this session cannot reach, and the route still refuses it, so
+            a hand-typed URL gets the same answer as the nav. */}
+        <Route
+          path="/settings"
+          element={
+            <Protected>
+              <SettingsShell />
+            </Protected>
+          }
+        >
+          <Route index element={<Navigate to="/settings/profile" replace />} />
+
+          <Route path="profile" element={<SettingsProfile />} />
+          <Route path="preferences" element={<SettingsPreferences />} />
+          <Route path="models" element={<SettingsModels />} />
+          <Route path="connections" element={<MeConnections />} />
+          <Route path="access" element={<MeAccess />} />
+          <Route path="mail-rules" element={<Navigate to="/me/mail" replace />} />
+          <Route path="skills" element={<MeSkills />} />
+          <Route path="memory" element={<MeMemory />} />
+          <Route path="usage" element={<MeUsage />} />
+
           <Route path="team/people" element={<RequireScope kind="team"><TeamPeopleRoute /></RequireScope>} />
           <Route path="team/roles" element={<RequireScope kind="team"><TeamRolesRoute /></RequireScope>} />
           <Route path="team/approvals" element={<RequireScope kind="team"><TeamApprovalsRoute /></RequireScope>} />
           <Route path="team/usage" element={<RequireScope kind="team"><TeamUsageRoute /></RequireScope>} />
 
-          {/* ── Company ─────────────────────────────────────
-              The Workspace screens, on the admin API the old pages used. */}
-          <Route path="home" element={<RequireScope kind="company"><CompanyHomeRoute /></RequireScope>} />
-          <Route path="people" element={<RequireScope kind="company"><CompanyPeopleRoute /></RequireScope>} />
-          <Route path="people/:userId" element={<RequireScope kind="company"><CompanyPersonDetailRoute /></RequireScope>} />
-          <Route path="people/:userId/connections/:connectionId" element={<RequireScope kind="company"><ConnectionGovernancePage /></RequireScope>} />
-          <Route path="departments" element={<RequireScope kind="company"><CompanyDepartmentsRoute /></RequireScope>} />
-          <Route path="departments/:departmentId" element={<RequireScope kind="company"><CompanyDepartmentDetailRoute /></RequireScope>} />
-          <Route path="ai-ops" element={<RequireScope kind="company"><CompanyAiOpsRoute /></RequireScope>} />
-          <Route path="ai-ops/runs/:runId" element={<RequireScope kind="company"><CompanyRunDetailRoute /></RequireScope>} />
-          <Route path="skills" element={<RequireScope kind="company"><CompanySkillsRoute /></RequireScope>} />
-          <Route path="memories" element={<RequireScope kind="company"><MemoriesPage /></RequireScope>} />
-          <Route path="guardrails" element={<RequireScope kind="company"><CompanyGuardrailsRoute /></RequireScope>} />
-          <Route path="policy" element={<RequireScope kind="company"><CompanyPolicyRoute /></RequireScope>} />
-          {/* Connections — fixture overview; web search is the one real company
-              connection surface that exists today. */}
-          <Route path="connections" element={<RequireScope kind="company"><CompanyConnectionsRoute /></RequireScope>} />
-          <Route path="connections/web-search" element={<RequireScope kind="company"><WebSearchPage /></RequireScope>} />
-          <Route path="activity" element={<RequireScope kind="company"><CompanyAuditRoute /></RequireScope>} />
+          <Route path="company/people" element={<RequireScope kind="company"><CompanyPeopleRoute /></RequireScope>} />
+          <Route path="company/people/:userId" element={<RequireScope kind="company"><CompanyPersonDetailRoute /></RequireScope>} />
+          <Route path="company/people/:userId/connections/:connectionId" element={<RequireScope kind="company"><ConnectionGovernancePage /></RequireScope>} />
+          <Route path="company/departments" element={<RequireScope kind="company"><CompanyDepartmentsRoute /></RequireScope>} />
+          <Route path="company/departments/:departmentId" element={<RequireScope kind="company"><CompanyDepartmentDetailRoute /></RequireScope>} />
+          <Route path="company/skills" element={<RequireScope kind="company"><CompanySkillsRoute /></RequireScope>} />
+          <Route path="company/memory" element={<RequireScope kind="company"><MemoriesPage /></RequireScope>} />
+          <Route path="company/guardrails" element={<RequireScope kind="company"><CompanyGuardrailsRoute /></RequireScope>} />
+          <Route path="company/policy" element={<RequireScope kind="company"><CompanyPolicyRoute /></RequireScope>} />
+          <Route path="company/connections" element={<RequireScope kind="company"><CompanyConnectionsRoute /></RequireScope>} />
+          <Route path="company/connections/web-search" element={<RequireScope kind="company"><WebSearchPage /></RequireScope>} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />
