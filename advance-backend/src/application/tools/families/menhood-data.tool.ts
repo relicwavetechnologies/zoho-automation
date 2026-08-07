@@ -53,7 +53,18 @@ const ResultSchema = z.object({
     ordersThrough: z.string().nullable(),
     maturedThrough: z.string(),
     maturityDays: z.number().int().positive(),
+    maturityCurve: z.array(z.object({
+      days: z.number().int().positive(),
+      arrivedPct: z.string(),
+    }).strict()).readonly(),
+    containsNoSpendOrCostData: z.literal(true),
   }).strict(),
+  // A LIMIT the caller wrote itself. The rows it returns are indistinguishable
+  // from a complete breakdown, so the truncation has to be named in the result.
+  queryLimit: z.object({
+    rows: z.number().int().positive(),
+    note: z.string(),
+  }).strict().optional(),
   exportCandidate: z.object({
     candidateId: z.string().uuid(),
     sourceKind: z.literal('menhood_query'),
@@ -144,6 +155,16 @@ export const createMenhoodDataTool = (deps: {
           : { kind: 'complete', totalRows: data.coverage.returnedRows },
         },
         freshness,
+        ...(validatedQuery.topLevelLimit === undefined
+          ? {}
+          : {
+              queryLimit: {
+                rows: validatedQuery.topLevelLimit,
+                note: `Your query ends in LIMIT ${validatedQuery.topLevelLimit}. These are the top ${validatedQuery.topLevelLimit} rows of an unknown total, not the full set.`
+                  + ' Present them as a top-N selection, never as a complete breakdown or distribution, and never compute a share, percentage of total, or "the rest" from them.'
+                  + ' To describe a full breakdown, rerun without the LIMIT or aggregate the tail into an explicit Other bucket.',
+              },
+            }),
         ...(candidate.kind === 'published'
           ? {
               exportCandidate: {

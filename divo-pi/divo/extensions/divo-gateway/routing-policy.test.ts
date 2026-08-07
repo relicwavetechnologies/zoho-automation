@@ -186,3 +186,49 @@ describe("divo-local prompt tracks the runtime flag", () => {
 		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /do not describe an approximation as a result/i);
 	});
 });
+
+/**
+ * Every fabrication in the Menhood stress test lived in the prose around the
+ * tables, never in the tables: a 5x multiplier borrowed from an unrelated
+ * comparison and contradicting the model's own printed figures, a three-month
+ * total relabelled as a monthly rate and inflating a headline by 2.6x, and a
+ * budget narrative asserted over a source that holds no spend data at all.
+ *
+ * These are not Menhood-specific, so the rule is not either. It belongs beside
+ * the persona every run receives, and it is pinned here so the summarizing
+ * discipline cannot be quietly dropped from it.
+ */
+describe("derived claims discipline", () => {
+	it("requires every derived figure to come from a query", () => {
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Retrieved rows are evidence/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /must come from a query, not from arithmetic you performed while writing/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /retrieve both and divide them in SQL/i);
+	});
+
+	it("blocks the two arithmetic failures that actually shipped", () => {
+		// A multiplier borrowed across comparisons.
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /never carries to a different one/i);
+		// A total presented as a rate.
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /A three-month total is not a monthly figure/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /State the divisor beside any rate/i);
+		// Contradicting its own table.
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /re-read the numbers you already presented/i);
+	});
+
+	it("forbids asserting causes, spend, or margins with no source", () => {
+		assert.match(
+			DIVO_COMPANY_PERSONA_PROMPT,
+			/Never assert a cause, a budget decision, a spend level, a cost, or a margin/i,
+		);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /not evidence of what anyone spent or decided/i);
+		// Absence has to be reportable, or it gets filled in.
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /absence is a finding to report, not a gap to fill/i);
+	});
+
+	it("carries a result's stated limits into the summary and any recommendation", () => {
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /carry those limits into every sentence/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /including the summary and any recommendation/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Do not invent a figure for a limit the result did not quantify/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /say what would confirm it instead of prescribing the action/i);
+	});
+});
