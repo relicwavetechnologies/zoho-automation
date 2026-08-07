@@ -2153,10 +2153,14 @@ export async function buildContainer(
     dryRun: input => mailOpsReadRepo.loadRuleForDryRun(input),
   }));
   /*
-   * The one create path, shared by the agent's tool and the web route.
+   * The web route's create path, built from exactly the dependencies the tool
+   * above is given so the two cannot disagree about what a rule may be.
    *
-   * Built from exactly the dependencies the tool above is given, so the two
-   * callers cannot drift into disagreeing about what a rule may be.
+   * They are still two paths: the tool writes through the repository directly.
+   * That is why `externalForward` is configured here and not only on the gate —
+   * the gate runs in the gateway executor, which the browser never reaches, so
+   * without this the identical rule is governed on one surface and not the
+   * other.
    */
   const writeMailRule = createMailRuleWriter({
     repo: mailOpsRepo,
@@ -2167,6 +2171,24 @@ export async function buildContainer(
     resolveConnection: resolveMailAutomationGoogleConnection,
     authorizeLarkChat: authorizeMailOpsLarkChat,
     connectionApproval: input => connectionRateLimits.approval(input),
+    /*
+     * The same approver the agent path would ask, resolved the same way.
+     *
+     * Reached through a closure rather than by moving the resolver up: it is
+     * only ever called while serving a request, long after this function has
+     * returned, and reordering composition to satisfy a lexical position is a
+     * change with far more reach than the one being made here.
+     */
+    externalForward: {
+      resolveManager: (departmentId, companyId, options) =>
+        approvalResolver.resolveManager(departmentId, companyId, options),
+      get disableManagerSelfBypass() {
+        return approvalGateOptions.disableManagerSelfBypass;
+      },
+      onSelfBypass: (bypassed) => {
+        logger.info('mail_ops.external_forward_self_bypass', bypassed);
+      },
+    },
   });
 
   // Same model the other background readers use — this is a small, strict

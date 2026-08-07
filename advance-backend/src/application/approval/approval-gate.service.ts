@@ -23,6 +23,7 @@ import {
 } from './approval-delivery';
 import type { KnowledgeMutationService } from '../knowledge/knowledge-mutation.service';
 import { externalMailDestination } from '../mail-ops/external-destination';
+import { inspectExternalForward } from '../mail-ops/external-forward-approval';
 
 export type { ApprovalAuthority } from './approval.types';
 
@@ -481,9 +482,11 @@ export class ApprovalGateService {
    * manager may or may not have configured; this one does not wait to be
    * switched on.
    *
-   * Deliberately every external rule, not merely the first to a given domain.
-   * Creating a rule is a rare act, and "first time" is state that would have to
-   * be right for this to be worth anything.
+   * The decision itself lives in `mail-ops/external-forward-approval`, because
+   * a member creating the identical rule in a browser never reaches this class
+   * and must get the same answer. What stays here is the part that is genuinely
+   * the gate's: reading arguments the model supplied, and speaking in
+   * `ApprovalRequirement`.
    */
   private async inspectExternalMailForward(
     input: Pick<ApprovalGateInput, 'toolId' | 'action' | 'args' | 'perm' | 'runContext'>,
@@ -495,41 +498,33 @@ export class ApprovalGateService {
     });
     if (!destination) return null;
 
-    const companyId = String(input.runContext.companyId);
-    const requesterId = String(input.runContext.userId);
-    const departmentId = input.runContext.departmentId
-      ? String(input.runContext.departmentId)
-      : input.perm.department?.id
-        ? String(input.perm.department.id)
-        : null;
-    const approver = departmentId
-      ? await this.resolver.resolveManager(departmentId, companyId, {
-          excludeUserId: requesterId,
-          allowCompanyAdminFallback: true,
-        })
-      : null;
-    if (!approver) {
-      // Fails closed. The alternative is a silent standing forward to an
-      // address nobody in the company chose.
-      return {
-        kind: 'misconfigured',
-        message:
-          `Forwarding mail to ${destination} leaves your organisation, so it `
-          + 'needs a manager or company admin to approve it — and none with a '
-          + 'connected Lark account could be found.',
-      };
-    }
-    if (
-      !this.options.disableManagerSelfBypass
-      && requesterId === approver.userId
-    ) {
-      this.logger.info('approval.gate.external_mail_forward_self_bypass', {
-        userId: requesterId,
+    const verdict = await inspectExternalForward(
+      {
         destination,
-      });
-      return { kind: 'allowed' };
+        companyId: String(input.runContext.companyId),
+        requesterId: String(input.runContext.userId),
+        departmentId: input.runContext.departmentId
+          ? String(input.runContext.departmentId)
+          : input.perm.department?.id
+            ? String(input.perm.department.id)
+            : null,
+      },
+      {
+        resolveManager: (departmentId, companyId, options) =>
+          this.resolver.resolveManager(departmentId, companyId, options),
+        disableManagerSelfBypass: this.options.disableManagerSelfBypass,
+        onSelfBypass: (bypassed) => {
+          this.logger.info('approval.gate.external_mail_forward_self_bypass', bypassed);
+        },
+      },
+    );
+
+    if (verdict.kind === 'not_external') return null;
+    if (verdict.kind === 'allowed') return { kind: 'allowed' };
+    if (verdict.kind === 'misconfigured') {
+      return { kind: 'misconfigured', message: verdict.message };
     }
-    return { kind: 'required', approver, authority: 'department_manager' };
+    return { kind: 'required', approver: verdict.approver, authority: 'department_manager' };
   }
 
   private async inspectKnowledgeMutation(

@@ -132,6 +132,24 @@ const REFUSALS: Record<Exclude<MailRuleWriteResult['status'], 'created'>, {
       + 'background, and a mail rule runs with nobody present to approve it. Ask them to allow '
       + 'background execution on this connection first.',
   },
+  /*
+   * Not a mistake in the request, so not a 400.
+   *
+   * A forward out of the company is a standing export of whatever it matches,
+   * and the person who has to agree to that is somebody other than whoever is
+   * filling in this form. 409 says the same thing the other two account-shaped
+   * refusals say: nothing about the rule is wrong, and rewriting it will not
+   * help.
+   */
+  external_approval_required: {
+    code: 409,
+    message: 'This forward leaves your organisation, so it needs approval first.',
+  },
+  external_approval_unavailable: {
+    code: 409,
+    message:
+      'This forward leaves your organisation and needs a manager or company admin to approve it.',
+  },
   destination_refused: { code: 400, message: 'Divo will not send mail to that destination.' },
   unavailable: { code: 500, message: 'That rule could not be created. Try again shortly.' },
 };
@@ -545,6 +563,11 @@ export function createMailAutomationsRoutes(
         match: body.match as MailRuleWriteRequest['match'],
         destination,
         ...(body.rateLimitPerHour !== undefined ? { rateLimitPerHour: body.rateLimitPerHour } : {}),
+        // What "outside the company" is measured against. Absent reads as
+        // external, which asks one extra person rather than none.
+        ...(typeof res.locals['email'] === 'string'
+          ? { requesterEmail: res.locals['email'] as string }
+          : {}),
       }, action);
 
       if (outcome.status === 'created') {
@@ -557,11 +580,30 @@ export function createMailAutomationsRoutes(
         return;
       }
 
+      if (outcome.status === 'external_approval_required') {
+        // Logged as its own event: this is the record that somebody tried to
+        // set up a standing export, which is worth being able to find later
+        // whether or not it was ever approved.
+        log.info('mail_automations.external_forward_pending', {
+          companyId: res.locals['companyId'],
+          destination: outcome.destination,
+          approverId: outcome.approver.userId,
+        });
+      }
+
       const refusal = REFUSALS[outcome.status];
       res.status(refusal.code).json({
         success: false,
         code: outcome.status,
-        message: 'reason' in outcome && outcome.reason ? outcome.reason : refusal.message,
+        message: outcome.status === 'external_approval_required'
+          // Names the person, because "needs approval" without a name leaves
+          // somebody with nothing to do next.
+          ? `Forwarding to ${outcome.destination} sends your mail outside your `
+            + `organisation, so ${outcome.approver.displayName} has to approve it first.`
+          : 'reason' in outcome && outcome.reason ? outcome.reason : refusal.message,
+        ...(outcome.status === 'external_approval_required'
+          ? { approverName: outcome.approver.displayName, destination: outcome.destination }
+          : {}),
         ...(outcome.status === 'choose_connection' ? { connections: outcome.connections } : {}),
         ...(outcome.status === 'connection_unavailable' && outcome.connectionState
           ? { connectionState: outcome.connectionState }
