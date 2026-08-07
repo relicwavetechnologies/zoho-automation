@@ -638,3 +638,44 @@ export function useCreateMailRule() {
 
   return { ...state, create }
 }
+
+/**
+ * Pause, resume, archive.
+ *
+ * Archive rather than delete, and the word is the honest one: an archived rule
+ * keeps its identity, so re-creating the identical rule brings that row back
+ * rather than making a second one beside it. Calling it "delete" would promise
+ * a disappearance that does not happen — the rule is still there under All.
+ */
+export type MailRuleChange = 'pause' | 'resume' | 'archive'
+
+export function useMailRuleStatus() {
+  const { token } = useAdminAuth()
+  const [pending, setPending] = useState<MailRuleChange | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const change = useCallback(async (ruleId: string, next: MailRuleChange): Promise<boolean> => {
+    if (!token) return false
+    setPending(next)
+    setError(null)
+    try {
+      if (next === 'archive') {
+        await api.delete(`${BASE}/rules/${ruleId}`, {}, token, { quiet: true })
+      } else {
+        await api.post(`${BASE}/rules/${ruleId}/${next}`, {}, token, { quiet: true })
+      }
+      return true
+    } catch (e) {
+      // The server distinguishes "not yours", "not real" and "nothing would
+      // poll this mailbox anyway", and only its sentence knows which.
+      setError(e instanceof Error && e.message.length > 0
+        ? e.message
+        : 'That change could not be saved.')
+      return false
+    } finally {
+      setPending(null)
+    }
+  }, [token])
+
+  return { pending, error, change }
+}

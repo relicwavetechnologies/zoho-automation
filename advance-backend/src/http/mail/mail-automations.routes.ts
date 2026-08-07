@@ -26,6 +26,8 @@ import { dryRunMailRule } from '../../application/mail-ops/mail-rule-dry-run';
 import { summariseCorrespondents } from '../../application/mail-ops/mail-correspondents';
 import {
   actionForDestination,
+  type MailRuleStatusChange,
+  type MailRuleStatusResult,
   type MailRuleWriteRequest,
   type MailRuleWriteResult,
 } from '../../application/mail-ops/mail-rule-writer';
@@ -171,10 +173,16 @@ export interface MailAutomationsRouteDeps {
    * the same reason as above: the router still mounts where nothing can write,
    * and says so plainly rather than pretending.
    */
-  writeRule?: (
-    request: MailRuleWriteRequest,
-    action: MailRuleAction,
-  ) => Promise<MailRuleWriteResult>;
+  writeRule?: {
+    create: (
+      request: MailRuleWriteRequest,
+      action: MailRuleAction,
+    ) => Promise<MailRuleWriteResult>;
+    setStatus: (
+      input: { companyId: string; userId: string; ruleId: string },
+      change: MailRuleStatusChange,
+    ) => Promise<MailRuleStatusResult>;
+  };
   logger: Logger;
 }
 
@@ -515,7 +523,7 @@ export function createMailAutomationsRoutes(
           }
         : actionForDestination(destination, body.rateLimitPerHour);
 
-      const outcome = await deps.writeRule({
+      const outcome = await deps.writeRule.create({
         ...actor(res),
         ...(res.locals['runtimeDepartmentId']
           ? { departmentId: String(res.locals['runtimeDepartmentId']) }
@@ -554,6 +562,73 @@ export function createMailAutomationsRoutes(
       fail(res, 'create', error);
     }
   });
+
+  /*
+   * Off, on, and away.
+   *
+   * `POST` for pause and resume, `DELETE` for archive — and archive really is
+   * what DELETE does here, because an archived rule keeps its identity so that
+   * re-creating the same rule revives that row rather than making a second one
+   * beside it. A hard delete would leave two rules forwarding every matching
+   * message twice, which is the collision the dedupe key exists to prevent.
+   */
+  const statusRoute = (change: MailRuleStatusChange) =>
+    async (req: import('express').Request, res: Response): Promise<void> => {
+      if (!deps.writeRule) {
+        res.status(503).json({
+          success: false,
+          message: 'Mail rules cannot be changed in this environment.',
+        });
+        return;
+      }
+      const ruleId = z.string().uuid().safeParse(req.params['ruleId']);
+      if (!ruleId.success) {
+        res.status(400).json({ success: false, message: 'Invalid rule ID.' });
+        return;
+      }
+      try {
+        const outcome = await deps.writeRule.setStatus(
+          { ...actor(res), ruleId: ruleId.data },
+          change,
+        );
+        if (outcome.status === 'changed') {
+          log.info('mail_automations.rule_status_changed', {
+            companyId: res.locals['companyId'],
+            ruleId: ruleId.data,
+            change,
+          });
+          res.json({ success: true, data: { ruleId: ruleId.data, change } });
+          return;
+        }
+        if (outcome.status === 'not_found') {
+          // Not yours and not real are deliberately indistinguishable: the
+          // repository enforces ownership inside the query, so answering them
+          // differently would confirm that somebody else's rule exists.
+          res.status(404).json({
+            success: false,
+            message: 'That mail rule was not found in your account.',
+          });
+          return;
+        }
+        if (outcome.status === 'not_configured') {
+          res.status(503).json({
+            success: false,
+            code: 'not_configured',
+            message:
+              'Mail automation is not running in this environment, so resuming this rule would '
+              + 'not start it firing again.',
+          });
+          return;
+        }
+        res.status(500).json({ success: false, message: outcome.reason });
+      } catch (error) {
+        fail(res, change, error);
+      }
+    };
+
+  router.post('/rules/:ruleId/pause', statusRoute('pause'));
+  router.post('/rules/:ruleId/resume', statusRoute('resume'));
+  router.delete('/rules/:ruleId', statusRoute('archive'));
 
   /**
    * Who writes to this mailbox, for the rule builder's From and To fields.
