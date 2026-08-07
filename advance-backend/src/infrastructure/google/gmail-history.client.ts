@@ -607,9 +607,17 @@ export class GmailHistoryClient {
  */
 export class MailTooLargeError extends Error {
   constructor(readonly bytes: number, readonly limit: number) {
+    // To one decimal place, because rounding to whole megabytes produced
+    // "This message is 25 MB, and Gmail will not send anything over 25 MB" —
+    // true, since the message was 25.25 MB against a 25 MB ceiling, and
+    // unreadable. A person seeing the same number twice concludes the software
+    // is broken rather than that their mail is too big.
+    const mb = (value: number) => (value / 1024 / 1024).toFixed(1);
     super(
-      `This message is ${Math.round(bytes / 1024 / 1024)} MB, and Gmail will `
-        + `not send anything over ${Math.round(limit / 1024 / 1024)} MB.`,
+      `This message is ${mb(bytes)} MB and Gmail will not send anything over `
+        + `${mb(limit)} MB, so it could not be forwarded. Gmail accepts mail up `
+        + 'to twice that size but refuses to send it on, which is why the '
+        + 'message arrived but the forward could not leave.',
     );
     this.name = 'MailTooLargeError';
   }

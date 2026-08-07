@@ -416,7 +416,9 @@ describe('GmailHistoryClient forward stamping', () => {
     // like a transient fault — nothing said the message was the reason.
     await assert.rejects(
       stageForward(26 * 1024 * 1024),
-      /Gmail will not send anything over 25 MB/,
+      // To one decimal place, or a 25.25 MB message against a 25 MB ceiling
+      // reports both as "25 MB" and reads as a bug rather than as a limit.
+      /is 26\.0 MB and Gmail will not send anything over 25\.0 MB/,
     );
   });
 
