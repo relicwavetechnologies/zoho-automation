@@ -692,6 +692,9 @@ export const createServer = (c: Container): DivoServerApplication => {
       // A forward out of the company is refused by the writer and asked about
       // here, on the same card the agent path sends.
       requestExternalForwardApproval: c.requestMailRuleExternalApproval,
+      // A browser session carries no run context, so the department has to be
+      // looked up rather than read off the token.
+      resolveDepartmentId: c.resolveMemberDepartmentId,
       compileRule: c.compileMailRule,
       memberAuth: {
         prisma: c.prisma,

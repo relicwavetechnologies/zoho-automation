@@ -367,6 +367,11 @@ export interface Container {
   writeMailRule: ReturnType<typeof createMailRuleWriter>;
   /** Asks a manager about a forward the web route refused to make unasked. */
   requestMailRuleExternalApproval: ReturnType<typeof createMailRuleExternalApproval>;
+  /** Which department a signed-in member is acting in, for surfaces with no run context. */
+  resolveMemberDepartmentId: (input: {
+    companyId: string;
+    userId: string;
+  }) => Promise<string | null>;
   /** One sentence into a draft rule. Creates nothing. */
   compileMailRule: ReturnType<typeof createMailRuleCompiler>;
   mailOpsWorker: MailOpsWorker;
@@ -2636,6 +2641,37 @@ export async function buildContainer(
     logger: logger.child({ service: 'scheduled-lark-dm-channel' }),
   });
   /*
+   * The department a member is acting in, for a request that carries no run.
+   *
+   * The preference first, because that is what the member last chose and what
+   * every runtime path already treats as their active department. Their
+   * membership second: somebody who has never opened the switcher still belongs
+   * somewhere, and answering "no department" for them means Divo cannot work
+   * out who approves anything they ask for.
+   */
+  const resolveMemberDepartmentId = async (input: {
+    companyId: string;
+    userId: string;
+  }): Promise<string | null> => {
+    const preference = await prisma.userDepartmentPreference.findUnique({
+      where: { companyId_userId: { companyId: input.companyId, userId: input.userId } },
+      select: { activeDepartmentId: true },
+    });
+    if (preference?.activeDepartmentId) return preference.activeDepartmentId;
+
+    const membership = await prisma.departmentMembership.findFirst({
+      where: {
+        userId: input.userId,
+        status: 'active',
+        department: { companyId: input.companyId, status: 'active' },
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: { departmentId: true },
+    });
+    return membership?.departmentId ?? null;
+  };
+
+  /*
    * Built here rather than beside the writer because it needs the gate, and the
    * gate needs half the container. The writer refuses an external forward on
    * its own; this is what turns that refusal into a question somebody can
@@ -2889,6 +2925,7 @@ export async function buildContainer(
     mailOpsReadRepo,
     writeMailRule,
     requestMailRuleExternalApproval,
+    resolveMemberDepartmentId,
     compileMailRule,
     mailOpsWorker,
     canvaMcpOAuthService,

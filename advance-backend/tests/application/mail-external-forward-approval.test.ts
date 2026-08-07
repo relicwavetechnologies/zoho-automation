@@ -64,6 +64,33 @@ describe('external forward approval — the decision', () => {
     assert.equal(asked, false);
   });
 
+  it('says Divo could not look, rather than that nobody was found', async () => {
+    /*
+     * Two different facts, and they used to share one sentence. "None could be
+     * found" is a claim about the company; with no department Divo never
+     * searched at all. On the web that was reached every single time, and it
+     * sent people to appoint a manager they already had.
+     */
+    const noDepartment = await inspectExternalForward(
+      { destination: 'x@gmail.com', companyId: 'c1', requesterId: 'u1', departmentId: null },
+      port(),
+    );
+    const noApprover = await inspectExternalForward(
+      { destination: 'x@gmail.com', companyId: 'c1', requesterId: 'u1', departmentId: 'd1' },
+      port({ resolveManager: async () => null }),
+    );
+    assert.equal(noDepartment.kind, 'misconfigured');
+    assert.equal(noApprover.kind, 'misconfigured');
+    assert.notEqual(
+      noDepartment.kind === 'misconfigured' && noDepartment.message,
+      noApprover.kind === 'misconfigured' && noApprover.message,
+    );
+    assert.ok(
+      noDepartment.kind === 'misconfigured'
+        && noDepartment.message.includes('which department'),
+    );
+  });
+
   it('lets the approver set up their own, and says so', async () => {
     const seen: string[] = [];
     const verdict = await inspectExternalForward(

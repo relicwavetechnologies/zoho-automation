@@ -69,12 +69,30 @@ export async function inspectExternalForward(
   const { destination } = input;
   if (!destination) return { kind: 'not_external' };
 
-  const approver = input.departmentId
-    ? await port.resolveManager(input.departmentId, input.companyId, {
-        excludeUserId: input.requesterId,
-        allowCompanyAdminFallback: true,
-      })
-    : null;
+  if (!input.departmentId) {
+    /*
+     * Fails closed, and says the true thing.
+     *
+     * This used to fall into the sentence below — "none could be found" — which
+     * is a claim about the company when the fact is that Divo never looked. On
+     * the web path it was reached every single time, because the department was
+     * read from a field only Pi runtime tokens carry, and it sent somebody to
+     * go and appoint a manager they already had.
+     */
+    return {
+      kind: 'misconfigured',
+      message:
+        `Forwarding mail to ${destination} leaves your organisation, so it needs `
+        + 'approval — but Divo could not work out which department you are in, so '
+        + 'it does not know whose approval to ask for. Ask an administrator to '
+        + 'put you in a department.',
+    };
+  }
+
+  const approver = await port.resolveManager(input.departmentId, input.companyId, {
+    excludeUserId: input.requesterId,
+    allowCompanyAdminFallback: true,
+  });
 
   if (!approver) {
     // Fails closed. The alternative is a silent standing forward to an address

@@ -209,6 +209,19 @@ export interface MailAutomationsRouteDeps {
       change: MailRuleStatusChange,
     ) => Promise<MailRuleStatusResult>;
   };
+  /**
+   * Which department the signed-in member belongs to.
+   *
+   * `res.locals.runtimeDepartmentId` is set by the member-auth middleware for
+   * Pi runtime tokens **and nothing else** — a browser session never carries
+   * one. Reading only that made every web request look department-less, which
+   * is how an external forward reached "nobody can approve this" in a company
+   * with two department managers and two admins: Divo never asked.
+   */
+  resolveDepartmentId?: (input: {
+    companyId: string;
+    userId: string;
+  }) => Promise<string | null>;
   /** Turns one sentence into a draft rule. Absent where no model is configured. */
   compileRule?: (input: {
     sentence: string;
@@ -564,11 +577,21 @@ export function createMailAutomationsRoutes(
           }
         : actionForDestination(destination, body.rateLimitPerHour);
 
+      /*
+       * Resolved once, used by both the rule row and the approval question.
+       *
+       * The runtime's own value wins where there is one — a Pi token states
+       * which department it is acting for, and that is more specific than the
+       * member's standing preference.
+       */
+      const who = actor(res);
+      const departmentId = res.locals['runtimeDepartmentId']
+        ? String(res.locals['runtimeDepartmentId'])
+        : (await deps.resolveDepartmentId?.(who)) ?? null;
+
       const outcome = await deps.writeRule.create({
-        ...actor(res),
-        ...(res.locals['runtimeDepartmentId']
-          ? { departmentId: String(res.locals['runtimeDepartmentId']) }
-          : {}),
+        ...who,
+        ...(departmentId ? { departmentId } : {}),
         ...(body.connectionId ? { connectionId: body.connectionId } : {}),
         name: body.name,
         // The schema is the tool's own, so the value is already right; the cast
@@ -615,11 +638,9 @@ export function createMailAutomationsRoutes(
 
         if (deps.requestExternalForwardApproval && body.destination.type === 'email') {
           const asked = await deps.requestExternalForwardApproval({
-            ...actor(res),
+            ...who,
             companyRole: String(res.locals['aiRole'] ?? 'MEMBER'),
-            ...(res.locals['runtimeDepartmentId']
-              ? { departmentId: String(res.locals['runtimeDepartmentId']) }
-              : {}),
+            ...(departmentId ? { departmentId } : {}),
             ...(typeof res.locals['email'] === 'string'
               ? { requesterEmail: res.locals['email'] as string }
               : {}),
