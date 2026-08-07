@@ -685,9 +685,13 @@ export const createServer = (c: Container): DivoServerApplication => {
       // The one write on this router, and deliberately the narrowest possible
       // one: it moves a poll schedule forward and touches nothing else.
       requestReconciliation: input => c.mailOpsRepo.requestReconciliation(input),
-      // Creating and changing a rule run the same sequence the agent's tool
-      // runs, because it is literally the same function.
+      // Creating and changing a rule run the same checks the agent's tool runs,
+      // built from the same dependencies — though not, today, the same
+      // function: the tool still writes through the repository directly.
       writeRule: c.writeMailRule,
+      // A forward out of the company is refused by the writer and asked about
+      // here, on the same card the agent path sends.
+      requestExternalForwardApproval: c.requestMailRuleExternalApproval,
       compileRule: c.compileMailRule,
       memberAuth: {
         prisma: c.prisma,

@@ -206,6 +206,18 @@
 .cur .ws-ceiling svg { color: var(--ws-warning); flex-shrink: 0; margin-top: 1px; }
 .cur .ws-ceiling b { color: var(--cur-ink); font-weight: 500; }
 
+/* Waiting on a person, which is not a warning and must not read as one.
+   Same shape as `.ws-ceiling` so it sits in the same place in the flow, and a
+   deliberately quiet surface: nothing here is wrong, and there is nothing to
+   fix — the member's own work is finished and somebody else has it now. */
+.cur .ws-pending {
+  display: flex; gap: 10px; padding: 12px 14px; border-radius: var(--cur-r-cta);
+  background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline);
+  font-size: 12px; color: var(--cur-body); line-height: 1.5;
+}
+.cur .ws-pending svg { color: var(--cur-muted); flex-shrink: 0; margin-top: 1px; }
+.cur .ws-pending b { color: var(--cur-ink); font-weight: 500; }
+
 /* ── Consent / scope disclosure ───────────────────────
    A member connecting Google is not configuring a setting, they are granting
    access to their own mail. This reads as a consent surface, not a form. */

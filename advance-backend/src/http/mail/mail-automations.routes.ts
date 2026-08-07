@@ -36,6 +36,10 @@ import type {
   MailRuleAction,
   MailRuleDestination,
 } from '../../application/mail-ops/mail-ops.types';
+import type {
+  MailRuleExternalApprovalInput,
+  MailRuleExternalApprovalOutcome,
+} from '../../application/mail-ops/mail-rule-external-approval';
 import type { InfraError } from '../../shared/errors';
 import type { Result } from '../../shared/result';
 
@@ -210,6 +214,16 @@ export interface MailAutomationsRouteDeps {
     sentence: string;
     mailboxEmail: string;
   }) => Promise<MailRuleCompilation>;
+  /**
+   * Asks the manager about a forward that leaves the company.
+   *
+   * Optional, and its absence is not silent: the route still refuses the rule
+   * and still names the approver, so nothing ungoverned is created — the member
+   * is simply told to go and ask rather than being asked on their behalf.
+   */
+  requestExternalForwardApproval?: (
+    input: MailRuleExternalApprovalInput,
+  ) => Promise<MailRuleExternalApprovalOutcome>;
   logger: Logger;
 }
 
@@ -580,15 +594,83 @@ export function createMailAutomationsRoutes(
         return;
       }
 
+      /*
+       * Not a dead end — the manager is asked, here, now.
+       *
+       * The rule is deliberately not written first and activated later. A row
+       * that exists but does nothing is a rule the member can see, name and
+       * believe in, and every screen would then have to explain why it is
+       * inert. The request is the thing that is pending; the rule is written
+       * once, when the answer is yes.
+       */
       if (outcome.status === 'external_approval_required') {
-        // Logged as its own event: this is the record that somebody tried to
-        // set up a standing export, which is worth being able to find later
+        // Logged whatever happens next: this is the record that somebody tried
+        // to set up a standing export, which is worth being able to find later
         // whether or not it was ever approved.
         log.info('mail_automations.external_forward_pending', {
           companyId: res.locals['companyId'],
           destination: outcome.destination,
           approverId: outcome.approver.userId,
         });
+
+        if (deps.requestExternalForwardApproval && body.destination.type === 'email') {
+          const asked = await deps.requestExternalForwardApproval({
+            ...actor(res),
+            companyRole: String(res.locals['aiRole'] ?? 'MEMBER'),
+            ...(res.locals['runtimeDepartmentId']
+              ? { departmentId: String(res.locals['runtimeDepartmentId']) }
+              : {}),
+            ...(typeof res.locals['email'] === 'string'
+              ? { requesterEmail: res.locals['email'] as string }
+              : {}),
+            larkOpenId: (res.locals['larkOpenId'] as string | null) ?? null,
+            larkTenantKey: (res.locals['larkTenantKey'] as string | null) ?? null,
+            mailboxEmail: outcome.mailboxEmail,
+            rule: {
+              connectionId: outcome.connectionId,
+              name: body.name,
+              match: body.match as MailRuleWriteRequest['match'],
+              email: body.destination.email,
+              ...(body.rateLimitPerHour !== undefined
+                ? { rateLimitPerHour: body.rateLimitPerHour }
+                : {}),
+            },
+          });
+
+          if (asked.kind === 'requested') {
+            // 202, not 201: the request was taken, and the rule does not exist.
+            res.status(202).json({
+              success: true,
+              code: 'pending_approval',
+              data: {
+                status: 'pending_approval',
+                approvalId: asked.approvalId,
+                approverName: asked.approverName,
+                destination: outcome.destination,
+                reused: asked.reused,
+              },
+              message: asked.reused
+                ? `${asked.approverName} has already been asked about this rule and has not answered yet.`
+                : `Asked ${asked.approverName} to approve forwarding to ${outcome.destination}. `
+                  + 'The rule turns on by itself once they agree.',
+            });
+            return;
+          }
+          if (asked.kind !== 'unavailable') {
+            res.status(409).json({
+              success: false,
+              code: asked.kind === 'declined' ? 'external_approval_declined' : 'external_approval_granted',
+              message: asked.message,
+            });
+            return;
+          }
+          // Fell through: say who has to approve rather than why Divo could not
+          // ask them, which is nothing the member can act on.
+          log.warn('mail_automations.external_forward_ask_failed', {
+            companyId: res.locals['companyId'],
+            reason: asked.message,
+          });
+        }
       }
 
       const refusal = REFUSALS[outcome.status];

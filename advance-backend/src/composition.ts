@@ -179,6 +179,7 @@ import {
 import { RunOriginStore } from './application/connections/run-origin.store';
 import { createLarkChatDestinationAuthorizer } from './application/mail-ops/lark-chat-destination';
 import { createMailRuleWriter } from './application/mail-ops/mail-rule-writer';
+import { createMailRuleExternalApproval } from './application/mail-ops/mail-rule-external-approval';
 import { createMailRuleCompiler } from './application/mail-ops/mail-rule-compiler';
 import {
   createBeginGoogleAuthorization,
@@ -362,8 +363,10 @@ export interface Container {
   connectionAuthorizationRepo: ConnectionAuthorizationRepository;
   mailOpsRepo: MailOpsRepository;
   mailOpsReadRepo: MailOpsReadRepository;
-  /** The one create path for a mail rule, shared by the tool and the web route. */
+  /** The web route's create path for a mail rule. */
   writeMailRule: ReturnType<typeof createMailRuleWriter>;
+  /** Asks a manager about a forward the web route refused to make unasked. */
+  requestMailRuleExternalApproval: ReturnType<typeof createMailRuleExternalApproval>;
   /** One sentence into a draft rule. Creates nothing. */
   compileMailRule: ReturnType<typeof createMailRuleCompiler>;
   mailOpsWorker: MailOpsWorker;
@@ -2632,6 +2635,17 @@ export async function buildContainer(
     }),
     logger: logger.child({ service: 'scheduled-lark-dm-channel' }),
   });
+  /*
+   * Built here rather than beside the writer because it needs the gate, and the
+   * gate needs half the container. The writer refuses an external forward on
+   * its own; this is what turns that refusal into a question somebody can
+   * answer.
+   */
+  const requestMailRuleExternalApproval = createMailRuleExternalApproval({
+    approvalGate,
+    permissions,
+    logger,
+  });
   const approvalResumer  = new ApprovalResumerService({
     approvalRepo,
     larkAdapter,
@@ -2874,6 +2888,7 @@ export async function buildContainer(
     mailOpsRepo,
     mailOpsReadRepo,
     writeMailRule,
+    requestMailRuleExternalApproval,
     compileMailRule,
     mailOpsWorker,
     canvaMcpOAuthService,

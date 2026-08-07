@@ -124,6 +124,14 @@ export type MailRuleWriteResult =
       readonly status: 'external_approval_required';
       readonly destination: string;
       readonly approver: { readonly userId: string; readonly displayName: string };
+      /**
+       * The mailbox this would have watched, carried so the approved request
+       * binds to the very account the member was looking at. Re-resolving it
+       * when the approval comes back could pick a different one of their Google
+       * accounts, and nothing on the card would have said which.
+       */
+      readonly connectionId: string;
+      readonly mailboxEmail: string;
     }
   /** External forward, and nobody in the company can approve it. Fails closed. */
   | { readonly status: 'external_approval_unavailable'; readonly reason: string }
@@ -342,6 +350,8 @@ export function createMailRuleWriter(deps: MailRuleWriterDeps) {
             userId: verdict.approver.userId,
             displayName: verdict.approver.displayName,
           },
+          connectionId: connection.connectionId,
+          mailboxEmail: connection.mailboxEmail,
         };
       }
     }

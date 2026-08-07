@@ -545,23 +545,64 @@ export type MailRuleCreateState = {
   error: string | null
   /** Which check refused, for the rare case the UI should act rather than tell. */
   code: string | null
+  /**
+   * A forward that leaves the company, now waiting on a named person.
+   *
+   * Not an error, and kept apart from one for that reason: nothing the member
+   * typed is wrong, no rule exists yet, and the only thing left to do is wait.
+   */
+  pending: { approverName: string; destination: string; reused: boolean } | null
 }
+
+/**
+ * Turning a rule on has three endings, not two.
+ *
+ * The third — asked, and waiting — reads as success on the wire (202) and as
+ * failure to anybody looking only for a rule id. Naming it here is what stops
+ * the wizard navigating to a rule that was never created.
+ */
+export type MailRuleCreateOutcome =
+  | { kind: 'created'; ruleId: string }
+  | { kind: 'pending_approval'; approverName: string; destination: string; reused: boolean }
+  | { kind: 'refused' }
 
 export function useCreateMailRule() {
   const { token } = useAdminAuth()
   const [state, setState] = useState<MailRuleCreateState>({
-    saving: false, error: null, code: null,
+    saving: false, error: null, code: null, pending: null,
   })
 
-  const create = useCallback(async (draft: MailRuleDraft): Promise<string | null> => {
-    if (!token) return null
-    setState({ saving: true, error: null, code: null })
+  const create = useCallback(async (draft: MailRuleDraft): Promise<MailRuleCreateOutcome> => {
+    if (!token) return { kind: 'refused' }
+    setState({ saving: true, error: null, code: null, pending: null })
     try {
-      const data = await api.post<{ ruleId: string; mailboxEmail: string }>(
-        `${BASE}/rules`, draft, token, { quiet: true },
-      )
-      setState({ saving: false, error: null, code: null })
+      const data = await api.post<{
+        ruleId?: string
+        mailboxEmail?: string
+        status?: string
+        approverName?: string
+        destination?: string
+        reused?: boolean
+      }>(`${BASE}/rules`, draft, token, { quiet: true })
+
+      // Read from the body rather than the status code: `api.post` hands back
+      // the payload and nothing else, and the payload already says which of the
+      // two endings this is.
+      if (data.status === 'pending_approval') {
+        const pending = {
+          approverName: data.approverName ?? 'your manager',
+          destination: data.destination
+            ?? (draft.destination.type === 'email' ? draft.destination.email : ''),
+          reused: data.reused === true,
+        }
+        setState({ saving: false, error: null, code: 'pending_approval', pending })
+        return { kind: 'pending_approval', ...pending }
+      }
+
+      setState({ saving: false, error: null, code: null, pending: null })
       return data.ruleId
+        ? { kind: 'created', ruleId: data.ruleId }
+        : { kind: 'refused' }
     } catch (error) {
       // Six refusals with six different remedies, and the remedy is the only
       // part a member can act on — so the server's message is shown verbatim
@@ -572,8 +613,8 @@ export function useCreateMailRule() {
       const code = typeof (error as { code?: unknown })?.code === 'string'
         ? (error as { code: string }).code
         : null
-      setState({ saving: false, error: message, code })
-      return null
+      setState({ saving: false, error: message, code, pending: null })
+      return { kind: 'refused' }
     }
   }, [token])
 

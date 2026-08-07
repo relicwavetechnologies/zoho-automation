@@ -256,10 +256,14 @@ export function MailRuleNew({ replay }: ScreenProps) {
         ? { rateLimitPerHour: Number(ceiling) }
         : {}),
     }
-    const ruleId = await creating.create(request)
+    const outcome = await creating.create(request)
     // Straight to the rule itself, not back to the list: the next question is
     // always "would it have caught anything", and that lives on its page.
-    if (ruleId) navigate(`/me/mail/${ruleId}`)
+    //
+    // A rule waiting on approval has no page to go to, deliberately: it does
+    // not exist yet. Staying put is what makes that true rather than showing a
+    // rule somebody could pause, rename or believe is running.
+    if (outcome.kind === 'created') navigate(`/me/mail/${outcome.ruleId}`)
   }
 
   if (resolution.status === 'loading') return <div className="page"><SkelRows n={4} /></div>
@@ -307,6 +311,26 @@ export function MailRuleNew({ replay }: ScreenProps) {
 
       <div className="ws-stack">
         <StepBar step={step} onPick={setStep} />
+
+        {/* Asked, not refused.
+            Nothing the member typed is wrong and there is nothing to correct —
+            a person has to answer. Rendering this as an error would send
+            somebody back to rewrite a rule that was fine. */}
+        {creating.pending ? (
+          <div className="ws-pending">
+            <ShieldAlert size={14} />
+            <div>
+              <b>
+                {creating.pending.reused
+                  ? `${creating.pending.approverName} has already been asked.`
+                  : `Asked ${creating.pending.approverName} to approve this.`}
+              </b>{' '}
+              Forwarding to {creating.pending.destination} sends mail outside your
+              organisation, so it needs their yes. <b>The rule turns on by itself</b> once
+              they agree — you do not need to come back and do this again.
+            </div>
+          </div>
+        ) : null}
 
         {/* The server's own sentence, never replaced with a generic failure:
             six checks can refuse this and each has a different remedy, which is
@@ -586,11 +610,16 @@ export function MailRuleNew({ replay }: ScreenProps) {
             <button
               type="button"
               className="btn primary"
-              disabled={creating.saving || !canCreate}
+              // Nothing to press once it is with somebody else. Leaving it live
+              // invites the same request again, and a member who clicks twice
+              // should not have to wonder whether they sent two.
+              disabled={creating.saving || !canCreate || creating.pending !== null}
               title={canCreate ? undefined : blockedReason(clauses, destination, address)}
               onClick={() => { void onCreate() }}
             >
-              {creating.saving ? 'Turning it on…' : 'Turn it on'}
+              {creating.pending
+                ? `Waiting for ${creating.pending.approverName}`
+                : creating.saving ? 'Turning it on…' : 'Turn it on'}
             </button>
           )}
         </div>
