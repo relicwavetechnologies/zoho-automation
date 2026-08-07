@@ -73,7 +73,7 @@ export const createSemrushTool = (deps: {
   parameterDocs: [
     'operation: domain_overview, backlinks_comparison, or keyword_position_trend.',
     'domain_overview: { domain, database? }. One-row snapshot of rank, organic/paid keywords, traffic and cost.',
-    'backlinks_comparison: { targets[2–10] }. Authority score, total backlinks and referring domains per target in one web request. If Semrush has no report for a requested target, coverage.missingTargets and the export name it as no provider data rather than zero.',
+    'backlinks_comparison: { targets[1–10] }. Authority score, total backlinks and referring domains per target in one web request. If Semrush has no report for a requested target, coverage.missingTargets and the export name it as no provider data rather than zero.',
     'keyword_position_trend: { domain, keyword, date, database?, dateType? }. One domain, one keyword, one date (YYYYMMDD). Use for rank on a specific date, not for full keyword lists.',
     'Divo rejects arbitrary Semrush endpoints, headers, cookies, export columns, and API keys. Do not claim an unavailable operation has run.',
   ].join('\n'),

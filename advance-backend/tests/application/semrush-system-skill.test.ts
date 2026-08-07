@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { DIVO_SEMRUSH_SYSTEM_SKILL } from '../../src/application/skills/semrush-system-skill.ts';
+import { SEMRUSH_OPERATIONS } from '../../src/application/semrush/semrush.types.ts';
 
 describe('Semrush system skill', () => {
   it('is discoverable by SEO terms and constrained to the canonical Semrush tool', () => {
@@ -16,5 +17,27 @@ describe('Semrush system skill', () => {
     // Naming a store the tool can no longer reach only tells the model it exists.
     assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /cloudinary/i);
     assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /legacy rollback/i);
+  });
+
+  it('documents all three callable operations and the excluded senior backlink export curl', () => {
+    for (const operation of SEMRUSH_OPERATIONS) {
+      assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, new RegExp(`\`${operation}\``));
+    }
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Senior curl mapping/i);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /backlinks_comparison/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /domain_overview/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /keyword_position_trend/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /analytics\/backlinks\/webapi2/i);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /403 ERROR 130 API DISABLED/i);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Excluded/i);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Supported backend operations \(3 callable\)/i);
+  });
+
+  it('documents web-only env vars without legacy api.semrush.com keys', () => {
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /SEMRUSH_WEB_API_KEY/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /SEMRUSH_WEB_COOKIE/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /SEMRUSH_TIMEOUT_MS/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /never `api\.semrush\.com`/i);
+    assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /SEMRUSH_API_KEY/);
   });
 });

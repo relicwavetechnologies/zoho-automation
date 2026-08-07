@@ -25,14 +25,14 @@ not a claim that all Semrush UI functionality is available through an API.
 | --- | --- | --- | --- |
 | Backlinks comparison | `POST /backlinks/webapi2/`, `type=backlinks_comparison` | Browser-session endpoint returned data | Accepted for backend-owned env-session wrapper |
 | Organic overview | `POST /dpa/rpc`, `ranks.Ranks`, `organic.overview` | Browser-session endpoint returned target-dependent results | Accepted for backend-owned env-session wrapper |
-| Organic keyword-position trend | `POST /dpa/rpc`, `organic.KeywordPositionTrend`, `organic.positions` | Browser-session endpoint returned rows for tested targets | Not yet wired: needs tool args and response fixture |
-| Legacy backlink export | `POST /analytics/backlinks/webapi2`, `action=export`, `type=backlinks` | `Validation Error` both with and without the active Semrush session | Exclude until a corrected, validated recipe is supplied |
+| Organic keyword-position trend | `POST /dpa/rpc`, `organic.KeywordPositionTrend`, `organic.positions` | Browser-session endpoint returned rows for tested targets | Wired as `keyword_position_trend` |
+| Legacy backlink export | `GET /analytics/backlinks/webapi2`, `action=export`, `type=backlinks` | Live probe returns `403 ERROR 130 API DISABLED` with active session | **Excluded** — API disabled on live session; do not implement |
 | Organic growth/trend export | `POST /dpa/rpc`, `export.Get`, `organic.overviewtrendbatch` | Supplied payload is an n8n template with eight unresolved expressions, so it is not valid raw JSON | Exclude until the resolved API contract is supplied and tested |
 
-2026-08-04 update: Divo Semrush is web-only via `SEMRUSH_WEB_API_KEY` and
-`SEMRUSH_WEB_COOKIE`. It never exposes the cookie/key to Pi, Desktop, Lark,
-logs, or export artifacts. Only the validated private routes in the matrix
-are wired.
+2026-08-04 update: Divo Semrush is web-only via `SEMRUSH_WEB_API_KEY`,
+`SEMRUSH_WEB_COOKIE`, and `SEMRUSH_TIMEOUT_MS` (default 15000). It never exposes
+the cookie/key to Pi, Desktop, Lark, logs, or export artifacts. Only the
+validated private routes in the matrix are wired.
 
 ## DPA request-ID rule
 

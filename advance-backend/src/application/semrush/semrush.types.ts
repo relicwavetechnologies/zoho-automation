@@ -23,7 +23,7 @@ const domain = z.string().trim().min(3).max(253)
 
 const semrushDate = z.string().trim().regex(/^\d{8}$/, 'Use a Semrush date as YYYYMMDD.');
 
-const uniqueTargets = z.array(domain).min(2).max(10).superRefine((targets, ctx) => {
+const uniqueTargets = z.array(domain).min(1).max(10).superRefine((targets, ctx) => {
   if (new Set(targets).size !== targets.length) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Comparison targets must be unique.' });
   }
