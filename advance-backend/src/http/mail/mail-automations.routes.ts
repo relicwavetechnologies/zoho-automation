@@ -23,7 +23,6 @@ import {
   type MailboxHealth,
 } from '../../application/mail-ops/mail-ops-health';
 import { dryRunMailRule } from '../../application/mail-ops/mail-rule-dry-run';
-import { summariseCorrespondents } from '../../application/mail-ops/mail-correspondents';
 import type { MailRuleCompilation } from '../../application/mail-ops/mail-rule-compiler';
 import {
   actionForDestination,
@@ -37,6 +36,10 @@ import type {
   MailRuleAction,
   MailRuleDestination,
 } from '../../application/mail-ops/mail-ops.types';
+import type {
+  MailRuleExternalApprovalInput,
+  MailRuleExternalApprovalOutcome,
+} from '../../application/mail-ops/mail-rule-external-approval';
 import type { InfraError } from '../../shared/errors';
 import type { Result } from '../../shared/result';
 
@@ -51,16 +54,6 @@ const dryRunBodySchema = z.object({
 const listQuerySchema = z.object({
   includeInactive: z.enum(['true', 'false']).optional(),
 });
-
-/**
- * How many stored messages the summary reads.
- *
- * Enough that a domain's real volume shows against the noise, and small
- * enough that the query stays a bounded index read on one subscription. The
- * counts are relative to this window, not to all time, and the response says
- * so.
- */
-const SUGGESTION_EVENTS = 1_000;
 
 /*
  * The same `.strict()` match schema the agent's tool validates against, reused
@@ -143,6 +136,24 @@ const REFUSALS: Record<Exclude<MailRuleWriteResult['status'], 'created'>, {
       + 'background, and a mail rule runs with nobody present to approve it. Ask them to allow '
       + 'background execution on this connection first.',
   },
+  /*
+   * Not a mistake in the request, so not a 400.
+   *
+   * A forward out of the company is a standing export of whatever it matches,
+   * and the person who has to agree to that is somebody other than whoever is
+   * filling in this form. 409 says the same thing the other two account-shaped
+   * refusals say: nothing about the rule is wrong, and rewriting it will not
+   * help.
+   */
+  external_approval_required: {
+    code: 409,
+    message: 'This forward leaves your organisation, so it needs approval first.',
+  },
+  external_approval_unavailable: {
+    code: 409,
+    message:
+      'This forward leaves your organisation and needs a manager or company admin to approve it.',
+  },
   destination_refused: { code: 400, message: 'Divo will not send mail to that destination.' },
   unavailable: { code: 500, message: 'That rule could not be created. Try again shortly.' },
 };
@@ -164,10 +175,6 @@ const previewBodySchema = z.object({
   connectionId: z.string().uuid().optional(),
   limit: z.coerce.number().int().min(1).max(MAX_DRY_RUN_EVENTS).optional(),
 }).strict();
-
-const suggestionsQuerySchema = z.object({
-  connectionId: z.string().uuid().optional(),
-});
 
 const deliveriesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(MAX_DELIVERY_LIMIT).optional(),
@@ -202,11 +209,34 @@ export interface MailAutomationsRouteDeps {
       change: MailRuleStatusChange,
     ) => Promise<MailRuleStatusResult>;
   };
+  /**
+   * Which department the signed-in member belongs to.
+   *
+   * `res.locals.runtimeDepartmentId` is set by the member-auth middleware for
+   * Pi runtime tokens **and nothing else** — a browser session never carries
+   * one. Reading only that made every web request look department-less, which
+   * is how an external forward reached "nobody can approve this" in a company
+   * with two department managers and two admins: Divo never asked.
+   */
+  resolveDepartmentId?: (input: {
+    companyId: string;
+    userId: string;
+  }) => Promise<string | null>;
   /** Turns one sentence into a draft rule. Absent where no model is configured. */
   compileRule?: (input: {
     sentence: string;
     mailboxEmail: string;
   }) => Promise<MailRuleCompilation>;
+  /**
+   * Asks the manager about a forward that leaves the company.
+   *
+   * Optional, and its absence is not silent: the route still refuses the rule
+   * and still names the approver, so nothing ungoverned is created — the member
+   * is simply told to go and ask rather than being asked on their behalf.
+   */
+  requestExternalForwardApproval?: (
+    input: MailRuleExternalApprovalInput,
+  ) => Promise<MailRuleExternalApprovalOutcome>;
   logger: Logger;
 }
 
@@ -547,11 +577,21 @@ export function createMailAutomationsRoutes(
           }
         : actionForDestination(destination, body.rateLimitPerHour);
 
+      /*
+       * Resolved once, used by both the rule row and the approval question.
+       *
+       * The runtime's own value wins where there is one — a Pi token states
+       * which department it is acting for, and that is more specific than the
+       * member's standing preference.
+       */
+      const who = actor(res);
+      const departmentId = res.locals['runtimeDepartmentId']
+        ? String(res.locals['runtimeDepartmentId'])
+        : (await deps.resolveDepartmentId?.(who)) ?? null;
+
       const outcome = await deps.writeRule.create({
-        ...actor(res),
-        ...(res.locals['runtimeDepartmentId']
-          ? { departmentId: String(res.locals['runtimeDepartmentId']) }
-          : {}),
+        ...who,
+        ...(departmentId ? { departmentId } : {}),
         ...(body.connectionId ? { connectionId: body.connectionId } : {}),
         name: body.name,
         // The schema is the tool's own, so the value is already right; the cast
@@ -560,6 +600,11 @@ export function createMailAutomationsRoutes(
         match: body.match as MailRuleWriteRequest['match'],
         destination,
         ...(body.rateLimitPerHour !== undefined ? { rateLimitPerHour: body.rateLimitPerHour } : {}),
+        // What "outside the company" is measured against. Absent reads as
+        // external, which asks one extra person rather than none.
+        ...(typeof res.locals['email'] === 'string'
+          ? { requesterEmail: res.locals['email'] as string }
+          : {}),
       }, action);
 
       if (outcome.status === 'created') {
@@ -572,11 +617,96 @@ export function createMailAutomationsRoutes(
         return;
       }
 
+      /*
+       * Not a dead end — the manager is asked, here, now.
+       *
+       * The rule is deliberately not written first and activated later. A row
+       * that exists but does nothing is a rule the member can see, name and
+       * believe in, and every screen would then have to explain why it is
+       * inert. The request is the thing that is pending; the rule is written
+       * once, when the answer is yes.
+       */
+      if (outcome.status === 'external_approval_required') {
+        // Logged whatever happens next: this is the record that somebody tried
+        // to set up a standing export, which is worth being able to find later
+        // whether or not it was ever approved.
+        log.info('mail_automations.external_forward_pending', {
+          companyId: res.locals['companyId'],
+          destination: outcome.destination,
+          approverId: outcome.approver.userId,
+        });
+
+        if (deps.requestExternalForwardApproval && body.destination.type === 'email') {
+          const asked = await deps.requestExternalForwardApproval({
+            ...who,
+            companyRole: String(res.locals['aiRole'] ?? 'MEMBER'),
+            ...(departmentId ? { departmentId } : {}),
+            ...(typeof res.locals['email'] === 'string'
+              ? { requesterEmail: res.locals['email'] as string }
+              : {}),
+            larkOpenId: (res.locals['larkOpenId'] as string | null) ?? null,
+            larkTenantKey: (res.locals['larkTenantKey'] as string | null) ?? null,
+            mailboxEmail: outcome.mailboxEmail,
+            rule: {
+              connectionId: outcome.connectionId,
+              name: body.name,
+              match: body.match as MailRuleWriteRequest['match'],
+              email: body.destination.email,
+              ...(body.rateLimitPerHour !== undefined
+                ? { rateLimitPerHour: body.rateLimitPerHour }
+                : {}),
+            },
+          });
+
+          if (asked.kind === 'requested') {
+            // 202, not 201: the request was taken, and the rule does not exist.
+            res.status(202).json({
+              success: true,
+              code: 'pending_approval',
+              data: {
+                status: 'pending_approval',
+                approvalId: asked.approvalId,
+                approverName: asked.approverName,
+                destination: outcome.destination,
+                reused: asked.reused,
+              },
+              message: asked.reused
+                ? `${asked.approverName} has already been asked about this rule and has not answered yet.`
+                : `Asked ${asked.approverName} to approve forwarding to ${outcome.destination}. `
+                  + 'The rule turns on by itself once they agree.',
+            });
+            return;
+          }
+          if (asked.kind !== 'unavailable') {
+            res.status(409).json({
+              success: false,
+              code: asked.kind === 'declined' ? 'external_approval_declined' : 'external_approval_granted',
+              message: asked.message,
+            });
+            return;
+          }
+          // Fell through: say who has to approve rather than why Divo could not
+          // ask them, which is nothing the member can act on.
+          log.warn('mail_automations.external_forward_ask_failed', {
+            companyId: res.locals['companyId'],
+            reason: asked.message,
+          });
+        }
+      }
+
       const refusal = REFUSALS[outcome.status];
       res.status(refusal.code).json({
         success: false,
         code: outcome.status,
-        message: 'reason' in outcome && outcome.reason ? outcome.reason : refusal.message,
+        message: outcome.status === 'external_approval_required'
+          // Names the person, because "needs approval" without a name leaves
+          // somebody with nothing to do next.
+          ? `Forwarding to ${outcome.destination} sends your mail outside your `
+            + `organisation, so ${outcome.approver.displayName} has to approve it first.`
+          : 'reason' in outcome && outcome.reason ? outcome.reason : refusal.message,
+        ...(outcome.status === 'external_approval_required'
+          ? { approverName: outcome.approver.displayName, destination: outcome.destination }
+          : {}),
         ...(outcome.status === 'choose_connection' ? { connections: outcome.connections } : {}),
         ...(outcome.status === 'connection_unavailable' && outcome.connectionState
           ? { connectionState: outcome.connectionState }
@@ -763,61 +893,6 @@ export function createMailAutomationsRoutes(
       });
     } catch (error) {
       fail(res, 'preview', error);
-    }
-  });
-
-  /**
-   * Who writes to this mailbox, for the rule builder's From and To fields.
-   *
-   * A mail rule written from memory fails silently: the sender is typed as the
-   * brand somebody knows, the invoices arrive from a subdomain nobody has
-   * heard of, and the rule waits for ever while looking perfectly healthy.
-   * This is the only fix — not validation, which has nothing to object to.
-   *
-   * Reads events Divo has already stored, so it costs no Gmail call and no
-   * quota. The trade is that a mailbox nobody has watched yet has nothing
-   * stored, and answers with empty sets and `watched: false` rather than
-   * pretending — a first rule is exactly the one written blind, and closing
-   * that gap needs a Gmail scan this route deliberately does not do inline.
-   */
-  router.get('/suggestions', async (req, res) => {
-    try {
-      const parsed = suggestionsQuerySchema.safeParse(req.query);
-      if (!parsed.success) {
-        res.status(400).json({ success: false, error: 'Invalid connectionId.' });
-        return;
-      }
-
-      const found = await deps.readRepo.listRecentEventsForMailbox({
-        ...actor(res),
-        ...(parsed.data.connectionId ? { connectionId: parsed.data.connectionId } : {}),
-        limit: SUGGESTION_EVENTS,
-      });
-      if (!found.ok) throw found.error;
-
-      if (found.value === null) {
-        res.json({
-          success: true,
-          data: { from: [], to: [], window: '', watched: false },
-        });
-        return;
-      }
-
-      const summary = summariseCorrespondents(found.value.events, found.value.mailboxEmail);
-      res.json({
-        success: true,
-        data: {
-          ...summary,
-          // Stated as a count rather than a period. Events are kept for ninety
-          // days but a mailbox watched since Tuesday has three days of them,
-          // and "the last 90 days" would be a claim about coverage this route
-          // cannot make.
-          window: `from the last ${found.value.events.length} messages Divo has seen`,
-          watched: true,
-        },
-      });
-    } catch (error) {
-      fail(res, 'suggestions', error);
     }
   });
 

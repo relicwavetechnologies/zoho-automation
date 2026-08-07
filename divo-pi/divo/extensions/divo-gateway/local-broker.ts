@@ -363,10 +363,19 @@ export function registerLocalDivoBroker(
 	pi.on("session_start", async (_event, ctx) => {
 		if (server) return;
 		// No socket, no launchers, no PATH entry: on a server channel the CLI is
-		// not merely unused, it is absent.
-		if (!localCliEnabled()) return;
+		// not merely unused, it is absent. Say so in the log, because an absence
+		// nobody records is one nobody notices — this stayed invisible for four
+		// days while the prompt kept prescribing the client it had removed.
+		if (!localCliEnabled()) {
+			console.error("[divo-gateway] local CLI disabled for this channel; divo-local will not exist");
+			return;
+		}
 		const resolved = resolveDivoGatewayConfig();
-		if ("error" in resolved) return;
+		if ("error" in resolved) {
+			console.error(`[divo-gateway] local broker not started: ${resolved.error}`);
+			ctx.ui.notify(`Divo local execution is unavailable: ${resolved.error}`, "warning");
+			return;
+		}
 		try {
 			cliDirectory = await mkdtemp(join(tmpdir(), "divo-cli-"));
 			await writeCliLaunchers(cliDirectory);

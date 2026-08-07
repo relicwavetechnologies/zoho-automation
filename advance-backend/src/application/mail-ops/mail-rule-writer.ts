@@ -21,7 +21,14 @@
  * before approval, because the approval question is *about* a connection.
  * Approval before destination, because a refusal there ends the attempt and
  * there is no reason to have grounded a chat first.
+ *
+ * Two approvals sit here, and they are different questions. The connection's
+ * own policy asks whether this account may run anything unattended, and it
+ * refuses outright. The external-forward gate asks whether company mail may
+ * leave the company at all, and it *defers* — a named person is asked, and the
+ * same request is written once they agree.
  */
+import type { MailOpsConnectionState } from '../tools/families/mail-automations.tool';
 import { parseMailRule } from './mail-rule.matcher';
 import {
   mailRuleDedupeKey,
@@ -31,6 +38,11 @@ import {
   type MailRuleMatch,
 } from './mail-ops.types';
 import type { LarkChatDestinationVerdict } from './lark-chat-destination';
+import { mailRuleLeavesOrganisation } from './external-destination';
+import {
+  inspectExternalForward,
+  type ExternalForwardApprovalPort,
+} from './external-forward-approval';
 
 /** What the caller asks for, already validated against the shared schema. */
 export interface MailRuleWriteRequest {
@@ -44,6 +56,25 @@ export interface MailRuleWriteRequest {
   readonly destination: MailRuleDestination;
   /** Ignored for `organize`, which sends nothing and so floods nobody. */
   readonly rateLimitPerHour?: number;
+  /**
+   * The requester's own address, which is what "outside the company" is judged
+   * against. Absent reads as external — the failure direction that asks a human
+   * one extra question is the only acceptable one here.
+   */
+  readonly requesterEmail?: string;
+  /**
+   * Set by a caller that has already had the external forward approved.
+   *
+   * The agent path runs the approval gate in its executor, before the tool is
+   * ever invoked, so by the time it reaches this writer the manager has already
+   * said yes — asking again would block a rule that was approved. The web path
+   * has no such upstream gate and sets nothing.
+   *
+   * Declared by the caller rather than inferred, because the two paths differ
+   * in a way no amount of inspection here could tell apart. Forgetting it asks
+   * twice; there is no value that skips the question.
+   */
+  readonly externalForwardApproved?: boolean;
 }
 
 /**
@@ -80,10 +111,30 @@ export type MailRuleWriteResult =
   | {
       readonly status: 'connection_unavailable';
       readonly reason: string;
-      readonly connectionState?: 'none_accessible' | 'insufficient_access' | 'requested_not_accessible';
+      readonly connectionState?: MailOpsConnectionState;
     }
   /** The connection's owner gates background execution. Refused, not deferred. */
   | { readonly status: 'approval_required' }
+  /**
+   * The rule would forward company mail outside the company, and a named person
+   * has to say yes first. Deferred rather than refused: the caller creates the
+   * approval and the same request is written once it is granted.
+   */
+  | {
+      readonly status: 'external_approval_required';
+      readonly destination: string;
+      readonly approver: { readonly userId: string; readonly displayName: string };
+      /**
+       * The mailbox this would have watched, carried so the approved request
+       * binds to the very account the member was looking at. Re-resolving it
+       * when the approval comes back could pick a different one of their Google
+       * accounts, and nothing on the card would have said which.
+       */
+      readonly connectionId: string;
+      readonly mailboxEmail: string;
+    }
+  /** External forward, and nobody in the company can approve it. Fails closed. */
+  | { readonly status: 'external_approval_unavailable'; readonly reason: string }
   | { readonly status: 'destination_refused'; readonly reason: string }
   | { readonly status: 'unavailable'; readonly reason: string };
 
@@ -101,7 +152,7 @@ export interface MailRuleConnectionResolution {
   mailboxEmail?: string;
   connections?: readonly unknown[];
   reason?: string;
-  connectionState?: 'none_accessible' | 'insufficient_access' | 'requested_not_accessible';
+  connectionState?: MailOpsConnectionState;
 }
 
 export interface MailRuleWriterDeps {
@@ -124,6 +175,15 @@ export interface MailRuleWriterDeps {
     companyId: string;
     chatId: string;
   }): Promise<LarkChatDestinationVerdict>;
+  /**
+   * Who must approve a forward that leaves the company.
+   *
+   * Absent in compositions with no approval resolver, and the question is then
+   * skipped — the same shape `connectionApproval` uses. The decision itself is
+   * `inspectExternalForward`, shared with the approval gate so the agent path
+   * and the web path cannot answer this differently.
+   */
+  externalForward?: ExternalForwardApprovalPort;
   repo: {
     setRuleStatus(input: {
       companyId: string;
@@ -245,6 +305,53 @@ export function createMailRuleWriter(deps: MailRuleWriterDeps) {
         return {
           status: 'unavailable',
           reason: policy.message ?? 'Divo could not read the connection policy.',
+        };
+      }
+    }
+
+    /*
+     * A forward out of the company is approved by a person, on every surface.
+     *
+     * This used to be reachable only through the approval gate, which only the
+     * agent's tool executor calls — so the identical rule created in a browser
+     * established a standing export of company mail with nobody else seeing the
+     * address. Same decision, same module, asked here so both callers meet it.
+     *
+     * Before the destination is grounded and after the connection is resolved:
+     * the answer is about mail leaving the company, and there is no reason to
+     * have grounded a Lark chat for a rule a manager may refuse.
+     */
+    if (deps.externalForward && !request.externalForwardApproved) {
+      const leaving = request.destination.type === 'email'
+        && mailRuleLeavesOrganisation({
+          destinationEmail: request.destination.email,
+          requesterEmail: request.requesterEmail,
+        })
+        ? request.destination.email
+        : null;
+
+      const verdict = await inspectExternalForward(
+        {
+          destination: leaving,
+          companyId: request.companyId,
+          requesterId: request.userId,
+          departmentId: request.departmentId ?? null,
+        },
+        deps.externalForward,
+      );
+      if (verdict.kind === 'misconfigured') {
+        return { status: 'external_approval_unavailable', reason: verdict.message };
+      }
+      if (verdict.kind === 'required') {
+        return {
+          status: 'external_approval_required',
+          destination: verdict.destination,
+          approver: {
+            userId: verdict.approver.userId,
+            displayName: verdict.approver.displayName,
+          },
+          connectionId: connection.connectionId,
+          mailboxEmail: connection.mailboxEmail,
         };
       }
     }

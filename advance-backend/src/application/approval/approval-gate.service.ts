@@ -23,6 +23,7 @@ import {
 } from './approval-delivery';
 import type { KnowledgeMutationService } from '../knowledge/knowledge-mutation.service';
 import { externalMailDestination } from '../mail-ops/external-destination';
+import { inspectExternalForward } from '../mail-ops/external-forward-approval';
 
 export type { ApprovalAuthority } from './approval.types';
 
@@ -36,6 +37,15 @@ export interface ApprovalGateInput {
   chatId:         string;
   /** Human-readable summary of what the tool call would do (shown on approval card). */
   argsSummary:    string;
+  /**
+   * Approving this should finish the work, rather than unblock a retry.
+   *
+   * Only meaningful for gateway-origin requests, which default to "the
+   * requester will come back and re-issue it". That is right for somebody
+   * sitting in front of a desktop action and wrong for a request made from a
+   * form that has since been closed.
+   */
+  resumeOnApproval?: boolean;
   /** Optional, non-authoritative runtime execution provenance for audit/match checks. */
   execution?: {
     readonly version: 1;
@@ -47,6 +57,15 @@ export interface ApprovalGateInput {
 
 export interface ApprovalGateOptions {
   readonly disableManagerSelfBypass?: boolean;
+  /**
+   * Write the request and skip the card, leaving it in the approval inbox.
+   *
+   * For testing the flow without messaging a colleague on every attempt. It
+   * suppresses delivery only: the row is still written, still bound to exactly
+   * one approver, and still answerable — nothing about who may decide changes.
+   * The composition refuses to set it in production.
+   */
+  readonly suppressCardDelivery?: boolean;
   readonly knowledgeMutations?: Pick<
     KnowledgeMutationService,
     'get' | 'attachRuntimeApproval'
@@ -208,12 +227,19 @@ export class ApprovalGateService {
           resolvedManagerUserId:  manager.userId,
           resolvedManagerName:    manager.displayName,
           approvalAuthority:      requirement.authority,
+          // Whether a yes finishes this or merely unblocks a retry. Read by
+          // both decision surfaces; absent means the old behaviour.
+          autoResume:             input.resumeOnApproval === true,
           execution: execution ?? null,
         },
         // How this request will reach the approver. Lark when Divo can card
-        // them, the desktop approval inbox when it cannot. The row is the
-        // source of truth either way; delivery is a side effect of it.
-        channel:        manager.larkOpenId ? 'lark' : 'desktop',
+        // them, the desktop approval inbox when it cannot — or when delivery is
+        // suppressed, which is the same thing from the approver's side and must
+        // not be recorded as a card that was never sent. The row is the source
+        // of truth either way; delivery is a side effect of it.
+        channel:        manager.larkOpenId && !this.options.suppressCardDelivery
+          ? 'lark'
+          : 'desktop',
         requestedBy:    requesterId,
         idempotencyKey: idemKey,
         expiresAt:      new Date(Date.now() + 24 * 60 * 60 * 1000),
@@ -264,12 +290,18 @@ export class ApprovalGateService {
     // inbox. This used to be `misconfigured`, which failed the tool call
     // outright and made a Lark account a precondition for approvals working
     // at all.
-    if (!manager.larkOpenId) {
+    //
+    // Suppressed delivery lands here too, on purpose: it is the same state, and
+    // it is a state the system already handles rather than a new half-sent one.
+    if (!manager.larkOpenId || this.options.suppressCardDelivery) {
       this.logger.info('approval.gate.pending_created_inbox', {
         approvalId: approval.id,
         toolId,
         action,
         approver: manager.displayName,
+        // Which of the two reasons, so a quiet approval is never mistaken for a
+        // colleague who has not connected Lark.
+        reason: manager.larkOpenId ? 'card_delivery_suppressed' : 'no_lark_account',
       });
       return pendingDecision(
         approval.id,
@@ -481,9 +513,11 @@ export class ApprovalGateService {
    * manager may or may not have configured; this one does not wait to be
    * switched on.
    *
-   * Deliberately every external rule, not merely the first to a given domain.
-   * Creating a rule is a rare act, and "first time" is state that would have to
-   * be right for this to be worth anything.
+   * The decision itself lives in `mail-ops/external-forward-approval`, because
+   * a member creating the identical rule in a browser never reaches this class
+   * and must get the same answer. What stays here is the part that is genuinely
+   * the gate's: reading arguments the model supplied, and speaking in
+   * `ApprovalRequirement`.
    */
   private async inspectExternalMailForward(
     input: Pick<ApprovalGateInput, 'toolId' | 'action' | 'args' | 'perm' | 'runContext'>,
@@ -495,41 +529,33 @@ export class ApprovalGateService {
     });
     if (!destination) return null;
 
-    const companyId = String(input.runContext.companyId);
-    const requesterId = String(input.runContext.userId);
-    const departmentId = input.runContext.departmentId
-      ? String(input.runContext.departmentId)
-      : input.perm.department?.id
-        ? String(input.perm.department.id)
-        : null;
-    const approver = departmentId
-      ? await this.resolver.resolveManager(departmentId, companyId, {
-          excludeUserId: requesterId,
-          allowCompanyAdminFallback: true,
-        })
-      : null;
-    if (!approver) {
-      // Fails closed. The alternative is a silent standing forward to an
-      // address nobody in the company chose.
-      return {
-        kind: 'misconfigured',
-        message:
-          `Forwarding mail to ${destination} leaves your organisation, so it `
-          + 'needs a manager or company admin to approve it — and none with a '
-          + 'connected Lark account could be found.',
-      };
-    }
-    if (
-      !this.options.disableManagerSelfBypass
-      && requesterId === approver.userId
-    ) {
-      this.logger.info('approval.gate.external_mail_forward_self_bypass', {
-        userId: requesterId,
+    const verdict = await inspectExternalForward(
+      {
         destination,
-      });
-      return { kind: 'allowed' };
+        companyId: String(input.runContext.companyId),
+        requesterId: String(input.runContext.userId),
+        departmentId: input.runContext.departmentId
+          ? String(input.runContext.departmentId)
+          : input.perm.department?.id
+            ? String(input.perm.department.id)
+            : null,
+      },
+      {
+        resolveManager: (departmentId, companyId, options) =>
+          this.resolver.resolveManager(departmentId, companyId, options),
+        disableManagerSelfBypass: this.options.disableManagerSelfBypass,
+        onSelfBypass: (bypassed) => {
+          this.logger.info('approval.gate.external_mail_forward_self_bypass', bypassed);
+        },
+      },
+    );
+
+    if (verdict.kind === 'not_external') return null;
+    if (verdict.kind === 'allowed') return { kind: 'allowed' };
+    if (verdict.kind === 'misconfigured') {
+      return { kind: 'misconfigured', message: verdict.message };
     }
-    return { kind: 'required', approver, authority: 'department_manager' };
+    return { kind: 'required', approver: verdict.approver, authority: 'department_manager' };
   }
 
   private async inspectKnowledgeMutation(

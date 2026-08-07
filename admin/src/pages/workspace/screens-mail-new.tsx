@@ -36,9 +36,6 @@ import {
 } from './data/use-mail-automations'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useConnections } from './data/use-connections'
-import {
-  filterSuggestions, suggestionsFor, useMailSuggestions, type MailSuggestion,
-} from './data/use-mail-suggestions'
 import { Empty, PageHeader, Panel, SkelRows } from './ui'
 import type { Persona } from './fixtures'
 import type { Toast } from './ui'
@@ -49,7 +46,6 @@ const STEPS = ['What to catch', 'What to do', 'Check & turn on'] as const
 
 /* The fields that offer real correspondents, and therefore the ones whose
    presence makes the provenance line worth showing. */
-const ADDRESS_FIELDS = new Set(['from', 'to', 'notFrom'])
 
 /* ── The conditions being assembled ───────────────────
    Held in the stored shape rather than a form-shaped mirror of it, so the
@@ -173,11 +169,6 @@ export function MailRuleNew({ replay }: ScreenProps) {
       ? resolution.options.find((o) => o.connectionId === picked) ?? null
       : null
 
-  // Above the early returns, as hooks must be. Keyed on the resolved
-  // connection so choosing the other account re-reads that inbox's senders
-  // rather than offering the first one's.
-  const suggestions = useMailSuggestions(mailbox?.connectionId ?? null)
-
   /*
    * The compiled draft lands in the same state a hand-built rule uses.
    *
@@ -265,18 +256,26 @@ export function MailRuleNew({ replay }: ScreenProps) {
         ? { rateLimitPerHour: Number(ceiling) }
         : {}),
     }
-    const ruleId = await creating.create(request)
+    const outcome = await creating.create(request)
     // Straight to the rule itself, not back to the list: the next question is
     // always "would it have caught anything", and that lives on its page.
-    if (ruleId) navigate(`/me/mail/${ruleId}`)
+    //
+    // A rule waiting on approval has no page to go to, deliberately: it does
+    // not exist yet. Staying put is what makes that true rather than showing a
+    // rule somebody could pause, rename or believe is running.
+    if (outcome.kind === 'created') navigate(`/me/mail/${outcome.ruleId}`)
   }
 
   if (resolution.status === 'loading') return <div className="page"><SkelRows n={4} /></div>
 
-  // Three states, three remedies — the same three the tool distinguishes. They
+  // Four states, four remedies — the same ones the tool distinguishes. They
   // used to share one sentence, which sent somebody with a scope-limited
   // account off to connect an account they already had.
-  if (resolution.status === 'none' || resolution.status === 'insufficient') {
+  if (
+    resolution.status === 'none'
+    || resolution.status === 'insufficient'
+    || resolution.status === 'reconnect'
+  ) {
     return <NoMailbox resolution={resolution} onBack={() => navigate('/me/mail')} />
   }
 
@@ -312,6 +311,26 @@ export function MailRuleNew({ replay }: ScreenProps) {
 
       <div className="ws-stack">
         <StepBar step={step} onPick={setStep} />
+
+        {/* Asked, not refused.
+            Nothing the member typed is wrong and there is nothing to correct —
+            a person has to answer. Rendering this as an error would send
+            somebody back to rewrite a rule that was fine. */}
+        {creating.pending ? (
+          <div className="ws-pending">
+            <ShieldAlert size={14} />
+            <div>
+              <b>
+                {creating.pending.reused
+                  ? `${creating.pending.approverName} has already been asked.`
+                  : `Asked ${creating.pending.approverName} to approve this.`}
+              </b>{' '}
+              Forwarding to {creating.pending.destination} sends mail outside your
+              organisation, so it needs their yes. <b>The rule turns on by itself</b> once
+              they agree — you do not need to come back and do this again.
+            </div>
+          </div>
+        ) : null}
 
         {/* The server's own sentence, never replaced with a generic failure:
             six checks can refuse this and each has a different remedy, which is
@@ -386,7 +405,6 @@ export function MailRuleNew({ replay }: ScreenProps) {
                           key={key}
                           field={field}
                           value={draft[key]}
-                          suggestions={suggestionsFor(key, suggestions)}
                           onChange={(value) => setField(key, value)}
                           onRemove={() => removeField(key)}
                         />
@@ -394,22 +412,6 @@ export function MailRuleNew({ replay }: ScreenProps) {
                     })}
                   </div>
                 )}
-
-                {/* Where the offered senders came from, said once. A list of
-                    addresses is read as fact, so an illustrative one has to
-                    admit it before somebody builds a rule on a name they have
-                    never actually received mail from. */}
-                {added.some((k) => ADDRESS_FIELDS.has(k)) ? (
-                  <p className="ws-mk-src">
-                    {suggestions.loading
-                      ? 'Reading who writes to this inbox…'
-                      : !suggestions.watched
-                        ? 'No suggestions yet — Divo has not watched this inbox before, so it has nothing to go on. Your first rule starts that; the next one will be able to offer real senders.'
-                        : suggestions.from.length === 0 && suggestions.to.length === 0
-                          ? 'Divo is watching this inbox but has not seen enough mail yet to suggest anything.'
-                          : `Suggestions come from mail Divo has already seen for this inbox — ${suggestions.window}.`}
-                  </p>
-                ) : null}
 
                 <div className="ws-mk-add">
                   {FIELDS.filter((f) => !added.includes(f.key)).map((field) => (
@@ -608,11 +610,16 @@ export function MailRuleNew({ replay }: ScreenProps) {
             <button
               type="button"
               className="btn primary"
-              disabled={creating.saving || !canCreate}
+              // Nothing to press once it is with somebody else. Leaving it live
+              // invites the same request again, and a member who clicks twice
+              // should not have to wonder whether they sent two.
+              disabled={creating.saving || !canCreate || creating.pending !== null}
               title={canCreate ? undefined : blockedReason(clauses, destination, address)}
               onClick={() => { void onCreate() }}
             >
-              {creating.saving ? 'Turning it on…' : 'Turn it on'}
+              {creating.pending
+                ? `Waiting for ${creating.pending.approverName}`
+                : creating.saving ? 'Turning it on…' : 'Turn it on'}
             </button>
           )}
         </div>
@@ -730,18 +737,30 @@ function MailboxPicker({
 }
 
 /**
- * No usable account, said two different ways.
+ * No usable account, said three different ways.
  *
  * "Connect Google" is the wrong instruction for somebody who already has,
  * and who needs to grant Gmail access on the account they have — they would
- * connect a second one, hit the same wall, and have two.
+ * connect a second one, hit the same wall, and have two. It is equally wrong
+ * for somebody whose account Google simply logged out: nothing about that
+ * account needs changing, it needs signing into.
  */
 function NoMailbox({
   resolution, onBack,
-}: { resolution: { status: 'none' } | { status: 'insufficient'; options: MailboxOption[] }; onBack: () => void }) {
+}: {
+  resolution:
+    | { status: 'none' }
+    | { status: 'insufficient'; options: MailboxOption[] }
+    | { status: 'reconnect'; options: MailboxOption[] }
+  onBack: () => void
+}) {
   const { loading, connecting, connect } = useConnections()
   const [failed, setFailed] = useState<string | null>(null)
   const insufficient = resolution.status === 'insufficient'
+  const revoked = resolution.status === 'reconnect'
+  const accounts = resolution.status === 'none'
+    ? ''
+    : resolution.options.map((o) => o.accountEmail).join(', ')
 
   const onConnect = async () => {
     setFailed(null)
@@ -763,13 +782,17 @@ function NoMailbox({
         title="New rule"
       />
       <Empty
-        icon={insufficient ? ShieldAlert : Inbox}
-        title={insufficient
-          ? 'Your Google account cannot be used for mail yet'
-          : 'Connect the inbox you want watched'}
-        body={insufficient
-          ? `${resolution.options.map((o) => o.accountEmail).join(', ')} is connected, but shared read-only or missing Gmail access. Divo has to read, watch and send with it to run a rule. Reconnect it and grant the full Gmail access.`
-          : 'A rule watches one Gmail inbox. Google will ask for your mail only — not Drive, Calendar or anything else.'}
+        icon={insufficient || revoked ? ShieldAlert : Inbox}
+        title={revoked
+          ? 'Google signed Divo out of your account'
+          : insufficient
+            ? 'Your Google account cannot be used for mail yet'
+            : 'Connect the inbox you want watched'}
+        body={revoked
+          ? `${accounts} is still listed, but Google has ended the authorisation — a password change, a revoked app, or simply long enough since you last signed in. No rule can be built on it until you sign in again. Your existing rules are untouched and resume the moment you do.`
+          : insufficient
+            ? `${accounts} is connected, but shared read-only or missing Gmail access. Divo has to read, watch and send with it to run a rule. Reconnect it and grant the full Gmail access.`
+            : 'A rule watches one Gmail inbox. Google will ask for your mail only — not Drive, Calendar or anything else.'}
         action={
           <button
             type="button"
@@ -779,7 +802,7 @@ function NoMailbox({
           >
             {connecting === 'google_workspace'
               ? 'Waiting for Google…'
-              : insufficient ? 'Reconnect Google' : 'Connect Gmail'}
+              : insufficient || revoked ? 'Reconnect Google' : 'Connect Gmail'}
           </button>
         }
       />
@@ -858,95 +881,11 @@ function ReadBack({ clauses }: { clauses: string[] }) {
   )
 }
 
-/**
- * A text field that offers the people who actually write to this mailbox.
- *
- * Not a `<select>`: every one of these fields accepts values the list will
- * never contain — a sender who has not written yet, a domain being onboarded
- * next week — so the typed value always wins and the list only ever helps.
- *
- * Opens on focus rather than only after a keystroke. The whole point is for
- * somebody who does not know what to type to see what there is.
- */
-function SuggestInput({
-  field, value, suggestions, onChange,
-}: {
-  field: Field
-  value: string
-  suggestions: MailSuggestion[]
-  onChange: (value: string) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const [cursor, setCursor] = useState(0)
-  const hits = filterSuggestions(suggestions, value).slice(0, 8)
-
-  const commit = (next: string) => {
-    onChange(next)
-    setOpen(false)
-    setCursor(0)
-  }
-
-  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (!open || hits.length === 0) return
-    if (e.key === 'ArrowDown') { e.preventDefault(); setCursor((c) => (c + 1) % hits.length) }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); setCursor((c) => (c - 1 + hits.length) % hits.length) }
-    else if (e.key === 'Enter') { e.preventDefault(); commit(hits[cursor]!.value) }
-    else if (e.key === 'Escape') { setOpen(false) }
-  }
-
-  return (
-    <div className="ws-sg">
-      <input
-        className="input"
-        placeholder={field.placeholder}
-        value={value}
-        onChange={(e) => { onChange(e.target.value); setOpen(true); setCursor(0) }}
-        onFocus={() => setOpen(true)}
-        // Deferred, or the click that picks a row unmounts the row first.
-        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
-        onKeyDown={onKeyDown}
-        autoComplete="off"
-        role="combobox"
-        aria-expanded={open}
-        aria-autocomplete="list"
-      />
-      {open && hits.length > 0 ? (
-        <div className="ws-sg-list">
-          {hits.map((hit, i) => (
-            <button
-              type="button"
-              key={`${hit.kind}:${hit.value}`}
-              className="ws-sg-opt"
-              data-on={i === cursor ? 'true' : undefined}
-              onMouseEnter={() => setCursor(i)}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => commit(hit.value)}
-            >
-              <span className="ws-sg-v">{hit.value}</span>
-              <span className="ws-sg-m">
-                {hit.kind === 'domain'
-                  /* Said on the row that causes it. A domain suggestion is the
-                     one place somebody learns the rule will be wider than the
-                     literal string they just accepted. */
-                  ? `${hit.messageCount} from ${hit.senderCount ?? 0} sender${hit.senderCount === 1 ? '' : 's'} · covers subdomains`
-                  : hit.alias
-                    ? `${hit.messageCount} messages · group address`
-                    : `${hit.messageCount} messages`}
-              </span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
 function FieldRow({
-  field, value, suggestions, onChange, onRemove,
+  field, value, onChange, onRemove,
 }: {
   field: Field
   value: unknown
-  suggestions: MailSuggestion[]
   onChange: (value: unknown) => void
   onRemove: () => void
 }) {
@@ -985,13 +924,6 @@ function FieldRow({
           <input className="input" placeholder="Asia/Kolkata" onChange={(e) =>
             onChange({ ...(value as object ?? {}), timeZone: e.target.value })} />
         </div>
-      ) : suggestions.length > 0 ? (
-        <SuggestInput
-          field={field}
-          value={typeof value === 'string' ? value : ''}
-          suggestions={suggestions}
-          onChange={onChange}
-        />
       ) : (
         <input
           className="input"

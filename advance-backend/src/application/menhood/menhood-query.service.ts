@@ -15,6 +15,30 @@ const PREVIEW_ROWS = 25;
 const EXPORT_PAGE_ROWS = 1_000;
 const EXPORT_CURSOR = 'menhood_export_cursor';
 
+/**
+ * Orders reach this reporting DB long after they are placed, and they keep
+ * arriving for weeks. Measured over two independent settled cohorts:
+ *
+ *   order_date Mar 1 – Apr 15   68.2% of lines by day 7, 89.9% by day 14, 99.1% by day 30
+ *   order_date May 1 – Jun 30   60.3% of lines by day 7, 78.9% by day 14, 95.3% by day 30
+ *
+ * So a window that ends inside the last month is undercounted, and silently:
+ * the query succeeds and returns a number that reads as complete. That is more
+ * dangerous than the empty result a current-week question returns, because
+ * nothing about it looks wrong. Every result carries this window so the caller
+ * can say which part of its answer is settled and which is still filling in.
+ */
+const MATURITY_DAYS = 30;
+const COVERAGE_CACHE_MS = 10 * 60 * 1000;
+
+export type MenhoodCoverageWindow = {
+  /** Latest `order_date` present. Nothing after this exists yet, at any count. */
+  readonly ordersThrough: string | null;
+  /** On/before this date counts are ~fully settled; after it they undercount. */
+  readonly maturedThrough: string;
+  readonly maturityDays: number;
+};
+
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
 type MenhoodEnv = Pick<TypedEnv,
@@ -60,11 +84,13 @@ export class MenhoodQueryServiceError extends Error {
 
 export class MenhoodQueryService {
   private pool: MenhoodPool | undefined;
+  private coverageCache: { window: MenhoodCoverageWindow; readAt: number } | undefined;
 
   constructor(
     private readonly env: MenhoodEnv,
     private readonly poolFactory: MenhoodPoolFactory | undefined = undefined,
     private readonly logger: Pick<Logger, 'error'> = new ConsoleLogger({ service: 'menhood-query' }),
+    private readonly now: () => Date = () => new Date(),
   ) {}
 
   preflight(companyId: string): void {
@@ -122,6 +148,41 @@ export class MenhoodQueryService {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Best effort by design: a freshness read must never turn a good answer into
+   * a failed tool call, so any error here degrades to `ordersThrough: null`
+   * rather than propagating.
+   */
+  async coverageWindow(companyId: string): Promise<MenhoodCoverageWindow> {
+    this.preflight(companyId);
+    const now = this.now();
+    const maturedThrough = isoDate(new Date(now.getTime() - MATURITY_DAYS * 86_400_000));
+    const cached = this.coverageCache;
+    if (cached && now.getTime() - cached.readAt < COVERAGE_CACHE_MS) return cached.window;
+
+    let ordersThrough: string | null = null;
+    try {
+      const client = await this.getPool().connect();
+      try {
+        const result = await client.query({
+          text: 'SELECT max(order_date)::text AS orders_through FROM menhood_orders',
+          values: [],
+          rowMode: 'array',
+        }) as DriverResult;
+        const value = result.rows[0]?.[0];
+        ordersThrough = typeof value === 'string' ? value : null;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      this.logger.error('menhood.coverage_window.failed', { error });
+    }
+
+    const window: MenhoodCoverageWindow = { ordersThrough, maturedThrough, maturityDays: MATURITY_DAYS };
+    this.coverageCache = { window, readAt: now.getTime() };
+    return window;
   }
 
   async *streamExportPages(
@@ -266,6 +327,10 @@ async function checkedQuery(
   const result = await client.query(query);
   signal?.throwIfAborted();
   return result;
+}
+
+function isoDate(value: Date): string {
+  return value.toISOString().slice(0, 10);
 }
 
 function uniqueColumnNames(fields: DriverResult['fields']): string[] {

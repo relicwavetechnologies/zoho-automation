@@ -3,7 +3,7 @@ import type { AuditService } from '../observability/audit.service';
 import type { RuntimeApprovalRepository, RuntimeApprovalRow } from '../../infrastructure/persistence/runtime-approval.repository';
 import type { ApprovalResumerService } from './approval-resumer.service';
 import { describeToolAction, type ToolActionDescription } from './describe-tool-action';
-import { isGatewayApprovalMetadata } from './approval-origin';
+import { approvalResumesAutomatically, isGatewayApprovalMetadata } from './approval-origin';
 import type { ApprovalCardInput } from './approval-card-builder';
 
 /**
@@ -133,8 +133,10 @@ export class ApprovalInboxService {
     }
 
     // Gateway approvals are retried by the requester rather than resumed for
-    // them; resuming those would execute an action nobody re-issued.
-    if (!isGatewayApprovalMetadata(meta)) {
+    // them; resuming those would execute an action nobody re-issued. Unless the
+    // request says otherwise — one made from a form has no requester left to
+    // re-issue it, and a yes that did nothing is the worse failure.
+    if (!isGatewayApprovalMetadata(meta) || approvalResumesAutomatically(meta)) {
       void this.deps.resumer.resume(approvalId, decision)
         .catch(error => this.deps.logger.error('approval_inbox.resume_failed', { approvalId, error: String(error) }));
     }

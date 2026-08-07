@@ -9,7 +9,9 @@ import {
 	DIVO_GOVERNED_DIRECT_ACTION_CRITERION,
 	DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION,
 	DIVO_LOCAL_EXECUTION_PROMPT,
+	DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT,
 } from "./index.ts";
+import { localCliEnabled } from "./local-broker.ts";
 
 const ROUTER_SKILL = readFileSync(
 	new URL("../../skills/divo-gateway/SKILL.md", import.meta.url),
@@ -138,5 +140,49 @@ describe("Divo normal-session routing policy", () => {
 			DIVO_DIRECT_WEB_SEARCH_POLICY,
 			/do not by themselves make a request a specialized workflow/i,
 		);
+	});
+});
+
+/**
+ * The Menhood regression: on 2026-08-03 the runtime stopped writing the
+ * divo-local launcher on server channels, and the prompt kept prescribing it.
+ * Four days later an agent followed the prompt, hit FileNotFoundError, and
+ * finished the task by pasting a 303-row sheet into a source literal — losing
+ * ten rows and reporting the total as complete. Nothing failed loudly enough to
+ * catch it, because a prompt and a runtime flag can disagree in silence.
+ *
+ * These bind the two together: whichever way the flag points, the instruction
+ * the agent receives has to agree with what the channel can actually do.
+ */
+describe("divo-local prompt tracks the runtime flag", () => {
+	it("offers the client only when the channel actually provides it", () => {
+		const offered = localCliEnabled();
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local client/i);
+		assert.doesNotMatch(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /use the.*divo-local client/i);
+		assert.match(
+			DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT,
+			/There is no divo-local client on this channel/i,
+		);
+		// A disabled channel must not be told the absence is a fault to work around.
+		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /absent by design, not broken/i);
+		assert.equal(typeof offered, "boolean");
+	});
+
+	it("names the replacement route instead of leaving a hole", () => {
+		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /aggregates server-side/i);
+		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /backend export pipeline/i);
+		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, new RegExp(DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION));
+		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, new RegExp(DIVO_GOVERNED_DIRECT_ACTION_CRITERION));
+	});
+
+	it("forbids the fallback that actually caused the wrong number", () => {
+		assert.match(
+			DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT,
+			/Never reconstruct a record set inside a script, a tool argument, or a message/i,
+		);
+		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /silently lossy/i);
+		// Stopping must be presented as the better outcome, or the agent improvises.
+		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /stop and say exactly which step is unavailable/i);
+		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /do not describe an approximation as a result/i);
 	});
 });

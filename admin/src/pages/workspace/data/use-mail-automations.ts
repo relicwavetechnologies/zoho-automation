@@ -14,7 +14,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
-import { useConnections, type LiveConnection } from './use-connections'
+import { useConnections } from './use-connections'
+import { resolveMailboxes, type MailboxResolution } from './mailbox-resolution'
 
 const BASE = '/api/mail-automations'
 
@@ -184,35 +185,7 @@ export function useMailDeliveries(ruleId?: string) {
    meant the first rule could never be made — the page told somebody with Gmail
    connected that they had no mailbox. */
 
-export type MailboxOption = {
-  connectionId: string
-  /** The address, or the connection's label when Google gave us no email. */
-  accountEmail: string
-  accountName: string | null
-  access: string
-  /** A subscription already exists, i.e. Divo is watching this inbox today. */
-  watched: boolean
-  activeRuleCount: number
-}
-
-export type MailboxResolution =
-  | { status: 'loading' }
-  /** No Google account you own. `none_accessible`. */
-  | { status: 'none' }
-  /** Owned, but shared read-only or missing Gmail scopes. `insufficient_access`. */
-  | { status: 'insufficient'; options: MailboxOption[] }
-  | { status: 'one'; option: MailboxOption }
-  /** `google_workspace_connection_selection_required`. */
-  | { status: 'choose'; options: MailboxOption[] }
-
-/**
- * Read, watch and send. A connection shared with this person read-only can be
- * used to look at mail and not to forward any, which is a different problem
- * from having no account and has a different remedy — so it is not filtered
- * away silently, it is reported as its own state.
- */
-const canRunMail = (connection: LiveConnection): boolean =>
-  connection.ownerType === 'user' && connection.access !== 'read_only'
+export type { MailboxOption, MailboxResolution } from './mailbox-resolution'
 
 export function useMailboxOptions(): MailboxResolution {
   const { byProvider, loading: connectionsLoading } = useConnections()
@@ -220,40 +193,8 @@ export function useMailboxOptions(): MailboxResolution {
 
   return useMemo<MailboxResolution>(() => {
     if (connectionsLoading || mailLoading) return { status: 'loading' }
-
-    const google = byProvider.get('google_workspace')
-    const owned = (google?.connections ?? []).filter((c) => c.ownerType === 'user')
-    const usable = owned.filter(canRunMail)
-
-    if (usable.length === 0) {
-      return owned.length > 0
-        ? { status: 'insufficient', options: owned.map((c) => toOption(c, mailboxes)) }
-        : { status: 'none' }
-    }
-
-    const options = usable.map((c) => toOption(c, mailboxes))
-    // Watched inboxes first: somebody with two accounts almost always means the
-    // one Divo is already working on, and it is the only ordering here that
-    // carries information rather than reproducing whatever Google returned.
-    options.sort((a, b) => Number(b.watched) - Number(a.watched))
-
-    return options.length === 1 ? { status: 'one', option: options[0]! } : { status: 'choose', options }
+    return resolveMailboxes(byProvider.get('google_workspace')?.connections ?? [], mailboxes)
   }, [byProvider, connectionsLoading, mailboxes, mailLoading])
-}
-
-function toOption(connection: LiveConnection, mailboxes: MailboxHealth[]): MailboxOption {
-  const email = connection.accountEmail ?? connection.label
-  const health = mailboxes.find(
-    (m) => m.mailboxEmail.toLowerCase() === email.toLowerCase(),
-  )
-  return {
-    connectionId: connection.connectionId,
-    accountEmail: email,
-    accountName: connection.accountName,
-    access: connection.access,
-    watched: health !== undefined,
-    activeRuleCount: health?.activeRuleCount ?? 0,
-  }
 }
 
 export type MailRuleDryRun = {
@@ -604,23 +545,64 @@ export type MailRuleCreateState = {
   error: string | null
   /** Which check refused, for the rare case the UI should act rather than tell. */
   code: string | null
+  /**
+   * A forward that leaves the company, now waiting on a named person.
+   *
+   * Not an error, and kept apart from one for that reason: nothing the member
+   * typed is wrong, no rule exists yet, and the only thing left to do is wait.
+   */
+  pending: { approverName: string; destination: string; reused: boolean } | null
 }
+
+/**
+ * Turning a rule on has three endings, not two.
+ *
+ * The third — asked, and waiting — reads as success on the wire (202) and as
+ * failure to anybody looking only for a rule id. Naming it here is what stops
+ * the wizard navigating to a rule that was never created.
+ */
+export type MailRuleCreateOutcome =
+  | { kind: 'created'; ruleId: string }
+  | { kind: 'pending_approval'; approverName: string; destination: string; reused: boolean }
+  | { kind: 'refused' }
 
 export function useCreateMailRule() {
   const { token } = useAdminAuth()
   const [state, setState] = useState<MailRuleCreateState>({
-    saving: false, error: null, code: null,
+    saving: false, error: null, code: null, pending: null,
   })
 
-  const create = useCallback(async (draft: MailRuleDraft): Promise<string | null> => {
-    if (!token) return null
-    setState({ saving: true, error: null, code: null })
+  const create = useCallback(async (draft: MailRuleDraft): Promise<MailRuleCreateOutcome> => {
+    if (!token) return { kind: 'refused' }
+    setState({ saving: true, error: null, code: null, pending: null })
     try {
-      const data = await api.post<{ ruleId: string; mailboxEmail: string }>(
-        `${BASE}/rules`, draft, token, { quiet: true },
-      )
-      setState({ saving: false, error: null, code: null })
+      const data = await api.post<{
+        ruleId?: string
+        mailboxEmail?: string
+        status?: string
+        approverName?: string
+        destination?: string
+        reused?: boolean
+      }>(`${BASE}/rules`, draft, token, { quiet: true })
+
+      // Read from the body rather than the status code: `api.post` hands back
+      // the payload and nothing else, and the payload already says which of the
+      // two endings this is.
+      if (data.status === 'pending_approval') {
+        const pending = {
+          approverName: data.approverName ?? 'your manager',
+          destination: data.destination
+            ?? (draft.destination.type === 'email' ? draft.destination.email : ''),
+          reused: data.reused === true,
+        }
+        setState({ saving: false, error: null, code: 'pending_approval', pending })
+        return { kind: 'pending_approval', ...pending }
+      }
+
+      setState({ saving: false, error: null, code: null, pending: null })
       return data.ruleId
+        ? { kind: 'created', ruleId: data.ruleId }
+        : { kind: 'refused' }
     } catch (error) {
       // Six refusals with six different remedies, and the remedy is the only
       // part a member can act on — so the server's message is shown verbatim
@@ -631,8 +613,8 @@ export function useCreateMailRule() {
       const code = typeof (error as { code?: unknown })?.code === 'string'
         ? (error as { code: string }).code
         : null
-      setState({ saving: false, error: message, code })
-      return null
+      setState({ saving: false, error: message, code, pending: null })
+      return { kind: 'refused' }
     }
   }, [token])
 

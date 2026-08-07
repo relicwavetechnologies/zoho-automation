@@ -5,6 +5,7 @@ import type {
 import { GoogleSheetsDataValidationClient } from './google-sheets-data-validation.client';
 import { compactGmailMcpResult } from './gmail-result-compactor';
 import { GoogleWorkspaceMcpClient } from './google-workspace-mcp.client';
+import { normalizeGoogleWorkspaceInput } from './google-workspace-input-normalizer';
 import { normalizeGoogleWorkspaceResult } from './google-workspace-result-normalizer';
 
 /** Composite governed client: pinned MCP operations plus narrow Divo adapters. */
@@ -30,10 +31,11 @@ export class GoogleWorkspaceGatewayClient implements GoogleWorkspaceMcpPort {
 
   async callTool(
     name: string,
-    input: Readonly<Record<string, unknown>>,
+    rawInput: Readonly<Record<string, unknown>>,
     abortSignal?: AbortSignal,
   ): Promise<unknown> {
     abortSignal?.throwIfAborted();
+    const input = normalizeGoogleWorkspaceInput(name, rawInput);
     if (this.sheetsDataValidation.describeTool(name)) {
       const result = await this.sheetsDataValidation.callTool(name, input);
       abortSignal?.throwIfAborted();

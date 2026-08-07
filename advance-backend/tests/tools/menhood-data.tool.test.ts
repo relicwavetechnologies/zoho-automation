@@ -5,6 +5,8 @@ import { MenhoodQueryServiceError } from '../../src/application/menhood/menhood-
 import { createMenhoodDataTool } from '../../src/application/tools/families/menhood-data.tool.ts';
 import { makeAllowedPerm, makeCtx, makeDeniedPerm } from './tool-test.helpers.ts';
 
+const COVERAGE = { ordersThrough: '2026-07-30', maturedThrough: '2026-07-08', maturityDays: 30 };
+
 const result = {
   columns: [{ name: 'orders', dataTypeId: 20 }],
   rows: [{ orders: '134418' }],
@@ -24,10 +26,21 @@ const truncatedResult = {
 const createTool = (overrides: Record<string, unknown> = {}) => createMenhoodDataTool({
   service: {
     preflight: () => undefined,
+    coverageWindow: async () => COVERAGE,
     execute: async () => result,
   },
   ...overrides,
 } as Parameters<typeof createMenhoodDataTool>[0]);
+
+const tool_execute_ok = async () => {
+  const output = await createTool().execute(
+    { sql: 'SELECT count(*) AS orders FROM menhood_orders' },
+    makeCtx('menhoodData', ['read']),
+  );
+  assert.equal(output.ok, true);
+  if (!output.ok) throw new Error('unreachable');
+  return output.value;
+};
 
 describe('Menhood Data tool', () => {
   it('tells the model to keep row-level export order deterministic', () => {
@@ -47,6 +60,7 @@ describe('Menhood Data tool', () => {
     const tool = createTool({
       service: {
         preflight: () => undefined,
+        coverageWindow: async () => COVERAGE,
         execute: async () => { executions += 1; return result; },
       },
     });
@@ -85,6 +99,49 @@ describe('Menhood Data tool', () => {
     assert.doesNotMatch(serialized, /SELECT|Delivered|134418/);
   });
 
+  it('carries the coverage window on every result so no count reads as settled by default', async () => {
+    const output = await tool_execute_ok();
+    assert.deepEqual(output.freshness, COVERAGE);
+    assert.match(output.message, /Orders exist only through 2026-07-30/);
+    assert.match(output.message, /after 2026-07-08 are still arriving/);
+  });
+
+  it('says an empty result is out of range, never that no orders were placed', async () => {
+    const tool = createTool({
+      service: {
+        preflight: () => undefined,
+        coverageWindow: async () => COVERAGE,
+        execute: async () => ({ ...result, rows: [], coverage: { returnedRows: 0, truncated: false } }),
+      },
+    });
+    const output = await tool.execute(
+      { sql: 'SELECT count(*) FROM menhood_orders WHERE order_date >= $1', parameters: ['2026-08-03'] },
+      makeCtx('menhoodData', ['read']),
+    );
+    assert.equal(output.ok, true);
+    if (!output.ok) return;
+    assert.match(output.value.message, /out of range or not yet populated/);
+    assert.match(output.value.message, /never that no orders were placed/);
+  });
+
+  it('refuses to describe a count as complete when the coverage read failed', async () => {
+    const tool = createTool({
+      service: {
+        preflight: () => undefined,
+        coverageWindow: async () => ({ ordersThrough: null, maturedThrough: '2026-07-08', maturityDays: 30 }),
+        execute: async () => result,
+      },
+    });
+    const output = await tool.execute(
+      { sql: 'SELECT count(*) FROM menhood_orders' },
+      makeCtx('menhoodData', ['read']),
+    );
+    assert.equal(output.ok, true);
+    if (!output.ok) return;
+    assert.equal(output.value.freshness.ordersThrough, null);
+    assert.match(output.value.message, /do not describe any count here as complete/);
+  });
+
   it('maps disabled, wrong-company, timeout, and provider failures to stable tool errors', async () => {
     for (const [code, expected] of [
       ['unavailable_connection', 'upstream_failure'],
@@ -94,6 +151,7 @@ describe('Menhood Data tool', () => {
       const tool = createTool({
         service: {
           preflight: () => undefined,
+          coverageWindow: async () => COVERAGE,
           execute: async () => { throw new MenhoodQueryServiceError(code, 'stable message'); },
         },
       });
@@ -115,6 +173,7 @@ describe('Menhood Data tool', () => {
       audit: { record: (record: unknown) => { records.push(record); } },
       service: {
         preflight: () => undefined,
+        coverageWindow: async () => COVERAGE,
         execute: async () => { throw new MenhoodQueryServiceError('timeout', 'stable message'); },
       },
     });
@@ -185,6 +244,7 @@ describe('Menhood Data tool', () => {
     const tool = createMenhoodDataTool({
       service: {
         preflight: () => undefined,
+        coverageWindow: async () => COVERAGE,
         execute: async () => truncatedResult,
       },
       exportCandidates: {
@@ -224,6 +284,7 @@ describe('Menhood Data tool', () => {
     const tool = createMenhoodDataTool({
       service: {
         preflight: () => undefined,
+        coverageWindow: async () => COVERAGE,
         execute: async () => truncatedResult,
       },
       exportCandidates: {

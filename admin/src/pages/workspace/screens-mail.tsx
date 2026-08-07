@@ -27,7 +27,7 @@ import { useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Archive, Check, Inbox, Mail, MailWarning, MessageSquare, Pause, Pencil, Play,
-  Plus, ShieldAlert, Tag, TriangleAlert,
+  Plus, RefreshCw, ShieldAlert, Tag, TriangleAlert,
 } from 'lucide-react'
 import {
   leavesOrganisation, matchClauses, rateLimitClause, readAction, readDestination,
@@ -35,6 +35,7 @@ import {
   type MailDelivery, type MailRule, type MailRuleDryRun, type MailRuleState, type MailboxHealth,
 } from './data/use-mail-automations'
 import { useConnections } from './data/use-connections'
+import { isLive } from './data/mailbox-resolution'
 import { ago } from './data/use-approvals'
 import { DetailPage, RailChip, RailEmpty, RailRow, RailSection } from './detail'
 import { DataNote, Empty, Fade, PageHeader, Panel, Seg, SkelRows, useStaged } from './ui'
@@ -110,7 +111,7 @@ function ruleLine(rule: MailRule): string | null {
 export function MailRules({ replay, go }: ScreenProps) {
   const [r1] = useStaged([320], replay)
   const [scope, setScope] = useState<'active' | 'all'>('active')
-  const { rules, mailboxes, anyMailboxBroken, loading, error } = useMailAutomations(scope === 'all')
+  const { rules, mailboxes, anyMailboxBroken, loading, error, refresh } = useMailAutomations(scope === 'all')
   const navigate = useNavigate()
   void go
 
@@ -152,7 +153,7 @@ export function MailRules({ replay, go }: ScreenProps) {
             reload leaves the previous response in state, so without this a
             stale mailbox line and a stale list of externally-forwarding rules
             render directly beneath a banner saying nothing was read. */}
-        {settled && anyMailboxBroken ? <MailboxBanner mailboxes={mailboxes} /> : null}
+        {settled && anyMailboxBroken ? <MailboxBanner mailboxes={mailboxes} onReconnected={refresh} /> : null}
 
         {/* The mailbox comes first now. It used to be a panel at the foot of the
             page, below a box of general notes — so the one thing that can take
@@ -313,7 +314,12 @@ function GettingStarted() {
   const { byProvider, loading, connecting, connect } = useConnections()
   const [failed, setFailed] = useState<string | null>(null)
   const google = byProvider.get('google_workspace')
+  // `connected` counts working accounts only, so a revoked one lands here
+  // rather than in the tick. Which is right — the step genuinely is not done —
+  // but the instruction has to change, because there is nothing to connect.
   const connected = Boolean(google?.connected)
+  const live = (google?.connections ?? []).filter(isLive)
+  const revoked = !connected && (google?.connections?.length ?? 0) > 0
 
   const onConnect = async () => {
     setFailed(null)
@@ -333,11 +339,13 @@ function GettingStarted() {
         <div className="ws-row">
           <span className="ws-ic">{connected ? <Check size={14} /> : <Mail size={14} />}</span>
           <div className="ws-row-main">
-            <b>Connect the Gmail account you want watched</b>
+            <b>{revoked ? 'Sign in to the Gmail account you want watched' : 'Connect the Gmail account you want watched'}</b>
             <p>
               {connected
-                ? `Connected as ${google?.connections[0]?.accountEmail ?? 'your Google account'}. Divo can read this inbox and send on its behalf.`
-                : 'Google will ask for your mail only — not Drive, Calendar or anything else.'}
+                ? `Connected as ${live[0]?.accountEmail ?? 'your Google account'}. Divo can read this inbox and send on its behalf.`
+                : revoked
+                  ? `${google?.connections.map((c) => c.accountEmail ?? c.label).join(', ')} is connected, but Google has ended the authorisation. Signing in again restores it — you are not connecting a new account.`
+                  : 'Google will ask for your mail only — not Drive, Calendar or anything else.'}
             </p>
           </div>
           <div className="ws-row-act">
@@ -350,7 +358,9 @@ function GettingStarted() {
                 disabled={loading || connecting === 'google_workspace'}
                 onClick={() => { void onConnect() }}
               >
-                {connecting === 'google_workspace' ? 'Waiting for Google…' : 'Connect Gmail'}
+                {connecting === 'google_workspace'
+                  ? 'Waiting for Google…'
+                  : revoked ? 'Reconnect Google' : 'Connect Gmail'}
               </button>
             )}
           </div>
@@ -390,21 +400,75 @@ function GettingStarted() {
  * connected mailbox the address is the reassurance that this is about them, and
  * with several it is the only way to know which one to go and fix.
  */
-function MailboxBanner({ mailboxes }: { mailboxes: MailboxHealth[] }) {
+/**
+ * The two failures a member can actually fix, and the only two that get a
+ * button.
+ *
+ * Every other code the health assessment can carry ends in "wait" or "this
+ * needs a Divo operator" — and a Reconnect button under those sentences is an
+ * instruction to go and fix an account that is working. So the list is the
+ * codes whose remedy already says to reconnect, and nothing else.
+ */
+const RECONNECTABLE = new Set(['connection_unavailable', 'scope_missing'])
+
+function MailboxBanner({
+  mailboxes, onReconnected,
+}: {
+  mailboxes: MailboxHealth[]
+  onReconnected: () => void
+}) {
+  const { loading, connecting, connect } = useConnections()
+  const [failed, setFailed] = useState<string | null>(null)
   const broken = mailboxes.filter((m) => !m.rulesCanFire && m.state !== 'paused')
   if (broken.length === 0) return null
+
+  /* The banner already says "reconnect it to resume". Until now that was the
+     whole of it: a remedy in prose, with nowhere to do it. Somebody reading
+     this has been told what is wrong, told what fixes it, and left to find the
+     Connections page and guess which account. */
+  const reconnectable = broken.some((m) => m.failureCode && RECONNECTABLE.has(m.failureCode))
+
+  const onConnect = async () => {
+    setFailed(null)
+    try {
+      // Mail alone — the same six scopes the new-rule flow asks for, not the
+      // forty the general Connected apps flow requests. Reconnecting to fix
+      // mail should not widen what Divo can reach.
+      await connect('google_workspace', { forTools: ['mailAutomations'] })
+      // The rules did not change; what changed is whether they can run. So the
+      // page is re-read rather than navigated away from.
+      onReconnected()
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : 'The Google window could not be opened.')
+    }
+  }
+
   return (
     <div className="ws-ceiling">
       <MailWarning size={14} />
-      <div>
-        <b>
+      <div className="ws-mb-banner">
+        <div>
+          <b>
+            {broken.length === 1
+              ? `Divo is not watching ${broken[0]!.mailboxEmail}.`
+              : `Divo is not watching ${broken.length} of your mailboxes.`}
+          </b>{' '}
           {broken.length === 1
-            ? `Divo is not watching ${broken[0]!.mailboxEmail}.`
-            : `Divo is not watching ${broken.length} of your mailboxes.`}
-        </b>{' '}
-        {broken.length === 1
-          ? `${broken[0]!.summary}${broken[0]!.remedy ? ` ${broken[0]!.remedy}` : ''} Until that is fixed, no rule on this mailbox can fire — however healthy it looks below.`
-          : 'Until that is fixed, no rule on those mailboxes can fire — however healthy they look below.'}
+            ? `${broken[0]!.summary}${broken[0]!.remedy ? ` ${broken[0]!.remedy}` : ''} Until that is fixed, no rule on this mailbox can fire — however healthy it looks below.`
+            : 'Until that is fixed, no rule on those mailboxes can fire — however healthy they look below.'}
+        </div>
+        {reconnectable ? (
+          <button
+            type="button"
+            className="btn primary"
+            disabled={loading || connecting === 'google_workspace'}
+            onClick={() => { void onConnect() }}
+          >
+            <RefreshCw size={13} />
+            {connecting === 'google_workspace' ? 'Opening Google…' : 'Reconnect Google'}
+          </button>
+        ) : null}
+        {failed ? <p className="ws-sub">{failed}</p> : null}
       </div>
     </div>
   )

@@ -414,7 +414,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         revokedAt: null,
         // Repairable API-key and OAuth states remain visible to their
         // administrators even though execution correctly excludes them.
-        status:    provider === 'aitable' || provider === 'shopify'
+        status:    provider === 'aitable' || provider === 'shopify' || provider === 'google_workspace'
           ? { in: MANAGEABLE_STATUSES }
           : 'connected',
       },
@@ -2055,29 +2055,47 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     }
   });
 
+  /**
+   * What Connected apps reads, and the only place it learns an account is dead.
+   *
+   * `connected` counts working accounts only. It used to be `length > 0` over a
+   * list that could not contain a revoked account anyway — so a member whose
+   * Google grant Google had thrown away saw a green card, while Mail Ops failed
+   * on the same connection every five minutes. Revoked accounts are asked for
+   * explicitly and returned with `reconnectRequired`, because dropping the row
+   * would say "you never connected Google" to somebody looking at the account
+   * they connected last week and want back.
+   */
   router.get('/google/status', memberAuth, async (_req: Request, res: Response) => {
     const userId    = res.locals['userId'] as string;
     const companyId = res.locals['companyId'] as string;
-    const connections = await deps.connectionRepo.listAccessibleGoogleConnections({ userId, companyId });
+    const connections = await deps.connectionRepo.listAccessibleGoogleConnections({
+      userId,
+      companyId,
+      includeReauthorizationRequired: true,
+    });
     if (!connections.ok) {
       res.status(500).json({ success: false, message: connections.error.message });
       return;
     }
+    const rows = connections.value.map(connection => ({
+      connectionId: connection.connectionId,
+      label:        connection.label,
+      accountEmail: connection.accountEmail ?? null,
+      accountName:  connection.accountName ?? null,
+      ownerType:    connection.ownerType,
+      access:       connection.access,
+      scopes:       connection.scopes,
+      status:       connection.status ?? 'connected',
+      reconnectRequired: connection.status === CONNECTION_REAUTHORIZATION_REQUIRED,
+      connectedAt:  connection.connectedAt.toISOString(),
+      lastUsedAt:   connection.lastUsedAt?.toISOString() ?? null,
+    }));
     res.json({
       success: true,
       data: {
-        connected: connections.value.length > 0,
-        connections: connections.value.map(connection => ({
-          connectionId: connection.connectionId,
-          label:        connection.label,
-          accountEmail: connection.accountEmail ?? null,
-          accountName:  connection.accountName ?? null,
-          ownerType:    connection.ownerType,
-          access:       connection.access,
-          scopes:       connection.scopes,
-          connectedAt:  connection.connectedAt.toISOString(),
-          lastUsedAt:   connection.lastUsedAt?.toISOString() ?? null,
-        })),
+        connected: rows.some(row => !row.reconnectRequired),
+        connections: rows,
       },
     });
   });

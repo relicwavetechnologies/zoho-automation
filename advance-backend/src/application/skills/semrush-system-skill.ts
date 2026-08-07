@@ -13,7 +13,24 @@ export const DIVO_SEMRUSH_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = 
   summary: 'Run Semrush domain and organic-search research through backend-configured Semrush web operations.',
   markdown: `# Divo Semrush SEO Research
 
-Use this skill for read-only Semrush SEO research available through Divo's backend-configured capability. The backend uses a backend-owned Semrush web session; the model never receives endpoint credentials, cookies, API keys, or raw provider headers.
+Use this skill for read-only Semrush SEO research available through Divo's backend-configured capability. The backend uses a backend-owned Semrush web session (\`www.semrush.com\` only — never \`api.semrush.com\`); the model never receives endpoint credentials, cookies, API keys, or raw provider headers.
+
+## Backend environment (ops only — never expose to members)
+
+- \`SEMRUSH_WEB_API_KEY\`
+- \`SEMRUSH_WEB_COOKIE\`
+- \`SEMRUSH_TIMEOUT_MS\` (default 15000 ms)
+
+## Senior curl mapping
+
+| # | Senior curl | Divo operation | Status |
+| --- | --- | --- | --- |
+| 1 | \`POST /backlinks/webapi2/\` · \`type=backlinks_comparison\` | \`backlinks_comparison\` | Callable |
+| 2 | \`GET /analytics/backlinks/webapi2\` · \`action=export\` · \`type=backlinks\` | — | **Excluded** — live probe \`403 ERROR 130 API DISABLED\`; do not call or implement |
+| 3 | \`POST /dpa/rpc\` · \`ranks.Ranks\` · \`organic.overview\` | \`domain_overview\` | Callable |
+| 4 | \`POST /dpa/rpc\` · \`organic.KeywordPositionTrend\` · \`organic.positions\` | \`keyword_position_trend\` | Callable |
+
+Only the three **Callable** operations below may be invoked through the \`semrush\` tool.
 
 ## Operating rules
 
@@ -33,17 +50,17 @@ Use this skill for read-only Semrush SEO research available through Divo's backe
 - Show one main table in chat. You may offer one follow-up: "Want domain overview detail for any of these?"
 - Add extra Semrush calls only after explicit member follow-up in the same thread.
 
-## Supported backend operations
+## Supported backend operations (3 callable)
 
 - \`domain_overview\`: one bare domain and a supported country database. A single snapshot row.
-- \`backlinks_comparison\`: authority score, total backlinks and referring domains per target (2–10 domains in one request).
+- \`backlinks_comparison\`: authority score, total backlinks and referring domains per target (1–10 domains in one request).
 - \`keyword_position_trend\`: one domain, one keyword, and one date (YYYYMMDD). Use for "where did this keyword rank on this date", not for full keyword lists or monthly domain history.
 
 ## Cost and honesty rules for these operations
 
-1. \`backlinks_comparison\` is one web request for all listed targets. Compare the domains the user actually named; do not pad the list to be thorough.
+1. \`backlinks_comparison\` is **one web request** for all listed targets (1–10). Compare the domains the user actually named; do not pad the list or fan out \`domain_overview\` per target to be thorough.
 2. If Semrush has no backlink overview for a requested target, \`coverage.missingTargets\` and the export name it as no provider data rather than zero.
-3. Never substitute one report for another. If the user asked for something outside these three operations, say it is not available through Divo Semrush yet.`,
+3. Never substitute one report for another. If the user asked for something outside these three operations (including senior curl #2 backlink export), say it is not available through Divo Semrush yet.`,
   toolIds: ['semrush'],
   tags: ['divo', 'seo', 'semrush', 'organic', 'rankings', 'domain'],
   aliases: ['semrush', 'seo research', 'organic rankings', 'domain overview'],

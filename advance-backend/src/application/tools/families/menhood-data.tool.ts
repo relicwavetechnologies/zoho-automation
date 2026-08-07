@@ -28,7 +28,7 @@ import {
   MenhoodQueryServiceError,
 } from '../../menhood/menhood-query.service';
 
-type MenhoodService = Pick<MenhoodQueryService, 'preflight' | 'execute'>;
+type MenhoodService = Pick<MenhoodQueryService, 'preflight' | 'execute' | 'coverageWindow'>;
 
 const ResultSchema = z.object({
   status: z.enum(['complete', 'partial']),
@@ -46,6 +46,14 @@ const ResultSchema = z.object({
       }),
     ]),
   }),
+  // Attached to every result, not only suspicious ones. The caller has no other
+  // way to tell a settled count from one that is still filling in, and the
+  // failure this prevents is a plausible number reported as complete.
+  freshness: z.object({
+    ordersThrough: z.string().nullable(),
+    maturedThrough: z.string(),
+    maturityDays: z.number().int().positive(),
+  }).strict(),
   exportCandidate: z.object({
     candidateId: z.string().uuid(),
     sourceKind: z.literal('menhood_query'),
@@ -100,7 +108,10 @@ export const createMenhoodDataTool = (deps: {
       // Captured so the candidate closure sees the narrowed value, not the
       // still-possibly-undefined outer binding used by the catch block.
       const validatedQuery = validated;
-      const data = await deps.service.execute(ctx.runContext.companyId, args);
+      const [data, freshness] = await Promise.all([
+        deps.service.execute(ctx.runContext.companyId, args),
+        deps.service.coverageWindow(ctx.runContext.companyId),
+      ]);
       const exportBlockedByMissingOrder = data.coverage.truncated
         && !menhoodQueryHasDeterministicReplayOrder(validatedQuery);
       const candidate = await publishExportCandidate({
@@ -132,6 +143,7 @@ export const createMenhoodDataTool = (deps: {
             ? { kind: 'truncated', returnedRows: data.coverage.returnedRows, reason: 'menhood_more_rows_available' }
           : { kind: 'complete', totalRows: data.coverage.returnedRows },
         },
+        freshness,
         ...(candidate.kind === 'published'
           ? {
               exportCandidate: {
@@ -143,11 +155,14 @@ export const createMenhoodDataTool = (deps: {
               },
             }
           : {}),
-        message: exportBlockedByMissingOrder
-          ? `Showing the first ${data.coverage.returnedRows} matching rows. Add a deterministic ORDER BY before creating a sample or full export; for order-line exports use o.order_date, o.order_number, o.id.`
-          : data.coverage.truncated
-          ? `Showing the first ${data.coverage.returnedRows} matching rows.`
-          : `Retrieved ${data.coverage.returnedRows} matching row${data.coverage.returnedRows === 1 ? '' : 's'}.`,
+        message: [
+          exportBlockedByMissingOrder
+            ? `Showing the first ${data.coverage.returnedRows} matching rows. Add a deterministic ORDER BY before creating a sample or full export; for order-line exports use o.order_date, o.order_number, o.id.`
+            : data.coverage.truncated
+            ? `Showing the first ${data.coverage.returnedRows} matching rows.`
+            : `Retrieved ${data.coverage.returnedRows} matching row${data.coverage.returnedRows === 1 ? '' : 's'}.`,
+          freshnessNote(freshness, data.coverage.returnedRows),
+        ].join(' '),
       };
       deps.audit?.record({
         actorId: ctx.runContext.userId,
@@ -187,6 +202,28 @@ export const createMenhoodDataTool = (deps: {
     }
   },
 });
+
+/**
+ * An empty Menhood result is almost never "it did not happen". Orders arrive
+ * here for weeks after they are placed, so a recent window is out of range or
+ * undercounted, and both look identical to a caller reading only the row count.
+ * Saying so in the message is what stops zero rows being reported as zero
+ * orders, and a still-filling count being reported as a settled one.
+ */
+function freshnessNote(
+  freshness: { ordersThrough: string | null; maturedThrough: string; maturityDays: number },
+  returnedRows: number,
+): string {
+  if (!freshness.ordersThrough) {
+    return 'Coverage window unavailable for this run; do not describe any count here as complete.';
+  }
+  const settled =
+    `Orders exist only through ${freshness.ordersThrough}, and order dates after ${freshness.maturedThrough} are still arriving`
+    + ` — they undercount until roughly ${freshness.maturityDays} days have passed.`;
+  return returnedRows === 0
+    ? `${settled} No rows here means the window is out of range or not yet populated, never that no orders were placed.`
+    : settled;
+}
 
 function exportPayloadFor(
   query: ValidatedMenhoodQuery,

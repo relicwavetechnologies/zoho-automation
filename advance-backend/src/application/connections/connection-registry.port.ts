@@ -20,10 +20,11 @@ export interface AccessibleConnection {
   readonly lastUsedAt?: Date;
   /**
    * Present only for providers that can hold a listed-but-unusable connection.
-   * Every OAuth provider heals a stale credential with a refresh token, so it
-   * has nothing to report here; an API-key provider cannot, and a key revoked
-   * upstream has to stay visible in order to be repaired rather than silently
-   * disappearing from the account list.
+   * An API-key provider cannot heal itself, and a key revoked upstream has to
+   * stay visible in order to be repaired rather than silently disappearing from
+   * the account list. OAuth providers normally heal a stale credential with a
+   * refresh token — but not once the grant itself is gone, which is why Google
+   * and Shopify also report `reauthorization_required` here.
    */
   readonly status?: string;
 }
@@ -32,6 +33,8 @@ export interface ConnectionRegistryPort {
   listAccessibleGoogleConnections(input: {
     readonly companyId: string;
     readonly userId: string;
+    /** Include accounts whose grant Google revoked, so they can be reconnected. */
+    readonly includeReauthorizationRequired?: boolean;
     readonly abortSignal?: AbortSignal;
   }): Promise<Result<AccessibleConnection[], InfraError>>;
   listAccessibleZohoConnections(input: {

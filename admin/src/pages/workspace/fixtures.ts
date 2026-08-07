@@ -489,7 +489,7 @@ export const DATA_SOURCES: Record<string, { state: DataState; note: string }> = 
   artifacts: { state: 'needs-backend', note: 'divo_artifact is disabled, markdown-only, and never leaves the container.' },
   artifactSharing: { state: 'needs-backend', note: 'An artifact has no owner or grants today — it is only a file path.' },
   artifactHistory: { state: 'needs-backend', note: 'No versioned storage; the workspace file is overwritten in place.' },
-  reconnect: { state: 'needs-backend', note: 'Token expiry is stored but never evaluated — there is no needs_reauth state to read.' },
+  reconnect: { state: 'live', note: 'A refresh Google rejects with invalid_grant writes reauthorization_required to the connection; /google/status reports it. Stored token expiry is still never evaluated, so this is reactive — the account is marked when it is next used, not the moment Google revokes it.' },
   /**
    * The domain is complete and the UI is fabricated, which is an unusual pair.
    * ScheduledWorkflow / Run / Message are real Prisma models and

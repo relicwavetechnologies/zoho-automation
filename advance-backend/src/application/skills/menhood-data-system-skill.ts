@@ -25,6 +25,23 @@ Use this skill for analytical questions over the company-managed Menhood Airtabl
 6. For row-level previews or exportable raw datasets, always include a deterministic \`ORDER BY\` on stable columns. For order-line exports use \`ORDER BY o.order_date, o.order_number, o.id\` unless the member requested a different stable order. A sample is only reviewable if the full replay returns rows in the same order.
 7. If a Menhood query fails with a SQL, schema, or generic tool error, do not loop. Make at most one schema/context probe and one corrected retry for the same request. If it still fails, stop and explain the failure plainly.
 
+## Coverage: this data trails real orders
+
+Orders reach this reporting DB well after they are placed, and they keep arriving for weeks. Measured across two independent settled cohorts:
+
+| Order date cohort | Present by day 7 | by day 14 | by day 30 |
+|---|---|---|---|
+| 2026-03-01 – 2026-04-15 | 68.2% | 89.9% | 99.1% |
+| 2026-05-01 – 2026-06-30 | 60.3% | 78.9% | 95.3% |
+
+Every result carries a \`freshness\` block with \`ordersThrough\` (the latest \`order_date\` that exists at all) and \`maturedThrough\` (on/before this date counts are settled). Read it before describing any number.
+
+1. **Never read an empty result as zero orders.** A window after \`ordersThrough\` is out of range. Say “this data only covers through <date>”, and do not tell the member their sync is broken or their orders stopped — that conclusion is not available from this tool.
+2. **Never present a recent window as complete.** Any window overlapping the period after \`maturedThrough\` undercounts. State the shortfall plainly when it is material; do not silently report the partial number.
+3. **Current-week, yesterday, and today questions cannot be answered here at all.** Say so and use the live Airtable Orders table instead. This tool is for settled, historical analysis: financial years, months, cohorts, product and campaign performance.
+4. Never compute ROAS, ad spend, or ad-to-sales ratios from this source. Ad spend lives in the live Menhood Management Airtable base; \`menhood_advertisement_costs\` here stopped receiving data on 2025-03-21.
+5. When one metric combines two sources, intersect their date ranges or refuse. Never divide N days of orders by M days of ad spend, and never present the result of doing so as a rate.
+
 ## Data model and quality
 
 - Exact schema map, verified from the backend Menhood reporting DB:
