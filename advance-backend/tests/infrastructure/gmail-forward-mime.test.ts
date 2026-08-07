@@ -2,12 +2,18 @@
  * A forward must arrive as the message that was sent, not as Divo's rendering
  * of it.
  *
- * The forward wraps the original as a nested MIME part rather than rebuilding
- * it, so HTML, inline images, attachments and transfer encodings survive
- * untouched. Nothing asserted that until now — the guarantee lived only in a
- * doc sentence, which is the shape of every other defect in this subsystem.
- * These tests hold the original's bytes to being present **verbatim**, because
- * any re-encoding at all is what breaks an HTML mail.
+ * The forward carries the original's own content headers and body straight
+ * under a new envelope, so HTML, inline images, attachments and transfer
+ * encodings survive untouched and the message renders as itself. These tests
+ * hold the original's bytes to being present **verbatim**, because any
+ * re-encoding at all is what breaks an HTML mail.
+ *
+ * They also hold the *structure*, which is the defect verbatim bytes did not
+ * catch: the original used to be nested inside a `multipart/mixed` of Divo's
+ * own, behind a `text/plain` part introducing it. Every byte survived and the
+ * mail still arrived looking wrong, because a client shows the first plain
+ * part of a `multipart/mixed` as the body — so Divo's introduction became the
+ * mail and the real content was pushed underneath it.
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
@@ -180,6 +186,83 @@ describe('forwarding preserves the original message', () => {
     )).toString('utf8');
 
     assert.match(drafted, /X-Divo-Mailops: rule-1/);
-    assert.match(drafted, /^Subject: Fwd: Your invoice$/m);
+    // From the original's own header, not Divo's parsed copy of it.
+    assert.match(drafted, /^Subject: Fwd: Statement$/m);
+  });
+
+  it('keeps the original as the top-level message rather than a part of one', async () => {
+    // The whole defect. Wrapping an HTML mail in a `multipart/mixed` behind a
+    // plain-text introduction preserved every byte and still rendered wrong:
+    // a client shows the first plain part as the body, so the introduction
+    // became the mail and the real content was pushed below it.
+    const raw = Buffer.from([
+      'From: Acme Billing <billing@acme.com>',
+      'Subject: Your invoice',
+      'MIME-Version: 1.0',
+      'Content-Type: multipart/alternative; boundary="inner"',
+      '',
+      '--inner',
+      'Content-Type: text/html; charset=UTF-8',
+      '',
+      '<html><body>Total 500</body></html>',
+      '--inner--',
+      '',
+    ].join('\r\n'), 'utf8');
+
+    const drafted = (await forward(raw)).toString('latin1');
+
+    // The forward's own Content-Type is the original's, so the message is the
+    // original rather than a container holding it.
+    assert.match(
+      drafted,
+      /^Content-Type: multipart\/alternative; boundary="inner"$/m,
+    );
+    assert.doesNotMatch(drafted, /multipart\/mixed/);
+    assert.doesNotMatch(drafted, /Forwarded by Divo/);
+  });
+
+  it('shows the real sender in the name and routes replies back to them', async () => {
+    // The address has to stay the authenticated mailbox or the message fails
+    // DMARC, so the display name is the only place the sender can appear —
+    // and without Reply-To a reply would go to the relaying mailbox instead of
+    // to whoever actually wrote the mail.
+    const raw = Buffer.from(
+      'From: Acme Billing <billing@acme.com>\r\nSubject: Your invoice\r\n\r\nbody',
+      'utf8',
+    );
+
+    const drafted = (await forward(raw)).toString('utf8');
+
+    assert.match(drafted, /^From: Acme Billing via Divo <me@company\.com>$/m);
+    assert.match(drafted, /^Reply-To: Acme Billing <billing@acme\.com>$/m);
+  });
+
+  it('quotes a bare sender address used as a display name', async () => {
+    // An unquoted `@` is not legal in a display name, and an illegal From is
+    // rejected outright rather than rendered oddly.
+    const raw = Buffer.from(
+      'From: billing@acme.com\r\nSubject: Your invoice\r\n\r\nbody',
+      'utf8',
+    );
+
+    const drafted = (await forward(raw)).toString('utf8');
+
+    assert.match(drafted, /^From: "billing@acme\.com via Divo" <me@company\.com>$/m);
+  });
+
+  it('passes an encoded subject back as the bytes it arrived as', async () => {
+    // Decoding and re-encoding an `=?UTF-8?B?...?=` subject is how an accented
+    // subject line turns into mojibake. `Fwd:` goes in front of the encoded
+    // word, which is legal and leaves it intact.
+    const raw = Buffer.from([
+      'Subject: =?UTF-8?B?w4ViZXJzaWNodA==?=',
+      'Content-Type: text/plain',
+      '',
+      'body',
+    ].join('\r\n'), 'utf8');
+
+    const drafted = (await forward(raw)).toString('utf8');
+
+    assert.match(drafted, /^Subject: Fwd: =\?UTF-8\?B\?w4ViZXJzaWNodA==\?=$/m);
   });
 });

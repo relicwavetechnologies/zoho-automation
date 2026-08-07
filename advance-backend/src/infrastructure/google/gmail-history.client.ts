@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type {
   MailMessageMetadata,
   NewMailEvent,
@@ -791,56 +790,112 @@ function buildForwardMime(input: {
   ruleId: string;
 }): Buffer {
   const original = splitRawMessage(input.sourceRaw);
-  const contentHeaders = selectContentHeaders(original.headers);
-  const boundary = `=_divo_${createHash('sha256')
-    .update(input.idempotencyKey)
-    .digest('hex')
-    .slice(0, 32)}`;
-  const intro = [
-    'Forwarded by Divo Mail Ops',
-    '',
-    `From: ${sanitizeHeader(input.source.from)}`,
-    `To: ${sanitizeHeader(input.source.to)}`,
-    ...(input.source.date
-      ? [`Date: ${sanitizeHeader(input.source.date)}`]
-      : []),
-    `Subject: ${sanitizeHeader(input.source.subject)}`,
-  ].join('\r\n');
-  const prefix = [
-    `From: ${sanitizeHeader(input.mailboxEmail)}`,
+  const blocks = headerBlocks(original.headers);
+  const contentHeaders = selectContentHeaders(blocks);
+  const originalFrom = findHeader(blocks, 'from') ?? sanitizeHeader(input.source.from);
+  const replyTo = findHeader(blocks, 'reply-to') ?? originalFrom;
+  const envelope = [
+    // The authenticated mailbox, wearing the original sender's name. The
+    // address has to be the mailbox or the message fails DMARC at the far end;
+    // the display name is the only place the real sender can be shown, and it
+    // is where every mailing list puts it for exactly this reason.
+    `From: ${forwardFromPhrase(originalFrom)} <${sanitizeHeader(input.mailboxEmail)}>`,
     `To: ${sanitizeHeader(input.destination)}`,
-    `Subject: ${sanitizeHeader(input.subject)}`,
+    // Taken from the original's own bytes rather than Divo's parsed copy, so a
+    // subject Gmail encoded as `=?UTF-8?B?...?=` is passed back exactly as it
+    // came. Decoding and re-encoding it is how an accented subject line turns
+    // into mojibake.
+    `Subject: ${forwardSubject(findHeader(blocks, 'subject'), input.subject)}`,
+    // So a reply reaches whoever actually wrote the mail rather than the
+    // mailbox that relayed it.
+    ...(replyTo ? [`Reply-To: ${replyTo}`] : []),
     `Message-ID: ${input.messageId}`,
     `${MAILOPS_HEADER}: ${sanitizeHeader(input.ruleId)}`,
     `Date: ${new Date().toUTCString()}`,
     'MIME-Version: 1.0',
-    `Content-Type: multipart/mixed; boundary="${boundary}"`,
-    '',
-    `--${boundary}`,
-    'Content-Type: text/plain; charset=UTF-8',
-    'Content-Transfer-Encoding: 8bit',
-    '',
-    intro,
-    '',
-    `--${boundary}`,
     '',
   ].join('\r\n');
-  const suffix = `\r\n--${boundary}--\r\n`;
-  // Three pieces with three different encodings, which is the whole point.
+  // The original's content headers, then its body, and nothing in between.
   //
-  // The intro is Divo's own text and is UTF-8. The forwarded body is bytes and
-  // is never touched. The original's content headers sit between them and must
-  // be written back as the exact bytes they arrived as: they were read with
-  // `latin1`, which maps bytes 1:1, so re-encoding them as UTF-8 would turn
-  // every byte above 0x7F into two — mangling a `Content-Type` boundary
-  // parameter or a filename, and taking the whole part with it.
+  // This used to nest the original inside a `multipart/mixed` of Divo's own,
+  // behind a `text/plain` part introducing it. That is not a forward of the
+  // message, it is a new message quoting it — and it rendered like one. Every
+  // HTML mail is a `multipart/alternative` of a plain twin and an HTML twin;
+  // put inside a `multipart/mixed` whose first part is plain text, a client
+  // shows Divo's introduction *as* the mail and pushes the real content into a
+  // second block. The sender saw their message taken apart and reassembled
+  // wrongly, which is the opposite of what forwarding promises.
+  //
+  // Written as one envelope plus the original's own headers and body, the
+  // message arrives as itself: same structure, same HTML, same inline images,
+  // same attachments, same transfer encodings.
+  //
+  // Encoding matters here. Everything Divo generates is ASCII, and the pieces
+  // taken from the original were read with `latin1`, which maps bytes 1:1 —
+  // so writing the whole envelope back as `latin1` reproduces the original's
+  // bytes exactly. Writing them as UTF-8 would turn every byte above 0x7F into
+  // two, mangling a `Content-Type` boundary parameter or a filename and taking
+  // the whole part with it.
   return Buffer.concat([
-    Buffer.from(prefix, 'utf8'),
+    Buffer.from(envelope, 'latin1'),
     Buffer.from(contentHeaders.join('\r\n'), 'latin1'),
     Buffer.from('\r\n\r\n', 'utf8'),
     original.body,
-    Buffer.from(suffix, 'utf8'),
   ]);
+}
+
+/**
+ * The display name the forward goes out under.
+ *
+ * An encoded word is returned as it stands: quoting one stops it being decoded,
+ * and it is already header-safe by construction. A bare address is quoted,
+ * because an unquoted `@` is not legal in a display name. Everything else is a
+ * phrase the original already used, so appending to it keeps it legal.
+ */
+function forwardFromPhrase(originalFrom: string): string {
+  const trimmed = sanitizeHeader(originalFrom);
+  const angle = trimmed.lastIndexOf('<');
+  const name = angle > 0 ? trimmed.slice(0, angle).trim() : '';
+  if (name) return `${name} via Divo`;
+  const address = trimmed.replace(/^</, '').replace(/>$/, '').trim();
+  return `"${address.replace(/["\\]/g, '')} via Divo"`;
+}
+
+/**
+ * `Fwd:` in front of whatever the original said, without rewriting it.
+ *
+ * Falls back to Divo's parsed subject only when the original carried none,
+ * which is the one case where there are no bytes to preserve.
+ */
+function forwardSubject(originalSubject: string | undefined, fallback: string): string {
+  const value = originalSubject?.trim() || sanitizeHeader(fallback) || '(no subject)';
+  return /^fwd:/i.test(value) ? value : `Fwd: ${value}`;
+}
+
+/**
+ * A header block's value, with folded continuation lines kept as they were.
+ */
+function findHeader(blocks: readonly string[], name: string): string | undefined {
+  const wanted = `${name.toLowerCase()}:`;
+  const found = blocks.find(
+    block => block.slice(0, wanted.length).toLowerCase() === wanted,
+  );
+  return found?.slice(wanted.length).trim();
+}
+
+/**
+ * Raw headers split into one entry per header, continuation lines folded in.
+ */
+function headerBlocks(rawHeaders: string): string[] {
+  const blocks: string[] = [];
+  for (const line of rawHeaders.replace(/\r\n/g, '\n').split('\n')) {
+    if (/^[ \t]/.test(line) && blocks.length > 0) {
+      blocks[blocks.length - 1] += `\r\n${line}`;
+    } else {
+      blocks.push(line);
+    }
+  }
+  return blocks;
 }
 
 function splitRawMessage(raw: Buffer): {
@@ -860,15 +915,7 @@ function splitRawMessage(raw: Buffer): {
   };
 }
 
-function selectContentHeaders(rawHeaders: string): string[] {
-  const blocks: string[] = [];
-  for (const line of rawHeaders.replace(/\r\n/g, '\n').split('\n')) {
-    if (/^[ \t]/.test(line) && blocks.length > 0) {
-      blocks[blocks.length - 1] += `\r\n${line}`;
-    } else {
-      blocks.push(line);
-    }
-  }
+function selectContentHeaders(blocks: readonly string[]): string[] {
   const allowed = new Set([
     'content-type',
     'content-transfer-encoding',
