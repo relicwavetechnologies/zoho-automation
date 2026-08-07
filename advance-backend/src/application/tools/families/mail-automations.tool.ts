@@ -183,25 +183,42 @@ export type MailAutomationConnectionResolution =
       status: 'unavailable';
       reason: string;
       /**
-       * Which of the three unavailable states this is. Carried separately from
+       * Which of the four unavailable states this is. Carried separately from
        * the sentence so a caller can behave differently without matching on
        * prose — an account that exists but lacks a scope is not the same
        * problem as no account at all.
        */
-      connectionState?: 'none_accessible' | 'insufficient_access' | 'requested_not_accessible';
+      connectionState?: MailOpsConnectionState;
     };
 
+export type MailOpsConnectionState =
+  | 'none_accessible'
+  | 'insufficient_access'
+  | 'requested_not_accessible'
+  | 'reauthorization_required';
+
 /**
- * Three different problems with three different remedies.
+ * Four different problems with four different remedies.
  *
  * They used to share one sentence — "Connect or reconnect Google to continue" —
  * which sent a member with a scope-limited account off to connect an account
  * they already had, and a member with no account off to grant scopes on one
  * that did not exist.
+ *
+ * `reauthorization_required` is the newest and was the worst of the four to get
+ * wrong: a revoked account is simply absent from the accessible list, so it fell
+ * through to `none_accessible` and Divo told somebody looking straight at their
+ * connected Gmail that they had never connected Google.
  */
 export function mailOpsConnectionUnavailableMessage(
-  state: 'none_accessible' | 'insufficient_access' | 'requested_not_accessible',
+  state: MailOpsConnectionState,
 ): string {
+  if (state === 'reauthorization_required') {
+    return 'Google has ended Divo\'s authorisation on your connected account, so '
+      + 'nothing can be read or sent with it until you sign in again. Reconnect '
+      + 'Google — it is the same account, not a new one, and your existing rules '
+      + 'resume once it is back.';
+  }
   if (state === 'insufficient_access') {
     return 'Your Google account is connected but Divo cannot read, watch, and '
       + 'send mail with it — it is shared read-only or missing Gmail scopes. '
@@ -238,10 +255,16 @@ function mailRuleActivatedMessage(destination: {
       + `${destination.email} — HTML, attachments and inline images kept as `
       + 'they were sent.';
   }
-  if (destination.type === 'lark_chat') {
-    return 'Mail automation is active. Matching mail is now announced in the '
-      + 'chosen Lark chat: sender, subject and a short preview, with a link to '
-      + 'the message itself.';
+  // `lark_dm` names one recipient — the rule's own owner — and `lark_chat` a
+  // room. Both leave the mailbox, and neither carries the mail itself, so they
+  // read alike and must not fall through to the `organize` sentence below.
+  if (destination.type === 'lark_chat' || destination.type === 'lark_dm') {
+    const where = destination.type === 'lark_dm'
+      ? 'your Divo chat'
+      : 'the chosen Lark chat';
+    return `Mail automation is active. Matching mail is now announced in ${where}`
+      + ': sender, subject and a short preview, with a link to the message '
+      + 'itself.';
   }
   return 'Mail automation is active. Matching mail is now organised in place, '
     + 'and nothing leaves the mailbox.';
