@@ -196,7 +196,10 @@ describe('rule health', () => {
 
   it('distinguishes a rule waiting for mail from one its mailbox cannot fire', () => {
     assert.equal(assessRule(VALID_RULE, healthy).state, 'waiting');
-    assert.equal(assessRule(VALID_RULE, dead).state, 'blocked');
+    // `mailbox_down`, not `blocked`. The two share a colour and nothing else:
+    // this rule is refused by nobody, and calling it blocked sends its owner
+    // hunting a permission problem while the dead connection sits elsewhere.
+    assert.equal(assessRule(VALID_RULE, dead).state, 'mailbox_down');
   });
 
   it('reports a refused rule as blocked rather than waiting', () => {

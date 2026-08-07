@@ -20,7 +20,7 @@ const BASE = '/api/mail-automations'
 
 /** Worst first. `waiting` is a healthy rule that has simply not matched yet. */
 export type MailRuleState =
-  | 'broken' | 'blocked' | 'paused' | 'archived' | 'working' | 'waiting'
+  | 'broken' | 'blocked' | 'mailbox_down' | 'paused' | 'archived' | 'working' | 'waiting'
 
 /**
  * Worst first. `watch_delayed` and `watch_degraded` both still deliver — Divo

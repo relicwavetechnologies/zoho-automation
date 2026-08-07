@@ -183,8 +183,21 @@ function remedyForFailure(code: string | null): string | null {
 export type MailRuleState =
   /** Stored in a shape the current matcher rejects, so it matches nothing. */
   | 'broken'
-  /** Active, but its mailbox cannot deliver right now. */
+  /**
+   * Matched, then refused — Divo is no longer allowed to act on this rule.
+   * About permission, and about this rule alone.
+   */
   | 'blocked'
+  /**
+   * Fine in itself; its mailbox is not being watched, so nothing reaches it.
+   *
+   * Split from `blocked` because the two have nothing in common but their
+   * colour. A rule shown as "Blocked" beside a refused count of zero
+   * contradicts itself on screen, and sends its owner looking for a permission
+   * problem that does not exist while the actual fault — a Google connection
+   * that needs reconnecting — sits one panel away.
+   */
+  | 'mailbox_down'
   | 'paused'
   | 'archived'
   /** Active and has delivered at least once. */
@@ -255,8 +268,8 @@ export function assessRule(
 
   if (mailbox && !mailbox.rulesCanFire) {
     return {
-      state: 'blocked',
-      summary: 'Active, but its mailbox is not being watched right now.',
+      state: 'mailbox_down',
+      summary: 'Active, but its mailbox is not being watched, so nothing reaches it.',
       invalidReason: null,
     };
   }
