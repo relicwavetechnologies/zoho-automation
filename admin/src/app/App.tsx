@@ -17,7 +17,7 @@ import { NoAccess } from "@/pages/workspace/ui"
 import {
   YouAccess, YouApprovals, YouConnections, YouHome, YouMemory, YouSettings, YouSkills, YouUsage,
 } from "@/pages/workspace/screens-you"
-import { YouMailRules } from "@/pages/workspace/screens-you-mail"
+import { YouMailRules } from "@/pages/workspace/screens-mail"
 import {
   TeamApprovalPolicy, TeamHome, TeamPeople, TeamRoles, TeamUsage,
 } from "@/pages/workspace/screens-team"
