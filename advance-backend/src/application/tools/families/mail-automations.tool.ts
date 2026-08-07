@@ -220,6 +220,33 @@ export function mailOpsConnectionUnavailableMessage(
  * case that is not theirs to act on, which says so rather than sending them
  * off to fix a room in a company they cannot see.
  */
+/**
+ * What a person reads when their rule goes live.
+ *
+ * "Mail automation is active" alone is the whole of what the approver and the
+ * requester were told, and it names nothing that was decided — least of all
+ * where the mail now goes, which is the entire subject of the approval that
+ * had to be granted for it. Naming the destination lets somebody catch a wrong
+ * address in the confirmation rather than in a week of forwarded mail.
+ */
+function mailRuleActivatedMessage(destination: {
+  readonly type: string;
+  readonly email?: string;
+}): string {
+  if (destination.type === 'email' && destination.email) {
+    return 'Mail automation is active. Matching mail is now forwarded whole to '
+      + `${destination.email} — HTML, attachments and inline images kept as `
+      + 'they were sent.';
+  }
+  if (destination.type === 'lark_chat') {
+    return 'Mail automation is active. Matching mail is now announced in the '
+      + 'chosen Lark chat: sender, subject and a short preview, with a link to '
+      + 'the message itself.';
+  }
+  return 'Mail automation is active. Matching mail is now organised in place, '
+    + 'and nothing leaves the mailbox.';
+}
+
 function larkChatRefusalMessage(verdict: LarkChatDestinationVerdict): string {
   if (verdict.status === 'other_company') {
     return 'That Lark chat belongs to a different company, so Divo will not '
@@ -717,7 +744,7 @@ export function createMailAutomationsTool(deps: {
             createdAt: new Date().toISOString(),
             valid: true,
           },
-          message: 'Mail automation is active.',
+          message: mailRuleActivatedMessage(parsed.destination),
         });
       } catch (cause) {
         return err(new ToolError({
