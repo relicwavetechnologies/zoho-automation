@@ -417,7 +417,8 @@ export class MailOpsReadRepository {
     limit: number;
   }): Promise<Result<{
     mailboxEmail: string;
-    events: Array<{ metadata: Record<string, unknown> }>;
+    activatedAt: Date;
+    events: Array<{ eventId: string; occurredAt: Date; metadata: Record<string, unknown> }>;
   } | null, InfraError>> {
     try {
       const subscription = await this.db.mailboxSubscription.findFirst({
@@ -427,7 +428,7 @@ export class MailOpsReadRepository {
           ...(input.connectionId ? { connectionId: input.connectionId } : {}),
         },
         orderBy: { createdAt: 'asc' },
-        select: { id: true, mailboxEmail: true },
+        select: { id: true, mailboxEmail: true, createdAt: true },
       });
       // Not an error. A mailbox with no subscription is simply one Divo has
       // never watched, which is the ordinary state before a first rule.
@@ -437,12 +438,15 @@ export class MailOpsReadRepository {
         where: { subscriptionId: subscription.id, companyId: input.companyId },
         orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
         take: input.limit,
-        select: { metadataJson: true },
+        select: { id: true, occurredAt: true, metadataJson: true },
       });
 
       return ok({
         mailboxEmail: subscription.mailboxEmail,
+        activatedAt: subscription.createdAt,
         events: events.map(event => ({
+          eventId: event.id,
+          occurredAt: event.occurredAt,
           metadata: (event.metadataJson ?? {}) as Record<string, unknown>,
         })),
       });

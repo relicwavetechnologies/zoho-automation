@@ -688,6 +688,7 @@ export const createServer = (c: Container): DivoServerApplication => {
       // Creating and changing a rule run the same sequence the agent's tool
       // runs, because it is literally the same function.
       writeRule: c.writeMailRule,
+      compileRule: c.compileMailRule,
       memberAuth: {
         prisma: c.prisma,
         jwtSecret: c.env.MEMBER_JWT_SECRET,

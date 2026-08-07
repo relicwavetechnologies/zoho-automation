@@ -176,6 +176,7 @@ import {
 import { RunOriginStore } from './application/connections/run-origin.store';
 import { createLarkChatDestinationAuthorizer } from './application/mail-ops/lark-chat-destination';
 import { createMailRuleWriter } from './application/mail-ops/mail-rule-writer';
+import { createMailRuleCompiler } from './application/mail-ops/mail-rule-compiler';
 import {
   createBeginGoogleAuthorization,
   type DeliverGoogleConnectCard,
@@ -359,6 +360,8 @@ export interface Container {
   mailOpsReadRepo: MailOpsReadRepository;
   /** The one create path for a mail rule, shared by the tool and the web route. */
   writeMailRule: ReturnType<typeof createMailRuleWriter>;
+  /** One sentence into a draft rule. Creates nothing. */
+  compileMailRule: ReturnType<typeof createMailRuleCompiler>;
   mailOpsWorker: MailOpsWorker;
   canvaMcpOAuthService: CanvaMcpOAuthService;
   airtableMcpOAuthService: AirtableMcpOAuthService;
@@ -2071,6 +2074,12 @@ export async function buildContainer(
     connectionApproval: input => connectionRateLimits.approval(input),
   });
 
+  // Same model the other background readers use — this is a small, strict
+  // extraction, not a conversation.
+  const compileMailRule = createMailRuleCompiler({
+    model: deepSeekModel(env.PERSONA_LEARNING_MODEL_ID),
+  });
+
   toolRegistry.register(createCanvaDesignTool({ getClient: getCanvaMcpClient }));
   for (const tool of createAirtableMcpTools({
     getConnection: getAirtableMcpConnection,
@@ -2742,6 +2751,7 @@ export async function buildContainer(
     mailOpsRepo,
     mailOpsReadRepo,
     writeMailRule,
+    compileMailRule,
     mailOpsWorker,
     canvaMcpOAuthService,
     airtableMcpOAuthService,

@@ -679,3 +679,94 @@ export function useMailRuleStatus() {
 
   return { pending, error, change }
 }
+
+/* ── Describing a rule, and testing it before it exists ── */
+
+export type MailRuleCompiled = {
+  status: 'compiled'
+  name: string
+  match: Record<string, unknown>
+  destination:
+    | { type: 'email'; email: string }
+    | { type: 'lark_dm' }
+    | { type: 'organize'; label?: string; archive?: boolean; markRead?: boolean }
+  rateLimitPerHour?: number
+  /** What Divo deliberately dropped from the sentence. */
+  notes?: string[]
+} | { status: 'unclear'; reason: string } | { status: 'unavailable'; reason: string }
+
+/**
+ * One sentence in, a draft out — and never a guess.
+ *
+ * `unclear` is a first-class answer, not a failure: Divo names the piece it
+ * needs ("say the domain, e.g. @amazon.in") rather than inventing one. A
+ * guessed rule is wrong while being reported as right, which is the one thing
+ * this whole screen exists to avoid.
+ */
+export function useCompileMailRule() {
+  const { token } = useAdminAuth()
+  const [result, setResult] = useState<MailRuleCompiled | null>(null)
+  const [running, setRunning] = useState(false)
+
+  const compile = useCallback(async (sentence: string, connectionId?: string) => {
+    if (!token) return
+    setRunning(true)
+    try {
+      const data = await api.post<MailRuleCompiled>(
+        `${BASE}/compile`,
+        { sentence, ...(connectionId ? { connectionId } : {}) },
+        token,
+        { quiet: true },
+      )
+      setResult(data)
+    } catch {
+      setResult({ status: 'unavailable', reason: 'Divo could not read that just now.' })
+    } finally {
+      setRunning(false)
+    }
+  }, [token])
+
+  return { result, running, compile, reset: useCallback(() => setResult(null), []) }
+}
+
+export type MailRulePreview = {
+  /** False when Divo has never watched this inbox — no evidence either way. */
+  watched: boolean
+  consideredCount: number
+  matchedCount: number
+  bodyUnavailableCount: number
+  matched: Array<{ eventId: string; occurredAt: string; from: string; subject: string }>
+}
+
+/** Replays unsaved conditions over mail Divo has already seen. Sends nothing. */
+export function usePreviewMailRule() {
+  const { token } = useAdminAuth()
+  const [result, setResult] = useState<MailRulePreview | null>(null)
+  const [running, setRunning] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const preview = useCallback(async (match: Record<string, unknown>, connectionId?: string) => {
+    if (!token) return
+    setRunning(true)
+    setError(null)
+    try {
+      const data = await api.post<MailRulePreview>(
+        `${BASE}/preview`,
+        { match, ...(connectionId ? { connectionId } : {}) },
+        token,
+        { quiet: true },
+      )
+      setResult(data)
+    } catch (e) {
+      // A test that could not run says nothing about the conditions, and
+      // reporting it as zero matches would send somebody rewriting a rule that
+      // was never the problem.
+      setError(e instanceof Error && e.message ? e.message : 'The check could not run.')
+      setResult(null)
+    } finally {
+      setRunning(false)
+    }
+  }, [token])
+
+  return { result, running, error, preview }
+}
