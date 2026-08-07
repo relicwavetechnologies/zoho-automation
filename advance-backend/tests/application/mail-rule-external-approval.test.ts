@@ -154,6 +154,19 @@ describe('mail rule external approval — the request', () => {
     assert.equal('tenantId' in run, false);
   });
 
+  it('says a yes finishes the rule rather than unblocking a retry', async () => {
+    /*
+     * Gateway-origin requests default to "the requester will come back and
+     * re-issue it", which is right for a desktop action somebody is sitting in
+     * front of and wrong for a form that is closed by the time the manager
+     * looks. Without this the approval lands and nothing happens — the worst
+     * shape of failure, because the manager is told it worked.
+     */
+    const { request, seen } = ask();
+    await request(INPUT);
+    assert.equal(seen[0]!['resumeOnApproval'], true);
+  });
+
   it('reports who was asked', async () => {
     const { request } = ask();
     const outcome = await request(INPUT);

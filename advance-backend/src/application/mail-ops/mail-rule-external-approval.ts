@@ -126,10 +126,29 @@ export function createMailRuleExternalApproval(deps: MailRuleExternalApprovalDep
 
     const decision = await deps.approvalGate.check({
       toolId: 'mailAutomations',
-      action: 'execute',
+      /*
+       * The action group the *tool* derives from these arguments, not the one
+       * a connection policy speaks in.
+       *
+       * The resumer replays with `expectedAction: approval.actionGroup` and the
+       * executor recomputes it from the args; a mismatch is refused as "the
+       * action changed after approval", which is the right guard and does not
+       * care that the mismatch was ours. `mailAutomations` maps `create` to
+       * `create` — say the same thing here or the approval can never be spent.
+       */
+      action: 'create',
       args,
       perm: permission.value,
       chatId,
+      /*
+       * A yes here finishes the rule; it does not unblock a retry.
+       *
+       * Gateway-origin requests default to the opposite, because a desktop
+       * action has somebody sitting in front of it who re-issues it. This one
+       * was made from a form that is closed by the time the manager looks, so
+       * without this their approval would land and nothing would happen.
+       */
+      resumeOnApproval: true,
       // What the approver reads. Says what will leave and from where, because
       // "approve a mail rule" is not a question anybody can answer.
       argsSummary:

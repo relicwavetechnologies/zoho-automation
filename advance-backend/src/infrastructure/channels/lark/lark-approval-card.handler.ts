@@ -6,7 +6,10 @@ import {
   buildApprovalResolutionCard,
   buildApprovalResolutionCardData,
 } from '../../../application/approval/approval-card-builder';
-import { isGatewayApprovalMetadata } from '../../../application/approval/approval-origin';
+import {
+  approvalResumesAutomatically,
+  isGatewayApprovalMetadata,
+} from '../../../application/approval/approval-origin';
 import type { AuditService } from '../../../application/observability/audit.service';
 
 interface CardActionPayload {
@@ -273,7 +276,11 @@ export class LarkApprovalCardHandler {
       });
     }
 
-    const isGatewayApproval = isGatewayApprovalMetadata(approval.metadataJson);
+    // A gateway request normally waits for its requester to retry. One that
+    // says it resumes has no requester to wait for — the form that asked is
+    // closed, and not resuming would leave a yes that did nothing.
+    const isGatewayApproval = isGatewayApprovalMetadata(approval.metadataJson)
+      && !approvalResumesAutomatically(approval.metadataJson);
     if (!isGatewayApproval) {
       // Kick off engine resume asynchronously (must not block the HTTP response).
       void this.resumer.resume(approvalId, decision as 'approved' | 'rejected')

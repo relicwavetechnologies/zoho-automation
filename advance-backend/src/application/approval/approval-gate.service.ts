@@ -37,6 +37,15 @@ export interface ApprovalGateInput {
   chatId:         string;
   /** Human-readable summary of what the tool call would do (shown on approval card). */
   argsSummary:    string;
+  /**
+   * Approving this should finish the work, rather than unblock a retry.
+   *
+   * Only meaningful for gateway-origin requests, which default to "the
+   * requester will come back and re-issue it". That is right for somebody
+   * sitting in front of a desktop action and wrong for a request made from a
+   * form that has since been closed.
+   */
+  resumeOnApproval?: boolean;
   /** Optional, non-authoritative runtime execution provenance for audit/match checks. */
   execution?: {
     readonly version: 1;
@@ -209,6 +218,9 @@ export class ApprovalGateService {
           resolvedManagerUserId:  manager.userId,
           resolvedManagerName:    manager.displayName,
           approvalAuthority:      requirement.authority,
+          // Whether a yes finishes this or merely unblocks a retry. Read by
+          // both decision surfaces; absent means the old behaviour.
+          autoResume:             input.resumeOnApproval === true,
           execution: execution ?? null,
         },
         // How this request will reach the approver. Lark when Divo can card
