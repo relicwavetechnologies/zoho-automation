@@ -37,6 +37,43 @@ const MAX_BUDGET_RETRY_MS = 60 * 60_000;
 const DELIVERY_BATCH_SIZE = 50;
 
 /**
+ * How many pieces of work of one kind run at once.
+ *
+ * Four rather than one because the failure this worker had at scale was never
+ * throughput in aggregate — it was head-of-line blocking. One mailbox with a
+ * twenty-megabyte attachment spends half a minute in a media upload, and
+ * serially every other mailbox and every other delivery waits behind it for
+ * that half minute. Lanes mean the slow one occupies a lane rather than the
+ * worker.
+ *
+ * Four rather than forty because the ceiling is Google's, not Divo's: past a
+ * point more lanes only convert waiting into `quotaExceeded`, and a rate-limit
+ * failure costs an attempt off a delivery's ladder.
+ */
+const DEFAULT_MAILBOX_LANES = 4;
+const DEFAULT_DELIVERY_LANES = 4;
+/** The most lanes a deployment may ask for, whatever it puts in the env. */
+const MAX_LANES = 16;
+
+/**
+ * How many times one wake-up may refill its batch before yielding to the timer.
+ *
+ * A drain that spends its whole budget has not finished, it has stopped, so it
+ * asks for another pass — otherwise a backlog leaves at fifty deliveries per
+ * ten-second tick, five a second, no matter how much is queued. The cap is what
+ * keeps that from becoming a loop this worker never returns from: twenty passes
+ * is a thousand deliveries, and anything still waiting is picked up ten seconds
+ * later rather than held.
+ */
+const MAX_TICK_PASSES = 20;
+
+/** Lane counts come from a deployment, so they are bounded before use. */
+function clampLanes(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  return Math.min(MAX_LANES, Math.max(1, Math.floor(value)));
+}
+
+/**
  * Whether a rule may act right now.
  *
  * `denied` carries the sentence a person will read on their rules screen —
@@ -139,6 +176,8 @@ export class MailOpsWorker {
   /** When retention last ran. Undefined means it has not run this process. */
   private lastRetentionAt?: number;
   private readonly log: Logger;
+  private readonly mailboxLanes: number;
+  private readonly deliveryLanes: number;
 
   constructor(private readonly deps: {
     repo: MailRepo;
@@ -227,8 +266,19 @@ export class MailOpsWorker {
     logger: Logger;
     pubsubTopicName?: string;
     scanIntervalMs?: number;
+    /**
+     * How many mailboxes and deliveries this worker handles at once.
+     *
+     * Set to 1 to get back exactly the serial behaviour this replaced, which is
+     * the escape hatch if concurrency turns out to provoke something at Google
+     * that one-at-a-time did not.
+     */
+    mailboxLanes?: number;
+    deliveryLanes?: number;
   }) {
     this.log = deps.logger.child({ service: 'mail-ops-worker' });
+    this.mailboxLanes = clampLanes(deps.mailboxLanes, DEFAULT_MAILBOX_LANES);
+    this.deliveryLanes = clampLanes(deps.deliveryLanes, DEFAULT_DELIVERY_LANES);
   }
 
   start(): void {
@@ -268,35 +318,53 @@ export class MailOpsWorker {
       deliveriesFailed: 0,
     };
     const startedAt = Date.now();
+    // Split out of the total, because "the tick took ninety seconds" does not
+    // say whether mail was slow to read or slow to send, and those have
+    // different remedies.
+    let mailboxMs = 0;
+    let deliveryMs = 0;
+    let saturated = false;
+    let passes = 0;
     try {
       do {
         this.rerunRequested = false;
+        passes += 1;
         if (this.deps.pubsubTopicName) {
-          for (let count = 0; count < MAILBOX_BATCH_SIZE; count++) {
-            const claimed = await this.deps.repo.claimNextWatchRenewal();
-            if (!claimed.ok) throw claimed.error;
-            if (!claimed.value) break;
-            tick.watchesRenewed += 1;
-            await this.renewWatch(claimed.value);
-          }
+          await this.drain({
+            budget: MAILBOX_BATCH_SIZE,
+            lanes: this.mailboxLanes,
+            claim: () => this.deps.repo.claimNextWatchRenewal(),
+            onClaimed: () => { tick.watchesRenewed += 1; },
+            run: claim => this.renewWatch(claim),
+          });
         }
-        for (let count = 0; count < MAILBOX_BATCH_SIZE; count++) {
-          // Unconditional, whether or not Pub/Sub is configured and whether or
-          // not this mailbox's watch ever registered. Reconciliation is the
-          // safety net for a missing watch; gating it on the watch removed the
-          // net exactly when it was needed.
-          const claimed = await this.deps.repo.claimNextDueMailbox();
-          if (!claimed.ok) throw claimed.error;
-          if (!claimed.value) break;
-          tick.mailboxesSynced += 1;
-          await this.syncMailbox(claimed.value, tick);
-        }
-        for (let count = 0; count < DELIVERY_BATCH_SIZE; count++) {
-          const claimed = await this.deps.repo.claimNextDueDelivery();
-          if (!claimed.ok) throw claimed.error;
-          if (!claimed.value) break;
-          tick.deliveriesAttempted += 1;
-          await this.deliver(claimed.value, tick);
+        // Unconditional, whether or not Pub/Sub is configured and whether or
+        // not this mailbox's watch ever registered. Reconciliation is the
+        // safety net for a missing watch; gating it on the watch removed the
+        // net exactly when it was needed.
+        const mailboxes = await this.drain({
+          budget: MAILBOX_BATCH_SIZE,
+          lanes: this.mailboxLanes,
+          claim: () => this.deps.repo.claimNextDueMailbox(),
+          onClaimed: () => { tick.mailboxesSynced += 1; },
+          run: claim => this.syncMailbox(claim, tick),
+        });
+        mailboxMs += mailboxes.durationMs;
+        const deliveries = await this.drain({
+          budget: DELIVERY_BATCH_SIZE,
+          lanes: this.deliveryLanes,
+          claim: () => this.deps.repo.claimNextDueDelivery(),
+          onClaimed: () => { tick.deliveriesAttempted += 1; },
+          run: claim => this.deliver(claim, tick),
+        });
+        deliveryMs += deliveries.durationMs;
+        // Either drain stopping on its budget rather than on an empty queue
+        // means there is known work still waiting. Going round again is the
+        // difference between draining a backlog and metering it out fifty at a
+        // time for as long as it lasts.
+        if (mailboxes.saturated || deliveries.saturated) {
+          saturated = true;
+          if (passes < MAX_TICK_PASSES) this.rerunRequested = true;
         }
         await this.sweepRetention();
       } while (this.rerunRequested);
@@ -308,12 +376,73 @@ export class MailOpsWorker {
       ) {
         this.log.info('mail_ops.tick_summary', {
           ...tick,
+          mailboxMs,
+          deliveryMs,
+          passes,
+          // The one number that says this worker is behind rather than busy: a
+          // tick that filled its budget left mail waiting for the next one.
+          saturated,
+          mailboxLanes: this.mailboxLanes,
+          deliveryLanes: this.deliveryLanes,
           durationMs: Date.now() - startedAt,
         });
       }
     } finally {
       this.running = false;
     }
+  }
+
+  /**
+   * Runs one kind of work across several lanes until it runs out or the batch
+   * budget is spent.
+   *
+   * Safe to run concurrently because every claim underneath is a
+   * compare-and-swap: two lanes reaching for the same row produce one winner,
+   * and the loser looks past it rather than reporting the queue empty. That
+   * property is what this depends on, and it is the reason the claims retry
+   * internally now — without it the first collision in a drain would end the
+   * losing lane's whole batch.
+   *
+   * The budget is shared across lanes rather than handed to each, so the lane
+   * count changes how fast a tick drains and never how much it does. Failures
+   * are collected and rethrown after every lane has settled: rethrowing from
+   * inside `Promise.all` leaves the other lanes running against a worker that
+   * has already given up, and their rejections then surface detached from the
+   * tick that owned them.
+   */
+  private async drain<T>(input: {
+    budget: number;
+    lanes: number;
+    claim: () => Promise<Result<T | null, InfraError>>;
+    run: (claimed: T) => Promise<void>;
+    onClaimed: () => void;
+  }): Promise<{ saturated: boolean; durationMs: number }> {
+    const startedAt = Date.now();
+    let remaining = input.budget;
+    let failure: unknown;
+    const lane = async (): Promise<void> => {
+      while (remaining > 0 && failure === undefined) {
+        // Spent before the claim rather than after it, so two lanes cannot both
+        // see the last unit of budget and between them do one more piece of
+        // work than the tick allowed.
+        remaining -= 1;
+        const claimed = await input.claim();
+        if (!claimed.ok) throw claimed.error;
+        if (!claimed.value) return;
+        input.onClaimed();
+        await input.run(claimed.value);
+      }
+    };
+    await Promise.all(
+      Array.from({ length: input.lanes }, () => lane().catch((error: unknown) => {
+        failure ??= error;
+      })),
+    );
+    if (failure !== undefined) throw failure;
+    // Distinguishable from "ran out of work" only here: the lanes themselves
+    // cannot tell, because a lane that finds nothing and a lane that runs out
+    // of budget both simply stop.
+    return { saturated: remaining <= 0, durationMs: Date.now() - startedAt };
   }
 
   /**

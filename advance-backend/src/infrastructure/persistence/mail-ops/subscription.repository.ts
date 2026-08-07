@@ -7,7 +7,7 @@ import {
 } from '../../../application/mail-ops/mail-ops.types';
 import { wrapInfra, type InfraError } from '../../../shared/errors';
 import { err, ok, type Result } from '../../../shared/result';
-import { errorText } from './shared';
+import { errorText, MAIL_CLAIM_CONTENTION_ATTEMPTS } from './shared';
 
 type MailboxSubscriptionDb = Pick<
   PrismaClient,
@@ -65,60 +65,72 @@ export class MailboxSubscriptionRepository {
       now.getTime() - MAILBOX_CLAIM_STALE_AFTER_MS,
     );
     try {
-      const due = await this.db.mailboxSubscription.findFirst({
-        where: {
-          status: 'active',
-          nextPollAt: { lte: now },
-          OR: [
-            { claimToken: null },
-            { claimedAt: null },
-            { claimedAt: { lt: staleBefore } },
-          ],
-        },
-        orderBy: [{ nextPollAt: 'asc' }, { id: 'asc' }],
-        select: {
-          id: true,
-          companyId: true,
-          userId: true,
-          connectionId: true,
-          mailboxEmail: true,
-          historyId: true,
-          historyPageToken: true,
-          nextPollAt: true,
-          signalVersion: true,
-        },
-      });
-      if (!due) return ok(null);
+      // Retried rather than returned empty on a lost race: see
+      // MAIL_CLAIM_CONTENTION_ATTEMPTS. A mailbox another lane just took no
+      // longer matches the search below, so the next pass reads the one after
+      // it instead of contesting the same row.
+      for (
+        let attempt = 0;
+        attempt < MAIL_CLAIM_CONTENTION_ATTEMPTS;
+        attempt++
+      ) {
+        const due = await this.db.mailboxSubscription.findFirst({
+          where: {
+            status: 'active',
+            nextPollAt: { lte: now },
+            OR: [
+              { claimToken: null },
+              { claimedAt: null },
+              { claimedAt: { lt: staleBefore } },
+            ],
+          },
+          orderBy: [{ nextPollAt: 'asc' }, { id: 'asc' }],
+          select: {
+            id: true,
+            companyId: true,
+            userId: true,
+            connectionId: true,
+            mailboxEmail: true,
+            historyId: true,
+            historyPageToken: true,
+            nextPollAt: true,
+            signalVersion: true,
+          },
+        });
+        // The one empty answer that genuinely means empty.
+        if (!due) return ok(null);
 
-      const claimToken = randomUUID();
-      const claimed = await this.db.mailboxSubscription.updateMany({
-        where: {
-          id: due.id,
-          status: 'active',
-          nextPollAt: due.nextPollAt,
-          OR: [
-            { claimToken: null },
-            { claimedAt: null },
-            { claimedAt: { lt: staleBefore } },
-          ],
-        },
-        data: { claimToken, claimedAt: now, lastSyncAt: now },
-      });
-      if (claimed.count !== 1) return ok(null);
+        const claimToken = randomUUID();
+        const claimed = await this.db.mailboxSubscription.updateMany({
+          where: {
+            id: due.id,
+            status: 'active',
+            nextPollAt: due.nextPollAt,
+            OR: [
+              { claimToken: null },
+              { claimedAt: null },
+              { claimedAt: { lt: staleBefore } },
+            ],
+          },
+          data: { claimToken, claimedAt: now, lastSyncAt: now },
+        });
+        if (claimed.count !== 1) continue;
 
-      return ok({
-        subscriptionId: due.id,
-        companyId: due.companyId,
-        userId: due.userId,
-        connectionId: due.connectionId,
-        mailboxEmail: due.mailboxEmail,
-        ...(due.historyId ? { historyId: due.historyId } : {}),
-        ...(due.historyPageToken
-          ? { historyPageToken: due.historyPageToken }
-          : {}),
-        signalVersion: due.signalVersion,
-        claimToken,
-      });
+        return ok({
+          subscriptionId: due.id,
+          companyId: due.companyId,
+          userId: due.userId,
+          connectionId: due.connectionId,
+          mailboxEmail: due.mailboxEmail,
+          ...(due.historyId ? { historyId: due.historyId } : {}),
+          ...(due.historyPageToken
+            ? { historyPageToken: due.historyPageToken }
+            : {}),
+          signalVersion: due.signalVersion,
+          claimToken,
+        });
+      }
+      return ok(null);
     } catch (cause) {
       return err(wrapInfra('prisma', 'mailOps.claimNextDueMailbox', cause));
     }
@@ -227,50 +239,57 @@ export class MailboxSubscriptionRepository {
   ): Promise<Result<MailboxWatchClaim | null, InfraError>> {
     const staleBefore = new Date(now.getTime() - MAILBOX_CLAIM_STALE_AFTER_MS);
     try {
-      const due = await this.db.mailboxSubscription.findFirst({
-        where: {
-          status: 'active',
-          nextWatchRenewalAt: { lte: now },
-          OR: [
-            { watchClaimToken: null },
-            { watchClaimedAt: null },
-            { watchClaimedAt: { lt: staleBefore } },
-          ],
-        },
-        orderBy: [{ nextWatchRenewalAt: 'asc' }, { id: 'asc' }],
-        select: {
-          id: true,
-          companyId: true,
-          userId: true,
-          connectionId: true,
-          mailboxEmail: true,
-          nextWatchRenewalAt: true,
-        },
-      });
-      if (!due) return ok(null);
-      const claimToken = randomUUID();
-      const claimed = await this.db.mailboxSubscription.updateMany({
-        where: {
-          id: due.id,
-          status: 'active',
-          nextWatchRenewalAt: due.nextWatchRenewalAt,
-          OR: [
-            { watchClaimToken: null },
-            { watchClaimedAt: null },
-            { watchClaimedAt: { lt: staleBefore } },
-          ],
-        },
-        data: { watchClaimToken: claimToken, watchClaimedAt: now },
-      });
-      if (claimed.count !== 1) return ok(null);
-      return ok({
-        subscriptionId: due.id,
-        companyId: due.companyId,
-        userId: due.userId,
-        connectionId: due.connectionId,
-        mailboxEmail: due.mailboxEmail,
-        claimToken,
-      });
+      for (
+        let attempt = 0;
+        attempt < MAIL_CLAIM_CONTENTION_ATTEMPTS;
+        attempt++
+      ) {
+        const due = await this.db.mailboxSubscription.findFirst({
+          where: {
+            status: 'active',
+            nextWatchRenewalAt: { lte: now },
+            OR: [
+              { watchClaimToken: null },
+              { watchClaimedAt: null },
+              { watchClaimedAt: { lt: staleBefore } },
+            ],
+          },
+          orderBy: [{ nextWatchRenewalAt: 'asc' }, { id: 'asc' }],
+          select: {
+            id: true,
+            companyId: true,
+            userId: true,
+            connectionId: true,
+            mailboxEmail: true,
+            nextWatchRenewalAt: true,
+          },
+        });
+        if (!due) return ok(null);
+        const claimToken = randomUUID();
+        const claimed = await this.db.mailboxSubscription.updateMany({
+          where: {
+            id: due.id,
+            status: 'active',
+            nextWatchRenewalAt: due.nextWatchRenewalAt,
+            OR: [
+              { watchClaimToken: null },
+              { watchClaimedAt: null },
+              { watchClaimedAt: { lt: staleBefore } },
+            ],
+          },
+          data: { watchClaimToken: claimToken, watchClaimedAt: now },
+        });
+        if (claimed.count !== 1) continue;
+        return ok({
+          subscriptionId: due.id,
+          companyId: due.companyId,
+          userId: due.userId,
+          connectionId: due.connectionId,
+          mailboxEmail: due.mailboxEmail,
+          claimToken,
+        });
+      }
+      return ok(null);
     } catch (cause) {
       return err(wrapInfra('prisma', 'mailOps.claimNextWatchRenewal', cause));
     }

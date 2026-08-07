@@ -2403,6 +2403,8 @@ export async function buildContainer(
     reviewMailboxHealth: subscriptionId =>
       mailOpsNotifier.review(subscriptionId),
     logger,
+    mailboxLanes: env.DIVO_MAIL_OPS_MAILBOX_LANES,
+    deliveryLanes: env.DIVO_MAIL_OPS_DELIVERY_LANES,
     ...(gmailPubsubConfig
       ? { pubsubTopicName: gmailPubsubConfig.topic }
       : {}),

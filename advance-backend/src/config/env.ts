@@ -349,6 +349,11 @@ export const EnvSchema = z.object({
   // Interactive Lark, OAuth, tools, and queue-backed work remain available.
   DIVO_AUTONOMOUS_WORKERS_ENABLED: booleanStr.default('true'),
   SCHEDULED_WORKFLOW_POLL_INTERVAL_MS: z.coerce.number().int().min(10_000).default(120_000),
+  // How many mailboxes and deliveries Mail Ops works at once. Set either to 1
+  // to restore the strictly serial worker, which is the escape hatch if
+  // concurrency provokes a Gmail quota that one-at-a-time did not.
+  DIVO_MAIL_OPS_MAILBOX_LANES:  z.coerce.number().int().min(1).max(16).default(4),
+  DIVO_MAIL_OPS_DELIVERY_LANES: z.coerce.number().int().min(1).max(16).default(4),
 
   // ── Hindsight semantic recall projection ────────────────────────────────
   // Versioned Postgres knowledge remains authoritative. Hindsight is private
