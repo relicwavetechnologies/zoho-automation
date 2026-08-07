@@ -1468,25 +1468,5 @@
 }
 .cur .ws-row.auto-row[data-picked="true"] { background: var(--cur-canvas-soft); }
 
-/* ── Sender suggestions ───────────────────────────────
-   A list under a text field, not a select: every one of these fields accepts
-   values the list will never hold, so the typed value always wins. */
-.cur .ws-sg { position: relative; }
-.cur .ws-sg .input { width: 100%; box-sizing: border-box; }
-.cur .ws-sg-list {
-  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 30;
-  max-height: 260px; overflow-y: auto; padding: 4px;
-  background: var(--cur-surface); border: 1px solid var(--cur-hairline);
-  border-radius: 10px; box-shadow: var(--ws-float);
-}
-.cur .ws-sg-opt {
-  width: 100%; display: flex; align-items: baseline; gap: 10px; padding: 7px 9px;
-  border: 0; background: none; border-radius: 7px; cursor: pointer;
-  font: inherit; text-align: left; color: var(--cur-ink);
-}
-.cur .ws-sg-opt[data-on] { background: var(--cur-surface-strong); }
-.cur .ws-sg-v { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* The evidence, pushed right and kept quiet — it decides the pick without
-   competing with the address for the first read. */
-.cur .ws-sg-m { margin-left: auto; flex-shrink: 0; font-size: 11.5px; color: var(--cur-muted); }
+/* Where a compiled rule says what it left out. */
 .cur .ws-mk-src { margin: 14px 0 0; font-size: 12px; line-height: 1.55; color: var(--cur-muted); }

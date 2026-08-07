@@ -36,9 +36,6 @@ import {
 } from './data/use-mail-automations'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useConnections } from './data/use-connections'
-import {
-  filterSuggestions, suggestionsFor, useMailSuggestions, type MailSuggestion,
-} from './data/use-mail-suggestions'
 import { Empty, PageHeader, Panel, SkelRows } from './ui'
 import type { Persona } from './fixtures'
 import type { Toast } from './ui'
@@ -49,7 +46,6 @@ const STEPS = ['What to catch', 'What to do', 'Check & turn on'] as const
 
 /* The fields that offer real correspondents, and therefore the ones whose
    presence makes the provenance line worth showing. */
-const ADDRESS_FIELDS = new Set(['from', 'to', 'notFrom'])
 
 /* ── The conditions being assembled ───────────────────
    Held in the stored shape rather than a form-shaped mirror of it, so the
@@ -172,11 +168,6 @@ export function MailRuleNew({ replay }: ScreenProps) {
     : resolution.status === 'choose'
       ? resolution.options.find((o) => o.connectionId === picked) ?? null
       : null
-
-  // Above the early returns, as hooks must be. Keyed on the resolved
-  // connection so choosing the other account re-reads that inbox's senders
-  // rather than offering the first one's.
-  const suggestions = useMailSuggestions(mailbox?.connectionId ?? null)
 
   /*
    * The compiled draft lands in the same state a hand-built rule uses.
@@ -390,7 +381,6 @@ export function MailRuleNew({ replay }: ScreenProps) {
                           key={key}
                           field={field}
                           value={draft[key]}
-                          suggestions={suggestionsFor(key, suggestions)}
                           onChange={(value) => setField(key, value)}
                           onRemove={() => removeField(key)}
                         />
@@ -398,22 +388,6 @@ export function MailRuleNew({ replay }: ScreenProps) {
                     })}
                   </div>
                 )}
-
-                {/* Where the offered senders came from, said once. A list of
-                    addresses is read as fact, so an illustrative one has to
-                    admit it before somebody builds a rule on a name they have
-                    never actually received mail from. */}
-                {added.some((k) => ADDRESS_FIELDS.has(k)) ? (
-                  <p className="ws-mk-src">
-                    {suggestions.loading
-                      ? 'Reading who writes to this inbox…'
-                      : !suggestions.watched
-                        ? 'No suggestions yet — Divo has not watched this inbox before, so it has nothing to go on. Your first rule starts that; the next one will be able to offer real senders.'
-                        : suggestions.from.length === 0 && suggestions.to.length === 0
-                          ? 'Divo is watching this inbox but has not seen enough mail yet to suggest anything.'
-                          : `Suggestions come from mail Divo has already seen for this inbox — ${suggestions.window}.`}
-                  </p>
-                ) : null}
 
                 <div className="ws-mk-add">
                   {FIELDS.filter((f) => !added.includes(f.key)).map((field) => (
@@ -878,95 +852,11 @@ function ReadBack({ clauses }: { clauses: string[] }) {
   )
 }
 
-/**
- * A text field that offers the people who actually write to this mailbox.
- *
- * Not a `<select>`: every one of these fields accepts values the list will
- * never contain — a sender who has not written yet, a domain being onboarded
- * next week — so the typed value always wins and the list only ever helps.
- *
- * Opens on focus rather than only after a keystroke. The whole point is for
- * somebody who does not know what to type to see what there is.
- */
-function SuggestInput({
-  field, value, suggestions, onChange,
-}: {
-  field: Field
-  value: string
-  suggestions: MailSuggestion[]
-  onChange: (value: string) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const [cursor, setCursor] = useState(0)
-  const hits = filterSuggestions(suggestions, value).slice(0, 8)
-
-  const commit = (next: string) => {
-    onChange(next)
-    setOpen(false)
-    setCursor(0)
-  }
-
-  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (!open || hits.length === 0) return
-    if (e.key === 'ArrowDown') { e.preventDefault(); setCursor((c) => (c + 1) % hits.length) }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); setCursor((c) => (c - 1 + hits.length) % hits.length) }
-    else if (e.key === 'Enter') { e.preventDefault(); commit(hits[cursor]!.value) }
-    else if (e.key === 'Escape') { setOpen(false) }
-  }
-
-  return (
-    <div className="ws-sg">
-      <input
-        className="input"
-        placeholder={field.placeholder}
-        value={value}
-        onChange={(e) => { onChange(e.target.value); setOpen(true); setCursor(0) }}
-        onFocus={() => setOpen(true)}
-        // Deferred, or the click that picks a row unmounts the row first.
-        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
-        onKeyDown={onKeyDown}
-        autoComplete="off"
-        role="combobox"
-        aria-expanded={open}
-        aria-autocomplete="list"
-      />
-      {open && hits.length > 0 ? (
-        <div className="ws-sg-list">
-          {hits.map((hit, i) => (
-            <button
-              type="button"
-              key={`${hit.kind}:${hit.value}`}
-              className="ws-sg-opt"
-              data-on={i === cursor ? 'true' : undefined}
-              onMouseEnter={() => setCursor(i)}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => commit(hit.value)}
-            >
-              <span className="ws-sg-v">{hit.value}</span>
-              <span className="ws-sg-m">
-                {hit.kind === 'domain'
-                  /* Said on the row that causes it. A domain suggestion is the
-                     one place somebody learns the rule will be wider than the
-                     literal string they just accepted. */
-                  ? `${hit.messageCount} from ${hit.senderCount ?? 0} sender${hit.senderCount === 1 ? '' : 's'} · covers subdomains`
-                  : hit.alias
-                    ? `${hit.messageCount} messages · group address`
-                    : `${hit.messageCount} messages`}
-              </span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
 function FieldRow({
-  field, value, suggestions, onChange, onRemove,
+  field, value, onChange, onRemove,
 }: {
   field: Field
   value: unknown
-  suggestions: MailSuggestion[]
   onChange: (value: unknown) => void
   onRemove: () => void
 }) {
@@ -1005,13 +895,6 @@ function FieldRow({
           <input className="input" placeholder="Asia/Kolkata" onChange={(e) =>
             onChange({ ...(value as object ?? {}), timeZone: e.target.value })} />
         </div>
-      ) : suggestions.length > 0 ? (
-        <SuggestInput
-          field={field}
-          value={typeof value === 'string' ? value : ''}
-          suggestions={suggestions}
-          onChange={onChange}
-        />
       ) : (
         <input
           className="input"

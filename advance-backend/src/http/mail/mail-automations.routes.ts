@@ -23,7 +23,6 @@ import {
   type MailboxHealth,
 } from '../../application/mail-ops/mail-ops-health';
 import { dryRunMailRule } from '../../application/mail-ops/mail-rule-dry-run';
-import { summariseCorrespondents } from '../../application/mail-ops/mail-correspondents';
 import type { MailRuleCompilation } from '../../application/mail-ops/mail-rule-compiler';
 import {
   actionForDestination,
@@ -51,16 +50,6 @@ const dryRunBodySchema = z.object({
 const listQuerySchema = z.object({
   includeInactive: z.enum(['true', 'false']).optional(),
 });
-
-/**
- * How many stored messages the summary reads.
- *
- * Enough that a domain's real volume shows against the noise, and small
- * enough that the query stays a bounded index read on one subscription. The
- * counts are relative to this window, not to all time, and the response says
- * so.
- */
-const SUGGESTION_EVENTS = 1_000;
 
 /*
  * The same `.strict()` match schema the agent's tool validates against, reused
@@ -164,10 +153,6 @@ const previewBodySchema = z.object({
   connectionId: z.string().uuid().optional(),
   limit: z.coerce.number().int().min(1).max(MAX_DRY_RUN_EVENTS).optional(),
 }).strict();
-
-const suggestionsQuerySchema = z.object({
-  connectionId: z.string().uuid().optional(),
-});
 
 const deliveriesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(MAX_DELIVERY_LIMIT).optional(),
@@ -763,61 +748,6 @@ export function createMailAutomationsRoutes(
       });
     } catch (error) {
       fail(res, 'preview', error);
-    }
-  });
-
-  /**
-   * Who writes to this mailbox, for the rule builder's From and To fields.
-   *
-   * A mail rule written from memory fails silently: the sender is typed as the
-   * brand somebody knows, the invoices arrive from a subdomain nobody has
-   * heard of, and the rule waits for ever while looking perfectly healthy.
-   * This is the only fix — not validation, which has nothing to object to.
-   *
-   * Reads events Divo has already stored, so it costs no Gmail call and no
-   * quota. The trade is that a mailbox nobody has watched yet has nothing
-   * stored, and answers with empty sets and `watched: false` rather than
-   * pretending — a first rule is exactly the one written blind, and closing
-   * that gap needs a Gmail scan this route deliberately does not do inline.
-   */
-  router.get('/suggestions', async (req, res) => {
-    try {
-      const parsed = suggestionsQuerySchema.safeParse(req.query);
-      if (!parsed.success) {
-        res.status(400).json({ success: false, error: 'Invalid connectionId.' });
-        return;
-      }
-
-      const found = await deps.readRepo.listRecentEventsForMailbox({
-        ...actor(res),
-        ...(parsed.data.connectionId ? { connectionId: parsed.data.connectionId } : {}),
-        limit: SUGGESTION_EVENTS,
-      });
-      if (!found.ok) throw found.error;
-
-      if (found.value === null) {
-        res.json({
-          success: true,
-          data: { from: [], to: [], window: '', watched: false },
-        });
-        return;
-      }
-
-      const summary = summariseCorrespondents(found.value.events, found.value.mailboxEmail);
-      res.json({
-        success: true,
-        data: {
-          ...summary,
-          // Stated as a count rather than a period. Events are kept for ninety
-          // days but a mailbox watched since Tuesday has three days of them,
-          // and "the last 90 days" would be a claim about coverage this route
-          // cannot make.
-          window: `from the last ${found.value.events.length} messages Divo has seen`,
-          watched: true,
-        },
-      });
-    } catch (error) {
-      fail(res, 'suggestions', error);
     }
   });
 
