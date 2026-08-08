@@ -384,12 +384,51 @@ interface AnalyzedQuery {
   readonly contactSource: 'company' | 'external' | 'unspecified';
 }
 
+/**
+ * Fold a plural onto its singular, and nothing more ambitious than that.
+ *
+ * Routing scored tokens by exact set membership, so `email` found the Google
+ * Workspace router and `emails` found nothing at all — every router came back
+ * with a score of zero and the model had to guess. "Forward my emails
+ * automatically" is close to the most ordinary way anybody would ask, and it
+ * was the one phrasing that could not be routed.
+ *
+ * Deliberately not a real stemmer. This runs over every skill in the catalogue
+ * and over every query, so a rule that is wrong is wrong for Airtable and
+ * Shopify too — the risk here is a bad fold quietly merging two unrelated
+ * words. So the exclusions are conservative:
+ *
+ *  · `ss`, `us`, `is` endings are left alone — `business`, `status`, `analysis`
+ *  · anything four characters or shorter is left alone, which covers `docs`
+ *    and `apps` staying as the tokens the catalogue already indexes
+ *
+ * Applied to the index and the query both, so a fold can only ever make a match
+ * that already nearly existed. It never introduces a token neither side had.
+ */
+export function singularize(word: string): string {
+  if (word.length <= 4 || !word.endsWith('s')) return word;
+  if (/(ss|us|is)$/.test(word)) return word;
+  if (word.endsWith('ies')) return `${word.slice(0, -3)}y`;
+  /*
+   * `ch|sh|x|z` only — deliberately not `s`.
+   *
+   * `-ses` is ambiguous: `buses` drops `es`, but `expenses` and `responses`
+   * drop only the `s`, and treating them alike produced `expens` and `respon`
+   * — two catalogue words folded onto stems nothing indexes. The corpus test
+   * caught it. Words like `buses` fold to `buse` instead, which is harmless
+   * because both sides fold identically and nothing else lands there.
+   */
+  if (/(ch|sh|x|z)es$/.test(word)) return word.slice(0, -2);
+  return word.slice(0, -1);
+}
+
 function tokenize(value: string): string[] {
   return value
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .map((word) => word.trim())
-    .filter((word) => word.length > 1 && !SCORE_STOP_WORDS.has(word));
+    .filter((word) => word.length > 1 && !SCORE_STOP_WORDS.has(word))
+    .map(singularize);
 }
 
 function analyzeQuery(value: string): AnalyzedQuery {

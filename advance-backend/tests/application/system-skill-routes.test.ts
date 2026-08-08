@@ -83,7 +83,9 @@ describe('system skill routes', () => {
     assert.match(data.markdown, /xlsx[\s\S]*csv[\s\S]*google-drive/);
     assert.match(data.markdown, /No eligible Google destination.*Google connection/s);
     assert.match(airtableCoreSkill.instructions, /Record reads are bounded previews.*do not keep paging through Airtable MCP/s);
-    assert.match(airtableCoreSkill.instructions, /Menhood.*switch to `menhood-data` instead of paging Airtable MCP/s);
+    assert.match(airtableCoreSkill.instructions, /Menhood settled historical totals.*switch to `menhood-data` instead of paging Airtable MCP/s);
+    assert.match(airtableCoreSkill.instructions, /use live Airtable for narrow current\/recent Menhood order counts/);
+    assert.match(airtableCoreSkill.instructions, /Duplicate\/TEST\/Testing cleanup/);
     assert.match(airtableCoreSkill.instructions, /If an exact replayable source exists.*one soft follow-up/s);
     assert.match(airtableCoreSkill.instructions, /not to export, not now, or chat-only/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /`exportCandidate`/);

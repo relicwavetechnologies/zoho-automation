@@ -1,0 +1,911 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Divo · Mail — two proposals</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ═══ Tokens — lifted from cursor.css (dark) so this is the real skin ═══ */
+:root{
+  --canvas:#0f0f0f; --canvas-soft:#151515; --surface:#1a1a1a; --surface-strong:#262626;
+  --sidebar:#0d0d0d;
+  --hair:#262626; --hair-soft:#1e1e1e; --hair-strong:#333333;
+  --ink:#e8e8e8; --body:#b4b4b4; --muted:#8f8f8f; --muted-soft:#6a6a6a;
+  --accent:#3b82f6; --success:#35b083; --error:#e35a7d; --warn:#d9a441;
+  --primary:#fb5613;
+  --cta:#3a3a3a; --cta-hover:#474747; --on-cta:#e8e8e8;
+  --r:12px; --r-s:8px;
+  --float:0 16px 40px -8px rgba(0,0,0,.7), 0 0 0 1px var(--hair-strong);
+  --sb:252px;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--canvas); color:var(--body);
+  font-family:'Geist',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased;
+}
+button{font:inherit;color:inherit}
+.ic{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+.ic.s{width:14px;height:14px}
+.ic.xs{width:12px;height:12px}
+
+/* ═══ Shell ═══ */
+.app{display:flex;height:100vh;overflow:hidden}
+.side{
+  width:var(--sb);flex-shrink:0;background:var(--sidebar);
+  border-right:1px solid var(--hair);display:flex;flex-direction:column;padding:12px 10px;
+}
+.side-top{display:flex;align-items:center;gap:8px;padding:4px 6px 14px}
+.mark{width:26px;height:26px;border-radius:7px;background:var(--primary);display:grid;place-items:center;flex-shrink:0}
+.mark svg{width:13px;height:13px;fill:#fff}
+.side-name{flex:1;min-width:0;font-size:13.5px;font-weight:500;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.side-btn{width:26px;height:26px;border:0;border-radius:7px;background:var(--surface-strong);color:var(--muted);display:grid;place-items:center;cursor:pointer}
+.side-btn:hover{color:var(--ink)}
+.nav{display:flex;flex-direction:column;gap:1px}
+.nav a{
+  display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;
+  color:var(--body);text-decoration:none;font-size:13.5px;cursor:pointer;
+}
+.nav a:hover{background:var(--canvas-soft);color:var(--ink)}
+.nav a.on{background:var(--surface-strong);color:var(--ink)}
+.side-h{display:flex;align-items:center;gap:8px;padding:20px 10px 8px;font-size:12px;color:var(--muted-soft)}
+.side-h span{flex:1}
+.recent{display:flex;flex-direction:column;gap:2px;overflow:auto}
+.recent div{padding:6px 10px;border-radius:7px;cursor:pointer}
+.recent div:hover{background:var(--canvas-soft)}
+.recent b{display:block;font-size:13px;font-weight:400;color:var(--body)}
+.recent i{font-style:normal;font-size:11.5px;color:var(--muted-soft)}
+.side-foot{margin-top:auto;display:flex;flex-direction:column;gap:1px;padding-top:14px}
+
+.main{flex:1;overflow:auto;position:relative}
+.crumb{padding:18px 40px 0;font-size:13px;color:var(--muted)}
+.wrap{max-width:840px;margin:0 auto;padding:24px 40px 80px}
+.wrap.wide{max-width:1080px}
+
+/* ═══ Type ═══ */
+h1{margin:0;font-size:30px;font-weight:500;letter-spacing:-.02em;color:var(--ink)}
+h2{margin:0;font-size:14px;font-weight:500;color:var(--ink)}
+.sub{font-size:13px;color:var(--muted)}
+.eyebrow{font-size:11.5px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;color:var(--muted-soft)}
+.ph{display:flex;align-items:flex-start;gap:20px;margin-bottom:26px}
+.ph>div:first-child{flex:1;min-width:0}
+.ph p{margin:7px 0 0;font-size:13.5px;color:var(--muted)}
+.ph-act{display:flex;gap:8px;flex-shrink:0;padding-top:6px}
+.back{display:inline-flex;align-items:center;gap:6px;border:0;background:none;padding:0;color:var(--muted);font-size:13px;cursor:pointer;margin-bottom:10px}
+.back:hover{color:var(--ink)}
+
+/* ═══ Buttons ═══ */
+.btn{
+  display:inline-flex;align-items:center;gap:7px;padding:7px 13px;border-radius:var(--r-s);
+  border:1px solid var(--hair-strong);background:var(--surface);color:var(--ink);
+  font-size:13px;cursor:pointer;white-space:nowrap;transition:background .12s,border-color .12s;
+}
+.btn:hover{background:var(--surface-strong)}
+.btn.pri{background:var(--cta);border-color:transparent;color:var(--on-cta)}
+.btn.pri:hover{background:var(--cta-hover)}
+.btn.g{background:#fff;color:#1f1f1f;border-color:transparent;font-weight:500}
+.btn.g:hover{background:#eee}
+.btn:disabled{opacity:.42;cursor:not-allowed}
+.btn.sm{padding:5px 10px;font-size:12.5px}
+.icb{width:28px;height:28px;padding:0;justify-content:center;border-radius:7px;background:none;border:0;color:var(--muted-soft);cursor:pointer;display:inline-flex;align-items:center}
+.icb:hover{background:var(--surface-strong);color:var(--ink)}
+
+/* ═══ Surfaces ═══ */
+.card{border:1px solid var(--hair);border-radius:var(--r);background:var(--surface)}
+.card>header{padding:16px 18px;border-bottom:1px solid var(--hair-soft)}
+.card>header h2{margin:0}
+.card>header p{margin:4px 0 0;font-size:12.5px;color:var(--muted)}
+.card .body{padding:18px}
+.stack{display:flex;flex-direction:column;gap:16px}
+.rows{display:flex;flex-direction:column}
+.row{display:flex;align-items:center;gap:13px;padding:13px 18px;border-top:1px solid var(--hair-soft)}
+.rows>.row:first-child{border-top:0}
+.row-ic{width:30px;height:30px;border-radius:8px;border:1px solid var(--hair);display:grid;place-items:center;color:var(--muted);flex-shrink:0}
+.row-m{flex:1;min-width:0}
+.row-m b{display:block;font-size:13.5px;font-weight:450;color:var(--ink)}
+.row-m p{margin:3px 0 0;font-size:12.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row-a{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.row.pick{cursor:pointer}
+.row.pick:hover{background:var(--canvas-soft)}
+.row.pick.on{background:var(--canvas-soft);box-shadow:inset 2px 0 0 var(--primary)}
+
+.badge{display:inline-flex;align-items:center;gap:5px;padding:2.5px 8px;border-radius:20px;border:1px solid var(--hair-strong);font-size:11.5px;color:var(--muted)}
+.badge.ok{color:var(--success);border-color:color-mix(in srgb,var(--success) 34%,transparent)}
+.badge.err{color:var(--error);border-color:color-mix(in srgb,var(--error) 34%,transparent)}
+.badge .dot{width:5px;height:5px;border-radius:50%;background:currentColor}
+.tag{display:inline-flex;padding:1px 7px;margin-left:8px;border-radius:5px;border:1px solid color-mix(in srgb,var(--warn) 34%,transparent);font-size:11px;color:var(--warn);vertical-align:middle}
+
+.input{
+  width:100%;padding:8px 11px;border-radius:var(--r-s);border:1px solid var(--hair-strong);
+  background:var(--canvas-soft);color:var(--ink);font:inherit;font-size:13.5px;
+}
+.input:focus{outline:none;background:var(--surface);border-color:#4a4a4a}
+.input::placeholder{color:var(--muted-soft)}
+
+.chip{
+  display:inline-flex;align-items:center;gap:5px;padding:5px 10px;border-radius:20px;
+  border:1px dashed var(--hair-strong);background:none;color:var(--muted);font-size:12.5px;cursor:pointer;
+}
+.chip:hover{color:var(--ink);border-color:var(--muted-soft)}
+.chip.solid{border-style:solid;background:var(--canvas-soft)}
+.chips{display:flex;flex-wrap:wrap;gap:7px}
+
+.note{display:flex;gap:9px;padding:12px 14px;border-radius:10px;border:1px solid var(--hair);background:var(--canvas-soft);font-size:12.5px;line-height:1.6}
+.note svg{margin-top:2px;color:var(--muted)}
+.note b{color:var(--ink);font-weight:500}
+.note.warn{border-color:color-mix(in srgb,var(--warn) 30%,var(--hair));background:color-mix(in srgb,var(--warn) 5%,var(--surface))}
+.note.warn svg{color:var(--warn)}
+
+/* ═══ Proposal switch ═══ */
+.switch{
+  position:fixed;top:14px;right:18px;z-index:90;display:flex;align-items:center;gap:6px;
+  padding:5px;border-radius:24px;background:var(--surface);box-shadow:var(--float);
+}
+.switch span{padding:0 8px 0 10px;font-size:11.5px;color:var(--muted-soft)}
+.switch button{
+  padding:5px 13px;border-radius:18px;border:0;background:none;color:var(--muted);
+  font-size:12.5px;cursor:pointer;
+}
+.switch button.on{background:var(--surface-strong);color:var(--ink)}
+
+/* ═══ Mailbox strip ═══ */
+.mbx{display:flex;align-items:center;gap:9px;padding:10px 14px;border:1px solid var(--hair);border-radius:10px;background:var(--surface);font-size:12.5px}
+.mbx .dot{width:6px;height:6px;border-radius:50%;background:var(--success)}
+.mbx b{font-weight:450;color:var(--ink)}
+.mbx .sep{color:var(--muted-soft)}
+.mbx .when{margin-left:auto;color:var(--muted-soft);font-size:11.5px}
+
+.worked{display:flex;align-items:center;gap:18px;flex-wrap:wrap;padding:11px 14px;border:1px solid var(--hair);border-radius:10px;background:var(--canvas-soft);font-size:12.5px}
+.worked>b{font-size:11.5px;font-weight:450;color:var(--muted-soft)}
+.worked span{display:inline-flex;align-items:baseline;gap:5px}
+.worked i{font-style:normal;font-size:15px;font-weight:500;color:var(--ink)}
+
+/* ═══ Empty ═══ */
+.empty{padding:52px 24px;text-align:center}
+.empty .g{width:46px;height:46px;margin:0 auto 16px}
+.empty b{display:block;font-size:16px;font-weight:500;color:var(--ink)}
+.empty p{margin:8px auto 0;max-width:38ch;font-size:13px;color:var(--muted)}
+.empty .act{margin-top:20px}
+
+/* ═══ A · rule sheet ═══ */
+.sheet{display:grid;grid-template-columns:minmax(0,1fr) 244px;gap:22px;align-items:start}
+.blk{padding:0 0 20px;border-bottom:1px solid var(--hair-soft);margin-bottom:20px}
+.blk:last-child{border-bottom:0;margin-bottom:0;padding-bottom:0}
+.blk-h{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.blk-h .eyebrow{flex:1}
+.cond{display:grid;grid-template-columns:120px minmax(0,1fr) 26px 26px;align-items:center;gap:8px;padding:7px 0;border-top:1px solid var(--hair-soft)}
+.cond:first-child{border-top:0}
+.cond-l{font-size:12.5px;color:var(--body)}
+.cond.neg .cond-l{color:var(--muted);font-style:italic}
+.cond-note{grid-column:2/-1;margin:2px 0 4px;font-size:11.5px;line-height:1.55;color:var(--muted-soft)}
+.seg{display:inline-flex;gap:5px}
+.seg button{padding:6px 12px;border-radius:7px;border:1px solid var(--hair-strong);background:var(--surface);color:var(--body);font-size:12.5px;cursor:pointer}
+.seg button.on{background:var(--cta);color:var(--on-cta);border-color:transparent}
+.picks{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+.pick{padding:13px;border-radius:10px;border:1px solid var(--hair);background:var(--surface);cursor:pointer;text-align:left}
+.pick:hover{border-color:var(--hair-strong)}
+.pick.on{border-color:var(--muted-soft);background:var(--canvas-soft)}
+.pick .pi{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;margin-bottom:9px;background:var(--surface-strong);color:var(--body)}
+.pick b{display:block;font-size:13px;font-weight:450;color:var(--ink)}
+.pick p{margin:3px 0 0;font-size:11.5px;color:var(--muted)}
+.rail{position:sticky;top:24px;display:flex;flex-direction:column;gap:2px}
+.rail-s{padding:12px 0;border-top:1px solid var(--hair-soft)}
+.rail-s:first-child{border-top:0;padding-top:0}
+.rail-s .eyebrow{display:block;margin-bottom:9px}
+.rail-r{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px}
+.rail-r span{flex:1;color:var(--muted)}
+.rail-r b{font-weight:400;color:var(--ink)}
+
+/* ═══ B · ask ═══ */
+.ask{max-width:600px;margin:40px auto 0;text-align:center}
+.ask h2{font-size:19px;font-weight:500;letter-spacing:-.01em;margin-bottom:18px}
+.ask textarea{
+  width:100%;min-height:92px;resize:vertical;padding:15px 16px;border-radius:12px;
+  border:1px solid var(--hair-strong);background:var(--canvas-soft);color:var(--ink);
+  font:inherit;font-size:15px;line-height:1.6;text-align:left;
+}
+.ask textarea:focus{outline:none;background:var(--surface);border-color:#4a4a4a}
+.ask textarea::placeholder{color:var(--muted-soft)}
+.ask-act{display:flex;align-items:center;justify-content:center;gap:14px;margin-top:14px}
+.ask-eg{display:flex;flex-wrap:wrap;justify-content:center;gap:7px;margin-top:22px}
+.link{border:0;background:none;padding:0;color:var(--muted);font-size:12.5px;cursor:pointer;text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--hair-strong)}
+.link:hover{color:var(--ink)}
+.said{display:flex;align-items:center;gap:10px;margin-bottom:16px;font-size:13px;color:var(--muted);font-style:italic}
+.said span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ═══ Receipt ═══ */
+.receipt{padding:22px 24px;border-radius:var(--r);border:1px solid var(--hair-strong);background:var(--surface)}
+.receipt-n{
+  width:100%;margin:0 0 18px;padding:2px 0;border:0;border-bottom:1px solid transparent;
+  background:none;font:inherit;font-size:19px;font-weight:500;letter-spacing:-.01em;color:var(--ink);
+}
+.receipt-n:hover{border-bottom-color:var(--hair)}
+.receipt-n:focus{outline:none;border-bottom-color:var(--hair-strong)}
+.rec{display:grid;grid-template-columns:82px minmax(0,1fr);gap:11px 16px;margin:0}
+.rec dt{font-size:11px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;color:var(--muted-soft);padding-top:3px}
+.rec dd{margin:0;font-size:14px;line-height:1.6;color:var(--body)}
+.rec dd b{color:var(--ink);font-weight:450}
+.receipt-w{display:flex;align-items:center;gap:7px;margin:18px 0 0;padding-top:14px;border-top:1px solid var(--hair);font-size:12.5px;color:var(--warn)}
+
+.proof-h{display:flex;align-items:flex-start;gap:16px;margin-top:4px}
+.proof-h>div{flex:1;min-width:0}
+.proof-h p{margin:3px 0 0;font-size:12.5px;color:var(--muted)}
+.proof-l{margin:14px 0 0;font-size:12.5px;color:var(--muted)}
+.proof-l b{color:var(--ink);font-weight:450}
+.hits{list-style:none;margin:10px 0 0;padding:0}
+.hits li{display:flex;align-items:center;gap:9px;padding:7px 0;font-size:12.5px;border-top:1px solid var(--hair-soft)}
+.hits li:first-child{border-top:0}
+.hits li svg{color:var(--muted-soft)}
+.hits li b{font-weight:400;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hits li span{margin-left:auto;padding-left:12px;color:var(--muted-soft);flex-shrink:0}
+
+.foot{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:22px}
+.foot .why{margin-right:auto;max-width:44ch;font-size:12.5px;color:var(--warn)}
+
+/* ═══ Google consent (mock) ═══ */
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:100;display:grid;place-items:center}
+.gbox{width:400px;border-radius:14px;background:#fff;color:#202124;padding:28px;font-family:'Geist',sans-serif;box-shadow:0 24px 60px rgba(0,0,0,.5)}
+.gbox .gh{display:flex;align-items:center;gap:11px;margin-bottom:20px}
+.gbox h3{margin:0;font-size:17px;font-weight:500}
+.gbox p{margin:0;font-size:13px;line-height:1.6;color:#5f6368}
+.gbox ul{margin:16px 0 0;padding:0;list-style:none}
+.gbox li{display:flex;gap:10px;padding:8px 0;font-size:13px;color:#3c4043;border-top:1px solid #e8eaed}
+.gbox li svg{color:#5f6368;margin-top:2px}
+.gbox .gf{display:flex;justify-content:flex-end;gap:8px;margin-top:22px}
+.gbox .gb{padding:8px 18px;border-radius:6px;border:0;background:#0b57d0;color:#fff;font-size:13.5px;font-weight:500;cursor:pointer}
+.gbox .gb.alt{background:none;color:#0b57d0}
+
+.hide{display:none !important}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--muted-soft);border-top-color:transparent;border-radius:50%;animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.fade{animation:fi .28s ease}
+@keyframes fi{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<!-- ═══ Icon sprite ═══ -->
+<svg style="display:none">
+  <symbol id="i-home" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></symbol>
+  <symbol id="i-bot" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-cog" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6 1.65 1.65 0 0 0 10 3.09V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+  <symbol id="i-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-updown" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5M7 9l5-5 5 5"/></symbol>
+  <symbol id="i-left" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></symbol>
+  <symbol id="i-dots" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-shieldx" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4M12 16h.01"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="m6 3 14 9-14 9z"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M21.2 6.3a2.5 2.5 0 0 0-3.5-3.5L4 16.5V20h3.5z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-arch" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.8 8.8a2 2 0 0 0 2.8 0l7.2-7.2a2 2 0 0 0 0-2.8z"/><circle cx="6.5" cy="6.5" r="1"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+  <symbol id="i-paperclip" viewBox="0 0 24 24"><path d="M21.4 11.05 12.25 20.2a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></symbol>
+</svg>
+
+<!-- Gmail mark, reusable -->
+<svg style="display:none"><symbol id="gmail" viewBox="0 0 48 48">
+  <path fill="#4caf50" d="M45,16.2l-5,2.75l-5,4.75L35,40h7c1.657,0,3-1.343,3-3V16.2z"/>
+  <path fill="#1e88e5" d="M3,16.2l3.614,1.71L13,23.7V40H6c-1.657,0-3-1.343-3-3V16.2z"/>
+  <polygon fill="#e53935" points="35,11.2 24,19.45 13,11.2 12,17 13,23.7 24,31.95 35,23.7 36,17"/>
+  <path fill="#c62828" d="M3,12.298V16.2l10,7.5V11.2L9.876,8.859C9.132,8.301,8.228,8,7.298,8h0C4.924,8,3,9.924,3,12.298z"/>
+  <path fill="#fbc02d" d="M45,12.298V16.2l-10,7.5V11.2l3.124-2.341C38.868,8.301,39.772,8,40.702,8h0C43.076,8,45,9.924,45,12.298z"/>
+</symbol></svg>
+
+<div class="switch">
+  <span>Proposal</span>
+  <button id="pa" class="on" onclick="setProposal('A')">A · Rule sheet</button>
+  <button id="pb" onclick="setProposal('B')">B · Ask Divo</button>
+</div>
+
+<div class="app">
+  <!-- ═══ Sidebar ═══ -->
+  <aside class="side">
+    <div class="side-top">
+      <div class="mark"><svg viewBox="0 0 24 24"><path d="M12 2 22 12 12 22 2 12z"/></svg></div>
+      <div class="side-name">Abhishek's workspa…</div>
+      <svg class="ic s" style="color:var(--muted-soft)"><use href="#i-updown"/></svg>
+      <button class="side-btn"><svg class="ic s"><use href="#i-plus"/></svg></button>
+    </div>
+    <nav class="nav">
+      <a onclick="go('home')"><svg class="ic"><use href="#i-home"/></svg> Home</a>
+      <a id="nav-mail" class="on" onclick="go('mail')"><svg class="ic"><use href="#i-mail"/></svg> Mail</a>
+      <a onclick="go('home')"><svg class="ic"><use href="#i-shield"/></svg> Approvals</a>
+      <a onclick="go('home')"><svg class="ic"><use href="#i-bot"/></svg> Automations</a>
+      <a onclick="go('home')"><svg class="ic"><use href="#i-layers"/></svg> Things Divo made</a>
+    </nav>
+    <div class="side-h"><span>Recent</span><svg class="ic s"><use href="#i-search"/></svg></div>
+    <div class="recent">
+      <div><b>pi</b><i>9h</i></div><div><b>pi</b><i>1d</i></div>
+      <div><b>pi</b><i>2d</i></div><div><b>pi</b><i>2d</i></div><div><b>pi</b><i>2d</i></div>
+    </div>
+    <div class="side-foot nav">
+      <a><svg class="ic"><use href="#i-cog"/></svg> Settings</a>
+      <a><svg class="ic"><use href="#i-sun"/></svg> Light mode</a>
+      <a><svg class="ic"><use href="#i-out"/></svg> Sign out</a>
+    </div>
+  </aside>
+
+  <!-- ═══ Main ═══ -->
+  <main class="main" id="main">
+    <div class="crumb">Abhishek's workspace</div>
+    <div id="view"></div>
+  </main>
+</div>
+
+<div id="overlay"></div>
+
+<script>
+/* ══════════════════════════════════════════════════════════
+   Mock state. One object; every screen renders from it.
+   ══════════════════════════════════════════════════════════ */
+const S = {
+  proposal: 'A',
+  screen: 'mail',
+  connected: false,
+  mailbox: 'abhishek@emiactech.com',
+  rules: [],
+  openRule: null,
+  /* the rule being built */
+  d: null,
+  asked: false,          // B: has Divo read the sentence yet
+  intent: '',
+  checked: false,
+};
+
+const blank = () => ({
+  name: '', named: false,
+  conds: [],             // {k, label, v, note}
+  dest: null,            // 'fwd' | 'lark' | 'file'
+  to: '', cap: '',
+  label: 'Invoices', arch: false, read: false,
+});
+
+const FIELDS = {
+  from:   {label:'From', ph:'billing@acme.com or @acme.com', note:'A leading @ covers the domain and everything under it.'},
+  to:     {label:'Addressed to', ph:'you@company.com', note:'Matches To, Cc, Bcc and Delivered-To alike.'},
+  subj:   {label:'Subject has', ph:'invoice', note:'Plain text, not a pattern. Several? Any one counts.'},
+  body:   {label:'Body has', ph:'purchase order', note:'Cannot judge mail whose body has aged out of storage.'},
+  att:    {label:'Attachment', kind:'seg', note:'Inline images and signatures do not count.'},
+  when:   {label:'Only during', kind:'win', note:'Judged on arrival time. An end before the start runs overnight.'},
+  nfrom:  {label:'Except from', ph:'noreply@acme.com', neg:true, note:'Can only narrow what the rule catches.'},
+  nsubj:  {label:'Except subject', ph:'newsletter', neg:true, note:'Can only narrow what the rule catches.'},
+};
+
+const EGS = [
+  {t:'Invoices to accounts', s:'forward anything from @acme.com with an invoice attached to books@vendor-cpa.com, but skip their noreply address',
+   build:()=>({...blank(), conds:[{k:'from',v:'@acme.com'},{k:'att',v:true},{k:'nfrom',v:'noreply@acme.com'}], dest:'fwd', to:'books@vendor-cpa.com'})},
+  {t:'Urgent mail to me on Lark', s:'send me on Lark any mail with "urgent" in the subject',
+   build:()=>({...blank(), conds:[{k:'subj',v:'urgent'}], dest:'lark'})},
+  {t:'File newsletters away', s:'label anything from @newsletters.com as Reading and archive it',
+   build:()=>({...blank(), conds:[{k:'from',v:'@newsletters.com'}], dest:'file', label:'Reading', arch:true})},
+];
+
+/* ── helpers ─────────────────────────────────────────── */
+const el = (h) => { const t=document.createElement('template'); t.innerHTML=h.trim(); return t.content; };
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const domain = (a) => (a.split('@')[1] || '').toLowerCase();
+const leaves = (d) => d.dest === 'fwd' && d.to.includes('@') && domain(d.to) !== domain(S.mailbox);
+
+function clauses(d){
+  const out = [];
+  for (const c of d.conds){
+    const f = FIELDS[c.k];
+    if (c.k === 'att') { out.push(c.v ? 'has an attachment' : 'has no attachment'); continue; }
+    if (c.k === 'when') { out.push(`arrives between ${c.v?.a||'09:00'} and ${c.v?.b||'18:00'}`); continue; }
+    if (!c.v) continue;
+    if (c.k === 'from') out.push(String(c.v).startsWith('@') ? `from ${c.v.slice(1)} or its subdomains` : `sent by ${c.v}`);
+    else if (c.k === 'to') out.push(`addressed to ${c.v}`);
+    else if (c.k === 'subj') out.push(`subject contains “${c.v}”`);
+    else if (c.k === 'body') out.push(`body contains “${c.v}”`);
+    else if (c.k === 'nfrom') out.push(`not from ${c.v}`);
+    else if (c.k === 'nsubj') out.push(`subject does not contain “${c.v}”`);
+    void f;
+  }
+  return out;
+}
+
+function fileSummary(d){
+  const p = [];
+  if (d.label) p.push(`labelled “${d.label}”`);
+  if (d.arch) p.push('archived');
+  if (d.read) p.push('marked read');
+  if (!p.length) return 'though nothing is chosen to do to it yet';
+  return p.length === 1 ? p[0] : p.slice(0,-1).join(', ') + ' and ' + p[p.length-1];
+}
+
+function suggested(d){
+  if (d.dest === 'file') return 'File it in Gmail';
+  if (d.dest === 'lark') return 'Send it to me on Lark';
+  if (d.dest === 'fwd' && d.to.trim()) return 'Forward to ' + d.to.trim();
+  return 'Mail rule';
+}
+const ruleName = (d) => d.named && d.name.trim() ? d.name : suggested(d);
+
+function why(d){
+  if (!clauses(d).length) return 'Add a condition — with none, this acts on every message that arrives.';
+  if (!d.dest) return 'Choose what Divo should do with it.';
+  if (d.dest === 'fwd' && !d.to.trim()) return 'Enter the address to forward to.';
+  if (d.dest === 'file' && !d.label && !d.arch && !d.read) return 'Pick at least one thing to do: label, archive or mark read.';
+  return null;
+}
+
+/* ══════════════════════════════════════════════════════════
+   Router
+   ══════════════════════════════════════════════════════════ */
+function go(s){
+  S.screen = s;
+  document.getElementById('nav-mail').classList.toggle('on', s !== 'home');
+  document.getElementById('main').scrollTop = 0;
+  render();
+}
+function setProposal(p){
+  S.proposal = p;
+  document.getElementById('pa').classList.toggle('on', p === 'A');
+  document.getElementById('pb').classList.toggle('on', p === 'B');
+  if (S.screen === 'new') {
+    S.d = blank(); S.asked = false; S.intent = ''; S.checked = false;
+    if (p === 'A') S.d.conds = [{k:'from', v:''}];
+  }
+  render();
+}
+
+function render(){
+  const v = document.getElementById('view');
+  v.className = 'fade';
+  if (S.screen === 'home') v.innerHTML = home();
+  else if (S.screen === 'mail') v.innerHTML = mailList();
+  else if (S.screen === 'new') v.innerHTML = S.proposal === 'A' ? sheetA() : askB();
+  else if (S.screen === 'rule') v.innerHTML = ruleDetail();
+  // restack the fade animation
+  void v.offsetWidth;
+}
+
+/* ══════════════════════════════════════════════════════════
+   Screens
+   ══════════════════════════════════════════════════════════ */
+function home(){
+  return `<div class="wrap"><div class="ph"><div>
+    <div class="eyebrow">Your account</div><h1 style="margin-top:7px">Home</h1>
+    <p>This mock is about Mail. Click <b style="color:var(--ink)">Mail</b> in the sidebar.</p>
+  </div></div></div>`;
+}
+
+/* ── Mail: the landing ───────────────────────────────── */
+function mailList(){
+  if (!S.connected) return connectScreen();
+
+  const rows = S.rules.map((r,i) => `
+    <div class="row pick" onclick="openRule(${i})">
+      <span class="row-ic"><svg class="ic s"><use href="#i-${r.dest==='lark'?'chat':r.dest==='file'?'tag':'mail'}"/></svg></span>
+      <div class="row-m">
+        <b>${esc(ruleName(r))}${leaves(r) ? '<span class="tag">Leaves the company</span>' : ''}</b>
+        <p>${esc(clauses(r).join(' · '))}</p>
+      </div>
+      <div class="row-a">
+        <span class="sub" style="font-size:11.5px">${r.dest==='fwd'?esc(r.to):r.dest==='lark'?'you, on Lark':'your Gmail'}</span>
+        <span class="badge ok"><span class="dot"></span>Working</span>
+        <button class="icb" onclick="event.stopPropagation()"><svg class="ic s"><use href="#i-dots"/></svg></button>
+      </div>
+    </div>`).join('');
+
+  return `<div class="wrap">
+    <div class="ph">
+      <div><div class="eyebrow">Your account</div><h1 style="margin-top:7px">Mail</h1>
+        <p>Standing rules that watch your Gmail and pass matching messages on.</p></div>
+      <div class="ph-act"><button class="btn pri" onclick="newRule()"><svg class="ic s"><use href="#i-plus"/></svg> New rule</button></div>
+    </div>
+    <div class="stack">
+      <div class="mbx">
+        <span class="dot"></span><b>${S.mailbox}</b>
+        <span>watching</span><span class="sep">·</span>
+        <span class="sub">${S.rules.length} active rule${S.rules.length===1?'':'s'}</span>
+        <span class="when">last signal 2m ago</span>
+      </div>
+      ${S.rules.length ? `<div class="worked">
+        <b>Last 30 days</b>
+        <span><i>${S.rules.length*23}</i> passed on</span>
+        <span><i>0</i> failed</span>
+        <span><i>0</i> refused</span>
+      </div>` : ''}
+      <div class="card">
+        <header><h2>Your rules</h2></header>
+        ${S.rules.length ? `<div class="rows">${rows}</div>` : `
+          <div class="empty">
+            <svg class="g" viewBox="0 0 48 48" style="width:38px;height:38px"><use href="#gmail"/></svg>
+            <b>No rules yet</b>
+            <p>A rule watches this inbox for the mail you describe and passes it on.</p>
+            <div class="act"><button class="btn pri" onclick="newRule()"><svg class="ic s"><use href="#i-plus"/></svg> New rule</button></div>
+          </div>`}
+      </div>
+    </div>
+  </div>`;
+}
+
+function connectScreen(){
+  return `<div class="wrap">
+    <div class="ph"><div>
+      <div class="eyebrow">Your account</div><h1 style="margin-top:7px">Mail</h1>
+      <p>Standing rules that watch your Gmail and pass matching messages on.</p>
+    </div></div>
+    <div class="card">
+      <div class="empty">
+        <svg class="g" viewBox="0 0 48 48"><use href="#gmail"/></svg>
+        <b>Connect the inbox you want watched</b>
+        <p>Google will ask for your mail only — not Drive, Calendar or anything else.</p>
+        <div class="act"><button class="btn g" onclick="consent()">
+          <svg viewBox="0 0 48 48" style="width:15px;height:15px"><use href="#gmail"/></svg> Connect Gmail
+        </button></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* Fake Google consent, so the whole path is walkable. */
+function consent(){
+  document.getElementById('overlay').innerHTML = `
+  <div class="scrim">
+    <div class="gbox">
+      <div class="gh"><svg viewBox="0 0 48 48" style="width:26px;height:26px"><use href="#gmail"/></svg>
+        <div><h3>Sign in with Google</h3></div></div>
+      <p><b>divo-app.com</b> wants access to your Google Account<br><span style="color:#202124">abhishek@emiactech.com</span></p>
+      <ul>
+        <li><svg class="ic s"><use href="#i-mail"/></svg> Read, compose and send email</li>
+        <li><svg class="ic s"><use href="#i-shield"/></svg> Watch for new mail as it arrives</li>
+      </ul>
+      <div class="gf">
+        <button class="gb alt" onclick="closeOverlay()">Cancel</button>
+        <button class="gb" onclick="connected()">Continue</button>
+      </div>
+    </div>
+  </div>`;
+}
+function closeOverlay(){ document.getElementById('overlay').innerHTML = ''; }
+function connected(){ closeOverlay(); S.connected = true; render(); }
+
+/* A opens with one empty condition rather than an empty block — the sheet is
+   the hand-built path, and its first screen should have something to type in.
+   B opens on its question, so it seeds nothing. */
+function newRule(){
+  S.d = blank(); S.asked = false; S.intent = ''; S.checked = false;
+  if (S.proposal === 'A') S.d.conds = [{k:'from', v:''}];
+  go('new');
+}
+function openRule(i){ S.openRule = i; go('rule'); }
+
+/* ══════════════════════════════════════════════════════════
+   PROPOSAL A — the rule sheet
+   Everything on one page. No steps. Left is the rule, right
+   is everything that is not the rule. Change any part in place.
+   ══════════════════════════════════════════════════════════ */
+function sheetA(){
+  const d = S.d, cl = clauses(d), blocked = why(d);
+
+  const conds = d.conds.map((c,i) => {
+    const f = FIELDS[c.k];
+    let ctrl;
+    if (f.kind === 'seg') ctrl = `<div class="seg">
+        <button class="${c.v===true?'on':''}" onclick="setCond(${i},true)">Has one</button>
+        <button class="${c.v===false?'on':''}" onclick="setCond(${i},false)">Has none</button></div>`;
+    else if (f.kind === 'win') ctrl = `<div style="display:flex;gap:7px;align-items:center">
+        <input class="input" style="width:78px" value="${esc(c.v?.a||'09:00')}" oninput="setCond(${i},{a:this.value,b:'${esc(c.v?.b||'18:00')}'})">
+        <span class="sub">to</span>
+        <input class="input" style="width:78px" value="${esc(c.v?.b||'18:00')}" oninput="setCond(${i},{a:'${esc(c.v?.a||'09:00')}',b:this.value})"></div>`;
+    else ctrl = `<input class="input" placeholder="${esc(f.ph)}" value="${esc(c.v||'')}" oninput="setCond(${i},this.value)">`;
+    return `<div class="cond ${f.neg?'neg':''}">
+      <span class="cond-l">${f.label}</span>
+      <div>${ctrl}</div>
+      <button class="icb" title="What this means" onclick="toggleNote(${i})"><svg class="ic xs"><use href="#i-info"/></svg></button>
+      <button class="icb" onclick="dropCond(${i})"><svg class="ic xs"><use href="#i-x"/></svg></button>
+      ${c.open ? `<p class="cond-note">${f.note}</p>` : ''}
+    </div>`;
+  }).join('');
+
+  const avail = Object.keys(FIELDS).filter(k => !d.conds.some(c => c.k === k))
+    .map(k => `<button class="chip" onclick="addCond('${k}')"><svg class="ic xs"><use href="#i-plus"/></svg> ${FIELDS[k].label}</button>`).join('');
+
+  return `<div class="wrap wide">
+    <button class="back" onclick="go('mail')"><svg class="ic s"><use href="#i-left"/></svg> Mail</button>
+    <div class="ph">
+      <div><h1>New rule</h1></div>
+      <div class="ph-act">
+        <button class="btn" onclick="go('mail')">Cancel</button>
+        <button class="btn pri" ${blocked?'disabled':''} onclick="turnOn()">Turn it on</button>
+      </div>
+    </div>
+
+    <div class="sheet">
+      <div class="card"><div class="body">
+
+        <div class="blk">
+          <div class="blk-h"><span class="eyebrow">When mail arrives that is</span>
+            ${cl.length>1?`<span class="sub" style="font-size:11.5px">all must hold</span>`:''}</div>
+          ${d.conds.length ? conds : `<p class="sub" style="margin:0 0 12px">Nothing yet.</p>`}
+          <div class="chips" style="margin-top:14px">${avail}</div>
+          ${!cl.length ? `<p class="cond-note" style="grid-column:auto;color:var(--warn);margin-top:12px">With none of these, the rule acts on every message that arrives.</p>` : ''}
+        </div>
+
+        <div class="blk">
+          <div class="blk-h"><span class="eyebrow">Divo will</span></div>
+          <div class="picks">
+            <button class="pick ${d.dest==='fwd'?'on':''}" onclick="setDest('fwd')">
+              <span class="pi"><svg class="ic s"><use href="#i-mail"/></svg></span>
+              <b>Forward it</b><p>The whole message, unchanged.</p></button>
+            <button class="pick ${d.dest==='lark'?'on':''}" onclick="setDest('lark')">
+              <span class="pi"><svg class="ic s"><use href="#i-chat"/></svg></span>
+              <b>Send to me on Lark</b><p>Your own chat with Divo.</p></button>
+            <button class="pick ${d.dest==='file'?'on':''}" onclick="setDest('file')">
+              <span class="pi"><svg class="ic s"><use href="#i-tag"/></svg></span>
+              <b>File it in Gmail</b><p>Label, archive or mark read.</p></button>
+          </div>
+
+          ${d.dest==='fwd' ? `<div style="margin-top:14px">
+            <input class="input" placeholder="books@vendor-cpa.com" value="${esc(d.to)}" oninput="S.d.to=this.value;render()">
+            ${leaves(d) ? `<div class="note warn" style="margin-top:11px"><svg class="ic s"><use href="#i-shieldx"/></svg>
+              <div>Leaves <b>${domain(S.mailbox)}</b> — Shivam is asked to approve before this starts.</div></div>`:''}
+          </div>`:''}
+
+          ${d.dest==='lark' ? `<div class="note" style="margin-top:14px"><svg class="ic s"><use href="#i-check"/></svg>
+            <div>Straight to your own chat with Divo. Nobody else sees it.</div></div>`:''}
+
+          ${d.dest==='file' ? `<div style="margin-top:14px;display:flex;flex-direction:column;gap:10px;font-size:13px">
+            <label style="display:flex;align-items:center;gap:9px"><input type="checkbox" ${d.label?'checked':''} onchange="S.d.label=this.checked?'Invoices':'';render()"> Label it
+              ${d.label?`<input class="input" style="width:160px;margin-left:4px" value="${esc(d.label)}" oninput="S.d.label=this.value">`:''}</label>
+            <label style="display:flex;align-items:center;gap:9px"><input type="checkbox" ${d.arch?'checked':''} onchange="S.d.arch=this.checked;render()"> Archive it</label>
+            <label style="display:flex;align-items:center;gap:9px"><input type="checkbox" ${d.read?'checked':''} onchange="S.d.read=this.checked;render()"> Mark it read</label>
+          </div>`:''}
+        </div>
+
+      </div></div>
+
+      <!-- properties rail -->
+      <div class="rail">
+        <div class="rail-s">
+          <span class="eyebrow">Watching</span>
+          <div class="rail-r"><svg viewBox="0 0 48 48" style="width:15px;height:15px"><use href="#gmail"/></svg>
+            <span style="flex:1;color:var(--ink);font-size:12px;overflow:hidden;text-overflow:ellipsis">${S.mailbox}</span></div>
+        </div>
+        <div class="rail-s">
+          <span class="eyebrow">Name</span>
+          <input class="input" style="font-size:12.5px" value="${esc(ruleName(d))}" oninput="S.d.name=this.value;S.d.named=true">
+        </div>
+        ${d.dest && d.dest!=='file' ? `<div class="rail-s">
+          <span class="eyebrow">Hourly cap</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <input class="input" style="width:62px" placeholder="none" value="${esc(d.cap)}" oninput="S.d.cap=this.value.replace(/[^0-9]/g,'');render()">
+            <span class="sub" style="font-size:11.5px">an hour</span>
+          </div>
+          <p class="cond-note" style="margin-top:7px">Over it, mail is dropped — not queued.</p>
+        </div>`:''}
+        <div class="rail-s">
+          <span class="eyebrow">Dry run</span>
+          <button class="btn sm" style="width:100%;justify-content:center" onclick="S.checked=true;render()">
+            ${S.checked?'Check again':'Check it'}</button>
+          ${S.checked ? `<p class="cond-note" style="margin-top:9px">Read 30 · <b style="color:var(--ink)">${cl.length?2:30} would match</b></p>
+            <ul class="hits" style="margin-top:6px">
+              <li><svg class="ic xs"><use href="#i-mail"/></svg><b>Invoice #4471</b></li>
+              <li><svg class="ic xs"><use href="#i-mail"/></svg><b>Statement — July</b></li>
+            </ul>`:''}
+        </div>
+      </div>
+    </div>
+
+    ${blocked ? `<div class="foot"><span class="why">${blocked}</span></div>`:''}
+  </div>`;
+}
+
+/* ══════════════════════════════════════════════════════════
+   PROPOSAL B — ask Divo
+   One question. Divo answers with a rule card you can accept
+   or adjust. Nothing else is on screen until it needs to be.
+   ══════════════════════════════════════════════════════════ */
+function askB(){
+  const d = S.d;
+
+  if (!S.asked) return `<div class="wrap">
+    <button class="back" onclick="go('mail')"><svg class="ic s"><use href="#i-left"/></svg> Mail</button>
+    <div class="ask">
+      <h2>What should Divo do with your mail?</h2>
+      <textarea id="say" placeholder="forward invoices from @acme.com to books@vendor-cpa.com"
+        oninput="S.intent=this.value;document.getElementById('go').disabled=this.value.trim().length<3">${esc(S.intent)}</textarea>
+      <div class="ask-act">
+        <button class="btn pri" id="go" ${S.intent.trim().length<3?'disabled':''} onclick="compileB()">
+          <svg class="ic s"><use href="#i-spark"/></svg> Read it back</button>
+        <button class="link" onclick="S.asked=true;S.d=blank();S.d.conds=[{k:'from',v:''}];render()">or build it yourself</button>
+      </div>
+      <div class="ask-eg">${EGS.map((e,i)=>`<button class="chip solid" onclick="useEgB(${i})">${e.t}</button>`).join('')}</div>
+      <p class="sub" style="margin-top:34px;font-size:12px">Watching ${S.mailbox}</p>
+    </div>
+  </div>`;
+
+  const cl = clauses(d), blocked = why(d);
+
+  return `<div class="wrap">
+    <button class="back" onclick="S.asked=false;render()"><svg class="ic s"><use href="#i-left"/></svg> Ask again</button>
+    <div class="stack">
+      ${S.intent ? `<div class="said"><svg class="ic s"><use href="#i-chat"/></svg>
+        <span>“${esc(S.intent)}”</span>
+        <button class="link" onclick="S.asked=false;render()">edit</button></div>`:''}
+
+      <div class="receipt">
+        <input class="receipt-n" value="${esc(ruleName(d))}" oninput="S.d.name=this.value;S.d.named=true">
+        <dl class="rec">
+          <dt>When</dt><dd>${cl.length ? esc('mail arrives ' + cl.join(', and ')) : '<b>any message arrives</b>'}</dd>
+          <dt>Divo will</dt><dd>${
+            !d.dest ? '<i style="color:var(--muted)">nothing chosen yet</i>'
+            : d.dest==='fwd' ? `forward the whole message, unchanged, to <b>${esc(d.to||'…')}</b>`
+            : d.dest==='lark' ? 'send it to you in Lark, in your own chat with Divo'
+            : `leave it in your mailbox, ${esc(fileSummary(d))}`}</dd>
+          ${d.dest && d.dest!=='file' ? `<dt>Limit</dt><dd>${d.cap ? `at most ${esc(d.cap)} an hour — over that, mail is dropped` : 'none — every match is sent'}</dd>`:''}
+        </dl>
+        ${leaves(d) ? `<p class="receipt-w"><svg class="ic xs"><use href="#i-shieldx"/></svg>
+          Leaves ${domain(S.mailbox)} — Shivam is asked to approve before this starts.</p>`:''}
+      </div>
+
+      <div>
+        <div class="proof-h">
+          <div><h2>Would it have caught anything?</h2>
+            <p>Replays it over mail Divo has already seen. Nothing is sent.</p></div>
+          <button class="btn" onclick="S.checked=true;render()">${S.checked?'Check again':'Check it'}</button>
+        </div>
+        ${S.checked ? `<p class="proof-l">Read 30 messages · <b>2 matched</b></p>
+          <ul class="hits">
+            <li><svg class="ic xs"><use href="#i-mail"/></svg><b>Invoice #4471 — Acme Supplies</b><span>billing@acme.com</span></li>
+            <li><svg class="ic xs"><use href="#i-mail"/></svg><b>Statement for July</b><span>billing@acme.com</span></li>
+          </ul>`:''}
+      </div>
+
+      <div id="adj" class="${d.adjusting?'':'hide'}">
+        <div class="card"><div class="body">
+          <div class="blk-h"><span class="eyebrow">Conditions</span></div>
+          ${d.conds.map((c,i)=>{
+            const f = FIELDS[c.k];
+            const ctrl = f.kind==='seg'
+              ? `<div class="seg"><button class="${c.v===true?'on':''}" onclick="setCond(${i},true)">Has one</button><button class="${c.v===false?'on':''}" onclick="setCond(${i},false)">Has none</button></div>`
+              : `<input class="input" placeholder="${esc(f.ph||'')}" value="${esc(typeof c.v==='string'?c.v:'')}" oninput="setCond(${i},this.value)">`;
+            return `<div class="cond ${f.neg?'neg':''}"><span class="cond-l">${f.label}</span><div>${ctrl}</div>
+              <span></span><button class="icb" onclick="dropCond(${i})"><svg class="ic xs"><use href="#i-x"/></svg></button></div>`;
+          }).join('')}
+          <div class="chips" style="margin-top:14px">
+            ${Object.keys(FIELDS).filter(k=>!d.conds.some(c=>c.k===k)).map(k=>
+              `<button class="chip" onclick="addCond('${k}')"><svg class="ic xs"><use href="#i-plus"/></svg> ${FIELDS[k].label}</button>`).join('')}
+          </div>
+          <div class="blk-h" style="margin-top:22px"><span class="eyebrow">Divo will</span></div>
+          <div class="picks">
+            <button class="pick ${d.dest==='fwd'?'on':''}" onclick="setDest('fwd')"><span class="pi"><svg class="ic s"><use href="#i-mail"/></svg></span><b>Forward it</b></button>
+            <button class="pick ${d.dest==='lark'?'on':''}" onclick="setDest('lark')"><span class="pi"><svg class="ic s"><use href="#i-chat"/></svg></span><b>Lark</b></button>
+            <button class="pick ${d.dest==='file'?'on':''}" onclick="setDest('file')"><span class="pi"><svg class="ic s"><use href="#i-tag"/></svg></span><b>File it</b></button>
+          </div>
+          ${d.dest==='fwd'?`<input class="input" style="margin-top:12px" placeholder="books@vendor-cpa.com" value="${esc(d.to)}" oninput="S.d.to=this.value;render()">`:''}
+          <div style="display:flex;align-items:center;gap:9px;margin-top:16px">
+            <span class="sub">At most</span>
+            <input class="input" style="width:64px" placeholder="any" value="${esc(d.cap)}" oninput="S.d.cap=this.value.replace(/[^0-9]/g,'');render()">
+            <span class="sub">an hour — over that, mail is dropped</span>
+          </div>
+        </div></div>
+      </div>
+
+      <div class="foot">
+        ${blocked?`<span class="why">${blocked}</span>`:''}
+        <button class="btn" onclick="S.d.adjusting=!S.d.adjusting;render()">${d.adjusting?'Done adjusting':'Adjust'}</button>
+        <button class="btn pri" ${blocked?'disabled':''} onclick="turnOn()">Turn it on</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ── shared editing ──────────────────────────────────── */
+function addCond(k){ S.d.conds.push({k, v: k==='att' ? true : k==='when' ? {a:'09:00',b:'18:00'} : ''}); render(); }
+function dropCond(i){ S.d.conds.splice(i,1); render(); }
+function setCond(i,v){ S.d.conds[i].v = v; render(); }
+function toggleNote(i){ S.d.conds[i].open = !S.d.conds[i].open; render(); }
+function setDest(x){ S.d.dest = x; render(); }
+
+function useEgB(i){ const e = EGS[i]; S.intent = e.s; S.d = e.build(); S.asked = true; S.checked = false; render(); }
+
+/* A compile is faked: the sentence is matched loosely to one of the examples.
+   Real one goes to the server — nothing is guessed in the browser. */
+function pretendCompile(){
+  const t = (S.intent || '').toLowerCase();
+  if (t.includes('lark')) return EGS[1].build();
+  if (t.includes('label') || t.includes('archive') || t.includes('file')) return EGS[2].build();
+  return EGS[0].build();
+}
+function compileB(){ if ((S.intent||'').trim().length < 3) return; S.d = pretendCompile(); S.asked = true; S.checked = false; render(); }
+
+function turnOn(){
+  const d = S.d;
+  if (leaves(d)) return approvalScreen();
+  S.rules.push(JSON.parse(JSON.stringify(d)));
+  S.openRule = S.rules.length - 1;
+  go('rule');
+}
+
+/* The one ending nobody expects: it is not on yet, and that is fine. */
+function approvalScreen(){
+  document.getElementById('view').innerHTML = `<div class="wrap">
+    <div class="empty" style="padding-top:90px">
+      <div style="width:46px;height:46px;margin:0 auto 18px;border-radius:12px;background:color-mix(in srgb,var(--warn) 14%,var(--surface));display:grid;place-items:center;color:var(--warn)">
+        <svg class="ic" style="width:20px;height:20px"><use href="#i-shieldx"/></svg></div>
+      <b>Asked Shivam to approve this</b>
+      <p>Forwarding to ${esc(S.d.to)} sends mail outside ${domain(S.mailbox)}, so it needs his yes.
+         <b style="color:var(--ink)">The rule turns on by itself</b> once he agrees.</p>
+      <div class="act" style="display:flex;gap:8px;justify-content:center">
+        <button class="btn" onclick="go('mail')">Back to Mail</button>
+        <button class="btn pri" onclick="approve()">Simulate: Shivam approves</button>
+      </div>
+    </div>
+  </div>`;
+}
+function approve(){
+  S.rules.push(JSON.parse(JSON.stringify(S.d)));
+  S.openRule = S.rules.length - 1;
+  go('rule');
+}
+
+/* ── One rule ────────────────────────────────────────── */
+function ruleDetail(){
+  const r = S.rules[S.openRule];
+  if (!r) return `<div class="wrap"><div class="empty"><b>No such rule</b></div></div>`;
+  const cl = clauses(r);
+  return `<div class="wrap">
+    <button class="back" onclick="go('mail')"><svg class="ic s"><use href="#i-left"/></svg> Mail</button>
+    <div class="ph">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <h1>${esc(ruleName(r))}</h1><span class="badge ok"><span class="dot"></span>Working</span>
+      </div>
+      <div class="ph-act">
+        <button class="btn"><svg class="ic s"><use href="#i-pencil"/></svg> Edit</button>
+        <button class="btn"><svg class="ic s"><use href="#i-copy"/></svg> Duplicate</button>
+        <button class="btn"><svg class="ic s"><use href="#i-pause"/></svg> Pause</button>
+        <button class="btn"><svg class="ic s"><use href="#i-arch"/></svg> Archive</button>
+      </div>
+    </div>
+    <div class="stack">
+      ${leaves(r)?`<div class="note warn"><svg class="ic s"><use href="#i-shieldx"/></svg>
+        <div><b>Matching mail leaves your company.</b> Every message is forwarded to ${esc(r.to)} in full.</div></div>`:''}
+      <div class="receipt">
+        <dl class="rec">
+          <dt>When</dt><dd>${cl.length?esc('mail arrives '+cl.join(', and ')):'any message arrives'}</dd>
+          <dt>Divo will</dt><dd>${
+            r.dest==='fwd'?`forward the whole message, unchanged, to <b>${esc(r.to)}</b>`
+            : r.dest==='lark'?'send it to you in Lark'
+            : `leave it in your mailbox, ${esc(fileSummary(r))}`}</dd>
+          <dt>Watching</dt><dd>${S.mailbox}</dd>
+        </dl>
+      </div>
+      <div>
+        <div class="proof-h"><div><h2>What it acted on</h2>
+          <p>The last messages this rule matched, and what became of each.</p></div></div>
+        <ul class="hits">
+          <li><svg class="ic xs"><use href="#i-mail"/></svg><b>Invoice #4471 — Acme Supplies</b><span class="badge ok" style="margin-left:auto">Sent</span></li>
+          <li><svg class="ic xs"><use href="#i-mail"/></svg><b>Statement for July</b><span class="badge ok" style="margin-left:auto">Sent</span></li>
+          <li><svg class="ic xs"><use href="#i-mail"/></svg><b>Remittance advice</b><span class="badge" style="margin-left:auto">Sending</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>`;
+}
+
+render();
+</script>
+</body>
+</html>

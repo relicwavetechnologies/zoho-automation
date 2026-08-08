@@ -179,8 +179,20 @@ import {
 import { RunOriginStore } from './application/connections/run-origin.store';
 import { createLarkChatDestinationAuthorizer } from './application/mail-ops/lark-chat-destination';
 import { createMailRuleWriter } from './application/mail-ops/mail-rule-writer';
+import {
+  mailRulePermission,
+  mailRuleRefusal,
+  type MailRuleOperation,
+} from './application/mail-ops/mail-rule-permission';
 import { createMailRuleExternalApproval } from './application/mail-ops/mail-rule-external-approval';
 import { createMailRuleCompiler } from './application/mail-ops/mail-rule-compiler';
+import { createMailRuleJudge } from './application/mail-ops/mail-rule-judge';
+import { createMailBriefComposer } from './application/mail-ops/mail-brief';
+import { createMailBriefRunner } from './application/mail-ops/mail-brief.runner';
+import {
+  DEFAULT_MAIL_BRIEF_SCHEDULE,
+  nextMailBriefRunAt,
+} from './application/mail-ops/mail-brief.schedule';
 import {
   createBeginGoogleAuthorization,
   type DeliverGoogleConnectCard,
@@ -383,6 +395,17 @@ export interface Container {
     companyId: string;
     userId: string;
   }) => Promise<string | null>;
+  /**
+   * Whether a member may do this to a mail rule — asked when they ask, not only
+   * at delivery, and answered per operation rather than once for all of them.
+   */
+  canRunMailRules: (input: {
+    companyId: string;
+    userId: string;
+    companyRole: string;
+    departmentId?: string;
+    operation: MailRuleOperation;
+  }) => Promise<{ kind: 'allowed' | 'denied' | 'unavailable'; message?: string }>;
   /** One sentence into a draft rule. Creates nothing. */
   compileMailRule: ReturnType<typeof createMailRuleCompiler>;
   mailOpsWorker: MailOpsWorker;
@@ -2189,6 +2212,50 @@ export async function buildContainer(
     },
     resolveConnection: resolveMailAutomationGoogleConnection,
     authorizeLarkChat: authorizeMailOpsLarkChat,
+    /*
+     * One live call, so a rule is never created on a grant Google has already
+     * ended. `googleAccessTokenFor` both discovers that and records it — it
+     * clears every cache partition for the connection and marks it
+     * reauthorization-required — so this probe is also what makes the Mail page
+     * start saying "reconnect" instead of waiting for the eleventh watch
+     * failure to say it for us.
+     */
+    probeConnection: async ({ companyId, userId, connectionId }) => {
+      const connection = await integrationConnectionRepo.findAccessibleGoogleConnection({
+        companyId,
+        userId,
+        connectionId,
+        minimumAccess: 'read_write',
+      });
+      if (!connection.ok) {
+        return { kind: 'unavailable', reason: connection.error.message };
+      }
+      if (!connection.value?.refreshToken) {
+        return { kind: 'revoked' };
+      }
+      try {
+        await googleAccessTokenFor({
+          companyId,
+          connectionId,
+          cacheUserId: `connection:${connectionId}`,
+          refreshToken: connection.value.refreshToken,
+        });
+        return { kind: 'alive' };
+      } catch (error) {
+        // Only a rejected refresh means the grant itself is dead. A timeout, a
+        // 5xx, a DNS blip — those say nothing about it, and reporting them as
+        // revoked would send somebody reconnecting a working account.
+        if (error instanceof GoogleTokenRefreshError && error.code === 'refresh_rejected') {
+          return { kind: 'revoked' };
+        }
+        return {
+          kind: 'unavailable',
+          reason: error instanceof Error
+            ? `Divo could not reach Google to check this account (${error.message}).`
+            : 'Divo could not reach Google to check this account.',
+        };
+      }
+    },
     connectionApproval: input => connectionRateLimits.approval(input),
     /*
      * The same approver the agent path would ask, resolved the same way.
@@ -2213,6 +2280,18 @@ export async function buildContainer(
   // Same model the other background readers use — this is a small, strict
   // extraction, not a conversation.
   const compileMailRule = createMailRuleCompiler({
+    model: deepSeekModel(env.PERSONA_LEARNING_MODEL_ID),
+  });
+
+  const judgeMailMessage = createMailRuleJudge({
+    model: deepSeekModel(env.PERSONA_LEARNING_MODEL_ID),
+    // Without this, a rule holding one message in five is indistinguishable
+    // from one holding none: the answer that could not be read was discarded
+    // and the member only ever saw a fixed sentence.
+    logger: logger.child({ service: 'mail-ops-judge' }),
+  });
+
+  const composeMailBrief = createMailBriefComposer({
     model: deepSeekModel(env.PERSONA_LEARNING_MODEL_ID),
   });
 
@@ -2582,6 +2661,23 @@ export async function buildContainer(
       if (!sent.ok) throw sent.error;
       return sent.value;
     },
+    // The rule's AI step. Same model the compiler uses, and for the same
+    // reason: this is one closed question with a bounded answer, not a
+    // conversation, and it runs inside a delivery lane where a slow model is a
+    // lane not moving anybody else's mail.
+    judgeMessage: judgeMailMessage,
+    // Twice on workdays, in the company's own timezone. Computed per call, so
+    // the first run is the next real slot rather than whenever the process
+    // happened to boot.
+    briefDefaults: () => ({
+      ...DEFAULT_MAIL_BRIEF_SCHEDULE,
+      nextRunAt: nextMailBriefRunAt(DEFAULT_MAIL_BRIEF_SCHEDULE, new Date())
+        // A schedule that cannot find a slot in fourteen days is not one this
+        // constant can produce; the fallback exists so the type is honest
+        // rather than because it can be reached.
+        ?? new Date(Date.now() + 12 * 60 * 60_000),
+    }),
+    runBrief: claim => runMailBrief(claim),
     reviewMailboxHealth: subscriptionId =>
       mailOpsNotifier.review(subscriptionId),
     logger,
@@ -2591,6 +2687,42 @@ export async function buildContainer(
       ? { pubsubTopicName: gmailPubsubConfig.topic }
       : {}),
   });
+  /*
+   * One member's brief, end to end.
+   *
+   * Defined after the worker because the worker only calls it at tick time, and
+   * declared here rather than inside the worker's dependency literal so the four
+   * steps it performs — read the window, compose, deliver, advance — stay
+   * readable as a unit.
+   */
+  const runMailBrief = createMailBriefRunner({
+    repo: mailOpsRepo,
+    compose: composeMailBrief,
+    deliverLarkDm: async input => {
+      const sent = await larkAdapter.sendDmToOpenId(
+        input.openId,
+        input.content,
+        input.idempotencyKey,
+      );
+      if (!sent.ok) throw sent.error;
+      return sent.value;
+    },
+    /*
+     * Where Divo sends it.
+     *
+     * `null` is a real answer, not a failure: a member who signed in with a
+     * password and never linked Lark has nowhere for a brief to go. The runner
+     * treats that as "skip this window" rather than retrying forever against an
+     * identity that does not exist.
+     */
+    resolveLarkOpenId: async ({ userId, companyId }) => {
+      const identity = await channelIdentityRepo.resolveByUserId(userId, companyId);
+      if (!identity.ok) throw identity.error;
+      return identity.value?.larkOpenId ?? null;
+    },
+    logger,
+  });
+
   const channelRegistry = new ChannelAdapterRegistry();
   channelRegistry.register(larkAdapter);
 
@@ -2680,6 +2812,67 @@ export async function buildContainer(
       select: { departmentId: true },
     });
     return membership?.departmentId ?? null;
+  };
+
+  /**
+   * May this member run mail automations at all — asked at create, not only at
+   * every delivery.
+   *
+   * The same question `authorizeRule` asks on each message, deliberately: the
+   * capability is **`execute`**, and the channel is **Lark**, because that is
+   * what the worker resolves and a rule its owner may not execute is a rule
+   * that exists, lists as Working, and silently stops on every message. Asking
+   * anything different here would let exactly that through.
+   *
+   * Enforcement stays where it was. This only adds the answer at the moment
+   * somebody asks the question.
+   */
+  const canRunMailRules = async (input: {
+    companyId: string;
+    userId: string;
+    companyRole: string;
+    departmentId?: string;
+    /**
+     * What the member is asking to do.
+     *
+     * Named rather than assumed, because the answer differs: creating a rule
+     * needs `create` and background `execute`, archiving one needs `delete` and
+     * no execute at all. This used to check `execute` alone for every request,
+     * which both refused members who could legitimately archive and admitted
+     * members who had lost the right to edit.
+     */
+    operation: MailRuleOperation;
+  }): Promise<{ kind: 'allowed' | 'denied' | 'unavailable'; message?: string }> => {
+    const resolved = await permissions.resolve({
+      companyId: asCompanyId(input.companyId),
+      userId: asUserId(input.userId),
+      companyRole: asCompanyRoleSlug(input.companyRole),
+      ...(input.departmentId ? { departmentId: asDepartmentId(input.departmentId) } : {}),
+      channel: 'lark',
+    });
+    if (!resolved.ok) {
+      // The one distinction that matters: a store that could not be read is
+      // retried, a decision is recorded. Calling an unreadable store a refusal
+      // sends somebody asking for access they already have.
+      return resolved.error.payload.reason === 'permission_lookup_failed'
+        ? { kind: 'unavailable', message: resolved.error.message }
+        : {
+            kind: 'denied',
+            message: 'Divo could not work out your access to mail automations.',
+          };
+    }
+    // The same decision the agent tool makes, from the same function, so the
+    // browser and Divo-in-Lark cannot answer one member two different ways.
+    const verdict = mailRulePermission(
+      input.operation,
+      resolved.value.allowedActionsByTool.get(asToolId('mailAutomations')),
+    );
+    return verdict.allowed
+      ? { kind: 'allowed' }
+      : {
+          kind: 'denied',
+          message: mailRuleRefusal(input.operation, verdict.missing),
+        };
   };
 
   /*
@@ -2937,6 +3130,7 @@ export async function buildContainer(
     writeMailRule,
     requestMailRuleExternalApproval,
     resolveMemberDepartmentId,
+    canRunMailRules,
     compileMailRule,
     mailOpsWorker,
     canvaMcpOAuthService,

@@ -71,8 +71,9 @@ Use this recipe only for rules triggered by future Gmail arrivals.
 
 - **Gmail only.** There is no Outlook, Microsoft 365, or IMAP support. If the user's mail is not Gmail, say so instead of creating a rule.
 - **Only new mail that lands in the inbox** triggers a rule. Mail that a native Gmail filter archives, or that lands in Spam, is never seen.
-- **A rule delivers the whole message. That is the design, not a shortfall.** Mail Ops is deliberately good at *which* mail and *where it goes* — sender, subject, exclusions, hours, destination — and does not read the mail at all. When the user asks for "just the OTP", "just the tracking number", or "just the amount", say plainly that the whole email arrives instead, and move on. It is a correct answer with more in it, not a worse one.
-- **Do not build a workaround for that.** There is no Divo path that extracts part of an email on arrival — not the scheduler, not a Gmail filter, not a local script. Offering one would promise something nothing delivers. Set up the forward and tell the user what they will receive.
+- **A rule delivers the whole message. That is the design, not a shortfall.** Mail Ops is deliberately good at *which* mail and *where it goes* — sender, subject, exclusions, hours, destination — and never rewrites, summarises, or pulls anything out of what it sends. When the user asks for "just the OTP", "just the tracking number", or "just the amount", say plainly that the whole email arrives instead, and move on. It is a correct answer with more in it, not a worse one.
+- **Do not build a workaround for that.** There is no Divo path that extracts part of an email on arrival — not the scheduler, not a Gmail filter, not a local script, and **not the judge below**. Offering one would promise something nothing delivers. Set up the forward and tell the user what they will receive.
+- **A rule may also carry one AI step, called the judge**, which decides *whether* to act — never what to send or where. See **The judge** below. It is the answer to "only the real ones", which no combination of substrings can express.
 - **A rule can also tidy mail instead of sending it** — label it, archive it, mark it read — with \`destination.type: "organize"\`. That acts on the user's own Gmail and reaches nobody else.
 - **Delivering to a Lark chat posts the full message text into that chat**, up to 20,000 characters, plain text only — no HTML and no attachments. Warn the user before delivering personal mail such as login codes into a group chat.
 - **Email forwarding** preserves the original Gmail MIME content, including HTML, inline images, and attachments, inside a new message sent by the connected mailbox.
@@ -95,6 +96,20 @@ Use this recipe only for rules triggered by future Gmail arrivals.
 - Update: replace the complete match and destination using the exact \`ruleId\`
   and \`connectionId\` returned by list. \`name\` is required too, so carry the existing name forward unless the user asked to rename it. **\`rateLimitPerHour\` works the same way: it is replaced, not merged, so a rule that had a cap loses it unless you re-send it.** Read the current value from the rule's \`action.rateLimitPerHour\` in \`list\` and carry it forward. Update also resumes a paused rule.
 - Pause/resume/archive: include the exact \`ruleId\` returned by create or list. Archive is final — an archived rule cannot be resumed.
+
+## The judge
+
+A deterministic match is a filter, and filters cannot tell an invoice from an advert for an invoicing product. \`judge\` closes that gap: one question, asked of every matched message, answered yes or no before the rule acts.
+
+- Shape: \`"judge": {"question":"Is this a real invoice addressed to us, rather than marketing, a quote, or a reminder for something already paid?","onFailure":"closed"}\`.
+- **Offer it whenever the user's own words are a judgement, not a pattern** — "the real ones", "actual complaints", "only what needs my reply". Creating a match-only rule there hands them something that forwards the wrong mail, and they find out a week later from the person on the other end.
+- **Write \`question\` as one closed yes/no question**, in the user's own terms. Never an instruction, never a list of steps, never a request for a value out of the message.
+- **A rejected message is held, not lost.** It is recorded with the model's reason and the user can see it. Say this — a user who thinks rejected mail vanishes will not trust the step.
+- **It sees headers and a short preview only** — never the full body, never attachments. Do not promise answers that need the whole document ("is the total over 50,000"). Say what it can actually see.
+- **\`onFailure\` decides what happens when the model cannot answer.** \`closed\` (the default) sends nothing; \`open\` acts anyway. Use \`open\` only for a noise-cutting rule where a stray forward is better than a missed message, and **never on a rule whose destination is outside the company**.
+- **It cannot move mail.** The destination is fixed when the rule is written and no verdict can change it.
+- **Narrow the match first.** Every matched message costs a model call, so an exclusion such as \`notFrom: "no-reply@"\` is free and stops those before the judge runs.
+- **\`update\` replaces \`judge\` rather than merging it**, exactly like \`rateLimitPerHour\`. Read the current value from the rule's \`judge\` in \`list\` and carry it forward unless the user asked to change or remove it. Renaming a rule without doing so deletes its judge.
 
 ## Reading rule health
 

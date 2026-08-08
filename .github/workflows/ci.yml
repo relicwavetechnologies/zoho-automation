@@ -462,8 +462,13 @@ jobs:
       - name: Validate deployment secrets
         env:
           DIVO_DEV_SSH_KEY: ${{ secrets.DIVO_DEV_SSH_KEY }}
+          DEVELOPMENT_ENV_FILE: ${{ secrets.DEVELOPMENT_ENV_FILE }}
         run: |
           test -n "${DIVO_DEV_SSH_KEY}"
+          # Checked before anything is written rather than after: an empty
+          # secret would otherwise truncate the environment on the box and take
+          # the stack down with a deploy that reported success.
+          test -n "${DEVELOPMENT_ENV_FILE}"
 
       - name: Configure SSH
         env:
@@ -474,10 +479,34 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' '103.172.92.187 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICer9x9ARy2oBqzIGOALmDDLZPwpIfEmbXuutFu53Nuy' >> ~/.ssh/known_hosts
 
+      # Written from the secret rather than maintained by hand on the box, so a
+      # reprovisioned development host comes back with the same environment
+      # instead of whatever was last typed into it. `main` has done this since
+      # its first deploy; development had not, which is how its Lark app came to
+      # differ from the one being tested against with nothing in the repository
+      # to say so.
+      #
+      # The consequence is worth stating plainly: this file is now derived. An
+      # edit made over SSH survives until the next deploy and is then gone, so a
+      # value that must persist belongs in DEVELOPMENT_ENV_FILE.
+      - name: Upload development environment
+        env:
+          DEVELOPMENT_ENV_FILE: ${{ secrets.DEVELOPMENT_ENV_FILE }}
+        run: |
+          printf '%s' "${DEVELOPMENT_ENV_FILE}" | ssh -i ~/.ssh/id_ed25519 \
+            "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
+            "install -d -m 700 '${DEPLOY_DIR}' && \
+             if test -s '${DEPLOY_DIR}/.env.development.local'; then \
+               cp -p '${DEPLOY_DIR}/.env.development.local' \
+                     '${DEPLOY_DIR}/.release-rollback.env.development.local'; \
+             fi && \
+             cat > '${DEPLOY_DIR}/.env.development.local' && \
+             chmod 600 '${DEPLOY_DIR}/.env.development.local'"
+
       - name: Verify development environment is provisioned
         run: |
           ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
-            "test -r '${DEPLOY_DIR}/.env.development.local' && command -v docker >/dev/null && docker compose version >/dev/null"
+            "test -s '${DEPLOY_DIR}/.env.development.local' && command -v docker >/dev/null && docker compose version >/dev/null"
 
       - name: Authorize development tunnel keys
         run: |

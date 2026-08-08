@@ -20,7 +20,11 @@ type MailRuleDb = Pick<
  */
 export type MailRuleReplacement =
   | 'replaced'
+  /** The edit also took the rule off pause, which the member is told about. */
+  | 'replaced_and_resumed'
   | 'not_found'
+  /** Named separately from `not_found`: archiving is final, and saying so helps. */
+  | 'archived'
   | 'duplicate'
   | 'duplicate_archived';
 
@@ -32,6 +36,15 @@ export interface CreateMailAutomationRuleInput {
   match: Record<string, unknown>;
   action: Record<string, unknown>;
   destination: Record<string, unknown>;
+  /**
+   * The rule's AI step, or `null` to state that it has none.
+   *
+   * `null` rather than absent, because this is written on the update branch as
+   * well as the create one and the two have opposite defaults there: an omitted
+   * key leaves whatever was on the row, which would mean "create this rule
+   * again, without the AI step" quietly kept the old question.
+   */
+  judge: Record<string, unknown> | null;
   connectionId: string;
   mailboxEmail: string;
   dedupeKey: string;
@@ -46,6 +59,14 @@ export interface MailAutomationRuleSummary {
   match: Record<string, unknown>;
   action: Record<string, unknown>;
   destination: Record<string, unknown>;
+  /**
+   * The rule's AI step, or `null`.
+   *
+   * Returned by `list` because `update` replaces the whole rule: without it the
+   * agent has no way to carry an existing question forward, and renaming a rule
+   * in Lark would silently strip the step that was doing the actual work.
+   */
+  judge: Record<string, unknown> | null;
   createdAt: Date;
 }
 
@@ -115,9 +136,24 @@ function stableJson(value: unknown): string {
 export class MailAutomationRuleRepository {
   constructor(private readonly db: MailRuleDb) {}
 
+  /**
+   * `existing` is what the caller could not otherwise know.
+   *
+   * This is an upsert on a key derived from the rule's own content, so asking
+   * for a rule that is already there returns that rule — and asking for one
+   * that was archived brings it back to life. Both are the right behaviour and
+   * neither was reportable: every caller was told "created", so somebody who
+   * archived a rule in March and built the same one in August was shown a
+   * brand-new rule carrying five months of somebody else's deliveries.
+   */
   async createRuleForMailbox(
     input: CreateMailAutomationRuleInput,
-  ): Promise<Result<{ ruleId: string; subscriptionId: string }, InfraError>> {
+  ): Promise<Result<{
+    ruleId: string;
+    subscriptionId: string;
+    /** `null` when nothing was there before — a genuinely new rule. */
+    existing: 'active' | 'paused' | 'archived' | null;
+  }, InfraError>> {
     try {
       // Ahead of the transaction, not inside it. Postgres aborts a transaction
       // outright on a unique violation, so a swallowed collision there would
@@ -145,6 +181,15 @@ export class MailAutomationRuleRepository {
           },
           select: { id: true },
         });
+        /*
+         * Read before the upsert, because the upsert cannot say which branch
+         * it took. Inside the transaction and on the same key, so the answer
+         * describes the row the upsert is about to land on.
+         */
+        const before = await tx.mailAutomationRule.findUnique({
+          where: { dedupeKey: input.dedupeKey },
+          select: { status: true },
+        });
         const rule = await tx.mailAutomationRule.upsert({
           where: { dedupeKey: input.dedupeKey },
           create: {
@@ -156,6 +201,7 @@ export class MailAutomationRuleRepository {
             matchJson: input.match as Prisma.InputJsonObject,
             actionJson: input.action as Prisma.InputJsonObject,
             destinationJson: input.destination as Prisma.InputJsonObject,
+            judgeJson: (input.judge ?? Prisma.DbNull) as Prisma.InputJsonValue,
             dedupeKey: input.dedupeKey,
           },
           // Reviving is the conditional write below, not this branch. The
@@ -170,9 +216,15 @@ export class MailAutomationRuleRepository {
           // is the one thing that can differ, and writing it is what makes
           // "create the same rule but slower" mean anything. Without this the
           // tool reported the new ceiling and the rule kept the old one.
+          // `judgeJson` for the same reason as `actionJson`: it is deliberately
+          // not part of the dedupe key — two rules alike but for their question
+          // are one rule with two opinions, and leaving both active would act on
+          // every matching message twice — so landing here is exactly how a
+          // changed question, or a removed one, is meant to take effect.
           update: {
             name: input.name,
             actionJson: input.action as Prisma.InputJsonObject,
+            judgeJson: (input.judge ?? Prisma.DbNull) as Prisma.InputJsonValue,
           },
           select: { id: true },
         });
@@ -192,7 +244,11 @@ export class MailAutomationRuleRepository {
             activatedAt: new Date(),
           },
         });
-        return { ruleId: rule.id, subscriptionId: subscription.id };
+        return {
+          ruleId: rule.id,
+          subscriptionId: subscription.id,
+          existing: (before?.status ?? null) as 'active' | 'paused' | 'archived' | null,
+        };
       });
       return ok(created);
     } catch (cause) {
@@ -337,6 +393,7 @@ export class MailAutomationRuleRepository {
           matchJson: true,
           actionJson: true,
           destinationJson: true,
+          judgeJson: true,
           createdAt: true,
           subscription: {
             select: { mailboxEmail: true, connectionId: true },
@@ -352,6 +409,7 @@ export class MailAutomationRuleRepository {
         match: row.matchJson as Record<string, unknown>,
         action: row.actionJson as Record<string, unknown>,
         destination: row.destinationJson as Record<string, unknown>,
+        judge: (row.judgeJson ?? null) as Record<string, unknown> | null,
         createdAt: row.createdAt,
       })));
     } catch (cause) {
@@ -368,6 +426,8 @@ export class MailAutomationRuleRepository {
     match: Record<string, unknown>;
     action: Record<string, unknown>;
     destination: Record<string, unknown>;
+    /** `null` states that the edited rule has no AI step — see the create input. */
+    judge: Record<string, unknown> | null;
     dedupeKey: string;
   }): Promise<Result<MailRuleReplacement, InfraError>> {
     try {
@@ -389,7 +449,32 @@ export class MailAutomationRuleRepository {
             destinationJson: true,
           },
         });
-        if (!current) return 'not_found' as const;
+        if (!current) {
+          /*
+           * Archived is a different answer from missing, and the member can see
+           * the difference.
+           *
+           * The lookup above excludes archived rules, so editing one reported
+           * "not found in your account" for a rule sitting in that member's own
+           * list under Archived. Archiving is final by design — an archived
+           * rule cannot be resumed — so the honest answer names that, rather
+           * than implying the rule is gone and leaving them to wonder whether
+           * Divo lost it.
+           *
+           * Scoped to this member exactly as the lookup above is, so it still
+           * cannot confirm that somebody else's rule exists.
+           */
+          const archived = await tx.mailAutomationRule.findFirst({
+            where: {
+              id: input.ruleId,
+              companyId: input.companyId,
+              createdByUserId: input.userId,
+              status: 'archived',
+            },
+            select: { id: true },
+          });
+          return archived ? 'archived' as const : 'not_found' as const;
+        }
         // Editing a rule into one this member already holds is a real answer —
         // the rule they are asking for exists — and it is reported rather than
         // left to raise a unique violation inside the transaction and reach
@@ -437,6 +522,7 @@ export class MailAutomationRuleRepository {
             matchJson: input.match as Prisma.InputJsonObject,
             actionJson: input.action as Prisma.InputJsonObject,
             destinationJson: input.destination as Prisma.InputJsonObject,
+            judgeJson: (input.judge ?? Prisma.DbNull) as Prisma.InputJsonValue,
             dedupeKey: input.dedupeKey,
             status: 'active',
             pausedAt: null,
@@ -444,6 +530,12 @@ export class MailAutomationRuleRepository {
             // A replace can move the destination or widen the match. Mail that
             // arrived under the old ones was never this version of the rule's
             // to send, so it starts watching now.
+            //
+            // The AI step is deliberately not one of those conditions. It
+            // changes what the rule *does* with a matched message, not which
+            // messages the rule is entitled to touch, and `activatedAt` is a
+            // floor on entitlement. Restarting on a reworded question would
+            // throw away a backlog because somebody fixed a typo in it.
             ...(restarting ? { activatedAt: new Date() } : {}),
           },
         });
@@ -455,7 +547,18 @@ export class MailAutomationRuleRepository {
             nextWatchRenewalAt: new Date(),
           },
         });
-        return 'replaced' as const;
+        /*
+         * Editing a paused rule starts it again — said out loud.
+         *
+         * The behaviour is deliberate and Divo in Lark has always documented
+         * it ("update also resumes a paused rule"), but a browser did it in
+         * silence: a member who paused a rule because it was misbehaving, then
+         * corrected it, got no hint that their mail was moving again. The
+         * behaviour stays; what changes is that the answer says so.
+         */
+        return current.status === 'paused'
+          ? 'replaced_and_resumed' as const
+          : 'replaced' as const;
       });
       return ok(changed);
     } catch (cause) {
@@ -475,7 +578,17 @@ export class MailAutomationRuleRepository {
     ruleId: string;
     status: 'active' | 'paused' | 'archived';
     now?: Date;
-  }): Promise<Result<boolean, InfraError>> {
+    /*
+     * `'archived'` rather than a third boolean's worth of guessing.
+     *
+     * `false` used to mean both "no such rule of yours" and "that rule is
+     * archived", so pausing or resuming an archived rule answered "not found in
+     * your account" about a rule sitting in that member's own Archived list.
+     * `replace` already tells those apart; this is the same distinction on the
+     * other two buttons, and their remedies differ — one is a typo, the other is
+     * final.
+     */
+  }): Promise<Result<boolean | 'archived', InfraError>> {
     const now = input.now ?? new Date();
     try {
       const changed = await this.db.$transaction(async tx => {
@@ -489,7 +602,7 @@ export class MailAutomationRuleRepository {
         });
         if (!current) return false;
         if (current.status === input.status) return true;
-        if (current.status === 'archived') return false;
+        if (current.status === 'archived') return 'archived' as const;
         await tx.mailAutomationRule.update({
           where: { id: current.id },
           data: {
@@ -573,6 +686,7 @@ export class MailAutomationRuleRepository {
     match: Record<string, unknown>;
     action: Record<string, unknown>;
     destination: Record<string, unknown>;
+    judge: unknown;
   }>, InfraError>> {
     try {
       const rules = await this.db.mailAutomationRule.findMany({
@@ -585,6 +699,7 @@ export class MailAutomationRuleRepository {
           matchJson: true,
           actionJson: true,
           destinationJson: true,
+          judgeJson: true,
         },
       });
       return ok(rules.map(rule => ({
@@ -594,6 +709,10 @@ export class MailAutomationRuleRepository {
         match: rule.matchJson as Record<string, unknown>,
         action: rule.actionJson as Record<string, unknown>,
         destination: rule.destinationJson as Record<string, unknown>,
+        // Left opaque on the way out. `parseMailRule` is the one place a stored
+        // judge is validated, and a second lenient read here is how a corrupt
+        // one would slip past it.
+        judge: rule.judgeJson,
       })));
     } catch (cause) {
       return err(wrapInfra('prisma', 'mailOps.listActiveRules', cause));

@@ -38,7 +38,7 @@
 import type { ApprovalGateService } from '../approval/approval-gate.service';
 import type { PermissionService } from '../permissions/permission.service';
 import type { Logger } from '../../shared/logger';
-import type { MailRuleMatch } from './mail-ops.types';
+import type { MailRuleJudge, MailRuleMatch } from './mail-ops.types';
 import {
   asCompanyId,
   asDepartmentId,
@@ -69,6 +69,26 @@ export interface MailRuleExternalApprovalInput {
     readonly match: MailRuleMatch;
     readonly email: string;
     readonly rateLimitPerHour?: number | undefined;
+    /**
+     * Present when an existing rule is being edited into this shape.
+     *
+     * Without it an approved edit would replay as a `create`, which upserts on
+     * the dedupe key — so the member would end up with the new rule *and* the
+     * old one still forwarding, which is the double-delivery the whole dedupe
+     * key exists to prevent. With it, the replay is the same `update` the
+     * member asked for.
+     */
+    readonly ruleId?: string | undefined;
+    /**
+     * The rule's AI step, carried into the replay.
+     *
+     * Without it an approved external forward would be written with no step at
+     * all — and the member would have been shown the approval for the careful
+     * version of their rule and given the indiscriminate one. On a rule whose
+     * mail leaves the company that is the worst place for the two to differ,
+     * which is why it rides in the args rather than being re-derived later.
+     */
+    readonly judge?: MailRuleJudge | undefined;
   };
   readonly mailboxEmail: string;
 }
@@ -113,8 +133,12 @@ export function createMailRuleExternalApproval(deps: MailRuleExternalApprovalDep
     const chatId =
       `${GATEWAY_APPROVAL_CHAT_PREFIX}company:${input.companyId}:requester:${input.userId}:mail-rule`;
 
+    const editing = typeof input.rule.ruleId === 'string' && input.rule.ruleId.length > 0;
+
     const args = {
-      operation: 'create' as const,
+      ...(editing
+        ? { operation: 'update' as const, ruleId: input.rule.ruleId! }
+        : { operation: 'create' as const }),
       connectionId: input.rule.connectionId,
       name: input.rule.name,
       match: input.rule.match,
@@ -122,6 +146,7 @@ export function createMailRuleExternalApproval(deps: MailRuleExternalApprovalDep
       ...(input.rule.rateLimitPerHour !== undefined
         ? { rateLimitPerHour: input.rule.rateLimitPerHour }
         : {}),
+      ...(input.rule.judge ? { judge: input.rule.judge } : {}),
     };
 
     const decision = await deps.approvalGate.check({
@@ -134,9 +159,10 @@ export function createMailRuleExternalApproval(deps: MailRuleExternalApprovalDep
        * executor recomputes it from the args; a mismatch is refused as "the
        * action changed after approval", which is the right guard and does not
        * care that the mismatch was ours. `mailAutomations` maps `create` to
-       * `create` — say the same thing here or the approval can never be spent.
+       * `create` and `update` to `update` — say the same thing here or the
+       * approval can never be spent.
        */
-      action: 'create',
+      action: editing ? 'update' : 'create',
       args,
       perm: permission.value,
       chatId,
@@ -151,9 +177,11 @@ export function createMailRuleExternalApproval(deps: MailRuleExternalApprovalDep
       resumeOnApproval: true,
       // What the approver reads. Says what will leave and from where, because
       // "approve a mail rule" is not a question anybody can answer.
-      argsSummary:
-        `Forward mail from ${input.mailboxEmail} to ${input.rule.email}, `
-        + `which is outside the company (rule: ${input.rule.name}).`,
+      argsSummary: editing
+        ? `Change the rule “${input.rule.name}” so mail from ${input.mailboxEmail} is forwarded `
+          + `to ${input.rule.email}, which is outside the company.`
+        : `Forward mail from ${input.mailboxEmail} to ${input.rule.email}, `
+          + `which is outside the company (rule: ${input.rule.name}).`,
       runContext: {
         companyId: asCompanyId(input.companyId),
         userId: asUserId(input.userId),

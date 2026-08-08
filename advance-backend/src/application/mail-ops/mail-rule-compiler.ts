@@ -24,7 +24,8 @@
 import { generateText, type LanguageModel } from 'ai';
 import { z } from 'zod';
 import { mailRuleMatchSchema } from './mail-rule.matcher';
-import type { MailRuleMatch } from './mail-ops.types';
+import { mailRuleJudgeSchema } from './mail-ops.types';
+import type { MailRuleJudge, MailRuleMatch } from './mail-ops.types';
 
 export type MailRuleCompilation =
   | {
@@ -36,6 +37,15 @@ export type MailRuleCompilation =
         | { type: 'lark_dm' }
         | { type: 'organize'; label?: string; archive?: boolean; markRead?: boolean };
       rateLimitPerHour?: number;
+      /**
+       * The part of the sentence no filter can express, kept as a question.
+       *
+       * Absent unless the sentence actually asked for a judgement. Without this
+       * the compiler had to refuse every request whose real content was one —
+       * "contracts that actually need my signature" came back `unclear`, which
+       * tells a member Divo cannot do the one thing the judge was built for.
+       */
+      judge?: MailRuleJudge;
       /** What Divo could not take from the sentence, in the member's words. */
       notes?: string[];
     }
@@ -48,7 +58,7 @@ const SYSTEM_PROMPT = `You turn one sentence into a Gmail automation rule for Di
 Return ONLY JSON. No prose, no code fence.
 
 Shape:
-{"understood":true,"name":"...","match":{...},"destination":{...},"rateLimitPerHour":5,"notes":["..."]}
+{"understood":true,"name":"...","match":{...},"destination":{...},"rateLimitPerHour":5,"judge":{"question":"...","onFailure":"closed"},"notes":["..."]}
 or
 {"understood":false,"reason":"..."}
 
@@ -74,12 +84,30 @@ DESTINATION — exactly one:
 
 rateLimitPerHour is optional, 1-1000, and only for email or lark_dm.
 
+JUDGE — optional, and only when the sentence asks for something no filter can
+decide. The match narrows by what a message *has*; the judge decides what a
+message *means*. Divo reads each matched message and answers your question
+before the destination runs; "no" stops it there.
+
+  "invoices that are actually overdue"        -> match on the sender/subject,
+                                                 judge "Is this invoice overdue?"
+  "contracts that really need my signature"   -> judge "Does this contract need
+                                                 the recipient's signature?"
+  "only the urgent ones"                      -> judge "Is this urgent?"
+
+Write the question so that YES means "go ahead". One question, answerable from
+the message alone. Use onFailure:"open" only if the sentence says to let mail
+through when Divo cannot decide; otherwise omit it and nothing is sent.
+
+A judge is not a substitute for a match. Still name a sender or a subject —
+without one the rule reads every message that arrives.
+
 REFUSE with understood:false when:
 - a sender or recipient is named as a brand but no address or domain is given
   ("from Amazon" — say you need the domain, e.g. @amazon.in)
 - the destination is unclear or missing
 - the sentence asks for something none of the fields above can express
-  (matching "or" between conditions, reading the message, replying, summarising)
+  (matching "or" between conditions, replying, summarising, editing the message)
 
 NEVER invent a domain, an address, a timezone or a phrase that is not in the
 sentence. A rule that is wrong is worse than a question.
@@ -104,6 +132,7 @@ const responseSchema = z.union([
       }),
     ]),
     rateLimitPerHour: z.number().int().min(1).max(1000).optional(),
+    judge: z.unknown().optional(),
     notes: z.array(z.string().trim().min(1)).max(6).optional(),
   }),
   z.object({
@@ -186,10 +215,32 @@ export function createMailRuleCompiler(deps: MailRuleCompilerDeps) {
       };
     }
 
+    /*
+     * The judge answers to the runtime's schema too, and a malformed one is
+     * refused rather than dropped.
+     *
+     * Dropping it would be the worst of the three outcomes: the member asked
+     * for "only the ones that actually need me", and a rule that quietly lost
+     * that question forwards everything it matched while reporting that it
+     * understood. Silence is what this whole file exists to avoid.
+     */
+    let judge: MailRuleJudge | undefined;
+    if (parsed.judge !== undefined && parsed.judge !== null) {
+      const read = mailRuleJudgeSchema.safeParse(parsed.judge);
+      if (!read.success) {
+        return {
+          status: 'unclear',
+          reason: 'Divo could not turn that into a question it can ask about each message. Say what it should check, in one sentence.',
+        };
+      }
+      judge = read.data;
+    }
+
     return {
       status: 'compiled',
       name: parsed.name,
       match: match.data as MailRuleMatch,
+      ...(judge ? { judge } : {}),
       // Cast only bridges `exactOptionalPropertyTypes`: zod emits
       // `label?: string | undefined` where the type wants optional-not-undefined.
       destination: parsed.destination as MailRuleCompilation extends { destination: infer D } ? D : never,

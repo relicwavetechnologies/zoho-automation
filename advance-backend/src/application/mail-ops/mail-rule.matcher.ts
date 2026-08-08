@@ -1,10 +1,12 @@
 import { z } from 'zod';
 import {
   MAIL_RULE_WEEKDAYS,
+  mailRuleJudgeSchema,
   type MailMessageMetadata,
   type MailRuleAction,
   type MailRuleActiveWindow,
   type MailRuleDestination,
+  type MailRuleJudge,
   type MailRuleMatch,
   type MailRuleWeekday,
 } from './mail-ops.types';
@@ -377,10 +379,20 @@ export function parseMailRule(input: {
   match: Record<string, unknown>;
   action: Record<string, unknown>;
   destination: Record<string, unknown>;
+  /**
+   * The stored AI step, if the rule has one. Parsed here with everything else
+   * rather than read leniently at delivery time, and that placement is the
+   * safety property: a stored judge that no longer parses throws, the rule is
+   * reported `broken`, and it stops. Reading it leniently — treating an
+   * unreadable question as "no judge" — would turn a corrupted gate into a rule
+   * that silently forwards everything it was written to hold back.
+   */
+  judge?: unknown;
 }): {
   match: MailRuleMatch;
   action: MailRuleAction;
   destination: MailRuleDestination;
+  judge?: MailRuleJudge;
 } {
   const parsedMatch = storedMailRuleMatchSchema.parse(input.match);
   const match: MailRuleMatch = {
@@ -412,7 +424,14 @@ export function parseMailRule(input: {
         }
       : {}),
   };
-  return { match, ...parseMailRuleDelivery(input) };
+  return {
+    match,
+    ...parseMailRuleDelivery(input),
+    // `null` is what an absent column reads as, and is not a parse failure.
+    ...(input.judge === undefined || input.judge === null
+      ? {}
+      : { judge: mailRuleJudgeSchema.parse(input.judge) }),
+  };
 }
 
 export function parseMailRuleDelivery(input: {

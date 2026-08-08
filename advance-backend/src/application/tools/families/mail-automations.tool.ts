@@ -14,10 +14,17 @@ import type {
 import { SELF_SERVICE_CONNECT_HINT } from './google-workspace-mcp.tool';
 import { mailRuleMatchSchema, parseMailRule } from '../../mail-ops/mail-rule.matcher';
 import {
+  mailRuleActionGroup,
+  mailRulePermission,
+  mailRuleRefusal,
+} from '../../mail-ops/mail-rule-permission';
+import {
   dryRunMailRule,
   type MailRuleDryRunEvent,
 } from '../../mail-ops/mail-rule-dry-run';
-import { mailRuleDedupeKey } from '../../mail-ops/mail-ops.types';
+import {
+  mailRuleDedupeKey, mailRuleJudgeSchema,
+} from '../../mail-ops/mail-ops.types';
 import type { MailRuleAction, MailRuleIdentity } from '../../mail-ops/mail-ops.types';
 import type {
   AuthorizeLarkChatDestination,
@@ -66,6 +73,17 @@ const destinationSchema = z.union([
  */
 const rateLimitPerHourSchema = z.number().int().min(1).max(1000).optional();
 
+/**
+ * The rule's optional AI step, offered on the same terms the browser offers it.
+ *
+ * Here rather than only on the web route because the two surfaces have to be
+ * able to build the same rule. A member who asks Divo in Lark to "forward real
+ * invoices, not the marketing ones" and gets a rule with no step would have
+ * been given a rule that forwards the marketing ones — and no way to tell,
+ * short of watching their finance inbox fill up.
+ */
+const judgeSchema = mailRuleJudgeSchema.optional();
+
 export const mailAutomationsArgsSchema = z.discriminatedUnion('operation', [
   z.object({
     operation: z.literal('create'),
@@ -74,6 +92,7 @@ export const mailAutomationsArgsSchema = z.discriminatedUnion('operation', [
     match: mailRuleMatchSchema,
     destination: destinationSchema,
     rateLimitPerHour: rateLimitPerHourSchema,
+    judge: judgeSchema,
   }).strict(),
   z.object({
     operation: z.literal('list'),
@@ -92,6 +111,7 @@ export const mailAutomationsArgsSchema = z.discriminatedUnion('operation', [
     match: mailRuleMatchSchema,
     destination: destinationSchema,
     rateLimitPerHour: rateLimitPerHourSchema,
+    judge: judgeSchema,
   }).strict(),
   z.object({
     operation: z.literal('pause'),
@@ -118,6 +138,17 @@ const ruleSummarySchema = z.object({
   match: z.record(z.unknown()),
   action: z.record(z.unknown()),
   destination: z.record(z.unknown()),
+  /**
+   * The rule's AI step, and it must be listed here or it does not survive.
+   *
+   * Every tool result is re-parsed against this schema and the *parsed* value is
+   * what the model sees, so zod's default strip silently drops any key missing
+   * from it. Left out, `list` would answer without `judge` while the tool's own
+   * instructions tell the model to read it from `list` and carry it forward —
+   * so renaming a rule in Lark would delete the question that was doing the
+   * work, with nothing anywhere saying so.
+   */
+  judge: z.record(z.unknown()).nullable().optional(),
   createdAt: z.string(),
   valid: z.boolean(),
   invalidReason: z.string().optional(),
@@ -164,6 +195,30 @@ const resultSchema = z.object({
       predatesRule: z.boolean(),
     })),
   }).optional(),
+  /**
+   * What was already there when a `create` landed on a rule that exists.
+   *
+   * Declared here or it does not survive: every result is re-parsed against
+   * this schema and a key it does not name is stripped without complaint.
+   *
+   * `create` is an upsert on the rule's own content, so asking for a rule that
+   * already exists updates its name, its ceiling and its question, and brings
+   * it back if it was paused or archived. The tool used to report all of that
+   * as a plain creation, so an agent told a member it had made them a new rule
+   * when what it had actually done was overwrite one — or resurrect one they
+   * archived months ago.
+   */
+  existing: z.enum(['active', 'paused', 'archived']).nullable().optional(),
+  /**
+   * What question the rule carries after an `update`, declared for the same
+   * reason and stripped without it.
+   *
+   * `update` replaces the judge rather than merging it, so an edit about
+   * something else — a rename, a new address — removes it unless the caller
+   * re-sent it. This is the answer to the call that did it, which is a better
+   * place to notice than a warning read once at the top of the turn.
+   */
+  judge: z.record(z.unknown()).nullable().optional(),
   message: z.string().optional(),
 });
 
@@ -270,6 +325,52 @@ function mailRuleActivatedMessage(destination: {
     + 'and nothing leaves the mailbox.';
 }
 
+/**
+ * What `create` actually did, which is not always create.
+ *
+ * The operation is an upsert on the rule's own content, so a member asking for
+ * a rule they already have gets that rule's name, ceiling and question
+ * rewritten — and if it was paused or archived, restarted. Reporting every one
+ * of those as "Mail automation is active" told an agent it had built something
+ * new when it had overwritten, or resurrected, something the member had already
+ * decided about. The archived case is the one that stings: a rule retired in
+ * March comes back to life in August and starts moving mail again.
+ */
+/**
+ * What a rule with a question does, said on the answer that created it.
+ *
+ * The recipe tells the model to explain that rejected mail is held rather than
+ * lost, because a member who thinks it vanishes will not trust the step. The
+ * tool's own confirmation said only where mail goes — so a rule whose entire
+ * point was "only the real ones" was reported as an ordinary forward, and the
+ * one sentence that makes the step trustworthy depended on the model
+ * remembering to add it.
+ */
+const judgeAddendum = (judge: { readonly question: string } | undefined): string =>
+  judge
+    ? ` Before anything is sent, Divo asks “${judge.question}” of each matching `
+      + 'message; anything it answers no to is held back and recorded with its '
+      + 'reason, not deleted.'
+    : '';
+
+function mailRuleCreatedMessage(
+  destination: { readonly type: string; readonly email?: string },
+  existing: 'active' | 'paused' | 'archived' | null,
+  judge?: { readonly question: string },
+): string {
+  const active = `${mailRuleActivatedMessage(destination)}${judgeAddendum(judge)}`;
+  if (!existing) return active;
+  const what = existing === 'archived'
+    ? 'You already had this exact rule, archived. It has been brought back and '
+      + 'is running again'
+    : existing === 'paused'
+      ? 'You already had this exact rule, paused. It is running again'
+      : 'You already had this exact rule and it was already running. Nothing '
+        + 'was duplicated';
+  return `${what}, and its name, its hourly ceiling and its AI question now `
+    + `match what you just asked for. ${active}`;
+}
+
 function larkChatRefusalMessage(verdict: LarkChatDestinationVerdict): string {
   if (verdict.status === 'other_company') {
     return 'That Lark chat belongs to a different company, so Divo will not '
@@ -292,21 +393,11 @@ type MailRepo = Pick<
   | 'setRuleStatus'
 >;
 
-const actionFor = (operation: Args['operation']): ToolActionGroup => {
-  switch (operation) {
-    case 'list':
-    // A dry run reads stored mail and stored rules and writes nothing, so it
-    // is `read`. Gating it behind `update` would mean the member who most
-    // needs to check a rule — one whose edit rights were just taken away —
-    // is the one who cannot.
-    case 'test': return 'read';
-    case 'create': return 'create';
-    case 'update':
-    case 'pause':
-    case 'resume': return 'update';
-    case 'archive': return 'delete';
-  }
-};
+// The mapping and the decision both live in `mail-rule-permission`, because
+// the browser asks the same question of the same grants and the two answers
+// have to be one answer. See the note there.
+const actionFor = (operation: Args['operation']): ToolActionGroup =>
+  mailRuleActionGroup(operation);
 
 export function createMailAutomationsTool(deps: {
   repo: MailRepo;
@@ -387,7 +478,7 @@ export function createMailAutomationsTool(deps: {
       'Use this only for arrival-triggered mail rules: "whenever/when a matching email arrives".',
       'Use googleGmail for immediate mail reading, searching, drafting, sending, or one-time forwarding.',
       'Use scheduledWorkflows for time-triggered inbox work such as a daily summary.',
-      'A rule delivers the entire message and never reads it. It cannot extract a code, link, amount, or any part of the mail. When the user asks for "just the OTP" or similar, say the whole email arrives instead and continue; do not look for another Divo path that extracts it, because none exists.',
+      'A rule delivers the entire message. It cannot extract a code, link, amount, or any part of the mail, and nothing it delivers is ever rewritten or summarised. When the user asks for "just the OTP" or similar, say the whole email arrives instead and continue; do not look for another Divo path that extracts it, because none exists. The optional judge below reads a message to decide yes or no, and that is the only reading any rule does.',
       'Only mail arriving in the INBOX triggers a rule. Mail that a Gmail filter archives, or that lands in Spam, is never seen.',
       'create requires name, a deterministic match, and one destination. Match supports from, to, subjectContains, bodyContains, hasAttachment, notFrom, notSubjectContains, and activeWindow; at least one of from, to, subjectContains, or bodyContains is required. from, to, and notFrom must each be one exact mailbox address or an exact @domain, never a brand or display-name substring.',
       'Match fields are combined with AND. There is no OR.',
@@ -409,7 +500,15 @@ export function createMailAutomationsTool(deps: {
       'rateLimitPerHour caps how many messages one rule may send in a rolling hour, 1-1000. It applies to email and Lark destinations only. Over the cap the message is dropped and recorded, not queued, so nothing is delivered late in a burst. Offer it when a rule could match a busy sender or a mailing list.',
       'test replays a rule against mail Divo already recorded for that mailbox and reports what it would have matched. It sends nothing and changes nothing. Use it before telling the user a new or edited rule is right, and when they ask why a rule is quiet. An empty result on a new mailbox means Divo has no recorded mail yet, not that the rule is wrong.',
       'connectionId is optional only when exactly one eligible user-owned Google account exists. If several exist the tool returns google_workspace_connection_selection_required with a connections list; that is a normal step, not a failure. Retry with one exact returned connectionId.',
-      'No LLM runs for matching or delivery. Do not request per-message approval after the user creates the rule.',
+      'No LLM runs for matching or delivery unless the rule has a judge. Do not request per-message approval after the user creates the rule.',
+      'judge is an optional AI step that runs after the match and before the action: {question, onFailure?}. Divo asks the question of each matched message and only acts when the answer is yes. A rejected message is recorded as held with the reason, and is visible to the user; nothing is sent.',
+      'Offer judge whenever the user describes what they want in terms a substring cannot express — "real invoices, not marketing", "actual customer complaints", "only the ones that need me to reply". A match alone will catch the wrong mail there, and the user will not find out until it has been forwarding for a week.',
+      'Write question as one closed yes/no question about a single message, in the user\'s own terms: "Is this a real invoice addressed to us, rather than marketing, a quote, or a reminder for something already paid?" Never write an instruction, a list of steps, or anything that asks for a value out of the message.',
+      'The judge sees only headers and a short preview, never the full body and never attachments. Do not promise the user it can answer questions that need the whole document, such as "is the total over 50,000".',
+      'The judge cannot change where mail goes, and cannot pick a recipient. It only decides whether the rule acts at all.',
+      'onFailure says what happens when the model cannot answer — open acts anyway, closed sends nothing. It defaults to closed. Use open only when the rule exists to cut noise and the user would rather have a false forward than a missed message; never use open on a rule whose destination is outside the company.',
+      'A judge costs a model call per matched message, so narrow the match first. Adding notFrom for a noisy no-reply address is free and stops those messages before the judge ever runs.',
+      'update replaces judge too rather than merging it, so a rule that had one loses it unless you re-send it. Read the current value from that rule\'s judge in list and carry it forward unless the user asked to change or remove it.',
       'list returns valid for every rule, plus invalidReason when valid is false, meaning that rule matches no mail and needs repair. Report those instead of presenting them as working.',
       'list hides paused and archived rules unless includeInactive is true.',
       'list, pause, resume, and archive operate only on rules owned by the authenticated user. Never invent ruleId.',
@@ -425,31 +524,17 @@ export function createMailAutomationsTool(deps: {
       const action = actionFor(args.operation);
       const grantedActions = permission.allowedActionsByTool
         .get(asToolId('mailAutomations'));
-      // Stopping a rule must never be harder than deleting it. `pause` shares
-      // the `update` action group with editing, so a department that revoked
-      // `update` to stop members rewriting rules also took away their ability
-      // to stop a live one — de-escalation gated on the capability being
-      // withdrawn.
-      const allowed = args.operation === 'pause'
-        ? (grantedActions?.has('update') ?? false)
-          || (grantedActions?.has('delete') ?? false)
-        : grantedActions?.has(action) ?? false;
-      const needsExecute = args.operation === 'create'
-        || args.operation === 'update'
-        || args.operation === 'resume';
-      const canExecute = !needsExecute || (grantedActions?.has('execute') ?? false);
-      return allowed && canExecute
+      const verdict = mailRulePermission(args.operation, grantedActions);
+      return verdict.allowed
         ? ok(action)
         : err(new PermissionError({
             toolId: 'mailAutomations',
-            action: allowed ? 'execute' : action,
+            // The action actually withheld, not the one asked for: reporting
+            // `create` when what is missing is background `execute` sends
+            // somebody asking for access they already have.
+            action: verdict.missing === 'execute' ? 'execute' : action,
             reason: 'not_allowed',
-            ...(allowed && !canExecute
-              ? {
-                  message:
-                    'Activating a mail automation also requires background execute access.',
-                }
-              : {}),
+            message: mailRuleRefusal(args.operation, verdict.missing),
           }));
     },
 
@@ -560,6 +645,19 @@ export function createMailAutomationsTool(deps: {
             status,
           });
           if (!changed.ok) throw changed.error;
+          /*
+           * Checked before the falsy test, because `'archived'` is truthy and
+           * would otherwise be reported to the member as a completed pause.
+           */
+          if (changed.value === 'archived') {
+            return err(new ToolError({
+              toolId: 'mailAutomations',
+              reason: 'bad_args',
+              message:
+                'That rule is archived, and archiving is final — it cannot be paused or '
+                + 'restarted. Create a new rule with the same conditions instead.',
+            }));
+          }
           if (!changed.value) {
             return err(new ToolError({
               toolId: 'mailAutomations',
@@ -696,6 +794,10 @@ export function createMailAutomationsTool(deps: {
             match: { ...parsed.match },
             action: { ...parsed.action },
             destination: { ...parsed.destination },
+            // Omitted means removed, matching how `update` already treats the
+            // rate limit and the match: this operation replaces the whole rule
+            // rather than merging into it.
+            judge: args.judge ? { ...args.judge } : null,
             dedupeKey: mailRuleDedupeKey(identity),
           });
           if (!updated.ok) throw updated.error;
@@ -730,10 +832,26 @@ export function createMailAutomationsTool(deps: {
                 + 'matches, and archive whichever of the two is not wanted.',
             }));
           }
+          /*
+           * The answer says whether the rule still has a question.
+           *
+           * `update` replaces the judge rather than merging it, so the commonest
+           * way to destroy one is an edit about something else entirely —
+           * "rename it", "change the address". The instructions warn about it,
+           * and a warning read once at the top of a turn is weaker than the
+           * answer to the call that did the damage. Now the result states which
+           * of the two happened, so a model that dropped the question by
+           * accident has something to notice.
+           */
           return ok({
             success: true,
             operation: 'update',
-            message: 'Mail automation update completed.',
+            judge: args.judge ? { ...args.judge } : null,
+            message: args.judge
+              ? 'Mail automation update completed. This rule still asks its question '
+                + 'before acting.'
+              : 'Mail automation update completed. This rule has no AI question — if it '
+                + 'had one before this edit, that question is now removed.',
           });
         }
         const created = await deps.repo.createRuleForMailbox({
@@ -748,10 +866,14 @@ export function createMailAutomationsTool(deps: {
           match: { ...parsed.match },
           action: { ...parsed.action },
           destination: { ...parsed.destination },
+          judge: args.judge ? { ...args.judge } : null,
           dedupeKey: mailRuleDedupeKey(identity),
         });
         if (!created.ok) throw created.error;
-        ctx.onProgress?.('Mail automation activated.');
+        const existing = created.value.existing;
+        ctx.onProgress?.(existing
+          ? 'Mail automation updated.'
+          : 'Mail automation activated.');
         return ok({
           success: true,
           operation: 'create',
@@ -764,10 +886,23 @@ export function createMailAutomationsTool(deps: {
             match: { ...parsed.match },
             action: { ...parsed.action },
             destination: { ...parsed.destination },
+            /*
+             * Echoed for the same reason `list` echoes it, one call earlier.
+             *
+             * This object carries every other field of the rule and says
+             * `valid: true`, so a model reading it has no reason to doubt it is
+             * the whole rule. Leaving `judge` out meant an agent that created a
+             * judge rule and then edited it in the same turn — "actually call it
+             * X" — carried nothing forward and deleted the question it had just
+             * been asked for. `null` rather than absent: "there is no question"
+             * has to be distinguishable from "this answer did not mention one".
+             */
+            judge: args.judge ? { ...args.judge } : null,
             createdAt: new Date().toISOString(),
             valid: true,
           },
-          message: mailRuleActivatedMessage(parsed.destination),
+          existing,
+          message: mailRuleCreatedMessage(parsed.destination, existing, args.judge),
         });
       } catch (cause) {
         return err(new ToolError({
