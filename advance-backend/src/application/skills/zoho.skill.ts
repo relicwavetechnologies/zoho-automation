@@ -103,7 +103,7 @@ const ZOHO_BOOKS_BILL_WORKFLOW = `ZOHO BOOKS BILL RECORDING:
 - If an existing bill is found, do not create another bill and do not record another payment. Read its \`documents\` list with op="get_invoice"-style single-record reads or from the write response; attach the PDF only if it is missing.
 - Resolve the vendor with op="list_contacts" and searchQuery first. Only when that returns no match, create it with op="create_contact", and say in your reply that a new vendor was created.
 - Fetch chart of accounts with op="get_chart_of_accounts" and choose the expense account that matches the service. Do not guess silently when the account choice is ambiguous.
-- Fetch the real tax records with op="list_taxes" and apply GST using the tax_id they return. EMIAC state is Rajasthan, code 08. Different vendor GST state means IGST; same state means CGST plus SGST. Never invent a rate or a tax id.
+- Fetch the real tax records with op="list_taxes" and apply GST using the tax_id they return. Divo compares the vendor's state against the selling organisation's own state, so do not assume one. Different state means IGST; the same state means CGST plus SGST. Never invent a rate or a tax id.
 - Create the bill with zohoBooks op="create_bill" and fields containing vendor_id, bill_number, date, due_date, line_items, taxes, and notes including IRN/payment context when available.
 - Attach the source PDF with op="attach_document", recordType="bill", recordId set to the bill_id, and fileName set to the exact name of the file the member sent in this conversation. The tool confirms against Zoho's own document list; report attached only when it says so.
 - Attaching works only for a file sent in this Lark conversation. If the tool says it cannot find or download the file, say the bill was created without its PDF and ask the member to send the file again. Never describe an attachment the tool did not confirm.
@@ -151,7 +151,7 @@ BEFORE WRITING:
 1. Duplicate check. Search with op="list_invoices" and searchQuery, or op="get_invoice" with an exact invoice number, before creating anything the member describes as already existing. Accept only an exact normalized invoice_number match.
 2. Customer. op="list_contacts" with searchQuery. Use the contact_id it returns. Only when there is no match, op="create_contact" — and say in your reply that a new customer was created.
 3. Line items. op="list_items" for item_id and rate. Use free-typed name and rate only when the member explicitly describes a one-off charge that is not in the item list, and say that you did.
-4. Tax. op="list_taxes" for the real tax_id values. EMIAC state is Rajasthan, code 08. A customer in another state means IGST; the same state means CGST plus SGST. Never guess a rate or a tax id, and never copy one from a document you read.
+4. Tax. op="list_taxes" for the real tax_id values, and set place_of_supply to the customer's state code as Zoho writes it ("RJ", "KA"). A customer in another state than the selling organisation means IGST; the same state means CGST plus SGST. Divo checks that direction against the organisation it is creating in and refuses a draft that has it backwards. Never guess a rate or a tax id, and never copy one from a document you read.
 
 CREATING — STAGE, SHOW, THEN CREATE:
 - Never call create_invoice first. It requires a stagingId and will refuse without one.
