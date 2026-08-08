@@ -220,11 +220,38 @@ describe('semrush tool', () => {
     assert.equal(datasetSourceToolId(source), 'semrush');
   });
 
-  it('turns rejected web sessions into a permanent export failure', async () => {
+  it('ends an export permanently when the key is refused or spent, and points at the key', async () => {
+    const cases = [
+      { code: 'provider_auth_failed' as const, expect: /api key was rejected/i },
+      { code: 'provider_quota_exhausted' as const, expect: /used up its allowance/i },
+    ];
+    for (const { code, expect } of cases) {
+      const adapter = new SemrushSnapshotDataExportSource({
+        execute: async () => { throw new SemrushServiceError(code, `Semrush ${code}.`); },
+      } as never);
+
+      await assert.rejects(
+        async () => {
+          for await (const _page of adapter.read({
+            kind: 'semrush_snapshot',
+            connectionId: 'backend_managed',
+            args: { operation: 'domain_overview', domain: 'example.com' },
+          }, { companyId: 'co-1', userId: 'user-1' })) {
+            // consume
+          }
+        },
+        (error: unknown) => error instanceof PermanentDataExportError
+          && expect.test(error.memberMessage)
+          // Refreshing a browser cookie never fixes either case.
+          && !/session|cookie/i.test(error.memberMessage),
+        `${code} should end the export with a key-specific reason`,
+      );
+    }
+  });
+
+  it('lets a throttled export stay retryable instead of failing permanently', async () => {
     const adapter = new SemrushSnapshotDataExportSource({
-      execute: async () => {
-        throw new SemrushServiceError('provider_auth_failed', 'Semrush web session was rejected.');
-      },
+      execute: async () => { throw new SemrushServiceError('rate_limited', 'Semrush is throttling requests.'); },
     } as never);
 
     await assert.rejects(
@@ -237,8 +264,7 @@ describe('semrush tool', () => {
           // consume
         }
       },
-      (error: unknown) => error instanceof PermanentDataExportError
-        && /web session was rejected/i.test(error.memberMessage),
+      (error: unknown) => error instanceof SemrushServiceError && !(error instanceof PermanentDataExportError),
     );
   });
 

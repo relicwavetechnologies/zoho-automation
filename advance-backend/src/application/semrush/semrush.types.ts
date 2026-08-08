@@ -66,7 +66,15 @@ export class SemrushServiceError extends Error {
     readonly code:
       | 'not_configured'
       | 'capability_unavailable'
+      /** Too fast. The same key works again after a pause. */
       | 'rate_limited'
+      /**
+       * The key's allowance is spent. Waiting does not help and neither does
+       * retrying; only a different key does. Semrush reports this as
+       * `Limits exceeded` on `dpa/rpc`, which reads like throttling but
+       * persists for hours, so it is kept distinct from `rate_limited`.
+       */
+      | 'provider_quota_exhausted'
       | 'provider_auth_failed'
       | 'no_more_rows'
       | 'provider_failure'

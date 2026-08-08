@@ -6,6 +6,15 @@ const DPA_RPC_URL = 'https://www.semrush.com/dpa/rpc';
 const BACKLINKS_WEBAPI_URL = 'https://www.semrush.com/backlinks/webapi2/';
 
 /**
+ * These reach a member, so they name the thing an administrator can actually
+ * act on. Earlier wording blamed the "web session", which sent people hunting
+ * for a fresh browser cookie — a value Semrush ignores on every wired route.
+ */
+const SEMRUSH_CREDENTIAL_REJECTED = 'Semrush rejected the configured API key.';
+const SEMRUSH_QUOTA_EXHAUSTED = 'The configured Semrush API key has used up its allowance.';
+const SEMRUSH_THROTTLED = 'Semrush is throttling requests; the same key works again shortly.';
+
+/**
  * Semrush DPA dedupes on `params.request_id`. Senior curls use a UUID-shaped value
  * (for example `898248e6-0c40-0ecf-f2a1-15f31a189833`); reusing one is rejected.
  */
@@ -231,10 +240,10 @@ export class SemrushWebClient {
       });
       if (response.ok) return response;
       if (response.status === 401 || response.status === 403) {
-        throw new SemrushServiceError('provider_auth_failed', 'Semrush web session was rejected.');
+        throw new SemrushServiceError('provider_auth_failed', SEMRUSH_CREDENTIAL_REJECTED);
       }
       if (response.status === 429) {
-        throw new SemrushServiceError('rate_limited', 'Semrush web rate limit reached; no retry was attempted.');
+        throw new SemrushServiceError('rate_limited', SEMRUSH_THROTTLED);
       }
       throw new SemrushServiceError('provider_failure', `Semrush web request failed with HTTP ${response.status}.`);
     } catch (error) {
@@ -327,10 +336,16 @@ function webFailure(status: unknown, fallback: string): SemrushServiceError {
       ? JSON.stringify(status)
       : '';
   if (/auth|forbidden|denied|session/i.test(serialized)) {
-    return new SemrushServiceError('provider_auth_failed', 'Semrush web session was rejected.');
+    return new SemrushServiceError('provider_auth_failed', SEMRUSH_CREDENTIAL_REJECTED);
   }
-  if (/limit|rate/i.test(serialized)) {
-    return new SemrushServiceError('rate_limited', 'Semrush web rate limit reached; no retry was attempted.');
+  // `Limits exceeded` is the spent-allowance answer, not a slow-down: it keeps
+  // coming back for hours while a different key answers the same request. Only
+  // an explicit throttle wording is treated as retryable.
+  if (/throttl|too many requests|slow down/i.test(serialized)) {
+    return new SemrushServiceError('rate_limited', SEMRUSH_THROTTLED);
+  }
+  if (/limit|quota|unit|credit/i.test(serialized)) {
+    return new SemrushServiceError('provider_quota_exhausted', SEMRUSH_QUOTA_EXHAUSTED);
   }
   return new SemrushServiceError('provider_failure', serialized ? `${fallback} ${serialized.slice(0, 160)}` : fallback);
 }

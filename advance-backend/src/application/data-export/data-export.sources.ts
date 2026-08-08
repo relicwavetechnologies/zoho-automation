@@ -385,7 +385,16 @@ async function executeSemrushForExport(
     if (error instanceof SemrushServiceError) {
       if (error.code === 'provider_auth_failed' || error.code === 'not_configured') {
         throw new PermanentDataExportError(
-          'Semrush export could not run because the configured Semrush credential or web session was rejected. Ask an administrator to refresh it, then retry.',
+          'Semrush export could not run because the configured Semrush API key was rejected. Ask an administrator to replace it, then retry.',
+          error.message,
+        );
+      }
+      // Spent allowance survives every retry this queue would attempt, so it
+      // ends the job with a reason instead of failing again on a schedule.
+      // Plain throttling is deliberately not handled here: it stays retryable.
+      if (error.code === 'provider_quota_exhausted') {
+        throw new PermanentDataExportError(
+          'Semrush export could not run because the configured Semrush API key has used up its allowance. Ask an administrator to replace it, then retry.',
           error.message,
         );
       }

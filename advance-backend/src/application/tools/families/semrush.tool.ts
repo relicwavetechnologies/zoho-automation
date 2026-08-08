@@ -169,10 +169,11 @@ export const createSemrushTool = (deps: {
         outcome: 'failure',
         metadata: { operation: args.operation, failureCode: normalized.code, latencyMs: Date.now() - startedAt, correlationId: ctx.correlationId },
       });
-      // A rejected Semrush credential is invisible otherwise: the key lives in
-      // backend env, so no member can see that it died and no company admin is
-      // told. The notifier dedups per company/provider, so this alerts once.
-      if (normalized.code === 'provider_auth_failed') {
+      // A rejected or spent Semrush credential is invisible otherwise: the key
+      // lives in backend env, so no member can see that it died and no company
+      // admin is told. The notifier dedups per company/provider, so this alerts
+      // once. Throttling is excluded — it says nothing about the credential.
+      if (normalized.code === 'provider_auth_failed' || normalized.code === 'provider_quota_exhausted') {
         void deps.apiKeyExhaustion?.notifyIfExhausted({
           companyId: ctx.runContext.companyId,
           provider: 'semrush',
@@ -263,6 +264,8 @@ function semrushExportTitle(args: SemrushToolArgs): string {
 
 function toToolError(error: unknown): ToolError {
   if (error instanceof SemrushServiceError) {
+    // Only throttling is retryable. `provider_quota_exhausted` reads like a
+    // limit but the same key never recovers, so retrying it just burns the run.
     const reason = error.code === 'timeout' ? 'timeout'
       : error.code === 'capability_unavailable' || error.code === 'not_configured' ? 'bad_args'
         : error.code === 'rate_limited' ? 'retryable'
