@@ -395,8 +395,10 @@ describe('the file the summary promised', () => {
     } as never, larkCtx);
 
     assert.equal(created.ok, true);
-    assert.match((created as any).value.message, /not confirmed on it/);
+    // Never dispatched, so it is safe to say the file can still be put on later.
+    assert.match((created as any).value.message, /never uploaded/);
     assert.match((created as any).value.message, /No file called/);
+    assert.match((created as any).value.message, /attach_document can still put it on/);
   });
 });
 
@@ -521,5 +523,44 @@ describe('verifying an attachment follows the write', () => {
     );
     assert.match((result as any).value.message, /Do not upload it again/);
     assert.equal(attachments, 1);
+  });
+});
+
+describe('the organisation a draft was judged in', () => {
+  it('creates in the organisation the review read from, even when nobody named one', async () => {
+    // A connection can expose several organisations with no default flag, and
+    // which one a later call resolves to is Zoho's response order rather than a
+    // contract. Reviewing against one and creating in another puts a customer_id
+    // that means someone else on a real invoice — and the drift check cannot see
+    // it, because Zoho echoes the id back unchanged.
+    let listedOrg = 'ORG-A';
+    const writes: any[] = [];
+    const client = {
+      mutate: async (input: any) => {
+        writes.push(input);
+        return {
+          organizationId: input.organizationId,
+          payload: { invoice: { invoice_id: 'inv-created', status: 'draft', currency_code: 'INR' } },
+        };
+      },
+      listRecords: async () => ({ organizationId: listedOrg, items: [], hasMore: false, page: 1 }),
+      getEndpoint: async () => ({}),
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ booksClient: client });
+
+    const staged = await tool.execute({
+      op: 'stage_invoice', fields: soundPayload, connectionId: 'conn-a',
+    } as never, ctx);
+
+    // Zoho's ordering changes between the two calls.
+    listedOrg = 'ORG-B';
+
+    const created = await tool.execute({
+      op: 'create_invoice', stagingId: (staged as any).value.stagingId, connectionId: 'conn-a',
+    } as never, ctx);
+
+    assert.equal(created.ok, true);
+    const post = writes.find(w => w.path === '/invoices');
+    assert.equal(post.organizationId, 'ORG-A', 'the invoice must land where it was reviewed');
   });
 });

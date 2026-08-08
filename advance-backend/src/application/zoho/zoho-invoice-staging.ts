@@ -84,9 +84,10 @@ export interface StagedInvoiceStore {
 /**
  * Whether a failed write provably never reached Zoho's books.
  *
- * Only a validation refusal proves it: Zoho read the payload, rejected it, and
- * wrote nothing. A 5xx, a 408, a 429 or a transport error all leave open that
- * the invoice exists and only the answer was lost.
+ * Two things prove it: a request that was never dispatched, and a validation
+ * refusal, where Zoho read the payload, rejected it, and wrote nothing. A 5xx, a
+ * 408, a 429 or a transport error all leave open that the invoice exists and
+ * only the answer was lost.
  */
 export function writeProvablyDidNotHappen(error: unknown): boolean {
   // Nothing was dispatched — a missing connection, a revoked token, an

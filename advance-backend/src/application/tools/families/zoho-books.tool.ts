@@ -1158,7 +1158,8 @@ export const createZohoBooksTool = (deps: {
           companyId, ...connectionContext, moduleName: 'items',
           ...(args.organizationId ? { organizationId: args.organizationId } : {}),
           filters: {}, perPage: 50,
-        }).then(result => result.items).catch(() => []),
+        }).then(result => ({ items: result.items, organizationId: result.organizationId }))
+          .catch(() => ({ items: [] as Record<string, unknown>[], organizationId: undefined })),
         invoiceNumber
           ? deps.booksClient.listRecords({
               companyId, ...connectionContext, moduleName: 'invoices',
@@ -1176,7 +1177,12 @@ export const createZohoBooksTool = (deps: {
         otherCustomerMatches: otherMatches.filter(record =>
           String(record['contact_id'] ?? '') !== customerId),
         availableTaxes: taxes,
-        catalogueItems: items,
+        catalogueItems: items.items,
+        // The organisation these customers, items and taxes were actually read
+        // from. A connection can expose several with no default flag, and which
+        // one a later call resolves to is Zoho's response order, not a contract
+        // — so the draft has to carry the one it was judged against.
+        reviewedOrganizationId: items.organizationId,
         // Zoho's search is broad; the duplicate rule wants exact matches only.
         sameNumberInvoices: sameNumber.filter(record =>
           String(record['invoice_number'] ?? '').trim().toLowerCase() === invoiceNumber.toLowerCase()),
@@ -1439,7 +1445,7 @@ export const createZohoBooksTool = (deps: {
 
           // After the lookup, not before: the duplicate rule can only fire on
           // invoices Divo actually went and found.
-          const { sameNumberInvoices, ...reviewSources } = sources;
+          const { sameNumberInvoices, reviewedOrganizationId, ...reviewSources } = sources;
           const findings = checkInvoice({
             invoice: payload,
             ...(deps.homeGstStateCode ? { homeGstStateCode: deps.homeGstStateCode } : {}),
@@ -1472,7 +1478,12 @@ export const createZohoBooksTool = (deps: {
           await deps.invoiceStaging.put({
             stagingId, companyId, userId,
             connectionId: args.connectionId,
-            ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+            // Pinned, not copied from the arguments: the model is told to omit
+            // organizationId, and leaving it unset here is what let a draft be
+            // reviewed in one organisation and created in another.
+            ...(args.organizationId ?? reviewedOrganizationId
+              ? { organizationId: args.organizationId ?? reviewedOrganizationId }
+              : {}),
             payload, summary,
             ...(args.fileName ? { attachFileName: args.fileName } : {}),
             findings, review, attempt,
@@ -1618,8 +1629,11 @@ export const createZohoBooksTool = (deps: {
             });
             attachmentNote = outcome.outcome === 'attached'
               ? ` ${outcome.message}`
-              : ` The invoice exists, but the file the member approved is not confirmed on it: ${outcome.message}`
-                + ' Say so rather than leaving them to assume it was attached, and do not retry the upload blind.';
+              : outcome.outcome === 'refused'
+                ? ` The invoice exists, but the file the member approved was never uploaded: ${outcome.message}`
+                  + ' Say so; attach_document can still put it on once the cause is fixed.'
+                : ` The invoice exists, but the file the member approved is not confirmed on it: ${outcome.message}`
+                  + ' Say so rather than leaving them to assume it was attached, and do not retry the upload blind.';
           }
 
           // Staging cannot see what Zoho does on the way in. This can.

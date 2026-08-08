@@ -298,7 +298,20 @@ export class ZohoBooksPaginatedClient {
         connectionId:  input.connectionId,
         minimumAccess: 'read_write',
       });
-      orgId = await this.resolveOrganizationId(input.companyId, input.organizationId, auth);
+      if (input.organizationId) {
+        orgId = input.organizationId;
+      } else {
+        // Not resolveOrganizationId(): that one answers a failed lookup with the
+        // companyId, which is fine for a read that will simply find nothing and
+        // wrong for a write, which would be dispatched at an organisation that
+        // does not exist.
+        const organizations = await this.listOrganizations(input.companyId, { ...auth, resolved });
+        const chosen = organizations.find(org => org.isDefault === true) ?? organizations[0];
+        if (!chosen) {
+          throw new Error('Zoho Books returned no organisation for this connection, so there is nowhere to write.');
+        }
+        orgId = chosen.organizationId;
+      }
     } catch (error) {
       throw new WriteNotDispatchedError(
         error instanceof Error ? error.message : String(error),
@@ -328,7 +341,7 @@ export class ZohoBooksPaginatedClient {
       input.companyId,
       `${path}?${params}`,
       { method: input.method, ...(body === undefined ? {} : { body }) },
-      auth,
+      { ...auth, resolved },
     );
 
     // The caller needs the org that was actually written to — it is what makes

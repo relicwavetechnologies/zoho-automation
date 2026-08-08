@@ -25,6 +25,72 @@ function makeClient(capture: { auth?: any } = {}) {
 }
 
 describe('ZohoBooksPaginatedClient.mutate', () => {
+  it('settles the token once and sends that one', async () => {
+    // Resolving again inside the request would put a second lookup between
+    // deciding to write and writing — and a failure there throws a plain error
+    // that reads as "the write may have landed" when nothing was sent.
+    let resolveCalls = 0;
+    const tokenService = {
+      getValidConnectionAuth: async () => {
+        resolveCalls += 1;
+        if (resolveCalls > 1) throw new Error('Zoho connection lookup failed');
+        return { accessToken: 'settled-token', apiBaseUrl: 'https://www.zohoapis.com' };
+      },
+      getValidToken: async () => { throw new Error('company token must never be used for a write'); },
+    };
+    const client = new ZohoBooksPaginatedClient(tokenService as any);
+
+    const originalFetch = globalThis.fetch;
+    const sent: any[] = [];
+    globalThis.fetch = (async (url: any, init: any) => {
+      sent.push({ url: String(url), init });
+      return { ok: true, json: async () => ({ invoice: { invoice_id: 'inv-1' } }) };
+    }) as any;
+
+    try {
+      await client.mutate({
+        companyId: 'co-1', userId: 'user-1', connectionId: 'conn-1',
+        method: 'POST', path: '/invoices', organizationId: 'org-7',
+        body: { customer_id: '1' },
+      });
+      assert.equal(resolveCalls, 1, 'the token must be resolved exactly once');
+      assert.equal(sent[0].init.headers['Authorization'], 'Zoho-oauthtoken settled-token');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('refuses to write when the connection exposes no organisation', async () => {
+    // resolveOrganizationId answers a failed lookup with the companyId, which is
+    // harmless for a read and would dispatch a write at an organisation that
+    // does not exist.
+    const tokenService = {
+      getValidConnectionAuth: async () => ({ accessToken: 'tok', apiBaseUrl: 'https://www.zohoapis.com' }),
+      getValidToken: async () => { throw new Error('unused'); },
+    };
+    const client = new ZohoBooksPaginatedClient(tokenService as any);
+
+    const originalFetch = globalThis.fetch;
+    const paths: string[] = [];
+    globalThis.fetch = (async (url: any) => {
+      paths.push(String(url));
+      return { ok: false, status: 503, statusText: 'Service Unavailable', text: async () => '' };
+    }) as any;
+
+    try {
+      await assert.rejects(
+        client.mutate({
+          companyId: 'co-1', userId: 'user-1', connectionId: 'conn-1',
+          method: 'POST', path: '/invoices', body: { customer_id: '1' },
+        }),
+        /no organisation/,
+      );
+      assert.equal(paths.some(path => path.includes('/invoices')), false, 'nothing may be posted');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('refuses a write with no connection instead of borrowing the company token', async () => {
     const client = makeClient();
     await assert.rejects(
