@@ -50,7 +50,25 @@ export interface InvoiceCheckInput {
    * guessed — the internal-consistency checks still run.
    */
   readonly homeGstStateCode?: string | undefined;
+  /**
+   * Which direction each configured tax is for, keyed by `tax_id`, from Zoho's
+   * own `tax_specification`.
+   *
+   * A staged payload names no taxes: it carries `tax_id`, because that is what
+   * Zoho accepts and what the skill tells the model to send. Names only appear
+   * once Zoho has expanded them onto a created invoice — by which point the
+   * invoice exists and the check has nothing left to prevent. Without this map
+   * the GST direction rules simply never fire on a draft.
+   *
+   * Zoho's own classification is used rather than the tax's name because the
+   * intra-state tax is a group called "GST18" — the words CGST and SGST appear
+   * nowhere in it, and only surface as components after creation.
+   */
+  readonly taxDirectionById?: Readonly<Record<string, GstDirection>> | undefined;
 }
+
+/** Inter-state is IGST; intra-state is CGST plus SGST (or UTGST). */
+export type GstDirection = 'inter' | 'intra';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -91,20 +109,31 @@ export function derivedLineTotal(items: readonly Record<string, unknown>[]): num
 
 export const invoiceLineItems = lines;
 
-const taxNames = (invoice: Record<string, unknown>): string[] => {
+/**
+ * Every tax on the invoice, however it was written down.
+ *
+ * A draft names nothing and carries `tax_id`; a created invoice carries names
+ * and no longer needs the map. Both are collected, so one function serves the
+ * check before creation and the drift check after it.
+ */
+const taxRefs = (invoice: Record<string, unknown>): { names: string[]; ids: string[] } => {
   const names: string[] = [];
+  const ids:   string[] = [];
+  const take = (tax: Record<string, unknown>) => {
+    names.push(str(tax['tax_name']));
+    ids.push(str(tax['tax_id']));
+  };
+
   const taxes = invoice['taxes'];
-  if (Array.isArray(taxes)) {
-    for (const tax of taxes.filter(isRecord)) names.push(str(tax['tax_name']));
-  }
+  if (Array.isArray(taxes)) for (const tax of taxes.filter(isRecord)) take(tax);
+
   for (const line of lines(invoice)) {
-    names.push(str(line['tax_name']));
+    take(line);
     const lineTaxes = line['line_item_taxes'];
-    if (Array.isArray(lineTaxes)) {
-      for (const tax of lineTaxes.filter(isRecord)) names.push(str(tax['tax_name']));
-    }
+    if (Array.isArray(lineTaxes)) for (const tax of lineTaxes.filter(isRecord)) take(tax);
   }
-  return names.filter(name => name.length > 0);
+
+  return { names: names.filter(n => n.length > 0), ids: ids.filter(id => id.length > 0) };
 };
 
 // Leading boundary only. Zoho names its taxes "IGST18", "CGST9", "SGST 9%" —
@@ -115,6 +144,17 @@ const hasIgst = (names: readonly string[]): boolean =>
 
 const hasIntraStateGst = (names: readonly string[]): boolean =>
   names.some(name => /\b(cgst|sgst|utgst)/i.test(name));
+
+const directionsOf = (
+  refs: { names: string[]; ids: string[] },
+  byId: Readonly<Record<string, GstDirection>> | undefined,
+): { igst: boolean; intraState: boolean } => {
+  const resolved = byId ? refs.ids.map(id => byId[id]).filter(Boolean) : [];
+  return {
+    igst:       hasIgst(refs.names)          || resolved.includes('inter'),
+    intraState: hasIntraStateGst(refs.names) || resolved.includes('intra'),
+  };
+};
 
 /** Zoho reports place of supply as a state code such as "RJ" or "08". */
 const stateCodeOf = (value: unknown): string => str(value).toUpperCase();
@@ -177,9 +217,9 @@ export function checkInvoice(input: InvoiceCheckInput): InvoiceFinding[] {
   }
 
   // ── GST ───────────────────────────────────────────────────────────────────
-  const names = taxNames(invoice);
-  const igst = hasIgst(names);
-  const intraState = hasIntraStateGst(names);
+  const refs = taxRefs(invoice);
+  const { igst, intraState } = directionsOf(refs, input.taxDirectionById);
+  const names = refs.names;
 
   // True regardless of anyone's location: a supply is either inter-state or
   // intra-state, never both.
@@ -187,7 +227,9 @@ export function checkInvoice(input: InvoiceCheckInput): InvoiceFinding[] {
     add(
       'mixed_gst',
       'blocking',
-      `The invoice carries both IGST and CGST/SGST (${[...new Set(names)].join(', ')}). A supply is one or the other.`,
+      names.length > 0
+        ? `The invoice carries both IGST and CGST/SGST (${[...new Set(names)].join(', ')}). A supply is one or the other.`
+        : 'The invoice carries both an inter-state and an intra-state tax. A supply is one or the other.',
     );
   }
 
