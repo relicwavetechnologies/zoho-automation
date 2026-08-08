@@ -14,6 +14,14 @@ import type { LarkFileClient } from '../channels/lark/clients/lark-file.client';
 
 const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
 
+/** "invoice.pdf" -> "invoice-2.pdf": a concrete name beats "rename it somehow". */
+function renamedSuggestion(fileName: string): string {
+  const dot = fileName.lastIndexOf('.');
+  return dot > 0
+    ? `${fileName.slice(0, dot)}-2${fileName.slice(dot)}`
+    : `${fileName}-2`;
+}
+
 export class LarkConversationAttachmentSource implements ZohoAttachmentSourcePort {
   constructor(
     private readonly attachments: ConversationAttachmentService,
@@ -46,8 +54,16 @@ export class LarkConversationAttachmentSource implements ZohoAttachmentSourcePor
         .join(', ');
       return {
         kind: 'unavailable' as const,
+        // Never "send it again". Every resend adds one more file under the same
+        // name, so the advice that sounds most natural is the one that makes the
+        // situation permanently worse — as it did, three times, in production.
+        // A different name is the only thing that resolves this.
         message: `More than one different file called "${input.fileName}" was sent in this conversation (received ${when}). `
-          + 'Divo will not guess which one belongs on this record — ask the member to re-send the exact file, or rename it.',
+          + 'Divo will not guess which one belongs on this record. Ask the member to send the file again under a '
+          + 'distinct name, such as "'
+          + renamedSuggestion(input.fileName)
+          + '", and use that name. Do not ask them to resend it unchanged: another copy of the same name makes '
+          + 'this worse, not better.',
       };
     }
 

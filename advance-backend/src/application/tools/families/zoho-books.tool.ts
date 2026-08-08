@@ -2071,11 +2071,46 @@ export const createZohoBooksTool = (deps: {
 
         case 'record_payment': {
           if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for record_payment' }));
-          return ok(await writtenRecord('customerpayments', 'recorded', {
+
+          // Money received and money *settled against an invoice* are different
+          // events, and Zoho accepts the first while the caller means the second.
+          // A payment with no application is booked as an on-account advance:
+          // Zoho answers 201, the invoice keeps its full balance, and the
+          // customer goes on being chased for money they have already paid.
+          const paymentFields = args.fields as Record<string, unknown>;
+          const applications = paymentFields['invoices'];
+          const appliesToInvoice = Array.isArray(applications) && applications.length > 0;
+          if (!appliesToInvoice && paymentFields['on_account'] !== true) {
+            return err(new ToolError({
+              toolId: 'zohoBooks', reason: 'bad_args',
+              message: 'This payment names no invoice, so Zoho would hold it as an unapplied credit and the '
+                + 'invoice would stay outstanding. Add invoices: [{ invoice_id, amount_applied }] with the '
+                + 'invoice this settles. If the member really is recording money received in advance of any '
+                + 'invoice, say so and pass on_account: true.',
+            }));
+          }
+          // `on_account` is ours, not Zoho's — strip it before it travels.
+          const { on_account: _onAccount, ...body } = paymentFields;
+
+          const recorded = await writtenRecord('customerpayments', 'recorded', {
             method: 'POST',
             path: '/customerpayments',
-            body: args.fields as Record<string, unknown>,
-          }));
+            body,
+          });
+
+          // What Zoho did with it, not what we asked for. A partial application
+          // leaves a remainder that nobody is watching unless it is said out loud.
+          const stored = isRecord(recorded.data) ? recorded.data : {};
+          const unused = numericAmount(stored['unused_amount']);
+          if (appliesToInvoice && unused !== null && unused > 0) {
+            return ok({
+              ...recorded,
+              message: `${recorded.message} Zoho left ${formatAmount(unused, stringValue(stored, 'currency_code') || 'INR')} `
+                + 'of this payment unapplied, so the invoice is not fully settled. Tell the member that figure '
+                + 'before saying the invoice is paid.',
+            });
+          }
+          return ok(recorded);
         }
 
         case 'create_expense': {

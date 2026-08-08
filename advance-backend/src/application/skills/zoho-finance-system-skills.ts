@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Prisma, PrismaClient } from '../../generated/prisma';
 import {
   financeZohoRouterSkill,
+  zohoBooksMoneySkill,
   zohoBillNotifyAccountsSkill,
   zohoBooksBillSkill,
   zohoBooksInvoiceSkill,
@@ -39,7 +40,14 @@ export const ZOHO_FINANCE_SYSTEM_SKILLS: readonly ZohoFinanceSystemSkillDefiniti
       'create an invoice', 'raise an invoice', 'make an invoice', 'new invoice',
       'send an invoice', 'email an invoice', 'bill a customer', 'invoice a client',
       'record a bill', 'enter a vendor bill', 'vendor invoice', 'supplier invoice',
-      'record a payment', 'mark as paid',
+      // Search scores routers, not the specialists under them, so the phrases a
+      // member uses for money movement have to be reachable here or the request
+      // lands on whichever router happens to score highest — Airtable, in the
+      // case of "log an expense".
+      'record a payment', 'mark as paid', 'payment received', 'customer paid',
+      'settle an invoice', 'apply a payment', 'money received',
+      'log an expense', 'record an expense', 'add an expense', 'expense claim',
+      'reimbursement', 'petty cash',
       'unpaid invoices', 'outstanding invoices', 'overdue invoices', 'receivables',
       'payables', 'aging report', 'accounts receivable', 'accounts payable',
       'zoho books', 'zoho crm', 'chart of accounts', 'tax summary', 'gst',
@@ -85,6 +93,20 @@ export const ZOHO_FINANCE_SYSTEM_SKILLS: readonly ZohoFinanceSystemSkillDefiniti
       'attach pdf to invoice', 'add a customer', 'new customer',
     ],
     sortOrder: 18,
+  },
+  {
+    slug: zohoBooksMoneySkill.id,
+    name: zohoBooksMoneySkill.name,
+    summary: zohoBooksMoneySkill.description,
+    markdown: `# ${zohoBooksMoneySkill.name}\n\n${zohoBooksMoneySkill.instructions}`,
+    toolIds: zohoBooksMoneySkill.toolIds,
+    tags: ['finance', 'zoho', 'books', 'payments', 'expenses', 'write'],
+    aliases: [
+      'record a payment', 'received a payment', 'payment received', 'mark invoice paid',
+      'settle an invoice', 'apply a payment', 'customer paid', 'money received',
+      'log an expense', 'record an expense', 'add an expense', 'reimburse',
+    ],
+    sortOrder: 19,
   },
   {
     slug: zohoBooksBillSkill.id,
