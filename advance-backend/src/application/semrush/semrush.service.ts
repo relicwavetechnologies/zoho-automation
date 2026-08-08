@@ -1,5 +1,6 @@
 import type { Logger } from '../../shared/logger';
 import type { SemrushWebClient } from '../../infrastructure/semrush/semrush-web.client';
+import type { SemrushKeyProvider } from './semrush-key.provider';
 import {
   semrushPreflightLimits,
   type SemrushFetchedData,
@@ -10,14 +11,21 @@ import {
 /**
  * Backend-owned Semrush integration via validated `www.semrush.com` recipes only.
  */
+/** Codes that mean "this key is finished", as opposed to "Semrush is busy". */
+function isSpentKey(error: unknown): boolean {
+  return error instanceof SemrushServiceError
+    && (error.code === 'provider_auth_failed' || error.code === 'provider_quota_exhausted');
+}
+
 export class SemrushService {
   constructor(
     private readonly webClient: SemrushWebClient,
+    private readonly keys: SemrushKeyProvider,
     private readonly logger: Logger,
   ) {}
 
   async preflight(args: SemrushToolArgs): Promise<Record<string, unknown>> {
-    this.webClient.assertConfigured();
+    await this.keys.resolve();
     return {
       configured: true,
       operation: args.operation,
@@ -29,23 +37,54 @@ export class SemrushService {
   }
 
   async execute(args: SemrushToolArgs): Promise<SemrushFetchedData> {
-    this.webClient.assertConfigured();
     const request = semrushRequestLogContext(args);
+    const apiKey = await this.keys.resolve();
     try {
-      const data = await this.webClient.fetch(args);
-      this.logger.info('semrush.request.complete', {
-        ...request,
-        status: data.status,
-        rowCount: data.rows.length,
-      });
-      return data;
+      return this.complete(request, await this.webClient.fetch({ apiKey, args }));
     } catch (error) {
-      this.logger.warn('semrush.request.failed', {
+      if (!isSpentKey(error) || !this.keys.canRotate) throw this.failed(request, error);
+
+      // Keys exhaust in ordinary use, and the webhook knows which one is live.
+      // Retrying here rather than inside the client is deliberate: `fetch`
+      // rebuilds the request, so the second attempt carries a fresh
+      // `params.request_id`. Replaying the body with only the key swapped would
+      // be refused as a duplicate however good the replacement was.
+      this.keys.invalidate(apiKey);
+      const replacement = await this.keys.resolve();
+      if (replacement === apiKey) {
+        // The source has nothing newer, so a retry would spend the same dead
+        // key again and report a different failure for the same cause.
+        this.keys.invalidate(replacement);
+        throw this.failed(request, error);
+      }
+      this.logger.warn('semrush.key.rotated', {
         ...request,
         failureCode: error instanceof SemrushServiceError ? error.code : 'unknown',
       });
-      throw error;
+      try {
+        return this.complete(request, await this.webClient.fetch({ apiKey: replacement, args }));
+      } catch (retryError) {
+        if (isSpentKey(retryError)) this.keys.invalidate(replacement);
+        throw this.failed(request, retryError);
+      }
     }
+  }
+
+  private complete(request: Record<string, unknown>, data: SemrushFetchedData): SemrushFetchedData {
+    this.logger.info('semrush.request.complete', {
+      ...request,
+      status: data.status,
+      rowCount: data.rows.length,
+    });
+    return data;
+  }
+
+  private failed(request: Record<string, unknown>, error: unknown): unknown {
+    this.logger.warn('semrush.request.failed', {
+      ...request,
+      failureCode: error instanceof SemrushServiceError ? error.code : 'unknown',
+    });
+    return error;
   }
 }
 

@@ -23,25 +23,38 @@ describe('SemrushWebClient credentials', () => {
 
   it('runs on the API key alone, with no cookie configured', async () => {
     sentHeaders = [];
-    const client = new SemrushWebClient({ apiKey: 'test-api-key', timeoutMs: 5_000, fetchImpl: okResponse });
-    const data = await client.fetch(overview);
+    const client = new SemrushWebClient({ timeoutMs: 5_000, fetchImpl: okResponse });
+    const data = await client.fetch({ apiKey: 'test-api-key', args: overview });
     assert.equal(data.status, 'complete');
     assert.equal(sentHeaders[0]!.Cookie, undefined, 'no Cookie header should be sent when none is configured');
   });
 
   it('still sends a cookie when one is configured, for the disabled analytics route', async () => {
     sentHeaders = [];
-    const client = new SemrushWebClient({ apiKey: 'test-api-key', cookie: 'PHPSESSID=abc', timeoutMs: 5_000, fetchImpl: okResponse });
-    await client.fetch(overview);
+    const client = new SemrushWebClient({ cookie: 'PHPSESSID=abc', timeoutMs: 5_000, fetchImpl: okResponse });
+    await client.fetch({ apiKey: 'test-api-key', args: overview });
     assert.equal(sentHeaders[0]!.Cookie, 'PHPSESSID=abc');
   });
 
-  it('refuses only when the API key is missing, and says so without mentioning a session', () => {
+  it('uses the key it is handed, so a rotated key reaches Semrush', async () => {
+    const keysSent: string[] = [];
+    const client = new SemrushWebClient({
+      timeoutMs: 5_000,
+      fetchImpl: async (_url, init) => {
+        keysSent.push(String((JSON.parse(String(init?.body)).params as { apiKey: string }).apiKey));
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: [{ database: 'in' }] }), { status: 200 });
+      },
+    });
+    await client.fetch({ apiKey: 'first-key', args: overview });
+    await client.fetch({ apiKey: 'second-key', args: overview });
+    assert.deepEqual(keysSent, ['first-key', 'second-key']);
+  });
+
+  it('refuses a call with no key, without mentioning a session', async () => {
     const client = new SemrushWebClient({ cookie: 'PHPSESSID=abc', timeoutMs: 5_000 });
-    assert.throws(
-      () => client.assertConfigured(),
+    await assert.rejects(
+      () => client.fetch({ apiKey: '  ', args: overview }),
       (error: unknown) => (error as { code?: string }).code === 'not_configured'
-        && /SEMRUSH_WEB_API_KEY/.test((error as Error).message)
         && !/session|cookie/i.test((error as Error).message),
     );
   });
@@ -57,13 +70,14 @@ describe('SemrushWebClient domain overview', () => {
     { database: 'ru', domain: 'emiactech.com', rank: 2839423, organicPositions: 6, organicTraffic: 2 },
   ];
   const clientReturning = (result: unknown) => new SemrushWebClient({
-    apiKey: 'test-api-key', cookie: 'session=cookie', timeoutMs: 5_000,
+    cookie: 'session=cookie', timeoutMs: 5_000,
     fetchImpl: async () => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }), { status: 200 }),
   });
 
   it('keeps every country Semrush already returned', async () => {
     const data = await clientReturning(liveShape).fetch({
-      operation: 'domain_overview', domain: 'emiactech.com', database: 'in',
+      apiKey: 'test-api-key',
+      args: { operation: 'domain_overview', domain: 'emiactech.com', database: 'in' },
     });
     assert.equal(data.status, 'complete');
     assert.equal(data.rows.length, 4);
@@ -73,7 +87,8 @@ describe('SemrushWebClient domain overview', () => {
 
   it('leads with the requested country so a one-country answer reads off row one', async () => {
     const data = await clientReturning(liveShape).fetch({
-      operation: 'domain_overview', domain: 'emiactech.com', database: 'ca',
+      apiKey: 'test-api-key',
+      args: { operation: 'domain_overview', domain: 'emiactech.com', database: 'ca' },
     });
     assert.equal(data.rows[0]!.Database, 'ca');
     assert.equal(data.rows[0]!['Organic Keywords'], 9);
@@ -83,7 +98,8 @@ describe('SemrushWebClient domain overview', () => {
 
   it('reports empty rather than inventing a row when Semrush holds nothing', async () => {
     const data = await clientReturning([]).fetch({
-      operation: 'domain_overview', domain: 'example.com', database: 'in',
+      apiKey: 'test-api-key',
+      args: { operation: 'domain_overview', domain: 'example.com', database: 'in' },
     });
     assert.equal(data.status, 'empty');
     assert.deepEqual(data.rows, []);
@@ -92,13 +108,13 @@ describe('SemrushWebClient domain overview', () => {
 
 describe('SemrushWebClient failure classification', () => {
   const client = (fetchImpl: typeof fetch) => new SemrushWebClient({
-    apiKey: 'test-api-key', cookie: 'session=cookie', timeoutMs: 5_000, fetchImpl,
+    cookie: 'session=cookie', timeoutMs: 5_000, fetchImpl,
   });
   const overview = { operation: 'domain_overview' as const, domain: 'example.com', database: 'in' as const };
 
   async function codeFor(fetchImpl: typeof fetch, args: Parameters<SemrushWebClient['fetch']>[0] = overview) {
     try {
-      await client(fetchImpl).fetch(args);
+      await client(fetchImpl).fetch({ apiKey: 'test-api-key', args });
       return 'no_error';
     } catch (error) {
       return (error as { code?: string }).code ?? 'unknown';
@@ -133,7 +149,7 @@ describe('SemrushWebClient failure classification', () => {
     assert.equal(
       await codeFor(
         async () => new Response(JSON.stringify({ status: 'Forbidden' }), { status: 403 }),
-        { operation: 'backlinks_comparison', targets: ['example.com'] },
+        { operation: 'backlinks_comparison', targets: ['example.com'] } as never,
       ),
       'provider_auth_failed',
     );
@@ -142,7 +158,7 @@ describe('SemrushWebClient failure classification', () => {
   it('never blames the browser session in a member-facing message', async () => {
     for (const [status, body] of [[403, '{}'], [429, '{}']] as const) {
       try {
-        await client(async () => new Response(body, { status })).fetch(overview);
+        await client(async () => new Response(body, { status })).fetch({ apiKey: 'test-api-key', args: overview });
         assert.fail('expected a failure');
       } catch (error) {
         assert.doesNotMatch((error as Error).message, /session|cookie/i);
@@ -155,7 +171,6 @@ describe('SemrushWebClient DPA RPC', () => {
   it('generates a fresh params.request_id on every call', async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const client = new SemrushWebClient({
-      apiKey: 'test-api-key',
       cookie: 'session=cookie',
       timeoutMs: 5_000,
       fetchImpl: async (_url, init) => {
@@ -180,8 +195,9 @@ describe('SemrushWebClient DPA RPC', () => {
       },
     });
 
-    await client.fetch({ operation: 'domain_overview', domain: 'example.com', database: 'in' });
-    await client.fetch({ operation: 'domain_overview', domain: 'example.com', database: 'in' });
+    const args = { operation: 'domain_overview' as const, domain: 'example.com', database: 'in' as const };
+    await client.fetch({ apiKey: 'test-api-key', args });
+    await client.fetch({ apiKey: 'test-api-key', args });
 
     assert.equal(bodies.length, 2);
     const first = (bodies[0]!.params as Record<string, unknown>).request_id;

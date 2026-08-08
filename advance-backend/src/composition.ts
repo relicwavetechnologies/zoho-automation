@@ -87,6 +87,7 @@ import { CompanySerperConnectionRepository } from './infrastructure/persistence/
 import { CompanySerperService } from './application/web-search/company-serper.service';
 import { SemrushWebClient } from './infrastructure/semrush/semrush-web.client';
 import { SemrushService } from './application/semrush/semrush.service';
+import { createSemrushKeyProvider } from './application/semrush/semrush-key.provider';
 import { MenhoodQueryService } from './application/menhood/menhood-query.service';
 import { CompanyOmsConnectionRepository } from './infrastructure/persistence/company-oms-connection.repository';
 import { OmsSiteDataClient } from './infrastructure/oms/oms-site-data.client';
@@ -708,8 +709,12 @@ export async function buildContainer(
   const semrushService = new SemrushService(
     new SemrushWebClient({
       timeoutMs: env.SEMRUSH_TIMEOUT_MS,
-      ...(env.SEMRUSH_WEB_API_KEY ? { apiKey: env.SEMRUSH_WEB_API_KEY } : {}),
       ...(env.SEMRUSH_WEB_COOKIE ? { cookie: env.SEMRUSH_WEB_COOKIE } : {}),
+    }),
+    createSemrushKeyProvider({
+      timeoutMs: env.SEMRUSH_TIMEOUT_MS,
+      ...(env.SEMRUSH_WEB_API_KEY ? { environmentApiKey: env.SEMRUSH_WEB_API_KEY } : {}),
+      ...(env.SEMRUSH_API_KEY_WEBHOOK_URL ? { webhookUrl: env.SEMRUSH_API_KEY_WEBHOOK_URL } : {}),
     }),
     logger.child({ service: 'semrush' }),
   );

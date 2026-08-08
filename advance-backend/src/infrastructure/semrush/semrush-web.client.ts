@@ -45,52 +45,49 @@ const BACKLINKS_COLUMN_LABELS: Readonly<Record<string, string>> = {
  */
 export class SemrushWebClient {
   constructor(private readonly deps: {
-    readonly apiKey?: string;
     readonly cookie?: string;
     readonly timeoutMs: number;
     readonly fetchImpl?: typeof fetch;
   }) {}
 
-  assertConfigured(): void {
-    if (!this.configured()) {
-      throw new SemrushServiceError(
-        'not_configured',
-        'Semrush is not configured. Set SEMRUSH_WEB_API_KEY in the backend environment.',
-      );
+  /**
+   * The key arrives per call rather than at construction, so a caller holding a
+   * spent key can retry with a fresh one. That retry re-enters here and rebuilds
+   * the request, which is what gives it a new `params.request_id` — Semrush
+   * dedups on that value, so replaying the same body with a swapped key would
+   * be rejected as a duplicate no matter how good the new key was.
+   */
+  async fetch(input: { readonly apiKey: string; readonly args: SemrushToolArgs }): Promise<SemrushFetchedData> {
+    const apiKey = input.apiKey.trim();
+    if (!apiKey) {
+      throw new SemrushServiceError('not_configured', 'Semrush was called without an API key.');
     }
-  }
-
-  async fetch(args: SemrushToolArgs): Promise<SemrushFetchedData> {
-    this.assertConfigured();
+    const { args } = input;
     switch (args.operation) {
       case 'domain_overview':
-        return this.domainOverview(args.domain, args.database ?? 'in');
+        return this.domainOverview(apiKey, args.domain, args.database ?? 'in');
       case 'backlinks_comparison':
-        return this.backlinksComparison(args.targets);
+        return this.backlinksComparison(apiKey, args.targets);
       case 'keyword_position_trend':
-        return this.keywordPositionTrend(args);
+        return this.keywordPositionTrend(apiKey, args);
       default:
         throw new SemrushServiceError('capability_unavailable', `${(args as { operation: string }).operation} is not available through Semrush web.`);
     }
   }
 
   /**
-   * The key alone. Every wired route authenticates on `key`/`apiKey` and
-   * answers identically with a valid cookie, no cookie, or a fabricated one —
-   * so requiring a cookie only invented a refusal for a request Semrush would
-   * have served. A cookie is still sent when configured, because the excluded
-   * `/analytics/backlinks/webapi2` route does read it.
+   * Every wired route authenticates on `key`/`apiKey` and answers identically
+   * with a valid cookie, no cookie, or a fabricated one. A cookie is still sent
+   * when configured, because the excluded `/analytics/backlinks/webapi2` route
+   * does read it.
    */
-  private configured(): boolean {
-    return Boolean(this.deps.apiKey?.trim());
-  }
-
   private sessionHeaders(): Record<string, string> {
     const cookie = this.deps.cookie?.trim();
     return cookie ? { Cookie: cookie } : {};
   }
 
   private buildDpaRpcPayload(
+    apiKey: string,
     method: string,
     report: string,
     args: Record<string, unknown>,
@@ -103,13 +100,13 @@ export class SemrushWebClient {
         request_id: nextSemrushDpaRequestId(),
         report,
         args,
-        apiKey: this.deps.apiKey!.trim(),
+        apiKey,
       },
     };
   }
 
-  private async domainOverview(domain: string, database: string): Promise<SemrushFetchedData> {
-    const payload = this.buildDpaRpcPayload('ranks.Ranks', 'organic.overview', {
+  private async domainOverview(apiKey: string, domain: string, database: string): Promise<SemrushFetchedData> {
+    const payload = this.buildDpaRpcPayload(apiKey, 'ranks.Ranks', 'organic.overview', {
       database,
       searchItem: domain,
       searchType: 'domain',
@@ -140,9 +137,9 @@ export class SemrushWebClient {
     };
   }
 
-  private async keywordPositionTrend(args: Extract<SemrushToolArgs, { operation: 'keyword_position_trend' }>): Promise<SemrushFetchedData> {
+  private async keywordPositionTrend(apiKey: string, args: Extract<SemrushToolArgs, { operation: 'keyword_position_trend' }>): Promise<SemrushFetchedData> {
     const database = args.database ?? 'in';
-    const payload = this.buildDpaRpcPayload('organic.KeywordPositionTrend', 'organic.positions', {
+    const payload = this.buildDpaRpcPayload(apiKey, 'organic.KeywordPositionTrend', 'organic.positions', {
       database,
       searchItem: args.domain,
       searchType: 'domain',
@@ -170,9 +167,9 @@ export class SemrushWebClient {
     };
   }
 
-  private async backlinksComparison(targets: readonly string[]): Promise<SemrushFetchedData> {
+  private async backlinksComparison(apiKey: string, targets: readonly string[]): Promise<SemrushFetchedData> {
     const form = new URLSearchParams();
-    form.set('key', this.deps.apiKey!.trim());
+    form.set('key', apiKey);
     form.set('type', 'backlinks_comparison');
     form.set(
       'export_columns',
