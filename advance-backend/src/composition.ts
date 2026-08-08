@@ -106,6 +106,8 @@ import { ZohoBooksPaginatedClient } from './infrastructure/zoho/zoho-books-pagin
 import { ConversationAttachmentService } from './application/conversation-attachments/conversation-attachment.service';
 import { PrismaConversationAttachmentStore } from './infrastructure/persistence/conversation-attachment.repository';
 import { LarkConversationAttachmentSource } from './infrastructure/zoho/lark-conversation-attachment.source';
+import { PrismaStagedInvoiceStore } from './infrastructure/persistence/zoho-invoice-staging.repository';
+import { createInvoiceReviewer } from './application/zoho/zoho-invoice-reviewer';
 import { LarkFileClient } from './infrastructure/channels/lark/clients/lark-file.client';
 import { ZohoCrmPaginatedClient } from './infrastructure/zoho/zoho-crm-paginated.client';
 import { CloudinaryAdapter } from './infrastructure/cloudinary/cloudinary.adapter';
@@ -1800,6 +1802,21 @@ export async function buildContainer(
     new PrismaConversationAttachmentStore(prisma),
     logger,
   );
+  const invoiceDocumentParser = new DefaultKnowledgeDocumentParser({
+    ocr: env.OPENROUTER_API_KEY
+      ? new OpenRouterKnowledgeOcr({
+          apiKey: env.OPENROUTER_API_KEY,
+          model: env.VISION_OCR_MODEL,
+          providerOrder: env.OPENROUTER_PROVIDER_ORDER,
+        })
+      : null,
+    maxPages: env.KNOWLEDGE_DOCUMENT_MAX_PAGES,
+    maxOcrPages: env.KNOWLEDGE_DOCUMENT_MAX_OCR_PAGES,
+    maxArchiveEntries: env.KNOWLEDGE_DOCUMENT_MAX_ARCHIVE_ENTRIES,
+    maxArchiveUncompressedBytes: env.KNOWLEDGE_DOCUMENT_MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+    maxArchiveCompressionRatio: env.KNOWLEDGE_DOCUMENT_MAX_ARCHIVE_COMPRESSION_RATIO,
+  });
+
   const conversationAttachmentSource = new LarkConversationAttachmentSource(
     conversationAttachments,
     new LarkFileClient(env, logger),
@@ -2249,6 +2266,16 @@ export async function buildContainer(
   }));
   toolRegistry.register(createZohoBooksTool({
     booksClient:     zohoPaginatedBooksClient,
+    invoiceStaging:  new PrismaStagedInvoiceStore(prisma),
+    invoiceReviewer: createInvoiceReviewer({
+      model: deepSeekModel(env.ZOHO_INVOICE_REVIEW_MODEL_ID),
+      logger: logger.child({ service: 'zoho-invoice-reviewer' }),
+    }),
+    conversationHistory: conversationRepo,
+    documentParser:  invoiceDocumentParser,
+    ...(env.ZOHO_BOOKS_HOME_GST_STATE_CODE
+      ? { homeGstStateCode: env.ZOHO_BOOKS_HOME_GST_STATE_CODE }
+      : {}),
     financeOps:      zohoFinanceOps,
     exportCandidates: dataExportOrchestrationService,
     inlineThreshold: env.ZOHO_BOOKS_CSV_INLINE_THRESHOLD,

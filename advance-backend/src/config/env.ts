@@ -251,6 +251,11 @@ export const EnvSchema = z.object({
   // Web base for Zoho Books record links. Set this to the org's custom finance
   // domain when it has one; the default is the generic Zoho Books app.
   ZOHO_BOOKS_APP_BASE_URL:   z.string().default('https://books.zoho.com'),
+  // Reads a draft invoice cold before the member is shown it.
+  ZOHO_INVOICE_REVIEW_MODEL_ID: z.string().default('deepseek-chat'),
+  // The selling organisation's GST state code, e.g. '08' for Rajasthan. Absent
+  // means the IGST-versus-CGST direction is reported as unchecked, never guessed.
+  ZOHO_BOOKS_HOME_GST_STATE_CODE: z.string().optional(),
   ZOHO_TOKEN_ENCRYPTION_KEY: z.string().optional(),
   ZOHO_PROVIDER_DEFAULT:     z.enum(['rest', 'mcp']).default('rest'),
   ZOHO_MCP_ENABLED:          booleanStr.default('false'),

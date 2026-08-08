@@ -2636,6 +2636,39 @@ model ConversationAttachment {
   @@index([expiresAt])
 }
 
+/// An invoice payload held before it is sent to Zoho.
+///
+/// Stored rather than passed back through the model on purpose: creation
+/// replays this row, so what the member was shown and what Zoho receives cannot
+/// drift apart. A model that rendered one invoice and created another would be
+/// the exact failure the review is meant to prevent, and no instruction rules
+/// it out.
+model ZohoInvoiceStaging {
+  id             String    @id @default(uuid())
+  companyId      String
+  userId         String
+  connectionId   String
+  organizationId String?
+  /// The exact body that will be POSTed to Zoho.
+  payloadJson    Json
+  /// What the member reads before saying yes.
+  summary        String
+  /// Deterministic findings plus the reviewer's verdict, issues and unsourced values.
+  reviewJson     Json
+  /// Filename to attach once the invoice exists.
+  attachFileName String?
+  /// Which correction round this is; a re-stage after a fix supersedes its predecessor.
+  attempt        Int       @default(1)
+  supersedesId   String?
+  /// Set once this payload has been created, so one staging cannot make two invoices.
+  createdInvoiceId String?
+  createdAt      DateTime  @default(now())
+  expiresAt      DateTime
+
+  @@index([companyId, userId, expiresAt])
+  @@index([expiresAt])
+}
+
 model RuntimeRun {
   id             String                       @id @default(uuid())
   conversationId String

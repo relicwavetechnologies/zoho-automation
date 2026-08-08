@@ -38,6 +38,7 @@
  *   - Governed artifacts are delivered only by dataExport and obey its central row ceiling
  */
 
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Tool, ToolExecutionContext } from '../tool.contract';
 import type { Result }                     from '../../../shared/result';
@@ -57,6 +58,19 @@ import {
   unwrapZohoRecord,
   type ZohoWriteModule,
 } from '../../zoho/zoho-books-write-result';
+import {
+  checkInvoice,
+  hasBlockingFinding,
+} from '../../zoho/zoho-invoice-checks';
+import {
+  compareStagedToStored,
+  describePayloadChange,
+  MAX_INVOICE_FIX_ATTEMPTS,
+  renderStagedInvoice,
+  STAGED_INVOICE_TTL_MS,
+  type StagedInvoiceStore,
+} from '../../zoho/zoho-invoice-staging';
+import type { InvoiceReviewer } from '../../zoho/zoho-invoice-reviewer';
 import { validateAttachmentPolicy }        from '../../email/attachment-policy';
 import { mapZohoError }                    from '../../zoho/zoho-error.utils';
 import { formatAmount, formatDate }        from '../../zoho/zoho-format.utils';
@@ -90,6 +104,7 @@ const Schema = z.object({
     // CRUD
     'list_invoices',
     'get_invoice',
+    'stage_invoice',
     'create_invoice',
     'list_contacts',
     'get_contact',
@@ -124,6 +139,10 @@ const Schema = z.object({
   recordType:     z.enum(['invoice', 'bill']).optional(),
   recordId:       z.string().optional(),
   fileName:       z.string().optional(),
+  /** Draft produced by stage_invoice. create_invoice replays it rather than re-reading fields. */
+  stagingId:      z.string().uuid().optional(),
+  /** The draft this staging corrects, when the reviewer sent one back. */
+  supersedesStagingId: z.string().uuid().optional(),
   searchQuery:    z.string().optional(),
   email:          z.string().email().optional(),
   fields:         z.record(z.unknown()).optional(),
@@ -155,6 +174,32 @@ const ResultSchema = z.object({
   message:      z.string().optional(),
   /** Zoho web link for a record a write just created or changed. */
   recordUrl:    z.string().optional(),
+  /** Draft identity to hand back to create_invoice once the member agrees. */
+  stagingId:    z.string().optional(),
+  /** Exactly what to show the member before creating anything. */
+  stagedSummary: z.string().optional(),
+  review: z.object({
+    outcome: z.enum(['pass', 'fail', 'unavailable']),
+    reason: z.string(),
+    issues: z.array(z.object({
+      field: z.string(),
+      problem: z.string(),
+      suggestedFix: z.string().optional(),
+    })),
+    unsourced: z.array(z.object({
+      field: z.string(),
+      value: z.string(),
+      note: z.string(),
+    })),
+    attempt: z.number().int(),
+    attemptsRemaining: z.number().int(),
+  }).optional(),
+  /** Fields Zoho stored differently from what was approved. */
+  drift: z.array(z.object({
+    field: z.string(),
+    staged: z.string(),
+    stored: z.string(),
+  })).optional(),
   // Report fields (present only for build_overdue_report)
   report:       z.unknown().optional(),
   truncated:    z.boolean().optional(),
@@ -243,6 +288,9 @@ const createOps = new Set<Args['op']>([
   'create_bill',
   'create_contact',
   'attach_document',
+  // Staging writes nothing to Zoho, but it reads what a create would and it is
+  // the only route to one, so it carries the same permission.
+  'stage_invoice',
 ]);
 
 /**
@@ -620,6 +668,22 @@ export const createZohoBooksTool = (deps: {
   attachmentSource?: ZohoAttachmentSourcePort;
   /** Web base for record links, e.g. https://books.zoho.com or a custom finance domain. */
   appBaseUrl?: string;
+  /** Holds invoice drafts between staging and creation. Absent disables staging. */
+  invoiceStaging?: StagedInvoiceStore;
+  /** Reads a draft cold before the member is shown it. */
+  invoiceReviewer?: InvoiceReviewer;
+  /** The member's own words, for the reviewer. Never the model's account of them. */
+  conversationHistory?: {
+    getHistory(chatId: string, limit?: number, scope?: { companyId: string; channel: string }):
+      Promise<{ ok: true; value: Array<{ role: string; content: string }> } | { ok: false; error: unknown }>;
+  };
+  /** Reads the file the member sent, so the reviewer checks the document not a retelling of it. */
+  documentParser?: {
+    parse(input: { buffer: Buffer; fileName: string; mimeType: string; signal: AbortSignal }):
+      Promise<{ units: readonly { text: string }[] }>;
+  };
+  /** The selling organisation's GST state code, for the IGST-versus-CGST rule. */
+  homeGstStateCode?: string;
 }): Tool<Args, Res> => ({
   id:           asToolId('zohoBooks'),
   family:       'zoho',
@@ -646,8 +710,11 @@ export const createZohoBooksTool = (deps: {
     'get_invoice accepts a Zoho numeric invoice ID or an exact human invoice number. list_invoices forwards searchQuery to Zoho and returns newest invoice dates first.',
     'limit is the requested maximum. Once that many rows are returned, do not fetch more pages or switch to script mode unless the user explicitly asks for an export or an aggregate within script mode’s documented 4,000-record ceiling.',
     'write params: invoiceId, email, fields',
-    'create_invoice/update_invoice/create_bill/create_contact/create_expense/record_payment take fields; the tool returns the stored record, its status, and its link. Never restate a status the tool did not return.',
-    'create_invoice: supply invoice_number only when the member gave one — the tool then overrides Zoho auto-numbering. Omit it to let Zoho number the invoice.',
+    'update_invoice/create_bill/create_contact/create_expense/record_payment take fields; the tool returns the stored record, its status, and its link. Never restate a status the tool did not return.',
+    'INVOICES ARE STAGED. stage_invoice takes fields (and fileName when a document is the source) and writes nothing to Zoho: it checks the draft, has a reviewer read it cold, and returns stagedSummary plus stagingId. Show the member that summary verbatim, including everything under review.unsourced, and create only once they agree.',
+    'create_invoice takes ONLY stagingId. It replays the approved payload, so what the member saw is what Zoho receives. It refuses a draft that failed review, one already created, and one with no stagingId.',
+    'When review.outcome is fail, fix the exact fields named in review.issues and call stage_invoice again with supersedesStagingId. review.attemptsRemaining says how many corrections are left; at zero, put the objection to the member instead of re-staging.',
+    'stage_invoice: supply invoice_number only when the member gave one — the tool then overrides Zoho auto-numbering. Omit it to let Zoho number the invoice.',
     'mark_invoice_sent issues a draft without emailing anyone. send_invoice emails it. They are different acts; do not substitute one for the other.',
     'create_contact only after list_contacts with searchQuery returns no match, and say in the reply that a new contact was created.',
     'attach_document params: recordType (invoice|bill), recordId, fileName — the exact name of a file the member sent in this Lark conversation. Never invent a filename, and never claim an attachment the tool did not confirm.',
@@ -1005,6 +1072,85 @@ export const createZohoBooksTool = (deps: {
       });
     };
 
+    /**
+     * Assemble everything the reviewer is allowed to see, gathering it from the
+     * providers rather than from the caller. A model that searched badly hands
+     * over a tidy list, and a reviewer reading that list is reassured by exactly
+     * the mistake it exists to catch.
+     */
+    const gatherReviewSources = async (payload: Record<string, unknown>) => {
+      const customerId = typeof payload['customer_id'] === 'string' ? payload['customer_id'] : '';
+      const customerName = typeof payload['customer_name'] === 'string' ? payload['customer_name'] : '';
+
+      const [chosenCustomer, otherMatches, taxes, items] = await Promise.all([
+        customerId
+          ? getOne('contacts', customerId).catch(() => undefined)
+          : Promise.resolve(undefined),
+        // Divo's own search, not the one the builder reports having done.
+        customerName
+          ? deps.booksClient.listRecords({
+              companyId, ...connectionContext, moduleName: 'contacts',
+              ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+              filters: {}, query: customerName, perPage: 10,
+            }).then(result => result.items).catch(() => [])
+          : Promise.resolve([]),
+        deps.booksClient.getEndpoint({
+          companyId, ...connectionContext, path: '/settings/taxes',
+          ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+        }).then(data => Array.isArray(data['taxes']) ? data['taxes'] as Record<string, unknown>[] : [])
+          .catch(() => []),
+        deps.booksClient.listRecords({
+          companyId, ...connectionContext, moduleName: 'items',
+          ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+          filters: {}, perPage: 50,
+        }).then(result => result.items).catch(() => []),
+      ]);
+
+      return {
+        ...(chosenCustomer ? { chosenCustomer } : {}),
+        otherCustomerMatches: otherMatches.filter(record =>
+          String(record['contact_id'] ?? '') !== customerId),
+        availableTaxes: taxes,
+        catalogueItems: items,
+      };
+    };
+
+    /** The member's own words, and the questions Divo put to them. Never Divo's summaries. */
+    const gatherTurns = async () => {
+      const threadId = ctx.runContext.runtimeThreadId ?? ctx.runContext.chatId;
+      if (!deps.conversationHistory || !threadId) return [];
+      const history = await deps.conversationHistory.getHistory(threadId, 30, {
+        companyId, channel: ctx.runContext.channel,
+      }).catch(() => null);
+      if (!history?.ok) return [];
+      return history.value
+        .filter(turn => turn.role === 'user' || (turn.role === 'assistant' && turn.content.includes('?')))
+        .map(turn => ({
+          role: turn.role === 'user' ? 'member' as const : 'divo' as const,
+          content: turn.content,
+        }));
+    };
+
+    /** The document the member sent, read here rather than taken on trust. */
+    const gatherDocument = async (fileName: string | undefined) => {
+      if (!fileName || !deps.documentParser || !deps.attachmentSource) return undefined;
+      if (ctx.runContext.channel !== 'lark' || !ctx.runContext.chatId) return undefined;
+      const resolved = await deps.attachmentSource.resolve({
+        companyId, userId, channel: ctx.runContext.channel,
+        chatId: ctx.runContext.chatId, fileName,
+      }).catch(() => null);
+      if (!resolved || resolved.kind !== 'resolved') return undefined;
+      const parsed = await deps.documentParser.parse({
+        buffer: resolved.content,
+        fileName: resolved.fileName,
+        mimeType: resolved.mimeType,
+        signal: ctx.abortSignal ?? AbortSignal.timeout(30_000),
+      }).catch(() => null);
+      if (!parsed) return undefined;
+      const text = parsed.units.map(unit => unit.text).join('\n\n').trim();
+      return text ? { fileName: resolved.fileName, text } : undefined;
+    };
+
     /** Write, then report what Zoho actually stored rather than that it accepted the call. */
     const writtenRecord = async (
       moduleName: ZohoWriteModule,
@@ -1201,19 +1347,164 @@ export const createZohoBooksTool = (deps: {
           return ok({ success: true, data: formatZohoResult(invoice) });
         }
 
-        case 'create_invoice': {
-          if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for create_invoice' }));
-          const fields = args.fields as Record<string, unknown>;
-          return ok(await writtenRecord('invoices', 'created', {
-            method: 'POST',
-            path: '/invoices',
-            // Zoho rejects a supplied invoice_number outright while auto-numbering
-            // is on, unless this says the member meant to override it.
-            ...(typeof fields['invoice_number'] === 'string' && fields['invoice_number'].trim()
-              ? { params: { ignore_auto_number_generation: 'true' } }
+        case 'stage_invoice': {
+          if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for stage_invoice' }));
+          if (!deps.invoiceStaging || !deps.invoiceReviewer) {
+            return err(new ToolError({
+              toolId: 'zohoBooks', reason: 'bad_args',
+              message: 'Invoice staging is not configured on this deployment, so an invoice cannot be prepared for review.',
+            }));
+          }
+          const payload = args.fields as Record<string, unknown>;
+
+          const previous = args.supersedesStagingId
+            ? await deps.invoiceStaging.get({ stagingId: args.supersedesStagingId, companyId, userId })
+            : null;
+          const attempt = (previous?.attempt ?? 0) + 1;
+
+          ctx.onProgress?.('Checking the draft invoice…');
+          const findings = checkInvoice({
+            invoice: payload,
+            ...(deps.homeGstStateCode ? { homeGstStateCode: deps.homeGstStateCode } : {}),
+            ...(args.fileName ? { documentExpected: false } : {}),
+          });
+
+          const [sources, turns, sourceDocument] = await Promise.all([
+            gatherReviewSources(payload),
+            gatherTurns(),
+            gatherDocument(args.fileName),
+          ]);
+
+          const customerName = typeof sources.chosenCustomer?.['contact_name'] === 'string'
+            ? sources.chosenCustomer['contact_name'] as string
+            : undefined;
+          const summary = renderStagedInvoice({
+            payload,
+            ...(customerName ? { customerName } : {}),
+            findings,
+            ...(args.fileName ? { attachFileName: args.fileName } : {}),
+          });
+
+          ctx.onProgress?.('Reviewing the draft…');
+          const review = await deps.invoiceReviewer.review({
+            turns,
+            stagedSummary: summary,
+            ...sources,
+            ...(sourceDocument ? { sourceDocument } : {}),
+            findings,
+            ...(previous
+              ? { changedSincePrevious: describePayloadChange(previous.payload, payload) }
               : {}),
-            body: fields,
-          }));
+          });
+
+          const stagingId = randomUUID();
+          await deps.invoiceStaging.put({
+            stagingId, companyId, userId,
+            connectionId: args.connectionId,
+            ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+            payload, summary,
+            ...(args.fileName ? { attachFileName: args.fileName } : {}),
+            findings, review, attempt,
+            ...(args.supersedesStagingId ? { supersedesId: args.supersedesStagingId } : {}),
+            expiresAt: new Date(ctx.clock.now().getTime() + STAGED_INVOICE_TTL_MS),
+          });
+
+          const attemptsRemaining = Math.max(0, MAX_INVOICE_FIX_ATTEMPTS - (attempt - 1));
+          const blocked = hasBlockingFinding(findings) || review.outcome === 'fail';
+          return ok({
+            success: !blocked,
+            stagingId,
+            stagedSummary: summary,
+            review: {
+              outcome: review.outcome,
+              reason: review.reason,
+              issues: [...review.issues],
+              unsourced: [...review.unsourced],
+              attempt,
+              attemptsRemaining,
+            },
+            message: blocked
+              ? `This draft is not ready. ${review.reason} Nothing has been created. Correct it and call stage_invoice again with supersedesStagingId, or ask the member about what could not be resolved.`
+              : `Draft ready — nothing has been created yet. Show the member this summary exactly as written, including anything listed as unconfirmed, and create it only once they agree. Then call create_invoice with stagingId "${stagingId}".`,
+          });
+        }
+
+        case 'create_invoice': {
+          if (!args.stagingId) {
+            return err(new ToolError({
+              toolId: 'zohoBooks', reason: 'bad_args',
+              message: 'create_invoice needs a stagingId. Call stage_invoice first, show the member the summary it returns, and create only what they agreed to.',
+            }));
+          }
+          if (!deps.invoiceStaging) {
+            return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'Invoice staging is not configured on this deployment.' }));
+          }
+          const staged = await deps.invoiceStaging.get({ stagingId: args.stagingId, companyId, userId });
+          if (!staged) {
+            return err(new ToolError({
+              toolId: 'zohoBooks', reason: 'bad_args',
+              message: 'That draft is unknown or has expired. Stage the invoice again and show the member the fresh summary.',
+            }));
+          }
+          if (staged.expiresAt.getTime() <= ctx.clock.now().getTime()) {
+            return err(new ToolError({
+              toolId: 'zohoBooks', reason: 'bad_args',
+              message: 'That draft has expired. Stage it again so the member confirms current figures.',
+            }));
+          }
+          if (hasBlockingFinding(staged.findings) || staged.review.outcome === 'fail') {
+            return err(new ToolError({
+              toolId: 'zohoBooks', reason: 'bad_args',
+              message: `This draft did not pass review, so it will not be created: ${staged.review.reason} Correct it with stage_invoice and supersedesStagingId.`,
+            }));
+          }
+
+          // Claimed before the call, not after: Zoho has no idempotency key, so a
+          // create that succeeds and then times out would otherwise be retried
+          // into a second real invoice.
+          const marker = `pending:${ctx.correlationId}`;
+          const claim = await deps.invoiceStaging.claim({ stagingId: staged.stagingId, companyId, marker });
+          if (!claim.claimed) {
+            return err(new ToolError({
+              toolId: 'zohoBooks', reason: 'bad_args',
+              message: claim.heldBy?.startsWith('pending:')
+                ? 'This draft is already being sent to Zoho. Do not send it again — check Zoho for the invoice before retrying.'
+                : `This draft was already created as invoice ${claim.heldBy}. It will not be created twice.`,
+            }));
+          }
+
+          let created: Res;
+          try {
+            const invoiceNumber = staged.payload['invoice_number'];
+            created = await writtenRecord('invoices', 'created', {
+              method: 'POST',
+              path: '/invoices',
+              // Zoho rejects a supplied invoice_number outright while auto-numbering
+              // is on, unless this says the member meant to override it.
+              ...(typeof invoiceNumber === 'string' && invoiceNumber.trim()
+                ? { params: { ignore_auto_number_generation: 'true' } }
+                : {}),
+              body: staged.payload,
+            });
+          } catch (error) {
+            await deps.invoiceStaging.release({ stagingId: staged.stagingId, companyId, marker });
+            throw error;
+          }
+
+          const invoiceId = created.id ?? '';
+          await deps.invoiceStaging.settle({ stagingId: staged.stagingId, companyId, invoiceId });
+
+          // Staging cannot see what Zoho does on the way in. This can.
+          const stored = isRecord(created.data) ? created.data : {};
+          const drift = compareStagedToStored(staged.payload, stored);
+          return ok({
+            ...created,
+            ...(drift.length > 0 ? { drift } : {}),
+            message: drift.length > 0
+              ? `${created.message} Zoho stored some values differently from the draft the member approved: `
+                + `${drift.map(d => `${d.field} was ${d.staged}, Zoho has ${d.stored}`).join('; ')}. Tell them before doing anything else with it.`
+              : created.message ?? 'Invoice created.',
+          });
         }
 
         case 'update_invoice': {
