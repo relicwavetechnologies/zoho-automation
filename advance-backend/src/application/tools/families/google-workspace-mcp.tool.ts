@@ -449,7 +449,7 @@ function createProductTool(
           toolId: product.toolId,
           reason: 'upstream_failure',
           cause,
-          message: cause instanceof Error ? cause.message : String(cause),
+          message: withRecoveryHint(cause instanceof Error ? cause.message : String(cause)),
         }));
       }
     },
@@ -514,6 +514,24 @@ function sheetReferenceResolutionMessage(
   if (resolution.status === 'trashed') return 'This Google file is in the trash.';
   if (resolution.status === 'wrong_type') return 'This is not a supported Google Sheet or Excel workbook.';
   return 'This Google file is not accessible through the connected personal account.';
+}
+
+/**
+ * Google says an Office file cannot be used as a Sheet, and says it clearly.
+ * The model still read that as a permissions problem twice and told the member
+ * to reconnect Google — which changes nothing, because the grant was never the
+ * issue. Saying so in the failure itself is what the Semrush country caveat
+ * showed actually reaches the model: guidance in a skill is advisory, guidance
+ * attached to the error arrives with the thing that went wrong.
+ */
+const OFFICE_FILE_RECOVERY = ' This file is an Excel or CSV upload, not a native Google Sheet,'
+  + ' and the Sheets API cannot read or write one whatever the connection is allowed to do.'
+  + ' It is not a permission problem: do not report missing scopes and do not ask the member'
+  + ' to reconnect Google. Call `resolve_reference` on the same URL to offer an editable'
+  + ' Google Sheet copy, and tell the member the file is an Excel export.';
+
+export function withRecoveryHint(message: string): string {
+  return /must not be an Office file/i.test(message) ? `${message}${OFFICE_FILE_RECOVERY}` : message;
 }
 
 function badArgs(toolId: string, message: string): Result<never, ToolError> {
