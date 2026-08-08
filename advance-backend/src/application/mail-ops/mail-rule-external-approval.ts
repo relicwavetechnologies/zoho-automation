@@ -38,7 +38,16 @@
 import type { ApprovalGateService } from '../approval/approval-gate.service';
 import type { PermissionService } from '../permissions/permission.service';
 import type { Logger } from '../../shared/logger';
-import type { MailRuleJudge, MailRuleMatch } from './mail-ops.types';
+import {
+  mailDestinationLeaves,
+  type MailRuleDestination,
+  type MailRuleJudge,
+  type MailRuleMatch,
+} from './mail-ops.types';
+import {
+  mailRuleLeavesOrganisation,
+  namedAddresses,
+} from './external-destination';
 import {
   asCompanyId,
   asDepartmentId,
@@ -67,7 +76,17 @@ export interface MailRuleExternalApprovalInput {
     readonly connectionId: string;
     readonly name: string;
     readonly match: MailRuleMatch;
-    readonly email: string;
+    /**
+     * Exactly the destination the member built, whether that is one address or
+     * a routing table.
+     *
+     * It used to be a single `email`, and the replayed request was rebuilt from
+     * it as `{type:'email'}`. On a routed rule that would have replaced the
+     * whole table with whichever branch happened to be picked out — so the
+     * manager would have approved one thing and the member been given another,
+     * on the one operation where the two differing matters most.
+     */
+    readonly destination: MailRuleDestination;
     readonly rateLimitPerHour?: number | undefined;
     /**
      * Present when an existing rule is being edited into this shape.
@@ -106,6 +125,25 @@ export type MailRuleExternalApprovalOutcome =
   | { readonly kind: 'declined'; readonly approverName: string; readonly message: string }
   | { readonly kind: 'unavailable'; readonly message: string };
 
+/**
+ * Which of this rule's recipients are outside the company.
+ *
+ * Recomputed here rather than threaded in, so the sentence on the card is
+ * derived from the very destination being approved. A summary built from a list
+ * assembled somewhere else can fall out of step with the rule it describes, and
+ * this is the one sentence where that would matter.
+ */
+function externalRecipients(input: MailRuleExternalApprovalInput): string[] {
+  return [...new Set(
+    mailDestinationLeaves(input.rule.destination)
+      .flatMap(leaf => leaf.type === 'email' ? [leaf.email] : [])
+      .filter(email => mailRuleLeavesOrganisation({
+        destinationEmail: email,
+        requesterEmail: input.requesterEmail,
+      })),
+  )];
+}
+
 export function createMailRuleExternalApproval(deps: MailRuleExternalApprovalDeps) {
   const log = deps.logger.child({ service: 'mail-rule-external-approval' });
 
@@ -142,7 +180,7 @@ export function createMailRuleExternalApproval(deps: MailRuleExternalApprovalDep
       connectionId: input.rule.connectionId,
       name: input.rule.name,
       match: input.rule.match,
-      destination: { type: 'email' as const, email: input.rule.email },
+      destination: input.rule.destination,
       ...(input.rule.rateLimitPerHour !== undefined
         ? { rateLimitPerHour: input.rule.rateLimitPerHour }
         : {}),
@@ -177,11 +215,21 @@ export function createMailRuleExternalApproval(deps: MailRuleExternalApprovalDep
       resumeOnApproval: true,
       // What the approver reads. Says what will leave and from where, because
       // "approve a mail rule" is not a question anybody can answer.
-      argsSummary: editing
-        ? `Change the rule “${input.rule.name}” so mail from ${input.mailboxEmail} is forwarded `
-          + `to ${input.rule.email}, which is outside the company.`
-        : `Forward mail from ${input.mailboxEmail} to ${input.rule.email}, `
-          + `which is outside the company (rule: ${input.rule.name}).`,
+      /*
+       * What the approver reads. Says what will leave and to whom — every
+       * recipient, because a routing table can establish several external
+       * forwards at once and a card naming one of them is a card that asks
+       * about less than it grants.
+       */
+      argsSummary: (() => {
+        const leaving = namedAddresses(externalRecipients(input));
+        const where = leaving || 'an address outside the company';
+        return editing
+          ? `Change the rule “${input.rule.name}” so mail from ${input.mailboxEmail} is forwarded `
+            + `to ${where}, which is outside the company.`
+          : `Forward mail from ${input.mailboxEmail} to ${where}, `
+            + `which is outside the company (rule: ${input.rule.name}).`;
+      })(),
       runContext: {
         companyId: asCompanyId(input.companyId),
         userId: asUserId(input.userId),

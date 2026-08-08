@@ -260,8 +260,15 @@ export const EnvSchema = z.object({
   ZOHO_BOOKS_APP_BASE_URL:   z.string().default('https://books.zoho.com'),
   // Reads a draft invoice cold before the member is shown it.
   ZOHO_INVOICE_REVIEW_MODEL_ID: z.string().default('deepseek-chat'),
-  // The selling organisation's GST state code, e.g. '08' for Rajasthan. Absent
-  // means the IGST-versus-CGST direction is reported as unchecked, never guessed.
+  // Fallback selling state, in Zoho's own spelling — 'RJ', not '08' — because it
+  // is compared against an invoice's `place_of_supply`, which Zoho writes that
+  // way. A code in the other alphabet matches nothing and would call every
+  // intra-state sale inter-state.
+  //
+  // Normally unset: the state is taken from the Zoho organisation being written
+  // to, which is the only value that can be right when one connection reaches
+  // organisations in several states. Absent and unresolvable means the
+  // IGST-versus-CGST direction is reported as unchecked, never guessed.
   ZOHO_BOOKS_HOME_GST_STATE_CODE: z.string().optional(),
   ZOHO_TOKEN_ENCRYPTION_KEY: z.string().optional(),
   ZOHO_PROVIDER_DEFAULT:     z.enum(['rest', 'mcp']).default('rest'),
@@ -380,6 +387,20 @@ export const EnvSchema = z.object({
   // concurrency provokes a Gmail quota that one-at-a-time did not.
   DIVO_MAIL_OPS_MAILBOX_LANES:  z.coerce.number().int().min(1).max(16).default(4),
   DIVO_MAIL_OPS_DELIVERY_LANES: z.coerce.number().int().min(1).max(16).default(4),
+  /*
+   * Hold company admins to the same external-forward approval as everybody else.
+   *
+   * Off by default: a rule forwarding mail out of the company is approved by
+   * somebody above the person asking, and for an admin there is nobody the
+   * question is meaningfully addressed to — Divo used to card their department
+   * manager, or another admin, or refuse the rule outright when it found
+   * neither. Turn this on to restore that.
+   *
+   * Named for what it asks rather than for the flag it sets, because
+   * "disable the exemption" is how an operator ends up setting the opposite of
+   * what they meant.
+   */
+  DIVO_MAIL_OPS_ADMIN_NEEDS_EXTERNAL_APPROVAL: booleanStr.default('false'),
 
   // ── Hindsight semantic recall projection ────────────────────────────────
   // Versioned Postgres knowledge remains authoritative. Hindsight is private

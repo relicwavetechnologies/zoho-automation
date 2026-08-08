@@ -93,6 +93,16 @@ export type MailDelivery = {
   deliveryId: string
   status: string
   attempts: number
+  /** What the rule's AI step decided about this message, if it has one. */
+  verdict?: MailJudgeVerdict | null
+  /**
+   * Where the message actually went, on a rule that chooses per message.
+   *
+   * Null on every rule with one destination. Screens must prefer this over the
+   * rule's own destination, which on a routed rule is a table and would name
+   * the wrong person.
+   */
+  resolvedDestination?: Record<string, unknown> | null
   /**
    * The send was made but could not be confirmed. Gmail does not reliably keep
    * a client-supplied Message-ID, so a retry here risks a duplicate — the
@@ -196,12 +206,21 @@ export function useMailDeliveries(ruleId?: string) {
  * sentence the model actually wrote, not a label.
  */
 export type MailJudgeVerdict = {
-  decision: 'passed' | 'rejected' | 'unavailable'
+  /**
+   * `routed` is the routing table's answer and is deliberately its own decision
+   * rather than a `passed` carrying a key. They are different claims: `passed`
+   * says *this rule should act*, `routed` says *this message is that kind of
+   * message*, and a screen showing them alike would say "Divo passed it" about
+   * a message whose whole outcome was which person got it.
+   */
+  decision: 'passed' | 'rejected' | 'unavailable' | 'routed'
   reason: string
   /** Absent when the model could not be reached at all. */
   confidence?: number
   /** Which way the rule's own failure setting sent it, when it came to that. */
   appliedFailure?: 'open' | 'closed'
+  /** Which branch it named, on a routed rule. `none` means "nothing fits". */
+  route?: string
 }
 
 export type MailCaught = MailDelivery & {
@@ -522,11 +541,32 @@ export function rateLimitClause(action: Record<string, unknown>): string | null 
   return `at most ${read.rateLimitPerHour} an hour — over that, mail is dropped rather than queued`
 }
 
+export type MailRouteBranch = {
+  key: string
+  when: string
+  destination: MailDestination
+}
+
 export type MailDestination =
   | { kind: 'email'; email: string; label: string }
   | { kind: 'lark'; chatId: string; label: string }
   | { kind: 'lark_dm'; label: string }
   | { kind: 'organize'; label: string }
+  /**
+   * Several recipients, one of which Divo picks per message.
+   *
+   * `label` is the one-line form every existing caller already prints; the
+   * branches are beside it for the screens that show the whole table. Callers
+   * that only know the four shapes above therefore keep working and say
+   * something true, rather than falling to `unknown` and telling a member their
+   * rule points "somewhere Divo can no longer read".
+   */
+  | {
+      kind: 'routed'
+      routes: MailRouteBranch[]
+      otherwise: MailDestination | null
+      label: string
+    }
   | { kind: 'unknown'; label: string }
 
 /**
@@ -550,6 +590,39 @@ export function readDestination(
   // Said as "you", not as an id. The open id is meaningless to read and the
   // only fact that matters about this destination is that nobody else sees it.
   if (type === 'lark_dm') return { kind: 'lark_dm', label: 'you, on Lark' }
+
+  if (type === 'routed') {
+    const raw = Array.isArray(destination['routes']) ? destination['routes'] : []
+    const routes: MailRouteBranch[] = raw.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') return []
+      const row = entry as Record<string, unknown>
+      const leaf = row['destination']
+      if (!leaf || typeof leaf !== 'object') return []
+      return [{
+        // A branch with no description is a branch nothing can be sorted into,
+        // so it reads as empty rather than being dropped — a table that renders
+        // five rows where six were saved is worse than one that shows a blank.
+        key: str(row, 'key') ?? '',
+        when: str(row, 'when') ?? '',
+        destination: readDestination(leaf as Record<string, unknown>),
+      }]
+    })
+    const rest = destination['otherwise']
+    const otherwise = rest && typeof rest === 'object'
+      ? readDestination(rest as Record<string, unknown>)
+      : null
+    return {
+      kind: 'routed',
+      routes,
+      otherwise,
+      // Counted rather than listed. This string is printed in table rows and
+      // summary lines built for one recipient, and six addresses in one of them
+      // would push everything else off the screen.
+      label: routes.length === 1
+        ? 'one of 1 person Divo picks'
+        : `one of ${routes.length} people Divo picks`,
+    }
+  }
 
   if (type === 'none' && action) {
     const read = readAction(action)
@@ -583,12 +656,27 @@ export function readDestination(
  * the mailbox domain is the only thing this screen can actually know.
  */
 export function leavesOrganisation(rule: MailRule): boolean {
-  const destination = readDestination(rule.destination)
-  if (destination.kind !== 'email') return false
   const domainOf = (address: string) => address.split('@')[1]?.toLowerCase() ?? ''
-  const to = domainOf(destination.email)
   const mailbox = domainOf(rule.mailboxEmail)
-  return to.length > 0 && mailbox.length > 0 && to !== mailbox
+  if (mailbox.length === 0) return false
+  // Every branch, not the first. A routed rule sends to several people, and one
+  // external branch among five makes the whole rule a standing export — which
+  // is the single thing this flag exists to surface.
+  return destinationEmails(readDestination(rule.destination))
+    .some((email) => {
+      const to = domainOf(email)
+      return to.length > 0 && to !== mailbox
+    })
+}
+
+/** Every address a destination reaches, flattening a routing table. */
+export function destinationEmails(destination: MailDestination): string[] {
+  if (destination.kind === 'email') return [destination.email]
+  if (destination.kind !== 'routed') return []
+  return [
+    ...destination.routes.flatMap((route) => destinationEmails(route.destination)),
+    ...(destination.otherwise ? destinationEmails(destination.otherwise) : []),
+  ]
 }
 
 /* ── Creating a rule ──────────────────────────────────
@@ -608,6 +696,18 @@ export type MailRuleDraft = {
        browser cannot name somebody else's DM. */
     | { type: 'lark_dm' }
     | { type: 'organize'; label?: string; archive?: boolean; markRead?: boolean }
+    /**
+     * Several recipients and what kind of message each one gets.
+     *
+     * `otherwise` absent means hold — nothing is sent and the member sees it in
+     * What Divo caught. There is deliberately no value that drops a message
+     * silently.
+     */
+    | {
+        type: 'routed'
+        routes: Array<{ key: string; when: string; destination: { type: 'email'; email: string } }>
+        otherwise?: 'hold' | { type: 'email'; email: string }
+      }
   rateLimitPerHour?: number
   /**
    * The rule's AI step. Absent means it has none — and on an edit that means
@@ -881,6 +981,12 @@ export type MailRuleCompiled = {
     | { type: 'email'; email: string }
     | { type: 'lark_dm' }
     | { type: 'organize'; label?: string; archive?: boolean; markRead?: boolean }
+    /** Different people for different kinds of the same mail. */
+    | {
+        type: 'routed'
+        routes: Array<{ key: string; when: string; destination: { type: 'email'; email: string } }>
+        otherwise?: 'hold' | { type: 'email'; email: string }
+      }
   rateLimitPerHour?: number
   /**
    * The part of the sentence no filter could express, kept as a question the

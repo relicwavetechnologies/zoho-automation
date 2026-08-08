@@ -605,7 +605,13 @@ describe('zohoBooks expanded execution', () => {
     const tool = makeTool({ booksClient: makeBooksClient(captures) });
 
     const sent = await tool.execute({ op: 'send_invoice', invoiceId: 'inv-1', email: 'finance@example.com' }, ctx);
-    const payment = await tool.execute({ op: 'record_payment', fields: { invoice_id: 'inv-1', amount: 100 } }, ctx);
+    // `invoices`, not a bare `invoice_id`: Zoho only settles an invoice when the
+    // payment names the application. The earlier shape here was the one that
+    // stranded ₹59,000 as an unapplied credit in production.
+    const payment = await tool.execute({
+      op: 'record_payment',
+      fields: { customer_id: 'cust-1', amount: 100, invoices: [{ invoice_id: 'inv-1', amount_applied: 100 }] },
+    }, ctx);
     const expense = await tool.execute({ op: 'create_expense', fields: { amount: 50 } }, ctx);
     const bill = await tool.execute({ op: 'create_bill', fields: { amount: 70 } }, ctx);
     const voided = await tool.execute({ op: 'void_invoice', invoiceId: 'inv-1' }, ctx);

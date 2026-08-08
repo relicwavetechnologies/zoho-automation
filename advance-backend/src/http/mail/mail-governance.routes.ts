@@ -1,6 +1,10 @@
 import { Router, type Response } from 'express';
 import { z } from 'zod';
 import { mailRuleLeavesOrganisation } from '../../application/mail-ops/external-destination';
+import {
+  mailDestinationLeaves,
+  type MailRuleDestination,
+} from '../../application/mail-ops/mail-ops.types';
 import type { CompanyMailForward } from '../../infrastructure/persistence/mail-ops-read.repository';
 import type { Logger } from '../../shared/logger';
 
@@ -81,18 +85,33 @@ export function createMailGovernanceRoutes(deps: MailGovernanceDeps): Router {
        * read counts as external, which is the fail-closed direction: it shows
        * one rule too many rather than hiding one.
        */
-      const forwards = rows.value.map(row => {
-        const email = typeof row.destination['email'] === 'string'
-          ? String(row.destination['email'])
-          : '';
-        return {
+      /*
+       * One entry per recipient, not per rule.
+       *
+       * A routed rule sends to several people, so counting it once would report
+       * a company with three external recipients as having one — and the
+       * `totalForwards` denominator, which is the whole point of the number,
+       * would be measuring rules while reading as though it measured
+       * destinations. `mailDestinationLeaves` answers for both shapes and
+       * includes the `otherwise` branch, which is where an unwatched address is
+       * most likely to be sitting.
+       */
+      const forwards = rows.value.flatMap(row => {
+        const leaves = mailDestinationLeaves(
+          row.destination as unknown as MailRuleDestination,
+        ).flatMap(leaf => leaf.type === 'email' ? [leaf.email] : []);
+        // A destination Divo cannot read at all still has to appear. Dropping
+        // it would hide a rule rather than flag one, which is the wrong
+        // direction for a report somebody audits with.
+        const addresses = leaves.length > 0 ? leaves : [''];
+        return addresses.map(email => ({
           ...row,
           destinationEmail: email,
           external: email.length > 0 && mailRuleLeavesOrganisation({
             destinationEmail: email,
             requesterEmail: row.ownerEmail ?? undefined,
           }),
-        };
+        }));
       });
 
       const shown = parsed.data.scope === 'all'

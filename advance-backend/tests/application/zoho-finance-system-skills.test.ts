@@ -14,6 +14,7 @@ describe('Zoho Finance system skill provisioning', () => {
         'zoho-crm-read-analysis',
         'zoho-books-read-analysis',
         'zoho-books-invoice',
+        'zoho-books-money',
         'zoho-books-bill',
         'zoho-bill-notify-accounts',
       ],

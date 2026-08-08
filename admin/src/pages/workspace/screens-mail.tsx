@@ -1065,6 +1065,10 @@ function DeliveryRow({ delivery }: { delivery: MailDelivery }) {
 
 function RuleRail({ rule, mailbox }: { rule: MailRule; mailbox: MailboxHealth | null }) {
   const destination = readDestination(rule.destination, rule.action)
+  // Narrowed once. `destination.label` still says "one of three people Divo
+  // picks", which is the right one-liner for the Status row above; this is the
+  // table itself, for the section that shows the whole thing.
+  const routed = destination.kind === 'routed' ? destination : null
   const action = readAction(rule.action)
   const ceiling = action.kind === 'forward' || action.kind === 'deliver'
     ? action.rateLimitPerHour
@@ -1105,6 +1109,26 @@ function RuleRail({ rule, mailbox }: { rule: MailRule; mailbox: MailboxHealth | 
         </RailRow>
       </RailSection>
 
+      {/* The routing table, where a plain rule shows its question. A member
+          looking at a rule that sorts their mail has one question — who gets
+          what — and this is the only screen that can answer it. */}
+      {routed ? (
+        <RailSection title="Divo sorts it" defaultOpen>
+          {routed.routes.map((route) => (
+            <RailRow key={route.key} label={route.when || '(not described)'}>
+              <RailChip tone="plain">{route.destination.label}</RailChip>
+            </RailRow>
+          ))}
+          <RailRow label="Anything else">
+            <RailChip tone="plain">
+              {routed.otherwise
+                ? routed.otherwise.label
+                : 'Held back and shown to you'}
+            </RailChip>
+          </RailRow>
+        </RailSection>
+      ) : null}
+
       {/* Only when the rule has one. An empty "Divo reads it" section on every
           other rule would advertise a feature by way of its absence. */}
       {rule.judge ? (
@@ -1129,7 +1153,7 @@ function RuleRail({ rule, mailbox }: { rule: MailRule; mailbox: MailboxHealth | 
             step, and worded apart from "Refused": on a working rule this is
             usually the largest number here, and reading it as failures would
             make the step look like the thing breaking the rule. */}
-        {rule.judge ? (
+        {rule.judge || routed ? (
           <RailRow label="Held back"><RailChip tone="plain">{rule.heldCount}</RailChip></RailRow>
         ) : null}
       </RailSection>

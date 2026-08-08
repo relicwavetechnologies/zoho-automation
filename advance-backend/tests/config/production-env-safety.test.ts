@@ -65,22 +65,49 @@ describe('production environment safety', () => {
       DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS: true,
       DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: true,
     });
+    /*
+     * `disableCompanyAdminExternalForwardExemption` is false throughout, and an
+     * absent key has to produce `false` rather than `undefined` — an operator
+     * handing over a partial env should get the exemption, not a third state
+     * nothing downstream reads.
+     */
     assert.deepEqual(resolveApprovalGateOptions(productionPolicy), {
       disableManagerSelfBypass: true,
       suppressCardDelivery: false,
+      disableCompanyAdminExternalForwardExemption: false,
     });
     assert.deepEqual(validateProductionEnv(productionPolicy), []);
 
     assert.deepEqual(resolveApprovalGateOptions(production({
       DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS: false,
       DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: true,
-    })), { disableManagerSelfBypass: false, suppressCardDelivery: false });
+    })), {
+      disableManagerSelfBypass: false,
+      suppressCardDelivery: false,
+      disableCompanyAdminExternalForwardExemption: false,
+    });
 
     assert.deepEqual(resolveApprovalGateOptions({
       NODE_ENV: 'test',
       DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS: false,
       DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: true,
-    }), { disableManagerSelfBypass: true, suppressCardDelivery: false });
+    }), {
+      disableManagerSelfBypass: true,
+      suppressCardDelivery: false,
+      disableCompanyAdminExternalForwardExemption: false,
+    });
+  });
+
+  it('holds an admin to approval only when asked to, in production too', () => {
+    // The exemption is a deliberate loosening, so the switch that takes it back
+    // must work where it matters — unlike `suppressCardDelivery`, which is
+    // ignored in production on purpose.
+    assert.equal(
+      resolveApprovalGateOptions(production({
+        DIVO_MAIL_OPS_ADMIN_NEEDS_EXTERNAL_APPROVAL: true,
+      })).disableCompanyAdminExternalForwardExemption,
+      true,
+    );
   });
 
   it('will not silence approval cards in production, whatever the switch says', () => {

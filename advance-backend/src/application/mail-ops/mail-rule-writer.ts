@@ -31,6 +31,8 @@
 import type { MailOpsConnectionState } from '../tools/families/mail-automations.tool';
 import { parseMailRule } from './mail-rule.matcher';
 import {
+  mailDestinationKind,
+  mailDestinationLeaves,
   mailRuleDedupeKey,
   type MailRuleAction,
   type MailRuleDestination,
@@ -63,6 +65,14 @@ export interface MailRuleWriteRequest {
    * one extra question is the only acceptable one here.
    */
   readonly requesterEmail?: string;
+  /**
+   * The requester's company role, which decides whether an external forward is
+   * asked about at all — a company admin is exempt.
+   *
+   * Absent is read as an ordinary member, so a caller that omits it asks one
+   * extra person rather than none.
+   */
+  readonly companyRole?: string;
   /**
    * Set by a caller that has already had the external forward approved.
    *
@@ -160,7 +170,10 @@ export type MailRuleWriteResult =
    */
   | {
       readonly status: 'external_approval_required';
+      /** Every external recipient, said the way a sentence says them. */
       readonly destination: string;
+      /** The same addresses, unjoined, for the card and the replayed request. */
+      readonly destinations: readonly string[];
       readonly approver: { readonly userId: string; readonly displayName: string };
       /**
        * The mailbox this would have watched, carried so the approved request
@@ -365,8 +378,16 @@ export function actionForDestination(
     // no organize action, which parseMailRule refuses.
     return { type: 'organize' };
   }
+  /*
+   * Through `mailDestinationKind`, not `type === 'email'`.
+   *
+   * A routing table's `type` is `routed` and its recipients are one level down,
+   * so the straight comparison called every routed rule a Lark delivery — and
+   * `parseMailRule` then refused it as "delivery rules require a Lark chat or
+   * DM destination", which is a true sentence about a rule nobody wrote.
+   */
   return {
-    type: destination.type === 'email' ? 'forward' : 'deliver',
+    type: mailDestinationKind(destination) === 'email' ? 'forward' : 'deliver',
     ...(rateLimitPerHour !== undefined ? { rateLimitPerHour } : {}),
   };
 }
@@ -534,20 +555,29 @@ export function createMailRuleWriter(deps: MailRuleWriterDeps) {
      * have grounded a Lark chat for a rule a manager may refuse.
      */
     if (deps.externalForward && !request.externalForwardApproved) {
-      const leaving = request.destination.type === 'email'
-        && mailRuleLeavesOrganisation({
-          destinationEmail: request.destination.email,
+      /*
+       * Every place this rule could send mail, not merely its first.
+       *
+       * A routing table establishes several forwards at once, so reading one
+       * address here would ask a manager about one branch and let the rest
+       * through unmentioned. `mailDestinationLeaves` answers for both shapes,
+       * including the `otherwise` branch — which is the one nobody thinks about
+       * and exactly where an unnoticed address ends up.
+       */
+      const leaving = mailDestinationLeaves(request.destination)
+        .flatMap(leaf => leaf.type === 'email' ? [leaf.email] : [])
+        .filter(email => mailRuleLeavesOrganisation({
+          destinationEmail: email,
           requesterEmail: request.requesterEmail,
-        })
-        ? request.destination.email
-        : null;
+        }));
 
       const verdict = await inspectExternalForward(
         {
-          destination: leaving,
+          destinations: [...new Set(leaving)],
           companyId: request.companyId,
           requesterId: request.userId,
           departmentId: request.departmentId ?? null,
+          requesterCompanyRole: request.companyRole,
         },
         deps.externalForward,
       );
@@ -563,6 +593,7 @@ export function createMailRuleWriter(deps: MailRuleWriterDeps) {
           refusal: {
             status: 'external_approval_required',
             destination: verdict.destination,
+            destinations: verdict.destinations,
             approver: {
               userId: verdict.approver.userId,
               displayName: verdict.approver.displayName,

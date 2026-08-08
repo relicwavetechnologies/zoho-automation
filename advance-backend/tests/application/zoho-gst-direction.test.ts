@@ -51,6 +51,57 @@ describe('GST direction on a staged draft, which names no taxes', () => {
     assert.deepEqual(findings.map(f => f.code), ['gst_direction_unchecked']);
   });
 
+  it('treats an unpadded numeric code as the same state', () => {
+    // "8" and "08" are Rajasthan twice. Matching alphabets is not matching
+    // spellings, and letting the pair through blocked a correct intra-state
+    // invoice and told the model to switch it to IGST.
+    const findings = checkInvoice({
+      invoice: { customer_id: 'c1', place_of_supply: '08', line_items: [{ ...line, tax_id: GST18 }] },
+      homeGstStateCode: '8', taxDirectionById,
+    });
+    assert.deepEqual(findings, []);
+  });
+
+  it('still sees a genuine difference between unpadded codes', () => {
+    const findings = checkInvoice({
+      invoice: { customer_id: 'c1', place_of_supply: '29', line_items: [{ ...line, tax_id: GST18 }] },
+      homeGstStateCode: '8', taxDirectionById,
+    });
+    assert.deepEqual(findings.map(f => f.code), ['gst_should_be_igst']);
+  });
+
+  it('will not compare a numeric state code against a lettered one', () => {
+    // The GSTIN prefix ("08") and Zoho's place_of_supply ("RJ") are two
+    // spellings of Rajasthan that never match each other. Comparing across them
+    // does not fail safely: every intra-state sale reads as inter-state and the
+    // finding is *blocking*, so the model is told to switch a correct
+    // CGST/SGST invoice to IGST. A mismatched pair is the absence of an answer.
+    const findings = checkInvoice({
+      invoice: draft('RJ', GST18), homeGstStateCode: '08', taxDirectionById,
+    });
+    assert.deepEqual(findings.map(f => f.code), ['gst_state_spelling_mismatch']);
+    // The text matters as much as the code: "not configured" sent an operator
+    // to a setting that was already set, with nothing naming the real cause.
+    const [only] = findings;
+    assert.doesNotMatch(only!.message, /not configured/);
+    assert.match(only!.message, /08/);
+    assert.match(only!.message, /RJ/);
+  });
+
+  it('says "not configured" only when it really is absent', () => {
+    const findings = checkInvoice({ invoice: draft('KA', GST18), taxDirectionById });
+    assert.deepEqual(findings.map(f => f.code), ['gst_direction_unchecked']);
+    assert.match(findings[0]!.message, /not configured/);
+  });
+
+  it('still compares two numeric codes with each other', () => {
+    const findings = checkInvoice({
+      invoice: { customer_id: 'c1', place_of_supply: '29', line_items: [{ ...line, tax_id: GST18 }] },
+      homeGstStateCode: '08', taxDirectionById,
+    });
+    assert.deepEqual(findings.map(f => f.code), ['gst_should_be_igst']);
+  });
+
   it('refuses a draft carrying both directions at once', () => {
     const invoice = {
       customer_id: 'c1',

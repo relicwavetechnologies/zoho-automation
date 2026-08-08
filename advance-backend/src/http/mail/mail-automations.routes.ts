@@ -34,7 +34,11 @@ import {
   type MailRuleWriteResult,
 } from '../../application/mail-ops/mail-rule-writer';
 import { mailRuleMatchSchema } from '../../application/mail-ops/mail-rule.matcher';
-import { mailRuleJudgeSchema } from '../../application/mail-ops/mail-ops.types';
+import {
+  MAIL_RULE_MAX_ROUTES,
+  MAIL_RULE_MIN_ROUTES,
+  mailRuleJudgeSchema,
+} from '../../application/mail-ops/mail-ops.types';
 import type { MailRuleOperation } from '../../application/mail-ops/mail-rule-permission';
 import {
   mailBriefScheduleSchema,
@@ -123,6 +127,35 @@ const createRuleBodySchema = z.object({
       label: z.string().trim().min(1).max(225).optional(),
       archive: z.boolean().optional(),
       markRead: z.boolean().optional(),
+    }).strict(),
+    /*
+     * Several recipients, one of which Divo picks per message.
+     *
+     * Email only from a browser, for the same reason `lark_chat` is absent
+     * above: there is no conversation to ground a room id against, and this
+     * screen has no picker. A routing table is where a mistyped id would be
+     * least visible, because five branches look right while the sixth quietly
+     * posts somebody's mail into a room nobody chose.
+     *
+     * `otherwise` absent means hold — nothing is sent and the member sees it.
+     */
+    z.object({
+      type: z.literal('routed'),
+      routes: z.array(z.object({
+        key: z.string().trim().min(1).max(40),
+        when: z.string().trim().min(3).max(200),
+        destination: z.object({
+          type: z.literal('email'),
+          email: z.string().trim().email(),
+        }).strict(),
+      }).strict()).min(MAIL_RULE_MIN_ROUTES).max(MAIL_RULE_MAX_ROUTES),
+      otherwise: z.union([
+        z.literal('hold'),
+        z.object({
+          type: z.literal('email'),
+          email: z.string().trim().email(),
+        }).strict(),
+      ]).optional(),
     }).strict(),
   ]),
   rateLimitPerHour: z.number().int().min(1).max(1000).optional(),
@@ -516,6 +549,10 @@ export function createMailAutomationsRoutes(
             firstAttemptAt: delivery.firstAttemptAt.toISOString(),
             deliveredAt: delivery.deliveredAt?.toISOString() ?? null,
             nextAttemptAt: delivery.nextAttemptAt?.toISOString() ?? null,
+            // The rule page used to show no verdicts at all while the Caught
+            // feed showed every one of them, about the very same deliveries.
+            verdict: delivery.verdict,
+            resolvedDestination: delivery.resolvedDestination,
           })),
         },
       });
@@ -653,6 +690,10 @@ export function createMailAutomationsRoutes(
             action: row.action,
             destination: row.destination,
             verdict: row.verdict,
+            // Where it actually went, on a rule that chooses per message. The
+            // feed must prefer this over the rule's own destination, which on a
+            // routed rule is a table and would name the wrong person.
+            resolvedDestination: row.resolvedDestination,
           })),
         },
       });
@@ -837,7 +878,23 @@ export function createMailAutomationsRoutes(
           ? { type: 'email', email: body.destination.email }
           : body.destination.type === 'lark_dm'
             ? { type: 'lark_dm', openId: openId! }
-            : { type: 'none' };
+            : body.destination.type === 'routed'
+              ? {
+                  type: 'routed',
+                  routes: body.destination.routes.map(route => ({
+                    key: route.key,
+                    when: route.when,
+                    destination: { type: 'email' as const, email: route.destination.email },
+                  })),
+                  // Absent means hold: nothing is sent and the member sees it.
+                  // Never a silent drop, which is the one outcome a routing
+                  // table must not be able to produce.
+                  otherwise: body.destination.otherwise === undefined
+                    || body.destination.otherwise === 'hold'
+                    ? 'hold'
+                    : { type: 'email', email: body.destination.otherwise.email },
+                }
+              : { type: 'none' };
 
       const action: MailRuleAction = body.destination.type === 'organize'
         ? {
@@ -879,6 +936,9 @@ export function createMailAutomationsRoutes(
         ...(typeof res.locals['email'] === 'string'
           ? { requesterEmail: res.locals['email'] as string }
           : {}),
+        // Who is asking, which decides whether anyone is asked about an
+        // external forward at all — a company admin is not.
+        companyRole: String(res.locals['aiRole'] ?? 'MEMBER'),
       }, action);
 
       if (outcome.status === 'created') {
@@ -941,7 +1001,16 @@ export function createMailAutomationsRoutes(
           approverId: outcome.approver.userId,
         });
 
-        if (deps.requestExternalForwardApproval && body.destination.type === 'email') {
+        /*
+         * Email and routed both reach here. A routed rule is several external
+         * forwards asked about at once, and gating this on `type === 'email'`
+         * would have written no approval at all for it — which reads, from the
+         * member's side, as a rule that simply never appears.
+         */
+        if (
+          deps.requestExternalForwardApproval
+          && (body.destination.type === 'email' || body.destination.type === 'routed')
+        ) {
           const asked = await deps.requestExternalForwardApproval({
             ...who,
             companyRole: String(res.locals['aiRole'] ?? 'MEMBER'),
@@ -956,7 +1025,10 @@ export function createMailAutomationsRoutes(
               connectionId: outcome.connectionId,
               name: body.name,
               match: body.match as MailRuleWriteRequest['match'],
-              email: body.destination.email,
+              // The destination as resolved above, not rebuilt from one
+              // address: the rule the manager approves has to be the rule the
+              // member built, branches and all.
+              destination,
               ...(body.rateLimitPerHour !== undefined
                 ? { rateLimitPerHour: body.rateLimitPerHour }
                 : {}),
@@ -1088,7 +1160,23 @@ export function createMailAutomationsRoutes(
           ? { type: 'email', email: body.destination.email }
           : body.destination.type === 'lark_dm'
             ? { type: 'lark_dm', openId: openId! }
-            : { type: 'none' };
+            : body.destination.type === 'routed'
+              ? {
+                  type: 'routed',
+                  routes: body.destination.routes.map(route => ({
+                    key: route.key,
+                    when: route.when,
+                    destination: { type: 'email' as const, email: route.destination.email },
+                  })),
+                  // Absent means hold: nothing is sent and the member sees it.
+                  // Never a silent drop, which is the one outcome a routing
+                  // table must not be able to produce.
+                  otherwise: body.destination.otherwise === undefined
+                    || body.destination.otherwise === 'hold'
+                    ? 'hold'
+                    : { type: 'email', email: body.destination.otherwise.email },
+                }
+              : { type: 'none' };
 
       const action: MailRuleAction = body.destination.type === 'organize'
         ? {
@@ -1119,6 +1207,7 @@ export function createMailAutomationsRoutes(
         ...(typeof res.locals['email'] === 'string'
           ? { requesterEmail: res.locals['email'] as string }
           : {}),
+        companyRole: String(res.locals['aiRole'] ?? 'MEMBER'),
       }, action);
 
       if (outcome.status === 'replaced') {
@@ -1200,7 +1289,16 @@ export function createMailAutomationsRoutes(
           approverId: outcome.approver.userId,
         });
 
-        if (deps.requestExternalForwardApproval && body.destination.type === 'email') {
+        /*
+         * Email and routed both reach here. A routed rule is several external
+         * forwards asked about at once, and gating this on `type === 'email'`
+         * would have written no approval at all for it — which reads, from the
+         * member's side, as a rule that simply never appears.
+         */
+        if (
+          deps.requestExternalForwardApproval
+          && (body.destination.type === 'email' || body.destination.type === 'routed')
+        ) {
           const asked = await deps.requestExternalForwardApproval({
             ...who,
             companyRole: String(res.locals['aiRole'] ?? 'MEMBER'),
@@ -1220,7 +1318,10 @@ export function createMailAutomationsRoutes(
               connectionId: outcome.connectionId,
               name: body.name,
               match: body.match as MailRuleWriteRequest['match'],
-              email: body.destination.email,
+              // The destination as resolved above, not rebuilt from one
+              // address: the rule the manager approves has to be the rule the
+              // member built, branches and all.
+              destination,
               ...(body.rateLimitPerHour !== undefined
                 ? { rateLimitPerHour: body.rateLimitPerHour }
                 : {}),

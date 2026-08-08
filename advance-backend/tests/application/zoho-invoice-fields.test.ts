@@ -59,6 +59,27 @@ describe('payment terms in the vocabulary the member used', () => {
     assert.match(refusal({ payment_terms: 'end of next quarter' }), /whole number of days/);
   });
 
+  it('refuses a date dressed as a term', () => {
+    // "15th of next month" carries exactly one digit run, so a "contains one
+    // number" rule read it as 15 days and set a due date nobody asked for.
+    for (const phrase of ['15th of next month', '1st of the next month', 'Net 15 days from EOM']) {
+      assert.match(refusal({ payment_terms: phrase }), /whole number of days/, `for ${phrase}`);
+    }
+  });
+
+  it('refuses a negative written as text rather than dropping its sign', () => {
+    // "-5" once parsed to 5: the sign vanished and the invoice fell due early.
+    refusal({ payment_terms: '-5' });
+    // And with the prefix, where the "-" that separates in "net-15" was allowed
+    // to act as a sign instead.
+    refusal({ payment_terms: 'Net -5' });
+    refusal({ payment_terms: 'net - 5' });
+  });
+
+  it('still reads the hyphen when it is a separator', () => {
+    assert.equal(unwrap({ payment_terms: 'net-15' })['payment_terms'], 15);
+  });
+
   it('refuses a discount schedule instead of picking one of its numbers', () => {
     // "2/10 net 30" means 2% off if paid within 10 days, otherwise 30 days.
     // Reading either number as the due date would be a guess reported as fact.
@@ -75,6 +96,19 @@ describe('payment terms in the vocabulary the member used', () => {
       unwrap({ customer_id: '311', due_date: '2026-08-23' }),
       { customer_id: '311', due_date: '2026-08-23' },
     );
+  });
+
+  it('reports what it re-read, so the member can be shown it', () => {
+    const result = normalizeInvoiceFields({ payment_terms: 'Net 15' });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.notes.length, 1);
+    assert.match(result.notes[0]!, /15 days/);
+  });
+
+  it('says nothing when it changed nothing', () => {
+    const result = normalizeInvoiceFields({ payment_terms: 30 });
+    assert.deepEqual(result.ok ? result.notes : null, []);
   });
 
   it('does not mutate the payload it was handed', () => {
@@ -135,7 +169,26 @@ describe('Zoho keeps the last word on its own failures', () => {
     );
   });
 
+  it('names the product that actually failed', () => {
+    // mapZohoError is shared with the CRM tool, whose client throws "Zoho CRM".
+    // Branding a CRM failure as Books sends the member to reconnect the wrong
+    // connection.
+    const crm = new Error('Zoho CRM 401 Unauthorized: {"code":"INVALID_TOKEN","message":"invalid oauth token"}');
+    const mapped = mapZohoError(crm);
+    assert.doesNotMatch(mapped, /Zoho Books/);
+    assert.match(mapped, /Zoho CRM says: "invalid oauth token"/);
+    assert.match(mapped, /Reconnect Zoho CRM/);
+  });
+
+  it('falls back in the right product name too', () => {
+    assert.match(mapZohoError(new Error('Zoho CRM 404 Not Found: ')), /^Zoho CRM/);
+  });
+
   it('still has something to say when nothing is recognisable', () => {
-    assert.match(mapZohoError(undefined), /Zoho Books request failed/);
+    // Neutral, not "Books": with nothing to read, naming a product would be a
+    // guess, and it is the guess that misdirects a member.
+    const mapped = mapZohoError(undefined);
+    assert.match(mapped, /^Zoho request failed/);
+    assert.doesNotMatch(mapped, /Zoho Books|Zoho CRM/);
   });
 });

@@ -347,6 +347,22 @@ export function renderStagedInvoice(input: {
   if (date) lines.push(`Date: ${date}`);
   if (dueDate) lines.push(`Due: ${dueDate}`);
 
+  // When terms set the due date rather than a date doing it, the summary said
+  // nothing at all about when the invoice falls due — the one number the member
+  // is most likely to want to correct. The label is Zoho's own wording where it
+  // has one.
+  if (!dueDate) {
+    const terms = num(payload['payment_terms']);
+    if (terms !== null) {
+      const spelled = terms === 0 ? 'due on receipt' : `${terms} days`;
+      const label = str(payload['payment_terms_label']);
+      // Only when it adds something. "due on receipt (due on receipt)" reads
+      // like a mistake, because it is one.
+      const suffix = label && label.toLowerCase() !== spelled.toLowerCase() ? ` (${label})` : '';
+      lines.push(`Payment terms: ${spelled}${suffix}`);
+    }
+  }
+
   const items = invoiceLineItems(payload);
   if (items.length > 0) {
     lines.push('Lines:');

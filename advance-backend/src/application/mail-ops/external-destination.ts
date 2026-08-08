@@ -31,30 +31,80 @@ export function mailRuleLeavesOrganisation(input: {
  * the approval gate sees whatever the model sent, before the tool has had a
  * chance to reject it, so nothing here may assume a shape.
  */
-export function externalMailDestination(input: {
+export function externalMailDestinations(input: {
   readonly args: unknown;
   readonly requesterEmail?: string | undefined;
-}): string | null {
+}): string[] {
   const args = input.args;
-  if (typeof args !== 'object' || args === null) return null;
+  if (typeof args !== 'object' || args === null) return [];
   const record = args as Record<string, unknown>;
   const operation = record['operation'];
-  if (operation !== 'create' && operation !== 'update') return null;
+  if (operation !== 'create' && operation !== 'update') return [];
 
   const destination = record['destination'];
-  if (typeof destination !== 'object' || destination === null) return null;
-  const destinationRecord = destination as Record<string, unknown>;
-  if (destinationRecord['type'] !== 'email') return null;
+  if (typeof destination !== 'object' || destination === null) return [];
 
-  const email = destinationRecord['email'];
-  if (typeof email !== 'string' || !email) return null;
+  const seen = new Set<string>();
+  for (const email of emailsIn(destination as Record<string, unknown>)) {
+    if (!mailRuleLeavesOrganisation({
+      destinationEmail: email,
+      requesterEmail: input.requesterEmail,
+    })) continue;
+    // De-duplicated by address rather than by branch: two branches pointing at
+    // one person is one address to approve, and naming it twice on a card reads
+    // as two different things being asked for.
+    seen.add(email);
+  }
+  return [...seen];
+}
 
-  return mailRuleLeavesOrganisation({
-    destinationEmail: email,
-    requesterEmail: input.requesterEmail,
-  })
-    ? email
-    : null;
+/**
+ * Every address a destination would send to, however many places it has.
+ *
+ * Reads by shape rather than by declared type, because a routing table is the
+ * one destination whose recipients are nested — and a reader that only
+ * understood `{type:'email'}` returned nothing at all for it, which on this
+ * path means "no approval needed". Missing one branch here is not a missing
+ * warning; it is a standing export of company mail that nobody was asked about.
+ *
+ * The fallback counts. It is a recipient like any other and it is the branch
+ * nobody thinks about — "everything else goes to X" is exactly where an
+ * unnoticed address ends up.
+ */
+function emailsIn(destination: Record<string, unknown>): string[] {
+  if (destination['type'] === 'email') {
+    const email = destination['email'];
+    return typeof email === 'string' && email ? [email] : [];
+  }
+  if (destination['type'] !== 'routed') return [];
+  const found: string[] = [];
+  const routes = destination['routes'];
+  if (Array.isArray(routes)) {
+    for (const route of routes) {
+      if (!route || typeof route !== 'object') continue;
+      const leaf = (route as Record<string, unknown>)['destination'];
+      if (leaf && typeof leaf === 'object') {
+        found.push(...emailsIn(leaf as Record<string, unknown>));
+      }
+    }
+  }
+  const otherwise = destination['otherwise'];
+  if (otherwise && typeof otherwise === 'object') {
+    found.push(...emailsIn(otherwise as Record<string, unknown>));
+  }
+  return found;
+}
+
+/**
+ * Several addresses, said the way a sentence would say them.
+ *
+ * Lives here because the approval card, the refusal message and the browser's
+ * own banner all have to name the same set, and three separate joins is three
+ * chances for one of them to name fewer.
+ */
+export function namedAddresses(addresses: readonly string[]): string {
+  if (addresses.length <= 1) return addresses[0] ?? '';
+  return `${addresses.slice(0, -1).join(', ')} and ${addresses[addresses.length - 1]}`;
 }
 
 function emailDomain(address: string): string | null {

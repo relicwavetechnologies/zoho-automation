@@ -157,7 +157,32 @@ const directionsOf = (
 };
 
 /** Zoho reports place of supply as a state code such as "RJ" or "08". */
-const stateCodeOf = (value: unknown): string => str(value).toUpperCase();
+const stateCodeOf = (value: unknown): string => str(value).trim().toUpperCase();
+
+/**
+ * Both sides must be written the same way before a difference between them
+ * means anything.
+ *
+ * India's states have two spellings — the GSTIN's numeric prefix ("08") and
+ * Zoho's letter code ("RJ") — and they never match each other. Comparing across
+ * them does not fail safely: every intra-state sale looks inter-state, and the
+ * finding is *blocking*, telling the model to switch a correct CGST/SGST
+ * invoice to IGST. A mismatched pair is therefore not an answer, it is the
+ * absence of one.
+ */
+const comparableStatePair = (
+  home: string,
+  place: string,
+): { readonly home: string; readonly place: string } | null => {
+  if (/^[A-Z]{2}$/.test(home) && /^[A-Z]{2}$/.test(place)) return { home, place };
+  // "8" and "08" are the same state. Same alphabet is not the same as the same
+  // spelling, and an unpadded code left the exact misfire this guard exists to
+  // stop — a correct intra-state invoice blocked and sent to IGST.
+  if (/^\d{1,2}$/.test(home) && /^\d{1,2}$/.test(place)) {
+    return { home: home.padStart(2, '0'), place: place.padStart(2, '0') };
+  }
+  return null;
+};
 
 export function checkInvoice(input: InvoiceCheckInput): InvoiceFinding[] {
   const { invoice } = input;
@@ -234,21 +259,39 @@ export function checkInvoice(input: InvoiceCheckInput): InvoiceFinding[] {
   }
 
   const placeOfSupply = stateCodeOf(invoice['place_of_supply']);
-  const home = stateCodeOf(input.homeGstStateCode);
-  if (home && placeOfSupply && (igst || intraState)) {
-    const interState = placeOfSupply !== home;
+  const homeRaw = stateCodeOf(input.homeGstStateCode);
+  const pair = homeRaw && placeOfSupply ? comparableStatePair(homeRaw, placeOfSupply) : null;
+
+  if (pair && (igst || intraState)) {
+    const interState = pair.place !== pair.home;
     if (interState && intraState) {
-      add('gst_should_be_igst', 'blocking', `Place of supply ${placeOfSupply} differs from the selling state ${home}, so this should be IGST, not CGST/SGST.`);
+      add('gst_should_be_igst', 'blocking', `Place of supply ${placeOfSupply} differs from the selling state ${homeRaw}, so this should be IGST, not CGST/SGST.`);
     }
     if (!interState && igst) {
-      add('gst_should_be_split', 'blocking', `Place of supply ${placeOfSupply} matches the selling state ${home}, so this should be CGST plus SGST, not IGST.`);
+      add('gst_should_be_split', 'blocking', `Place of supply ${placeOfSupply} matches the selling state ${homeRaw}, so this should be CGST plus SGST, not IGST.`);
     }
-  } else if (!home && (igst || intraState)) {
-    add(
-      'gst_direction_unchecked',
-      'warning',
-      'Whether GST should be IGST or CGST/SGST was not checked: the selling organisation\'s GST state is not configured.',
-    );
+  } else if (igst || intraState) {
+    // Why it could not be checked, not merely that it could not. "Not
+    // configured" sent an operator to look at a setting that was already set,
+    // with nothing to tell them the two values were the same state written two
+    // different ways.
+    if (homeRaw && placeOfSupply) {
+      add(
+        'gst_state_spelling_mismatch',
+        'warning',
+        `Whether GST should be IGST or CGST/SGST was not checked: the selling state is recorded as ${homeRaw} `
+        + `and the place of supply as ${placeOfSupply}. India writes a state both ways — the GSTIN's number and `
+        + `Zoho's letter code — and the two cannot be compared. Record both the same way.`,
+      );
+    } else {
+      add(
+        'gst_direction_unchecked',
+        'warning',
+        placeOfSupply
+          ? 'Whether GST should be IGST or CGST/SGST was not checked: the selling organisation\'s GST state is not configured.'
+          : 'Whether GST should be IGST or CGST/SGST was not checked: the invoice carries no place of supply.',
+      );
+    }
   }
 
   // ── Duplicates ────────────────────────────────────────────────────────────

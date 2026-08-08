@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import {
+  MAIL_RULE_MAX_ROUTES,
+  MAIL_RULE_MIN_ROUTES,
   MAIL_RULE_WEEKDAYS,
+  mailDestinationKind,
   mailRuleJudgeSchema,
   type MailMessageMetadata,
   type MailRuleAction,
@@ -368,12 +371,80 @@ const ActionSchema = z.union([
   organizeActionSchema,
 ]);
 
-const DestinationSchema = z.discriminatedUnion('type', [
+const LeafDestinationSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('email'), email: z.string().email() }),
   z.object({ type: z.literal('lark_chat'), chatId: z.string().trim().min(1) }),
   z.object({ type: z.literal('lark_dm'), openId: z.string().trim().min(1) }),
+]);
+
+/**
+ * A route key, as the judge will be asked to answer with one.
+ *
+ * Constrained rather than free text because it becomes a `z.enum` member on the
+ * verdict schema, and because `none` is the answer that means *no branch fits* —
+ * a rule owning a branch called `none` would make the two indistinguishable.
+ */
+export const mailRuleRouteKeySchema = z.string().trim().toLowerCase()
+  .regex(/^[a-z0-9][a-z0-9_-]{0,39}$/, 'A route key is a short label such as `invoices`.')
+  .refine(key => key !== 'none', 'A route cannot be called `none`; that is the answer for "nothing fits".');
+
+const RouteSchema = z.object({
+  key: mailRuleRouteKeySchema,
+  when: z.string().trim().min(3).max(200),
+  destination: LeafDestinationSchema,
+});
+
+const RoutedDestinationSchema = z.object({
+  type: z.literal('routed'),
+  routes: z.array(RouteSchema).min(MAIL_RULE_MIN_ROUTES).max(MAIL_RULE_MAX_ROUTES),
+  otherwise: z.union([z.literal('hold'), LeafDestinationSchema]),
+})
+  .superRefine((value, ctx) => {
+    const keys = new Set(value.routes.map(route => route.key));
+    if (keys.size !== value.routes.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Two routes share a key, so the answer would name both.',
+      });
+    }
+    /*
+     * Every branch sends the same kind of thing.
+     *
+     * A rule carries one action and the runtime dispatches on it, so a table
+     * mixing an email and a Lark chat is a rule that is both `forward` and
+     * `deliver`. Refused here rather than discovered at the first delivery,
+     * where it would be one message failing for a reason nobody could see.
+     */
+    const kinds = new Set([
+      ...value.routes.map(route => leafKind(route.destination)),
+      ...(value.otherwise === 'hold' ? [] : [leafKind(value.otherwise)]),
+    ]);
+    if (kinds.size > 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Every route must send the same way — all by email, or all to Lark.',
+      });
+    }
+  });
+
+const leafKind = (leaf: { type: string }): 'email' | 'lark' =>
+  leaf.type === 'email' ? 'email' : 'lark';
+
+/**
+ * Exported because the compiler validates what a model wrote against it.
+ *
+ * Same discipline `mailRuleMatchSchema` and `mailRuleJudgeSchema` already get:
+ * the last word on what a rule may say belongs to the schema the runtime
+ * enforces, not to the model — an invented field or a mixed routing table
+ * becomes a question rather than a rule nobody can run.
+ */
+export const mailRuleDestinationSchema = z.union([
+  LeafDestinationSchema,
+  RoutedDestinationSchema,
   z.object({ type: z.literal('none') }),
 ]);
+
+const DestinationSchema = mailRuleDestinationSchema;
 
 export function parseMailRule(input: {
   match: Record<string, unknown>;
@@ -424,14 +495,28 @@ export function parseMailRule(input: {
         }
       : {}),
   };
-  return {
-    match,
-    ...parseMailRuleDelivery(input),
-    // `null` is what an absent column reads as, and is not a parse failure.
-    ...(input.judge === undefined || input.judge === null
-      ? {}
-      : { judge: mailRuleJudgeSchema.parse(input.judge) }),
-  };
+  const delivery = parseMailRuleDelivery(input);
+  // `null` is what an absent column reads as, and is not a parse failure.
+  const judge = input.judge === undefined || input.judge === null
+    ? undefined
+    : mailRuleJudgeSchema.parse(input.judge);
+  /*
+   * A routing table is already an AI step, so a second question on top of it is
+   * a rule with two of them and no stated order between them.
+   *
+   * Refused rather than reconciled because there is no reading of it that is
+   * obviously right — does the question gate the routing, or does a route
+   * override the question? — and a rule whose author believed one while the
+   * runtime did the other is exactly the silent wrongness this subsystem keeps
+   * being bitten by.
+   */
+  if (judge && delivery.destination.type === 'routed') {
+    throw new Error(
+      'A rule that sorts mail between people already asks its own question, '
+      + 'so it cannot also carry a separate one.',
+    );
+  }
+  return { match, ...delivery, ...(judge ? { judge } : {}) };
 }
 
 export function parseMailRuleDelivery(input: {
@@ -462,15 +547,18 @@ export function parseMailRuleDelivery(input: {
           ? { rateLimitPerHour: parsedAction.rateLimitPerHour }
           : {}),
       };
-  const destination = DestinationSchema.parse(input.destination);
-  if (action.type === 'forward' && destination.type !== 'email') {
+  const destination = DestinationSchema.parse(input.destination) as MailRuleDestination;
+  /*
+   * The action and the destination have to agree, and a routed destination
+   * answers for its branches through `mailDestinationKind` — which is only
+   * meaningful because the schema above has already refused a table that mixes
+   * the two kinds.
+   */
+  const kind = mailDestinationKind(destination);
+  if (action.type === 'forward' && kind !== 'email') {
     throw new Error('Forward rules require an email destination.');
   }
-  if (
-    action.type === 'deliver'
-    && destination.type !== 'lark_chat'
-    && destination.type !== 'lark_dm'
-  ) {
+  if (action.type === 'deliver' && kind !== 'lark') {
     throw new Error('Delivery rules require a Lark chat or DM destination.');
   }
   // An `organize` rule never leaves the mailbox, so a destination on one is not

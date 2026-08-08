@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  externalMailDestination,
+  externalMailDestinations,
   mailRuleLeavesOrganisation,
 } from '../../src/application/mail-ops/external-destination';
 
@@ -62,25 +62,25 @@ describe('external mail destinations', () => {
     // The approval gate sees whatever the model sent, before the tool has had
     // a chance to reject it.
     const requesterEmail = 'owner@example.com';
-    assert.equal(
-      externalMailDestination({
+    assert.deepEqual(
+      externalMailDestinations({
         args: {
           operation: 'create',
           destination: { type: 'email', email: 'collector@evil.test' },
         },
         requesterEmail,
       }),
-      'collector@evil.test',
+      ['collector@evil.test'],
     );
-    assert.equal(
-      externalMailDestination({
+    assert.deepEqual(
+      externalMailDestinations({
         args: {
           operation: 'update',
           destination: { type: 'email', email: 'collector@evil.test' },
         },
         requesterEmail,
       }),
-      'collector@evil.test',
+      ['collector@evil.test'],
     );
     for (const args of [
       null,
@@ -93,11 +93,81 @@ describe('external mail destinations', () => {
       { operation: 'create', destination: { type: 'email' } },
       { operation: 'create', destination: { type: 'email', email: 'finance@example.com' } },
     ]) {
-      assert.equal(
-        externalMailDestination({ args, requesterEmail }),
-        null,
+      assert.deepEqual(
+        externalMailDestinations({ args, requesterEmail }),
+        [],
         `expected no external destination for ${JSON.stringify(args)}`,
       );
     }
+  });
+
+  /*
+   * A routing table sends to several people, and the gate reads it before any
+   * schema has vetted it — so it is read by shape, and every branch counts.
+   *
+   * Missing one here is not a missing warning. It is a standing export of
+   * company mail that nobody was ever asked about, on a rule that reports
+   * itself as approved.
+   */
+  it('finds every external branch of a routing table, including the fallback', () => {
+    const requesterEmail = 'owner@example.com';
+    assert.deepEqual(
+      externalMailDestinations({
+        args: {
+          operation: 'create',
+          destination: {
+            type: 'routed',
+            routes: [
+              { key: 'a', when: 'invoices', destination: { type: 'email', email: 'inside@example.com' } },
+              { key: 'b', when: 'product', destination: { type: 'email', email: 'first@evil.test' } },
+            ],
+            otherwise: { type: 'email', email: 'second@evil.test' },
+          },
+        },
+        requesterEmail,
+      }),
+      ['first@evil.test', 'second@evil.test'],
+    );
+  });
+
+  it('says nothing leaves when every branch stays inside', () => {
+    assert.deepEqual(
+      externalMailDestinations({
+        args: {
+          operation: 'create',
+          destination: {
+            type: 'routed',
+            routes: [
+              { key: 'a', when: 'invoices', destination: { type: 'email', email: 'a@example.com' } },
+              { key: 'b', when: 'product', destination: { type: 'email', email: 'b@example.com' } },
+            ],
+            otherwise: 'hold',
+          },
+        },
+        requesterEmail: 'owner@example.com',
+      }),
+      [],
+    );
+  });
+
+  it('names one address once, however many branches point at it', () => {
+    // Two branches reaching one person is one thing to approve. Naming it twice
+    // on a card reads as two different requests.
+    assert.deepEqual(
+      externalMailDestinations({
+        args: {
+          operation: 'create',
+          destination: {
+            type: 'routed',
+            routes: [
+              { key: 'a', when: 'invoices', destination: { type: 'email', email: 'one@evil.test' } },
+              { key: 'b', when: 'product', destination: { type: 'email', email: 'one@evil.test' } },
+            ],
+          },
+        },
+        requesterEmail: 'owner@example.com',
+      }),
+      ['one@evil.test'],
+    );
   });
 });

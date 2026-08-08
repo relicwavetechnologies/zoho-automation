@@ -1508,6 +1508,53 @@
 .cur .ws-mk-chip:hover { color: var(--cur-ink); border-color: var(--cur-muted-soft); }
 .cur .ws-mk-chip[data-neg="true"] { border-color: var(--cur-featured-ring); }
 
+/* ── The routing table ────────────────────────────────
+   Rows of "when the message is X → send it to Y". The grid is fixed rather
+   than flowing so the arrows line up down the column: a table whose arrows
+   wander reads as a list of unrelated pairs rather than one decision with
+   several outcomes. */
+.cur .ws-routes { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.cur .ws-route {
+  display: grid; grid-template-columns: 1fr 20px 1fr 26px;
+  gap: 9px; align-items: center;
+}
+.cur .ws-route-h { font-size: 11.5px; color: var(--cur-muted); }
+.cur .ws-route-ar { text-align: center; color: var(--cur-muted-soft); }
+.cur .ws-route-x {
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; background: none; color: var(--cur-muted-soft); cursor: pointer;
+  padding: 0;
+}
+.cur .ws-route-x:hover:not(:disabled) { color: var(--cur-ink); }
+/* Two is the floor the runtime enforces. Dimmed rather than hidden, so the
+   control does not move under the pointer as rows are added and removed. */
+.cur .ws-route-x:disabled { opacity: 0.3; cursor: default; }
+@media (max-width: 720px) {
+  .cur .ws-route { grid-template-columns: 1fr 26px; }
+  .cur .ws-route-ar { display: none; }
+  .cur .ws-route-h { display: none; }
+}
+
+.cur .ws-add {
+  display: inline-flex; align-items: center; gap: 5px; padding: 6px 11px;
+  margin-top: 10px; border: 1px dashed var(--cur-hairline-strong);
+  border-radius: 999px; background: none;
+  font: inherit; font-size: 12.5px; color: var(--cur-muted); cursor: pointer;
+}
+.cur .ws-add:hover:not(:disabled) { color: var(--cur-ink); border-color: var(--cur-muted-soft); }
+.cur .ws-add:disabled { opacity: 0.4; cursor: default; }
+
+/* What happens to everything else, separated by a rule from the branches
+   above it: it is not a seventh branch, it is the answer to a different
+   question, and running it into the list makes it look like one more row
+   somebody forgot to fill in. */
+.cur .ws-route-else {
+  display: flex; flex-wrap: wrap; gap: 9px; align-items: center;
+  margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--cur-hairline);
+  font-size: 13px; color: var(--cur-body);
+}
+.cur .ws-route-else .input { width: auto; min-width: 200px; }
+
 .cur .ws-mk-org { display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
 .cur .ws-mk-org label { display: flex; align-items: center; gap: 9px; }
 .cur .ws-mk-org .input { max-width: 260px; }
@@ -1553,7 +1600,13 @@
 /* Three destinations, side by side. They were full-width rows carrying a title,
    a body sentence and a chosen badge — three paragraphs for what is one
    decision between three words. */
-.cur .ws-picks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
+/* Four now, not three — `auto-fit` rather than a fourth column, so adding a
+   fifth destination later does not make each card too narrow to read at the
+   breakpoint nobody tests. */
+.cur .ws-picks {
+  display: grid; gap: 9px;
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+}
 @media (max-width: 720px) { .cur .ws-picks { grid-template-columns: 1fr; } }
 .cur .ws-pick {
   padding: 13px; text-align: left; cursor: pointer;

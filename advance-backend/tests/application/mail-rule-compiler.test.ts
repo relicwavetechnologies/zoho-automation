@@ -109,3 +109,140 @@ describe('a sentence whose real content is a judgement', () => {
     }
   });
 });
+
+/**
+ * The sentence this whole feature was built for.
+ *
+ * The old prompt had exactly one DESTINATION and refused an "or" between
+ * conditions — so "invoices to Anish, product mail to Rakshit" came back
+ * `unclear`, which tells a member Divo cannot do the one thing that was just
+ * built for them.
+ */
+describe('a sentence that names different people for different mail', () => {
+  const routed = (over: Record<string, unknown> = {}) => ({
+    understood: true,
+    name: 'Client mail, sorted',
+    match: { from: 'client@google.com' },
+    destination: {
+      type: 'routed',
+      routes: [
+        { key: 'invoices', when: 'an invoice, bill or payment request', destination: { type: 'email', email: 'anish@emiactech.com' } },
+        { key: 'product', when: 'about the product, a feature or a bug', destination: { type: 'email', email: 'rdx.omega2678@gmail.com' } },
+      ],
+      otherwise: 'hold',
+      ...over,
+    },
+  });
+
+  it('compiles it into one rule with both branches', async () => {
+    const out = await compileWith(routed());
+    assert.equal(out.status, 'compiled');
+    if (out.status !== 'compiled') return;
+    assert.equal(out.destination.type, 'routed');
+    assert.deepEqual(
+      out.destination.type === 'routed'
+        ? out.destination.routes.map(r => r.destination)
+        : null,
+      [
+        { type: 'email', email: 'anish@emiactech.com' },
+        { type: 'email', email: 'rdx.omega2678@gmail.com' },
+      ],
+    );
+  });
+
+  it('defaults an unstated fallback to holding, never to a silent drop', async () => {
+    const { otherwise: _drop, ...withoutFallback } = routed().destination;
+    const out = await compileWith({ ...routed(), destination: withoutFallback });
+    assert.equal(out.status, 'compiled');
+    assert.equal(
+      out.status === 'compiled' && out.destination.type === 'routed'
+        ? out.destination.otherwise
+        : null,
+      'hold',
+    );
+  });
+
+  it('keeps a named fallback, which is a recipient like any other', async () => {
+    const out = await compileWith(routed({
+      otherwise: { type: 'email', email: 'everything-else@emiactech.com' },
+    }));
+    assert.deepEqual(
+      out.status === 'compiled' && out.destination.type === 'routed'
+        ? out.destination.otherwise
+        : null,
+      { type: 'email', email: 'everything-else@emiactech.com' },
+    );
+  });
+
+  /*
+   * Refused, not trimmed. A table that quietly lost a branch, or had a mixed
+   * one repaired, is a rule that sends somebody's mail to the wrong colleague
+   * while reporting that Divo understood the sentence.
+   */
+  it('refuses a table the runtime would not accept', async () => {
+    const cases = [
+      // One branch — that is a plain destination with a model call in front.
+      { routes: [{ key: 'invoices', when: 'an invoice', destination: { type: 'email', email: 'a@b.com' } }] },
+      // Mixed kinds: one rule cannot be both a forward and a Lark delivery.
+      { routes: [
+        { key: 'invoices', when: 'an invoice', destination: { type: 'email', email: 'a@b.com' } },
+        { key: 'product', when: 'the product', destination: { type: 'lark_chat', chatId: 'oc_1' } },
+      ] },
+      // Two branches no answer could tell apart.
+      { routes: [
+        { key: 'invoices', when: 'an invoice', destination: { type: 'email', email: 'a@b.com' } },
+        { key: 'invoices', when: 'a bill', destination: { type: 'email', email: 'c@d.com' } },
+      ] },
+      // `none` is the answer that means "nothing fits".
+      { routes: [
+        { key: 'none', when: 'an invoice', destination: { type: 'email', email: 'a@b.com' } },
+        { key: 'product', when: 'the product', destination: { type: 'email', email: 'c@d.com' } },
+      ] },
+      // Seven branches.
+      { routes: Array.from({ length: 7 }, (_, i) => ({
+        key: `k${i}`, when: `kind number ${i}`, destination: { type: 'email', email: `a${i}@b.com` },
+      })) },
+    ];
+    for (const over of cases) {
+      const out = await compileWith(routed(over));
+      assert.equal(out.status, 'unclear', `${JSON.stringify(over).slice(0, 60)} must not compile`);
+    }
+  });
+
+  it('refuses a table that also carries a question', async () => {
+    // Two AI steps with no stated order between them. `parseMailRule` refuses
+    // the pair outright, so compiling it would produce a draft that cannot be
+    // saved — a worse answer than a sentence.
+    const out = await compileWith({
+      ...routed(),
+      judge: { question: 'Is this actually from the client?' },
+    });
+    assert.equal(out.status, 'unclear');
+  });
+
+  it('reads a routed reply out of a code fence', async () => {
+    // JSON mode is the guarantee and `extractJson` is the salvage path. The
+    // longest, most structured output this prompt produces is exactly where a
+    // fenced reply used to cost somebody their rule.
+    const out = await createMailRuleCompiler({
+      model: {
+        specificationVersion: 'v2',
+        provider: 'test',
+        modelId: 'test',
+        supportedUrls: {},
+        doGenerate: async () => ({
+          content: [{
+            type: 'text',
+            text: '```json\n' + JSON.stringify(routed()) + '\n```',
+          }],
+          finishReason: 'stop',
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+          warnings: [],
+        }),
+        doStream: async () => { throw new Error('not used'); },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+    })({ sentence: 'test', mailboxEmail: 'abhishek@emiactech.com' });
+    assert.equal(out.status, 'compiled');
+  });
+});

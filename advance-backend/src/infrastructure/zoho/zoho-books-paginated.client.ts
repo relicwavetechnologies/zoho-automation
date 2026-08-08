@@ -89,6 +89,11 @@ const asArrayOfRecords = (v: unknown): Array<Record<string, unknown>> =>
 const isRecordValue = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === 'object' && !Array.isArray(v);
 
+const nonBlank = (v: string | undefined): string | undefined => {
+  const trimmed = v?.trim();
+  return trimmed ? trimmed : undefined;
+};
+
 const toPrimitive = (v: unknown): string | undefined => {
   if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return String(v);
   return undefined;
@@ -210,8 +215,11 @@ export class ZohoBooksPaginatedClient {
         const name      = asString(org['name']);
         const isDefault = asBoolean(org['is_default_org']) ?? asBoolean(org['is_default']);
         const address   = org['address'];
-        const stateCode = (isRecordValue(address) ? asString(address['state_code']) : undefined)
-          ?? asString(org['state_code']);
+        // Blank is absent. Zoho sends "" for an organisation with no state set,
+        // and a "" that survives defeats every `?? fallback` downstream while
+        // looking like an answer.
+        const stateCode = nonBlank(isRecordValue(address) ? asString(address['state_code']) : undefined)
+          ?? nonBlank(asString(org['state_code']));
         return {
           organizationId: asString(org['organization_id']) ?? asString(org['organizationId']) ?? '',
           ...(name      !== undefined ? { name }      : {}),

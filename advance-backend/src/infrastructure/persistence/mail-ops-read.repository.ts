@@ -96,6 +96,16 @@ export interface MailDeliveryRecord {
   /** Read out of the frozen payload so the row can name the mail it acted on. */
   subject: string | null;
   from: string | null;
+  /** What the rule's AI step decided, when it has one. `null` when it has not. */
+  verdict: Record<string, unknown> | null;
+  /**
+   * Where the message actually went, on a rule that chooses per message.
+   *
+   * `null` on every rule with one destination — there the rule's own answer is
+   * already right, and a second copy of it would be one more thing to keep in
+   * step.
+   */
+  resolvedDestination: Record<string, unknown> | null;
 }
 
 /**
@@ -111,8 +121,21 @@ export interface MailCaughtRecord extends MailDeliveryRecord {
   ruleName: string;
   action: Record<string, unknown>;
   destination: Record<string, unknown>;
-  /** What the rule's AI step decided, when it has one. `null` when it has not. */
-  verdict: Record<string, unknown> | null;
+}
+
+/**
+ * The address a verdict settled on, if it settled on one.
+ *
+ * Read defensively: this column holds whatever the worker wrote at the time,
+ * and rows predating routing carry no `destination` at all. A shape that cannot
+ * be read is `null` rather than an error — the row is still a real delivery and
+ * still has a status worth showing.
+ */
+function readVerdictDestination(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object') return null;
+  const destination = (value as Record<string, unknown>)['destination'];
+  if (!destination || typeof destination !== 'object') return null;
+  return destination as Record<string, unknown>;
 }
 
 /**
@@ -330,6 +353,7 @@ export class MailOpsReadRepository {
           nextAttemptAt: true,
           providerMessageId: true,
           payloadJson: true,
+          judgeVerdictJson: true,
         },
       });
 
@@ -347,6 +371,10 @@ export class MailOpsReadRepository {
           providerMessageId: row.providerMessageId,
           subject: message.subject,
           from: message.from,
+          // The rule page showed no verdicts at all while the Caught feed
+          // showed every one of them, about the same deliveries.
+          verdict: (row.judgeVerdictJson ?? null) as Record<string, unknown> | null,
+          resolvedDestination: readVerdictDestination(row.judgeVerdictJson),
         };
       }));
     } catch (cause) {
@@ -427,11 +455,27 @@ export class MailOpsReadRepository {
           ruleId: row.rule.id,
           ruleName: row.rule.name,
           action: (row.rule.actionJson ?? {}) as Record<string, unknown>,
+          /*
+           * The rule's destination, which on a routed rule is a table rather
+           * than a place — so the resolved one below is what the screen should
+           * prefer. Both are returned: the table is what the rule *is*, and the
+           * resolved address is what happened to this message.
+           */
           destination: (row.rule.destinationJson ?? {}) as Record<string, unknown>,
           // Passed through unread. The shape is the AI step's business and the
           // screen's; a repository that reinterprets it is a second opinion
           // about what the model said.
           verdict: (row.judgeVerdictJson ?? null) as Record<string, unknown> | null,
+          /*
+           * Where this message actually went.
+           *
+           * Read off the verdict rather than recomputed from the rule, because
+           * the rule's table may have been edited since and the frozen payload
+           * that carried the old one is swept off terminal rows at thirty days.
+           * Null on every rule that has one destination, where the rule's own
+           * answer is already the right one.
+           */
+          resolvedDestination: readVerdictDestination(row.judgeVerdictJson),
         };
       }));
     } catch (cause) {
@@ -551,9 +595,20 @@ export class MailOpsReadRepository {
         where: {
           companyId: input.companyId,
           ...(input.includeInactive ? {} : { status: 'active' }),
-          // Only rules that send somewhere. `organize` acts in place and
-          // `lark_dm` reaches one person who already had the mail.
-          destinationJson: { path: ['type'], equals: 'email' },
+          /*
+           * Only rules that send somewhere. `organize` acts in place and
+           * `lark_dm` reaches one person who already had the mail.
+           *
+           * `routed` as well as `email`, and leaving it out was not a narrower
+           * report — it was a blind one. A routed rule's recipients live one
+           * level down, so a predicate matching only `type === 'email'` skipped
+           * the whole rule, and every external address inside it dropped out of
+           * the one report built to find exactly that.
+           */
+          OR: [
+            { destinationJson: { path: ['type'], equals: 'email' } },
+            { destinationJson: { path: ['type'], equals: 'routed' } },
+          ],
         },
         orderBy: [{ createdAt: 'desc' }],
         select: {

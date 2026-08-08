@@ -1691,12 +1691,20 @@ export const createZohoBooksTool = (deps: {
           const customerName = typeof reviewSources.chosenCustomer?.['contact_name'] === 'string'
             ? reviewSources.chosenCustomer['contact_name'] as string
             : undefined;
-          const summary = renderStagedInvoice({
-            payload,
-            ...(customerName ? { customerName } : {}),
-            findings,
-            ...(args.fileName ? { attachFileName: args.fileName } : {}),
-          });
+          const summary = [
+            renderStagedInvoice({
+              payload,
+              ...(customerName ? { customerName } : {}),
+              findings,
+              ...(args.fileName ? { attachFileName: args.fileName } : {}),
+            }),
+            // Anything the tool re-read on the member's behalf belongs in the
+            // text they approve. A translation nobody is shown is a silent
+            // change to what they are agreeing to.
+            ...(normalized.notes.length > 0
+              ? ['', `Divo read: ${normalized.notes.join('; ')}.`]
+              : []),
+          ].join('\n');
 
           ctx.onProgress?.('Reviewing the draft…');
           const review = await deps.invoiceReviewer.review({
@@ -2029,11 +2037,17 @@ export const createZohoBooksTool = (deps: {
           if (!updates.ok) {
             return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: updates.message }));
           }
-          return ok(await writtenRecord('invoices', 'updated', {
+          const updated = await writtenRecord('invoices', 'updated', {
             method: 'PUT',
             path: `/invoices/${encodeURIComponent(args.invoiceId)}`,
             body: updates.fields,
-          }));
+          });
+          // This path has no staging, no summary and no approval text, so it is
+          // the one where a silent translation would go furthest unseen — the
+          // write has already happened by the time anybody reads the reply.
+          return ok(updates.notes.length > 0
+            ? { ...updated, message: `${updated.message} Divo read: ${updates.notes.join('; ')}.` }
+            : updated);
         }
 
         case 'mark_invoice_sent': {
@@ -2071,11 +2085,53 @@ export const createZohoBooksTool = (deps: {
 
         case 'record_payment': {
           if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for record_payment' }));
-          return ok(await writtenRecord('customerpayments', 'recorded', {
+
+          // Money received and money *settled against an invoice* are different
+          // events, and Zoho accepts the first while the caller means the second.
+          // A payment with no application is booked as an on-account advance:
+          // Zoho answers 201, the invoice keeps its full balance, and the
+          // customer goes on being chased for money they have already paid.
+          const paymentFields = args.fields as Record<string, unknown>;
+          const applications = paymentFields['invoices'];
+          const appliesToInvoice = Array.isArray(applications) && applications.length > 0;
+          if (!appliesToInvoice && paymentFields['on_account'] !== true) {
+            return err(new ToolError({
+              toolId: 'zohoBooks', reason: 'bad_args',
+              message: 'This payment names no invoice, so Zoho would hold it as an unapplied credit and the '
+                + 'invoice would stay outstanding. Add invoices: [{ invoice_id, amount_applied }] with the '
+                + 'invoice this settles. If the member really is recording money received in advance of any '
+                + 'invoice, say so and pass on_account: true.',
+            }));
+          }
+          // `on_account` is ours, not Zoho's — strip it before it travels.
+          const { on_account: _onAccount, ...body } = paymentFields;
+
+          const recorded = await writtenRecord('customerpayments', 'recorded', {
             method: 'POST',
             path: '/customerpayments',
-            body: args.fields as Record<string, unknown>,
-          }));
+            body,
+          });
+
+          // What Zoho did with it, not what we asked for. A partial application
+          // leaves a remainder that nobody is watching unless it is said out loud.
+          const stored = isRecord(recorded.data) ? recorded.data : {};
+          const unused = numericAmount(stored['unused_amount']);
+          if (appliesToInvoice && unused !== null && unused > 0) {
+            // A remainder does not say which way it went. The customer may have
+            // paid more than the invoice — in which case the invoice IS settled
+            // and the surplus is a credit — or the payment may have covered only
+            // part of it. Asserting either from this number alone would be the
+            // same false statement in the opposite direction, so it reports the
+            // figure and points at the record that actually decides.
+            return ok({
+              ...recorded,
+              message: `${recorded.message} Zoho attached ${formatAmount(unused, stringValue(stored, 'currency_code') || 'INR')} `
+                + 'of this payment to no invoice — either the customer paid more than was owed, or less was applied '
+                + 'than intended. Read the invoice back before describing it as paid or outstanding, and tell the '
+                + 'member the leftover figure either way.',
+            });
+          }
+          return ok(recorded);
         }
 
         case 'create_expense': {

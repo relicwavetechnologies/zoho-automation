@@ -35,6 +35,7 @@ export const financeZohoRouterSkill: Skill = {
 - Zoho Books lookup, read-only reporting, whole-account aggregation, receivables, invoices, payments, bills, expenses, bank transactions, item and tax rate lookups, and tax summaries -> load \`zoho-books-read-analysis\`.
 - Zoho CRM customer, lead, contact, account, deal, or case context -> load \`zoho-crm-read-analysis\`.
 - Creating, issuing, emailing, correcting, or attaching a PDF to a customer invoice, or adding a new customer -> load \`zoho-books-invoice\`.
+- Recording a customer payment against an invoice, or logging an expense -> load \`zoho-books-money\`.
 - Recording or creating a vendor bill from an invoice or PDF -> load \`zoho-books-bill\`.
 - Recording a bill and then notifying the Accounts Lark group -> load \`zoho-bill-notify-accounts\`.
 
@@ -54,6 +55,11 @@ READ ROUTING:
 - Use zohoCrm read operations for customer, lead, contact, account, deal, case, owner, and relationship context.
 - Use narrow search/list filters before fetching a specific record.
 - Stay read-only unless the user explicitly requests a CRM mutation and an approved write specialist is available.
+
+WRITES ARE NOT THIS SKILL:
+- This skill is for reading. Creating, editing, issuing, emailing, voiding, paying, or attaching anything is a different workflow with its own safeguards, and those safeguards are not in this file.
+- If the member wants a write, stop and load the right skill first: \`zoho-books-invoice\` for invoices and customers, \`zoho-books-bill\` for vendor bills, \`zoho-books-money\` for payments and expenses.
+- Sharing a tool with those skills does not make a write safe here. Do not perform one merely because the tool would accept it.
 
 OUTPUT:
 - State the account used, material filters, record type, and confirmed result.
@@ -88,6 +94,11 @@ ${ZOHO_BOOKS_ROW_CONTRACT}
 ${ZOHO_BOOKS_OUTSTANDING_RULE}
 ${ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE}
 
+WRITES ARE NOT THIS SKILL:
+- This skill reads. Creating, editing, issuing, emailing, voiding, attaching, paying, or expensing anything is a different workflow, and the safeguards those need — staging, duplicate checks, the GST direction check, payment application — are not in this file.
+- If the member wants a write, stop and load the right skill first: \`zoho-books-invoice\` for invoices and customers, \`zoho-books-bill\` for vendor bills, \`zoho-books-money\` for customer payments and expenses.
+- The zohoBooks tool will accept a write from here because it is the same tool. That is not permission. A write performed under this skill is a write performed without its checks.
+
 OUTPUT:
 - State the account used, material filters, count, total, and whether all pages were processed.
 - Preserve Zoho identifiers exactly as returned, including invoice numbers; never add, remove, or reformat identifier characters.
@@ -105,6 +116,7 @@ const ZOHO_BOOKS_BILL_WORKFLOW = `ZOHO BOOKS BILL RECORDING:
 - Fetch chart of accounts with op="get_chart_of_accounts" and choose the expense account that matches the service. Do not guess silently when the account choice is ambiguous.
 - Fetch the real tax records with op="list_taxes" and apply GST using the tax_id they return. Divo compares the vendor's state against the selling organisation's own state, so do not assume one. Different state means IGST; the same state means CGST plus SGST. Never invent a rate or a tax id.
 - Create the bill with zohoBooks op="create_bill" and fields containing vendor_id, bill_number, date, due_date, line_items, taxes, and notes including IRN/payment context when available.
+- bill_number is the vendor's own reference, printed on their invoice. Read it from the document or ask for it. Never compose one from the vendor's name and the month: an invented number reconciles against nothing and hides the real duplicate.
 - Attach the source PDF with op="attach_document", recordType="bill", recordId set to the bill_id, and fileName set to the exact name of the file the member sent in this conversation. The tool confirms against Zoho's own document list; report attached only when it says so.
 - Attaching works only for a file sent in this Lark conversation. If the tool says it cannot find or download the file, say the bill was created without its PDF and ask the member to send the file again. Never describe an attachment the tool did not confirm.
 - Record payment only when the user asks or the invoice is clearly paid. If unpaid or bill-only, leave it open and say payment was not recorded.
@@ -192,6 +204,37 @@ VERIFY AND REPORT:
 - State the invoice number, its status, total, balance, and its link, all from what the tool returned.
 - Say plainly which of these happened: created, issued, emailed, attached, or left as a draft. Never imply an act you did not perform.
 - Preserve Zoho identifiers exactly as returned; never reformat an invoice number.`,
+};
+
+export const zohoBooksMoneySkill: Skill = {
+  id: 'zoho-books-money',
+  name: 'Zoho Books Payments and Expenses',
+  description: 'Record customer payments against invoices and log expenses in Zoho Books, settling the right record rather than leaving money unattached.',
+  toolIds: ['zohoBooks'],
+  instructions: `${ZOHO_CONNECTION_METHOD}
+
+SCOPE:
+- Money arriving from a customer, and money the company spends. Raising an invoice is \`zoho-books-invoice\`; recording what a supplier billed us is \`zoho-books-bill\`.
+
+${ZOHO_WRITE_SAFETY}
+
+RECORDING A CUSTOMER PAYMENT:
+- Receiving money and settling an invoice are two different events, and only one of them is usually meant. A payment recorded without naming an invoice sits in Zoho as an unapplied credit: the invoice keeps its full balance and the customer is chased for money they have already paid.
+- Find the invoice first. op="list_invoices" with searchQuery, or op="get_invoice" with the exact number. Take its invoice_id and its current balance.
+- op="record_payment" with fields containing customer_id, date, amount, payment_mode, and invoices: [{ invoice_id, amount_applied }]. The tool refuses a payment that settles nothing.
+- amount_applied is what this payment clears on that invoice, and it cannot exceed the invoice balance. Paying several invoices at once means several entries in that list.
+- Money genuinely received before any invoice exists is an advance. Only then, say so to the member and pass on_account: true.
+- If the tool reports that Zoho attached part of the payment to no invoice, repeat that figure and read the invoice back with op="get_invoice" before describing it. A leftover can mean the customer overpaid, in which case the invoice is settled and the surplus is a credit; or that less was applied than intended, in which case it is still outstanding. The invoice's own balance decides, not the leftover.
+- Ask which account the money landed in rather than choosing one. Zoho files a payment with no account under Undeposited Funds, which someone has to unpick later.
+
+LOGGING AN EXPENSE:
+- op="list_taxes" and the chart of accounts give the real ids. op="create_expense" with fields containing account_id, date, amount, and paid_through_account_id.
+- The expense account and the account it was paid from are two separate choices, and both belong to the member. Never pick either silently — if the member did not say, ask, and name the options you found.
+
+VERIFY AND REPORT:
+- Report the balance the tool returned, not the balance you expect after arithmetic you did yourself.
+- Say which invoice was settled and by how much. If an invoice is now fully paid, say so; if it is part paid, give the remaining balance.
+- Never describe money as received, applied, or paid unless the tool confirmed it.`,
 };
 
 export const zohoBillNotifyAccountsSkill: Skill = {
