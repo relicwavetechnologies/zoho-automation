@@ -46,6 +46,19 @@ describe('Semrush system skill', () => {
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Never tally the preview instead/);
   });
 
+  it('requires every compared target to be reported, and says why that fails silently', () => {
+    // Eleven sites came back described as ten. Each number in the answer was
+    // right, so the omission was invisible.
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /every target numbered 1\.\.N/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /\*\*Report every position\.\*\*/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /because each number in it is correct/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /More than ten named domains means more than one call/);
+  });
+
+  it('keeps a missing backlinks report out of the weakest slot', () => {
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /never present a missing report as an authority score of 0 or as the weakest site/);
+  });
+
   it('names the derived columns the file adds, and keeps them out of the chat table', () => {
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /`Traffic Share %`/);
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /`Market Tier`/);

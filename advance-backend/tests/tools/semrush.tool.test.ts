@@ -216,7 +216,13 @@ describe('semrush tool', () => {
     for await (const page of adapter.read(source, { companyId: 'co-1', userId: 'user-1' })) pages.push(page);
 
     assert.deepEqual(calls, [source.args]);
-    assert.deepEqual(pages, [{ rows: [{ Target: 'example.com' }] }]);
+    // One fetch is the point of this test; the row is enriched on the way out.
+    assert.equal(pages.length, 1);
+    assert.deepEqual(pages[0]!.rows, [{
+      Target: 'example.com',
+      'Authority Rank': 1,
+      'Backlinks per Referring Domain': '',
+    }]);
     assert.equal(datasetSourceToolId(source), 'semrush');
   });
 
@@ -260,13 +266,17 @@ describe('semrush tool', () => {
     assert.equal(rows[0]!['Organic Traffic'], 90);
   });
 
-  it('leaves a report that is not a country table exactly as the provider sent it', async () => {
+  it('adds the ranking and link-concentration columns to an exported comparison', async () => {
     const adapter = new SemrushSnapshotDataExportSource({
       execute: async () => ({
         operation: 'backlinks_comparison',
         status: 'complete',
         coverage: {},
-        rows: [{ Target: 'example.com', 'Authority Score': 40 }],
+        rows: [
+          { Target: 'small.com', 'Authority Score': 5, Backlinks: 300, 'Referring Domains': 100, 'Provider Data Status': 'Returned' },
+          { Target: 'big.com', 'Authority Score': 30, Backlinks: 1000, 'Referring Domains': 500, 'Provider Data Status': 'Returned' },
+          { Target: 'gone.com', 'Provider Data Status': 'No provider data' },
+        ],
       }),
     } as never);
 
@@ -274,10 +284,18 @@ describe('semrush tool', () => {
     for await (const page of adapter.read({
       kind: 'semrush_snapshot' as const,
       connectionId: 'backend_managed' as const,
-      args: { operation: 'backlinks_comparison' as const, targets: ['example.com'] },
+      args: { operation: 'backlinks_comparison' as const, targets: ['small.com', 'big.com', 'gone.com'] },
     }, { companyId: 'co-1', userId: 'user-1' })) pages.push(page);
+    const rows = pages[0]!.rows as Array<Record<string, unknown>>;
 
-    assert.deepEqual(pages[0]!.rows, [{ Target: 'example.com', 'Authority Score': 40 }]);
+    assert.equal(rows[1]!['Authority Rank'], 1); // big.com leads on authority
+    assert.equal(rows[0]!['Authority Rank'], 2);
+    assert.equal(rows[0]!['Backlinks per Referring Domain'], 3); //  300/100
+    assert.equal(rows[1]!['Backlinks per Referring Domain'], 2); // 1000/500
+    // A target Semrush had no report for is left unranked, not ranked worst.
+    assert.equal(rows[2]!['Authority Rank'], '');
+    assert.equal(rows[2]!['Backlinks per Referring Domain'], '');
+    assert.equal(rows[0]!['Authority Score'], 5);
   });
 
   it('ends an export permanently when the key is refused or spent, and points at the key', async () => {
@@ -378,6 +396,7 @@ describe('semrush tool', () => {
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.deepEqual(result.value.insights, {
+      kind: 'domain_overview',
       countriesReturned: 4,
       totalOrganicTraffic: 815,
       totalOrganicKeywords: 173,
@@ -425,22 +444,69 @@ describe('semrush tool', () => {
     assert.equal(result.value.insights?.countriesWithTraffic, 10);
   });
 
-  it('offers no insights for a report that has no countries to count', async () => {
+  it('numbers every compared target so an answer cannot quietly drop one', async () => {
+    // A real eleven-site comparison was written up as ten, with every printed
+    // number correct. A count does not catch that; numbered positions do.
+    const targets = Array.from({ length: 11 }, (_, i) => `site${i}.com`);
     const tool = createTool({
       service: {
         execute: async () => ({
           operation: 'backlinks_comparison',
           status: 'complete',
           coverage: {},
-          rows: [{ Target: 'a.com', 'Authority Score': 40 }],
+          rows: targets.map((target, i) => ({
+            Target: target,
+            'Authority Score': 30 - i,
+            Backlinks: 1000 * (i + 1),
+            'Referring Domains': 100 * (i + 1),
+            'Provider Data Status': 'Returned',
+          })),
         }),
       },
     });
-    const result = await tool.execute({ operation: 'backlinks_comparison', targets: ['a.com'] }, makeCtx('semrush', ['read']));
+
+    const result = await tool.execute({ operation: 'backlinks_comparison', targets }, makeCtx('semrush', ['read']));
+
     assert.equal(result.ok, true);
-    if (!result.ok) return;
-    assert.equal(result.value.insights, undefined);
-    assert.doesNotMatch(result.value.message, /Counted from the rows/);
+    if (!result.ok || result.value.insights?.kind !== 'backlinks_comparison') {
+      return assert.fail('expected backlinks insights');
+    }
+    const { insights } = result.value;
+    assert.equal(insights.targetsCompared, 11);
+    assert.deepEqual(insights.ranking.map(entry => entry.position), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    assert.deepEqual(insights.ranking.map(entry => entry.target), targets);
+    assert.deepEqual(insights.targetsWithoutProviderData, []);
+    assert.match(result.value.message, /Ranked 11 targets as positions 1 to 11/);
+    assert.match(result.value.message, /do not drop one/);
+    assert.match(result.value.message, /Every target returned a report/);
+  });
+
+  it('ranks a target with no Semrush report last, with null metrics rather than a zero score', async () => {
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'backlinks_comparison',
+          status: 'complete',
+          coverage: { missingTargets: ['gone.com'] },
+          rows: [
+            { Target: 'weak.com', 'Authority Score': 2, Backlinks: 10, 'Referring Domains': 5, 'Provider Data Status': 'Returned' },
+            { Target: 'gone.com', 'Provider Data Status': 'No provider data' },
+          ],
+        }),
+      },
+    });
+
+    const result = await tool.execute({ operation: 'backlinks_comparison', targets: ['weak.com', 'gone.com'] }, makeCtx('semrush', ['read']));
+
+    assert.equal(result.ok, true);
+    if (!result.ok || result.value.insights?.kind !== 'backlinks_comparison') {
+      return assert.fail('expected backlinks insights');
+    }
+    const last = result.value.insights.ranking.at(-1)!;
+    assert.equal(last.target, 'gone.com');
+    assert.equal(last.authorityScore, null);
+    assert.equal(last.hasProviderData, false);
+    assert.match(result.value.message, /missing data and not a score of zero/);
   });
 
   it('does not add the country caveat to operations that have no countries', async () => {

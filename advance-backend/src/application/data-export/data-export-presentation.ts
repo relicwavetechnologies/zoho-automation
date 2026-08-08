@@ -96,6 +96,8 @@ export function buildDataExportPresentation(input: {
       'Nofollow Links': '#,##0',
       'Text Links': '#,##0',
       'Image Links': '#,##0',
+      'Authority Rank': '#,##0',
+      'Backlinks per Referring Domain': '0.00',
       'Traffic Rank': '#,##0',
       'Traffic Share %': '0.00"%"',
       'Cumulative Traffic %': '0.00"%"',
@@ -132,6 +134,8 @@ export function buildDataExportPresentation(input: {
       'SERP Features by Keyword': 220,
       'SERP Features by Position': 220,
       'Provider Data Status': 160,
+      'Authority Rank': 120,
+      'Backlinks per Referring Domain': 210,
       'Traffic Rank': 100,
       'Traffic Share %': 115,
       'Cumulative Traffic %': 155,
@@ -217,6 +221,14 @@ function semrushOverviewRows(input: {
       ['Value per Visit', 'Organic cost divided by organic traffic. Blank where there is no traffic to divide by.'],
       ['Market Tier', 'Core = inside the first 80% of traffic. Emerging = has traffic, beyond that 80%. Dormant = Semrush measured exactly zero traffic.'],
       ['Dormant vs absent', 'Dormant is a measured zero and can be reported as ranking without clicks. A country with no row here was never measured, and is not dormant.'],
+    );
+  }
+  if (input.columns.includes('Authority Rank')) {
+    rows.push(
+      [],
+      ['Derived columns', 'Calculated by Divo from the rows in this file. No extra Semrush request was made.'],
+      ['Authority Rank', 'Position by authority score, strongest first. Blank where Semrush returned no report, which is missing data rather than the weakest score.'],
+      ['Backlinks per Referring Domain', 'Backlinks divided by referring domains. A high ratio is many links from few sites; a low one is a broader profile.'],
     );
   }
   if (args.operation === 'domain_overview' && input.hasTrends) {

@@ -8,10 +8,8 @@ import type { ToolActionGroup } from '../../../domain/permissions/tool-action-gr
 import { asToolId } from '../../../shared/ids';
 import type { AuditService } from '../../observability/audit.service';
 import { SemrushService } from '../../semrush/semrush.service';
-import {
-  summarizeSemrushDomainOverview,
-  type SemrushDomainOverviewInsights,
-} from '../../semrush/semrush-domain-insights';
+import { summarizeSemrushDomainOverview } from '../../semrush/semrush-domain-insights';
+import { summarizeSemrushBacklinks } from '../../semrush/semrush-backlinks-insights';
 import { SemrushServiceError, SemrushToolArgsSchema, type SemrushFetchedData, type SemrushToolArgs } from '../../semrush/semrush.types';
 import type { ApiKeyExhaustionNotifierPort } from '../../governance/api-key-exhaustion.notifier';
 import type { DataExportOrchestrationService } from '../../data-export/data-export-orchestration.service';
@@ -59,7 +57,8 @@ const ResultSchema = z.object({
   // Counted from the rows the run actually returned. Every number a member asks
   // for out loud lives here, so the model reports one instead of tallying a
   // table by eye — which is how a 26-row answer came back naming 22 countries.
-  insights: z.object({
+  insights: z.discriminatedUnion('kind', [z.object({
+    kind: z.literal('domain_overview'),
     countriesReturned: z.number().int().nonnegative(),
     totalOrganicTraffic: z.number().nonnegative(),
     totalOrganicKeywords: z.number().nonnegative(),
@@ -76,7 +75,23 @@ const ResultSchema = z.object({
       organicTraffic: z.number(),
       trafficSharePct: z.number(),
     }).strict()),
-  }).strict().optional(),
+  }).strict(), z.object({
+    // Positions run 1..N with no gaps, so a target left out of the written
+    // answer is visible. An eleven-site comparison was reported as ten with
+    // every printed number correct, which is the failure a count cannot catch.
+    kind: z.literal('backlinks_comparison'),
+    targetsCompared: z.number().int().nonnegative(),
+    targetsWithProviderData: z.number().int().nonnegative(),
+    targetsWithoutProviderData: z.array(z.string()),
+    ranking: z.array(z.object({
+      position: z.number().int().positive(),
+      target: z.string(),
+      authorityScore: z.number().nullable(),
+      backlinks: z.number().nullable(),
+      referringDomains: z.number().nullable(),
+      hasProviderData: z.boolean(),
+    }).strict()),
+  }).strict()]).optional(),
   nextPage: z.string().optional(),
   message: z.string(),
 });
@@ -142,7 +157,7 @@ export const createSemrushTool = (deps: {
         rows: allRows,
         coverage: previewCoverageFor(data, allRows.length),
       });
-      const insights = resultInsights(summarizeSemrushDomainOverview(allRows));
+      const insights = resultInsights(allRows);
       const result: Res = {
         status: data.status,
         operation: data.operation,
@@ -225,16 +240,25 @@ export const createSemrushTool = (deps: {
   },
 });
 
-/** The summary is readonly by construction; the result schema infers mutable arrays. */
-function resultInsights(
-  insights: SemrushDomainOverviewInsights | undefined,
-): Res['insights'] {
-  if (!insights) return undefined;
-  return {
-    ...insights,
-    tiers: { ...insights.tiers },
-    topCountries: insights.topCountries.map(country => ({ ...country })),
-  };
+/** The summaries are readonly by construction; the result schema infers mutable arrays. */
+function resultInsights(rows: readonly Readonly<Record<string, unknown>>[]): Res['insights'] {
+  const overview = summarizeSemrushDomainOverview(rows);
+  if (overview) {
+    return {
+      ...overview,
+      tiers: { ...overview.tiers },
+      topCountries: overview.topCountries.map(country => ({ ...country })),
+    };
+  }
+  const backlinks = summarizeSemrushBacklinks(rows);
+  if (backlinks) {
+    return {
+      ...backlinks,
+      targetsWithoutProviderData: [...backlinks.targetsWithoutProviderData],
+      ranking: backlinks.ranking.map(entry => ({ ...entry })),
+    };
+  }
+  return undefined;
 }
 
 function messageFor(input: {
@@ -264,7 +288,22 @@ function messageFor(input: {
   // Handing over the counts removes the step the model kept getting wrong. Any
   // "how many" answer is a field read from here, never a tally of the preview —
   // the preview is capped at 25 rows and counting it undercounts a longer run.
-  if (input.insights) {
+  // A comparison is a list, and a list fails differently from a count: eleven
+  // targets were reported as ten with every printed number correct. Numbered
+  // positions make the gap visible, so the instruction is to walk them.
+  if (input.insights?.kind === 'backlinks_comparison') {
+    const { insights } = input;
+    parts.push(
+      `Ranked ${insights.targetsCompared} targets as positions 1 to ${insights.targetsCompared}`
+      + ' in insights.ranking, strongest authority score first.'
+      + ' Account for every position when you write the answer — read them off that list rather than'
+      + ' from the table, and do not drop one.'
+      + (insights.targetsWithoutProviderData.length > 0
+        ? ` Semrush returned no report for ${insights.targetsWithoutProviderData.join(', ')}; those rank last and their metrics are null, which is missing data and not a score of zero.`
+        : ' Every target returned a report.'),
+    );
+  }
+  if (input.insights?.kind === 'domain_overview') {
     const { insights } = input;
     parts.push(
       `Counted from the rows: ${insights.countriesReturned} countries returned,`

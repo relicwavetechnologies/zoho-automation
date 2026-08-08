@@ -41,6 +41,7 @@ export interface SemrushTopCountry {
 }
 
 export interface SemrushDomainOverviewInsights {
+  readonly kind: 'domain_overview';
   readonly countriesReturned: number;
   readonly totalOrganicTraffic: number;
   readonly totalOrganicKeywords: number;
@@ -135,6 +136,7 @@ export function summarizeSemrushDomainOverview(
   }
 
   return {
+    kind: 'domain_overview',
     countriesReturned: rows.length,
     totalOrganicTraffic,
     totalOrganicKeywords,

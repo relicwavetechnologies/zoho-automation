@@ -345,7 +345,13 @@ describe('data export source adapters', () => {
       pages.push(page);
     }
 
-    assert.deepEqual(pages, [{ rows: [{ Target: 'example.com' }] }]);
+    // One page from one fetch; the row carries the derived export columns.
+    assert.equal(pages.length, 1);
+    assert.deepEqual(pages[0]!.rows, [{
+      Target: 'example.com',
+      'Authority Rank': 1,
+      'Backlinks per Referring Domain': '',
+    }]);
   });
 
   it('does not claim truncation when the CRM returned the whole module', async () => {
