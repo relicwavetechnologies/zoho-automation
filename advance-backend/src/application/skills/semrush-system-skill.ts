@@ -52,9 +52,9 @@ Only the three **Callable** operations below may be invoked through the \`semrus
 
 ## Supported backend operations (3 callable)
 
-- \`domain_overview\`: one bare domain and a supported country database. A single snapshot row.
+- \`domain_overview\`: one bare domain. Semrush answers with **one row per country database** it holds that domain in, so a single call already covers "global and country-wise traffic". \`database\` chooses which country leads the table; the rest follow by organic traffic. For a one-country question, read the first row and say so — do not call the operation again per country.
 - \`backlinks_comparison\`: authority score, total backlinks and referring domains per target (1–10 domains in one request).
-- \`keyword_position_trend\`: one domain, one keyword, and one date (YYYYMMDD). Use for "where did this keyword rank on this date", not for full keyword lists or monthly domain history.
+- \`keyword_position_trend\`: one domain and one keyword, returned as a **dated series** of positions around the date you pass — not one row. Use it for "where did this keyword rank" and for how that rank moved over the returned window. Not for full keyword lists.
 
 ## Cost and honesty rules for these operations
 

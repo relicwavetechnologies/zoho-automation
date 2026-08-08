@@ -13,6 +13,49 @@ describe('nextSemrushDpaRequestId', () => {
   });
 });
 
+describe('SemrushWebClient domain overview', () => {
+  // Shape and values taken from a live organic.overview call for emiactech.com,
+  // which answered with 26 country databases in one request.
+  const liveShape = [
+    { database: 'us', domain: 'emiactech.com', rank: 10435549, organicPositions: 105, organicTraffic: 3 },
+    { database: 'in', domain: 'emiactech.com', rank: 305836, organicPositions: 53, organicTraffic: 810 },
+    { database: 'ca', domain: 'emiactech.com', rank: 4785795, organicPositions: 9, organicTraffic: 0 },
+    { database: 'ru', domain: 'emiactech.com', rank: 2839423, organicPositions: 6, organicTraffic: 2 },
+  ];
+  const clientReturning = (result: unknown) => new SemrushWebClient({
+    apiKey: 'test-api-key', cookie: 'session=cookie', timeoutMs: 5_000,
+    fetchImpl: async () => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }), { status: 200 }),
+  });
+
+  it('keeps every country Semrush already returned', async () => {
+    const data = await clientReturning(liveShape).fetch({
+      operation: 'domain_overview', domain: 'emiactech.com', database: 'in',
+    });
+    assert.equal(data.status, 'complete');
+    assert.equal(data.rows.length, 4);
+    assert.equal(data.coverage.databasesReturned, 4);
+    assert.deepEqual(data.rows.map(row => row.Database), ['in', 'us', 'ru', 'ca']);
+  });
+
+  it('leads with the requested country so a one-country answer reads off row one', async () => {
+    const data = await clientReturning(liveShape).fetch({
+      operation: 'domain_overview', domain: 'emiactech.com', database: 'ca',
+    });
+    assert.equal(data.rows[0]!.Database, 'ca');
+    assert.equal(data.rows[0]!['Organic Keywords'], 9);
+    // The remainder still ranks by the traffic that makes a row worth reading.
+    assert.deepEqual(data.rows.slice(1).map(row => row.Database), ['in', 'us', 'ru']);
+  });
+
+  it('reports empty rather than inventing a row when Semrush holds nothing', async () => {
+    const data = await clientReturning([]).fetch({
+      operation: 'domain_overview', domain: 'example.com', database: 'in',
+    });
+    assert.equal(data.status, 'empty');
+    assert.deepEqual(data.rows, []);
+  });
+});
+
 describe('SemrushWebClient failure classification', () => {
   const client = (fetchImpl: typeof fetch) => new SemrushWebClient({
     apiKey: 'test-api-key', cookie: 'session=cookie', timeoutMs: 5_000, fetchImpl,

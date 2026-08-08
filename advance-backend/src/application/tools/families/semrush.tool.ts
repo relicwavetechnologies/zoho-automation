@@ -72,9 +72,9 @@ export const createSemrushTool = (deps: {
   description: 'Run read-only Semrush SEO research through backend-configured Semrush web operations. Supports only explicit operations.',
   parameterDocs: [
     'operation: domain_overview, backlinks_comparison, or keyword_position_trend.',
-    'domain_overview: { domain, database? }. One-row snapshot of rank, organic/paid keywords, traffic and cost.',
+    'domain_overview: { domain, database? }. Rank, organic/paid keywords, traffic and cost for every country database Semrush holds the domain in — one row per country, the requested database first, the rest by organic traffic. Answers "traffic by country" from a single request; read the first row for one country.',
     'backlinks_comparison: { targets[1–10] }. Authority score, total backlinks and referring domains per target in one web request. If Semrush has no report for a requested target, coverage.missingTargets and the export name it as no provider data rather than zero.',
-    'keyword_position_trend: { domain, keyword, date, database?, dateType? }. One domain, one keyword, one date (YYYYMMDD). Use for rank on a specific date, not for full keyword lists.',
+    'keyword_position_trend: { domain, keyword, date, database?, dateType? }. One domain and one keyword, returned as a dated series of positions around the requested date — not a single row. Use for rank on a date and for how that rank moved; not for full keyword lists.',
     'Divo rejects arbitrary Semrush endpoints, headers, cookies, export columns, and API keys. Do not claim an unavailable operation has run.',
   ].join('\n'),
   permissionCheck(_args: SemrushToolArgs, perm: PermissionResult) {

@@ -110,20 +110,21 @@ export class SemrushWebClient {
     });
     const body = await this.jsonRpc(payload);
     const result = Array.isArray(body.result) ? body.result : [];
-    const selected = result.find(row => objectValue(row, 'database') === database) ?? result[0];
-    const row = selected && typeof selected === 'object'
-      ? domainOverviewRow(selected as Record<string, unknown>)
-      : undefined;
+    const rows = result
+      .filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === 'object' && !Array.isArray(row))
+      .map(row => domainOverviewRow(row))
+      .sort(byRequestedDatabaseThenTraffic(database));
     return {
       operation: 'domain_overview',
-      status: row ? 'complete' : 'empty',
+      status: rows.length ? 'complete' : 'empty',
       coverage: {
         domain,
         database,
+        databasesReturned: rows.length,
         apiVersion: 'web_dpa',
         report: 'organic.overview',
       },
-      rows: row ? [row] : [],
+      rows,
     };
   }
 
@@ -325,8 +326,26 @@ function flattenRow(row: Record<string, unknown>): Record<string, unknown> {
   return output;
 }
 
-function objectValue(value: unknown, key: string): unknown {
-  return value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
+/**
+ * One `organic.overview` call answers with a row per country database — 26 for
+ * a small domain. Keeping only the requested one discarded a country breakdown
+ * the same request had already paid for, and left "traffic by country" looking
+ * like a capability Semrush does not offer.
+ *
+ * The requested database leads so a single-country question still reads off
+ * the first row; the rest follow by the traffic that makes them worth reading.
+ */
+function byRequestedDatabaseThenTraffic(requested: string) {
+  return (a: Record<string, unknown>, b: Record<string, unknown>): number => {
+    const aRequested = a.Database === requested;
+    const bRequested = b.Database === requested;
+    if (aRequested !== bRequested) return aRequested ? -1 : 1;
+    return finiteNumber(b['Organic Traffic']) - finiteNumber(a['Organic Traffic']);
+  };
+}
+
+function finiteNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
 function webFailure(status: unknown, fallback: string): SemrushServiceError {
