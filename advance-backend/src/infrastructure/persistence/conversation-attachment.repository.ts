@@ -32,19 +32,19 @@ export class PrismaConversationAttachmentStore implements ConversationAttachment
   }
 
   async listLive(input: {
-    companyId:       string;
-    userId:          string;
-    channel:         string;
-    conversationKey: string;
-    now:             Date;
+    companyId: string;
+    userId:    string;
+    channel:   string;
+    chatId:    string;
+    now:       Date;
   }): Promise<readonly ConversationAttachmentRow[]> {
     const rows = await this.prisma.conversationAttachment.findMany({
       where: {
-        companyId:       input.companyId,
-        userId:          input.userId,
-        channel:         input.channel,
-        conversationKey: input.conversationKey,
-        expiresAt:       { gt: input.now },
+        companyId: input.companyId,
+        userId:    input.userId,
+        channel:   input.channel,
+        chatId:    input.chatId,
+        expiresAt: { gt: input.now },
       },
       orderBy: { receivedAt: 'desc' },
       take: 50,

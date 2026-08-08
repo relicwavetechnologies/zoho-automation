@@ -10,9 +10,11 @@ import {
   unwrapZohoRecord,
 } from '../../src/application/zoho/zoho-books-write-result.ts';
 import {
+  ConversationAttachmentService,
   selectAttachment,
   type ConversationAttachmentRow,
 } from '../../src/application/conversation-attachments/conversation-attachment.service.ts';
+import { conversationKeyForMessage } from '../../src/domain/conversation/conversation-key.ts';
 
 describe('unwrapZohoRecord', () => {
   it('reads the singular wrapper Zoho uses for most modules', () => {
@@ -144,5 +146,48 @@ describe('selectAttachment', () => {
     const result = selectAttachment([row({ fileName: 'ACME-4471.pdf' })], 'ACME-4472.pdf');
     assert.equal(result.kind, 'not_found');
     assert.deepEqual(result.kind === 'not_found' ? result.available : [], ['ACME-4471.pdf']);
+  });
+});
+
+describe('attachment lookup scope', () => {
+  it('finds a file the member sent in an earlier top-level group message', async () => {
+    // The runtime thread key carries the id of the message that seeded the
+    // thread, so a PDF posted alone and the instruction posted next are two
+    // different threads. Keying the lookup on that would miss the exact case
+    // this index exists for, so it keys on the chat and the sender instead.
+    const pdfMessage = { chatId: 'oc-1', chatType: 'group', messageId: 'om-pdf', userExternalId: 'ou-1' };
+    const askMessage = { chatId: 'oc-1', chatType: 'group', messageId: 'om-ask', userExternalId: 'ou-1' };
+    assert.notEqual(
+      conversationKeyForMessage(pdfMessage),
+      conversationKeyForMessage(askMessage),
+      'precondition: the two messages really do get different thread keys',
+    );
+
+    const queried: any[] = [];
+    const service = new ConversationAttachmentService(
+      {
+        record: async () => {},
+        listLive: async (input) => {
+          queried.push(input);
+          return [{
+            companyId: 'co', userId: 'u', channel: 'lark',
+            conversationKey: conversationKeyForMessage(pdfMessage),
+            chatId: 'oc-1', larkMessageId: 'om-pdf', larkFileKey: 'key-1',
+            fileName: 'ACME-4471.pdf', mimeType: 'application/pdf',
+            receivedAt: new Date('2026-08-01T10:00:00Z'),
+          }];
+        },
+      },
+      { warn: () => {} } as any,
+    );
+
+    const found = await service.lookup({
+      companyId: 'co', userId: 'u', channel: 'lark',
+      chatId: 'oc-1', fileName: 'ACME-4471.pdf',
+    });
+
+    assert.equal(found.kind, 'found');
+    assert.equal(queried[0].chatId, 'oc-1');
+    assert.equal('conversationKey' in queried[0], false);
   });
 });

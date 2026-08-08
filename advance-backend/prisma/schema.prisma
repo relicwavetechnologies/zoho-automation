@@ -2610,6 +2610,12 @@ model RuntimePendingAttachment {
 /// not a question came with it — the two cases that were previously unrecoverable
 /// are a DM (where only a Pi fileId survived) and a file sent in the same message
 /// as the instruction (where nothing was stored at all).
+///
+/// Looked up by chat and sender, deliberately not by the runtime thread key. A
+/// group thread key carries the seeding message id, so a file posted as one
+/// top-level message and the instruction posted as the next are two different
+/// threads — which is the very shape this is for. conversationKey is kept for
+/// diagnostics only.
 model ConversationAttachment {
   id              String   @id @default(uuid())
   companyId       String
@@ -2626,7 +2632,7 @@ model ConversationAttachment {
   expiresAt       DateTime
 
   @@unique([companyId, channel, larkMessageId, larkFileKey], map: "ConversationAttachment_provider_file_key")
-  @@index([companyId, userId, channel, conversationKey, expiresAt])
+  @@index([companyId, userId, channel, chatId, expiresAt])
   @@index([expiresAt])
 }
 

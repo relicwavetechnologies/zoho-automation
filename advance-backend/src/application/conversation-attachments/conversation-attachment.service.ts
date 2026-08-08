@@ -35,12 +35,16 @@ export interface ConversationAttachmentRow extends ConversationAttachmentRecord 
 
 export interface ConversationAttachmentStore {
   record(entries: readonly ConversationAttachmentRecord[], expiresAt: Date): Promise<void>;
+  /**
+   * Scoped to the chat and the member who sent the file — not to the runtime
+   * thread, whose key changes between two top-level messages in a group.
+   */
   listLive(input: {
-    companyId:       string;
-    userId:          string;
-    channel:         string;
-    conversationKey: string;
-    now:             Date;
+    companyId: string;
+    userId:    string;
+    channel:   string;
+    chatId:    string;
+    now:       Date;
   }): Promise<readonly ConversationAttachmentRow[]>;
 }
 
@@ -104,18 +108,18 @@ export class ConversationAttachmentService {
   }
 
   async lookup(input: {
-    companyId:       string;
-    userId:          string;
-    channel:         string;
-    conversationKey: string;
-    fileName:        string;
+    companyId: string;
+    userId:    string;
+    channel:   string;
+    chatId:    string;
+    fileName:  string;
   }): Promise<AttachmentLookup> {
     const rows = await this.store.listLive({
-      companyId:       input.companyId,
-      userId:          input.userId,
-      channel:         input.channel,
-      conversationKey: input.conversationKey,
-      now:             this.now(),
+      companyId: input.companyId,
+      userId:    input.userId,
+      channel:   input.channel,
+      chatId:    input.chatId,
+      now:       this.now(),
     });
     return selectAttachment(rows, input.fileName);
   }

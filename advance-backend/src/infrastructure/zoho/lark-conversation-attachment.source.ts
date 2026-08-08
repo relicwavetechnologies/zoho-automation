@@ -22,11 +22,11 @@ export class LarkConversationAttachmentSource implements ZohoAttachmentSourcePor
   ) {}
 
   async resolve(input: {
-    companyId:       string;
-    userId:          string;
-    channel:         string;
-    conversationKey: string;
-    fileName:        string;
+    companyId: string;
+    userId:    string;
+    channel:   string;
+    chatId:    string;
+    fileName:  string;
   }) {
     const lookup = await this.attachments.lookup(input);
 

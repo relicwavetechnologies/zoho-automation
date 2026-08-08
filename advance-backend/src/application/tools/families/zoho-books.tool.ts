@@ -206,11 +206,11 @@ type Res = z.infer<typeof ResultSchema>;
  */
 export interface ZohoAttachmentSourcePort {
   resolve(input: {
-    companyId:       string;
-    userId:          string;
-    channel:         string;
-    conversationKey: string;
-    fileName:        string;
+    companyId: string;
+    userId:    string;
+    channel:   string;
+    chatId:    string;
+    fileName:  string;
   }): Promise<
     | { readonly kind: 'resolved'; readonly fileName: string; readonly mimeType: string; readonly content: Buffer }
     | { readonly kind: 'unavailable'; readonly message: string }
@@ -933,8 +933,11 @@ export const createZohoBooksTool = (deps: {
             + 'The record itself is unchanged; say the attachment could not be made rather than that it was.',
         }));
       }
-      const conversationKey = ctx.runContext.runtimeThreadId ?? ctx.runContext.chatId;
-      if (!conversationKey) {
+      // Scoped to the chat, not the runtime thread: a group thread key carries
+      // the id of the message that seeded it, so a file posted on its own and
+      // the instruction posted next would never share a key.
+      const chatId = ctx.runContext.chatId;
+      if (!chatId) {
         return err(new ToolError({
           toolId: 'zohoBooks', reason: 'bad_args',
           message: 'Divo cannot tell which conversation this file was sent in, so it will not guess at one.',
@@ -948,7 +951,7 @@ export const createZohoBooksTool = (deps: {
         companyId,
         userId,
         channel: ctx.runContext.channel,
-        conversationKey,
+        chatId,
         fileName: args.fileName,
       });
       if (resolved.kind === 'unavailable') {
