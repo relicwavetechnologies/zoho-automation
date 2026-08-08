@@ -400,7 +400,12 @@ function MailRuleForm({
       const outcome = await updating.update(sourceRuleId, request)
       if (outcome.kind === 'saved') {
         setTouched(false)
-        toast('Saved. The change applies to mail arriving from now on.')
+        // Editing a paused rule starts it again. Saying only "Saved" to
+        // somebody who paused a rule because it misbehaved, then fixed it,
+        // leaves them believing their mail is still still.
+        toast(outcome.resumed
+          ? 'Saved — and this rule is running again, because editing a paused rule starts it. Pause it again if that is not what you wanted.'
+          : 'Saved. The change applies to mail arriving from now on.')
         navigate(`/me/mail/${outcome.ruleId}`)
       }
       // `duplicate` and `pending_approval` both stay put and are rendered

@@ -719,7 +719,16 @@ export function useCreateMailRule() {
    nobody would think to look for it. */
 
 export type MailRuleUpdateOutcome =
-  | { kind: 'saved'; ruleId: string }
+  /**
+   * `resumed` because editing a paused rule starts it again.
+   *
+   * That is deliberate and it is documented in the tool's own instructions, but
+   * it was done in silence here: somebody who paused a rule because it was
+   * misbehaving, then corrected it, got "Saved" and no hint their mail was
+   * moving again. The server has said which of the two happened since the
+   * permission fix; this screen was still throwing the answer away.
+   */
+  | { kind: 'saved'; ruleId: string; resumed: boolean }
   /** The edit changed the destination to somewhere outside the company. */
   | { kind: 'pending_approval'; approverName: string; destination: string; reused: boolean }
   /**
@@ -762,6 +771,8 @@ export function useUpdateMailRule() {
       const data = await api.put<{
         ruleId?: string
         status?: string
+        /** True when this edit took the rule off pause. See the outcome type. */
+        resumed?: boolean
         approverName?: string
         destination?: string
         reused?: boolean
@@ -782,7 +793,7 @@ export function useUpdateMailRule() {
       }
 
       setState({ saving: false, error: null, pending: null, duplicate: null })
-      return { kind: 'saved', ruleId: data.ruleId ?? ruleId }
+      return { kind: 'saved', ruleId: data.ruleId ?? ruleId, resumed: data.resumed === true }
     } catch (error) {
       /*
        * The duplicate arrives here, not above.
