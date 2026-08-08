@@ -39,20 +39,28 @@ Always load the routed specialist before answering or claiming that a connection
 ## Route
 
 - Read, search, summarize now, draft, send, reply, label, or forward one existing Gmail message now → load \`google-gmail\`.
-- React whenever a future matching Gmail message arrives, including forwarding a matching message or delivering it to a Lark chat → load \`mail-ops\`.
+- React whenever a future matching Gmail message arrives, including forwarding a matching message, delivering it to a Lark chat, or sending different kinds of it to different people → load \`mail-ops\`.
 - Run inbox work at a clock time or recurrence, such as a daily digest → load \`schedule-divo-work\` and \`google-gmail\`. Scheduler owns timing; Gmail owns the work performed at run time.
 - Reserve time, invite attendees, check free/busy, or create a meeting/event → load \`google-calendar\`.
 - Drive, Docs, Sheets, Slides, Forms, Tasks, Contacts, Chat, or Apps Script → load the matching \`google-<product>\` recipe.
 
+"Send invoices to one person and product mail to another" is one arrival rule that sorts, not two rules — still \`mail-ops\`.
 If "forward this email" could mean a one-time action or an ongoing arrival rule, ask which one. Never implement a future-arrival rule with the scheduler, and never create a Mail Ops rule for a one-time Gmail action.`,
   },
   {
     slug: 'mail-ops',
     name: 'Mail Ops',
     summary:
-      'Create and manage deterministic Gmail-arrival rules for forwarding future matching mail to email or delivering it to Lark.',
+      'Create and manage deterministic Gmail-arrival rules for forwarding future matching mail to email, delivering it to Lark, or sorting each arriving message to the right person.',
     toolIds: ['mailAutomations'],
-    tags: ['gmail', 'mail', 'automation', 'forwarding', 'otp', 'watcher'],
+    tags: ['gmail', 'mail', 'automation', 'forwarding', 'otp', 'watcher', 'routing', 'triage'],
+    /*
+     * Routing needs its own vocabulary, or the recipe describing it is never
+     * reached. Nobody asking Divo to "sort my client's mail between the team"
+     * says "forward future email" — and the router scores alias tokens, so a
+     * capability the catalogue cannot be searched for is a capability that
+     * exists only for whoever already knows it does.
+     */
     aliases: [
       'whenever email arrives',
       'when mail arrives',
@@ -61,6 +69,11 @@ If "forward this email" could mean a one-time action or an ongoing arrival rule,
       'mail watcher',
       'otp forwarding',
       'send matching mail to lark',
+      'sort mail between people',
+      'route mail to the right person',
+      'send different mail to different people',
+      'split incoming mail by kind',
+      'triage arriving mail',
     ],
     sortOrder: 6,
     markdown: `# Mail Ops
