@@ -157,7 +157,22 @@ const directionsOf = (
 };
 
 /** Zoho reports place of supply as a state code such as "RJ" or "08". */
-const stateCodeOf = (value: unknown): string => str(value).toUpperCase();
+const stateCodeOf = (value: unknown): string => str(value).trim().toUpperCase();
+
+/**
+ * Both sides must be written the same way before a difference between them
+ * means anything.
+ *
+ * India's states have two spellings — the GSTIN's numeric prefix ("08") and
+ * Zoho's letter code ("RJ") — and they never match each other. Comparing across
+ * them does not fail safely: every intra-state sale looks inter-state, and the
+ * finding is *blocking*, telling the model to switch a correct CGST/SGST
+ * invoice to IGST. A mismatched pair is therefore not an answer, it is the
+ * absence of one.
+ */
+const comparableStates = (a: string, b: string): boolean =>
+  (/^[A-Z]{2}$/.test(a) && /^[A-Z]{2}$/.test(b))
+  || (/^\d{1,2}$/.test(a) && /^\d{1,2}$/.test(b));
 
 export function checkInvoice(input: InvoiceCheckInput): InvoiceFinding[] {
   const { invoice } = input;
@@ -234,7 +249,8 @@ export function checkInvoice(input: InvoiceCheckInput): InvoiceFinding[] {
   }
 
   const placeOfSupply = stateCodeOf(invoice['place_of_supply']);
-  const home = stateCodeOf(input.homeGstStateCode);
+  const homeRaw = stateCodeOf(input.homeGstStateCode);
+  const home = comparableStates(homeRaw, placeOfSupply) ? homeRaw : '';
   if (home && placeOfSupply && (igst || intraState)) {
     const interState = placeOfSupply !== home;
     if (interState && intraState) {

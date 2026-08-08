@@ -36,9 +36,6 @@ const namedTerms: Record<string, number> = {
   'immediately': 0,
 };
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === 'object' && !Array.isArray(value);
-
 const REFUSAL =
   'Zoho Books records payment terms as a whole number of days, so this invoice was not staged. '
   + 'Give payment_terms as a number — 15 for "Net 15", 0 for due on receipt — or set due_date '
@@ -65,12 +62,15 @@ function parsePaymentTerms(value: unknown): ParsedTerms | null {
   const named = namedTerms[raw.toLowerCase()];
   if (named !== undefined) return { days: named, label: raw };
 
-  // Exactly one run of digits: "Net 15", "15 days", "net-15", "NET15".
-  // Two numbers means something we do not understand well enough to act on —
-  // "2/10 net 30" is a discount schedule, not a due date.
-  const digits = raw.match(/\d+/g);
-  if (digits?.length === 1) {
-    const days = Number(digits[0]);
+  // Anchored, because "contains one number" is not the same as "is a number of
+  // days". "15th of next month" and "Net 15 days from EOM" each carry exactly
+  // one digit run and mean something this field cannot express; reading them as
+  // 15 days would set a due date nobody asked for and look like success.
+  // "2/10 net 30" is a discount schedule, and "-5" is not a term at all.
+  const matched = raw.match(/^net[\s-]*(\d{1,3})(\s*days?)?$/i)
+    ?? raw.match(/^(\d{1,3})\s*days?$/i);
+  if (matched?.[1]) {
+    const days = Number(matched[1]);
     if (Number.isSafeInteger(days) && days >= 0) return { days, label: raw };
   }
 
@@ -101,11 +101,6 @@ export function normalizeInvoiceFields(fields: Record<string, unknown>): Invoice
     if (parsed.label && out['payment_terms_label'] === undefined) {
       out['payment_terms_label'] = parsed.label;
     }
-  }
-
-  const lineItems = out['line_items'];
-  if (Array.isArray(lineItems)) {
-    out['line_items'] = lineItems.map(item => (isRecord(item) ? { ...item } : item));
   }
 
   return { ok: true, fields: out, notes };

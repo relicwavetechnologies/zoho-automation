@@ -1691,12 +1691,20 @@ export const createZohoBooksTool = (deps: {
           const customerName = typeof reviewSources.chosenCustomer?.['contact_name'] === 'string'
             ? reviewSources.chosenCustomer['contact_name'] as string
             : undefined;
-          const summary = renderStagedInvoice({
-            payload,
-            ...(customerName ? { customerName } : {}),
-            findings,
-            ...(args.fileName ? { attachFileName: args.fileName } : {}),
-          });
+          const summary = [
+            renderStagedInvoice({
+              payload,
+              ...(customerName ? { customerName } : {}),
+              findings,
+              ...(args.fileName ? { attachFileName: args.fileName } : {}),
+            }),
+            // Anything the tool re-read on the member's behalf belongs in the
+            // text they approve. A translation nobody is shown is a silent
+            // change to what they are agreeing to.
+            ...(normalized.notes.length > 0
+              ? ['', `Divo read: ${normalized.notes.join('; ')}.`]
+              : []),
+          ].join('\n');
 
           ctx.onProgress?.('Reviewing the draft…');
           const review = await deps.invoiceReviewer.review({
@@ -2103,11 +2111,18 @@ export const createZohoBooksTool = (deps: {
           const stored = isRecord(recorded.data) ? recorded.data : {};
           const unused = numericAmount(stored['unused_amount']);
           if (appliesToInvoice && unused !== null && unused > 0) {
+            // A remainder does not say which way it went. The customer may have
+            // paid more than the invoice — in which case the invoice IS settled
+            // and the surplus is a credit — or the payment may have covered only
+            // part of it. Asserting either from this number alone would be the
+            // same false statement in the opposite direction, so it reports the
+            // figure and points at the record that actually decides.
             return ok({
               ...recorded,
-              message: `${recorded.message} Zoho left ${formatAmount(unused, stringValue(stored, 'currency_code') || 'INR')} `
-                + 'of this payment unapplied, so the invoice is not fully settled. Tell the member that figure '
-                + 'before saying the invoice is paid.',
+              message: `${recorded.message} Zoho attached ${formatAmount(unused, stringValue(stored, 'currency_code') || 'INR')} `
+                + 'of this payment to no invoice — either the customer paid more than was owed, or less was applied '
+                + 'than intended. Read the invoice back before describing it as paid or outstanding, and tell the '
+                + 'member the leftover figure either way.',
             });
           }
           return ok(recorded);

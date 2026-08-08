@@ -81,16 +81,21 @@ describe('a customer payment has to settle something', () => {
     assert.equal(sent[0]!['on_account'], undefined);
   });
 
-  it('says so when Zoho leaves part of the payment unapplied', async () => {
-    // Half-settling an invoice and settling it are different outcomes, and only
-    // the tool can tell them apart — the caller asked for the same thing.
+  it('reports a leftover without deciding what it means', async () => {
+    // A remainder has two causes that point opposite ways: the customer overpaid
+    // (invoice settled, surplus is a credit) or less was applied than intended
+    // (invoice outstanding). Calling it "not fully settled" would chase a
+    // customer who has already overpaid — the same false statement this guard
+    // exists to prevent, inverted.
     const { result } = await run(
       { customer_id: 'cust-1', amount: 59000, invoices: [{ invoice_id: 'inv-1', amount_applied: 30000 }] },
       { unused_amount: 29000 },
     );
     assert.equal(result.ok, true);
-    assert.match(result.value.message, /unapplied/i);
     assert.match(result.value.message, /29,000/);
+    assert.doesNotMatch(result.value.message, /not fully settled|still outstanding/i);
+    // It must still push the caller at the record that does decide.
+    assert.match(result.value.message, /read the invoice back/i);
   });
 
   it('stays quiet when the payment applied in full', async () => {

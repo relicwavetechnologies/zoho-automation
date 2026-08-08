@@ -260,8 +260,15 @@ export const EnvSchema = z.object({
   ZOHO_BOOKS_APP_BASE_URL:   z.string().default('https://books.zoho.com'),
   // Reads a draft invoice cold before the member is shown it.
   ZOHO_INVOICE_REVIEW_MODEL_ID: z.string().default('deepseek-chat'),
-  // The selling organisation's GST state code, e.g. '08' for Rajasthan. Absent
-  // means the IGST-versus-CGST direction is reported as unchecked, never guessed.
+  // Fallback selling state, in Zoho's own spelling — 'RJ', not '08' — because it
+  // is compared against an invoice's `place_of_supply`, which Zoho writes that
+  // way. A code in the other alphabet matches nothing and would call every
+  // intra-state sale inter-state.
+  //
+  // Normally unset: the state is taken from the Zoho organisation being written
+  // to, which is the only value that can be right when one connection reaches
+  // organisations in several states. Absent and unresolvable means the
+  // IGST-versus-CGST direction is reported as unchecked, never guessed.
   ZOHO_BOOKS_HOME_GST_STATE_CODE: z.string().optional(),
   ZOHO_TOKEN_ENCRYPTION_KEY: z.string().optional(),
   ZOHO_PROVIDER_DEFAULT:     z.enum(['rest', 'mcp']).default('rest'),

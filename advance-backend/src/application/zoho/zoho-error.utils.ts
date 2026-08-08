@@ -1,19 +1,30 @@
-const zohoBooksErrorMessages: Record<string, string> = {
-  '5':    'Zoho Books rejected the request because one or more required fields are missing.',
-  '14':   'Zoho Books could not find the requested record.',
-  '1002': 'Zoho Books authentication failed. Reconnect Zoho Books and try again.',
-  '2006': 'Zoho Books rejected the request because a referenced record is missing or invalid.',
-  '3008': 'Zoho Books rejected the request because the record is already in that state.',
-  '4001': 'Zoho Books rejected the request because the organization is invalid or unavailable.',
-  '4823': 'Zoho Books rejected the request because the record cannot be modified in its current status.',
+/**
+ * Which Zoho product failed.
+ *
+ * This module is shared by the Books tool and the CRM tool, and their clients
+ * throw `Zoho Books <status> …` and `Zoho CRM <status> …` respectively. Naming
+ * the wrong one sends a member to reconnect a connection that was working, so
+ * the product is read from the failure rather than assumed. "Zoho" alone when
+ * the text does not say.
+ */
+type ZohoProduct = 'Zoho Books' | 'Zoho CRM' | 'Zoho';
+
+const codeMessages: Record<string, (product: ZohoProduct) => string> = {
+  '5':    p => `${p} rejected the request because one or more required fields are missing.`,
+  '14':   p => `${p} could not find the requested record.`,
+  '1002': p => `${p} authentication failed. Reconnect ${p} and try again.`,
+  '2006': p => `${p} rejected the request because a referenced record is missing or invalid.`,
+  '3008': p => `${p} rejected the request because the record is already in that state.`,
+  '4001': p => `${p} rejected the request because the organization is invalid or unavailable.`,
+  '4823': p => `${p} rejected the request because the record cannot be modified in its current status.`,
 };
 
-const statusMessages: Record<number, string> = {
-  400: 'Zoho Books rejected the request. Check the fields and try again.',
-  401: 'Zoho Books authentication failed. Reconnect Zoho Books and try again.',
-  403: 'Zoho Books denied access for this operation.',
-  404: 'Zoho Books could not find the requested record.',
-  429: 'Zoho Books rate limit reached. Try again shortly.',
+const statusMessages: Record<number, (product: ZohoProduct) => string> = {
+  400: p => `${p} rejected the request. Check the fields and try again.`,
+  401: p => `${p} authentication failed. Reconnect ${p} and try again.`,
+  403: p => `${p} denied access for this operation.`,
+  404: p => `${p} could not find the requested record.`,
+  429: p => `${p} rate limit reached. Try again shortly.`,
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -56,12 +67,18 @@ function extractCodeFromMessage(message: string): string | undefined {
   return undefined;
 }
 
-function extractStatusFromMessage(message: string): number | undefined {
-  const status = message.match(/\bZoho Books\s+(\d{3})\b/i);
-  if (!status) return undefined;
+/**
+ * The header both clients throw: `Zoho <product> <status> <statusText>: <body>`.
+ * Read together, because attributing the status to the wrong product is the
+ * mistake worth preventing.
+ */
+function parseThrownHeader(message: string): { product: ZohoProduct; status?: number } {
+  const matched = message.match(/\bZoho\s+(Books|CRM)\s+(\d{3})\b/i);
+  if (!matched) return { product: 'Zoho' };
 
-  const parsed = Number(status[1]);
-  return Number.isInteger(parsed) ? parsed : undefined;
+  const product: ZohoProduct = matched[1]!.toLowerCase() === 'crm' ? 'Zoho CRM' : 'Zoho Books';
+  const parsed = Number(matched[2]);
+  return Number.isInteger(parsed) ? { product, status: parsed } : { product };
 }
 
 function extractTextMessage(error: unknown): string | undefined {
@@ -125,23 +142,24 @@ function extractUpstreamMessage(text: string): string | undefined {
 export function mapZohoError(error: unknown): string {
   const message  = extractTextMessage(error);
   const upstream = message ? extractUpstreamMessage(message) : undefined;
-  const status   = message ? extractStatusFromMessage(message) : undefined;
+  const { product, status } = message ? parseThrownHeader(message) : { product: 'Zoho' as ZohoProduct, status: undefined };
 
   if (upstream) {
-    const hint = status === 401 ? ' Reconnect Zoho Books and try again.' : '';
-    return `Zoho Books says: "${upstream.replace(/[.\s]+$/, '')}".${hint}`;
+    const hint = status === 401 ? ` Reconnect ${product} and try again.` : '';
+    return `${product} says: "${upstream.replace(/[.\s]+$/, '')}".${hint}`;
   }
 
   const recordCode  = isRecord(error) ? extractCodeFromRecord(error) : undefined;
   const messageCode = message ? extractCodeFromMessage(message) : undefined;
   const mapped =
-    (recordCode ? zohoBooksErrorMessages[recordCode] : undefined)
-    ?? (messageCode ? zohoBooksErrorMessages[messageCode] : undefined);
-  if (mapped) return mapped;
+    (recordCode ? codeMessages[recordCode] : undefined)
+    ?? (messageCode ? codeMessages[messageCode] : undefined);
+  if (mapped) return mapped(product);
 
-  if (status && statusMessages[status]) return statusMessages[status];
+  const byStatus = status ? statusMessages[status] : undefined;
+  if (byStatus) return byStatus(product);
 
   if (message?.trim()) return message;
 
-  return 'Zoho Books request failed. Try again or reconnect Zoho Books if the issue continues.';
+  return `${product} request failed. Try again or reconnect ${product} if the issue continues.`;
 }

@@ -51,6 +51,26 @@ describe('GST direction on a staged draft, which names no taxes', () => {
     assert.deepEqual(findings.map(f => f.code), ['gst_direction_unchecked']);
   });
 
+  it('will not compare a numeric state code against a lettered one', () => {
+    // The GSTIN prefix ("08") and Zoho's place_of_supply ("RJ") are two
+    // spellings of Rajasthan that never match each other. Comparing across them
+    // does not fail safely: every intra-state sale reads as inter-state and the
+    // finding is *blocking*, so the model is told to switch a correct
+    // CGST/SGST invoice to IGST. A mismatched pair is the absence of an answer.
+    const findings = checkInvoice({
+      invoice: draft('RJ', GST18), homeGstStateCode: '08', taxDirectionById,
+    });
+    assert.deepEqual(findings.map(f => f.code), ['gst_direction_unchecked']);
+  });
+
+  it('still compares two numeric codes with each other', () => {
+    const findings = checkInvoice({
+      invoice: { customer_id: 'c1', place_of_supply: '29', line_items: [{ ...line, tax_id: GST18 }] },
+      homeGstStateCode: '08', taxDirectionById,
+    });
+    assert.deepEqual(findings.map(f => f.code), ['gst_should_be_igst']);
+  });
+
   it('refuses a draft carrying both directions at once', () => {
     const invoice = {
       customer_id: 'c1',
