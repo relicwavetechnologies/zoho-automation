@@ -50,10 +50,11 @@ const MAX_STDERR_CHARS = 64 * 1024;
 const MAX_STDOUT_BUFFER_CHARS = 1024 * 1024;
 const MAX_MODEL_OUTPUT_PER_CHILD = 12_000;
 const UPDATE_THROTTLE_MS = 125;
+const LIVE_UPDATE_HEARTBEAT_MS = 15_000;
 
 type ToolContent = { type: "text"; text: string };
-type ToolUpdate = { content: ToolContent[]; details: SubagentDetails };
-type OnUpdate = (update: ToolUpdate) => void;
+export type ToolUpdate = { content: ToolContent[]; details: SubagentDetails };
+export type OnUpdate = (update: ToolUpdate) => void;
 type RegisterAborter = (abort: () => void) => () => void;
 
 type DelegatedTask = { agent: string; task: string };
@@ -311,16 +312,24 @@ function makeLiveText(details: SubagentDetails): string {
 	return `Subagents: ${summary.completed}/${summary.total} completed, ${active} active${summary.failed ? `, ${summary.failed} failed` : ""}`;
 }
 
-function createUpdateEmitter(
+function hasActiveChildren(children: SubagentChild[]): boolean {
+	return children.some((child) => child.state === "queued" || child.state === "running");
+}
+
+export function createUpdateEmitter(
 	onUpdate: OnUpdate | undefined,
 	parentToolCallId: string,
 	mode: SubagentMode,
-	children: SubagentChild[]
-): { emit: (immediate?: boolean) => void; flush: () => void } {
+	children: SubagentChild[],
+	heartbeatMs = LIVE_UPDATE_HEARTBEAT_MS
+): { emit: (immediate?: boolean) => void; flush: () => void; stop: () => void } {
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	let heartbeat: ReturnType<typeof setInterval> | undefined;
 	let lastEmittedAt = 0;
+	let stopped = false;
 
 	const flush = () => {
+		if (stopped) return;
 		if (timer) {
 			clearTimeout(timer);
 			timer = undefined;
@@ -332,7 +341,7 @@ function createUpdateEmitter(
 	};
 
 	const emit = (immediate = false) => {
-		if (!onUpdate) return;
+		if (stopped || !onUpdate) return;
 		if (immediate || Date.now() - lastEmittedAt >= UPDATE_THROTTLE_MS) {
 			flush();
 			return;
@@ -340,7 +349,26 @@ function createUpdateEmitter(
 		if (!timer) timer = setTimeout(flush, UPDATE_THROTTLE_MS);
 	};
 
-	return { emit, flush };
+	if (onUpdate && heartbeatMs > 0) {
+		heartbeat = setInterval(() => {
+			if (hasActiveChildren(children)) flush();
+		}, heartbeatMs);
+		(heartbeat as ReturnType<typeof setInterval> & { unref?: () => void }).unref?.();
+	}
+
+	const stop = () => {
+		stopped = true;
+		if (timer) {
+			clearTimeout(timer);
+			timer = undefined;
+		}
+		if (heartbeat) {
+			clearInterval(heartbeat);
+			heartbeat = undefined;
+		}
+	};
+
+	return { emit, flush, stop };
 }
 
 async function runChild(
@@ -572,41 +600,45 @@ export default function divoSubagentsExtension(pi: ExtensionAPI) {
 			const emitter = createUpdateEmitter(onUpdate, toolCallId, mode, children);
 			emitter.emit(true);
 
-			if (mode === "parallel") {
-				await mapWithConcurrency(children, MAX_CONCURRENCY, async (child) => {
-					await runChild(child, child.task, childModel, signal, () => emitter.emit(), registerAborter);
-				});
-				emitter.flush();
-				const details = makeDetails(toolCallId, mode, children);
-				return {
-					content: [{ type: "text", text: finalParallelContent(children) }],
-					details,
-					isError: children.every(isFailed),
-				};
-			}
-
-			let previousOutput = "";
-			for (const child of children) {
-				const delegatedTask =
-					mode === "chain" ? child.task.replaceAll("{previous}", previousOutput) : child.task;
-				await runChild(child, delegatedTask, childModel, signal, () => emitter.emit(), registerAborter);
-				if (isFailed(child)) {
+			try {
+				if (mode === "parallel") {
+					await mapWithConcurrency(children, MAX_CONCURRENCY, async (child) => {
+						await runChild(child, child.task, childModel, signal, () => emitter.emit(), registerAborter);
+					});
 					emitter.flush();
+					const details = makeDetails(toolCallId, mode, children);
 					return {
-						content: [{ type: "text", text: `Subagent ${child.role} ${child.state}: ${resultText(child)}` }],
-						details: makeDetails(toolCallId, mode, children),
-						isError: true,
+						content: [{ type: "text", text: finalParallelContent(children) }],
+						details,
+						isError: children.every(isFailed),
 					};
 				}
-				previousOutput = truncateText(resultText(child), MAX_MODEL_OUTPUT_PER_CHILD);
-			}
 
-			emitter.flush();
-			const result = children[children.length - 1];
-			return {
-				content: [{ type: "text", text: resultText(result) }],
-				details: makeDetails(toolCallId, mode, children),
-			};
+				let previousOutput = "";
+				for (const child of children) {
+					const delegatedTask =
+						mode === "chain" ? child.task.replaceAll("{previous}", previousOutput) : child.task;
+					await runChild(child, delegatedTask, childModel, signal, () => emitter.emit(), registerAborter);
+					if (isFailed(child)) {
+						emitter.flush();
+						return {
+							content: [{ type: "text", text: `Subagent ${child.role} ${child.state}: ${resultText(child)}` }],
+							details: makeDetails(toolCallId, mode, children),
+							isError: true,
+						};
+					}
+					previousOutput = truncateText(resultText(child), MAX_MODEL_OUTPUT_PER_CHILD);
+				}
+
+				emitter.flush();
+				const result = children[children.length - 1];
+				return {
+					content: [{ type: "text", text: resultText(result) }],
+					details: makeDetails(toolCallId, mode, children),
+				};
+			} finally {
+				emitter.stop();
+			}
 		},
 	});
 }
