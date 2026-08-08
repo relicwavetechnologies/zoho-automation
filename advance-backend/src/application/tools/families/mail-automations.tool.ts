@@ -617,6 +617,19 @@ export function createMailAutomationsTool(deps: {
             status,
           });
           if (!changed.ok) throw changed.error;
+          /*
+           * Checked before the falsy test, because `'archived'` is truthy and
+           * would otherwise be reported to the member as a completed pause.
+           */
+          if (changed.value === 'archived') {
+            return err(new ToolError({
+              toolId: 'mailAutomations',
+              reason: 'bad_args',
+              message:
+                'That rule is archived, and archiving is final — it cannot be paused or '
+                + 'restarted. Create a new rule with the same conditions instead.',
+            }));
+          }
           if (!changed.value) {
             return err(new ToolError({
               toolId: 'mailAutomations',

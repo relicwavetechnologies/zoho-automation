@@ -1343,6 +1343,22 @@ export function createMailAutomationsRoutes(
           });
           return;
         }
+        /*
+         * Same answer `PUT /rules/:id` gives, for the same reason: the member is
+         * looking at this rule under Archived, so "not found in your account"
+         * reads as Divo having lost it. 409 rather than 404 — nothing about the
+         * request is wrong, and retrying it will not help.
+         */
+        if (outcome.status === 'archived') {
+          res.status(409).json({
+            success: false,
+            code: 'rule_archived',
+            message:
+              'That rule is archived, and archiving is final — it cannot be paused or restarted. '
+              + 'Create a new rule with these conditions instead.',
+          });
+          return;
+        }
         if (outcome.status === 'not_configured') {
           res.status(503).json({
             success: false,

@@ -221,8 +221,42 @@ describe('MailOpsRepository', () => {
       status: 'active',
     });
 
-    assert.deepEqual(result, { ok: true, value: false });
+    // `'archived'`, not `false`. Both refuse the change; only one of them can
+    // be told to the member without contradicting the screen they are on.
+    assert.deepEqual(result, { ok: true, value: 'archived' });
     assert.equal(updates, 0);
+  });
+
+  /*
+   * Archived and missing had one answer between them, and it was the wrong one
+   * for the commoner case.
+   *
+   * `false` meant both "no rule of yours by that id" and "that rule is
+   * archived", so pausing or resuming an archived rule reported "not found in
+   * your account" about a rule the member was looking at under Archived.
+   * `replace` already drew this distinction; these are the other two buttons.
+   */
+  it('tells a rule that is gone apart from one that is archived', async () => {
+    const answer = async (current: { status: string } | null) => {
+      const tx = {
+        mailAutomationRule: {
+          findFirst: async () => (current
+            ? { id: 'rule-1', subscriptionId: 'mailbox-1', ...current }
+            : null),
+          update: async () => ({}),
+          count: async () => 0,
+        },
+        mailboxSubscription: { update: async () => ({}) },
+      };
+      return new MailOpsRepository({ $transaction: async (fn: any) => fn(tx) } as any)
+        .setRuleStatus({
+          companyId: 'company-1', userId: 'user-1', ruleId: 'rule-1', status: 'paused',
+        });
+    };
+
+    assert.deepEqual(await answer(null), { ok: true, value: false });
+    assert.deepEqual(await answer({ status: 'archived' }), { ok: true, value: 'archived' });
+    assert.deepEqual(await answer({ status: 'active' }), { ok: true, value: true });
   });
 
   it('claims a due mailbox with a conditional lease, not one claim per rule', async () => {

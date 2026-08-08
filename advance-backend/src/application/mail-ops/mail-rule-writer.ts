@@ -116,6 +116,13 @@ export type MailRuleStatusResult =
   | { readonly status: 'changed' }
   /** Not yours, or not real. The repository makes the two indistinguishable. */
   | { readonly status: 'not_found' }
+  /**
+   * Archived, which is a different answer from missing and has a different
+   * remedy — the same distinction `replace` already draws. A member looking at
+   * a rule under Archived and being told it is "not found in your account" is
+   * being contradicted by the screen they are reading it on.
+   */
+  | { readonly status: 'archived' }
   /** Resuming into an environment where nothing would poll the mailbox. */
   | { readonly status: 'not_configured' }
   | { readonly status: 'unavailable'; readonly reason: string };
@@ -283,7 +290,7 @@ export interface MailRuleWriterDeps {
       ruleId: string;
       status: 'active' | 'paused' | 'archived';
     }): Promise<
-      | { ok: true; value: boolean }
+      | { ok: true; value: boolean | 'archived' }
       | { ok: false; error: { message: string } }
     >;
     createRuleForMailbox(input: {
@@ -387,6 +394,7 @@ export function createMailRuleWriter(deps: MailRuleWriterDeps) {
 
     const changed = await deps.repo.setRuleStatus({ ...input, status });
     if (!changed.ok) return { status: 'unavailable', reason: changed.error.message };
+    if (changed.value === 'archived') return { status: 'archived' };
     return changed.value ? { status: 'changed' } : { status: 'not_found' };
   };
 

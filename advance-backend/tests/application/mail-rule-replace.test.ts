@@ -196,3 +196,44 @@ describe('editing a mail rule', () => {
     assert.equal(outcome.status, 'unavailable');
   });
 });
+
+/**
+ * Stopping and restarting a rule, and the answer archiving deserves.
+ *
+ * Here rather than in its own file because `setStatus` shares this writer and
+ * these deps with `replace` — and because the defect was that the two disagreed
+ * about what an archived rule is. `replace` said "archived"; pause and resume
+ * said "not found in your account" about a rule sitting in the member's own
+ * Archived list.
+ */
+describe('pausing, resuming and archiving', () => {
+  const status = (value: boolean | 'archived') => write({
+    repo: { ...deps().repo, setRuleStatus: async () => ({ ok: true as const, value }) },
+  });
+
+  it('says archived rather than not found, on the buttons too', async () => {
+    const outcome = await status('archived').setStatus(ACTOR as never, 'resume');
+    assert.equal(outcome.status, 'archived');
+  });
+
+  it('still says not found when there is no such rule', async () => {
+    const outcome = await status(false).setStatus(ACTOR as never, 'pause');
+    assert.equal(outcome.status, 'not_found');
+  });
+
+  it('reports the change when one was made', async () => {
+    const outcome = await status(true).setStatus(ACTOR as never, 'pause');
+    assert.equal(outcome.status, 'changed');
+  });
+
+  /*
+   * Resume is the one that claims a rule will fire again, so it is the one that
+   * has to check there is anything to fire it. Pause and archive make a rule do
+   * less and are true whatever the workers are doing.
+   */
+  it('refuses to claim a resume into an environment with no workers', async () => {
+    const writer = write({ runtime: { pubsubConfigured: true, workersEnabled: false } });
+    assert.equal((await writer.setStatus(ACTOR as never, 'resume')).status, 'not_configured');
+    assert.notEqual((await writer.setStatus(ACTOR as never, 'pause')).status, 'not_configured');
+  });
+});

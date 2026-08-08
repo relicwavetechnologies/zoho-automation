@@ -871,6 +871,13 @@ export type MailRuleCompiled = {
     | { type: 'lark_dm' }
     | { type: 'organize'; label?: string; archive?: boolean; markRead?: boolean }
   rateLimitPerHour?: number
+  /**
+   * The part of the sentence no filter could express, kept as a question the
+   * rule asks about each matched message. Present only when the sentence asked
+   * for a judgement — carry it onto the draft, because dropping it turns "only
+   * the ones that actually need me" into "all of them".
+   */
+  judge?: { question: string; onFailure?: 'open' | 'closed' }
   /** What Divo deliberately dropped from the sentence. */
   notes?: string[]
 } | { status: 'unclear'; reason: string } | { status: 'unavailable'; reason: string }

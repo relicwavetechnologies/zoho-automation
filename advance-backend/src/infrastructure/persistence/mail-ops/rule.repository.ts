@@ -578,7 +578,17 @@ export class MailAutomationRuleRepository {
     ruleId: string;
     status: 'active' | 'paused' | 'archived';
     now?: Date;
-  }): Promise<Result<boolean, InfraError>> {
+    /*
+     * `'archived'` rather than a third boolean's worth of guessing.
+     *
+     * `false` used to mean both "no such rule of yours" and "that rule is
+     * archived", so pausing or resuming an archived rule answered "not found in
+     * your account" about a rule sitting in that member's own Archived list.
+     * `replace` already tells those apart; this is the same distinction on the
+     * other two buttons, and their remedies differ — one is a typo, the other is
+     * final.
+     */
+  }): Promise<Result<boolean | 'archived', InfraError>> {
     const now = input.now ?? new Date();
     try {
       const changed = await this.db.$transaction(async tx => {
@@ -592,7 +602,7 @@ export class MailAutomationRuleRepository {
         });
         if (!current) return false;
         if (current.status === input.status) return true;
-        if (current.status === 'archived') return false;
+        if (current.status === 'archived') return 'archived' as const;
         await tx.mailAutomationRule.update({
           where: { id: current.id },
           data: {
