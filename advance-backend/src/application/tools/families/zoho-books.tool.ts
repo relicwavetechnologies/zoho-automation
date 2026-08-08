@@ -82,6 +82,7 @@ import type { InvoiceReviewer } from '../../zoho/zoho-invoice-reviewer';
 import { validateAttachmentPolicy }        from '../../email/attachment-policy';
 import { WriteNotDispatchedError }         from '../../../shared/errors';
 import { mapZohoError }                    from '../../zoho/zoho-error.utils';
+import { normalizeInvoiceFields }          from '../../zoho/zoho-invoice-fields';
 import { formatAmount, formatDate }        from '../../zoho/zoho-format.utils';
 import { normalizeStatus, parseDateFilter } from '../../zoho/zoho-filter.utils';
 import { handleZohoList, type ZohoListCsvColumn } from '../../zoho/zoho-list-handler';
@@ -744,6 +745,7 @@ export const createZohoBooksTool = (deps: {
     'create_invoice takes ONLY stagingId. It replays the approved payload, so what the member saw is what Zoho receives. It refuses a draft that failed review, one already created, and one with no stagingId.',
     'When review.outcome is fail, fix the exact fields named in review.issues and call stage_invoice again with supersedesStagingId. review.attemptsRemaining says how many corrections are left; at zero, put the objection to the member instead of re-staging.',
     'stage_invoice: supply invoice_number only when the member gave one — the tool then overrides Zoho auto-numbering. Omit it to let Zoho number the invoice.',
+    'payment_terms is a whole number of days, never words: 15 for "Net 15", 0 for due on receipt. The tool records the original wording as payment_terms_label.',
     'mark_invoice_sent issues a draft without emailing anyone. send_invoice emails it. They are different acts; do not substitute one for the other.',
     'create_contact only after list_contacts with searchQuery returns no match, and say in the reply that a new contact was created.',
     'attach_document params: recordType (invoice|bill), recordId, fileName — the exact name of a file the member sent in this Lark conversation. Never invent a filename, and never claim an attachment the tool did not confirm.',
@@ -1613,7 +1615,14 @@ export const createZohoBooksTool = (deps: {
               message: 'Invoice staging is not configured on this deployment, so an invoice cannot be prepared for review.',
             }));
           }
-          const payload = args.fields as Record<string, unknown>;
+          // Translated before anything reads it, so the draft that is checked,
+          // reviewed, summarised and later replayed is the one Zoho will accept
+          // — not a payload that passes every check here and is refused there.
+          const normalized = normalizeInvoiceFields(args.fields as Record<string, unknown>);
+          if (!normalized.ok) {
+            return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: normalized.message }));
+          }
+          const payload = normalized.fields;
 
           const previous = args.supersedesStagingId
             ? await deps.invoiceStaging.get({ stagingId: args.supersedesStagingId, companyId, userId })
@@ -1986,10 +1995,15 @@ export const createZohoBooksTool = (deps: {
         case 'update_invoice': {
           if (!args.invoiceId) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'invoiceId required for update_invoice' }));
           if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for update_invoice' }));
+          // A correction carries the same wording risk as the original draft.
+          const updates = normalizeInvoiceFields(args.fields as Record<string, unknown>);
+          if (!updates.ok) {
+            return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: updates.message }));
+          }
           return ok(await writtenRecord('invoices', 'updated', {
             method: 'PUT',
             path: `/invoices/${encodeURIComponent(args.invoiceId)}`,
-            body: args.fields as Record<string, unknown>,
+            body: updates.fields,
           }));
         }
 

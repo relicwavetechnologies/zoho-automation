@@ -73,15 +73,72 @@ function extractTextMessage(error: unknown): string | undefined {
   return typeof message === 'string' ? message : undefined;
 }
 
+/**
+ * Zoho's own explanation, dug out of the response body.
+ *
+ * The client throws `Zoho Books <status> <statusText>: <body>`, where the body
+ * is Zoho's error envelope — `{"code":2,"message":"Invalid value passed for
+ * Payment Terms"}`. That sentence is the only thing in the whole failure that
+ * says what was actually wrong, and every code we have not enumerated used to
+ * fall through to a status line that discarded it. A generic "check the fields"
+ * sends a member, and a model, hunting through fields that were never the
+ * problem.
+ *
+ * The client truncates the body at 300 characters, so a long envelope arrives
+ * as invalid JSON. The regex fallback exists for exactly that case.
+ */
+function extractUpstreamMessage(text: string): string | undefined {
+  const brace = text.indexOf('{');
+  if (brace === -1) return undefined;
+  const body = text.slice(brace);
+
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (isRecord(parsed)) {
+      const message = parsed['message'];
+      if (typeof message === 'string' && message.trim()) return message.trim();
+    }
+  } catch {
+    // Truncated mid-object — fall through.
+  }
+
+  const matched = body.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (!matched?.[1]) return undefined;
+
+  const unescaped = matched[1].replace(/\\(["\\/])/g, '$1').trim();
+  return unescaped || undefined;
+}
+
+/**
+ * When Zoho has said what was wrong, that is the answer.
+ *
+ * The table below it is a gloss keyed on error codes, and Zoho reuses those
+ * codes across unrelated failures — 1002 is "authentication failed" in one
+ * response and "the customer is not accessible" in the next. Preferring the
+ * gloss there does not merely lose detail, it asserts something false and sends
+ * the member off to reconnect a connection that was working. So the gloss only
+ * speaks when Zoho did not.
+ *
+ * The one thing worth adding to Zoho's own words is what to do next, and only
+ * where the status settles it.
+ */
 export function mapZohoError(error: unknown): string {
-  const code = isRecord(error) ? extractCodeFromRecord(error) : undefined;
-  if (code && zohoBooksErrorMessages[code]) return zohoBooksErrorMessages[code];
+  const message  = extractTextMessage(error);
+  const upstream = message ? extractUpstreamMessage(message) : undefined;
+  const status   = message ? extractStatusFromMessage(message) : undefined;
 
-  const message = extractTextMessage(error);
+  if (upstream) {
+    const hint = status === 401 ? ' Reconnect Zoho Books and try again.' : '';
+    return `Zoho Books says: "${upstream.replace(/[.\s]+$/, '')}".${hint}`;
+  }
+
+  const recordCode  = isRecord(error) ? extractCodeFromRecord(error) : undefined;
   const messageCode = message ? extractCodeFromMessage(message) : undefined;
-  if (messageCode && zohoBooksErrorMessages[messageCode]) return zohoBooksErrorMessages[messageCode];
+  const mapped =
+    (recordCode ? zohoBooksErrorMessages[recordCode] : undefined)
+    ?? (messageCode ? zohoBooksErrorMessages[messageCode] : undefined);
+  if (mapped) return mapped;
 
-  const status = message ? extractStatusFromMessage(message) : undefined;
   if (status && statusMessages[status]) return statusMessages[status];
 
   if (message?.trim()) return message;
