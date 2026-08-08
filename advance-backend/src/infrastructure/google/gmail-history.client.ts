@@ -119,17 +119,12 @@ export class GmailHistoryClient {
     pageToken?: string;
   }): Promise<GmailHistorySync> {
     if (!input.historyId) {
-      const profile = await this.getJson<{ historyId?: string }>(
-        `${GMAIL_API}/profile`,
-        input.accessToken,
-      );
-      if (!profile.historyId) throw new Error('Gmail profile returned no historyId.');
-      return {
-        nextHistoryId: profile.historyId,
-        events: [],
+      // A brand-new Mailer enrollment owes the member a first brief, not only a
+      // cursor for future mail. Sweep the same bounded inbox window as stale
+      // recovery, but do not record it as a cursor failure.
+      return this.reconcileStaleCursor(input.accessToken, {
         staleCursorRecovered: false,
-        truncated: false,
-      };
+      });
     }
 
     try {
@@ -483,6 +478,7 @@ export class GmailHistoryClient {
 
   private async reconcileStaleCursor(
     accessToken: string,
+    options: { staleCursorRecovered?: boolean } = {},
   ): Promise<GmailHistorySync> {
     const profile = await this.getJson<{ historyId?: string }>(
       `${GMAIL_API}/profile`,
@@ -524,7 +520,7 @@ export class GmailHistoryClient {
     return {
       nextHistoryId: profile.historyId,
       events: await this.loadEvents(accessToken, ids),
-      staleCursorRecovered: true,
+      staleCursorRecovered: options.staleCursorRecovered ?? true,
       recoveredMessageCount: ids.length,
       recoveryTruncated,
       truncated: false,

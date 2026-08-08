@@ -194,6 +194,7 @@ import { createMailRuleExternalApproval } from './application/mail-ops/mail-rule
 import { createMailRuleCompiler } from './application/mail-ops/mail-rule-compiler';
 import { createMailRuleJudge } from './application/mail-ops/mail-rule-judge';
 import { createMailBriefComposer } from './application/mail-ops/mail-brief';
+import { createMailBriefOnboarding } from './application/mail-ops/mail-brief-onboarding';
 import { createMailBriefRunner } from './application/mail-ops/mail-brief.runner';
 import {
   DEFAULT_MAIL_BRIEF_SCHEDULE,
@@ -422,6 +423,7 @@ export interface Container {
   }) => Promise<{ kind: 'allowed' | 'denied' | 'unavailable'; message?: string }>;
   /** One sentence into a draft rule. Creates nothing. */
   compileMailRule: ReturnType<typeof createMailRuleCompiler>;
+  mailBriefOnboarding: ReturnType<typeof createMailBriefOnboarding>;
   mailOpsWorker: MailOpsWorker;
   canvaMcpOAuthService: CanvaMcpOAuthService;
   airtableMcpOAuthService: AirtableMcpOAuthService;
@@ -893,10 +895,12 @@ export async function buildContainer(
       ? 'GOOGLE_OAUTH_REDIRECT_URI_origin'
       : 'BACKEND_PUBLIC_URL',
   });
+  let mailBriefOnboarding: ReturnType<typeof createMailBriefOnboarding>;
   const googleConnectionAuthorization = new GoogleConnectionAuthorizationService({
     intentRepo: connectionAuthorizationRepo,
     googleOAuth: googleOAuthService,
     connectionRepo: integrationConnectionRepo,
+    mailBriefOnboarding: input => mailBriefOnboarding(input),
     callbackUrl: googleConnectionCallbackUrl,
     logger,
   });
@@ -2718,6 +2722,11 @@ export async function buildContainer(
     },
     logger,
   });
+  mailBriefOnboarding = createMailBriefOnboarding({
+    repo: mailOpsRepo,
+    wakeMailOps: () => mailOpsWorker.wake(),
+    logger,
+  });
 
   const channelRegistry = new ChannelAdapterRegistry();
   channelRegistry.register(larkAdapter);
@@ -3128,6 +3137,7 @@ export async function buildContainer(
     resolveMemberDepartmentId,
     canRunMailRules,
     compileMailRule,
+    mailBriefOnboarding,
     mailOpsWorker,
     canvaMcpOAuthService,
     airtableMcpOAuthService,

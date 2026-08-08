@@ -14,6 +14,13 @@ import type {
   CreateConnectionAuthorizationIntentInput,
 } from '../../infrastructure/persistence/connection-authorization.repository';
 import type { Logger } from '../../shared/logger';
+import type { InfraError } from '../../shared/errors';
+import {
+  canStartMailBriefFromGoogleAuthorization,
+  type MailBriefOnboardingInput,
+  type MailBriefOnboardingResult,
+} from '../mail-ops/mail-brief-onboarding';
+import type { Result } from '../../shared/result';
 
 export interface IssuedGoogleAuthorization {
   outcome: 'issued';
@@ -82,6 +89,9 @@ export class GoogleConnectionAuthorizationService {
     intentRepo: IntentRepo;
     googleOAuth: GoogleOAuth;
     connectionRepo: ConnectionRepo;
+    mailBriefOnboarding?: (
+      input: MailBriefOnboardingInput,
+    ) => Promise<Result<MailBriefOnboardingResult, InfraError>>;
     callbackUrl: string;
     logger: Logger;
   }) {
@@ -254,6 +264,31 @@ export class GoogleConnectionAuthorizationService {
       userId: intent.userId,
       correlationId: intent.correlationId,
     });
+    const startsMailBrief = canStartMailBriefFromGoogleAuthorization({
+      requestedToolIds: intent.requestedToolIds,
+      grantedScopes,
+    });
+    const mailboxEmail = saved.value.accountEmail ?? userInfo.email;
+    if (startsMailBrief && mailboxEmail && this.deps.mailBriefOnboarding) {
+      const started = await this.deps.mailBriefOnboarding({
+        companyId: intent.companyId,
+        userId: intent.userId,
+        connectionId: saved.value.id,
+        mailboxEmail,
+      });
+      if (!started.ok) {
+        this.log.warn('google.authorization.mail_brief_onboarding_failed', {
+          intentId: intent.intentId,
+          connectionId: saved.value.id,
+          error: started.error.message,
+        });
+      }
+    } else if (startsMailBrief && !mailboxEmail) {
+      this.log.warn('google.authorization.mail_brief_onboarding_skipped', {
+        intentId: intent.intentId,
+        reason: 'missing_google_email',
+      });
+    }
     return {
       outcome: 'connected',
       intentId: intent.intentId,

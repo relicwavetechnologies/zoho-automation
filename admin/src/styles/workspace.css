@@ -774,6 +774,23 @@
 .cur .ws-auth-or::before,
 .cur .ws-auth-or::after { content: ''; flex: 1; height: 1px; background: var(--cur-hairline); }
 
+.cur .ws-auth-mailer {
+  border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card);
+  background: var(--cur-surface); padding: 15px; display: flex; flex-direction: column; gap: 14px;
+}
+.cur .ws-auth-mailer-head { display: flex; align-items: center; gap: 12px; }
+.cur .ws-auth-mailer-mark {
+  width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center;
+  background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline);
+}
+.cur .ws-auth-mailer b { display: block; font-size: 14px; font-weight: 500; color: var(--cur-ink); }
+.cur .ws-auth-mailer p { margin-top: 3px; font-size: 12px; line-height: 1.45; color: var(--cur-muted); }
+.cur .ws-auth-mailer-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; }
+.cur .ws-auth-mailer-list li {
+  display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--cur-body);
+}
+.cur .ws-auth-mailer-list svg { color: var(--cur-muted); flex-shrink: 0; }
+
 /* Outcome lines on the auth cards. Green for "it worked", amber for "it did
    not, and nothing changed" — the second is not an error, it is an answer. */
 .cur .ws-auth-done, .cur .ws-auth-warn {

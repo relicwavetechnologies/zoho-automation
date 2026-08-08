@@ -55,6 +55,7 @@ export class MailOpsRepository {
 
   // The mailbox.
   readonly claimNextDueMailbox: MailboxSubscriptionRepository['claimNextDueMailbox'];
+  readonly ensureMailboxForConnection: MailboxSubscriptionRepository['ensureMailboxForConnection'];
   readonly advanceCursor: MailboxSubscriptionRepository['advanceCursor'];
   readonly signalMailbox: MailboxSubscriptionRepository['signalMailbox'];
   readonly claimNextWatchRenewal: MailboxSubscriptionRepository['claimNextWatchRenewal'];
@@ -110,6 +111,8 @@ export class MailOpsRepository {
 
     const { subscriptions, rules, events, deliveries, briefs } = this;
     this.claimNextDueMailbox = subscriptions.claimNextDueMailbox.bind(subscriptions);
+    this.ensureMailboxForConnection =
+      subscriptions.ensureMailboxForConnection.bind(subscriptions);
     this.advanceCursor = subscriptions.advanceCursor.bind(subscriptions);
     this.signalMailbox = subscriptions.signalMailbox.bind(subscriptions);
     this.claimNextWatchRenewal = subscriptions.claimNextWatchRenewal.bind(subscriptions);
