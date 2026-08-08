@@ -42,10 +42,11 @@
  * recorded with `decision: 'unavailable'`, so a member can always tell a verdict
  * the model gave from one this policy supplied.
  */
-import { generateText, type LanguageModel } from 'ai';
+import { generateObject, NoObjectGeneratedError, type LanguageModel } from 'ai';
 import { z } from 'zod';
 import { extractJson } from './mail-rule-compiler';
 import { judgeFailurePolicy } from './mail-ops.types';
+import type { Logger } from '../../shared/logger';
 import type {
   MailJudgeVerdict, MailMessageMetadata, MailRuleJudge,
 } from './mail-ops.types';
@@ -98,7 +99,47 @@ const responseSchema = z.object({
 
 export interface MailRuleJudgeDeps {
   readonly model: LanguageModel;
+  /**
+   * Optional so every existing construction still compiles, but it is the only
+   * way anybody finds out *why* a rule went quiet.
+   *
+   * A verdict this step could not read is recorded as `unavailable` with a
+   * fixed sentence, and the reply that caused it was thrown away — so a rule
+   * holding one message in five looked identical to a rule holding none, and
+   * there was nothing to diagnose it from. What gets logged is the model's
+   * answer, truncated: it is Divo's own output about a message, never the
+   * message.
+   */
+  readonly logger?: Logger;
 }
+
+/**
+ * Enough for the schema's own limits with room to spare.
+ *
+ * `reason` allows 600 characters — roughly 150 tokens — and the old budget of
+ * 300 had to cover that plus the JSON around it. DeepSeek's own JSON-mode
+ * guidance is to set this generously *because* a truncated reply is invalid
+ * JSON, which is exactly the failure that was showing up. It still bounds a
+ * step that runs per matched message.
+ */
+const MAX_OUTPUT_TOKENS = 700;
+
+/**
+ * Read a verdict out of a reply the provider would not hand back as an object.
+ *
+ * `extractJson` reaches through a code fence or a sentence of preamble, and the
+ * schema still has the last word. Returns undefined when there is nothing
+ * usable, so the caller can tell "recovered" from "genuinely unreadable"
+ * instead of guessing.
+ */
+const salvage = (text: string | undefined): z.infer<typeof responseSchema> | undefined => {
+  if (!text || text.trim().length === 0) return undefined;
+  try {
+    return responseSchema.parse(extractJson(text));
+  } catch {
+    return undefined;
+  }
+};
 
 export function createMailRuleJudge(deps: MailRuleJudgeDeps) {
   return async function judgeMessage(input: {
@@ -111,10 +152,34 @@ export function createMailRuleJudge(deps: MailRuleJudgeDeps) {
       appliedFailure: judgeFailurePolicy(input.judge),
     });
 
-    let text: string;
+    let parsed: z.infer<typeof responseSchema>;
     try {
-      const result = await generateText({
+      /*
+       * `generateObject`, not `generateText` — for the provider flag, not the
+       * convenience.
+       *
+       * Asking for JSON in the prompt is a request; this is the only path that
+       * turns it into `response_format: {type: 'json_object'}` on the wire, and
+       * DeepSeek then guarantees the reply is syntactically valid JSON.
+       * `generateText` never sets it, with or without an output helper.
+       *
+       * It is a guarantee about syntax and nothing more. DeepSeek rejects
+       * `json_schema`, so nothing server-side promises `answer` is a boolean or
+       * that `reason` fits — the schema below is still what enforces the shape,
+       * and it is still what decides an answer is unreadable.
+       */
+      // Same cast the knowledge extractor uses: `generateObject`'s inferred
+      // types blow the instantiation depth limit against a zod schema. The
+      // shape is re-established by parsing the result below, which has to
+      // happen regardless — DeepSeek is not enforcing this schema for us.
+      const generateStructured = generateObject as unknown as (
+        options: Record<string, unknown>,
+      ) => Promise<{ object: unknown }>;
+      const result = await generateStructured({
         model: deps.model,
+        schema: responseSchema,
+        schemaName: 'mail_rule_judge_verdict',
+        schemaDescription: 'One yes/no verdict about one email, with its reason.',
         system: SYSTEM_PROMPT,
         prompt: [
           `Question: ${input.judge.question}`,
@@ -123,29 +188,81 @@ export function createMailRuleJudge(deps: MailRuleJudgeDeps) {
           describeMessage(input.message),
         ].join('\n'),
         temperature: 0,
-        maxOutputTokens: 300,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
         // Shorter than the compiler's 25s. That one runs while a person waits
         // and watches; this one runs inside a delivery lane where every second
         // is a second the whole lane is not moving other people's mail.
         abortSignal: AbortSignal.timeout(12_000),
       });
-      text = result.text;
+      parsed = responseSchema.parse(result.object);
     } catch (cause) {
-      return unavailable(
-        cause instanceof Error && cause.name === 'TimeoutError'
-          ? 'Divo did not answer in time.'
-          : 'Divo could not be reached to read this message.',
-      );
-    }
-
-    let parsed: z.infer<typeof responseSchema>;
-    try {
-      parsed = responseSchema.parse(extractJson(text));
-    } catch {
-      // A malformed answer is not a "no". Reporting it as a rejection would put
-      // a made-up reason next to a message the model never actually judged, and
-      // the member would have no way to tell that apart from a real verdict.
-      return unavailable('Divo answered in a way this rule could not read.');
+      if (cause instanceof Error && cause.name === 'TimeoutError') {
+        return unavailable('Divo did not answer in time.');
+      }
+      /*
+       * Valid JSON of the wrong shape — `answer` as "yes", a confidence above
+       * one, a reason past the limit. DeepSeek guarantees the syntax and
+       * nothing about the fields, so this is a real outcome rather than a
+       * defensive branch, and it is the one the log has to name specifically.
+       */
+      if (cause instanceof z.ZodError) {
+        deps.logger?.warn('mail_ops.judge_off_schema', {
+          issues: cause.issues.map(i => `${i.path.join('.') || '(root)'}: ${i.code}`),
+        });
+        return unavailable('Divo answered in a way this rule could not read.');
+      }
+      /*
+       * An answer arrived and could not be used. Kept apart from "could not be
+       * reached" because the remedies are opposites — one is a network or a
+       * key, the other is this prompt, this budget or this model.
+       *
+       * A malformed answer is also not a "no": reporting it as a rejection
+       * would put an invented reason beside a message the model never actually
+       * judged, and a member could not tell that from a real verdict.
+       */
+      if (NoObjectGeneratedError.isInstance(cause)) {
+        /*
+         * One more try at the raw reply before giving up on it.
+         *
+         * JSON mode is the guarantee, and this is what catches the reply that
+         * arrives despite it — a fenced block, a sentence before the object.
+         * `generateText` + `extractJson` used to tolerate exactly that, and
+         * dropping the tolerance to gain the provider flag would have traded
+         * one silent hold for another. Both, or the change is not worth making.
+         */
+        const salvaged = salvage(cause.text);
+        if (salvaged) {
+          deps.logger?.warn('mail_ops.judge_salvaged', {
+            reason: 'the reply was valid JSON the provider would not accept',
+          });
+          return {
+            decision: salvaged.answer ? 'passed' : 'rejected',
+            reason: salvaged.reason,
+            ...(salvaged.confidence !== undefined
+              ? { confidence: salvaged.confidence }
+              : {}),
+          };
+        }
+        deps.logger?.warn('mail_ops.judge_unreadable', {
+          // Divo's own answer about a message, never the message. Truncated
+          // because the failure is usually visible in the first line, and an
+          // untruncated reply is a lot of log for a step that runs per message.
+          reply: (cause.text ?? '').slice(0, 500),
+          empty: (cause.text ?? '').trim().length === 0,
+          finishReason: cause.finishReason,
+          maxOutputTokens: MAX_OUTPUT_TOKENS,
+        });
+        /*
+         * Empty is its own answer, and DeepSeek documents it as a known JSON
+         * mode outcome they are still working on. Saying "answered in a way
+         * this rule could not read" about an empty reply sends somebody
+         * rewriting a question that was never read at all.
+         */
+        return unavailable((cause.text ?? '').trim().length === 0
+          ? 'Divo returned nothing for this message.'
+          : 'Divo answered in a way this rule could not read.');
+      }
+      return unavailable('Divo could not be reached to read this message.');
     }
 
     return {

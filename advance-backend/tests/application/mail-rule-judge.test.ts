@@ -217,3 +217,154 @@ describe('mail rule judge', () => {
     });
   });
 });
+
+/**
+ * What happens when the model's answer cannot be used.
+ *
+ * Two of ten judged messages came back unreadable during a live run, and every
+ * one of them was held — `onFailure: closed` doing its job. That is the safe
+ * outcome and it is also an invisible one: the reply that caused it was thrown
+ * away, so a rule holding one message in five looked exactly like a rule with
+ * nothing to hold. These pin the three things that changed.
+ */
+describe('when the answer cannot be used', () => {
+  const capture = () => {
+    const lines: Array<{ event: string; data: Record<string, unknown> }> = [];
+    const log = {
+      warn: (event: string, data: Record<string, unknown>) => lines.push({ event, data }),
+      info: () => {}, error: () => {}, debug: () => {},
+      child: () => log,
+    };
+    return { lines, log };
+  };
+
+  const judgeWith = (text: string) => {
+    const { lines, log } = capture();
+    return {
+      lines,
+      run: () => createMailRuleJudge({
+        model: modelReturning(text) as never,
+        logger: log as never,
+      })({ judge: { question: 'Is this a real invoice?' }, message }),
+    };
+  };
+
+  /*
+   * The reply is the whole diagnosis, and it used to be discarded. It is Divo's
+   * own answer about a message rather than any part of the message, which is
+   * what makes it loggable at all.
+   */
+  it('records the reply it could not read', async () => {
+    const { lines, run } = judgeWith('I think this is probably an invoice, yes.');
+    const verdict = await run();
+
+    assert.equal(verdict.decision, 'unavailable');
+    const logged = lines.find(l => l.event === 'mail_ops.judge_unreadable');
+    assert.ok(logged, 'the unreadable reply must be recorded');
+    assert.match(String(logged.data['reply']), /probably an invoice/);
+    assert.equal(logged.data['empty'], false);
+  });
+
+  /*
+   * DeepSeek documents empty content as a known JSON-mode outcome. Reporting it
+   * as "answered in a way this rule could not read" sends somebody rewriting a
+   * question that was never answered at all.
+   */
+  it('says nothing came back, rather than blaming the answer', async () => {
+    const { lines, run } = judgeWith('');
+    const verdict = await run();
+
+    assert.equal(verdict.decision, 'unavailable');
+    assert.match(verdict.reason, /returned nothing/);
+    assert.equal(lines.find(l => l.event === 'mail_ops.judge_unreadable')?.data['empty'], true);
+  });
+
+  /*
+   * A reply cut off mid-object is the failure the token budget was raised for.
+   * It must still be reported rather than guessed at.
+   */
+  it('holds on a truncated reply instead of inventing a verdict', async () => {
+    const verdict = await judgeWith('{"answer":true,"reason":"A dated invoice with a to').run();
+    assert.equal(verdict.decision, 'unavailable');
+    assert.equal(verdict.appliedFailure, 'closed');
+  });
+
+  /*
+   * Valid JSON of the wrong shape. DeepSeek guarantees the syntax and nothing
+   * about the fields, so this is a real outcome rather than a defensive branch.
+   */
+  it('refuses valid JSON that is not a verdict', async () => {
+    for (const reply of [
+      '{"answer":"yes","reason":"Looks like one."}',
+      '{"answer":true,"confidence":4,"reason":"Certain."}',
+      '{"answer":true}',
+    ]) {
+      const verdict = await judgeWith(reply).run();
+      assert.equal(verdict.decision, 'unavailable', `${reply} must not become a verdict`);
+    }
+  });
+
+  /*
+   * The tolerance that came free with the old text path must not be lost to
+   * gain the provider's JSON flag. A fenced reply is still a usable verdict,
+   * and it is recorded so the frequency is visible rather than invisible.
+   */
+  it('still salvages a fenced reply, and says that it did', async () => {
+    const { lines, run } = judgeWith(
+      '```json\n{"answer":false,"reason":"A webinar promotion, not an invoice."}\n```',
+    );
+    const verdict = await run();
+
+    assert.equal(verdict.decision, 'rejected');
+    assert.ok(lines.some(l => l.event === 'mail_ops.judge_salvaged'));
+  });
+});
+
+/**
+ * The reason this step uses `generateObject` at all.
+ *
+ * Asking for JSON in a prompt is a request. Only this path sets
+ * `responseFormat` on the call, which `@ai-sdk/deepseek` turns into
+ * `response_format: {type: 'json_object'}` on the wire — the provider's own
+ * guarantee that the reply is syntactically valid JSON. `generateText` never
+ * sets it, with or without an output helper, so a well-meaning switch back to
+ * it would quietly remove the guarantee and leave every other line here
+ * passing.
+ */
+describe('what actually reaches the provider', () => {
+  const callOptions = async () => {
+    let seen: Record<string, unknown> | undefined;
+    const model = {
+      specificationVersion: 'v2' as const,
+      provider: 'test', modelId: 'test', supportedUrls: {},
+      async doGenerate(options: Record<string, unknown>) {
+        seen = options;
+        return {
+          content: [{ type: 'text' as const, text: '{"answer":true,"reason":"A dated invoice."}' }],
+          finishReason: 'stop' as const,
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+          warnings: [],
+        };
+      },
+      doStream() { throw new Error('not used'); },
+    };
+    await createMailRuleJudge({ model: model as never })({
+      judge: { question: 'Is this a real invoice?' }, message,
+    });
+    return seen ?? {};
+  };
+
+  it('asks for JSON at the provider, not only in the prompt', async () => {
+    const format = (await callOptions())['responseFormat'] as { type?: string } | undefined;
+    assert.equal(format?.type, 'json');
+  });
+
+  /*
+   * The budget a truncated reply is invalid JSON because of. DeepSeek's own
+   * guidance is to set it generously; 300 had to cover a 600-character reason
+   * plus the JSON around it.
+   */
+  it('leaves room for the longest reason the schema allows', async () => {
+    assert.ok(Number((await callOptions())['maxOutputTokens']) >= 700);
+  });
+});

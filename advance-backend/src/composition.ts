@@ -2285,6 +2285,10 @@ export async function buildContainer(
 
   const judgeMailMessage = createMailRuleJudge({
     model: deepSeekModel(env.PERSONA_LEARNING_MODEL_ID),
+    // Without this, a rule holding one message in five is indistinguishable
+    // from one holding none: the answer that could not be read was discarded
+    // and the member only ever saw a fixed sentence.
+    logger: logger.child({ service: 'mail-ops-judge' }),
   });
 
   const composeMailBrief = createMailBriefComposer({
