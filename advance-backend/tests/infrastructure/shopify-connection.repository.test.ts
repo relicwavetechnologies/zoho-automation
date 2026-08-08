@@ -67,6 +67,40 @@ describe('IntegrationConnectionRepository Shopify credentials', () => {
     assert.notEqual(fixture.updateMany?.data.refreshTokenEncrypted, 'new-refresh');
   });
 
+  it('encrypts Shopify client credentials for server-side token renewal', async () => {
+    const fixture = makeFixture();
+    const repository = new IntegrationConnectionRepository(fixture.db as never, {
+      ZOHO_TOKEN_ENCRYPTION_KEY: encryptionKey,
+    } as never);
+
+    const saved = await repository.upsertShopifyConnection({
+      companyId: 'company-1',
+      ownerType: 'company',
+      createdBy: 'user-1',
+      shopDomain: 'test-store.myshopify.com',
+      shopName: 'Test Store',
+      shopGraphqlId: 'gid://shopify/Shop/1',
+      accessToken: 'plain-access-token',
+      accessTokenExpiresAt: new Date('2026-08-02T13:00:00.000Z'),
+      scopes: ['read_reports'],
+      apiVersion: '2026-07',
+      clientCredentials: {
+        clientId: 'client-id',
+        clientSecret: 'plain-client-secret',
+      },
+    });
+
+    assert.ok(saved.ok);
+    assert.equal(saved.value.tokenType, 'client_credentials');
+    assert.equal(saved.value.shopifyClientCredentials?.clientId, 'client-id');
+    assert.equal(saved.value.shopifyClientCredentials?.clientSecret, 'plain-client-secret');
+    assert.equal(fixture.row?.refreshTokenEncrypted, null);
+    const metadata = fixture.row?.tokenMetadata as Record<string, any>;
+    assert.equal(metadata.authMethod, 'client_credentials');
+    assert.equal(metadata.shopifyClientCredentials.clientId, 'client-id');
+    assert.notEqual(metadata.shopifyClientCredentials.clientSecretEncrypted, 'plain-client-secret');
+  });
+
   it('rejects a malformed shop domain before any persistence call', async () => {
     const fixture = makeFixture();
     const repository = new IntegrationConnectionRepository(fixture.db as never, {

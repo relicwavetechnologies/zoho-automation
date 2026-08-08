@@ -17,6 +17,15 @@ function tokenBody(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function clientCredentialsBody(overrides: Record<string, unknown> = {}) {
+  return {
+    access_token: 'access-1',
+    scope: SCOPES.join(','),
+    expires_in: 86_399,
+    ...overrides,
+  };
+}
+
 function response(body: unknown, status = 200, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
     status,
@@ -172,5 +181,47 @@ describe('ShopifyOAuthService', () => {
       refresh_token: 'refresh-1',
     });
     assert.equal(calls[0]?.body, calls[1]?.body, 'retries must reuse the same refresh request');
+  });
+
+  it('exchanges per-store client credentials without a refresh token and validates minimum scopes', async () => {
+    const calls: Array<{ url: string; body: string }> = [];
+    const oauth = service(async (url, init) => {
+      calls.push({ url: String(url), body: String(init.body) });
+      return response(clientCredentialsBody());
+    });
+
+    const token = await oauth.exchangeClientCredentials({
+      shop: 'demo-store',
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      minimumScopes: ['read_reports'],
+    });
+
+    assert.equal(token.accessToken, 'access-1');
+    assert.equal(token.accessTokenExpiresAt.toISOString(), '2026-08-03T11:59:59.000Z');
+    assert.deepEqual(token.scopes, [...SCOPES].sort());
+    assert.deepEqual(Object.fromEntries(new URLSearchParams(calls[0]?.body)), {
+      grant_type: 'client_credentials',
+      client_id: 'client-id',
+      client_secret: 'client-secret',
+    });
+
+    await assert.rejects(
+      () => service(async () => response(clientCredentialsBody({ scope: 'read_orders' }))).exchangeClientCredentials({
+        shop: 'demo-store',
+        clientId: 'client-id',
+        clientSecret: 'client-secret',
+        minimumScopes: ['read_reports'],
+      }),
+      (error: unknown) => error instanceof ShopifyOAuthError && error.code === 'scope_mismatch',
+    );
+    await assert.rejects(
+      () => service(async () => response({ error: 'invalid_client' }, 400)).exchangeClientCredentials({
+        shop: 'demo-store',
+        clientId: 'client-id',
+        clientSecret: 'rotated-secret',
+      }),
+      (error: unknown) => error instanceof ShopifyOAuthError && error.code === 'token_rejected',
+    );
   });
 });

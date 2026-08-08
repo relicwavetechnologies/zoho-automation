@@ -7,7 +7,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Activity, ArrowUpRight, Ban, BookOpen, Brain, Building2, Check, CircleAlert, Clock, Copy, ExternalLink,
+  Activity, ArrowUpRight, Ban, BookOpen, Brain, Building2, Check, CircleAlert, Clock,
   ChevronRight, Eye, Gauge, Globe, Link2, Lock, MessageSquare, Plus, RotateCw, Search, ShieldCheck,
   Sparkles, Trash2, TriangleAlert, Users, X,
 } from 'lucide-react'
@@ -28,6 +28,11 @@ import {
   useShopifyCompanyStatus, useShopifyConnect, type ShopifyCompanyConnection, type ShopifyCompanyStatus,
 } from './data/use-company-connections'
 import { ago, expiryLabel, useApprovals } from './data/use-approvals'
+import {
+  useZohoSelfClientConnect,
+  ZOHO_DATA_CENTRES,
+  type ZohoSelfClientAccess,
+} from './data/use-zoho-self-client'
 import {
   changePct, durationLabel, useMyModelOptions, useMyRuns, useMyTools, useMyUsage, type MyRun,
 } from './data/use-my-activity'
@@ -260,8 +265,14 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
   // Which provider is waiting on a name before its sign-in window opens.
   const [naming, setNaming] = useState<Provider | null>(null)
   const [shopifyOpen, setShopifyOpen] = useState(false)
+  const [zohoOpen, setZohoOpen] = useState(false)
   const { byProvider, loading, unreachable, connecting, connect, disconnect, refresh } = useConnections()
   const shopifyStatus = useShopifyCompanyStatus()
+  const { session } = useAdminAuth()
+  // Whoever "admin connects this" refers to. The backend already decides this
+  // for itself — `/zoho/authorize-url` answers 403 to anyone else — so this
+  // only governs whether the button is worth offering.
+  const isCompanyAdmin = session?.role === 'COMPANY_ADMIN' || session?.role === 'SUPER_ADMIN'
 
   /**
    * Adding an account, with a name where a name is worth having.
@@ -272,7 +283,10 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
    * holds one, so asking there would be a question with no answer worth giving.
    */
   const startConnect = (provider: Provider, existing: number) => {
-    if (LABELLED.includes(provider) && existing > 0) setNaming(provider)
+    // Zoho takes a detour: it can be connected two different ways, and which
+    // one you want is not something the button can infer.
+    if (provider === 'zoho') setZohoOpen(true)
+    else if (LABELLED.includes(provider) && existing > 0) setNaming(provider)
     else void connect(provider)
   }
 
@@ -321,7 +335,17 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
                 {CONNECTORS.map((def) => {
                   const status = byProvider.get(def.provider)
                   const accounts = status?.connections ?? []
-                  const canAdd = def.memberCanConnect
+                  /*
+                   * Two different questions, and one flag was answering both.
+                   *
+                   * `memberCanConnect` says whether an ordinary member may
+                   * connect this for themselves. A provider connected once for
+                   * the whole company answers no — but it is still connectable,
+                   * by an admin, and reading the flag as "nobody may add one
+                   * here" left an admin looking at Zoho with no way to add an
+                   * account to the very thing they administer.
+                   */
+                  const canAdd = def.memberCanConnect || isCompanyAdmin
                   // Counted rather than derived from `accounts.length`: the
                   // header's job is to say how many of these actually work, and
                   // "2 accounts" over one live and one revoked is the sentence
@@ -365,9 +389,14 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
                               ? 'Waiting…'
                               : accounts.length === 0 ? 'Connect' : <><Plus size={13} />Add account</>}
                           </button>
-                        ) : accounts.length === 0 ? (
+                        ) : (
+                          /* Shown whether or not accounts already exist. It used
+                             to appear only on an empty provider, so a member
+                             looking at one that already had accounts got no
+                             button and no reason — a dead end that read as a
+                             missing feature rather than a deliberate rule. */
                           <span className="ws-tag"><Lock size={11} />Admin connects this</span>
-                        ) : null}
+                        )}
                       </div>
 
                       {accounts.length > 0 ? (
@@ -479,6 +508,15 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
           onConnected={shopifyStatus.refresh}
         />
       ) : null}
+
+      {zohoOpen ? (
+        <ZohoConnectDialog
+          toast={toast}
+          onClose={() => setZohoOpen(false)}
+          onOAuth={() => { setZohoOpen(false); void connect('zoho') }}
+          onConnected={refresh}
+        />
+      ) : null}
     </>
   )
 }
@@ -508,7 +546,7 @@ function ShopifyConnectionGroup({ status, onOpen }: {
               : status.failed
                 ? 'Could not read Shopify connections.'
                 : accounts.length === 0
-                  ? 'Company-owned store access. Generate a link, send it to the Shopify admin if needed, then paste the callback URL.'
+                  ? 'Company-owned store access. Save Dev Dashboard credentials once; Divo keeps tokens refreshed.'
                   : `${accounts.length} store${accounts.length === 1 ? '' : 's'}${dead > 0 ? ` · ${dead} needs reconnecting` : ''}`}
           </p>
         </div>
@@ -566,41 +604,29 @@ function ShopifyConnectDialog({ toast, onClose, onConnected }: {
 }) {
   const shopify = useShopifyConnect()
   const [shopDomain, setShopDomain] = useState('')
-  const [authorizeUrl, setAuthorizeUrl] = useState('')
-  const [callbackUrl, setCallbackUrl] = useState('')
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [label, setLabel] = useState('')
 
-  const start = async () => {
+  const finish = async () => {
     const normalized = normalizeShopDomainInput(shopDomain)
     if (!normalized) {
       toast('Use the permanent .myshopify.com store domain', 'error')
       return
     }
-    try {
-      const url = await shopify.begin(normalized)
-      setAuthorizeUrl(url)
-      window.open(url, '_blank', 'noopener,noreferrer')
-      toast('Shopify sign-in link ready')
-    } catch (e) {
-      toast(e instanceof Error ? e.message : 'Could not start Shopify authorization', 'error')
+    if (!clientId.trim() || !clientSecret.trim()) {
+      toast('Enter the Shopify client ID and secret', 'error')
+      return
     }
-  }
-
-  const copyLink = async () => {
-    if (!authorizeUrl) return
     try {
-      await navigator.clipboard.writeText(authorizeUrl)
-      toast('Shopify link copied')
-    } catch {
-      toast('Copy failed. Select the URL and copy it manually.', 'error')
-    }
-  }
-
-  const finish = async () => {
-    if (!callbackUrl.trim()) return
-    try {
-      const result = await shopify.complete(callbackUrl.trim())
+      const result = await shopify.connect({
+        shopDomain: normalized,
+        clientId: clientId.trim(),
+        clientSecret: clientSecret.trim(),
+        ...(label.trim() ? { label: label.trim() } : {}),
+      })
       await onConnected()
-      toast(result === 'connected' ? 'Shopify connected for the company' : 'Shopify authorization was denied')
+      toast(`Shopify connected: ${result.shopName || result.shopDomain}`)
       onClose()
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Could not save Shopify connection', 'error')
@@ -614,7 +640,7 @@ function ShopifyConnectDialog({ toast, onClose, onConnected }: {
         <div className="ws-modal" role="dialog" aria-label="Connect Shopify">
           <div className="ws-modal-h">
             <h2>Connect Shopify</h2>
-            <p>Generate a store install link, then paste the callback URL after Shopify approval.</p>
+            <p>Verify a store with Dev Dashboard credentials. Divo keeps the Admin API token refreshed server-side.</p>
           </div>
           <div className="ws-modal-b">
             <div className="ws-lbl">Shopify store domain</div>
@@ -627,45 +653,42 @@ function ShopifyConnectDialog({ toast, onClose, onConnected }: {
               onChange={(e) => setShopDomain(e.target.value)}
               style={{ width: '100%', marginTop: 8 }}
             />
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
-              <button type="button" className="btn primary" disabled={shopify.saving} onClick={() => void start()}>
-                <ExternalLink size={14} />{authorizeUrl ? 'Regenerate link' : 'Open sign-in'}
-              </button>
-              <button type="button" className="btn" disabled={!authorizeUrl} onClick={() => void copyLink()}>
-                <Copy size={14} />Copy link
-              </button>
-            </div>
-
-            {authorizeUrl ? (
-              <>
-                <div className="ws-lbl" style={{ marginTop: 18 }}>Initiated URL</div>
-                <input
-                  className="input"
-                  readOnly
-                  value={authorizeUrl}
-                  onFocus={(e) => e.currentTarget.select()}
-                  style={{ width: '100%', marginTop: 8 }}
-                />
-              </>
-            ) : null}
-
-            <div className="ws-lbl" style={{ marginTop: 18 }}>Callback URL</div>
-            <textarea
+            <div className="ws-lbl" style={{ marginTop: 18 }}>Client ID</div>
+            <input
               className="input"
-              value={callbackUrl}
-              rows={4}
-              placeholder="Paste the full URL Shopify redirects to after approval"
-              onChange={(e) => setCallbackUrl(e.target.value)}
-              style={{ width: '100%', marginTop: 8, resize: 'vertical', minHeight: 96 }}
+              value={clientId}
+              maxLength={255}
+              placeholder="Shopify app client ID"
+              onChange={(e) => setClientId(e.target.value)}
+              style={{ width: '100%', marginTop: 8 }}
+            />
+            <div className="ws-lbl" style={{ marginTop: 18 }}>Client secret</div>
+            <input
+              className="input"
+              type="password"
+              value={clientSecret}
+              maxLength={4000}
+              placeholder="Shopify app client secret"
+              onChange={(e) => setClientSecret(e.target.value)}
+              style={{ width: '100%', marginTop: 8 }}
+            />
+            <div className="ws-lbl" style={{ marginTop: 18 }}>Connection name</div>
+            <input
+              className="input"
+              value={label}
+              maxLength={255}
+              placeholder="Optional"
+              onChange={(e) => setLabel(e.target.value)}
+              style={{ width: '100%', marginTop: 8 }}
             />
             <p className="ws-sentence-note">
-              The pasted URL is exchanged by the backend. Tokens are stored encrypted and are never shown here.
+              Credentials go straight to the backend. Stored tokens and secrets are encrypted and never shown here.
             </p>
           </div>
           <div className="ws-modal-f">
             <button type="button" className="btn" onClick={onClose} disabled={shopify.saving}>Cancel</button>
-            <button type="button" className="btn primary" disabled={shopify.saving || !callbackUrl.trim()} onClick={() => void finish()}>
-              {shopify.saving ? 'Working…' : 'Save connection'}
+            <button type="button" className="btn primary" disabled={shopify.saving || !shopDomain.trim() || !clientId.trim() || !clientSecret.trim()} onClick={() => void finish()}>
+              {shopify.saving ? 'Checking…' : 'Verify and save'}
             </button>
           </div>
         </div>
@@ -1858,6 +1881,188 @@ export function YouSettings({ persona, replay }: ScreenProps) {
                 on. Approvals already reach people in Lark. */}
           </div>
         </Panel>
+      </div>
+    </>
+  )
+}
+
+/**
+ * Connecting Zoho, both ways.
+ *
+ * OAuth is the ordinary route and the only one that can be given write access
+ * by Zoho itself. Self Client exists for the case where an admin cannot run a
+ * consent screen — a service account, a Zoho org that will not grant one — and
+ * hands over credentials instead.
+ *
+ * Ported from the desktop app, which had this and the web did not. Anyone
+ * administering Zoho from a browser was simply told to go and use the desktop.
+ */
+function ZohoConnectDialog({ toast, onClose, onOAuth, onConnected }: {
+  toast: Toast
+  onClose: () => void
+  onOAuth: () => void
+  onConnected: () => Promise<void>
+}) {
+  const zoho = useZohoSelfClientConnect()
+  const [mode, setMode] = useState<'choose' | 'self_client'>('choose')
+  const [label, setLabel] = useState('')
+  const [dataCentre, setDataCentre] = useState<string>(ZOHO_DATA_CENTRES[0].value)
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [grantToken, setGrantToken] = useState('')
+  const [access, setAccess] = useState<ZohoSelfClientAccess>('read_only')
+
+  const finish = async () => {
+    if (!clientId.trim() || !clientSecret.trim() || !grantToken.trim()) {
+      toast('Enter the client ID, client secret, and grant token', 'error')
+      return
+    }
+    try {
+      const result = await zoho.connect({
+        clientId: clientId.trim(),
+        clientSecret: clientSecret.trim(),
+        grantToken: grantToken.trim(),
+        accountsBaseUrl: dataCentre,
+        access,
+        ...(label.trim() ? { label: label.trim() } : {}),
+      })
+      await onConnected()
+      toast(`Zoho connected: ${result.label}`)
+      onClose()
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not connect Zoho', 'error')
+    }
+  }
+
+  return (
+    <>
+      <div className="ws-scrim" onClick={onClose} />
+      <div className="ws-modal-wrap">
+        <div className="ws-modal" role="dialog" aria-label="Connect Zoho">
+          <div className="ws-modal-h">
+            <h2>Connect Zoho</h2>
+            <p>
+              {mode === 'choose'
+                ? 'Sign in with Zoho, or hand over Self Client credentials if a consent screen is not available to you.'
+                : 'Register a Self Client in the Zoho API console, then generate a grant and paste it here before it expires.'}
+            </p>
+          </div>
+
+          {mode === 'choose' ? (
+            <div className="ws-modal-b">
+              <div className="ws-choice">
+                <div className="ws-lbl">Sign in with Zoho</div>
+                <p className="ws-sentence-note" style={{ marginTop: 6 }}>
+                  Zoho asks you to approve the access. This is the only route Zoho will grant write access through,
+                  so it is the one to use if Divo should create or edit records.
+                </p>
+                <button type="button" className="btn primary" style={{ marginTop: 12 }} onClick={onOAuth}>
+                  Continue with Zoho
+                </button>
+              </div>
+              <div className="ws-choice" style={{ marginTop: 20 }}>
+                <div className="ws-lbl">Self Client credentials</div>
+                <p className="ws-sentence-note" style={{ marginTop: 6 }}>
+                  Paste a client ID, client secret, and a fresh short-lived grant. Divo exchanges the grant for a
+                  refresh token, encrypts it, and keeps the connection alive from there — you never paste that part.
+                </p>
+                <button type="button" className="btn" style={{ marginTop: 12 }} onClick={() => setMode('self_client')}>
+                  Enter credentials
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="ws-modal-b">
+              <div className="ws-lbl">Data centre</div>
+              <select
+                className="input"
+                value={dataCentre}
+                onChange={(e) => setDataCentre(e.target.value)}
+                style={{ width: '100%', marginTop: 8 }}
+              >
+                {ZOHO_DATA_CENTRES.map((dc) => <option key={dc.value} value={dc.value}>{dc.label}</option>)}
+              </select>
+
+              <div className="ws-lbl" style={{ marginTop: 18 }}>Client ID</div>
+              <input
+                className="input"
+                autoFocus
+                value={clientId}
+                maxLength={255}
+                placeholder="Zoho Self Client ID"
+                onChange={(e) => setClientId(e.target.value)}
+                style={{ width: '100%', marginTop: 8 }}
+              />
+
+              <div className="ws-lbl" style={{ marginTop: 18 }}>Client secret</div>
+              <input
+                className="input"
+                type="password"
+                value={clientSecret}
+                maxLength={512}
+                placeholder="Zoho Self Client secret"
+                onChange={(e) => setClientSecret(e.target.value)}
+                style={{ width: '100%', marginTop: 8 }}
+              />
+
+              <div className="ws-lbl" style={{ marginTop: 18 }}>Short-lived grant token</div>
+              <input
+                className="input"
+                type="password"
+                value={grantToken}
+                maxLength={4096}
+                placeholder="Generated in the Zoho API console"
+                onChange={(e) => setGrantToken(e.target.value)}
+                style={{ width: '100%', marginTop: 8 }}
+              />
+
+              <div className="ws-lbl" style={{ marginTop: 18 }}>What this connection may do</div>
+              <select
+                className="input"
+                value={access}
+                onChange={(e) => setAccess(e.target.value as ZohoSelfClientAccess)}
+                style={{ width: '100%', marginTop: 8 }}
+              >
+                <option value="read_only">Read only</option>
+                <option value="read_write">Read and write</option>
+              </select>
+
+              <div className="ws-lbl" style={{ marginTop: 18 }}>Connection name</div>
+              <input
+                className="input"
+                value={label}
+                maxLength={120}
+                placeholder="Optional"
+                onChange={(e) => setLabel(e.target.value)}
+                style={{ width: '100%', marginTop: 8 }}
+              />
+
+              <p className="ws-sentence-note">
+                {access === 'read_write'
+                  ? 'Divo will let this connection create and edit records. The grant still bounds it — Zoho refuses a write the scopes never covered.'
+                  : 'Divo will only read through this connection. Choose read and write if it should create or edit records.'}
+                {' '}Credentials go straight to the backend, encrypted, and are never shown here again.
+              </p>
+            </div>
+          )}
+
+          <div className="ws-modal-f">
+            {mode === 'self_client' ? (
+              <button type="button" className="btn" onClick={() => setMode('choose')} disabled={zoho.saving}>Back</button>
+            ) : null}
+            <button type="button" className="btn" onClick={onClose} disabled={zoho.saving}>Cancel</button>
+            {mode === 'self_client' ? (
+              <button
+                type="button"
+                className="btn primary"
+                disabled={zoho.saving || !clientId.trim() || !clientSecret.trim() || !grantToken.trim()}
+                onClick={() => void finish()}
+              >
+                {zoho.saving ? 'Connecting…' : 'Connect'}
+              </button>
+            ) : null}
+          </div>
+        </div>
       </div>
     </>
   )

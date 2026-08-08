@@ -435,6 +435,47 @@ describe('desktop auth routes', () => {
     assert.equal((completed[0] as any).searchParams.get('state'), 'signed');
   });
 
+  it('connects Shopify directly with per-store client credentials for company admins', async () => {
+    const connected: unknown[] = [];
+    const router = createDesktopAuthRoutes(makeDeps({
+      shopifyAuthorizationService: {
+        connectWithClientCredentials: async (input: unknown) => {
+          connected.push(input);
+          return {
+            status: 'connected',
+            connectionId: 'shopify-1',
+            shopDomain: 'demo.myshopify.com',
+            shopName: 'Demo Store',
+            scopes: ['read_reports'],
+            accessTokenExpiresAt: new Date('2026-08-03T12:00:00.000Z'),
+          };
+        },
+      },
+    }));
+
+    const member = await callRoute(router, 'POST', '/shopify/client-credentials', {
+      body: { shopDomain: 'demo.myshopify.com', clientId: 'cid', clientSecret: 'secret' },
+      locals: { userId: 'member-1', companyId: 'company-1', aiRole: 'MEMBER' },
+    });
+    assert.equal(member.status, 403);
+    assert.equal(connected.length, 0);
+
+    const admin = await callRoute(router, 'POST', '/shopify/client-credentials', {
+      body: { shopDomain: ' Demo.MyShopify.com ', clientId: 'cid', clientSecret: 'secret', label: 'Demo' },
+      locals: { userId: 'admin-1', companyId: 'company-1', aiRole: 'COMPANY_ADMIN' },
+    });
+    assert.equal(admin.status, 200);
+    assert.equal(admin.body.data.status, 'connected');
+    assert.deepEqual(connected, [{
+      companyId: 'company-1',
+      userId: 'admin-1',
+      shopDomain: 'demo.myshopify.com',
+      clientId: 'cid',
+      clientSecret: 'secret',
+      label: 'Demo',
+    }]);
+  });
+
   it('returns read-only Shopify status and keeps stale stores visible to company admins', async () => {
     const connectedAt = new Date('2026-08-01T00:00:00.000Z');
     const router = createDesktopAuthRoutes(makeDeps({

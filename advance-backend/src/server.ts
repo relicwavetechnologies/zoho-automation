@@ -563,8 +563,9 @@ export const createServer = (c: Container): DivoServerApplication => {
     }),
   );
 
-  // Shopify connect is member-authenticated; the provider callback remains
-  // public but requires signed HMAC, a signed browser cookie, and one-time state.
+  // Legacy Shopify OAuth remains member-authenticated to start and HMAC/state
+  // checked to finish. The admin Connected Apps UI uses per-store client
+  // credentials instead, so most stores do not hit this browser callback path.
   app.use(
     '/api/shopify/auth',
     createShopifyAuthRoutes({

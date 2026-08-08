@@ -226,8 +226,9 @@ export const EnvSchema = z.object({
   AITABLE_BASE_URL:          z.string().default('https://aitable.ai'),
 
   // ── Shopify Admin GraphQL + ShopifyQL ────────────────────────────────────
-  // Standalone Divo uses Shopify's authorization-code flow. Credentials and
-  // resulting shop tokens remain backend-only; Pi receives connection IDs.
+  // Stores are normally connected with per-store Dev Dashboard client
+  // credentials. Legacy authorization-code OAuth remains available when a
+  // redirect URI is configured. Credentials and shop tokens remain backend-only.
   SHOPIFY_CLIENT_ID:        z.string().optional(),
   SHOPIFY_CLIENT_SECRET:    z.string().optional(),
   SHOPIFY_REDIRECT_URI:     z.string().url().optional(),
@@ -522,15 +523,13 @@ export const validateProductionEnv = (env: TypedEnv): string[] => {
   if (!env.OPENROUTER_API_KEY) {
     issues.push('OPENROUTER_API_KEY is required to index approved images and scanned PDFs in production.');
   }
-  if (!env.SHOPIFY_CLIENT_ID) {
-    issues.push('SHOPIFY_CLIENT_ID is required for Shopify OAuth in production.');
-  }
-  if (!env.SHOPIFY_CLIENT_SECRET) {
-    issues.push('SHOPIFY_CLIENT_SECRET is required for Shopify OAuth in production.');
-  }
-  if (!env.SHOPIFY_REDIRECT_URI) {
-    issues.push('SHOPIFY_REDIRECT_URI is required for Shopify OAuth in production.');
-  } else {
+  if (env.SHOPIFY_REDIRECT_URI) {
+    if (!env.SHOPIFY_CLIENT_ID) {
+      issues.push('SHOPIFY_CLIENT_ID is required when legacy Shopify OAuth is configured.');
+    }
+    if (!env.SHOPIFY_CLIENT_SECRET) {
+      issues.push('SHOPIFY_CLIENT_SECRET is required when legacy Shopify OAuth is configured.');
+    }
     const redirect = new URL(env.SHOPIFY_REDIRECT_URI);
     const hostname = redirect.hostname.toLowerCase();
     if (redirect.protocol !== 'https:' || hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {

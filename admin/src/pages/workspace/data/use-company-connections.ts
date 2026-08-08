@@ -173,39 +173,28 @@ export function useShopifyConnect() {
   const { token } = useAdminAuth()
   const [saving, setSaving] = useState(false)
 
-  const begin = useCallback(async (shopDomain: string) => {
-    if (!token) throw new Error('Sign in again before connecting Shopify.')
-    setSaving(true)
-    try {
-      const query = new URLSearchParams({ shopDomain })
-      const data = await api.get<{ authorizeUrl: string }>(
-        `${BASE}/shopify/authorize-url?${query.toString()}`,
-        token,
-        { quiet: true },
-      )
-      return data.authorizeUrl
-    } finally {
-      setSaving(false)
-    }
-  }, [token])
-
-  const complete = useCallback(async (callbackUrl: string) => {
+  const connect = useCallback(async (input: {
+    shopDomain: string
+    clientId: string
+    clientSecret: string
+    label?: string
+  }) => {
     if (!token) throw new Error('Sign in again before saving Shopify.')
     setSaving(true)
     try {
-      const data = await api.post<{ status: 'connected' | 'denied' }>(
-        `${BASE}/shopify/callback-url`,
-        { callbackUrl },
+      const data = await api.post<{ status: 'connected'; shopName: string; shopDomain: string }>(
+        `${BASE}/shopify/client-credentials`,
+        input,
         token,
         { quiet: true },
       )
-      return data.status
+      return data
     } finally {
       setSaving(false)
     }
   }, [token])
 
-  return { saving, begin, complete }
+  return { saving, connect }
 }
 
 export function useShopifyCompanyStatus() {
