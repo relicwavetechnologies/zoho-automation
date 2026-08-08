@@ -21,6 +21,7 @@ Use this skill only to choose the next Lark family skill. It has no executable t
 - People or department lookup → load \`lark-contacts\`.
 - Base records → load \`lark-base\`.
 - Native approvals → load \`lark-approvals\`.
+- Announcing a **Gmail message in Lark whenever one arrives** — "tell me here when mail comes from X", "post their invoices into this chat" → load \`mail-ops\`. That is a mail-arrival rule that happens to deliver to Lark, and nothing in this family can watch a mailbox. Sending a message that is not triggered by arriving mail is \`lark-messaging\`.
 
 Load the selected family skill before calling a Lark tool. If the destination of “add todos” is unclear, ask whether the member means native checklist blocks inside a document or separate Task v2 tasks.
 

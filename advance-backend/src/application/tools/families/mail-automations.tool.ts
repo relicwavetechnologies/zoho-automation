@@ -336,11 +336,29 @@ function mailRuleActivatedMessage(destination: {
  * decided about. The archived case is the one that stings: a rule retired in
  * March comes back to life in August and starts moving mail again.
  */
+/**
+ * What a rule with a question does, said on the answer that created it.
+ *
+ * The recipe tells the model to explain that rejected mail is held rather than
+ * lost, because a member who thinks it vanishes will not trust the step. The
+ * tool's own confirmation said only where mail goes — so a rule whose entire
+ * point was "only the real ones" was reported as an ordinary forward, and the
+ * one sentence that makes the step trustworthy depended on the model
+ * remembering to add it.
+ */
+const judgeAddendum = (judge: { readonly question: string } | undefined): string =>
+  judge
+    ? ` Before anything is sent, Divo asks “${judge.question}” of each matching `
+      + 'message; anything it answers no to is held back and recorded with its '
+      + 'reason, not deleted.'
+    : '';
+
 function mailRuleCreatedMessage(
   destination: { readonly type: string; readonly email?: string },
   existing: 'active' | 'paused' | 'archived' | null,
+  judge?: { readonly question: string },
 ): string {
-  const active = mailRuleActivatedMessage(destination);
+  const active = `${mailRuleActivatedMessage(destination)}${judgeAddendum(judge)}`;
   if (!existing) return active;
   const what = existing === 'archived'
     ? 'You already had this exact rule, archived. It has been brought back and '
@@ -884,7 +902,7 @@ export function createMailAutomationsTool(deps: {
             valid: true,
           },
           existing,
-          message: mailRuleCreatedMessage(parsed.destination, existing),
+          message: mailRuleCreatedMessage(parsed.destination, existing, args.judge),
         });
       } catch (cause) {
         return err(new ToolError({
