@@ -242,6 +242,49 @@ describe('semrush tool', () => {
     );
   });
 
+  it('alerts a company admin when Semrush rejects the backend credential', async () => {
+    const notifier = recordingExhaustionNotifier();
+    const tool = createTool({
+      service: {
+        execute: async () => {
+          throw new SemrushServiceError('provider_auth_failed', 'Semrush web session was rejected.');
+        },
+      },
+      apiKeyExhaustion: notifier.port,
+    });
+
+    const result = await tool.execute({ operation: 'domain_overview', domain: 'example.com' }, makeCtx('semrush', ['read']));
+
+    assert.equal(result.ok, false);
+    assert.equal(notifier.notified.length, 1);
+    assert.equal(notifier.notified[0]!.provider, 'semrush');
+    assert.equal(notifier.notified[0]!.code, 'provider_auth_failed');
+    assert.match(String(notifier.notified[0]!.message), /rejected/i);
+  });
+
+  it('does not alert for provider failures that are not credential rejections', async () => {
+    for (const code of ['timeout', 'provider_failure', 'rate_limited'] as const) {
+      const notifier = recordingExhaustionNotifier();
+      const tool = createTool({
+        service: { execute: async () => { throw new SemrushServiceError(code, `Semrush ${code}.`); } },
+        apiKeyExhaustion: notifier.port,
+      });
+      await tool.execute({ operation: 'domain_overview', domain: 'example.com' }, makeCtx('semrush', ['read']));
+      assert.equal(notifier.notified.length, 0, `${code} must not raise a credential alert`);
+    }
+  });
+
+  it('clears any standing alert once Semrush answers again', async () => {
+    const notifier = recordingExhaustionNotifier();
+    const tool = createTool({ apiKeyExhaustion: notifier.port });
+
+    const result = await tool.execute({ operation: 'domain_overview', domain: 'example.com' }, makeCtx('semrush', ['read']));
+
+    assert.equal(result.ok, true);
+    assert.equal(notifier.notified.length, 0);
+    assert.equal(notifier.cleared.length, 1);
+  });
+
   it('returns an honest blocked result when the web session is not configured', async () => {
     const tool = createTool({
       service: {
@@ -262,6 +305,7 @@ describe('semrush tool', () => {
 function createTool(overrides: {
   service?: Record<string, unknown>;
   exportCandidates?: Record<string, unknown>;
+  apiKeyExhaustion?: Record<string, unknown>;
 } = {}) {
   const service = {
     preflight: async () => ({ configured: true }),
@@ -271,5 +315,24 @@ function createTool(overrides: {
   return createSemrushTool({
     service: service as never,
     ...(overrides.exportCandidates ? { exportCandidates: overrides.exportCandidates as never } : {}),
+    ...(overrides.apiKeyExhaustion ? { apiKeyExhaustion: overrides.apiKeyExhaustion as never } : {}),
   });
+}
+
+function recordingExhaustionNotifier() {
+  const notified: Array<Record<string, unknown>> = [];
+  const cleared: Array<unknown> = [];
+  return {
+    notified,
+    cleared,
+    port: {
+      notifyIfExhausted: async (input: Record<string, unknown>) => {
+        notified.push(input);
+        return { notified: true };
+      },
+      clear: async (companyId: string, provider: string) => {
+        cleared.push({ companyId, provider });
+      },
+    },
+  };
 }
