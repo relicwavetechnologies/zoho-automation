@@ -291,6 +291,8 @@ import { LarkMessagingClient } from './infrastructure/channels/lark/clients/lark
 import { ToolExecutor } from './application/gateway/tool-executor';
 import { GatewayDispatcher } from './application/gateway/gateway-dispatcher';
 import { GoogleWorkspaceContractBootstrapService } from './application/gateway/google-workspace-contract-bootstrap.service';
+import { AirtableContractBootstrapService } from './application/gateway/airtable-contract-bootstrap.service';
+import { CompositeWorkContractBootstrap } from './application/gateway/composite-contract-bootstrap.service';
 import { WorkResolutionService } from './application/gateway/work-resolution.service';
 import { WorkBootstrapService } from './application/gateway/work-bootstrap.service';
 import {
@@ -2351,9 +2353,14 @@ export async function buildContainer(
     skillAccessEnforcement,
     managerPersonaRuntime: managerPersonaRuntimeService,
   });
-  const workContractBootstrap = new GoogleWorkspaceContractBootstrapService(
-    getGoogleWorkspaceMcpConnection,
-  );
+  // Every provider whose native shapes a model would otherwise have to guess.
+  // Airtable earns its place here for the same reason Google did: its record
+  // filter tree is not reconstructable from prose, and each wrong guess costs a
+  // validation dump larger than the schema.
+  const workContractBootstrap = new CompositeWorkContractBootstrap([
+    new GoogleWorkspaceContractBootstrapService(getGoogleWorkspaceMcpConnection),
+    new AirtableContractBootstrapService(getAirtableMcpConnection),
+  ]);
   // One instance for both surfaces. The desktop gateway and the backend-hosted
   // channels must resolve the same accounts and contracts, or the model works
   // blind on whichever one was left out.

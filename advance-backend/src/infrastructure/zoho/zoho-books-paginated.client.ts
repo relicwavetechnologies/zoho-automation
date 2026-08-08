@@ -44,6 +44,16 @@ export interface ZohoBooksOrganization {
   readonly organizationId: string;
   readonly name?:          string;
   readonly isDefault?:     boolean;
+  /**
+   * The selling state, as Zoho writes it — "RJ", "KA".
+   *
+   * Which GST a sale attracts depends on where the seller is, and that belongs
+   * to the organisation rather than to the deployment: one connection can reach
+   * several organisations in several states. Carried here in the same spelling
+   * `place_of_supply` uses on an invoice, so the two compare without a mapping
+   * table nobody would maintain.
+   */
+  readonly stateCode?:     string;
 }
 
 export interface ZohoBooksListResult {
@@ -75,6 +85,9 @@ const asBoolean = (v: unknown): boolean | undefined =>
 
 const asArrayOfRecords = (v: unknown): Array<Record<string, unknown>> =>
   Array.isArray(v) ? v.filter(x => x && typeof x === 'object' && !Array.isArray(x)) : [];
+
+const isRecordValue = (v: unknown): v is Record<string, unknown> =>
+  v !== null && typeof v === 'object' && !Array.isArray(v);
 
 const toPrimitive = (v: unknown): string | undefined => {
   if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return String(v);
@@ -196,10 +209,14 @@ export class ZohoBooksPaginatedClient {
       return asArrayOfRecords(data['organizations']).map(org => {
         const name      = asString(org['name']);
         const isDefault = asBoolean(org['is_default_org']) ?? asBoolean(org['is_default']);
+        const address   = org['address'];
+        const stateCode = (isRecordValue(address) ? asString(address['state_code']) : undefined)
+          ?? asString(org['state_code']);
         return {
           organizationId: asString(org['organization_id']) ?? asString(org['organizationId']) ?? '',
           ...(name      !== undefined ? { name }      : {}),
           ...(isDefault !== undefined ? { isDefault } : {}),
+          ...(stateCode !== undefined ? { stateCode } : {}),
         };
       }).filter(o => o.organizationId.length > 0);
     } catch {

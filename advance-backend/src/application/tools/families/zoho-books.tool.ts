@@ -1308,10 +1308,17 @@ export const createZohoBooksTool = (deps: {
       // single call happened to report one, silently becoming "unpinned" when
       // that call failed. A draft created in an organisation it was not judged
       // against posts ids that mean something else there.
-      const reviewOrg = args.organizationId ?? await deps.booksClient
+      //
+      // Listed even when the caller named an organisation, because the state it
+      // sells from decides whether a sale is IGST or CGST/SGST, and only the
+      // organisation record knows it.
+      const organizations = await deps.booksClient
         .listOrganizations(companyId, { userId, connectionId: args.connectionId })
-        .then(orgs => (orgs.find(org => org.isDefault === true) ?? orgs[0])?.organizationId)
-        .catch(() => undefined);
+        .catch(() => []);
+      const chosenOrg = args.organizationId
+        ? organizations.find(org => org.organizationId === args.organizationId)
+        : (organizations.find(org => org.isDefault === true) ?? organizations[0]);
+      const reviewOrg = args.organizationId ?? chosenOrg?.organizationId;
       const orgScope = reviewOrg ? { organizationId: reviewOrg } : {};
 
       const customerId = typeof payload['customer_id'] === 'string' ? payload['customer_id'] : '';
@@ -1368,6 +1375,22 @@ export const createZohoBooksTool = (deps: {
         // one a later call resolves to is Zoho's response order, not a contract
         // — so the draft has to carry the one it was judged against.
         reviewedOrganizationId: reviewOrg,
+        // The selling state that organisation trades from, in the spelling
+        // `place_of_supply` uses, so the GST direction rule has a home to
+        // compare against instead of a deployment-wide constant that can only
+        // ever be right for one organisation on the connection.
+        reviewedOrganizationStateCode: chosenOrg?.stateCode,
+        // Zoho's own inter/intra classification per tax id. A draft carries ids,
+        // not names, so without this the GST direction rules see no tax at all.
+        taxDirectionById: Object.fromEntries(
+          taxes.flatMap(tax => {
+            const id = String(tax['tax_id'] ?? '');
+            const spec = String(tax['tax_specification'] ?? '').toLowerCase();
+            return id && (spec === 'inter' || spec === 'intra')
+              ? [[id, spec] as const]
+              : [];
+          }),
+        ),
         // Zoho's search is broad; the duplicate rule wants exact matches only.
         sameNumberInvoices: sameNumber.items.filter(record =>
           String(record['invoice_number'] ?? '').trim().toLowerCase() === invoiceNumber.toLowerCase()),
@@ -1639,7 +1662,8 @@ export const createZohoBooksTool = (deps: {
           // After the lookup, not before: the duplicate rule can only fire on
           // invoices Divo actually went and found.
           const {
-            sameNumberInvoices, reviewedOrganizationId, duplicateCheckUnavailable, ...reviewSources
+            sameNumberInvoices, reviewedOrganizationId, duplicateCheckUnavailable,
+            reviewedOrganizationStateCode, taxDirectionById, ...reviewSources
           } = sources;
 
           // Refused here, before the reviewer runs. An unpinned draft is one
@@ -1652,9 +1676,14 @@ export const createZohoBooksTool = (deps: {
                 + 'so it will not stage one that might be created in the wrong set of books. Try again.',
             }));
           }
+          // The organisation being sold from decides the GST direction, so its
+          // state wins over the configured default; the default remains for a
+          // connection whose organisation record carries no state.
+          const homeState = reviewedOrganizationStateCode ?? deps.homeGstStateCode;
           const findings = checkInvoice({
             invoice: payload,
-            ...(deps.homeGstStateCode ? { homeGstStateCode: deps.homeGstStateCode } : {}),
+            ...(homeState ? { homeGstStateCode: homeState } : {}),
+            taxDirectionById,
             sameNumberInvoices,
             duplicateCheckUnavailable,
           });

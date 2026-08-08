@@ -567,7 +567,13 @@ test("subagent children ride the details the extension already streams", () => {
 			details: {
 				parentToolCallId: "call-9",
 				children: [
-					{ role: "scout", task: "read the pipeline export", state: "running", finalOutput: "must-not-leak" },
+					{
+						role: "scout",
+						task: "read the pipeline export",
+						state: "running",
+						startedAt: new Date(Date.now() - 90_000).toISOString(),
+						finalOutput: "must-not-leak",
+					},
 					{ role: "reviewer", task: "check last week's numbers", state: "completed" },
 				],
 			},
@@ -579,7 +585,7 @@ test("subagent children ride the details the extension already streams", () => {
 		callId: "call-9",
 		toolName: "divo_subagents",
 		children: [
-			{ label: "scout", status: "running", detail: "read the pipeline export" },
+			{ label: "scout", status: "running", detail: "read the pipeline export · working 1m 30s" },
 			{ label: "reviewer", status: "done", detail: "check last week's numbers" },
 		],
 	});

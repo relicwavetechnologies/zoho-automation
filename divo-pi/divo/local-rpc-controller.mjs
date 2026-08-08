@@ -1266,6 +1266,32 @@ const CHILD_STATE_STATUS = {
 	cancelled: "skipped",
 };
 
+function progressElapsedLabel(value) {
+	if (typeof value !== "string") return undefined;
+	const startedAt = Date.parse(value);
+	if (!Number.isFinite(startedAt)) return undefined;
+	const seconds = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	const remainingSeconds = seconds % 60;
+	if (minutes < 60) return `${minutes}m ${String(remainingSeconds).padStart(2, "0")}s`;
+	const hours = Math.floor(minutes / 60);
+	return `${hours}h ${minutes % 60}m`;
+}
+
+function progressChildDetail(child) {
+	const elapsed = child?.state === "running"
+		? progressElapsedLabel(child?.startedAt)
+		: undefined;
+	if (!elapsed) return progressLabel(child?.task, PROGRESS_DETAIL_MAX);
+	const suffix = `working ${elapsed}`;
+	const task = progressLabel(
+		child?.task,
+		Math.max(16, PROGRESS_DETAIL_MAX - suffix.length - 3),
+	);
+	return task ? `${task} · ${suffix}` : suffix;
+}
+
 /**
  * Subagent children, from the details `divo_subagents` already streams.
  *
@@ -1280,7 +1306,7 @@ function progressChildren(details) {
 		const label = progressLabel(child?.role);
 		if (!label) return [];
 		const status = CHILD_STATE_STATUS[child?.state] ?? "running";
-		const detail = progressLabel(child?.task);
+		const detail = progressChildDetail(child);
 		return [{ label, status, ...(detail ? { detail } : {}) }];
 	});
 	return rows.length > 0 ? rows : undefined;
