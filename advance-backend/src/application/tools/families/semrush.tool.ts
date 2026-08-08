@@ -72,9 +72,9 @@ export const createSemrushTool = (deps: {
   description: 'Run read-only Semrush SEO research through backend-configured Semrush web operations. Supports only explicit operations.',
   parameterDocs: [
     'operation: domain_overview, backlinks_comparison, or keyword_position_trend.',
-    'domain_overview: { domain, database? }. One-row snapshot of rank, organic/paid keywords, traffic and cost.',
+    'domain_overview: { domain, database? }. Rank, organic/paid keywords, traffic and cost for every country database Semrush holds the domain in — one row per country, the requested database first, the rest by organic traffic. Answers "traffic by country" from a single request; read the first row for one country.',
     'backlinks_comparison: { targets[1–10] }. Authority score, total backlinks and referring domains per target in one web request. If Semrush has no report for a requested target, coverage.missingTargets and the export name it as no provider data rather than zero.',
-    'keyword_position_trend: { domain, keyword, date, database?, dateType? }. One domain, one keyword, one date (YYYYMMDD). Use for rank on a specific date, not for full keyword lists.',
+    'keyword_position_trend: { domain, keyword, date, database?, dateType? }. One domain and one keyword, returned as a dated series of positions around the requested date — not a single row. Use for rank on a date and for how that rank moved; not for full keyword lists.',
     'Divo rejects arbitrary Semrush endpoints, headers, cookies, export columns, and API keys. Do not claim an unavailable operation has run.',
   ].join('\n'),
   permissionCheck(_args: SemrushToolArgs, perm: PermissionResult) {
@@ -136,6 +136,7 @@ export const createSemrushTool = (deps: {
           : {}),
         ...(data.nextPage ? { nextPage: data.nextPage } : {}),
         message: messageFor({
+          operation: args.operation,
           rowCount: allRows.length,
           returnedRows: preview.rows.length,
           hasCandidate: candidate.kind === 'published',
@@ -169,6 +170,19 @@ export const createSemrushTool = (deps: {
         outcome: 'failure',
         metadata: { operation: args.operation, failureCode: normalized.code, latencyMs: Date.now() - startedAt, correlationId: ctx.correlationId },
       });
+      // A rejected or spent Semrush credential is invisible otherwise: the key
+      // lives in backend env, so no member can see that it died and no company
+      // admin is told. The notifier dedups per company/provider, so this alerts
+      // once. Throttling is excluded — it says nothing about the credential.
+      if (normalized.code === 'provider_auth_failed' || normalized.code === 'provider_quota_exhausted') {
+        void deps.apiKeyExhaustion?.notifyIfExhausted({
+          companyId: ctx.runContext.companyId,
+          provider: 'semrush',
+          code: normalized.code,
+          message: normalized.message,
+          source: 'semrush.tool.execute',
+        });
+      }
       if (['not_configured', 'capability_unavailable'].includes(normalized.code)) {
         return ok({
           status: 'blocked',
@@ -184,6 +198,7 @@ export const createSemrushTool = (deps: {
 });
 
 function messageFor(input: {
+  operation: SemrushToolArgs['operation'];
   rowCount: number;
   returnedRows: number;
   hasCandidate: boolean;
@@ -192,6 +207,19 @@ function messageFor(input: {
 }): string {
   if (input.status === 'empty') return 'Semrush returned no matching data for this request.';
   const parts = [`Retrieved ${input.rowCount} row${input.rowCount === 1 ? '' : 's'}.`];
+  // Said here rather than only in the skill because this sentence travels with
+  // the rows. Asked which markets a domain is invisible in, the model otherwise
+  // answers with countries out of its own knowledge — naming Germany or Japan
+  // as unindexed is a measurement Semrush never took, and a member reading the
+  // answer cannot tell that apart from one it did.
+  if (input.operation === 'domain_overview') {
+    parts.push(
+      `These ${input.rowCount} countries are every country Semrush returned for this domain.`
+      + ' Semrush reported nothing at all about any other country, so do not name one,'
+      + ' do not call it unindexed, and do not count how many are missing.'
+      + ' A row here showing 0 traffic is a real measurement and can be reported as such.',
+    );
+  }
   if (input.rowCount > input.returnedRows) parts.push(`Showing the first ${input.returnedRows} rows in chat.`);
   if (input.hasCandidate) parts.push('If the member asks for Sheet, Excel, or CSV, use the returned export candidate; Divo reruns current provider data for the file.');
   if (input.missingTargets.length > 0) parts.push(`Semrush returned no backlink overview for: ${input.missingTargets.join(', ')}.`);
@@ -251,6 +279,8 @@ function semrushExportTitle(args: SemrushToolArgs): string {
 
 function toToolError(error: unknown): ToolError {
   if (error instanceof SemrushServiceError) {
+    // Only throttling is retryable. `provider_quota_exhausted` reads like a
+    // limit but the same key never recovers, so retrying it just burns the run.
     const reason = error.code === 'timeout' ? 'timeout'
       : error.code === 'capability_unavailable' || error.code === 'not_configured' ? 'bad_args'
         : error.code === 'rate_limited' ? 'retryable'

@@ -2,6 +2,44 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildDataExportPresentation } from '../../src/application/data-export/data-export-presentation.ts';
 
+describe('buildDataExportPresentation semrush overview sheet', () => {
+  const overviewFor = (args: Record<string, unknown>, rowCount: number) => {
+    const rows = buildDataExportPresentation({
+      title: 'Semrush country traffic emiactech',
+      columns: ['Database', 'Domain', 'Rank'],
+      source: { kind: 'semrush_snapshot', connectionId: 'backend_managed', args } as never,
+      rowCount,
+      sourceTruncated: false,
+    }).overviewRows ?? [];
+    return new Map(rows.filter(row => row.length > 1).map(row => [String(row[0]), String(row[1])]));
+  };
+
+  it('does not describe a 26-country file as one country', () => {
+    // The file carries every country database Semrush holds. Naming only the
+    // requested one read as "this is Indian data", which the rows contradict.
+    const overview = overviewFor({ operation: 'domain_overview', domain: 'emiactech.com', database: 'in' }, 26);
+    assert.notEqual(overview.get('Database'), 'in');
+    assert.match(overview.get('Database')!, /^in first, then every other country/);
+    assert.equal(overview.get('Rows exported'), '26');
+    assert.match(overview.get('Scope note')!, /One row per country database/);
+    // Absent is not zero — the same distinction backlinks already makes.
+    assert.match(overview.get('Scope note')!, /not the same as zero traffic/);
+  });
+
+  it('still names the single database an operation is genuinely scoped to', () => {
+    const overview = overviewFor(
+      { operation: 'keyword_position_trend', domain: 'decentro.tech', keyword: 'upi payment gateway', date: '20260719', database: 'in' },
+      28,
+    );
+    assert.equal(overview.get('Database'), 'in');
+  });
+
+  it('says database is not applicable where the operation has none', () => {
+    const overview = overviewFor({ operation: 'backlinks_comparison', targets: ['a.com', 'b.com'] }, 2);
+    assert.equal(overview.get('Database'), 'Not applicable');
+  });
+});
+
 describe('buildDataExportPresentation', () => {
   it('formats domain overview metrics', () => {
     const presentation = buildDataExportPresentation({

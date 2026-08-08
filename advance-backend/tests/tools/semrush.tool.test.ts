@@ -220,11 +220,38 @@ describe('semrush tool', () => {
     assert.equal(datasetSourceToolId(source), 'semrush');
   });
 
-  it('turns rejected web sessions into a permanent export failure', async () => {
+  it('ends an export permanently when the key is refused or spent, and points at the key', async () => {
+    const cases = [
+      { code: 'provider_auth_failed' as const, expect: /api key was rejected/i },
+      { code: 'provider_quota_exhausted' as const, expect: /used up its allowance/i },
+    ];
+    for (const { code, expect } of cases) {
+      const adapter = new SemrushSnapshotDataExportSource({
+        execute: async () => { throw new SemrushServiceError(code, `Semrush ${code}.`); },
+      } as never);
+
+      await assert.rejects(
+        async () => {
+          for await (const _page of adapter.read({
+            kind: 'semrush_snapshot',
+            connectionId: 'backend_managed',
+            args: { operation: 'domain_overview', domain: 'example.com' },
+          }, { companyId: 'co-1', userId: 'user-1' })) {
+            // consume
+          }
+        },
+        (error: unknown) => error instanceof PermanentDataExportError
+          && expect.test(error.memberMessage)
+          // Refreshing a browser cookie never fixes either case.
+          && !/session|cookie/i.test(error.memberMessage),
+        `${code} should end the export with a key-specific reason`,
+      );
+    }
+  });
+
+  it('lets a throttled export stay retryable instead of failing permanently', async () => {
     const adapter = new SemrushSnapshotDataExportSource({
-      execute: async () => {
-        throw new SemrushServiceError('provider_auth_failed', 'Semrush web session was rejected.');
-      },
+      execute: async () => { throw new SemrushServiceError('rate_limited', 'Semrush is throttling requests.'); },
     } as never);
 
     await assert.rejects(
@@ -237,9 +264,95 @@ describe('semrush tool', () => {
           // consume
         }
       },
-      (error: unknown) => error instanceof PermanentDataExportError
-        && /web session was rejected/i.test(error.memberMessage),
+      (error: unknown) => error instanceof SemrushServiceError && !(error instanceof PermanentDataExportError),
     );
+  });
+
+  it('states, next to the rows, that no other country was reported', async () => {
+    // Skill text alone did not hold: asked which markets a domain was invisible
+    // in, the model twice answered with Germany, Japan and Brazil — countries
+    // Semrush never mentioned — and called them unindexed. This sentence
+    // travels with the rows, which is where the claim gets made.
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'domain_overview',
+          status: 'complete',
+          coverage: { databasesReturned: 26 },
+          rows: Array.from({ length: 26 }, (_, i) => ({ Database: `c${i}`, 'Organic Traffic': 0 })),
+        }),
+      },
+    });
+
+    const result = await tool.execute({ operation: 'domain_overview', domain: 'example.com' }, makeCtx('semrush', ['read']));
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.match(result.value.message, /26 countries are every country Semrush returned/);
+    assert.match(result.value.message, /do not name one/);
+    assert.match(result.value.message, /do not count how many are missing/);
+    // A returned 0 is measured and must stay reportable.
+    assert.match(result.value.message, /real measurement/);
+  });
+
+  it('does not add the country caveat to operations that have no countries', async () => {
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'backlinks_comparison',
+          status: 'complete',
+          coverage: {},
+          rows: [{ Target: 'a.com' }],
+        }),
+      },
+    });
+    const result = await tool.execute({ operation: 'backlinks_comparison', targets: ['a.com'] }, makeCtx('semrush', ['read']));
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.doesNotMatch(result.value.message, /every country Semrush returned/);
+  });
+
+  it('alerts a company admin when Semrush rejects the backend credential', async () => {
+    const notifier = recordingExhaustionNotifier();
+    const tool = createTool({
+      service: {
+        execute: async () => {
+          throw new SemrushServiceError('provider_auth_failed', 'Semrush web session was rejected.');
+        },
+      },
+      apiKeyExhaustion: notifier.port,
+    });
+
+    const result = await tool.execute({ operation: 'domain_overview', domain: 'example.com' }, makeCtx('semrush', ['read']));
+
+    assert.equal(result.ok, false);
+    assert.equal(notifier.notified.length, 1);
+    assert.equal(notifier.notified[0]!.provider, 'semrush');
+    assert.equal(notifier.notified[0]!.code, 'provider_auth_failed');
+    assert.match(String(notifier.notified[0]!.message), /rejected/i);
+  });
+
+  it('does not alert for provider failures that are not credential rejections', async () => {
+    for (const code of ['timeout', 'provider_failure', 'rate_limited'] as const) {
+      const notifier = recordingExhaustionNotifier();
+      const tool = createTool({
+        service: { execute: async () => { throw new SemrushServiceError(code, `Semrush ${code}.`); } },
+        apiKeyExhaustion: notifier.port,
+      });
+      await tool.execute({ operation: 'domain_overview', domain: 'example.com' }, makeCtx('semrush', ['read']));
+      assert.equal(notifier.notified.length, 0, `${code} must not raise a credential alert`);
+    }
+  });
+
+  it('clears any standing alert once Semrush answers again', async () => {
+    const notifier = recordingExhaustionNotifier();
+    const tool = createTool({ apiKeyExhaustion: notifier.port });
+
+    const result = await tool.execute({ operation: 'domain_overview', domain: 'example.com' }, makeCtx('semrush', ['read']));
+
+    assert.equal(result.ok, true);
+    assert.equal(notifier.notified.length, 0);
+    assert.equal(notifier.cleared.length, 1);
   });
 
   it('returns an honest blocked result when the web session is not configured', async () => {
@@ -262,6 +375,7 @@ describe('semrush tool', () => {
 function createTool(overrides: {
   service?: Record<string, unknown>;
   exportCandidates?: Record<string, unknown>;
+  apiKeyExhaustion?: Record<string, unknown>;
 } = {}) {
   const service = {
     preflight: async () => ({ configured: true }),
@@ -271,5 +385,24 @@ function createTool(overrides: {
   return createSemrushTool({
     service: service as never,
     ...(overrides.exportCandidates ? { exportCandidates: overrides.exportCandidates as never } : {}),
+    ...(overrides.apiKeyExhaustion ? { apiKeyExhaustion: overrides.apiKeyExhaustion as never } : {}),
   });
+}
+
+function recordingExhaustionNotifier() {
+  const notified: Array<Record<string, unknown>> = [];
+  const cleared: Array<unknown> = [];
+  return {
+    notified,
+    cleared,
+    port: {
+      notifyIfExhausted: async (input: Record<string, unknown>) => {
+        notified.push(input);
+        return { notified: true };
+      },
+      clear: async (companyId: string, provider: string) => {
+        cleared.push({ companyId, provider });
+      },
+    },
+  };
 }

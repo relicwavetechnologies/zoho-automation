@@ -4,6 +4,49 @@ import { DIVO_SEMRUSH_SYSTEM_SKILL } from '../../src/application/skills/semrush-
 import { SEMRUSH_OPERATIONS } from '../../src/application/semrush/semrush.types.ts';
 
 describe('Semrush system skill', () => {
+  it('answers every question dataExport op=plan can ask back', () => {
+    // These states are only explained in secure-data-export, which data-router
+    // reaches for when a source returned NO candidate. Semrush always returns
+    // one, so that skill never loads on this path and the model would be left
+    // guessing at a question the backend genuinely asked it.
+    for (const state of ['choose_destination', 'connect_required', 'sample_required', 'ambiguous']) {
+      assert.match(
+        DIVO_SEMRUSH_SYSTEM_SKILL.markdown,
+        new RegExp(`\`${state}\``),
+        `the skill must say what to do when op=plan returns ${state}`,
+      );
+    }
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /exact `connectionId`/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /`op=confirm_sample`/);
+    // A queued export is not a finished one.
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /started, not that it is finished/);
+  });
+
+  it('forbids treating a country Semrush omitted as a measured zero', () => {
+    // Observed 2026-08-08: asked which markets emiactech.com was invisible in,
+    // the model listed Germany, Japan, Brazil and five others as "no organic
+    // presence whatsoever". Semrush returned 26 databases and said nothing
+    // about any of them — the list came from the model's own world knowledge
+    // and read as a finding. Absent is unknown, exactly as for a backlinks
+    // target with no provider report.
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /A country missing from that list is one Semrush has no record for/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Never write that an absent country is unindexed, has zero traffic, or has no visibility/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /say in the same sentence that Semrush has no record of it/);
+    // A returned row showing 0 is a real measurement and stays reportable.
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /ranking without earning clicks/);
+  });
+
+  it('requires counts to be taken from the rows', () => {
+    // The same answer said 22 zero-traffic countries and listed 22, dropping
+    // Taiwan; the rows held 23. Another turn on the same data said 23.
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Counts must come from the rows, not from memory/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /check it against the rows before writing it/);
+  });
+
+  it('never tells the model to expose export internals to a member', () => {
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Never show the\s+member a candidate list or any ID/);
+  });
+
   it('is discoverable by SEO terms and constrained to the canonical Semrush tool', () => {
     assert.deepEqual(DIVO_SEMRUSH_SYSTEM_SKILL.toolIds, ['semrush']);
     assert.ok(DIVO_SEMRUSH_SYSTEM_SKILL.aliases.includes('semrush'));

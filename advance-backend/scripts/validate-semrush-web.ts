@@ -24,7 +24,6 @@ async function main() {
   const key = (process.env.SEMRUSH_WEB_API_KEY ?? '').trim();
   const cookie = (process.env.SEMRUSH_WEB_COOKIE ?? '').trim();
   if (!key) throw new Error('Set SEMRUSH_WEB_API_KEY in advance-backend/.env');
-  if (!cookie) throw new Error('Set SEMRUSH_WEB_COOKIE in advance-backend/.env');
 
   const requested = process.argv.includes('--probe')
     ? process.argv[process.argv.indexOf('--probe') + 1] as Probe
@@ -32,11 +31,11 @@ async function main() {
   const probes = requested ? [requested] : Object.keys(PROBES) as Probe[];
 
   const { SemrushWebClient } = await import('../src/infrastructure/semrush/semrush-web.client.ts');
-  const client = new SemrushWebClient({ apiKey: key, cookie, timeoutMs: 30_000 });
+  const client = new SemrushWebClient({ cookie, timeoutMs: 30_000 });
 
   for (const probe of probes) {
     console.log(`\n=== ${probe} ===`);
-    const result = await client.fetch(probeArgs(probe));
+    const result = await client.fetch({ apiKey: key, args: probeArgs(probe) });
     console.log(JSON.stringify({ status: result.status, rowCount: result.rows.length, coverage: result.coverage }, null, 2));
     if (result.rows[0]) console.log('first row:', result.rows[0]);
   }

@@ -333,9 +333,13 @@ export class DataExportWorker {
     const identity = identityResult.value;
     const readerEmail = normalizedEmail(identity.email);
     if (!readerEmail) {
+      // The address is read through a connected Lark integration, not the
+      // synced directory, so this fires for members whose email is on file and
+      // verified. Naming the email sent them looking at their Lark profile,
+      // where nothing was wrong; the connection is the thing that is missing.
       throw new PermanentDataExportError(
-        'Divo needs a verified email address on your Lark account before it can share an export with you.',
-        'Data export requires a verified email for the invoking Lark user',
+        'Divo could not confirm where to share this export. Connect Lark in Divo, then ask for the export again.',
+        'Data export could not resolve a reader email: the invoking user has no connected Lark integration',
       );
     }
     const permission = await this.deps.permissions.resolve({

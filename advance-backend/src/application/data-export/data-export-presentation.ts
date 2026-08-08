@@ -1,6 +1,6 @@
 import { normalizeExportCell } from './data-export-cell';
 import type { DataExportCoverage, DataExportSource } from './data-export.types';
-import type { SemrushOperation } from '../semrush/semrush.types';
+import type { SemrushOperation, SemrushToolArgs } from '../semrush/semrush.types';
 
 const SEMRUSH_NUMERIC_COLUMNS = new Set([
   'Position', 'Previous Position', 'Position Difference', 'Search Volume',
@@ -162,7 +162,7 @@ function semrushOverviewRows(input: {
     ['Source', 'Semrush web'],
     ['Report', args.operation.replaceAll('_', ' ')],
     ['Subject', subject],
-    ['Database', 'database' in args ? args.database ?? 'in' : 'Not applicable'],
+    ['Database', semrushDatabaseLabel(args)],
     ['Retrieved at', new Date().toISOString()],
     ['Rows exported', input.rowCount],
     ['Completeness', coverageLabel(input.coverage, input.sourceTruncated)],
@@ -180,6 +180,14 @@ function semrushOverviewRows(input: {
       `Keyword "${args.keyword}" on ${args.date} for ${args.domain}.`,
     ]);
   }
+  if (args.operation === 'domain_overview') {
+    rows.push([
+      'Scope note',
+      'One row per country database Semrush holds this domain in. The requested '
+      + 'database leads; the rest follow by organic traffic. A country absent here '
+      + 'is one Semrush has no record for, which is not the same as zero traffic.',
+    ]);
+  }
   if (args.operation === 'domain_overview' && input.hasTrends) {
     rows.push([
       'Trend note',
@@ -194,6 +202,20 @@ function semrushOverviewRows(input: {
   }
 
   return rows;
+}
+
+/**
+ * `domain_overview` returns a row per country database, so naming only the
+ * requested one described a single-country file that this is not — a reader
+ * would take a 26-country sheet for Indian data. Every other operation is
+ * genuinely scoped to the database it was asked for.
+ */
+function semrushDatabaseLabel(args: SemrushToolArgs): string {
+  if (!('database' in args)) return 'Not applicable';
+  const requested = args.database ?? 'in';
+  return args.operation === 'domain_overview'
+    ? `${requested} first, then every other country Semrush holds`
+    : requested;
 }
 
 function usesCpcColumn(operation: string): boolean {
