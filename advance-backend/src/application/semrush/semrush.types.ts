@@ -15,8 +15,23 @@ export type SemrushOperation = z.infer<typeof SemrushOperationSchema>;
 
 export const SUPPORTED_SEMRUSH_OPERATIONS = [...SEMRUSH_OPERATIONS];
 
-const DATABASES = ['in', 'us', 'uk', 'au', 'ca', 'de', 'fr', 'es', 'it', 'br', 'jp'] as const;
-export const SemrushDatabaseSchema = z.enum(DATABASES);
+/**
+ * Semrush country databases, as two-letter codes.
+ *
+ * This was an eleven-value enum, which rejected eighteen of the twenty-six
+ * databases a single `domain_overview` returns: asking for a keyword's rank in
+ * `ru`, `ae` or `vn` failed validation while the same countries appeared in our
+ * own results. The list was a guess at Semrush's coverage, and it was wrong in
+ * the direction that refuses real data.
+ *
+ * Semrush is the authority on which codes exist, and it answers an unknown one
+ * with an error this client already classifies. So the shape is validated here
+ * — two lowercase letters, which is what every observed code is — and coverage
+ * is left to the provider. Codes a domain actually has are discoverable: they
+ * are the `Database` column of a `domain_overview` for that domain.
+ */
+export const SemrushDatabaseSchema = z.string().trim().toLowerCase()
+  .regex(/^[a-z]{2}$/, 'Use a two-letter Semrush country database code, such as in, us or ru.');
 
 const domain = z.string().trim().min(3).max(253)
   .refine((value) => !/[/?#@:\s]/.test(value) && value.includes('.'), 'Use a bare domain, without protocol, path, credentials, port, or query string.');

@@ -4,12 +4,48 @@ import {
   nextSemrushDpaRequestId,
   SemrushWebClient,
 } from '../../src/infrastructure/semrush/semrush-web.client.ts';
+import { SemrushToolArgsSchema } from '../../src/application/semrush/semrush.types.ts';
 
 describe('nextSemrushDpaRequestId', () => {
   it('matches the senior UUID-shaped DPA request_id format', () => {
     const id = nextSemrushDpaRequestId();
     assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
     assert.notEqual(id, nextSemrushDpaRequestId());
+  });
+});
+
+describe('Semrush database argument', () => {
+  it('accepts every country a single domain_overview actually returns', () => {
+    // Live 2026-08-08: one organic.overview for emiactech.com answered with
+    // these 26 databases. The old eleven-value enum rejected eighteen of them,
+    // so a member could read Russian data in our own table and not ask for it.
+    const returnedLive = [
+      'us', 'in', 'ca', 'ru', 'uk', 'vn', 'ae', 'ph', 'au', 'fr', 'it', 'nz', 'pk',
+      'ar', 'dk', 'es', 'hk', 'hu', 'ie', 'kw', 'me', 'no', 'ro', 'se', 'th', 'tw',
+    ];
+    for (const database of returnedLive) {
+      assert.equal(
+        SemrushToolArgsSchema.safeParse({ operation: 'domain_overview', domain: 'a.com', database }).success,
+        true,
+        `${database} is returned by Semrush and must be requestable`,
+      );
+    }
+  });
+
+  it('still rejects anything that is not a two-letter code', () => {
+    for (const database of ['', 'x', 'usa', 'IN1', 'a-b', '../etc', 'in us']) {
+      assert.equal(
+        SemrushToolArgsSchema.safeParse({ operation: 'domain_overview', domain: 'a.com', database }).success,
+        false,
+        `${JSON.stringify(database)} must not be accepted as a database`,
+      );
+    }
+  });
+
+  it('normalises case rather than refusing it', () => {
+    const parsed = SemrushToolArgsSchema.safeParse({ operation: 'domain_overview', domain: 'a.com', database: 'RU' });
+    assert.equal(parsed.success, true);
+    if (parsed.success && 'database' in parsed.data) assert.equal(parsed.data.database, 'ru');
   });
 });
 

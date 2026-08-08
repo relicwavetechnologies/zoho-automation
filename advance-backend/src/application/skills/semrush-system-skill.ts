@@ -77,6 +77,7 @@ The completion card is what reports the final row count and any cap.
   **The returned rows are the entire world this answer knows about.** Prefer not to name a country Semrush did not return; if you do name one as an example, the same sentence must say that this is Semrush having no record, **not** the domain having no presence. Never write that an unreturned country is unindexed, has zero traffic, or has no visibility — Semrush did not measure it, and a member cannot tell an inference apart from a finding.
 - \`backlinks_comparison\`: authority score, total backlinks and referring domains per target (1–10 domains in one request).
 - \`keyword_position_trend\`: one domain and one keyword, returned as a **dated series** of positions around the date you pass — not one row. Use it for "where did this keyword rank" and for how that rank moved over the returned window. Not for full keyword lists.
+- \`database\` is a two-letter Semrush country code and defaults to \`in\`. There is no fixed list to choose from: the databases a domain actually has are the \`Database\` column of a \`domain_overview\` for that domain, so run that first when the member names a country you have not seen for this domain. If Semrush does not recognise a code it says so, and that answer is reported rather than guessed around.
 
 ## Cost and honesty rules for these operations
 
