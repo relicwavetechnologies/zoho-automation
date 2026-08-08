@@ -136,6 +136,7 @@ export const createSemrushTool = (deps: {
           : {}),
         ...(data.nextPage ? { nextPage: data.nextPage } : {}),
         message: messageFor({
+          operation: args.operation,
           rowCount: allRows.length,
           returnedRows: preview.rows.length,
           hasCandidate: candidate.kind === 'published',
@@ -197,6 +198,7 @@ export const createSemrushTool = (deps: {
 });
 
 function messageFor(input: {
+  operation: SemrushToolArgs['operation'];
   rowCount: number;
   returnedRows: number;
   hasCandidate: boolean;
@@ -205,6 +207,19 @@ function messageFor(input: {
 }): string {
   if (input.status === 'empty') return 'Semrush returned no matching data for this request.';
   const parts = [`Retrieved ${input.rowCount} row${input.rowCount === 1 ? '' : 's'}.`];
+  // Said here rather than only in the skill because this sentence travels with
+  // the rows. Asked which markets a domain is invisible in, the model otherwise
+  // answers with countries out of its own knowledge — naming Germany or Japan
+  // as unindexed is a measurement Semrush never took, and a member reading the
+  // answer cannot tell that apart from one it did.
+  if (input.operation === 'domain_overview') {
+    parts.push(
+      `These ${input.rowCount} countries are every country Semrush returned for this domain.`
+      + ' Semrush reported nothing at all about any other country, so do not name one,'
+      + ' do not call it unindexed, and do not count how many are missing.'
+      + ' A row here showing 0 traffic is a real measurement and can be reported as such.',
+    );
+  }
   if (input.rowCount > input.returnedRows) parts.push(`Showing the first ${input.returnedRows} rows in chat.`);
   if (input.hasCandidate) parts.push('If the member asks for Sheet, Excel, or CSV, use the returned export candidate; Divo reruns current provider data for the file.');
   if (input.missingTargets.length > 0) parts.push(`Semrush returned no backlink overview for: ${input.missingTargets.join(', ')}.`);

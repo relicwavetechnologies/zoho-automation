@@ -22,6 +22,27 @@ describe('Semrush system skill', () => {
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /started, not that it is finished/);
   });
 
+  it('forbids treating a country Semrush omitted as a measured zero', () => {
+    // Observed 2026-08-08: asked which markets emiactech.com was invisible in,
+    // the model listed Germany, Japan, Brazil and five others as "no organic
+    // presence whatsoever". Semrush returned 26 databases and said nothing
+    // about any of them — the list came from the model's own world knowledge
+    // and read as a finding. Absent is unknown, exactly as for a backlinks
+    // target with no provider report.
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /A country missing from that list is one Semrush has no record for/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Never write that an absent country is unindexed, has zero traffic, or has no visibility/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /say in the same sentence that Semrush has no record of it/);
+    // A returned row showing 0 is a real measurement and stays reportable.
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /ranking without earning clicks/);
+  });
+
+  it('requires counts to be taken from the rows', () => {
+    // The same answer said 22 zero-traffic countries and listed 22, dropping
+    // Taiwan; the rows held 23. Another turn on the same data said 23.
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Counts must come from the rows, not from memory/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /check it against the rows before writing it/);
+  });
+
   it('never tells the model to expose export internals to a member', () => {
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Never show the\s+member a candidate list or any ID/);
   });

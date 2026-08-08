@@ -74,6 +74,7 @@ The completion card is what reports the final row count and any cap.
 ## Supported backend operations (3 callable)
 
 - \`domain_overview\`: one bare domain. Semrush answers with **one row per country database** it holds that domain in, so a single call already covers "global and country-wise traffic". \`database\` chooses which country leads the table; the rest follow by organic traffic. For a one-country question, read the first row and say so — do not call the operation again per country.
+  **The returned rows are the entire world this answer knows about.** Prefer not to name a country Semrush did not return; if you do name one as an example, the same sentence must say that this is Semrush having no record, **not** the domain having no presence. Never write that an unreturned country is unindexed, has zero traffic, or has no visibility — Semrush did not measure it, and a member cannot tell an inference apart from a finding.
 - \`backlinks_comparison\`: authority score, total backlinks and referring domains per target (1–10 domains in one request).
 - \`keyword_position_trend\`: one domain and one keyword, returned as a **dated series** of positions around the date you pass — not one row. Use it for "where did this keyword rank" and for how that rank moved over the returned window. Not for full keyword lists.
 
@@ -81,7 +82,9 @@ The completion card is what reports the final row count and any cap.
 
 1. \`backlinks_comparison\` is **one web request** for all listed targets (1–10). Compare the domains the user actually named; do not pad the list or fan out \`domain_overview\` per target to be thorough.
 2. If Semrush has no backlink overview for a requested target, \`coverage.missingTargets\` and the export name it as no provider data rather than zero.
-3. Never substitute one report for another. If the user asked for something outside these three operations (including senior curl #2 backlink export), say it is not available through Divo Semrush yet.`,
+3. \`domain_overview\` returns a row per country Semrush holds the domain in, and nothing at all about the countries it does not. A country missing from that list is one Semrush has no record for — **not** a measured zero, and not evidence of no presence. Never write that an absent country is unindexed, has zero traffic, or has no visibility, and never count how many markets the domain is missing from. If you name one as an example, say in the same sentence that Semrush has no record of it. Report the countries that came back, say how many there were, and say plainly that Semrush returned no data for anywhere else. A row present with \`Organic Traffic\` 0 is different: that is measured, and can be described as ranking without earning clicks.
+4. Counts must come from the rows, not from memory. If you say how many countries had zero traffic, that number is the count of returned rows whose \`Organic Traffic\` is 0 — check it against the rows before writing it.
+5. Never substitute one report for another. If the user asked for something outside these three operations (including senior curl #2 backlink export), say it is not available through Divo Semrush yet.`,
   toolIds: ['semrush'],
   tags: ['divo', 'seo', 'semrush', 'organic', 'rankings', 'domain'],
   aliases: ['semrush', 'seo research', 'organic rankings', 'domain overview'],

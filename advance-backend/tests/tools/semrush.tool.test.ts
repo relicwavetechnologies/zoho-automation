@@ -268,6 +268,50 @@ describe('semrush tool', () => {
     );
   });
 
+  it('states, next to the rows, that no other country was reported', async () => {
+    // Skill text alone did not hold: asked which markets a domain was invisible
+    // in, the model twice answered with Germany, Japan and Brazil — countries
+    // Semrush never mentioned — and called them unindexed. This sentence
+    // travels with the rows, which is where the claim gets made.
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'domain_overview',
+          status: 'complete',
+          coverage: { databasesReturned: 26 },
+          rows: Array.from({ length: 26 }, (_, i) => ({ Database: `c${i}`, 'Organic Traffic': 0 })),
+        }),
+      },
+    });
+
+    const result = await tool.execute({ operation: 'domain_overview', domain: 'example.com' }, makeCtx('semrush', ['read']));
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.match(result.value.message, /26 countries are every country Semrush returned/);
+    assert.match(result.value.message, /do not name one/);
+    assert.match(result.value.message, /do not count how many are missing/);
+    // A returned 0 is measured and must stay reportable.
+    assert.match(result.value.message, /real measurement/);
+  });
+
+  it('does not add the country caveat to operations that have no countries', async () => {
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'backlinks_comparison',
+          status: 'complete',
+          coverage: {},
+          rows: [{ Target: 'a.com' }],
+        }),
+      },
+    });
+    const result = await tool.execute({ operation: 'backlinks_comparison', targets: ['a.com'] }, makeCtx('semrush', ['read']));
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.doesNotMatch(result.value.message, /every country Semrush returned/);
+  });
+
   it('alerts a company admin when Semrush rejects the backend credential', async () => {
     const notifier = recordingExhaustionNotifier();
     const tool = createTool({
