@@ -255,6 +255,25 @@ function MailRuleForm({
     ? existing.rules.find((r) => r.ruleId === sourceRuleId) ?? null
     : null
 
+  /*
+   * A destination this screen cannot say.
+   *
+   * `lark_chat` is deliberately absent from what a browser may create — a room
+   * is named in conversation, and an opaque id typed one character wrong is
+   * indistinguishable from a right one until the mail lands in somebody else's
+   * room. But rules made through Divo in Lark do carry one, and this form
+   * seeded them as *no destination at all*: every other field arrived filled
+   * in, so the member picked an address to get past the empty one and saved —
+   * turning a rule that announced mail in a room into one that emails it. Both
+   * routes replace the whole rule, so there was nothing to stop that.
+   *
+   * So the screen says what it cannot do instead of quietly doing something
+   * else. Changing it where it was made is a real answer; a blank field is not.
+   */
+  const foreignDestination = editing
+    && source
+    && readDestination(source.destination, source.action).kind === 'lark'
+
   const clauses = useMemo(() => matchClauses(draft), [draft])
   const ruleName = nameEdited ? name : suggestedName(destination, address)
 
@@ -461,6 +480,31 @@ function MailRuleForm({
     )
   }
 
+  // Checked before the form renders rather than inside it: the fields would
+  // otherwise seed from a destination they cannot hold, and the first thing the
+  // member does is fill the gap.
+  if (foreignDestination) {
+    return (
+      <div className="page">
+        <PageHeader
+          eyebrow={<button type="button" className="ws-crumb-back" onClick={onExit}>
+            <ArrowLeft size={13} /> Back to the rule
+          </button>}
+          title="Edit rule"
+        />
+        <div className="ws-empty">
+          <p>This rule delivers to a Lark chat, and that is not something this screen can change.</p>
+          <p className="ws-empty-sub">
+            Rules that post into a room are made in Lark, where the room is named in
+            conversation rather than typed as an id. Ask Divo there to change it, and
+            it will edit this same rule. Everything else about it — pausing it, or
+            seeing what it caught — still works here.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   if (mailbox === null) return <div className="page"><SkelRows n={4} /></div>
 
   return (
@@ -538,9 +582,11 @@ function MailRuleForm({
                   ? 'An archived rule already has these conditions.'
                   : 'Another rule already has these conditions.'}
               </b>{' '}
-              {updating.duplicate.archived
-                ? `“${updating.duplicate.name}” watches this mailbox for exactly this mail. It is archived, so you would not see it on your list — restoring it is usually what you want rather than making a second.`
-                : `“${updating.duplicate.name}” watches this mailbox for exactly this mail. Two rules matching the same message act on it twice.`}
+              {/* The server's own sentence. It used to name the colliding rule
+                  in quotes — but nothing sends that name, so the panel read
+                  「"another rule" watches this mailbox」. Better to say the true
+                  thing without the name than to quote a placeholder. */}
+              {updating.duplicate.message}
             </div>
             {updating.duplicate.ruleId ? (
               <button

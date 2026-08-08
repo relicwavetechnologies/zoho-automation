@@ -179,6 +179,11 @@ import {
 import { RunOriginStore } from './application/connections/run-origin.store';
 import { createLarkChatDestinationAuthorizer } from './application/mail-ops/lark-chat-destination';
 import { createMailRuleWriter } from './application/mail-ops/mail-rule-writer';
+import {
+  mailRulePermission,
+  mailRuleRefusal,
+  type MailRuleOperation,
+} from './application/mail-ops/mail-rule-permission';
 import { createMailRuleExternalApproval } from './application/mail-ops/mail-rule-external-approval';
 import { createMailRuleCompiler } from './application/mail-ops/mail-rule-compiler';
 import { createMailRuleJudge } from './application/mail-ops/mail-rule-judge';
@@ -390,12 +395,16 @@ export interface Container {
     companyId: string;
     userId: string;
   }) => Promise<string | null>;
-  /** Whether a member may run mail rules — asked at create, not only at delivery. */
+  /**
+   * Whether a member may do this to a mail rule — asked when they ask, not only
+   * at delivery, and answered per operation rather than once for all of them.
+   */
   canRunMailRules: (input: {
     companyId: string;
     userId: string;
     companyRole: string;
     departmentId?: string;
+    operation: MailRuleOperation;
   }) => Promise<{ kind: 'allowed' | 'denied' | 'unavailable'; message?: string }>;
   /** One sentence into a draft rule. Creates nothing. */
   compileMailRule: ReturnType<typeof createMailRuleCompiler>;
@@ -2819,6 +2828,16 @@ export async function buildContainer(
     userId: string;
     companyRole: string;
     departmentId?: string;
+    /**
+     * What the member is asking to do.
+     *
+     * Named rather than assumed, because the answer differs: creating a rule
+     * needs `create` and background `execute`, archiving one needs `delete` and
+     * no execute at all. This used to check `execute` alone for every request,
+     * which both refused members who could legitimately archive and admitted
+     * members who had lost the right to edit.
+     */
+    operation: MailRuleOperation;
   }): Promise<{ kind: 'allowed' | 'denied' | 'unavailable'; message?: string }> => {
     const resolved = await permissions.resolve({
       companyId: asCompanyId(input.companyId),
@@ -2838,16 +2857,17 @@ export async function buildContainer(
             message: 'Divo could not work out your access to mail automations.',
           };
     }
-    const allowed = resolved.value.allowedActionsByTool
-      .get(asToolId('mailAutomations'))
-      ?.has('execute') ?? false;
-    return allowed
+    // The same decision the agent tool makes, from the same function, so the
+    // browser and Divo-in-Lark cannot answer one member two different ways.
+    const verdict = mailRulePermission(
+      input.operation,
+      resolved.value.allowedActionsByTool.get(asToolId('mailAutomations')),
+    );
+    return verdict.allowed
       ? { kind: 'allowed' }
       : {
           kind: 'denied',
-          message:
-            'You do not have permission to run mail automations, so a rule made here would never '
-            + 'act on anything. Ask an administrator for access to Mail automations.',
+          message: mailRuleRefusal(input.operation, verdict.missing),
         };
   };
 

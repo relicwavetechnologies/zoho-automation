@@ -14,6 +14,11 @@ import type {
 import { SELF_SERVICE_CONNECT_HINT } from './google-workspace-mcp.tool';
 import { mailRuleMatchSchema, parseMailRule } from '../../mail-ops/mail-rule.matcher';
 import {
+  mailRuleActionGroup,
+  mailRulePermission,
+  mailRuleRefusal,
+} from '../../mail-ops/mail-rule-permission';
+import {
   dryRunMailRule,
   type MailRuleDryRunEvent,
 } from '../../mail-ops/mail-rule-dry-run';
@@ -190,6 +195,20 @@ const resultSchema = z.object({
       predatesRule: z.boolean(),
     })),
   }).optional(),
+  /**
+   * What was already there when a `create` landed on a rule that exists.
+   *
+   * Declared here or it does not survive: every result is re-parsed against
+   * this schema and a key it does not name is stripped without complaint.
+   *
+   * `create` is an upsert on the rule's own content, so asking for a rule that
+   * already exists updates its name, its ceiling and its question, and brings
+   * it back if it was paused or archived. The tool used to report all of that
+   * as a plain creation, so an agent told a member it had made them a new rule
+   * when what it had actually done was overwrite one — or resurrect one they
+   * archived months ago.
+   */
+  existing: z.enum(['active', 'paused', 'archived']).nullable().optional(),
   message: z.string().optional(),
 });
 
@@ -296,6 +315,34 @@ function mailRuleActivatedMessage(destination: {
     + 'and nothing leaves the mailbox.';
 }
 
+/**
+ * What `create` actually did, which is not always create.
+ *
+ * The operation is an upsert on the rule's own content, so a member asking for
+ * a rule they already have gets that rule's name, ceiling and question
+ * rewritten — and if it was paused or archived, restarted. Reporting every one
+ * of those as "Mail automation is active" told an agent it had built something
+ * new when it had overwritten, or resurrected, something the member had already
+ * decided about. The archived case is the one that stings: a rule retired in
+ * March comes back to life in August and starts moving mail again.
+ */
+function mailRuleCreatedMessage(
+  destination: { readonly type: string; readonly email?: string },
+  existing: 'active' | 'paused' | 'archived' | null,
+): string {
+  const active = mailRuleActivatedMessage(destination);
+  if (!existing) return active;
+  const what = existing === 'archived'
+    ? 'You already had this exact rule, archived. It has been brought back and '
+      + 'is running again'
+    : existing === 'paused'
+      ? 'You already had this exact rule, paused. It is running again'
+      : 'You already had this exact rule and it was already running. Nothing '
+        + 'was duplicated';
+  return `${what}, and its name, its hourly ceiling and its AI question now `
+    + `match what you just asked for. ${active}`;
+}
+
 function larkChatRefusalMessage(verdict: LarkChatDestinationVerdict): string {
   if (verdict.status === 'other_company') {
     return 'That Lark chat belongs to a different company, so Divo will not '
@@ -318,21 +365,11 @@ type MailRepo = Pick<
   | 'setRuleStatus'
 >;
 
-const actionFor = (operation: Args['operation']): ToolActionGroup => {
-  switch (operation) {
-    case 'list':
-    // A dry run reads stored mail and stored rules and writes nothing, so it
-    // is `read`. Gating it behind `update` would mean the member who most
-    // needs to check a rule — one whose edit rights were just taken away —
-    // is the one who cannot.
-    case 'test': return 'read';
-    case 'create': return 'create';
-    case 'update':
-    case 'pause':
-    case 'resume': return 'update';
-    case 'archive': return 'delete';
-  }
-};
+// The mapping and the decision both live in `mail-rule-permission`, because
+// the browser asks the same question of the same grants and the two answers
+// have to be one answer. See the note there.
+const actionFor = (operation: Args['operation']): ToolActionGroup =>
+  mailRuleActionGroup(operation);
 
 export function createMailAutomationsTool(deps: {
   repo: MailRepo;
@@ -459,31 +496,17 @@ export function createMailAutomationsTool(deps: {
       const action = actionFor(args.operation);
       const grantedActions = permission.allowedActionsByTool
         .get(asToolId('mailAutomations'));
-      // Stopping a rule must never be harder than deleting it. `pause` shares
-      // the `update` action group with editing, so a department that revoked
-      // `update` to stop members rewriting rules also took away their ability
-      // to stop a live one — de-escalation gated on the capability being
-      // withdrawn.
-      const allowed = args.operation === 'pause'
-        ? (grantedActions?.has('update') ?? false)
-          || (grantedActions?.has('delete') ?? false)
-        : grantedActions?.has(action) ?? false;
-      const needsExecute = args.operation === 'create'
-        || args.operation === 'update'
-        || args.operation === 'resume';
-      const canExecute = !needsExecute || (grantedActions?.has('execute') ?? false);
-      return allowed && canExecute
+      const verdict = mailRulePermission(args.operation, grantedActions);
+      return verdict.allowed
         ? ok(action)
         : err(new PermissionError({
             toolId: 'mailAutomations',
-            action: allowed ? 'execute' : action,
+            // The action actually withheld, not the one asked for: reporting
+            // `create` when what is missing is background `execute` sends
+            // somebody asking for access they already have.
+            action: verdict.missing === 'execute' ? 'execute' : action,
             reason: 'not_allowed',
-            ...(allowed && !canExecute
-              ? {
-                  message:
-                    'Activating a mail automation also requires background execute access.',
-                }
-              : {}),
+            message: mailRuleRefusal(args.operation, verdict.missing),
           }));
     },
 
@@ -790,7 +813,10 @@ export function createMailAutomationsTool(deps: {
           dedupeKey: mailRuleDedupeKey(identity),
         });
         if (!created.ok) throw created.error;
-        ctx.onProgress?.('Mail automation activated.');
+        const existing = created.value.existing;
+        ctx.onProgress?.(existing
+          ? 'Mail automation updated.'
+          : 'Mail automation activated.');
         return ok({
           success: true,
           operation: 'create',
@@ -806,7 +832,8 @@ export function createMailAutomationsTool(deps: {
             createdAt: new Date().toISOString(),
             valid: true,
           },
-          message: mailRuleActivatedMessage(parsed.destination),
+          existing,
+          message: mailRuleCreatedMessage(parsed.destination, existing),
         });
       } catch (cause) {
         return err(new ToolError({

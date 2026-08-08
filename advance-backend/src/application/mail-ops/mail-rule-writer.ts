@@ -188,9 +188,27 @@ export type MailRuleWriteResult =
  * building a second.
  */
 export type MailRuleReplaceResult =
-  | { readonly status: 'replaced'; readonly ruleId: string; readonly mailboxEmail: string }
+  | {
+      readonly status: 'replaced';
+      readonly ruleId: string;
+      readonly mailboxEmail: string;
+      /**
+       * The edit took the rule off pause.
+       *
+       * Reported rather than assumed. Editing a paused rule starts it again —
+       * deliberate, and stated in the tool's own instructions — but a member
+       * who paused a rule because it misbehaved and then corrected it was never
+       * told their mail had started moving.
+       */
+      readonly resumed: boolean;
+    }
   /** Not yours, or not real. The repository makes the two indistinguishable. */
   | { readonly status: 'not_found' }
+  /**
+   * Real, yours, and archived. Kept apart from `not_found` because the remedies
+   * differ: archiving is final, so the way forward is a new rule, not a retry.
+   */
+  | { readonly status: 'archived' }
   | { readonly status: 'duplicate' }
   | { readonly status: 'duplicate_archived' }
   | Exclude<MailRuleWriteResult, { status: 'created' }>;
@@ -309,7 +327,16 @@ export interface MailRuleWriterDeps {
       judge: Record<string, unknown> | null;
       dedupeKey: string;
     }): Promise<
-      | { ok: true; value: 'replaced' | 'not_found' | 'duplicate' | 'duplicate_archived' }
+      | {
+          ok: true;
+          value:
+            | 'replaced'
+            | 'replaced_and_resumed'
+            | 'not_found'
+            | 'archived'
+            | 'duplicate'
+            | 'duplicate_archived';
+        }
       | { ok: false; error: { message: string } }
     >;
   };
@@ -666,11 +693,25 @@ export function createMailRuleWriter(deps: MailRuleWriterDeps) {
 
     switch (replaced.value) {
       case 'replaced':
-        return { status: 'replaced', ruleId: request.ruleId, mailboxEmail: ready.mailboxEmail };
+        return {
+          status: 'replaced',
+          ruleId: request.ruleId,
+          mailboxEmail: ready.mailboxEmail,
+          resumed: false,
+        };
+      case 'replaced_and_resumed':
+        return {
+          status: 'replaced',
+          ruleId: request.ruleId,
+          mailboxEmail: ready.mailboxEmail,
+          resumed: true,
+        };
       case 'duplicate':
         return { status: 'duplicate' };
       case 'duplicate_archived':
         return { status: 'duplicate_archived' };
+      case 'archived':
+        return { status: 'archived' };
       default:
         return { status: 'not_found' };
     }

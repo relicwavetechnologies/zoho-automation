@@ -20,7 +20,11 @@ type MailRuleDb = Pick<
  */
 export type MailRuleReplacement =
   | 'replaced'
+  /** The edit also took the rule off pause, which the member is told about. */
+  | 'replaced_and_resumed'
   | 'not_found'
+  /** Named separately from `not_found`: archiving is final, and saying so helps. */
+  | 'archived'
   | 'duplicate'
   | 'duplicate_archived';
 
@@ -445,7 +449,32 @@ export class MailAutomationRuleRepository {
             destinationJson: true,
           },
         });
-        if (!current) return 'not_found' as const;
+        if (!current) {
+          /*
+           * Archived is a different answer from missing, and the member can see
+           * the difference.
+           *
+           * The lookup above excludes archived rules, so editing one reported
+           * "not found in your account" for a rule sitting in that member's own
+           * list under Archived. Archiving is final by design — an archived
+           * rule cannot be resumed — so the honest answer names that, rather
+           * than implying the rule is gone and leaving them to wonder whether
+           * Divo lost it.
+           *
+           * Scoped to this member exactly as the lookup above is, so it still
+           * cannot confirm that somebody else's rule exists.
+           */
+          const archived = await tx.mailAutomationRule.findFirst({
+            where: {
+              id: input.ruleId,
+              companyId: input.companyId,
+              createdByUserId: input.userId,
+              status: 'archived',
+            },
+            select: { id: true },
+          });
+          return archived ? 'archived' as const : 'not_found' as const;
+        }
         // Editing a rule into one this member already holds is a real answer —
         // the rule they are asking for exists — and it is reported rather than
         // left to raise a unique violation inside the transaction and reach
@@ -518,7 +547,18 @@ export class MailAutomationRuleRepository {
             nextWatchRenewalAt: new Date(),
           },
         });
-        return 'replaced' as const;
+        /*
+         * Editing a paused rule starts it again — said out loud.
+         *
+         * The behaviour is deliberate and Divo in Lark has always documented
+         * it ("update also resumes a paused rule"), but a browser did it in
+         * silence: a member who paused a rule because it was misbehaving, then
+         * corrected it, got no hint that their mail was moving again. The
+         * behaviour stays; what changes is that the answer says so.
+         */
+        return current.status === 'paused'
+          ? 'replaced_and_resumed' as const
+          : 'replaced' as const;
       });
       return ok(changed);
     } catch (cause) {

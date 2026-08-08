@@ -146,6 +146,48 @@ describe('editing a mail rule', () => {
     assert.equal(outcome.status, 'not_found');
   });
 
+  /*
+   * Archived and missing are different answers, and the member can tell.
+   *
+   * The repository's lookup excludes archived rules, so editing one used to
+   * report "not found in your account" about a rule sitting in that member's
+   * own list under Archived. Archiving is final by design, so the honest answer
+   * names that — and its remedy is a new rule, not a retry.
+   */
+  it('says archived rather than not found, because the remedies differ', async () => {
+    const writer = write({
+      repo: { ...deps().repo, replaceRule: async () => ({ ok: true as const, value: 'archived' as const }) },
+    });
+    const outcome = await writer.replace(REQUEST as never, FORWARD);
+    assert.equal(outcome.status, 'archived');
+  });
+
+  /*
+   * Editing a paused rule starts it again — deliberate, and documented in the
+   * tool's own instructions, but done in silence by the browser. A member who
+   * paused a rule because it misbehaved and then corrected it got no hint that
+   * their mail was moving again.
+   */
+  it('reports that an edit took the rule off pause', async () => {
+    const writer = write({
+      repo: {
+        ...deps().repo,
+        replaceRule: async () => ({ ok: true as const, value: 'replaced_and_resumed' as const }),
+      },
+    });
+    const outcome = await writer.replace(REQUEST as never, FORWARD);
+    assert.equal(outcome.status, 'replaced');
+    assert.equal(outcome.status === 'replaced' && outcome.resumed, true);
+  });
+
+  it('does not claim a running rule was resumed', async () => {
+    const writer = write({
+      repo: { ...deps().repo, replaceRule: async () => ({ ok: true as const, value: 'replaced' as const }) },
+    });
+    const outcome = await writer.replace(REQUEST as never, FORWARD);
+    assert.equal(outcome.status === 'replaced' && outcome.resumed, false);
+  });
+
   it('says editing is unavailable rather than throwing where the repo cannot do it', async () => {
     const bare = deps();
     delete (bare.repo as Record<string, unknown>)['replaceRule'];

@@ -65,6 +65,30 @@ describe('mail automations tool result', () => {
     assert.equal(parsed.rules[0]?.['judge'], null);
     assert.equal('judge' in (parsed.rules[0] ?? {}), true);
   });
+
+  /*
+   * The same strip hazard, on the answer to "did you make me a new rule?".
+   *
+   * `create` is an upsert on the rule's own content, so asking for a rule that
+   * already exists rewrites its name, its ceiling and its question — and brings
+   * it back if it was paused or archived. The tool reported every one of those
+   * as a plain creation, so an agent could tell a member it had built them
+   * something new when it had actually resurrected a rule they retired months
+   * ago. Reporting it is only half the fix: a key this schema does not name is
+   * stripped on the way out and the model never sees it.
+   */
+  it('carries what was already there through the result schema', () => {
+    for (const existing of ['active', 'paused', 'archived', null] as const) {
+      const parsed = tool.resultSchema.parse({
+        success: true,
+        operation: 'create',
+        existing,
+      }) as Record<string, unknown>;
+
+      assert.equal('existing' in parsed, true, `${existing} must survive the schema`);
+      assert.equal(parsed['existing'], existing);
+    }
+  });
 });
 
 describe('a rule whose question holds everything', () => {

@@ -35,6 +35,7 @@ import {
 } from '../../application/mail-ops/mail-rule-writer';
 import { mailRuleMatchSchema } from '../../application/mail-ops/mail-rule.matcher';
 import { mailRuleJudgeSchema } from '../../application/mail-ops/mail-ops.types';
+import type { MailRuleOperation } from '../../application/mail-ops/mail-rule-permission';
 import {
   mailBriefScheduleSchema,
   nextMailBriefRunAt,
@@ -289,6 +290,7 @@ export interface MailAutomationsRouteDeps {
     userId: string;
     companyRole: string;
     departmentId?: string;
+    operation: MailRuleOperation;
   }) => Promise<{ kind: 'allowed' | 'denied' | 'unavailable'; message?: string }>;
   /**
    * Which department the signed-in member belongs to.
@@ -332,6 +334,57 @@ export function createMailAutomationsRoutes(
     companyId: res.locals['companyId'] as string,
     userId: res.locals['userId'] as string,
   });
+
+  /**
+   * The permission answer, given at the point of asking.
+   *
+   * Refused here rather than at every delivery, silently, forever. The
+   * permission is real either way — `authorizeRule` re-checks it on each
+   * message and a rule its owner may not execute never fires. What was missing
+   * was anybody being told: the rule was written, listed, and shown as Working,
+   * and it simply did nothing. Enforcement stays at the point of action; this
+   * is the answer, given when somebody asks.
+   *
+   * Returns `true` when it has already answered the request, so callers read as
+   * `if (await refused(...)) return;`.
+   */
+  const refused = async (
+    res: Response,
+    operation: MailRuleOperation,
+  ): Promise<boolean> => {
+    if (!deps.canRunMailRules) return false;
+    const who = actor(res);
+    const departmentId = res.locals['runtimeDepartmentId']
+      ? String(res.locals['runtimeDepartmentId'])
+      : (await deps.resolveDepartmentId?.(who)) ?? null;
+    const may = await deps.canRunMailRules({
+      ...who,
+      companyRole: String(res.locals['aiRole'] ?? 'MEMBER'),
+      ...(departmentId ? { departmentId } : {}),
+      operation,
+    });
+    if (may.kind === 'denied') {
+      res.status(403).json({
+        success: false,
+        code: 'not_permitted',
+        message: may.message
+          ?? 'You do not have permission to change mail automations. '
+            + 'Ask an administrator for access to Mail automations.',
+      });
+      return true;
+    }
+    if (may.kind === 'unavailable') {
+      // A store that could not be read is not a refusal. Saying "denied" would
+      // send somebody asking for access they already have.
+      res.status(503).json({
+        success: false,
+        code: 'permission_unavailable',
+        message: may.message ?? 'Divo could not check your access just now. Try again shortly.',
+      });
+      return true;
+    }
+    return false;
+  };
 
   const fail = (res: Response, operation: string, error: unknown): void => {
     log.error('mail_automations.read_failed', {
@@ -807,42 +860,7 @@ export function createMailAutomationsRoutes(
         ? String(res.locals['runtimeDepartmentId'])
         : (await deps.resolveDepartmentId?.(who)) ?? null;
 
-      /*
-       * Refused here rather than at every delivery, silently, forever.
-       *
-       * The permission is real either way — `authorizeRule` re-checks it on
-       * each message and a rule its owner may not execute never fires. What was
-       * missing was anybody being told: the rule was written, listed, and shown
-       * as Working, and it simply did nothing. Enforcement stays at the point
-       * of action; this is the answer, given at the point of asking.
-       */
-      if (deps.canRunMailRules) {
-        const may = await deps.canRunMailRules({
-          ...who,
-          companyRole: String(res.locals['aiRole'] ?? 'MEMBER'),
-          ...(departmentId ? { departmentId } : {}),
-        });
-        if (may.kind === 'denied') {
-          res.status(403).json({
-            success: false,
-            code: 'not_permitted',
-            message: may.message
-              ?? 'You do not have permission to run mail automations, so a rule made here would '
-                + 'never act on anything. Ask an administrator for access to Mail automations.',
-          });
-          return;
-        }
-        if (may.kind === 'unavailable') {
-          // A store that could not be read is not a refusal. Saying "denied"
-          // would send somebody asking for access they already have.
-          res.status(503).json({
-            success: false,
-            code: 'permission_unavailable',
-            message: may.message ?? 'Divo could not check your access just now. Try again shortly.',
-          });
-          return;
-        }
-      }
+      if (await refused(res, 'create')) return;
 
       const outcome = await deps.writeRule.create({
         ...who,
@@ -888,7 +906,17 @@ export function createMailAutomationsRoutes(
             : outcome.existing === 'paused'
               ? { message: 'That rule already existed and was paused. It has been resumed rather than duplicated.' }
               : outcome.existing === 'active'
-                ? { message: 'That rule already exists and is already running. Nothing was duplicated.' }
+                /*
+                 * "Nothing was duplicated" was true and still misleading.
+                 *
+                 * No row was added — but this path rewrites the rule's name,
+                 * its hourly ceiling and its AI question, because none of the
+                 * three is part of the dedupe key. A member who sent a new
+                 * question and read "nothing was duplicated" had every reason
+                 * to think their question had been ignored. It had not; the
+                 * sentence simply never mentioned it.
+                 */
+                ? { message: 'That rule already exists and is already running, so nothing was duplicated — but its name, its hourly ceiling and its AI question now match what you just sent.' }
                 : {}),
         });
         return;
@@ -1076,42 +1104,7 @@ export function createMailAutomationsRoutes(
         ? String(res.locals['runtimeDepartmentId'])
         : (await deps.resolveDepartmentId?.(who)) ?? null;
 
-      /*
-       * Refused here rather than at every delivery, silently, forever.
-       *
-       * The permission is real either way — `authorizeRule` re-checks it on
-       * each message and a rule its owner may not execute never fires. What was
-       * missing was anybody being told: the rule was written, listed, and shown
-       * as Working, and it simply did nothing. Enforcement stays at the point
-       * of action; this is the answer, given at the point of asking.
-       */
-      if (deps.canRunMailRules) {
-        const may = await deps.canRunMailRules({
-          ...who,
-          companyRole: String(res.locals['aiRole'] ?? 'MEMBER'),
-          ...(departmentId ? { departmentId } : {}),
-        });
-        if (may.kind === 'denied') {
-          res.status(403).json({
-            success: false,
-            code: 'not_permitted',
-            message: may.message
-              ?? 'You do not have permission to run mail automations, so a rule made here would '
-                + 'never act on anything. Ask an administrator for access to Mail automations.',
-          });
-          return;
-        }
-        if (may.kind === 'unavailable') {
-          // A store that could not be read is not a refusal. Saying "denied"
-          // would send somebody asking for access they already have.
-          res.status(503).json({
-            success: false,
-            code: 'permission_unavailable',
-            message: may.message ?? 'Divo could not check your access just now. Try again shortly.',
-          });
-          return;
-        }
-      }
+      if (await refused(res, 'update')) return;
 
       const outcome = await deps.writeRule.replace({
         ...who,
@@ -1133,8 +1126,35 @@ export function createMailAutomationsRoutes(
           companyId: res.locals['companyId'],
           ruleId: outcome.ruleId,
           destination: destination.type,
+          resumed: outcome.resumed,
         });
-        res.json({ success: true, data: outcome });
+        res.json({
+          success: true,
+          data: outcome,
+          // Only when it happened. A rule that was already running does not
+          // need to be told it is running.
+          ...(outcome.resumed
+            ? {
+                message:
+                  'Saved, and this rule is running again — editing a paused rule '
+                  + 'starts it. Pause it again if that is not what you wanted.',
+              }
+            : {}),
+        });
+        return;
+      }
+
+      if (outcome.status === 'archived') {
+        // Real, theirs, and archived — so "not found in your account" was a lie
+        // about a rule sitting in their own list. Archiving is final, and the
+        // way forward is a new rule rather than a retry of this one.
+        res.status(409).json({
+          success: false,
+          code: 'rule_archived',
+          message:
+            'That rule is archived, and archiving is final — it cannot be edited '
+            + 'or restarted. Create a new rule with these conditions instead.',
+        });
         return;
       }
 
@@ -1288,6 +1308,17 @@ export function createMailAutomationsRoutes(
         res.status(400).json({ success: false, message: 'Invalid rule ID.' });
         return;
       }
+      /*
+       * These three had no permission check at all.
+       *
+       * Divo in Lark has always asked: `resume` needs `update` and background
+       * `execute`, `archive` needs `delete`. A browser asked nothing, so a
+       * member whose access had been revoked could still resume a paused rule
+       * — and it went straight back to acting on their mail. `pause` is gated
+       * too, on `update` *or* `delete`, so stopping a rule is never harder than
+       * deleting it.
+       */
+      if (await refused(res, change)) return;
       try {
         const outcome = await deps.writeRule.setStatus(
           { ...actor(res), ruleId: ruleId.data },

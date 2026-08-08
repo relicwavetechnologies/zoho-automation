@@ -16,7 +16,7 @@
  * member, so there is nothing to pass and nothing to get wrong.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api } from '@/lib/api'
+import { api, ApiError } from '@/lib/api'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useConnections } from './use-connections'
 import { resolveMailboxes, type MailboxResolution } from './mailbox-resolution'
@@ -730,14 +730,21 @@ export type MailRuleUpdateOutcome =
    * rule they cannot see from here at all, and "that already exists" without
    * the word archived reads as Divo being wrong.
    */
-  | { kind: 'duplicate'; ruleId: string; name: string; archived: boolean }
+  | {
+      kind: 'duplicate'
+      ruleId: string
+      name: string
+      archived: boolean
+      /** What the server said. It knows which of the two collisions this is. */
+      message: string
+    }
   | { kind: 'refused' }
 
 export type MailRuleUpdateState = {
   saving: boolean
   error: string | null
   pending: { approverName: string; destination: string; reused: boolean } | null
-  duplicate: { ruleId: string; name: string; archived: boolean } | null
+  duplicate: { ruleId: string; name: string; archived: boolean; message: string } | null
 }
 
 export function useUpdateMailRule() {
@@ -774,19 +781,33 @@ export function useUpdateMailRule() {
         return { kind: 'pending_approval', ...pending }
       }
 
-      if (data.status === 'duplicate' || data.status === 'duplicate_archived') {
+      setState({ saving: false, error: null, pending: null, duplicate: null })
+      return { kind: 'saved', ruleId: data.ruleId ?? ruleId }
+    } catch (error) {
+      /*
+       * The duplicate arrives here, not above.
+       *
+       * A collision is answered with a 409, and `api.put` throws on any
+       * non-2xx — so the `data.status === 'duplicate'` test that used to sit
+       * inside the `try` could never run, and the one refusal this screen has
+       * a real remedy for was reported as "that change could not be saved".
+       *
+       * Matched on the server's own code rather than on the status, because
+       * `rule_archived` is a 409 too and its remedy is the opposite one.
+       */
+      if (error instanceof ApiError
+        && (error.code === 'duplicate' || error.code === 'duplicate_archived')) {
         const duplicate = {
-          ruleId: data.conflictRuleId ?? '',
-          name: data.conflictRuleName ?? 'another rule',
-          archived: data.status === 'duplicate_archived' || data.conflictArchived === true,
+          // The server names neither, so neither is invented. The message it
+          // sent says what to do, and that is what the screen shows.
+          ruleId: '',
+          name: 'another rule',
+          archived: error.code === 'duplicate_archived',
+          message: error.message,
         }
         setState({ saving: false, error: null, pending: null, duplicate })
         return { kind: 'duplicate', ...duplicate }
       }
-
-      setState({ saving: false, error: null, pending: null, duplicate: null })
-      return { kind: 'saved', ruleId: data.ruleId ?? ruleId }
-    } catch (error) {
       const message = error instanceof Error && error.message.length > 0
         ? error.message
         : 'That change could not be saved.'
