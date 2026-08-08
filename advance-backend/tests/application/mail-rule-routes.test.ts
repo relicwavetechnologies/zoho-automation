@@ -70,20 +70,56 @@ describe('a routing table is part of a rule’s identity', () => {
     assert.equal(a, b);
   });
 
-  it('makes one rule out of the same recipients described differently', () => {
+  /*
+   * The one this was originally written wrong.
+   *
+   * The key folded only the *set* of recipients, by analogy with
+   * `judge.question` — which is excluded because a question does not change who
+   * receives mail. A route's description does: it is half of a meaning →
+   * recipient pair, and the pairing is what the rule is. With only the
+   * recipients folded in, swapping which branch reaches whom produced the same
+   * key, so asking for the second rule landed on the first as an upsert and
+   * every invoice kept going to the person the member had just moved it away
+   * from. Found in cold review.
+   */
+  it('tells apart two tables that send the same two people opposite things', () => {
+    const a = mailRuleDedupeKey(base(routed([
+      route('invoices', 'anish@emiactech.com'),
+      route('product', 'rdx@gmail.com'),
+    ])));
+    const swapped = mailRuleDedupeKey(base(routed([
+      { key: 'invoices', when: 'something that looks like invoices', destination: { type: 'email', email: 'rdx@gmail.com' } },
+      { key: 'product', when: 'something that looks like product', destination: { type: 'email', email: 'anish@emiactech.com' } },
+    ])));
+    assert.notEqual(a, swapped);
+  });
+
+  it('makes one rule out of the same branches with different keys', () => {
     /*
-     * Keys and descriptions are labels and a question — the same class of thing
-     * as `judge.question` and `name`, which are excluded on purpose. If renaming
-     * a branch produced a second rule, both would stay active and every matching
-     * message would be forwarded twice.
+     * The `key` is still a label: the editor derives it from row position, so
+     * folding it in would make dragging a row into a different order produce a
+     * second rule — both active, forwarding everything twice.
      */
     const a = mailRuleDedupeKey(base(routed([
       route('invoices', 'anish@emiactech.com'),
       route('product', 'rdx@gmail.com'),
     ])));
     const b = mailRuleDedupeKey(base(routed([
-      { key: 'bills', when: 'a bill or a payment request', destination: { type: 'email', email: 'anish@emiactech.com' } },
-      { key: 'dev', when: 'anything about the product', destination: { type: 'email', email: 'rdx@gmail.com' } },
+      { key: 'route-1', when: 'something that looks like invoices', destination: { type: 'email', email: 'anish@emiactech.com' } },
+      { key: 'route-2', when: 'something that looks like product', destination: { type: 'email', email: 'rdx@gmail.com' } },
+    ])));
+    assert.equal(a, b);
+  });
+
+  it('folds a description the way every other free text here is folded', () => {
+    // Case-insensitively, because the runtime matches that way.
+    const a = mailRuleDedupeKey(base(routed([
+      route('invoices', 'anish@emiactech.com'),
+      route('product', 'rdx@gmail.com'),
+    ])));
+    const b = mailRuleDedupeKey(base(routed([
+      { key: 'invoices', when: 'Something That Looks Like Invoices', destination: { type: 'email', email: 'anish@emiactech.com' } },
+      { key: 'product', when: 'something that looks like product', destination: { type: 'email', email: 'rdx@gmail.com' } },
     ])));
     assert.equal(a, b);
   });

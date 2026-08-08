@@ -757,6 +757,7 @@ export const createServer = (c: Container): DivoServerApplication => {
       zohoTokenService:       c.zohoTokenService,
       zohoConnectionRepo:     c.zohoConnectionRepo,
       connectionRepo:         c.integrationConnectionRepo,
+      mailBriefOnboarding:    c.mailBriefOnboarding,
       invalidateLarkIdentityCache: (larkOpenId: string) =>
         c.channelIdentityRepo.invalidateIdentityCache(larkOpenId),
       permissions:            c.permissions,

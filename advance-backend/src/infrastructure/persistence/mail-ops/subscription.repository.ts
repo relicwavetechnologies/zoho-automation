@@ -136,6 +136,45 @@ export class MailboxSubscriptionRepository {
     }
   }
 
+  async ensureMailboxForConnection(input: {
+    companyId: string;
+    userId: string;
+    connectionId: string;
+    mailboxEmail: string;
+    now?: Date;
+  }): Promise<Result<{ subscriptionId: string; created: boolean }, InfraError>> {
+    const now = input.now ?? new Date();
+    try {
+      const existing = await this.db.mailboxSubscription.findUnique({
+        where: { connectionId: input.connectionId },
+        select: { id: true },
+      });
+      const subscription = await this.db.mailboxSubscription.upsert({
+        where: { connectionId: input.connectionId },
+        create: {
+          companyId: input.companyId,
+          userId: input.userId,
+          connectionId: input.connectionId,
+          mailboxEmail: input.mailboxEmail,
+          nextPollAt: now,
+          nextWatchRenewalAt: now,
+        },
+        update: {
+          mailboxEmail: input.mailboxEmail,
+          status: 'active',
+          nextPollAt: now,
+          nextWatchRenewalAt: now,
+          failureCode: null,
+          lastError: null,
+        },
+        select: { id: true },
+      });
+      return ok({ subscriptionId: subscription.id, created: !existing });
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'mailOps.ensureMailboxForConnection', cause));
+    }
+  }
+
   /**
    * Moves the mailbox cursor forward and releases the claim.
    *

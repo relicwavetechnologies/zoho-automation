@@ -610,16 +610,30 @@ export function createMailRuleWriter(deps: MailRuleWriterDeps) {
     // is not grounded because it carries no caller-supplied id to ground: the
     // open id comes from the signed-in session, so its single recipient is
     // already known to be the person who owns the mailbox.
-    if (request.destination.type === 'lark_chat' && deps.authorizeLarkChat) {
-      const verdict = await deps.authorizeLarkChat({
-        companyId: request.companyId,
-        chatId: request.destination.chatId,
-      });
-      if (verdict.status !== 'allowed') {
-        return {
-          ok: false,
-          refusal: { status: 'destination_refused', reason: larkRefusal(verdict) },
-        };
+    if (deps.authorizeLarkChat) {
+      /*
+       * Every chat this rule could reach, not only a top-level one.
+       *
+       * A routed rule's chats sit one level down, so a check written against
+       * `destination.type === 'lark_chat'` skipped the whole table — the rule
+       * was accepted with an ungrounded room in a branch, and the first message
+       * that sorted into it was spent discovering that. The worker does
+       * re-check and abandons rather than delivering, so nothing reached the
+       * wrong company; what was lost was the refusal happening while somebody
+       * was still looking at the form.
+       */
+      for (const leaf of mailDestinationLeaves(request.destination)) {
+        if (leaf.type !== 'lark_chat') continue;
+        const verdict = await deps.authorizeLarkChat({
+          companyId: request.companyId,
+          chatId: leaf.chatId,
+        });
+        if (verdict.status !== 'allowed') {
+          return {
+            ok: false,
+            refusal: { status: 'destination_refused', reason: larkRefusal(verdict) },
+          };
+        }
       }
     }
 
@@ -632,6 +646,17 @@ export function createMailRuleWriter(deps: MailRuleWriterDeps) {
         match: request.match as Record<string, unknown>,
         action: action as Record<string, unknown>,
         destination: request.destination as Record<string, unknown>,
+        /*
+         * The judge goes in too, and leaving it out was not a tidiness question.
+         *
+         * `parseMailRule` is where a routing table plus a separate question is
+         * refused — two AI steps with no stated order between them. Validating
+         * without it accepted that pair here and refused it later, when the
+         * *worker* re-parsed the stored row: the member was told the rule was
+         * active, and it then reported itself broken and matched nothing.
+         * Validate what is about to be written, not a subset of it.
+         */
+        ...(request.judge ? { judge: request.judge } : {}),
       });
     } catch (cause) {
       return {

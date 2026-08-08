@@ -356,6 +356,65 @@ describe('external forward approval — the web write path', () => {
     assert.deepEqual(w.written, ['me@emiactech.com']);
   });
 
+  /*
+   * Found in cold review: the writer validated with `parseMailRule({match,
+   * action, destination})` and then wrote `judge` anyway — so a routed rule
+   * with a question saved cleanly and only failed later, when the *worker*
+   * re-parsed the stored row. The member was told the rule was active; it then
+   * reported itself broken and matched nothing.
+   */
+  it('refuses a routing table that also carries a question, at write time', async () => {
+    const w = writer();
+    const outcome = await create(w, {
+      ...REQUEST,
+      destination: {
+        type: 'routed',
+        routes: [
+          { key: 'invoices', when: 'an invoice', destination: { type: 'email', email: 'anish@emiactech.com' } },
+          { key: 'product', when: 'the product', destination: { type: 'email', email: 'rdx@emiactech.com' } },
+        ],
+        otherwise: 'hold',
+      },
+      judge: { question: 'Is this really from the client?' },
+    });
+    assert.notEqual(outcome.status, 'created');
+    assert.deepEqual(w.written, []);
+  });
+
+  /*
+   * Also cold review: chat grounding was written against a top-level
+   * `lark_chat`, so a routing table's chats — one level down — were never
+   * checked. The worker re-checks and abandons rather than delivering, so
+   * nothing reached another company; what was lost was the refusal happening
+   * while somebody was still looking at the form.
+   */
+  it('grounds every Lark chat in a routing table, not only a top-level one', async () => {
+    const asked: string[] = [];
+    const w = writer({
+      authorizeLarkChat: async ({ chatId }) => {
+        asked.push(chatId);
+        return chatId === 'oc_bad'
+          ? { status: 'not_found' }
+          : { status: 'allowed' };
+      },
+    });
+    const outcome = await w.instance.create({
+      ...REQUEST,
+      destination: {
+        type: 'routed',
+        routes: [
+          { key: 'invoices', when: 'an invoice', destination: { type: 'lark_chat', chatId: 'oc_good' } },
+          { key: 'product', when: 'the product', destination: { type: 'lark_chat', chatId: 'oc_bad' } },
+        ],
+        otherwise: 'hold',
+      },
+    }, { type: 'deliver' });
+
+    assert.equal(outcome.status, 'destination_refused');
+    assert.deepEqual(asked, ['oc_good', 'oc_bad']);
+    assert.deepEqual(w.written, []);
+  });
+
   it('asks before grounding a destination, so a refusal costs nothing', async () => {
     // Order is load-bearing: there is no reason to have grounded a Lark chat
     // for a rule a manager may refuse.

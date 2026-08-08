@@ -22,6 +22,7 @@ import { normalizeShopDomain } from '../../domain/shopify/shopify-shop';
 import { AIRTABLE_REQUESTED_SCOPES, AIRTABLE_SCOPE } from '../../application/airtable/airtable-mcp-manifest';
 import type { Logger } from '../../shared/logger';
 import type { TypedEnv } from '../../config/env';
+import type { InfraError } from '../../shared/errors';
 import { createMemberAuthMiddleware } from '../middleware/member-auth.middleware';
 import { parseCallbackOriginAllowlist, requestHost, resolveCallbackOrigin } from './callback-origin';
 import type { PermissionService } from '../../application/permissions/permission.service';
@@ -47,6 +48,12 @@ import {
   configureDataExportProfile,
   getDataExportProfile,
 } from '../../application/data-export/data-export.profile';
+import {
+  canStartMailBriefFromGoogleAuthorization,
+  type MailBriefOnboardingInput,
+  type MailBriefOnboardingResult,
+} from '../../application/mail-ops/mail-brief-onboarding';
+import type { Result } from '../../shared/result';
 
 export interface DesktopAuthRoutesDeps {
   prisma:                 PrismaClient;
@@ -62,6 +69,9 @@ export interface DesktopAuthRoutesDeps {
   connectionRepo:         IntegrationConnectionRepository;
   /** Busts tenant-scoped Lark identity resolution after a successful OAuth link. */
   invalidateLarkIdentityCache?: (larkOpenId: string) => Promise<void>;
+  mailBriefOnboarding?: (
+    input: MailBriefOnboardingInput,
+  ) => Promise<Result<MailBriefOnboardingResult, InfraError>>;
   permissions:            PermissionService;
   skillCatalog:           SkillCatalogService;
   skillAccessEnforcement: SkillAccessEnforcementPort;
@@ -85,6 +95,8 @@ interface StatePayload {
   sessionId?: string;
   /** Exact OAuth callback used to mint this signed state. */
   redirectUri?: string;
+  /** Tool ids that made this OAuth grant necessary. */
+  requestedToolIds?: string[];
   /** Safe app-local page to resume after a same-tab browser sign-in. */
   returnTo?: string;
   exp?: number;
@@ -2061,18 +2073,6 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       const companyId = res.locals['companyId'] as string;
       const redirectUri = desktopCallbackUri(req, '/api/desktop/auth/google/callback');
 
-      const state = signJwt(
-        {
-          kind: 'desktop_google_connect',
-          nonce: randomBytes(16).toString('hex'),
-          userId,
-          companyId,
-          redirectUri,
-        },
-        deps.memberJwtSecret,
-        600,
-      );
-
       // `for` names what the member is connecting Google *to do*, and narrows
       // the consent screen to that. Somebody arriving from Mail rules should
       // be asked for their mail, not for Drive, Calendar, Contacts and Apps
@@ -2086,6 +2086,19 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         .map(value => value.trim())
         .filter(Boolean);
       const scopes = googleScopesToRequestForToolIds(requestedFor);
+
+      const state = signJwt(
+        {
+          kind: 'desktop_google_connect',
+          nonce: randomBytes(16).toString('hex'),
+          userId,
+          companyId,
+          redirectUri,
+          requestedToolIds: requestedFor,
+        },
+        deps.memberJwtSecret,
+        600,
+      );
 
       const authorizeUrl = deps.googleOAuthService.getAuthorizeUrl({
         state,
@@ -2127,6 +2140,10 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         ?? `${deps.backendPublicUrl.replace(/\/+$/, '')}/api/desktop/auth/google/callback`;
       const tokenBundle = await deps.googleOAuthService.exchangeAuthorizationCode(String(code), redirectUri);
       const userInfo = await deps.googleOAuthService.fetchUserInfo(tokenBundle.accessToken);
+      const grantedScopes = tokenBundle.scope?.split(/\s+/).filter(Boolean) ?? [];
+      const requestedToolIds = Array.isArray(payload.requestedToolIds)
+        ? payload.requestedToolIds.filter((value): value is string => typeof value === 'string')
+        : [];
 
       const expiresAt = tokenBundle.expiresIn
         ? new Date(Date.now() + tokenBundle.expiresIn * 1000)
@@ -2149,6 +2166,31 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       });
       if (!upsertResult.ok) {
         log.error('google.callback.upsert_failed', { error: String(upsertResult.error) });
+      } else {
+        const startsMailBrief = canStartMailBriefFromGoogleAuthorization({
+          requestedToolIds,
+          grantedScopes,
+        });
+        const mailboxEmail = upsertResult.value.accountEmail ?? userInfo.email;
+        if (startsMailBrief && mailboxEmail && deps.mailBriefOnboarding) {
+          const started = await deps.mailBriefOnboarding({
+            companyId: payload.companyId,
+            userId: payload.userId,
+            connectionId: upsertResult.value.id,
+            mailboxEmail,
+          });
+          if (!started.ok) {
+            log.warn('google.callback.mail_brief_onboarding_failed', {
+              connectionId: upsertResult.value.id,
+              error: started.error.message,
+            });
+          }
+        } else if (startsMailBrief && !mailboxEmail) {
+          log.warn('google.callback.mail_brief_onboarding_skipped', {
+            reason: 'missing_google_email',
+            userId: payload.userId,
+          });
+        }
       }
 
       log.info('google.callback.success', { userId: payload.userId });

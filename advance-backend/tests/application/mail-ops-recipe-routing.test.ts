@@ -75,3 +75,44 @@ describe('what the recipe now says about picking a recipient', () => {
     assert.match(recipe, /calls no model/i);
   });
 });
+
+/**
+ * A capability the catalogue cannot be searched for exists only for whoever
+ * already knows it does.
+ *
+ * `scoreRouterCandidate` ranks identity, alias and description tokens, so the
+ * recipe body being right is worth nothing if the words a member actually uses
+ * score zero against every skill. That failure is silent in the worst way: the
+ * model is left guessing between families and picks one, so the member gets a
+ * confident answer from the wrong recipe.
+ */
+describe('whether anybody asking for this can find it', () => {
+  const mailOps = MAIL_OPS_SYSTEM_SKILLS.find(skill => skill.slug === 'mail-ops')!;
+  const searchable = [
+    mailOps.slug, mailOps.name, mailOps.summary,
+    ...mailOps.aliases, ...mailOps.tags,
+  ].join(' ').toLowerCase();
+
+  it('is findable by the words somebody uses for sorting mail', () => {
+    // Not "forward future email", which is what the aliases said and is not how
+    // anybody describes wanting their client's mail split between two people.
+    for (const word of ['sort', 'route', 'different', 'triage', 'people']) {
+      assert.ok(searchable.includes(word), `nothing in mail-ops is searchable by "${word}"`);
+    }
+  });
+
+  it('says in its summary that a rule can sort, not only forward', () => {
+    // The summary is scored too, and it is the one line an operator reads in a
+    // list of skills.
+    assert.match(mailOps.summary, /sorting each arriving message to the right person/i);
+  });
+
+  it('sends the router there for two people rather than two rules', () => {
+    // The commonest wrong turn, and the one place it can be headed off before
+    // the recipe is even loaded.
+    const router = MAIL_OPS_SYSTEM_SKILLS
+      .find(skill => skill.slug === 'google-workspace-router')!.markdown;
+    assert.match(router, /different kinds of it to different people/i);
+    assert.match(router, /one arrival rule that sorts, not two rules/i);
+  });
+});

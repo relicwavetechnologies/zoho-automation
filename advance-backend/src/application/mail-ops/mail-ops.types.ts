@@ -605,25 +605,39 @@ function destinationIdentity(destination: MailRuleDestination): unknown {
 }
 
 /**
- * A routing table reduced to the set of places it can send mail.
+ * A routing table reduced to **which kind of message goes to whom**.
  *
- * Two decisions here, and both follow rules this file already applies elsewhere.
+ * The pairing is the identity, not the set of recipients. This was originally
+ * written as the sorted set of destinations alone, by analogy with
+ * `judge.question` — which is deliberately excluded above because a question
+ * does not change who receives mail. That analogy is wrong here, and the
+ * counterexample is not exotic:
  *
- * **The keys and the descriptions are left out.** They are labels and a question
- * — the same class of thing as `judge.question` and `name`, which are
- * deliberately excluded above. Two rules alike but for how their branches are
- * worded are one rule with two opinions about the same mail, and treating them
- * as two would leave both active and forward every matching message twice.
- * Renaming a branch must not silently produce a second rule.
+ *     A: invoices → anish@,  product → rakshit@
+ *     B: invoices → rakshit@, product → anish@
  *
- * **The list is sorted**, exactly as `phraseIdentity` sorts alternatives, so the
- * same three recipients written in two orders are one rule. Order matters to
- * how the branches read, and not at all to who receives mail.
+ * Same sender, same two recipients, opposite meaning. With only the recipients
+ * folded in, those two produce the same key — so asking for B lands on A as an
+ * upsert, and every invoice keeps going to the person the member just said it
+ * should not. Silent, on a rule that goes on reporting itself as working.
  *
- * What is emphatically *not* left out is the destinations themselves. Routes are
- * destinations, and a destination is what a rule is — leaving them out would
- * make "same sender, different recipients" an upsert onto the existing rule,
- * silently rewriting who gets somebody's mail.
+ * So each branch folds as `when → place`, and the whole thing is what a rule is:
+ *
+ * **The `key` is still left out.** It is a handle the model answers with, not a
+ * claim about the mail — the editor derives it from row position, so folding it
+ * in would make dragging a row into a different order produce a second rule.
+ *
+ * **The pairs are sorted**, exactly as `phraseIdentity` sorts alternatives, so
+ * the same branches written in two orders are one rule. Order changes how the
+ * table reads and nothing about who receives what.
+ *
+ * **The wording of `when` is now load-bearing**, which is the cost of this. Two
+ * tables that differ only in how a branch is described are two rules. That is
+ * the deliberate trade: rewording is done through `update`, which targets a
+ * ruleId and never touches this key, so the only way to reach it is to *create*
+ * a reworded copy — which produces a visible duplicate rather than an invisible
+ * redirection. A duplicate is noticed; mail arriving at the wrong colleague is
+ * not.
  */
 function routedIdentity(destination: {
   routes: readonly MailRuleRoute[];
@@ -631,8 +645,20 @@ function routedIdentity(destination: {
 }): unknown {
   const place = (leaf: MailRuleLeafDestination): string =>
     `${leaf.type}:${String(destinationIdentity(leaf))}`;
+  const branchIdentity = (route: MailRuleRoute): readonly [string, string] => [
+    route.when.trim().toLowerCase(),
+    place(route.destination),
+  ];
+  const compareBranches = (
+    left: readonly [string, string],
+    right: readonly [string, string],
+  ): number => {
+    if (left[0] !== right[0]) return left[0] < right[0] ? -1 : 1;
+    if (left[1] !== right[1]) return left[1] < right[1] ? -1 : 1;
+    return 0;
+  };
   return [
-    [...destination.routes.map(route => place(route.destination))].sort(),
+    [...destination.routes.map(branchIdentity)].sort(compareBranches),
     destination.otherwise === 'hold' ? 'hold' : place(destination.otherwise),
   ];
 }
