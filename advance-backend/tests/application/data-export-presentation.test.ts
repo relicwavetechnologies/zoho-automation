@@ -70,6 +70,27 @@ describe('buildDataExportPresentation semrush overview sheet', () => {
     assert.match(overview.get('Dormant vs absent')!, /never measured, and is not dormant/);
   });
 
+  it('says Authority Rank is per tab, because a split comparison restarts it', () => {
+    // Eleven targets need two Semrush requests, so the overflow tab holds one
+    // row and ranks it 1 — reading as the strongest site when it was eighth.
+    const rows = buildDataExportPresentation({
+      title: 'Semrush Backlinks Comparison - 11 Sites',
+      columns: ['Target', 'Authority Score', 'Authority Rank', 'Backlinks per Referring Domain'],
+      source: {
+        kind: 'semrush_snapshot',
+        connectionId: 'backend_managed',
+        args: { operation: 'backlinks_comparison', targets: ['a.com'] },
+      } as never,
+      rowCount: 1,
+      sourceTruncated: false,
+    }).overviewRows ?? [];
+    const overview = new Map(rows.filter(row => row.length > 1).map(row => [String(row[0]), String(row[1])]));
+
+    assert.match(overview.get('Authority Rank')!, /within this tab only/);
+    assert.match(overview.get('Authority Rank')!, /restarts the numbering on each one/);
+    assert.match(overview.get('Backlinks per Referring Domain')!, /many links from few sites/);
+  });
+
   it('leaves the dictionary out of a file that has no derived columns', () => {
     const overview = overviewFor({ operation: 'backlinks_comparison', targets: ['a.com'] }, 1);
     assert.equal(overview.has('Market Tier'), false);

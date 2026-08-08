@@ -227,7 +227,11 @@ function semrushOverviewRows(input: {
     rows.push(
       [],
       ['Derived columns', 'Calculated by Divo from the rows in this file. No extra Semrush request was made.'],
-      ['Authority Rank', 'Position by authority score, strongest first. Blank where Semrush returned no report, which is missing data rather than the weakest score.'],
+      // More than ten targets needs more than one Semrush request, and each one
+      // becomes its own tab. Rank is computed inside a tab, so a lone target on
+      // the overflow tab reads as rank 1 — strongest — when it may be the
+      // weakest of the set. The column has to say what it is ranking.
+      ['Authority Rank', 'Position by authority score within this tab only, strongest first. A comparison split across tabs restarts the numbering on each one, so compare ranks across tabs by authority score rather than by this number. Blank where Semrush returned no report, which is missing data rather than the weakest score.'],
       ['Backlinks per Referring Domain', 'Backlinks divided by referring domains. A high ratio is many links from few sites; a low one is a broader profile.'],
     );
   }
