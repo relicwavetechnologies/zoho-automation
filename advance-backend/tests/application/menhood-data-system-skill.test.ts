@@ -36,6 +36,30 @@ describe('Menhood data system skill', () => {
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Load `airtable-core` immediately and use the live Airtable Orders table yourself/);
   });
 
+  it('hands the exact requested window to Airtable instead of a relative one', () => {
+    // A July question that reached Airtable as `pastMonth` counted a rolling
+    // 30-day window and reported a total that was never July's.
+    assert.match(
+      MENHOOD_DATA_SYSTEM_SKILL.markdown,
+      /Carry the member's exact requested window into that filter/,
+    );
+    assert.match(
+      MENHOOD_DATA_SYSTEM_SKILL.markdown,
+      /explicit start and end bounds in Asia\/Kolkata/,
+    );
+    assert.match(
+      MENHOOD_DATA_SYSTEM_SKILL.markdown,
+      /never a relative window such as `pastMonth` or `thisCalendarMonth`/,
+    );
+    assert.match(
+      MENHOOD_DATA_SYSTEM_SKILL.markdown,
+      /Read the count from Airtable's `metadata\.totalRecordCount` rather than from the preview rows/,
+    );
+    // The old escape hatch let a truncated live read bounce back to a question.
+    // Every live read is truncated, so it fired on the happy path.
+    assert.doesNotMatch(MENHOOD_DATA_SYSTEM_SKILL.markdown, /or the live read is truncated/);
+  });
+
   it('contains the operational joins, enums, quality rules, and named recipes', () => {
     const cookbook = MENHOOD_DATA_SYSTEM_SKILL.markdown;
 
