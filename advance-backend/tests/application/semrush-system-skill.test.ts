@@ -4,6 +4,28 @@ import { DIVO_SEMRUSH_SYSTEM_SKILL } from '../../src/application/skills/semrush-
 import { SEMRUSH_OPERATIONS } from '../../src/application/semrush/semrush.types.ts';
 
 describe('Semrush system skill', () => {
+  it('answers every question dataExport op=plan can ask back', () => {
+    // These states are only explained in secure-data-export, which data-router
+    // reaches for when a source returned NO candidate. Semrush always returns
+    // one, so that skill never loads on this path and the model would be left
+    // guessing at a question the backend genuinely asked it.
+    for (const state of ['choose_destination', 'connect_required', 'sample_required', 'ambiguous']) {
+      assert.match(
+        DIVO_SEMRUSH_SYSTEM_SKILL.markdown,
+        new RegExp(`\`${state}\``),
+        `the skill must say what to do when op=plan returns ${state}`,
+      );
+    }
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /exact `connectionId`/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /`op=confirm_sample`/);
+    // A queued export is not a finished one.
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /started, not that it is finished/);
+  });
+
+  it('never tells the model to expose export internals to a member', () => {
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Never show the\s+member a candidate list or any ID/);
+  });
+
   it('is discoverable by SEO terms and constrained to the canonical Semrush tool', () => {
     assert.deepEqual(DIVO_SEMRUSH_SYSTEM_SKILL.toolIds, ['semrush']);
     assert.ok(DIVO_SEMRUSH_SYSTEM_SKILL.aliases.includes('semrush'));
