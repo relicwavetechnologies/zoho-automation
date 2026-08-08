@@ -373,7 +373,7 @@ const commonColumns = {
   id: (header = 'ID'): ZohoListCsvColumn<Record<string, unknown>> => ({
     key: 'id',
     header,
-    value: item => stringValue(item, 'invoice_id', 'bill_id', 'payment_id', 'expense_id', 'contact_id', 'transaction_id', 'id'),
+    value: item => stringValue(item, 'invoice_id', 'bill_id', 'payment_id', 'expense_id', 'contact_id', 'transaction_id', 'item_id', 'id'),
   }),
   date: { key: 'date', header: 'Date' } satisfies ZohoListCsvColumn<Record<string, unknown>>,
   status: { key: 'status', header: 'Status' } satisfies ZohoListCsvColumn<Record<string, unknown>>,
@@ -1386,7 +1386,8 @@ export const createZohoBooksTool = (deps: {
         case 'list_items':
           return ok(await listBounded('items', 'items', {
             ...(args.searchQuery ? { query: args.searchQuery } : {}),
-            amountKeys: ['rate'],
+            // No amountKeys: a catalogue's rates are unit prices, and adding
+            // them up would present a meaningless total as a finding.
             columns: [
               commonColumns.id('Item ID'),
               { key: 'name', header: 'Item' },
