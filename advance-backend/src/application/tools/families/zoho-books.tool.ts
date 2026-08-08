@@ -63,6 +63,9 @@ import {
   hasBlockingFinding,
 } from '../../zoho/zoho-invoice-checks';
 import {
+  INVOICE_CLAIM_PENDING,
+  INVOICE_CLAIM_UNRESOLVED,
+  writeProvablyDidNotHappen,
   compareStagedToStored,
   describePayloadChange,
   MAX_INVOICE_FIX_ATTEMPTS,
@@ -970,14 +973,26 @@ export const createZohoBooksTool = (deps: {
       params?: Record<string, string>;
       body?:  Record<string, unknown>;
       multipart?: { field: string; fileName: string; mimeType: string; content: Buffer };
-    }) => deps.booksClient.mutate({
-      companyId,
-      userId,
-      connectionId: args.connectionId,
-      ...(args.organizationId ? { organizationId: args.organizationId } : {}),
-      ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
-      ...input,
-    });
+      /**
+       * Where this write goes, when that is not simply where the call says.
+       * A staged invoice was reviewed against one organisation's customers and
+       * rates, so it has to be created there and not wherever the confirming
+       * call happens to point.
+       */
+      connectionId?: string;
+      organizationId?: string | undefined;
+    }) => {
+      const { connectionId, organizationId, ...rest } = input;
+      const destinationOrg = organizationId ?? args.organizationId;
+      return deps.booksClient.mutate({
+        companyId,
+        userId,
+        connectionId: connectionId ?? args.connectionId,
+        ...(destinationOrg ? { organizationId: destinationOrg } : {}),
+        ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+        ...rest,
+      });
+    };
 
     /**
      * Put a file the member already sent into this conversation onto an invoice
@@ -986,54 +1001,55 @@ export const createZohoBooksTool = (deps: {
      * Re-reads `documents[]` first: Zoho appends rather than replaces, so an
      * unchecked retry silently leaves the same PDF on the record twice.
      */
-    const attachDocument = async (): Promise<Result<Res, ToolError>> => {
-      if (!args.recordType || !args.recordId || !args.fileName) {
-        return err(new ToolError({
-          toolId: 'zohoBooks', reason: 'bad_args',
-          message: 'attach_document needs recordType (invoice or bill), recordId, and the exact fileName the member sent.',
-        }));
-      }
+    /**
+     * Put a named file from this conversation onto a record that already exists.
+     *
+     * Shared by attach_document and by invoice creation, so a file the member
+     * approved as part of a draft lands the same way and is proved the same way
+     * as one they asked for directly.
+     *
+     * Never throws: by the time this runs the record exists, and losing the
+     * attachment must not be reported as losing the invoice.
+     */
+    const attachFileToRecord = async (input: {
+      recordType: 'invoice' | 'bill';
+      recordId:   string;
+      fileName:   string;
+      destination?: { connectionId: string; organizationId?: string | undefined };
+    }): Promise<{ attached: boolean; message: string }> => {
+      const { recordType, recordId, fileName } = input;
       if (!deps.attachmentSource || ctx.runContext.channel !== 'lark') {
-        return err(new ToolError({
-          toolId: 'zohoBooks', reason: 'bad_args',
-          message: `Divo cannot attach files from the ${ctx.runContext.channel} channel yet — only files sent in Lark. `
-            + 'The record itself is unchanged; say the attachment could not be made rather than that it was.',
-        }));
+        return {
+          attached: false,
+          message: `Divo cannot attach files from the ${ctx.runContext.channel} channel yet — only files sent in Lark.`,
+        };
       }
-      // Scoped to the chat, not the runtime thread: a group thread key carries
-      // the id of the message that seeded it, so a file posted on its own and
-      // the instruction posted next would never share a key.
       const chatId = ctx.runContext.chatId;
       if (!chatId) {
-        return err(new ToolError({
-          toolId: 'zohoBooks', reason: 'bad_args',
-          message: 'Divo cannot tell which conversation this file was sent in, so it will not guess at one.',
-        }));
+        return { attached: false, message: 'Divo cannot tell which conversation this file was sent in, so it will not guess at one.' };
       }
 
-      const moduleName = attachModule[args.recordType];
-      const before = attachedDocumentNames(await getOne(moduleName, args.recordId));
+      const moduleName = attachModule[recordType];
+      const readDocuments = async () => {
+        try {
+          return attachedDocumentNames(await getOne(moduleName, recordId));
+        } catch {
+          return null;
+        }
+      };
+      const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+      // Zoho appends rather than replaces, so an unchecked retry leaves the same
+      // PDF on the record twice.
+      const before = await readDocuments();
+      if (before?.some(name => sameName(name, fileName))) {
+        return { attached: true, message: `"${fileName}" was already attached; it was not uploaded again.` };
+      }
 
       const resolved = await deps.attachmentSource.resolve({
-        companyId,
-        userId,
-        channel: ctx.runContext.channel,
-        chatId,
-        fileName: args.fileName,
+        companyId, userId, channel: ctx.runContext.channel, chatId, fileName,
       });
-      if (resolved.kind === 'unavailable') {
-        return err(new ToolError({
-          toolId: 'zohoBooks', reason: 'bad_args', message: resolved.message,
-        }));
-      }
-
-      if (before.some(name => name.trim().toLowerCase() === resolved.fileName.trim().toLowerCase())) {
-        return ok({
-          success: true,
-          id: args.recordId,
-          message: `"${resolved.fileName}" is already attached to this ${args.recordType}. Nothing was uploaded again. Attached: ${before.join(', ')}.`,
-        });
-      }
+      if (resolved.kind === 'unavailable') return { attached: false, message: resolved.message };
 
       const policy = validateAttachmentPolicy([{
         fileName: resolved.fileName,
@@ -1042,34 +1058,59 @@ export const createZohoBooksTool = (deps: {
         content: resolved.content,
         source: 'lark',
       }]);
-      if (!policy.ok) {
-        return err(new ToolError({
-          toolId: 'zohoBooks', reason: 'bad_args', message: policy.error.message,
-        }));
+      if (!policy.ok) return { attached: false, message: policy.error.message };
+
+      ctx.onProgress?.(`Attaching ${resolved.fileName} to the ${recordType}…`);
+      try {
+        await write({
+          method: 'POST',
+          path: `/${moduleName}/${encodeURIComponent(recordId)}/attachment`,
+          ...(input.destination
+            ? {
+                connectionId: input.destination.connectionId,
+                ...(input.destination.organizationId ? { organizationId: input.destination.organizationId } : {}),
+              }
+            : {}),
+          multipart: {
+            field: 'attachment',
+            fileName: resolved.fileName,
+            mimeType: resolved.mimeType,
+            content: resolved.content,
+          },
+        });
+      } catch (error) {
+        return { attached: false, message: `Zoho refused the upload: ${mapZohoError(error)}` };
       }
 
-      ctx.onProgress?.(`Attaching ${resolved.fileName} to the ${args.recordType}…`);
-      await write({
-        method: 'POST',
-        path: `/${moduleName}/${encodeURIComponent(args.recordId)}/attachment`,
-        multipart: {
-          field: 'attachment',
-          fileName: resolved.fileName,
-          mimeType: resolved.mimeType,
-          content: resolved.content,
-        },
-      });
-
       // Zoho's own record is the only proof the upload landed.
-      const after = attachedDocumentNames(await getOne(moduleName, args.recordId));
-      const landed = after.some(name => name.trim().toLowerCase() === resolved.fileName.trim().toLowerCase());
-      return ok({
-        success: landed,
-        id: args.recordId,
-        message: landed
-          ? `Attached "${resolved.fileName}" to the ${args.recordType}. Zoho now lists: ${after.join(', ')}.`
-          : `Zoho accepted the upload but does not list "${resolved.fileName}" on the ${args.recordType}. Treat the attachment as unconfirmed.`,
+      const after = await readDocuments();
+      if (after === null) {
+        return { attached: false, message: `Zoho accepted "${resolved.fileName}" but the record could not be re-read, so the attachment is unconfirmed.` };
+      }
+      return after.some(name => sameName(name, resolved.fileName))
+        ? { attached: true, message: `Attached "${resolved.fileName}". Zoho now lists: ${after.join(', ')}.` }
+        : { attached: false, message: `Zoho accepted the upload but does not list "${resolved.fileName}" on the ${recordType}. Treat the attachment as unconfirmed.` };
+    };
+
+    const attachDocument = async (): Promise<Result<Res, ToolError>> => {
+      if (!args.recordType || !args.recordId || !args.fileName) {
+        return err(new ToolError({
+          toolId: 'zohoBooks', reason: 'bad_args',
+          message: 'attach_document needs recordType (invoice or bill), recordId, and the exact fileName the member sent.',
+        }));
+      }
+      const outcome = await attachFileToRecord({
+        recordType: args.recordType,
+        recordId: args.recordId,
+        fileName: args.fileName,
       });
+      if (!outcome.attached) {
+        return err(new ToolError({
+          toolId: 'zohoBooks', reason: 'bad_args',
+          message: `${outcome.message} The ${args.recordType} itself is unchanged — say the attachment could not be made rather than that it was.`,
+        }));
+      }
+      return ok({ success: true, id: args.recordId, message: outcome.message });
     };
 
     /**
@@ -1081,8 +1122,12 @@ export const createZohoBooksTool = (deps: {
     const gatherReviewSources = async (payload: Record<string, unknown>) => {
       const customerId = typeof payload['customer_id'] === 'string' ? payload['customer_id'] : '';
       const customerName = typeof payload['customer_name'] === 'string' ? payload['customer_name'] : '';
+      // Only when the member supplied a number. Creating with one tells Zoho to
+      // stand its own numbering down, so this is the one path where a repeat can
+      // reach the books — and the only place to catch it is before it does.
+      const invoiceNumber = typeof payload['invoice_number'] === 'string' ? payload['invoice_number'].trim() : '';
 
-      const [chosenCustomer, otherMatches, taxes, items] = await Promise.all([
+      const [chosenCustomer, otherMatches, taxes, items, sameNumber] = await Promise.all([
         customerId
           ? getOne('contacts', customerId).catch(() => undefined)
           : Promise.resolve(undefined),
@@ -1104,6 +1149,13 @@ export const createZohoBooksTool = (deps: {
           ...(args.organizationId ? { organizationId: args.organizationId } : {}),
           filters: {}, perPage: 50,
         }).then(result => result.items).catch(() => []),
+        invoiceNumber
+          ? deps.booksClient.listRecords({
+              companyId, ...connectionContext, moduleName: 'invoices',
+              ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+              filters: {}, query: invoiceNumber, perPage: 25,
+            }).then(result => result.items).catch(() => [])
+          : Promise.resolve([]),
       ]);
 
       return {
@@ -1112,6 +1164,9 @@ export const createZohoBooksTool = (deps: {
           String(record['contact_id'] ?? '') !== customerId),
         availableTaxes: taxes,
         catalogueItems: items,
+        // Zoho's search is broad; the duplicate rule wants exact matches only.
+        sameNumberInvoices: sameNumber.filter(record =>
+          String(record['invoice_number'] ?? '').trim().toLowerCase() === invoiceNumber.toLowerCase()),
       };
     };
 
@@ -1363,20 +1418,23 @@ export const createZohoBooksTool = (deps: {
           const attempt = (previous?.attempt ?? 0) + 1;
 
           ctx.onProgress?.('Checking the draft invoice…');
-          const findings = checkInvoice({
-            invoice: payload,
-            ...(deps.homeGstStateCode ? { homeGstStateCode: deps.homeGstStateCode } : {}),
-            ...(args.fileName ? { documentExpected: false } : {}),
-          });
-
           const [sources, turns, sourceDocument] = await Promise.all([
             gatherReviewSources(payload),
             gatherTurns(),
             gatherDocument(args.fileName),
           ]);
 
-          const customerName = typeof sources.chosenCustomer?.['contact_name'] === 'string'
-            ? sources.chosenCustomer['contact_name'] as string
+          // After the lookup, not before: the duplicate rule can only fire on
+          // invoices Divo actually went and found.
+          const { sameNumberInvoices, ...reviewSources } = sources;
+          const findings = checkInvoice({
+            invoice: payload,
+            ...(deps.homeGstStateCode ? { homeGstStateCode: deps.homeGstStateCode } : {}),
+            sameNumberInvoices,
+          });
+
+          const customerName = typeof reviewSources.chosenCustomer?.['contact_name'] === 'string'
+            ? reviewSources.chosenCustomer['contact_name'] as string
             : undefined;
           const summary = renderStagedInvoice({
             payload,
@@ -1389,7 +1447,7 @@ export const createZohoBooksTool = (deps: {
           const review = await deps.invoiceReviewer.review({
             turns,
             stagedSummary: summary,
-            ...sources,
+            ...reviewSources,
             ...(sourceDocument ? { sourceDocument } : {}),
             findings,
             ...(previous
@@ -1459,17 +1517,40 @@ export const createZohoBooksTool = (deps: {
             }));
           }
 
+          // The draft was checked against one organisation's customers, items
+          // and taxes. Creating it anywhere else would post ids that mean
+          // something different there, and the drift check cannot catch it:
+          // Zoho echoes back the customer_id it was sent, so the comparison
+          // passes while the invoice names the wrong customer entirely.
+          if (args.connectionId !== staged.connectionId) {
+            return err(new ToolError({
+              toolId: 'zohoBooks', reason: 'bad_args',
+              message: 'This draft was prepared for a different Zoho account than the one this call names. '
+                + 'Create it with the account it was staged against, or stage it again for this one.',
+            }));
+          }
+          if (args.organizationId && args.organizationId !== staged.organizationId) {
+            return err(new ToolError({
+              toolId: 'zohoBooks', reason: 'bad_args',
+              message: 'This draft was prepared for a different Zoho organisation than the one this call names. '
+                + 'Create it in the organisation it was staged against, or stage it again for this one.',
+            }));
+          }
+
           // Claimed before the call, not after: Zoho has no idempotency key, so a
           // create that succeeds and then times out would otherwise be retried
           // into a second real invoice.
-          const marker = `pending:${ctx.correlationId}`;
+          const marker = `${INVOICE_CLAIM_PENDING}${ctx.correlationId}`;
           const claim = await deps.invoiceStaging.claim({ stagingId: staged.stagingId, companyId, marker });
           if (!claim.claimed) {
             return err(new ToolError({
               toolId: 'zohoBooks', reason: 'bad_args',
-              message: claim.heldBy?.startsWith('pending:')
+              message: claim.heldBy?.startsWith(INVOICE_CLAIM_PENDING)
                 ? 'This draft is already being sent to Zoho. Do not send it again — check Zoho for the invoice before retrying.'
-                : `This draft was already created as invoice ${claim.heldBy}. It will not be created twice.`,
+                : claim.heldBy?.startsWith(INVOICE_CLAIM_UNRESOLVED)
+                  ? 'An earlier attempt to create this invoice never reported back, so it may already exist in Zoho. '
+                    + 'Divo will not send it again. Check Zoho for this invoice and tell the member what you find.'
+                  : `This draft was already created as invoice ${claim.heldBy}. It will not be created twice.`,
             }));
           }
 
@@ -1479,6 +1560,8 @@ export const createZohoBooksTool = (deps: {
             created = await writtenRecord('invoices', 'created', {
               method: 'POST',
               path: '/invoices',
+              connectionId: staged.connectionId,
+              ...(staged.organizationId ? { organizationId: staged.organizationId } : {}),
               // Zoho rejects a supplied invoice_number outright while auto-numbering
               // is on, unless this says the member meant to override it.
               ...(typeof invoiceNumber === 'string' && invoiceNumber.trim()
@@ -1487,23 +1570,56 @@ export const createZohoBooksTool = (deps: {
               body: staged.payload,
             });
           } catch (error) {
-            await deps.invoiceStaging.release({ stagingId: staged.stagingId, companyId, marker });
-            throw error;
+            // Only a validation refusal proves nothing was written. A timeout, a
+            // dropped socket or a 5xx leaves the invoice's existence open, and
+            // handing the draft back would invite the retry that bills twice.
+            if (writeProvablyDidNotHappen(error)) {
+              await deps.invoiceStaging.release({ stagingId: staged.stagingId, companyId, marker });
+              throw error;
+            }
+            await deps.invoiceStaging.markUnresolved({
+              stagingId: staged.stagingId, companyId, marker,
+              unresolved: `${INVOICE_CLAIM_UNRESOLVED}${ctx.correlationId}`,
+            });
+            return err(new ToolError({
+              toolId: 'zohoBooks', reason: 'upstream_failure', cause: error,
+              message: `${mapZohoError(error)} Divo cannot tell whether the invoice was created before the connection failed, `
+                + 'so it will not send this draft again. Check Zoho for it and tell the member what you find.',
+            }));
           }
 
           const invoiceId = created.id ?? '';
           await deps.invoiceStaging.settle({ stagingId: staged.stagingId, companyId, invoiceId });
 
+          // The summary the member approved said this file would be on it.
+          let attachmentNote = '';
+          if (staged.attachFileName && invoiceId) {
+            const outcome = await attachFileToRecord({
+              recordType: 'invoice',
+              recordId: invoiceId,
+              fileName: staged.attachFileName,
+              destination: {
+                connectionId: staged.connectionId,
+                ...(staged.organizationId ? { organizationId: staged.organizationId } : {}),
+              },
+            });
+            attachmentNote = outcome.attached
+              ? ` ${outcome.message}`
+              : ` The invoice exists, but the file the member approved is not on it: ${outcome.message}`
+                + ' Say so rather than leaving them to assume it was attached.';
+          }
+
           // Staging cannot see what Zoho does on the way in. This can.
           const stored = isRecord(created.data) ? created.data : {};
           const drift = compareStagedToStored(staged.payload, stored);
+          const base = drift.length > 0
+            ? `${created.message} Zoho stored some values differently from the draft the member approved: `
+              + `${drift.map(d => `${d.field} was ${d.staged}, Zoho has ${d.stored}`).join('; ')}. Tell them before doing anything else with it.`
+            : created.message ?? 'Invoice created.';
           return ok({
             ...created,
             ...(drift.length > 0 ? { drift } : {}),
-            message: drift.length > 0
-              ? `${created.message} Zoho stored some values differently from the draft the member approved: `
-                + `${drift.map(d => `${d.field} was ${d.staged}, Zoho has ${d.stored}`).join('; ')}. Tell them before doing anything else with it.`
-              : created.message ?? 'Invoice created.',
+            message: `${base}${attachmentNote}`,
           });
         }
 

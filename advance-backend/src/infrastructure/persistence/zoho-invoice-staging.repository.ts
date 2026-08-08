@@ -111,11 +111,30 @@ export class PrismaStagedInvoiceStore implements StagedInvoiceStore {
     });
   }
 
-  /** Hands the draft back when the create never happened, so it can be retried. */
+  /** Hands the draft back when the create provably never happened, so it can be retried. */
   async release(input: { stagingId: string; companyId: string; marker: string }): Promise<void> {
     await this.prisma.zohoInvoiceStaging.updateMany({
       where: { id: input.stagingId, companyId: input.companyId, createdInvoiceId: input.marker },
       data: { createdInvoiceId: null },
+    });
+  }
+
+  /**
+   * Keeps the draft held when the create's outcome is unknown.
+   *
+   * Deliberately not a release: the invoice may exist. Leaving the claim in a
+   * state no retry clears is what stops a lost response from becoming a second
+   * real invoice, and it is why the member is told to go and look instead.
+   */
+  async markUnresolved(input: {
+    stagingId: string;
+    companyId: string;
+    marker: string;
+    unresolved: string;
+  }): Promise<void> {
+    await this.prisma.zohoInvoiceStaging.updateMany({
+      where: { id: input.stagingId, companyId: input.companyId, createdInvoiceId: input.marker },
+      data: { createdInvoiceId: input.unresolved },
     });
   }
 }

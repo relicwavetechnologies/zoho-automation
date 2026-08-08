@@ -57,12 +57,43 @@ export const STAGED_INVOICE_TTL_MS = 24 * 60 * 60_000;
  */
 export const MAX_INVOICE_FIX_ATTEMPTS = 2;
 
+/** Held while a create is in flight. */
+export const INVOICE_CLAIM_PENDING = 'pending:';
+
+/**
+ * Held when a create failed in a way that cannot prove it failed.
+ *
+ * A timeout, a dropped socket or a 5xx all leave the same question open: did
+ * Zoho write the invoice before the answer was lost? Releasing the claim would
+ * answer "no" on the member's behalf and invite a retry that bills them twice.
+ * This says "nobody knows" and refuses to send it again.
+ */
+export const INVOICE_CLAIM_UNRESOLVED = 'unknown:';
+
 export interface StagedInvoiceStore {
   put(staged: StagedInvoice): Promise<void>;
   get(input: { stagingId: string; companyId: string; userId: string }): Promise<StagedInvoice | null>;
   claim(input: { stagingId: string; companyId: string; marker: string }): Promise<{ claimed: boolean; heldBy?: string }>;
   settle(input: { stagingId: string; companyId: string; invoiceId: string }): Promise<void>;
   release(input: { stagingId: string; companyId: string; marker: string }): Promise<void>;
+  /** Replaces an in-flight claim with a state no retry may clear. */
+  markUnresolved(input: { stagingId: string; companyId: string; marker: string; unresolved: string }): Promise<void>;
+}
+
+/**
+ * Whether a failed write provably never reached Zoho's books.
+ *
+ * Only a validation refusal proves it: Zoho read the payload, rejected it, and
+ * wrote nothing. A 5xx, a 408, a 429 or a transport error all leave open that
+ * the invoice exists and only the answer was lost.
+ */
+export function writeProvablyDidNotHappen(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const status = /Zoho Books (\d{3})/.exec(message)?.[1];
+  if (!status) return false;
+  const code = Number(status);
+  if (code === 408 || code === 429) return false;
+  return code >= 400 && code < 500;
 }
 
 const str = (value: unknown): string =>

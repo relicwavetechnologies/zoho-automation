@@ -11,15 +11,12 @@
  * Every check names the field it read. A finding a member cannot trace back to
  * a number on their invoice is a finding they cannot act on.
  *
- * The same checks run twice, over two different things. Before creation they
- * read a staged payload, where Zoho has computed nothing yet — so the totals it
- * would supply are absent and the arithmetic is derived from the lines instead.
- * After creation they read the stored record. Sharing the rules is the point:
- * a payload that passes and a record that then fails means Zoho did something
- * to it, which is exactly what the post-create diff is looking for.
+ * These run once, over a staged payload, before anything is created. Zoho has
+ * computed nothing at that point — the totals it would supply are absent — so
+ * the arithmetic is derived from the lines instead. What Zoho then did to the
+ * payload on the way in is a separate question, answered by diffing the stored
+ * record against what was approved rather than by re-running these.
  */
-
-import { createHash } from 'node:crypto';
 
 export type InvoiceFindingSeverity = 'blocking' | 'warning';
 
@@ -45,7 +42,6 @@ export interface InvoiceCheckInput {
    */
   readonly homeGstStateCode?: string | undefined;
   /** True when the member sent a file that was meant to end up on this invoice. */
-  readonly documentExpected?: boolean;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -220,51 +216,9 @@ export function checkInvoice(input: InvoiceCheckInput): InvoiceFinding[] {
     );
   }
 
-  // ── Attachment ────────────────────────────────────────────────────────────
-  if (input.documentExpected) {
-    const documents = Array.isArray(invoice['documents']) ? invoice['documents'] : [];
-    if (documents.length === 0) {
-      add('missing_document', 'blocking', 'A file was meant to be attached to this invoice, and Zoho lists none.');
-    }
-  }
 
   return findings;
 }
 
 export const hasBlockingFinding = (findings: readonly InvoiceFinding[]): boolean =>
   findings.some(finding => finding.severity === 'blocking');
-
-/**
- * Identity of the *content* of an invoice.
- *
- * A review is a statement about a specific set of numbers. If any of them move
- * afterwards the review no longer describes what is stored, so issuing has to
- * demand a fresh one. Only the fields a review could reasonably turn on are
- * included — `last_modified_time` would invalidate on every unrelated touch.
- */
-export function invoiceRevisionHash(invoice: Record<string, unknown>): string {
-  const canonical = {
-    customer_id: str(invoice['customer_id']),
-    invoice_number: str(invoice['invoice_number']),
-    date: str(invoice['date']),
-    due_date: str(invoice['due_date']),
-    currency_code: str(invoice['currency_code']),
-    place_of_supply: str(invoice['place_of_supply']),
-    total: num(invoice['total']),
-    sub_total: num(invoice['sub_total']),
-    tax_total: num(invoice['tax_total']),
-    documents: (Array.isArray(invoice['documents']) ? invoice['documents'] : [])
-      .filter(isRecord)
-      .map(document => str(document['file_name']))
-      .sort(),
-    line_items: lines(invoice).map(item => ({
-      item_id: str(item['item_id']),
-      name: str(item['name']),
-      description: str(item['description']),
-      quantity: num(item['quantity']),
-      rate: num(item['rate']),
-      tax_id: str(item['tax_id']),
-    })),
-  };
-  return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
-}
