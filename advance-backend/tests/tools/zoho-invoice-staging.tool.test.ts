@@ -28,14 +28,16 @@ function makeStore(seed?: Partial<StagedInvoice>) {
   return {
     calls,
     rows,
-    put: async (staged: StagedInvoice) => { rows.set(staged.stagingId, staged); },
+    put: async (staged: StagedInvoice) => {
+      rows.set(staged.stagingId, { createdAt: new Date(), ...staged });
+    },
     get: async ({ stagingId }: { stagingId: string }) => rows.get(stagingId) ?? null,
     claim: async ({ stagingId, marker }: { stagingId: string; marker: string }) => {
       calls.push('claim');
       const row = rows.get(stagingId);
       if (!row) return { claimed: false };
       if (row.createdInvoiceId) return { claimed: false, heldBy: row.createdInvoiceId };
-      rows.set(stagingId, { ...row, createdInvoiceId: marker });
+      rows.set(stagingId, { ...row, createdInvoiceId: marker, claimedAt: new Date() });
       return { claimed: true };
     },
     settle: async ({ stagingId, invoiceId }: { stagingId: string; invoiceId: string }) => {
@@ -48,10 +50,27 @@ function makeStore(seed?: Partial<StagedInvoice>) {
       const row = rows.get(stagingId);
       if (row) rows.set(stagingId, { ...row, createdInvoiceId: undefined });
     },
-    markUnresolved: async ({ stagingId, unresolved }: { stagingId: string; unresolved: string }) => {
+    markUnresolved: async ({ stagingId, marker, unresolved }: { stagingId: string; marker: string; unresolved: string }) => {
       calls.push('markUnresolved');
       const row = rows.get(stagingId);
-      if (row) rows.set(stagingId, { ...row, createdInvoiceId: unresolved });
+      if (row?.createdInvoiceId === marker) rows.set(stagingId, { ...row, createdInvoiceId: unresolved });
+    },
+    markAbsent: async ({ stagingId, marker, absent }: { stagingId: string; marker: string; absent: string }) => {
+      calls.push('markAbsent');
+      const row = rows.get(stagingId);
+      if (row?.createdInvoiceId === marker) rows.set(stagingId, { ...row, createdInvoiceId: absent });
+    },
+    findUnresolved: async ({ connectionId }: { connectionId: string }) => {
+      calls.push('findUnresolved');
+      return [...rows.values()].filter(row => {
+        if (row.connectionId !== connectionId) return false;
+        const held = row.createdInvoiceId ?? '';
+        // An in-flight claim, a caught failure, and a search that came back
+        // empty are all still open questions; how they differ decides what the
+        // caller does, not whether it gets to see them.
+        return held.startsWith('unknown:') || held.startsWith('pending:')
+          || held.startsWith('absent:');
+      });
     },
   };
 }
@@ -77,6 +96,7 @@ function makeBooksClient(onMutate?: () => void) {
       };
     },
     listRecords: async () => ({ organizationId: 'org-1', items: [], hasMore: false, page: 1 }),
+    listOrganizations: async () => [{ organizationId: 'org-1', name: 'Books', isDefault: true }],
     getEndpoint: async () => ({}),
   } as unknown as ZohoBooksPaginatedClient;
 }
@@ -180,7 +200,7 @@ describe('one approved draft makes one invoice', () => {
     const result = await tool.execute({ op: 'create_invoice', stagingId } as never, ctx);
 
     assert.equal(result.ok, false);
-    assert.deepEqual(store.calls, ['claim', 'release']);
+    assert.deepEqual(store.calls, ['findUnresolved', 'claim', 'release']);
     assert.equal(store.rows.get(stagingId)?.createdInvoiceId, undefined);
   });
 
@@ -206,7 +226,7 @@ describe('one approved draft makes one invoice', () => {
 
       const first = await tool.execute({ op: 'create_invoice', stagingId } as never, ctx);
       assert.equal(first.ok, false, failure.message);
-      assert.deepEqual(store.calls, ['claim', 'release'], failure.message);
+      assert.deepEqual(store.calls, ['findUnresolved', 'claim', 'release'], failure.message);
       assert.equal(
         /may already exist/.test(String((first as any).error.payload.message)),
         false,
@@ -242,14 +262,528 @@ describe('one approved draft makes one invoice', () => {
 
       const first = await tool.execute({ op: 'create_invoice', stagingId } as never, ctx);
       assert.equal(first.ok, false, failure.message);
-      assert.deepEqual(store.calls, ['claim', 'markUnresolved'], failure.message);
+      assert.deepEqual(store.calls, ['findUnresolved', 'claim', 'markAbsent'], failure.message);
 
       // The retry the error text would otherwise invite must not reach Zoho.
       const second = await tool.execute({ op: 'create_invoice', stagingId } as never, ctx);
       assert.equal(second.ok, false);
-      assert.match((second as any).error.payload.message, /may already exist in Zoho/);
+      assert.match((second as any).error.payload.message, /already sent to Zoho once/);
       assert.equal(mutations, 1, `Zoho must be called once for ${failure.message}`);
     }
+  });
+});
+
+describe('the same invoice, staged a second time', () => {
+  // The claim protects one draft. Nothing protected the *work*: a member told
+  // "that may or may not have gone through" asks again, the model stages a
+  // fresh draft, and that draft carries no claim. Every guard waved it through.
+  //
+  // What Zoho stores when the answer to a create is lost.
+  const createdInvoice = {
+    invoice_id: 'inv-landed',
+    invoice_number: 'INV-77',
+    customer_id: soundPayload.customer_id,
+    date: soundPayload.date,
+    status: 'draft',
+    currency_code: 'INR',
+    sub_total: '50000.00',
+    line_items: soundPayload.line_items,
+  };
+
+  /** Fails the create, then answers read-back lookups with `found`. */
+  const clientThatLosesTheAnswer = (found: Record<string, unknown>[], onList?: () => void) => {
+    let mutations = 0;
+    return {
+      client: {
+        ...makeBooksClient(),
+        mutate: async () => { mutations += 1; throw new Error('Zoho Books 500 Internal Server Error: '); },
+        listRecords: async () => {
+          onList?.();
+          return { organizationId: 'org-1', items: found, hasMore: false, page: 1 };
+        },
+        getEndpoint: async () => ({}),
+      } as unknown as ZohoBooksPaginatedClient,
+      mutations: () => mutations,
+    };
+  };
+
+  it('finds the invoice the lost answer created, and refuses to bill it twice', async () => {
+    const store = makeStore();
+    const { client, mutations } = clientThatLosesTheAnswer([createdInvoice]);
+    const tool = makeTool({ store, booksClient: client });
+
+    // First attempt: the answer is lost, but Divo reads back and finds it.
+    const first = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    const recovered = await tool.execute({
+      op: 'create_invoice', stagingId: (first as any).value.stagingId,
+    } as never, ctx);
+    assert.equal(recovered.ok, true, 'a read-back that finds the invoice is a success, not a mystery');
+    assert.equal((recovered as any).value.id, 'inv-landed');
+    assert.match((recovered as any).value.message, /Divo checked Zoho: the invoice was created/);
+    assert.equal(mutations(), 1);
+  });
+
+  it('refuses a fresh draft that repeats an unresolved one', async () => {
+    const store = makeStore();
+    let readBacks = 0;
+    let mutations = 0;
+    const client = {
+      ...makeBooksClient(),
+      mutate: async () => {
+        mutations += 1;
+        throw new Error('Zoho Books 500 Internal Server Error: ');
+      },
+      listRecords: async (input: any) => {
+        // Only the customer-plus-date-window lookup is a read-back; staging
+        // makes plenty of other list calls and they must not be counted.
+        const isReadBack = input.moduleName === 'invoices'
+          && Boolean(input.filters?.customer_id) && Boolean(input.filters?.date_start);
+        if (!isReadBack) return { organizationId: 'org-1', items: [], hasMore: false, page: 1 };
+        readBacks += 1;
+        // Invisible on the first look, visible by the second: Zoho did write
+        // it, and only said so once its own indexes caught up.
+        return {
+          organizationId: 'org-1',
+          items: readBacks > 1 ? [createdInvoice] : [],
+          hasMore: false, page: 1,
+        };
+      },
+      getEndpoint: async () => ({}),
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ store, booksClient: client });
+
+    const first = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    const failed = await tool.execute({
+      op: 'create_invoice', stagingId: (first as any).value.stagingId,
+    } as never, ctx);
+    assert.equal(failed.ok, false, 'the first attempt is left unresolved');
+
+    // The member is told there was a problem, so they ask for it again. A brand
+    // new draft, no claim on it, and the member approves it believing nothing
+    // was created.
+    const second = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    const blocked = await tool.execute({
+      op: 'create_invoice', stagingId: (second as any).value.stagingId,
+    } as never, ctx);
+
+    assert.equal(blocked.ok, false, 'the second draft must not become a second invoice');
+    assert.match((blocked as any).error.payload.message, /did reach Zoho after all/);
+    assert.match((blocked as any).error.payload.message, /INV-77/);
+    assert.equal(mutations, 1, 'Zoho must have been written to exactly once');
+  });
+
+  it('lets a fresh draft through once the search proves the earlier one never landed', async () => {
+    const store = makeStore();
+    let mutations = 0;
+    const client = {
+      ...makeBooksClient(),
+      mutate: async () => {
+        mutations += 1;
+        // Only the first attempt fails; the retry is allowed to succeed.
+        if (mutations === 1) throw new Error('Zoho Books 500 Internal Server Error: ');
+        return {
+          organizationId: 'org-1',
+          payload: { invoice: { ...createdInvoice, invoice_id: 'inv-retry' } },
+        };
+      },
+      listRecords: async () => ({ organizationId: 'org-1', items: [], hasMore: false, page: 1 }),
+      getEndpoint: async () => ({}),
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ store, booksClient: client });
+
+    const first = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    await tool.execute({ op: 'create_invoice', stagingId: (first as any).value.stagingId } as never, ctx);
+
+    const second = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    const created = await tool.execute({
+      op: 'create_invoice', stagingId: (second as any).value.stagingId,
+    } as never, ctx);
+
+    assert.equal(created.ok, true, 'evidence of absence must not become a permanent block');
+    assert.equal((created as any).value.id, 'inv-retry');
+    assert.equal(mutations, 2);
+  });
+
+  it('fetches the record when a list row cannot settle it, and finds the invoice', async () => {
+    // Zoho's invoice LIST rows carry `total` but neither `sub_total` nor
+    // `line_items` (verified against the live API). A draft that let Zoho
+    // assign the number is therefore undecidable from a list row — and reading
+    // that as "not found" is what green-lights the duplicate.
+    const listRow = {
+      invoice_id: 'inv-landed', invoice_number: 'INV-77',
+      customer_id: soundPayload.customer_id, date: soundPayload.date,
+      status: 'draft', total: 59000, balance: 59000,
+    };
+    let mutations = 0;
+    let detailFetches = 0;
+    const client = {
+      ...makeBooksClient(),
+      mutate: async () => { mutations += 1; throw new Error('Zoho Books 500 Internal Server Error: '); },
+      listRecords: async (input: any) => ({
+        organizationId: 'org-1',
+        items: input.filters?.customer_id ? [listRow] : [],
+        hasMore: false, page: 1,
+      }),
+      getEndpoint: async ({ path }: { path: string }) => {
+        if (!path.startsWith('/invoices/')) return {};
+        detailFetches += 1;
+        return { invoice: { ...listRow, sub_total: '50000.00', line_items: soundPayload.line_items } };
+      },
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ store: makeStore(), booksClient: client });
+
+    const staged = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    const recovered = await tool.execute({
+      op: 'create_invoice', stagingId: (staged as any).value.stagingId,
+    } as never, ctx);
+
+    assert.equal(recovered.ok, true, 'the invoice exists and must be reported as created');
+    assert.equal((recovered as any).value.id, 'inv-landed');
+    assert.ok(detailFetches > 0, 'an undecidable list row must be fetched in full, not written off');
+    assert.equal(mutations, 1);
+  });
+
+  it('will not call an unfetchable candidate absent', async () => {
+    const listRow = {
+      invoice_id: 'inv-maybe', invoice_number: 'INV-78',
+      customer_id: soundPayload.customer_id, date: soundPayload.date, total: 59000,
+    };
+    let mutations = 0;
+    const client = {
+      ...makeBooksClient(),
+      mutate: async () => { mutations += 1; throw new Error('Zoho Books 500 Internal Server Error: '); },
+      listRecords: async (input: any) => ({
+        organizationId: 'org-1',
+        items: input.filters?.customer_id ? [listRow] : [],
+        hasMore: false, page: 1,
+      }),
+      getEndpoint: async ({ path }: { path: string }) => {
+        if (!path.startsWith('/invoices/')) return {};
+        throw new Error('Zoho Books 503 Service Unavailable: ');
+      },
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ store: makeStore(), booksClient: client });
+
+    const staged = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    const failed = await tool.execute({
+      op: 'create_invoice', stagingId: (staged as any).value.stagingId,
+    } as never, ctx);
+
+    assert.equal(failed.ok, false);
+    assert.match((failed as any).error.payload.message, /genuinely unknown/,
+      'a candidate that could not be fetched is not evidence of absence');
+    assert.equal(mutations, 1);
+  });
+
+  it('treats a claim orphaned by a dead process as unresolved', async () => {
+    // `pending:` becomes `unknown:` only in the catch block. A process killed
+    // mid-write never reaches it, so the row stays `pending:` forever — and the
+    // retry's fresh draft used to sail past the guard entirely.
+    const store = makeStore();
+    let mutations = 0;
+    const client = {
+      ...makeBooksClient(),
+      mutate: async () => { mutations += 1; return { organizationId: 'org-1', payload: { invoice: { invoice_id: 'inv-second' } } }; },
+      listRecords: async (input: any) => ({
+        organizationId: 'org-1',
+        items: input.filters?.customer_id ? [{ ...createdInvoice }] : [],
+        hasMore: false, page: 1,
+      }),
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ store, booksClient: client });
+
+    // A draft whose create was claimed an hour ago and never came back.
+    const orphan = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    const orphanId = (orphan as any).value.stagingId;
+    const row = store.rows.get(orphanId)!;
+    store.rows.set(orphanId, {
+      ...row,
+      createdInvoiceId: 'pending:dead-process',
+      // Claimed long enough ago that no live request could still hold it.
+      claimedAt: new Date('2020-01-01T00:00:00.000Z'),
+    });
+
+    const fresh = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    const blocked = await tool.execute({
+      op: 'create_invoice', stagingId: (fresh as any).value.stagingId,
+    } as never, ctx);
+
+    assert.equal(blocked.ok, false, 'a stale in-flight claim must still block the twin');
+    assert.match((blocked as any).error.payload.message, /did reach Zoho after all/);
+    assert.equal(mutations, 0, 'nothing may be posted while an orphaned claim is unexplained');
+  });
+
+  it('will not claim an invoice that existed before the draft did', async () => {
+    // A monthly retainer: same customer, same amount, same lines. Matching on
+    // those alone means last month's invoice answers this month's question —
+    // reporting a write that never landed as a success, and uploading the
+    // approved file onto a record nobody approved.
+    const lastMonth = {
+      invoice_id: 'inv-old', invoice_number: 'INV-01',
+      customer_id: soundPayload.customer_id, date: soundPayload.date,
+      created_time: '2020-01-01T00:00:00+0530',
+      sub_total: '50000.00', line_items: soundPayload.line_items,
+    };
+    let mutations = 0;
+    let attachments = 0;
+    const client = {
+      ...makeBooksClient(),
+      mutate: async (input: any) => {
+        if (input.multipart) { attachments += 1; return { organizationId: 'org-1', payload: {} }; }
+        mutations += 1;
+        throw new Error('Zoho Books 500 Internal Server Error: ');
+      },
+      listRecords: async (input: any) => ({
+        organizationId: 'org-1',
+        items: input.filters?.customer_id ? [lastMonth] : [],
+        hasMore: false, page: 1,
+      }),
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ store: makeStore(), booksClient: client });
+
+    const staged = await tool.execute({
+      op: 'stage_invoice', fields: soundPayload, fileName: 'invoice.pdf',
+    } as never, ctx);
+    const result = await tool.execute({
+      op: 'create_invoice', stagingId: (staged as any).value.stagingId,
+    } as never, ctx);
+
+    assert.equal(result.ok, false, 'an older invoice is not proof this write landed');
+    assert.equal(attachments, 0, 'nothing may be uploaded onto an unrelated invoice');
+    assert.equal(mutations, 1);
+  });
+
+  it('will not call a truncated search absent', async () => {
+    let mutations = 0;
+    const client = {
+      ...makeBooksClient(),
+      mutate: async () => { mutations += 1; throw new Error('Zoho Books 500 Internal Server Error: '); },
+      listRecords: async (input: any) => ({
+        organizationId: 'org-1',
+        // Nothing matches on this page — but there are more pages.
+        items: input.filters?.customer_id
+          ? [{ invoice_id: 'other', customer_id: soundPayload.customer_id, sub_total: '1.00', line_items: [] }]
+          : [],
+        hasMore: Boolean(input.filters?.customer_id), page: 1,
+      }),
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ store: makeStore(), booksClient: client });
+
+    const staged = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    const result = await tool.execute({
+      op: 'create_invoice', stagingId: (staged as any).value.stagingId,
+    } as never, ctx);
+
+    assert.equal(result.ok, false);
+    assert.match((result as any).error.payload.message, /genuinely unknown/,
+      'a page that is not the whole answer cannot rule anything out');
+    assert.equal(mutations, 1);
+  });
+
+  it('reports no drift when it recovered the invoice from a list row', async () => {
+    // A list row has no line_items and no sub_total. Comparing the draft
+    // against one invents differences and tells the member their invoice is
+    // wrong when it is not.
+    const numbered = { ...soundPayload, invoice_number: 'EMI/2026/114' };
+    const listRow = {
+      invoice_id: 'inv-landed', invoice_number: 'EMI/2026/114',
+      customer_id: numbered.customer_id, date: numbered.date,
+      // Stamped at test time: an invoice created before the draft was staged is
+      // correctly ignored, which is a different test.
+      created_time: new Date().toISOString(), status: 'draft', total: 59000,
+    };
+    const client = {
+      ...makeBooksClient(),
+      mutate: async () => { throw new Error('Zoho Books 500 Internal Server Error: '); },
+      listRecords: async (input: any) => ({
+        organizationId: 'org-1',
+        items: input.filters?.customer_id ? [listRow] : [],
+        hasMore: false, page: 1,
+      }),
+      getEndpoint: async ({ path }: { path: string }) => (
+        path.startsWith('/invoices/')
+          ? {
+            invoice: {
+              ...listRow,
+              due_date: numbered.due_date, currency_code: numbered.currency_code,
+              sub_total: '50000.00', line_items: numbered.line_items,
+            },
+          }
+          : {}
+      ),
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ store: makeStore(), booksClient: client });
+
+    const staged = await tool.execute({ op: 'stage_invoice', fields: numbered } as never, ctx);
+    const recovered = await tool.execute({
+      op: 'create_invoice', stagingId: (staged as any).value.stagingId,
+    } as never, ctx);
+
+    assert.equal(recovered.ok, true);
+    assert.equal((recovered as any).value.drift, undefined, 'a list row must not be compared as if it were the record');
+    assert.doesNotMatch((recovered as any).value.message, /stored some values differently/);
+  });
+
+  it('refuses a twin while the first attempt is still in flight', async () => {
+    // A claim younger than the write ceiling means a request is very likely
+    // still running. Reading back would race it and find nothing simply
+    // because it has not finished — and that "nothing" would authorise a
+    // second real invoice.
+    const store = makeStore();
+    let mutations = 0;
+    const tool = makeTool({ store, booksClient: makeBooksClient(() => { mutations += 1; }) });
+
+    const first = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    const firstId = (first as any).value.stagingId;
+    const row = store.rows.get(firstId)!;
+    store.rows.set(firstId, {
+      // Claimed at the instant the test clock reports as "now".
+      ...row, createdInvoiceId: 'pending:in-flight', claimedAt: new Date('2025-01-01'),
+    });
+
+    const second = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    const blocked = await tool.execute({
+      op: 'create_invoice', stagingId: (second as any).value.stagingId,
+    } as never, ctx);
+
+    assert.equal(blocked.ok, false);
+    assert.match((blocked as any).error.payload.message, /being sent to Zoho right now/);
+    assert.equal(mutations, 0, 'nothing may be posted alongside a live create for the same invoice');
+  });
+
+  it('guards across members, because the books are shared even when drafts are not', async () => {
+    const store = makeStore();
+    let mutations = 0;
+    const client = {
+      ...makeBooksClient(),
+      mutate: async () => { mutations += 1; return { organizationId: 'org-1', payload: { invoice: { invoice_id: 'inv-2' } } }; },
+      listRecords: async (input: any) => ({
+        organizationId: 'org-1',
+        items: input.filters?.customer_id ? [{ ...createdInvoice }] : [],
+        hasMore: false, page: 1,
+      }),
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ store, booksClient: client });
+
+    const staged = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+
+    // A colleague's lost attempt at the same invoice, on the same connection.
+    const mine = store.rows.get((staged as any).value.stagingId)!;
+    store.rows.set('other-member', {
+      ...mine,
+      stagingId: 'other-member', userId: 'someone-else',
+      createdInvoiceId: 'unknown:lost',
+    });
+    const blocked = await tool.execute({
+      op: 'create_invoice', stagingId: (staged as any).value.stagingId,
+    } as never, ctx);
+
+    assert.equal(blocked.ok, false, "another member's lost attempt still bills the same customer");
+    assert.equal(mutations, 0);
+  });
+
+  it('will not let a months-old orphan claim next month\'s invoice', async () => {
+    // A retainer billed monthly, Zoho assigning the numbers. An orphaned draft
+    // from July matches August's draft perfectly — same customer, same amount,
+    // same lines. If the read-back has no upper bound, July's draft claims the
+    // invoice created for July, and August is refused and never billed.
+    const store = makeStore();
+    let mutations = 0;
+    const julyInvoice = {
+      invoice_id: 'inv-july', invoice_number: 'INV-88',
+      customer_id: soundPayload.customer_id, date: soundPayload.date,
+      // Created a month after the orphaned draft was dispatched.
+      created_time: '2024-12-31T10:00:00+0530',
+      sub_total: '50000.00', line_items: soundPayload.line_items,
+    };
+    const client = {
+      ...makeBooksClient(),
+      mutate: async (input: any) => {
+        if (input.multipart) return { organizationId: 'org-1', payload: {} };
+        mutations += 1;
+        return { organizationId: 'org-1', payload: { invoice: { invoice_id: 'inv-august' } } };
+      },
+      listRecords: async (input: any) => ({
+        organizationId: 'org-1',
+        items: input.filters?.customer_id ? [julyInvoice] : [],
+        hasMore: false, page: 1,
+      }),
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ store, booksClient: client });
+
+    const july = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    const julyId = (july as any).value.stagingId;
+    const julyRow = store.rows.get(julyId)!;
+    // Dispatched a month before "now" (the test clock reads 2025-01-01) and
+    // never heard from again.
+    const monthAgo = new Date('2024-12-01T00:00:00.000Z');
+    store.rows.set(julyId, {
+      ...julyRow, createdInvoiceId: 'pending:dead', claimedAt: monthAgo, createdAt: monthAgo,
+    });
+
+    const august = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    const created = await tool.execute({
+      op: 'create_invoice', stagingId: (august as any).value.stagingId,
+    } as never, ctx);
+
+    assert.equal(created.ok, true, "an invoice created a month after a dispatch cannot be from it");
+    assert.equal((created as any).value.id, 'inv-august');
+    assert.equal(mutations, 1, 'August must actually be billed');
+    assert.notEqual(store.rows.get(julyId)?.createdInvoiceId, 'inv-july',
+      'the orphaned draft must not be settled against an invoice it never created');
+  });
+
+  it('refuses rather than grinding through an unbounded pile of unresolved twins', async () => {
+    const store = makeStore();
+    let mutations = 0;
+    const tool = makeTool({ store, booksClient: makeBooksClient(() => { mutations += 1; }) });
+
+    const seed = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    const template = store.rows.get((seed as any).value.stagingId)!;
+    for (let i = 0; i < 8; i += 1) {
+      store.rows.set(`lost-${i}`, {
+        ...template, stagingId: `lost-${i}`, createdInvoiceId: `unknown:lost-${i}`,
+      });
+    }
+    store.rows.delete((seed as any).value.stagingId);
+
+    const fresh = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    const refused = await tool.execute({
+      op: 'create_invoice', stagingId: (fresh as any).value.stagingId,
+    } as never, ctx);
+
+    assert.equal(refused.ok, false);
+    assert.match((refused as any).error.payload.message, /too many for Divo to check/);
+    assert.equal(mutations, 0);
+  });
+
+  it('refuses when the earlier attempt cannot be checked at all', async () => {
+    const store = makeStore();
+    let mutations = 0;
+    let listCalls = 0;
+    const client = {
+      ...makeBooksClient(),
+      mutate: async () => { mutations += 1; throw new Error('Zoho Books 500 Internal Server Error: '); },
+      listRecords: async () => {
+        listCalls += 1;
+        throw new Error('Zoho Books 503 Service Unavailable: ');
+      },
+      getEndpoint: async () => ({}),
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ store, booksClient: client });
+
+    const first = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    await tool.execute({ op: 'create_invoice', stagingId: (first as any).value.stagingId } as never, ctx);
+
+    const second = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    const blocked = await tool.execute({
+      op: 'create_invoice', stagingId: (second as any).value.stagingId,
+    } as never, ctx);
+
+    assert.equal(blocked.ok, false);
+    assert.match((blocked as any).error.payload.message, /cannot check whether it exists/);
+    assert.equal(mutations, 1, 'a lookup that failed is not evidence the invoice is missing');
+    assert.ok(listCalls > 0);
   });
 });
 
@@ -543,7 +1077,10 @@ describe('the organisation a draft was judged in', () => {
           payload: { invoice: { invoice_id: 'inv-created', status: 'draft', currency_code: 'INR' } },
         };
       },
-      listRecords: async () => ({ organizationId: listedOrg, items: [], hasMore: false, page: 1 }),
+      listRecords: async (input: any) => ({
+        organizationId: input.organizationId ?? listedOrg, items: [], hasMore: false, page: 1,
+      }),
+      listOrganizations: async () => [{ organizationId: listedOrg, name: 'Books' }],
       getEndpoint: async () => ({}),
     } as unknown as ZohoBooksPaginatedClient;
     const tool = makeTool({ booksClient: client });

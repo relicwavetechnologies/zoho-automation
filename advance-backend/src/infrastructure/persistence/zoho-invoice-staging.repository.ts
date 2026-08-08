@@ -1,7 +1,10 @@
 import type { PrismaClient, Prisma } from '../../generated/prisma';
-import type {
-  StagedInvoice,
-  StagedInvoiceStore,
+import {
+  INVOICE_CLAIM_ABSENT,
+  INVOICE_CLAIM_PENDING,
+  INVOICE_CLAIM_UNRESOLVED,
+  type StagedInvoice,
+  type StagedInvoiceStore,
 } from '../../application/zoho/zoho-invoice-staging';
 
 const asRecord = (value: unknown): Record<string, unknown> =>
@@ -49,7 +52,62 @@ export class PrismaStagedInvoiceStore implements StagedInvoiceStore {
       },
     });
     if (!row) return null;
+    return this.toStagedInvoice(row);
+  }
 
+  /**
+   * Drafts this member sent to this connection whose outcome was never learned.
+   *
+   * Not bounded by expiry. A draft that expired an hour ago can still have put
+   * a real invoice into Zoho, and that is exactly the fact a second attempt
+   * needs to know about.
+   *
+   * Two states qualify, not one. `unknown:` is set by the code that caught the
+   * failure — but a process killed mid-write never reaches that code, and leaves
+   * `pending:` behind forever. Both mean the same thing: a request went out and
+   * nobody learned what happened to it.
+   *
+   * Every `pending:` row is returned, however recently it was claimed. Whether
+   * a claim is old enough to be an orphan decides what the caller *does* about
+   * it, not whether the caller gets to see it.
+   *
+   * `absent:` rows come back too, while they are still live. A search that
+   * found nothing is good evidence, not proof: Zoho's own indexes lag, so an
+   * invoice written moments earlier can be genuinely invisible. Re-checking
+   * one costs a single list call and is the difference between "we looked once"
+   * and "we know".
+   */
+  async findUnresolved(input: {
+    companyId: string;
+    connectionId: string;
+  }): Promise<readonly StagedInvoice[]> {
+    const rows = await this.prisma.zohoInvoiceStaging.findMany({
+      where: {
+        companyId:    input.companyId,
+        connectionId: input.connectionId,
+        OR: [
+          { createdInvoiceId: { startsWith: INVOICE_CLAIM_UNRESOLVED } },
+          { createdInvoiceId: { startsWith: INVOICE_CLAIM_PENDING } },
+          {
+            createdInvoiceId: { startsWith: INVOICE_CLAIM_ABSENT },
+            expiresAt: { gt: new Date() },
+          },
+        ],
+      },
+      // Deliberately uncapped. Truncating this set drops a twin silently, and
+      // a duplicate guard that quietly stops guarding is the failure this whole
+      // mechanism exists to prevent. The query is index-backed on
+      // [companyId, connectionId, createdInvoiceId] and the set is naturally
+      // small; how much work the caller then does with it is capped there,
+      // where it can say so.
+      orderBy: { createdAt: 'desc' },
+    });
+    return rows.map(row => this.toStagedInvoice(row));
+  }
+
+  private toStagedInvoice(
+    row: NonNullable<Awaited<ReturnType<PrismaClient['zohoInvoiceStaging']['findFirst']>>>,
+  ): StagedInvoice {
     const review = asRecord(row.reviewJson);
     return {
       stagingId: row.id,
@@ -65,6 +123,8 @@ export class PrismaStagedInvoiceStore implements StagedInvoiceStore {
       attempt: row.attempt,
       ...(row.supersedesId ? { supersedesId: row.supersedesId } : {}),
       ...(row.createdInvoiceId ? { createdInvoiceId: row.createdInvoiceId } : {}),
+      ...(row.claimedAt ? { claimedAt: row.claimedAt } : {}),
+      createdAt: row.createdAt,
       expiresAt: row.expiresAt,
     };
   }
@@ -88,7 +148,7 @@ export class PrismaStagedInvoiceStore implements StagedInvoiceStore {
         companyId: input.companyId,
         createdInvoiceId: null,
       },
-      data: { createdInvoiceId: input.marker },
+      data: { createdInvoiceId: input.marker, claimedAt: new Date() },
     });
     if (claimed.count === 1) return { claimed: true };
 
@@ -135,6 +195,25 @@ export class PrismaStagedInvoiceStore implements StagedInvoiceStore {
     await this.prisma.zohoInvoiceStaging.updateMany({
       where: { id: input.stagingId, companyId: input.companyId, createdInvoiceId: input.marker },
       data: { createdInvoiceId: input.unresolved },
+    });
+  }
+
+  /**
+   * Records that a draft's create was searched for and not found.
+   *
+   * Conditional on the marker, so a search that concluded "absent" cannot
+   * overwrite a claim some other request is still holding — which would throw
+   * away that request's own outcome when it finally reported one.
+   */
+  async markAbsent(input: {
+    stagingId: string;
+    companyId: string;
+    marker: string;
+    absent: string;
+  }): Promise<void> {
+    await this.prisma.zohoInvoiceStaging.updateMany({
+      where: { id: input.stagingId, companyId: input.companyId, createdInvoiceId: input.marker },
+      data: { createdInvoiceId: input.absent },
     });
   }
 }

@@ -43,6 +43,10 @@ export interface StagedInvoice {
   /** The draft this one corrects, when it is a retry. */
   readonly supersedesId?: string | undefined;
   readonly createdInvoiceId?: string | undefined;
+  /** When the create was dispatched, if it ever was. */
+  readonly claimedAt?: Date | undefined;
+  /** When the draft was staged. Anchors the search for what it may have created. */
+  readonly createdAt?: Date | undefined;
   readonly expiresAt: Date;
 }
 
@@ -71,6 +75,26 @@ export const INVOICE_CLAIM_PENDING = 'pending:';
  */
 export const INVOICE_CLAIM_UNRESOLVED = 'unknown:';
 
+/**
+ * Held when an unresolved create was later searched for and not found.
+ *
+ * Distinct from {@link INVOICE_CLAIM_UNRESOLVED} so the draft stops being
+ * treated as an open question. It is not a release: the draft is still spent,
+ * and the record of what happened to it survives.
+ */
+export const INVOICE_CLAIM_ABSENT = 'absent:';
+
+/**
+ * How long a create may plausibly still be in flight.
+ *
+ * A claim older than this was not left by a request that is still running; it
+ * was left by a process that died holding it — a deploy, an OOM, a killed
+ * container. Which is one of the ways the answer gets lost in the first place,
+ * so a stale claim has to be read back exactly like an unresolved one rather
+ * than sitting invisible while a retry bills the customer again.
+ */
+export const INVOICE_WRITE_CEILING_MS = 10 * 60_000;
+
 export interface StagedInvoiceStore {
   put(staged: StagedInvoice): Promise<void>;
   get(input: { stagingId: string; companyId: string; userId: string }): Promise<StagedInvoice | null>;
@@ -79,33 +103,210 @@ export interface StagedInvoiceStore {
   release(input: { stagingId: string; companyId: string; marker: string }): Promise<void>;
   /** Replaces an in-flight claim with a state no retry may clear. */
   markUnresolved(input: { stagingId: string; companyId: string; marker: string; unresolved: string }): Promise<void>;
+  /**
+   * Records that a draft's create was searched for and not found.
+   *
+   * Conditional on the marker it expects to replace, like {@link release} and
+   * {@link markUnresolved}. An unconditional write here would let one request
+   * overwrite a claim another is still holding, and the in-flight request's own
+   * outcome would then be silently discarded.
+   */
+  markAbsent(input: { stagingId: string; companyId: string; marker: string; absent: string }): Promise<void>;
+  /**
+   * Drafts whose create never reported back, for this connection.
+   *
+   * The claim protects one draft. This is what protects the *work*: a member
+   * told "that may or may not have gone through" will very reasonably ask for
+   * it again, and the second attempt arrives as a brand-new draft carrying no
+   * claim at all. Finding the earlier unresolved draft is what makes the
+   * duplicate answerable before it is billed.
+   *
+   * Not scoped to the member. Someone whose create was lost tells a colleague,
+   * the colleague asks Divo to raise it, and the customer is billed twice —
+   * the books are shared even when the drafts are not. Nothing from the earlier
+   * draft is revealed beyond the fact that an attempt exists.
+   *
+   * In-flight claims are returned too, however fresh. A claim younger than
+   * {@link INVOICE_WRITE_CEILING_MS} means a request is very likely still
+   * running, which is a reason to refuse a twin outright rather than a reason
+   * to ignore it.
+   *
+   * So are drafts already searched for and not found, while they are still
+   * live. Zoho's indexes lag, so one empty search is evidence rather than
+   * proof, and re-checking costs a single list call.
+   */
+  findUnresolved(input: {
+    companyId: string;
+    connectionId: string;
+  }): Promise<readonly StagedInvoice[]>;
 }
 
 /**
- * Whether a failed write provably never reached Zoho's books.
+ * What a failed write proves about Zoho's books.
  *
- * Two things prove it: a request that was never dispatched, and a validation
- * refusal, where Zoho read the payload, rejected it, and wrote nothing. A 5xx, a
- * 408, a 429 or a transport error all leave open that the invoice exists and
- * only the answer was lost.
+ * Deliberately three answers rather than a boolean. "Did not happen" and "we
+ * cannot tell" call for opposite handling — one hands the draft back, the other
+ * must never — and collapsing the reasons into a single flag is what previously
+ * let a revoked refresh token be reported to a member as "your invoice may have
+ * been created, go and look for it". Each case carries the sentence that
+ * explains it, so the member is told what actually went wrong rather than a
+ * catch-all.
  */
-export function writeProvablyDidNotHappen(error: unknown): boolean {
-  // Nothing was dispatched — a missing connection, a revoked token, an
-  // unresolvable organisation. Reading these as "might have written" would
-  // strand a draft that never reached Zoho and send the member hunting for an
-  // invoice that does not exist.
-  if (error instanceof WriteNotDispatchedError) return true;
+export type WriteFailure =
+  /** Never left this process: no connection, a revoked token, no organisation. */
+  | { readonly kind: 'not_dispatched'; readonly why: string }
+  /** Zoho read the payload and refused it. Nothing was written. */
+  | { readonly kind: 'rejected'; readonly status: number; readonly why: string }
+  /** Dispatched, and the answer was lost. The invoice may exist. */
+  | { readonly kind: 'unknown'; readonly why: string };
 
-  // Dispatched and refused on its contents: Zoho read the payload and wrote
-  // nothing. 408 and 429 are excluded — the first says the request may have
-  // been cut short, the second is thrown by a gateway that need not have been
-  // the last hop.
+export function classifyWriteFailure(error: unknown): WriteFailure {
   const message = error instanceof Error ? error.message : String(error);
+
+  // Nothing was dispatched. Reading these as "might have written" would strand
+  // a draft that never reached Zoho and send the member hunting for an invoice
+  // that does not exist.
+  if (error instanceof WriteNotDispatchedError) {
+    return { kind: 'not_dispatched', why: message };
+  }
+
   const status = /Zoho Books (\d{3})/.exec(message)?.[1];
-  if (!status) return false;
+  if (!status) {
+    // No HTTP status at all: the socket died, DNS failed, the request was
+    // aborted. The request may well have been delivered and executed.
+    return { kind: 'unknown', why: 'the connection to Zoho failed before it answered' };
+  }
+
   const code = Number(status);
-  if (code === 408 || code === 429) return false;
-  return code >= 400 && code < 500;
+  if (code === 408) {
+    return { kind: 'unknown', why: 'Zoho timed out, which does not say whether it finished writing first' };
+  }
+  if (code === 429) {
+    // Thrown by a gateway that need not have been the last hop before Books.
+    return { kind: 'unknown', why: 'Zoho rate-limited the request, which does not prove it was never processed' };
+  }
+  if (code >= 500) {
+    return { kind: 'unknown', why: `Zoho returned a ${code} after receiving the invoice` };
+  }
+  if (code >= 400) {
+    return { kind: 'rejected', status: code, why: `Zoho refused the invoice with a ${code} and wrote nothing` };
+  }
+  return { kind: 'unknown', why: `Zoho answered with an unexpected ${code}` };
+}
+
+/**
+ * Where to look in Zoho for an invoice that may have been created from a draft.
+ *
+ * Narrow enough to be cheap, wide enough to survive a timezone: Zoho dates an
+ * invoice in the organisation's zone, which can be a calendar day away from
+ * this process's. The window is a day either side of the draft's own date, or
+ * of today when the draft let Zoho choose.
+ *
+ * `customer_id` and the date bounds are both filters Zoho honours. That matters
+ * more than it sounds: Zoho answers a filter it does not recognise by returning
+ * the unfiltered list, so a lookup built on an unsupported field would quietly
+ * search everything and match nothing.
+ */
+export function stagedInvoiceSearchWindow(
+  staged: Pick<StagedInvoice, 'payload' | 'createdAt'>,
+  now: Date,
+): { customerId: string; dateStart: string; dateEnd: string } | null {
+  const customerId = str(staged.payload['customer_id']);
+  if (!customerId) return null;
+
+  const asDay = (date: Date) => date.toISOString().slice(0, 10);
+  // When the draft let Zoho pick the date, Zoho picked it on the day the write
+  // went out — which may be days before this check runs. Anchoring on `now`
+  // would search the wrong days and report the invoice missing.
+  const day = str(staged.payload['date']) || asDay(staged.createdAt ?? now);
+  const centre = new Date(`${day}T00:00:00.000Z`);
+  if (Number.isNaN(centre.getTime())) return null;
+
+  const shift = (from: Date, days: number) =>
+    asDay(new Date(from.getTime() + days * 86_400_000));
+
+  // Open at the far end: an old draft still has to be searched up to today,
+  // because that is where a late or re-dated invoice would sit.
+  const end = shift(centre, 1) > shift(now, 1) ? shift(centre, 1) : shift(now, 1);
+  return { customerId, dateStart: shift(centre, -1), dateEnd: end };
+}
+
+/**
+ * Three answers, because "cannot tell" is not "no".
+ *
+ * This decides whether an invoice already in Zoho is the one a draft would have
+ * created — and its result authorises, or refuses, a second real invoice. A
+ * matcher that answered a question it could not decide with `false` would hand
+ * the caller "proved absent" and green-light the duplicate.
+ *
+ * That is not hypothetical. Zoho's invoice *list* rows carry `total` but no
+ * `sub_total` and no `line_items`, so a draft that let Zoho assign the number —
+ * the recommended path — is undecidable from a list row alone and needs the
+ * record fetched.
+ */
+export type StagedInvoiceMatch = 'match' | 'no' | 'undecidable';
+
+export function matchStagedInvoice(
+  staged: Pick<StagedInvoice, 'payload'>,
+  candidate: Record<string, unknown>,
+): StagedInvoiceMatch {
+  const stagedCustomer = str(staged.payload['customer_id']);
+  if (!stagedCustomer) return 'undecidable';
+  if (stagedCustomer !== str(candidate['customer_id'])) return 'no';
+
+  // A number decides outright — but only when both sides carry one. Comparing a
+  // number against a blank is how a numbered first attempt and an unnumbered
+  // re-stage of the same invoice looked like different invoices.
+  const stagedNumber = str(staged.payload['invoice_number']);
+  const candidateNumber = str(candidate['invoice_number']);
+  if (stagedNumber && candidateNumber) {
+    return stagedNumber.toLowerCase() === candidateNumber.toLowerCase() ? 'match' : 'no';
+  }
+
+  // Otherwise identity rests on the amount. Pre-tax, because that is what
+  // staging can compute; Zoho's `total` includes tax the draft never carried.
+  const stagedItems = invoiceLineItems(staged.payload);
+  const stagedTotal = listPriceTotal(stagedItems);
+  if (stagedItems.length === 0 || stagedTotal === null) return 'undecidable';
+
+  const candidateItems = invoiceLineItems(candidate);
+  if (candidateItems.length > 0 && candidateItems.length !== stagedItems.length) return 'no';
+
+  // Rate times quantity on both sides, deliberately ignoring `item_total` and
+  // `sub_total`. Zoho applies customer price lists and line discounts on the
+  // way in — which is why a drift check exists at all — so the amount it
+  // stored can differ from the amount that was sent while being the very same
+  // invoice.
+  const candidateTotal = candidateItems.length > 0
+    ? listPriceTotal(candidateItems)
+    : num(candidate['sub_total']);
+  if (candidateTotal === null) return 'undecidable';
+  if (Math.abs(stagedTotal - candidateTotal) <= 0.02) return 'match';
+
+  // Same customer, same line count, different money. That is either a repriced
+  // version of this invoice or a different one, and this cannot tell which.
+  // Answering 'no' would report it absent and authorise a second real invoice.
+  return candidateItems.length > 0 ? 'undecidable' : 'no';
+}
+
+/**
+ * What the lines come to before Zoho touches them.
+ *
+ * Rate times quantity only. {@link derivedLineTotal} prefers `item_total`,
+ * which is what Zoho *decided* a line costs after discounts — the right number
+ * for checking a draft's own arithmetic, the wrong one for asking whether two
+ * records describe the same invoice.
+ */
+function listPriceTotal(items: readonly Record<string, unknown>[]): number | null {
+  if (items.length === 0) return null;
+  let total = 0;
+  for (const item of items) {
+    const rate = num(item['rate']);
+    const quantity = num(item['quantity']);
+    if (rate === null || quantity === null) return null;
+    total += rate * quantity;
+  }
+  return total;
 }
 
 const str = (value: unknown): string =>

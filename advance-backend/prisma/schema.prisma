@@ -2662,10 +2662,14 @@ model ZohoInvoiceStaging {
   supersedesId   String?
   /// Set once this payload has been created, so one staging cannot make two invoices.
   createdInvoiceId String?
+  /// When the create was dispatched. A claim older than the write ceiling was
+  /// left by a process that died holding it, not by a request still running.
+  claimedAt      DateTime?
   createdAt      DateTime  @default(now())
   expiresAt      DateTime
 
   @@index([companyId, userId, expiresAt])
+  @@index([companyId, connectionId, createdInvoiceId])
   @@index([expiresAt])
 }
 

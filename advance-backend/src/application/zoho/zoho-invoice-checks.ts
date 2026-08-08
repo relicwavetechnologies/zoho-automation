@@ -36,6 +36,15 @@ export interface InvoiceCheckInput {
   /** Other invoices carrying the same number, if a duplicate search ran. */
   readonly sameNumberInvoices?: readonly Record<string, unknown>[];
   /**
+   * The duplicate search was attempted and could not complete.
+   *
+   * Distinct from an empty result, which is an answer. An empty list from a
+   * lookup that never ran would report "that number is free" — on the one path
+   * where the member's own number switches Zoho's numbering off, and a repeat
+   * therefore reaches the books.
+   */
+  readonly duplicateCheckUnavailable?: boolean | undefined;
+  /**
    * The selling organisation's GST state code. Absent means the IGST-versus-
    * CGST rule cannot be decided, and it is reported as unchecked rather than
    * guessed — the internal-consistency checks still run.
@@ -212,6 +221,13 @@ export function checkInvoice(input: InvoiceCheckInput): InvoiceFinding[] {
       'duplicate_number',
       'blocking',
       `Invoice number ${invoiceNumber} is already used by ${duplicates.map(d => str(d['invoice_id'])).join(', ')}.`,
+    );
+  } else if (input.duplicateCheckUnavailable && invoiceNumber) {
+    add(
+      'duplicate_check_unavailable',
+      'warning',
+      `Whether invoice number ${invoiceNumber} is already in use could not be checked: the lookup in Zoho failed. `
+      + 'Supplying a number turns Zoho\'s own numbering off, so nothing else would catch a repeat.',
     );
   }
 
