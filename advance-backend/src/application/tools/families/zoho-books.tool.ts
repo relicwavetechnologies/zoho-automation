@@ -75,6 +75,7 @@ import {
 } from '../../zoho/zoho-invoice-staging';
 import type { InvoiceReviewer } from '../../zoho/zoho-invoice-reviewer';
 import { validateAttachmentPolicy }        from '../../email/attachment-policy';
+import { WriteNotDispatchedError }         from '../../../shared/errors';
 import { mapZohoError }                    from '../../zoho/zoho-error.utils';
 import { formatAmount, formatDate }        from '../../zoho/zoho-format.utils';
 import { normalizeStatus, parseDateFilter } from '../../zoho/zoho-filter.utils';
@@ -957,12 +958,18 @@ export const createZohoBooksTool = (deps: {
 
     /** Single-record GET. Unlike getRecord() this surfaces provider errors
      *  instead of turning an expired token into "not found". */
-    const getOne = async (moduleName: ZohoBooksModule, recordId: string) => {
+    const getOne = async (
+      moduleName: ZohoBooksModule,
+      recordId: string,
+      destination?: { connectionId: string; organizationId?: string | undefined },
+    ) => {
+      const organizationId = destination?.organizationId ?? args.organizationId;
       const payload = await deps.booksClient.getEndpoint({
         companyId,
-        ...connectionContext,
+        userId,
+        connectionId: destination?.connectionId ?? args.connectionId,
         path: `/${moduleName}/${encodeURIComponent(recordId)}`,
-        ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+        ...(organizationId ? { organizationId } : {}),
       });
       return unwrapZohoRecord(payload, moduleName);
     };
@@ -995,13 +1002,6 @@ export const createZohoBooksTool = (deps: {
     };
 
     /**
-     * Put a file the member already sent into this conversation onto an invoice
-     * or a bill.
-     *
-     * Re-reads `documents[]` first: Zoho appends rather than replaces, so an
-     * unchecked retry silently leaves the same PDF on the record twice.
-     */
-    /**
      * Put a named file from this conversation onto a record that already exists.
      *
      * Shared by attach_document and by invoice creation, so a file the member
@@ -1016,23 +1016,23 @@ export const createZohoBooksTool = (deps: {
       recordId:   string;
       fileName:   string;
       destination?: { connectionId: string; organizationId?: string | undefined };
-    }): Promise<{ attached: boolean; message: string }> => {
+    }): Promise<{ outcome: 'attached' | 'unconfirmed' | 'refused'; message: string }> => {
       const { recordType, recordId, fileName } = input;
       if (!deps.attachmentSource || ctx.runContext.channel !== 'lark') {
         return {
-          attached: false,
+          outcome: 'refused',
           message: `Divo cannot attach files from the ${ctx.runContext.channel} channel yet — only files sent in Lark.`,
         };
       }
       const chatId = ctx.runContext.chatId;
       if (!chatId) {
-        return { attached: false, message: 'Divo cannot tell which conversation this file was sent in, so it will not guess at one.' };
+        return { outcome: 'refused', message: 'Divo cannot tell which conversation this file was sent in, so it will not guess at one.' };
       }
 
       const moduleName = attachModule[recordType];
       const readDocuments = async () => {
         try {
-          return attachedDocumentNames(await getOne(moduleName, recordId));
+          return attachedDocumentNames(await getOne(moduleName, recordId, input.destination));
         } catch {
           return null;
         }
@@ -1043,13 +1043,13 @@ export const createZohoBooksTool = (deps: {
       // PDF on the record twice.
       const before = await readDocuments();
       if (before?.some(name => sameName(name, fileName))) {
-        return { attached: true, message: `"${fileName}" was already attached; it was not uploaded again.` };
+        return { outcome: 'attached', message: `"${fileName}" was already attached; it was not uploaded again.` };
       }
 
       const resolved = await deps.attachmentSource.resolve({
         companyId, userId, channel: ctx.runContext.channel, chatId, fileName,
       });
-      if (resolved.kind === 'unavailable') return { attached: false, message: resolved.message };
+      if (resolved.kind === 'unavailable') return { outcome: 'refused', message: resolved.message };
 
       const policy = validateAttachmentPolicy([{
         fileName: resolved.fileName,
@@ -1058,7 +1058,7 @@ export const createZohoBooksTool = (deps: {
         content: resolved.content,
         source: 'lark',
       }]);
-      if (!policy.ok) return { attached: false, message: policy.error.message };
+      if (!policy.ok) return { outcome: 'refused', message: policy.error.message };
 
       ctx.onProgress?.(`Attaching ${resolved.fileName} to the ${recordType}…`);
       try {
@@ -1079,17 +1079,21 @@ export const createZohoBooksTool = (deps: {
           },
         });
       } catch (error) {
-        return { attached: false, message: `Zoho refused the upload: ${mapZohoError(error)}` };
+        // A dispatched upload that then failed may still have landed, so this
+        // cannot claim the record is untouched.
+        return error instanceof WriteNotDispatchedError
+          ? { outcome: 'refused', message: `The upload was never sent: ${error.message}` }
+          : { outcome: 'unconfirmed', message: `Zoho did not accept the upload cleanly: ${mapZohoError(error)}` };
       }
 
       // Zoho's own record is the only proof the upload landed.
       const after = await readDocuments();
       if (after === null) {
-        return { attached: false, message: `Zoho accepted "${resolved.fileName}" but the record could not be re-read, so the attachment is unconfirmed.` };
+        return { outcome: 'unconfirmed', message: `Zoho accepted "${resolved.fileName}" but the record could not be re-read, so the attachment is unconfirmed.` };
       }
       return after.some(name => sameName(name, resolved.fileName))
-        ? { attached: true, message: `Attached "${resolved.fileName}". Zoho now lists: ${after.join(', ')}.` }
-        : { attached: false, message: `Zoho accepted the upload but does not list "${resolved.fileName}" on the ${recordType}. Treat the attachment as unconfirmed.` };
+        ? { outcome: 'attached', message: `Attached "${resolved.fileName}". Zoho now lists: ${after.join(', ')}.` }
+        : { outcome: 'unconfirmed', message: `Zoho accepted the upload but does not list "${resolved.fileName}" on the ${recordType}. Treat the attachment as unconfirmed.` };
     };
 
     const attachDocument = async (): Promise<Result<Res, ToolError>> => {
@@ -1104,13 +1108,19 @@ export const createZohoBooksTool = (deps: {
         recordId: args.recordId,
         fileName: args.fileName,
       });
-      if (!outcome.attached) {
+      if (outcome.outcome === 'refused') {
         return err(new ToolError({
           toolId: 'zohoBooks', reason: 'bad_args',
           message: `${outcome.message} The ${args.recordType} itself is unchanged — say the attachment could not be made rather than that it was.`,
         }));
       }
-      return ok({ success: true, id: args.recordId, message: outcome.message });
+      return ok({
+        success: outcome.outcome === 'attached',
+        id: args.recordId,
+        message: outcome.outcome === 'attached'
+          ? outcome.message
+          : `${outcome.message} Do not upload it again — check the ${args.recordType} in Zoho first, or the same file may end up on it twice.`,
+      });
     };
 
     /**
@@ -1153,7 +1163,10 @@ export const createZohoBooksTool = (deps: {
           ? deps.booksClient.listRecords({
               companyId, ...connectionContext, moduleName: 'invoices',
               ...(args.organizationId ? { organizationId: args.organizationId } : {}),
-              filters: {}, query: invoiceNumber, perPage: 25,
+              // The exact filter, not free-text search: a number like
+              // EMI/2026/114 is not something a text match can be trusted with,
+              // and a silent miss here reads as "no duplicate".
+              filters: { invoice_number: invoiceNumber }, perPage: 25,
             }).then(result => result.items).catch(() => [])
           : Promise.resolve([]),
       ]);
@@ -1603,10 +1616,10 @@ export const createZohoBooksTool = (deps: {
                 ...(staged.organizationId ? { organizationId: staged.organizationId } : {}),
               },
             });
-            attachmentNote = outcome.attached
+            attachmentNote = outcome.outcome === 'attached'
               ? ` ${outcome.message}`
-              : ` The invoice exists, but the file the member approved is not on it: ${outcome.message}`
-                + ' Say so rather than leaving them to assume it was attached.';
+              : ` The invoice exists, but the file the member approved is not confirmed on it: ${outcome.message}`
+                + ' Say so rather than leaving them to assume it was attached, and do not retry the upload blind.';
           }
 
           // Staging cannot see what Zoho does on the way in. This can.

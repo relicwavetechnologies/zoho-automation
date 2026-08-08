@@ -18,6 +18,7 @@
  */
 
 import type { ZohoTokenService } from './zoho-token.service';
+import { WriteNotDispatchedError } from '../../shared/errors';
 import type { IntegrationGrantAccess } from '../persistence/integration-connection.repository';
 
 // ─── Module types ─────────────────────────────────────────────────────────────
@@ -57,6 +58,8 @@ interface ZohoConnectionAuth {
   readonly connectionId?: string;
   readonly minimumAccess?: IntegrationGrantAccess;
   readonly signal?: AbortSignal;
+  /** Already-settled credentials, so a write does not re-resolve them mid-flight. */
+  readonly resolved?: { readonly accessToken: string; readonly apiBaseUrl: string };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -137,14 +140,15 @@ export class ZohoBooksPaginatedClient {
     init:      RequestInit = {},
     auth:      ZohoConnectionAuth = {},
   ): Promise<T> {
-    const connectionAuth = auth.connectionId && auth.userId
-      ? await this.tokenService.getValidConnectionAuth({
-        companyId,
-        userId: auth.userId,
-        connectionId: auth.connectionId,
-        minimumAccess: auth.minimumAccess ?? 'read_only',
-      })
-      : null;
+    const connectionAuth = auth.resolved
+      ?? (auth.connectionId && auth.userId
+        ? await this.tokenService.getValidConnectionAuth({
+          companyId,
+          userId: auth.userId,
+          connectionId: auth.connectionId,
+          minimumAccess: auth.minimumAccess ?? 'read_only',
+        })
+        : null);
     const token = connectionAuth?.accessToken ?? await this.tokenService.getValidToken(companyId);
     const booksBase = connectionAuth
       ? `${connectionAuth.apiBaseUrl}/books/v3`
@@ -271,7 +275,7 @@ export class ZohoBooksPaginatedClient {
     signal?: AbortSignal;
   }): Promise<{ organizationId: string; payload: Record<string, unknown> }> {
     if (!input.connectionId || !input.userId) {
-      throw new Error('Zoho Books writes require an exact connection and the acting member.');
+      throw new WriteNotDispatchedError('Zoho Books writes require an exact connection and the acting member.');
     }
 
     const auth: ZohoConnectionAuth = {
@@ -281,7 +285,26 @@ export class ZohoBooksPaginatedClient {
       ...(input.signal ? { signal: input.signal } : {}),
     };
 
-    const orgId = await this.resolveOrganizationId(input.companyId, input.organizationId, auth);
+    // Auth and organisation are settled here, before anything is sent, and the
+    // resolved token is handed to request() rather than looked up again — so a
+    // failure in either is known to have written nothing, and a token cannot
+    // expire in the gap between deciding to write and writing.
+    let resolved: { accessToken: string; apiBaseUrl: string };
+    let orgId: string;
+    try {
+      resolved = await this.tokenService.getValidConnectionAuth({
+        companyId:     input.companyId,
+        userId:        input.userId,
+        connectionId:  input.connectionId,
+        minimumAccess: 'read_write',
+      });
+      orgId = await this.resolveOrganizationId(input.companyId, input.organizationId, auth);
+    } catch (error) {
+      throw new WriteNotDispatchedError(
+        error instanceof Error ? error.message : String(error),
+        error,
+      );
+    }
     const path  = input.path.startsWith('/') ? input.path : `/${input.path}`;
     const params = new URLSearchParams({ organization_id: orgId });
     for (const [key, value] of Object.entries(input.params ?? {})) {

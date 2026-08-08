@@ -41,7 +41,6 @@ export interface InvoiceCheckInput {
    * guessed — the internal-consistency checks still run.
    */
   readonly homeGstStateCode?: string | undefined;
-  /** True when the member sent a file that was meant to end up on this invoice. */
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -215,7 +214,6 @@ export function checkInvoice(input: InvoiceCheckInput): InvoiceFinding[] {
       `Invoice number ${invoiceNumber} is already used by ${duplicates.map(d => str(d['invoice_id'])).join(', ')}.`,
     );
   }
-
 
   return findings;
 }

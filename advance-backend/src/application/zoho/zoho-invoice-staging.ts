@@ -17,6 +17,7 @@
  * impossible to express.
  */
 
+import { WriteNotDispatchedError } from '../../shared/errors';
 import { formatAmount } from './zoho-format.utils';
 import {
   derivedLineTotal,
@@ -88,6 +89,16 @@ export interface StagedInvoiceStore {
  * the invoice exists and only the answer was lost.
  */
 export function writeProvablyDidNotHappen(error: unknown): boolean {
+  // Nothing was dispatched — a missing connection, a revoked token, an
+  // unresolvable organisation. Reading these as "might have written" would
+  // strand a draft that never reached Zoho and send the member hunting for an
+  // invoice that does not exist.
+  if (error instanceof WriteNotDispatchedError) return true;
+
+  // Dispatched and refused on its contents: Zoho read the payload and wrote
+  // nothing. 408 and 429 are excluded — the first says the request may have
+  // been cut short, the second is thrown by a gateway that need not have been
+  // the last hop.
   const message = error instanceof Error ? error.message : String(error);
   const status = /Zoho Books (\d{3})/.exec(message)?.[1];
   if (!status) return false;

@@ -9,6 +9,7 @@ import { createZohoBooksTool } from '../../src/application/tools/families/zoho-b
 import type { ZohoFinanceOps } from '../../src/application/zoho/zoho-finance-ops.ts';
 import type { ZohoBooksPaginatedClient } from '../../src/infrastructure/zoho/zoho-books-paginated.client.ts';
 import type { StagedInvoice } from '../../src/application/zoho/zoho-invoice-staging.ts';
+import { WriteNotDispatchedError } from '../../src/shared/errors.ts';
 
 const ctx = makeCtx('zohoBooks', ['read', 'create', 'update', 'delete']);
 
@@ -181,6 +182,42 @@ describe('one approved draft makes one invoice', () => {
     assert.equal(result.ok, false);
     assert.deepEqual(store.calls, ['claim', 'release']);
     assert.equal(store.rows.get(stagingId)?.createdInvoiceId, undefined);
+  });
+
+  it('hands the draft back when the write was never dispatched', async () => {
+    // A revoked refresh token, a missing connection, an unresolvable
+    // organisation: none of these sent a byte. Holding them would strand a
+    // draft that never reached Zoho and send the member hunting for an invoice
+    // that does not exist.
+    for (const failure of [
+      new WriteNotDispatchedError('invalid_client'),
+      new WriteNotDispatchedError('Zoho connection not found or access denied'),
+    ]) {
+      const store = makeStore();
+      let mutations = 0;
+      const failing = {
+        ...makeBooksClient(),
+        mutate: async () => { mutations += 1; throw failure; },
+      } as unknown as ZohoBooksPaginatedClient;
+      const tool = makeTool({ store, booksClient: failing });
+
+      const staged = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+      const stagingId = (staged as any).value.stagingId;
+
+      const first = await tool.execute({ op: 'create_invoice', stagingId } as never, ctx);
+      assert.equal(first.ok, false, failure.message);
+      assert.deepEqual(store.calls, ['claim', 'release'], failure.message);
+      assert.equal(
+        /may already exist/.test(String((first as any).error.payload.message)),
+        false,
+        'nothing was sent, so nothing may exist',
+      );
+
+      // Once the connection is fixed, the same draft must still be creatable.
+      const second = await tool.execute({ op: 'create_invoice', stagingId } as never, ctx);
+      assert.equal(second.ok, false);
+      assert.equal(mutations, 2, 'the retry must actually reach Zoho');
+    }
   });
 
   it('refuses to retry a draft whose create never reported back', async () => {
@@ -358,7 +395,7 @@ describe('the file the summary promised', () => {
     } as never, larkCtx);
 
     assert.equal(created.ok, true);
-    assert.match((created as any).value.message, /not on it/);
+    assert.match((created as any).value.message, /not confirmed on it/);
     assert.match((created as any).value.message, /No file called/);
   });
 });
@@ -385,7 +422,104 @@ describe('a number that is already in use', () => {
     } as never, ctx);
 
     assert.equal((staged as any).value.success, false);
-    const findings = (staged as any).value.stagedSummary as string;
-    assert.match(findings + (staged as any).value.message, /already/i);
+    assert.match((staged as any).value.stagedSummary, /EMI\/2026\/114 is already used by inv-existing/);
+  });
+});
+
+describe('verifying an attachment follows the write', () => {
+  it('confirms the file in the organisation the invoice was created in', async () => {
+    // The upload went to the staged organisation; a verification read against
+    // the connection's default one 404s and reports a file that did land as
+    // missing.
+    let uploaded = false;
+    const client = {
+      ...makeBooksClient(),
+      mutate: async (input: any) => {
+        if (String(input.path).includes('/attachment')) {
+          // The upload must itself go to the staged organisation.
+          assert.equal(input.organizationId, 'ORG-A');
+          uploaded = true;
+          return { organizationId: input.organizationId, payload: {} };
+        }
+        return {
+          organizationId: input.organizationId,
+          payload: { invoice: { invoice_id: 'inv-created', status: 'draft', currency_code: 'INR' } },
+        };
+      },
+      getEndpoint: async (input: any) => {
+        // The read has to follow the write, or a file that landed reads as missing.
+        if (input.organizationId !== 'ORG-A') throw new Error('Zoho Books 404 Not Found: invoice does not exist');
+        return {
+          invoice: {
+            invoice_id: 'inv-created',
+            documents: uploaded ? [{ file_name: 'acme-po.pdf' }] : [],
+          },
+        };
+      },
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({
+      booksClient: client,
+      attachmentSource: {
+        resolve: async () => ({
+          kind: 'resolved' as const,
+          fileName: 'acme-po.pdf',
+          mimeType: 'application/pdf',
+          content: Buffer.from('%PDF-1.4'),
+        }),
+      },
+    });
+
+    const staged = await tool.execute({
+      op: 'stage_invoice', fields: soundPayload, fileName: 'acme-po.pdf',
+      connectionId: 'conn-a', organizationId: 'ORG-A',
+    } as never, larkCtx);
+
+    // organizationId omitted on the confirming call, as the tool docs instruct.
+    const created = await tool.execute({
+      op: 'create_invoice', stagingId: (staged as any).value.stagingId, connectionId: 'conn-a',
+    } as never, larkCtx);
+
+    assert.equal(created.ok, true);
+    assert.match((created as any).value.message, /Attached "acme-po\.pdf"/);
+  });
+
+  it('does not call an accepted upload a failed one, or invite a blind retry', async () => {
+    // The POST succeeded and only the verification read failed. Saying the
+    // record is unchanged would invite a retry, and Zoho appends rather than
+    // replaces — the same PDF twice.
+    let attachments = 0;
+    const client = {
+      ...makeBooksClient(),
+      mutate: async (input: any) => {
+        if (String(input.path).includes('/attachment')) { attachments += 1; return { organizationId: 'org-1', payload: {} }; }
+        return { organizationId: 'org-1', payload: { invoice: { invoice_id: 'inv-created', status: 'draft', currency_code: 'INR' } } };
+      },
+      getEndpoint: async () => { throw new Error('Zoho Books 503 Service Unavailable: '); },
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({
+      booksClient: client,
+      attachmentSource: {
+        resolve: async () => ({
+          kind: 'resolved' as const,
+          fileName: 'po.pdf',
+          mimeType: 'application/pdf',
+          content: Buffer.from('%PDF-1.4'),
+        }),
+      },
+    });
+
+    const result = await tool.execute({
+      op: 'attach_document', recordType: 'invoice', recordId: 'inv-1', fileName: 'po.pdf',
+    } as never, larkCtx);
+
+    assert.equal(result.ok, true, 'an accepted upload is not a refusal');
+    assert.equal((result as any).value.success, false, 'but it is not confirmed either');
+    assert.equal(
+      /itself is unchanged/.test((result as any).value.message),
+      false,
+      'the upload was accepted, so the record may well have changed',
+    );
+    assert.match((result as any).value.message, /Do not upload it again/);
+    assert.equal(attachments, 1);
   });
 });
