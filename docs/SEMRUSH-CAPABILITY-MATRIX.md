@@ -1,8 +1,16 @@
 # Semrush capability matrix
 
-Divo Semrush is **web-session only** (`www.semrush.com`). No `api.semrush.com` path.
+Divo Semrush uses `www.semrush.com` web routes only. No `api.semrush.com` path.
 
-**Required env:** `SEMRUSH_WEB_API_KEY`, `SEMRUSH_WEB_COOKIE`, `SEMRUSH_TIMEOUT_MS`
+**Required env:** `SEMRUSH_WEB_API_KEY`, `SEMRUSH_TIMEOUT_MS`
+**Optional env:** `SEMRUSH_WEB_COOKIE` — read by no wired operation
+
+Every wired operation authenticates on the API key. Probed 2026-08-08: each
+one returns identical data with a valid cookie, with no cookie, and with a
+fabricated cookie, so the cookie is not a credential for these routes. It is
+still sent when configured because the excluded `/analytics/backlinks/webapi2`
+route does read it — that route answers `user not authenticated` without a
+cookie and `ERROR 130 :: API DISABLED` with one, on every key tested.
 
 | Divo operation | Senior curl / Semrush recipe | Status |
 | --- | --- | --- |

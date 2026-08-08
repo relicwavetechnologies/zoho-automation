@@ -55,7 +55,7 @@ export class SemrushWebClient {
     if (!this.configured()) {
       throw new SemrushServiceError(
         'not_configured',
-        'Semrush web session is not configured. Set SEMRUSH_WEB_API_KEY and SEMRUSH_WEB_COOKIE in the backend environment.',
+        'Semrush is not configured. Set SEMRUSH_WEB_API_KEY in the backend environment.',
       );
     }
   }
@@ -74,8 +74,20 @@ export class SemrushWebClient {
     }
   }
 
+  /**
+   * The key alone. Every wired route authenticates on `key`/`apiKey` and
+   * answers identically with a valid cookie, no cookie, or a fabricated one —
+   * so requiring a cookie only invented a refusal for a request Semrush would
+   * have served. A cookie is still sent when configured, because the excluded
+   * `/analytics/backlinks/webapi2` route does read it.
+   */
   private configured(): boolean {
-    return Boolean(this.deps.apiKey?.trim()) && Boolean(this.deps.cookie?.trim());
+    return Boolean(this.deps.apiKey?.trim());
+  }
+
+  private sessionHeaders(): Record<string, string> {
+    const cookie = this.deps.cookie?.trim();
+    return cookie ? { Cookie: cookie } : {};
   }
 
   private buildDpaRpcPayload(
@@ -176,7 +188,7 @@ export class SemrushWebClient {
       headers: {
         Accept: 'application/json, text/plain, */*',
         'Content-Type': 'application/x-www-form-urlencoded',
-        Cookie: this.deps.cookie!.trim(),
+        ...this.sessionHeaders(),
         'User-Agent': 'Mozilla/5.0',
       },
       body: form,
@@ -219,7 +231,7 @@ export class SemrushWebClient {
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
-        Cookie: this.deps.cookie!.trim(),
+        ...this.sessionHeaders(),
         Origin: 'https://www.semrush.com',
         Referer: 'https://www.semrush.com/',
         'User-Agent': 'Mozilla/5.0',

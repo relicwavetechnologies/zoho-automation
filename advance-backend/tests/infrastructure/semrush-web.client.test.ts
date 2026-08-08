@@ -13,6 +13,40 @@ describe('nextSemrushDpaRequestId', () => {
   });
 });
 
+describe('SemrushWebClient credentials', () => {
+  const okResponse = async (_url: unknown, init?: RequestInit) => {
+    sentHeaders.push((init?.headers ?? {}) as Record<string, string>);
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: [{ database: 'in', domain: 'a.com' }] }), { status: 200 });
+  };
+  let sentHeaders: Array<Record<string, string>> = [];
+  const overview = { operation: 'domain_overview' as const, domain: 'a.com', database: 'in' as const };
+
+  it('runs on the API key alone, with no cookie configured', async () => {
+    sentHeaders = [];
+    const client = new SemrushWebClient({ apiKey: 'test-api-key', timeoutMs: 5_000, fetchImpl: okResponse });
+    const data = await client.fetch(overview);
+    assert.equal(data.status, 'complete');
+    assert.equal(sentHeaders[0]!.Cookie, undefined, 'no Cookie header should be sent when none is configured');
+  });
+
+  it('still sends a cookie when one is configured, for the disabled analytics route', async () => {
+    sentHeaders = [];
+    const client = new SemrushWebClient({ apiKey: 'test-api-key', cookie: 'PHPSESSID=abc', timeoutMs: 5_000, fetchImpl: okResponse });
+    await client.fetch(overview);
+    assert.equal(sentHeaders[0]!.Cookie, 'PHPSESSID=abc');
+  });
+
+  it('refuses only when the API key is missing, and says so without mentioning a session', () => {
+    const client = new SemrushWebClient({ cookie: 'PHPSESSID=abc', timeoutMs: 5_000 });
+    assert.throws(
+      () => client.assertConfigured(),
+      (error: unknown) => (error as { code?: string }).code === 'not_configured'
+        && /SEMRUSH_WEB_API_KEY/.test((error as Error).message)
+        && !/session|cookie/i.test((error as Error).message),
+    );
+  });
+});
+
 describe('SemrushWebClient domain overview', () => {
   // Shape and values taken from a live organic.overview call for emiactech.com,
   // which answered with 26 country databases in one request.

@@ -177,7 +177,9 @@ export const EnvSchema = z.object({
   SERPER_CONNECTION_ENCRYPTION_KEY: z.string().optional(),
   SERPER_TIMEOUT_MS:             positiveInt(10_000),
   // Semrush credentials never reach Desktop or Pi. Only validated
-  // www.semrush.com web-session recipes are supported.
+  // www.semrush.com recipes are supported. The key is the credential; the
+  // cookie is read by no wired operation and is kept only for the excluded
+  // /analytics/backlinks/webapi2 route, which the account has disabled.
   SEMRUSH_WEB_API_KEY: z.string().optional(),
   SEMRUSH_WEB_COOKIE: z.string().optional(),
   SEMRUSH_TIMEOUT_MS:             positiveInt(15_000),

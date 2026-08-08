@@ -24,7 +24,6 @@ async function main() {
   const key = (process.env.SEMRUSH_WEB_API_KEY ?? '').trim();
   const cookie = (process.env.SEMRUSH_WEB_COOKIE ?? '').trim();
   if (!key) throw new Error('Set SEMRUSH_WEB_API_KEY in advance-backend/.env');
-  if (!cookie) throw new Error('Set SEMRUSH_WEB_COOKIE in advance-backend/.env');
 
   const requested = process.argv.includes('--probe')
     ? process.argv[process.argv.indexOf('--probe') + 1] as Probe

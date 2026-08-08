@@ -17,8 +17,8 @@ Use this skill for read-only Semrush SEO research available through Divo's backe
 
 ## Backend environment (ops only — never expose to members)
 
-- \`SEMRUSH_WEB_API_KEY\`
-- \`SEMRUSH_WEB_COOKIE\`
+- \`SEMRUSH_WEB_API_KEY\` — the only credential the wired operations use
+- \`SEMRUSH_WEB_COOKIE\` — optional; read by no wired operation
 - \`SEMRUSH_TIMEOUT_MS\` (default 15000 ms)
 
 ## Senior curl mapping
