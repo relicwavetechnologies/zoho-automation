@@ -2037,11 +2037,17 @@ export const createZohoBooksTool = (deps: {
           if (!updates.ok) {
             return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: updates.message }));
           }
-          return ok(await writtenRecord('invoices', 'updated', {
+          const updated = await writtenRecord('invoices', 'updated', {
             method: 'PUT',
             path: `/invoices/${encodeURIComponent(args.invoiceId)}`,
             body: updates.fields,
-          }));
+          });
+          // This path has no staging, no summary and no approval text, so it is
+          // the one where a silent translation would go furthest unseen — the
+          // write has already happened by the time anybody reads the reply.
+          return ok(updates.notes.length > 0
+            ? { ...updated, message: `${updated.message} Divo read: ${updates.notes.join('; ')}.` }
+            : updated);
         }
 
         case 'mark_invoice_sent': {

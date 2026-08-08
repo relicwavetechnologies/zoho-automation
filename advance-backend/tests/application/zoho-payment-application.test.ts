@@ -43,6 +43,30 @@ const run = async (fields: Record<string, unknown>, response: Record<string, unk
   return { result, sent };
 };
 
+describe('a write that translates a field says so', () => {
+  it('discloses the reinterpretation on update_invoice, which has no summary', async () => {
+    // stage_invoice shows the member a summary they approve; update_invoice
+    // writes to Zoho immediately. It is the path where a silent translation
+    // would go furthest unseen, so it is the one that most needs to say it.
+    const { tool } = makeTool({ invoice_id: 'inv-1', invoice_number: 'INV-114' });
+    const result: any = await tool.execute(
+      { op: 'update_invoice', connectionId: 'conn-1', invoiceId: 'inv-1', fields: { payment_terms: 'Net 15' } } as any,
+      ctx,
+    );
+    assert.equal(result.ok, true);
+    assert.match(result.value.message, /read as 15 days/);
+  });
+
+  it('adds nothing when it translated nothing', async () => {
+    const { tool } = makeTool({ invoice_id: 'inv-1', invoice_number: 'INV-114' });
+    const result: any = await tool.execute(
+      { op: 'update_invoice', connectionId: 'conn-1', invoiceId: 'inv-1', fields: { payment_terms: 15 } } as any,
+      ctx,
+    );
+    assert.doesNotMatch(result.value.message ?? '', /Divo read/);
+  });
+});
+
 describe('a customer payment has to settle something', () => {
   it('refuses a payment that names no invoice', async () => {
     const { result, sent } = await run({ customer_id: 'cust-1', amount: 59000 });

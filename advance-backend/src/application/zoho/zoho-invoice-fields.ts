@@ -67,7 +67,10 @@ function parsePaymentTerms(value: unknown): ParsedTerms | null {
   // one digit run and mean something this field cannot express; reading them as
   // 15 days would set a due date nobody asked for and look like success.
   // "2/10 net 30" is a discount schedule, and "-5" is not a term at all.
-  const matched = raw.match(/^net[\s-]*(\d{1,3})(\s*days?)?$/i)
+  // `-` is a separator in "net-15" but a sign in "Net -5", and the difference is
+  // the whitespace. Allowing both in one character class let the minus be eaten
+  // and turned "Net -5" into five days.
+  const matched = raw.match(/^net(?:-|\s*)(\d{1,3})(\s*days?)?$/i)
     ?? raw.match(/^(\d{1,3})\s*days?$/i);
   if (matched?.[1]) {
     const days = Number(matched[1]);
@@ -80,8 +83,15 @@ function parsePaymentTerms(value: unknown): ParsedTerms | null {
 /**
  * Normalise an invoice payload on its way to Zoho.
  *
- * Returns a new object; the caller's payload is left alone so that what was
- * staged, reviewed, and shown to the member stays the thing that was checked.
+ * Returns a new top-level object, so the caller's own record keeps the wording
+ * it was given and what was staged, reviewed and shown to the member stays the
+ * thing that was checked. Nested values — line items in particular — are shared
+ * with the caller rather than copied; nothing here writes through them, and a
+ * deep copy would only pretend to a guarantee this does not need.
+ *
+ * `notes` records anything re-read on the member's behalf. It is not optional
+ * decoration: a translation nobody is shown is a silent change to what they are
+ * agreeing to, so every caller is expected to surface it.
  */
 export function normalizeInvoiceFields(fields: Record<string, unknown>): InvoiceFieldsResult {
   const out: Record<string, unknown> = { ...fields };

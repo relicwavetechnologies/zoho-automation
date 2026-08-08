@@ -70,6 +70,14 @@ describe('payment terms in the vocabulary the member used', () => {
   it('refuses a negative written as text rather than dropping its sign', () => {
     // "-5" once parsed to 5: the sign vanished and the invoice fell due early.
     refusal({ payment_terms: '-5' });
+    // And with the prefix, where the "-" that separates in "net-15" was allowed
+    // to act as a sign instead.
+    refusal({ payment_terms: 'Net -5' });
+    refusal({ payment_terms: 'net - 5' });
+  });
+
+  it('still reads the hyphen when it is a separator', () => {
+    assert.equal(unwrap({ payment_terms: 'net-15' })['payment_terms'], 15);
   });
 
   it('refuses a discount schedule instead of picking one of its numbers', () => {

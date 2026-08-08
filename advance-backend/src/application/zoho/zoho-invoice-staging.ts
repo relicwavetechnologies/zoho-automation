@@ -354,10 +354,12 @@ export function renderStagedInvoice(input: {
   if (!dueDate) {
     const terms = num(payload['payment_terms']);
     if (terms !== null) {
+      const spelled = terms === 0 ? 'due on receipt' : `${terms} days`;
       const label = str(payload['payment_terms_label']);
-      lines.push(terms === 0
-        ? `Payment terms: due on receipt${label ? ` (${label})` : ''}`
-        : `Payment terms: ${terms} days${label ? ` (${label})` : ''}`);
+      // Only when it adds something. "due on receipt (due on receipt)" reads
+      // like a mistake, because it is one.
+      const suffix = label && label.toLowerCase() !== spelled.toLowerCase() ? ` (${label})` : '';
+      lines.push(`Payment terms: ${spelled}${suffix}`);
     }
   }
 
