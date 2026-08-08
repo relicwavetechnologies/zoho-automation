@@ -80,6 +80,10 @@ describe('DepartmentAdminService fixed policy', () => {
       },
       skillVersion: { upsert: async () => ({}) },
       skillRegistryRevision: { upsert: async () => ({}) },
+      skillAlias: {
+        deleteMany: async () => ({ count: 0 }),
+        createMany: async () => ({ count: 0 }),
+      },
       skillAccessGrant: { upsert: async () => ({}) },
     };
     const service = new DepartmentAdminService({

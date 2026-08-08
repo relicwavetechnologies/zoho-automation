@@ -18,6 +18,7 @@
  */
 
 import type { ZohoTokenService } from './zoho-token.service';
+import { WriteNotDispatchedError } from '../../shared/errors';
 import type { IntegrationGrantAccess } from '../persistence/integration-connection.repository';
 
 // ─── Module types ─────────────────────────────────────────────────────────────
@@ -57,6 +58,8 @@ interface ZohoConnectionAuth {
   readonly connectionId?: string;
   readonly minimumAccess?: IntegrationGrantAccess;
   readonly signal?: AbortSignal;
+  /** Already-settled credentials, so a write does not re-resolve them mid-flight. */
+  readonly resolved?: { readonly accessToken: string; readonly apiBaseUrl: string };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -137,14 +140,15 @@ export class ZohoBooksPaginatedClient {
     init:      RequestInit = {},
     auth:      ZohoConnectionAuth = {},
   ): Promise<T> {
-    const connectionAuth = auth.connectionId && auth.userId
-      ? await this.tokenService.getValidConnectionAuth({
-        companyId,
-        userId: auth.userId,
-        connectionId: auth.connectionId,
-        minimumAccess: auth.minimumAccess ?? 'read_only',
-      })
-      : null;
+    const connectionAuth = auth.resolved
+      ?? (auth.connectionId && auth.userId
+        ? await this.tokenService.getValidConnectionAuth({
+          companyId,
+          userId: auth.userId,
+          connectionId: auth.connectionId,
+          minimumAccess: auth.minimumAccess ?? 'read_only',
+        })
+        : null);
     const token = connectionAuth?.accessToken ?? await this.tokenService.getValidToken(companyId);
     const booksBase = connectionAuth
       ? `${connectionAuth.apiBaseUrl}/books/v3`
@@ -152,12 +156,17 @@ export class ZohoBooksPaginatedClient {
     const sep   = path.includes('?') ? '&' : '?';
     const url   = `${booksBase}${path}${sep}`;
 
+    // A multipart upload must carry the boundary fetch generates for it, so the
+    // JSON default has to stay off rather than be overridden with a value that
+    // no longer describes the body.
+    const isMultipart = init.body instanceof FormData;
+
     const res = await fetch(url, {
       ...init,
       ...(auth.signal ? { signal: auth.signal } : {}),
       headers: {
         'Authorization': `Zoho-oauthtoken ${token}`,
-        'Content-Type':  'application/json',
+        ...(isMultipart ? {} : { 'Content-Type': 'application/json' }),
         ...(init.headers ?? {}),
       },
     });
@@ -236,6 +245,108 @@ export class ZohoBooksPaginatedClient {
       {},
       input,
     );
+  }
+
+  /**
+   * Write to any Zoho Books endpoint — the single path every mutation takes.
+   *
+   * `connectionId` and `userId` are required, and deliberately so. `request()`
+   * falls back to the company-level token whenever either is missing, and that
+   * fallback never sees `minimumAccess` — so an optional connection here would
+   * let a write skip the per-connection read_write check entirely. A write
+   * without a connection has to fail, not quietly borrow the company's token.
+   */
+  async mutate(input: {
+    companyId:       string;
+    userId:          string;
+    connectionId:    string;
+    method:          'POST' | 'PUT';
+    path:            string;
+    organizationId?: string;
+    params?:         Record<string, string>;
+    body?:           Record<string, unknown>;
+    /** Multipart upload. Mutually exclusive with `body`. */
+    multipart?: {
+      field:    string;
+      fileName: string;
+      mimeType: string;
+      content:  Buffer;
+    };
+    signal?: AbortSignal;
+  }): Promise<{ organizationId: string; payload: Record<string, unknown> }> {
+    if (!input.connectionId || !input.userId) {
+      throw new WriteNotDispatchedError('Zoho Books writes require an exact connection and the acting member.');
+    }
+
+    const auth: ZohoConnectionAuth = {
+      userId:        input.userId,
+      connectionId:  input.connectionId,
+      minimumAccess: 'read_write',
+      ...(input.signal ? { signal: input.signal } : {}),
+    };
+
+    // Auth and organisation are settled here, before anything is sent, and the
+    // resolved token is handed to request() rather than looked up again — so a
+    // failure in either is known to have written nothing, and a token cannot
+    // expire in the gap between deciding to write and writing.
+    let resolved: { accessToken: string; apiBaseUrl: string };
+    let orgId: string;
+    try {
+      resolved = await this.tokenService.getValidConnectionAuth({
+        companyId:     input.companyId,
+        userId:        input.userId,
+        connectionId:  input.connectionId,
+        minimumAccess: 'read_write',
+      });
+      if (input.organizationId) {
+        orgId = input.organizationId;
+      } else {
+        // Not resolveOrganizationId(): that one answers a failed lookup with the
+        // companyId, which is fine for a read that will simply find nothing and
+        // wrong for a write, which would be dispatched at an organisation that
+        // does not exist.
+        const organizations = await this.listOrganizations(input.companyId, { ...auth, resolved });
+        const chosen = organizations.find(org => org.isDefault === true) ?? organizations[0];
+        if (!chosen) {
+          throw new Error('Zoho Books returned no organisation for this connection, so there is nowhere to write.');
+        }
+        orgId = chosen.organizationId;
+      }
+    } catch (error) {
+      throw new WriteNotDispatchedError(
+        error instanceof Error ? error.message : String(error),
+        error,
+      );
+    }
+    const path  = input.path.startsWith('/') ? input.path : `/${input.path}`;
+    const params = new URLSearchParams({ organization_id: orgId });
+    for (const [key, value] of Object.entries(input.params ?? {})) {
+      if (value.length > 0) params.set(key, value);
+    }
+
+    let body: FormData | string | undefined;
+    if (input.multipart) {
+      const form = new FormData();
+      form.append(
+        input.multipart.field,
+        new Blob([new Uint8Array(input.multipart.content)], { type: input.multipart.mimeType }),
+        input.multipart.fileName,
+      );
+      body = form;
+    } else if (input.body) {
+      body = JSON.stringify(input.body);
+    }
+
+    const payload = await this.request<Record<string, unknown>>(
+      input.companyId,
+      `${path}?${params}`,
+      { method: input.method, ...(body === undefined ? {} : { body }) },
+      { ...auth, resolved },
+    );
+
+    // The caller needs the org that was actually written to — it is what makes
+    // a record link correct when the member named no organisation.
+    return { organizationId: orgId, payload };
   }
 
   /**

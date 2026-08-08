@@ -518,9 +518,6 @@ export function buildPiArguments(values) {
 		path.join(divoDir, "skills", name),
 	]);
 	const args = [
-		"--tsconfig",
-		path.join(repositoryRoot, "tsconfig.json"),
-		path.join(repositoryRoot, "packages", "coding-agent", "src", "cli.ts"),
 		"--session",
 		values.sessionPath,
 		"--session-dir",
@@ -553,6 +550,24 @@ export function buildPiArguments(values) {
 	if (values.print) args.push("--print");
 	if (values.prompt) args.push(values.prompt);
 	return args;
+}
+
+export function buildPiLaunch(values, entryMode = "source") {
+	const args = buildPiArguments(values);
+	if (entryMode === "compiled") {
+		const entrypoint = path.join(repositoryRoot, "packages", "coding-agent", "dist", "cli.js");
+		return { executable: process.execPath, entrypoint, args: [entrypoint, ...args] };
+	}
+	if (entryMode === "source") {
+		const executable = path.join(repositoryRoot, "node_modules", ".bin", "tsx");
+		const entrypoint = path.join(repositoryRoot, "packages", "coding-agent", "src", "cli.ts");
+		return {
+			executable,
+			entrypoint,
+			args: ["--tsconfig", path.join(repositoryRoot, "tsconfig.json"), entrypoint, ...args],
+		};
+	}
+	throw new Error('DIVO_PI_ENTRY_MODE must be either "source" or "compiled"');
 }
 
 export function startDivoPi({
@@ -595,11 +610,6 @@ export function startDivoPi({
 	if (!["thread", "run"].includes(sessionScope)) {
 		throw new Error('Session scope must be either "thread" or "run"');
 	}
-	const tsx = path.join(repositoryRoot, "node_modules", ".bin", "tsx");
-	if (!fs.existsSync(tsx)) {
-		throw new Error("Divo Pi dependencies are missing. Run npm ci --ignore-scripts first.");
-	}
-
 	const runId = trustedRunId ?? randomUUID();
 	const agentDir = path.join(stateRoot, "agent");
 	const dataDir = path.join(stateRoot, "data");
@@ -715,7 +725,15 @@ export function startDivoPi({
 		token,
 		workspace: path.resolve(workspace),
 	};
-	const child = spawn(tsx, buildPiArguments(values), {
+	const entryMode = process.env.DIVO_PI_ENTRY_MODE ?? "source";
+	const launch = buildPiLaunch(values, entryMode);
+	if (!fs.existsSync(launch.executable) || !fs.existsSync(launch.entrypoint)) {
+		const recovery = entryMode === "compiled"
+			? "Rebuild the runtime image."
+			: "Run npm ci --ignore-scripts first.";
+		throw new Error(`Divo Pi ${entryMode} entrypoint is missing. ${recovery}`);
+	}
+	const child = spawn(launch.executable, launch.args, {
 		cwd: values.workspace,
 		env: buildChildEnvironment(process.env, values),
 		stdio: "inherit",

@@ -4,6 +4,7 @@ import {
   financeZohoRouterSkill,
   zohoBillNotifyAccountsSkill,
   zohoBooksBillSkill,
+  zohoBooksInvoiceSkill,
   zohoBooksReadAnalysisSkill,
   zohoCrmReadAnalysisSkill,
 } from './zoho.skill';
@@ -16,6 +17,13 @@ export interface ZohoFinanceSystemSkillDefinition {
   readonly markdown: string;
   readonly toolIds: readonly string[];
   readonly tags: readonly string[];
+  /**
+   * Phrases a member actually types. Router search scores slug, name and tags at
+   * 5, an alias term at 4, an exact alias phrase at 10, and the summary at 2 —
+   * markdown is never scored. Without these, "create an invoice" matched nothing
+   * in this family and the finance router lost to alphabetical order.
+   */
+  readonly aliases: readonly string[];
   readonly sortOrder: number;
 }
 
@@ -27,6 +35,15 @@ export const ZOHO_FINANCE_SYSTEM_SKILLS: readonly ZohoFinanceSystemSkillDefiniti
     markdown: `# ${financeZohoRouterSkill.name}\n\n${financeZohoRouterSkill.instructions}`,
     toolIds: financeZohoRouterSkill.toolIds,
     tags: ['finance', 'zoho', 'books', 'crm', 'router'],
+    aliases: [
+      'create an invoice', 'raise an invoice', 'make an invoice', 'new invoice',
+      'send an invoice', 'email an invoice', 'bill a customer', 'invoice a client',
+      'record a bill', 'enter a vendor bill', 'vendor invoice', 'supplier invoice',
+      'record a payment', 'mark as paid',
+      'unpaid invoices', 'outstanding invoices', 'overdue invoices', 'receivables',
+      'payables', 'aging report', 'accounts receivable', 'accounts payable',
+      'zoho books', 'zoho crm', 'chart of accounts', 'tax summary', 'gst',
+    ],
     sortOrder: 10,
   },
   {
@@ -36,6 +53,7 @@ export const ZOHO_FINANCE_SYSTEM_SKILLS: readonly ZohoFinanceSystemSkillDefiniti
     markdown: `# ${zohoCrmReadAnalysisSkill.name}\n\n${zohoCrmReadAnalysisSkill.instructions}`,
     toolIds: zohoCrmReadAnalysisSkill.toolIds,
     tags: ['finance', 'zoho', 'crm', 'read', 'analysis'],
+    aliases: ['crm customer', 'crm lead', 'crm deal', 'crm account', 'sales pipeline'],
     sortOrder: 12,
   },
   {
@@ -45,7 +63,28 @@ export const ZOHO_FINANCE_SYSTEM_SKILLS: readonly ZohoFinanceSystemSkillDefiniti
     markdown: `# ${zohoBooksReadAnalysisSkill.name}\n\n${zohoBooksReadAnalysisSkill.instructions}`,
     toolIds: zohoBooksReadAnalysisSkill.toolIds,
     tags: ['finance', 'zoho', 'books', 'read', 'reporting', 'analysis'],
+    aliases: [
+      'unpaid invoices', 'outstanding invoices', 'overdue invoices', 'receivables',
+      'payables', 'aging report', 'invoice list', 'recent payments', 'bank transactions',
+      'chart of accounts', 'tax summary', 'item rate', 'product list', 'gst rate', 'tax rates',
+      'vendor balance', 'customer balance',
+    ],
     sortOrder: 15,
+  },
+  {
+    slug: zohoBooksInvoiceSkill.id,
+    name: zohoBooksInvoiceSkill.name,
+    summary: zohoBooksInvoiceSkill.description,
+    markdown: `# ${zohoBooksInvoiceSkill.name}\n\n${zohoBooksInvoiceSkill.instructions}`,
+    toolIds: zohoBooksInvoiceSkill.toolIds,
+    tags: ['finance', 'zoho', 'books', 'invoices', 'write'],
+    aliases: [
+      'create an invoice', 'raise an invoice', 'make an invoice', 'new invoice',
+      'send an invoice', 'email an invoice', 'issue an invoice', 'bill a customer',
+      'invoice a client', 'fix an invoice', 'correct an invoice', 'edit an invoice',
+      'attach pdf to invoice', 'add a customer', 'new customer',
+    ],
+    sortOrder: 18,
   },
   {
     slug: zohoBooksBillSkill.id,
@@ -54,6 +93,10 @@ export const ZOHO_FINANCE_SYSTEM_SKILLS: readonly ZohoFinanceSystemSkillDefiniti
     markdown: `# ${zohoBooksBillSkill.name}\n\n${zohoBooksBillSkill.instructions}`,
     toolIds: zohoBooksBillSkill.toolIds,
     tags: ['finance', 'zoho', 'books', 'bills', 'invoices'],
+    aliases: [
+      'record a bill', 'enter a vendor bill', 'create a bill', 'vendor invoice',
+      'supplier invoice', 'book this invoice', 'process this invoice pdf',
+    ],
     sortOrder: 20,
   },
   {
@@ -63,13 +106,14 @@ export const ZOHO_FINANCE_SYSTEM_SKILLS: readonly ZohoFinanceSystemSkillDefiniti
     markdown: `# ${zohoBillNotifyAccountsSkill.name}\n\n${zohoBillNotifyAccountsSkill.instructions}`,
     toolIds: zohoBillNotifyAccountsSkill.toolIds,
     tags: ['finance', 'zoho', 'books', 'lark', 'notifications'],
+    aliases: ['notify accounts', 'tell core accounts', 'inform the accounts group'],
     sortOrder: 30,
   },
 ] as const;
 
 type ZohoFinanceSkillStore = Pick<
   Prisma.TransactionClient,
-  'department' | 'skill' | 'skillVersion' | 'skillRegistryRevision' | 'skillAccessGrant'
+  'department' | 'skill' | 'skillVersion' | 'skillRegistryRevision' | 'skillAccessGrant' | 'skillAlias'
 >;
 
 type ExistingSkill = {
@@ -90,6 +134,7 @@ type ExistingSkill = {
   revision: number;
   createdBy: string | null;
   updatedBy: string | null;
+  aliases: { alias: string }[];
 };
 
 const EXISTING_SKILL_SELECT = {
@@ -110,6 +155,7 @@ const EXISTING_SKILL_SELECT = {
   revision: true,
   createdBy: true,
   updatedBy: true,
+  aliases: { select: { alias: true }, orderBy: { alias: 'asc' as const } },
 } as const;
 
 export async function provisionZohoFinanceSystemSkills(
@@ -121,6 +167,9 @@ export async function provisionZohoFinanceSystemSkills(
   updated: number;
   existing: number;
   skipped: number;
+  /** Slugs left untouched because an admin edit cleared isSystem. A silent
+   *  skip here means the company keeps the old instructions forever. */
+  skippedSlugs: string[];
 }> {
   const departments = await db.department.findMany({
     where: { companyId, status: 'active' },
@@ -130,13 +179,18 @@ export async function provisionZohoFinanceSystemSkills(
   const department = departments.find(candidate => candidate.slug.toLowerCase() === 'finance')
     ?? departments.find(candidate => isFinanceDepartment(candidate.name, candidate.slug));
   if (!department) {
-    return { departmentId: null, created: 0, updated: 0, existing: 0, skipped: ZOHO_FINANCE_SYSTEM_SKILLS.length };
+    return {
+      departmentId: null, created: 0, updated: 0, existing: 0,
+      skipped: ZOHO_FINANCE_SYSTEM_SKILLS.length,
+      skippedSlugs: ZOHO_FINANCE_SYSTEM_SKILLS.map(definition => definition.slug),
+    };
   }
 
   let created = 0;
   let updated = 0;
   let existing = 0;
   let skipped = 0;
+  const skippedSlugs: string[] = [];
 
   for (const definition of ZOHO_FINANCE_SYSTEM_SKILLS) {
     const current = await db.skill.findFirst({
@@ -146,6 +200,7 @@ export async function provisionZohoFinanceSystemSkills(
 
     if (current && !current.isSystem) {
       skipped += 1;
+      skippedSlugs.push(definition.slug);
       continue;
     }
 
@@ -153,7 +208,9 @@ export async function provisionZohoFinanceSystemSkills(
     if (!current) {
       skill = await db.skill.create({
         data: buildZohoFinanceSystemSkill(companyId, department.id, definition),
+        select: EXISTING_SKILL_SELECT,
       }) as ExistingSkill;
+      await syncAliases(db, skill.id, definition.aliases);
       await recordSkillRegistryMutation(db, skill, 'system');
       created += 1;
     } else if (matchesDefinition(current, department.id, definition)) {
@@ -168,7 +225,9 @@ export async function provisionZohoFinanceSystemSkills(
           tags: [...definition.tags],
           revision: { increment: 1 },
         },
+        select: EXISTING_SKILL_SELECT,
       }) as ExistingSkill;
+      await syncAliases(db, skill.id, definition.aliases);
       await recordSkillRegistryMutation(db, skill, 'system');
       updated += 1;
     }
@@ -191,14 +250,25 @@ export async function provisionZohoFinanceSystemSkills(
     });
   }
 
-  return { departmentId: department.id, created, updated, existing, skipped };
+  return { departmentId: department.id, created, updated, existing, skipped, skippedSlugs };
 }
 
 export async function provisionZohoFinanceSkillsForExistingCompanies(
-  db: Pick<PrismaClient, 'company' | 'department' | 'skill' | 'skillVersion' | 'skillRegistryRevision' | 'skillAccessGrant'>,
-): Promise<{ companies: number; created: number; updated: number; existing: number; skipped: number }> {
+  db: Pick<PrismaClient, 'company' | 'department' | 'skill' | 'skillVersion' | 'skillRegistryRevision' | 'skillAccessGrant' | 'skillAlias'>,
+): Promise<{
+  companies: number;
+  created: number;
+  updated: number;
+  existing: number;
+  skipped: number;
+  skippedByCompany: Array<{ companyId: string; slugs: string[] }>;
+}> {
   const companies = await db.company.findMany({ select: { id: true } });
-  const totals = { companies: companies.length, created: 0, updated: 0, existing: 0, skipped: 0 };
+  const totals = {
+    companies: companies.length,
+    created: 0, updated: 0, existing: 0, skipped: 0,
+    skippedByCompany: [] as Array<{ companyId: string; slugs: string[] }>,
+  };
 
   for (const company of companies) {
     const result = await provisionZohoFinanceSystemSkills(db, company.id);
@@ -206,6 +276,9 @@ export async function provisionZohoFinanceSkillsForExistingCompanies(
     totals.updated += result.updated;
     totals.existing += result.existing;
     totals.skipped += result.skipped;
+    if (result.skippedSlugs.length > 0) {
+      totals.skippedByCompany.push({ companyId: company.id, slugs: result.skippedSlugs });
+    }
   }
   return totals;
 }
@@ -255,7 +328,23 @@ function matchesDefinition(
     && current.isSystem
     && current.sortOrder === definition.sortOrder
     && arraysEqual(current.toolIds, definition.toolIds)
-    && arraysEqual(current.tags, definition.tags);
+    && arraysEqual(current.tags, definition.tags)
+    // Without this an alias-only change compares equal, takes the untouched
+    // branch, and never writes the alias rows.
+    && arraysEqual(current.aliases.map((item) => item.alias), [...definition.aliases].sort());
+}
+
+async function syncAliases(
+  db: ZohoFinanceSkillStore,
+  skillId: string,
+  aliases: readonly string[],
+): Promise<void> {
+  await db.skillAlias.deleteMany({ where: { skillId, alias: { notIn: [...aliases] } } });
+  if (aliases.length === 0) return;
+  await db.skillAlias.createMany({
+    data: aliases.map((alias) => ({ skillId, alias })),
+    skipDuplicates: true,
+  });
 }
 
 function isFinanceDepartment(name: string, slug: string): boolean {

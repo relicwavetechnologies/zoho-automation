@@ -13,7 +13,7 @@ import { DATA_EXPORT_SYSTEM_SKILL } from '../../src/application/skills/data-expo
 import { ROUTING_SYSTEM_SKILLS } from '../../src/application/skills/system-skill-routes';
 import { DIVO_PRESENTATIONS_SYSTEM_SKILL } from '../../src/application/skills/divo-presentations-system-skill';
 import {
-  financeOpsCoreSkill,
+  zohoBooksInvoiceSkill,
   zohoBillNotifyAccountsSkill,
   zohoBooksBillSkill,
   zohoBooksReadAnalysisSkill,
@@ -68,7 +68,7 @@ describe('governed local-workflow instruction contract', () => {
 
   it('keeps Zoho skills aligned with backend-owned connection selection', () => {
     for (const skill of [
-      financeOpsCoreSkill,
+      zohoBooksInvoiceSkill,
       zohoBooksReadAnalysisSkill,
       zohoBooksBillSkill,
       zohoBillNotifyAccountsSkill,
@@ -92,7 +92,7 @@ describe('governed local-workflow instruction contract', () => {
     // An unqualified mention sends a Lark run hunting for a binary it cannot
     // execute, instead of staying on the governed tool it was already using.
     const publishedInstructions = [
-      financeOpsCoreSkill.instructions,
+      zohoBooksInvoiceSkill.instructions,
       zohoBooksReadAnalysisSkill.instructions,
       zohoBooksBillSkill.instructions,
       zohoBillNotifyAccountsSkill.instructions,

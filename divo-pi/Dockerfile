@@ -47,12 +47,17 @@ COPY packages/coding-agent/examples/extensions/sandbox/package.json packages/cod
 COPY packages/coding-agent/examples/extensions/gondolin/package.json packages/coding-agent/examples/extensions/gondolin/package.json
 RUN --mount=type=cache,target=/root/.npm npm ci --ignore-scripts
 COPY . .
+RUN npm run build --workspace packages/tui \
+	&& ./node_modules/.bin/tsgo -p packages/ai/tsconfig.build.json \
+	&& npm run build --workspace packages/agent \
+	&& npm run build --workspace packages/coding-agent
 RUN groupadd --gid 10001 divo \
 	&& useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash divo \
 	&& mkdir -p /data /run/divo-auth \
 	&& chown 10001:10001 /data /run/divo-auth
 
 ENV HOME="/data/state/home" \
+	DIVO_PI_ENTRY_MODE="compiled" \
 	PATH="/app/node_modules/.bin:/data/state/home/.local/bin:/data/state/home/.npm/bin:${PATH}" \
 	PIP_BREAK_SYSTEM_PACKAGES="1" \
 	PIP_CACHE_DIR="/data/state/home/.cache/pip" \

@@ -7,7 +7,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Activity, ArrowUpRight, Ban, BookOpen, Brain, Building2, Check, CircleAlert, Clock, ExternalLink,
+  Activity, ArrowUpRight, Ban, BookOpen, Brain, Building2, Check, CircleAlert, Clock, Copy, ExternalLink,
   ChevronRight, Eye, Gauge, Globe, Link2, Lock, MessageSquare, Plus, RotateCw, Search, ShieldCheck,
   Sparkles, Trash2, TriangleAlert, Users, X,
 } from 'lucide-react'
@@ -24,6 +24,9 @@ import {
   type ConnectionGovernancePolicy, type ConnectionGrant, type GranteeType, type LiveConnection,
   type ManageCandidates,
 } from './data/use-connections'
+import {
+  useShopifyCompanyStatus, useShopifyConnect, type ShopifyCompanyConnection, type ShopifyCompanyStatus,
+} from './data/use-company-connections'
 import { ago, expiryLabel, useApprovals } from './data/use-approvals'
 import {
   changePct, durationLabel, useMyModelOptions, useMyRuns, useMyTools, useMyUsage, type MyRun,
@@ -256,7 +259,9 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
   const [open, setOpen] = useState<{ provider: Provider; connectionId?: string } | null>(null)
   // Which provider is waiting on a name before its sign-in window opens.
   const [naming, setNaming] = useState<Provider | null>(null)
+  const [shopifyOpen, setShopifyOpen] = useState(false)
   const { byProvider, loading, unreachable, connecting, connect, disconnect, refresh } = useConnections()
+  const shopifyStatus = useShopifyCompanyStatus()
 
   /**
    * Adding an account, with a name where a name is worth having.
@@ -397,6 +402,7 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
                     </div>
                   )
                 })}
+                <ShopifyConnectionGroup status={shopifyStatus} onOpen={() => setShopifyOpen(true)} />
               </div>
             </Fade>
           )}
@@ -465,6 +471,205 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
           toast={toast}
         />
       ) : null}
+
+      {shopifyOpen ? (
+        <ShopifyConnectDialog
+          toast={toast}
+          onClose={() => setShopifyOpen(false)}
+          onConnected={shopifyStatus.refresh}
+        />
+      ) : null}
+    </>
+  )
+}
+
+function ShopifyConnectionGroup({ status, onOpen }: {
+  status: {
+    status: ShopifyCompanyStatus | null
+    loading: boolean
+    failed: boolean
+  }
+  onOpen: () => void
+}) {
+  const accounts = status.status?.connections ?? []
+  const canManage = status.status?.canManage === true
+  const dead = accounts.filter((c) => c.reconnectRequired === true).length
+  return (
+    <div className="ws-conn-group">
+      <div className="ws-conn-h">
+        <span className="ws-ic" aria-hidden>
+          <span style={{ fontSize: 12, fontWeight: 600 }}>S</span>
+        </span>
+        <div className="ws-conn-h-main">
+          <b>Shopify</b>
+          <p>
+            {status.loading
+              ? 'Loading Shopify stores…'
+              : status.failed
+                ? 'Could not read Shopify connections.'
+                : accounts.length === 0
+                  ? 'Company-owned store access. Generate a link, send it to the Shopify admin if needed, then paste the callback URL.'
+                  : `${accounts.length} store${accounts.length === 1 ? '' : 's'}${dead > 0 ? ` · ${dead} needs reconnecting` : ''}`}
+          </p>
+        </div>
+        {canManage ? (
+          <button type="button" className="btn" onClick={onOpen}>
+            {accounts.length === 0 ? 'Connect' : <><Plus size={13} />Add store</>}
+          </button>
+        ) : accounts.length === 0 ? (
+          <span className="ws-tag"><Lock size={11} />Admin connects this</span>
+        ) : null}
+      </div>
+
+      {accounts.length > 0 ? (
+        <div className="ws-conn-accounts">
+          {accounts.map((conn) => (
+            <div className="ws-row" key={conn.connectionId}>
+              <div className="ws-row-main">
+                <b>
+                  {shopifyConnectionLabel(conn)}
+                  <span className="ws-tag">Company</span>
+                </b>
+                <p>
+                  {conn.reconnectRequired === true
+                    ? 'Shopify ended this authorisation. Nothing can run on it until an admin connects it again.'
+                    : `Last used ${since(conn.lastUsedAt)}`}
+                </p>
+              </div>
+              <div className="ws-row-act">
+                {conn.reconnectRequired === true ? (
+                  <span className="badge b-err"><span className="dot" />Reconnect</span>
+                ) : null}
+                {canManage ? <span className="ws-sub">Managed by admins</span> : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function shopifyConnectionLabel(connection: ShopifyCompanyConnection): string {
+  return connection.accountName ?? connection.label
+}
+
+function normalizeShopDomainInput(value: string): string | null {
+  const domain = value.trim().toLowerCase()
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.myshopify\.com$/.test(domain) ? domain : null
+}
+
+function ShopifyConnectDialog({ toast, onClose, onConnected }: {
+  toast: Toast
+  onClose: () => void
+  onConnected: () => void | Promise<void>
+}) {
+  const shopify = useShopifyConnect()
+  const [shopDomain, setShopDomain] = useState('')
+  const [authorizeUrl, setAuthorizeUrl] = useState('')
+  const [callbackUrl, setCallbackUrl] = useState('')
+
+  const start = async () => {
+    const normalized = normalizeShopDomainInput(shopDomain)
+    if (!normalized) {
+      toast('Use the permanent .myshopify.com store domain', 'error')
+      return
+    }
+    try {
+      const url = await shopify.begin(normalized)
+      setAuthorizeUrl(url)
+      window.open(url, '_blank', 'noopener,noreferrer')
+      toast('Shopify sign-in link ready')
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not start Shopify authorization', 'error')
+    }
+  }
+
+  const copyLink = async () => {
+    if (!authorizeUrl) return
+    try {
+      await navigator.clipboard.writeText(authorizeUrl)
+      toast('Shopify link copied')
+    } catch {
+      toast('Copy failed. Select the URL and copy it manually.', 'error')
+    }
+  }
+
+  const finish = async () => {
+    if (!callbackUrl.trim()) return
+    try {
+      const result = await shopify.complete(callbackUrl.trim())
+      await onConnected()
+      toast(result === 'connected' ? 'Shopify connected for the company' : 'Shopify authorization was denied')
+      onClose()
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not save Shopify connection', 'error')
+    }
+  }
+
+  return (
+    <>
+      <div className="ws-scrim" onClick={onClose} />
+      <div className="ws-modal-wrap">
+        <div className="ws-modal" role="dialog" aria-label="Connect Shopify">
+          <div className="ws-modal-h">
+            <h2>Connect Shopify</h2>
+            <p>Generate a store install link, then paste the callback URL after Shopify approval.</p>
+          </div>
+          <div className="ws-modal-b">
+            <div className="ws-lbl">Shopify store domain</div>
+            <input
+              className="input"
+              autoFocus
+              value={shopDomain}
+              maxLength={255}
+              placeholder="your-store.myshopify.com"
+              onChange={(e) => setShopDomain(e.target.value)}
+              style={{ width: '100%', marginTop: 8 }}
+            />
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+              <button type="button" className="btn primary" disabled={shopify.saving} onClick={() => void start()}>
+                <ExternalLink size={14} />{authorizeUrl ? 'Regenerate link' : 'Open sign-in'}
+              </button>
+              <button type="button" className="btn" disabled={!authorizeUrl} onClick={() => void copyLink()}>
+                <Copy size={14} />Copy link
+              </button>
+            </div>
+
+            {authorizeUrl ? (
+              <>
+                <div className="ws-lbl" style={{ marginTop: 18 }}>Initiated URL</div>
+                <input
+                  className="input"
+                  readOnly
+                  value={authorizeUrl}
+                  onFocus={(e) => e.currentTarget.select()}
+                  style={{ width: '100%', marginTop: 8 }}
+                />
+              </>
+            ) : null}
+
+            <div className="ws-lbl" style={{ marginTop: 18 }}>Callback URL</div>
+            <textarea
+              className="input"
+              value={callbackUrl}
+              rows={4}
+              placeholder="Paste the full URL Shopify redirects to after approval"
+              onChange={(e) => setCallbackUrl(e.target.value)}
+              style={{ width: '100%', marginTop: 8, resize: 'vertical', minHeight: 96 }}
+            />
+            <p className="ws-sentence-note">
+              The pasted URL is exchanged by the backend. Tokens are stored encrypted and are never shown here.
+            </p>
+          </div>
+          <div className="ws-modal-f">
+            <button type="button" className="btn" onClick={onClose} disabled={shopify.saving}>Cancel</button>
+            <button type="button" className="btn primary" disabled={shopify.saving || !callbackUrl.trim()} onClick={() => void finish()}>
+              {shopify.saving ? 'Working…' : 'Save connection'}
+            </button>
+          </div>
+        </div>
+      </div>
     </>
   )
 }

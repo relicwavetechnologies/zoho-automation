@@ -156,3 +156,24 @@ export class InfraError extends Error {
 /** Build an InfraError from a caught unknown. */
 export const wrapInfra = (layer: InfraLayer, op: string, cause: unknown): InfraError =>
   new InfraError({ layer, op, cause, message: cause instanceof Error ? cause.message : String(cause) });
+
+/**
+ * A provider write that failed before any byte left this process.
+ *
+ * The distinction is the whole point: a request that was never dispatched
+ * provably wrote nothing, so the work it was carrying can safely be retried. A
+ * request that *was* dispatched and then failed carries no such guarantee, and
+ * for a financial write the difference between the two is the difference
+ * between "try again" and "go and check before you do".
+ *
+ * Inferring this from an error message is not good enough — a missing
+ * connection, a revoked refresh token and a transport reset all arrive as plain
+ * strings, and reading them wrong in the safe direction strands work that never
+ * happened.
+ */
+export class WriteNotDispatchedError extends Error {
+  constructor(message: string, readonly cause?: unknown) {
+    super(message);
+    this.name = 'WriteNotDispatchedError';
+  }
+}
