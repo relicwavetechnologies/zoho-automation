@@ -54,7 +54,17 @@ type Outcome = { text: string; tone: 'ok' | 'held' | 'fail' | 'busy' }
  * that is sitting in the destination inbox as one that never went.
  */
 function outcomeOf(row: MailCaught): Outcome {
-  const destination = readDestination(row.destination, row.action)
+  /*
+   * The resolved address wins where there is one.
+   *
+   * `row.destination` is the *rule's* destination, and on a rule that sorts
+   * mail between people that is a table rather than a place — so reading it
+   * here would name whichever branch the summary happened to describe, about a
+   * message that went to a different one.
+   */
+  const destination = row.resolvedDestination
+    ? readDestination(row.resolvedDestination, row.action)
+    : readDestination(row.destination, row.action)
   const action = readAction(row.action)
 
   switch (row.status) {
@@ -98,19 +108,35 @@ const OUTCOME_ICON = {
  * question they asked.
  */
 function Verdict({ verdict }: { verdict: MailJudgeVerdict }) {
+  /*
+   * A routed verdict reads as a sorting, not as a pass.
+   *
+   * "Divo passed it" about a message whose entire outcome was *which colleague
+   * received it* answers a question nobody asked. `none` is a real answer —
+   * the model is told to prefer it over guessing — so it is said in those
+   * words rather than as a failure.
+   */
+  const routedNowhere = verdict.decision === 'routed'
+    && (!verdict.route || verdict.route === 'none')
   const tone = verdict.decision === 'passed'
     ? 'b-ok'
-    : verdict.decision === 'rejected' ? '' : 'b-warn'
+    : verdict.decision === 'routed'
+      ? (routedNowhere ? '' : 'b-ok')
+      : verdict.decision === 'rejected' ? '' : 'b-warn'
   const label = verdict.decision === 'passed'
     ? 'Divo passed it'
-    : verdict.decision === 'rejected'
-      ? 'Divo held it'
-      : 'Divo could not read it'
+    : verdict.decision === 'routed'
+      ? (routedNowhere
+          ? 'Divo found no match for it'
+          : `Divo sorted it as ${verdict.route}`)
+      : verdict.decision === 'rejected'
+        ? 'Divo held it'
+        : 'Divo could not read it'
 
   return (
     <div className="ws-caught-v">
       <span className={`badge ${tone}`}>
-        {verdict.decision === 'passed' ? <span className="dot" /> : null}
+        {verdict.decision === 'passed' || tone === 'b-ok' ? <span className="dot" /> : null}
         {label}
         {typeof verdict.confidence === 'number'
           // Rounded to whole percent. Two decimal places on a number a model

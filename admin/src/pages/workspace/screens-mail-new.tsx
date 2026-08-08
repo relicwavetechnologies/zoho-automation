@@ -32,7 +32,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
-  ArrowLeft, Inbox, Info, Mail, Plus, ShieldAlert, TriangleAlert, X,
+  ArrowLeft, Inbox, Info, Mail, Plus, ShieldAlert, Split, TriangleAlert, X,
 } from 'lucide-react'
 import {
   matchClauses, readAction, readDestination, useCreateMailRule, useMailAutomations,
@@ -163,7 +163,7 @@ function toggleDay(window: Record<string, unknown>, day: string): Record<string,
    Three, matching the three the backend actually runs. Each states the one
    thing about it that a member cannot infer, and nothing they can. */
 
-type DestinationKind = 'email' | 'lark_dm' | 'organize'
+type DestinationKind = 'email' | 'lark_dm' | 'organize' | 'routed'
 
 const DESTINATIONS: Array<{
   kind: DestinationKind
@@ -184,7 +184,27 @@ const DESTINATIONS: Array<{
     kind: 'organize', mark: () => <GmailMark size={15} />,
     title: 'File it in Gmail', body: 'Label, archive or mark read.',
   },
+  {
+    kind: 'routed', mark: () => <Split size={15} />,
+    title: 'Sort it between people', body: 'Divo reads it and picks who gets it.',
+  },
 ]
+
+/** One branch of a routed rule, as the form holds it. */
+type RouteRow = { when: string; email: string }
+
+/**
+ * The keys the server is given, derived rather than typed.
+ *
+ * A key is a label the model answers with; the member is describing kinds of
+ * mail, not naming variables, so asking them for a slug would be asking for
+ * something they have no opinion about. Derived from the position so it is
+ * stable while a row is edited, and short enough to be an easy token.
+ */
+const routeKey = (index: number): string => `route-${index + 1}`
+
+/** The runtime's cap, stated once so the button and the server agree. */
+const MAX_ROUTES = 6
 
 /* ══ Entry points ══════════════════════════════════════ */
 
@@ -239,6 +259,22 @@ function MailRuleForm({
   const [judging, setJudging] = useState(false)
   const [question, setQuestion] = useState('')
   const [failOpen, setFailOpen] = useState(false)
+  /*
+   * The routing table.
+   *
+   * Two empty rows to start rather than one: a single row is a plain forward
+   * with extra steps, and the shape of the thing being built is only legible
+   * once there are two of them side by side.
+   *
+   * `otherwiseEmail` empty means hold — nothing is sent and the member sees it
+   * under What Divo caught. There is no third state that drops a message
+   * silently, here or in the runtime.
+   */
+  const [routes, setRoutes] = useState<RouteRow[]>([
+    { when: '', email: '' },
+    { when: '', email: '' },
+  ])
+  const [otherwiseEmail, setOtherwiseEmail] = useState('')
   const [seeded, setSeeded] = useState(false)
   const [touched, setTouched] = useState(false)
   const [leaving, setLeaving] = useState(false)
@@ -302,6 +338,8 @@ function MailRuleForm({
     setJudging(Boolean(source.judge))
     setQuestion(source.judge?.question ?? '')
     setFailOpen(source.judge?.onFailure === 'open')
+    setRoutes(read.routes)
+    setOtherwiseEmail(read.otherwiseEmail)
     // A duplicate that keeps the original's name produces two rows nobody can
     // tell apart on the list. An edit keeps it, because it is that rule.
     setName(editing ? source.name : `${source.name} (copy)`)
@@ -358,6 +396,7 @@ function MailRuleForm({
   const organizeChosen = label.length > 0 || archive || markRead
   const blocked = blockedReason({
     clauses, destination, address, larkLinked, organizeChosen, judging, question,
+    routes, otherwiseEmail,
   })
   const saving = creating.saving || updating.saving
   const pending = creating.pending ?? updating.pending
@@ -372,12 +411,27 @@ function MailRuleForm({
         ? { type: 'email', email: address.trim() }
         : destination === 'lark_dm'
           ? { type: 'lark_dm' }
-          : {
-              type: 'organize',
-              ...(label.length > 0 ? { label } : {}),
-              ...(archive ? { archive: true } : {}),
-              ...(markRead ? { markRead: true } : {}),
-            },
+          : destination === 'routed'
+            ? {
+                type: 'routed',
+                routes: routes.map((row, index) => ({
+                  key: routeKey(index),
+                  when: row.when.trim(),
+                  destination: { type: 'email' as const, email: row.email.trim() },
+                })),
+                // Absent would also mean hold on the server; sent explicitly so
+                // the stored rule states what happens rather than leaving it to
+                // a default somebody has to know about.
+                otherwise: otherwiseEmail.trim().length > 0
+                  ? { type: 'email' as const, email: otherwiseEmail.trim() }
+                  : 'hold' as const,
+              }
+            : {
+                type: 'organize',
+                ...(label.length > 0 ? { label } : {}),
+                ...(archive ? { archive: true } : {}),
+                ...(markRead ? { markRead: true } : {}),
+              },
       ...(destination !== 'organize' && ceiling.trim().length > 0
         ? { rateLimitPerHour: Number(ceiling) }
         : {}),
@@ -667,7 +721,17 @@ function MailRuleForm({
               and its position on the page is the clearest explanation of that
               anybody gets.
             */}
-            <section className="ws-blk">
+            {/*
+              Hidden entirely on a routed rule, rather than disabled.
+
+              A yes/no question and a single destination are independent — the
+              question decides *whether*, the picker decides *where*. On a routed
+              rule they are the same decision, so leaving this on screen would
+              offer a question and, beneath it, a table that already asks one.
+              The runtime refuses the pair outright, so a rule built from both
+              could not be saved at all.
+            */}
+            <section className="ws-blk" hidden={destination === 'routed'}>
               <div className="ws-blk-h">
                 <span className="ws-blk-t">Then Divo reads it</span>
                 <label className="ws-mk-tog">
@@ -693,7 +757,7 @@ function MailRuleForm({
                     Divo answers yes or no for each matching message and only acts on a yes.
                     A no is <b>kept, not lost</b> — it appears under What Divo caught with the
                     reason. Divo sees the sender, the subject and a short preview, never
-                    attachments.
+                    attachments. A question decides <i>whether</i>, never <i>who</i>.
                   </p>
 
                   <label className="ws-mk-tog">
@@ -729,7 +793,8 @@ function MailRuleForm({
                   <p className="ws-mk-hint">
                     Conditions match words. A question lets Divo tell a real invoice from an
                     advert that says “invoice” — worth adding when what you want is a judgement
-                    rather than a pattern.
+                    rather than a pattern. To send different mail to different people instead,
+                    choose <b>Sort it between people</b> below.
                   </p>
                 </div>
               )}
@@ -745,7 +810,14 @@ function MailRuleForm({
                     className="ws-pick"
                     key={option.kind}
                     data-on={destination === option.kind ? 'true' : undefined}
-                    onClick={() => { setDestination(option.kind); setTouched(true) }}
+                    onClick={() => {
+                      setDestination(option.kind)
+                      // A routed rule already asks its own question. Clearing it
+                      // here rather than ignoring it on save, so somebody who
+                      // typed one and then switched sees it go.
+                      if (option.kind === 'routed') setJudging(false)
+                      setTouched(true)
+                    }}
                   >
                     <span className="ws-pick-i">{option.mark()}</span>
                     <b>{option.title}</b>
@@ -779,6 +851,122 @@ function MailRuleForm({
               ) : null}
 
               {destination === 'lark_dm' ? <LarkDelivery linked={larkLinked} /> : null}
+
+              {destination === 'routed' ? (
+                <div className="ws-blk-body">
+                  <p className="ws-mk-hint">
+                    Divo reads each matching message and sends it to <b>one</b> of these.
+                    It can never send anywhere else. One reading per message — the same
+                    cost as one question.
+                  </p>
+
+                  <div className="ws-routes">
+                    <div className="ws-route ws-route-h">
+                      <span>When the message is…</span>
+                      <span />
+                      <span>send it to</span>
+                      <span />
+                    </div>
+                    {routes.map((row, index) => (
+                      <div className="ws-route" key={index}>
+                        <input
+                          className="input"
+                          value={row.when}
+                          onChange={(e) => {
+                            const next = [...routes]
+                            next[index] = { ...next[index]!, when: e.target.value }
+                            setRoutes(next); setTouched(true)
+                          }}
+                          placeholder="an invoice, bill or payment request"
+                        />
+                        <span className="ws-route-ar">→</span>
+                        <input
+                          className="input"
+                          value={row.email}
+                          onChange={(e) => {
+                            const next = [...routes]
+                            next[index] = { ...next[index]!, email: e.target.value }
+                            setRoutes(next); setTouched(true)
+                          }}
+                          placeholder="anish@emiactech.com"
+                        />
+                        <button
+                          type="button"
+                          className="ws-route-x"
+                          /* Two is the floor the runtime enforces, so the button
+                             that would take it below is gone rather than
+                             refusing after the click. */
+                          disabled={routes.length <= 2}
+                          onClick={() => {
+                            setRoutes(routes.filter((_, i) => i !== index)); setTouched(true)
+                          }}
+                          aria-label={`Remove row ${index + 1}`}
+                        >
+                          <X size={13} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* The count is on the button rather than behind it. Six is
+                      the runtime's cap, and a button that simply stops working
+                      at seven is a limit somebody discovers by failing. */}
+                  <button
+                    type="button"
+                    className="ws-add"
+                    disabled={routes.length >= MAX_ROUTES}
+                    onClick={() => {
+                      setRoutes([...routes, { when: '', email: '' }]); setTouched(true)
+                    }}
+                  >
+                    <Plus size={12} /> Add another · {routes.length} of {MAX_ROUTES}
+                  </button>
+
+                  {routedExternals(routes, otherwiseEmail, mailbox.accountEmail).length > 0 ? (
+                    <div className="ws-ceiling">
+                      <ShieldAlert size={14} />
+                      <div>
+                        <b>
+                          {routedExternals(routes, otherwiseEmail, mailbox.accountEmail).join(', ')}
+                          {' '}
+                          {routedExternals(routes, otherwiseEmail, mailbox.accountEmail).length > 1
+                            ? 'are' : 'is'} outside {domainOf(mailbox.accountEmail)}.
+                        </b>{' '}
+                        Matching mail leaves your company in full, so your manager is asked
+                        before this starts.
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="ws-route-else">
+                    <span>Anything that fits none of these →</span>
+                    <select
+                      className="input"
+                      value={otherwiseEmail.length > 0 ? 'send' : 'hold'}
+                      onChange={(e) => {
+                        setOtherwiseEmail(e.target.value === 'hold' ? '' : ' ')
+                        setTouched(true)
+                      }}
+                    >
+                      <option value="hold">Hold it and show me</option>
+                      <option value="send">Send it to…</option>
+                    </select>
+                    {otherwiseEmail.length > 0 ? (
+                      <input
+                        className="input"
+                        value={otherwiseEmail.trim()}
+                        onChange={(e) => { setOtherwiseEmail(e.target.value); setTouched(true) }}
+                        placeholder="everyone@emiactech.com"
+                      />
+                    ) : null}
+                  </div>
+                  <p className="ws-mk-hint">
+                    Held mail is <b>kept, not lost</b> — it appears under What Divo caught with
+                    the reason. Divo sees the sender, the subject and a short preview, never
+                    attachments.
+                  </p>
+                </div>
+              ) : null}
 
               {destination === 'organize' ? (
                 <div className="ws-blk-body ws-mk-org">
@@ -898,6 +1086,8 @@ function seedFrom(rule: MailRule): {
   label: string
   archive: boolean
   markRead: boolean
+  routes: RouteRow[]
+  otherwiseEmail: string
 } {
   const action = readAction(rule.action)
   const to = readDestination(rule.destination, rule.action)
@@ -905,17 +1095,37 @@ function seedFrom(rule: MailRule): {
     ? String(action.rateLimitPerHour)
     : ''
 
+  /*
+   * Seeded like everything else, and for the sharpest version of the reason
+   * already written above `judge`: both routes take the whole rule, so a table
+   * left unseeded here would be *deleted* the moment somebody edited this
+   * rule's name — and what came back would forward everything to one place.
+   */
+  const routes: RouteRow[] = to.kind === 'routed'
+    ? to.routes.map((route) => ({
+        when: route.when,
+        email: route.destination.kind === 'email' ? route.destination.email : '',
+      }))
+    : []
+
   return {
     match: { ...rule.match },
     destination: to.kind === 'email' ? 'email'
       : to.kind === 'lark_dm' ? 'lark_dm'
-        : action.kind === 'organize' ? 'organize'
-          : null,
+        : to.kind === 'routed' ? 'routed'
+          : action.kind === 'organize' ? 'organize'
+            : null,
     address: to.kind === 'email' ? to.email : '',
     ceiling,
     label: action.kind === 'organize' ? action.label ?? '' : '',
     archive: action.kind === 'organize' ? action.archive : false,
     markRead: action.kind === 'organize' ? action.markRead : false,
+    // Two empty rows rather than none, so switching a non-routed rule to routed
+    // starts from something to type in rather than an empty block.
+    routes: routes.length >= 2 ? routes : [{ when: '', email: '' }, { when: '', email: '' }],
+    otherwiseEmail: to.kind === 'routed' && to.otherwise?.kind === 'email'
+      ? to.otherwise.email
+      : '',
   }
 }
 
@@ -1188,6 +1398,7 @@ function FieldRow({
  * truncated. The destination is the one thing those lines do not already say.
  */
 function suggestedName(destination: DestinationKind | null, address: string): string {
+  if (destination === 'routed') return 'Sort it between people'
   if (destination === 'organize') return 'File it in Gmail'
   if (destination === 'lark_dm') return 'Send it to me on Lark'
   if (destination === 'email' && address.trim().length > 0) return `Forward to ${address.trim()}`
@@ -1197,6 +1408,7 @@ function suggestedName(destination: DestinationKind | null, address: string): st
 /** Why the button is refusing, in the order somebody would fix them. */
 function blockedReason({
   clauses, destination, address, larkLinked, organizeChosen, judging, question,
+  routes, otherwiseEmail,
 }: {
   clauses: string[]
   destination: DestinationKind | null
@@ -1205,6 +1417,8 @@ function blockedReason({
   organizeChosen: boolean
   judging: boolean
   question: string
+  routes: RouteRow[]
+  otherwiseEmail: string
 }): string | null {
   /*
    * Refused here rather than left to the server's schema.
@@ -1229,10 +1443,60 @@ function blockedReason({
   if (destination === 'organize' && !organizeChosen) {
     return 'Say what to do with the message: label it, archive it, or mark it read.'
   }
+  if (destination === 'routed') {
+    /*
+     * Refused here rather than left to the server, for the same reason the
+     * empty question is. A half-filled row is a branch the member believes in;
+     * sending it produces a schema error that reads as a bug, and a member
+     * cannot tell which of six rows the server meant.
+     */
+    if (routes.length < 2) {
+      return 'Add at least two kinds of message — with one, this is a plain forward.'
+    }
+    const half = routes.findIndex(
+      (row) => (row.when.trim().length > 0) !== (row.email.trim().length > 0),
+    )
+    if (half >= 0) {
+      return `Row ${half + 1} is half filled in — say what that kind of message is, and who gets it.`
+    }
+    if (routes.some((row) => row.when.trim().length < 3)) {
+      return 'Describe each kind of message in a few words, so Divo can tell them apart.'
+    }
+    if (routes.some((row) => row.email.trim().length === 0)) {
+      return 'Give every kind of message somebody to send it to.'
+    }
+    // Two rows described the same way is a table no answer could resolve — the
+    // model would be picking between two branches that mean the same thing.
+    const described = routes.map((row) => row.when.trim().toLowerCase())
+    if (new Set(described).size !== described.length) {
+      return 'Two rows describe the same kind of message. Divo could not tell them apart.'
+    }
+  }
   return null
 }
 
 const domainOf = (address: string): string => address.split('@')[1]?.toLowerCase() ?? ''
+
+/**
+ * Every branch of a routing table that leaves the company, including the one
+ * for everything else.
+ *
+ * The fallback counts and is the branch nobody thinks about — "everything else
+ * goes to X" is exactly where an unnoticed external address ends up, and it is
+ * the row a member is least likely to re-read before saving.
+ */
+function routedExternals(
+  routes: RouteRow[],
+  otherwiseEmail: string,
+  mailbox: string,
+): string[] {
+  const addresses = [...routes.map((row) => row.email), otherwiseEmail]
+  return [...new Set(
+    addresses
+      .map((address) => address.trim())
+      .filter((address) => leavesDomain(address, mailbox)),
+  )]
+}
 
 /** Only once there is something to compare — an empty box is not a warning. */
 function leavesDomain(address: string, mailbox: string): boolean {

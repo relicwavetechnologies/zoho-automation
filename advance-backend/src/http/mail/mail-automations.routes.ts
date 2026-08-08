@@ -549,6 +549,10 @@ export function createMailAutomationsRoutes(
             firstAttemptAt: delivery.firstAttemptAt.toISOString(),
             deliveredAt: delivery.deliveredAt?.toISOString() ?? null,
             nextAttemptAt: delivery.nextAttemptAt?.toISOString() ?? null,
+            // The rule page used to show no verdicts at all while the Caught
+            // feed showed every one of them, about the very same deliveries.
+            verdict: delivery.verdict,
+            resolvedDestination: delivery.resolvedDestination,
           })),
         },
       });
@@ -686,6 +690,10 @@ export function createMailAutomationsRoutes(
             action: row.action,
             destination: row.destination,
             verdict: row.verdict,
+            // Where it actually went, on a rule that chooses per message. The
+            // feed must prefer this over the rule's own destination, which on a
+            // routed rule is a table and would name the wrong person.
+            resolvedDestination: row.resolvedDestination,
           })),
         },
       });

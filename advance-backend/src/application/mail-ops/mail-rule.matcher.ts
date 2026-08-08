@@ -430,11 +430,21 @@ const RoutedDestinationSchema = z.object({
 const leafKind = (leaf: { type: string }): 'email' | 'lark' =>
   leaf.type === 'email' ? 'email' : 'lark';
 
-const DestinationSchema = z.union([
+/**
+ * Exported because the compiler validates what a model wrote against it.
+ *
+ * Same discipline `mailRuleMatchSchema` and `mailRuleJudgeSchema` already get:
+ * the last word on what a rule may say belongs to the schema the runtime
+ * enforces, not to the model — an invented field or a mixed routing table
+ * becomes a question rather than a rule nobody can run.
+ */
+export const mailRuleDestinationSchema = z.union([
   LeafDestinationSchema,
   RoutedDestinationSchema,
   z.object({ type: z.literal('none') }),
 ]);
+
+const DestinationSchema = mailRuleDestinationSchema;
 
 export function parseMailRule(input: {
   match: Record<string, unknown>;
