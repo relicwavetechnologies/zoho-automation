@@ -31,7 +31,7 @@ export const ROUTING_SYSTEM_SKILLS = [
 Choose the exact approved specialist returned by this router.
 
 - Settled Menhood order, customer, product, RTO, COD, campaign, or pincode analysis that needs joins, aggregates, cohorts, broad filtering, or bulk analysis → \`menhood-data\`. This company-managed reporting source needs no Airtable connection ID and does not use local Python.
-- Current/latest Menhood order counts, the current or previous month before reporting maturity, or questions that depend on Airtable-only view fields such as \`Order Status (Team)\`, \`Order Sub Status\`, Duplicate/TEST/Testing cleanup, or Regular Order filtering → \`airtable-core\` against the live Airtable Orders table. Use this for exact live reconciliation, not broad historical analysis.
+- Current/latest Menhood order counts, the current or previous month before reporting maturity, or questions that depend on Airtable-only view fields such as \`Order Status (Team)\`, \`Order Sub Status\`, Duplicate/TEST/Testing cleanup, or Regular Order filtering → \`airtable-core\` against the live Airtable Orders table. Route there immediately; do not first sample the reporting DB and do not ask whether to check Airtable. Use this for exact live reconciliation, not broad historical analysis.
 - Ordinary Airtable records, comments, and CRUD → \`airtable-core\`.
 - Bases, tables, fields, schemas, and views → \`airtable-schema-ops\`.
 - Interfaces, forms, and automations → \`airtable-automation-ops\`.

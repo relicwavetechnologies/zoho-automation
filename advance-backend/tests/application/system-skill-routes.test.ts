@@ -3,7 +3,11 @@ import { describe, it } from 'node:test';
 import { DIVO_SEMRUSH_SYSTEM_SKILL } from '../../src/application/skills/semrush-system-skill.ts';
 import { DIVO_OMS_SITE_DATA_SYSTEM_SKILL } from '../../src/application/skills/oms-site-data-system-skill.ts';
 import { DATA_EXPORT_SYSTEM_SKILL } from '../../src/application/skills/data-export-system-skill.ts';
-import { airtableCoreSkill } from '../../src/application/skills/airtable.skill.ts';
+import {
+  airtableAutomationOpsSkill,
+  airtableCoreSkill,
+  airtableSchemaOpsSkill,
+} from '../../src/application/skills/airtable.skill.ts';
 import { zohoBooksReadAnalysisSkill } from '../../src/application/skills/zoho.skill.ts';
 import { DIVO_LOCAL_PYTHON_SYSTEM_SKILL } from '../../src/application/skills/divo-local-python-system-skill.ts';
 import { CREATE_FILES_SYSTEM_SKILL } from '../../src/application/skills/files-and-documents-system-skills.ts';
@@ -85,6 +89,7 @@ describe('system skill routes', () => {
     assert.match(airtableCoreSkill.instructions, /Record reads are bounded previews.*do not keep paging through Airtable MCP/s);
     assert.match(airtableCoreSkill.instructions, /Menhood settled historical totals.*switch to `menhood-data` instead of paging Airtable MCP/s);
     assert.match(airtableCoreSkill.instructions, /use live Airtable for narrow current\/recent Menhood order counts/);
+    assert.match(airtableCoreSkill.instructions, /perform the live read yourself; do not ask whether to check Airtable/);
     assert.match(airtableCoreSkill.instructions, /Duplicate\/TEST\/Testing cleanup/);
     assert.match(airtableCoreSkill.instructions, /If an exact replayable source exists.*one soft follow-up/s);
     assert.match(airtableCoreSkill.instructions, /not to export, not now, or chat-only/);
@@ -103,6 +108,21 @@ describe('system skill routes', () => {
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /direct `dataExport` recipe only.*backend-replayable source.*no\s+provider candidate/s);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Airtable MCP is not\s+a bulk-export source/s);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /say it has started or been\s+queued/s);
+  });
+
+  it('teaches the exact Airtable gateway envelope and native record-read shapes', () => {
+    assert.match(airtableCoreSkill.instructions, /root `op: "tools\.invoke"`/);
+    assert.match(airtableCoreSkill.instructions, /Put `connectionId` inside `payload\.args`, never beside `payload`/);
+    assert.match(airtableCoreSkill.instructions, /toolId: "airtableRecords"/);
+    assert.match(airtableSchemaOpsSkill.instructions, /toolId: "airtableSchema"/);
+    assert.match(airtableAutomationOpsSkill.instructions, /toolId: "airtableAutomation"/);
+    assert.doesNotMatch(airtableSchemaOpsSkill.instructions, /toolId: "airtableRecords", args: \{ op: "describe"\|"call"/);
+    assert.doesNotMatch(airtableAutomationOpsSkill.instructions, /toolId: "airtableRecords", args: \{ op: "describe"\|"call"/);
+    assert.match(airtableCoreSkill.instructions, /list_records_for_table input uses `filters` plural, not `filter`/);
+    assert.match(airtableCoreSkill.instructions, /search_records has a different input shape/);
+    assert.match(airtableCoreSkill.instructions, /Never pass `tableId`, `fieldIds`, `filter`, or `pageSize` to search_records/);
+    assert.match(airtableCoreSkill.instructions, /do not use `contains` on the live `Product Name` field/);
+    assert.match(airtableCoreSkill.instructions, /use `isAnyOf` with those names/);
   });
 
   it('keeps Semrush and OMS on Divo governed candidates without ad-hoc export paths', () => {

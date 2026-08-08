@@ -8,12 +8,15 @@ import {
 	selectDepartment,
 } from "./auth.mjs";
 import {
+	buildRuntimeEnvironmentPatch,
+	prepareDivoPiRun,
 	recordInterruptedWorkFact,
 	resolveRuntimeThreadId,
 	startDivoPi,
 } from "./runtime.mjs";
 
 const DEFAULT_BOOTSTRAP_PATH = "/run/divo-auth/bootstrap.json";
+const DEFAULT_INTERRUPTION_PATH = "/run/divo-auth/interruption.json";
 const DEFAULT_BOOTSTRAP_TIMEOUT_MS = 30_000;
 
 export function validateBootstrap(value) {
@@ -51,6 +54,9 @@ export function validateBootstrap(value) {
 	) {
 		throw new Error("Bootstrap interruptionTask is invalid");
 	}
+	if (value.trustedSession !== undefined) {
+		value.trustedSession = validateTrustedSession(value.trustedSession);
+	}
 	return value;
 }
 
@@ -63,6 +69,71 @@ export function assertPinnedIdentity(session, bootstrap) {
 			`Authenticated identity does not match pinned profile "${bootstrap.profile}"`,
 		);
 	}
+}
+
+function validateInterruption(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("Interruption record must be an object");
+	}
+	if (!/^[A-Za-z0-9._-]+$/.test(value.thread)) {
+		throw new Error("Interruption thread is invalid");
+	}
+	if (typeof value.task !== "string" || value.task.length > 8_000) {
+		throw new Error("Interruption task is invalid");
+	}
+	return value;
+}
+
+function validateTrustedDepartment(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("Bootstrap trusted department is invalid");
+	}
+	if (typeof value.id !== "string" || !value.id.trim()) {
+		throw new Error("Bootstrap trusted department id is invalid");
+	}
+	if (value.name !== undefined && typeof value.name !== "string") {
+		throw new Error("Bootstrap trusted department name is invalid");
+	}
+	return {
+		id: value.id,
+		...(value.name ? { name: value.name } : {}),
+	};
+}
+
+function validateTrustedSession(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("Bootstrap trusted session is invalid");
+	}
+	if (typeof value.userId !== "string" || !value.userId.trim()) {
+		throw new Error("Bootstrap trusted session userId is invalid");
+	}
+	if (typeof value.companyId !== "string" || !value.companyId.trim()) {
+		throw new Error("Bootstrap trusted session companyId is invalid");
+	}
+	const departments = value.departments === undefined ? [] : value.departments;
+	if (!Array.isArray(departments)) {
+		throw new Error("Bootstrap trusted session departments are invalid");
+	}
+	return {
+		userId: value.userId,
+		companyId: value.companyId,
+		departments: departments.map(validateTrustedDepartment),
+	};
+}
+
+function recordPendingInterruption(
+	filePath = process.env.DIVO_INTERRUPTION_PATH ?? DEFAULT_INTERRUPTION_PATH,
+) {
+	if (!fs.existsSync(filePath)) return false;
+	const raw = fs.readFileSync(filePath, "utf8");
+	fs.unlinkSync(filePath);
+	const interruption = validateInterruption(JSON.parse(raw));
+	recordInterruptedWorkFact({
+		dataDir: "/data/state/data",
+		thread: interruption.thread,
+		task: interruption.task,
+	});
+	return true;
 }
 
 /**
@@ -89,6 +160,27 @@ export function piOptions({ bootstrap, department, runtimeContext }) {
 	};
 }
 
+async function resolvePiOptions() {
+	const bootstrap = await readBootstrap(
+		process.env.DIVO_BOOTSTRAP_PATH ?? DEFAULT_BOOTSTRAP_PATH,
+	);
+	const session = bootstrap.trustedSession ?? await fetchMemberSession(bootstrap);
+	assertPinnedIdentity(session, bootstrap);
+	const department = selectDepartment(
+		session.departments,
+		bootstrap.departmentId,
+	);
+	const runtimeContext = await fetchRuntimeContext({
+		...bootstrap,
+		department,
+		departments: session.departments,
+	});
+	return {
+		bootstrap,
+		options: piOptions({ bootstrap, department, runtimeContext }),
+	};
+}
+
 async function readBootstrap(
 	filePath = DEFAULT_BOOTSTRAP_PATH,
 	timeoutMs = DEFAULT_BOOTSTRAP_TIMEOUT_MS,
@@ -104,32 +196,15 @@ async function readBootstrap(
 }
 
 export async function runContainer() {
-	const bootstrap = await readBootstrap(
-		process.env.DIVO_BOOTSTRAP_PATH ?? DEFAULT_BOOTSTRAP_PATH,
-	);
-	const session = await fetchMemberSession(bootstrap);
-	assertPinnedIdentity(session, bootstrap);
-	const department = selectDepartment(
-		session.departments,
-		bootstrap.departmentId,
-	);
-	const runtimeContext = await fetchRuntimeContext({
-		...bootstrap,
-		department,
-		departments: session.departments,
-	});
-	const child = startDivoPi(piOptions({ bootstrap, department, runtimeContext }));
+	const { bootstrap, options } = await resolvePiOptions();
+	const child = startDivoPi(options);
 	let interruptionRecorded = false;
 	for (const signal of ["SIGINT", "SIGTERM"]) {
 		process.once(signal, () => {
 			if (!interruptionRecorded && bootstrap.channel === "lark") {
 				interruptionRecorded = true;
 				try {
-					recordInterruptedWorkFact({
-						dataDir: "/data/state/data",
-						thread: bootstrap.thread,
-						task: bootstrap.interruptionTask,
-					});
+					recordPendingInterruption();
 				} catch (error) {
 					console.error(`[divo-container] could not record interrupted work: ${error.message}`);
 				}
@@ -149,11 +224,25 @@ export async function runContainer() {
 	});
 }
 
+export async function prepareContainerRun() {
+	const { options } = await resolvePiOptions();
+	const prepared = prepareDivoPiRun(options);
+	return {
+		environment: buildRuntimeEnvironmentPatch(prepared.values),
+	};
+}
+
 const isMain =
 	process.argv[1] &&
 	path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 if (isMain) {
-	runContainer().catch((error) => {
+	const command = process.argv[2];
+	const work = command === "prepare"
+		? prepareContainerRun().then((result) => {
+			process.stdout.write(`${JSON.stringify(result)}\n`);
+		})
+		: runContainer();
+	work.catch((error) => {
 		console.error(`[divo-container] ${error.message}`);
 		process.exitCode = 1;
 	});

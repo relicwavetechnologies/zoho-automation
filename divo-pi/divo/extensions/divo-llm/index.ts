@@ -63,20 +63,7 @@ export function normalizeDivoLlmRequestError<T>(message: T): T {
 	} as T;
 }
 
-export default function divoLlmExtension(pi: ExtensionAPI) {
-	const config = captureDivoGatewayConfig();
-	// Scrub the credential even when the remaining proxy configuration is
-	// incomplete. A partial/misconfigured desktop launch must fail without
-	// leaving member auth available to later Bash or Python children.
-	delete process.env.DIVO_MEMBER_TOKEN;
-	if ("error" in config) {
-		throw new Error(`${config.error} Standalone Divo Pi refuses direct provider fallback.`);
-	}
-	// The trace extension uses this process-local marker to add Divo correlation
-	// fields only when DeepSeek is actually repointed to our proxy. It prevents
-	// proxy-only fields from leaking into direct provider requests.
-	process.env.DIVO_LLM_PROXY_ACTIVE = "1";
-
+export function registerDivoLlmProviders(pi: ExtensionAPI, config: { backendUrl: string; memberToken: string }) {
 	// Our OpenAI-compatible proxy. Each provider SDK appends its own endpoint.
 	const baseUrl = `${config.backendUrl}/api/llm/v1`;
 	const proxied = {
@@ -95,6 +82,22 @@ export default function divoLlmExtension(pi: ExtensionAPI) {
 		api: "openai-responses",
 		models: [DIVO_LUNA_MODEL],
 	});
+	// The trace extension uses this process-local marker to add Divo correlation
+	// fields only when DeepSeek is actually repointed to our proxy. It prevents
+	// proxy-only fields from leaking into direct provider requests.
+	process.env.DIVO_LLM_PROXY_ACTIVE = "1";
+}
+
+export default function divoLlmExtension(pi: ExtensionAPI) {
+	const config = captureDivoGatewayConfig();
+	// Scrub the credential even when the remaining proxy configuration is
+	// incomplete. A partial/misconfigured desktop launch must fail without
+	// leaving member auth available to later Bash or Python children.
+	delete process.env.DIVO_MEMBER_TOKEN;
+	if ("error" in config) {
+		throw new Error(`${config.error} Standalone Divo Pi refuses direct provider fallback.`);
+	}
+	registerDivoLlmProviders(pi, config);
 	// A request rejected by Express never reaches the LLM proxy or emits model
 	// tokens. Keep the provider failure concise and machine-recognisable so Pi
 	// can surface it and apply its normal oversized-context recovery path.

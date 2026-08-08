@@ -323,6 +323,84 @@ describe('airtable execute', () => {
     assert.match(value.message, /MCP preview is not a full export or broad analytics source/i);
   });
 
+  it('normalizes stale record-read params before calling Airtable MCP', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const [records] = createAirtableMcpTools({
+      getConnection: async () => ({
+        status: 'resolved' as const,
+        connection: {
+          client: {
+            describeTool: async () => ({ name: 'search_records', inputSchema: { type: 'object' } }),
+            callTool: async (_name: string, input: Record<string, unknown>) => {
+              calls.push(input);
+              return { records: [{ id: 'recAAAAAAAAAAAAAA' }] };
+            },
+          },
+        },
+      }),
+    });
+    const result = await records!.execute(
+      {
+        op: 'call',
+        nativeTool: 'search_records',
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        input: {
+          baseId: 'app1',
+          table: 'Orders',
+          tableId: 'tbl1',
+          query: 'Trimmer 1.0',
+          fieldIds: ['fld1'],
+          filter: { operator: '=', field: 'fldStatus', value: 'Regular Order' },
+          pageSize: 8_000,
+        },
+      } as any,
+      makeCtx('airtableRecords', ['read']),
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(calls[0]?.['limit'], 10);
+    assert.equal(calls[0]?.['pageSize'], undefined);
+    assert.equal(calls[0]?.['tableId'], undefined);
+    assert.equal(calls[0]?.['fieldIds'], undefined);
+    assert.equal(calls[0]?.['filter'], undefined);
+    assert.deepEqual(calls[0]?.['resultFieldIds'], ['fld1']);
+    assert.deepEqual(calls[0]?.['filters'], { operator: '=', field: 'fldStatus', value: 'Regular Order' });
+  });
+
+  it('accepts legacy singular list_records filter but calls Airtable with filters plural', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const [records] = createAirtableMcpTools({
+      getConnection: async () => ({
+        status: 'resolved' as const,
+        connection: {
+          client: {
+            describeTool: async () => ({ name: 'list_records_for_table', inputSchema: { type: 'object' } }),
+            callTool: async (_name: string, input: Record<string, unknown>) => {
+              calls.push(input);
+              return { records: [{ id: 'recAAAAAAAAAAAAAA' }] };
+            },
+          },
+        },
+      }),
+    });
+    const filter = { operator: '=', field: 'fldStatus', value: 'Regular Order' };
+    const result = await records!.execute(
+      {
+        op: 'call',
+        nativeTool: 'list_records_for_table',
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        input: { baseId: 'app1', tableId: 'tbl1', filter, limit: 8_000 },
+      } as any,
+      makeCtx('airtableRecords', ['read']),
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls[0]?.['filters'], filter);
+    assert.equal(calls[0]?.['filter'], undefined);
+    assert.equal(calls[0]?.['limit'], undefined);
+    assert.equal(calls[0]?.['pageSize'], 10);
+  });
+
   it('rejects the retired inline export path before resolving a connection', async () => {
     let resolved = false;
     const [records] = createAirtableMcpTools({

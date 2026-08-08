@@ -24,9 +24,11 @@ import { registerKnowledgeReviewTool } from "./knowledge-review.ts";
 import {
 	formatGatewayResponse,
 	isGatewayApprovalStatus,
+	captureDivoGatewayConfig,
 	resolveDivoGatewayConfig,
 } from "./gateway-client.ts";
 import { executeGatewayRequest } from "./gateway-execution.ts";
+import { registerDivoLlmProviders } from "../divo-llm/index.ts";
 import { registerLocalDivoBroker, localCliEnabled, DEFAULT_EXECUTION_DEPENDENCIES as DEFAULT_LOCAL_BROKER_DEPENDENCIES } from "./local-broker.ts";
 import { authorizeToolInvocation } from "./skill-authorization.ts";
 import {
@@ -39,6 +41,28 @@ import { readDivoRunCorrelation } from "./run-correlation.ts";
 import { registerTeachClarificationTool } from "./teach-clarification.ts";
 
 const SCHEDULE_DIVO_WORK_SKILL_SLUG = "schedule-divo-work";
+
+function refreshDivoRuntime(pi: ExtensionAPI): void {
+	const hasFreshToken = typeof process.env.DIVO_MEMBER_TOKEN === "string"
+		&& process.env.DIVO_MEMBER_TOKEN.trim().length > 0;
+	const resolved = hasFreshToken
+		? captureDivoGatewayConfig(process.env)
+		: resolveDivoGatewayConfig();
+	delete process.env.DIVO_MEMBER_TOKEN;
+	if ("error" in resolved) return;
+	registerDivoLlmProviders(pi, resolved);
+}
+
+function currentRunPrompt(threadId?: string): string {
+	const lines = [
+		"Divo current run context (authoritative for this turn):",
+		`- The selected workspace root is: ${process.env.DIVO_WORKSPACE_DIR ?? "unavailable"}`,
+		`- The active Divo session id for this run is: ${threadId ?? "unavailable"}`,
+		`- Divo-owned scratch state for this run is: ${process.env.DIVO_RUN_DIR ?? "unavailable"}`,
+		"- Put temporary helper scripts, scratch notes, downloaded intermediate files, and logs under DIVO_RUN_DIR or the matching DIVO_* scratch directory.",
+	];
+	return lines.join("\n");
+}
 
 export function resolvedScheduleDivoWork(result: {
 	results: Array<{ slug?: string }>;
@@ -515,7 +539,9 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", async (event) => {
+		refreshDivoRuntime(pi);
 		loadedSkillByTool.clear();
+		const correlation = await readDivoRunCorrelation().catch(() => undefined);
 		let systemPrompt = composeDivoSystemPrompt(
 			event.systemPrompt,
 			DIVO_COMPANY_PERSONA_PROMPT,
@@ -523,8 +549,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 		);
 		systemPrompt = `${systemPrompt}\n\n${
 			localCliEnabled() ? DIVO_LOCAL_EXECUTION_PROMPT : DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT
-		}`;
-		const correlation = await readDivoRunCorrelation().catch(() => undefined);
+		}\n\n${currentRunPrompt(correlation?.threadId)}`;
 		if (correlation?.profile === "teach") {
 			if (!correlation.teachSessionId || !correlation.departmentId) {
 				throw new Error("Teach run context is incomplete");

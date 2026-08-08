@@ -163,6 +163,25 @@ export function runtimeIdentityNames(
 	};
 }
 
+export function trustedRuntimeSession(session) {
+	return {
+		userId: session.userId,
+		companyId: session.companyId,
+		departments: Array.isArray(session.departments)
+			? session.departments
+				.filter((department) =>
+					typeof department?.id === "string" && department.id.trim(),
+				)
+				.map((department) => ({
+					id: department.id,
+					...(typeof department.name === "string" && department.name
+						? { name: department.name }
+						: {}),
+				}))
+			: [],
+	};
+}
+
 export function validateAttachmentRequestId(value) {
 	if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]{7,63}$/.test(value)) {
 		throw new Error("Attachment request id is invalid");
@@ -1081,8 +1100,76 @@ export function buildBootstrapWriteArgs(container) {
 	];
 }
 
+export function buildInterruptionWriteArgs(container) {
+	return [
+		"exec",
+		"--interactive",
+		"--user",
+		WORKSPACE_UID_GID,
+		container,
+		"/bin/sh",
+		"-c",
+		"umask 077; cat > /run/divo-auth/interruption.json",
+	];
+}
+
+export function buildContainerPrepareArgs(container) {
+	return [
+		"exec",
+		"--interactive",
+		"--user",
+		WORKSPACE_UID_GID,
+		container,
+		"node",
+		"divo/container-entry.mjs",
+		"prepare",
+	];
+}
+
+export function buildContainerRunArgs(container) {
+	return [
+		"exec",
+		"--interactive",
+		container,
+		"node",
+		"divo/container-entry.mjs",
+	];
+}
+
 async function writeBootstrap(container, bootstrap) {
 	await runWithInput("docker", buildBootstrapWriteArgs(container), JSON.stringify(bootstrap));
+}
+
+async function stageRuntimeInterruption(container, bootstrap) {
+	if (
+		bootstrap.channel !== "lark"
+		|| typeof bootstrap.interruptionTask !== "string"
+		|| !bootstrap.interruptionTask
+	) {
+		return;
+	}
+	await runWithInput("docker", buildInterruptionWriteArgs(container), JSON.stringify({
+		thread: bootstrap.thread,
+		task: bootstrap.interruptionTask,
+	}));
+}
+
+async function prepareWarmRuntime(container) {
+	const result = await runWithInput("docker", buildContainerPrepareArgs(container), "");
+	let parsed;
+	try {
+		parsed = JSON.parse(result.stdout);
+	} catch {
+		throw new Error(`Divo runtime prepare returned invalid JSON: ${result.stdout.slice(0, 160)}`);
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error("Divo runtime prepare returned an invalid response");
+	}
+	const environment = parsed.environment;
+	if (!environment || typeof environment !== "object" || Array.isArray(environment)) {
+		throw new Error("Divo runtime prepare returned an invalid environment patch");
+	}
+	return environment;
 }
 
 async function clearBootstrap(volume) {
@@ -1487,6 +1574,7 @@ export async function promptWithTransientRetries({
 	onRetry,
 	signal,
 }) {
+	rpc.beginRun?.();
 	for (let retry = 0; ; retry += 1) {
 		signal?.throwIfAborted();
 		const completed = rpc.waitFor("agent_end");
@@ -1613,6 +1701,15 @@ export class JsonlRpc {
 		this.child.stdin.write(`${JSON.stringify(value)}\n`);
 	}
 
+	beginRun() {
+		this.writingStarted = false;
+	}
+
+	configure({ answerRequest, onProgress }) {
+		this.answerRequest = answerRequest;
+		this.onProgress = onProgress;
+	}
+
 	send(command, timeoutMs = RPC_TIMEOUT_MS) {
 		const id = `controller-${++this.nextId}`;
 		return new Promise((resolve, reject) => {
@@ -1726,6 +1823,115 @@ async function stopOwnedContainer(profile) {
 	if (container.State.Running) await docker(["stop", resources.container]);
 }
 
+const WARM_PI_EXIT_TIMEOUT_MS = 5_000;
+const warmPiProcesses = new Map();
+
+export function canReusePiProcess({
+	enabled = process.env.DIVO_PI_KEEPALIVE !== "false",
+	ephemeral = false,
+	sessionScope = "thread",
+	lifecycle,
+} = {}) {
+	return enabled && !ephemeral && sessionScope === "thread" && lifecycle === undefined;
+}
+
+function piProcessBinding({ profile, thread, backendUrl, departmentId, selectedModel }) {
+	return {
+		profile,
+		thread,
+		backendUrl,
+		departmentId: departmentId ?? "",
+		provider: selectedModel?.provider ?? "",
+		model: selectedModel?.model ?? "",
+	};
+}
+
+export function piProcessBindingMatches(current, next) {
+	return Boolean(current && next)
+		&& current.profile === next.profile
+		&& current.thread === next.thread
+		&& current.backendUrl === next.backendUrl
+		&& current.departmentId === next.departmentId
+		&& current.provider === next.provider
+		&& current.model === next.model;
+}
+
+function runtimeExitPromise(child) {
+	return new Promise((resolve) => {
+		child.once("error", (error) => resolve({ error }));
+		child.once("exit", (code, terminationSignal) => resolve({ code, terminationSignal }));
+	});
+}
+
+function spawnRuntimeRpc(container, answerRequest, onProgress) {
+	const child = spawn("docker", buildContainerRunArgs(container), {
+		stdio: ["pipe", "pipe", "pipe"],
+	});
+	child.stderr.pipe(process.stderr);
+	const exited = runtimeExitPromise(child);
+	const rpc = new JsonlRpc(child, answerRequest, onProgress);
+	return { child, exited, rpc };
+}
+
+function endRuntimeInput(child) {
+	if (child && !child.stdin.destroyed && !child.stdin.writableEnded) {
+		child.stdin.end();
+	}
+}
+
+async function waitForWarmPiExit(entry) {
+	const waitOrTimeout = () => new Promise((resolve) => {
+		const timer = setTimeout(() => resolve({ timedOut: true }), WARM_PI_EXIT_TIMEOUT_MS);
+		timer.unref?.();
+	});
+	const first = await Promise.race([entry.exited, waitOrTimeout()]);
+	if (!first?.timedOut) return first;
+	entry.child.kill("SIGTERM");
+	return await Promise.race([entry.exited, waitOrTimeout()]);
+}
+
+async function assertRuntimeExit(outcome) {
+	if (outcome?.timedOut) {
+		throw new Error("Divo runtime did not exit after stdin closed");
+	}
+	if (outcome?.error) throw outcome.error;
+	if (outcome?.code !== 0) {
+		throw new Error(
+			`Divo runtime exited ${outcome?.terminationSignal ? `with ${outcome.terminationSignal}` : `with code ${outcome?.code}`}`,
+		);
+	}
+}
+
+async function waitForClosedRuntime(child, exited) {
+	endRuntimeInput(child);
+	const outcome = await exited;
+	await assertRuntimeExit(outcome);
+}
+
+async function discardWarmPiProcess(profile) {
+	const entry = warmPiProcesses.get(profile);
+	if (!entry) return undefined;
+	if (warmPiProcesses.get(profile) === entry) warmPiProcesses.delete(profile);
+	endRuntimeInput(entry.child);
+	return await waitForWarmPiExit(entry);
+}
+
+function forgetWarmPiProcess(profile) {
+	warmPiProcesses.delete(profile);
+}
+
+async function stopWarmRuntime(profile) {
+	await discardWarmPiProcess(profile);
+	await stopOwnedContainer(profile);
+}
+
+function rememberWarmPiProcess(profile, entry) {
+	warmPiProcesses.set(profile, entry);
+	void entry.exited.finally(() => {
+		if (warmPiProcesses.get(profile) === entry) warmPiProcesses.delete(profile);
+	});
+}
+
 export function createIdleContainerScheduler({
 	stop,
 	idleTimeoutMs = RUNTIME_IDLE_TIMEOUT_MS,
@@ -1809,7 +2015,7 @@ export function createIdleContainerScheduler({
 	};
 }
 
-const idleContainers = createIdleContainerScheduler({ stop: stopOwnedContainer });
+const idleContainers = createIdleContainerScheduler({ stop: stopWarmRuntime });
 
 /**
  * Teardown that a reply is no longer waiting on.
@@ -1845,6 +2051,7 @@ export function trackRuntimeReclamation(
 }
 
 export async function shutdownWarmContainers() {
+	await Promise.allSettled([...warmPiProcesses.keys()].map(profile => discardWarmPiProcess(profile)));
 	await idleContainers.shutdown();
 	await Promise.allSettled([...reclaiming]);
 }
@@ -1969,6 +2176,7 @@ async function runPrompt({
 	userId,
 	companyId,
 	departmentId,
+	trustedSession,
 	runId,
 	runtimeThreadId,
 	channel,
@@ -1992,6 +2200,11 @@ async function runPrompt({
 	if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
 	let resources = resourcesFor(profile);
 	const selectedModel = validateRuntimeModel(model);
+	const piKeepAlive = canReusePiProcess({
+		ephemeral,
+		sessionScope: normalizedSessionScope,
+		lifecycle,
+	});
 	const bootstrap = {
 		backendUrl: backendUrlForContainer(backendUrl),
 		token,
@@ -2000,6 +2213,7 @@ async function runPrompt({
 		...(runtimeThreadId ? { runtimeThreadId } : {}),
 		userId,
 		companyId,
+		...(trustedSession ? { trustedSession } : {}),
 		...(runId ? { runId } : {}),
 		departmentId,
 		sessionScope: normalizedSessionScope,
@@ -2007,14 +2221,31 @@ async function runPrompt({
 		...(channel === "lark" ? { interruptionTask: message } : {}),
 		...(selectedModel ?? {}),
 	};
+	const binding = piProcessBinding({
+		profile,
+		thread,
+		backendUrl: bootstrap.backendUrl,
+		departmentId,
+		selectedModel,
+	});
 	if (!ephemeral) await idleContainers.activate(profile);
+	if (!piKeepAlive) await discardWarmPiProcess(profile);
 	let abortStop;
 	let bootstrapAttempted = false;
 	let child;
+	let exited;
+	let rpc;
+	let retainRuntimeProcess = false;
 	let completedSuccessfully = false;
 	let runError;
 	const abort = () => {
-		abortStop = stopOwnedContainer(profile).then(
+		abortStop = (async () => {
+			await stageRuntimeInterruption(resources.container, bootstrap).catch((error) => {
+				console.error(`[Pi] Failed to stage interrupted work: ${error.message}`);
+			});
+			forgetWarmPiProcess(profile);
+			await stopOwnedContainer(profile);
+		})().then(
 			() => undefined,
 			(error) => error,
 		);
@@ -2049,35 +2280,46 @@ async function runPrompt({
 		}
 		bootstrapAttempted = true;
 		await writeBootstrap(resources.container, bootstrap);
-		child = spawn("docker", [
-			"exec",
-			"--interactive",
-			resources.container,
-			"node",
-			"divo/container-entry.mjs",
-		], {
-			stdio: ["pipe", "pipe", "pipe"],
-		});
-		child.stderr.pipe(process.stderr);
-		const exited = new Promise((resolve) => {
-			child.once("error", (error) => resolve({ error }));
-			child.once("exit", (code, terminationSignal) => resolve({ code, terminationSignal }));
-		});
-		const rpc = new JsonlRpc(child, answerRequest, onProgress);
+		let piProcessReused = false;
+		let piPrepareMs = 0;
+		const cached = piKeepAlive ? warmPiProcesses.get(profile) : undefined;
+		if (cached && !piProcessBindingMatches(cached.binding, binding)) {
+			await discardWarmPiProcess(profile);
+		}
+		const reusable = piKeepAlive ? warmPiProcesses.get(profile) : undefined;
+		if (reusable) {
+			const prepareStartedAt = Date.now();
+			const environment = await prepareWarmRuntime(resources.container);
+			piPrepareMs = Date.now() - prepareStartedAt;
+			reusable.rpc.configure({ answerRequest, onProgress });
+			await reusable.rpc.send({ type: "set_environment", values: environment });
+			child = reusable.child;
+			exited = reusable.exited;
+			rpc = reusable.rpc;
+			piProcessReused = true;
+		} else {
+			({ child, exited, rpc } = spawnRuntimeRpc(
+				resources.container,
+				answerRequest,
+				onProgress,
+			));
+		}
 		const state = await rpc.send({ type: "get_state" }, 90_000);
+		if (piKeepAlive && !piProcessReused) {
+			rememberWarmPiProcess(profile, {
+				profile,
+				binding,
+				child,
+				exited,
+				rpc,
+			});
+		}
 		console.error(
-			`Ready ${profile}/${thread} in ${Date.now() - startedAt}ms (session ${state.sessionId})`,
+			`Ready ${profile}/${thread} in ${Date.now() - startedAt}ms (session ${state.sessionId}; piProcessReused=${piProcessReused}; prepareMs=${piPrepareMs})`,
 		);
 		emitRuntimeProgress(onProgress, { type: "ready" });
 		if (lifecycle !== undefined) {
-			child.stdin.end();
-			const outcome = await exited;
-			if (outcome.error) throw outcome.error;
-			if (outcome.code !== 0) {
-				throw new Error(
-					`Divo runtime exited ${outcome.terminationSignal ? `with ${outcome.terminationSignal}` : `with code ${outcome.code}`}`,
-				);
-			}
+			await waitForClosedRuntime(child, exited);
 			completedSuccessfully = true;
 			return { profile, thread, sessionId: state.sessionId };
 		}
@@ -2097,23 +2339,26 @@ async function runPrompt({
 				summary: "The model continuation completed without a final answer.",
 			});
 		}
-		console.log(text);
-		child.stdin.end();
-		const outcome = await exited;
-		if (outcome.error) throw outcome.error;
-		if (outcome.code !== 0) {
-			throw new Error(
-				`Divo runtime exited ${outcome.terminationSignal ? `with ${outcome.terminationSignal}` : `with code ${outcome.code}`}`,
-			);
+		const metadata = collectProtectedRunMetadata(completion?.messages);
+		logCompletedRun(text, metadata, console.log);
+		if (piKeepAlive && metadata.protectedDataUsed !== true) {
+			retainRuntimeProcess = true;
+		} else {
+			const discarded = await discardWarmPiProcess(profile);
+			if (discarded) await assertRuntimeExit(discarded);
+			else await waitForClosedRuntime(child, exited);
 		}
 		completedSuccessfully = true;
-		return { profile, thread, text };
+		return { profile, thread, text, ...metadata };
 	} catch (error) {
 		runError = error;
+		await discardWarmPiProcess(profile).catch((cleanupError) => {
+			console.error(`[Pi] Failed to discard warm Pi process: ${cleanupError.message}`);
+		});
 		throw error;
 	} finally {
 		signal?.removeEventListener("abort", abort);
-		if (child && !child.stdin.destroyed) child.stdin.end();
+		if (!retainRuntimeProcess) endRuntimeInput(child);
 		await finalizeRuntimeLifecycle({
 			profile,
 			resources,
@@ -2145,6 +2390,7 @@ export async function prompt(profileName, message, options = {}) {
 		userId: metadata.userId,
 		companyId: metadata.companyId,
 		departmentId: metadata.departmentId,
+		trustedSession: trustedRuntimeSession(session),
 		answerRequest: createExtensionResponder(Boolean(options.approve)),
 	});
 }
@@ -2181,6 +2427,7 @@ export async function resolveRuntimeLease({ backendUrl, lease }) {
 		token: lease,
 		userId: session.userId,
 		companyId: session.companyId,
+		trustedSession: trustedRuntimeSession(session),
 		instanceId: session.runtime.instanceId,
 		channel: session.runtime.channel,
 		runId: session.runtime.runId,

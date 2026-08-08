@@ -741,6 +741,25 @@ test("admission isolates profiles, rejects overload, and accepts a retry", async
 	assert.equal(admission.activeCount, 0);
 });
 
+test("admission default is not capped at two active profiles", async () => {
+	const gates = new Map();
+	const admission = createAdmissionController({
+		execute: async (profile) => {
+			const gate = deferred();
+			gates.set(profile, gate);
+			await gate.promise;
+			return { profile, text: "done" };
+		},
+	});
+	const first = admission.run({ profile: "one", message: "work" });
+	const second = admission.run({ profile: "two", message: "work" });
+	const third = admission.run({ profile: "three", message: "work" });
+	assert.equal(admission.maxActiveRuns, 8);
+	assert.equal(admission.activeCount, 3);
+	for (const gate of gates.values()) gate.resolve();
+	await Promise.all([first, second, third]);
+});
+
 test("manual admission forwards the request disconnect signal to Pi execution", async () => {
 	const controller = new AbortController();
 	let receivedOptions;

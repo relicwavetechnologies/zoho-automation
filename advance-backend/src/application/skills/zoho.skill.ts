@@ -156,6 +156,7 @@ BEFORE WRITING:
 CREATING — STAGE, SHOW, THEN CREATE:
 - Never call create_invoice first. It requires a stagingId and will refuse without one.
 - op="stage_invoice" with fields containing customer_id, date, due_date or payment_terms, and line_items each carrying item_id or name, quantity, rate, and tax_id. Pass fileName when the member sent a document this invoice comes from, so the reviewer can read it.
+- payment_terms is a whole number of DAYS, not words: 15, not "Net 15"; 0 for due on receipt. A document saying "Net 15" means payment_terms 15. Zoho keeps the wording in payment_terms_label, which the tool fills in for you.
 - Nothing is written to Zoho by staging. It runs the automatic checks, has a reviewer read the draft cold, and returns a summary plus a stagingId.
 - Supply invoice_number only when the member gave you one. Omitting it lets Zoho apply its own numbering, which is what most organisations want.
 

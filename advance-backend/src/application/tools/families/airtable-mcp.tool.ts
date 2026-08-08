@@ -286,7 +286,7 @@ function createProductTool(
         }
 
         const nativeInput = RECORD_READ_OPERATIONS.has(args.nativeTool)
-          ? boundedRecordInput(args.input ?? {})
+          ? boundedRecordInput(args.nativeTool, args.input ?? {})
           : args.input ?? {};
         const data = await connection.client.callTool(
           args.nativeTool,
@@ -311,14 +311,47 @@ function createProductTool(
   };
 }
 
-function boundedRecordInput(input: Readonly<Record<string, unknown>>): Record<string, unknown> {
-  const requested = typeof input['pageSize'] === 'number' && Number.isFinite(input['pageSize'])
-    ? Math.trunc(input['pageSize'])
+function boundedRecordInput(
+  nativeTool: string,
+  input: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const limitKey = nativeTool === 'search_records' ? 'limit' : 'pageSize';
+  const requested = typeof input[limitKey] === 'number' && Number.isFinite(input[limitKey])
+    ? Math.trunc(input[limitKey])
     : RECORD_PREVIEW_LIMIT;
+  const normalized = normalizeRecordReadInput(nativeTool, input);
   return {
-    ...input,
-    pageSize: Math.max(1, Math.min(requested, RECORD_PREVIEW_LIMIT)),
+    ...normalized,
+    [limitKey]: Math.max(1, Math.min(requested, RECORD_PREVIEW_LIMIT)),
   };
+}
+
+function normalizeRecordReadInput(
+  nativeTool: string,
+  input: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  if (nativeTool === 'search_records') {
+    const {
+      pageSize: _pageSize,
+      tableId,
+      fieldIds,
+      filter,
+      ...rest
+    } = input;
+    return {
+      ...rest,
+      ...(rest['table'] === undefined && tableId !== undefined ? { table: tableId } : {}),
+      ...(rest['resultFieldIds'] === undefined && fieldIds !== undefined ? { resultFieldIds: fieldIds } : {}),
+      ...(rest['filters'] === undefined && filter !== undefined ? { filters: filter } : {}),
+    };
+  }
+  if (nativeTool === 'list_records_for_table') {
+    const { limit: _limit, filter, ...rest } = input;
+    return rest['filters'] === undefined && filter !== undefined
+      ? { ...rest, filters: filter }
+      : rest;
+  }
+  return { ...input };
 }
 
 function compactRecordResult(value: unknown): unknown {
