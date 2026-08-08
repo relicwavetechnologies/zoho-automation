@@ -3,7 +3,12 @@ import type {
   DecryptedIntegrationConnection,
   IntegrationConnectionRepository,
 } from '../../infrastructure/persistence/integration-connection.repository';
-import { ShopifyOAuthError, ShopifyOAuthService } from '../../infrastructure/shopify/shopify-oauth.service';
+import {
+  ShopifyOAuthError,
+  ShopifyOAuthService,
+  type ShopifyClientCredentialsToken,
+  type ShopifyTokenPair,
+} from '../../infrastructure/shopify/shopify-oauth.service';
 import { normalizeShopDomain } from '../../domain/shopify/shopify-shop';
 
 export class ShopifyConnectionError extends Error {
@@ -105,10 +110,10 @@ export class ShopifyConnectionService {
     abortSignal?: AbortSignal,
   ): Promise<DecryptedIntegrationConnection> {
     const shopDomain = normalizeShopDomain(connection.externalAccountId ?? '');
-    if (!shopDomain || !connection.refreshToken) {
+    if (!shopDomain || (!connection.refreshToken && !connection.shopifyClientCredentials)) {
       throw new ShopifyConnectionError('authorization_required', 'Shopify authorization has expired; reconnect this store.');
     }
-    if (connection.refreshTokenExpiresAt && connection.refreshTokenExpiresAt.getTime() <= this.nowMs()) {
+    if (!connection.shopifyClientCredentials && connection.refreshTokenExpiresAt && connection.refreshTokenExpiresAt.getTime() <= this.nowMs()) {
       throw new ShopifyConnectionError('authorization_required', 'Shopify refresh authorization has expired; reconnect this store.');
     }
     const leaseOwner = randomUUID();
@@ -124,17 +129,24 @@ export class ShopifyConnectionService {
     abortSignal?: AbortSignal,
   ): Promise<DecryptedIntegrationConnection> {
     const shopDomain = normalizeShopDomain(connection.externalAccountId ?? '');
-    if (!shopDomain || !connection.refreshToken) {
+    if (!shopDomain || (!connection.refreshToken && !connection.shopifyClientCredentials)) {
       throw new ShopifyConnectionError('authorization_required', 'Shopify authorization has expired; reconnect this store.');
     }
     try {
-      let refreshed;
+      let refreshed: ShopifyTokenPair | ShopifyClientCredentialsToken;
       try {
-        refreshed = await this.deps.oauth.refresh({
-          shop: shopDomain,
-          refreshToken: connection.refreshToken,
-          ...(abortSignal ? { abortSignal } : {}),
-        });
+        refreshed = connection.shopifyClientCredentials
+          ? await this.deps.oauth.exchangeClientCredentials({
+            shop: shopDomain,
+            clientId: connection.shopifyClientCredentials.clientId,
+            clientSecret: connection.shopifyClientCredentials.clientSecret,
+            ...(abortSignal ? { abortSignal } : {}),
+          })
+          : await this.deps.oauth.refresh({
+            shop: shopDomain,
+            refreshToken: connection.refreshToken!,
+            ...(abortSignal ? { abortSignal } : {}),
+          });
       } catch (error) {
         if (error instanceof ShopifyOAuthError && error.code === 'token_rejected') {
           const marked = await this.deps.repository.markShopifyReauthorizationRequired({
@@ -148,16 +160,28 @@ export class ShopifyConnectionService {
         }
         throw error;
       }
-      const saved = await this.deps.repository.compareAndSwapShopifyTokens({
+      const tokenUpdate: {
+        companyId: string;
+        connectionId: string;
+        expectedTokenVersion: number;
+        accessToken: string;
+        refreshToken?: string | null;
+        accessTokenExpiresAt: Date;
+        refreshTokenExpiresAt?: Date | null;
+        scopes: string[];
+      } = {
         companyId: connection.companyId,
         connectionId: connection.id,
         expectedTokenVersion: connection.tokenVersion,
         accessToken: refreshed.accessToken,
-        refreshToken: refreshed.refreshToken,
         accessTokenExpiresAt: refreshed.accessTokenExpiresAt,
-        refreshTokenExpiresAt: refreshed.refreshTokenExpiresAt,
         scopes: refreshed.scopes,
-      });
+      };
+      if (hasRotatingRefreshToken(refreshed)) {
+        tokenUpdate.refreshToken = refreshed.refreshToken;
+        tokenUpdate.refreshTokenExpiresAt = refreshed.refreshTokenExpiresAt;
+      }
+      const saved = await this.deps.repository.compareAndSwapShopifyTokens(tokenUpdate);
       if (!saved.ok) throw new ShopifyConnectionError('unavailable', 'Refreshed Shopify credentials could not be persisted safely.');
     } finally {
       await this.deps.repository.releaseShopifyRefreshLease({
@@ -225,6 +249,12 @@ export class ShopifyConnectionService {
   private leaseMs(): number {
     return this.deps.refreshLeaseMs ?? 90_000;
   }
+}
+
+function hasRotatingRefreshToken(
+  token: ShopifyTokenPair | ShopifyClientCredentialsToken,
+): token is ShopifyTokenPair {
+  return 'refreshToken' in token;
 }
 
 async function wait(ms: number, signal?: AbortSignal): Promise<void> {

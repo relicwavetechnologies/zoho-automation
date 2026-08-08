@@ -17,6 +17,7 @@ import {
 } from '../../infrastructure/persistence/integration-connection.repository';
 import type { AitableKeyVerifier } from '../../application/aitable/aitable-connect.service';
 import { ShopifyAuthorizationError, type ShopifyAuthorizationService } from '../../application/shopify/shopify-authorization.service';
+import { ShopifyOAuthError } from '../../infrastructure/shopify/shopify-oauth.service';
 import { normalizeShopDomain } from '../../domain/shopify/shopify-shop';
 import { AIRTABLE_REQUESTED_SCOPES, AIRTABLE_SCOPE } from '../../application/airtable/airtable-mcp-manifest';
 import type { Logger } from '../../shared/logger';
@@ -110,6 +111,12 @@ const loginSchema = z.object({
 });
 const shopifyCallbackUrlSchema = z.object({
   callbackUrl: z.string().trim().min(1).max(4_000),
+}).strict();
+const shopifyClientCredentialsSchema = z.object({
+  shopDomain:   z.string().trim().min(1).max(255),
+  clientId:     z.string().trim().min(1).max(255),
+  clientSecret: z.string().trim().min(1).max(4_000),
+  label:        z.string().trim().max(255).optional(),
 }).strict();
 
 const DESKTOP_PROTOCOL = 'cursorr';
@@ -213,6 +220,15 @@ const zohoSelfClientSchema = z.object({
   clientSecret:    z.string().trim().min(8).max(512),
   grantToken:      z.string().trim().min(8).max(4096),
   accountsBaseUrl: z.enum(Object.keys(ZOHO_DATA_CENTRES) as [keyof typeof ZOHO_DATA_CENTRES, ...(keyof typeof ZOHO_DATA_CENTRES)[]]),
+  /**
+   * What this connection may do, chosen by the admin creating it.
+   *
+   * Defaults to read-only so an existing caller that omits it keeps the
+   * behaviour it had. Whichever is chosen, the grant Zoho itself issued still
+   * bounds it: asking for read/write on a grant carrying only .READ scopes buys
+   * nothing, because Zoho refuses the write.
+   */
+  access:          z.enum(['read_only', 'read_write']).default('read_only'),
 });
 
 const runtimeContextQuerySchema = z.object({
@@ -1492,6 +1508,58 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       }
       log.error('shopify.desktop.callback_url.error', { error: String(error) });
       res.status(503).json({ success: false, message: 'Could not complete Shopify authorization' });
+    }
+  });
+
+  router.post('/shopify/client-credentials', memberAuth, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!COMPANY_ADMIN_ROLES.has((res.locals['aiRole'] as string | undefined) ?? 'MEMBER')) {
+      res.status(403).json({ success: false, message: 'A company admin must connect Shopify' });
+      return;
+    }
+    const parsed = shopifyClientCredentialsSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({
+        success: false,
+        message: parsed.error.issues[0]?.message ?? 'Enter the Shopify store domain, client ID, and client secret.',
+      });
+      return;
+    }
+    const shopDomain = normalizeShopDomain(parsed.data.shopDomain);
+    if (!shopDomain) {
+      res.status(400).json({ success: false, message: 'Use a valid *.myshopify.com store domain' });
+      return;
+    }
+
+    try {
+      const connected = await deps.shopifyAuthorizationService.connectWithClientCredentials({
+        companyId: res.locals['companyId'] as string,
+        userId: res.locals['userId'] as string,
+        shopDomain,
+        clientId: parsed.data.clientId,
+        clientSecret: parsed.data.clientSecret,
+        ...(parsed.data.label ? { label: parsed.data.label } : {}),
+      });
+      log.info('shopify.desktop.client_credentials.connected', {
+        userId: res.locals['userId'] as string,
+        companyId: res.locals['companyId'] as string,
+        connectionId: connected.connectionId,
+        shopDomain: connected.shopDomain,
+      });
+      res.json({ success: true, data: connected });
+    } catch (error) {
+      if (error instanceof ShopifyOAuthError) {
+        const status = error.status && error.status >= 500 ? 502 : 400;
+        res.status(status).json({ success: false, message: error.message });
+        return;
+      }
+      if (error instanceof ShopifyAuthorizationError) {
+        const status = error.code === 'unavailable' ? 500 : 400;
+        res.status(status).json({ success: false, message: error.message });
+        return;
+      }
+      log.error('shopify.desktop.client_credentials.error', { error: String(error) });
+      res.status(503).json({ success: false, message: 'Could not connect Shopify with these credentials' });
     }
   });
 
@@ -3261,9 +3329,14 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         });
         return;
       }
+      // Zoho's own answer is authoritative. The fallback only matters when it
+      // returned none, and it has to match what was asked for — listing read
+      // scopes on a read/write connection would misreport what it can do.
       const grantedScopes = tokens.scopes.length > 0
         ? tokens.scopes
-        : ZOHO_SELF_CLIENT_READ_SCOPES;
+        : parsed.data.access === 'read_write'
+          ? DEFAULT_ZOHO_SCOPES
+          : ZOHO_SELF_CLIENT_READ_SCOPES;
 
       const apiBaseUrl = tokens.apiDomain
         ?? ZOHO_DATA_CENTRES[parsed.data.accountsBaseUrl];
@@ -3296,7 +3369,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           clientSecret: parsed.data.clientSecret,
         },
         environment: 'prod',
-        initialAccess: 'read_only',
+        initialAccess: parsed.data.access,
       });
       if (!connectionResult.ok) throw new Error(connectionResult.error.message);
 
@@ -3310,7 +3383,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         data: {
           connectionId: connectionResult.value.id,
           label: connectionResult.value.label,
-          access: 'read_only',
+          access: parsed.data.access,
           scopes: grantedScopes,
         },
       });

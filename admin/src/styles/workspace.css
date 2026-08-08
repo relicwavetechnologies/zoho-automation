@@ -347,6 +347,10 @@
 .cur .ws-modal-b { padding: 18px 20px; }
 .cur .ws-modal-f { padding: 14px 20px; border-top: 1px solid var(--cur-hairline); display: flex; gap: 8px; justify-content: flex-end; }
 
+/* One of two ways in, each explained before it is chosen. Bordered rather than
+   plain so the pair reads as alternatives instead of a list of steps. */
+.cur .ws-choice { border: 1px solid var(--cur-hairline); border-radius: 10px; padding: 14px 16px; }
+
 /* ── Command palette ─────────────────────────────────── */
 .cur .ws-pal-wrap { position: fixed; inset: 0; z-index: 70; display: flex; justify-content: center; padding-top: 14vh; }
 .cur .ws-pal {
