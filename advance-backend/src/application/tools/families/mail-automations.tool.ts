@@ -426,6 +426,31 @@ function mailRuleActivatedMessage(destination: {
 }
 
 /**
+ * Every chat id the caller *named*, at any depth.
+ *
+ * Read off the arguments rather than the resolved destination, and that
+ * distinction is load-bearing: `current_lark_chat` resolves into a `lark_chat`
+ * carrying the run's own conversation, which arrived on a signed inbound event
+ * for this company and is already known to be reachable. Grounding the resolved
+ * shape therefore demanded a room record for it — which a DM never has, so it
+ * broke every rule delivered into the conversation that asked for it.
+ *
+ * What needs grounding is an id a model supplied, and only that.
+ */
+function namedChatIds(destination: z.infer<typeof destinationSchema>): string[] {
+  if (destination.type === 'lark_chat') return [destination.chatId];
+  if (destination.type !== 'routed') return [];
+  return [
+    ...destination.routes.flatMap(route =>
+      route.destination.type === 'lark_chat' ? [route.destination.chatId] : []),
+    ...(destination.otherwise && destination.otherwise !== 'hold'
+      && destination.otherwise.type === 'lark_chat'
+      ? [destination.otherwise.chatId]
+      : []),
+  ];
+}
+
+/**
  * A routed rule's branches, lifted out of its destination.
  *
  * They are already inside `destination` — this is a flattened copy, so an agent
@@ -896,27 +921,68 @@ export function createMailAutomationsTool(deps: {
         }
 
         const destination = resolveDestination(args.destination, ctx);
-        // A named chat is grounded here, in code, once — not on every delivery,
-        // and not by asking the model nicely in prompt text, which is all that
-        // stood between a rule and any room the bot could reach.
-        if (args.destination.type === 'lark_chat' && deps.authorizeLarkChat) {
-          const verdict = await deps.authorizeLarkChat({
-            companyId: String(ctx.runContext.companyId),
-            chatId: args.destination.chatId,
-          });
-          if (verdict.status !== 'allowed') {
-            return err(new ToolError({
-              toolId: 'mailAutomations',
-              reason: verdict.status === 'unavailable' ? 'upstream_failure' : 'bad_args',
-              message: larkChatRefusalMessage(verdict),
-            }));
+        /*
+         * A named chat is grounded here, in code, once — not on every delivery,
+         * and not by asking the model nicely in prompt text, which is all that
+         * stood between a rule and any room the bot could reach.
+         *
+         * Over every chat the caller *named*, at any depth. Checking only a
+         * top-level `lark_chat` let a routed rule be created with an ungrounded
+         * room in a branch: the worker re-checks and abandons rather than
+         * delivering, so nothing reached another company — but the refusal
+         * arrived on the first message that sorted into that branch instead of
+         * while the member was still asking for the rule.
+         */
+        if (deps.authorizeLarkChat) {
+          for (const chatId of namedChatIds(args.destination)) {
+            const verdict = await deps.authorizeLarkChat({
+              companyId: String(ctx.runContext.companyId),
+              chatId,
+            });
+            if (verdict.status !== 'allowed') {
+              return err(new ToolError({
+                toolId: 'mailAutomations',
+                reason: verdict.status === 'unavailable' ? 'upstream_failure' : 'bad_args',
+                message: larkChatRefusalMessage(verdict),
+              }));
+            }
           }
+        }
+        /*
+         * Refused here, in words, rather than left to `parseMailRule` below.
+         *
+         * The parser does refuse this pair, and that refusal is the backstop —
+         * but it throws, and a thrown parse error reaches the model as a
+         * generic failure rather than as the one sentence that tells it what to
+         * send instead. This is a shape a model will reach for, because both
+         * fields are documented and nothing about them says "not together".
+         */
+        if (args.destination.type === 'routed' && args.judge) {
+          return err(new ToolError({
+            toolId: 'mailAutomations',
+            reason: 'bad_args',
+            message: 'A rule that sorts mail between people already asks its own '
+              + 'question, so it cannot also carry a judge. Send the routes '
+              + 'without judge, or send judge with a single destination.',
+          }));
         }
         const action = resolveAction(args.destination, args.rateLimitPerHour);
         const parsed = parseMailRule({
           match: args.match,
           action,
           destination,
+          /*
+           * The judge goes in too, and leaving it out was not a tidiness
+           * question.
+           *
+           * `parseMailRule` is where a routing table plus a separate question
+           * is refused. Validating without it accepted that pair here and
+           * refused it later, when the *worker* re-parsed the stored row: the
+           * member was told the rule was active, and it then reported itself
+           * broken and matched nothing. Validate what is about to be written,
+           * not a subset of it.
+           */
+          ...(args.judge ? { judge: args.judge } : {}),
         });
         // Built once, so the canonical key and the key this rule would have
         // carried before canonicalisation describe the very same request.

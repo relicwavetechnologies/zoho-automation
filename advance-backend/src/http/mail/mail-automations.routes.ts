@@ -182,6 +182,23 @@ const createRuleBodySchema = z.object({
       message: 'Say what to do with the message: label it, archive it, or mark it read.',
     });
   }
+  /*
+   * A routing table already is the AI step, so a second question on top of it
+   * is a rule with two of them and no stated order between them.
+   *
+   * `parseMailRule` refuses this pair when the stored row is read back, which
+   * means accepting it here produced a rule the member was told was active and
+   * which then reported itself broken and matched nothing. Refused at the door
+   * instead, where the sentence can say what to send.
+   */
+  if (value.destination.type === 'routed' && value.judge) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['judge'],
+      message: 'A rule that sorts mail between people already asks its own question, '
+        + 'so it cannot also carry one. Remove the question, or choose a single destination.',
+    });
+  }
 });
 
 /*
