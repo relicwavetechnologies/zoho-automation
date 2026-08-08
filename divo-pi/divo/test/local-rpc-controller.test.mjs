@@ -26,6 +26,7 @@ import {
 	runtimeStartupProgress,
 	settleAll,
 	trackRuntimeReclamation,
+	trustedRuntimeSession,
 	validateProfileName,
 	validateRuntimeModel,
 	validateThread,
@@ -244,6 +245,30 @@ test("cloud runtime names are stable, isolated, and safe for Docker", () => {
 	assert.notEqual(first.thread, first.runtimeThreadId);
 	assert.equal(validateProfileName(first.profile), first.profile);
 	assert.equal(validateThread(first.thread), first.thread);
+});
+
+test("trusted runtime session keeps only container bootstrap identity metadata", () => {
+	assert.deepEqual(
+		trustedRuntimeSession({
+			userId: "user-a",
+			companyId: "company-1",
+			email: "user@example.com",
+			token: "must-not-leak",
+			departments: [
+				{ id: "department-1", name: "Finance", token: "must-not-leak" },
+				{ id: "", name: "Ignored" },
+				{ id: "department-2", name: "" },
+			],
+		}),
+		{
+			userId: "user-a",
+			companyId: "company-1",
+			departments: [
+				{ id: "department-1", name: "Finance" },
+				{ id: "department-2" },
+			],
+		},
+	);
 });
 
 test("shared runtimes receive a unique disposable profile instead of the private user profile", () => {

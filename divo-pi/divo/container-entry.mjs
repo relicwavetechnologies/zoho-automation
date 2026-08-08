@@ -54,6 +54,9 @@ export function validateBootstrap(value) {
 	) {
 		throw new Error("Bootstrap interruptionTask is invalid");
 	}
+	if (value.trustedSession !== undefined) {
+		value.trustedSession = validateTrustedSession(value.trustedSession);
+	}
 	return value;
 }
 
@@ -79,6 +82,43 @@ function validateInterruption(value) {
 		throw new Error("Interruption task is invalid");
 	}
 	return value;
+}
+
+function validateTrustedDepartment(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("Bootstrap trusted department is invalid");
+	}
+	if (typeof value.id !== "string" || !value.id.trim()) {
+		throw new Error("Bootstrap trusted department id is invalid");
+	}
+	if (value.name !== undefined && typeof value.name !== "string") {
+		throw new Error("Bootstrap trusted department name is invalid");
+	}
+	return {
+		id: value.id,
+		...(value.name ? { name: value.name } : {}),
+	};
+}
+
+function validateTrustedSession(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("Bootstrap trusted session is invalid");
+	}
+	if (typeof value.userId !== "string" || !value.userId.trim()) {
+		throw new Error("Bootstrap trusted session userId is invalid");
+	}
+	if (typeof value.companyId !== "string" || !value.companyId.trim()) {
+		throw new Error("Bootstrap trusted session companyId is invalid");
+	}
+	const departments = value.departments === undefined ? [] : value.departments;
+	if (!Array.isArray(departments)) {
+		throw new Error("Bootstrap trusted session departments are invalid");
+	}
+	return {
+		userId: value.userId,
+		companyId: value.companyId,
+		departments: departments.map(validateTrustedDepartment),
+	};
 }
 
 function recordPendingInterruption(
@@ -124,7 +164,7 @@ async function resolvePiOptions() {
 	const bootstrap = await readBootstrap(
 		process.env.DIVO_BOOTSTRAP_PATH ?? DEFAULT_BOOTSTRAP_PATH,
 	);
-	const session = await fetchMemberSession(bootstrap);
+	const session = bootstrap.trustedSession ?? await fetchMemberSession(bootstrap);
 	assertPinnedIdentity(session, bootstrap);
 	const department = selectDepartment(
 		session.departments,

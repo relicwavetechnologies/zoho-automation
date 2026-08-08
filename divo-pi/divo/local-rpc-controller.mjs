@@ -163,6 +163,25 @@ export function runtimeIdentityNames(
 	};
 }
 
+export function trustedRuntimeSession(session) {
+	return {
+		userId: session.userId,
+		companyId: session.companyId,
+		departments: Array.isArray(session.departments)
+			? session.departments
+				.filter((department) =>
+					typeof department?.id === "string" && department.id.trim(),
+				)
+				.map((department) => ({
+					id: department.id,
+					...(typeof department.name === "string" && department.name
+						? { name: department.name }
+						: {}),
+				}))
+			: [],
+	};
+}
+
 export function validateAttachmentRequestId(value) {
 	if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]{7,63}$/.test(value)) {
 		throw new Error("Attachment request id is invalid");
@@ -2157,6 +2176,7 @@ async function runPrompt({
 	userId,
 	companyId,
 	departmentId,
+	trustedSession,
 	runId,
 	runtimeThreadId,
 	channel,
@@ -2193,6 +2213,7 @@ async function runPrompt({
 		...(runtimeThreadId ? { runtimeThreadId } : {}),
 		userId,
 		companyId,
+		...(trustedSession ? { trustedSession } : {}),
 		...(runId ? { runId } : {}),
 		departmentId,
 		sessionScope: normalizedSessionScope,
@@ -2369,6 +2390,7 @@ export async function prompt(profileName, message, options = {}) {
 		userId: metadata.userId,
 		companyId: metadata.companyId,
 		departmentId: metadata.departmentId,
+		trustedSession: trustedRuntimeSession(session),
 		answerRequest: createExtensionResponder(Boolean(options.approve)),
 	});
 }
@@ -2405,6 +2427,7 @@ export async function resolveRuntimeLease({ backendUrl, lease }) {
 		token: lease,
 		userId: session.userId,
 		companyId: session.companyId,
+		trustedSession: trustedRuntimeSession(session),
 		instanceId: session.runtime.instanceId,
 		channel: session.runtime.channel,
 		runId: session.runtime.runId,

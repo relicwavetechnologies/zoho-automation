@@ -38,6 +38,47 @@ test("container bootstrap requires an exact pinned identity", () => {
 	);
 });
 
+test("container bootstrap accepts only pinned trusted session metadata", () => {
+	const parsed = validateBootstrap({
+		...bootstrap,
+		trustedSession: {
+			userId: "user-a",
+			companyId: "company-1",
+			departments: [
+				{ id: "department-1", name: "Finance", token: "must-not-leak" },
+			],
+			email: "user@example.com",
+		},
+	});
+
+	assert.deepEqual(parsed.trustedSession, {
+		userId: "user-a",
+		companyId: "company-1",
+		departments: [{ id: "department-1", name: "Finance" }],
+	});
+	assert.doesNotThrow(() =>
+		assertPinnedIdentity(parsed.trustedSession, parsed),
+	);
+	assert.throws(
+		() => assertPinnedIdentity(
+			{ ...parsed.trustedSession, userId: "user-b" },
+			parsed,
+		),
+		/does not match pinned profile/,
+	);
+	assert.throws(
+		() => validateBootstrap({
+			...bootstrap,
+			trustedSession: {
+				userId: "user-a",
+				companyId: "company-1",
+				departments: [{ id: "" }],
+			},
+		}),
+		/trusted department id is invalid/,
+	);
+});
+
 test("container bootstrap rejects unsafe profile and thread values", () => {
 	assert.throws(
 		() => validateBootstrap({ ...bootstrap, profile: "../other" }),
