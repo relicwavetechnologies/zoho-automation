@@ -6,6 +6,15 @@ const DPA_RPC_URL = 'https://www.semrush.com/dpa/rpc';
 const BACKLINKS_WEBAPI_URL = 'https://www.semrush.com/backlinks/webapi2/';
 
 /**
+ * These reach a member, so they name the thing an administrator can actually
+ * act on. Earlier wording blamed the "web session", which sent people hunting
+ * for a fresh browser cookie — a value Semrush ignores on every wired route.
+ */
+const SEMRUSH_CREDENTIAL_REJECTED = 'Semrush rejected the configured API key.';
+const SEMRUSH_QUOTA_EXHAUSTED = 'The configured Semrush API key has used up its allowance.';
+const SEMRUSH_THROTTLED = 'Semrush is throttling requests; the same key works again shortly.';
+
+/**
  * Semrush DPA dedupes on `params.request_id`. Senior curls use a UUID-shaped value
  * (for example `898248e6-0c40-0ecf-f2a1-15f31a189833`); reusing one is rejected.
  */
@@ -36,40 +45,49 @@ const BACKLINKS_COLUMN_LABELS: Readonly<Record<string, string>> = {
  */
 export class SemrushWebClient {
   constructor(private readonly deps: {
-    readonly apiKey?: string;
     readonly cookie?: string;
     readonly timeoutMs: number;
     readonly fetchImpl?: typeof fetch;
   }) {}
 
-  assertConfigured(): void {
-    if (!this.configured()) {
-      throw new SemrushServiceError(
-        'not_configured',
-        'Semrush web session is not configured. Set SEMRUSH_WEB_API_KEY and SEMRUSH_WEB_COOKIE in the backend environment.',
-      );
+  /**
+   * The key arrives per call rather than at construction, so a caller holding a
+   * spent key can retry with a fresh one. That retry re-enters here and rebuilds
+   * the request, which is what gives it a new `params.request_id` — Semrush
+   * dedups on that value, so replaying the same body with a swapped key would
+   * be rejected as a duplicate no matter how good the new key was.
+   */
+  async fetch(input: { readonly apiKey: string; readonly args: SemrushToolArgs }): Promise<SemrushFetchedData> {
+    const apiKey = input.apiKey.trim();
+    if (!apiKey) {
+      throw new SemrushServiceError('not_configured', 'Semrush was called without an API key.');
     }
-  }
-
-  async fetch(args: SemrushToolArgs): Promise<SemrushFetchedData> {
-    this.assertConfigured();
+    const { args } = input;
     switch (args.operation) {
       case 'domain_overview':
-        return this.domainOverview(args.domain, args.database ?? 'in');
+        return this.domainOverview(apiKey, args.domain, args.database ?? 'in');
       case 'backlinks_comparison':
-        return this.backlinksComparison(args.targets);
+        return this.backlinksComparison(apiKey, args.targets);
       case 'keyword_position_trend':
-        return this.keywordPositionTrend(args);
+        return this.keywordPositionTrend(apiKey, args);
       default:
         throw new SemrushServiceError('capability_unavailable', `${(args as { operation: string }).operation} is not available through Semrush web.`);
     }
   }
 
-  private configured(): boolean {
-    return Boolean(this.deps.apiKey?.trim()) && Boolean(this.deps.cookie?.trim());
+  /**
+   * Every wired route authenticates on `key`/`apiKey` and answers identically
+   * with a valid cookie, no cookie, or a fabricated one. A cookie is still sent
+   * when configured, because the excluded `/analytics/backlinks/webapi2` route
+   * does read it.
+   */
+  private sessionHeaders(): Record<string, string> {
+    const cookie = this.deps.cookie?.trim();
+    return cookie ? { Cookie: cookie } : {};
   }
 
   private buildDpaRpcPayload(
+    apiKey: string,
     method: string,
     report: string,
     args: Record<string, unknown>,
@@ -82,13 +100,13 @@ export class SemrushWebClient {
         request_id: nextSemrushDpaRequestId(),
         report,
         args,
-        apiKey: this.deps.apiKey!.trim(),
+        apiKey,
       },
     };
   }
 
-  private async domainOverview(domain: string, database: string): Promise<SemrushFetchedData> {
-    const payload = this.buildDpaRpcPayload('ranks.Ranks', 'organic.overview', {
+  private async domainOverview(apiKey: string, domain: string, database: string): Promise<SemrushFetchedData> {
+    const payload = this.buildDpaRpcPayload(apiKey, 'ranks.Ranks', 'organic.overview', {
       database,
       searchItem: domain,
       searchType: 'domain',
@@ -101,26 +119,27 @@ export class SemrushWebClient {
     });
     const body = await this.jsonRpc(payload);
     const result = Array.isArray(body.result) ? body.result : [];
-    const selected = result.find(row => objectValue(row, 'database') === database) ?? result[0];
-    const row = selected && typeof selected === 'object'
-      ? domainOverviewRow(selected as Record<string, unknown>)
-      : undefined;
+    const rows = result
+      .filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === 'object' && !Array.isArray(row))
+      .map(row => domainOverviewRow(row))
+      .sort(byRequestedDatabaseThenTraffic(database));
     return {
       operation: 'domain_overview',
-      status: row ? 'complete' : 'empty',
+      status: rows.length ? 'complete' : 'empty',
       coverage: {
         domain,
         database,
+        databasesReturned: rows.length,
         apiVersion: 'web_dpa',
         report: 'organic.overview',
       },
-      rows: row ? [row] : [],
+      rows,
     };
   }
 
-  private async keywordPositionTrend(args: Extract<SemrushToolArgs, { operation: 'keyword_position_trend' }>): Promise<SemrushFetchedData> {
+  private async keywordPositionTrend(apiKey: string, args: Extract<SemrushToolArgs, { operation: 'keyword_position_trend' }>): Promise<SemrushFetchedData> {
     const database = args.database ?? 'in';
-    const payload = this.buildDpaRpcPayload('organic.KeywordPositionTrend', 'organic.positions', {
+    const payload = this.buildDpaRpcPayload(apiKey, 'organic.KeywordPositionTrend', 'organic.positions', {
       database,
       searchItem: args.domain,
       searchType: 'domain',
@@ -148,9 +167,9 @@ export class SemrushWebClient {
     };
   }
 
-  private async backlinksComparison(targets: readonly string[]): Promise<SemrushFetchedData> {
+  private async backlinksComparison(apiKey: string, targets: readonly string[]): Promise<SemrushFetchedData> {
     const form = new URLSearchParams();
-    form.set('key', this.deps.apiKey!.trim());
+    form.set('key', apiKey);
     form.set('type', 'backlinks_comparison');
     form.set(
       'export_columns',
@@ -166,7 +185,7 @@ export class SemrushWebClient {
       headers: {
         Accept: 'application/json, text/plain, */*',
         'Content-Type': 'application/x-www-form-urlencoded',
-        Cookie: this.deps.cookie!.trim(),
+        ...this.sessionHeaders(),
         'User-Agent': 'Mozilla/5.0',
       },
       body: form,
@@ -209,7 +228,7 @@ export class SemrushWebClient {
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
-        Cookie: this.deps.cookie!.trim(),
+        ...this.sessionHeaders(),
         Origin: 'https://www.semrush.com',
         Referer: 'https://www.semrush.com/',
         'User-Agent': 'Mozilla/5.0',
@@ -231,10 +250,10 @@ export class SemrushWebClient {
       });
       if (response.ok) return response;
       if (response.status === 401 || response.status === 403) {
-        throw new SemrushServiceError('provider_auth_failed', 'Semrush web session was rejected.');
+        throw new SemrushServiceError('provider_auth_failed', SEMRUSH_CREDENTIAL_REJECTED);
       }
       if (response.status === 429) {
-        throw new SemrushServiceError('rate_limited', 'Semrush web rate limit reached; no retry was attempted.');
+        throw new SemrushServiceError('rate_limited', SEMRUSH_THROTTLED);
       }
       throw new SemrushServiceError('provider_failure', `Semrush web request failed with HTTP ${response.status}.`);
     } catch (error) {
@@ -316,8 +335,26 @@ function flattenRow(row: Record<string, unknown>): Record<string, unknown> {
   return output;
 }
 
-function objectValue(value: unknown, key: string): unknown {
-  return value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
+/**
+ * One `organic.overview` call answers with a row per country database — 26 for
+ * a small domain. Keeping only the requested one discarded a country breakdown
+ * the same request had already paid for, and left "traffic by country" looking
+ * like a capability Semrush does not offer.
+ *
+ * The requested database leads so a single-country question still reads off
+ * the first row; the rest follow by the traffic that makes them worth reading.
+ */
+function byRequestedDatabaseThenTraffic(requested: string) {
+  return (a: Record<string, unknown>, b: Record<string, unknown>): number => {
+    const aRequested = a.Database === requested;
+    const bRequested = b.Database === requested;
+    if (aRequested !== bRequested) return aRequested ? -1 : 1;
+    return finiteNumber(b['Organic Traffic']) - finiteNumber(a['Organic Traffic']);
+  };
+}
+
+function finiteNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
 function webFailure(status: unknown, fallback: string): SemrushServiceError {
@@ -327,10 +364,16 @@ function webFailure(status: unknown, fallback: string): SemrushServiceError {
       ? JSON.stringify(status)
       : '';
   if (/auth|forbidden|denied|session/i.test(serialized)) {
-    return new SemrushServiceError('provider_auth_failed', 'Semrush web session was rejected.');
+    return new SemrushServiceError('provider_auth_failed', SEMRUSH_CREDENTIAL_REJECTED);
   }
-  if (/limit|rate/i.test(serialized)) {
-    return new SemrushServiceError('rate_limited', 'Semrush web rate limit reached; no retry was attempted.');
+  // `Limits exceeded` is the spent-allowance answer, not a slow-down: it keeps
+  // coming back for hours while a different key answers the same request. Only
+  // an explicit throttle wording is treated as retryable.
+  if (/throttl|too many requests|slow down/i.test(serialized)) {
+    return new SemrushServiceError('rate_limited', SEMRUSH_THROTTLED);
+  }
+  if (/limit|quota|unit|credit/i.test(serialized)) {
+    return new SemrushServiceError('provider_quota_exhausted', SEMRUSH_QUOTA_EXHAUSTED);
   }
   return new SemrushServiceError('provider_failure', serialized ? `${fallback} ${serialized.slice(0, 160)}` : fallback);
 }

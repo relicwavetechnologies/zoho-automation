@@ -416,6 +416,16 @@ to create a new Google Sheet copy. The original workbook stays unchanged. In
 Lark, stop after the successful resolver call: the backend delivers the
 confirmation card and owns conversion after the member clicks it.
 
+**If a Sheets operation fails with \`must not be an Office file\`**, Google is
+saying the file is an Excel or CSV upload rather than a native Sheet — the
+Sheets API cannot read or write one whatever the connection is allowed to do.
+This is **not** a permission problem: never tell the member their scopes are
+missing or ask them to reconnect Google over it, because reconnecting changes
+nothing and they will do it and fail again. Recover by running
+\`resolve_reference\` on the same URL, which offers the editable Google Sheet
+copy. Say that the file is an Excel export and that editing needs a Sheet copy,
+and let the member decide.
+
 When RECENT DIVO EXPORTS lists a recent artifact:
 
 - **\`google_sheet\`** → use its opaque \`resourceRef\` for every read or edit

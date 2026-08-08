@@ -17,8 +17,8 @@ Use this skill for read-only Semrush SEO research available through Divo's backe
 
 ## Backend environment (ops only — never expose to members)
 
-- \`SEMRUSH_WEB_API_KEY\`
-- \`SEMRUSH_WEB_COOKIE\`
+- \`SEMRUSH_WEB_API_KEY\` — the only credential the wired operations use
+- \`SEMRUSH_WEB_COOKIE\` — optional; read by no wired operation
 - \`SEMRUSH_TIMEOUT_MS\` (default 15000 ms)
 
 ## Senior curl mapping
@@ -44,6 +44,27 @@ Only the three **Callable** operations below may be invoked through the \`semrus
    - \`blocked\` or an invocation error: explain whether configuration, permission, unsupported capability, or provider availability prevented the lookup. Never invent the missing data.
 5. Summarize useful evidence in chat; the structured preview contains at most 25 rows. Present **one main table** when one operation is enough. When \`exportCandidate\` is present and the member asks for Sheet, Excel, CSV, all rows, or a full export, call \`dataExport\` with \`op=plan\` using the candidate that matches the table you showed — not every candidate from the run. If unsure which candidate matches, call \`dataExport\` \`op=list_candidates\` first, then plan. If the member did not ask for a file but the result is a useful table, ranking, gap, or comparison with \`exportCandidate\`, end with one soft follow-up asking whether to export it to Google Sheets, Excel, or CSV, unless the member explicitly said not to export, not now, or chat-only. Do not manually follow \`nextPage\`, create or upload a CSV/XLSX/Sheet, run Python or a local workflow, or rerun the provider query after the member chooses a format. The central governed export owns provider pagination, sample/full decisions, destination access, and artifact creation. It retrieves current Semrush data, so describe it as a current export rather than an immutable copy of the preview.
 
+## When \`dataExport\` asks you something back
+
+\`op=plan\` does not always queue. It can answer with a question, and each one
+has exactly one correct reply:
+
+- \`choose_destination\` — the member has more than one writable Google account.
+  Show the returned account labels/emails, ask which should own the file, and
+  retry \`op=plan\` with the exact \`connectionId\` they pick. Never guess an
+  account, never reuse a previous one.
+- \`connect_required\` — no writable Google account. Say the export needs Google
+  connected, and stop; do not build the file another way.
+- \`sample_required\` — the dataset is large enough that Divo makes a private
+  sample first. Explain that, call \`op=sample\` once the member agrees, and call
+  \`op=confirm_sample\` only after they say the sample looks right.
+- \`ambiguous\` — your plan named more than one dataset without saying how they
+  fit. Repair it (one dataset, or a \`tabName\` per dataset). Never show the
+  member a candidate list or any ID.
+
+When a plan is accepted, say the export has started, not that it is finished.
+The completion card is what reports the final row count and any cap.
+
 ## Shy answering (default)
 
 - Multi-domain ranking, authority comparison, or backlinks comparison → **one** \`backlinks_comparison\` with all domains the member named (up to the operation limit). Do not also call \`domain_overview\` per domain unless the member asked for overview-specific fields such as organic keywords, traffic, or rank snapshot.
@@ -52,15 +73,19 @@ Only the three **Callable** operations below may be invoked through the \`semrus
 
 ## Supported backend operations (3 callable)
 
-- \`domain_overview\`: one bare domain and a supported country database. A single snapshot row.
+- \`domain_overview\`: one bare domain. Semrush answers with **one row per country database** it holds that domain in, so a single call already covers "global and country-wise traffic". \`database\` chooses which country leads the table; the rest follow by organic traffic. For a one-country question, read the first row and say so — do not call the operation again per country.
+  **The returned rows are the entire world this answer knows about.** Prefer not to name a country Semrush did not return; if you do name one as an example, the same sentence must say that this is Semrush having no record, **not** the domain having no presence. Never write that an unreturned country is unindexed, has zero traffic, or has no visibility — Semrush did not measure it, and a member cannot tell an inference apart from a finding.
 - \`backlinks_comparison\`: authority score, total backlinks and referring domains per target (1–10 domains in one request).
-- \`keyword_position_trend\`: one domain, one keyword, and one date (YYYYMMDD). Use for "where did this keyword rank on this date", not for full keyword lists or monthly domain history.
+- \`keyword_position_trend\`: one domain and one keyword, returned as a **dated series** of positions around the date you pass — not one row. Use it for "where did this keyword rank" and for how that rank moved over the returned window. Not for full keyword lists.
+- \`database\` is a two-letter Semrush country code and defaults to \`in\`. There is no fixed list to choose from: the databases a domain actually has are the \`Database\` column of a \`domain_overview\` for that domain, so run that first when the member names a country you have not seen for this domain. If Semrush does not recognise a code it says so, and that answer is reported rather than guessed around.
 
 ## Cost and honesty rules for these operations
 
 1. \`backlinks_comparison\` is **one web request** for all listed targets (1–10). Compare the domains the user actually named; do not pad the list or fan out \`domain_overview\` per target to be thorough.
 2. If Semrush has no backlink overview for a requested target, \`coverage.missingTargets\` and the export name it as no provider data rather than zero.
-3. Never substitute one report for another. If the user asked for something outside these three operations (including senior curl #2 backlink export), say it is not available through Divo Semrush yet.`,
+3. \`domain_overview\` returns a row per country Semrush holds the domain in, and nothing at all about the countries it does not. A country missing from that list is one Semrush has no record for — **not** a measured zero, and not evidence of no presence. Never write that an absent country is unindexed, has zero traffic, or has no visibility, and never count how many markets the domain is missing from. If you name one as an example, say in the same sentence that Semrush has no record of it. Report the countries that came back, say how many there were, and say plainly that Semrush returned no data for anywhere else. A row present with \`Organic Traffic\` 0 is different: that is measured, and can be described as ranking without earning clicks.
+4. Counts must come from the rows, not from memory. If you say how many countries had zero traffic, that number is the count of returned rows whose \`Organic Traffic\` is 0 — check it against the rows before writing it.
+5. Never substitute one report for another. If the user asked for something outside these three operations (including senior curl #2 backlink export), say it is not available through Divo Semrush yet.`,
   toolIds: ['semrush'],
   tags: ['divo', 'seo', 'semrush', 'organic', 'rankings', 'domain'],
   aliases: ['semrush', 'seo research', 'organic rankings', 'domain overview'],

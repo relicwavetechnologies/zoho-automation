@@ -10,6 +10,33 @@ import {
   GOVERNED_LOCAL_WORKFLOW_CRITERION,
 } from '../../src/application/skills/governed-local-routing';
 
+const sheetsSkill = () => {
+  const skill = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find(entry => entry.slug === 'google-sheets');
+  assert.ok(skill, 'google-sheets skill must exist');
+  return skill!.markdown;
+};
+
+describe('google-sheets Office-file recovery', () => {
+  it('tells the model what "must not be an Office file" actually means', () => {
+    // Live 2026-08-08: editing an exported .xlsx returned Google's own
+    // HttpError 400 "The document must not be an Office file". The model read
+    // that and told the member their Google account was missing Sheets write
+    // scope — the grant contained auth/spreadsheets the whole time, so
+    // reconnecting would have failed the same way.
+    const markdown = sheetsSkill();
+    assert.match(markdown, /must not be an Office file/);
+    assert.match(markdown, /This is \*\*not\*\* a permission problem/);
+    assert.match(markdown, /never tell the member their scopes are\s+missing/);
+    assert.match(markdown, /reconnecting changes\s+nothing/);
+  });
+
+  it('routes the recovery through the governed resolver, not a hand-rolled conversion', () => {
+    const markdown = sheetsSkill();
+    assert.match(markdown, /Recover by running\s+`resolve_reference` on the same URL/);
+    assert.match(markdown, /editable Google Sheet\s+copy/);
+  });
+});
+
 describe('Google Workspace system skills', () => {
   // After deploy, run `pnpm tsx scripts/reconcile-capabilities.ts` on each environment
   // so provisioned Skill.markdown rows match these source definitions.

@@ -177,9 +177,15 @@ export const EnvSchema = z.object({
   SERPER_CONNECTION_ENCRYPTION_KEY: z.string().optional(),
   SERPER_TIMEOUT_MS:             positiveInt(10_000),
   // Semrush credentials never reach Desktop or Pi. Only validated
-  // www.semrush.com web-session recipes are supported.
+  // www.semrush.com recipes are supported. The key is the credential; the
+  // cookie is read by no wired operation and is kept only for the excluded
+  // /analytics/backlinks/webapi2 route, which the account has disabled.
   SEMRUSH_WEB_API_KEY: z.string().optional(),
   SEMRUSH_WEB_COOKIE: z.string().optional(),
+  // Semrush keys exhaust in ordinary use. Where this is set it is the source of
+  // truth for the live key and the environment key is only a fallback, because
+  // a hardcoded key goes stale silently while the webhook does not.
+  SEMRUSH_API_KEY_WEBHOOK_URL: z.string().url().optional(),
   SEMRUSH_TIMEOUT_MS:             positiveInt(15_000),
   // OMS Site Data keys are company-owned and persisted encrypted. The
   // composition fallback preserves existing deployments while allowing an
