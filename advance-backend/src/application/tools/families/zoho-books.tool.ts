@@ -16,10 +16,16 @@
  *     list_bank_transactions — paginated bank transaction list
  *     search_transactions   — global transaction search
  *     get_tax_summary       — tax summary report
+ *     list_items            — paginated item/product list
+ *     list_taxes            — configured tax rates (GST etc.)
  *     send_invoice          — email an invoice
  *     record_payment        — record a customer payment
  *     create_expense        — create an expense
  *     create_bill           — create a bill
+ *     create_contact        — create a customer or vendor
+ *     update_invoice        — correct an existing invoice
+ *     mark_invoice_sent     — move a draft invoice to sent without emailing it
+ *     attach_document       — attach a file from this conversation to an invoice or bill
  *     void_invoice          — void an invoice
  *
  *   Reports (exhaustive pagination + token-safe output):
@@ -45,6 +51,13 @@ import {
   ZOHO_BOOKS_ROW_CONTRACT,
 } from '../../../shared/zoho-books-row-contract';
 import type { ZohoFinanceOps }             from '../../zoho/zoho-finance-ops';
+import {
+  attachedDocumentNames,
+  summarizeZohoWrite,
+  unwrapZohoRecord,
+  type ZohoWriteModule,
+} from '../../zoho/zoho-books-write-result';
+import { validateAttachmentPolicy }        from '../../email/attachment-policy';
 import { mapZohoError }                    from '../../zoho/zoho-error.utils';
 import { formatAmount, formatDate }        from '../../zoho/zoho-format.utils';
 import { normalizeStatus, parseDateFilter } from '../../zoho/zoho-filter.utils';
@@ -88,10 +101,16 @@ const Schema = z.object({
     'list_bank_transactions',
     'search_transactions',
     'get_tax_summary',
+    'list_items',
+    'list_taxes',
     'send_invoice',
     'record_payment',
     'create_expense',
     'create_bill',
+    'create_contact',
+    'update_invoice',
+    'mark_invoice_sent',
+    'attach_document',
     'void_invoice',
     // Reports
     'build_overdue_report',
@@ -101,6 +120,10 @@ const Schema = z.object({
   invoiceId:      z.string().optional(),
   contactId:      z.string().optional(),
   accountId:      z.string().optional(),
+  // attach_document — which record the file belongs on, and which file it is.
+  recordType:     z.enum(['invoice', 'bill']).optional(),
+  recordId:       z.string().optional(),
+  fileName:       z.string().optional(),
   searchQuery:    z.string().optional(),
   email:          z.string().email().optional(),
   fields:         z.record(z.unknown()).optional(),
@@ -130,6 +153,8 @@ const ResultSchema = z.object({
   data:         z.unknown().optional(),
   id:           z.string().optional(),
   message:      z.string().optional(),
+  /** Zoho web link for a record a write just created or changed. */
+  recordUrl:    z.string().optional(),
   // Report fields (present only for build_overdue_report)
   report:       z.unknown().optional(),
   truncated:    z.boolean().optional(),
@@ -170,20 +195,26 @@ const ResultSchema = z.object({
 
 type Res = z.infer<typeof ResultSchema>;
 
-// ─── Simple client port (for CRUD ops) ───────────────────────────────────────
+// ─── Attachment source ────────────────────────────────────────────────────────
 
-export interface ZohoBooksClientPort {
-  listInvoices(limit?: number): Promise<unknown[]>;
-  getInvoice(invoiceId: string): Promise<unknown>;
-  createInvoice(fields: Record<string, unknown>): Promise<{ invoiceId: string }>;
-  listContacts(limit?: number): Promise<unknown[]>;
-  getContact(contactId: string): Promise<unknown>;
-  listExpenses(limit?: number): Promise<unknown[]>;
-  sendInvoice(invoiceId: string, email?: string): Promise<{ invoiceId: string }>;
-  recordPayment(fields: Record<string, unknown>): Promise<{ paymentId: string }>;
-  createExpense(fields: Record<string, unknown>): Promise<{ expenseId: string }>;
-  createBill(fields: Record<string, unknown>): Promise<{ billId: string }>;
-  voidInvoice(invoiceId: string): Promise<{ invoiceId: string }>;
+/**
+ * Resolves a member-named file from the current conversation to its bytes.
+ *
+ * The model names a file; it never handles the provider key. Resolution is the
+ * backend's job precisely so a wrong or invented identifier cannot put someone
+ * else's document on a financial record.
+ */
+export interface ZohoAttachmentSourcePort {
+  resolve(input: {
+    companyId:       string;
+    userId:          string;
+    channel:         string;
+    conversationKey: string;
+    fileName:        string;
+  }): Promise<
+    | { readonly kind: 'resolved'; readonly fileName: string; readonly mimeType: string; readonly content: Buffer }
+    | { readonly kind: 'unavailable'; readonly message: string }
+  >;
 }
 
 const readOps = new Set<Args['op']>([
@@ -199,6 +230,8 @@ const readOps = new Set<Args['op']>([
   'list_bank_transactions',
   'search_transactions',
   'get_tax_summary',
+  'list_items',
+  'list_taxes',
   'build_overdue_report',
 ]);
 
@@ -208,6 +241,20 @@ const createOps = new Set<Args['op']>([
   'record_payment',
   'create_expense',
   'create_bill',
+  'create_contact',
+  'attach_document',
+]);
+
+/**
+ * Ops that change a record that already exists.
+ *
+ * Without this set the action ternary below sends everything that is neither a
+ * read nor a create to `delete` — so correcting an invoice would demand delete
+ * permission, and the tool's declared `update` action group would stay unused.
+ */
+const updateOps = new Set<Args['op']>([
+  'update_invoice',
+  'mark_invoice_sent',
 ]);
 
 const listOpToModule: Record<string, ZohoBooksModule> = {
@@ -216,9 +263,13 @@ const listOpToModule: Record<string, ZohoBooksModule> = {
   list_expenses:         'expenses',
   list_payments:         'customerpayments',
   list_contacts:         'contacts',
+  list_items:            'items',
   list_bank_transactions: 'banktransactions',
   search_transactions:   'banktransactions',
 };
+
+/** Zoho's own module path for a record the member can attach a file to. */
+const attachModule = { invoice: 'invoices', bill: 'bills' } as const;
 
 const INLINE_SCRIPT_LIMIT = 10;
 
@@ -559,19 +610,16 @@ async function executeScriptMode(
 // ─── Tool factory ─────────────────────────────────────────────────────────────
 
 export const createZohoBooksTool = (deps: {
-  /** Factory for simple per-request CRUD client (token resolved per call). */
-  getClient:    (
-    companyId: string,
-    userId: string,
-    connectionId?: string,
-    minimumAccess?: 'read_only' | 'read_write',
-  ) => Promise<ZohoBooksClientPort | null>;
-  /** Paginated client for module reads and raw Books report endpoints. */
+  /** Paginated client — every read and every write goes through this one. */
   booksClient:  ZohoBooksPaginatedClient;
   /** Finance ops service for deep report operations. */
   financeOps:   ZohoFinanceOps;
   exportCandidates?: Pick<DataExportOrchestrationService, 'publishCandidate'>;
   inlineThreshold?: number;
+  /** Resolves a file the member sent in this conversation. Absent = attachments unavailable. */
+  attachmentSource?: ZohoAttachmentSourcePort;
+  /** Web base for record links, e.g. https://books.zoho.com or a custom finance domain. */
+  appBaseUrl?: string;
 }): Tool<Args, Res> => ({
   id:           asToolId('zohoBooks'),
   family:       'zoho',
@@ -580,7 +628,9 @@ export const createZohoBooksTool = (deps: {
   resultSchema: ResultSchema,
 
   description: [
-    'Access Zoho Books: 19 operations for invoices, bills, expenses, payments, contacts, bank transactions, and reports.',
+    'Access Zoho Books: read, write, and report on invoices, bills, expenses, payments, contacts, items, taxes, bank transactions.',
+    'A created invoice is a draft until mark_invoice_sent or send_invoice; report the status the tool returns rather than assuming it was issued.',
+    'attach_document puts a file the member sent in this Lark conversation onto an invoice or bill, and verifies it against Zoho documents[].',
     'Plain list operations fetch one bounded page and return only the requested limit.',
     'For custom analysis (grouping, aggregation, ranking), add a `script` parameter to fetch up to 4000 records with pre-converted INR fields (_amount_inr, _balance_inr, _total_inr).',
     'For an exact aggregate that may require more than 4000 records, use a governed backend workflow; do not create a member-facing file from paged script rows.',
@@ -591,11 +641,17 @@ export const createZohoBooksTool = (deps: {
 
   parameterDocs: [
     'connectionId: exact accessible Zoho UUID. In backend-hosted channels, omit it when only one Zoho account is accessible; the backend resolves that account. If multiple are available, retry with the exact ID returned by the error.',
-    'op: list_invoices|get_invoice|create_invoice|list_contacts|get_contact|list_expenses|list_bills|list_payments|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
+    'op: list_invoices|get_invoice|create_invoice|update_invoice|mark_invoice_sent|attach_document|list_contacts|get_contact|create_contact|list_expenses|list_bills|list_payments|list_items|list_taxes|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
     'read params: invoiceId, accountId, searchQuery, dateFrom, dateTo, status, taxYear, exportAll, limit (1-100)',
     'get_invoice accepts a Zoho numeric invoice ID or an exact human invoice number. list_invoices forwards searchQuery to Zoho and returns newest invoice dates first.',
     'limit is the requested maximum. Once that many rows are returned, do not fetch more pages or switch to script mode unless the user explicitly asks for an export or an aggregate within script mode’s documented 4,000-record ceiling.',
     'write params: invoiceId, email, fields',
+    'create_invoice/update_invoice/create_bill/create_contact/create_expense/record_payment take fields; the tool returns the stored record, its status, and its link. Never restate a status the tool did not return.',
+    'create_invoice: supply invoice_number only when the member gave one — the tool then overrides Zoho auto-numbering. Omit it to let Zoho number the invoice.',
+    'mark_invoice_sent issues a draft without emailing anyone. send_invoice emails it. They are different acts; do not substitute one for the other.',
+    'create_contact only after list_contacts with searchQuery returns no match, and say in the reply that a new contact was created.',
+    'attach_document params: recordType (invoice|bill), recordId, fileName — the exact name of a file the member sent in this Lark conversation. Never invent a filename, and never claim an attachment the tool did not confirm.',
+    'list_items gives item_id and rate for invoice line_items. list_taxes gives the real tax_id values for GST; never guess a tax rate or tax id.',
     'build_overdue_report params: asOfDate (ISO), minOverdueDays, invoiceDateFrom, invoiceDateTo',
     '',
     'SCRIPT MODE (list ops only — for ANALYSIS/GROUPING/AGGREGATION):',
@@ -612,7 +668,13 @@ export const createZohoBooksTool = (deps: {
   ].join('\n'),
 
   permissionCheck(args, perm) {
-    const action: ToolActionGroup = readOps.has(args.op) ? 'read' : createOps.has(args.op) ? 'create' : 'delete';
+    const action: ToolActionGroup = readOps.has(args.op)
+      ? 'read'
+      : createOps.has(args.op)
+        ? 'create'
+        : updateOps.has(args.op)
+          ? 'update'
+          : 'delete';
     const allowed = perm.allowedActionsByTool.get(asToolId('zohoBooks'))?.has(action) ?? false;
     if (
       allowed
@@ -820,23 +882,149 @@ export const createZohoBooksTool = (deps: {
       }));
     }
 
-    // ── CRUD operations (use simple client) ──────────────────────────────────
-    ctx.logger.info('zoho_books.tool.get_client', { companyId, userId, op: args.op });
-    const client = await deps.getClient(
+    // ── CRUD operations ──────────────────────────────────────────────────────
+    const appBaseUrl = deps.appBaseUrl ?? 'https://books.zoho.com';
+
+    /** Single-record GET. Unlike getRecord() this surfaces provider errors
+     *  instead of turning an expired token into "not found". */
+    const getOne = async (moduleName: ZohoBooksModule, recordId: string) => {
+      const payload = await deps.booksClient.getEndpoint({
+        companyId,
+        ...connectionContext,
+        path: `/${moduleName}/${encodeURIComponent(recordId)}`,
+        ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+      });
+      return unwrapZohoRecord(payload, moduleName);
+    };
+
+    const write = async (input: {
+      method: 'POST' | 'PUT';
+      path:   string;
+      params?: Record<string, string>;
+      body?:  Record<string, unknown>;
+      multipart?: { field: string; fileName: string; mimeType: string; content: Buffer };
+    }) => deps.booksClient.mutate({
       companyId,
       userId,
-      args.connectionId,
-      readOps.has(args.op) ? 'read_only' : 'read_write',
-    );
-    ctx.logger.info('zoho_books.tool.client_resolved', { companyId, hasClient: !!client, op: args.op });
-    if (!client) {
-      ctx.logger.warn('zoho_books.tool.no_client', { companyId, userId, op: args.op });
-      return err(new ToolError({
-        toolId:  'zohoBooks',
-        reason:  'unrecoverable',
-        message: 'Zoho Books not connected for this company',
-      }));
-    }
+      connectionId: args.connectionId,
+      ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+      ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+      ...input,
+    });
+
+    /**
+     * Put a file the member already sent into this conversation onto an invoice
+     * or a bill.
+     *
+     * Re-reads `documents[]` first: Zoho appends rather than replaces, so an
+     * unchecked retry silently leaves the same PDF on the record twice.
+     */
+    const attachDocument = async (): Promise<Result<Res, ToolError>> => {
+      if (!args.recordType || !args.recordId || !args.fileName) {
+        return err(new ToolError({
+          toolId: 'zohoBooks', reason: 'bad_args',
+          message: 'attach_document needs recordType (invoice or bill), recordId, and the exact fileName the member sent.',
+        }));
+      }
+      if (!deps.attachmentSource || ctx.runContext.channel !== 'lark') {
+        return err(new ToolError({
+          toolId: 'zohoBooks', reason: 'bad_args',
+          message: `Divo cannot attach files from the ${ctx.runContext.channel} channel yet — only files sent in Lark. `
+            + 'The record itself is unchanged; say the attachment could not be made rather than that it was.',
+        }));
+      }
+      const conversationKey = ctx.runContext.runtimeThreadId ?? ctx.runContext.chatId;
+      if (!conversationKey) {
+        return err(new ToolError({
+          toolId: 'zohoBooks', reason: 'bad_args',
+          message: 'Divo cannot tell which conversation this file was sent in, so it will not guess at one.',
+        }));
+      }
+
+      const moduleName = attachModule[args.recordType];
+      const before = attachedDocumentNames(await getOne(moduleName, args.recordId));
+
+      const resolved = await deps.attachmentSource.resolve({
+        companyId,
+        userId,
+        channel: ctx.runContext.channel,
+        conversationKey,
+        fileName: args.fileName,
+      });
+      if (resolved.kind === 'unavailable') {
+        return err(new ToolError({
+          toolId: 'zohoBooks', reason: 'bad_args', message: resolved.message,
+        }));
+      }
+
+      if (before.some(name => name.trim().toLowerCase() === resolved.fileName.trim().toLowerCase())) {
+        return ok({
+          success: true,
+          id: args.recordId,
+          message: `"${resolved.fileName}" is already attached to this ${args.recordType}. Nothing was uploaded again. Attached: ${before.join(', ')}.`,
+        });
+      }
+
+      const policy = validateAttachmentPolicy([{
+        fileName: resolved.fileName,
+        mimeType: resolved.mimeType,
+        sizeBytes: resolved.content.length,
+        content: resolved.content,
+        source: 'lark',
+      }]);
+      if (!policy.ok) {
+        return err(new ToolError({
+          toolId: 'zohoBooks', reason: 'bad_args', message: policy.error.message,
+        }));
+      }
+
+      ctx.onProgress?.(`Attaching ${resolved.fileName} to the ${args.recordType}…`);
+      await write({
+        method: 'POST',
+        path: `/${moduleName}/${encodeURIComponent(args.recordId)}/attachment`,
+        multipart: {
+          field: 'attachment',
+          fileName: resolved.fileName,
+          mimeType: resolved.mimeType,
+          content: resolved.content,
+        },
+      });
+
+      // Zoho's own record is the only proof the upload landed.
+      const after = attachedDocumentNames(await getOne(moduleName, args.recordId));
+      const landed = after.some(name => name.trim().toLowerCase() === resolved.fileName.trim().toLowerCase());
+      return ok({
+        success: landed,
+        id: args.recordId,
+        message: landed
+          ? `Attached "${resolved.fileName}" to the ${args.recordType}. Zoho now lists: ${after.join(', ')}.`
+          : `Zoho accepted the upload but does not list "${resolved.fileName}" on the ${args.recordType}. Treat the attachment as unconfirmed.`,
+      });
+    };
+
+    /** Write, then report what Zoho actually stored rather than that it accepted the call. */
+    const writtenRecord = async (
+      moduleName: ZohoWriteModule,
+      verb: string,
+      input: Parameters<typeof write>[0],
+    ): Promise<Res> => {
+      const { organizationId, payload } = await write(input);
+      const record = unwrapZohoRecord(payload, moduleName);
+      const summary = summarizeZohoWrite({
+        module: moduleName,
+        verb,
+        record,
+        appBaseUrl,
+        organizationId,
+      });
+      return {
+        success: true,
+        ...(summary.id ? { id: summary.id } : {}),
+        data: formatZohoResult(record),
+        message: summary.message,
+        ...(summary.recordUrl ? { recordUrl: summary.recordUrl } : {}),
+      };
+    };
 
     const listRecords = async (moduleName: ZohoBooksModule, filters?: Record<string, unknown>, query?: string) =>
       deps.booksClient.listRecords({
@@ -1005,45 +1193,121 @@ export const createZohoBooksTool = (deps: {
               }));
             }
           }
-          const invoice = await client.getInvoice(resolvedInvoiceId);
+          const invoice = await getOne('invoices', resolvedInvoiceId);
           if (personalizedScope && !recordMatchesZohoEmail(invoice, requesterEmail!)) return ok({ success: true, data: null, message: 'Invoice not found' });
           return ok({ success: true, data: formatZohoResult(invoice) });
         }
 
         case 'create_invoice': {
           if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for create_invoice' }));
-          const r = await client.createInvoice(args.fields as Record<string, unknown>);
-          return ok({ success: true, id: r.invoiceId, message: 'Invoice created successfully' });
+          const fields = args.fields as Record<string, unknown>;
+          return ok(await writtenRecord('invoices', 'created', {
+            method: 'POST',
+            path: '/invoices',
+            // Zoho rejects a supplied invoice_number outright while auto-numbering
+            // is on, unless this says the member meant to override it.
+            ...(typeof fields['invoice_number'] === 'string' && fields['invoice_number'].trim()
+              ? { params: { ignore_auto_number_generation: 'true' } }
+              : {}),
+            body: fields,
+          }));
+        }
+
+        case 'update_invoice': {
+          if (!args.invoiceId) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'invoiceId required for update_invoice' }));
+          if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for update_invoice' }));
+          return ok(await writtenRecord('invoices', 'updated', {
+            method: 'PUT',
+            path: `/invoices/${encodeURIComponent(args.invoiceId)}`,
+            body: args.fields as Record<string, unknown>,
+          }));
+        }
+
+        case 'mark_invoice_sent': {
+          if (!args.invoiceId) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'invoiceId required for mark_invoice_sent' }));
+          await write({
+            method: 'POST',
+            path: `/invoices/${encodeURIComponent(args.invoiceId)}/status/sent`,
+          });
+          // Zoho's status endpoint answers with a bare code/message, so the
+          // record has to be re-read for the reply to describe the real state.
+          const invoice = await getOne('invoices', args.invoiceId);
+          return ok({
+            success: true,
+            id: args.invoiceId,
+            data: formatZohoResult(invoice),
+            message: `Invoice ${stringValue(invoice, 'invoice_number') || args.invoiceId} is now marked sent in Zoho Books. It was not emailed — use send_invoice for that.`,
+          });
         }
 
         case 'send_invoice': {
           if (!args.invoiceId) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'invoiceId required for send_invoice' }));
-          const r = await client.sendInvoice(args.invoiceId, args.email);
-          return ok({ success: true, id: r.invoiceId, message: 'Invoice sent successfully' });
+          await write({
+            method: 'POST',
+            path: `/invoices/${encodeURIComponent(args.invoiceId)}/email`,
+            body: args.email ? { to_mail_ids: [args.email] } : {},
+          });
+          return ok({
+            success: true,
+            id: args.invoiceId,
+            message: args.email
+              ? `Invoice emailed to ${args.email}.`
+              : 'Invoice emailed to the contacts Zoho holds for this customer.',
+          });
         }
 
         case 'record_payment': {
           if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for record_payment' }));
-          const r = await client.recordPayment(args.fields as Record<string, unknown>);
-          return ok({ success: true, id: r.paymentId, message: 'Payment recorded successfully' });
+          return ok(await writtenRecord('customerpayments', 'recorded', {
+            method: 'POST',
+            path: '/customerpayments',
+            body: args.fields as Record<string, unknown>,
+          }));
         }
 
         case 'create_expense': {
           if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for create_expense' }));
-          const r = await client.createExpense(args.fields as Record<string, unknown>);
-          return ok({ success: true, id: r.expenseId, message: 'Expense created successfully' });
+          return ok(await writtenRecord('expenses', 'created', {
+            method: 'POST',
+            path: '/expenses',
+            body: args.fields as Record<string, unknown>,
+          }));
         }
 
         case 'create_bill': {
           if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for create_bill' }));
-          const r = await client.createBill(args.fields as Record<string, unknown>);
-          return ok({ success: true, id: r.billId, message: 'Bill created successfully' });
+          return ok(await writtenRecord('bills', 'created', {
+            method: 'POST',
+            path: '/bills',
+            body: args.fields as Record<string, unknown>,
+          }));
         }
+
+        case 'create_contact': {
+          if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for create_contact' }));
+          return ok(await writtenRecord('contacts', 'created', {
+            method: 'POST',
+            path: '/contacts',
+            body: args.fields as Record<string, unknown>,
+          }));
+        }
+
+        case 'attach_document':
+          return attachDocument();
 
         case 'void_invoice': {
           if (!args.invoiceId) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'invoiceId required for void_invoice' }));
-          const r = await client.voidInvoice(args.invoiceId);
-          return ok({ success: true, id: r.invoiceId, message: 'Invoice voided successfully' });
+          await write({
+            method: 'POST',
+            path: `/invoices/${encodeURIComponent(args.invoiceId)}/status/void`,
+          });
+          const voided = await getOne('invoices', args.invoiceId);
+          return ok({
+            success: true,
+            id: args.invoiceId,
+            data: formatZohoResult(voided),
+            message: `Invoice ${stringValue(voided, 'invoice_number') || args.invoiceId} is now voided in Zoho Books.`,
+          });
         }
 
         case 'list_contacts':
@@ -1064,7 +1328,7 @@ export const createZohoBooksTool = (deps: {
 
         case 'get_contact': {
           if (!args.contactId) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'contactId required for get_contact' }));
-          const contact = await client.getContact(args.contactId);
+          const contact = await getOne('contacts', args.contactId);
           if (personalizedScope && !recordMatchesZohoEmail(contact, requesterEmail!)) return ok({ success: true, data: null, message: 'Contact not found' });
           return ok({ success: true, data: formatZohoResult(contact) });
         }
@@ -1115,6 +1379,35 @@ export const createZohoBooksTool = (deps: {
               commonColumns.status,
             ],
           }));
+
+        case 'list_items':
+          return ok(await listBounded('items', 'items', {
+            ...(args.searchQuery ? { query: args.searchQuery } : {}),
+            amountKeys: ['rate'],
+            columns: [
+              commonColumns.id('Item ID'),
+              { key: 'name', header: 'Item' },
+              { key: 'sku', header: 'SKU' },
+              { key: 'rate', header: 'Rate' },
+              { key: 'unit', header: 'Unit' },
+              { key: 'tax_name', header: 'Tax' },
+              { key: 'tax_percentage', header: 'Tax %' },
+              commonColumns.currency,
+              commonColumns.status,
+            ],
+          }));
+
+        case 'list_taxes': {
+          // Not a module — the configured tax rates live under settings, the
+          // same shape as the chart of accounts.
+          const data = await deps.booksClient.getEndpoint({
+            companyId,
+            ...connectionContext,
+            path: '/settings/taxes',
+            ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+          });
+          return ok({ success: true, data: formatZohoResult(data['taxes'] ?? data) });
+        }
 
         case 'get_chart_of_accounts': {
           if (personalizedScope) return err(new ToolError({ toolId: 'zohoBooks', reason: 'permission_denied', message: 'Chart of accounts is unavailable for personalized Zoho access.' }));

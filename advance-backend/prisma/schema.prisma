@@ -2602,6 +2602,34 @@ model RuntimePendingAttachment {
   @@index([expiresAt])
 }
 
+/// Files a member sent into a conversation, kept addressable by name so a tool
+/// can put one onto a provider record without the model ever handling the
+/// provider's file key.
+///
+/// Written for every inbound attachment, in both DMs and group chats, whether or
+/// not a question came with it — the two cases that were previously unrecoverable
+/// are a DM (where only a Pi fileId survived) and a file sent in the same message
+/// as the instruction (where nothing was stored at all).
+model ConversationAttachment {
+  id              String   @id @default(uuid())
+  companyId       String
+  userId          String
+  channel         String
+  conversationKey String
+  chatId          String
+  larkMessageId   String
+  larkFileKey     String
+  fileName        String
+  mimeType        String
+  sizeBytes       Int?
+  receivedAt      DateTime @default(now())
+  expiresAt       DateTime
+
+  @@unique([companyId, channel, larkMessageId, larkFileKey], map: "ConversationAttachment_provider_file_key")
+  @@index([companyId, userId, channel, conversationKey, expiresAt])
+  @@index([expiresAt])
+}
+
 model RuntimeRun {
   id             String                       @id @default(uuid())
   conversationId String

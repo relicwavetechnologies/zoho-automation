@@ -17,9 +17,7 @@ import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeIntCtx, noopLogger } from './helpers/int.helpers.ts';
 
-import { ZohoBooksClient }    from '../../src/infrastructure/zoho/zoho-books.client.ts';
 import { ZohoCrmClient }      from '../../src/infrastructure/zoho/zoho-crm.client.ts';
-import { createZohoBooksTool } from '../../src/application/tools/families/zoho-books.tool.ts';
 import { createZohoCrmTool }   from '../../src/application/tools/families/zoho-crm.tool.ts';
 
 const ZOHO_ACCESS_TOKEN = process.env['ZOHO_ACCESS_TOKEN'];
@@ -27,80 +25,10 @@ const ZOHO_ORG_ID       = process.env['ZOHO_ORG_ID'];
 const missingZoho       = !ZOHO_ACCESS_TOKEN || !ZOHO_ORG_ID;
 const crmWriteEnabled   = process.env['ZOHO_CRM_TEST_WRITE'] === '1';
 
-// ─── Minimal ZohoFinanceOps stub (used only for build_overdue_report) ─────────
-
-const stubFinanceOps = {
-  buildOverdueReport: async () => {
-    throw new Error('build_overdue_report not tested in integration suite');
-  },
-};
-
-// ─── zohoBooks ────────────────────────────────────────────────────────────────
-
-describe('zohoBooks — integration', { skip: missingZoho ? 'ZOHO_ACCESS_TOKEN / ZOHO_ORG_ID not set' : false }, () => {
-  const getClient = async (_companyId: string, _userId: string) =>
-    new ZohoBooksClient(ZOHO_ACCESS_TOKEN!, ZOHO_ORG_ID!);
-
-  const tool = createZohoBooksTool({
-    getClient,
-    financeOps: stubFinanceOps as any,
-  });
-
-  const ctx = makeIntCtx('zohoBooks', { companyId: ZOHO_ORG_ID });
-
-  it('list_invoices: returns invoice list (may be empty)', async () => {
-    const r = await tool.execute({ op: 'list_invoices', limit: 10 }, ctx);
-    assert.equal(r.ok, true, `list_invoices failed: ${!r.ok ? JSON.stringify((r as any).error) : ''}`);
-    const data = (r as any).value.data;
-    assert.ok(Array.isArray(data), 'data should be an array');
-    noopLogger.info('zohoBooks.list_invoices', { count: data.length });
-  });
-
-  it('get_invoice: reads a specific invoice if any exist', async () => {
-    // First list to get an actual invoice ID
-    const list = await tool.execute({ op: 'list_invoices', limit: 1 }, ctx);
-    if (!list.ok) { return; }
-    const invoices = (list as any).value.data as Array<{ invoice_id?: string }>;
-    if (invoices.length === 0) {
-      noopLogger.info('zohoBooks.get_invoice', { skipped: 'no invoices found' });
-      return;
-    }
-    const invoiceId = invoices[0]?.invoice_id ?? (invoices[0] as any)?.id;
-    assert.ok(invoiceId, 'invoice should have an ID');
-
-    const r = await tool.execute({ op: 'get_invoice', invoiceId }, ctx);
-    assert.equal(r.ok, true, `get_invoice failed: ${!r.ok ? JSON.stringify((r as any).error) : ''}`);
-    assert.ok((r as any).value.data, 'should return invoice data');
-  });
-
-  it('list_contacts: returns contact list (may be empty)', async () => {
-    const r = await tool.execute({ op: 'list_contacts', limit: 10 }, ctx);
-    assert.equal(r.ok, true, `list_contacts failed: ${!r.ok ? JSON.stringify((r as any).error) : ''}`);
-    assert.ok(Array.isArray((r as any).value.data));
-  });
-
-  it('get_contact: reads a specific contact if any exist', async () => {
-    const list = await tool.execute({ op: 'list_contacts', limit: 1 }, ctx);
-    if (!list.ok) { return; }
-    const contacts = (list as any).value.data as Array<{ contact_id?: string }>;
-    if (contacts.length === 0) {
-      noopLogger.info('zohoBooks.get_contact', { skipped: 'no contacts found' });
-      return;
-    }
-    const contactId = contacts[0]?.contact_id ?? (contacts[0] as any)?.id;
-    assert.ok(contactId);
-
-    const r = await tool.execute({ op: 'get_contact', contactId }, ctx);
-    assert.equal(r.ok, true, `get_contact failed: ${!r.ok ? JSON.stringify((r as any).error) : ''}`);
-    assert.ok((r as any).value.data);
-  });
-
-  it('list_expenses: returns expense list (may be empty)', async () => {
-    const r = await tool.execute({ op: 'list_expenses', limit: 10 }, ctx);
-    assert.equal(r.ok, true, `list_expenses failed: ${!r.ok ? JSON.stringify((r as any).error) : ''}`);
-    assert.ok(Array.isArray((r as any).value.data));
-  });
-});
+// zohoBooks is no longer reachable from a bare access token: reads and writes
+// both run through ZohoBooksPaginatedClient, which resolves auth per connection
+// through ZohoTokenService. Its live coverage belongs in a suite that can build
+// that, not here.
 
 // ─── zohoCrm ─────────────────────────────────────────────────────────────────
 

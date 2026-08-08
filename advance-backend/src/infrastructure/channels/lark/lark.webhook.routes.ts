@@ -74,6 +74,7 @@ import type { PrismaClient } from '../../../generated/prisma';
 import type { GroupChatAttachmentContext } from '../../../domain/conversation/group-context';
 import { fetchParentMessage, buildParentContextPrefix, type ParentMessageResult } from './lark-parent-message';
 import type { LarkContactsClient } from './clients/lark-contacts.client';
+import type { ConversationAttachmentService } from '../../../application/conversation-attachments/conversation-attachment.service';
 import type { LarkFileClient } from './clients/lark-file.client';
 import type { ElevenLabsTranscriptionClient } from '../../ai/transcription/elevenlabs-transcription.client';
 import {
@@ -207,6 +208,12 @@ export interface LarkWebhookDeps {
   larkContactsClient?: Pick<LarkContactsClient, 'getTenantKey' | 'getUser'>;
   /** Test seam for parent authorship/content lookup; production uses Lark. */
   fetchParentMessage?: typeof fetchParentMessage;
+  /**
+   * Records inbound files so a tool can attach one by name later.
+   * Absent means files still arrive and are read as usual; only attaching one to
+   * a provider record becomes unavailable.
+   */
+  conversationAttachments?: Pick<ConversationAttachmentService, 'record'>;
 }
 
 export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
@@ -2005,6 +2012,7 @@ async function processInBackground(
     prisma?: PrismaClient;
     larkContactsClient?: Pick<LarkContactsClient, 'getTenantKey' | 'getUser'>;
     fetchParentMessage?: typeof fetchParentMessage;
+    conversationAttachments?: Pick<ConversationAttachmentService, 'record'>;
   },
   log: Logger,
   signal?: AbortSignal,
@@ -2497,6 +2505,31 @@ async function processInBackground(
         log,
       })
     : [];
+
+  // Index every file before the branches below, so a tool can find it by name
+  // later. The existing paths each cover one case only — the Pi staging record
+  // keeps no Lark key, and a file sent together with its instruction was never
+  // recorded at all — which is why neither could be extended instead.
+  if (mayProcessAttachments && attachments.length > 0 && deps.conversationAttachments) {
+    const attachmentConversationKey = await activeRuntimeThreadIdFor(
+      deps.prisma,
+      identity.companyId,
+      incoming,
+    );
+    await deps.conversationAttachments.record(
+      attachments.filter(isSupportedLarkMedia).map(attachment => ({
+        companyId:       identity.companyId,
+        userId:          identity.userId,
+        channel:         'lark',
+        conversationKey: attachmentConversationKey,
+        chatId:          String(incoming.chatId),
+        larkMessageId:   attachment.messageId,
+        larkFileKey:     attachment.key,
+        fileName:        attachment.fileName,
+        mimeType:        attachment.mimeType,
+      })),
+    );
+  }
 
   if (untagged) {
     // Logged as the policy actually applied, not as the policy configured, so a

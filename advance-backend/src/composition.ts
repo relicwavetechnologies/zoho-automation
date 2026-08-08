@@ -102,8 +102,11 @@ import {
 import { ZohoConnectionRepository } from './infrastructure/zoho/zoho-connection.repository';
 import { ZohoTokenService } from './infrastructure/zoho/zoho-token.service';
 import { ZohoCrmClient } from './infrastructure/zoho/zoho-crm.client';
-import { ZohoBooksClient } from './infrastructure/zoho/zoho-books.client';
 import { ZohoBooksPaginatedClient } from './infrastructure/zoho/zoho-books-paginated.client';
+import { ConversationAttachmentService } from './application/conversation-attachments/conversation-attachment.service';
+import { PrismaConversationAttachmentStore } from './infrastructure/persistence/conversation-attachment.repository';
+import { LarkConversationAttachmentSource } from './infrastructure/zoho/lark-conversation-attachment.source';
+import { LarkFileClient } from './infrastructure/channels/lark/clients/lark-file.client';
 import { ZohoCrmPaginatedClient } from './infrastructure/zoho/zoho-crm-paginated.client';
 import { CloudinaryAdapter } from './infrastructure/cloudinary/cloudinary.adapter';
 import { ZohoFinanceOps } from './application/zoho/zoho-finance-ops';
@@ -302,14 +305,6 @@ import type { ApiKeyProvider } from './application/governance/api-key-exhaustion
 import { createDeepSeek } from '@ai-sdk/deepseek';
 import { wrapLanguageModel, type LanguageModel } from 'ai';
 
-type ZohoBooksOrganizationPayload = {
-  organizations?: Array<{
-    organization_id?: string;
-    is_default?: boolean;
-    is_default_org?: boolean;
-  }>;
-};
-
 const GATEWAY_PROVIDER_CACHE_TTL_MS = 5 * 60 * 1000;
 
 /**
@@ -493,6 +488,8 @@ export interface Container {
   busyLaneNotices: BusyLaneNotices;
   // Lark contacts (for directory sync)
   larkContactsClient: LarkContactsClient;
+  /** Files the member sent, indexed by name so a tool can attach one later. */
+  conversationAttachments: ConversationAttachmentService;
   // Pi/Desktop capability gateway
   gatewayDispatcher: GatewayDispatcher;
   /** Container runtime shared by the Lark webhook and the scheduled-workflow poller. */
@@ -1655,85 +1652,9 @@ export async function buildContainer(
     }
   }
 
-  const zohoBooksOrgCache = new Map<string, { organizationId: string; expiresAtMs: number }>();
-
-  async function resolveZohoBooksOrganizationId(
-    companyId: string,
-    token: string,
-    apiBaseUrl: string,
-    connectionId?: string,
-  ): Promise<string | null> {
-    const cacheKey = connectionId ?? companyId;
-    const cached = zohoBooksOrgCache.get(cacheKey);
-    if (cached && cached.expiresAtMs > Date.now()) {
-      return cached.organizationId;
-    }
-
-    try {
-      const apiRoot = apiBaseUrl.replace(/\/$/, '');
-      const res = await fetch(`${apiRoot}/books/v3/organizations`, {
-        headers: { Authorization: `Zoho-oauthtoken ${token}` },
-      });
-
-      const payload = (await res.json().catch(() => ({}))) as ZohoBooksOrganizationPayload & {
-        code?: number;
-        message?: string;
-      };
-
-      if (!res.ok) {
-        logger.warn('zoho.books.organization_lookup.failed', {
-          companyId,
-          status: res.status,
-          code: payload.code,
-          message: payload.message,
-        });
-        return null;
-      }
-
-      const orgs = Array.isArray(payload.organizations) ? payload.organizations : [];
-      const selected = orgs.find((org) => org.is_default_org === true || org.is_default === true) ?? orgs[0];
-      const organizationId = selected?.organization_id;
-      if (!organizationId) {
-        logger.warn('zoho.books.organization_lookup.empty', { companyId });
-        return null;
-      }
-
-      zohoBooksOrgCache.set(cacheKey, {
-        organizationId,
-        expiresAtMs: Date.now() + 10 * 60 * 1000,
-      });
-      return organizationId;
-    } catch (error) {
-      logger.warn('zoho.books.organization_lookup.error', {
-        companyId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return null;
-    }
-  }
-
   const getZohoCrmClient = async (companyId: string, userId: string, connectionId?: string) => {
     const auth = await resolveZohoAuth(companyId, userId, connectionId);
     return auth ? new ZohoCrmClient(auth.accessToken, auth.apiBaseUrl) : null;
-  };
-
-  const getZohoBooksClient = async (
-    companyId: string,
-    userId: string,
-    connectionId?: string,
-    minimumAccess: 'read_only' | 'read_write' = 'read_only',
-  ) => {
-    const auth = await resolveZohoAuth(companyId, userId, connectionId, minimumAccess);
-    if (!auth) return null;
-    const organizationId = await resolveZohoBooksOrganizationId(
-      companyId,
-      auth.accessToken,
-      auth.apiBaseUrl,
-      connectionId,
-    );
-    return organizationId
-      ? new ZohoBooksClient(auth.accessToken, organizationId, auth.apiBaseUrl)
-      : null;
   };
 
   // ── Cloudinary adapter (graceful no-op when credentials absent) ──────────
@@ -1871,6 +1792,19 @@ export async function buildContainer(
     rawRetentionHours: env.MANAGER_TEACH_RAW_RETENTION_HOURS,
     uploadDir: managerTeachUploadDir,
   });
+
+  // ── Conversation attachment index ────────────────────────────────────────
+  // Files the member sent, addressable by name. Written at the Lark webhook,
+  // read by tools that put a document onto a provider record.
+  const conversationAttachments = new ConversationAttachmentService(
+    new PrismaConversationAttachmentStore(prisma),
+    logger,
+  );
+  const conversationAttachmentSource = new LarkConversationAttachmentSource(
+    conversationAttachments,
+    new LarkFileClient(env, logger),
+    logger,
+  );
 
   // ── Zoho Books paginated client + finance ops ────────────────────────────
   const zohoPaginatedBooksClient = new ZohoBooksPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
@@ -2314,11 +2248,12 @@ export async function buildContainer(
     exportCandidates: dataExportOrchestrationService,
   }));
   toolRegistry.register(createZohoBooksTool({
-    getClient:       getZohoBooksClient,
     booksClient:     zohoPaginatedBooksClient,
     financeOps:      zohoFinanceOps,
     exportCandidates: dataExportOrchestrationService,
     inlineThreshold: env.ZOHO_BOOKS_CSV_INLINE_THRESHOLD,
+    attachmentSource: conversationAttachmentSource,
+    appBaseUrl:      env.ZOHO_BOOKS_APP_BASE_URL,
   }));
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
   toolRegistry.register(createKnowledgeTool({
@@ -3203,6 +3138,7 @@ export async function buildContainer(
     busyLaneNotices,
     // Lark contacts (for directory sync)
     larkContactsClient,
+    conversationAttachments,
     // Pi/Desktop capability gateway
     gatewayDispatcher,
     // Container runtime, shared by the Lark webhook and the scheduler.

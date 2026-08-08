@@ -136,6 +136,7 @@ export const createServer = (c: Container): DivoServerApplication => {
     batchingEnabled:       c.env.LARK_MESSAGE_BATCHING === 'on',
     prisma:                c.prisma,
     larkContactsClient:    c.larkContactsClient,
+    conversationAttachments: c.conversationAttachments,
     ...(voiceFileClient && voiceTranscriber
       ? { voiceFileClient, voiceTranscriber }
       : {}),
