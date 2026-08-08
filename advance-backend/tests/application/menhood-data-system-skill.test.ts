@@ -32,7 +32,8 @@ describe('Menhood data system skill', () => {
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /ORDER BY o\.order_date, o\.order_number, o\.id/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /sample is only reviewable if the full replay returns rows in the same order/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /current-month, and previous-month questions before reporting maturity cannot be answered here as final numbers/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /use the live Airtable Orders table instead/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /do not ask whether to check live data/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Load `airtable-core` immediately and use the live Airtable Orders table yourself/);
   });
 
   it('contains the operational joins, enums, quality rules, and named recipes', () => {
@@ -70,6 +71,7 @@ describe('Menhood data system skill', () => {
     assert.match(cookbook, /`Order Status \(Team\)`/);
     assert.match(cookbook, /`Order Sub Status`/);
     assert.match(cookbook, /Duplicate\/TEST\/Testing/);
+    assert.match(cookbook, /query the live Airtable Orders table yourself; do not ask permission first/);
     assert.match(cookbook, /Do not approximate these filters with `order_status`/);
     assert.match(cookbook, /Grouped `order_status` and `payment_type` counts are order-line buckets/);
     assert.match(cookbook, /final-amount\/gross order value/);
@@ -92,6 +94,7 @@ describe('Menhood data system skill', () => {
     assert.match(router!.markdown, /joins, aggregates, cohorts, broad filtering, or bulk analysis/);
     assert.match(router!.markdown, /Current\/latest Menhood order counts/);
     assert.match(router!.markdown, /Duplicate\/TEST\/Testing cleanup/);
+    assert.match(router!.markdown, /Route there immediately; do not first sample the reporting DB and do not ask whether to check Airtable/);
     assert.match(router!.markdown, /Do not route broad historical analytics or full exports through\s+Airtable MCP/);
     assert.match(router!.markdown, /does not use local Python/);
     assert.match(router!.markdown, /Ordinary Airtable records, comments, and CRUD/);

@@ -1,8 +1,12 @@
 import type { Skill } from './skill.types';
 
-const AIRTABLE_CONNECTION_METHOD = `DIVO-GOVERNED AIRTABLE CONNECTION:
-- Invoke Airtable only through the Divo tool surface available in the current runtime: server channels use call_tool; desktop uses divo_gateway. Never call Airtable directly, never use a personal access token, and never switch to an unavailable tool surface.
+type AirtableToolId = 'airtableRecords' | 'airtableSchema' | 'airtableAutomation';
+
+const airtableConnectionMethod = (toolId: AirtableToolId) => `DIVO-GOVERNED AIRTABLE CONNECTION:
+- Invoke Airtable only through the Divo tool surface available in the current runtime: Pi/desktop exposes divo_gateway, while a direct server runner may expose call_tool. Never call Airtable directly, never use a personal access token, and never switch to an unavailable tool surface.
 - A call requires an exact connectionId supplied by the current run. Describe may omit it only to inspect an approved operation schema.
+- For divo_gateway, the only valid wrapper for this skill's primary Airtable tool is root \`op: "tools.invoke"\` with \`payload: { toolId: "${toolId}", args: { op: "describe"|"call", nativeTool, connectionId, input } }\`. Put \`connectionId\` inside \`payload.args\`, never beside \`payload\`.
+- If this skill intentionally uses another loaded Airtable tool, substitute that exact toolId: record native tools use \`airtableRecords\`, schema native tools use \`airtableSchema\`, and automation/interface native tools use \`airtableAutomation\`.
 - If the current run supplies multiple connections, ask one short account-choice question using those labels, then use the selected exact ID. Do not guess.
 - If no connection is accessible, tell the member to connect Airtable or request access to an existing connection.
 - Never use a base name, workspace name, or label as connectionId. Use only a backend-provided connectionId.`;
@@ -31,7 +35,8 @@ UNDO:
 - Record UPDATES are NOT revertible. Never promise a member that an update can be undone; if the previous values matter, read and report them before updating.`;
 
 const AIRTABLE_READ_CRAFT = `READING AND FILTERING:
-- list_records_for_table takes a structured filter object, not a formula string: an operator ("and"/"or") plus operands, each with its own comparison operator (=, !=, <, >, <=, >=, contains, doesNotContain, isAnyOf, isNoneOf, hasAnyOf, hasAllOf, isWithin, isEmpty, isNotEmpty). Build the filter tree; never hand-write or URL-encode a formula.
+- list_records_for_table input uses \`filters\` plural, not \`filter\`: \`{ baseId, tableId, fieldIds, filters, sort?, pageSize? }\`. \`filters\` is a structured tree, not a formula string: an operator ("and"/"or") plus operands, each with its own comparison operator (=, !=, <, >, <=, >=, contains, doesNotContain, isAnyOf, isNoneOf, hasAnyOf, hasAllOf, isWithin, isEmpty, isNotEmpty). Build the filter tree; never hand-write or URL-encode a formula.
+- search_records has a different input shape: \`{ baseId, table, query, fields?, resultFieldIds?, filters?, sort?, limit? }\`. Never pass \`tableId\`, \`fieldIds\`, \`filter\`, or \`pageSize\` to search_records. Prefer list_records_for_table when you already have exact table and field IDs.
 - Match the operator to the field type: single select and single collaborator use =, !=, isAnyOf, isNoneOf; multiple selects and multiple collaborators use hasAnyOf, hasAllOf, =, doesNotContain; linked records use hasAnyOf, hasAllOf, =, isNoneOf, contains, doesNotContain.
 - Always pass fieldIds with only the fields the answer needs. Pulling every field on a wide table wastes the run's context for no benefit.
 - Record reads are bounded previews. If a preview says more rows exist, do not keep paging through Airtable MCP for a total, broad analysis, CSV, Excel, or Google Sheet. For settled synced Menhood analytics use \`menhood-data\`; for live/recent Menhood order counts or Airtable-view filters that the sync does not carry, use the live Orders table here only when the scoped read can be exhausted. For other Airtable data, use \`secure-data-export\` only when an exact backend-replayable connection, base, table, operation, and filters are already resolved. Otherwise ask for a bounded preview or say the full export is not available through MCP.
@@ -43,7 +48,7 @@ export const airtableCoreSkill: Skill = {
   name: 'Airtable Core',
   description: 'Read, search, create, update, upsert, and delete Airtable records and comments across bases and tables, with schema-aware filtering and safe batch writes.',
   toolIds: ['airtableRecords'],
-  instructions: `${AIRTABLE_CONNECTION_METHOD}
+  instructions: `${airtableConnectionMethod('airtableRecords')}
 
 ROLE:
 - This is Divo's Airtable record specialist.
@@ -58,8 +63,9 @@ ${AIRTABLE_READ_CRAFT}
 ${AIRTABLE_WRITE_SAFETY}
 
 ANALYSIS:
-- Airtable returns raw rows; it does not aggregate. For Menhood settled historical totals, grouping, ratios, cohorts, or cross-table joins, switch to \`menhood-data\` instead of paging Airtable MCP. Exception: use live Airtable for narrow current/recent Menhood order counts and Airtable-view semantics such as \`Order Status (Team)\`, \`Order Sub Status\`, Duplicate/TEST/Testing cleanup, or Regular Order filtering, because the reporting sync cannot represent those filters. If the live read is truncated, say the total is not proven and do not present it as final.
+- Airtable returns raw rows; it does not aggregate. For Menhood settled historical totals, grouping, ratios, cohorts, or cross-table joins, switch to \`menhood-data\` instead of paging Airtable MCP. Exception: use live Airtable for narrow current/recent Menhood order counts and Airtable-view semantics such as \`Order Status (Team)\`, \`Order Sub Status\`, Duplicate/TEST/Testing cleanup, or Regular Order filtering, because the reporting sync cannot represent those filters. When routed here for recent Menhood data or cleanup fields, perform the live read yourself; do not ask whether to check Airtable. If the live read is truncated, say the total is not proven and do not present it as final.
 - For Menhood live order-count reconciliation, first resolve the live base/table/field IDs, then filter the Orders table with exact Airtable values. Example business logic: July 2026 + \`SKU = MEN-GRO-TRI-BLA\` + \`Order Sub Status = Regular Order\` + \`Order Status (Team)\` not in Duplicate/TEST/Testing. Report records, distinct order numbers, units, and selected amount separately because line rows and orders can differ.
+- For Menhood product-name matching, do not use \`contains\` on the live \`Product Name\` field. Resolve the exact product option names first, then use \`isAnyOf\` with those names. For "Trimmer 1.0" include only exact Trimmer 1.0 product variants; do not include charging cable or replacement blade unless the member asks for accessories/replacements too.
 - For non-Menhood Airtable analysis, use MCP only when the member gave a narrow bounded scope; otherwise ask for a smaller preview or a backend-replayable export source.
 - Each Airtable row arrives with its fields nested. Flatten once when writing the file, then read plain column names; deciding row-by-row whether to reach for row.fields or row.cellValuesByFieldId is where these scripts go wrong.
 - Never estimate a number you did not compute, and never present a partial page as a complete total.
@@ -81,7 +87,7 @@ export const airtableSchemaOpsSkill: Skill = {
   name: 'Airtable Schema Operations',
   description: 'Create and modify the structure of Airtable bases: new bases, tables, and fields, renames and descriptions, and table deletion with confirmation.',
   toolIds: ['airtableSchema', 'airtableRecords'],
-  instructions: `${AIRTABLE_CONNECTION_METHOD}
+  instructions: `${airtableConnectionMethod('airtableSchema')}
 
 ROLE:
 - Use this only when the member is changing the STRUCTURE of a base: creating a base or table, adding or changing fields, renaming, or deleting a table.
@@ -115,7 +121,7 @@ export const airtableAutomationOpsSkill: Skill = {
   name: 'Airtable Interfaces & Automations',
   description: 'Inspect and build Airtable interfaces, pages, and forms, and create or modify base automations, which are saved as drafts for manual activation.',
   toolIds: ['airtableAutomation', 'airtableRecords'],
-  instructions: `${AIRTABLE_CONNECTION_METHOD}
+  instructions: `${airtableConnectionMethod('airtableAutomation')}
 
 ROLE:
 - Use this for Airtable interfaces, interface pages, forms, and base automations.
