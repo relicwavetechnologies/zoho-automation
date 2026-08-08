@@ -18,6 +18,7 @@ import {
 import type { CompanyOmsSiteDataService } from '../oms/company-oms-site-data.service';
 import type { MenhoodQueryService } from '../menhood/menhood-query.service';
 import type { SemrushService } from '../semrush/semrush.service';
+import { enrichSemrushDomainOverviewRows } from '../semrush/semrush-domain-insights';
 import { SemrushServiceError } from '../semrush/semrush.types';
 import type { ShopifyOperationResult, ShopifyService } from '../shopify/shopify.service';
 import { ShopifyServiceError } from '../shopify/shopify.service';
@@ -315,7 +316,12 @@ export class SemrushSnapshotDataExportSource implements DataExportSourceAdapter<
     const result = await executeSemrushForExport(this.service, source.args);
     context.signal?.throwIfAborted();
     yield {
-      rows: result.rows,
+      // Enriched here rather than in the client so the chat preview keeps the
+      // narrow table it already shows, while the file — where a reader has room
+      // to scroll and sort — carries the share, concentration and tier columns
+      // the raw counts only imply. The sinks discover columns from row keys, so
+      // this reaches Sheets, Excel and CSV without further plumbing.
+      rows: enrichSemrushDomainOverviewRows(result.rows),
       ...(result.status === 'partial'
         ? { coverage: { outcome: 'partial' as const, cause: 'provider_limit' as const } }
         : {}),

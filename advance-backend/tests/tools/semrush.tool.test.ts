@@ -220,6 +220,66 @@ describe('semrush tool', () => {
     assert.equal(datasetSourceToolId(source), 'semrush');
   });
 
+  it('adds the derived country columns to the exported rows, and only there', async () => {
+    // The sinks discover columns from row keys, so enriching the replayed rows
+    // is what puts share, concentration and tier into Sheets, Excel and CSV.
+    const adapter = new SemrushSnapshotDataExportSource({
+      execute: async () => ({
+        operation: 'domain_overview',
+        status: 'complete',
+        coverage: { databasesReturned: 2 },
+        rows: [
+          { Database: 'in', 'Organic Keywords': 45, 'Organic Traffic': 90, 'Organic Cost': 180 },
+          { Database: 'us', 'Organic Keywords': 40, 'Organic Traffic': 10, 'Organic Cost': 0 },
+        ],
+      }),
+    } as never);
+    const source = {
+      kind: 'semrush_snapshot' as const,
+      connectionId: 'backend_managed' as const,
+      args: { operation: 'domain_overview' as const, domain: 'example.com' },
+    };
+
+    const pages = [];
+    for await (const page of adapter.read(source, { companyId: 'co-1', userId: 'user-1' })) pages.push(page);
+    const rows = pages[0]!.rows as Array<Record<string, unknown>>;
+
+    assert.equal(rows[0]!['Traffic Share %'], 90);
+    assert.equal(rows[1]!['Traffic Share %'], 10);
+    assert.equal(rows[0]!['Cumulative Traffic %'], 90);
+    assert.equal(rows[1]!['Cumulative Traffic %'], 100);
+    assert.equal(rows[0]!['Traffic per Keyword'], 2); //     90/45
+    assert.equal(rows[1]!['Traffic per Keyword'], 0.25); //  10/40 — ranking, not earning
+    assert.equal(rows[0]!['Value per Visit'], 2); //        180/90
+    // India alone already covers 90% of traffic, so the US sits beyond the
+    // first 80% even though it is the only other country with any.
+    assert.equal(rows[0]!['Market Tier'], 'Core');
+    assert.equal(rows[1]!['Market Tier'], 'Emerging');
+    // The provider's own values survive untouched beside the derived ones.
+    assert.equal(rows[0]!.Database, 'in');
+    assert.equal(rows[0]!['Organic Traffic'], 90);
+  });
+
+  it('leaves a report that is not a country table exactly as the provider sent it', async () => {
+    const adapter = new SemrushSnapshotDataExportSource({
+      execute: async () => ({
+        operation: 'backlinks_comparison',
+        status: 'complete',
+        coverage: {},
+        rows: [{ Target: 'example.com', 'Authority Score': 40 }],
+      }),
+    } as never);
+
+    const pages = [];
+    for await (const page of adapter.read({
+      kind: 'semrush_snapshot' as const,
+      connectionId: 'backend_managed' as const,
+      args: { operation: 'backlinks_comparison' as const, targets: ['example.com'] },
+    }, { companyId: 'co-1', userId: 'user-1' })) pages.push(page);
+
+    assert.deepEqual(pages[0]!.rows, [{ Target: 'example.com', 'Authority Score': 40 }]);
+  });
+
   it('ends an export permanently when the key is refused or spent, and points at the key', async () => {
     const cases = [
       { code: 'provider_auth_failed' as const, expect: /api key was rejected/i },
@@ -293,6 +353,94 @@ describe('semrush tool', () => {
     assert.match(result.value.message, /do not count how many are missing/);
     // A returned 0 is measured and must stay reportable.
     assert.match(result.value.message, /real measurement/);
+  });
+
+  it('counts the countries itself so the model never has to', async () => {
+    // 810 + 3 + 2 + 0 = 815 across four rows, one of them a measured zero.
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'domain_overview',
+          status: 'complete',
+          coverage: { databasesReturned: 4 },
+          rows: [
+            { Database: 'in', 'Organic Keywords': 53, 'Organic Traffic': 810, 'Organic Cost': 1000 },
+            { Database: 'us', 'Organic Keywords': 105, 'Organic Traffic': 3, 'Organic Cost': 12 },
+            { Database: 'ru', 'Organic Keywords': 6, 'Organic Traffic': 2, 'Organic Cost': 0 },
+            { Database: 'ca', 'Organic Keywords': 9, 'Organic Traffic': 0, 'Organic Cost': 0 },
+          ],
+        }),
+      },
+    });
+
+    const result = await tool.execute({ operation: 'domain_overview', domain: 'example.com' }, makeCtx('semrush', ['read']));
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(result.value.insights, {
+      countriesReturned: 4,
+      totalOrganicTraffic: 815,
+      totalOrganicKeywords: 173,
+      countriesWithTraffic: 3,
+      countriesWithZeroTraffic: 1,
+      countriesForEightyPercentOfTraffic: 1,
+      tiers: { core: 1, emerging: 2, dormant: 1 },
+      topCountries: [
+        { database: 'in', organicTraffic: 810, trafficSharePct: 99.39 },
+        { database: 'us', organicTraffic: 3, trafficSharePct: 0.37 },
+        { database: 'ru', organicTraffic: 2, trafficSharePct: 0.25 },
+      ],
+    });
+    assert.match(result.value.message, /4 countries returned/);
+    assert.match(result.value.message, /1 measured at zero/);
+    assert.match(result.value.message, /Quote these numbers rather than counting rows yourself/);
+  });
+
+  it('counts every returned row, not the 25 the chat preview stops at', async () => {
+    // Counting the preview is the failure this replaces: it is capped, so a
+    // tally of what is on screen silently undercounts a longer run.
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'domain_overview',
+          status: 'complete',
+          coverage: { databasesReturned: 30 },
+          rows: Array.from({ length: 30 }, (_, i) => ({
+            Database: `c${i}`,
+            'Organic Keywords': 1,
+            'Organic Traffic': i < 10 ? 100 : 0,
+            'Organic Cost': 0,
+          })),
+        }),
+      },
+    });
+
+    const result = await tool.execute({ operation: 'domain_overview', domain: 'example.com' }, makeCtx('semrush', ['read']));
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.value.preview?.rows.length, 25);
+    assert.equal(result.value.insights?.countriesReturned, 30);
+    assert.equal(result.value.insights?.countriesWithZeroTraffic, 20);
+    assert.equal(result.value.insights?.countriesWithTraffic, 10);
+  });
+
+  it('offers no insights for a report that has no countries to count', async () => {
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'backlinks_comparison',
+          status: 'complete',
+          coverage: {},
+          rows: [{ Target: 'a.com', 'Authority Score': 40 }],
+        }),
+      },
+    });
+    const result = await tool.execute({ operation: 'backlinks_comparison', targets: ['a.com'] }, makeCtx('semrush', ['read']));
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.value.insights, undefined);
+    assert.doesNotMatch(result.value.message, /Counted from the rows/);
   });
 
   it('does not add the country caveat to operations that have no countries', async () => {

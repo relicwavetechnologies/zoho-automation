@@ -36,11 +36,21 @@ describe('Semrush system skill', () => {
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /ranking without earning clicks/);
   });
 
-  it('requires counts to be taken from the rows', () => {
+  it('sends every count to the insights field instead of asking for a tally', () => {
     // The same answer said 22 zero-traffic countries and listed 22, dropping
-    // Taiwan; the rows held 23. Another turn on the same data said 23.
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Counts must come from the rows, not from memory/);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /check it against the rows before writing it/);
+    // Taiwan; the rows held 23. Another turn on the same data said 23. Telling
+    // the model to count more carefully did not fix that, so the backend now
+    // counts and the skill points at the answer.
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Counts come from `insights`, not from counting/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Every "how many" and "how much" answer quotes a field from there/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Never tally the preview instead/);
+  });
+
+  it('names the derived columns the file adds, and keeps them out of the chat table', () => {
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /`Traffic Share %`/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /`Market Tier`/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /No extra Semrush request is made for them/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /do not paste these columns into the chat table/);
   });
 
   it('never tells the model to expose export internals to a member', () => {

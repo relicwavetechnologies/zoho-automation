@@ -38,6 +38,43 @@ describe('buildDataExportPresentation semrush overview sheet', () => {
     const overview = overviewFor({ operation: 'backlinks_comparison', targets: ['a.com', 'b.com'] }, 2);
     assert.equal(overview.get('Database'), 'Not applicable');
   });
+
+  it('defines every derived column in the file that carries them', () => {
+    // A number a reader cannot reproduce is one they either over-trust or
+    // ignore. The file outlives the chat, so the arithmetic ships with it.
+    const rows = buildDataExportPresentation({
+      title: 'Semrush country traffic emiactech',
+      columns: [
+        'Database', 'Organic Traffic', 'Traffic Rank', 'Traffic Share %',
+        'Cumulative Traffic %', 'Traffic per Keyword', 'Value per Visit', 'Market Tier',
+      ],
+      source: {
+        kind: 'semrush_snapshot',
+        connectionId: 'backend_managed',
+        args: { operation: 'domain_overview', domain: 'emiactech.com', database: 'in' },
+      } as never,
+      rowCount: 26,
+      sourceTruncated: false,
+    }).overviewRows ?? [];
+    const overview = new Map(rows.filter(row => row.length > 1).map(row => [String(row[0]), String(row[1])]));
+
+    for (const column of [
+      'Traffic Rank', 'Traffic Share %', 'Cumulative Traffic %',
+      'Traffic per Keyword', 'Value per Visit', 'Market Tier',
+    ]) {
+      assert.ok(overview.has(column), `${column} must be defined in the summary sheet`);
+    }
+    assert.match(overview.get('Derived columns')!, /No extra Semrush request was made/);
+    assert.match(overview.get('Market Tier')!, /Dormant = Semrush measured exactly zero traffic/);
+    // The distinction the whole report rests on, restated where a reader lands.
+    assert.match(overview.get('Dormant vs absent')!, /never measured, and is not dormant/);
+  });
+
+  it('leaves the dictionary out of a file that has no derived columns', () => {
+    const overview = overviewFor({ operation: 'backlinks_comparison', targets: ['a.com'] }, 1);
+    assert.equal(overview.has('Market Tier'), false);
+    assert.equal(overview.has('Derived columns'), false);
+  });
 });
 
 describe('buildDataExportPresentation', () => {

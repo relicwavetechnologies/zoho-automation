@@ -10,6 +10,8 @@ const SEMRUSH_DOMAIN_METRIC_COLUMNS = new Set([
   'Rank', 'Organic Keywords', 'Organic Traffic', 'Organic Cost',
   'Adwords Keywords', 'Adwords Traffic', 'Adwords Cost',
   'PLA keywords', 'PLA uniques',
+  'Traffic Rank', 'Traffic Share %', 'Cumulative Traffic %',
+  'Traffic per Keyword', 'Value per Visit',
 ]);
 const SEMRUSH_BACKLINKS_NUMERIC_COLUMNS = new Set([
   'Authority Score', 'Backlinks', 'Referring Domains', 'Referring URLs', 'Referring IPs',
@@ -94,6 +96,11 @@ export function buildDataExportPresentation(input: {
       'Nofollow Links': '#,##0',
       'Text Links': '#,##0',
       'Image Links': '#,##0',
+      'Traffic Rank': '#,##0',
+      'Traffic Share %': '0.00"%"',
+      'Cumulative Traffic %': '0.00"%"',
+      'Traffic per Keyword': '0.00',
+      'Value per Visit': '0.00',
       Position: '#,##0',
       'Previous Position': '#,##0',
       'Position Difference': '#,##0;[Red]-#,##0',
@@ -125,6 +132,12 @@ export function buildDataExportPresentation(input: {
       'SERP Features by Keyword': 220,
       'SERP Features by Position': 220,
       'Provider Data Status': 160,
+      'Traffic Rank': 100,
+      'Traffic Share %': 115,
+      'Cumulative Traffic %': 155,
+      'Traffic per Keyword': 150,
+      'Value per Visit': 120,
+      'Market Tier': 110,
       ...Object.fromEntries(TREND_COLUMNS.map(column => [column, 105])),
     },
     ...(hasTrends ? { trends: { title: 'Trends', columns: [...trendIdentityColumns, ...TREND_COLUMNS] } } : {}),
@@ -146,6 +159,7 @@ function semrushDataSheetTitle(operation: SemrushOperation, hasTrends: boolean):
 
 function semrushOverviewRows(input: {
   readonly title: string;
+  readonly columns: readonly string[];
   readonly source?: DataExportSource;
   readonly rowCount: number;
   readonly coverage?: DataExportCoverage;
@@ -187,6 +201,23 @@ function semrushOverviewRows(input: {
       + 'database leads; the rest follow by organic traffic. A country absent here '
       + 'is one Semrush has no record for, which is not the same as zero traffic.',
     ]);
+  }
+  // A derived column a reader cannot check is worse than no column: they either
+  // trust a number they cannot reproduce, or ignore the whole sheet. So each one
+  // ships with the arithmetic that produced it, in the file itself — the file
+  // outlives the chat that explained it.
+  if (input.columns.includes('Market Tier')) {
+    rows.push(
+      [],
+      ['Derived columns', 'Calculated by Divo from the rows in this file. No extra Semrush request was made.'],
+      ['Traffic Rank', 'Position by organic traffic, highest first, independent of the row order above.'],
+      ['Traffic Share %', "This country's organic traffic as a percentage of the total across all rows here."],
+      ['Cumulative Traffic %', 'Running share once countries are added highest-traffic first. Reads the concentration of the domain.'],
+      ['Traffic per Keyword', 'Organic traffic divided by organic keywords. A low value means the domain ranks without earning clicks.'],
+      ['Value per Visit', 'Organic cost divided by organic traffic. Blank where there is no traffic to divide by.'],
+      ['Market Tier', 'Core = inside the first 80% of traffic. Emerging = has traffic, beyond that 80%. Dormant = Semrush measured exactly zero traffic.'],
+      ['Dormant vs absent', 'Dormant is a measured zero and can be reported as ranking without clicks. A country with no row here was never measured, and is not dormant.'],
+    );
   }
   if (args.operation === 'domain_overview' && input.hasTrends) {
     rows.push([

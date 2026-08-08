@@ -8,6 +8,10 @@ import type { ToolActionGroup } from '../../../domain/permissions/tool-action-gr
 import { asToolId } from '../../../shared/ids';
 import type { AuditService } from '../../observability/audit.service';
 import { SemrushService } from '../../semrush/semrush.service';
+import {
+  summarizeSemrushDomainOverview,
+  type SemrushDomainOverviewInsights,
+} from '../../semrush/semrush-domain-insights';
 import { SemrushServiceError, SemrushToolArgsSchema, type SemrushFetchedData, type SemrushToolArgs } from '../../semrush/semrush.types';
 import type { ApiKeyExhaustionNotifierPort } from '../../governance/api-key-exhaustion.notifier';
 import type { DataExportOrchestrationService } from '../../data-export/data-export-orchestration.service';
@@ -51,6 +55,27 @@ const ResultSchema = z.object({
     previewRowCount: z.number().int().nonnegative(),
     estimatedRows: z.number().int().nonnegative().optional(),
     expiresAt: z.string(),
+  }).strict().optional(),
+  // Counted from the rows the run actually returned. Every number a member asks
+  // for out loud lives here, so the model reports one instead of tallying a
+  // table by eye — which is how a 26-row answer came back naming 22 countries.
+  insights: z.object({
+    countriesReturned: z.number().int().nonnegative(),
+    totalOrganicTraffic: z.number().nonnegative(),
+    totalOrganicKeywords: z.number().nonnegative(),
+    countriesWithTraffic: z.number().int().nonnegative(),
+    countriesWithZeroTraffic: z.number().int().nonnegative(),
+    countriesForEightyPercentOfTraffic: z.number().int().nonnegative(),
+    tiers: z.object({
+      core: z.number().int().nonnegative(),
+      emerging: z.number().int().nonnegative(),
+      dormant: z.number().int().nonnegative(),
+    }).strict(),
+    topCountries: z.array(z.object({
+      database: z.string(),
+      organicTraffic: z.number(),
+      trafficSharePct: z.number(),
+    }).strict()),
   }).strict().optional(),
   nextPage: z.string().optional(),
   message: z.string(),
@@ -117,6 +142,7 @@ export const createSemrushTool = (deps: {
         rows: allRows,
         coverage: previewCoverageFor(data, allRows.length),
       });
+      const insights = resultInsights(summarizeSemrushDomainOverview(allRows));
       const result: Res = {
         status: data.status,
         operation: data.operation,
@@ -134,6 +160,7 @@ export const createSemrushTool = (deps: {
               },
             }
           : {}),
+        ...(insights ? { insights } : {}),
         ...(data.nextPage ? { nextPage: data.nextPage } : {}),
         message: messageFor({
           operation: args.operation,
@@ -142,6 +169,7 @@ export const createSemrushTool = (deps: {
           hasCandidate: candidate.kind === 'published',
           status: data.status,
           missingTargets: stringValues(data.coverage.missingTargets),
+          insights,
         }),
       };
       deps.audit?.record({
@@ -197,6 +225,18 @@ export const createSemrushTool = (deps: {
   },
 });
 
+/** The summary is readonly by construction; the result schema infers mutable arrays. */
+function resultInsights(
+  insights: SemrushDomainOverviewInsights | undefined,
+): Res['insights'] {
+  if (!insights) return undefined;
+  return {
+    ...insights,
+    tiers: { ...insights.tiers },
+    topCountries: insights.topCountries.map(country => ({ ...country })),
+  };
+}
+
 function messageFor(input: {
   operation: SemrushToolArgs['operation'];
   rowCount: number;
@@ -204,6 +244,7 @@ function messageFor(input: {
   hasCandidate: boolean;
   status: Res['status'];
   missingTargets: readonly string[];
+  insights?: Res['insights'];
 }): string {
   if (input.status === 'empty') return 'Semrush returned no matching data for this request.';
   const parts = [`Retrieved ${input.rowCount} row${input.rowCount === 1 ? '' : 's'}.`];
@@ -218,6 +259,19 @@ function messageFor(input: {
       + ' Semrush reported nothing at all about any other country, so do not name one,'
       + ' do not call it unindexed, and do not count how many are missing.'
       + ' A row here showing 0 traffic is a real measurement and can be reported as such.',
+    );
+  }
+  // Handing over the counts removes the step the model kept getting wrong. Any
+  // "how many" answer is a field read from here, never a tally of the preview —
+  // the preview is capped at 25 rows and counting it undercounts a longer run.
+  if (input.insights) {
+    const { insights } = input;
+    parts.push(
+      `Counted from the rows: ${insights.countriesReturned} countries returned,`
+      + ` ${insights.countriesWithTraffic} with organic traffic and ${insights.countriesWithZeroTraffic} measured at zero;`
+      + ` ${insights.totalOrganicTraffic.toLocaleString('en-IN')} total organic visits;`
+      + ` ${insights.countriesForEightyPercentOfTraffic} ${insights.countriesForEightyPercentOfTraffic === 1 ? 'country accounts' : 'countries account'} for the first 80% of traffic.`
+      + ' Quote these numbers rather than counting rows yourself.',
     );
   }
   if (input.rowCount > input.returnedRows) parts.push(`Showing the first ${input.returnedRows} rows in chat.`);
