@@ -103,6 +103,7 @@ export class ShopifyAuthorizationService {
   async complete(input: {
     readonly searchParams: URLSearchParams;
     readonly signedStateCookie?: string;
+    readonly expectedCompanyId?: string;
   }): Promise<{ status: 'connected' | 'denied'; returnTo?: string }> {
     const verified = this.deps.oauth.verifyCallback(input.searchParams);
     const cookieState = this.deps.oauth.verifyStateCookie(input.signedStateCookie, verified.state)
@@ -119,6 +120,9 @@ export class ShopifyAuthorizationService {
     if (!claimed.value) throw new ShopifyAuthorizationError('invalid_state', 'Shopify OAuth state is expired or already consumed.');
     const attempt = claimed.value;
     try {
+      if (input.expectedCompanyId && attempt.companyId !== input.expectedCompanyId) {
+        throw new ShopifyAuthorizationError('invalid_state', 'Shopify OAuth state belongs to another company.');
+      }
       if (attempt.shopDomain !== verified.shop) throw new ShopifyAuthorizationError('invalid_state', 'Shopify OAuth shop does not match the requested store.');
       if (verified.error || !verified.code) {
         const failed = await this.deps.attempts.fail(attempt.id, verified.error || 'access_denied');

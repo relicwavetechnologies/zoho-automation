@@ -108,6 +108,9 @@ const loginSchema = z.object({
   password:  z.string().min(1),
   companyId: z.string().uuid().optional(),
 });
+const shopifyCallbackUrlSchema = z.object({
+  callbackUrl: z.string().trim().min(1).max(4_000),
+}).strict();
 
 const DESKTOP_PROTOCOL = 'cursorr';
 const HANDOFF_TTL_MS   = 5 * 60 * 1000;
@@ -1451,6 +1454,44 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       }
       log.error('shopify.desktop.reconnect.error', { error: String(error) });
       res.status(503).json({ success: false, message: 'Could not start Shopify reconnection' });
+    }
+  });
+
+  router.post('/shopify/callback-url', memberAuth, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!COMPANY_ADMIN_ROLES.has((res.locals['aiRole'] as string | undefined) ?? 'MEMBER')) {
+      res.status(403).json({ success: false, message: 'A company admin must complete Shopify authorization' });
+      return;
+    }
+    if (!deps.shopifyAuthorizationService.isConfigured()) {
+      res.status(503).json({ success: false, message: 'Shopify OAuth is not configured' });
+      return;
+    }
+    const parsed = shopifyCallbackUrlSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ success: false, message: 'Paste the full Shopify callback URL' });
+      return;
+    }
+    let callbackUrl: URL;
+    try {
+      callbackUrl = new URL(parsed.data.callbackUrl);
+    } catch {
+      res.status(400).json({ success: false, message: 'Paste a valid Shopify callback URL' });
+      return;
+    }
+    try {
+      const outcome = await deps.shopifyAuthorizationService.complete({
+        searchParams: callbackUrl.searchParams,
+        expectedCompanyId: res.locals['companyId'] as string,
+      });
+      res.json({ success: true, data: { status: outcome.status } });
+    } catch (error) {
+      if (error instanceof ShopifyAuthorizationError && error.code === 'invalid_state') {
+        res.status(400).json({ success: false, message: 'This Shopify callback is invalid, expired, or already used' });
+        return;
+      }
+      log.error('shopify.desktop.callback_url.error', { error: String(error) });
+      res.status(503).json({ success: false, message: 'Could not complete Shopify authorization' });
     }
   });
 

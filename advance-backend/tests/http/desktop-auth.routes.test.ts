@@ -405,6 +405,36 @@ describe('desktop auth routes', () => {
     }]);
   });
 
+  it('completes desktop Shopify OAuth from a pasted callback URL for company admins', async () => {
+    const completed: unknown[] = [];
+    const router = createDesktopAuthRoutes(makeDeps({
+      shopifyAuthorizationService: {
+        isConfigured: () => true,
+        complete: async (input: unknown) => {
+          completed.push(input);
+          return { status: 'connected' };
+        },
+      },
+    }));
+
+    const member = await callRoute(router, 'POST', '/shopify/callback-url', {
+      body: { callbackUrl: 'https://backend.example.com/api/shopify/auth/callback?code=abc&state=signed' },
+      locals: { userId: 'member-1', companyId: 'company-1', aiRole: 'MEMBER' },
+    });
+    assert.equal(member.status, 403);
+    assert.equal(completed.length, 0);
+
+    const admin = await callRoute(router, 'POST', '/shopify/callback-url', {
+      body: { callbackUrl: 'https://backend.example.com/api/shopify/auth/callback?code=abc&state=signed' },
+      locals: { userId: 'admin-1', companyId: 'company-1', aiRole: 'COMPANY_ADMIN' },
+    });
+    assert.equal(admin.status, 200);
+    assert.equal(admin.body.data.status, 'connected');
+    assert.equal((completed[0] as any).expectedCompanyId, 'company-1');
+    assert.equal((completed[0] as any).searchParams.get('code'), 'abc');
+    assert.equal((completed[0] as any).searchParams.get('state'), 'signed');
+  });
+
   it('returns read-only Shopify status and keeps stale stores visible to company admins', async () => {
     const connectedAt = new Date('2026-08-01T00:00:00.000Z');
     const router = createDesktopAuthRoutes(makeDeps({

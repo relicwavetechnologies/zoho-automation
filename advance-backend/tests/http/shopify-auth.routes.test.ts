@@ -477,6 +477,30 @@ describe('Shopify OAuth routes', () => {
     assert.equal(persisted.length, 1);
   });
 
+  it('rejects a signed callback completed by a different company admin', async () => {
+    const { deps, persisted } = makeDeps();
+    const started = await deps.authorization.begin({
+      companyId: 'company-1',
+      userId: 'user-1',
+      shopDomain: 'demo.myshopify.com',
+      stateTransport: 'signed_parameter',
+    });
+    const providerState = new URL(started.authorizeUrl).searchParams.get('state');
+    assert.ok(providerState);
+
+    await assert.rejects(
+      () => deps.authorization.complete({
+        searchParams: new URLSearchParams(signedCallback({
+          shop: 'demo.myshopify.com', code: 'desktop-authorization-code', state: providerState,
+          timestamp: String(now.getTime() / 1_000),
+        })),
+        expectedCompanyId: 'company-2',
+      }),
+      (error: unknown) => error instanceof Error && /another company/.test(error.message),
+    );
+    assert.equal(persisted.length, 0);
+  });
+
   it('validates callback grants against the scopes snapshotted when authorization began', async () => {
     const { deps, persisted } = makeDeps({
       authorizationScopes: ['read_reports', 'read_orders'],

@@ -1,10 +1,9 @@
 /**
- * The connection jobs only a company admin can do.
+ * The connection jobs that operate on company-held accounts.
  *
- * Kept apart from `use-connections`, which is the member's own surface, because
- * these three routes all gate on `COMPANY_ADMIN_ROLES` and answer 403 to
- * everybody else. Putting them in the You scope would have meant a member
- * seeing a control that always refuses.
+ * Kept apart from `use-connections`, which is the member's own provider loop:
+ * these routes either require a company admin or report company-owned
+ * connections with extra management state.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, ApiError } from '@/lib/api'
@@ -35,6 +34,26 @@ type ProfileResponse = {
   configuredAt: string | null
   configuredBy: string | null
   version: number
+}
+
+export type ShopifyCompanyConnection = {
+  connectionId: string
+  label: string
+  accountEmail: string | null
+  accountName: string | null
+  ownerType: 'user' | 'company'
+  access: string
+  scopes?: string[]
+  connectedAt?: string
+  lastUsedAt?: string | null
+  reconnectRequired?: boolean
+}
+
+export type ShopifyCompanyStatus = {
+  connected: boolean
+  canManage: boolean
+  readOnlyEnforced: boolean
+  connections: ShopifyCompanyConnection[]
 }
 
 export function useDataExportProfile() {
@@ -148,4 +167,69 @@ export function useTokenConnect() {
   }, [token])
 
   return { saving, connectAirtable, connectAitable }
+}
+
+export function useShopifyConnect() {
+  const { token } = useAdminAuth()
+  const [saving, setSaving] = useState(false)
+
+  const begin = useCallback(async (shopDomain: string) => {
+    if (!token) throw new Error('Sign in again before connecting Shopify.')
+    setSaving(true)
+    try {
+      const query = new URLSearchParams({ shopDomain })
+      const data = await api.get<{ authorizeUrl: string }>(
+        `${BASE}/shopify/authorize-url?${query.toString()}`,
+        token,
+        { quiet: true },
+      )
+      return data.authorizeUrl
+    } finally {
+      setSaving(false)
+    }
+  }, [token])
+
+  const complete = useCallback(async (callbackUrl: string) => {
+    if (!token) throw new Error('Sign in again before saving Shopify.')
+    setSaving(true)
+    try {
+      const data = await api.post<{ status: 'connected' | 'denied' }>(
+        `${BASE}/shopify/callback-url`,
+        { callbackUrl },
+        token,
+        { quiet: true },
+      )
+      return data.status
+    } finally {
+      setSaving(false)
+    }
+  }, [token])
+
+  return { saving, begin, complete }
+}
+
+export function useShopifyCompanyStatus() {
+  const { token } = useAdminAuth()
+  const [status, setStatus] = useState<ShopifyCompanyStatus | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [failed, setFailed] = useState(false)
+
+  const load = useCallback(async () => {
+    if (!token) { setLoading(false); return }
+    setLoading(true)
+    try {
+      const data = await api.get<ShopifyCompanyStatus>(`${BASE}/shopify/status`, token, { quiet: true })
+      setStatus(data)
+      setFailed(false)
+    } catch {
+      setStatus(null)
+      setFailed(true)
+    } finally {
+      setLoading(false)
+    }
+  }, [token])
+
+  useEffect(() => { void load() }, [load])
+
+  return { status, loading, failed, refresh: load }
 }
