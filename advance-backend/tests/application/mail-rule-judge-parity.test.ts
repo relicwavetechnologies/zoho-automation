@@ -133,3 +133,57 @@ describe('a rule whose question holds everything', () => {
     assert.equal(health.summary, 'Working.');
   });
 });
+
+/**
+ * The same strip hazard on the two answers either side of `list`.
+ *
+ * `list` was fixed first because the instructions name it. But an agent does
+ * not always go back to `list`: it creates a rule and then edits it in the same
+ * turn ("actually call it X"), reading the rule out of the answer it just got.
+ * That answer carried every other field and said `valid: true`, so there was
+ * nothing in it to suggest the question was missing rather than absent.
+ */
+describe('the answers a rule is read out of', () => {
+  const tool = createMailAutomationsTool({} as never);
+
+  it('carries a new rule’s question back on create', () => {
+    const judge = { question: 'Is this a real invoice addressed to us?', onFailure: 'closed' };
+    const parsed = tool.resultSchema.parse({
+      success: true,
+      operation: 'create',
+      rule: {
+        ruleId: '11111111-1111-4111-8111-111111111111',
+        name: 'Vendor invoices → Finance',
+        status: 'active',
+        mailboxEmail: 'rahul@emiactech.com',
+        connectionId: '22222222-2222-4222-8222-222222222222',
+        match: { subjectContains: 'invoice' },
+        action: { type: 'forward' },
+        destination: { type: 'email', email: 'finance@emiactech.com' },
+        judge,
+        createdAt: new Date().toISOString(),
+        valid: true,
+      },
+    }) as { rule: Record<string, unknown> };
+
+    assert.deepEqual(parsed.rule['judge'], judge);
+  });
+
+  /*
+   * `update` replaces the judge rather than merging it, so the commonest way to
+   * destroy one is an edit about something else. The result now states which of
+   * the two happened — and has to survive the schema to do it.
+   */
+  it('says on update whether the rule still has a question', () => {
+    for (const judge of [{ question: 'Is this urgent?' }, null]) {
+      const parsed = tool.resultSchema.parse({
+        success: true,
+        operation: 'update',
+        judge,
+      }) as Record<string, unknown>;
+
+      assert.equal('judge' in parsed, true, 'the verdict on the question must survive');
+      assert.deepEqual(parsed['judge'], judge);
+    }
+  });
+});

@@ -209,6 +209,16 @@ const resultSchema = z.object({
    * archived months ago.
    */
   existing: z.enum(['active', 'paused', 'archived']).nullable().optional(),
+  /**
+   * What question the rule carries after an `update`, declared for the same
+   * reason and stripped without it.
+   *
+   * `update` replaces the judge rather than merging it, so an edit about
+   * something else — a rename, a new address — removes it unless the caller
+   * re-sent it. This is the answer to the call that did it, which is a better
+   * place to notice than a warning read once at the top of the turn.
+   */
+  judge: z.record(z.unknown()).nullable().optional(),
   message: z.string().optional(),
 });
 
@@ -804,10 +814,26 @@ export function createMailAutomationsTool(deps: {
                 + 'matches, and archive whichever of the two is not wanted.',
             }));
           }
+          /*
+           * The answer says whether the rule still has a question.
+           *
+           * `update` replaces the judge rather than merging it, so the commonest
+           * way to destroy one is an edit about something else entirely —
+           * "rename it", "change the address". The instructions warn about it,
+           * and a warning read once at the top of a turn is weaker than the
+           * answer to the call that did the damage. Now the result states which
+           * of the two happened, so a model that dropped the question by
+           * accident has something to notice.
+           */
           return ok({
             success: true,
             operation: 'update',
-            message: 'Mail automation update completed.',
+            judge: args.judge ? { ...args.judge } : null,
+            message: args.judge
+              ? 'Mail automation update completed. This rule still asks its question '
+                + 'before acting.'
+              : 'Mail automation update completed. This rule has no AI question — if it '
+                + 'had one before this edit, that question is now removed.',
           });
         }
         const created = await deps.repo.createRuleForMailbox({
@@ -842,6 +868,18 @@ export function createMailAutomationsTool(deps: {
             match: { ...parsed.match },
             action: { ...parsed.action },
             destination: { ...parsed.destination },
+            /*
+             * Echoed for the same reason `list` echoes it, one call earlier.
+             *
+             * This object carries every other field of the rule and says
+             * `valid: true`, so a model reading it has no reason to doubt it is
+             * the whole rule. Leaving `judge` out meant an agent that created a
+             * judge rule and then edited it in the same turn — "actually call it
+             * X" — carried nothing forward and deleted the question it had just
+             * been asked for. `null` rather than absent: "there is no question"
+             * has to be distinguishable from "this answer did not mention one".
+             */
+            judge: args.judge ? { ...args.judge } : null,
             createdAt: new Date().toISOString(),
             valid: true,
           },
