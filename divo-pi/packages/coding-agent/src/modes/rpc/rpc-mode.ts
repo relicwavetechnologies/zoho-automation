@@ -75,6 +75,25 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		return { id, type: "response", command, success: false, error: message };
 	};
 
+	const applyEnvironmentPatch = (values: Record<string, string | null>): void => {
+		if (!values || typeof values !== "object" || Array.isArray(values)) {
+			throw new Error("set_environment values must be an object");
+		}
+		for (const [key, value] of Object.entries(values)) {
+			if (!/^DIVO_[A-Z0-9_]+$/.test(key)) {
+				throw new Error(`set_environment cannot update ${key}`);
+			}
+			if (value === null) {
+				delete process.env[key];
+				continue;
+			}
+			if (typeof value !== "string") {
+				throw new Error(`set_environment ${key} must be a string or null`);
+			}
+			process.env[key] = value;
+		}
+	};
+
 	// Pending extension UI requests waiting for response
 	const pendingExtensionRequests = new Map<
 		string,
@@ -455,6 +474,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					pendingMessageCount: session.pendingMessageCount,
 				};
 				return success(id, "get_state", state);
+			}
+
+			case "set_environment": {
+				applyEnvironmentPatch(command.values);
+				return success(id, "set_environment");
 			}
 
 			// =================================================================

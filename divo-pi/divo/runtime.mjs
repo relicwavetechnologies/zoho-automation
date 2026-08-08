@@ -426,6 +426,36 @@ export function buildChildEnvironment(baseEnvironment, values) {
 	};
 }
 
+export const RUNTIME_ENVIRONMENT_PATCH_KEYS = [
+	"DIVO_BACKEND_URL",
+	"DIVO_MEMBER_TOKEN",
+	"DIVO_DEPARTMENT_ID",
+	"DIVO_RUNTIME_CONTEXT_PATH",
+	"DIVO_RUN_CONTEXT_PATH",
+	"DIVO_SKILL_DIRS",
+	"DIVO_BUNDLED_SKILLS_DIR",
+	"DIVO_WORKSPACE_DIR",
+	"DIVO_INTERNAL_DIR",
+	"DIVO_LOCAL_CLI_DISABLED",
+	"DIVO_RUN_ID",
+	"DIVO_RUN_DIR",
+	"DIVO_SCRATCH_DIR",
+	"DIVO_SCRIPTS_DIR",
+	"DIVO_ARTIFACTS_DIR",
+	"DIVO_LOGS_DIR",
+	"DIVO_CHAT_HISTORY_DIR",
+	"DIVO_HOME",
+];
+
+export function buildRuntimeEnvironmentPatch(values) {
+	const environment = buildChildEnvironment({}, values);
+	const patch = {};
+	for (const key of RUNTIME_ENVIRONMENT_PATCH_KEYS) {
+		patch[key] = Object.hasOwn(environment, key) ? environment[key] : null;
+	}
+	return patch;
+}
+
 /**
  * Where this run's Pi session lives, given the scope it was started with.
  *
@@ -570,7 +600,7 @@ export function buildPiLaunch(values, entryMode = "source") {
 	throw new Error('DIVO_PI_ENTRY_MODE must be either "source" or "compiled"');
 }
 
-export function startDivoPi({
+export function prepareDivoPiRun({
 	backendUrl,
 	token,
 	runId: trustedRunId,
@@ -733,6 +763,27 @@ export function startDivoPi({
 			: "Run npm ci --ignore-scripts first.";
 		throw new Error(`Divo Pi ${entryMode} entrypoint is missing. ${recovery}`);
 	}
+	return {
+		values,
+		launch,
+		isRunScoped,
+		interruptedWork,
+		runDir,
+		sessionDir,
+		threadDir,
+	};
+}
+
+export function startDivoPi(options) {
+	const {
+		values,
+		launch,
+		isRunScoped,
+		interruptedWork,
+		runDir,
+		sessionDir,
+		threadDir,
+	} = prepareDivoPiRun(options);
 	const child = spawn(launch.executable, launch.args, {
 		cwd: values.workspace,
 		env: buildChildEnvironment(process.env, values),
@@ -744,7 +795,7 @@ export function startDivoPi({
 	});
 	child.once("exit", (code, signal) => {
 		if (signal) console.error(`[divo-pi] exited by signal ${signal}`);
-		if (channel === "lark") removeDirectory(runDir);
+		if (values.channel === "lark") removeDirectory(runDir);
 		// Removed on every outcome, not only success: a failed or interrupted run
 		// leaves a partial transcript that the next turn must not resume, since
 		// the authoritative conversation is sent in with the request.

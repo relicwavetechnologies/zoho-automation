@@ -27,6 +27,7 @@ export type RpcCommand =
 
 	// State
 	| { id?: string; type: "get_state" }
+	| { id?: string; type: "set_environment"; values: Record<string, string | null> }
 
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
@@ -121,6 +122,7 @@ export type RpcResponse =
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
+	| { id?: string; type: "response"; command: "set_environment"; success: true }
 
 	// Model
 	| {
