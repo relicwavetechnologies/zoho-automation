@@ -551,9 +551,20 @@ export class MailOpsReadRepository {
         where: {
           companyId: input.companyId,
           ...(input.includeInactive ? {} : { status: 'active' }),
-          // Only rules that send somewhere. `organize` acts in place and
-          // `lark_dm` reaches one person who already had the mail.
-          destinationJson: { path: ['type'], equals: 'email' },
+          /*
+           * Only rules that send somewhere. `organize` acts in place and
+           * `lark_dm` reaches one person who already had the mail.
+           *
+           * `routed` as well as `email`, and leaving it out was not a narrower
+           * report — it was a blind one. A routed rule's recipients live one
+           * level down, so a predicate matching only `type === 'email'` skipped
+           * the whole rule, and every external address inside it dropped out of
+           * the one report built to find exactly that.
+           */
+          OR: [
+            { destinationJson: { path: ['type'], equals: 'email' } },
+            { destinationJson: { path: ['type'], equals: 'routed' } },
+          ],
         },
         orderBy: [{ createdAt: 'desc' }],
         select: {

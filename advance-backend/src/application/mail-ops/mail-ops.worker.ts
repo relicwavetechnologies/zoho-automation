@@ -20,7 +20,7 @@ import {
   MAIL_RETENTION_BATCH_SIZE,
   MAIL_RETENTION_MAX_BATCHES,
   MAIL_RETENTION_SWEEP_INTERVAL_MS,
-  judgeAllowsDelivery,
+  judgedDestination,
   mailDeliveryIdempotencyKey,
   mailRuleJudgeSchema,
   MailOpsConnectionUnavailableError,
@@ -28,7 +28,9 @@ import {
   type MailJudgeVerdict,
   type MailMessageMetadata,
   type MailRuleAction,
+  type MailRuleDestination,
   type MailRuleJudge,
+  type MailRuleRoute,
   type PendingMailDeliveryPayload,
 } from './mail-ops.types';
 import {
@@ -296,7 +298,8 @@ export class MailOpsWorker {
      * and is the one outcome the step exists to prevent.
      */
     judgeMessage?(input: {
-      judge: MailRuleJudge;
+      judge?: MailRuleJudge;
+      routes?: readonly MailRuleRoute[];
       message: MailMessageMetadata;
     }): Promise<MailJudgeVerdict>;
     /**
@@ -1023,10 +1026,18 @@ export class MailOpsWorker {
     deliveryId: string;
     attempts: number;
     payload: PendingMailDeliveryPayload;
+    /**
+     * The address this attempt is for, resolved by the caller.
+     *
+     * Handed in rather than read off the payload, because on a routed rule the
+     * payload's destination is a table and the address is whichever branch the
+     * verdict named.
+     */
+    destination: MailRuleDestination;
     stagedDraftId?: string;
   }): Promise<string> {
-    const { payload } = input;
-    if (payload.destination.type !== 'email') {
+    const { payload, destination } = input;
+    if (destination.type !== 'email') {
       throw new Error('Mail delivery action and destination do not match.');
     }
 
@@ -1039,7 +1050,7 @@ export class MailOpsWorker {
 
     const draftId = await this.deps.gmail.createForwardDraft({
       accessToken: input.accessToken,
-      destination: payload.destination.email,
+      destination: destination.email,
       mailboxEmail: payload.mailboxEmail,
       sourceMessageId: payload.sourceMessageId,
       source: payload.message,
@@ -1181,7 +1192,27 @@ export class MailOpsWorker {
       // dies mid-attempt; re-running the model each time would bill the member
       // repeatedly for one question and could answer it differently than the
       // verdict already sitting on the row and already on their screen.
-      if (payload.judge && !input.judgeVerdict) {
+      /*
+       * Two shapes of AI step reach here and only one of them is a `judge`
+       * column: a routing table *is* the step on a routed rule, so the trigger
+       * is either one.
+       */
+      const routes = payload.destination.type === 'routed'
+        ? payload.destination.routes
+        : undefined;
+      let verdict: MailJudgeVerdict | undefined = input.judgeVerdict
+        ? readJudgeVerdict(input.judgeVerdict)
+        : undefined;
+      /*
+       * Where this message actually goes.
+       *
+       * The rule's own destination for everything that is not routed, and on a
+       * routed rule the branch the verdict named. Every send below reads this
+       * rather than `payload.destination`, which on a routed rule is a table
+       * and not a place.
+       */
+      let deliverTo: MailRuleDestination = payload.destination;
+      if ((payload.judge || routes) && !verdict) {
         if (!this.deps.judgeMessage) {
           // Configured with a judge in a composition that has no model. Failing
           // the delivery is deliberate: the alternative is to act on a message
@@ -1191,11 +1222,24 @@ export class MailOpsWorker {
             'This rule has an AI step, but no model is configured to run it.',
           );
         }
-        const verdict = await this.deps.judgeMessage({
-          judge: payload.judge,
+        const answered = await this.deps.judgeMessage({
+          ...(payload.judge ? { judge: payload.judge } : {}),
+          ...(routes ? { routes } : {}),
           message: payload.message,
         });
-        if (!judgeAllowsDelivery(verdict)) {
+        /*
+         * Resolved once, here, and written onto the verdict before it is
+         * stored — because the routing table this was resolved against is
+         * frozen in a payload that gets swept off terminal rows at thirty days,
+         * and the rule's live table may have been edited since. Recomputing
+         * later would answer a different question than the one that decided
+         * where this message actually went.
+         */
+        const chosen = judgedDestination(payload.destination, answered);
+        verdict = chosen && chosen.type !== 'none' && chosen.type !== 'routed'
+          ? { ...answered, destination: chosen }
+          : answered;
+        if (!chosen) {
           const held = await this.deps.repo.markDeliveryHeld({
             deliveryId: input.deliveryId,
             attempts: input.attempts,
@@ -1237,6 +1281,37 @@ export class MailOpsWorker {
           });
           return;
         }
+        deliverTo = chosen;
+      } else if (verdict) {
+        /*
+         * A retry, carrying the verdict an earlier attempt already recorded.
+         *
+         * Re-resolved rather than re-asked, and resolved against the payload's
+         * frozen routing table rather than the live rule — so a member editing
+         * the table between attempts cannot redirect a message that has already
+         * been decided.
+         */
+        const chosen = judgedDestination(payload.destination, verdict);
+        if (!chosen) {
+          // Unreachable in practice: `held` is terminal and never re-claimed.
+          // Reached only if a stored verdict stops resolving to a place, which
+          // is a hold — and acting anyway would send mail on the strength of a
+          // verdict that no longer says where.
+          const held = await this.deps.repo.markDeliveryHeld({
+            deliveryId: input.deliveryId,
+            attempts: input.attempts,
+            verdict: verdict as unknown as Record<string, unknown>,
+            reason: verdict.reason,
+          });
+          if (!held.ok) throw held.error;
+          this.log.info('mail_ops.delivery_held', {
+            deliveryId: input.deliveryId,
+            ruleId: payload.ruleId,
+            decision: verdict.decision,
+          });
+          return;
+        }
+        deliverTo = chosen;
       }
       // Charged per attempt, before the send, exactly as the interactive path
       // charges it. A rule that has exhausted its connection's budget waits for
@@ -1271,7 +1346,7 @@ export class MailOpsWorker {
       let providerMessageId: string;
       if (
         payload.action.type === 'forward'
-        && payload.destination.type === 'email'
+        && deliverTo.type === 'email'
       ) {
         const accessToken = await this.deps.resolveAccessToken({
           companyId: payload.companyId,
@@ -1288,15 +1363,16 @@ export class MailOpsWorker {
           deliveryId: input.deliveryId,
           attempts: input.attempts,
           payload,
+          destination: deliverTo,
           ...(input.providerDraftId
             ? { stagedDraftId: input.providerDraftId }
             : {}),
         });
       } else if (
         payload.action.type === 'deliver'
-        && payload.destination.type === 'lark_chat'
+        && deliverTo.type === 'lark_chat'
       ) {
-        const chat = payload.destination.chatId;
+        const chat = deliverTo.chatId;
         if (this.deps.authorizeLarkChat) {
           const verdict = await this.deps.authorizeLarkChat({
             companyId: payload.companyId,
@@ -1327,7 +1403,7 @@ export class MailOpsWorker {
         });
       } else if (
         payload.action.type === 'deliver'
-        && payload.destination.type === 'lark_dm'
+        && deliverTo.type === 'lark_dm'
       ) {
         /*
          * No chat authorisation, and that is not a check being skipped.
@@ -1342,7 +1418,7 @@ export class MailOpsWorker {
          */
         nothingWasSent = false;
         providerMessageId = await this.deps.deliverLarkDm({
-          openId: payload.destination.openId,
+          openId: deliverTo.openId,
           idempotencyKey: payload.idempotencyKey,
           text: formatLarkDelivery(payload),
         });
@@ -1388,7 +1464,7 @@ export class MailOpsWorker {
       this.log.info('mail_ops.delivery_delivered', {
         deliveryId: input.deliveryId,
         action: payload.action.type,
-        destination: payload.destination.type,
+        destination: deliverTo.type,
         providerMessageId,
         durationMs: Date.now() - startedAt,
       });
@@ -1506,6 +1582,35 @@ const deliveryPayloadSchema = z.object({
  * removed from the payload in a later version cannot ride around inside a row
  * written before the removal.
  */
+/**
+ * A verdict an earlier attempt wrote, read back off the row.
+ *
+ * Read leniently, and that is the opposite of how the payload beside it is
+ * treated — on purpose. A payload that will not parse means the delivery cannot
+ * be performed at all, so throwing is the honest outcome; a verdict is a record
+ * of a decision already made, and refusing to read it would re-ask the model,
+ * bill the member twice, and possibly answer differently than what is already on
+ * their screen. What the fields must survive is `decision` and `route`, because
+ * those are what `judgedDestination` resolves — anything else is presentation.
+ */
+function readJudgeVerdict(value: Record<string, unknown>): MailJudgeVerdict {
+  const decision = value['decision'];
+  return {
+    decision: decision === 'passed' || decision === 'rejected'
+      || decision === 'unavailable' || decision === 'routed'
+      ? decision
+      : 'unavailable',
+    reason: typeof value['reason'] === 'string' ? value['reason'] : '',
+    ...(typeof value['confidence'] === 'number'
+      ? { confidence: value['confidence'] }
+      : {}),
+    ...(value['appliedFailure'] === 'open' || value['appliedFailure'] === 'closed'
+      ? { appliedFailure: value['appliedFailure'] }
+      : {}),
+    ...(typeof value['route'] === 'string' ? { route: value['route'] } : {}),
+  };
+}
+
 function readDeliveryPayload(
   value: Record<string, unknown>,
 ): PendingMailDeliveryPayload {

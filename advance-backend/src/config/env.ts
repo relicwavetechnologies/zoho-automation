@@ -387,6 +387,20 @@ export const EnvSchema = z.object({
   // concurrency provokes a Gmail quota that one-at-a-time did not.
   DIVO_MAIL_OPS_MAILBOX_LANES:  z.coerce.number().int().min(1).max(16).default(4),
   DIVO_MAIL_OPS_DELIVERY_LANES: z.coerce.number().int().min(1).max(16).default(4),
+  /*
+   * Hold company admins to the same external-forward approval as everybody else.
+   *
+   * Off by default: a rule forwarding mail out of the company is approved by
+   * somebody above the person asking, and for an admin there is nobody the
+   * question is meaningfully addressed to — Divo used to card their department
+   * manager, or another admin, or refuse the rule outright when it found
+   * neither. Turn this on to restore that.
+   *
+   * Named for what it asks rather than for the flag it sets, because
+   * "disable the exemption" is how an operator ends up setting the opposite of
+   * what they meant.
+   */
+  DIVO_MAIL_OPS_ADMIN_NEEDS_EXTERNAL_APPROVAL: booleanStr.default('false'),
 
   // ── Hindsight semantic recall projection ────────────────────────────────
   // Versioned Postgres knowledge remains authoritative. Hindsight is private

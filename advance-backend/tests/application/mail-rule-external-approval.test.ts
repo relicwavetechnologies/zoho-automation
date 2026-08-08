@@ -48,7 +48,7 @@ const INPUT = {
     connectionId: '11111111-1111-4111-8111-111111111111',
     name: 'Invoices',
     match: { from: '@acme.com' },
-    email: 'anish.personal@gmail.com',
+    destination: { type: 'email' as const, email: 'anish.personal@gmail.com' },
     rateLimitPerHour: 5,
   },
 };
@@ -86,6 +86,79 @@ describe('mail rule external approval — the request', () => {
       destination: { type: 'email', email: 'anish.personal@gmail.com' },
       rateLimitPerHour: 5,
     });
+  });
+
+  it('carries a whole routing table into the replay, not one address of it', async () => {
+    /*
+     * The replayed args are what actually gets written when the manager agrees.
+     * Rebuilt from a single address, a routed rule would come back as an
+     * ordinary forward to one branch — so the manager would have approved a
+     * table and the member been handed something else, on the one operation
+     * where a difference between the two matters most.
+     */
+    const destination = {
+      type: 'routed' as const,
+      routes: [
+        { key: 'invoices', when: 'an invoice', destination: { type: 'email' as const, email: 'anish.personal@gmail.com' } },
+        { key: 'product', when: 'the product', destination: { type: 'email' as const, email: 'rdx.omega@gmail.com' } },
+      ],
+      otherwise: 'hold' as const,
+    };
+    const { request, seen } = ask();
+    await request({ ...INPUT, rule: { ...INPUT.rule, destination } });
+
+    assert.deepEqual(
+      (seen[0]!['args'] as Record<string, unknown>)['destination'],
+      destination,
+    );
+  });
+
+  it('names every external recipient on the card, not the first', async () => {
+    // The sentence the approver actually reads. One name where there are two is
+    // a card that asks about less than it grants.
+    const { request, seen } = ask();
+    await request({
+      ...INPUT,
+      rule: {
+        ...INPUT.rule,
+        destination: {
+          type: 'routed',
+          routes: [
+            { key: 'invoices', when: 'an invoice', destination: { type: 'email', email: 'anish.personal@gmail.com' } },
+            { key: 'product', when: 'the product', destination: { type: 'email', email: 'rdx.omega@gmail.com' } },
+          ],
+          otherwise: 'hold',
+        },
+      },
+    });
+
+    const summary = String(seen[0]!['argsSummary']);
+    assert.match(summary, /anish\.personal@gmail\.com/);
+    assert.match(summary, /rdx\.omega@gmail\.com/);
+  });
+
+  it('leaves an internal branch out of the sentence', async () => {
+    // Only what leaves the company is what the approval is about. Listing an
+    // internal colleague beside it makes the card read as a bigger ask.
+    const { request, seen } = ask();
+    await request({
+      ...INPUT,
+      rule: {
+        ...INPUT.rule,
+        destination: {
+          type: 'routed',
+          routes: [
+            { key: 'invoices', when: 'an invoice', destination: { type: 'email', email: 'finance@emiactech.com' } },
+            { key: 'product', when: 'the product', destination: { type: 'email', email: 'rdx.omega@gmail.com' } },
+          ],
+          otherwise: 'hold',
+        },
+      },
+    });
+
+    const summary = String(seen[0]!['argsSummary']);
+    assert.match(summary, /rdx\.omega@gmail\.com/);
+    assert.ok(!summary.includes('finance@emiactech.com'), summary);
   });
 
   it('binds to the mailbox the member was looking at', async () => {

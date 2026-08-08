@@ -89,6 +89,87 @@ describe('mail automations tool result', () => {
       assert.equal(parsed['existing'], existing);
     }
   });
+
+  /*
+   * The fourth time. `list.judge`, `create.existing`, `create.rule.judge` — and
+   * now a routing table, where the consequence is the worst of the four.
+   *
+   * The instructions tell the model to read a rule from `list` and re-send it
+   * on `update`, and `update` replaces rather than merges. A stripped `routes`
+   * therefore turns "rename this rule" into "delete this rule's routing table",
+   * and what comes back forwards everything to a single destination — silently,
+   * on a rule that keeps reporting itself as working.
+   */
+  const ROUTES = [
+    { key: 'invoices', when: 'an invoice or a bill', destination: { type: 'email', email: 'anish@emiactech.com' } },
+    { key: 'product', when: 'about the product', destination: { type: 'email', email: 'rdx@emiactech.com' } },
+  ];
+
+  it('carries a rule’s branches through the result schema', () => {
+    const parsed = tool.resultSchema.parse({
+      success: true,
+      operation: 'list',
+      rules: [{
+        ruleId: '11111111-1111-4111-8111-111111111111',
+        name: 'Client mail, sorted',
+        status: 'active',
+        mailboxEmail: 'abhishek@emiactech.com',
+        connectionId: '22222222-2222-4222-8222-222222222222',
+        match: { from: 'client@google.com' },
+        action: { type: 'forward' },
+        destination: { type: 'routed', routes: ROUTES, otherwise: 'hold' },
+        routes: ROUTES,
+        otherwise: 'hold',
+        judge: null,
+        createdAt: new Date().toISOString(),
+        valid: true,
+      }],
+    }) as { rules: Array<Record<string, unknown>> };
+
+    assert.deepEqual(parsed.rules[0]?.['routes'], ROUTES);
+    assert.equal(parsed.rules[0]?.['otherwise'], 'hold');
+  });
+
+  it('carries a named fallback, which is a recipient like any other', () => {
+    const otherwise = { type: 'email', email: 'everything-else@emiactech.com' };
+    const parsed = tool.resultSchema.parse({
+      success: true,
+      operation: 'create',
+      rule: {
+        ruleId: '11111111-1111-4111-8111-111111111111',
+        name: 'Client mail, sorted',
+        status: 'active',
+        mailboxEmail: 'abhishek@emiactech.com',
+        connectionId: '22222222-2222-4222-8222-222222222222',
+        match: { from: 'client@google.com' },
+        action: { type: 'forward' },
+        destination: { type: 'routed', routes: ROUTES, otherwise },
+        routes: ROUTES,
+        otherwise,
+        judge: null,
+        createdAt: new Date().toISOString(),
+        valid: true,
+      },
+    }) as { rule: Record<string, unknown> };
+
+    assert.deepEqual(parsed.rule?.['otherwise'], otherwise);
+    assert.equal((parsed.rule?.['routes'] as unknown[]).length, 2);
+  });
+
+  it('carries the branches an update left the rule with', () => {
+    // `update` replaces the whole destination, so this is the answer to "what
+    // does this rule route by now" — reported on the call that changed it.
+    const parsed = tool.resultSchema.parse({
+      success: true,
+      operation: 'update',
+      judge: null,
+      routes: ROUTES,
+      otherwise: 'hold',
+      message: 'Mail automation update completed.',
+    }) as Record<string, unknown>;
+
+    assert.deepEqual(parsed['routes'], ROUTES);
+  });
 });
 
 describe('a rule whose question holds everything', () => {

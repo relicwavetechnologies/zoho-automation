@@ -19,17 +19,36 @@
  * be right for this to be worth anything.
  */
 import type { ResolvedManager } from '../approval/approval.types';
+import { namedAddresses } from './external-destination';
 
 export type ExternalForwardVerdict =
   /** Not a forward, or not one that leaves the requester's own domain. */
   | { readonly kind: 'not_external' }
-  /** The requester is the person who would have approved it. */
+  /**
+   * Nobody needs to be asked: the requester is either the person who would have
+   * approved it, or a company admin, who is exempt. The two are distinguished
+   * in the log rather than in this type, because every caller acts the same way
+   * on both.
+   */
   | { readonly kind: 'allowed' }
   | {
       readonly kind: 'required';
       readonly approver: ResolvedManager;
-      /** The address that made this external, for the card and the log. */
+      /**
+       * The addresses that made this external, said the way a sentence says
+       * them — for the card, the refusal and the log.
+       */
       readonly destination: string;
+      /**
+       * The same addresses, unjoined.
+       *
+       * Both, because they are read by different things: a person reads the
+       * sentence, and the log and any later audit want the list. A routing
+       * table can establish several external forwards at once, and a card
+       * naming one of them while a second rides along unnamed is the exact
+       * failure this gate exists to prevent.
+       */
+      readonly destinations: readonly string[];
     }
   /** Nobody can answer. Fails closed — this is a refusal, not a warning. */
   | { readonly kind: 'misconfigured'; readonly message: string };
@@ -43,12 +62,50 @@ export interface ExternalForwardApprovalPort {
   /** Test and single-tenant compositions turn the bypass off. */
   readonly disableManagerSelfBypass?: boolean | undefined;
   onSelfBypass?(input: { userId: string; destination: string }): void;
+  /**
+   * Turn the company-admin exemption below off.
+   *
+   * A flag rather than a constant because the exemption is a deliberate,
+   * reversible loosening — the requirement was "not for now", not "never".
+   */
+  readonly disableCompanyAdminExemption?: boolean | undefined;
+  /**
+   * Separate from `onSelfBypass`, and that separation is the point.
+   *
+   * Both end in `allowed`, and they mean opposite things to anybody reading the
+   * trail afterwards: a self-bypass says *the person who would have approved
+   * this is the person who asked*, while this says *nobody was asked at all*.
+   * Sharing one log line would make an unapproved external forward
+   * indistinguishable from an approved one.
+   */
+  onCompanyAdminExempt?(input: {
+    userId: string;
+    destination: string;
+    companyRole: string;
+  }): void;
 }
+
+/**
+ * Roles that may establish an external forward without asking anyone.
+ *
+ * `SUPER_ADMIN` as well as `COMPANY_ADMIN`: a role above the one being exempted
+ * cannot sensibly be held to a stricter rule than the one below it, and leaving
+ * it out would send Divo hunting for somebody to approve a super admin's rule.
+ */
+const EXEMPT_COMPANY_ROLES = new Set(['COMPANY_ADMIN', 'SUPER_ADMIN']);
+
+const isExemptCompanyRole = (role: string | undefined): boolean =>
+  role !== undefined && EXEMPT_COMPANY_ROLES.has(role.trim().toUpperCase());
 
 export interface ExternalForwardApprovalInput {
   /**
-   * The external address, already extracted — or null when the request
-   * establishes no external forward.
+   * Every external address this request would establish, already extracted —
+   * empty when it establishes none.
+   *
+   * A list rather than one address because a routed rule sends to several
+   * people at once, and the question a manager is being asked is about all of
+   * them. Approving one while a second rides along unnamed is the failure this
+   * whole gate exists to prevent.
    *
    * Extraction differs by caller and must: the gate reads whatever the model
    * sent, before any schema has had a chance to reject it, while the web route
@@ -56,18 +113,54 @@ export interface ExternalForwardApprovalInput {
    * (`mailRuleLeavesOrganisation`) to decide externality, so the two extractors
    * cannot disagree about what "outside the company" means.
    */
-  readonly destination: string | null;
+  readonly destinations: readonly string[];
   readonly companyId: string;
   readonly requesterId: string;
   readonly departmentId: string | null;
+  /**
+   * The requester's company role, which decides whether anyone is asked at all.
+   *
+   * Optional so a caller that genuinely does not know a role keeps today's
+   * behaviour — absent is treated as an ordinary member, which is the direction
+   * that asks one extra person rather than none.
+   */
+  readonly requesterCompanyRole?: string | undefined;
 }
 
 export async function inspectExternalForward(
   input: ExternalForwardApprovalInput,
   port: ExternalForwardApprovalPort,
 ): Promise<ExternalForwardVerdict> {
-  const { destination } = input;
-  if (!destination) return { kind: 'not_external' };
+  if (input.destinations.length === 0) return { kind: 'not_external' };
+  const destination = namedAddresses(input.destinations);
+
+  /*
+   * A company admin is not asked, and is asked *first* — before the department
+   * is looked at and before an approver is resolved.
+   *
+   * Order is the whole of it. `resolveManager` is called with
+   * `excludeUserId: requesterId`, so an admin is removed from the candidate
+   * list before the self-bypass below can ever match them, and the three
+   * outcomes for an admin were: their department's manager is carded, some
+   * other admin is carded, or — with neither available — the rule is refused
+   * outright as `misconfigured`. None of those is "not asked", and the last is
+   * a flat refusal of a rule an admin is entitled to create.
+   *
+   * Placed above the `departmentId` check for the same reason: an admin who is
+   * in no department was previously told to go and ask an administrator to put
+   * them in one, which is a message about themselves.
+   */
+  if (
+    !port.disableCompanyAdminExemption
+    && isExemptCompanyRole(input.requesterCompanyRole)
+  ) {
+    port.onCompanyAdminExempt?.({
+      userId: input.requesterId,
+      destination,
+      companyRole: String(input.requesterCompanyRole),
+    });
+    return { kind: 'allowed' };
+  }
 
   if (!input.departmentId) {
     /*
@@ -111,5 +204,10 @@ export async function inspectExternalForward(
     return { kind: 'allowed' };
   }
 
-  return { kind: 'required', approver, destination };
+  return {
+    kind: 'required',
+    approver,
+    destination,
+    destinations: input.destinations,
+  };
 }

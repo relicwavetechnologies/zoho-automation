@@ -23,13 +23,59 @@ import {
   type MailRuleDryRunEvent,
 } from '../../mail-ops/mail-rule-dry-run';
 import {
+  MAIL_RULE_MAX_ROUTES,
+  MAIL_RULE_MIN_ROUTES,
   mailRuleDedupeKey, mailRuleJudgeSchema,
 } from '../../mail-ops/mail-ops.types';
-import type { MailRuleAction, MailRuleIdentity } from '../../mail-ops/mail-ops.types';
+import type {
+  MailRuleAction,
+  MailRuleDestination,
+  MailRuleIdentity,
+  MailRuleLeafDestination,
+} from '../../mail-ops/mail-ops.types';
 import type {
   AuthorizeLarkChatDestination,
   LarkChatDestinationVerdict,
 } from '../../mail-ops/lark-chat-destination';
+
+/**
+ * Somewhere one message can go. Everything a destination may be except
+ * "several of these" and "nowhere".
+ *
+ * Split out so a routing table can be built from exactly the destinations a
+ * plain rule already accepts — including `current_lark_chat` and `lark_dm`,
+ * whose identifiers the runtime supplies from the run rather than from
+ * arguments, which stays true one level down.
+ */
+const leafDestinationSchema = z.union([
+  z.object({ type: z.literal('email'), email: z.string().email() }).strict(),
+  z.object({ type: z.literal('current_lark_chat') }).strict(),
+  z.object({ type: z.literal('lark_dm') }).strict(),
+  z.object({
+    type: z.literal('lark_chat'),
+    chatId: z.string().trim().min(1),
+  }).strict(),
+]);
+
+/**
+ * Several destinations, and what each kind of message is, so the rule's AI step
+ * can pick one per message.
+ *
+ * `otherwise` is optional and absent means **hold** — nothing is sent, the
+ * message is recorded, and the member sees it. Optional rather than
+ * `.default('hold')` for the reason spelled out on `mailRuleJudgeSchema`: a zod
+ * default makes the parser's input and output types differ, and this schema is
+ * declared as one type in both directions.
+ */
+const routedDestinationSchema = z.object({
+  type: z.literal('routed'),
+  routes: z.array(z.object({
+    key: z.string().trim().min(1).max(40),
+    when: z.string().trim().min(3).max(200),
+    destination: leafDestinationSchema,
+  }).strict()).min(MAIL_RULE_MIN_ROUTES).max(MAIL_RULE_MAX_ROUTES),
+  otherwise: z.union([z.literal('hold'), leafDestinationSchema]).optional(),
+}).strict();
 
 const destinationSchema = z.union([
   z.object({ type: z.literal('email'), email: z.string().email() }).strict(),
@@ -62,6 +108,7 @@ const destinationSchema = z.union([
       message: 'Say what to do with the message: label, archive, or markRead.',
     },
   ),
+  routedDestinationSchema,
 ]);
 
 /**
@@ -149,6 +196,25 @@ const ruleSummarySchema = z.object({
    * work, with nothing anywhere saying so.
    */
   judge: z.record(z.unknown()).nullable().optional(),
+  /**
+   * A routed rule's branches, and they must be listed here or they do not
+   * survive — the same strip hazard as `judge` above, which has now bitten four
+   * times.
+   *
+   * Sharper here than anywhere it has bitten before. The instructions tell the
+   * model to read a rule from `list` and carry it forward on `update`, and
+   * `update` replaces rather than merges; a stripped `routes` therefore turns
+   * "rename this rule" into "delete this rule's routing table", and the rule
+   * that comes back forwards everything to whatever single destination the
+   * caller happened to send.
+   *
+   * `destination` already carries them as part of the stored shape. This is the
+   * flattened copy an agent can read without knowing that a routed rule keeps
+   * its branches inside its destination.
+   */
+  routes: z.array(z.record(z.unknown())).optional(),
+  /** `'hold'`, or the destination the member named for everything else. */
+  otherwise: z.union([z.string(), z.record(z.unknown())]).nullable().optional(),
   createdAt: z.string(),
   valid: z.boolean(),
   invalidReason: z.string().optional(),
@@ -219,6 +285,16 @@ const resultSchema = z.object({
    * place to notice than a warning read once at the top of the turn.
    */
   judge: z.record(z.unknown()).nullable().optional(),
+  /**
+   * The branches a rule carries after a `create` or an `update`, declared here
+   * as well as on the rule summary because `update` answers without a rule.
+   *
+   * Both places or neither: the summary is what `list` and `create` return, and
+   * this is what `update` returns, and an agent reading one of them and not the
+   * other is how a routing table goes missing on the next edit.
+   */
+  routes: z.array(z.record(z.unknown())).optional(),
+  otherwise: z.union([z.string(), z.record(z.unknown())]).nullable().optional(),
   message: z.string().optional(),
 });
 
@@ -304,7 +380,31 @@ export function mailOpsConnectionUnavailableMessage(
 function mailRuleActivatedMessage(destination: {
   readonly type: string;
   readonly email?: string;
+  readonly routes?: readonly { readonly key: string; readonly when: string;
+    readonly destination: { readonly type: string; readonly email?: string } }[];
+  readonly otherwise?: unknown;
 }): string {
+  /*
+   * Every branch, named.
+   *
+   * A routed rule's confirmation is the only place the member sees the whole
+   * table read back before mail starts moving, and it is the one shape where
+   * "Mail automation is active" is furthest from telling them what will happen —
+   * there is no single recipient to leave out, there are several.
+   */
+  if (destination.type === 'routed' && destination.routes?.length) {
+    const branches = destination.routes
+      .map(route => `${route.when} → ${placeName(route.destination)}`)
+      .join('; ');
+    const rest = destination.otherwise === undefined
+      || destination.otherwise === 'hold'
+      ? 'Anything that fits none of them is held back and shown to you, not sent'
+      : `Anything that fits none of them goes to ${placeName(
+          destination.otherwise as { type: string; email?: string },
+        )}`;
+    return 'Mail automation is active. Divo now reads each matching message and '
+      + `sends it to one of these: ${branches}. ${rest}.`;
+  }
   if (destination.type === 'email' && destination.email) {
     return 'Mail automation is active. Matching mail is now forwarded whole to '
       + `${destination.email} — HTML, attachments and inline images kept as `
@@ -323,6 +423,41 @@ function mailRuleActivatedMessage(destination: {
   }
   return 'Mail automation is active. Matching mail is now organised in place, '
     + 'and nothing leaves the mailbox.';
+}
+
+/**
+ * A routed rule's branches, lifted out of its destination.
+ *
+ * They are already inside `destination` — this is a flattened copy, so an agent
+ * reading a rule back does not have to know that a routing table lives one level
+ * down inside a field whose other four shapes are single places. The
+ * instructions tell it to read a rule from `list` and re-send it on `update`,
+ * and `update` replaces rather than merges, so anything it cannot see plainly is
+ * something it will delete.
+ */
+function routeSummary(destination: unknown): {
+  routes?: Record<string, unknown>[];
+  otherwise?: string | Record<string, unknown>;
+} {
+  if (
+    !destination || typeof destination !== 'object'
+    || (destination as { type?: unknown }).type !== 'routed'
+  ) return {};
+  const routed = destination as { routes?: unknown; otherwise?: unknown };
+  if (!Array.isArray(routed.routes)) return {};
+  return {
+    routes: routed.routes as Record<string, unknown>[],
+    otherwise: routed.otherwise === undefined || routed.otherwise === 'hold'
+      ? 'hold'
+      : routed.otherwise as Record<string, unknown>,
+  };
+}
+
+/** One destination said the way a person would say it, for a routed summary. */
+function placeName(destination: { readonly type: string; readonly email?: string }): string {
+  if (destination.type === 'email' && destination.email) return destination.email;
+  if (destination.type === 'lark_dm') return 'your Divo chat';
+  return 'the chosen Lark chat';
 }
 
 /**
@@ -557,6 +692,7 @@ export function createMailAutomationsTool(deps: {
               const validity = storedRuleValidity(rule);
               return {
                 ...rule,
+                ...routeSummary(rule.destination),
                 createdAt: rule.createdAt.toISOString(),
                 ...validity,
               };
@@ -847,6 +983,11 @@ export function createMailAutomationsTool(deps: {
             success: true,
             operation: 'update',
             judge: args.judge ? { ...args.judge } : null,
+            // `update` replaces the whole destination, so a routed rule edited
+            // without its table becomes a single-destination rule. Reported on
+            // the call that did it, which is a better place to notice than a
+            // warning read once at the top of the turn.
+            ...routeSummary(parsed.destination),
             message: args.judge
               ? 'Mail automation update completed. This rule still asks its question '
                 + 'before acting.'
@@ -886,6 +1027,11 @@ export function createMailAutomationsTool(deps: {
             match: { ...parsed.match },
             action: { ...parsed.action },
             destination: { ...parsed.destination },
+            // Same flattened copy `list` returns, and echoed here for the
+            // sharper version of the same reason: `create` is the answer an
+            // agent reaches for first, and a routing table it cannot see is one
+            // it will drop on the next edit.
+            ...routeSummary(parsed.destination),
             /*
              * Echoed for the same reason `list` echoes it, one call earlier.
              *
@@ -956,13 +1102,35 @@ function mailOpsConfigurationRequired(
 function resolveDestination(
   input: z.infer<typeof destinationSchema>,
   ctx: ToolExecutionContext,
-):
-  | { type: 'email'; email: string }
-  | { type: 'lark_chat'; chatId: string }
-  | { type: 'lark_dm'; openId: string }
-  | { type: 'none' } {
-  if (input.type === 'email') return input;
+): MailRuleDestination {
   if (input.type === 'organize') return { type: 'none' };
+  /*
+   * A routing table is resolved branch by branch through this same function, so
+   * `lark_dm` and `current_lark_chat` keep taking their identifiers from the run
+   * rather than from arguments one level down as well. A model naming an open id
+   * inside a route would be naming a person, exactly as it would at the top.
+   */
+  if (input.type === 'routed') {
+    return {
+      type: 'routed',
+      routes: input.routes.map(route => ({
+        key: route.key,
+        when: route.when,
+        destination: resolveLeaf(route.destination, ctx),
+      })),
+      otherwise: input.otherwise === undefined || input.otherwise === 'hold'
+        ? 'hold'
+        : resolveLeaf(input.otherwise, ctx),
+    };
+  }
+  return resolveLeaf(input, ctx);
+}
+
+function resolveLeaf(
+  input: z.infer<typeof leafDestinationSchema>,
+  ctx: ToolExecutionContext,
+): MailRuleLeafDestination {
+  if (input.type === 'email') return input;
   if (input.type === 'lark_chat') {
     return { type: 'lark_chat', chatId: input.chatId };
   }
@@ -1005,8 +1173,19 @@ function resolveAction(
       ...(input.markRead !== undefined ? { markRead: input.markRead } : {}),
     };
   }
+  /*
+   * A routed rule is still one action, taken from what its branches send.
+   *
+   * Reading the first branch is only sound because `parseMailRule` refuses a
+   * table that mixes email and Lark — a rule is one action and the runtime
+   * dispatches on it, so a mixed table would be a rule that is both. This
+   * derivation is deliberately naive; the refusal is what makes it correct.
+   */
+  const kind = input.type === 'routed'
+    ? input.routes[0]?.destination.type ?? 'email'
+    : input.type;
   return {
-    type: input.type === 'email' ? 'forward' : 'deliver',
+    type: kind === 'email' ? 'forward' : 'deliver',
     ...(rateLimitPerHour !== undefined ? { rateLimitPerHour } : {}),
   };
 }

@@ -326,11 +326,25 @@ export const resolveApprovalGateOptions = (
     | 'DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS'
     | 'DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS'
     | 'DIVO_APPROVAL_CARDS_ENABLED'
+    | 'DIVO_MAIL_OPS_ADMIN_NEEDS_EXTERNAL_APPROVAL'
   >,
-): { disableManagerSelfBypass: boolean; suppressCardDelivery: boolean } => ({
+): {
+  disableManagerSelfBypass: boolean;
+  suppressCardDelivery: boolean;
+  disableCompanyAdminExternalForwardExemption: boolean;
+} => ({
   disableManagerSelfBypass:
     env.DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS
     || (env.NODE_ENV !== 'production' && env.DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS),
+  /*
+   * The exemption is on unless somebody asks for it back.
+   *
+   * Stated as "does an admin still need approval" rather than "is the exemption
+   * disabled", because the double negative is how an operator sets the opposite
+   * of what they meant.
+   */
+  disableCompanyAdminExternalForwardExemption:
+    env.DIVO_MAIL_OPS_ADMIN_NEEDS_EXTERNAL_APPROVAL === true,
   /*
    * Never in production. An approval nobody is told about is an approval
    * nobody answers, and the tool call waiting on it simply stops.
@@ -2231,6 +2245,14 @@ export async function buildContainer(
       },
       onSelfBypass: (bypassed) => {
         logger.info('mail_ops.external_forward_self_bypass', bypassed);
+      },
+      get disableCompanyAdminExemption() {
+        return approvalGateOptions.disableCompanyAdminExternalForwardExemption;
+      },
+      onCompanyAdminExempt: (exempt) => {
+        // Deliberately not the line above. That one says the approver and the
+        // requester were the same person; this one says nobody was asked.
+        logger.info('mail_ops.external_forward_admin_exempt', exempt);
       },
     },
   });
