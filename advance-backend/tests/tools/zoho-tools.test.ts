@@ -113,6 +113,33 @@ describe('zohoCrm tool', () => {
       assert.equal(r.ok, true);
     });
 
+    it('list exposes the exact next page or provider continuation token', async () => {
+      const calls: unknown[] = [];
+      const paginatedClient = {
+        ...fakePaginatedCrmClient,
+        listRecords: async (input: unknown) => {
+          calls.push(input);
+          return { items: [{ id: 'lead-1' }], hasMore: true, nextPageToken: 'next-token' };
+        },
+      } as unknown as ZohoCrmPaginatedClient;
+      const tool = createZohoCrmTool({ getClient: yesClient, crmClient: paginatedClient, crmOps: fakeCrmOps });
+
+      const r = await tool.execute({ op: 'list', module: 'Leads', pageToken: 'current-token' }, ctx);
+
+      assert.equal(r.ok, true);
+      assert.equal((r as any).value.hasMore, true);
+      assert.equal((r as any).value.nextPageToken, 'next-token');
+      assert.equal((r as any).value.page, undefined);
+      assert.deepEqual(calls, [{
+        companyId: 'co-test',
+        userId: 'user-test',
+        connectionId: undefined,
+        module: 'Leads',
+        perPage: 25,
+        pageToken: 'current-token',
+      }]);
+    });
+
     it('personalized scope returns only records with the signed-in email', async () => {
       const scopedClient = {
         ...fakePaginatedCrmClient,

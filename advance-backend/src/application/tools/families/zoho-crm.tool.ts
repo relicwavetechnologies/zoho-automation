@@ -66,6 +66,8 @@ const Schema = z.object({
   query:     z.string().optional(),
   fields:    z.record(z.unknown()).optional(),
   limit:     z.number().int().min(1).max(200).optional(),
+  page:      z.number().int().min(1).max(10).optional(),
+  pageToken: z.string().min(1).max(2048).optional(),
   sortBy:    z.string().optional(),
   sortOrder: z.enum(['asc', 'desc']).optional(),
   exportAll: z.boolean().optional(),
@@ -87,6 +89,9 @@ const ResultSchema = z.object({
   report:          z.unknown().optional(),
   truncated:       z.boolean().optional(),
   hasMore:         z.boolean().optional(),
+  page:            z.number().int().positive().optional(),
+  nextPage:        z.number().int().positive().optional(),
+  nextPageToken:   z.string().optional(),
   rowCount:        z.number().optional(),
   totalFetched:    z.number().optional(),
   moduleSchema:    z.unknown().optional(),
@@ -284,6 +289,8 @@ export const createZohoCrmTool = (deps: {
     'query: free-text search (for search_text op) — searches name/email fields',
     'fields: record fields for create/update',
     'limit: max records to return (1-200, default 25)',
+    'page: list page 1-10. When hasMore=true, call the next page; after page 10 use nextPageToken.',
+    'pageToken: opaque continuation returned by a prior list call; do not combine with page.',
     'sortBy: field name to sort by (e.g., Created_Time, Amount)',
     'sortOrder: asc|desc',
     'exportAll: true to exhaust all pages and publish an export candidate for dataExport planning',
@@ -529,16 +536,28 @@ export const createZohoCrmTool = (deps: {
           const result = await deps.crmClient.listRecords({
             companyId, ...connectionContext, module: mod,
             perPage: args.limit ?? 25,
+            ...(args.pageToken ? { pageToken: args.pageToken } : { page: args.page ?? 1 }),
             ...(args.sortBy ? { sortBy: args.sortBy } : {}),
             ...(args.sortOrder ? { sortOrder: args.sortOrder } : {}),
           });
 
           const items = personalizedScope ? filterZohoRecordsByEmail(result.items, requesterEmail!) : result.items;
+          const continuationMissing = result.hasMore
+            && !result.nextPageToken
+            && (result.page === undefined || result.page >= 10);
           return ok({
             success: true,
             data: formatCrmResult(items),
-            message: `Found ${items.length} ${mod} record(s).`,
+            message: continuationMissing
+              ? `Found ${items.length} ${mod} record(s). Zoho reported more records but returned no continuation token.`
+              : `Found ${items.length} ${mod} record(s).`,
             hasMore: result.hasMore,
+            ...(continuationMissing ? { truncated: true } : {}),
+            ...(result.page !== undefined ? { page: result.page } : {}),
+            ...(result.hasMore && result.page !== undefined && result.page < 10 && !result.nextPageToken
+              ? { nextPage: result.page + 1 }
+              : {}),
+            ...(result.nextPageToken ? { nextPageToken: result.nextPageToken } : {}),
           });
         }
 
