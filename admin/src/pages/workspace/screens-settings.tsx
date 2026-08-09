@@ -16,7 +16,7 @@ import { useTheme } from '@/lib/use-theme'
 import { useMyModelOptions } from './data/use-my-activity'
 import { Empty, Seg, SkelRows } from './ui'
 
-const COMPANY_ROLE_LABEL: Record<string, string> = {
+export const COMPANY_ROLE_LABEL: Record<string, string> = {
   MEMBER: 'Member',
   COMPANY_ADMIN: 'Company admin',
   SUPER_ADMIN: 'Super admin',

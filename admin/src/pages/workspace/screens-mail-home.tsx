@@ -21,10 +21,10 @@ import { useCaught, useCaughtActivity, useMailAutomations } from './data/use-mai
 import {
   MAIL_LATEST_ROWS, MAIL_SUMMARY_WINDOW_DAYS as WINDOW_DAYS, mailBucketOf, summarizeMail,
 } from './data/mail-summary'
+import { Empty, Fade, Heatmap, PageHeader, Panel, Skel, SkelRows, useStaged } from './ui'
 
 /** Said in weeks, because a grid one column per week is read in weeks. */
 const WINDOW_WEEKS = WINDOW_DAYS / 7
-import { Empty, Fade, Heatmap, PageHeader, Panel, SkelRows, useStaged } from './ui'
 
 const timeLabel = (iso: string) =>
   new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
@@ -36,6 +36,43 @@ const dayLabel = (iso: string): string => {
   if (days === 0) return 'Today'
   if (days === 1) return 'Yesterday'
   return at.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+}
+
+/**
+ * The summary card's own skeleton.
+ *
+ * `SkelRows` draws list rows, and this card is not a list — so the placeholder
+ * showed three rows with a pill on the right and then swapped for three
+ * figures and a calendar, which is a jump rather than a load. Same blocks, same
+ * places, same heights.
+ */
+function SkelSummary() {
+  return (
+    <div className="ws-panel-body">
+      <div className="ws-stat3">
+        {[0, 1, 2].map((i) => (
+          <div key={i}>
+            <Skel w={i === 0 ? 108 : 78} h={9} />
+            <div style={{ height: 14 }} />
+            <Skel w={40} h={26} />
+            <div style={{ height: 10 }} />
+            <Skel w={i === 1 ? 120 : 84} h={9} />
+          </div>
+        ))}
+      </div>
+      {/* The grid's real footprint: seven rows at its capped cell size. */}
+      <div style={{ marginTop: 22 }}><Skel block h={7 * 30 + 6 * 4} /></div>
+      <div className="ws-heat-facts">
+        {[0, 1, 2].map((i) => (
+          <div key={i}>
+            <Skel w={72} h={9} />
+            <div style={{ height: 9 }} />
+            <Skel w={i === 1 ? 62 : 96} h={11} />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 export function MailHome() {
@@ -98,8 +135,8 @@ export function MailHome() {
           // column taller than its two neighbours for no reason.
           description={`${liveRules} live ${liveRules === 1 ? 'rule' : 'rules'} · ${firing} mailbox${firing === 1 ? '' : 'es'} watching`}
         >
-          <div className="ws-panel-body">
-            {!r1 || loading ? <SkelRows n={3} icon={false} /> : (
+          {!r1 || loading ? <SkelSummary /> : (
+            <div className="ws-panel-body">
               <Fade>
                 {/* A grid rather than a flex row. Wrapping put "Needs a look"
                     on its own line under two figures, which left a hole beside
@@ -181,8 +218,8 @@ export function MailHome() {
                   </div>
                 ) : null}
               </Fade>
-            )}
-          </div>
+            </div>
+          )}
         </Panel>
 
         <Panel

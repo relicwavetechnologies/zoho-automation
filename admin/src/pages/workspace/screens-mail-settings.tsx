@@ -25,8 +25,8 @@ import { GmailMark, LarkMark } from './brand'
 import { MailboxSetup } from './screens-mail'
 import { useMailAutomations, useMailboxOptions } from './data/use-mail-automations'
 import { useMailBrief } from './data/use-mail-governance'
-import { SettingsGroup, SettingsHead, SettingsRow, SettingsSection } from './screens-settings'
-import { Seg, SkelRows } from './ui'
+import { COMPANY_ROLE_LABEL, SettingsGroup, SettingsHead, SettingsRow, SettingsSection } from './screens-settings'
+import { Avatar, Seg, SkelRows } from './ui'
 
 /**
  * The mailbox, said once.
@@ -202,6 +202,35 @@ export function MailSettings() {
         description="There is not much here, and that is deliberate."
       />
 
+      <SettingsSection title="Profile" />
+      <SettingsGroup>
+        <SettingsRow label="Profile picture" description="How you are shown around Divo">
+          {/* Initials, because Divo stores no photograph. Nothing in the schema
+              holds an avatar and no route fetches one from Lark, so a slot for
+              an image would permanently show its own fallback. */}
+          <Avatar name={session?.name} email={session?.email} size={34} />
+        </SettingsRow>
+        <SettingsRow
+          label="Company role"
+          // Named as the ceiling rather than as the grant, because people read
+          // this row as the answer to "why was I refused" and it is not.
+          description="Your company-wide ceiling. What Divo may actually do for you is set per department."
+        >
+          <span className="set-val">{COMPANY_ROLE_LABEL[session?.role ?? ''] ?? session?.role ?? '—'}</span>
+        </SettingsRow>
+        {(session?.departments ?? []).map((dept) => (
+          <SettingsRow
+            key={dept.id}
+            label={dept.name}
+            description={dept.isManager
+              ? 'You manage this department, so you can also grant what it may use.'
+              : 'Your role here decides which tools Divo may use on your behalf.'}
+          >
+            <span className="set-val">{dept.roleName}</span>
+          </SettingsRow>
+        ))}
+      </SettingsGroup>
+
       <SettingsSection title="Account" />
       <SettingsGroup>
         <SettingsRow label="Name">
@@ -215,19 +244,6 @@ export function MailSettings() {
         </SettingsRow>
         <SettingsRow label="Company">
           <span className="set-val">{session?.companyName ?? '—'}</span>
-        </SettingsRow>
-        <SettingsRow
-          label={(session?.departments.length ?? 0) === 1 ? 'Department' : 'Departments'}
-          // Worth stating even here: people assume the company role is the grant,
-          // and a member wondering why Divo refused something is usually looking
-          // at the wrong one of the two.
-          description="This decides what Divo may actually do for you"
-        >
-          <span className="set-val">
-            {session?.departments.length
-              ? session.departments.map((d) => d.name).join(', ')
-              : 'None'}
-          </span>
         </SettingsRow>
         <SettingsRow
           label="Lark"

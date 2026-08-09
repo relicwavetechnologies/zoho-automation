@@ -312,6 +312,7 @@
 .cur .ws-skel { background: var(--cur-hairline-soft); border-radius: var(--cur-r-cta); animation: ws-pulse 1.6s ease-in-out infinite; }
 .dark .cur .ws-skel { background: var(--cur-surface-strong); }
 .cur .ws-skel.line { height: 11px; border-radius: 999px; }
+.cur .ws-skel.block { border-radius: 8px; }
 .cur .ws-skel.circle { border-radius: 50%; }
 .cur .ws-skel-row { display: flex; align-items: center; gap: 13px; padding: 14px 18px; border-top: 1px solid var(--cur-hairline-soft); }
 .cur .ws-skel-row:first-child { border-top: 0; }
@@ -418,16 +419,25 @@
    it. Column flow is what makes it wide and short: filled row-first a season
    is sixteen rows tall, and a month is five columns.
 
-   The cell is a fixed size rather than a fraction, so a card holding sixteen
-   weeks and one holding four draw the same square. Fractions made the short
-   window's cells enormous to fill the same box. */
-.cur .ws-heat { --ws-cell: 25px; display: block; }
-.cur .ws-heat-grid {
-  display: grid; grid-template-rows: repeat(7, var(--ws-cell));
-  grid-auto-flow: column; grid-auto-columns: var(--ws-cell); gap: 4px;
-  overflow-x: auto; padding-bottom: 2px;
+   Columns are fluid but capped. A fixed cell overflowed a narrow card and
+   clipped the last week off the right edge; an uncapped fraction drew tiles
+   when the window was short. `--ws-cols` comes from the data, so the same
+   component fits sixteen weeks into a half-panel and four into the same card
+   without either spilling or ballooning. */
+.cur .ws-heat {
+  --ws-cols: 16; --ws-cell-max: 30px; --ws-gap: 4px;
+  display: block; margin-inline: auto;
+  max-width: calc(var(--ws-cols) * var(--ws-cell-max) + (var(--ws-cols) - 1) * var(--ws-gap));
 }
-.cur .ws-heat-grid i { border-radius: 5px; background: var(--cur-surface-strong); }
+.cur .ws-heat-grid {
+  display: grid; gap: var(--ws-gap);
+  grid-template-columns: repeat(var(--ws-cols), minmax(0, 1fr));
+  grid-template-rows: repeat(7, auto);
+  grid-auto-flow: column;
+}
+/* Square from its own width, so the rows follow the columns rather than
+   needing a height the container cannot know. */
+.cur .ws-heat-grid i { aspect-ratio: 1; border-radius: 5px; background: var(--cur-surface-strong); }
 /* An unstarted week is absence, not a zero-cost day, so it holds the space
    without drawing a tile that could be counted. */
 .cur .ws-heat-grid i[data-pad="true"] { background: none; }
@@ -436,9 +446,11 @@
 .cur .ws-heat-grid i[data-level="2"] { background: color-mix(in srgb, var(--cur-primary) 48%, var(--cur-surface-strong)); }
 .cur .ws-heat-grid i[data-level="3"] { background: color-mix(in srgb, var(--cur-primary) 72%, var(--cur-surface-strong)); }
 .cur .ws-heat-grid i[data-level="4"] { background: var(--cur-primary); }
+/* Inside `.ws-heat`, so it ends where the last column ends rather than at the
+   card's edge — a legend floating past the grid reads as a stray control. */
 .cur .ws-heat-key {
   display: flex; align-items: center; justify-content: flex-end; gap: 4px;
-  margin-top: 9px; font-size: 10.5px; color: var(--cur-muted-soft);
+  margin-top: 10px; font-size: 10.5px; color: var(--cur-muted-soft);
 }
 .cur .ws-heat-key i { width: 11px; height: 11px; border-radius: 3px; background: var(--cur-surface-strong); }
 .cur .ws-heat-key i[data-level="1"] { background: color-mix(in srgb, var(--cur-primary) 24%, var(--cur-surface-strong)); }
@@ -1331,6 +1343,15 @@
 /* Two lines exactly: the label's line-height is 1.5, so 3em is 2 × 16.5px at
    its 11px size. 2.5em looked right and left the first figure 5px low. */
 .cur .ws-stat3 .ws-lbl { min-height: 3em; }
+
+/* ── Avatar ───────────────────────────────────────────
+   Accent rather than brand orange: orange is scarce here and marks the one
+   thing being asked for, and an avatar is identity rather than an action. */
+.cur .ws-avatar {
+  display: inline-grid; place-items: center; flex-shrink: 0;
+  border-radius: 50%; background: var(--cur-accent); color: var(--cur-on-accent);
+  font-weight: 500; letter-spacing: 0.02em; line-height: 1; user-select: none;
+}
 
 /* ── Grouped settings ─────────────────────────────────
    A quiet label over a bordered card, the way the reference groups a settings

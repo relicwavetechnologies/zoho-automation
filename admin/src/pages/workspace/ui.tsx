@@ -44,9 +44,21 @@ export function useStaged(steps: number[], replayKey: number) {
  */
 export type Toast = (message: string, tone?: 'ok' | 'error') => void
 
-export const Skel = ({ w, h = 11, circle }: { w?: number | string; h?: number; circle?: boolean }) => (
+export const Skel = ({ w, h = 11, circle, block }: {
+  w?: number | string
+  h?: number
+  circle?: boolean
+  /**
+   * A rounded rectangle rather than a pill.
+   *
+   * `line` carries a 999px radius, which reads as a pill at 11px and as an
+   * ellipse at two hundred — so a placeholder standing in for a block of
+   * content came out as a giant lozenge.
+   */
+  block?: boolean
+}) => (
   <div
-    className={`ws-skel${circle ? ' circle' : ' line'}`}
+    className={`ws-skel${circle ? ' circle' : block ? ' block' : ' line'}`}
     style={{ width: w ?? '100%', height: h, ...(circle ? { borderRadius: '50%' } : {}) }}
   />
 )
@@ -438,8 +450,14 @@ export const Heatmap = ({ data, format = money }: {
     })
   }
 
+  // The grid has to know its own width to stay inside the card. A fixed cell
+  // size overflowed a narrow panel and clipped the last week; a fraction with
+  // no ceiling drew tiles when the window was short. Columns are fluid, capped
+  // per column, and the count comes from the data rather than a guess.
+  const columns = Math.ceil(cells.length / 7)
+
   return (
-    <div className="ws-heat">
+    <div className="ws-heat" style={{ ['--ws-cols' as string]: String(columns) }}>
       {/*
         Seven rows, one week per column — the shape every contribution grid
         uses, and the reason it can be wide and short. Filled the other way a
@@ -457,6 +475,44 @@ export const Heatmap = ({ data, format = money }: {
         <span>More</span>
       </div>
     </div>
+  )
+}
+
+/**
+ * Somebody's initials, in a circle.
+ *
+ * Initials rather than a photograph because Divo holds no photograph. Nothing
+ * in the schema stores an avatar and no route fetches one from Lark, so a
+ * component that took a URL would be a slot permanently showing its fallback —
+ * and a broken image is a worse answer than a letter.
+ *
+ * The tint is the accent rather than the brand orange. Orange is scarce here by
+ * design and marks the one thing being asked for; an avatar is identity, not an
+ * action.
+ */
+export const Avatar = ({ name, email, size = 34 }: {
+  name?: string | null
+  email?: string | null
+  size?: number
+}) => {
+  const source = (name ?? '').trim() || (email ?? '').trim()
+  // First letter of the first two words, so "Anugra Gupta" reads AG and
+  // "anugra.gupta@…" still reads A rather than an empty circle.
+  const initials = source
+    .split(/[\s.@_-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? '')
+    .join('') || '—'
+
+  return (
+    <span
+      className="ws-avatar"
+      style={{ width: size, height: size, fontSize: Math.round(size * 0.4) }}
+      aria-hidden="true"
+    >
+      {initials}
+    </span>
   )
 }
 
