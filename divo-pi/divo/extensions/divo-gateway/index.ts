@@ -177,7 +177,7 @@ const DIVO_SKILL_RESOLVE_PARAMS = Type.Object({
 });
 
 export const DIVO_DIRECT_WEB_SEARCH_POLICY =
-	'For an ordinary request to find, verify, compare, price, or summarize current public information, load the exact Web Search DB skill from the injected catalogue once, then call webSearch directly through tools.invoke. Do not run fuzzy discovery when that exact catalogue entry is already present. The words research, find, compare, cheapest, latest, or best do not by themselves make a request a specialized workflow such as deep research. Run one focused search first; add a distinct follow-up only when the first result leaves a material evidence gap. Load a deep-research specialist only when the user explicitly requests thorough, multi-source, community, or deep research, or a matching persona rule requires it.';
+	'For an ordinary request to find, verify, compare, price, or summarize current public information, prefer loading the exact Web Search DB skill from the injected catalogue once when it has not already been loaded, then call webSearch directly through tools.invoke. If that recipe is unavailable, continue with the clear permitted direct capability instead of treating missing guidance as permission denial. Do not run fuzzy discovery when the catalogue already identifies the capability. The words research, find, compare, cheapest, latest, or best do not by themselves make a request a specialized workflow such as deep research. Run one focused search first; add a distinct follow-up only when the first result leaves a material evidence gap. Load a deep-research specialist only when the user explicitly requests thorough, multi-source, community, or deep research, or a matching persona rule requires it.';
 
 /**
  * Keep every model-facing runtime prompt on the same route-selection boundary.
@@ -443,6 +443,12 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				departmentId?: string;
 				payload?: Record<string, unknown>;
 			};
+			// The model may recommend a skill but cannot self-assert audit provenance.
+			// Only the extension's loaded-skill ledger may attach it to an invocation.
+			if (request.op === "tools.invoke" && request.payload) {
+				request.payload = { ...request.payload };
+				delete request.payload.skillId;
+			}
 			const correlation = await readDivoRunCorrelation();
 			const authorization = authorizeToolInvocation({
 				op: request.op,
@@ -461,7 +467,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 					isError: true,
 				};
 			}
-			if (authorization?.ok) {
+			if (authorization?.ok && authorization.skillId) {
 				request.payload = { ...request.payload, skillId: authorization.skillId };
 			}
 			const resolved = resolveDivoGatewayConfig();

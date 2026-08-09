@@ -20,7 +20,8 @@ const ROUTER_SKILL = readFileSync(
 
 describe("Divo normal-session routing policy", () => {
 	it("routes an ordinary current-information comparison directly to webSearch", () => {
-		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /load the exact Web Search DB skill/i);
+		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /prefer loading the exact Web Search DB skill/i);
+		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /missing guidance as permission denial/i);
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /then call webSearch/i);
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /Do not run fuzzy discovery/i);
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /cheapest.*do not by themselves/i);
@@ -34,10 +35,8 @@ describe("Divo normal-session routing policy", () => {
 
 	it("keeps the bundled router skill aligned with catalogue-first routing", () => {
 		assert.match(ROUTER_SKILL, /using no skill is correct/i);
-		// The gateway refuses a tools.invoke whose skill was not loaded in the same
-		// run, so the router must send the model through divo_skill_view first.
-		// It previously said "immediately invoke", which was a guaranteed refusal.
-		assert.match(ROUTER_SKILL, /load the exact web-search skill .* with `divo_skill_view`, then invoke `tools\.invoke`/i);
+		assert.match(ROUTER_SKILL, /prefer loading the exact web-search skill .* then invoke `tools\.invoke`/i);
+		assert.match(ROUTER_SKILL, /missing guidance as permission denial/i);
 		assert.doesNotMatch(ROUTER_SKILL, /immediately invoke `tools\.invoke`/i);
 		assert.match(ROUTER_SKILL, /without fuzzy skill discovery/i);
 		assert.doesNotMatch(ROUTER_SKILL, /before planning every meaningful company task/i);

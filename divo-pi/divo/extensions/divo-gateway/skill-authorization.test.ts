@@ -14,17 +14,14 @@ describe("skill authorization", () => {
 		}), null);
 	});
 
-	it("requires a loaded skill for governed invocations", () => {
+	it("allows an ordinary governed invocation without a loaded skill", () => {
 		const result = authorizeToolInvocation({
 			op: "tools.invoke",
 			toolId: "knowledge",
 			lookup: () => undefined,
 			scheduling: false,
 		});
-		assert.deepEqual(result, {
-			ok: false,
-			message: "Exact company skill required. Load the relevant DB skill with divo_skill_view, then retry this tool call.",
-		});
+		assert.equal(result, null);
 	});
 
 	it("gives scheduling work its own guidance", () => {
@@ -70,13 +67,13 @@ describe("skill authorization", () => {
 		assert.deepEqual(later, first);
 	});
 
-	it("still refuses a tool no skill ever loaded", () => {
+	it("does not invent provenance for a tool no skill ever loaded", () => {
 		const result = authorizeToolInvocation({
 			op: "tools.invoke",
 			toolId: "zohoBooks",
 			lookup: (toolId) => (toolId === "knowledge" ? loaded : undefined),
 			scheduling: false,
 		});
-		assert.equal(result?.ok, false);
+		assert.equal(result, null);
 	});
 });

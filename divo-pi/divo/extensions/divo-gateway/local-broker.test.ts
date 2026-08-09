@@ -26,9 +26,9 @@ const correlation = {
 const execFileAsync = promisify(execFile);
 
 /**
- * Stands in for the skill registry the extension owns. In a real run a tool is
- * only invocable because divo_skill_view loaded the skill that declares it, so
- * the tests below say which skill authorized each call.
+ * Stands in for the skill registry the extension owns. A tool call may carry
+ * advisory provenance when divo_skill_view loaded a matching recipe, so the
+ * tests below say which skill was actually read before each call.
  */
 function loadedSkills(skillId = "gmail-read"): (toolId: string) => { skillId: string } | undefined {
 	return () => ({ skillId });
@@ -77,24 +77,24 @@ describe("Divo local broker protocol", () => {
 		assert.equal((gatewayRequests[0]?.payload as { skillId?: string })?.skillId, "gmail-read");
 	});
 
-	it("rejects a scripted tool call when no matching skill was loaded", async () => {
-		let gatewayCalls = 0;
-		await assert.rejects(
-			executeLocalBrokerRequest({
+	it("sends an ordinary scripted call without invented skill provenance", async () => {
+		let sentPayload: unknown;
+		await executeLocalBrokerRequest({
 				version: 1,
-				request: { op: "tools.invoke", payload: { toolId: "googleGmail", args: {} } },
+				request: {
+					op: "tools.invoke",
+					payload: { skillId: "self-asserted", toolId: "googleGmail", args: {} },
+				},
 			}, activeCalls(), {
 				resolveConfig: () => config,
 				readCorrelation: async () => correlation,
 				lookupLoadedSkill: () => undefined,
-				executeGateway: async () => {
-					gatewayCalls += 1;
+				executeGateway: async (_resolved, request) => {
+					sentPayload = request.payload;
 					return { body: { ok: true, status: "ok", data: {} }, httpStatus: 200 };
 				},
-			}),
-			/Exact company skill required/,
-		);
-		assert.equal(gatewayCalls, 0);
+			});
+		assert.deepEqual(sentPayload, { toolId: "googleGmail", args: {} });
 	});
 
 	it("rejects protected Shopify records before Bash can receive them", async () => {

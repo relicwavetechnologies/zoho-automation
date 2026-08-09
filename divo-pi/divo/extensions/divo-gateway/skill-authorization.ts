@@ -4,9 +4,10 @@
  * There are two ways into the gateway from inside the container — the
  * `divo_gateway` tool the model calls directly, and the `divo-local` CLI a
  * script runs over the broker socket. Both reach the same backend, so both
- * apply this consistently. Missing or stale skill guidance stops dispatch,
- * while the backend still owns identity, RBAC, connection access, validation,
- * and approval policy.
+ * attach the same trusted provenance when a recipe was loaded. Missing skill
+ * guidance does not stop an ordinary call; the backend still owns identity,
+ * RBAC, connection access, validation, and approval policy. Workflows that
+ * genuinely depend on a recipe may still require one.
  *
  * The caller cannot supply its own `skillId`. When present, it is read from
  * what was actually loaded so audit provenance cannot be forged.
@@ -50,13 +51,12 @@ export function authorizeToolInvocation(input: {
 	const lookup = typeof input.lookup === "function" ? input.lookup : () => undefined;
 	const loaded = toolId ? lookup(toolId) : undefined;
 
-	if (!toolId || !loaded) {
+	if (input.scheduling && (!toolId || !loaded)) {
 		return {
 			ok: false,
-			message: input.scheduling
-				? "Scheduling recipe required. Load the exact Schedule Divo Work skillId from the injected catalogue with divo_skill_view, then retry."
-				: "Exact company skill required. Load the relevant DB skill with divo_skill_view, then retry this tool call.",
+			message: "Scheduling recipe required. Load the exact Schedule Divo Work skillId from the injected catalogue with divo_skill_view, then retry.",
 		};
 	}
+	if (!toolId || !loaded) return null;
 	return { ok: true, skillId: loaded.skillId };
 }

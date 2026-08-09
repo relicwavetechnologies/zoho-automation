@@ -156,10 +156,15 @@ export async function executeLocalBrokerRequest(
 		active.nextBrokerCall += 1;
 		const actionId = `${active.toolCallId}:broker:${active.nextBrokerCall}`;
 		const label = brokerLabel(input);
-		// Same gate the divo_gateway tool applies. A script reaching the backend
-		// through this socket has no more authority than the model calling the
-		// tool directly, and the skillId is taken from what was actually loaded.
+		// Same provenance rule the divo_gateway tool applies. A script reaching the
+		// backend through this socket has no more authority than the model calling
+		// the tool directly, and only a skill actually loaded here may be attached.
 		const payload = asRecord(input.request.payload);
+		let trustedPayload = input.request.payload;
+		if (input.request.op === "tools.invoke" && payload) {
+			trustedPayload = { ...payload };
+			delete trustedPayload.skillId;
+		}
 		if (
 			input.request.op === "tools.invoke"
 			&& (payload?.["toolId"] === "shopifyOrders" || payload?.["toolId"] === "shopifyCustomers")
@@ -175,9 +180,9 @@ export async function executeLocalBrokerRequest(
 		if (authorization && !authorization.ok) {
 			throw new Error(authorization.message);
 		}
-		const authorizedPayload = authorization?.ok
-			? { ...(payload ?? {}), skillId: authorization.skillId }
-			: input.request.payload;
+		const authorizedPayload = authorization?.ok && authorization.skillId
+			? { ...(asRecord(trustedPayload) ?? {}), skillId: authorization.skillId }
+			: trustedPayload;
 
 		const request: GatewayRequestBody = {
 			op: input.request.op,

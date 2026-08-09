@@ -8,7 +8,7 @@ import { readDivoRunCorrelation, type DivoRunCorrelationV1 } from "./run-correla
 
 export const DIVO_APPROVAL_PROTOCOL_TITLE = "divo_approval_v1";
 export const DIVO_TOOLS_INVOKE_ENVELOPE =
-	'{ "op": "tools.invoke", "payload": { "skillId": "<loaded exact DB skill ID>", "toolId": "<tool declared by that skill>", "args": { ...tool arguments } } }';
+	'{ "op": "tools.invoke", "payload": { "toolId": "<permitted backend tool ID>", "args": { ...tool arguments } } }';
 
 type JsonRecord = Record<string, unknown>;
 
