@@ -477,9 +477,21 @@ export async function fetchNativeSkillBootstrap({
 	);
 	const body = await response.json().catch(() => undefined);
 	if (!response.ok || body?.success !== true || !body.data?.nativeSkillBootstrap) {
-		throw new Error(body?.message ?? `Native skill bootstrap failed (${response.status})`);
+		const error = new Error(body?.message ?? `Native skill bootstrap failed (${response.status})`);
+		error.status = response.status;
+		throw error;
 	}
 	return validateNativeSkillBootstrap(body.data.nativeSkillBootstrap);
+}
+
+export async function fetchNativeSkillBootstrapOrEmpty(input) {
+	try {
+		return await fetchNativeSkillBootstrap(input);
+	} catch (error) {
+		if (Number.isInteger(error?.status) && error.status >= 400 && error.status < 500) throw error;
+		console.error(`[Pi] Native skill bootstrap unavailable; using bundled skills only: ${error.message}`);
+		return { registryRevision: 0, skills: [] };
+	}
 }
 
 const NATIVE_SKILL_STAGING_SCRIPT = String.raw`
@@ -2427,7 +2439,7 @@ async function runPrompt({
 		selectedModel,
 	});
 	const nativeSkillBootstrap = nativeSkills
-		? await fetchNativeSkillBootstrap({ backendUrl, token, departmentId })
+		? await fetchNativeSkillBootstrapOrEmpty({ backendUrl, token, departmentId })
 		: undefined;
 	if (!ephemeral) await idleContainers.activate(profile);
 	if (!piKeepAlive) await discardWarmPiProcess(profile);

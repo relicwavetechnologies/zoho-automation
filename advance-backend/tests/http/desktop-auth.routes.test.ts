@@ -1847,6 +1847,71 @@ describe('desktop auth routes', () => {
     });
   });
 
+  it('bounds native skills by priority order and bytes instead of aborting the run', async () => {
+    const departmentId = '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd';
+    const { events, logger } = captureLogger();
+    let catalogue = Array.from({ length: 101 }, (_, index) => ({
+      id: `skill-${index}`,
+      slug: `skill-${index}`,
+      name: `Skill ${index}`,
+      description: 'Safe description',
+      instructions: 'Use governed tools.',
+      toolIds: [],
+      aliases: [],
+      tags: [],
+      revision: 1,
+    }));
+    const router = createDesktopAuthRoutes(makeDeps({
+      logger,
+      prisma: {
+        departmentMembership: {
+          findFirst: async () => ({
+            department: { id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null },
+          }),
+        },
+      },
+      permissions: {
+        resolve: async () => ({
+          ok: true,
+          value: {
+            allowedToolIds: new Set(),
+            allowedActionsByTool: new Map(),
+            decisions: [],
+            department: { roleSlug: 'MEMBER' },
+          },
+        }),
+      },
+      skillCatalog: {
+        listVisible: async () => catalogue,
+        registryRevision: async () => 9,
+      },
+    }));
+    const request = {
+      query: { departmentId, capabilityVersion: '3', nativeSkills: '1' },
+      locals: {
+        userId: 'user-1',
+        companyId: 'company-1',
+        aiRole: 'MEMBER',
+        isPiRuntimeLease: true,
+        runtimeDepartmentId: departmentId,
+      },
+    };
+
+    const countBounded = await callRoute(router, 'GET', '/runtime-context', request);
+    assert.equal(countBounded.status, 200);
+    assert.equal(countBounded.body.data.nativeSkillBootstrap.skills.length, 100);
+    assert.equal(countBounded.body.data.nativeSkillBootstrap.skills.at(-1).slug, 'skill-99');
+
+    catalogue = catalogue.slice(0, 30).map(skill => ({
+      ...skill,
+      instructions: 'x'.repeat(90_000),
+    }));
+    const byteBounded = await callRoute(router, 'GET', '/runtime-context', request);
+    assert.equal(byteBounded.status, 200);
+    assert.equal(byteBounded.body.data.nativeSkillBootstrap.skills.length, 22);
+    assert.equal(events.filter(event => event === 'runtime.native_skills.bounded').length, 2);
+  });
+
   it('does not expose native skill bodies to an ordinary member session', async () => {
     const departmentId = '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd';
     const router = createDesktopAuthRoutes(makeDeps());

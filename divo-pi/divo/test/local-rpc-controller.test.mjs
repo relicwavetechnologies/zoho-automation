@@ -21,6 +21,7 @@ import {
 	deleteProtectedRuntimeSession,
 	finalizeRuntimeLifecycle,
 	fetchNativeSkillBootstrap,
+	fetchNativeSkillBootstrapOrEmpty,
 	loadToken,
 	logCompletedRun,
 	nativeDbSkillsEnabled,
@@ -532,6 +533,39 @@ test("native DB skills are fetched only through the authenticated runtime endpoi
 	assert.match(request.url, /nativeSkills=1/);
 	assert.match(request.url, /departmentId=department-1/);
 	assert.deepEqual(request.options.headers, { Authorization: "Bearer member-token" });
+});
+
+test("transient native skill bootstrap failure degrades to an empty DB catalogue", async () => {
+	const originalError = console.error;
+	console.error = () => {};
+	try {
+		const bootstrap = await fetchNativeSkillBootstrapOrEmpty({
+			backendUrl: "https://divo.example.com/",
+			token: "member-token",
+			departmentId: "department-1",
+			fetchImpl: async () => ({
+				ok: false,
+				status: 503,
+				json: async () => ({ success: false, message: "catalogue unavailable" }),
+			}),
+		});
+		assert.deepEqual(bootstrap, { registryRevision: 0, skills: [] });
+	} finally {
+		console.error = originalError;
+	}
+});
+
+test("native skill bootstrap authorization failure remains fatal", async () => {
+	await assert.rejects(fetchNativeSkillBootstrapOrEmpty({
+		backendUrl: "https://divo.example.com/",
+		token: "member-token",
+		departmentId: "department-1",
+		fetchImpl: async () => ({
+			ok: false,
+			status: 403,
+			json: async () => ({ success: false, message: "department denied" }),
+		}),
+	}), /department denied/);
 });
 
 test("native DB skills are staged by an isolated root helper", () => {

@@ -248,6 +248,10 @@ const runtimeContextQuerySchema = z.object({
   capabilityVersion: z.literal('3').optional(),
   nativeSkills: z.literal('1').optional(),
 });
+const NATIVE_SKILL_LIMIT = 100;
+const NATIVE_SKILL_DESCRIPTION_BYTES = 1_024;
+const NATIVE_SKILL_INSTRUCTIONS_BYTES = 100_000;
+const NATIVE_SKILL_TOTAL_BYTES = 2_000_000;
 
 const connectionManagerGovernanceUpdateSchema = z.object({
   managerPolicy: connectionGovernancePolicySchema,
@@ -1806,12 +1810,35 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           complete: true,
           failClosed: true,
         });
-        if (visibleSkills.length > 100) {
-          throw new Error('Native skill catalogue exceeds the 100-skill runtime limit');
+        const boundedSkills = [];
+        const omittedSlugs: string[] = [];
+        let totalBytes = 0;
+        for (const skill of visibleSkills) {
+          const descriptionBytes = Buffer.byteLength(skill.description, 'utf8');
+          const instructionBytes = Buffer.byteLength(skill.instructions, 'utf8');
+          if (
+            boundedSkills.length >= NATIVE_SKILL_LIMIT
+            || descriptionBytes > NATIVE_SKILL_DESCRIPTION_BYTES
+            || instructionBytes > NATIVE_SKILL_INSTRUCTIONS_BYTES
+            || totalBytes + descriptionBytes + instructionBytes > NATIVE_SKILL_TOTAL_BYTES
+          ) {
+            omittedSlugs.push(skill.slug);
+            continue;
+          }
+          totalBytes += descriptionBytes + instructionBytes;
+          boundedSkills.push(skill);
+        }
+        if (omittedSlugs.length > 0) {
+          log.warn('runtime.native_skills.bounded', {
+            visibleCount: visibleSkills.length,
+            loadedCount: boundedSkills.length,
+            omittedCount: omittedSlugs.length,
+            omittedSlugs: omittedSlugs.slice(0, 20),
+          });
         }
         nativeSkillBootstrap = {
           registryRevision,
-          skills: visibleSkills.map(skill => ({
+          skills: boundedSkills.map(skill => ({
             id: skill.id,
             slug: skill.slug,
             name: skill.name,

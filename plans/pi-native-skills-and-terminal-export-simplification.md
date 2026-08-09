@@ -125,17 +125,17 @@ with no repeated skill-fetch loop.
 
 ### Phase 2A — Harden native bootstrap and reuse
 
-- [ ] Degrade oversized catalogues deterministically by existing `sortOrder`
+- [x] Degrade oversized catalogues deterministically by existing `sortOrder`
       within count and byte budgets; log every omitted slug instead of aborting
       the whole run.
-- [ ] On bootstrap failure, clear DB-native materialization and continue with
+- [x] On bootstrap failure, clear DB-native materialization and continue with
       bundled skills only. Never reuse a stale catalogue without an exact
       user, department, permission, channel, and revision match.
 - [ ] Use `registryRevision` plus a scope/catalogue digest to skip unchanged
       Docker staging and permit warm Pi reuse only for an identical catalogue.
 - [ ] Measure cold start, unchanged warm turn, and revision-change restart.
-- [ ] Reject DB slugs reserved by bundled Pi skills before discovery.
-- [ ] Directly test read-only tree cleanup, atomic swap, and failure preserving
+- [x] Reject DB slugs reserved by bundled Pi skills before discovery.
+- [x] Directly test read-only tree cleanup, atomic swap, and failure preserving
       the prior catalogue in the staging script.
 - [ ] Audit shared/group Lark runs so DB-native roots follow the same scoped
       resource policy as extensions, trusted skills, and tool allowlists.
@@ -149,6 +149,12 @@ this plan.
 **Exit gate:** catalogue growth or a transient bootstrap fault cannot take down
 Cloud Pi, stale authorization cannot leak across scopes, unchanged turns avoid
 restaging, and staging behavior has direct regression coverage.
+
+Current proof: the backend keeps the existing priority order while enforcing
+the 100-skill and 2 MB budgets and logs omissions. Cloud Pi converts transient,
+malformed, or server-side bootstrap failures into an atomically staged empty DB
+catalogue, while 4xx authorization failures remain fatal. Controller tests pass
+48/48 and the authenticated runtime route suite passes 57/57.
 
 ### Phase 3 — Finish the governed terminal foundation
 
