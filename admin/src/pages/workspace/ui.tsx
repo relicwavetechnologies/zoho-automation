@@ -409,21 +409,21 @@ export const Spark = ({ data }: { data: number[] }) => {
  * Weeks run down the page and weekdays across, which matches the card's own
  * "last 30 days" framing better than the year-long strip this borrows from.
  */
-export const Heatmap = ({ data, format = money, compact = false }: {
+export const Heatmap = ({ data, format = money }: {
   data: { date: string; value: number }[]
   /** How a cell's value reads on hover. Dollars here, message counts in Mail. */
   format?: (value: number) => string
-  /** Tighter cap, for a grid sharing its row with something else. */
-  compact?: boolean
 }) => {
   if (data.length === 0) return null
   const max = Math.max(...data.map((p) => p.value), 0)
   // Parsed at local midnight. Letting the runtime read a bare date as UTC
   // shifts every cell a day west of the timezone the numbers were billed in.
   const dayOf = (iso: string) => new Date(`${iso}T00:00:00`)
-  // Monday-first, so the weekend sits together at the end of a row.
+  // Monday-first, so the weekend sits together at the foot of a column.
   const weekday = (d: Date) => (d.getDay() + 6) % 7
   const cells: Array<{ key: string; label: string; level: number } | null> = []
+  // Pads the first column down to the weekday the window opens on, so every
+  // row is one weekday all the way across.
   for (let i = 0; i < weekday(dayOf(data[0]!.date)); i += 1) cells.push(null)
   for (const point of data) {
     const date = dayOf(point.date)
@@ -439,10 +439,13 @@ export const Heatmap = ({ data, format = money, compact = false }: {
   }
 
   return (
-    <div className="ws-heat" data-compact={compact ? 'true' : undefined}>
-      <div className="ws-heat-days" aria-hidden="true">
-        {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => <span key={i}>{d}</span>)}
-      </div>
+    <div className="ws-heat">
+      {/*
+        Seven rows, one week per column — the shape every contribution grid
+        uses, and the reason it can be wide and short. Filled the other way a
+        season is sixteen rows tall and two hundred pixels wide, and a month is
+        five columns, which is a shape rather than a pattern.
+      */}
       <div className="ws-heat-grid">
         {cells.map((cell, i) => cell === null
           ? <i key={`pad-${i}`} data-pad="true" />

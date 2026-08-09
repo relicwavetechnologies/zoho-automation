@@ -6,28 +6,39 @@
  * and a count computed inline in a component cannot be checked without a
  * browser and a signed-in account.
  */
-import type { MailCaught } from './use-mail-automations'
 
-export const MAIL_SUMMARY_WINDOW_DAYS = 30
+/**
+ * The window the card describes.
+ *
+ * Sixteen weeks, because that is what the calendar needs to be a calendar. At
+ * thirty days the grid is five columns wide — a shape rather than a pattern —
+ * and no arrangement of thirty squares fills a card without either stretching
+ * them into tiles or leaving a column of nothing beside them.
+ */
+export const MAIL_SUMMARY_WINDOW_DAYS = 112
 
 /**
  * Rows in the Latest feed.
  *
  * Four, because the feed sits beside the summary card and four rows is what
- * squares the two heights. More rows made the pair uneven; the whole list is
- * one click away on Caught, which is what that page is for.
+ * squares the two heights. The whole list is one click away on Caught, which
+ * is what that page is for.
  */
 export const MAIL_LATEST_ROWS = 4
 
 /**
- * Rows to ask the caught feed for.
+ * All a count or a square needs from a message.
  *
- * The route validates `limit` at 100 and 400s above it, so asking for more
- * does not get more — it gets nothing, and the page renders "this could not be
- * read" every single load. Named here so the number the summary depends on and
- * the number the request sends cannot drift apart.
+ * Structural on purpose: the activity route returns exactly this, and the
+ * caught feed returns it among much more, so the same summary reads either
+ * without the two shapes having to know about each other.
  */
-export const MAIL_FEED_LIMIT = 100
+export type MailActivityLike = {
+  status: string
+  lastError: string | null
+  firstAttemptAt: string
+  deliveredAt: string | null
+}
 
 /**
  * Passed on, held, failed, or still going.
@@ -43,7 +54,7 @@ export const MAIL_FEED_LIMIT = 100
  */
 export type MailBucket = 'passed' | 'held' | 'failed' | 'pending'
 
-export function mailBucketOf(row: Pick<MailCaught, 'status' | 'deliveredAt' | 'lastError'>): MailBucket {
+export function mailBucketOf(row: Pick<MailActivityLike, 'status' | 'deliveredAt' | 'lastError'>): MailBucket {
   if (row.deliveredAt) return 'passed'
   const status = (row.status ?? '').toLowerCase()
   if (status === 'delivered' || status === 'sent') return 'passed'
@@ -67,20 +78,10 @@ export type MailSummary = {
   activeDays: number
   /** When the most recent message was caught, or null for a silent window. */
   lastCaughtAt: string | null
-  /**
-   * The feed hit its row cap inside this window, so the counts are a floor and
-   * the earliest squares may be empty for want of data rather than of mail.
-   *
-   * Worth its own flag because truncation damages a calendar differently from
-   * a total: a capped total can be reported as "at least N", but a capped
-   * calendar draws real-looking zeroes on days it simply never heard about.
-   */
-  truncated: boolean
-  latest: MailCaught[]
 }
 
 export function summarizeMail(
-  caught: readonly MailCaught[],
+  rows: readonly MailActivityLike[],
   now: Date = new Date(),
   windowDays: number = MAIL_SUMMARY_WINDOW_DAYS,
 ): MailSummary {
@@ -89,7 +90,7 @@ export function summarizeMail(
   // quiet day rather than a clipped one.
   const firstDay = new Date(now.getFullYear(), now.getMonth(), now.getDate())
   firstDay.setDate(firstDay.getDate() - (windowDays - 1))
-  const recent = caught.filter((row) => new Date(row.firstAttemptAt).getTime() >= firstDay.getTime())
+  const recent = rows.filter((row) => new Date(row.firstAttemptAt).getTime() >= firstDay.getTime())
 
   // Seeded with every day so a quiet day is a zero rather than a gap. The
   // heatmap has to draw the silence to be worth reading.
@@ -112,9 +113,12 @@ export function summarizeMail(
     (best, day) => (best === null || day.value > best.value ? day : best),
     null,
   )
-
-  const newestFirst = [...recent]
-    .sort((a, b) => new Date(b.firstAttemptAt).getTime() - new Date(a.firstAttemptAt).getTime())
+  const newest = recent.reduce<string | null>(
+    (latest, row) => (latest === null || new Date(row.firstAttemptAt) > new Date(latest)
+      ? row.firstAttemptAt
+      : latest),
+    null,
+  )
 
   return {
     total: recent.length,
@@ -122,12 +126,6 @@ export function summarizeMail(
     series,
     busiestDay: busiest && busiest.value > 0 ? busiest : null,
     activeDays: series.filter((day) => day.value > 0).length,
-    lastCaughtAt: newestFirst[0]?.firstAttemptAt ?? null,
-    // The cap applies to the whole feed, not to the window. So a full feed only
-    // hides something if it ran out *inside* the window: if the oldest row it
-    // returned predates the window, everything in the window came back.
-    truncated: caught.length >= MAIL_FEED_LIMIT
-      && caught.every((row) => new Date(row.firstAttemptAt).getTime() >= firstDay.getTime()),
-    latest: newestFirst.slice(0, MAIL_LATEST_ROWS),
+    lastCaughtAt: newest,
   }
 }

@@ -17,10 +17,13 @@
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { Ban, Check, Clock, Inbox, TriangleAlert } from 'lucide-react'
-import { useCaught, useMailAutomations } from './data/use-mail-automations'
+import { useCaught, useCaughtActivity, useMailAutomations } from './data/use-mail-automations'
 import {
-  MAIL_FEED_LIMIT, MAIL_SUMMARY_WINDOW_DAYS as WINDOW_DAYS, mailBucketOf, summarizeMail,
+  MAIL_LATEST_ROWS, MAIL_SUMMARY_WINDOW_DAYS as WINDOW_DAYS, mailBucketOf, summarizeMail,
 } from './data/mail-summary'
+
+/** Said in weeks, because a grid one column per week is read in weeks. */
+const WINDOW_WEEKS = WINDOW_DAYS / 7
 import { Empty, Fade, Heatmap, PageHeader, Panel, SkelRows, useStaged } from './ui'
 
 const timeLabel = (iso: string) =>
@@ -37,10 +40,15 @@ const dayLabel = (iso: string): string => {
 
 export function MailHome() {
   const [r1, r2] = useStaged([220, 460], 0)
-  const { caught, loading, error } = useCaught(MAIL_FEED_LIMIT)
+  // Two sources on purpose: the calendar and the counts come from the light
+  // activity route, which covers the whole window; the rows underneath come
+  // from the feed, which carries the subject and rule a row needs.
+  const { activity, truncated, loading, error } = useCaughtActivity(WINDOW_DAYS)
+  const { caught, loading: feedLoading } = useCaught(MAIL_LATEST_ROWS)
   const { rules, mailboxes } = useMailAutomations()
 
-  const summary = useMemo(() => summarizeMail(caught), [caught])
+  const summary = useMemo(() => summarizeMail(activity), [activity])
+  const latest = useMemo(() => caught.slice(0, MAIL_LATEST_ROWS), [caught])
 
   // A rule the member switched off, or retired, is not a rule that is running.
   // Everything else — including a broken one — is live and counted, because a
@@ -55,7 +63,7 @@ export function MailHome() {
       <PageHeader
         eyebrow="Your mail"
         title="Home"
-        description={`What Divo has done with your mail over the last ${WINDOW_DAYS} days.`}
+        description={`What Divo has done with your mail over the last ${WINDOW_WEEKS} weeks.`}
         actions={<Link className="btn" to="/me/caught">See every message</Link>}
       />
 
@@ -84,7 +92,7 @@ export function MailHome() {
             down the middle of the page. */}
         <div className="ws-cols-even" style={{ alignItems: 'stretch' }}>
         <Panel
-          title={`Last ${WINDOW_DAYS} days`}
+          title={`Last ${WINDOW_WEEKS} weeks`}
           // The setup facts belong to the card, not to one figure inside it.
           // Under "Messages caught" they wrapped to two lines and made that
           // column taller than its two neighbours for no reason.
@@ -130,56 +138,46 @@ export function MailHome() {
                 </div>
 
                 {/*
-                  A narrower grid with the two read-off facts beside it, rather
-                  than a grid filling the panel. Filling drew 60px tiles and made
-                  this card twice the height of the feed next to it; 238px keeps
-                  the cells square and leaves the facts a column wide enough not
-                  to wrap their labels.
+                  The calendar now spans the card. Sixteen weeks is sixteen
+                  columns, which fills the width at a legible cell size — the
+                  thing thirty days could never do without either stretching
+                  into tiles or leaving a column of nothing beside it.
                 */}
-                {/*
-                  Three facts, spread down the calendar's own height. Two left a
-                  block of nothing under them, which is the same empty the grid
-                  had beside it before — moved rather than removed.
-                */}
-                <div style={{ display: 'flex', gap: 20, marginTop: 22, alignItems: 'stretch' }}>
+                <div style={{ marginTop: 22 }}>
                   <Heatmap
-                    compact
                     data={summary.series}
                     format={(n) => `${n} message${n === 1 ? '' : 's'}`}
                   />
-                  <div style={{
-                    flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
-                    justifyContent: 'space-between', paddingTop: 15, paddingBottom: 2,
-                  }}>
-                    <div>
-                      <div className="ws-lbl">Busiest day</div>
-                      <div style={{ marginTop: 5 }}>
-                        {summary.busiestDay
-                          ? `${dayLabel(summary.busiestDay.date)} · ${summary.busiestDay.value} message${summary.busiestDay.value === 1 ? '' : 's'}`
-                          : '—'}
-                      </div>
+                </div>
+                <div className="ws-heat-facts">
+                  <div>
+                    <div className="ws-lbl">Busiest day</div>
+                    <div style={{ marginTop: 5 }}>
+                      {summary.busiestDay
+                        ? `${dayLabel(summary.busiestDay.date)} · ${summary.busiestDay.value} message${summary.busiestDay.value === 1 ? '' : 's'}`
+                        : '—'}
                     </div>
-                    <div>
-                      <div className="ws-lbl">Days with mail</div>
-                      <div style={{ marginTop: 5 }}>{summary.activeDays} of {WINDOW_DAYS}</div>
-                    </div>
-                    <div>
-                      <div className="ws-lbl">Last caught</div>
-                      <div style={{ marginTop: 5 }}>
-                        {summary.lastCaughtAt
-                          ? `${dayLabel(summary.lastCaughtAt)} ${timeLabel(summary.lastCaughtAt)}`
-                          : '—'}
-                      </div>
+                  </div>
+                  <div>
+                    <div className="ws-lbl">Days with mail</div>
+                    <div style={{ marginTop: 5 }}>{summary.activeDays} of {WINDOW_DAYS}</div>
+                  </div>
+                  <div>
+                    <div className="ws-lbl">Last caught</div>
+                    <div style={{ marginTop: 5 }}>
+                      {summary.lastCaughtAt
+                        ? `${dayLabel(summary.lastCaughtAt)} ${timeLabel(summary.lastCaughtAt)}`
+                        : '—'}
                     </div>
                   </div>
                 </div>
                 {/* Said out loud, because a capped calendar is the one chart
                     that lies quietly: the squares it never heard about are
                     drawn exactly like the days that were genuinely silent. */}
-                {summary.truncated ? (
+                {truncated ? (
                   <div className="ws-sub" style={{ marginTop: 12 }}>
-                    Counted from the most recent {MAIL_FEED_LIMIT} messages, which is as far back as
-                    this feed goes — earlier days in the calendar may be missing rather than quiet.
+                    This window holds more messages than one request returns, so the earliest days
+                    in the calendar may be missing rather than quiet.
                   </div>
                 ) : null}
               </Fade>
@@ -192,7 +190,7 @@ export function MailHome() {
           description="The most recent messages a rule of yours acted on"
           aside={<Link className="btn" to="/me/caught">Caught</Link>}
         >
-          {!r2 || loading ? <SkelRows n={4} /> : summary.latest.length === 0 ? (
+          {!r2 || feedLoading ? <SkelRows n={4} /> : latest.length === 0 ? (
             <Empty
               icon={Inbox}
               title="Nothing yet"
@@ -201,7 +199,7 @@ export function MailHome() {
           ) : (
             <Fade>
               <div className="ws-rows">
-                {summary.latest.map((row) => {
+                {latest.map((row) => {
                   const bucket = mailBucketOf(row)
                   const Icon = bucket === 'passed' ? Check
                     : bucket === 'held' ? Ban

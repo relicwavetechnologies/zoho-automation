@@ -65,6 +65,21 @@ const MAX_DELIVERY_LIMIT = 100;
 const DEFAULT_CAUGHT_LIMIT = 50;
 
 /**
+ * The activity window, in days, and the ceiling on what one request may cover.
+ *
+ * A season rather than a month: a heatmap of thirty days is five columns wide,
+ * which is a shape, not a pattern. 16 weeks is what makes a habit visible.
+ */
+const DEFAULT_ACTIVITY_DAYS = 112;
+const MAX_ACTIVITY_DAYS = 366;
+/**
+ * A backstop, not a page size. These rows are four scalars each, so a year of
+ * a busy mailbox still costs less than one page of the caught feed — but an
+ * unbounded `findMany` is how a read route becomes an outage.
+ */
+const MAX_ACTIVITY_ROWS = 20_000;
+
+/**
  * `paused` rides with the schedule rather than being its own endpoint.
  *
  * Turning a brief off and moving it to 07:00 are the same kind of change and
@@ -273,6 +288,10 @@ const previewBodySchema = z.object({
 
 const deliveriesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(MAX_DELIVERY_LIMIT).optional(),
+});
+
+const activityQuerySchema = z.object({
+  days: z.coerce.number().int().min(1).max(MAX_ACTIVITY_DAYS).optional(),
 });
 
 export interface MailAutomationsRouteDeps {
@@ -672,6 +691,65 @@ export function createMailAutomationsRoutes(
    * Ownership is enforced inside the query rather than by filtering afterwards,
    * so a bug here cannot widen it to the company.
    */
+  /**
+   * The same history as `/caught`, stripped to what a chart can draw.
+   *
+   * Separate from the feed because the two have opposite needs: the feed wants
+   * everything about a few messages, and a calendar wants almost nothing about
+   * a season of them. Sharing one route meant the chart inherited the feed's
+   * hundred-row cap, which does not merely shorten a heatmap — it fills the
+   * early weeks with squares that look exactly like quiet days and are really
+   * days the request never reached.
+   *
+   * Timestamps go out whole. Grouping by day belongs to whoever knows the
+   * member's own day boundary, which the database does not.
+   */
+  router.get('/caught/activity', async (req, res) => {
+    const query = activityQuerySchema.safeParse(req.query);
+    if (!query.success) {
+      res.status(400).json({
+        success: false,
+        message: `days must be between 1 and ${MAX_ACTIVITY_DAYS}.`,
+      });
+      return;
+    }
+    const days = query.data.days ?? DEFAULT_ACTIVITY_DAYS;
+    // From the start of the earliest day, not from N × 24h ago, so the oldest
+    // column is a whole day rather than a part-day that reads as a quiet one.
+    const since = new Date();
+    since.setHours(0, 0, 0, 0);
+    since.setDate(since.getDate() - (days - 1));
+
+    try {
+      const activity = await deps.readRepo.listCaughtActivityForUser({
+        ...actor(res),
+        since,
+        limit: MAX_ACTIVITY_ROWS,
+      });
+      if (!activity.ok) throw activity.error;
+
+      res.json({
+        success: true,
+        data: {
+          days,
+          since: since.toISOString(),
+          // True only if the backstop actually bit. The client has to know
+          // whether an empty square means "no mail" or "not fetched".
+          truncated: activity.value.length >= MAX_ACTIVITY_ROWS,
+          activity: activity.value.map(row => ({
+            status: row.status,
+            lastError: row.lastError,
+            firstAttemptAt: row.firstAttemptAt.toISOString(),
+            deliveredAt: row.deliveredAt?.toISOString() ?? null,
+          })),
+        },
+      });
+    } catch (error) {
+      log.error('mail.caught.activity.failed', { error: String(error) });
+      res.status(500).json({ success: false, message: 'Could not read your mail activity.' });
+    }
+  });
+
   router.get('/caught', async (req, res) => {
     const query = deliveriesQuerySchema.safeParse(req.query);
     if (!query.success) {

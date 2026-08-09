@@ -1,31 +1,20 @@
 /**
- * The Home page's only claim is its counts, so they are checked here rather
+ * The Home card's only claim is its counts, so they are checked here rather
  * than by eye in a browser. Every case below is one where a plausible-looking
  * implementation reports a working setup as a broken one, or the reverse.
  */
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  MAIL_FEED_LIMIT, MAIL_LATEST_ROWS, mailBucketOf, mailDayKey, summarizeMail,
+  MAIL_SUMMARY_WINDOW_DAYS, mailBucketOf, mailDayKey, summarizeMail,
+  type MailActivityLike,
 } from './mail-summary'
-import type { MailCaught } from './use-mail-automations'
 
-const at = (iso: string, over: Partial<MailCaught> = {}): MailCaught => ({
-  deliveryId: `d-${iso}-${over.status ?? 'x'}`,
+const at = (iso: string, over: Partial<MailActivityLike> = {}): MailActivityLike => ({
   status: 'delivered',
-  attempts: 1,
-  ambiguous: false,
   lastError: null,
-  subject: 'Subject',
-  from: 'someone@example.com',
   firstAttemptAt: iso,
   deliveredAt: iso,
-  nextAttemptAt: null,
-  ruleId: 'r1',
-  ruleName: 'Forward Abhishek to Anish',
-  action: {},
-  destination: {},
-  verdict: null,
   ...over,
 })
 
@@ -74,6 +63,13 @@ describe('summarizeMail', () => {
   const now = new Date(2026, 7, 9, 12, 0) // 9 Aug 2026, midday, local
   const on = (day: number, hour = 9) => new Date(2026, 7, day, hour).toISOString()
 
+  it('covers sixteen weeks by default, which is what makes the grid wide', () => {
+    // Seven rows and one column per week: 112 days is 16 columns, 30 is five.
+    assert.equal(MAIL_SUMMARY_WINDOW_DAYS, 112)
+    assert.equal(MAIL_SUMMARY_WINDOW_DAYS % 7, 0, 'a whole number of weeks keeps every column full')
+    assert.equal(summarizeMail([at(on(9))], now).series.length, 112)
+  })
+
   it('draws one column per day, including the silent ones', () => {
     const summary = summarizeMail([at(on(9))], now, 30)
     assert.equal(summary.series.length, 30)
@@ -95,8 +91,8 @@ describe('summarizeMail', () => {
     assert.deepEqual(summary.counts, { passed: 1, held: 2, failed: 1, pending: 0 })
   })
 
-  it('excludes anything older than the window without dropping it from the feed', () => {
-    const summary = summarizeMail([at(on(9)), at(new Date(2026, 5, 1).toISOString())], now, 30)
+  it('excludes anything older than the window', () => {
+    const summary = summarizeMail([at(on(9)), at(new Date(2025, 5, 1).toISOString())], now, 30)
     assert.equal(summary.total, 1)
     assert.equal(summary.series.reduce((s, d) => s + d.value, 0), 1)
   })
@@ -117,8 +113,8 @@ describe('summarizeMail', () => {
   })
 
   it('reports when mail was last caught, from the newest row not the first', () => {
-    // The feed does not arrive sorted, so taking caught[0] would report
-    // whichever row the API happened to return first as "last caught".
+    // The feed does not arrive sorted, so taking rows[0] would report whichever
+    // row the API happened to return first as "last caught".
     const summary = summarizeMail([at(on(5)), at(on(9, 16)), at(on(7))], now, 30)
     assert.equal(summary.lastCaughtAt, on(9, 16))
     assert.equal(summarizeMail([], now, 30).lastCaughtAt, null)
@@ -131,56 +127,12 @@ describe('summarizeMail', () => {
     assert.equal(summarizeMail([], now, 30).activeDays, 0)
   })
 
-  it('orders the latest newest-first regardless of how the feed arrived', () => {
-    const summary = summarizeMail([at(on(5)), at(on(9)), at(on(7))], now, 30)
-    assert.deepEqual(
-      summary.latest.map((r) => r.firstAttemptAt.slice(0, 10)),
-      ['2026-08-09', '2026-08-07', '2026-08-05'],
-    )
-  })
-
-  it('caps the feed at the row count the layout is built around', () => {
-    const many = Array.from({ length: 12 }, (_, i) => at(on(9, 8 + i)))
-    const summary = summarizeMail(many, now, 30)
-    assert.equal(summary.latest.length, MAIL_LATEST_ROWS)
-    // Capped for layout, but the counts still see every message.
-    assert.equal(summary.total, 12)
-  })
-
-  it('never asks the route for more rows than it accepts', () => {
-    // The route validates limit at 100 and 400s above it, so an over-ask does
-    // not return more — it returns nothing, and the page reads as broken.
-    assert.ok(MAIL_FEED_LIMIT <= 100, 'the caught route rejects a limit above 100')
-  })
-
-  it('flags a window whose feed ran out inside it', () => {
-    // A full feed that never reaches past the window start means there could be
-    // more in the window that never came back.
-    const full = Array.from({ length: MAIL_FEED_LIMIT }, (_, i) => at(on(9, 8 + (i % 12))))
-    assert.equal(summarizeMail(full, now, 30).truncated, true)
-  })
-
-  it('does not flag a full feed that reaches past the window', () => {
-    // The oldest row predates the window, so everything inside it came back —
-    // the cap bit outside the range this card describes.
-    const full = [
-      ...Array.from({ length: MAIL_FEED_LIMIT - 1 }, (_, i) => at(on(9, 8 + (i % 12)))),
-      at(new Date(2026, 5, 1).toISOString()),
-    ]
-    assert.equal(summarizeMail(full, now, 30).truncated, false)
-  })
-
-  it('does not flag a feed that came back under the cap', () => {
-    assert.equal(summarizeMail([at(on(9))], now, 30).truncated, false)
-    assert.equal(summarizeMail([], now, 30).truncated, false)
-  })
-
-  it('reports zeroes for an empty feed rather than throwing', () => {
+  it('reports zeroes for an empty window rather than throwing', () => {
     const summary = summarizeMail([], now, 30)
     assert.equal(summary.total, 0)
     assert.deepEqual(summary.counts, { passed: 0, held: 0, failed: 0, pending: 0 })
     assert.equal(summary.series.length, 30)
-    assert.equal(summary.latest.length, 0)
+    assert.equal(summary.lastCaughtAt, null)
   })
 
   it('bucket counts always add up to the total', () => {

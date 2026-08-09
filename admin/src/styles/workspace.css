@@ -413,28 +413,21 @@
 .cur .ws-spark i { flex: 1; border-radius: 2px 2px 0 0; background: var(--cur-surface-strong); min-height: 2px; }
 .cur .ws-spark i[data-hot="true"] { background: color-mix(in srgb, var(--cur-primary) 60%, transparent); }
 
-/* ── Spend heatmap ────────────────────────────────────
-   Weekdays across, weeks down. Cells are capped rather than stretched: a
-   30-day month is five rows, and letting seven columns fill a wide panel
-   turns days into tiles the eye reads as buttons. */
-/* Fluid up to a ceiling. Seven columns across a half-width panel would draw
-   50px tiles that read as buttons; the cap keeps them squares. */
-/* Fluid, but bounded at both ends. Letting seven columns fill a half-width
-   panel drew 60px tiles and made the card twice as tall as the one beside it;
-   letting a flex sibling squeeze it drew dots. */
-.cur .ws-heat { display: block; width: 100%; max-width: 300px; }
-.cur .ws-heat[data-compact="true"] { max-width: 238px; flex: none; }
-.cur .ws-heat-days,
+/* ── Activity heatmap ─────────────────────────────────
+   Seven rows, one week per column, exactly as every contribution grid draws
+   it. Column flow is what makes it wide and short: filled row-first a season
+   is sixteen rows tall, and a month is five columns.
+
+   The cell is a fixed size rather than a fraction, so a card holding sixteen
+   weeks and one holding four draw the same square. Fractions made the short
+   window's cells enormous to fill the same box. */
+.cur .ws-heat { --ws-cell: 25px; display: block; }
 .cur .ws-heat-grid {
-  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px;
+  display: grid; grid-template-rows: repeat(7, var(--ws-cell));
+  grid-auto-flow: column; grid-auto-columns: var(--ws-cell); gap: 4px;
+  overflow-x: auto; padding-bottom: 2px;
 }
-.cur .ws-heat-days {
-  margin-bottom: 6px; font-size: 10px; color: var(--cur-muted-soft);
-  text-align: center; letter-spacing: .02em;
-}
-.cur .ws-heat-grid i {
-  aspect-ratio: 1; border-radius: 5px; background: var(--cur-surface-strong);
-}
+.cur .ws-heat-grid i { border-radius: 5px; background: var(--cur-surface-strong); }
 /* An unstarted week is absence, not a zero-cost day, so it holds the space
    without drawing a tile that could be counted. */
 .cur .ws-heat-grid i[data-pad="true"] { background: none; }
@@ -454,6 +447,14 @@
 .cur .ws-heat-key i[data-level="4"] { background: var(--cur-primary); }
 .cur .ws-heat-key span:first-child { margin-right: 2px; }
 .cur .ws-heat-key span:last-child { margin-left: 2px; }
+
+/* The read-off facts, in a row under the grid rather than a column beside it.
+   Beside a full-width calendar there is nowhere for them to stand; under it
+   they close the card instead of leaving a band of empty below the squares. */
+.cur .ws-heat-facts {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px; margin-top: 16px;
+}
 
 /* ── Lark → browser connect flow ──────────────────────
    Spec for the moment a member is blocked in Lark chat, taps Connect, and

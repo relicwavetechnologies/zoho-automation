@@ -264,6 +264,52 @@ export function useCaught(limit = 50) {
   return { caught, loading, error, refresh: load }
 }
 
+/**
+ * Every message a rule of yours touched in a window, as bare times.
+ *
+ * Kept apart from `useCaught` because the two answer different questions. The
+ * feed answers "what happened to this message" and carries a subject, a sender
+ * and a rule, which is why the route caps it at a hundred rows. A calendar
+ * answers "when", needs four scalars, and covers a season — and built from the
+ * capped feed it drew ordinary empty squares on days the request never reached.
+ */
+export type MailActivity = {
+  status: string
+  lastError: string | null
+  firstAttemptAt: string
+  deliveredAt: string | null
+}
+
+export function useCaughtActivity(days: number) {
+  const { token } = useAdminAuth()
+  const [activity, setActivity] = useState<MailActivity[]>([])
+  const [truncated, setTruncated] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    if (!token) return
+    try {
+      const data = await api.get<{ activity: MailActivity[]; truncated: boolean }>(
+        `${BASE}/caught/activity?days=${days}`, token, { quiet: true },
+      )
+      setActivity(data.activity ?? [])
+      setTruncated(data.truncated === true)
+      setError(null)
+    } catch {
+      // Carried rather than swallowed: a chart that could not be read and one
+      // with nothing in it look identical, and only one of them means "quiet".
+      setError('This could not be read, so it is blank rather than empty.')
+    } finally {
+      setLoading(false)
+    }
+  }, [token, days])
+
+  useEffect(() => { void load() }, [load])
+
+  return { activity, truncated, loading, error, refresh: load }
+}
+
 /* ── Which mailbox a rule can watch ───────────────────
    Mirrors `MailAutomationConnectionResolution` on the tool side, which is the
    authority on this and already got it right: a rule needs a Google account
