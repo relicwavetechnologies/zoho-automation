@@ -1354,6 +1354,67 @@
 .cur .ws-brief-text strong, .cur .ws-brief-text b { color: var(--cur-ink); font-weight: 500; }
 
 /* ── Toasts ───────────────────────────────────────────
+   Divo's own surface, small, and one dot for the intent. `richColors` paints
+   the whole card by intent, which announced a refusal in the same red as an
+   outage — the words carry the meaning instead.
+
+   Every colour has a literal fallback. The tokens live on `.cur`, this renders
+   at the root of the app, and when the two came apart the toast had no
+   background at all and was legible only against whatever sat behind it. The
+   class is on the toaster now; the fallbacks are so it can never happen again.
+
+   Sized on the container so a message raised from a hook and one raised from a
+   route cannot look different. */
+.cur-toast[data-sonner-toaster] { --width: 380px; }
+[data-sonner-toast] {
+  background: var(--cur-surface, #1a1a1a) !important;
+  border: 1px solid var(--cur-hairline-strong, #333333) !important;
+  border-radius: 14px !important;
+  box-shadow: 0 18px 44px -14px rgba(0, 0, 0, 0.62), 0 2px 8px -3px rgba(0, 0, 0, 0.4) !important;
+  padding: 13px 15px !important;
+  gap: 11px !important;
+  align-items: flex-start !important;
+}
+[data-sonner-toast] [data-content] { gap: 3px !important; }
+[data-sonner-toast] [data-title] {
+  font-size: 13px !important; font-weight: 500 !important;
+  line-height: 1.45 !important; color: var(--cur-ink, #e8e8e8) !important;
+}
+[data-sonner-toast] [data-description] {
+  font-size: 12px !important; line-height: 1.5 !important;
+  color: var(--cur-muted, #8f8f8f) !important; margin-top: 3px !important;
+}
+/* One dot, coloured by intent. An icon box and a tinted card were two signals
+   for one fact, and neither of them was the sentence. */
+[data-sonner-toast] [data-icon] {
+  width: 7px !important; height: 7px !important; border-radius: 50%;
+  margin: 7px 0 0 0 !important; align-self: flex-start; flex-shrink: 0;
+  background: var(--cur-muted, #8f8f8f);
+}
+[data-sonner-toast] [data-icon] svg { display: none; }
+[data-sonner-toast][data-type="error"] [data-icon] { background: var(--cur-error, #e35a7d); }
+[data-sonner-toast][data-type="warning"] [data-icon] { background: var(--cur-primary, #fb5613); }
+[data-sonner-toast][data-type="success"] [data-icon] { background: var(--cur-success, #35b083); }
+[data-sonner-toast][data-type="info"] [data-icon] { background: var(--cur-accent, #3b82f6); }
+/* The way out of a message whose remedy is elsewhere. Reads as a control
+   rather than as a third line of prose. */
+[data-sonner-toast] [data-button] {
+  height: 26px !important; padding: 0 11px !important; margin-left: 4px !important;
+  border-radius: 999px !important; font-size: 12px !important; font-weight: 500 !important;
+  background: var(--cur-cta, #3a3a3a) !important; color: var(--cur-on-cta, #e8e8e8) !important;
+  border: 1px solid var(--cur-hairline-strong, #333333) !important;
+}
+
+/* The brief, as the lines it was written as. Markdown from the composer, so
+   the newlines are the structure and collapsing them would run a summary into
+   one paragraph. */
+.cur .ws-brief-text {
+  margin: 0; white-space: pre-wrap; font-size: 13px; line-height: 1.65;
+  color: var(--cur-body); max-width: 68ch;
+}
+.cur .ws-brief-text strong, .cur .ws-brief-text b { color: var(--cur-ink); font-weight: 500; }
+
+/* ── Toasts ───────────────────────────────────────────
    Divo's own surface and hairline rather than sonner's defaults, and small:
    a notice is a sentence, not a panel. `richColors` paints the whole card by
    intent, which shouted a refusal in the same red as an outage — the tone
