@@ -74,9 +74,15 @@ export class SkillCatalogService {
       this.log.warn('skills.catalog.list.failed', { companyId: input.companyId, error: result.error.message });
       return [];
     }
-    return result.value
-      .filter((row) => this.isVisible(row, input.permission, input.grantedSkillIds))
-      .map(toCatalogSkill);
+    const visibleRows = await this.filterVisibleRows({
+      companyId: input.companyId,
+      ...(input.departmentId ? { departmentId: input.departmentId } : {}),
+      permission: input.permission,
+      ...(input.grantedSkillIds ? { grantedSkillIds: input.grantedSkillIds } : {}),
+      ...(input.includeGrantedDepartments ? { includeGrantedDepartments: input.includeGrantedDepartments } : {}),
+      rows: result.value,
+    });
+    return visibleRows.map(toCatalogSkill);
   }
 
   async searchVisible(input: {
@@ -107,8 +113,16 @@ export class SkillCatalogService {
       return [];
     }
     const query = analyzeQuery(input.query);
-    return result.value
-      .filter((row) => this.isVisible(row, input.permission, input.grantedSkillIds))
+    const visibleRows = await this.filterVisibleRows({
+      companyId: input.companyId,
+      ...(input.departmentId ? { departmentId: input.departmentId } : {}),
+      permission: input.permission,
+      ...(input.grantedSkillIds ? { grantedSkillIds: input.grantedSkillIds } : {}),
+      rows: result.value,
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+    });
+    input.abortSignal?.throwIfAborted();
+    return visibleRows
       .map((row) => {
         const skill = toCatalogSkill(row);
         return { skill, score: scoreSkill(skill, query) };
@@ -152,8 +166,15 @@ export class SkillCatalogService {
       return [];
     }
 
-    const routers = result.value
-      .filter((row) => this.isLanguageSafe(row))
+    const visibleRows = await this.filterVisibleRows({
+      companyId: input.companyId,
+      ...(input.departmentId ? { departmentId: input.departmentId } : {}),
+      permission: input.permission,
+      ...(input.grantedSkillIds ? { grantedSkillIds: input.grantedSkillIds } : {}),
+      ...(input.includeGrantedDepartments ? { includeGrantedDepartments: input.includeGrantedDepartments } : {}),
+      rows: result.value,
+    });
+    const routers = visibleRows
       .map((row) => ({ row, skill: toCatalogSkill(row) }))
       .filter(({ skill }) => skill.tags.includes('router'))
       .filter(({ skill }) =>
@@ -219,6 +240,18 @@ export class SkillCatalogService {
       return null;
     }
     if (!result.value || !this.isVisible(result.value, input.permission, input.grantedSkillIds)) {
+      return null;
+    }
+    const hasVisibleTargets = await this.hasVisibleRouteTarget({
+      companyId: input.companyId,
+      ...(input.departmentId ? { departmentId: input.departmentId } : {}),
+      permission: input.permission,
+      ...(input.grantedSkillIds ? { grantedSkillIds: input.grantedSkillIds } : {}),
+      ...(input.includeGrantedDepartments ? { includeGrantedDepartments: input.includeGrantedDepartments } : {}),
+      row: result.value,
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+    });
+    if (!hasVisibleTargets) {
       return null;
     }
     return toCatalogSkill(result.value);
@@ -325,6 +358,58 @@ export class SkillCatalogService {
       permission.allowedToolIds.has(asToolId(toolId))
     );
     return granted && executable;
+  }
+
+  private async filterVisibleRows(input: {
+    companyId: string;
+    departmentId?: string;
+    permission: PermissionResult;
+    grantedSkillIds?: ReadonlySet<string>;
+    includeGrantedDepartments?: boolean;
+    rows: readonly SkillRow[];
+    abortSignal?: AbortSignal;
+  }): Promise<SkillRow[]> {
+    const visibleRows = input.rows.filter((row) =>
+      this.isVisible(row, input.permission, input.grantedSkillIds));
+    const checked = await Promise.all(visibleRows.map(async (row) => ({
+      row,
+      visible: await this.hasVisibleRouteTarget({ ...input, row }),
+    })));
+    input.abortSignal?.throwIfAborted();
+    return checked.filter(({ visible }) => visible).map(({ row }) => row);
+  }
+
+  private async hasVisibleRouteTarget(input: {
+    companyId: string;
+    departmentId?: string;
+    permission: PermissionResult;
+    grantedSkillIds?: ReadonlySet<string>;
+    includeGrantedDepartments?: boolean;
+    row: SkillRow;
+    abortSignal?: AbortSignal;
+  }): Promise<boolean> {
+    if (!input.row.tags.includes('router')) return true;
+
+    const result = await this.deps.repo.listRouteTargets({
+      companyId: input.companyId,
+      ...(input.departmentId ? { departmentId: input.departmentId } : {}),
+      ...(input.includeGrantedDepartments && input.grantedSkillIds
+        ? { additionalDepartmentSkillIds: [...input.grantedSkillIds] }
+        : {}),
+      routerSkillId: input.row.id,
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+    });
+    input.abortSignal?.throwIfAborted();
+    if (!result.ok) {
+      this.log.warn('skills.catalog.route_targets.failed', {
+        companyId: input.companyId,
+        routerSkillId: input.row.id,
+        error: result.error.message,
+      });
+      return false;
+    }
+    return result.value.some((row) =>
+      this.isVisible(row, input.permission, input.grantedSkillIds));
   }
 
   private isLanguageSafe(row: SkillRow): boolean {

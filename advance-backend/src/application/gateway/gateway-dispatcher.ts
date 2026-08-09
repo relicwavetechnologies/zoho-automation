@@ -480,12 +480,12 @@ export class GatewayDispatcher {
     const discoveryPerm = withGatewayDiscoveryPermissions(perm);
 
     const grantedSkillIds = await this.grantedSkillIds(member);
-    const skill = await this.deps.skillCatalog.getInScope({
+    const inScopeSkill = await this.deps.skillCatalog.getInScope({
       companyId: member.companyId,
       ...(departmentId ? { departmentId } : {}),
       skillId: parsed.data.skillId,
     });
-    if (!skill) {
+    if (!inScopeSkill) {
       this.recordSkillAudit(member, 'gateway.skill.get', 'failure', {
         departmentId: departmentId ?? null,
         skillId: parsed.data.skillId,
@@ -494,23 +494,22 @@ export class GatewayDispatcher {
       return gatewayFailure('bad_request', `Unknown skillId "${parsed.data.skillId}"`);
     }
 
-    // Runtime skill use requires both the registry grant and permission for
-    // every declared tool. An empty tool list is a valid instruction-only
-    // recipe; it grants no execution authority of its own.
-    const granted = grantedSkillIds ? grantedSkillIds.has(skill.id) : true;
-    const executable = skill.toolIds.every((toolId) =>
-      discoveryPerm.allowedToolIds.has(asToolId(toolId)),
-    );
-    const allowed = granted && executable;
-    if (!allowed) {
+    const skill = await this.deps.skillCatalog.getVisible({
+      companyId: member.companyId,
+      ...(departmentId ? { departmentId } : {}),
+      permission: discoveryPerm,
+      ...(grantedSkillIds ? { grantedSkillIds } : {}),
+      skillId: inScopeSkill.id,
+    });
+    if (!skill) {
       this.recordSkillAudit(member, 'gateway.skill.get', 'failure', {
         departmentId: departmentId ?? null,
-        skillId: skill.id,
+        skillId: inScopeSkill.id,
         reason: 'permission_denied',
       });
       return gatewayFailure(
         'permission_denied',
-        `Skill "${skill.id}" is not available for this user`,
+        `Skill "${inScopeSkill.id}" is not available for this user`,
       );
     }
 
