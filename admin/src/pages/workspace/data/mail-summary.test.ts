@@ -5,7 +5,7 @@
  */
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mailBucketOf, mailDayKey, summarizeMail } from './mail-summary'
+import { MAIL_LATEST_ROWS, mailBucketOf, mailDayKey, summarizeMail } from './mail-summary'
 import type { MailCaught } from './use-mail-automations'
 
 const at = (iso: string, over: Partial<MailCaught> = {}): MailCaught => ({
@@ -127,6 +127,14 @@ describe('summarizeMail', () => {
       summary.latest.map((r) => r.firstAttemptAt.slice(0, 10)),
       ['2026-08-09', '2026-08-07', '2026-08-05'],
     )
+  })
+
+  it('caps the feed at the row count the layout is built around', () => {
+    const many = Array.from({ length: 12 }, (_, i) => at(on(9, 8 + i)))
+    const summary = summarizeMail(many, now, 30)
+    assert.equal(summary.latest.length, MAIL_LATEST_ROWS)
+    // Capped for layout, but the counts still see every message.
+    assert.equal(summary.total, 12)
   })
 
   it('reports zeroes for an empty feed rather than throwing', () => {

@@ -11,6 +11,15 @@ import type { MailCaught } from './use-mail-automations'
 export const MAIL_SUMMARY_WINDOW_DAYS = 30
 
 /**
+ * Rows in the Latest feed.
+ *
+ * Four, because the feed sits beside the summary card and four rows is what
+ * squares the two heights. More rows made the pair uneven; the whole list is
+ * one click away on Caught, which is what that page is for.
+ */
+export const MAIL_LATEST_ROWS = 4
+
+/**
  * Passed on, held, failed, or still going.
  *
  * Held is not a failure and is never counted as one. A rule with an AI step
@@ -91,6 +100,6 @@ export function summarizeMail(
     activeDays: series.filter((day) => day.value > 0).length,
     latest: [...recent]
       .sort((a, b) => new Date(b.firstAttemptAt).getTime() - new Date(a.firstAttemptAt).getTime())
-      .slice(0, 6),
+      .slice(0, MAIL_LATEST_ROWS),
   }
 }

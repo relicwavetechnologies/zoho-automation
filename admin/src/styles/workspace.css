@@ -419,11 +419,11 @@
    turns days into tiles the eye reads as buttons. */
 /* Fluid up to a ceiling. Seven columns across a half-width panel would draw
    50px tiles that read as buttons; the cap keeps them squares. */
+/* Fluid, but bounded at both ends. Letting seven columns fill a half-width
+   panel drew 60px tiles and made the card twice as tall as the one beside it;
+   letting a flex sibling squeeze it drew dots. */
 .cur .ws-heat { display: block; width: 100%; max-width: 300px; }
-/* Fills its panel instead of stopping at 300px and leaving a column of nothing
-   beside it. Only for a panel narrow enough that seven columns stay squares —
-   on a full-width band this would draw tiles. */
-.cur .ws-heat[data-fill="true"] { max-width: none; }
+.cur .ws-heat[data-compact="true"] { max-width: 238px; flex: none; }
 .cur .ws-heat-days,
 .cur .ws-heat-grid {
   display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px;

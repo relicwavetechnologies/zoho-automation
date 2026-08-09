@@ -409,12 +409,12 @@ export const Spark = ({ data }: { data: number[] }) => {
  * Weeks run down the page and weekdays across, which matches the card's own
  * "last 30 days" framing better than the year-long strip this borrows from.
  */
-export const Heatmap = ({ data, format = money, fill = false }: {
+export const Heatmap = ({ data, format = money, compact = false }: {
   data: { date: string; value: number }[]
   /** How a cell's value reads on hover. Dollars here, message counts in Mail. */
   format?: (value: number) => string
-  /** Let the grid fill its container rather than stopping at its usual cap. */
-  fill?: boolean
+  /** Tighter cap, for a grid sharing its row with something else. */
+  compact?: boolean
 }) => {
   if (data.length === 0) return null
   const max = Math.max(...data.map((p) => p.value), 0)
@@ -439,7 +439,7 @@ export const Heatmap = ({ data, format = money, fill = false }: {
   }
 
   return (
-    <div className="ws-heat" data-fill={fill ? 'true' : undefined}>
+    <div className="ws-heat" data-compact={compact ? 'true' : undefined}>
       <div className="ws-heat-days" aria-hidden="true">
         {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => <span key={i}>{d}</span>)}
       </div>

@@ -79,7 +79,10 @@ export function MailHome() {
         nothing more.
       */}
       <section className="ws-band">
-        <div className="ws-cols-even">
+        {/* `stretch` rather than the grid's default `start`: the two cards are
+            one answer, and letting the shorter one stop halfway leaves a step
+            down the middle of the page. */}
+        <div className="ws-cols-even" style={{ alignItems: 'stretch' }}>
         <Panel title={`Last ${WINDOW_DAYS} days`}>
           <div className="ws-panel-body">
             {!r1 || loading ? <SkelRows n={3} icon={false} /> : (
@@ -121,23 +124,34 @@ export function MailHome() {
                 </div>
 
                 {/*
-                  Filled rather than capped. At 300px inside a half-width panel
-                  the grid left a column of nothing beside it, and the obvious
-                  patch — parking two facts in that gap — only moved the problem,
-                  because 140px is too narrow for a label and wrapped every one.
+                  A narrower grid with the two read-off facts beside it, rather
+                  than a grid filling the panel. Filling drew 60px tiles and made
+                  this card twice the height of the feed next to it; 238px keeps
+                  the cells square and leaves the facts a column wide enough not
+                  to wrap their labels.
                 */}
-                <div style={{ marginTop: 24 }}>
+                <div style={{ display: 'flex', gap: 20, marginTop: 24, alignItems: 'flex-start' }}>
                   <Heatmap
-                    fill
+                    compact
                     data={summary.series}
                     format={(n) => `${n} message${n === 1 ? '' : 's'}`}
                   />
+                  <div style={{ flex: 1, minWidth: 0, paddingTop: 16 }}>
+                    <div className="ws-lbl">Busiest day</div>
+                    <div style={{ marginTop: 6 }}>
+                      {summary.busiestDay
+                        ? `${dayLabel(summary.busiestDay.date)} · ${summary.busiestDay.value} message${summary.busiestDay.value === 1 ? '' : 's'}`
+                        : '—'}
+                    </div>
+                    <div className="ws-lbl" style={{ marginTop: 16 }}>Days with mail</div>
+                    <div style={{ marginTop: 6 }}>{summary.activeDays} of {WINDOW_DAYS}</div>
+                  </div>
                 </div>
-                <div className="ws-sub" style={{ marginTop: 12 }}>
-                  {summary.total === 0
-                    ? 'No messages matched a rule in this window.'
-                    : `Busiest day ${dayLabel(summary.busiestDay!.date)}, ${summary.busiestDay!.value} message${summary.busiestDay!.value === 1 ? '' : 's'} · mail on ${summary.activeDays} of ${WINDOW_DAYS} days`}
-                </div>
+                {summary.total === 0 ? (
+                  <div className="ws-sub" style={{ marginTop: 14 }}>
+                    No messages matched a rule in this window.
+                  </div>
+                ) : null}
               </Fade>
             )}
           </div>
