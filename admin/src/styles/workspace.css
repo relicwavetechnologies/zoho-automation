@@ -1066,20 +1066,40 @@
   border-color: var(--cur-primary);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--cur-primary) 16%, transparent);
 }
+/* The preview state.
+   Squat and left-hugging before: two lines of prose and a row of dead chips in
+   a 940px box, so most of it was empty and the whole thing read as a
+   notification bar wedged where the product's main control should be. Now it is
+   one row — mark, two lines, state — on the same grid as every other card on
+   the page, and the chips are gone rather than sitting there un-pressable. */
+.cur .ws-comp[data-preview="true"] {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center; gap: 14px; padding: 16px 18px;
+  /* A whisper of the brand, top-left, so the panel is not a flat grey slab —
+     the same trick the featured onboarding card uses, at a quarter the volume. */
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--cur-primary) 5%, transparent), transparent 60%),
+    var(--cur-surface);
+}
 /* Nothing inside takes focus while this is a preview, so the orange ring would
    never fire — and if it ever did it would promise an input that is not there. */
 .cur .ws-comp[data-preview="true"]:focus-within {
   border-color: var(--cur-hairline-strong); box-shadow: var(--cur-shadow-card);
 }
-
-/* The status, set as the composer's own text rather than as a placeholder in a
-   box you cannot type in. Same size and leading the real draft will have, so
-   the shell is not going to resize when chat arrives. */
-.cur .ws-comp-soon {
-  margin: 0; min-height: 42px; max-width: 64ch;
-  font-size: 14px; line-height: 1.55; color: var(--cur-muted);
+.cur .ws-comp-ic {
+  width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0;
+  display: grid; place-items: center;
+  background: var(--cur-surface-strong); border: 1px solid var(--cur-hairline);
+  color: var(--cur-muted);
 }
-.cur .ws-comp-soon b { color: var(--cur-ink); font-weight: 500; }
+.cur .ws-comp-say { min-width: 0; }
+.cur .ws-comp-say b {
+  display: block; font-size: 13.5px; font-weight: 500; color: var(--cur-ink);
+}
+.cur .ws-comp-say p {
+  margin: 2px 0 0; max-width: 72ch;
+  font-size: 12.5px; line-height: 1.5; color: var(--cur-muted);
+}
 
 .cur .ws-comp textarea {
   width: 100%; border: 0; background: none; resize: none; outline: none;
@@ -1118,17 +1138,56 @@
   background: var(--cur-surface-strong); color: var(--cur-muted-soft);
   cursor: default; opacity: .75;
 }
+/* Last 30 days: the numbers and the calendar on one row.
+   Thirty days is five columns of seven whatever the styling, so stacked under a
+   wide card the grid left two thirds of the row empty and pushed the panel to
+   479px tall. Beside the numbers it takes the space they do not want. */
+.cur .ws-usage {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 26px; flex-wrap: wrap;
+}
+.cur .ws-usage > .ws-heat { flex: 0 0 auto; margin-left: auto; }
+@media (max-width: 560px) {
+  .cur .ws-usage > .ws-heat { margin-left: 0; }
+}
+
+/* ── App icons ────────────────────────────────────────
+   The tile every provider mark sits in, so a drawn logo, a PNG and a lettered
+   fallback occupy the same square and a mixed list still lines up.
+
+   Sized by the row, not fixed: `--ws-app` lets a 28px list row and a 44px
+   onboarding card share one component instead of two. */
+.cur .ws-app {
+  --ws-app: 34px;
+  width: var(--ws-app); height: var(--ws-app); flex-shrink: 0;
+  display: grid; place-items: center; border-radius: calc(var(--ws-app) * 0.26);
+  background: var(--cur-surface-strong); border: 1px solid var(--cur-hairline);
+  overflow: hidden;
+}
+/* A real logo brings its own colour and shape, so the tile gets out of its way
+   — a bordered grey square around the Google G reads as a placeholder holding a
+   logo rather than as the app. */
+.cur .ws-app[data-plain="true"] {
+  background: var(--cur-surface); border-color: var(--cur-hairline-soft);
+}
+.cur .ws-app-l {
+  width: 100%; height: 100%; display: grid; place-items: center;
+  font-weight: 600; letter-spacing: -0.01em;
+}
+
 /* Where the send button will be. Quiet on purpose: it is a label, not a control
    waiting to be pressed, so it takes the chips' height and none of their
    outline — a bordered pill beside two bordered chips reads as a third button. */
+/* An outlined pill, not bare text. Floating at the right edge of a wide card it
+   read as a stray word; a border makes it a badge and gives the row an end.
+   `--cur-muted-soft` measured 3.22:1 — under the floor, and the wrong place to
+   save a shade when this is the only word saying the composer is not live. */
 .cur .ws-comp-pill {
-  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 4px;
-  /* `--cur-muted-soft` reads as the quietest thing on the card and measured
-     3.22:1, under the 4.5 floor. This is the only word saying the composer is
-     not live, so it is the wrong place to save a shade. */
-  font-size: 12px; letter-spacing: 0.02em; color: var(--cur-muted); flex-shrink: 0;
+  display: inline-flex; align-items: center; height: 24px; padding: 0 10px; flex-shrink: 0;
+  border: 1px solid var(--cur-hairline); border-radius: 999px;
+  background: var(--cur-canvas-soft);
+  font-size: 11.5px; letter-spacing: 0.02em; color: var(--cur-muted);
 }
-.cur .ws-comp-pill svg { flex-shrink: 0; }
 
 /* ── Section header ───────────────────────────────────
    Title + subtitle left, controls right. Used by every band on Home. */
@@ -1165,10 +1224,13 @@
   border-color: var(--cur-featured-ring);
 }
 .cur .ws-gs-mark {
-  width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;
+  width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
   background: var(--cur-surface-strong); color: var(--cur-body);
   font-size: 12.5px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 12px;
 }
+/* The provider marks bring their own tile, so this one gets out of the way
+   rather than drawing a second box around the first. */
+.cur .ws-gs-mark[data-plain="true"] { background: transparent; width: auto; height: auto; }
 .cur .ws-gs-card[data-featured="true"] .ws-gs-mark { background: transparent; font-size: 20px; }
 .cur .ws-gs-card h3 { font-size: 13.5px; font-weight: 500; letter-spacing: -0.01em; color: var(--cur-ink); }
 .cur .ws-gs-card p {

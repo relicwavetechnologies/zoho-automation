@@ -15,6 +15,7 @@ import {
   ACTION_GROUPS, DATA_SOURCES, SOURCE_LABEL, ceilingAllows, resolveGrants, toolById,
   type ActionGroup, type GrantMap, type Person, type PermissionSource, type Provider,
 } from './fixtures'
+import { GoogleMark } from './brand'
 import { ApiError } from '@/lib/api'
 
 /* ── Staged loading ───────────────────────────────────
@@ -608,22 +609,77 @@ export const listPhrase = (items: string[], max = 4) => {
 export type PendingChange = { toolId: string; action: ActionGroup; next: boolean; blocked?: boolean }
 
 /* ── Provider glyphs ─────────────────────────────────
-   Wordmark initials rather than logos — no brand assets to license, and it
-   keeps the palette to the two neutrals the design language allows. */
-const PROVIDER_META: Record<Provider, { short: string; name: string }> = {
-  google_workspace: { short: 'G', name: 'Google Workspace' },
-  lark: { short: 'L', name: 'Lark' },
-  canva: { short: 'C', name: 'Canva' },
-  airtable: { short: 'A', name: 'Airtable' },
-  aitable: { short: 'Ai', name: 'AITable' },
-  zoho: { short: 'Z', name: 'Zoho' },
+   Real marks where Divo has the real file, and a branded tile where it does
+   not. These were six identical grey squares carrying a letter, which read as
+   placeholders for logos rather than as a choice — an app list is scanned by
+   shape and colour, and initials give it neither.
+
+   `brand.tsx` sets the rule this follows: a mark is drawn only where the real
+   artwork is known exactly. Google publishes a fixed path and Lark's own PNG is
+   in `public/brand`. The rest get their brand colour rather than an invented
+   logo, because a mark redrawn from memory is recognisable enough to be trusted
+   and wrong enough to be somebody else's product. Drop `<provider>.png` into
+   `public/brand` and add it to `asset` below to promote one. */
+const PROVIDER_META: Record<Provider, {
+  short: string
+  name: string
+  /**
+   * The brand's colour as the tile's *fill*, with `ink` on top.
+   *
+   * Tinting the letter instead — brand colour as text on the card's own surface
+   * — measured 1.54:1 for Airtable's amber and 1.84:1 for Canva's teal in light
+   * mode. A brand colour is chosen to be seen against its own tile, not to be
+   * read as type on white, so the tile takes the colour and the letter takes a
+   * foreground picked to clear 4.5:1 against it.
+   */
+  tint?: string
+  ink?: string
+  /** A drawn mark, where the real artwork is known exactly. */
+  mark?: (size: number) => JSX.Element
+  /** A real file under `public/brand`. */
+  asset?: string
+}> = {
+  google_workspace: { short: 'G', name: 'Google Workspace', mark: (s) => <GoogleMark size={s} /> },
+  lark: { short: 'L', name: 'Lark', asset: '/brand/lark.png' },
+  // Dark ink rather than white, like Airtable's amber. White on Canva's teal is
+  // 3.01:1 however the teal is nudged, and darkening it far enough to carry
+  // white stops looking like Canva.
+  canva: { short: 'C', name: 'Canva', tint: '#00C4CC', ink: '#00312F' },
+  airtable: { short: 'A', name: 'Airtable', tint: '#FCB400', ink: '#3A2600' },
+  aitable: { short: 'Ai', name: 'AITable', tint: '#5B44CC', ink: '#FFFFFF' },
+  zoho: { short: 'Z', name: 'Zoho', tint: '#D32124', ink: '#FFFFFF' },
 }
 
-export const ProviderMark = ({ provider }: { provider: Provider }) => (
-  <span className="ws-ic" aria-hidden>
-    <span style={{ fontSize: 12, fontWeight: 600, letterSpacing: '-0.01em' }}>{PROVIDER_META[provider].short}</span>
-  </span>
-)
+/**
+ * An app icon, at the size the row asks for.
+ *
+ * A tile rather than a bare glyph, so a drawn logo, a PNG and a lettered
+ * fallback all occupy the same square and a list of them lines up whatever mix
+ * it happens to contain.
+ */
+export const ProviderMark = ({ provider, size = 20 }: { provider: Provider; size?: number }) => {
+  const meta = PROVIDER_META[provider]
+  return (
+    <span className="ws-app" aria-hidden data-plain={meta.mark || meta.asset ? 'true' : undefined}>
+      {meta.mark
+        ? meta.mark(size)
+        : meta.asset
+          ? <img src={meta.asset} width={size} height={size} alt="" loading="lazy" decoding="async"
+              style={{ width: size, height: size, display: 'block' }} />
+          : (
+            /* The letter kept its grey box before, so Canva and Zoho were the
+               same object. A filled tile in the brand's colour reads as that
+               app at a glance without claiming to be its logo. */
+            <span
+              className="ws-app-l"
+              style={{ color: meta.ink, background: meta.tint, fontSize: Math.round(size * 0.52) }}
+            >
+              {meta.short}
+            </span>
+          )}
+    </span>
+  )
+}
 
 export const providerName = (p: Provider) => PROVIDER_META[p].name
 

@@ -16,7 +16,7 @@
  * not a rewrite, and the panels that were already telling the truth keep
  * telling it.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Activity, ArrowUpRight, Check, ChevronLeft, ChevronRight, Link2, Lock, MessageSquare,
   Plus, Sparkles, X,
@@ -82,7 +82,10 @@ function useDismissed() {
 
 type StartCard = {
   id: string
-  mark: string
+  /** A node, because a provider card carries that app's real mark. */
+  mark: ReactNode
+  /** True when `mark` brings its own tile, so the wrapper stops drawing one. */
+  markPlain?: boolean
   title: string
   body: string
   cta: string
@@ -154,7 +157,11 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
     for (const provider of unconnected) {
       list.push({
         id: `connect:${provider}`,
-        mark: providerName(provider).slice(0, 1),
+        // The app's own mark, not the first letter of its name. A row of cards
+        // reading C / A / A asked somebody to tell Canva from Airtable from
+        // AITable by initial, which is the one thing an icon is for.
+        mark: <ProviderMark provider={provider} size={22} />,
+        markPlain: true,
         title: `Connect ${providerName(provider)}`,
         body: PITCH[provider],
         cta: `Connect ${providerName(provider)}`,
@@ -257,7 +264,9 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
                   >
                     <X size={13} />
                   </button>
-                  <span className="ws-gs-mark" aria-hidden>{card.mark}</span>
+                  <span className="ws-gs-mark" data-plain={card.markPlain ? 'true' : undefined} aria-hidden>
+                    {card.mark}
+                  </span>
                   <h3>{card.title}</h3>
                   <p>{card.body}</p>
                   <button
@@ -339,6 +348,15 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
                 </>
               ) : (
                 <Fade>
+                  {/*
+                    Numbers and the calendar side by side, not stacked.
+                    Thirty days is five columns of seven, so the grid is about
+                    170px wide however it is styled — under a 560px card it left
+                    two thirds of the row empty and the panel ran to 479px tall
+                    for the sake of a strip. Beside the numbers it fills the
+                    space the numbers do not want.
+                  */}
+                  <div className="ws-usage">
                   <div style={{ display: 'flex', gap: 44, flexWrap: 'wrap' }}>
                     <div>
                       <div className="ws-lbl">Tasks run</div>
@@ -354,7 +372,8 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
                       <div className="ws-sub" style={{ marginTop: 5 }}>{money(usage.spendTodayUsd)} today</div>
                     </div>
                   </div>
-                  <div style={{ marginTop: 22 }}><Heatmap data={usage.series.map((p) => ({ date: p.date, value: p.spendUsd }))} /></div>
+                    <Heatmap data={usage.series.map((p) => ({ date: p.date, value: p.spendUsd }))} />
+                  </div>
                 </Fade>
               )}
             </div>
@@ -381,7 +400,10 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
                   })}
                   {CONNECTABLE.length - connected.length > 0 ? (
                     <ClickRow onOpen={() => go('connections')}>
-                      <span className="ws-ic"><Plus size={14} /></span>
+                      {/* The app tile, not the old glyph box — this row sits
+                          under real marks and a 32px square beside 34px tiles
+                          is a misalignment you see before you read it. */}
+                      <span className="ws-app"><Plus size={15} /></span>
                       <div className="ws-row-main">
                         <b className="muted" style={{ fontWeight: 400 }}>
                           {CONNECTABLE.length - connected.length} more you can connect
@@ -425,25 +447,15 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
 function Composer() {
   return (
     <div className="ws-comp" data-preview="true">
-      <p className="ws-comp-soon">
-        <b>Chat is coming to the web.</b> Today Divo answers in Lark and on the
-        desktop — everything you connect here works in both.
-      </p>
-      <div className="ws-comp-foot">
-        {/* Kept, disabled: these two are real settings that will travel with
-            every message, so they show what is coming rather than decorating. */}
-        <button type="button" className="ws-comp-chip" disabled title="Chosen by your admin — see Settings">
-          <Sparkles size={13} /> Divo · default
-        </button>
-        <button type="button" className="ws-comp-chip" disabled title="Set on the Approvals page">
-          <Lock size={13} /> Ask me first
-        </button>
-        <span className="ws-comp-sp" />
-        {/* Where send will be. A dead send button on a box that cannot be typed
-            in is the same contradiction one size smaller — this states the
-            reason there is no button instead of dimming one. */}
-        <span className="ws-comp-pill"><MessageSquare size={12} /> Soon</span>
+      <span className="ws-comp-ic"><MessageSquare size={16} /></span>
+      <div className="ws-comp-say">
+        <b>Chat is coming to the web</b>
+        <p>Today Divo answers in Lark and on the desktop — everything you connect here works in both.</p>
       </div>
+      {/* Where send will be. A dead send button on a box nobody can type in is
+          the same contradiction one size smaller, so this states the reason
+          there is no button rather than dimming one. */}
+      <span className="ws-comp-pill">Soon</span>
     </div>
   )
 }
