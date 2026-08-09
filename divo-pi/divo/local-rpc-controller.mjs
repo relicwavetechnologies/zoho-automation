@@ -1388,22 +1388,12 @@ function progressToolDetail(toolName, args) {
 	if (toolName === "read" || toolName === "write" || toolName === "edit") {
 		return progressLabel(fileName(args.file_path ?? args.path), PROGRESS_DETAIL_MAX);
 	}
-	// A skill is addressed by UUID, which names nothing to the person reading the
-	// card. The row stays bare until the call returns and can be labelled with
-	// the skill's actual name.
-	if (toolName === "divo_skill_view") {
-		return UUID_PATTERN.test(String(args.skillId ?? ""))
-			? undefined
-			: progressLabel(args.skillId, PROGRESS_DETAIL_MAX);
-	}
 	// The tool id already travels as its own field, and the backend holds the
 	// table that turns it into a product name — so only the operation goes here.
 	// Sending the raw id too would print it twice, untranslated.
 	if (toolName === "divo_gateway") return progressLabel(args.op, PROGRESS_DETAIL_MAX);
 	return undefined;
 }
-
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The text block the model is writing right now, out of the accumulated message. */
 function assistantBlockText(assistantMessageEvent) {
@@ -1507,9 +1497,7 @@ function progressDetail(details) {
 	if (children) return { children };
 	const todos = progressTodos(details);
 	if (todos) return { todos };
-	// A loaded skill knows its own name, which is the only readable thing about
-	// a call the model addressed by UUID. It is only knowable once the call has
-	// returned, so the row is named on the way out rather than the way in.
+	// Some tools can name their work only after returning structured details.
 	const name = progressLabel(details.name, PROGRESS_DETAIL_MAX);
 	if (name && typeof details.revision === "number") return { detail: name };
 	return undefined;

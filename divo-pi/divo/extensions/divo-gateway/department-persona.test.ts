@@ -137,7 +137,7 @@ describe("department persona", () => {
 		assert.match(first, /Department function: finance/);
 		assert.match(first, /Finance Ops Core \[skillId=skill-finance\]/);
 		assert.match(first, /connectionId=connection-1/);
-		assert.match(first, /load it once with divo_skill_view/);
+		assert.match(first, /skill IDs are not authorization tokens/);
 		assert.match(first, /fuzzy skill search merely to prove/);
 
 		const refreshed = composeDivoSystemPrompt(first, COMPANY_PROMPT, {
@@ -181,7 +181,7 @@ describe("department persona", () => {
 		assert.match(prompt, /Skill registry revision: 14/);
 		assert.match(prompt, /Daily Report \[skillId=skill-daily-report; revision=3\]/);
 		assert.match(prompt, /googleSheets: read, update/);
-		assert.match(prompt, /Use divo_skill_resolve only as a fallback/);
+		assert.match(prompt, /Use divo_skill_resolve only when a specialized company workflow is likely/);
 
 		const nativePrompt = composeDivoSystemPrompt(
 			"Base prompt",
@@ -192,7 +192,7 @@ describe("department persona", () => {
 		assert.match(nativePrompt, /available_skills list is the skill index/);
 		assert.match(nativePrompt, /googleSheets: read, update/);
 		assert.doesNotMatch(nativePrompt, /Daily Report \[skillId=/);
-		assert.doesNotMatch(nativePrompt, /divo_skill_view using the listed skillId/);
+		assert.doesNotMatch(nativePrompt, /skill IDs are not authorization tokens/);
 	});
 
 	it("injects the v3 family hierarchy without treating family IDs as executable tools", async () => {

@@ -284,14 +284,14 @@ function formatCapabilityBootstrap(
 	if (nativeSkills) {
 		lines.push(
 			"- Match the task against Pi's available_skills metadata. Read only the exact relevant SKILL.md with Pi's read tool.",
-			"- Do not call divo_skill_view or divo_skill_resolve for ordinary routing when the relevant native skill is present.",
+			"- Do not call divo_skill_resolve for ordinary routing when the relevant native skill is present.",
 			"- No skill is a valid outcome for ordinary conversation or a simple direct capability call.",
 		);
 	} else {
 		lines.push(
-			"- Scan the compact index before acting. If one exact skill is relevant, load it once with divo_skill_view using the listed skillId.",
+			"- Scan the compact index before acting. Use its names and descriptions as guidance; skill IDs are not authorization tokens.",
 			"- No skill is a valid outcome for ordinary conversation or a simple direct capability call. Do not run fuzzy skill search merely to prove that no skill exists.",
-			"- Use divo_skill_resolve only as a fallback when a specialized company workflow is likely but no indexed skill clearly matches.",
+			"- Use divo_skill_resolve only when a specialized company workflow is likely and its exact guidance is unavailable natively.",
 		);
 	}
 	lines.push(

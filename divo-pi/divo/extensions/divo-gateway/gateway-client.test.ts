@@ -336,7 +336,7 @@ describe("callDivoGateway", () => {
 				version: 1 as const,
 				threadId: "thread-1",
 				runId: "run-1",
-				actionId: "skill-view-1",
+				actionId: "skill-get-1",
 			},
 		};
 

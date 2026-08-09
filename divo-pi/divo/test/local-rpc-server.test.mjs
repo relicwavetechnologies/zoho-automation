@@ -49,7 +49,6 @@ test("final delivery excludes progress narration before the terminal answer", ()
 		"The report above is complete.",
 	);
 });
-
 test("final delivery returns only assistant text and handles a normal terminal answer", () => {
 	assert.equal(
 		collectRunAssistantText([
@@ -1485,10 +1484,6 @@ test("a tool call carries the argument that says what it is about", () => {
 
 	assert.equal(detailOf("bash", { command: "airtable  list-bases\n" }), "airtable list-bases");
 	assert.equal(detailOf("read", { file_path: "/data/workspace/.divo/inbox/bases.json" }), "bases.json");
-	assert.equal(detailOf("divo_skill_view", { skillId: "zoho-unpaid-invoices" }), "zoho-unpaid-invoices");
-	// A UUID names nothing to the reader; the row is labelled from the skill's
-	// own name once the call returns.
-	assert.equal(detailOf("divo_skill_view", { skillId: "71a1f55f-d757-42c6-9d5e-c9e514c5c305" }), undefined);
 	// Only the operation: the tool id already travels as its own field, and the
 	// table that turns it into "Zoho Books" lives in the backend.
 	assert.equal(detailOf("divo_gateway", { op: "tools.invoke", payload: { toolId: "zohoBooks" } }), "tools.invoke");
@@ -1542,27 +1537,5 @@ test("thinking never leaves the container", () => {
 			},
 		}),
 		undefined,
-	);
-});
-
-
-// The model addresses a skill by UUID, so the only readable thing about the call
-// is the skill's own name — which is knowable only once it has returned.
-test("a loaded skill names its own row on the way out", () => {
-	assert.deepEqual(
-		projectRuntimeProgress({
-			type: "tool_execution_end",
-			toolCallId: "call-skill",
-			toolName: "divo_skill_view",
-			isError: false,
-			result: { details: { name: "Unpaid invoice report", revision: 4, instructions: "must-not-leak" } },
-		}),
-		{
-			type: "tool_end",
-			callId: "call-skill",
-			toolName: "divo_skill_view",
-			isError: false,
-			detail: "Unpaid invoice report",
-		},
 	);
 });

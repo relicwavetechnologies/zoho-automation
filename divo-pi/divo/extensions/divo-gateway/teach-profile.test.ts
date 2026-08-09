@@ -63,7 +63,6 @@ describe('interactive Teach Pi profile', () => {
 		assert.match(prompt, /same conversation/);
 		assert.match(prompt, /scheduledWorkflows/);
 		assert.match(prompt, /Before scheduling, read the native Schedule Divo Work/i);
-		assert.doesNotMatch(prompt, /Before scheduling.*divo_skill_view/i);
 		assert.match(prompt, /explicitly requested activation/i);
 		assert.match(prompt, /never silently activate inferred automation/i);
 		assert.match(prompt, /sole coordinator and writer for this Teach session/i);
