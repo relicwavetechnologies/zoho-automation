@@ -32,8 +32,6 @@ export const DIVO_GATEWAY_OPS = [
 	"skills.get",
 	"work.resolve",
 	"persona.resolve",
-	"teach.context.get",
-	"teach.learning.apply",
 	"connections.list",
 	"media.image_ocr",
 	"tools.preflight",

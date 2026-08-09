@@ -464,7 +464,7 @@ export async function callDivoGateway(
 		writeSkillResponseCache(cacheKey, { body, httpStatus: response.status });
 	}
 	if (body.ok && body.status === "success" && (
-		request.op === "teach.learning.apply" || request.op === "tools.commit"
+		request.op === "tools.commit"
 	)) {
 		// These operations may change persona/skill routing. Never serve a
 		// pre-mutation bootstrap afterward, even inside the same desktop run.

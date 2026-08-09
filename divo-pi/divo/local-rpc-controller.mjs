@@ -1769,7 +1769,7 @@ function gatewayActionState(messages) {
 			? message.content.filter((content) =>
 				content?.type === "toolCall"
 				&& content.name === "divo_gateway"
-				&& ["tools.invoke", "teach.learning.apply"].includes(content.arguments?.op))
+				&& content.arguments?.op === "tools.invoke")
 			: [],
 	);
 	if (calls.length === 0) return "none";
