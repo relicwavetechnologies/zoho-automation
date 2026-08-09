@@ -44,7 +44,12 @@ const MODEL_RETRY_PROMPT =
  */
 export const RUNTIME_IDLE_TIMEOUT_MS = 45 * 60_000;
 export const RUNTIME_STOP_RETRY_MS = 30_000;
-const RUNTIME_CONTAINER_MODE = "exec-v1";
+const RUNTIME_CONTAINER_MODE = "exec-v2";
+const NATIVE_SKILLS_ROOT = "/run/divo-skills";
+const MAX_NATIVE_SKILLS = 50;
+const MAX_NATIVE_SKILL_DESCRIPTION_BYTES = 1_024;
+const MAX_NATIVE_SKILL_INSTRUCTIONS_BYTES = 100_000;
+const MAX_NATIVE_SKILLS_TOTAL_BYTES = 2_000_000;
 let tokenReadTail = Promise.resolve();
 
 /**
@@ -130,6 +135,7 @@ export function resourcesFor(profileName, resourcePrefix = RESOURCE_PREFIX) {
 		authVolume: `${prefix}-${profile}-auth`,
 		container: `${prefix}-${profile}`,
 		network: `${prefix}-${profile}`,
+		skillsVolume: `${prefix}-${profile}-skills`,
 		volume: `${prefix}-${profile}`,
 	};
 }
@@ -341,6 +347,8 @@ export function buildContainerCreateArgs(
 		`type=volume,src=${resources.volume},dst=/data`,
 		"--mount",
 		`type=volume,src=${resources.authVolume},dst=/run/divo-auth`,
+		"--mount",
+		`type=volume,src=${resources.skillsVolume},dst=${NATIVE_SKILLS_ROOT},readonly`,
 		"--read-only",
 		"--tmpfs",
 		"/tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777",
@@ -368,6 +376,159 @@ export function backendUrlForContainer(value) {
 		url.hostname = "host.docker.internal";
 	}
 	return url.toString().replace(/\/+$/, "");
+}
+
+export function validateNativeSkillBootstrap(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("Native skill bootstrap must be an object");
+	}
+	if (!Number.isSafeInteger(value.registryRevision) || value.registryRevision < 0) {
+		throw new Error("Native skill registry revision is invalid");
+	}
+	if (!Array.isArray(value.skills) || value.skills.length > MAX_NATIVE_SKILLS) {
+		throw new Error(`Native skill bootstrap must contain at most ${MAX_NATIVE_SKILLS} skills`);
+	}
+	const slugs = new Set();
+	let totalBytes = 0;
+	const skills = value.skills.map((skill) => {
+		if (!skill || typeof skill !== "object" || Array.isArray(skill)) {
+			throw new Error("Native skill entry must be an object");
+		}
+		const { id, slug, name, description, instructions, revision } = skill;
+		if (typeof id !== "string" || !id.trim() || id.length > 100) {
+			throw new Error("Native skill id is invalid");
+		}
+		if (
+			typeof slug !== "string"
+			|| slug.length > 64
+			|| !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)
+		) {
+			throw new Error(`Native skill slug is invalid: ${String(slug)}`);
+		}
+		if (slugs.has(slug)) throw new Error(`Duplicate native skill slug: ${slug}`);
+		slugs.add(slug);
+		if (typeof name !== "string" || !name.trim() || name.length > 120) {
+			throw new Error(`Native skill name is invalid: ${slug}`);
+		}
+		if (
+			typeof description !== "string"
+			|| !description.trim()
+			|| Buffer.byteLength(description, "utf8") > MAX_NATIVE_SKILL_DESCRIPTION_BYTES
+		) {
+			throw new Error(`Native skill description is invalid: ${slug}`);
+		}
+		if (
+			typeof instructions !== "string"
+			|| !instructions.trim()
+			|| Buffer.byteLength(instructions, "utf8") > MAX_NATIVE_SKILL_INSTRUCTIONS_BYTES
+		) {
+			throw new Error(`Native skill instructions are invalid: ${slug}`);
+		}
+		if (!Number.isSafeInteger(revision) || revision < 1) {
+			throw new Error(`Native skill revision is invalid: ${slug}`);
+		}
+		totalBytes += Buffer.byteLength(description, "utf8")
+			+ Buffer.byteLength(instructions, "utf8");
+		return { id, slug, name: name.trim(), description, instructions, revision };
+	});
+	if (totalBytes > MAX_NATIVE_SKILLS_TOTAL_BYTES) {
+		throw new Error("Native skill bootstrap exceeds the total size limit");
+	}
+	return { registryRevision: value.registryRevision, skills };
+}
+
+export function renderNativeSkillFiles(bootstrap) {
+	return validateNativeSkillBootstrap(bootstrap).skills.map((skill) => ({
+		slug: skill.slug,
+		content: [
+			"---",
+			`name: ${skill.slug}`,
+			`description: ${JSON.stringify(skill.description)}`,
+			"---",
+			"",
+			skill.instructions.trim(),
+			"",
+		].join("\n"),
+	}));
+}
+
+export async function fetchNativeSkillBootstrap({
+	backendUrl,
+	token,
+	departmentId,
+	fetchImpl = fetch,
+}) {
+	if (!departmentId) throw new Error("Native skills require a selected department");
+	const query = new URLSearchParams({
+		capabilityVersion: "3",
+		departmentId,
+		nativeSkills: "1",
+	});
+	const response = await fetchImpl(
+		`${normalizeBackendUrl(backendUrl)}/api/desktop/auth/runtime-context?${query}`,
+		{ headers: { Authorization: `Bearer ${token}` } },
+	);
+	const body = await response.json().catch(() => undefined);
+	if (!response.ok || body?.success !== true || !body.data?.nativeSkillBootstrap) {
+		throw new Error(body?.message ?? `Native skill bootstrap failed (${response.status})`);
+	}
+	return validateNativeSkillBootstrap(body.data.nativeSkillBootstrap);
+}
+
+const NATIVE_SKILL_STAGING_SCRIPT = String.raw`
+const fs = require("node:fs");
+const path = require("node:path");
+const root = "/run/divo-skills";
+const next = path.join(root, ".next");
+const previous = path.join(root, ".previous");
+const current = path.join(root, "current");
+const files = JSON.parse(fs.readFileSync(0, "utf8"));
+fs.rmSync(next, { recursive: true, force: true });
+fs.rmSync(previous, { recursive: true, force: true });
+fs.mkdirSync(next, { recursive: true, mode: 0o700 });
+for (const file of files) {
+	if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(file.slug)) throw new Error("Invalid staged skill slug");
+	const directory = path.join(next, file.slug);
+	fs.mkdirSync(directory, { mode: 0o700 });
+	fs.writeFileSync(path.join(directory, "SKILL.md"), file.content, { mode: 0o444 });
+	fs.chmodSync(directory, 0o555);
+}
+fs.chmodSync(next, 0o555);
+if (fs.existsSync(current)) fs.renameSync(current, previous);
+fs.renameSync(next, current);
+fs.rmSync(previous, { recursive: true, force: true });
+`;
+
+export function buildNativeSkillStagingArgs(volume, image = IMAGE) {
+	return [
+		"run",
+		"--rm",
+		"--interactive",
+		"--network",
+		"none",
+		"--user",
+		"0:0",
+		"--read-only",
+		"--cap-drop",
+		"ALL",
+		"--security-opt",
+		"no-new-privileges:true",
+		"--mount",
+		`type=volume,src=${volume},dst=${NATIVE_SKILLS_ROOT}`,
+		"--entrypoint",
+		"node",
+		image,
+		"-e",
+		NATIVE_SKILL_STAGING_SCRIPT,
+	];
+}
+
+async function stageNativeSkillBootstrap(volume, bootstrap) {
+	await runWithInput(
+		"docker",
+		buildNativeSkillStagingArgs(volume),
+		JSON.stringify(renderNativeSkillFiles(bootstrap)),
+	);
 }
 
 export function runtimeContainerNeedsReplacement(container, image = IMAGE, imageId) {
@@ -800,6 +961,7 @@ async function ensureRuntime(profile, { ephemeral = false } = {}) {
 		ensureNetwork(profile, resources.network),
 		ensureVolume(profile, resources.volume),
 		ensureVolume(profile, resources.authVolume),
+		ensureVolume(profile, resources.skillsVolume),
 	]);
 	let container = existing;
 	if (container) {
@@ -837,7 +999,7 @@ async function destroyEphemeralRuntime(profileName) {
 		if (container.State.Running) await docker(["stop", resources.container]);
 		await docker(["rm", resources.container]);
 	}
-	for (const volume of [resources.authVolume, resources.volume]) {
+	for (const volume of [resources.authVolume, resources.skillsVolume, resources.volume]) {
 		if (await dockerObjectExists("volume", volume)) await docker(["volume", "rm", volume]);
 	}
 	if (await dockerObjectExists("network", resources.network)) {
@@ -1856,10 +2018,15 @@ const warmPiProcesses = new Map();
 export function canReusePiProcess({
 	enabled = process.env.DIVO_PI_KEEPALIVE !== "false",
 	ephemeral = false,
+	nativeSkills = false,
 	sessionScope = "thread",
 	lifecycle,
 } = {}) {
-	return enabled && !ephemeral && sessionScope === "thread" && lifecycle === undefined;
+	return enabled && !ephemeral && !nativeSkills && sessionScope === "thread" && lifecycle === undefined;
+}
+
+export function nativeDbSkillsEnabled(value = process.env.DIVO_PI_NATIVE_DB_SKILLS) {
+	return value === "true";
 }
 
 function piProcessBinding({ profile, thread, backendUrl, departmentId, selectedModel }) {
@@ -2217,6 +2384,7 @@ async function runPrompt({
 	lifecycle,
 }) {
 	const normalizedSessionScope = validateSessionScope(sessionScope);
+	const nativeSkills = nativeDbSkillsEnabled();
 	if (lifecycle !== undefined) validateSessionLifecycleOperation(lifecycle);
 	if (lifecycle !== undefined && normalizedSessionScope !== "thread") {
 		throw new Error("Session lifecycle operations require a thread-scoped session");
@@ -2229,6 +2397,7 @@ async function runPrompt({
 	const selectedModel = validateRuntimeModel(model);
 	const piKeepAlive = canReusePiProcess({
 		ephemeral,
+		nativeSkills,
 		sessionScope: normalizedSessionScope,
 		lifecycle,
 	});
@@ -2245,6 +2414,7 @@ async function runPrompt({
 		departmentId,
 		sessionScope: normalizedSessionScope,
 		...(channel ? { channel } : {}),
+		...(nativeSkills ? { nativeSkills: true } : {}),
 		...(channel === "lark" ? { interruptionTask: message } : {}),
 		...(selectedModel ?? {}),
 	};
@@ -2255,6 +2425,9 @@ async function runPrompt({
 		departmentId,
 		selectedModel,
 	});
+	const nativeSkillBootstrap = nativeSkills
+		? await fetchNativeSkillBootstrap({ backendUrl, token, departmentId })
+		: undefined;
 	if (!ephemeral) await idleContainers.activate(profile);
 	if (!piKeepAlive) await discardWarmPiProcess(profile);
 	let abortStop;
@@ -2282,6 +2455,9 @@ async function runPrompt({
 	try {
 		const runtime = await ensureRuntime(profile, { ephemeral });
 		resources = runtime.resources;
+		if (nativeSkillBootstrap) {
+			await stageNativeSkillBootstrap(resources.skillsVolume, nativeSkillBootstrap);
+		}
 		for (const progress of runtimeStartupProgress(runtime)) {
 			emitRuntimeProgress(onProgress, progress);
 		}

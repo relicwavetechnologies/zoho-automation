@@ -1772,6 +1772,133 @@ describe('desktop auth routes', () => {
     });
   });
 
+  it('returns complete native skill files only to the pinned Pi runtime lease', async () => {
+    const permissionCalls: unknown[] = [];
+    const departmentId = '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd';
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: {
+        departmentMembership: {
+          findFirst: async () => ({
+            department: { id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null },
+          }),
+        },
+      },
+      permissions: {
+        resolve: async (input: unknown) => {
+          permissionCalls.push(input);
+          return {
+            ok: true,
+            value: {
+              allowedToolIds: new Set(['zohoBooks']),
+              allowedActionsByTool: new Map([['zohoBooks', new Set(['read'])]]),
+              decisions: [],
+              department: { roleSlug: 'MEMBER' },
+            },
+          };
+        },
+      },
+      skillCatalog: {
+        listVisible: async (input: Record<string, unknown>) => {
+          assert.equal(input.failClosed, true);
+          assert.equal(input.limit, 51);
+          return [{
+            id: 'skill-finance',
+            slug: 'finance-ops-core',
+            name: 'Finance Ops Core',
+            description: 'Route broad finance questions.',
+            instructions: '# Finance Ops\n\nUse verified records.',
+            toolIds: ['zohoBooks'],
+            aliases: [],
+            tags: ['router'],
+            revision: 3,
+          }];
+        },
+        registryRevision: async () => 9,
+      },
+      skillAccessEnforcement: {
+        listGrantedSkillIds: async () => new Set(['skill-finance']),
+      },
+    }));
+
+    const result = await callRoute(router, 'GET', '/runtime-context', {
+      query: { departmentId, capabilityVersion: '3', nativeSkills: '1' },
+      locals: {
+        userId: 'user-1',
+        companyId: 'company-1',
+        aiRole: 'MEMBER',
+        isPiRuntimeLease: true,
+        runtimeDepartmentId: departmentId,
+      },
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal((permissionCalls[0] as { channel: string }).channel, 'lark');
+    assert.deepEqual(result.body.data.nativeSkillBootstrap, {
+      registryRevision: 9,
+      skills: [{
+        id: 'skill-finance',
+        slug: 'finance-ops-core',
+        name: 'Finance Ops Core',
+        description: 'Route broad finance questions.',
+        instructions: '# Finance Ops\n\nUse verified records.',
+        revision: 3,
+      }],
+    });
+  });
+
+  it('does not expose native skill bodies to an ordinary member session', async () => {
+    const departmentId = '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd';
+    const router = createDesktopAuthRoutes(makeDeps());
+    const result = await callRoute(router, 'GET', '/runtime-context', {
+      query: { departmentId, capabilityVersion: '3', nativeSkills: '1' },
+      locals: { userId: 'user-1', companyId: 'company-1', runtimeDepartmentId: departmentId },
+    });
+
+    assert.equal(result.status, 403);
+    assert.equal(result.body.success, false);
+  });
+
+  it('fails the native bootstrap instead of returning a partial catalogue', async () => {
+    const departmentId = '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd';
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: {
+        departmentMembership: {
+          findFirst: async () => ({
+            department: { id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null },
+          }),
+        },
+      },
+      permissions: {
+        resolve: async () => ({
+          ok: true,
+          value: {
+            allowedToolIds: new Set(),
+            allowedActionsByTool: new Map(),
+            decisions: [],
+            department: { roleSlug: 'MEMBER' },
+          },
+        }),
+      },
+      skillCatalog: {
+        listVisible: async () => { throw new Error('catalogue unavailable'); },
+        registryRevision: async () => 9,
+      },
+    }));
+    const result = await callRoute(router, 'GET', '/runtime-context', {
+      query: { departmentId, capabilityVersion: '3', nativeSkills: '1' },
+      locals: {
+        userId: 'user-1',
+        companyId: 'company-1',
+        aiRole: 'MEMBER',
+        isPiRuntimeLease: true,
+        runtimeDepartmentId: departmentId,
+      },
+    });
+
+    assert.equal(result.status, 500);
+    assert.equal(result.body.data, undefined);
+  });
+
   it('returns no persona when the department agent config is disabled', async () => {
     const router = createDesktopAuthRoutes(makeDeps({
       prisma: {

@@ -8,6 +8,7 @@ import {
 	buildAgentConfiguration,
 	buildChildEnvironment,
 	buildPiArguments,
+	buildPiArgumentsWithResources,
 	buildPiLaunch,
 	buildRunCorrelationContext,
 	deleteDurablePiSession,
@@ -138,6 +139,23 @@ describe("Divo Pi runtime boundary", () => {
 		const systemPrompt = args[args.indexOf("--append-system-prompt") + 1];
 		assert.match(systemPrompt, /complete user-facing result in chat/i);
 		assert.doesNotMatch(systemPrompt, /DIVO_ARTIFACTS_DIR|divo_artifact/i);
+	});
+
+	it("loads authenticated DB skills through Pi's native resource loader", () => {
+		const nativeSkillsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "divo-native-skills-"));
+		fs.mkdirSync(path.join(nativeSkillsRoot, "google-sheets"));
+		fs.writeFileSync(path.join(nativeSkillsRoot, "google-sheets", "SKILL.md"), "---\nname: google-sheets\ndescription: Test\n---\n");
+
+		const args = buildPiArgumentsWithResources(
+			{ ...values, nativeSkills: true },
+			{ nativeSkillsRoot },
+		);
+		const nativeSkillIndex = args.lastIndexOf("--skill");
+		assert.deepEqual(args.slice(nativeSkillIndex, nativeSkillIndex + 2), ["--skill", nativeSkillsRoot]);
+		assert.equal(buildPiArgumentsWithResources(
+			{ ...values, nativeSkills: false },
+			{ nativeSkillsRoot },
+		).includes(nativeSkillsRoot), false);
 	});
 
 	it("launches compiled Pi without tsx-only arguments and keeps the source fallback", () => {

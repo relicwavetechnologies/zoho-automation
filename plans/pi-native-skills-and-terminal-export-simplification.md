@@ -1,6 +1,6 @@
 # Pi-native skills and terminal-first export simplification
 
-> Status: **Phase 0 complete; Phase 1 next**
+> Status: **Phase 1 coded; isolated container proof pending**
 >
 > Last updated: **2026-08-10**
 >
@@ -74,16 +74,20 @@ Verification: Divo runtime 160/160; gateway extension 143/143; focused runtime
 
 ### Phase 1 — Native DB-skill materialization spike
 
-- [ ] Add an authenticated bootstrap response containing only currently
+- [x] Add an authenticated bootstrap response containing only currently
       authorized skill definitions and one `registryRevision`.
-- [ ] Materialize each skill into a runtime-owned, non-user-writable
+- [x] Materialize each skill into a runtime-owned, non-user-writable
       `<slug>/SKILL.md` directory before Pi starts.
-- [ ] Convert DB identity fields into valid Pi skill frontmatter.
-- [ ] Pass materialized directories through Pi's existing `--skill` arguments.
+- [x] Convert DB identity fields into valid Pi skill frontmatter.
+- [x] Pass materialized directories through Pi's existing `--skill` arguments.
 - [ ] Prove Pi lists the skills in `<available_skills>` and reads the selected
       `SKILL.md` only when relevant.
-- [ ] Reject malformed slugs, duplicate names, unsafe paths, and oversized
+- [x] Reject malformed slugs, duplicate names, unsafe paths, and oversized
       Markdown without starting Pi with a partial ambiguous catalogue.
+
+Unit proof: Cloud-Pi runtime 165/165; authenticated runtime route 56/56; Pi's
+native loader discovered the rendered test skill with zero diagnostics. The
+real isolated-container read remains part of Phase 6.
 
 **Exit gate:** one authorized DB skill is discovered and read through Pi's
 native loader in an isolated cloud-Pi test.

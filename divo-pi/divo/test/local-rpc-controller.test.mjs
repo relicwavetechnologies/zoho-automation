@@ -7,6 +7,7 @@ import {
 	backendUrlForContainer,
 	buildBootstrapWriteArgs,
 	buildContainerCreateArgs,
+	buildNativeSkillStagingArgs,
 	buildInterruptionWriteArgs,
 	buildContainerPrepareArgs,
 	buildContainerRunArgs,
@@ -15,12 +16,15 @@ import {
 	createIdleContainerScheduler,
 	deleteProtectedRuntimeSession,
 	finalizeRuntimeLifecycle,
+	fetchNativeSkillBootstrap,
 	loadToken,
 	logCompletedRun,
+	nativeDbSkillsEnabled,
 	piProcessBindingMatches,
 	RUNTIME_IDLE_TIMEOUT_MS,
 	RUNTIME_STOP_RETRY_MS,
 	resourcesFor,
+	renderNativeSkillFiles,
 	runtimeIdentityNames,
 	runtimeContainerNeedsReplacement,
 	runtimeStartupProgress,
@@ -29,6 +33,7 @@ import {
 	trustedRuntimeSession,
 	validateProfileName,
 	validateRuntimeModel,
+	validateNativeSkillBootstrap,
 	validateThread,
 } from "../local-rpc-controller.mjs";
 
@@ -239,6 +244,7 @@ test("two profiles receive distinct Docker resources", () => {
 	assert.notEqual(abhishek.network, anish.network);
 	assert.notEqual(abhishek.volume, anish.volume);
 	assert.notEqual(abhishek.authVolume, anish.authVolume);
+	assert.notEqual(abhishek.skillsVolume, anish.skillsVolume);
 	assert.equal(abhishek.volume, "divo-pi-local-abhishek");
 	assert.equal(anish.volume, "divo-pi-local-anish");
 });
@@ -341,9 +347,13 @@ test("container creation is hardened and contains no member secret", () => {
 		serialized,
 		/type=volume,src=divo-pi-local-abhishek-auth,dst=\/run\/divo-auth/,
 	);
+	assert.match(
+		serialized,
+		/type=volume,src=divo-pi-local-abhishek-skills,dst=\/run\/divo-skills,readonly/,
+	);
 	assert.match(serialized, /--network divo-pi-local-abhishek/);
 	assert.match(serialized, /--add-host host\.docker\.internal:host-gateway/);
-	assert.match(serialized, /dev\.divo\.runtime-mode=exec-v1/);
+	assert.match(serialized, /dev\.divo\.runtime-mode=exec-v2/);
 	assert.match(serialized, /divo-pi:test sleep infinity$/);
 	assert.doesNotMatch(serialized, /token|password|secret/i);
 });
@@ -405,6 +415,7 @@ test("a warm runtime can prepare the cached Pi process through docker exec", () 
 
 test("Pi process reuse is limited to compatible private thread runs", () => {
 	assert.equal(canReusePiProcess({ sessionScope: "thread" }), true);
+	assert.equal(canReusePiProcess({ sessionScope: "thread", nativeSkills: true }), false);
 	assert.equal(canReusePiProcess({ sessionScope: "run" }), false);
 	assert.equal(canReusePiProcess({ sessionScope: "thread", ephemeral: true }), false);
 	assert.equal(canReusePiProcess({ sessionScope: "thread", lifecycle: "reset" }), false);
@@ -422,6 +433,104 @@ test("Pi process reuse is limited to compatible private thread runs", () => {
 	assert.equal(piProcessBindingMatches(binding, { ...binding, thread: "lark-2" }), false);
 	assert.equal(piProcessBindingMatches(binding, { ...binding, departmentId: "dep-2" }), false);
 	assert.equal(piProcessBindingMatches(binding, { ...binding, model: "gpt-5.6-luna" }), false);
+});
+
+test("native DB skills are opt-in and render as Pi skill resources", () => {
+	assert.equal(nativeDbSkillsEnabled("true"), true);
+	assert.equal(nativeDbSkillsEnabled("1"), false);
+
+	const bootstrap = validateNativeSkillBootstrap({
+		registryRevision: 7,
+		skills: [{
+			id: "skill-1",
+			slug: "google-sheets",
+			name: "Google Sheets",
+			description: "Edit sheets safely: read, then write.",
+			instructions: "# Google Sheets\n\nUse governed tools.",
+			revision: 3,
+		}],
+	});
+	assert.deepEqual(renderNativeSkillFiles(bootstrap), [{
+		slug: "google-sheets",
+		content: [
+			"---",
+			"name: google-sheets",
+			'description: "Edit sheets safely: read, then write."',
+			"---",
+			"",
+			"# Google Sheets",
+			"",
+			"Use governed tools.",
+			"",
+		].join("\n"),
+	}]);
+});
+
+test("native DB skill bootstrap rejects unsafe or ambiguous resources", () => {
+	const skill = {
+		id: "skill-1",
+		slug: "safe-skill",
+		name: "Safe skill",
+		description: "Safe description",
+		instructions: "Use governed tools.",
+		revision: 1,
+	};
+	assert.throws(
+		() => validateNativeSkillBootstrap({ registryRevision: 1, skills: [{ ...skill, slug: "../escape" }] }),
+		/slug is invalid/,
+	);
+	assert.throws(
+		() => validateNativeSkillBootstrap({ registryRevision: 1, skills: [skill, { ...skill, id: "skill-2" }] }),
+		/Duplicate native skill slug/,
+	);
+	assert.throws(
+		() => validateNativeSkillBootstrap({
+			registryRevision: 1,
+			skills: [{ ...skill, instructions: "x".repeat(100_001) }],
+		}),
+		/instructions are invalid/,
+	);
+});
+
+test("native DB skills are fetched only through the authenticated runtime endpoint", async () => {
+	let request;
+	const bootstrap = await fetchNativeSkillBootstrap({
+		backendUrl: "https://divo.example.com/",
+		token: "member-token",
+		departmentId: "department-1",
+		fetchImpl: async (url, options) => {
+			request = { url, options };
+			return {
+				ok: true,
+				status: 200,
+				json: async () => ({ success: true, data: { nativeSkillBootstrap: {
+					registryRevision: 1,
+					skills: [{
+						id: "skill-1",
+						slug: "safe-skill",
+						name: "Safe skill",
+						description: "Safe description",
+						instructions: "Use governed tools.",
+						revision: 1,
+					}],
+				} } }),
+			};
+		},
+	});
+	assert.equal(bootstrap.skills[0].slug, "safe-skill");
+	assert.match(request.url, /nativeSkills=1/);
+	assert.match(request.url, /departmentId=department-1/);
+	assert.deepEqual(request.options.headers, { Authorization: "Bearer member-token" });
+});
+
+test("native DB skills are staged by an isolated root helper", () => {
+	const args = buildNativeSkillStagingArgs("divo-pi-local-abhishek-skills", "divo-pi:test");
+	const serialized = args.join(" ");
+	assert.match(serialized, /--network none/);
+	assert.match(serialized, /--user 0:0/);
+	assert.match(serialized, /--read-only/);
+	assert.match(serialized, /type=volume,src=divo-pi-local-abhishek-skills,dst=\/run\/divo-skills/);
+	assert.doesNotMatch(serialized, /member-token|password|secret/i);
 });
 
 test("a shared container mounts only its run-specific disposable volumes", () => {
@@ -451,7 +560,7 @@ test("a runtime container is replaced only when its image changes", () => {
 		Image: "sha256:old-image",
 		Config: {
 			Image: "ghcr.io/relicwavetechnologies/divo-pi:dev-old",
-			Labels: { "dev.divo.runtime-mode": "exec-v1" },
+			Labels: { "dev.divo.runtime-mode": "exec-v2" },
 		},
 	};
 	assert.equal(

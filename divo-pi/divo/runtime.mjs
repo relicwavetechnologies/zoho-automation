@@ -532,6 +532,13 @@ export function buildRunCorrelationContext({
 }
 
 export function buildPiArguments(values) {
+	return buildPiArgumentsWithResources(values);
+}
+
+export function buildPiArgumentsWithResources(
+	values,
+	{ nativeSkillsRoot = "/run/divo-skills/current" } = {},
+) {
 	const allowed = scopedManifest(values.isRunScoped);
 	const extensionArguments = allowed.extensions.flatMap((name) => [
 		"--extension",
@@ -541,6 +548,9 @@ export function buildPiArguments(values) {
 		"--skill",
 		path.join(divoDir, "skills", name),
 	]);
+	const nativeSkillArguments = values.nativeSkills && fs.existsSync(nativeSkillsRoot)
+		? ["--skill", nativeSkillsRoot]
+		: [];
 	const args = [
 		"--session",
 		values.sessionPath,
@@ -569,6 +579,7 @@ export function buildPiArguments(values) {
 		allowed.toolAllowlist.join(","),
 		...extensionArguments,
 		...skillArguments,
+		...nativeSkillArguments,
 	];
 	if (values.mode === "rpc") args.push("--mode", "rpc");
 	if (values.print) args.push("--print");

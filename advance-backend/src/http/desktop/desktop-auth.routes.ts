@@ -246,6 +246,7 @@ const zohoSelfClientSchema = z.object({
 const runtimeContextQuerySchema = z.object({
   departmentId: z.string().uuid().optional(),
   capabilityVersion: z.literal('3').optional(),
+  nativeSkills: z.literal('1').optional(),
 });
 
 const connectionManagerGovernanceUpdateSchema = z.object({
@@ -1689,6 +1690,9 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       capabilityVersion: typeof req.query.capabilityVersion === 'string'
         ? req.query.capabilityVersion
         : undefined,
+      nativeSkills: typeof req.query.nativeSkills === 'string'
+        ? req.query.nativeSkills
+        : undefined,
     });
     if (!parsed.success) {
       res.status(400).json({ success: false, message: parsed.error.issues[0]?.message ?? 'Invalid departmentId' });
@@ -1698,6 +1702,17 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     const userId = res.locals['userId'] as string;
     const companyId = res.locals['companyId'] as string;
     const departmentId = parsed.data.departmentId;
+    const nativeSkillsRequested = parsed.data.nativeSkills === '1';
+    if (nativeSkillsRequested) {
+      if (res.locals['isPiRuntimeLease'] !== true) {
+        res.status(403).json({ success: false, message: 'Native skills are available only to the Pi runtime' });
+        return;
+      }
+      if (!departmentId || res.locals['runtimeDepartmentId'] !== departmentId) {
+        res.status(403).json({ success: false, message: 'Runtime department does not match the native skill request' });
+        return;
+      }
+    }
     const personalMemoryLoad: Promise<string[]> = deps.memory
       ? deps.memory.getPersonalSnapshot({
         userId,
@@ -1765,6 +1780,47 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
 
       const config = membership.department.agentConfig;
       const active = config?.isActive === true;
+      let nativeSkillBootstrap;
+      if (nativeSkillsRequested) {
+        const companyRole = String(res.locals['aiRole'] ?? 'MEMBER');
+        const permissionResult = await deps.permissions.resolve({
+          companyId: asCompanyId(companyId),
+          userId: asUserId(userId),
+          companyRole: asCompanyRoleSlug(companyRole),
+          departmentId: asDepartmentId(membership.department.id),
+          channel: 'lark',
+        });
+        if (!permissionResult.ok) {
+          res.status(403).json({ success: false, message: 'Runtime skill access denied' });
+          return;
+        }
+        const [grantedSkillIds, registryRevision] = await Promise.all([
+          deps.skillAccessEnforcement.listGrantedSkillIds(companyId, userId),
+          deps.skillCatalog.registryRevision(companyId),
+        ]);
+        const visibleSkills = await deps.skillCatalog.listVisible({
+          companyId,
+          departmentId: membership.department.id,
+          permission: permissionResult.value,
+          grantedSkillIds,
+          limit: 51,
+          failClosed: true,
+        });
+        if (visibleSkills.length > 50) {
+          throw new Error('Native skill catalogue exceeds the 50-skill runtime limit');
+        }
+        nativeSkillBootstrap = {
+          registryRevision,
+          skills: visibleSkills.map(skill => ({
+            id: skill.id,
+            slug: skill.slug,
+            name: skill.name,
+            description: skill.description,
+            instructions: skill.instructions,
+            revision: skill.revision,
+          })),
+        };
+      }
       let managerPersonaPrompt = '';
       let managerPersonaVersion: string | null = null;
       try {
@@ -1850,6 +1906,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           ].filter((value): value is string => Boolean(value)).join('|') || null,
           personalMemory,
           ...(capabilityBootstrap ? { capabilityBootstrap } : {}),
+          ...(nativeSkillBootstrap ? { nativeSkillBootstrap } : {}),
         },
       });
     } catch (e) {
