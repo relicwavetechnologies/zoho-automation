@@ -36,18 +36,25 @@ export function isFixedToolPolicy(toolId: string): boolean {
 }
 
 /**
- * Tools a department must be granted explicitly, never by inheriting a
- * company-role default.
+ * Tools a department or admin must grant explicitly, never by inheriting a
+ * permissive MEMBER company-role default.
  *
  * Their company-role default is permissive on purpose — it is the ceiling the
  * department overlay is clamped against, and a restrictive ceiling would make
  * them impossible to grant at all. Everywhere that same default would act as a
  * grant rather than a ceiling has to skip them: the department-less permission
- * path, and the MEMBER template that seeds new role matrices.
+ * path, and the MEMBER template that seeds new role matrices. This keeps a new
+ * normal member's no-department surface to Lark, Google Workspace, Web Search,
+ * Knowledge, Data Export, and Mail Ops.
  */
 export const DEPARTMENT_GRANT_ONLY_TOOLS: readonly CanonicalToolId[] = [
   'omsSiteData',
   'semrush',
+  'zohoCrm',
+  'zohoBooks',
+  'canvaDesign',
+  'airtableBase',
+  'airtableRecords',
   // AITable ships to company administrators first. Keeping it here means the
   // permissive company-role ceiling in tool-id never reaches a member who has
   // no department selected, so opening it to a department later stays a
@@ -57,6 +64,7 @@ export const DEPARTMENT_GRANT_ONLY_TOOLS: readonly CanonicalToolId[] = [
   'shopifyAnalytics',
   'shopifyOrders',
   'shopifyCustomers',
+  'scheduledWorkflows',
 ];
 
 /**

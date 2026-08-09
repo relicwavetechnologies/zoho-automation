@@ -44,6 +44,17 @@ function makeCatalog() {
       aliases: [...zohoRouter.aliases],
       revision: 1,
     },
+    {
+      id: 'zoho-books-id',
+      slug: 'zoho-books-read-analysis',
+      name: 'Zoho Books Read and Analysis',
+      summary: 'Read Zoho Books',
+      markdown: '',
+      toolIds: ['zohoBooks'],
+      tags: ['zoho', 'books'],
+      aliases: ['invoice'],
+      revision: 1,
+    },
     ...OTHER_ROUTERS.map((name, index) => ({
       id: `other-${index}`,
       slug: name.toLowerCase().replace(/[^a-z]+/g, '-'),
@@ -58,7 +69,13 @@ function makeCatalog() {
   ];
 
   return new SkillCatalogService({
-    repo: { list: async () => ({ ok: true, value: rows }) } as any,
+    repo: {
+      list: async () => ({ ok: true, value: rows }),
+      listRouteTargets: async ({ routerSkillId }: { routerSkillId: string }) => ({
+        ok: true,
+        value: routerSkillId === 'zoho-router-id' ? [rows[1]] : [],
+      }),
+    } as any,
     logger: noopLogger,
   });
 }

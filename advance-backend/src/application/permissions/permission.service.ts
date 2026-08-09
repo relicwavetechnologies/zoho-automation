@@ -465,13 +465,16 @@ export class PermissionServiceImpl implements PermissionService {
 }
 
 /**
- * Tool → actions a company administrator holds outright. Airtable is here for
- * the same reason OMS is: a company-wide connection its admin is piloting,
- * which the default-deny department overlay refuses until every role is
- * granted by hand.
+ * Tool → actions a company administrator holds outright. These keep admin
+ * operation smooth while ordinary members see the grant-only tools only after
+ * a department role or member override grants them.
  */
 const COMPANY_ADMIN_FIXED_TOOLS: ReadonlyArray<readonly [CanonicalToolId, readonly ToolActionGroup[]]> = [
   ['omsSiteData', ['read']],
+  ['zohoCrm', ['read', 'create', 'update', 'delete']],
+  ['zohoBooks', ['read', 'create', 'update', 'delete']],
+  ['canvaDesign', ['read', 'create', 'update']],
+  ['airtableBase', ['read']],
   ['airtableRecords', ['read', 'create', 'update']],
   ['airtableSchema', ['read', 'create', 'update']],
   ['airtableAutomation', ['read', 'create', 'update']],
@@ -481,6 +484,7 @@ const COMPANY_ADMIN_FIXED_TOOLS: ReadonlyArray<readonly [CanonicalToolId, readon
   // it stays an explicit department grant.
   ['aitableDatasheets', ['read', 'create', 'update']],
   ['aitableFields', ['read', 'create']],
+  ['scheduledWorkflows', ['read', 'create', 'update', 'delete', 'execute']],
 ];
 
 /**

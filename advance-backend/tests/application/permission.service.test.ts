@@ -120,7 +120,7 @@ describe('PermissionService', () => {
   // ── Company-only: MEMBER defaults ─────────────────────────────────────────
 
   describe('company-only resolution (no department)', () => {
-    it('copies the final Airtable read decision to Menhood only for its configured company', async () => {
+    it('does not copy a stripped no-department Airtable decision to Menhood for members', async () => {
       const enabledMenhood: ToolPermissionRepoPort = {
         getForCompany: async () => ok([
           { companyId: COMPANY_ID, toolId: 'menhoodData', role: 'MEMBER', enabled: true } as ToolPermissionRow,
@@ -134,7 +134,10 @@ describe('PermissionService', () => {
         ]),
         upsert: async () => ok({} as any),
       };
-      const allowed = await new PermissionServiceImpl(buildDeps({ finalPermissionAliases: [MENHOOD_ALIAS] }))
+      const stripped = await new PermissionServiceImpl(buildDeps({
+        toolPermRepo: enabledMenhood,
+        finalPermissionAliases: [MENHOOD_ALIAS],
+      }))
         .resolve(baseQuery());
       const denied = await new PermissionServiceImpl(buildDeps({
         toolPermRepo: enabledMenhood,
@@ -146,8 +149,8 @@ describe('PermissionService', () => {
         finalPermissionAliases: [MENHOOD_ALIAS],
       })).resolve(baseQuery({ companyId: 'co_other' as any }));
 
-      assert.ok(allowed.ok);
-      assert.equal(allowed.value.allowedActionsByTool.get(asToolId('menhoodData'))?.has('read'), true);
+      assert.ok(stripped.ok);
+      assert.equal(stripped.value.allowedToolIds.has(asToolId('menhoodData')), false);
       assert.ok(denied.ok);
       assert.equal(denied.value.allowedToolIds.has(asToolId('menhoodData')), false);
       assert.ok(otherCompany.ok);
@@ -171,28 +174,41 @@ describe('PermissionService', () => {
       assert.equal(result.value.allowedActionsByTool.get(asToolId('menhoodData'))?.has('read'), true);
     });
 
-    it('MEMBER gets default operational tools and NOT larkBase/larkApproval', async () => {
+    it('MEMBER with no department gets only the default personal surface', async () => {
       const svc = new PermissionServiceImpl(buildDeps());
       const result = await svc.resolve(baseQuery({ companyRole: 'MEMBER' as any }));
 
       assert.ok(result.ok);
       const ids = [...result.value.allowedToolIds].map(String);
-      assert.ok(ids.includes('larkMessaging'), 'MEMBER should have larkMessaging');
-      assert.ok(ids.includes('larkTask'),      'MEMBER should have larkTask');
-      assert.ok(ids.includes('larkCalendar'),  'MEMBER should have larkCalendar');
-      assert.ok(ids.includes('larkDoc'),       'MEMBER should have larkDoc');
-      assert.ok(!ids.includes('larkBase'),     'MEMBER should NOT have larkBase by default');
-      assert.ok(!ids.includes('larkApproval'), 'MEMBER should NOT have larkApproval by default');
-      assert.ok(ids.includes('zohoCrm'),       'MEMBER should have zohoCrm by default');
-      assert.ok(ids.includes('zohoBooks'),     'MEMBER should have zohoBooks by default');
-      assert.ok(ids.includes('knowledge'), 'MEMBER should have governed knowledge access by default');
+      assert.deepEqual(ids, [
+        'larkMessaging',
+        'larkContacts',
+        'larkTask',
+        'larkCalendar',
+        'larkMeeting',
+        'larkDoc',
+        'googleGmail',
+        'googleDrive',
+        'googleCalendar',
+        'googleDocs',
+        'googleSheets',
+        'googleSlides',
+        'googleForms',
+        'googleTasks',
+        'googleContacts',
+        'googleChat',
+        'webSearch',
+        'knowledge',
+        'dataExport',
+        'mailAutomations',
+      ]);
       assert.deepEqual(
         [...(result.value.allowedActionsByTool.get(asToolId('knowledge')) ?? [])],
         ['read', 'create', 'update', 'delete'],
       );
     });
 
-    it('COMPANY_ADMIN gets every tool including larkBase, larkApproval, zoho', async () => {
+    it('COMPANY_ADMIN keeps administrative access to grant-only tools', async () => {
       const svc = new PermissionServiceImpl(buildDeps());
       const result = await svc.resolve(baseQuery({ companyRole: 'COMPANY_ADMIN' as any }));
 
@@ -202,6 +218,10 @@ describe('PermissionService', () => {
       assert.ok(ids.includes('larkApproval'), 'COMPANY_ADMIN should have larkApproval');
       assert.ok(ids.includes('zohoCrm'),      'COMPANY_ADMIN should have zohoCrm');
       assert.ok(ids.includes('zohoBooks'),    'COMPANY_ADMIN should have zohoBooks');
+      assert.ok(ids.includes('canvaDesign'),  'COMPANY_ADMIN should have canvaDesign');
+      assert.ok(ids.includes('airtableBase'), 'COMPANY_ADMIN should have airtableBase');
+      assert.ok(ids.includes('airtableRecords'), 'COMPANY_ADMIN should have airtableRecords');
+      assert.ok(ids.includes('scheduledWorkflows'), 'COMPANY_ADMIN should have scheduledWorkflows');
     });
 
     it('allows OMS Site Data for company admins only and ignores ordinary role overrides', async () => {
@@ -230,6 +250,26 @@ describe('PermissionService', () => {
 
       assert.ok(result.ok);
       assert.equal(result.value.allowedToolIds.has(asToolId('semrush')), false);
+    });
+
+    it('does not expose grant-only tools to a member with no department even when globally enabled', async () => {
+      const toolPermRepo: ToolPermissionRepoPort = {
+        getForCompany: async () => ok([
+          { companyId: COMPANY_ID, toolId: 'zohoCrm', role: 'MEMBER', enabled: true } as ToolPermissionRow,
+          { companyId: COMPANY_ID, toolId: 'airtableRecords', role: 'MEMBER', enabled: true } as ToolPermissionRow,
+          { companyId: COMPANY_ID, toolId: 'canvaDesign', role: 'MEMBER', enabled: true } as ToolPermissionRow,
+          { companyId: COMPANY_ID, toolId: 'scheduledWorkflows', role: 'MEMBER', enabled: true } as ToolPermissionRow,
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const result = await new PermissionServiceImpl(buildDeps({ toolPermRepo }))
+        .resolve(baseQuery({ companyRole: 'MEMBER' as any }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedToolIds.has(asToolId('zohoCrm')), false);
+      assert.equal(result.value.allowedToolIds.has(asToolId('airtableRecords')), false);
+      assert.equal(result.value.allowedToolIds.has(asToolId('canvaDesign')), false);
+      assert.equal(result.value.allowedToolIds.has(asToolId('scheduledWorkflows')), false);
     });
 
     it('does not expose any Shopify data surface without an explicit department grant', async () => {
@@ -488,6 +528,28 @@ describe('PermissionService', () => {
       assert.ok(result.ok);
       assert.equal(result.value.allowedToolIds.has(asToolId('airtableRecords')), false);
       assert.equal(result.value.allowedToolIds.has(asToolId('menhoodData')), false);
+    });
+
+    it('keeps no-department hidden tools grantable through a department role', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_member_001', toolId: 'zohoCrm', actionGroup: 'read', allowed: true },
+          { departmentId: DEPT_ID, roleId: 'role_member_001', toolId: 'airtableRecords', actionGroup: 'read', allowed: true },
+          { departmentId: DEPT_ID, roleId: 'role_member_001', toolId: 'canvaDesign', actionGroup: 'create', allowed: true },
+          { departmentId: DEPT_ID, roleId: 'role_member_001', toolId: 'scheduledWorkflows', actionGroup: 'execute', allowed: true },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const result = await new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+      })).resolve(baseQuery({ companyRole: 'MEMBER' as any, departmentId: DEPT_ID as any }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedActionsByTool.get(asToolId('zohoCrm'))?.has('read'), true);
+      assert.equal(result.value.allowedActionsByTool.get(asToolId('airtableRecords'))?.has('read'), true);
+      assert.equal(result.value.allowedActionsByTool.get(asToolId('canvaDesign'))?.has('create'), true);
+      assert.equal(result.value.allowedActionsByTool.get(asToolId('scheduledWorkflows'))?.has('execute'), true);
     });
 
     it('user not a member of dept returns PermissionError(department_access_denied)', async () => {
