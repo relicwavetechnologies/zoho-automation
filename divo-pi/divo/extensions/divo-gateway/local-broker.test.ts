@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -68,6 +68,29 @@ describe("Divo local broker protocol", () => {
 		});
 
 		assert.equal((gatewayRequests[0]?.payload as { skillId?: string })?.skillId, undefined);
+	});
+
+	it("requests the trusted local-file transport only for an explicit file result", async () => {
+		let resultMode: unknown;
+		await executeLocalBrokerRequest({
+			version: 1,
+			resultMode: "local-file",
+			request: { op: "tools.invoke", payload: { toolId: "zohoBooks", args: {} } },
+		}, activeCalls(), {
+			resolveConfig: () => config,
+			readCorrelation: async () => correlation,
+			executeGateway: async (_config, _request, _toolCallId, ctx) => {
+				resultMode = ctx.resultMode;
+				return { body: { ok: true, status: "success", data: {} }, httpStatus: 200 };
+			},
+		});
+
+		assert.equal(resultMode, "local-file");
+		assert.throws(() => parseLocalBrokerRequest({
+			version: 1,
+			resultMode: "local-file",
+			request: { op: "connections.list", payload: {} },
+		}), /only for tools.invoke/);
 	});
 
 	it("sends an ordinary scripted call without invented skill provenance", async () => {
@@ -300,6 +323,9 @@ describe("Divo local broker protocol", () => {
 	it("installs a credential-free CLI, serves one active Bash call, and cleans up its process state", async () => {
 		const originalPath = process.env.PATH;
 		const originalSocket = process.env.DIVO_LOCAL_BROKER_SOCKET;
+		const originalRunDir = process.env.DIVO_RUN_DIR;
+		const runDir = await mkdtemp(join(tmpdir(), "divo-run-"));
+		process.env.DIVO_RUN_DIR = runDir;
 		captureDivoGatewayConfig({
 			DIVO_BACKEND_URL: "http://localhost:4000",
 			DIVO_MEMBER_TOKEN: "member-token",
@@ -316,7 +342,9 @@ describe("Divo local broker protocol", () => {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
 			executeGateway: async (_resolved, request) => ({
-				body: { ok: true, status: "success", data: { op: request.op } },
+				body: { ok: true, status: "success", data: request.op === "tools.invoke"
+					? { toolId: "zohoBooks", action: "read", result: { rows: [{ id: "row-1", secret: "file-only" }] } }
+					: { op: request.op } },
 				httpStatus: 200,
 			}),
 		});
@@ -346,6 +374,13 @@ describe("Divo local broker protocol", () => {
 			assert.equal(output.trace.actionId, "bash-cli:broker:1");
 			assert.match(result.stderr, /\[Divo\] List connections/);
 			assert.doesNotMatch(`${result.stdout}${result.stderr}`, /member-token/);
+			const fileResult = await execFileAsync("divo-local", [
+				"invoke", "--tool", "zohoBooks", "--args-json", "{}", "--output", "page.json",
+			], { env: process.env });
+			const summary = JSON.parse(fileResult.stdout);
+			assert.equal(summary.output, join(runDir, "page.json"));
+			assert.doesNotMatch(fileResult.stdout, /file-only/);
+			assert.match(await readFile(join(runDir, "page.json"), "utf8"), /file-only/);
 			await handlers.get("tool_execution_end")?.[0]?.({
 				toolName: "bash",
 				toolCallId: "bash-cli",
@@ -355,6 +390,9 @@ describe("Divo local broker protocol", () => {
 			clearCapturedDivoGatewayConfig();
 			assert.equal(process.env.PATH, originalPath);
 			assert.equal(process.env.DIVO_LOCAL_BROKER_SOCKET, originalSocket);
+			if (originalRunDir === undefined) delete process.env.DIVO_RUN_DIR;
+			else process.env.DIVO_RUN_DIR = originalRunDir;
+			await rm(runDir, { recursive: true, force: true });
 		}
 	});
 });

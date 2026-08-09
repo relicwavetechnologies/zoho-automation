@@ -397,7 +397,7 @@ export async function callDivoGateway(
 	config: DivoGatewayConfig,
 	request: GatewayRequestBody,
 	fetchImpl: typeof fetch = fetch,
-	options: { signal?: AbortSignal } = {},
+	options: { signal?: AbortSignal; resultMode?: "local-file" } = {},
 ): Promise<{ body: GatewayResponseBody; httpStatus: number }> {
 	const preparedRequest = await prepareDivoGatewayRequest(request);
 	const departmentId = request.departmentId ?? config.defaultDepartmentId;
@@ -428,6 +428,7 @@ export async function callDivoGateway(
 			Authorization: `Bearer ${config.memberToken}`,
 			"Content-Type": "application/json",
 			Accept: "application/json",
+			...(options.resultMode ? { "X-Divo-Result-Mode": options.resultMode } : {}),
 		},
 		body: JSON.stringify(payload),
 		signal,

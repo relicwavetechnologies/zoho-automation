@@ -31,6 +31,7 @@ type JsonRecord = Record<string, unknown>;
 export interface LocalBrokerRequestV1 {
 	version: 1;
 	label?: string;
+	resultMode?: "local-file";
 	request: {
 		op: string;
 		departmentId?: string;
@@ -107,9 +108,16 @@ export function parseLocalBrokerRequest(value: unknown): LocalBrokerRequestV1 {
 	if (!ALLOWED_BROKER_OPS.has(op)) {
 		throw new Error(`Divo local broker operation "${op}" is not exposed.`);
 	}
+	if (input.resultMode !== undefined && input.resultMode !== "local-file") {
+		throw new Error("Invalid Divo local broker result mode.");
+	}
+	if (input.resultMode === "local-file" && op !== "tools.invoke") {
+		throw new Error("Local-file results are available only for tools.invoke.");
+	}
 	return {
 		version: 1,
 		...(cleanString(input.label, 120) ? { label: cleanString(input.label, 120) } : {}),
+		...(input.resultMode === "local-file" ? { resultMode: "local-file" as const } : {}),
 		request: {
 			op,
 			...(cleanString(request.departmentId) ? { departmentId: cleanString(request.departmentId) } : {}),
@@ -182,6 +190,7 @@ export async function executeLocalBrokerRequest(
 					...active.context,
 					...(combinedSignal.signal ? { signal: combinedSignal.signal } : {}),
 					...(correlation.channel ? { runtimeChannel: correlation.channel } : {}),
+					...(input.resultMode ? { resultMode: input.resultMode } : {}),
 				},
 		);
 		return {

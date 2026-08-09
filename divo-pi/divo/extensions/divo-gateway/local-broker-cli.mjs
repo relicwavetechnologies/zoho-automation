@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { normalizeLocalInvokeResponse } from "./local-broker-response.mjs";
 
 function usage(message) {
@@ -8,7 +9,7 @@ function usage(message) {
 	process.stderr.write([
 		"Divo governed company-call client",
 		"",
-		"  divo-local invoke --tool <toolId> (--args-json <json> | --args-file <path>) [--label <text>]",
+		"  divo-local invoke --tool <toolId> (--args-json <json> | --args-file <path>) [--output <run-path>] [--label <text>]",
 		"  divo-local request --op <connections.list|tools.list|tools.invoke> (--payload-json <json> | --payload-file <path>)",
 		"",
 		"The client contains no member or SaaS credentials. The local Divo broker applies runtime approval and the backend applies RBAC, connection policy, rate limits, manager approval, and audit.",
@@ -60,13 +61,27 @@ if (command === "invoke") {
 		payload: await readJson(options, "payload-json", "payload-file", {}),
 	};
 }
+if (options.output && command !== "invoke") usage("--output is available only for invoke.");
 if (options["department-id"]) request.departmentId = options["department-id"];
+
+let outputPath;
+if (options.output) {
+	const runRoot = process.env.DIVO_RUN_DIR;
+	if (!runRoot) usage("DIVO_RUN_DIR is required for --output.");
+	const root = resolve(runRoot);
+	outputPath = isAbsolute(options.output) ? resolve(options.output) : resolve(root, options.output);
+	const child = relative(root, outputPath);
+	if (!child || child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child)) {
+		usage("--output must name a new file inside DIVO_RUN_DIR.");
+	}
+}
 
 const socketPath = process.env.DIVO_LOCAL_BROKER_SOCKET;
 if (!socketPath) usage("The Divo local broker is not available in this shell.");
 const envelope = {
 	version: 1,
 	...(options.label ? { label: options.label } : {}),
+	...(outputPath ? { resultMode: "local-file" } : {}),
 	request,
 };
 process.stderr.write(`[Divo] ${options.label ?? (command === "invoke" ? options.tool : options.op)}\n`);
@@ -83,7 +98,7 @@ socket.on("error", (error) => {
 	process.stderr.write(`Divo broker error: ${error.message}\n`);
 	process.exitCode = error.message === "Cancelled" ? 130 : 3;
 });
-socket.on("close", () => {
+socket.on("close", async () => {
 	clearTimeout(timeout);
 	if (process.exitCode) return;
 	try {
@@ -91,7 +106,19 @@ socket.on("close", () => {
 		const response = command === "invoke"
 			? normalizeLocalInvokeResponse(rawResponse)
 			: rawResponse;
-		process.stdout.write(`${JSON.stringify(response, null, 2)}\n`);
+		if (outputPath) {
+			const serialized = `${JSON.stringify(response, null, 2)}\n`;
+			await writeFile(outputPath, serialized, { flag: "wx", mode: 0o600 });
+			process.stdout.write(`${JSON.stringify({
+				ok: response.ok,
+				status: response.status,
+				output: outputPath,
+				bytes: Buffer.byteLength(serialized, "utf8"),
+				...(response.trace ? { trace: response.trace } : {}),
+			}, null, 2)}\n`);
+		} else {
+			process.stdout.write(`${JSON.stringify(response, null, 2)}\n`);
+		}
 		process.exitCode = response.ok && response.status === "success" ? 0 : 3;
 	} catch (error) {
 		process.stderr.write(`Divo broker returned invalid JSON: ${error instanceof Error ? error.message : String(error)}\n`);
