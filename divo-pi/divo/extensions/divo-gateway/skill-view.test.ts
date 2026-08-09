@@ -14,6 +14,8 @@ describe("Divo exact skill view", () => {
 
 		assert.match(String(registered?.description), /Compatibility loader/i);
 		assert.match(String(registered?.promptSnippet), /Do not use divo_skill_view for ordinary native skills/i);
+		assert.match(String(registered?.promptSnippet), /provenance-bound knowledge-publishing/i);
+		assert.doesNotMatch(String(registered?.promptSnippet), /scheduling/i);
 	});
 
 	it("loads an exact skill through the backend-owned skills.get operation", async () => {

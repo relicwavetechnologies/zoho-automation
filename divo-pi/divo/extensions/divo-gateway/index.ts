@@ -41,7 +41,6 @@ import { registerTraceCapture } from "./trace.ts";
 import { readDivoRunCorrelation } from "./run-correlation.ts";
 import { registerTeachClarificationTool } from "./teach-clarification.ts";
 
-const SCHEDULE_DIVO_WORK_SKILL_SLUG = "schedule-divo-work";
 const NATIVE_DB_SKILL_ROOT = "/run/divo-skills/current/";
 
 export function nativeSkillPromptSummary(
@@ -75,20 +74,6 @@ function currentRunPrompt(threadId?: string): string {
 		"- Put temporary helper scripts, scratch notes, downloaded intermediate files, and logs under DIVO_RUN_DIR or the matching DIVO_* scratch directory.",
 	];
 	return lines.join("\n");
-}
-
-export function resolvedScheduleDivoWork(result: {
-	results: Array<{ slug?: string }>;
-}): boolean {
-	return result.results.some((skill) => skill.slug === SCHEDULE_DIVO_WORK_SKILL_SLUG);
-}
-
-export function isScheduledWorkflowInvocation(request: {
-	op: string;
-	payload?: Record<string, unknown>;
-}): boolean {
-	return request.op === "tools.invoke"
-		&& request.payload?.toolId === "scheduledWorkflows";
 }
 
 /**
@@ -288,7 +273,7 @@ Use divo_knowledge_review for every personal, department, or company skill mutat
 
 For every connection-backed Google, Zoho, Canva, Airtable, Shopify, or user-scoped Lark call, select one exact UUID returned by the current run bootstrap or by a single connections.list call and pass it as args.connectionId. Reuse a bootstrap account without rediscovering it. This is mandatory even when only one account is available: it is how backend RBAC, connection policy, approvals, and rate limits are applied. For connections.list, always include exactly one provider: google_workspace for Gmail, Drive, and Calendar; zoho for Zoho CRM and Books; canva for Canva; airtable for Airtable; lark for Lark; shopify for Shopify. Never omit provider and never use google.
 
-Scheduling is a direct core capability in both normal and Teach conversations. Read the native Schedule Divo Work skill first. Until native-read audit provenance replaces the compatibility ledger, also load that same exact recipe with divo_skill_view immediately before invoking scheduledWorkflows; do not use the resolver when the native recipe is present. The gateway refuses scheduledWorkflows invocation unless this provenance step completed. Use scheduledWorkflows for agent work, reminders, reports, or monitoring that must run later or repeatedly. Use a calendar skill for meetings, invitations, free/busy checks, or reserving time. If "schedule" is ambiguous, ask whether the user means a calendar event or Divo work. Follow the scheduling skill's exact envelopes; keep every scheduler field inside payload.args. The future intent must be self-contained. Use list, pause, resume, cancel, and run_now to manage existing schedules, and never call a pending approval or drafted payload completed.
+Scheduling is a direct core capability in both normal and Teach conversations. Read the native Schedule Divo Work skill first, then invoke scheduledWorkflows through the governed gateway. A skill is guidance, not an authorization token; backend RBAC and approval remain authoritative. Use scheduledWorkflows for agent work, reminders, reports, or monitoring that must run later or repeatedly. Use a calendar skill for meetings, invitations, free/busy checks, or reserving time. If "schedule" is ambiguous, ask whether the user means a calendar event or Divo work. Follow the scheduling skill's exact envelopes; keep every scheduler field inside payload.args. The future intent must be self-contained. Use list, pause, resume, cancel, and run_now to manage existing schedules, and never call a pending approval or drafted payload completed.
 
 After resolving a meaningful company task and before executing it, silently evaluate whether subagents would create a clear advantage. Think in company-wide workstreams such as research, retrieval from separate systems, document or record analysis, comparison, workflow planning, preparation, and independent verification. Use subagents when two or more substantial workstreams are independent, when a bounded investigation would add large irrelevant context to the main conversation, or when an independent specialist materially improves reliability. Do not delegate a simple or one-step request, work that needs frequent user clarification, tightly coupled steps that share evolving context, or parallel work against the same mutable record or external destination. Use the minimum useful number of subagents, normally two to four; parallelize only dependency-free work and chain genuinely dependent work.
 
@@ -337,7 +322,7 @@ The persona patch is { schemaVersion: 2, baseRevision, understanding, readiness,
 
 For a reusable procedure, preserve its corrected final version, decision rules, exceptions, rollback/failure handling, owners, inputs, expected output, and quality checks. Exclude unrelated conversation details. A skill update is a complete replacement version, not a partial patch.
 
-Do not execute the demonstrated business workflow during Teach. Scheduling is a separate explicit action after learning succeeds. When scheduled work is part of the reusable procedure, include scheduledWorkflows in its toolIds. Before scheduling, load Schedule Divo Work from the catalogue with divo_skill_view. Activate it only after learning succeeds, only for explicitly requested activation with a complete trigger, timezone, scope, autonomy boundary, and failure policy, and through its standard approval. If automation was merely inferred, clarify or report the opportunity; never silently activate inferred automation.
+Do not execute the demonstrated business workflow during Teach. Scheduling is a separate explicit action after learning succeeds. When scheduled work is part of the reusable procedure, include scheduledWorkflows in its toolIds. Before scheduling, read the native Schedule Divo Work skill. Activate it only after learning succeeds, only for explicitly requested activation with a complete trigger, timezone, scope, autonomy boundary, and failure policy, and through its standard approval. If automation was merely inferred, clarify or report the opportunity; never silently activate inferred automation.
 
 Report persona, skill, and scheduling outcomes separately. Say exactly what was applied, what is awaiting whom, what was rejected, and what was intentionally ignored. Stay in the same conversation for corrections; reload Teach context before each later persona revision.
 </divo_teach_agent>`;
@@ -466,19 +451,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				op: request.op,
 				toolId: request.payload?.toolId,
 				lookup: (toolId) => loadedSkillByTool.get(toolId),
-				scheduling: isScheduledWorkflowInvocation(request),
 			});
-			if (authorization && !authorization.ok) {
-				return {
-					content: [{ type: "text", text: authorization.message }],
-					details: {
-						configured: true,
-						status: "skill_required",
-						ok: false,
-					},
-					isError: true,
-				};
-			}
 			if (authorization?.ok && authorization.skillId) {
 				request.payload = { ...request.payload, skillId: authorization.skillId };
 			}

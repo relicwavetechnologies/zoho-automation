@@ -117,9 +117,9 @@ export function registerDivoSkillView(
 		name: "divo_skill_view",
 		label: "Divo skill",
 		description:
-			"Compatibility loader for an exact backend-owned Divo skill ID. Use only when scheduling or knowledge publishing still requires DB audit provenance, or when Pi's native DB skills are absent during rollback.",
+			"Compatibility loader for an exact backend-owned Divo skill ID. Use only when knowledge publishing still requires DB audit provenance, or when Pi's native DB skills are absent during rollback.",
 		promptSnippet:
-			"Do not use divo_skill_view for ordinary native skills. Use it only for a provenance-bound scheduling or knowledge-publishing step, or when native DB skills are absent.",
+			"Do not use divo_skill_view for ordinary native skills. Use it only for a provenance-bound knowledge-publishing step, or when native DB skills are absent.",
 		promptGuidelines: [
 			"Use only an exact skillId present in the injected Divo catalogue, a persona-linked rule, or a backend resolution result. Never guess an ID.",
 			"When Pi's available_skills contains the relevant DB skill, read its SKILL.md instead of calling this compatibility tool unless the workflow explicitly requires audit provenance.",

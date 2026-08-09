@@ -6,8 +6,6 @@ import { describe, it } from 'node:test';
 import {
 	buildTeachAgentPrompt,
 	DIVO_COMPANY_PERSONA_PROMPT,
-	isScheduledWorkflowInvocation,
-	resolvedScheduleDivoWork,
 } from './index.ts';
 import { DIVO_RUN_CONTEXT_PATH_ENV, readDivoRunCorrelation } from './run-correlation.ts';
 
@@ -16,21 +14,8 @@ describe('interactive Teach Pi profile', () => {
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Scheduling is a direct core capability/);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Read the native Schedule Divo Work skill first/);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /scheduledWorkflows/);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /refuses scheduledWorkflows invocation unless this provenance step completed/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /skill is guidance, not an authorization token/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /list, pause, resume, cancel, and run_now/);
-	});
-
-	it('identifies the exact scheduling recipe and scheduler invocation', () => {
-		assert.equal(resolvedScheduleDivoWork({ results: [{ slug: 'schedule-divo-work' }] }), true);
-		assert.equal(resolvedScheduleDivoWork({ results: [{ slug: 'calendar-events' }] }), false);
-		assert.equal(isScheduledWorkflowInvocation({
-			op: 'tools.invoke',
-			payload: { toolId: 'scheduledWorkflows', args: { operation: 'create' } },
-		}), true);
-		assert.equal(isScheduledWorkflowInvocation({
-			op: 'tools.list',
-			payload: { toolId: 'scheduledWorkflows' },
-		}), false);
 	});
 
 	it('teaches the primary agent selective company-wide subagent orchestration', () => {
@@ -77,8 +62,8 @@ describe('interactive Teach Pi profile', () => {
 		assert.match(prompt, /unresolvedMaterialQuestions must be \[\]/);
 		assert.match(prompt, /same conversation/);
 		assert.match(prompt, /scheduledWorkflows/);
-		assert.match(prompt, /Before scheduling, load Schedule Divo Work/i);
-		assert.match(prompt, /divo_skill_view/);
+		assert.match(prompt, /Before scheduling, read the native Schedule Divo Work/i);
+		assert.doesNotMatch(prompt, /Before scheduling.*divo_skill_view/i);
 		assert.match(prompt, /explicitly requested activation/i);
 		assert.match(prompt, /never silently activate inferred automation/i);
 		assert.match(prompt, /sole coordinator and writer for this Teach session/i);

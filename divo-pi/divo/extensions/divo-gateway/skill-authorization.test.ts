@@ -10,7 +10,6 @@ describe("skill authorization", () => {
 			op: "tools.list",
 			toolId: undefined,
 			lookup: () => loaded,
-			scheduling: false,
 		}), null);
 	});
 
@@ -19,22 +18,17 @@ describe("skill authorization", () => {
 			op: "tools.invoke",
 			toolId: "knowledge",
 			lookup: () => undefined,
-			scheduling: false,
 		});
 		assert.equal(result, null);
 	});
 
-	it("gives scheduling work its own guidance", () => {
+	it("does not turn scheduling guidance into an authorization gate", () => {
 		const result = authorizeToolInvocation({
 			op: "tools.invoke",
 			toolId: "scheduledWorkflows",
 			lookup: () => undefined,
-			scheduling: true,
 		});
-		assert.deepEqual(result, {
-			ok: false,
-			message: "Scheduling recipe required. Load the exact Schedule Divo Work skillId from the injected catalogue with divo_skill_view, then retry.",
-		});
+		assert.equal(result, null);
 	});
 
 	it("binds the skill that was actually loaded", () => {
@@ -42,7 +36,6 @@ describe("skill authorization", () => {
 			op: "tools.invoke",
 			toolId: "knowledge",
 			lookup: () => loaded,
-			scheduling: false,
 		}), { ok: true, skillId: "skill-1" });
 	});
 
@@ -57,11 +50,11 @@ describe("skill authorization", () => {
 	it("keeps the binding across runs in the same container", () => {
 		const lookup = () => loaded;
 		const first = authorizeToolInvocation({
-			op: "tools.invoke", toolId: "knowledge", lookup, scheduling: false,
+			op: "tools.invoke", toolId: "knowledge", lookup,
 		});
 		// A later message is a different run; the binding is unchanged.
 		const later = authorizeToolInvocation({
-			op: "tools.invoke", toolId: "knowledge", lookup, scheduling: false,
+			op: "tools.invoke", toolId: "knowledge", lookup,
 		});
 		assert.deepEqual(first, { ok: true, skillId: "skill-1" });
 		assert.deepEqual(later, first);
@@ -72,7 +65,6 @@ describe("skill authorization", () => {
 			op: "tools.invoke",
 			toolId: "zohoBooks",
 			lookup: (toolId) => (toolId === "knowledge" ? loaded : undefined),
-			scheduling: false,
 		});
 		assert.equal(result, null);
 	});

@@ -175,11 +175,7 @@ export async function executeLocalBrokerRequest(
 			op: input.request.op,
 			toolId: payload?.["toolId"],
 			lookup: dependencies.lookupLoadedSkill,
-			scheduling: payload?.["toolId"] === "scheduledWorkflows",
 		});
-		if (authorization && !authorization.ok) {
-			throw new Error(authorization.message);
-		}
 		const authorizedPayload = authorization?.ok && authorization.skillId
 			? { ...(asRecord(trustedPayload) ?? {}), skillId: authorization.skillId }
 			: trustedPayload;

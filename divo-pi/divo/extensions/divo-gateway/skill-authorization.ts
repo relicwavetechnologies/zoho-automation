@@ -6,8 +6,7 @@
  * script runs over the broker socket. Both reach the same backend, so both
  * attach the same trusted provenance when a recipe was loaded. Missing skill
  * guidance does not stop an ordinary call; the backend still owns identity,
- * RBAC, connection access, validation, and approval policy. Workflows that
- * genuinely depend on a recipe may still require one.
+ * RBAC, connection access, validation, and approval policy.
  *
  * The caller cannot supply its own `skillId`. When present, it is read from
  * what was actually loaded so audit provenance cannot be forged.
@@ -43,7 +42,6 @@ export function authorizeToolInvocation(input: {
 	readonly op: string;
 	readonly toolId: unknown;
 	readonly lookup: LoadedSkillLookup;
-	readonly scheduling: boolean;
 }): SkillAuthorization | null {
 	if (input.op !== "tools.invoke") return null;
 
@@ -51,12 +49,6 @@ export function authorizeToolInvocation(input: {
 	const lookup = typeof input.lookup === "function" ? input.lookup : () => undefined;
 	const loaded = toolId ? lookup(toolId) : undefined;
 
-	if (input.scheduling && (!toolId || !loaded)) {
-		return {
-			ok: false,
-			message: "Scheduling recipe required. Load the exact Schedule Divo Work skillId from the injected catalogue with divo_skill_view, then retry.",
-		};
-	}
 	if (!toolId || !loaded) return null;
 	return { ok: true, skillId: loaded.skillId };
 }
