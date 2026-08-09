@@ -14,8 +14,9 @@ import { DIVO_RUN_CONTEXT_PATH_ENV, readDivoRunCorrelation } from './run-correla
 describe('interactive Teach Pi profile', () => {
 	it('teaches normal Divo conversations the direct scheduling route', () => {
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Scheduling is a direct core capability/);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Read the native Schedule Divo Work skill first/);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /scheduledWorkflows/);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /refuses scheduledWorkflows invocation unless the recipe was loaded/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /refuses scheduledWorkflows invocation unless this provenance step completed/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /list, pause, resume, cancel, and run_now/);
 	});
 

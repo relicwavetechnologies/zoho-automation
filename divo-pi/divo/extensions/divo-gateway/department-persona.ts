@@ -131,6 +131,7 @@ export function composeDivoSystemPrompt(
 	systemPrompt: string,
 	companyPersonaPrompt: string,
 	departmentContext: DivoDepartmentPersonaContext | null,
+	options: { nativeSkills?: boolean } = {},
 ): string {
 	const withoutDivoContext = systemPrompt
 		.replace(departmentPersonaBlock, "")
@@ -143,7 +144,10 @@ export function composeDivoSystemPrompt(
 		? withoutDivoContext
 		: [withoutDivoContext, companyPersonaPrompt].filter(Boolean).join("\n\n");
 	const departmentPersona = formatDepartmentPersona(departmentContext);
-	const capabilityBootstrap = formatCapabilityBootstrap(departmentContext?.capabilityBootstrap);
+	const capabilityBootstrap = formatCapabilityBootstrap(
+		departmentContext?.capabilityBootstrap,
+		options.nativeSkills === true,
+	);
 	const memberDepartments = formatMemberDepartments(departmentContext);
 	const personalMemory = formatPersonalMemory(departmentContext);
 
@@ -190,12 +194,17 @@ function formatPersonalMemory(context: DivoDepartmentPersonaContext | null): str
 	].join("\n");
 }
 
-function formatCapabilityBootstrap(bootstrap: DivoCapabilityBootstrap | null | undefined): string | null {
+function formatCapabilityBootstrap(
+	bootstrap: DivoCapabilityBootstrap | null | undefined,
+	nativeSkills: boolean,
+): string | null {
 	if (!bootstrap) return null;
 
 	const lines = [
 		CAPABILITY_BOOTSTRAP_OPEN_TAG,
-		"This is a compact backend-generated, RBAC-filtered runtime catalogue. It is guidance, not a permission grant; the backend validates every invocation against current policy.",
+		nativeSkills
+			? "This is a compact backend-generated, RBAC-filtered tool and account catalogue. Pi's available_skills list is the skill index. This catalogue is guidance, not a permission grant; the backend validates every invocation against current policy."
+			: "This is a compact backend-generated, RBAC-filtered runtime catalogue. It is guidance, not a permission grant; the backend validates every invocation against current policy.",
 		"AUTHORITATIVE CAPABILITY-REPORTING RULE: describe permitted operations only from each governed tool's actions list. Skill names and descriptions explain workflows, not permissions; never claim an operation mentioned by a skill when that operation is absent from the matching tool actions.",
 		`Department function: ${safeInline(bootstrap.departmentFunction)}`,
 		`Company role: ${safeInline(bootstrap.companyRole)}`,
@@ -206,7 +215,7 @@ function formatCapabilityBootstrap(bootstrap: DivoCapabilityBootstrap | null | u
 		lines.push(`Skill registry revision: ${bootstrap.registryRevision}`);
 	}
 
-	if (bootstrap.availableSkills.length > 0) {
+	if (!nativeSkills && bootstrap.availableSkills.length > 0) {
 		lines.push("", "Available company skills (compact index):");
 		for (const skill of bootstrap.availableSkills) {
 			const description = bootstrap.families?.length ? "" : `: ${safeInline(skill.description)}`;
@@ -231,13 +240,15 @@ function formatCapabilityBootstrap(bootstrap: DivoCapabilityBootstrap | null | u
 			for (const tool of family.tools) {
 				lines.push(`  - ${safeInline(tool.displayName)} [toolId=${safeInline(tool.toolId)}; actions=${tool.actions.map(safeInline).join(", ")}]: ${safeInline(tool.description)}`);
 			}
-			for (const skill of family.skills) {
-				lines.push(`  - Recipe: ${safeInline(skill.name)} [skillId=${safeInline(skill.skillId)}; mode=${safeInline(skill.mode)}]`);
+			if (!nativeSkills) {
+				for (const skill of family.skills) {
+					lines.push(`  - Recipe: ${safeInline(skill.name)} [skillId=${safeInline(skill.skillId)}; mode=${safeInline(skill.mode)}]`);
+				}
 			}
 		}
 	}
 
-	if (bootstrap.preferredSkills.length > 0) {
+	if (!nativeSkills && bootstrap.preferredSkills.length > 0) {
 		lines.push("", "Preferred skill fast paths:");
 		for (const skill of bootstrap.preferredSkills) {
 			const description = bootstrap.families?.length ? "" : `: ${safeInline(skill.description)}`;
@@ -269,12 +280,21 @@ function formatCapabilityBootstrap(bootstrap: DivoCapabilityBootstrap | null | u
 		for (const hint of bootstrap.routingHints) lines.push(`- ${safeInline(hint)}`);
 	}
 
+	lines.push("", "Routing policy:");
+	if (nativeSkills) {
+		lines.push(
+			"- Match the task against Pi's available_skills metadata. Read only the exact relevant SKILL.md with Pi's read tool.",
+			"- Do not call divo_skill_view or divo_skill_resolve for ordinary routing when the relevant native skill is present.",
+			"- No skill is a valid outcome for ordinary conversation or a simple direct capability call.",
+		);
+	} else {
+		lines.push(
+			"- Scan the compact index before acting. If one exact skill is relevant, load it once with divo_skill_view using the listed skillId.",
+			"- No skill is a valid outcome for ordinary conversation or a simple direct capability call. Do not run fuzzy skill search merely to prove that no skill exists.",
+			"- Use divo_skill_resolve only as a fallback when a specialized company workflow is likely but no indexed skill clearly matches.",
+		);
+	}
 	lines.push(
-		"",
-		"Routing policy:",
-		"- Scan the compact index before acting. If one exact skill is relevant, load it once with divo_skill_view using the listed skillId.",
-		"- No skill is a valid outcome for ordinary conversation or a simple direct capability call. Do not run fuzzy skill search merely to prove that no skill exists.",
-		"- Use divo_skill_resolve only as a fallback when a specialized company workflow is likely but no indexed skill clearly matches.",
 		"- A successful skill load or catalogue entry never grants tool permission; backend validation remains authoritative.",
 		"- When listing capabilities, preserve the exact governed action boundary even when a skill description is broader.",
 		CAPABILITY_BOOTSTRAP_CLOSE_TAG,

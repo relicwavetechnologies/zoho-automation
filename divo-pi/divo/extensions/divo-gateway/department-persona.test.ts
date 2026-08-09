@@ -182,6 +182,17 @@ describe("department persona", () => {
 		assert.match(prompt, /Daily Report \[skillId=skill-daily-report; revision=3\]/);
 		assert.match(prompt, /googleSheets: read, update/);
 		assert.match(prompt, /Use divo_skill_resolve only as a fallback/);
+
+		const nativePrompt = composeDivoSystemPrompt(
+			"Base prompt",
+			COMPANY_PROMPT,
+			await readDepartmentPersonaContext(path),
+			{ nativeSkills: true },
+		);
+		assert.match(nativePrompt, /available_skills list is the skill index/);
+		assert.match(nativePrompt, /googleSheets: read, update/);
+		assert.doesNotMatch(nativePrompt, /Daily Report \[skillId=/);
+		assert.doesNotMatch(nativePrompt, /divo_skill_view using the listed skillId/);
 	});
 
 	it("injects the v3 family hierarchy without treating family IDs as executable tools", async () => {

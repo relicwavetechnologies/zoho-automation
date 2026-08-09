@@ -34,7 +34,7 @@ describe("Divo normal-session routing policy", () => {
 	});
 
 	it("routes an ordinary current-information comparison directly to webSearch", () => {
-		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /prefer loading the exact Web Search DB skill/i);
+		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /read the exact Web Search skill from Pi's available_skills/i);
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /missing guidance as permission denial/i);
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /then call webSearch/i);
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /Do not run fuzzy discovery/i);
@@ -47,9 +47,9 @@ describe("Divo normal-session routing policy", () => {
 		);
 	});
 
-	it("keeps the bundled router skill aligned with catalogue-first routing", () => {
+	it("keeps the bundled router skill aligned with Pi-native routing", () => {
 		assert.match(ROUTER_SKILL, /using no skill is correct/i);
-		assert.match(ROUTER_SKILL, /prefer loading the exact web-search skill .* then invoke `tools\.invoke`/i);
+		assert.match(ROUTER_SKILL, /read the exact Web Search skill from Pi's `available_skills`/i);
 		assert.match(ROUTER_SKILL, /missing guidance as permission denial/i);
 		assert.doesNotMatch(ROUTER_SKILL, /immediately invoke `tools\.invoke`/i);
 		assert.match(ROUTER_SKILL, /without fuzzy skill discovery/i);
@@ -59,6 +59,7 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(ROUTER_SKILL, /drive\.google\.com\/file\/d/);
 		assert.match(ROUTER_SKILL, /Never derive a Google ID, request a download URL, or call `import_to_google_sheets` directly/i);
 		assert.match(ROUTER_SKILL, /backend delivers the confirmation card and owns creation/i);
+		assert.doesNotMatch(ROUTER_SKILL, /compact capability catalogue as the normal routing map/i);
 	});
 
 	it("always routes a pasted Drive Excel workbook through the Sheets resolver", () => {

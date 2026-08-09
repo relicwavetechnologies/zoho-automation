@@ -1,8 +1,21 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { loadDivoSkill, parseLoadedSkill } from "./skill-view.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { loadDivoSkill, parseLoadedSkill, registerDivoSkillView } from "./skill-view.ts";
 
 describe("Divo exact skill view", () => {
+	it("advertises only the narrow compatibility use", () => {
+		let registered: Record<string, unknown> | undefined;
+		registerDivoSkillView({
+			registerTool: (tool: Record<string, unknown>) => {
+				registered = tool;
+			},
+		} as unknown as ExtensionAPI);
+
+		assert.match(String(registered?.description), /Compatibility loader/i);
+		assert.match(String(registered?.promptSnippet), /Do not use divo_skill_view for ordinary native skills/i);
+	});
+
 	it("loads an exact skill through the backend-owned skills.get operation", async () => {
 		let request: unknown;
 		const skill = await loadDivoSkill({ skillId: "skill-1", departmentId: "dept-1" }, {
