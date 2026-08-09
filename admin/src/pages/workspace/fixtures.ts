@@ -500,6 +500,23 @@ export const DATA_SOURCES: Record<string, { state: DataState; note: string }> = 
    */
   automations: { state: 'not-wired', note: 'The rows are invented. ScheduledWorkflowControlService is real and complete, but no HTTP route reaches it — automations are created by asking Divo, and nothing here was read from anywhere.' },
   mailRules: { state: 'live', note: 'Reads and creation are real — /api/mail-automations rules, health, deliveries, suggestions and POST /rules. Pausing, editing and deleting a rule are still done by asking Divo.' },
+  /**
+   * The agent map is deliberately half-and-half, and the two halves are
+   * different keys so neither can borrow the other's credibility.
+   *
+   * `agentGraph` — the nodes, the edges and every permission statement on them
+   * come from the same live routes the Team matrix uses. A lit edge is a real
+   * grant.
+   */
+  agentGraph: { state: 'live', note: 'Departments, people and the permission matrix are real — /api/desktop/departments/:id/manage and /api/desktop/auth/tools/*. An edge is lit only when the backend would really allow that action today.' },
+  /**
+   * `agentConfig` — everything that would make a tool family into an authored
+   * agent. None of it exists: there is no agent-definition table, the per-user
+   * container is keyed by company and user rather than by an agent, and memory
+   * has no agent scope. Shown so the shape can be argued about, marked so
+   * nobody reads it as a setting they have changed.
+   */
+  agentConfig: { state: 'needs-backend', note: 'System prompt, model, container policy and memory scope per agent have no backend. There is no agent-definition model; containers are one-per-user; memory scopes are personal, department and company only.' },
 }
 
 /* ── Scopes per persona ──────────────────────────────── */
