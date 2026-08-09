@@ -266,6 +266,27 @@ describe('ToolExecutor', () => {
     assert.equal(result.truncation.returnedBytes, Buffer.byteLength(JSON.stringify(result), 'utf8'));
   });
 
+  it('keeps a large result intact only for the trusted local-file audience', async () => {
+    const large = 'x'.repeat(MODEL_FACING_RESULT_MAX_BYTES * 3);
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({ execute: async () => ok({ result: large }) }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(),
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const response = await executor.invoke({
+      member: { ...member, resultAudience: 'local_file' },
+      toolId: 'fakeTool',
+      args: { query: 'large result' },
+    });
+
+    assert.equal(response.ok, true);
+    assert.equal((response.data as { result: { result: string } }).result.result, large);
+  });
+
   it('returns unknown_tool for missing registry entry', async () => {
     const executor = new ToolExecutor({
       toolRegistry: new ToolRegistry(),

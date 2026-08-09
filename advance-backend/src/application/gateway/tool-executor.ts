@@ -24,7 +24,7 @@ import type {
 } from './gateway.types';
 import { gatewayFailure, gatewaySuccess } from './gateway.types';
 import { SCHEDULED_SESSION_AUTH_PROVIDER } from '../scheduling/scheduled-runtime-session';
-import { limitModelFacingResult } from './model-facing-result-limit';
+import { limitLocalFileResult, limitModelFacingResult } from './model-facing-result-limit';
 import {
   classifyShopifyProtectedResult,
   isProtectedShopifyToolId,
@@ -121,6 +121,12 @@ export interface RuntimeToolPreflightOutcome {
   readonly action?: ToolActionGroup;
   readonly validation?: Record<string, unknown>;
   readonly message?: string;
+}
+
+function limitGatewayResult(member: GatewayMemberContext, value: unknown): unknown {
+  return member.resultAudience === 'local_file'
+    ? limitLocalFileResult(value)
+    : limitModelFacingResult(value);
 }
 
 export interface PreparedToolInvocation {
@@ -339,7 +345,7 @@ export class ToolExecutor {
         return gatewaySuccess({
           toolId: tool.id,
           action,
-          result: limitModelFacingResult(replayed.value),
+          result: limitGatewayResult(member, replayed.value),
           ...(protectedData ? { protectedData } : {}),
           replayedApproval: {
             approvalId: decision.approvalId,
@@ -459,7 +465,7 @@ export class ToolExecutor {
       return gatewaySuccess({
         toolId: tool.id,
         action,
-        result: limitModelFacingResult(validatedResult.value),
+        result: limitGatewayResult(member, validatedResult.value),
         ...protectedResultField(tool.id, validatedArgs, validatedResult.value),
       });
     } catch (error) {

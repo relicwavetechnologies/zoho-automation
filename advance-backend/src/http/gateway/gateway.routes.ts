@@ -99,6 +99,11 @@ export function createGatewayRoutes(deps: GatewayRoutesDeps): Router {
         ? { runtimeThreadId: res.locals['runtimeThreadId'] as string }
         : {}),
       sessionId,
+      ...(res.locals['isPiRuntimeLease'] === true
+        && parsed.data.op === 'tools.invoke'
+        && req.get('x-divo-result-mode') === 'local-file'
+        ? { resultAudience: 'local_file' as const }
+        : {}),
       authProvider: (res.locals['authProvider'] as string | null | undefined) ?? null,
     };
 

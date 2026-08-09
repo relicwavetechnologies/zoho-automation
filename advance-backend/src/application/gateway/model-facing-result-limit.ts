@@ -1,10 +1,11 @@
 import { Buffer } from 'node:buffer';
 
 export const MODEL_FACING_RESULT_MAX_BYTES = 96 * 1024;
+export const LOCAL_FILE_RESULT_MAX_BYTES = 8 * 1024 * 1024;
 
 export interface ModelFacingResultTruncation {
   readonly truncated: true;
-  readonly reason: 'model_result_limit';
+  readonly reason: 'model_result_limit' | 'local_file_result_limit';
   readonly originalBytes: number;
   readonly returnedBytes: number;
   readonly maxBytes: number;
@@ -23,6 +24,21 @@ export function limitModelFacingResult(
   value: unknown,
   maxBytes = MODEL_FACING_RESULT_MAX_BYTES,
 ): unknown {
+  return limitSerializedResult(value, maxBytes, 'model_result_limit');
+}
+
+export function limitLocalFileResult(
+  value: unknown,
+  maxBytes = LOCAL_FILE_RESULT_MAX_BYTES,
+): unknown {
+  return limitSerializedResult(value, maxBytes, 'local_file_result_limit');
+}
+
+function limitSerializedResult(
+  value: unknown,
+  maxBytes: number,
+  reason: 'model_result_limit' | 'local_file_result_limit',
+): unknown {
   const serialization = serializeForModelFacing(value);
   const serialized = serialization.serialized;
   const originalBytes = byteLength(serialized);
@@ -30,7 +46,7 @@ export function limitModelFacingResult(
 
   const metadataWithoutReturnedBytes = {
     truncated: true as const,
-    reason: 'model_result_limit' as const,
+    reason,
     originalBytes,
     returnedBytes: 0,
     maxBytes,

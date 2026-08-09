@@ -22,6 +22,7 @@ async function callPost(
   opts: {
     body?: unknown;
     locals?: Record<string, unknown>;
+    headers?: Record<string, string>;
   } = {},
 ): Promise<{ status: number; body: GatewayResponse }> {
   return new Promise((resolve) => {
@@ -34,7 +35,8 @@ async function callPost(
       params: {},
       query: {},
       body: opts.body ?? {},
-      headers: {},
+      headers: opts.headers ?? {},
+      get: (name: string) => opts.headers?.[name.toLowerCase()],
     } as unknown as Request;
 
     const res = {
@@ -160,6 +162,34 @@ describe('createGatewayRoutes', () => {
     assert.equal(dispatchedMember?.['runtimeRunId'], 'run-1');
     assert.equal(dispatchedMember?.['runtimeThreadId'], 'thread-1');
     assert.equal(dispatchedMember?.['runtimeChatId'], 'chat-1');
+  });
+
+  it('accepts local-file results only from a signed Pi tool invocation', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const router = createGatewayRoutes({
+      dispatcher: {
+        dispatch: async (_request, member) => {
+          seen.push(member as unknown as Record<string, unknown>);
+          return { ok: true, status: 'success', data: {} };
+        },
+      } as GatewayDispatcher,
+      logger: noopLogger,
+    });
+    const body = { op: 'tools.invoke', execution: executionFor('thread-1'), payload: { toolId: 'fakeTool', args: {} } };
+    const headers = { 'x-divo-result-mode': 'local-file' };
+
+    await callPost(router, { body, headers });
+    await callPost(router, {
+      body,
+      headers,
+      locals: {
+        companyId: 'co-1', userId: 'user-1', aiRole: 'MEMBER', sessionId: 'sess-1',
+        channel: 'lark', isPiRuntimeLease: true, runtimeRunId: 'run-1', runtimeThreadId: 'thread-1',
+      },
+    });
+
+    assert.equal(seen[0]?.['resultAudience'], undefined);
+    assert.equal(seen[1]?.['resultAudience'], 'local_file');
   });
 
   it('requires exact lease-bound run and thread provenance for a Pi memory effect', async () => {

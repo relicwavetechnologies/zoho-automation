@@ -274,6 +274,8 @@ export interface GatewayMemberContext {
   readonly runtimeRunId?: string;
   readonly runtimeThreadId?: string;
   readonly sessionId: string;
+  /** Trusted transport hint set only by the signed Cloud-Pi local-file route. */
+  readonly resultAudience?: 'local_file';
   /**
    * How the session was issued. `scheduled_workflow` marks a machine-issued
    * session for a scheduled run, whose result the runtime delivers to the
