@@ -1138,19 +1138,6 @@
   background: var(--cur-surface-strong); color: var(--cur-muted-soft);
   cursor: default; opacity: .75;
 }
-/* Last 30 days: the numbers and the calendar on one row.
-   Thirty days is five columns of seven whatever the styling, so stacked under a
-   wide card the grid left two thirds of the row empty and pushed the panel to
-   479px tall. Beside the numbers it takes the space they do not want. */
-.cur .ws-usage {
-  display: flex; align-items: flex-start; justify-content: space-between;
-  gap: 26px; flex-wrap: wrap;
-}
-.cur .ws-usage > .ws-heat { flex: 0 0 auto; margin-left: auto; }
-@media (max-width: 560px) {
-  .cur .ws-usage > .ws-heat { margin-left: 0; }
-}
-
 /* ── App icons ────────────────────────────────────────
    The tile every provider mark sits in, so a drawn logo, a PNG and a lettered
    fallback occupy the same square and a mixed list still lines up.

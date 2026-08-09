@@ -26,7 +26,19 @@ export interface DesktopActivityRoutesDeps {
   memberJwtSecret: string;
 }
 
-const MAX_DAYS = 90;
+/*
+ * Sixteen weeks, because that is what a calendar of days is drawn over.
+ *
+ * Ninety was an arbitrary round number and it silently clamped the one caller
+ * that asks for a full window — the Home usage card, whose heatmap is sixteen
+ * columns of seven. Clamped to 90 it drew thirteen columns and a ragged
+ * thirteenth, which reads as missing data rather than as a shorter window.
+ *
+ * The cost of the extra 22 days is one wider `WHERE createdAt >= …` on an
+ * indexed column, plus the same again for the preceding window this route
+ * already reads to report a change.
+ */
+const MAX_DAYS = 112;
 const MAX_RUNS = 50;
 
 const readDays = (req: Request, fallback: number): number => {

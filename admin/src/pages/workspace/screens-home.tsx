@@ -57,6 +57,50 @@ const PITCH: Record<Provider, string> = {
   aitable: 'Connect AITable with a key so Divo can read and update your tables.',
 }
 
+/**
+ * Sixteen weeks, matching the mail dashboard's calendar.
+ *
+ * Not a preference — it is the width the heatmap is drawn for. Sixteen columns
+ * of seven fills a card at a legible cell size; thirty days is five columns and
+ * cannot, however it is laid out. The backend caps `days` at this same number.
+ */
+const USAGE_DAYS = 112
+const USAGE_WEEKS = USAGE_DAYS / 7
+
+/** Today, yesterday, or a short date — the same wording the mail card uses. */
+const dayLabel = (iso: string): string => {
+  const at = new Date(iso)
+  const midnight = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  const days = Math.round((midnight(new Date()) - midnight(at)) / 86_400_000)
+  if (days === 0) return 'Today'
+  if (days === 1) return 'Yesterday'
+  return at.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+}
+
+/**
+ * The facts a total cannot give you.
+ *
+ * `$1.13 over sixteen weeks` reads as nothing at all until you know whether it
+ * was one heavy day or eighty quiet ones — so the average is over days that
+ * were actually used, not over the window, which would divide by the silence
+ * and report a number nobody spent.
+ */
+function summarizeSpend(series: { date: string; spendUsd: number }[]) {
+  const active = series.filter((p) => p.spendUsd > 0)
+  const busiest = active.reduce<{ date: string; value: number } | null>(
+    (best, p) => (best && best.value >= p.spendUsd ? best : { date: p.date, value: p.spendUsd }),
+    null,
+  )
+  const total = active.reduce((sum, p) => sum + p.spendUsd, 0)
+  return {
+    busiest,
+    activeDays: active.length,
+    perActiveDay: active.length > 0 ? total / active.length : 0,
+    // Series is oldest-first, so the last spending day is the most recent one.
+    last: active.length > 0 ? active[active.length - 1]!.date : null,
+  }
+}
+
 const DISMISSED_KEY = 'divo.home.dismissed'
 
 /** Cards the reader has closed. Kept locally — nothing on the backend stores this. */
@@ -122,7 +166,7 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
   const [r1, r2, r3] = useStaged([260, 520, 800], replay)
   const { session } = useAdminAuth()
   const { awaitingMe, requestedByMe, loading: approvalsLoading } = useApprovals()
-  const { usage, loading: usageLoading } = useMyUsage(30)
+  const { usage, loading: usageLoading } = useMyUsage(USAGE_DAYS)
   const { runs, loading: runsLoading } = useMyRuns(6)
   const { byProvider, loading: connectionsLoading } = useConnections()
   const { dismissed, dismiss } = useDismissed()
@@ -131,6 +175,7 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
   // surname adds nothing the person does not already know about themselves.
   const viewer = (session?.name ?? session?.email ?? 'there').split(/[\s@]/)[0]
   const runChange = changePct(usage.runs, usage.previousRuns)
+  const spend = useMemo(() => summarizeSpend(usage.series), [usage.series])
 
   const connected = CONNECTABLE
     .map((provider) => ({ provider, status: byProvider.get(provider) }))
@@ -331,39 +376,41 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
 
       <section className="ws-band">
         <div className="ws-cols">
+          {/*
+            The same card as the member dashboard's, because it answers the
+            same question about a different subject.
+
+            It was thirty days, and thirty days is five columns of seven
+            whatever the styling — a strip that could neither fill the card nor
+            sit under it without leaving two thirds of a row empty. Sixteen
+            weeks is sixteen columns, which is the width the calendar was drawn
+            for; the mail card has said so in a comment since it was built.
+          */}
           <Panel
-            title="Your last 30 days"
+            title={`Your last ${USAGE_WEEKS} weeks`}
             source="myUsage"
             aside={<button type="button" className="btn" onClick={() => go('usage')}>Details</button>}
           >
             <div className="ws-panel-body">
               {!r2 || usageLoading ? (
                 <>
-                  <div style={{ display: 'flex', gap: 40 }}>
+                  <div className="ws-stat3">
+                    <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
                     <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
                     <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
                   </div>
-                  <div style={{ height: 20 }} />
-                  <Skel w="100%" h={46} />
+                  <div style={{ height: 22 }} />
+                  <Skel w="100%" h={130} block />
                 </>
               ) : (
                 <Fade>
-                  {/*
-                    Numbers and the calendar side by side, not stacked.
-                    Thirty days is five columns of seven, so the grid is about
-                    170px wide however it is styled — under a 560px card it left
-                    two thirds of the row empty and the panel ran to 479px tall
-                    for the sake of a strip. Beside the numbers it fills the
-                    space the numbers do not want.
-                  */}
-                  <div className="ws-usage">
-                  <div style={{ display: 'flex', gap: 44, flexWrap: 'wrap' }}>
+                  <div className="ws-stat3">
                     <div>
                       <div className="ws-lbl">Tasks run</div>
                       <div className="ws-num" style={{ marginTop: 8 }}>{usage.runs}</div>
                       <div className="ws-sub" style={{ marginTop: 5, display: 'flex', alignItems: 'center', gap: 5 }}>
                         {runChange >= 0 ? <ArrowUpRight size={13} style={{ color: 'var(--cur-success)' }} /> : null}
-                        {runChange >= 0 ? '+' : '−'}{Math.abs(runChange)}% vs the month before
+                        {runChange >= 0 ? '+' : '−'}{Math.abs(runChange)}% vs the period before
                       </div>
                     </div>
                     <div>
@@ -371,8 +418,36 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
                       <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(usage.spendUsd)}</div>
                       <div className="ws-sub" style={{ marginTop: 5 }}>{money(usage.spendTodayUsd)} today</div>
                     </div>
+                    <div>
+                      <div className="ws-lbl">Busiest day</div>
+                      <div className="ws-num" style={{ marginTop: 8 }}>
+                        {spend.busiest ? money(spend.busiest.value) : '—'}
+                      </div>
+                      <div className="ws-sub" style={{ marginTop: 5 }}>
+                        {spend.busiest ? dayLabel(spend.busiest.date) : 'Nothing yet'}
+                      </div>
+                    </div>
                   </div>
-                    <Heatmap data={usage.series.map((p) => ({ date: p.date, value: p.spendUsd }))} />
+
+                  <div style={{ marginTop: 22 }}>
+                    <Heatmap
+                      data={usage.series.map((p) => ({ date: p.date, value: p.spendUsd }))}
+                      format={(n) => money(n)}
+                    />
+                  </div>
+                  <div className="ws-heat-facts">
+                    <div>
+                      <div className="ws-lbl">Days used</div>
+                      <div style={{ marginTop: 5 }}>{spend.activeDays} of {usage.days || USAGE_DAYS}</div>
+                    </div>
+                    <div>
+                      <div className="ws-lbl">On a day you used it</div>
+                      <div style={{ marginTop: 5 }}>{spend.activeDays ? money(spend.perActiveDay) : '—'}</div>
+                    </div>
+                    <div>
+                      <div className="ws-lbl">Last run</div>
+                      <div style={{ marginTop: 5 }}>{spend.last ? dayLabel(spend.last) : '—'}</div>
+                    </div>
                   </div>
                 </Fade>
               )}
