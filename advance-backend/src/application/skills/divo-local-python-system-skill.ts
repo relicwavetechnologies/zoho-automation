@@ -22,12 +22,12 @@ Use this recipe when one coherent workflow materially benefits from Python for
 bounded pagination, parsing, transformation, grouping, deduplication, joining,
 or several related destination writes.
 
-Use the governed provider preview and \`exportCandidate\` → \`dataExport\` path
-when one source simply needs a complete downloadable artifact. Use Python when
-the work genuinely needs computation across pages, transformation, more than
-one connected product, or related writes. The container is a real machine with a real
-terminal: write the file, run it, read the error, edit that same file, and run
-it again.
+Use this path for a complete artifact when the source skill exposes real page or
+continuation fields. Use a provider's temporary \`exportCandidate\` →
+\`dataExport\` compatibility path only when that provider skill explicitly says
+it has no terminal-safe paging contract. The container is a real machine with a
+real terminal: write the file, run it, read the error, edit that same file, and
+run it again.
 
 Never use \`exportCandidate\`, \`preview.exportOfferId\`,
 \`destinationReferenceId\`, or \`resourceRef\` as Python data input. Those
@@ -84,12 +84,9 @@ including when an older conversation or cached recipe mentions it.
 
 ## Required file lifecycle
 
-1. Enter this path through the unified Divo work resolver using the user's
-   complete original request. The resolution must include this recipe plus
-   every relevant source and destination recipe, governed tool contract, and
-   accessible account. Do not load this instruction-only recipe by itself.
-   Resolve anything separately only when the unified run bootstrap explicitly
-   says it is missing. Never mutate data to discover a response shape.
+1. Read the native source and destination skills relevant to the request if
+   they have not been read yet. Use their governed tool contracts; never mutate
+   data merely to discover a response shape.
 2. Use the \`write\` tool once to create
    \`<DIVO_RUN_DIR>/<descriptive-workflow>.py\`. Put non-secret input, output,
    and \`checkpoint.json\` beside it. In Lark, return the complete user-facing
@@ -118,12 +115,9 @@ Use \`subprocess\` with \`divo-local\`. It exposes no member token or SaaS
 credential. For generated or substantial arguments, write an adjacent JSON
 file and pass \`--args-file\`.
 
-Load the skill that owns a tool with \`divo_skill_view\` **before** the script
-calls it. A scripted call carries the same authorization as one you make
-directly: the tool has to have been loaded in this run, and \`divo-local\`
-refuses it otherwise. You never pass a skill on the command line — the runtime
-attaches the one that was actually loaded, which is what makes the call
-governed rather than self-asserted.
+Read the native skill that owns a tool before the script calls it. Never pass a
+skill ID on the command line: skills provide workflow guidance, while the
+backend independently enforces identity, RBAC, approvals, schemas, and audit.
 
 ~~~python
 import json

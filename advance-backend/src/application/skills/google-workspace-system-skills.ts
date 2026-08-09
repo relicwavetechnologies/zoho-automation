@@ -9,7 +9,7 @@ import {
 import { recordSkillRegistryMutation } from './skill-registry-versioning';
 import {
   GOVERNED_DIRECT_ACTION_CRITERION,
-  GOVERNED_LOCAL_DESKTOP_ONLY,
+  GOVERNED_LOCAL_AVAILABLE_RUNTIME,
   GOVERNED_LOCAL_WORKFLOW_CRITERION,
 } from './governed-local-routing';
 
@@ -215,14 +215,14 @@ Use this skill for ${product.description.toLowerCase()}
    If the bootstrap says no Google account is accessible, loading this skill has not sent a card. You must invoke \`call_tool\` exactly once with \`{"toolId":"${product.toolId}","args":{"op":"describe","nativeTool":"${product.tools[0]}"}}\`; do not include \`connectionId\`. Only a returned \`google_workspace_authorization_pending\` proves the backend sent the Connect Google card. Then end the current run; OAuth completion starts a fresh run automatically. Never invent a Lark operation, claim a card was sent without that tool result, or send the user to a settings page.
 2. Never choose a model default or rotate through accounts after an error. A text reply is an exact choice only when it uniquely identifies one returned option by number or account email.
 3. Reuse the same exact \`connectionId\` for both \`op: "describe"\` and \`op: "call"\` when the bootstrap provides it. It may be omitted for \`describe\` only when there is no selected account and account resolution is unambiguous. Never use an email address or label itself as \`connectionId\`.
-4. Use only Divo's governed \`${product.toolId}\` route. For ${GOVERNED_DIRECT_ACTION_CRITERION}, call the runtime's governed wrapper directly. In Divo Desktop only, use one persistent Python file and invoke this same tool through credential-free \`divo-local\` only when the work has ${GOVERNED_LOCAL_WORKFLOW_CRITERION}. Never call Google directly from Bash: no Google CLI, curl, browser automation, direct Google API call, local OAuth token, or credential-bearing SDK. \`divo-local\` is a governed Divo wrapper, not a Google client.
+4. Use only Divo's governed \`${product.toolId}\` route. For ${GOVERNED_DIRECT_ACTION_CRITERION}, call the runtime's governed wrapper directly. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use one persistent Python file and invoke this same tool through credential-free \`divo-local\` only when the work has ${GOVERNED_LOCAL_WORKFLOW_CRITERION}. Never call Google directly from Bash: no Google CLI, curl, browser automation, direct Google API call, local OAuth token, or credential-bearing SDK. \`divo-local\` is a governed Divo wrapper, not a Google client.
 5. If the current run bootstrap already contains the exact \`nativeTool\` input schema, use it and do not call \`describe\` again. Otherwise call \`op: "describe"\` once before that unfamiliar operation. \`input\` may be omitted for describe; follow the returned MCP input schema exactly.
 6. Call \`op: "call"\` with the same \`nativeTool\` and its arguments under \`input\`.
 7. ${GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance}
 
 ## Canonical governed call shape
 
-For a direct ${GOVERNED_DIRECT_ACTION_CRITERION}, invoke the runtime's governed wrapper with \`toolId: "${product.toolId}"\` and keep all product arguments under its \`args\` object: \`{ "op": "describe|call", "nativeTool": "<approved operation>", "connectionId": "<UUID required for call>", "input": {} }\`. ${GOVERNED_LOCAL_DESKTOP_ONLY}, when the local-workflow criterion above applies, put that same \`args\` object in an adjacent JSON file and call \`divo-local invoke --tool ${product.toolId} --args-file <path>\` from the one persistent Python file. The file holds the \`args\` object alone — a wrapper envelope carrying \`toolId\` or \`skillId\` is rejected as invalid args. Never place \`connectionId\` beside the wrapper's payload.
+For a direct ${GOVERNED_DIRECT_ACTION_CRITERION}, invoke the runtime's governed wrapper with \`toolId: "${product.toolId}"\` and keep all product arguments under its \`args\` object: \`{ "op": "describe|call", "nativeTool": "<approved operation>", "connectionId": "<UUID required for call>", "input": {} }\`. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, when the local-workflow criterion above applies, put that same \`args\` object in an adjacent JSON file and call \`divo-local invoke --tool ${product.toolId} --args-file <path>\` from the one persistent Python file. The file holds the \`args\` object alone — a wrapper envelope carrying \`toolId\` or \`skillId\` is rejected as invalid args. Never place \`connectionId\` beside the wrapper's payload.
 
 ## Approved operations
 
@@ -236,7 +236,7 @@ ${productWorkflow}
 - Never guess Google resource IDs. Discover or read the target before an ambiguous mutation.
 - Verify important content changes with a read operation and return canonical Google URLs from successful responses.
 - Treat every result advisory with \`level: "required"\` as part of the tool contract. Satisfy it before reporting completion; if it cannot be satisfied, report partial completion and the exact missing evidence.
-- Never expose tokens or the private MCP endpoint. A local path is forbidden only inside native Google \`input\`; it cannot be used as provider content. ${GOVERNED_LOCAL_DESKTOP_ONLY}, a local JSON \`--args-file\` passed to credential-free \`divo-local\` is allowed as Divo transport. Use base64 content or HTTPS sources when the native Google operation requires content.`;
+- Never expose tokens or the private MCP endpoint. A local path is forbidden only inside native Google \`input\`; it cannot be used as provider content. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, a local JSON \`--args-file\` passed to credential-free \`divo-local\` is allowed as Divo transport. Use base64 content or HTTPS sources when the native Google operation requires content.`;
 }
 
 function buildProductWorkflow(service: GoogleWorkspaceProductDefinition['service']): string {

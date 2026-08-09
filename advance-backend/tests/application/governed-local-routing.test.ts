@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { buildDesktopCapabilityBootstrap } from '../../src/application/desktop/desktop-capability-bootstrap';
 import {
   GOVERNED_DIRECT_ACTION_CRITERION,
-  GOVERNED_LOCAL_DESKTOP_ONLY,
+  GOVERNED_LOCAL_AVAILABLE_RUNTIME,
   GOVERNED_LOCAL_WORKFLOW_CRITERION,
 } from '../../src/application/skills/governed-local-routing';
 import { GOOGLE_WORKSPACE_SYSTEM_SKILLS } from '../../src/application/skills/google-workspace-system-skills';
@@ -79,18 +79,15 @@ describe('governed local-workflow instruction contract', () => {
   });
 
   it('routes exact whole-account finance aggregates through complete governed sources', () => {
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /Exact whole-account or potentially large aggregate -> .*use the scripted workflow/);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /omit the limit argument unless the user explicitly requested a numeric maximum/);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /When a list result is truncated, do not retry with a larger limit/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /Exact whole-account, complete artifact, or potentially large aggregate/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /keep the direct model preview bounded/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /fetch pages through `divo-local` into one local JSONL\/Parquet file/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /Number\(_balance_inr\) > 0/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /outstanding_payable_amount or outstanding_receivable_amount from get_contact/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /reconcile it: every source page accounted for/);
   });
 
-  it('never names divo-local to a skill reader without saying it is desktop-only', () => {
-    // Server channels run in the cloud container, whose /tmp is mounted noexec.
-    // An unqualified mention sends a Lark run hunting for a binary it cannot
-    // execute, instead of staying on the governed tool it was already using.
+  it('keeps divo-local availability explicit in published connected-work skills', () => {
     const publishedInstructions = [
       zohoBooksInvoiceSkill.instructions,
       zohoBooksReadAnalysisSkill.instructions,
@@ -104,30 +101,26 @@ describe('governed local-workflow instruction contract', () => {
         if (!line.includes('divo-local')) continue;
         assert.match(
           line,
-          new RegExp(GOVERNED_LOCAL_DESKTOP_ONLY),
+          new RegExp(GOVERNED_LOCAL_AVAILABLE_RUNTIME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
           `unqualified divo-local instruction: ${line}`,
         );
       }
     }
   });
 
-  it('tells a server-channel run what to do instead of reaching for divo-local', () => {
-    assert.match(
-      zohoBooksReadAnalysisSkill.instructions,
-      /On server channels there is no divo-local/,
-    );
-    assert.match(
-      zohoBooksReadAnalysisSkill.instructions,
-      /Never go looking for a local CLI there/,
-    );
+  it('routes complete Zoho Books work through cloud-capable governed Python', () => {
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /load `divo-python-automation`/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /each returned `nextPage`/);
+    assert.doesNotMatch(zohoBooksReadAnalysisSkill.instructions, /server channels there is no divo-local/);
+    assert.doesNotMatch(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /divo_skill_view/);
   });
 
-  it('keeps one-source export candidates out of the local Python path', () => {
+  it('uses native Python for paged sources and keeps candidates as compatibility only', () => {
     const dataRouter = ROUTING_SYSTEM_SKILLS.find(skill => skill.slug === 'data-router')!;
     assert.match(dataRouter.markdown, /exportCandidate/);
-    assert.match(dataRouter.markdown, /more than one connected product/);
-    assert.doesNotMatch(dataRouter.markdown, /whatever the row count/);
-    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /governed provider preview and `exportCandidate`/);
+    assert.match(dataRouter.markdown, /Complete Zoho Books or CRM artifact/);
+    assert.match(dataRouter.markdown, /temporary compatibility route/);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /source skill exposes real page or\s+continuation fields/);
     assert.doesNotMatch(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /how data of any size is processed/);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /supported source tools return bounded chat evidence plus an\s+`exportCandidate`/s);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /`op=plan`/i);

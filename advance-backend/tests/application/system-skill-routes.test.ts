@@ -74,19 +74,19 @@ describe('system skill routes', () => {
     assert.ok(data.targetSlugs.includes('read-understand-files'));
   });
 
-  it('keeps one-source exports out of Python, file authoring, and provider pagination', () => {
+  it('routes paged providers to Python and keeps candidate-only sources compatible', () => {
     const data = ROUTING_SYSTEM_SKILLS.find(skill => skill.slug === 'data-router')!;
     const sheets = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find(skill => skill.slug === 'google-sheets')!;
 
     assert.match(data.markdown, /exportCandidate.*`dataExport`/s);
-    assert.match(data.markdown, /soft follow-up about exporting to Google Sheets, Excel, or CSV/);
-    assert.match(data.markdown, /not to export, not now, or chat-only/);
+    assert.match(data.markdown, /Complete Zoho Books or CRM artifact/);
+    assert.match(data.markdown, /temporary compatibility route/);
     assert.match(data.markdown, /`op=plan`/);
     assert.match(data.markdown, /`op=sample`/);
     assert.match(data.markdown, /`op=confirm_sample`/);
     assert.match(data.markdown, /destinationReferenceId.*resourceRef.*google-sheets/s);
     assert.match(data.markdown, /xlsx[\s\S]*csv[\s\S]*google-drive/);
-    assert.match(data.markdown, /No eligible Google destination.*Google connection/s);
+    assert.match(data.markdown, /No eligible Google destination.*backend-provided account labels/s);
     assert.match(airtableCoreSkill.instructions, /If a preview says more rows exist, do not page through Airtable MCP/);
     assert.match(airtableCoreSkill.instructions, /Menhood settled historical totals.*switch to `menhood-data` instead of paging Airtable MCP/s);
     assert.match(airtableCoreSkill.instructions, /use live Airtable for narrow current\/recent Menhood order counts/);
@@ -94,10 +94,9 @@ describe('system skill routes', () => {
     assert.match(airtableCoreSkill.instructions, /Duplicate\/TEST\/Testing cleanup/);
     assert.match(airtableCoreSkill.instructions, /If an exact replayable source exists.*one soft follow-up/s);
     assert.match(airtableCoreSkill.instructions, /not to export, not now, or chat-only/);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /`exportCandidate`/);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /`dataExport` with `op=plan`/);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /one soft follow-up asking whether to export it to Google Sheets, Excel, or CSV/);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /not to export, not now, or chat-only/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /load `divo-python-automation`/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /source\/written\/read-back counts/);
+    assert.doesNotMatch(zohoBooksReadAnalysisSkill.instructions, /`dataExport op=plan`/);
     assert.match(CREATE_FILES_SYSTEM_SKILL.markdown, /does not own a complete export from a connected provider/i);
     assert.match(CREATE_FILES_SYSTEM_SKILL.markdown, /provider result contains `exportCandidate`/);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /Never use `exportCandidate`, `preview\.exportOfferId`/);
