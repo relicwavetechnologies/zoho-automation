@@ -114,6 +114,14 @@ describe('summarizeMail', () => {
     assert.equal(summarizeMail([], now, 30).busiestDay, null)
   })
 
+  it('reports when mail was last caught, from the newest row not the first', () => {
+    // The feed does not arrive sorted, so taking caught[0] would report
+    // whichever row the API happened to return first as "last caught".
+    const summary = summarizeMail([at(on(5)), at(on(9, 16)), at(on(7))], now, 30)
+    assert.equal(summary.lastCaughtAt, on(9, 16))
+    assert.equal(summarizeMail([], now, 30).lastCaughtAt, null)
+  })
+
   it('counts days that saw mail, not messages', () => {
     // Two on one day and one on another is two active days, not three.
     const summary = summarizeMail([at(on(7)), at(on(7), { status: 'held', deliveredAt: null }), at(on(9))], now, 30)

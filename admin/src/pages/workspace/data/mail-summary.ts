@@ -55,6 +55,8 @@ export type MailSummary = {
   busiestDay: { date: string; value: number } | null
   /** Days in the window that saw at least one message. */
   activeDays: number
+  /** When the most recent message was caught, or null for a silent window. */
+  lastCaughtAt: string | null
   latest: MailCaught[]
 }
 
@@ -92,14 +94,16 @@ export function summarizeMail(
     null,
   )
 
+  const newestFirst = [...recent]
+    .sort((a, b) => new Date(b.firstAttemptAt).getTime() - new Date(a.firstAttemptAt).getTime())
+
   return {
     total: recent.length,
     counts,
     series,
     busiestDay: busiest && busiest.value > 0 ? busiest : null,
     activeDays: series.filter((day) => day.value > 0).length,
-    latest: [...recent]
-      .sort((a, b) => new Date(b.firstAttemptAt).getTime() - new Date(a.firstAttemptAt).getTime())
-      .slice(0, MAIL_LATEST_ROWS),
+    lastCaughtAt: newestFirst[0]?.firstAttemptAt ?? null,
+    latest: newestFirst.slice(0, MAIL_LATEST_ROWS),
   }
 }

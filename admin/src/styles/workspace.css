@@ -1316,6 +1316,44 @@
 .cur .set-row-c { flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
 .cur .set-val { font-size: 13px; color: var(--cur-body); text-align: right; }
 
+/* ── Three figures across a card ──────────────────────
+   The labels reserve two lines whether or not they need them. "Messages
+   caught" wraps in a narrow column while "Passed on" does not, and without
+   the reservation that one figure drops half a line below its neighbours —
+   which reads as a mistake rather than as a longer label. */
+.cur .ws-stat3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+/* Two lines exactly: the label's line-height is 1.5, so 3em is 2 × 16.5px at
+   its 11px size. 2.5em looked right and left the first figure 5px low. */
+.cur .ws-stat3 .ws-lbl { min-height: 3em; }
+
+/* ── Grouped settings ─────────────────────────────────
+   A quiet label over a bordered card, the way the reference groups a settings
+   page. The heading carries the grouping and the card carries the rows, so a
+   row belongs to a section by containment rather than by being the next thing
+   after a heading. */
+.cur .set-section {
+  max-width: 720px; margin: 32px 0 10px;
+  font-size: 12.5px; font-weight: 500; color: var(--cur-muted);
+  letter-spacing: 0.01em;
+}
+.cur .set-section:first-of-type { margin-top: 0; }
+.cur .set-group {
+  max-width: 720px; background: var(--cur-surface);
+  border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card);
+  overflow: hidden;
+}
+/* Inside a card the rows carry their own padding and a divider between them,
+   rather than a rule above each that also draws one at the very top. */
+.cur .set-group .set-row {
+  max-width: none; padding: 14px 16px;
+  border-top: 1px solid var(--cur-hairline-soft);
+}
+.cur .set-group .set-row:first-child { border-top: 0; }
+.cur .set-group .set-note {
+  max-width: none; margin: 0; padding: 12px 16px;
+  border-top: 1px solid var(--cur-hairline-soft); background: var(--cur-canvas-soft);
+}
+
 /* Separates groups of rows. The next row draws its own top rule, so this is
    space rather than a second line. */
 .cur .set-gap { height: 26px; }

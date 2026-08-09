@@ -83,7 +83,13 @@ export function MailHome() {
             one answer, and letting the shorter one stop halfway leaves a step
             down the middle of the page. */}
         <div className="ws-cols-even" style={{ alignItems: 'stretch' }}>
-        <Panel title={`Last ${WINDOW_DAYS} days`}>
+        <Panel
+          title={`Last ${WINDOW_DAYS} days`}
+          // The setup facts belong to the card, not to one figure inside it.
+          // Under "Messages caught" they wrapped to two lines and made that
+          // column taller than its two neighbours for no reason.
+          description={`${liveRules} live ${liveRules === 1 ? 'rule' : 'rules'} · ${firing} mailbox${firing === 1 ? '' : 'es'} watching`}
+        >
           <div className="ws-panel-body">
             {!r1 || loading ? <SkelRows n={3} icon={false} /> : (
               <Fade>
@@ -91,12 +97,12 @@ export function MailHome() {
                     on its own line under two figures, which left a hole beside
                     them and read as a second, more important section. Three
                     equal columns hold the line at half width. */}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 14 }}>
+                <div className="ws-stat3">
                   <div>
                     <div className="ws-lbl">Messages caught</div>
                     <div className="ws-num" style={{ marginTop: 8 }}>{summary.total}</div>
                     <div className="ws-sub" style={{ marginTop: 5 }}>
-                      {liveRules} live {liveRules === 1 ? 'rule' : 'rules'} · {firing} mailbox{firing === 1 ? '' : 'es'} watching
+                      {summary.total === 0 ? 'None yet' : `across ${summary.activeDays} day${summary.activeDays === 1 ? '' : 's'}`}
                     </div>
                   </div>
                   <div>
@@ -130,28 +136,43 @@ export function MailHome() {
                   the cells square and leaves the facts a column wide enough not
                   to wrap their labels.
                 */}
-                <div style={{ display: 'flex', gap: 20, marginTop: 24, alignItems: 'flex-start' }}>
+                {/*
+                  Three facts, spread down the calendar's own height. Two left a
+                  block of nothing under them, which is the same empty the grid
+                  had beside it before — moved rather than removed.
+                */}
+                <div style={{ display: 'flex', gap: 20, marginTop: 22, alignItems: 'stretch' }}>
                   <Heatmap
                     compact
                     data={summary.series}
                     format={(n) => `${n} message${n === 1 ? '' : 's'}`}
                   />
-                  <div style={{ flex: 1, minWidth: 0, paddingTop: 16 }}>
-                    <div className="ws-lbl">Busiest day</div>
-                    <div style={{ marginTop: 6 }}>
-                      {summary.busiestDay
-                        ? `${dayLabel(summary.busiestDay.date)} · ${summary.busiestDay.value} message${summary.busiestDay.value === 1 ? '' : 's'}`
-                        : '—'}
+                  <div style={{
+                    flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
+                    justifyContent: 'space-between', paddingTop: 15, paddingBottom: 2,
+                  }}>
+                    <div>
+                      <div className="ws-lbl">Busiest day</div>
+                      <div style={{ marginTop: 5 }}>
+                        {summary.busiestDay
+                          ? `${dayLabel(summary.busiestDay.date)} · ${summary.busiestDay.value} message${summary.busiestDay.value === 1 ? '' : 's'}`
+                          : '—'}
+                      </div>
                     </div>
-                    <div className="ws-lbl" style={{ marginTop: 16 }}>Days with mail</div>
-                    <div style={{ marginTop: 6 }}>{summary.activeDays} of {WINDOW_DAYS}</div>
+                    <div>
+                      <div className="ws-lbl">Days with mail</div>
+                      <div style={{ marginTop: 5 }}>{summary.activeDays} of {WINDOW_DAYS}</div>
+                    </div>
+                    <div>
+                      <div className="ws-lbl">Last caught</div>
+                      <div style={{ marginTop: 5 }}>
+                        {summary.lastCaughtAt
+                          ? `${dayLabel(summary.lastCaughtAt)} ${timeLabel(summary.lastCaughtAt)}`
+                          : '—'}
+                      </div>
+                    </div>
                   </div>
                 </div>
-                {summary.total === 0 ? (
-                  <div className="ws-sub" style={{ marginTop: 14 }}>
-                    No messages matched a rule in this window.
-                  </div>
-                ) : null}
               </Fade>
             )}
           </div>

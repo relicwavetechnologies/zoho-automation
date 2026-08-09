@@ -50,6 +50,29 @@ export function SettingsRow({
   )
 }
 
+/**
+ * A section label above a group.
+ *
+ * Distinct from `SettingsHead`, which is the page's one title. Reusing the
+ * title for every section drew four 26px headings down a page whose content is
+ * a list of one-line statements — nothing on it was more important than
+ * anything else, and it read as four pages stacked.
+ */
+export function SettingsSection({ title }: { title: string }) {
+  return <h2 className="set-section">{title}</h2>
+}
+
+/**
+ * The card a group of rows sits in.
+ *
+ * Rows used to sit on the page with a hairline above each, so a group was only
+ * implied by the gap around it and a row belonged to whichever heading it
+ * happened to follow. A border makes the grouping the thing you see first.
+ */
+export function SettingsGroup({ children }: { children: React.ReactNode }) {
+  return <div className="set-group">{children}</div>
+}
+
 /** A rule between groups of rows, as the reference draws between sections. */
 export const SettingsGap = () => <div className="set-gap" />
 
