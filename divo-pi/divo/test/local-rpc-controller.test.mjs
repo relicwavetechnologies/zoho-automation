@@ -194,6 +194,21 @@ test("default protected cleanup targets only the signed runtime's owned thread",
 	}]);
 });
 
+test("default protected cleanup accepts the admission cleanup request", async () => {
+	const calls = [];
+	await deleteProtectedRuntimeSession(
+		{ runtime: { profile: "cloud-derived", thread: "thread-current" } },
+		{
+			inspectVolume: async name => ({ Labels: { "dev.divo.profile": "cloud-derived" }, name }),
+			removeSession: async (volume, directory) => calls.push({ volume, directory }),
+		},
+	);
+	assert.deepEqual(calls, [{
+		volume: "divo-pi-local-cloud-derived",
+		directory: "/data/state/data/threads/thread-current",
+	}]);
+});
+
 test("protected cleanup refuses a volume not owned by the signed runtime", async () => {
 	let removed = false;
 	await assert.rejects(

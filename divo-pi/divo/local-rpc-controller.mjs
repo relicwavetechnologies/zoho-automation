@@ -1063,7 +1063,8 @@ async function deleteDurableSession(volume, thread) {
 	);
 }
 
-export async function deleteProtectedRuntimeSession(runtime, dependencies = {}) {
+export async function deleteProtectedRuntimeSession(runtimeRequest, dependencies = {}) {
+	const runtime = runtimeRequest?.runtime ?? runtimeRequest;
 	const profile = validateProfileName(runtime?.profile);
 	const thread = validateThread(runtime?.thread);
 	const volume = resourcesFor(profile).volume;
