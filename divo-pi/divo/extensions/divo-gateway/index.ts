@@ -29,10 +29,12 @@ import {
 } from "./gateway-client.ts";
 import { executeGatewayRequest } from "./gateway-execution.ts";
 import {
+	createGatewayPlatformInvoker,
 	createGatewayTypedToolInvoker,
 	registerEagerTypedTools,
 	registerTypedTools,
 } from "./typed-tool-runtime.ts";
+import { registerTypedPlatformTools } from "./typed-platform-tools.ts";
 import { registerDivoLlmProviders } from "../divo-llm/index.ts";
 import { registerLocalDivoBroker, localCliEnabled } from "./local-broker.ts";
 import { DIVO_GATEWAY_OPS, prepareGatewayArguments } from "./gateway-arguments.ts";
@@ -350,6 +352,9 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 	registerMemoryReviewTool(pi);
 	registerKnowledgeReviewTool(pi);
 	registerTeachClarificationTool(pi);
+	// Capabilities that are not a governed tool call and would otherwise vanish
+	// with the mega-tool: connected accounts, and reading an attached image.
+	registerTypedPlatformTools(pi, createGatewayPlatformInvoker());
 
 	pi.registerTool({
 		name: "divo_skill_resolve",

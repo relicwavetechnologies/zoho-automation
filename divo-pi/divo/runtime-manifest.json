@@ -73,6 +73,8 @@
     "divo_scheduled_workflows",
     "divo_semrush",
     "divo_oms_site_data",
-    "divo_menhood_data"
+    "divo_menhood_data",
+    "divo_connections",
+    "divo_image_read"
   ]
 }

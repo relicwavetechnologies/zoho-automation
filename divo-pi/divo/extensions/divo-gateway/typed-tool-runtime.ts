@@ -227,55 +227,70 @@ export async function registerEagerTypedTools(
  * Arguments arrive already validated against the backend's own schema, so the
  * envelope-repair step the mega-tool needs has nothing left to repair.
  */
-export function createGatewayTypedToolInvoker(): TypedToolInvoker {
-	return async ({ toolId, args, toolCallId }, ctx) => {
-		const correlation = await readDivoRunCorrelation();
-		const resolved = resolveDivoGatewayConfig();
-		if ("error" in resolved) {
-			throw new Error(resolved.error);
-		}
+export async function runGatewayOperation(
+	op: string,
+	payload: Record<string, unknown>,
+	toolCallId: string,
+	ctx: unknown,
+	label: Record<string, unknown> = {},
+): Promise<TypedToolResult> {
+	const correlation = await readDivoRunCorrelation();
+	const resolved = resolveDivoGatewayConfig();
+	if ("error" in resolved) {
+		throw new Error(resolved.error);
+	}
 
-		const { body, httpStatus } = await executeGatewayRequest(
-			resolved,
-			{
-				op: "tools.invoke",
-				...(correlation.departmentId ? { departmentId: correlation.departmentId } : {}),
-				payload: { toolId, args },
-				execution: {
-					version: 1,
-					threadId: correlation.threadId,
-					runId: correlation.runId,
-					actionId: toolCallId,
-				},
+	const { body, httpStatus } = await executeGatewayRequest(
+		resolved,
+		{
+			op,
+			...(correlation.departmentId ? { departmentId: correlation.departmentId } : {}),
+			payload,
+			execution: {
+				version: 1,
+				threadId: correlation.threadId,
+				runId: correlation.runId,
+				actionId: toolCallId,
 			},
-			toolCallId,
-			{
-				...(ctx as Record<string, unknown>),
-				...(correlation.channel ? { runtimeChannel: correlation.channel } : {}),
-			} as never,
-		);
+		},
+		toolCallId,
+		{
+			...(ctx as Record<string, unknown>),
+			...(correlation.channel ? { runtimeChannel: correlation.channel } : {}),
+		} as never,
+	);
 
-		const formatted = formatGatewayResponse(body);
-		const details = {
-			configured: true,
-			httpStatus,
-			status: body.status,
-			ok: body.ok,
-			approval: body.approval,
-			error: body.error,
-			data: body.data,
-			typedTool: toolId,
-		};
-
-		// A held approval is not a failed action. Keeping the structured details
-		// on an errored result is what lets the desktop render its status in this
-		// exact trace row without a second local approval path.
-		if (isGatewayApprovalStatus(body.status)) {
-			return { content: [{ type: "text", text: formatted.text }], details, isError: true };
-		}
-		if (formatted.isError) {
-			throw new Error(formatted.text);
-		}
-		return { content: [{ type: "text", text: formatted.text }], details };
+	const formatted = formatGatewayResponse(body);
+	const details = {
+		configured: true,
+		httpStatus,
+		status: body.status,
+		ok: body.ok,
+		approval: body.approval,
+		error: body.error,
+		data: body.data,
+		...label,
 	};
+
+	// A held approval is not a failed action. Keeping the structured details on
+	// an errored result is what lets the desktop render its status in this exact
+	// trace row without a second local approval path.
+	if (isGatewayApprovalStatus(body.status)) {
+		return { content: [{ type: "text", text: formatted.text }], details, isError: true };
+	}
+	if (formatted.isError) {
+		throw new Error(formatted.text);
+	}
+	return { content: [{ type: "text", text: formatted.text }], details };
+}
+
+export function createGatewayTypedToolInvoker(): TypedToolInvoker {
+	return ({ toolId, args, toolCallId }, ctx) =>
+		runGatewayOperation("tools.invoke", { toolId, args }, toolCallId, ctx, { typedTool: toolId });
+}
+
+/** Platform operations that are not a governed tool call: connections, image reading. */
+export function createGatewayPlatformInvoker() {
+	return ({ op, payload, toolCallId }: { op: string; payload: Record<string, unknown>; toolCallId: string }, ctx: unknown) =>
+		runGatewayOperation(op, payload, toolCallId, ctx, { platformOp: op });
 }
