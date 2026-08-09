@@ -231,7 +231,7 @@ export function formatSkillResolveResult(result: SkillResolveResult): string {
 			lines.push(`${index + 1}. ${phase.name} — ${phase.skillId}`);
 		}
 		lines.push(planned.orchestrationPlan.connection.message);
-		lines.push("The first phase recipe is loaded above; load each later exact skill ID immediately before its phase.");
+		lines.push("The parent guidance is included above; read each matching native phase skill by name immediately before its phase.");
 	}
 	if (result.rejected.length) {
 		lines.push("", "Rejected fuzzy matches (do not use):");

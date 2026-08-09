@@ -356,14 +356,14 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 		label: "Divo skill resolver",
 		description:
 			"Fallback router discovery for company work not clearly identified by the injected catalogue. " +
-			"Returns advisory persona rules and bounded DB router candidates; load one router, then its exact specialist.",
+			"Returns advisory persona rules and bounded DB router candidates; read the matching native router and specialist.",
 		promptSnippet:
 			"Use divo_skill_resolve only when a specialized company workflow is likely and neither the injected catalogue nor persona supplies a clear exact skillId.",
 		promptGuidelines: [
 			"Always put the user's exact original wording in query. Never replace it with a summary.",
 			"Use at most two variants: one for the core task/domain and one for a distinct output, integration, scheduling, or monitoring need. Preserve all entities, constraints, destinations, timing, and formats.",
 			"Example: query='Prepare our monthly vendor-onboarding exception report and schedule it for Finance'; variants=['Apply the company vendor-onboarding exception workflow for Finance', 'Deliver the report monthly through scheduled Divo work'].",
-			"The response contains advisory persona rules and router-only DB candidates. Load a relevant router and specialist when available; if loading fails, continue with the governed tool contract when the requested capability is otherwise clear.",
+			"The response contains advisory persona rules and router-only DB candidates. Read the relevant native router and specialist when available; if guidance is missing, continue with the governed tool contract when the requested capability is otherwise clear.",
 			"Do not call this for greetings, ordinary conversation, or a simple direct capability call. No matching skill is a valid result.",
 			"If no useful router is selected, do not guess a specialist. A clear capability may still be invoked through the governed backend contract.",
 			"Do not include visible user-facing pre-tool text about resolver, gateway, backend, routing, enum, or tool mechanics. Call the tool directly or use plain wording like \"I'll check that.\"",
