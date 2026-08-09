@@ -41,6 +41,7 @@ import {
 } from './data/use-mail-automations'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { notify } from '@/lib/notify'
+import { previewScopeSentence } from './data/preview-scope'
 import { GmailMark, LarkMark } from './brand'
 import { MailboxSetup } from './screens-mail'
 import { Confirm, Empty, PageHeader, Panel, SkelRows } from './ui'
@@ -313,6 +314,19 @@ function MailRuleForm({
 
   const clauses = useMemo(() => matchClauses(draft), [draft])
   const ruleName = nameEdited ? name : suggestedName(destination, address)
+
+  /*
+   * Which conditions the dry run's answer is an answer *to*.
+   *
+   * The result sat on screen until the next press, so adding a condition after
+   * a check left "3 matched" describing conditions that no longer existed — the
+   * one number on this page somebody is entitled to trust, quietly describing
+   * something else. Recorded at the press and compared to the live draft, so
+   * the proof can say it has gone out of date rather than pretending.
+   */
+  const draftKey = useMemo(() => JSON.stringify(draft), [draft])
+  const provenFor = useRef<string | null>(null)
+  const proofStale = preview.result !== null && provenFor.current !== draftKey
 
   /*
    * Seeding, once.
@@ -796,18 +810,34 @@ function MailRuleForm({
               The runtime refuses the pair outright, so a rule built from both
               could not be saved at all.
             */}
+            {/*
+              The toggle sits with the sentence that justifies it, not at the far
+              edge of the header.
+
+              It was in the `ws-blk-h` slot the other blocks use for a label —
+              which is right for "all of these must hold" and wrong for a
+              control: on a wide screen the box ended up a thousand pixels from
+              the words naming it, and the reason to tick it was in a paragraph
+              underneath that the tick had no visible relationship to.
+            */}
             <section className="ws-blk" hidden={destination === 'routed'}>
-              <div className="ws-blk-h">
-                <span className="ws-blk-t">Then Divo reads it</span>
-                <label className="ws-mk-tog">
-                  <input
-                    type="checkbox"
-                    checked={judging}
-                    onChange={(e) => { setJudging(e.target.checked); setTouched(true) }}
-                  />
-                  {' '}Ask a question first
-                </label>
-              </div>
+              <div className="ws-blk-h"><span className="ws-blk-t">Then Divo reads it</span></div>
+
+              <label className="ws-opt" data-on={judging ? 'true' : undefined}>
+                <input
+                  type="checkbox"
+                  checked={judging}
+                  onChange={(e) => { setJudging(e.target.checked); setTouched(true) }}
+                />
+                <div>
+                  <b>Ask a question first</b>
+                  <p>
+                    Conditions match words. A question lets Divo tell a real invoice from an
+                    advert that says “invoice” — worth adding when what you want is a judgement
+                    rather than a pattern.
+                  </p>
+                </div>
+              </label>
 
               {judging ? (
                 <div className="ws-blk-body">
@@ -817,6 +847,7 @@ function MailRuleForm({
                     value={question}
                     onChange={(e) => { setQuestion(e.target.value); setTouched(true) }}
                     placeholder="Is this a real invoice addressed to us, rather than marketing, a quote, or a reminder for something already paid?"
+                    aria-label="The question Divo should ask about each matching message"
                   />
                   <p className="ws-mk-hint">
                     Divo answers yes or no for each matching message and only acts on a yes.
@@ -825,31 +856,33 @@ function MailRuleForm({
                     attachments. A question decides <i>whether</i>, never <i>who</i>.
                   </p>
 
-                  <label className="ws-mk-tog">
+                  {/* The same shape as the option above it, because it is the
+                      same kind of choice one level down — and toned when it is
+                      on, because it is the one choice on this screen whose wrong
+                      answer is invisible: a rule that fails open looks identical
+                      to one that is working, right up until the model is
+                      unreachable. */}
+                  <label className="ws-opt" data-warn={failOpen ? 'true' : undefined}>
                     <input
                       type="checkbox"
                       checked={failOpen}
                       onChange={(e) => { setFailOpen(e.target.checked); setTouched(true) }}
                     />
-                    {' '}If Divo cannot answer, go ahead anyway
+                    <div>
+                      <b>If Divo cannot answer, go ahead anyway</b>
+                      <p>
+                        {failOpen
+                          ? 'Off-days included: if Divo cannot read a message it will be acted on unread.'
+                          : 'Left off, a message Divo cannot read is held back and shown to you.'}
+                      </p>
+                    </div>
                   </label>
-                  {/* Said here rather than in a tooltip, because it is the one
-                      choice on this screen whose wrong answer is invisible: a
-                      rule that fails open looks identical to one that is
-                      working right up until the model is unreachable. */}
-                  <p className="ws-mk-hint">
-                    {failOpen
-                      ? 'Off-days included: if Divo cannot read a message it will be acted on unread.'
-                      : 'Left off, a message Divo cannot read is held back and shown to you.'}
-                  </p>
                 </div>
               ) : (
                 <div className="ws-blk-body">
                   <p className="ws-mk-hint">
-                    Conditions match words. A question lets Divo tell a real invoice from an
-                    advert that says “invoice” — worth adding when what you want is a judgement
-                    rather than a pattern. To send different mail to different people instead,
-                    choose <b>Sort it between people</b> below.
+                    To send different mail to different people instead, choose{' '}
+                    <b>Sort it between people</b> below.
                   </p>
                 </div>
               )}
@@ -1065,16 +1098,43 @@ function MailRuleForm({
               <button
                 type="button"
                 className="btn"
-                disabled={preview.running || clauses.length === 0}
-                onClick={() => { void preview.preview(draft, mailbox.connectionId) }}
+                /* Live with no conditions, for the reason Turn it on is: dead,
+                   it refused silently, and on a narrow screen the block that
+                   explains why is a scroll away under the rail. */
+                disabled={preview.running}
+                onClick={() => {
+                  if (clauses.length === 0) {
+                    notify.refused(
+                      'Nothing to check yet',
+                      'A dry run replays the conditions, and this rule has none. Add one first.',
+                    )
+                    return
+                  }
+                  provenFor.current = draftKey
+                  void preview.preview(draft, mailbox.connectionId)
+                }}
               >
                 {preview.running ? 'Checking…' : preview.result ? 'Check again' : 'Check it'}
               </button>
-              <p className="ws-cond-note">
-                Replays these conditions over mail Divo has already seen. Nothing is sent.
-              </p>
 
-              {preview.result ? <PreviewResult result={preview.result} /> : null}
+              {/* The answer takes the note's place rather than sitting below it.
+                  Read {n} · none matched was the same size, colour and spacing as
+                  the sentence explaining the button, so the one line anybody
+                  pressed for looked like more instructions. */}
+              {preview.result ? (
+                <PreviewResult
+                  result={preview.result}
+                  stale={proofStale}
+                  // Only when there is a question that would actually be saved —
+                  // an empty box is not a step, and flagging one would send
+                  // somebody looking for a caveat that does not apply.
+                  judged={judging && question.trim().length >= 8}
+                />
+              ) : (
+                <p className="ws-cond-note">
+                  Replays these conditions over mail Divo has already seen. Nothing is sent.
+                </p>
+              )}
             </div>
           </aside>
         </div>
@@ -1253,28 +1313,58 @@ function MailboxPicker({
  * they are neither a match nor a miss, and folding them either way states a
  * certainty nobody has.
  */
-function PreviewResult({ result }: { result: MailRulePreview }) {
+function PreviewResult({
+  result, judged, stale,
+}: { result: MailRulePreview; judged: boolean; stale: boolean }) {
   if (!result.watched) {
     return (
-      <p className="ws-proof-line">
-        Divo has not watched this inbox before, so there is nothing stored to check against. Your
-        first rule starts the watch.
-      </p>
+      <div className="ws-proof">
+        <b className="ws-proof-n">Nothing to check against</b>
+        <p className="ws-proof-line">
+          Divo has not watched this inbox before. Your first rule starts the watch.
+        </p>
+      </div>
     )
   }
+
   return (
-    <>
-      <p className="ws-proof-line">
-        Read {result.consideredCount} ·{' '}
-        {result.matchedCount === 0 ? 'none matched' : <b>{result.matchedCount} matched</b>}
-      </p>
-      {result.bodyUnavailableCount > 0 ? (
+    <div className="ws-proof" data-stale={stale ? 'true' : undefined}>
+      <b className="ws-proof-n">
+        {result.matchedCount === 0 ? 'None matched' : `${result.matchedCount} matched`}
+      </b>
+
+      {/* Said before the numbers rather than after them, because once the
+          conditions have moved on every line below is about something else. */}
+      {stale ? (
+        <p className="ws-proof-line ws-proof-warn">
+          <TriangleAlert size={12} />
+          The conditions have changed since this ran. Check again.
+        </p>
+      ) : (
+        <p className="ws-proof-line">{previewScopeSentence(result)}</p>
+      )}
+
+      {/*
+        The half of the rule a dry run cannot answer.
+        A replay matches words; it never asks the model, so with a question set
+        this number is an upper bound and not a result. Unsaid, "3 matched"
+        promises three deliveries that the question may well refuse.
+      */}
+      {judged && !stale ? (
+        <p className="ws-proof-line ws-proof-warn">
+          <TriangleAlert size={12} />
+          Conditions only — your question is not asked here, so a match may still be turned down.
+        </p>
+      ) : null}
+
+      {result.bodyUnavailableCount > 0 && !stale ? (
         <p className="ws-proof-line">
           {result.bodyUnavailableCount} could not be judged — their bodies have been discarded.
           Neither a match nor a miss.
         </p>
       ) : null}
-      {result.matched.length > 0 ? (
+
+      {result.matched.length > 0 && !stale ? (
         <ul className="ws-hits">
           {result.matched.slice(0, 5).map((hit) => (
             <li key={hit.eventId}>
@@ -1284,7 +1374,13 @@ function PreviewResult({ result }: { result: MailRulePreview }) {
           ))}
         </ul>
       ) : null}
-    </>
+
+      {/* Only where the worry exists. Nobody who was told none matched is
+          wondering whether mail went out. */}
+      {result.matchedCount > 0 && !stale ? (
+        <p className="ws-proof-line">Nothing was sent.</p>
+      ) : null}
+    </div>
   )
 }
 

@@ -1977,8 +1977,38 @@
    collapse to one. */
 .cur [aria-label="Gmail"], .cur [aria-label="Lark"] { color: initial; flex-shrink: 0; }
 
+/* What the replay found, as a thing rather than as more instructions.
+   `Read 11 · none matched` was the same size, colour and spacing as the sentence
+   explaining the button above it — so the one line anybody pressed the button
+   for was indistinguishable from the note telling them what the button does. */
+.cur .ws-proof {
+  margin-top: 12px; padding: 11px 12px;
+  border: 1px solid var(--cur-hairline); border-radius: 10px;
+  background: var(--cur-canvas-soft);
+}
+.cur .ws-proof-n {
+  display: block; font-size: 13.5px; font-weight: 500;
+  color: var(--cur-ink); font-variant-numeric: tabular-nums;
+}
+/* Dimmed rather than dropped. Watching an answer vanish while you edit the
+   thing it was about reads as a fault; saying it is out of date does not.
+   The *count* recedes and the reason does not — fading the whole box took the
+   one line that has to be read down to about 3.5:1 along with it. */
+.cur .ws-proof[data-stale="true"] { border-style: dashed; }
+.cur .ws-proof[data-stale="true"] .ws-proof-n { opacity: 0.45; }
+
 .cur .ws-proof-line { margin: 14px 0 0; font-size: 12.5px; line-height: 1.6; color: var(--cur-muted); }
 .cur .ws-proof-line b { color: var(--cur-ink); font-weight: 500; }
+.cur .ws-proof .ws-proof-line { margin-top: 5px; font-size: 11.5px; line-height: 1.55; }
+
+/* The two lines that say this proof does not cover the whole rule. Toned,
+   because a partial proof read as a total one is the failure this screen is
+   most likely to cause. */
+.cur .ws-proof-warn {
+  display: flex; align-items: flex-start; gap: 6px;
+  color: color-mix(in srgb, var(--ws-warning) 60%, var(--cur-body));
+}
+.cur .ws-proof-warn svg { flex-shrink: 0; margin-top: 2px; color: var(--ws-warning); }
 
 /* One line per matched message. These were full rows with a bordered icon
    square, which made three hits look like the content of the step rather than
@@ -2074,8 +2104,42 @@
 }
 .cur .ws-mk-tog input { accent-color: var(--cur-primary); cursor: pointer; }
 .cur .ws-mk-q { width: 100%; resize: vertical; min-height: 58px; line-height: 1.5; }
+
+/* An option with the reason for it attached, instead of a bare box whose
+   justification lived in a paragraph somewhere else. Both AI-step choices use
+   it, so the harmless one and the one whose wrong answer is invisible are
+   visibly the same kind of decision — and the second can be toned when it is on
+   without inventing a control shape for it. */
+.cur .ws-opt {
+  display: grid; grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px; align-items: start; padding: 11px 13px; cursor: pointer;
+  border: 1px solid var(--cur-hairline); border-radius: 10px;
+  background: var(--cur-canvas-soft);
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.cur .ws-opt:hover { border-color: var(--cur-hairline-strong); }
+.cur .ws-opt[data-on="true"] {
+  border-color: var(--cur-muted-soft); background: var(--cur-surface-strong);
+}
+.cur .ws-opt > input {
+  margin: 2px 0 0; accent-color: var(--cur-primary); cursor: pointer;
+}
+.cur .ws-opt b { display: block; font-size: 12.5px; font-weight: 500; color: var(--cur-ink); }
+/* Capped, like every other explanatory line in this sheet. The card is around
+   960px on a wide screen and prose set across all of it at 11.5px runs to about
+   150 characters a line, which is roughly twice what anybody tracks. */
+.cur .ws-opt p {
+  margin: 3px 0 0; max-width: 64ch;
+  font-size: 11.5px; line-height: 1.55; color: var(--cur-muted);
+}
+.cur .ws-opt[data-warn="true"] {
+  border-color: color-mix(in srgb, var(--ws-warning) 34%, var(--cur-hairline));
+  background: color-mix(in srgb, var(--ws-warning) 7%, var(--cur-canvas-soft));
+}
+.cur .ws-opt[data-warn="true"] p { color: color-mix(in srgb, var(--ws-warning) 58%, var(--cur-body)); }
 .cur .ws-mk-hint {
-  margin: 9px 0 0; font-size: 12px; line-height: 1.6; color: var(--cur-muted);
+  margin: 9px 0 0; max-width: 64ch;
+  font-size: 12px; line-height: 1.6; color: var(--cur-muted);
 }
 .cur .ws-mk-hint b { color: var(--cur-body); font-weight: 500; }
 .cur .ws-blk-body .ws-mk-tog { margin-top: 14px; }

@@ -1643,7 +1643,10 @@ export function createMailAutomationsRoutes(
         // not a failure, and not evidence the conditions are wrong.
         res.json({
           success: true,
-          data: { watched: false, consideredCount: 0, matchedCount: 0, bodyUnavailableCount: 0, matched: [] },
+          data: {
+            watched: false, consideredCount: 0, matchedCount: 0,
+            bodyUnavailableCount: 0, truncated: false, matched: [],
+          },
         });
         return;
       }
@@ -1666,6 +1669,24 @@ export function createMailAutomationsRoutes(
         return;
       }
 
+      /*
+       * How far back the replay actually reached, and whether it hit its own
+       * ceiling.
+       *
+       * "Read 11 · none matched" is a true sentence that reads as a broken
+       * rule. Eleven is every message Divo has ever recorded for this mailbox
+       * — the conditions may be perfect and there is simply nothing here yet —
+       * but nothing on the client could tell that from a rule matching none of
+       * a large archive. The events come back newest-first, so the last one is
+       * the oldest thing the replay saw.
+       *
+       * `truncated` is the opposite misreading: at the ceiling, "none matched"
+       * is a statement about the most recent N messages and not about the
+       * mailbox, and that distinction has to survive to the screen.
+       */
+      const limit = parsed.data.limit ?? DEFAULT_DRY_RUN_EVENTS;
+      const oldest = found.value.events.at(-1)?.occurredAt;
+
       res.json({
         success: true,
         data: {
@@ -1674,6 +1695,8 @@ export function createMailAutomationsRoutes(
           consideredCount: outcome.consideredCount,
           matchedCount: outcome.matched.length,
           bodyUnavailableCount: outcome.bodyUnavailableCount,
+          ...(oldest ? { coversSince: oldest.toISOString() } : {}),
+          truncated: found.value.events.length >= limit,
           matched: outcome.matched.slice(0, 10).map(hit => ({
             eventId: hit.eventId,
             occurredAt: hit.occurredAt.toISOString(),

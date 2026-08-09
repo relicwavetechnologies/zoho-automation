@@ -1085,6 +1085,16 @@ export type MailRulePreview = {
   consideredCount: number
   matchedCount: number
   bodyUnavailableCount: number
+  /**
+   * The oldest message the replay reached, so a count can be read as a span.
+   *
+   * "Read 11 · none matched" is true and reads as a broken rule. Eleven may be
+   * every message Divo has ever recorded here — the conditions could be perfect
+   * and there is simply nothing to catch yet.
+   */
+  coversSince?: string
+  /** At the ceiling, "none matched" is about the recent past, not the mailbox. */
+  truncated?: boolean
   matched: Array<{ eventId: string; occurredAt: string; from: string; subject: string }>
 }
 
