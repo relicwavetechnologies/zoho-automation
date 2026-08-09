@@ -1802,6 +1802,8 @@ describe('desktop auth routes', () => {
           assert.equal(input.failClosed, true);
           assert.equal(input.complete, true);
           assert.equal(input.limit, undefined);
+          assert.equal(input.departmentId, departmentId);
+          assert.equal(input.includeGrantedDepartments, undefined);
           return [{
             id: 'skill-finance',
             slug: 'finance-ops-core',

@@ -141,7 +141,7 @@ with no repeated skill-fetch loop.
 - [x] Reject DB slugs reserved by bundled Pi skills before discovery.
 - [x] Directly test read-only tree cleanup, atomic swap, and failure preserving
       the prior catalogue in the staging script.
-- [ ] Audit shared/group Lark runs so DB-native roots follow the same scoped
+- [x] Audit shared/group Lark runs so DB-native roots follow the same scoped
       resource policy as extensions, trusted skills, and tool allowlists.
 - [ ] Keep the slug as Pi's native `name`; preserve the human title in the
       description because Pi skill names cannot contain spaces or capitals.
@@ -158,9 +158,12 @@ Current proof: the backend keeps the existing priority order while enforcing
 the 100-skill and 2 MB budgets and logs omissions. Cloud Pi converts transient,
 malformed, or server-side bootstrap failures into an atomically staged empty DB
 catalogue, while 4xx authorization failures remain fatal. Controller tests pass
-49/49 and the authenticated runtime route suite passes 57/57. An unchanged
+50/50 and the authenticated runtime route suite passes 57/57. An unchanged
 scope and catalogue now skips its Docker staging process; a changed department,
-revision, or skill body produces a new digest and restages atomically.
+revision, or skill body produces a new digest and restages atomically. Shared
+runs have distinct disposable skills volumes, retain authorized department
+skills, and still exclude direct-message history resources. Lifecycle logs now
+report only revision, count, digest prefix, stage decision, timing, and audience.
 
 ### Phase 3 — Finish the governed terminal foundation
 

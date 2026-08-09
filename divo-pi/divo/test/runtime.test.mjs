@@ -476,6 +476,22 @@ describe("Past-chat recall is a direct-message capability", () => {
 		assert.ok(args.some((argument) => argument.endsWith("/divo-gateway/index.ts")));
 	});
 
+	it("loads only the shared run's authorized native skill root", () => {
+		const nativeSkillsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "divo-shared-skills-"));
+		fs.mkdirSync(path.join(nativeSkillsRoot, "shared-skill"));
+		fs.writeFileSync(
+			path.join(nativeSkillsRoot, "shared-skill", "SKILL.md"),
+			"---\nname: shared-skill\ndescription: Shared test\n---\n",
+		);
+		const args = buildPiArgumentsWithResources(
+			{ ...groupValues, nativeSkills: true },
+			{ nativeSkillsRoot },
+		);
+		assert.ok(args.includes(nativeSkillsRoot));
+		assert.ok(!args.some((argument) => argument.includes("divo-chat-history")));
+		fs.rmSync(nativeSkillsRoot, { recursive: true, force: true });
+	});
+
 	it("gives a direct message the recall tools, extension, and skill", () => {
 		const args = buildPiArguments(values);
 		const environment = buildChildEnvironment({}, values);

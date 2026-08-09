@@ -475,6 +475,28 @@ export function nativeSkillBootstrapDigest(bootstrap, scope) {
 		.digest("hex");
 }
 
+export function nativeSkillLifecycleEvent({
+	bootstrap,
+	digest,
+	staged,
+	fetchMs,
+	stageMs,
+	ephemeral,
+	sessionScope,
+}) {
+	return {
+		event: "native_skills.ready",
+		registryRevision: bootstrap.registryRevision,
+		skillCount: bootstrap.skills.length,
+		digest: digest.slice(0, 12),
+		staged,
+		fetchMs,
+		stageMs,
+		audience: ephemeral ? "shared" : "private",
+		sessionScope,
+	};
+}
+
 export async function fetchNativeSkillBootstrap({
 	backendUrl,
 	token,
@@ -2460,9 +2482,11 @@ async function runPrompt({
 	if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
 	let resources = resourcesFor(profile);
 	const selectedModel = validateRuntimeModel(model);
+	const nativeSkillFetchStartedAt = Date.now();
 	const nativeSkillBootstrap = nativeSkills
 		? await fetchNativeSkillBootstrapOrEmpty({ backendUrl, token, departmentId })
 		: undefined;
+	const nativeSkillFetchMs = Date.now() - nativeSkillFetchStartedAt;
 	const nativeSkillScope = { companyId, userId, departmentId, channel };
 	const nativeSkillDigest = nativeSkillBootstrap
 		? nativeSkillBootstrapDigest(nativeSkillBootstrap, nativeSkillScope)
@@ -2530,12 +2554,22 @@ async function runPrompt({
 		const runtime = await ensureRuntime(profile, { ephemeral });
 		resources = runtime.resources;
 		if (nativeSkillBootstrap) {
-			await stageNativeSkillBootstrap(
+			const nativeSkillStageStartedAt = Date.now();
+			const stage = await stageNativeSkillBootstrap(
 				resources.skillsVolume,
 				nativeSkillBootstrap,
 				nativeSkillScope,
 				{ force: runtime.created },
 			);
+			console.error(`[Pi] ${JSON.stringify(nativeSkillLifecycleEvent({
+				bootstrap: nativeSkillBootstrap,
+				digest: stage.digest,
+				staged: stage.staged,
+				fetchMs: nativeSkillFetchMs,
+				stageMs: Date.now() - nativeSkillStageStartedAt,
+				ephemeral,
+				sessionScope: normalizedSessionScope,
+			}))}`);
 		}
 		for (const progress of runtimeStartupProgress(runtime)) {
 			emitRuntimeProgress(onProgress, progress);

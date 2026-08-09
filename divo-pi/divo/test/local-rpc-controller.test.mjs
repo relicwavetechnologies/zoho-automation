@@ -25,6 +25,7 @@ import {
 	loadToken,
 	logCompletedRun,
 	nativeSkillBootstrapDigest,
+	nativeSkillLifecycleEvent,
 	nativeDbSkillsEnabled,
 	piProcessBindingMatches,
 	RUNTIME_IDLE_TIMEOUT_MS,
@@ -319,6 +320,10 @@ test("shared runtimes receive a unique disposable profile instead of the private
 	assert.match(firstShared.profile, /^shared-[a-f0-9]{20}$/);
 	assert.notEqual(firstShared.profile, privateRuntime.profile);
 	assert.notEqual(firstShared.profile, secondShared.profile);
+	assert.notEqual(
+		resourcesFor(firstShared.profile).skillsVolume,
+		resourcesFor(secondShared.profile).skillsVolume,
+	);
 	assert.throws(
 		() => runtimeIdentityNames("company-1", "user-1", "lark:chat-1", { contextAudience: "shared" }),
 		/shared runtime requires a run identity/i,
@@ -670,6 +675,30 @@ test("native DB skill staging skips only an identical scoped catalogue", async (
 	assert.equal(calls.length, 3);
 	assert.notEqual(first.digest, changedScope.digest);
 	assert.equal(first.digest, nativeSkillBootstrapDigest(bootstrap, scope));
+});
+
+test("native skill lifecycle telemetry contains counts and timing, never skill content", () => {
+	const event = nativeSkillLifecycleEvent({
+		bootstrap: { registryRevision: 7, skills: [{ instructions: "private recipe" }] },
+		digest: "a".repeat(64),
+		staged: false,
+		fetchMs: 12,
+		stageMs: 1,
+		ephemeral: true,
+		sessionScope: "run",
+	});
+	assert.deepEqual(event, {
+		event: "native_skills.ready",
+		registryRevision: 7,
+		skillCount: 1,
+		digest: "a".repeat(12),
+		staged: false,
+		fetchMs: 12,
+		stageMs: 1,
+		audience: "shared",
+		sessionScope: "run",
+	});
+	assert.doesNotMatch(JSON.stringify(event), /private recipe/);
 });
 
 test("a shared container mounts only its run-specific disposable volumes", () => {
