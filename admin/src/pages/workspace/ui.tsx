@@ -109,12 +109,13 @@ export function PageHeader({
         <h1 style={{ marginTop: eyebrow ? 7 : 0 }}>{title}</h1>
         {description ? <p>{description}</p> : null}
       </div>
-      {actions ? (
-        <div className="ws-ph-act" data-stacked={note ? 'true' : undefined}>
-          {note}
-          {note ? <div className="ws-ph-act-row">{actions}</div> : actions}
-        </div>
-      ) : null}
+      {actions ? <div className="ws-ph-act">{actions}</div> : null}
+      {/*
+        Its own row under the header rather than stacked inside the actions.
+        `.ws-ph` aligns its columns to the bottom, so a taller actions column
+        grows upward — which pushed this sentence off the top of the page.
+      */}
+      {note ? <div className="ws-ph-note">{note}</div> : null}
     </div>
   )
 }

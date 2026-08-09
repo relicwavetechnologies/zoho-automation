@@ -109,7 +109,7 @@
 }
 
 /* ── Page header ─────────────────────────────────────── */
-.cur .ws-ph { margin-bottom: 24px; display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }
+.cur .ws-ph { margin-bottom: 24px; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 20px 20px; }
 .cur .ws-ph h1 { font-size: 30px; letter-spacing: -0.025em; font-weight: 400; line-height: 1.12; }
 .cur .ws-ph p { font-size: 13px; color: var(--cur-body); margin-top: 8px; max-width: 620px; line-height: 1.55; }
 .cur .ws-ph-act { display: flex; gap: 8px; flex-shrink: 0; }
@@ -1344,6 +1344,43 @@
    its 11px size. 2.5em looked right and left the first figure 5px low. */
 .cur .ws-stat3 .ws-lbl { min-height: 3em; }
 
+/* ── Toasts ───────────────────────────────────────────
+   Divo's own surface and hairline rather than sonner's defaults, and small:
+   a notice is a sentence, not a panel. `richColors` paints the whole card by
+   intent, which shouted a refusal in the same red as an outage — the tone
+   lives in one dot instead, so the words carry the meaning.
+
+   Dimensions are set on the container rather than per toast, so a message
+   raised from a hook and one raised from a route cannot look different. */
+.cur-toast[data-sonner-toaster] { --width: 348px; }
+[data-sonner-toast] {
+  background: var(--cur-surface) !important;
+  border: 1px solid var(--cur-hairline-strong) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.45) !important;
+  padding: 12px 14px !important;
+  gap: 10px !important;
+}
+[data-sonner-toast] [data-title] {
+  font-size: 13px !important; font-weight: 500 !important;
+  line-height: 1.45 !important; color: var(--cur-ink) !important;
+}
+[data-sonner-toast] [data-description] {
+  font-size: 12px !important; line-height: 1.5 !important;
+  color: var(--cur-muted) !important; margin-top: 3px !important;
+}
+/* One dot, coloured by intent. An icon box and a tinted card were two signals
+   for one fact, and neither of them was the sentence. */
+[data-sonner-toast] [data-icon] {
+  width: 8px !important; height: 8px !important; border-radius: 50%;
+  margin: 6px 0 0 0 !important; align-self: flex-start; flex-shrink: 0;
+}
+[data-sonner-toast] [data-icon] svg { display: none; }
+[data-sonner-toast][data-type="error"] [data-icon] { background: var(--cur-error); }
+[data-sonner-toast][data-type="warning"] [data-icon] { background: var(--cur-primary); }
+[data-sonner-toast][data-type="success"] [data-icon] { background: var(--cur-success); }
+[data-sonner-toast][data-type="info"] [data-icon] { background: var(--cur-accent); }
+
 /* ── Avatar ───────────────────────────────────────────
    Accent rather than brand orange: orange is scarce here and marks the one
    thing being asked for, and an avatar is identity rather than an action. */
@@ -1717,17 +1754,16 @@
    spends the alarm colour on the ordinary state of a form somebody is still
    filling in — which leaves nothing louder for a forward that leaves the
    company. */
-/* On its own line above the buttons, not wedged between them.
-   Beside the actions it was a two-line paragraph competing with Cancel and
-   Turn it on for the same row, which is what made the header read as cluttered
-   — the sentence is the reason the button is refusing, so it belongs over the
-   button rather than next to it. */
-.cur .ws-ph-act[data-stacked="true"] {
-  flex-direction: column; align-items: flex-end; gap: 10px;
+/* A full-width row under the header, right-aligned so it sits beneath the
+   button it explains. Inside the actions it competed with Cancel and Turn it
+   on for one row and wrapped to two lines; stacked above them it grew the
+   bottom-aligned column upward and clipped off the top of the page. */
+.cur .ws-ph-note {
+  flex-basis: 100%; order: 3; margin-top: 10px;
+  display: flex; justify-content: flex-end;
 }
-.cur .ws-ph-act[data-stacked="true"] .ws-ph-act-row { display: flex; gap: 8px; }
 .cur .ws-mk-blocked {
-  max-width: 46ch; margin: 0;
+  max-width: 62ch; margin: 0;
   font-size: 12px; line-height: 1.5; color: var(--cur-muted); text-align: right;
 }
 

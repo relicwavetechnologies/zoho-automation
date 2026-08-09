@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { toast } from "sonner";
+import { notifyForStatus } from "@/lib/notify";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
@@ -186,17 +186,10 @@ const request = async <T>(
     const raw = await response.text();
     const errorMsg = extractErrorMessage(raw, response.status);
     const code = extractErrorCode(raw);
-    if (!opts.quiet) {
-      // A refusal is not an error the person can fix by retrying, and
-      // "Error 403" tells them nothing about which it is. Name the two cases.
-      if (response.status === 403) {
-        toast.error("You do not have access to that", { description: errorMsg });
-      } else if (response.status === 401) {
-        toast.error("Your session has expired", { description: "Sign in again to continue." });
-      } else {
-        toast.error(`Error ${response.status}`, { description: errorMsg });
-      }
-    }
+    // One notifier decides the voice. "Error 500" told a person nothing they
+    // could act on, and a refusal in the same red as a fault made a boundary
+    // look like a bug worth retrying.
+    if (!opts.quiet) notifyForStatus(response.status, errorMsg);
     throw new ApiError(response.status, errorMsg, code);
   }
 
