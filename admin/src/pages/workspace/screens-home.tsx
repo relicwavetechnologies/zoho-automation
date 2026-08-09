@@ -18,7 +18,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Activity, ArrowUp, ArrowUpRight, Check, ChevronLeft, ChevronRight, Link2, Lock, MessageSquare,
+  Activity, ArrowUpRight, Check, ChevronLeft, ChevronRight, Link2, Lock, MessageSquare,
   Plus, Sparkles, X,
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
@@ -208,7 +208,7 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
 
   return (
     <div className="ws-home">
-      <Composer toast={toast} onConnect={() => go('connections')} />
+      <Composer />
 
       {cards.length > 0 ? (
         <section className="ws-band">
@@ -400,71 +400,49 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
 }
 
 /**
- * The composer.
+ * The composer, as a preview of itself.
  *
- * Presentation only, on purpose (see the file header). The send control is
- * disabled and titled with the reason, and typing is allowed so the box can be
- * judged as a design — but nothing is ever dispatched from here.
+ * Presentation only, on purpose (see the file header) — and now it says so in
+ * the one place somebody is looking.
+ *
+ * It used to invite you in and then take it back: the box carried
+ * "Ask Divo to do something… (@ for an app, / for a skill)", advertising two
+ * affordances that do nothing, and a banner underneath explained that none of
+ * it works yet. Two elements, overlapping, and the contradiction was between
+ * them rather than in either — so the box read as broken and the banner read as
+ * an apology for it.
+ *
+ * The status now lives in the control. The banner is gone, and nothing was lost
+ * with it: its "Connect an app" button was the fourth route to the same page on
+ * this screen, after the quick action, the Connected panel's Manage, and the
+ * "more you can connect" row.
+ *
+ * Not a textarea any more. A box that takes a caret, accepts characters and
+ * drops them is a worse lie than a placeholder — and to a screen reader it was
+ * a textbox that does nothing. This is text that looks like a composer, which
+ * is exactly what it is.
  */
-function Composer({ toast, onConnect }: { toast: Toast; onConnect: () => void }) {
-  const [draft, setDraft] = useState('')
-
+function Composer() {
   return (
-    <div>
-      <div className="ws-comp">
-        <textarea
-          data-composer
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="Ask Divo to do something…  (“@” for an app, “/” for a skill)"
-          rows={2}
-        />
-        <div className="ws-comp-foot">
-          <button type="button" className="ws-comp-chip" disabled title="Chosen by your admin — see Settings">
-            <Sparkles size={13} /> Divo · default
-          </button>
-          <button type="button" className="ws-comp-chip" disabled title="Set on the Approvals page">
-            <Lock size={13} /> Ask me first
-          </button>
-          <span className="ws-comp-sp" />
-          <button
-            type="button"
-            className="ws-comp-send"
-            disabled
-            title="Chat is not wired up in the web app yet — ask Divo in Lark or on the desktop"
-            /* Disabled controls swallow clicks, so the explanation is attached
-               to the wrapper. Without it the only way to learn why nothing
-               happens is to keep pressing it. */
-            aria-label="Send (not available yet)"
-          >
-            <ArrowUp size={15} />
-          </button>
-        </div>
-      </div>
-      {/*
-        Said once, in place, rather than only on a click nobody makes. A
-        disabled send button explains itself to whoever hovers it; everybody
-        else types a sentence, presses nothing, and concludes the product is
-        broken. There is no "Open in Lark" button here on purpose — there is no
-        deep link to Divo's chat that this app knows, and a button that lands
-        somewhere approximate is worse than a sentence that is true.
-      */}
-      <div className="ws-soon">
-        <span className="ws-soon-ic"><MessageSquare size={13} /></span>
-        <p>
-          <b>Chat is coming to the web.</b> Today Divo answers in Lark and in the desktop app —
-          everything you connect here works in both.
-        </p>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => {
-            toast('Connect an app here and Divo can use it in Lark and on the desktop too.')
-            onConnect()
-          }}
-        >
-          <Link2 size={13} /> Connect an app
+    <div className="ws-comp" data-preview="true">
+      <p className="ws-comp-soon">
+        <b>Chat is coming to the web.</b> Today Divo answers in Lark and on the
+        desktop — everything you connect here works in both.
+      </p>
+      <div className="ws-comp-foot">
+        {/* Kept, disabled: these two are real settings that will travel with
+            every message, so they show what is coming rather than decorating. */}
+        <button type="button" className="ws-comp-chip" disabled title="Chosen by your admin — see Settings">
+          <Sparkles size={13} /> Divo · default
         </button>
+        <button type="button" className="ws-comp-chip" disabled title="Set on the Approvals page">
+          <Lock size={13} /> Ask me first
+        </button>
+        <span className="ws-comp-sp" />
+        {/* Where send will be. A dead send button on a box that cannot be typed
+            in is the same contradiction one size smaller — this states the
+            reason there is no button instead of dimming one. */}
+        <span className="ws-comp-pill"><MessageSquare size={12} /> Soon</span>
       </div>
     </div>
   )

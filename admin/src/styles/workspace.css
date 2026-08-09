@@ -1066,6 +1066,21 @@
   border-color: var(--cur-primary);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--cur-primary) 16%, transparent);
 }
+/* Nothing inside takes focus while this is a preview, so the orange ring would
+   never fire — and if it ever did it would promise an input that is not there. */
+.cur .ws-comp[data-preview="true"]:focus-within {
+  border-color: var(--cur-hairline-strong); box-shadow: var(--cur-shadow-card);
+}
+
+/* The status, set as the composer's own text rather than as a placeholder in a
+   box you cannot type in. Same size and leading the real draft will have, so
+   the shell is not going to resize when chat arrives. */
+.cur .ws-comp-soon {
+  margin: 0; min-height: 42px; max-width: 64ch;
+  font-size: 14px; line-height: 1.55; color: var(--cur-muted);
+}
+.cur .ws-comp-soon b { color: var(--cur-ink); font-weight: 500; }
+
 .cur .ws-comp textarea {
   width: 100%; border: 0; background: none; resize: none; outline: none;
   font-family: inherit; font-size: 14px; line-height: 1.55; color: var(--cur-ink);
@@ -1103,26 +1118,17 @@
   background: var(--cur-surface-strong); color: var(--cur-muted-soft);
   cursor: default; opacity: .75;
 }
-/* Under the composer: what the disabled send button would have told you, said
-   out loud instead of only on hover.
-
-   Deliberately not the featured amber any more. That treatment is reserved for
-   the one promoted card on a screen, and spending it on a passive notice both
-   overstated this sentence and left nothing louder for anything that is
-   actually asking to be clicked. */
-.cur .ws-soon {
-  display: flex; align-items: center; gap: 11px; margin-top: 10px; padding: 9px 11px 9px 10px;
-  border: 1px solid var(--cur-hairline); border-radius: 12px;
-  background: var(--cur-canvas-soft);
-  color: var(--cur-body);
+/* Where the send button will be. Quiet on purpose: it is a label, not a control
+   waiting to be pressed, so it takes the chips' height and none of their
+   outline — a bordered pill beside two bordered chips reads as a third button. */
+.cur .ws-comp-pill {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 4px;
+  /* `--cur-muted-soft` reads as the quietest thing on the card and measured
+     3.22:1, under the 4.5 floor. This is the only word saying the composer is
+     not live, so it is the wrong place to save a shade. */
+  font-size: 12px; letter-spacing: 0.02em; color: var(--cur-muted); flex-shrink: 0;
 }
-.cur .ws-soon-ic {
-  width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0; display: grid; place-items: center;
-  background: var(--cur-surface-strong); color: var(--cur-muted);
-}
-.cur .ws-soon p { flex: 1; margin: 0; font-size: 12.5px; line-height: 1.5; }
-.cur .ws-soon b { color: var(--cur-ink); font-weight: 500; }
-.cur .ws-soon .btn { flex-shrink: 0; }
+.cur .ws-comp-pill svg { flex-shrink: 0; }
 
 /* ── Section header ───────────────────────────────────
    Title + subtitle left, controls right. Used by every band on Home. */
