@@ -1961,7 +1961,6 @@ describe('GatewayDispatcher', () => {
         actionId: 'memory-review:1',
       },
       payload: {
-        skillId: 'share-memory-skill',
         requestId: 'proposal-1',
         kind: 'memory',
         bullets: ['The finance close completes by day five.'],
@@ -2470,7 +2469,6 @@ describe('GatewayDispatcher', () => {
       departmentId: 'dept-finance',
       execution: { version: 1, runId: 'run-1', threadId: 'thread-1', actionId: 'knowledge-review:1' },
       payload: {
-        skillId: 'knowledge-skill',
         requestId: 'knowledge:request-1',
         kind: 'skill',
         action: 'publish',
@@ -2494,7 +2492,7 @@ describe('GatewayDispatcher', () => {
     assert.deepEqual(input.content, content);
   });
 
-  it('rejects memory review from desktop, malformed payloads, and an unbound skill', async () => {
+  it('rejects memory review from desktop, malformed payloads, and an unbound runtime', async () => {
     let openCount = 0;
     const registry = new ToolRegistry();
     const dispatcher = new GatewayDispatcher({
@@ -2516,7 +2514,6 @@ describe('GatewayDispatcher', () => {
       logger: noopLogger,
     });
     const payload = {
-      skillId: 'allowed-skill',
       requestId: 'proposal-1',
       kind: 'memory',
       bullets: ['Company fact'],
@@ -2534,11 +2531,11 @@ describe('GatewayDispatcher', () => {
     }, { ...member, channel: 'lark', runtimeChatId: 'oc_source_chat' });
     assert.equal(malformed.status, 'bad_request');
 
-    const unboundSkill = await dispatcher.dispatch({
+    const unboundRuntime = await dispatcher.dispatch({
       op: 'knowledge.review.open',
       payload,
     }, { ...member, channel: 'lark', runtimeChatId: 'oc_source_chat' });
-    assert.equal(unboundSkill.status, 'permission_denied');
+    assert.equal(unboundRuntime.status, 'permission_denied');
     assert.equal(openCount, 0);
   });
 

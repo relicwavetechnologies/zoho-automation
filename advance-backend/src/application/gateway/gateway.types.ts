@@ -104,7 +104,7 @@ export const personalMemoryCommandPayloadSchema = z.discriminatedUnion('action',
 export type PersonalMemoryCommandPayload = z.infer<typeof personalMemoryCommandPayloadSchema>;
 
 const memoryKnowledgeReviewOpenPayloadSchema = z.object({
-  skillId: z.string().trim().min(1).max(200),
+  skillId: z.string().trim().min(1).max(200).optional(),
   requestId: z.string().trim().min(1).max(120),
   kind: z.literal('memory'),
   bullets: z.array(z.string().trim().min(1).max(500)).min(1).max(10),
@@ -112,7 +112,7 @@ const memoryKnowledgeReviewOpenPayloadSchema = z.object({
 }).strict();
 
 const resourceKnowledgeReviewOpenPayloadSchema = z.object({
-  skillId: z.string().trim().min(1).max(200),
+  skillId: z.string().trim().min(1).max(200).optional(),
   requestId: z.string().trim().min(1).max(120),
   kind: z.enum(['skill', 'file']),
   action: z.enum(['create', 'update', 'publish', 'delete']),
