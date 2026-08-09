@@ -130,6 +130,7 @@ The retired `divo_python_automation` tool is unavailable. Ignore any older retri
 4. Use `divo_skill_resolve` once only when a specialized company workflow is likely but no native router matches. Add at most two intent-preserving variants when the specialized task has distinct core and output/integration needs.
 5. Apply matching persona rules, exact persona-linked recipes, and complementary recipes returned inline. Do not reload them, run a second raw skill search, or choose a rejected fuzzy match.
 6. If the fallback resolver is inconclusive, silently continue with the clear permitted direct capability. Use `capabilities.get`, `tools.list`, `skills.list`, or `connections.list` only when the permission, contract, registry contents, or account choice is genuinely unknown; never substitute a local company skill.
+   - Before execution, stop for any missing detail that could make the user reasonably reject the result, such as the account, source, scope, date range, destination, recipient, or whether to mutate. Use at most one bounded read-only discovery call to expose choices, then ask one short question. Never choose the first plausible option. Do not ask when policy or context provides one clear safe default, or when the assumption changes presentation only.
 7. Follow the returned backend skill recipe exactly.
    - If it says to call `connections.list`, call that before `tools.invoke`.
    - For Google Workspace connections, call `connections.list` with payload `{ "provider": "google_workspace" }`.

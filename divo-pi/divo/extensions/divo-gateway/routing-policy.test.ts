@@ -132,6 +132,14 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(ROUTER_SKILL, /retired `divo_python_automation` tool is unavailable/i);
 	});
 
+	it("asks once instead of executing materially ambiguous work", () => {
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /CHASE MATERIAL CLARITY BEFORE EXECUTION/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /at most one bounded read-only discovery call.*ask one short question and stop/is);
+		assert.match(ROUTER_SKILL, /missing detail that could make the user reasonably reject the result/i);
+		assert.match(ROUTER_SKILL, /Never choose the first plausible option/i);
+		assert.match(ROUTER_SKILL, /one clear safe default.*presentation only/is);
+	});
+
 	it("keeps direct provider access forbidden while permitting the governed local bridge", () => {
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Never call Lark directly from Bash/i);
 		assert.match(
