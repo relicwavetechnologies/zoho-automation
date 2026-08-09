@@ -30,7 +30,7 @@ import {
 } from './data/use-my-activity'
 import {
   Bar, ClickRow, Confirm, DataNote, Drawer, Empty, Fade, PageHeader, Panel,
-  Prompt, ProviderMark, Seg, Skel, SkelRows, Spark, Switch, compact, listPhrase, money,
+  Heatmap, Prompt, ProviderMark, Seg, Skel, SkelRows, Spark, Switch, compact, listPhrase, money,
   providerName, useStaged,
 } from './ui'
 import type { Toast } from './ui'
@@ -156,7 +156,7 @@ export function YouHome({ persona, replay, toast, go }: ScreenProps) {
                       <div className="ws-sub" style={{ marginTop: 5 }}>{money(usage.spendTodayUsd)} today</div>
                     </div>
                   </div>
-                  <div style={{ marginTop: 22 }}><Spark data={usage.series.map((p) => p.spendUsd)} /></div>
+                  <div style={{ marginTop: 22 }}><Heatmap data={usage.series} /></div>
                 </Fade>
               )}
             </div>

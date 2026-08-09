@@ -409,6 +409,44 @@
 .cur .ws-spark i { flex: 1; border-radius: 2px 2px 0 0; background: var(--cur-surface-strong); min-height: 2px; }
 .cur .ws-spark i[data-hot="true"] { background: color-mix(in srgb, var(--cur-primary) 60%, transparent); }
 
+/* ── Spend heatmap ────────────────────────────────────
+   Weekdays across, weeks down. Cells are capped rather than stretched: a
+   30-day month is five rows, and letting seven columns fill a wide panel
+   turns days into tiles the eye reads as buttons. */
+/* Fluid up to a ceiling. Seven columns across a half-width panel would draw
+   50px tiles that read as buttons; the cap keeps them squares. */
+.cur .ws-heat { display: block; max-width: 300px; }
+.cur .ws-heat-days,
+.cur .ws-heat-grid {
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px;
+}
+.cur .ws-heat-days {
+  margin-bottom: 6px; font-size: 10px; color: var(--cur-muted-soft);
+  text-align: center; letter-spacing: .02em;
+}
+.cur .ws-heat-grid i {
+  aspect-ratio: 1; border-radius: 5px; background: var(--cur-surface-strong);
+}
+/* An unstarted week is absence, not a zero-cost day, so it holds the space
+   without drawing a tile that could be counted. */
+.cur .ws-heat-grid i[data-pad="true"] { background: none; }
+.cur .ws-heat-grid i[data-level="0"] { background: var(--cur-surface-strong); }
+.cur .ws-heat-grid i[data-level="1"] { background: color-mix(in srgb, var(--cur-primary) 24%, var(--cur-surface-strong)); }
+.cur .ws-heat-grid i[data-level="2"] { background: color-mix(in srgb, var(--cur-primary) 48%, var(--cur-surface-strong)); }
+.cur .ws-heat-grid i[data-level="3"] { background: color-mix(in srgb, var(--cur-primary) 72%, var(--cur-surface-strong)); }
+.cur .ws-heat-grid i[data-level="4"] { background: var(--cur-primary); }
+.cur .ws-heat-key {
+  display: flex; align-items: center; justify-content: flex-end; gap: 4px;
+  margin-top: 9px; font-size: 10.5px; color: var(--cur-muted-soft);
+}
+.cur .ws-heat-key i { width: 11px; height: 11px; border-radius: 3px; background: var(--cur-surface-strong); }
+.cur .ws-heat-key i[data-level="1"] { background: color-mix(in srgb, var(--cur-primary) 24%, var(--cur-surface-strong)); }
+.cur .ws-heat-key i[data-level="2"] { background: color-mix(in srgb, var(--cur-primary) 48%, var(--cur-surface-strong)); }
+.cur .ws-heat-key i[data-level="3"] { background: color-mix(in srgb, var(--cur-primary) 72%, var(--cur-surface-strong)); }
+.cur .ws-heat-key i[data-level="4"] { background: var(--cur-primary); }
+.cur .ws-heat-key span:first-child { margin-right: 2px; }
+.cur .ws-heat-key span:last-child { margin-left: 2px; }
+
 /* ── Lark → browser connect flow ──────────────────────
    Spec for the moment a member is blocked in Lark chat, taps Connect, and
    lands back in the dashboard. Rendered as two panes because the flow spans
@@ -980,45 +1018,73 @@
    worse than one that says it is not ready. */
 .cur .ws-comp {
   background: var(--cur-surface); border: 1px solid var(--cur-hairline-strong);
-  border-radius: var(--cur-r-card); padding: 15px 16px 12px;
+  border-radius: 14px; padding: 14px 14px 10px;
   box-shadow: var(--cur-shadow-card);
+  transition: border-color .15s ease, box-shadow .15s ease;
 }
-.cur .ws-comp:focus-within { border-color: var(--cur-muted-soft); }
+/* Focus is the one place the brand orange earns its keep on this screen, and a
+   ring rather than a fill keeps it to a hint. */
+.cur .ws-comp:focus-within {
+  border-color: var(--cur-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cur-primary) 16%, transparent);
+}
 .cur .ws-comp textarea {
   width: 100%; border: 0; background: none; resize: none; outline: none;
   font-family: inherit; font-size: 14px; line-height: 1.55; color: var(--cur-ink);
-  min-height: 56px;
+  /* Two rows, not four. The old box reserved height for a paragraph nobody
+     types, which left the primary control on the page reading as empty. */
+  min-height: 42px;
 }
 .cur .ws-comp textarea::placeholder { color: var(--cur-muted); }
-.cur .ws-comp-foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.cur .ws-comp-foot { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 .cur .ws-comp-sp { flex: 1; }
-/* Chips read as settings that belong to the message, so they sit on the
-   composer's own surface rather than being outlined like buttons. */
+/* Outlined, because these are controls. Sitting flat on the composer's surface
+   made them read as caption text, so the two settings that travel with every
+   message looked like a footnote about the box rather than part of it. */
 .cur .ws-comp-chip {
   display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px;
-  border-radius: var(--cur-r-cta); border: 1px solid transparent; background: transparent;
+  border-radius: 999px; border: 1px solid var(--cur-hairline); background: var(--cur-canvas-soft);
   font-family: inherit; font-size: 12.5px; color: var(--cur-body); cursor: pointer;
+  transition: border-color .15s ease, color .15s ease, background .15s ease;
 }
-.cur .ws-comp-chip:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
+.cur .ws-comp-chip svg { color: var(--cur-muted); }
+.cur .ws-comp-chip:hover { background: var(--cur-surface-strong); border-color: var(--cur-hairline-strong); color: var(--cur-ink); }
+/* These two are set elsewhere and only reported here, so they never light up
+   on hover — the outline says "control", the flat hover says "not this one". */
 .cur .ws-comp-chip:disabled { cursor: default; }
-.cur .ws-comp-chip:disabled:hover { background: transparent; color: var(--cur-body); }
+.cur .ws-comp-chip:disabled:hover { background: var(--cur-canvas-soft); border-color: var(--cur-hairline); color: var(--cur-body); }
 .cur .ws-comp-send {
-  width: 32px; height: 32px; border-radius: var(--cur-r-cta); border: 0; flex-shrink: 0;
+  width: 34px; height: 34px; border-radius: 999px; border: 0; flex-shrink: 0;
   background: var(--cur-cta); color: var(--cur-on-cta); display: grid; place-items: center; cursor: pointer;
+  transition: background .15s ease;
 }
 .cur .ws-comp-send:hover { background: var(--cur-cta-hover); }
-.cur .ws-comp-send:disabled { background: var(--cur-surface-strong); color: var(--cur-muted-soft); cursor: default; }
+/* Dimmed rather than greyed flat: the button is waiting on a feature, not
+   broken, and the notice underneath is what explains which. */
+.cur .ws-comp-send:disabled {
+  background: var(--cur-surface-strong); color: var(--cur-muted-soft);
+  cursor: default; opacity: .75;
+}
 /* Under the composer: what the disabled send button would have told you, said
-   out loud instead of only on hover. */
+   out loud instead of only on hover.
+
+   Deliberately not the featured amber any more. That treatment is reserved for
+   the one promoted card on a screen, and spending it on a passive notice both
+   overstated this sentence and left nothing louder for anything that is
+   actually asking to be clicked. */
 .cur .ws-soon {
-  display: flex; align-items: center; gap: 10px; margin-top: 11px; padding: 10px 13px;
-  border: 1px solid var(--cur-featured-ring); border-radius: 10px;
-  background: linear-gradient(var(--cur-featured-from), var(--cur-featured-to));
+  display: flex; align-items: center; gap: 11px; margin-top: 10px; padding: 9px 11px 9px 10px;
+  border: 1px solid var(--cur-hairline); border-radius: 12px;
+  background: var(--cur-canvas-soft);
   color: var(--cur-body);
 }
-.cur .ws-soon svg { flex-shrink: 0; color: var(--cur-muted); }
-.cur .ws-soon p { flex: 1; margin: 0; font-size: 12.5px; line-height: 1.55; }
+.cur .ws-soon-ic {
+  width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0; display: grid; place-items: center;
+  background: var(--cur-surface-strong); color: var(--cur-muted);
+}
+.cur .ws-soon p { flex: 1; margin: 0; font-size: 12.5px; line-height: 1.5; }
 .cur .ws-soon b { color: var(--cur-ink); font-weight: 500; }
+.cur .ws-soon .btn { flex-shrink: 0; }
 
 /* ── Section header ───────────────────────────────────
    Title + subtitle left, controls right. Used by every band on Home. */

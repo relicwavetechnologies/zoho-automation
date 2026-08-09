@@ -397,6 +397,60 @@ export const Spark = ({ data }: { data: number[] }) => {
   )
 }
 
+/**
+ * Spend per day, as a calendar rather than a bar row.
+ *
+ * The sparkline drew 30 bars of which three were tall and the rest sat on the
+ * floor, which is what light usage actually looks like — so it read as an empty
+ * chart rather than as a pattern. A grid gives every quiet day the same square
+ * as a busy one, and puts weekdays under each other, so "nothing on weekends"
+ * and "one heavy Tuesday" are both visible without a single tall bar.
+ *
+ * Weeks run down the page and weekdays across, which matches the card's own
+ * "last 30 days" framing better than the year-long strip this borrows from.
+ */
+export const Heatmap = ({ data }: { data: { date: string; spendUsd: number }[] }) => {
+  if (data.length === 0) return null
+  const max = Math.max(...data.map((p) => p.spendUsd), 0)
+  // Parsed at local midnight. Letting the runtime read a bare date as UTC
+  // shifts every cell a day west of the timezone the numbers were billed in.
+  const dayOf = (iso: string) => new Date(`${iso}T00:00:00`)
+  // Monday-first, so the weekend sits together at the end of a row.
+  const weekday = (d: Date) => (d.getDay() + 6) % 7
+  const cells: Array<{ key: string; label: string; level: number } | null> = []
+  for (let i = 0; i < weekday(dayOf(data[0]!.date)); i += 1) cells.push(null)
+  for (const point of data) {
+    const date = dayOf(point.date)
+    cells.push({
+      key: point.date,
+      label: `${date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} · ${money(point.spendUsd)}`,
+      // Zero keeps its own step. A day that cost nothing is a fact worth
+      // showing, and shading it like a cheap day would erase it.
+      level: point.spendUsd <= 0 || max <= 0
+        ? 0
+        : Math.max(1, Math.ceil((point.spendUsd / max) * 4)),
+    })
+  }
+
+  return (
+    <div className="ws-heat">
+      <div className="ws-heat-days" aria-hidden="true">
+        {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => <span key={i}>{d}</span>)}
+      </div>
+      <div className="ws-heat-grid">
+        {cells.map((cell, i) => cell === null
+          ? <i key={`pad-${i}`} data-pad="true" />
+          : <i key={cell.key} data-level={cell.level} title={cell.label} />)}
+      </div>
+      <div className="ws-heat-key">
+        <span>Less</span>
+        {[0, 1, 2, 3, 4].map((l) => <i key={l} data-level={l} />)}
+        <span>More</span>
+      </div>
+    </div>
+  )
+}
+
 /* ── Drawer ──────────────────────────────────────────── */
 export function Drawer({ title, subtitle, onClose, children, footer }: {
   title: string; subtitle?: string; onClose: () => void; children: ReactNode; footer?: ReactNode

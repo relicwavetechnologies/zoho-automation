@@ -36,6 +36,35 @@ const extractErrorMessage = async (response: Response): Promise<string> => {
 };
 
 /**
+ * A fetch that never answered, said in words.
+ *
+ * An aborted request throws a DOMException whose message is "signal is aborted
+ * without reason". Rendered straight into the sign-in form, that sentence
+ * blames something inside the browser and names neither the timeout that fired
+ * nor the server that went quiet — so the one person who could fix it goes
+ * looking in the wrong place. Seen for real against a local backend whose SSH
+ * database tunnel had dropped: the API kept accepting connections and never
+ * replied.
+ */
+const asReadableNetworkError = (error: unknown, timeoutMs: number | undefined): Error => {
+  const aborted = error instanceof DOMException
+    ? error.name === "AbortError"
+    : (error as { name?: string } | null)?.name === "AbortError";
+  if (aborted) {
+    const waited = timeoutMs === undefined ? "" : ` within ${Math.round(timeoutMs / 1000)} seconds`;
+    return new Error(
+      `Divo's server did not respond${waited}. It may still be starting up, or it cannot reach its database.`,
+    );
+  }
+  if (error instanceof TypeError) {
+    // What `fetch` throws when nothing is listening, DNS fails, or CORS blocks
+    // the response — all of which read to a person as "the app is offline".
+    return new Error("Divo's server could not be reached. Check that it is running, then try again.");
+  }
+  return error instanceof Error ? error : new Error("The request could not be completed.");
+};
+
+/**
  * Thrown instead of a bare Error so a caller can tell "wrong password" (401)
  * from "no workspace" (403) from "the server fell over" without parsing prose.
  */
@@ -123,7 +152,7 @@ const request = async <T>(
     } catch (networkError) {
       // The backend is not answering at all. Worth one more ask before this
       // becomes a sentence on somebody's screen.
-      if (attempt >= retries) throw networkError;
+      if (attempt >= retries) throw asReadableNetworkError(networkError, opts.timeoutMs);
     } finally {
       if (timeoutId !== undefined) clearTimeout(timeoutId);
     }

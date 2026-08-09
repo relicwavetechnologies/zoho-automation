@@ -28,7 +28,7 @@ import { useConnections, CONNECTABLE } from './data/use-connections'
 import type { MyRun } from './data/use-my-activity'
 import type { Provider } from './fixtures'
 import {
-  ClickRow, Empty, Fade, Panel, ProviderMark, Skel, SkelRows, Spark,
+  ClickRow, Empty, Fade, Heatmap, Panel, ProviderMark, Skel, SkelRows,
   money, providerName, useStaged, type Toast,
 } from './ui'
 
@@ -354,7 +354,7 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
                       <div className="ws-sub" style={{ marginTop: 5 }}>{money(usage.spendTodayUsd)} today</div>
                     </div>
                   </div>
-                  <div style={{ marginTop: 22 }}><Spark data={usage.series.map((p) => p.spendUsd)} /></div>
+                  <div style={{ marginTop: 22 }}><Heatmap data={usage.series} /></div>
                 </Fade>
               )}
             </div>
@@ -450,7 +450,7 @@ function Composer({ toast, onConnect }: { toast: Toast; onConnect: () => void })
         somewhere approximate is worse than a sentence that is true.
       */}
       <div className="ws-soon">
-        <MessageSquare size={13} />
+        <span className="ws-soon-ic"><MessageSquare size={13} /></span>
         <p>
           <b>Chat is coming to the web.</b> Today Divo answers in Lark and in the desktop app —
           everything you connect here works in both.
