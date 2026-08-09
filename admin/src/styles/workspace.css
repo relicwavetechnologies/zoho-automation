@@ -1301,7 +1301,12 @@
 */
 .cur .set-col { max-width: 1180px; margin: 0 auto; padding: 46px 34px 90px; }
 
-.cur .set-h, .cur .set-row, .cur .set-note { max-width: 720px; }
+/* Centred, not just capped.
+   The column centres itself at 1180px and the content inside it stops at 720,
+   so on any screen wider than that the whole page sat against the left edge
+   with 460px of nothing to its right — a reading column pushed off-centre
+   rather than a page with a margin. */
+.cur .set-h, .cur .set-row, .cur .set-note { max-width: 720px; margin-inline: auto; }
 .cur .set-h { margin-bottom: 30px; }
 .cur .set-h h1 { font-size: 26px; font-weight: 500; letter-spacing: -0.02em; color: var(--cur-ink); }
 .cur .set-h p { font-size: 13.5px; color: var(--cur-muted); margin-top: 7px; line-height: 1.5; }
@@ -1332,13 +1337,15 @@
    row belongs to a section by containment rather than by being the next thing
    after a heading. */
 .cur .set-section {
-  max-width: 720px; margin: 32px 0 10px;
+  /* `margin-inline: auto` after the shorthand, which would otherwise zero it
+     and leave the labels hanging left of the cards they belong to. */
+  max-width: 720px; margin: 32px 0 10px; margin-inline: auto;
   font-size: 12.5px; font-weight: 500; color: var(--cur-muted);
   letter-spacing: 0.01em;
 }
 .cur .set-section:first-of-type { margin-top: 0; }
 .cur .set-group {
-  max-width: 720px; background: var(--cur-surface);
+  max-width: 720px; margin-inline: auto; background: var(--cur-surface);
   border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card);
   overflow: hidden;
 }
