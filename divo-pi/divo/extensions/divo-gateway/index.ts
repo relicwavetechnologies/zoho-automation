@@ -30,6 +30,7 @@ import {
 import { executeGatewayRequest } from "./gateway-execution.ts";
 import { registerDivoLlmProviders } from "../divo-llm/index.ts";
 import { registerLocalDivoBroker, localCliEnabled, DEFAULT_EXECUTION_DEPENDENCIES as DEFAULT_LOCAL_BROKER_DEPENDENCIES } from "./local-broker.ts";
+import { DIVO_GATEWAY_OPS, prepareGatewayArguments } from "./gateway-arguments.ts";
 import { authorizeToolInvocation } from "./skill-authorization.ts";
 import {
 	formatSkillResolveResult,
@@ -85,21 +86,7 @@ export function isScheduledWorkflowInvocation(request: {
  * backend Zod schemas enforce which fields are required for the selected op.
  */
 export const DIVO_GATEWAY_PARAMS = Type.Object({
-	op: StringEnum([
-		"capabilities.get",
-		"tools.list",
-		"skills.list",
-		"skills.search",
-		"skills.get",
-		"work.resolve",
-		"persona.resolve",
-		"teach.context.get",
-		"teach.learning.apply",
-		"connections.list",
-		"media.image_ocr",
-		"tools.preflight",
-		"tools.invoke",
-	] as const, {
+	op: StringEnum(DIVO_GATEWAY_OPS, {
 		description:
 			"Exact backend gateway operation. In normal work, skills.list/search/get and work/persona.resolve are only for explicit registry inspection; do not use them as a routing loop. Use the injected catalogue, divo_skill_view, or the bounded divo_skill_resolve fallback instead.",
 	}),
@@ -443,6 +430,10 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			"Never ask the user for backend URLs, JWTs, or SaaS API keys.",
 		],
 		parameters: DIVO_GATEWAY_PARAMS,
+		// `op` exists at two depths with two meanings, and the model regularly
+		// fills the inner one only. Repaired before validation so a clerical
+		// slip costs nothing; anything genuinely ambiguous still fails.
+		prepareArguments: prepareGatewayArguments as (args: unknown) => never,
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			// TypeBox has already validated the closed model-facing envelope.
 			// Normalize it without changing payload data; backend Zod performs the
