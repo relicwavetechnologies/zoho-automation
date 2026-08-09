@@ -55,7 +55,6 @@ function dependencies(options: {
 			backendUrl: "http://localhost:4000",
 			memberToken: "member-token",
 		}),
-		resolveSkillId: () => "share-memory-skill",
 		callGateway: async (_config, gatewayRequest, requestOptions) => {
 			options.onRequest?.(gatewayRequest);
 			options.onOptions?.(requestOptions);
@@ -316,7 +315,6 @@ describe("memory review protocol", () => {
 				{
 					op: "tools.invoke",
 					payload: {
-						skillId: "share-memory-skill",
 						toolId: "knowledge",
 						args: { operation: "check_targets" },
 					},
@@ -325,7 +323,6 @@ describe("memory review protocol", () => {
 					op: "tools.prepare",
 					departmentId: "dept-1",
 					payload: {
-						skillId: "share-memory-skill",
 						toolId: "knowledge",
 						args: {
 							operation: "propose",
@@ -355,7 +352,6 @@ describe("memory review protocol", () => {
 					op: "tools.invoke",
 					departmentId: "dept-1",
 					payload: {
-						skillId: "share-memory-skill",
 						toolId: "knowledge",
 						args: {
 							operation: "apply",
@@ -431,7 +427,7 @@ describe("memory review protocol", () => {
 		assert.match(result.content[0]?.text ?? "", /allowedTargets must not be supplied/);
 	});
 
-	it("opens the backend-owned Lark card with the loaded dynamic skill binding", async () => {
+	it("opens the backend-owned Lark card without a model-supplied skill binding", async () => {
 		writeFileSync(runContextPath, JSON.stringify({
 			version: 1,
 			threadId: "thread-1",
@@ -456,7 +452,6 @@ describe("memory review protocol", () => {
 					actionId: (calls[0] as any).execution.actionId,
 				},
 				payload: {
-					skillId: "share-memory-skill",
 					requestId: "proposal-1",
 					kind: "memory",
 					bullets: [

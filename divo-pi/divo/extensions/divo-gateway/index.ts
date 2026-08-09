@@ -337,12 +337,8 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 	});
 	registerMemoryRecallTool(pi);
 	registerPersonalMemoryTool(pi);
-	registerMemoryReviewTool(pi, {
-		resolveLoadedSkillId: (toolId) => loadedSkillByTool.get(toolId)?.skillId,
-	});
-	registerKnowledgeReviewTool(pi, {
-		resolveLoadedSkillId: (toolId) => loadedSkillByTool.get(toolId)?.skillId,
-	});
+	registerMemoryReviewTool(pi);
+	registerKnowledgeReviewTool(pi);
 	registerTeachClarificationTool(pi);
 	registerDivoSkillView(pi, {
 		onSkillLoaded: (skill, execution) => {
