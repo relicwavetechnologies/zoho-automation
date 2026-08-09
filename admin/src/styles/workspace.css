@@ -1717,8 +1717,17 @@
    spends the alarm colour on the ordinary state of a form somebody is still
    filling in — which leaves nothing louder for a forward that leaves the
    company. */
+/* On its own line above the buttons, not wedged between them.
+   Beside the actions it was a two-line paragraph competing with Cancel and
+   Turn it on for the same row, which is what made the header read as cluttered
+   — the sentence is the reason the button is refusing, so it belongs over the
+   button rather than next to it. */
+.cur .ws-ph-act[data-stacked="true"] {
+  flex-direction: column; align-items: flex-end; gap: 10px;
+}
+.cur .ws-ph-act[data-stacked="true"] .ws-ph-act-row { display: flex; gap: 8px; }
 .cur .ws-mk-blocked {
-  align-self: center; max-width: 34ch; margin: 0 4px 0 0;
+  max-width: 46ch; margin: 0;
   font-size: 12px; line-height: 1.5; color: var(--cur-muted); text-align: right;
 }
 

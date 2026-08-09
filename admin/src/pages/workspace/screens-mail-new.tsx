@@ -573,14 +573,15 @@ function MailRuleForm({
           <ArrowLeft size={13} /> {editing ? 'Back to the rule' : 'Mail'}
         </button>}
         title={editing ? 'Edit rule' : sourceRuleId ? 'Duplicate rule' : 'New rule'}
+        // Why the button is refusing, over the button. It was a `title` first —
+        // invisible on touch and to a keyboard — then a yellow panel at the foot
+        // of the page, which said what the conditions block already said and
+        // said it in alarm colours. It is neither: the rule is unfinished, not
+        // wrong. Sharing the actions row made it wrap beside Cancel and Turn it
+        // on, so it takes a line of its own above them.
+        note={blocked ? <span className="ws-mk-blocked">{blocked}</span> : undefined}
         actions={
           <>
-            {/* Why the button is refusing, beside the button. It was a `title`
-                first — invisible on touch and to a keyboard — then a yellow
-                panel at the foot of the page, which said the same sentence the
-                conditions block was already saying and said it in alarm
-                colours. It is neither: the rule is unfinished, not wrong. */}
-            {blocked ? <span className="ws-mk-blocked">{blocked}</span> : null}
             {resolution.status === 'choose' && !editing ? (
               /* Whoever had to choose can un-choose. Without this the only way
                  back to the other account is to leave and start again. */
