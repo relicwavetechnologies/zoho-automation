@@ -62,6 +62,13 @@ describe("Divo normal-session routing policy", () => {
 		assert.doesNotMatch(ROUTER_SKILL, /compact capability catalogue as the normal routing map/i);
 	});
 
+	it("requires artifact links and verified counts in the terminal answer", () => {
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /final answer is the only result the user is guaranteed to receive/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Repeat every canonical artifact link and requested verified count/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Never say "the link above"/i);
+		assert.match(ROUTER_SKILL, /Repeat every canonical artifact link and requested verified count/i);
+	});
+
 	it("always routes a pasted Drive Excel workbook through the Sheets resolver", () => {
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /drive\.google\.com\/file\/d/);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /load the exact Google Sheets skill/i);
