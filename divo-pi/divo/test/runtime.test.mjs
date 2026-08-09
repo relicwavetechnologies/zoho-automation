@@ -417,10 +417,10 @@ describe("How a run is told to look at a picture", () => {
 	// of this is wrong for the running model, the failure is quiet.
 	it("sends a vision model to the file and a text model to the gateway", () => {
 		assert.match(imagePolicyFor("gpt-5.6-luna"), /read tool/);
-		assert.doesNotMatch(imagePolicyFor("gpt-5.6-luna"), /media\.image_ocr/);
+		assert.doesNotMatch(imagePolicyFor("gpt-5.6-luna"), /divo_image_read/);
 
-		assert.match(imagePolicyFor("deepseek-v4-flash"), /media\.image_ocr/);
-		assert.match(imagePolicyFor("deepseek-v4-pro"), /media\.image_ocr/);
+		assert.match(imagePolicyFor("deepseek-v4-flash"), /divo_image_read/);
+		assert.match(imagePolicyFor("deepseek-v4-pro"), /divo_image_read/);
 	});
 
 	it("runs V4 Flash at the provider's upgraded high reasoning level", () => {
@@ -470,7 +470,8 @@ describe("Past-chat recall is a direct-message capability", () => {
 	it("leaves the rest of the runtime untouched for a group turn", () => {
 		const args = buildPiArguments(groupValues);
 		const tools = args[args.indexOf("--tools") + 1].split(",");
-		assert.ok(tools.includes("divo_gateway"));
+		assert.ok(tools.includes("divo_connections"));
+		assert.ok(tools.includes("divo_zoho_books"));
 		assert.ok(!tools.includes("divo_memory_recall"));
 		assert.ok(!tools.includes("divo_memory"));
 		assert.ok(args.some((argument) => argument.endsWith("/divo-gateway/index.ts")));

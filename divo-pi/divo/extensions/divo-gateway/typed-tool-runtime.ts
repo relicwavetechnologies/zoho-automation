@@ -222,7 +222,7 @@ export async function registerEagerTypedTools(
 
 /**
  * The production invoker: one governed `tools.invoke` through the same client,
- * approval handling, and trace path `divo_gateway` already uses.
+ * approval handling, and trace path every governed call uses.
  *
  * Arguments arrive already validated against the backend's own schema, so the
  * envelope-repair step the mega-tool needs has nothing left to repair.

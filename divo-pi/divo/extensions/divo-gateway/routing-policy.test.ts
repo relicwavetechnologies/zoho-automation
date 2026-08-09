@@ -5,7 +5,6 @@ import { Check } from "typebox/value";
 import {
 	DIVO_COMPANY_PERSONA_PROMPT,
 	DIVO_DIRECT_WEB_SEARCH_POLICY,
-	DIVO_GATEWAY_PARAMS,
 	DIVO_GOVERNED_DIRECT_ACTION_CRITERION,
 	DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION,
 	DIVO_LOCAL_EXECUTION_PROMPT,
@@ -13,6 +12,7 @@ import {
 	nativeSkillPromptSummary,
 } from "./index.ts";
 import { localCliEnabled } from "./local-broker.ts";
+import { DIVO_CONNECTIONS_PARAMS } from "./typed-platform-tools.ts";
 
 const ROUTER_SKILL = readFileSync(
 	new URL("../../skills/divo-gateway/SKILL.md", import.meta.url),
@@ -84,17 +84,8 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /do not search Drive, resolve the URL, choose an account, or ask which file/i);
 	});
 
-	it("marks raw skill operations as inspection paths rather than normal routing", () => {
-		const schema = JSON.stringify(DIVO_GATEWAY_PARAMS);
-		assert.match(schema, /only for explicit registry inspection/i);
-		assert.match(schema, /do not use them as a routing loop/i);
-	});
-
 	it("treats Airtable as an exact governed connection family", () => {
-		assert.equal(Check(DIVO_GATEWAY_PARAMS, {
-			op: "connections.list",
-			payload: { provider: "airtable" },
-		}), true);
+		assert.equal(Check(DIVO_CONNECTIONS_PARAMS, { provider: "airtable" }), true);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /airtable for Airtable/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /never omit provider/i);
 		assert.match(ROUTER_SKILL, /airtable.*for Airtable/i);
@@ -102,10 +93,7 @@ describe("Divo normal-session routing policy", () => {
 	});
 
 	it("treats Shopify as an exact governed connection family", () => {
-		assert.equal(Check(DIVO_GATEWAY_PARAMS, {
-			op: "connections.list",
-			payload: { provider: "shopify" },
-		}), true);
+		assert.equal(Check(DIVO_CONNECTIONS_PARAMS, { provider: "shopify" }), true);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /shopify for Shopify/i);
 	});
 
@@ -146,7 +134,7 @@ describe("Divo normal-session routing policy", () => {
 			DIVO_COMPANY_PERSONA_PROMPT,
 			/credential-free divo-local from one persistent Python file.*pagination.*record set/s,
 		);
-		assert.doesNotMatch(JSON.stringify(DIVO_GATEWAY_PARAMS), /google\.plan/);
+		assert.doesNotMatch(JSON.stringify(DIVO_CONNECTIONS_PARAMS), /google\.plan/);
 	});
 
 	it("keeps Lark outcomes in chat while local artifact delivery is disabled", () => {

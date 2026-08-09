@@ -88,8 +88,8 @@ export function validateProtectedRunReferences(value) {
 
 function isProtectedShopifyProgress(progress) {
 	return progress?.type === "tool_start"
-		&& progress.toolName === "divo_gateway"
-		&& ["shopifyOrders", "shopifyCustomers"].includes(progress.toolId);
+		&& (["divo_shopify_orders", "divo_shopify_customers"].includes(progress.toolName)
+			|| ["shopifyOrders", "shopifyCustomers"].includes(progress.toolId));
 }
 
 function positiveInteger(value, fallback, name) {

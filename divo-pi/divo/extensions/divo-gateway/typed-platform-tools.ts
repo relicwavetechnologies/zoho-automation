@@ -5,7 +5,7 @@ import type { TypedToolHost, TypedToolResult } from "./typed-tool-runtime.ts";
 /**
  * Platform capabilities that are not a governed tool call.
  *
- * `divo_gateway` fronted thirteen operations. Typed tools replace exactly one
+ * The removed `divo_gateway` fronted thirteen operations. Typed tools replaced one
  * of them — `tools.invoke`. Most of the rest were registry inspection that
  * `divo_skill_resolve` already covers, or internal operations no model ever
  * calls. Two were real model-facing capabilities that would simply disappear
@@ -43,6 +43,36 @@ export const DIVO_IMAGE_READ_PARAMS = Type.Object({
 	fileName: Type.Optional(Type.String({
 		description: "Display name to report; defaults to the file's own name.",
 	})),
+});
+
+/**
+ * Preflight survives the mega-tool because typed tools do not replace it.
+ *
+ * A typed tool validates the backend wrapper contract, but the MCP families
+ * declare `input` as a free-form record, so the actual Google or Airtable
+ * operation arguments are still unvalidated locally. Preflight is what checks
+ * them — along with connection eligibility and OAuth scopes — without
+ * executing anything.
+ *
+ * Registering a typed tool per native contract would close that gap properly;
+ * the bootstrap already carries `nativeContracts[].inputSchema`. Until then,
+ * this stays.
+ */
+export const DIVO_PREFLIGHT_PARAMS = Type.Object({
+	invocations: Type.Array(
+		Type.Object({
+			toolId: Type.String({ description: "Exact backend tool ID to validate." }),
+			args: Type.Record(Type.String(), Type.Unknown(), {
+				description: "Complete proposed arguments, including args.input for a native contract.",
+			}),
+		}),
+		{
+			minItems: 1,
+			maxItems: 20,
+			description:
+				"Complete proposed invocations. Never send placeholders or empty mutation input; an incomplete preflight validates nothing.",
+		},
+	),
 });
 
 /** Issues one gateway operation and renders it exactly as a governed call would be. */
@@ -89,5 +119,22 @@ export function registerTypedPlatformTools(
 			invoke({ op: "media.image_ocr", payload: params, toolCallId }, ctx),
 	});
 
-	return ["divo_connections", "divo_image_read"];
+	host.registerTool({
+		name: "divo_preflight",
+		label: "Divo preflight",
+		description:
+			"Validate proposed governed calls without executing them: RBAC and action, the exact native input schema, selected connection eligibility, and required OAuth scopes.",
+		promptSnippet:
+			"Use divo_preflight before a Google or Airtable mutation, where args.input is checked against the native schema rather than the typed tool contract.",
+		promptGuidelines: [
+			"Send the complete arguments you intend to execute. A placeholder or empty mutation input validates nothing and wastes the check.",
+			"Preflight never executes and never creates an approval intent. A pass is not permission to skip approval.",
+			"A typed tool already validates its own contract, so preflight earns its round trip only where args.input carries a native schema.",
+		],
+		parameters: DIVO_PREFLIGHT_PARAMS as unknown as Record<string, unknown>,
+		execute: (toolCallId, params, _signal, _onUpdate, ctx) =>
+			invoke({ op: "tools.preflight", payload: params, toolCallId }, ctx),
+	});
+
+	return ["divo_connections", "divo_image_read", "divo_preflight"];
 }

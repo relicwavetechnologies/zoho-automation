@@ -1,6 +1,6 @@
 # Pi typed tool surface
 
-> Status: **Phases 0–2 complete and unit-proven; Phase 3 (cloud measurement) not started**
+> Status: **Phases 0–2 and 4 complete and unit-proven; `divo_gateway` deleted. Phase 3 (cloud measurement) deferred to one combined test.**
 >
 > Last updated: **2026-08-10**
 >
@@ -253,20 +253,27 @@ deleting the mega-tool today breaks Teach outright.
 - [x] Prerequisite: register typed tools eagerly, so an ordinary run that never
       resolves work still has governed tools.
 - [x] Replace `connections.list` and `media.image_ocr` with typed tools.
-- [ ] Replace `teach.context.get` and `teach.learning.apply`, and rewrite the
-      Teach agent prompt to name the new tools.
-- [ ] Replace or retire `tools.preflight`. Decide whether it stays a tool or
-      becomes an option on the typed tool it validates.
-- [ ] Remove the `divo_gateway` registration and its `promptGuidelines` block.
-- [ ] Redistribute any surviving bullet to the one tool it constrains; delete
-      the rest with a note on which schema now enforces it.
-- [ ] Delete the parts of `gateway-arguments.ts` that exist only to untangle
-      the 13-operation union; move whatever remains to per-tool
-      `prepareArguments`.
-- [ ] Keep `divo_skill_resolve`; it is routing, not a capability call.
-- [ ] Remove `args schema:` stringification from `formatWorkBootstrap`; the
-      schema now arrives as a tool definition.
-- [ ] Update `runtime-manifest.json` to drop `divo_gateway`.
+- [x] Remove the Teach pipeline instead of replacing its two operations. Teach
+      is a desktop pipeline and nothing here ever entered it.
+- [x] Keep `tools.preflight` as `divo_preflight`. It is **not** made redundant
+      by typed tools: the MCP families declare `input` as a free-form record,
+      so the real Google and Airtable arguments are still unvalidated locally.
+- [x] Remove the `divo_gateway` registration and its `promptGuidelines` block.
+- [x] Redistribute the surviving rules. The knowledge routing rules moved to the
+      typed `divo_knowledge` gate; the envelope checks were deleted because the
+      schema now enforces them.
+- [x] Delete `gateway-arguments.ts` entirely — the whole module existed to
+      untangle the 13-operation union.
+- [x] Keep `divo_skill_resolve`; it is routing, not a capability call.
+- [x] Remove `args schema:` and `parameters:` from `formatWorkBootstrap`.
+- [x] Update `runtime-manifest.json`, the bundled router skill, the workspace
+      prompt, the image policy, subagent tool access, and every progress and
+      trace check that keyed on the old tool name.
+
+The name checks were the subtle part. Progress labels, protected-Shopify
+detection, and governed-work detection all matched the literal string
+`divo_gateway`, and would have silently stopped recognising governed calls.
+They now use one `isGovernedDivoTool` predicate on the `divo_` prefix.
 
 **Exit gate:** one cloud run completes a governed Zoho and Google flow, plus one
 Teach flow, with no `divo_gateway` registered.

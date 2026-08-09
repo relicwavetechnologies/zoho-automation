@@ -1431,7 +1431,18 @@ function progressToolId(toolName, args) {
 	const nested = args?.payload?.toolId;
 	const value = typeof direct === "string" ? direct : typeof nested === "string" ? nested : undefined;
 	if (!value || !/^[A-Za-z0-9._-]{1,80}$/.test(value)) return undefined;
-	return toolName === "divo_gateway" || toolName === "call_tool" ? value : undefined;
+	return isGovernedDivoTool(toolName) || toolName === "call_tool" ? value : undefined;
+}
+
+/**
+ * A governed Divo capability call.
+ *
+ * Every governed tool is now its own typed Pi tool named `divo_<toolId>`, so
+ * there is no single mega-tool name left to match on. The prefix is the
+ * boundary: Divo registers it, Pi's own built-ins never use it.
+ */
+export function isGovernedDivoTool(toolName) {
+	return typeof toolName === "string" && toolName.startsWith("divo_");
 }
 
 const PROGRESS_LABEL_MAX = 80;
@@ -1472,7 +1483,7 @@ function progressToolDetail(toolName, args) {
 	// The tool id already travels as its own field, and the backend holds the
 	// table that turns it into a product name — so only the operation goes here.
 	// Sending the raw id too would print it twice, untranslated.
-	if (toolName === "divo_gateway") return progressLabel(args.op, PROGRESS_DETAIL_MAX);
+	if (isGovernedDivoTool(toolName)) return progressLabel(args.op ?? args.operation, PROGRESS_DETAIL_MAX);
 	return undefined;
 }
 
@@ -1690,7 +1701,7 @@ export function collectProtectedRunMetadata(messages) {
 	const gatewayCalls = currentRun.flatMap((message) =>
 		message?.role === "assistant" && Array.isArray(message.content)
 			? message.content.filter((content) =>
-				content?.type === "toolCall" && content.name === "divo_gateway")
+				content?.type === "toolCall" && isGovernedDivoTool(content.name))
 			: [],
 	);
 	if (gatewayCalls.length === 0) {
@@ -1768,8 +1779,7 @@ function gatewayActionState(messages) {
 		message?.role === "assistant" && Array.isArray(message.content)
 			? message.content.filter((content) =>
 				content?.type === "toolCall"
-				&& content.name === "divo_gateway"
-				&& content.arguments?.op === "tools.invoke")
+				&& isGovernedDivoTool(content.name))
 			: [],
 	);
 	if (calls.length === 0) return "none";
@@ -1778,7 +1788,7 @@ function gatewayActionState(messages) {
 		const result = currentRun.find((message) =>
 			message?.role === "toolResult"
 			&& message.toolCallId === call.id
-			&& message.toolName === "divo_gateway",
+			&& isGovernedDivoTool(message.toolName),
 		);
 		const action = result?.details?.data?.action;
 		if (

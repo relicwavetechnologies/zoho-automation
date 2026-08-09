@@ -287,7 +287,7 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 				message,
 				"",
 				"Next action: wait. Do not submit another approval request and do not claim the action completed.",
-				"After approval, retry the exact same divo_gateway tools.invoke request once with the same departmentId, toolId, and args.",
+				"After approval, retry the exact same Divo tool call once with the same arguments.",
 				"Changed args require a fresh approval.",
 			].join("\n"),
 			isError: true,

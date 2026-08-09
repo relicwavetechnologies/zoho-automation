@@ -20,11 +20,11 @@ const validate = (name: string, parameters: unknown, args: unknown) =>
 	validateToolArguments({ name, description: "", parameters } as never, { name, arguments: args } as never);
 
 describe("registerTypedPlatformTools", () => {
-	it("replaces the two mega-tool operations that are real model-facing capabilities", () => {
+	it("replaces the mega-tool operations that are real model-facing capabilities", () => {
 		const { host: pi, tools } = host();
 		const names = registerTypedPlatformTools(pi, async () => ({ content: [], details: undefined }));
-		assert.deepEqual(names, ["divo_connections", "divo_image_read"]);
-		assert.deepEqual(tools.map((tool) => tool.name), ["divo_connections", "divo_image_read"]);
+		assert.deepEqual(names, ["divo_connections", "divo_image_read", "divo_preflight"]);
+		assert.deepEqual(tools.map((tool) => tool.name), names);
 	});
 
 	it("sends each tool to its own gateway operation", async () => {

@@ -223,7 +223,7 @@ describe("formatGatewayResponse", () => {
 		assert.match(result.text, /Finance Manager/);
 		assert.match(result.text, /existing request was reused|request state: reused/i);
 		assert.match(result.text, /next action: wait/i);
-		assert.match(result.text, /exact same divo_gateway tools\.invoke request/i);
+		assert.match(result.text, /exact same Divo tool call/i);
 		assert.match(result.text, /changed args require a fresh approval/i);
 	});
 

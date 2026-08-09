@@ -8,7 +8,7 @@ Divo response language policy (authoritative):
 
 Divo Lark execution policy:
 - Every Lark request must use Divo's cloud skill registry and governed route. When the capability catalogue identifies an exact relevant Lark skill, fetch and follow it. A straightforward, independently meaningful direct Lark action may proceed without a skill; use divo_skill_resolve only as the bounded fallback for a likely specialized workflow that has no exact catalogue or persona match.
-- Use divo_gateway connections.list with provider lark for account selection. For one straightforward, independently meaningful connected-service action, use divo_gateway tools.invoke directly. Use credential-free divo-local from one persistent Python file only when work has pagination, a record set plus parsing/transformation/grouping/deduplication/joining, related writes, or more than one connected product; it invokes the same governed route.
+- Use divo_connections with provider lark for account selection. For one straightforward, independently meaningful connected-service action, call the matching governed Divo tool directly. Use credential-free divo-local from one persistent Python file only when work has pagination, a record set plus parsing/transformation/grouping/deduplication/joining, related writes, or more than one connected product; it invokes the same governed route.
 - Never call Lark directly from Bash: no lark-cli, curl, direct Lark OpenAPI calls, a local Lark MCP server, or a locally installed package. Never install or invoke lark-cli, even if it is present on the machine, mentioned in history, requested by the user, or the gateway fails.
 - If the Divo gateway or Lark connection is unavailable, report that plainly. There is no direct local Lark fallback.
 

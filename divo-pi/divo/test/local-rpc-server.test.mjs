@@ -262,14 +262,14 @@ test("a transient failure after a completed gateway action is not retried", asyn
 					content: [{
 						type: "toolCall",
 						id: "call-1",
-						name: "divo_gateway",
+						name: "divo_zoho_books",
 						arguments: { op: "tools.invoke" },
 					}],
 				},
 				{
 					role: "toolResult",
 					toolCallId: "call-1",
-					toolName: "divo_gateway",
+					toolName: "divo_zoho_books",
 					isError: false,
 					content: [{ type: "text", text: "Created" }],
 				},
@@ -305,14 +305,14 @@ test("a transient failure after a mutation and later read returns a truthful saf
 					content: [{
 						type: "toolCall",
 						id: "write-1",
-						name: "divo_gateway",
+						name: "divo_zoho_books",
 						arguments: { op: "tools.invoke" },
 					}],
 				},
 				{
 					role: "toolResult",
 					toolCallId: "write-1",
-					toolName: "divo_gateway",
+					toolName: "divo_zoho_books",
 					isError: false,
 					details: { data: { action: "update" } },
 				},
@@ -321,14 +321,14 @@ test("a transient failure after a mutation and later read returns a truthful saf
 					content: [{
 						type: "toolCall",
 						id: "read-1",
-						name: "divo_gateway",
+						name: "divo_zoho_books",
 						arguments: { op: "tools.invoke" },
 					}],
 				},
 				{
 					role: "toolResult",
 					toolCallId: "read-1",
-					toolName: "divo_gateway",
+					toolName: "divo_zoho_books",
 					isError: false,
 					details: { data: { action: "read" } },
 				},
@@ -366,14 +366,14 @@ test("a transient failure after read-only gateway calls may retry", async () => 
 					content: [{
 						type: "toolCall",
 						id: "read-1",
-						name: "divo_gateway",
+						name: "divo_zoho_books",
 						arguments: { op: "tools.invoke" },
 					}],
 				},
 				{
 					role: "toolResult",
 					toolCallId: "read-1",
-					toolName: "divo_gateway",
+					toolName: "divo_zoho_books",
 					isError: false,
 					details: { data: { action: "read" } },
 				},
@@ -423,14 +423,14 @@ test("a transient failure after an unknown gateway action is not retried", async
 					content: [{
 						type: "toolCall",
 						id: "unknown-1",
-						name: "divo_gateway",
+						name: "divo_zoho_books",
 						arguments: { op: "tools.invoke" },
 					}],
 				},
 				{
 					role: "toolResult",
 					toolCallId: "unknown-1",
-					toolName: "divo_gateway",
+					toolName: "divo_zoho_books",
 					isError: false,
 					details: { data: { action: "approve" } },
 				},
@@ -471,7 +471,7 @@ test("a transient failure after an issued gateway action is not retried without 
 					content: [{
 						type: "toolCall",
 						id: "call-1",
-						name: "divo_gateway",
+						name: "divo_zoho_books",
 						arguments: { op: "tools.invoke" },
 					}],
 				},
@@ -533,7 +533,7 @@ test("terminal model failure preserves protected-attempt metadata for cleanup", 
 					content: [{
 						type: "toolCall",
 						id: "call-shopify",
-						name: "divo_gateway",
+						name: "divo_zoho_books",
 						arguments: {
 							op: "tools.invoke",
 							payload: { toolId: "shopifyCustomers", args: { operation: "count_customers" } },
@@ -671,7 +671,7 @@ test("Pi events become sanitized progress events", () => {
 		projectRuntimeProgress({
 			type: "tool_execution_start",
 			toolCallId: "call-1",
-			toolName: "divo_gateway",
+			toolName: "divo_zoho_books",
 			args: {
 				payload: {
 					toolId: "googleDrive",
@@ -682,7 +682,7 @@ test("Pi events become sanitized progress events", () => {
 		{
 			type: "tool_start",
 			callId: "call-1",
-			toolName: "divo_gateway",
+			toolName: "divo_zoho_books",
 			toolId: "googleDrive",
 		},
 	);
@@ -690,14 +690,14 @@ test("Pi events become sanitized progress events", () => {
 		projectRuntimeProgress({
 			type: "tool_execution_end",
 			toolCallId: "call-1",
-			toolName: "divo_gateway",
+			toolName: "divo_zoho_books",
 			result: { secret: "must-not-leak" },
 			isError: false,
 		}),
 		{
 			type: "tool_end",
 			callId: "call-1",
-			toolName: "divo_gateway",
+			toolName: "divo_zoho_books",
 			isError: false,
 		},
 	);
@@ -1042,7 +1042,7 @@ test("a protected call followed by runtime failure still requests session cleanu
 			onProgress({
 				type: "tool_start",
 				callId: "call-1",
-				toolName: "divo_gateway",
+				toolName: "divo_zoho_books",
 				toolId: "shopifyOrders",
 			});
 			throw Object.assign(new Error("model failed"), { code: "model_continuation_failed" });
@@ -1486,7 +1486,7 @@ test("a tool call carries the argument that says what it is about", () => {
 	assert.equal(detailOf("read", { file_path: "/data/workspace/.divo/inbox/bases.json" }), "bases.json");
 	// Only the operation: the tool id already travels as its own field, and the
 	// table that turns it into "Zoho Books" lives in the backend.
-	assert.equal(detailOf("divo_gateway", { op: "tools.invoke", payload: { toolId: "zohoBooks" } }), "tools.invoke");
+	assert.equal(detailOf("divo_zoho_books", { op: "tools.invoke", payload: { toolId: "zohoBooks" } }), "tools.invoke");
 	// An unmapped tool has no argument worth naming, and a card row is better
 	// bare than filled with whichever key happened to sort first.
 	assert.equal(detailOf("mystery_tool", { whatever: "x" }), undefined);

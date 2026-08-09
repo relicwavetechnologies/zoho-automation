@@ -368,7 +368,7 @@ function ensureExtensionLink(agentDir, extensionName) {
 export function imagePolicyFor(model) {
 	return VISION_MODELS.has(model)
 		? "To understand a picture, open it with the read tool. This model sees images directly, so read the file itself rather than sending it anywhere to be transcribed."
-		: "To understand a picture, call divo_gateway with op \"media.image_ocr\" and payload { filePath }. This model cannot see images, so reading the file yourself returns nothing usable; the gateway returns the text, a description of what is shown, and the interface elements in it.";
+		: "To understand a picture, call divo_image_read with { filePath }. This model cannot see images, so reading the file yourself returns nothing usable; the tool returns the text, a description of what is shown, and the interface elements in it.";
 }
 
 function renderWorkspacePrompt(values) {

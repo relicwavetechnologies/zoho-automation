@@ -167,7 +167,7 @@ export async function executeLocalBrokerRequest(
 			input.request.op === "tools.invoke"
 			&& (payload?.["toolId"] === "shopifyOrders" || payload?.["toolId"] === "shopifyCustomers")
 		) {
-			throw new Error("Protected Shopify record tools must be called directly through divo_gateway; divo-local cannot retain or print their results.");
+			throw new Error("Protected Shopify record tools must be called directly through their Divo tool; divo-local cannot retain or print their results.");
 		}
 		const request: GatewayRequestBody = {
 			op: input.request.op,

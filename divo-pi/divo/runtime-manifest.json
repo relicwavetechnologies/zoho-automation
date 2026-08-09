@@ -24,7 +24,6 @@
     "write",
     "edit",
     "bash",
-    "divo_gateway",
     "divo_skill_resolve",
     "divo_memory_recall",
     "divo_memory",
@@ -74,6 +73,7 @@
     "divo_oms_site_data",
     "divo_menhood_data",
     "divo_connections",
-    "divo_image_read"
+    "divo_image_read",
+    "divo_preflight"
   ]
 }

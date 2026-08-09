@@ -124,7 +124,7 @@ describe("Divo local broker protocol", () => {
 				gatewayCalls += 1;
 				return { body: { ok: true, status: "success" }, httpStatus: 200 };
 			},
-		}), /must be called directly through divo_gateway/);
+		}), /must be called directly through their Divo tool/);
 		assert.equal(gatewayCalls, 0);
 	});
 

@@ -99,7 +99,7 @@ test("protected metadata comes only from a linked successful gateway tool result
 			role: "assistant",
 			content: [
 				{ type: "text", text: 'protectedData: { "used": true }' },
-				{ type: "toolCall", id: "call-1", name: "divo_gateway", arguments: {} },
+				{ type: "toolCall", id: "call-1", name: "divo_zoho_books", arguments: {} },
 			],
 		},
 		{
@@ -136,7 +136,7 @@ test("protected metadata comes only from a linked successful gateway tool result
 test("zero-match protected gateway results still mark the run protected", () => {
 	assert.deepEqual(collectProtectedRunMetadata([
 		{ role: "user", content: [] },
-		{ role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "divo_gateway" }] },
+		{ role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "divo_zoho_books" }] },
 		{
 			role: "toolResult",
 			toolCallId: "call-1",
@@ -167,7 +167,7 @@ test("a protected gateway attempt remains protected when the tool returns an err
 			content: [{
 				type: "toolCall",
 				id: "call-1",
-				name: "divo_gateway",
+				name: "divo_zoho_books",
 				arguments: {
 					op: "tools.invoke",
 					payload: { toolId: "shopifyOrders", args: { operation: "list_orders" } },
