@@ -2599,12 +2599,69 @@ describe('GatewayDispatcher', () => {
     assert.equal(typeof selectedTools[0]?.parameterDocs, 'string');
     assert.equal(typeof selectedTools[0]?.argsSchema, 'object');
 
+    // runCommand is registered but never offered through the company gateway,
+    // so this is a refusal, not an absence — the same answer tools.invoke has
+    // always given for it.
     const unavailable = await dispatcher.dispatch({
       op: 'tools.list',
       payload: { toolId: 'runCommand' },
     }, member);
     assert.equal(unavailable.ok, false);
-    assert.equal(unavailable.status, 'unknown_tool');
+    assert.equal(unavailable.status, 'permission_denied');
+    assert.match(String(unavailable.error?.message), /exists but is not permitted/);
+
+    // A selector nothing is registered under is the only unknown_tool.
+    const missing = await dispatcher.dispatch({
+      op: 'tools.list',
+      payload: { toolId: 'noSuchToolAnywhere' },
+    }, member);
+    assert.equal(missing.ok, false);
+    assert.equal(missing.status, 'unknown_tool');
+    assert.match(String(missing.error?.message), /No tool or family is registered/);
+  });
+
+  /**
+   * The distinction this exists for.
+   *
+   * A denied tool used to come back as unknown_tool, which reads as "this was
+   * never built". An agent that believes a capability does not exist stops
+   * asking for permission and starts inventing a way around it — in one real
+   * session it rebuilt an export by hand against an explicit prohibition. The
+   * refusal has to be legible as a refusal.
+   */
+  it('separates a denied tool from one that does not exist', async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool());
+    registry.register({
+      ...makeFakeTool(),
+      id: asToolId('dataExport'),
+      family: 'data',
+      description: 'Governed export',
+    } as Tool<{ query: string }, { result: string }>);
+
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(),
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([allowedSkill]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions: makePermissionService(),
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      logger: noopLogger,
+    });
+
+    // The member's permissions cover fakeTool only, so dataExport is real but
+    // out of reach.
+    const denied = await dispatcher.dispatch({
+      op: 'tools.list',
+      payload: { toolId: 'dataExport' },
+    }, member);
+    assert.equal(denied.status, 'permission_denied');
+    assert.match(String(denied.error?.message), /permission decision, not a missing capability/);
+    // And it must not suggest a detour.
+    assert.match(String(denied.error?.message), /Do not substitute another route/);
   });
 
   it('lists a permitted family without exposing every child contract and keeps invocation exact', async () => {

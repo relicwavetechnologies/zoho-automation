@@ -1051,6 +1051,40 @@ describe('PermissionService', () => {
       );
     });
 
+    /**
+     * Every family that can offer an export must be able to reach the exporter.
+     *
+     * A Shopify-only member used to resolve without dataExport at all, so the
+     * governed export vanished from their tool list and the agent reported the
+     * capability as non-existent rather than unavailable. Listed per family
+     * rather than asserted in bulk so that adding a new exporting family and
+     * forgetting this table fails here.
+     */
+    for (const source of [
+      'shopifyAnalytics', 'shopifyOrders', 'shopifyCustomers',
+      'zohoCrm', 'semrush', 'omsSiteData',
+    ] as const) {
+      it(`derives dataExport:create from a ${source} read grant`, async () => {
+        const deptToolPermRepo: DeptToolPermissionRepoPort = {
+          getForDeptRole: async () => ok([
+            { departmentId: DEPT_ID, roleId: 'role_member_001', toolId: source, actionGroup: 'read', allowed: true },
+          ]),
+          upsert: async () => ok({} as any),
+        };
+        const svc = new PermissionServiceImpl(buildDeps({
+          deptRepo: { getMembership: async () => ok(membershipRow()) },
+          deptToolPermRepo,
+        }));
+        const result = await svc.resolve(baseQuery({
+          companyRole: 'MEMBER' as any,
+          departmentId: DEPT_ID as any,
+        }));
+
+        assert.ok(result.ok);
+        assert.equal(result.value.allowedActionsByTool.get(asToolId('dataExport'))?.has('create'), true);
+      });
+    }
+
     it('honors an explicit department denial of derived dataExport access', async () => {
       const deptToolPermRepo: DeptToolPermissionRepoPort = {
         getForDeptRole: async () => ok([

@@ -340,7 +340,23 @@ export class GatewayDispatcher {
 
     if ((requestedToolId || requestedFamily) && selectedTools.length === 0) {
       const selector = requestedToolId ?? requestedFamily;
-      return gatewayFailure('unknown_tool', `Tool or family is unavailable or not permitted: ${selector}`);
+      // "You may not" and "it does not exist" are different answers, and
+      // collapsing them into unknown_tool taught the agent to conclude a
+      // capability had never been built and to invent a workaround around a
+      // governance rule. The registry is consulted unfiltered here, so the
+      // difference is decided by fact rather than by the caller's permissions.
+      const existsUnfiltered = this.deps.toolRegistry
+        .all()
+        .some((tool) => tool.id === selector || tool.family === selector);
+      if (existsUnfiltered) {
+        return gatewayFailure(
+          'permission_denied',
+          `${selector} exists but is not permitted for you in this department. `
+          + 'This is a permission decision, not a missing capability — a company admin can grant it. '
+          + 'Do not substitute another route to achieve the same effect.',
+        );
+      }
+      return gatewayFailure('unknown_tool', `No tool or family is registered under: ${selector}`);
     }
 
     const includeContract = exactTools.length > 0;
