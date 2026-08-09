@@ -134,10 +134,9 @@ with no repeated skill-fetch loop.
 - [x] Use `registryRevision` plus a scope/catalogue digest to skip unchanged
       Docker staging within a controller lifetime and persist the digest beside
       the materialized catalogue.
-- [ ] Allow warm Pi reuse only for an identical startup catalogue digest;
-      discard and restart before staging any changed digest. Complete this item
-      only after the local latency and revision-change E2E passes.
-- [ ] Measure cold start, unchanged warm turn, and revision-change restart.
+- [x] Allow warm Pi reuse only for an identical startup catalogue digest;
+      discard and restart before staging any changed digest.
+- [x] Measure cold start, unchanged warm turn, and revision-change restart.
 - [x] Reject DB slugs reserved by bundled Pi skills before discovery.
 - [x] Directly test read-only tree cleanup, atomic swap, and failure preserving
       the prior catalogue in the staging script.
@@ -164,6 +163,10 @@ revision, or skill body produces a new digest and restages atomically. Shared
 runs have distinct disposable skills volumes, retain authorized department
 skills, and still exclude direct-message history resources. Lifecycle logs now
 report only revision, count, digest prefix, stage decision, timing, and audience.
+Local Cloud-Pi evidence: the cold turn staged skills and started Pi in 25.0 s;
+the identical turn skipped staging and reused Pi in 18.8 s; changing one
+Development skill body changed the digest, restaged, and cold-started Pi in
+20.0 s. The exact original skill body was restored immediately afterward.
 
 ### Phase 3 — Finish the governed terminal foundation
 
@@ -173,6 +176,9 @@ report only revision, count, digest prefix, stage decision, timing, and audience
 - [x] Strip model/script-supplied `skillId`; skills are not authorization or
       execution provenance.
 - [x] Keep one persistent `.py` file, adjacent inputs, outputs, and checkpoint.
+- [x] Add a broker-owned `--output` path for governed results larger than the
+      96 KiB model ceiling; only a signed Cloud-Pi `tools.invoke` may request
+      it, files stay inside `DIVO_RUN_DIR`, and an 8 MiB hard cap remains.
 - [x] Verify create/write/read-back through one governed Python execution.
 
 Proof: a fresh locally built Cloud-Pi container read the native Google Sheets
@@ -194,14 +200,16 @@ abstraction prematurely:
 - [x] Semrush: classify the three exposed operations as bounded complete calls;
       preserve their existing coverage and failure reporting without fake
       cursor fields.
-- [ ] OMS: keep the 100-row result explicitly provider-limited until the
+- [x] OMS: keep the 100-row result explicitly provider-limited until the
       upstream webhook exposes stable pagination and a total.
-- [ ] Menhood: expose its existing deterministic backend cursor through a
-      bounded terminal contract without weakening safe query validation.
+- [ ] Menhood: retain the backend async stream. Its current PostgreSQL cursor
+      is transaction/connection-scoped and cannot be resumed across terminal
+      calls; replace it only if a safe stateful stream boundary is designed.
 - [x] Zoho Books and CRM: expose stable provider pagination in the public tool
       contracts (`page` for Books; `page`/`pageToken` for CRM).
 - [ ] Shopify: decide and test the protected Orders/Customers policy before
-      allowing local file retention.
+      allowing local file retention. Normal deep pagination now stops
+      truthfully at 25,000 rows; larger reads require Bulk Operations.
 - [ ] Airtable: use a bounded backend connector/REST paging path; do not turn
       MCP preview calls into bulk export.
 - [ ] Google Sheets: create, chunked write/append, and exact-range read-back.

@@ -122,6 +122,7 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local client/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /Gmail\/CRM → Sheets is always this path/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /Keep all connected reads, writes, and verification.*inside the file through divo-local/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /--output.*DIVO_RUN_DIR.*never print or cat rows/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /retired divo_python_automation tool is unavailable/i);
 		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /use one divo_python_automation call/i);
 		assert.match(ROUTER_SKILL, /Create one descriptive `.py` file/i);

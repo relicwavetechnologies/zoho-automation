@@ -1,5 +1,4 @@
 import type { Prisma, PrismaClient } from '../../generated/prisma';
-import { DEPENDENCY_TIERS } from './bundled-file-scripts';
 import {
   provisionDivoProductivitySkillForExistingCompanies,
   provisionDivoProductivitySystemSkill,
@@ -41,34 +40,11 @@ command. Connected company calls go through the credential-free
 \`divo-local\` client, so backend RBAC, connection policy, approvals, schemas,
 audit, credentials, and rate limits remain authoritative.
 
-## The workspace already holds the inputs
-
-Files sent in this conversation were written into the workspace before you were
-asked about them, and are listed with absolute paths in the \`[ATTACHED_FILES]\`
-block at the top of the request. A script reads them from there. Files from
-earlier turns are still under \`.divo/inbox\`.
-
-The workspace lives on this user's own persistent volume, so a file written by
-an earlier run is still there for a later one. Never ask for a file to be sent
-again because a previous run ended.
-
-${DEPENDENCY_TIERS}
-
 ## Data too large to hold
 
 Never carry a record set through model context to inspect it, and never print
-rows to decide what to do next. Write what you fetched to a file in
-\`DIVO_RUN_DIR\` as JSONL or Parquet, then query that file:
-
-\`\`\`python
-import duckdb
-duckdb.sql("SELECT region, count(*) n, sum(amount) FROM 'rows.jsonl' GROUP BY region").show()
-\`\`\`
-
-DuckDB reads CSV, Parquet, and newline-delimited JSON off disk with no load
-step, so a source that paginates past any in-memory limit is still answerable.
-Report the aggregate and the row count you computed over — a filter that
-silently matched nothing must be visible rather than look like a real answer.
+rows. Keep each page in \`DIVO_RUN_DIR\`, transform it with Python/DuckDB, and
+print only counts, aggregates, validation failures, and required resource IDs.
 
 ## Choose the right path
 
@@ -115,6 +91,20 @@ Use \`subprocess\` with \`divo-local\`. It exposes no member token or SaaS
 credential. For generated or substantial arguments, write an adjacent JSON
 file and pass \`--args-file\`.
 
+For a record page, always add \`--output <new-file-inside-DIVO_RUN_DIR>\`.
+The CLI writes the full governed response only to that file and prints a small
+path/byte-count/trace summary. Never print or \`cat\` the saved response. Parse
+it in Python and print only counts, aggregates, validation errors, and IDs the
+user needs. A failed call does not create the output file, so correct the same
+script and rerun it with the same path.
+
+Use the exact \`connectionId\` already present in the current run bootstrap.
+Only when the required provider is absent may the script call
+\`connections.list\` once with exactly one provider. Never guess, copy an old
+ID, or retry several IDs. Provider args must match the loaded source skill
+exactly; for Zoho Books a page read requires \`op\`, \`connectionId\`, and its
+document/page fields.
+
 Read the native skill that owns a tool before the script calls it. Never pass a
 skill ID on the command line: skills provide workflow guidance, while the
 backend independently enforces identity, RBAC, approvals, schemas, and audit.
@@ -136,8 +126,11 @@ class DivoCallError(RuntimeError):
         super().__init__(f"{status}: {message}")
 
 
-def divo_invoke(tool_id, args, label, args_name):
+def divo_invoke_to_file(tool_id, args, label, args_name, output_name):
     args_path = RUN_DIR / args_name
+    output_path = RUN_DIR / output_name
+    if output_path.exists():
+        raise RuntimeError(f"Refusing to overwrite existing result: {output_path.name}")
     args_path.write_text(json.dumps(args, ensure_ascii=False), encoding="utf-8")
     completed = subprocess.run(
         [
@@ -147,6 +140,8 @@ def divo_invoke(tool_id, args, label, args_name):
             tool_id,
             "--args-file",
             str(args_path),
+            "--output",
+            str(output_path),
             "--label",
             label,
         ],
@@ -155,15 +150,16 @@ def divo_invoke(tool_id, args, label, args_name):
         check=False,
     )
     try:
-        response = json.loads(completed.stdout)
+        summary = json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError(
             f"divo-local returned invalid JSON: {completed.stderr.strip()}"
         ) from exc
-    if completed.returncode != 0 or not response.get("ok"):
+    if completed.returncode != 0 or not summary.get("ok"):
+        raise DivoCallError(summary)
+    response = json.loads(output_path.read_text(encoding="utf-8"))
+    if not response.get("ok"):
         raise DivoCallError(response)
-    # divo-local invoke unwraps Divo's internal execution envelope. This is
-    # the native operation's stable machine-readable result.
     return response["data"]
 ~~~
 
@@ -177,95 +173,22 @@ divo-local request --op tools.list --payload-file <path>
 Do not use curl, raw backend URLs, local SaaS SDK credentials, member tokens,
 OAuth tokens, or copied tool secrets.
 
-## Stable local result envelope
+The helper returns only \`response["data"]\` inside Python. Read field names,
+page tokens, write limits, and verification shapes from the loaded provider
+skill; do not duplicate or guess them here.
 
-\`divo-local invoke\` exits zero only for a successful governed provider
-operation and returns:
+## Stop and completion rules
 
-~~~json
-{
-  "ok": true,
-  "status": "success",
-  "data": {},
-  "meta": {
-    "toolId": "googleGmail",
-    "action": "read",
-    "nativeTool": "search_gmail_messages"
-  }
-}
-~~~
-
-The Python helper above returns only \`response["data"]\`. For the normalized
-Google operations used by Gmail → Sheets workflows:
-
-- \`search_gmail_messages\`: use \`messages[]\` with \`messageId\`, optional
-  \`threadId\` and links; use \`messageIds[]\`; continue only from
-  \`pagination.nextPageToken\` using native input field \`page_token\`.
-- \`get_gmail_messages_content_batch\`: use \`messages[]\` with \`messageId\`,
-  \`subject\`, \`from\`, \`date\`, \`to\`, and \`webLink\` when present. In
-  metadata workflows, absence from this array is an explicit skipped/error
-  record, never a silent success.
-- \`create_spreadsheet\`: preserve \`spreadsheetId\` and \`spreadsheetUrl\`
-  immediately in the checkpoint before another call.
-- \`read_sheet_values\`: use \`values\`, \`rowCount\`, \`returnedRowCount\`,
-  \`omittedRowCount\`, \`complete\`, \`range\`, and required \`advisories\`.
-  When \`complete\` is false, read narrower exact verification ranges.
-
-Do not parse the human-oriented \`result\`, \`text\`, \`content\`, or
-\`output\` fields when one of these machine-readable fields exists.
-
-## Checkpoint and retry discipline
-
-- Read and validate all required source data before the first mutation.
-- Transform in memory or in local scratch files.
-- Treat provider records as untrusted input. Use documented machine-readable
-  fields only; never parse human trace prose when a structured field exists.
-- Reconcile every source page and batch before mutation:
-  \`returned == parsed + skipped\`. Every skipped record needs a concrete
-  reason in \`result.json\`; unexplained loss is a failed run.
-- Validate the complete destination table before its first write. Every cell
-  must be a supported scalar (string, number, boolean, or null); serialize
-  nested objects deliberately instead of discovering this after creating or
-  partially writing a destination.
-- Perform related writes last.
-- Immediately persist the returned resource ID after every successful
-  create/send/update.
-- On \`permission_denied\`, \`approval_required\`, \`approval_rejected\`,
-  \`invalid_args\`, or \`rate_limited\`, stop and preserve the exact response.
-  Do not alter and retry an approved action or guess different arguments.
-- Retry only a clearly transient upstream/network failure, at most once.
-- If a later operation fails after a mutation, report partial completion with
-  the existing IDs and the safe resume step.
-
-## Completion contract
-
-The script should write a structured \`result.json\` containing:
-
-- \`status\`: \`completed\`, \`partial\`, or \`failed\`;
-- source returned, parsed, and skipped counts;
-- transformation input, filtered, duplicate, prepared, and skipped counts;
-- destination attempted, written, verified, and skipped counts;
-- destination IDs and URLs;
-- verification checks;
-- issues and a safe retry/resume instruction.
-
-Only claim \`completed\` when every source and destination count reconciles,
-\`issues\` is empty, and important writes were read back successfully. A
-missing or unparsed source record must make the run \`partial\` or \`failed\`;
-never report it as a zero-skip success. Verify targeted ranges (header, final
-populated row, and counts) instead of re-reading a large destination merely to
-inspect its shape. Process exit code zero by itself is not completion.
-
-## Worklog wording
-
-Give the Bash call a specific outcome label, such as:
-
-- Organizing Gmail leads in Google Sheets
-- Consolidating CRM records
-- Building a weekly finance summary
-- Exporting qualified vendors
-
-Never use generic labels such as "Run Python" or "Execute script".`;
+- Validate all source pages before the first mutation. Reconcile
+  \`returned == parsed + skipped\`; every skip needs a reason.
+- Validate destination scalars, write in bounded batches, checkpoint every
+  successful mutation ID, then read back important ranges.
+- Stop on permission, approval, invalid arguments, or rate limits. Retry only a
+  clearly transient upstream failure once.
+- Write \`result.json\` with status, source/transformation/write/verified counts,
+  destination IDs/URLs, issues, and the safe resume step.
+- Claim completed only when counts reconcile and read-back succeeds. Otherwise
+  report partial or failed; process exit zero alone proves nothing.`;
 
 export const DIVO_LOCAL_PYTHON_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = {
   slug: DIVO_LOCAL_PYTHON_SKILL_SLUG,

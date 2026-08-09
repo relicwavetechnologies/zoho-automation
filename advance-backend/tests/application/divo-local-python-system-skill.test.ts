@@ -18,11 +18,12 @@ describe('Divo local Python system skill', () => {
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /rerun the exact Bash command/i);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /credential-free\s+`divo-local`/i);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /retired `divo_python_automation` tool is unavailable/i);
-    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /unified Divo work resolver/i);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /response\["data"\]/i);
-    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /messages\[\].*messageId/is);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /--output/);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /failed call does not create the output file/i);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /Never guess, copy an old\s+ID/is);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /returned == parsed \+ skipped/i);
-    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /missing or unparsed source record/i);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /every skip needs a reason/i);
     assert.doesNotMatch(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /def run\(input_data, divo\)/i);
   });
 
