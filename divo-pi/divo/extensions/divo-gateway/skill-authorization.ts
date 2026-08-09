@@ -10,10 +10,18 @@
  *
  * The caller cannot supply its own `skillId`. When present, it is read from
  * what was actually loaded so audit provenance cannot be forged.
+ *
+ * The binding lasts as long as the container. It used to last a single run,
+ * which meant every new message threw the binding away and the model had to
+ * re-load a recipe it already had — one rejected call plus one redundant fetch
+ * per turn, teaching it to pay the tax preemptively. Nothing was gained: the
+ * backend re-resolves RBAC on every call, so this ledger is provenance, not a
+ * permission boundary, and provenance does not expire when someone speaks
+ * again. Staleness is bounded by the container's own idle lifetime, which is
+ * the same window everything else in here already accepts.
  */
 
 export interface LoadedSkillRef {
-	readonly runId: string;
 	readonly skillId: string;
 }
 
@@ -33,7 +41,6 @@ export type SkillAuthorization =
 export function authorizeToolInvocation(input: {
 	readonly op: string;
 	readonly toolId: unknown;
-	readonly runId: string;
 	readonly lookup: LoadedSkillLookup;
 	readonly scheduling: boolean;
 }): SkillAuthorization | null {
@@ -43,7 +50,7 @@ export function authorizeToolInvocation(input: {
 	const lookup = typeof input.lookup === "function" ? input.lookup : () => undefined;
 	const loaded = toolId ? lookup(toolId) : undefined;
 
-	if (!toolId || !loaded || loaded.runId !== input.runId) {
+	if (!toolId || !loaded) {
 		return {
 			ok: false,
 			message: input.scheduling

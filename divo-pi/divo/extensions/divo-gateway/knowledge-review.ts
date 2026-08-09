@@ -53,7 +53,7 @@ const KnowledgeReviewParams = Type.Object({
 
 export interface KnowledgeReviewDependencies {
 	resolveConfig: () => DivoGatewayConfig | { error: string };
-	resolveSkillId: (toolId: string, runId: string) => string | undefined;
+	resolveSkillId: (toolId: string) => string | undefined;
 	callGateway: (
 		config: DivoGatewayConfig,
 		request: GatewayRequestBody,
@@ -277,7 +277,7 @@ export async function executeKnowledgeReview(
 	if ("error" in config) return { content: [{ type: "text" as const, text: config.error }], isError: true as const };
 	try {
 		const correlation = await readDivoRunCorrelation();
-		const skillId = deps.resolveSkillId("knowledge", correlation.runId);
+		const skillId = deps.resolveSkillId("knowledge");
 		if (!skillId) throw new Error("No loaded backend skill is authorized to request this knowledge change.");
 		const execution: GatewayExecutionContext = {
 			version: 1,
@@ -413,7 +413,7 @@ export async function executeKnowledgeReview(
 
 export function registerKnowledgeReviewTool(
 	pi: ExtensionAPI,
-	options: { resolveLoadedSkillId?: (toolId: string, runId: string) => string | undefined } = {},
+	options: { resolveLoadedSkillId?: (toolId: string) => string | undefined } = {},
 ): void {
 	pi.registerTool({
 		name: "divo_knowledge_review",

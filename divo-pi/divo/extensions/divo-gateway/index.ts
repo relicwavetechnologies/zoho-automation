@@ -345,7 +345,7 @@ Report persona, skill, and scheduling outcomes separately. Say exactly what was 
 }
 
 export default function divoGatewayExtension(pi: ExtensionAPI) {
-	const loadedSkillByTool = new Map<string, { runId: string; skillId: string }>();
+	const loadedSkillByTool = new Map<string, { skillId: string }>();
 	registerApprovalGate(pi);
 	registerLocalDivoBroker(pi, {
 		...DEFAULT_LOCAL_BROKER_DEPENDENCIES,
@@ -354,23 +354,19 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 	registerMemoryRecallTool(pi);
 	registerPersonalMemoryTool(pi);
 	registerMemoryReviewTool(pi, {
-		resolveLoadedSkillId: (toolId, runId) => {
-			const loaded = loadedSkillByTool.get(toolId);
-			return loaded?.runId === runId ? loaded.skillId : undefined;
-		},
+		resolveLoadedSkillId: (toolId) => loadedSkillByTool.get(toolId)?.skillId,
 	});
 	registerKnowledgeReviewTool(pi, {
-		resolveLoadedSkillId: (toolId, runId) => {
-			const loaded = loadedSkillByTool.get(toolId);
-			return loaded?.runId === runId ? loaded.skillId : undefined;
-		},
+		resolveLoadedSkillId: (toolId) => loadedSkillByTool.get(toolId)?.skillId,
 	});
 	registerTeachClarificationTool(pi);
 	registerDivoSkillView(pi, {
 		onSkillLoaded: (skill, execution) => {
+			// Still gated on a real run context — a load outside one is not
+			// provenance for anything — but the binding itself outlives that run.
 			if (!execution) return;
 			for (const toolId of skill.toolIds) {
-				loadedSkillByTool.set(toolId, { runId: execution.runId, skillId: skill.id });
+				loadedSkillByTool.set(toolId, { skillId: skill.id });
 			}
 		},
 	});
@@ -460,7 +456,6 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			const authorization = authorizeToolInvocation({
 				op: request.op,
 				toolId: request.payload?.toolId,
-				runId: correlation.runId,
 				lookup: (toolId) => loadedSkillByTool.get(toolId),
 				scheduling: isScheduledWorkflowInvocation(request),
 			});
@@ -540,7 +535,6 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (event) => {
 		refreshDivoRuntime(pi);
-		loadedSkillByTool.clear();
 		const correlation = await readDivoRunCorrelation().catch(() => undefined);
 		let systemPrompt = composeDivoSystemPrompt(
 			event.systemPrompt,

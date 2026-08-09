@@ -62,7 +62,7 @@ export interface MemoryReviewResponseV1 {
 
 export interface MemoryReviewDependencies {
 	resolveConfig: () => DivoGatewayConfig | { error: string };
-	resolveSkillId: (toolId: string, runId: string) => string | undefined;
+	resolveSkillId: (toolId: string) => string | undefined;
 	callGateway: (
 		config: DivoGatewayConfig,
 		request: GatewayRequestBody,
@@ -556,7 +556,7 @@ export async function executeMemoryReview(
 		runId: runCorrelation.runId,
 		actionId: `memory-review:${randomUUID()}`,
 	};
-	const skillId = dependencies.resolveSkillId("knowledge", runCorrelation.runId);
+	const skillId = dependencies.resolveSkillId("knowledge");
 	if (!skillId) {
 		const message = "The exact Manage Knowledge skill is not loaded in this run.";
 		return {
@@ -688,7 +688,7 @@ export async function executeMemoryReview(
 export function registerMemoryReviewTool(
 	pi: ExtensionAPI,
 	options: {
-		resolveLoadedSkillId?: (toolId: string, runId: string) => string | undefined;
+		resolveLoadedSkillId?: (toolId: string) => string | undefined;
 	} = {},
 ) {
 	pi.registerTool({

@@ -169,7 +169,6 @@ export async function executeLocalBrokerRequest(
 		const authorization = authorizeToolInvocation({
 			op: input.request.op,
 			toolId: payload?.["toolId"],
-			runId: correlation.runId,
 			lookup: dependencies.lookupLoadedSkill,
 			scheduling: payload?.["toolId"] === "scheduledWorkflows",
 		});

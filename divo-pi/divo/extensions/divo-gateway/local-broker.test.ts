@@ -30,8 +30,8 @@ const execFileAsync = promisify(execFile);
  * only invocable because divo_skill_view loaded the skill that declares it, so
  * the tests below say which skill authorized each call.
  */
-function loadedSkills(skillId = "gmail-read"): (toolId: string) => { runId: string; skillId: string } | undefined {
-	return () => ({ runId: correlation.runId, skillId });
+function loadedSkills(skillId = "gmail-read"): (toolId: string) => { skillId: string } | undefined {
+	return () => ({ skillId });
 }
 
 function activeCalls(signal?: AbortSignal): Map<string, ActiveBashCall> {
@@ -114,24 +114,30 @@ describe("Divo local broker protocol", () => {
 		assert.equal(gatewayCalls, 0);
 	});
 
-	it("rejects stale skill provenance from an earlier run", async () => {
-		let gatewayCalls = 0;
-		await assert.rejects(
-			executeLocalBrokerRequest({
-				version: 1,
-				request: { op: "tools.invoke", payload: { toolId: "googleGmail", args: {} } },
-			}, activeCalls(), {
-				resolveConfig: () => config,
-				readCorrelation: async () => correlation,
-				lookupLoadedSkill: () => ({ runId: "run-0", skillId: "gmail-read" }),
-				executeGateway: async () => {
-					gatewayCalls += 1;
-					return { body: { ok: true, status: "ok", data: {} }, httpStatus: 200 };
-				},
-			}),
-			/Exact company skill required/,
-		);
-		assert.equal(gatewayCalls, 0);
+	/**
+	 * A skill loaded on an earlier message still authorizes this one.
+	 *
+	 * This used to be a rejection: the binding was scoped to the run that
+	 * created it, so every later message paid a refused call plus a redundant
+	 * re-fetch of a recipe already in context. The backend re-resolves RBAC on
+	 * each call regardless, so nothing was being protected by the expiry.
+	 */
+	it("honours a skill loaded on an earlier message", async () => {
+		let sentSkillId: unknown;
+		await executeLocalBrokerRequest({
+			version: 1,
+			request: { op: "tools.invoke", payload: { toolId: "googleGmail", args: {} } },
+		}, activeCalls(), {
+			resolveConfig: () => config,
+			readCorrelation: async () => correlation,
+			lookupLoadedSkill: () => ({ skillId: "gmail-read" }),
+			executeGateway: async (_config, request) => {
+				sentSkillId = (request.payload as { skillId?: unknown } | undefined)?.skillId;
+				return { body: { ok: true, status: "ok", data: {} }, httpStatus: 200 };
+			},
+		});
+		// Provenance still comes from what was loaded, never from the caller.
+		assert.equal(sentSkillId, "gmail-read");
 	});
 
 	it("rejects calls that are not owned by one active approved Bash execution", async () => {

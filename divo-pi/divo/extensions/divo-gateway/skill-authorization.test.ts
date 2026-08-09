@@ -3,23 +3,21 @@ import { describe, it } from "node:test";
 import { authorizeToolInvocation } from "./skill-authorization.ts";
 
 describe("skill authorization", () => {
-	const loaded = { runId: "run-1", skillId: "skill-1" };
+	const loaded = { skillId: "skill-1" };
 
 	it("does not gate read operations", () => {
 		assert.equal(authorizeToolInvocation({
 			op: "tools.list",
 			toolId: undefined,
-			runId: "run-1",
 			lookup: () => loaded,
 			scheduling: false,
 		}), null);
 	});
 
-	it("requires a skill loaded in the current run for governed invocations", () => {
+	it("requires a loaded skill for governed invocations", () => {
 		const result = authorizeToolInvocation({
 			op: "tools.invoke",
 			toolId: "knowledge",
-			runId: "run-1",
 			lookup: () => undefined,
 			scheduling: false,
 		});
@@ -29,12 +27,11 @@ describe("skill authorization", () => {
 		});
 	});
 
-	it("rejects stale skill provenance and preserves scheduling guidance", () => {
+	it("gives scheduling work its own guidance", () => {
 		const result = authorizeToolInvocation({
 			op: "tools.invoke",
 			toolId: "scheduledWorkflows",
-			runId: "run-2",
-			lookup: () => loaded,
+			lookup: () => undefined,
 			scheduling: true,
 		});
 		assert.deepEqual(result, {
@@ -43,13 +40,43 @@ describe("skill authorization", () => {
 		});
 	});
 
-	it("binds the loaded skill only when its run matches", () => {
+	it("binds the skill that was actually loaded", () => {
 		assert.deepEqual(authorizeToolInvocation({
 			op: "tools.invoke",
 			toolId: "knowledge",
-			runId: "run-1",
 			lookup: () => loaded,
 			scheduling: false,
 		}), { ok: true, skillId: "skill-1" });
+	});
+
+	/**
+	 * The behaviour this change exists for.
+	 *
+	 * A binding used to be scoped to the run that created it, so the second
+	 * message in a thread was refused even though the recipe was already loaded
+	 * and the model was passing the right skill id. The lookup is now the only
+	 * thing consulted, and it survives for the container's life.
+	 */
+	it("keeps the binding across runs in the same container", () => {
+		const lookup = () => loaded;
+		const first = authorizeToolInvocation({
+			op: "tools.invoke", toolId: "knowledge", lookup, scheduling: false,
+		});
+		// A later message is a different run; the binding is unchanged.
+		const later = authorizeToolInvocation({
+			op: "tools.invoke", toolId: "knowledge", lookup, scheduling: false,
+		});
+		assert.deepEqual(first, { ok: true, skillId: "skill-1" });
+		assert.deepEqual(later, first);
+	});
+
+	it("still refuses a tool no skill ever loaded", () => {
+		const result = authorizeToolInvocation({
+			op: "tools.invoke",
+			toolId: "zohoBooks",
+			lookup: (toolId) => (toolId === "knowledge" ? loaded : undefined),
+			scheduling: false,
+		});
+		assert.equal(result?.ok, false);
 	});
 });
