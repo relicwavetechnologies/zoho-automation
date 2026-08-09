@@ -131,8 +131,11 @@ with no repeated skill-fetch loop.
 - [x] On bootstrap failure, clear DB-native materialization and continue with
       bundled skills only. Never reuse a stale catalogue without an exact
       user, department, permission, channel, and revision match.
-- [ ] Use `registryRevision` plus a scope/catalogue digest to skip unchanged
-      Docker staging and permit warm Pi reuse only for an identical catalogue.
+- [x] Use `registryRevision` plus a scope/catalogue digest to skip unchanged
+      Docker staging within a controller lifetime and persist the digest beside
+      the materialized catalogue.
+- [ ] Keep warm Pi reuse disabled until a measured test proves Pi can reload
+      startup-loaded native resources without stale descriptions.
 - [ ] Measure cold start, unchanged warm turn, and revision-change restart.
 - [x] Reject DB slugs reserved by bundled Pi skills before discovery.
 - [x] Directly test read-only tree cleanup, atomic swap, and failure preserving
@@ -154,7 +157,9 @@ Current proof: the backend keeps the existing priority order while enforcing
 the 100-skill and 2 MB budgets and logs omissions. Cloud Pi converts transient,
 malformed, or server-side bootstrap failures into an atomically staged empty DB
 catalogue, while 4xx authorization failures remain fatal. Controller tests pass
-48/48 and the authenticated runtime route suite passes 57/57.
+49/49 and the authenticated runtime route suite passes 57/57. An unchanged
+scope and catalogue now skips its Docker staging process; a changed department,
+revision, or skill body produces a new digest and restages atomically.
 
 ### Phase 3 — Finish the governed terminal foundation
 

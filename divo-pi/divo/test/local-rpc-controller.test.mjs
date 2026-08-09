@@ -24,6 +24,7 @@ import {
 	fetchNativeSkillBootstrapOrEmpty,
 	loadToken,
 	logCompletedRun,
+	nativeSkillBootstrapDigest,
 	nativeDbSkillsEnabled,
 	piProcessBindingMatches,
 	RUNTIME_IDLE_TIMEOUT_MS,
@@ -34,6 +35,7 @@ import {
 	runtimeContainerNeedsReplacement,
 	runtimeStartupProgress,
 	settleAll,
+	stageNativeSkillBootstrap,
 	trackRuntimeReclamation,
 	trustedRuntimeSession,
 	validateProfileName,
@@ -584,10 +586,10 @@ test("native DB skill staging swaps atomically and preserves current on failure"
 	fs.mkdirSync(current, { recursive: true });
 	fs.writeFileSync(path.join(current, "SKILL.md"), "old", { mode: 0o444 });
 	const script = buildNativeSkillStagingArgs("unused", "unused").at(-1);
-	const run = (files) => spawnSync(process.execPath, ["-e", script], {
+	const run = (files, digest = "a".repeat(64)) => spawnSync(process.execPath, ["-e", script], {
 		encoding: "utf8",
 		env: { ...process.env, DIVO_NATIVE_SKILLS_ROOT: root },
-		input: JSON.stringify(files),
+		input: JSON.stringify({ digest, files }),
 	});
 
 	const failed = run([
@@ -604,7 +606,60 @@ test("native DB skill staging swaps atomically and preserves current on failure"
 	assert.equal(fs.statSync(staged).mode & 0o777, 0o444);
 	assert.equal(fs.existsSync(path.join(root, ".previous")), false);
 	assert.equal(fs.existsSync(path.join(root, "current", "old-skill")), false);
+	assert.deepEqual(
+		JSON.parse(fs.readFileSync(path.join(root, "current", ".bootstrap.json"), "utf8")),
+		{ digest: "a".repeat(64) },
+	);
 	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("native DB skill staging skips only an identical scoped catalogue", async () => {
+	const bootstrap = {
+		registryRevision: 7,
+		skills: [{
+			id: "skill-1",
+			slug: "safe-skill",
+			name: "Safe Skill",
+			description: "Safe description",
+			instructions: "Use governed tools.",
+			revision: 1,
+		}],
+	};
+	const scope = {
+		companyId: "company-1",
+		userId: "user-1",
+		departmentId: "department-1",
+		channel: "lark",
+	};
+	const calls = [];
+	const runStaging = async (...args) => { calls.push(args); };
+	const volume = `test-skills-${Date.now()}`;
+
+	const first = await stageNativeSkillBootstrap(volume, bootstrap, scope, { runStaging });
+	const unchanged = await stageNativeSkillBootstrap(volume, bootstrap, scope, { runStaging });
+	const changedScope = await stageNativeSkillBootstrap(
+		volume,
+		bootstrap,
+		{ ...scope, departmentId: "department-2" },
+		{ runStaging },
+	);
+	const changedCatalogue = await stageNativeSkillBootstrap(
+		volume,
+		{
+			...bootstrap,
+			skills: [{ ...bootstrap.skills[0], instructions: "Use the revised governed recipe." }],
+		},
+		scope,
+		{ runStaging },
+	);
+
+	assert.equal(first.staged, true);
+	assert.equal(unchanged.staged, false);
+	assert.equal(changedScope.staged, true);
+	assert.equal(changedCatalogue.staged, true);
+	assert.equal(calls.length, 3);
+	assert.notEqual(first.digest, changedScope.digest);
+	assert.equal(first.digest, nativeSkillBootstrapDigest(bootstrap, scope));
 });
 
 test("a shared container mounts only its run-specific disposable volumes", () => {

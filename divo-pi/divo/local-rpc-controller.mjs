@@ -54,6 +54,7 @@ const RESERVED_NATIVE_SKILL_SLUGS = new Set(
 	JSON.parse(fs.readFileSync(fileURLToPath(new URL("./runtime-manifest.json", import.meta.url)), "utf8"))
 		.trustedSkills ?? [],
 );
+const stagedNativeSkillDigests = new Map();
 let tokenReadTail = Promise.resolve();
 
 /**
@@ -459,6 +460,21 @@ export function renderNativeSkillFiles(bootstrap) {
 	}));
 }
 
+export function nativeSkillBootstrapDigest(bootstrap, scope) {
+	const validated = validateNativeSkillBootstrap(bootstrap);
+	return createHash("sha256")
+		.update(JSON.stringify({
+			scope: {
+				companyId: scope.companyId,
+				userId: scope.userId,
+				departmentId: scope.departmentId,
+				channel: scope.channel,
+			},
+			bootstrap: validated,
+		}))
+		.digest("hex");
+}
+
 export async function fetchNativeSkillBootstrap({
 	backendUrl,
 	token,
@@ -501,7 +517,11 @@ const root = process.env.DIVO_NATIVE_SKILLS_ROOT || "/run/divo-skills";
 const next = path.join(root, ".next");
 const previous = path.join(root, ".previous");
 const current = path.join(root, "current");
-const files = JSON.parse(fs.readFileSync(0, "utf8"));
+const payload = JSON.parse(fs.readFileSync(0, "utf8"));
+if (!payload || !/^[a-f0-9]{64}$/.test(payload.digest) || !Array.isArray(payload.files)) {
+	throw new Error("Invalid native skill staging payload");
+}
+const files = payload.files;
 function removeTree(directory) {
 	if (!fs.existsSync(directory)) return;
 	fs.chmodSync(directory, 0o755);
@@ -510,6 +530,10 @@ function removeTree(directory) {
 	}
 	fs.rmSync(directory, { recursive: true, force: true });
 }
+try {
+	const marker = JSON.parse(fs.readFileSync(path.join(current, ".bootstrap.json"), "utf8"));
+	if (marker.digest === payload.digest) process.exit(0);
+} catch {}
 removeTree(next);
 removeTree(previous);
 fs.mkdirSync(next, { recursive: true, mode: 0o755 });
@@ -519,6 +543,11 @@ for (const file of files) {
 	fs.mkdirSync(directory, { mode: 0o755 });
 	fs.writeFileSync(path.join(directory, "SKILL.md"), file.content, { mode: 0o444 });
 }
+fs.writeFileSync(
+	path.join(next, ".bootstrap.json"),
+	JSON.stringify({ digest: payload.digest }),
+	{ mode: 0o444 },
+);
 if (fs.existsSync(current)) fs.renameSync(current, previous);
 fs.renameSync(next, current);
 removeTree(previous);
@@ -548,12 +577,23 @@ export function buildNativeSkillStagingArgs(volume, image = IMAGE) {
 	];
 }
 
-async function stageNativeSkillBootstrap(volume, bootstrap) {
-	await runWithInput(
+export async function stageNativeSkillBootstrap(
+	volume,
+	bootstrap,
+	scope,
+	{ force = false, runStaging = runWithInput } = {},
+) {
+	const digest = nativeSkillBootstrapDigest(bootstrap, scope);
+	if (!force && stagedNativeSkillDigests.get(volume) === digest) {
+		return { digest, staged: false };
+	}
+	await runStaging(
 		"docker",
 		buildNativeSkillStagingArgs(volume),
-		JSON.stringify(renderNativeSkillFiles(bootstrap)),
+		JSON.stringify({ digest, files: renderNativeSkillFiles(bootstrap) }),
 	);
+	stagedNativeSkillDigests.set(volume, digest);
+	return { digest, staged: true };
 }
 
 export function runtimeContainerNeedsReplacement(container, image = IMAGE, imageId) {
@@ -2469,7 +2509,12 @@ async function runPrompt({
 		const runtime = await ensureRuntime(profile, { ephemeral });
 		resources = runtime.resources;
 		if (nativeSkillBootstrap) {
-			await stageNativeSkillBootstrap(resources.skillsVolume, nativeSkillBootstrap);
+			await stageNativeSkillBootstrap(
+				resources.skillsVolume,
+				nativeSkillBootstrap,
+				{ companyId, userId, departmentId, channel },
+				{ force: runtime.created },
+			);
 		}
 		for (const progress of runtimeStartupProgress(runtime)) {
 			emitRuntimeProgress(onProgress, progress);
