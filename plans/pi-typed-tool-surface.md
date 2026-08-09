@@ -283,13 +283,25 @@ nothing else depends on the removal.
 
 ### Phase 5 — Harvest what the typed surface unlocks
 
-- [ ] Mark independent read tools `executionMode: "parallel"`; measure the
-      step-count effect on multi-page and multi-provider work.
+- [x] Mark independent read tools `executionMode: "parallel"`.
+      A tool is parallel only when **every** action the member can reach through
+      it is a read. Pi fixes the mode per tool with no per-call hook, so one
+      reachable mutation makes the whole tool sequential — `zohoBooks` with read
+      and create stays sequential even for a read, because two invoices created
+      at once is exactly the failure this prevents.
+      Always parallel regardless of grant: `larkContacts`, `larkMeeting`,
+      `shopifyAnalytics`, `shopifyOrders`, `shopifyCustomers`, `webSearch`,
+      `airtableBase`, `semrush`, `omsSiteData`, `menhoodData`, plus
+      `divo_connections`, `divo_image_read`, `divo_preflight`. A member with a
+      read-only grant on a writable tool gets concurrency there too.
+- [ ] Measure the step-count effect on multi-page and multi-provider work.
 - [ ] Give the largest families per-tool `prepareArguments` where a real
       compatibility shim is still needed.
-- [ ] Emit per-tool telemetry so error rate is attributable to a capability
-      rather than to `divo_gateway`. This is what Phase 9 of the export plan
-      asks for and cannot currently get.
+- [x] Emit per-tool telemetry so error rate is attributable to a capability
+      rather than to `divo_gateway`. No new code was needed: `trace.ts` already
+      records `toolName` and `isError` per call, and deleting the mega-tool is
+      what made that field mean a capability instead of a constant. This is what
+      Phase 9 of the export plan asks for and previously could not get.
 - [ ] Evaluate `renderCall`/`renderResult` per tool against the desktop tool
       cards already built downstream.
 - [ ] Re-measure prompt tokens after guidance redistribution.

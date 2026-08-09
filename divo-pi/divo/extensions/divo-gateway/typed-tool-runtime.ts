@@ -44,6 +44,7 @@ export interface TypedToolHost {
 		promptSnippet?: string;
 		promptGuidelines?: string[];
 		parameters: Record<string, unknown>;
+		executionMode?: "parallel" | "sequential";
 		execute(
 			toolCallId: string,
 			params: Record<string, unknown>,
@@ -98,6 +99,7 @@ export function registerTypedTools(
 			promptSnippet: promptSnippetFor(tool),
 			promptGuidelines: tool.promptGuidelines,
 			parameters: tool.parameters,
+			executionMode: tool.executionMode,
 			execute: (toolCallId, params, _signal, _onUpdate, ctx) =>
 				invoke({ toolId: tool.toolId, args: params, toolCallId }, ctx),
 		});

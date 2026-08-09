@@ -52,16 +52,18 @@ describe("registerTypedTools", () => {
 		assert.equal(tools.length, 1);
 		assert.equal(tools[0]?.name, "divo_web_search");
 		assert.match(tools[0]?.promptSnippet ?? "", /governed context work \(read\)/);
+		assert.equal(tools[0]?.executionMode, "parallel");
 	});
 
 	it("routes execution through the injected gateway invoker with the canonical tool ID", async () => {
 		const calls: Array<{ toolId: string; args: Record<string, unknown>; toolCallId: string }> = [];
 		const { host: pi, tools } = host();
-		registerTypedTools(pi, bootstrapWith([{ id: "zohoBooks", argsSchema: fixtures.zohoBooks }]), async (input) => {
+		registerTypedTools(pi, bootstrapWith([{ id: "zohoBooks", allowedActions: ["read", "create"], argsSchema: fixtures.zohoBooks }]), async (input) => {
 			calls.push(input);
 			return { content: [{ type: "text", text: "invoked" }], details: undefined };
 		}, new Set());
 
+		assert.equal(tools[0]?.executionMode, "sequential", "zohoBooks can also write, so it must not run concurrently");
 		const result = await tools[0]!.execute("call-1", { connectionId: "c", op: "list_invoices" }, undefined, undefined, {});
 		assert.deepEqual(calls, [{
 			toolId: "zohoBooks",
@@ -85,6 +87,7 @@ describe("registerTypedTools", () => {
 		const { host: pi, tools } = host();
 		registerTypedTools(pi, bootstrapWith([{ allowedActions: [] }]), noopInvoke, new Set());
 		assert.equal(tools.length, 1);
+		assert.equal(tools[0]?.executionMode, "sequential");
 		assert.match(tools[0]?.description ?? "", /permission decision, not a missing capability/);
 		assert.match(tools[0]?.promptSnippet ?? "", /not permitted for you/);
 	});

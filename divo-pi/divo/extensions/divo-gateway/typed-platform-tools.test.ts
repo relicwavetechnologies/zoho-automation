@@ -25,6 +25,8 @@ describe("registerTypedPlatformTools", () => {
 		const names = registerTypedPlatformTools(pi, async () => ({ content: [], details: undefined }));
 		assert.deepEqual(names, ["divo_connections", "divo_image_read", "divo_preflight"]);
 		assert.deepEqual(tools.map((tool) => tool.name), names);
+		// None of the three mutates, so a turn may run them together.
+		assert.deepEqual(tools.map((tool) => tool.executionMode), ["parallel", "parallel", "parallel"]);
 	});
 
 	it("sends each tool to its own gateway operation", async () => {

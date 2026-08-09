@@ -39,6 +39,24 @@ export interface TypedToolDefinition {
 	allowedActions: string[];
 	/** True when the department exposes the tool but this member may not call it. */
 	denied: boolean;
+	/** "parallel" only where every reachable action is a read. */
+	executionMode: "parallel" | "sequential";
+}
+
+/**
+ * Concurrency is decided per tool, and Pi has no per-call hook to decide it
+ * later, so the answer has to hold for every call the member could make.
+ *
+ * A tool is safe to run concurrently only when reading is the sole thing this
+ * member can do through it. `zohoBooks` with read and create is sequential even
+ * for a read, because the same tool could issue the write — two invoices
+ * created at once is how duplicates happen. `webSearch` or a read-only Shopify
+ * grant has no such branch, so three pages can be fetched in one wait.
+ */
+export function executionModeFor(allowedActions: readonly string[]): "parallel" | "sequential" {
+	return allowedActions.length > 0 && allowedActions.every((action) => action === "read")
+		? "parallel"
+		: "sequential";
 }
 
 export interface TypedToolBuildResult {
@@ -145,6 +163,7 @@ export function buildTypedTools(bootstrap: WorkBootstrap): TypedToolBuildResult 
 			parameters: sanitized.schema,
 			allowedActions: [...tool.allowedActions],
 			denied,
+			executionMode: executionModeFor(tool.allowedActions),
 		});
 	}
 

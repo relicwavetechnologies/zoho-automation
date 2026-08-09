@@ -5,6 +5,7 @@ import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { WorkBootstrap } from "./work-bootstrap.ts";
 import {
 	buildTypedTools,
+	executionModeFor,
 	guidelinesFromParameterDocs,
 	sanitizeSchema,
 	typedToolName,
@@ -94,6 +95,25 @@ describe("guidelinesFromParameterDocs", () => {
 	});
 });
 
+describe("executionModeFor", () => {
+	it("runs a read-only capability concurrently", () => {
+		assert.equal(executionModeFor(["read"]), "parallel");
+	});
+
+	it("keeps a tool sequential when the same tool could also write", () => {
+		// The mode is fixed per tool and Pi has no per-call hook, so one reachable
+		// mutation makes every call through that tool sequential.
+		assert.equal(executionModeFor(["read", "create"]), "sequential");
+		assert.equal(executionModeFor(["read", "update", "delete"]), "sequential");
+		assert.equal(executionModeFor(["send"]), "sequential");
+		assert.equal(executionModeFor(["execute"]), "sequential");
+	});
+
+	it("keeps a denied tool sequential rather than treating no actions as harmless", () => {
+		assert.equal(executionModeFor([]), "sequential");
+	});
+});
+
 describe("buildTypedTools", () => {
 	it("maps a reachable tool to a typed definition carrying the real schema", () => {
 		const { tools, rejected } = buildTypedTools(bootstrapWith([{}]));
@@ -101,6 +121,7 @@ describe("buildTypedTools", () => {
 		assert.equal(tools.length, 1);
 		assert.equal(tools[0]?.name, "divo_web_search");
 		assert.equal(tools[0]?.denied, false);
+		assert.equal(tools[0]?.executionMode, "parallel", "a read-only grant should fetch concurrently");
 		assert.equal((tools[0]?.parameters.properties as Record<string, unknown>).query !== undefined, true);
 	});
 
