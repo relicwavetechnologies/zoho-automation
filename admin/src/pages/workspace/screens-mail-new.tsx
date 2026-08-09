@@ -32,7 +32,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
-  ArrowLeft, Inbox, Info, Mail, Plus, ShieldAlert, Split, TriangleAlert, X,
+  ArrowLeft, Inbox, Info, Mail, Plus, Split, TriangleAlert, X,
 } from 'lucide-react'
 import {
   matchClauses, readAction, readDestination, useCreateMailRule, useMailAutomations,
@@ -475,6 +475,70 @@ function MailRuleForm({
     }
   }
 
+  /*
+   * Every outcome that used to be a panel, raised where the press happened.
+   *
+   * Watched rather than returned from `onSubmit`, because create and edit
+   * report the same four endings through different shapes — an effect keyed on
+   * the state says each one once, whichever path produced it.
+   */
+  const saveError = creating.error ?? updating.error
+  const spokenError = useRef<string | null>(null)
+  useEffect(() => {
+    if (!saveError || spokenError.current === saveError) return
+    spokenError.current = saveError
+    // The server's own sentence, never replaced with a generic failure: several
+    // checks can refuse this and each has a different remedy, which is the only
+    // part of a refusal anybody can act on.
+    notify.failed(editing ? 'The change was not saved' : 'The rule was not created', saveError)
+  }, [saveError, editing])
+
+  const spokenPending = useRef<string | null>(null)
+  useEffect(() => {
+    if (!pending) { spokenPending.current = null; return }
+    const key = `${pending.approverName}|${pending.destination}|${pending.reused}`
+    if (spokenPending.current === key) return
+    spokenPending.current = key
+    // Asked, not refused. Nothing the member typed is wrong and there is
+    // nothing to correct — somebody else has to answer.
+    notify.heads(
+      pending.reused
+        ? `${pending.approverName} has already been asked`
+        : `Asked ${pending.approverName} to approve this`,
+      `Forwarding to ${pending.destination} sends mail outside your organisation, so it needs their yes. ${editing ? 'The change applies' : 'The rule turns on'} by itself once they agree.`,
+    )
+  }, [pending, editing])
+
+  const duplicate = updating.duplicate
+  const spokenDuplicate = useRef<string | null>(null)
+  useEffect(() => {
+    if (!duplicate) { spokenDuplicate.current = null; return }
+    const key = duplicate.message
+    if (spokenDuplicate.current === key) return
+    spokenDuplicate.current = key
+    // A question, not a failure — and the rule it collides with may be one the
+    // member cannot reach from here, so the way to it travels with the message.
+    notify.heads(
+      duplicate.archived
+        ? 'An archived rule already has these conditions'
+        : 'Another rule already has these conditions',
+      duplicate.message,
+      duplicate.ruleId
+        ? { label: 'Open that rule', onClick: () => navigate(`/me/mail/${duplicate.ruleId}`) }
+        : undefined,
+    )
+  }, [duplicate, navigate])
+
+  const previewError = preview.error
+  const spokenPreview = useRef<string | null>(null)
+  useEffect(() => {
+    if (!previewError || spokenPreview.current === previewError) return
+    spokenPreview.current = previewError
+    // The dry run sends nothing, so a failure here costs only the answer — but
+    // said in silence it reads as "no mail matched", which is the opposite.
+    notify.failed('The dry run could not finish', previewError)
+  }, [previewError])
+
   const onSubmit = async () => {
     /*
      * One answer per press.
@@ -665,69 +729,14 @@ function MailRuleForm({
       />
 
       <div className="ws-stack">
-        {/* Asked, not refused.
-            Nothing the member typed is wrong and there is nothing to correct —
-            a person has to answer. Rendering this as an error would send
-            somebody back to rewrite a rule that was fine. */}
-        {pending ? (
-          <div className="ws-pending">
-            <ShieldAlert size={14} />
-            <div>
-              <b>
-                {pending.reused
-                  ? `${pending.approverName} has already been asked.`
-                  : `Asked ${pending.approverName} to approve this.`}
-              </b>{' '}
-              Forwarding to {pending.destination} sends mail outside your organisation, so it needs
-              their yes. <b>{editing ? 'The change applies by itself' : 'The rule turns on by itself'}</b>{' '}
-              once they agree — you do not need to come back and do this again.
-            </div>
-          </div>
-        ) : null}
-
-        {/* A question, not a failure. The rule this collides with may be one the
-            member cannot see from here at all, which is why "archived" is said
-            out loud rather than left as "that already exists". */}
-        {updating.duplicate ? (
-          <div className="ws-ceiling">
-            <TriangleAlert size={14} />
-            <div>
-              <b>
-                {updating.duplicate.archived
-                  ? 'An archived rule already has these conditions.'
-                  : 'Another rule already has these conditions.'}
-              </b>{' '}
-              {/* The server's own sentence. It used to name the colliding rule
-                  in quotes — but nothing sends that name, so the panel read
-                  「"another rule" watches this mailbox」. Better to say the true
-                  thing without the name than to quote a placeholder. */}
-              {updating.duplicate.message}
-            </div>
-            {updating.duplicate.ruleId ? (
-              <button
-                type="button"
-                className="btn"
-                onClick={() => navigate(`/me/mail/${updating.duplicate!.ruleId}`)}
-              >
-                Open that rule
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-
-        {/* The server's own sentence, never replaced with a generic failure:
-            six checks can refuse this and each has a different remedy, which is
-            the only part of a refusal anybody can act on. */}
-        {creating.error || updating.error ? (
-          <div className="ws-ceiling">
-            <TriangleAlert size={14} />
-            <div>
-              <b>{editing ? 'The change was not saved.' : 'The rule was not created.'}</b>{' '}
-              {creating.error ?? updating.error}
-            </div>
-          </div>
-        ) : null}
-
+        {/*
+          No panels here any more.
+          Approval, a colliding rule and a failed save were three boxes stacked
+          above the form, pushing it down and describing a press that had
+          already happened. Each is raised as one toast at the moment it
+          happens — see the effects above — and the header button carries the
+          standing state, which is what "Waiting for …" is for.
+        */}
         <div className="ws-sheet">
           <div className="ws-sheet-main">
             <section className="ws-blk">
@@ -1064,7 +1073,7 @@ function MailRuleForm({
               <p className="ws-cond-note">
                 Replays these conditions over mail Divo has already seen. Nothing is sent.
               </p>
-              {preview.error ? <p className="ws-proof-line">{preview.error}</p> : null}
+
               {preview.result ? <PreviewResult result={preview.result} /> : null}
             </div>
           </aside>

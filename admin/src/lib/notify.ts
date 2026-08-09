@@ -28,6 +28,14 @@ const detail = (text?: string | null): string | undefined => {
   return trimmed.length > 160 ? `${trimmed.slice(0, 157)}…` : trimmed
 }
 
+/** A way out, for a message whose remedy is somewhere else. */
+export type NotifyAction = { label: string; onClick: () => void }
+
+const withAction = (why?: string | null, action?: NotifyAction) => ({
+  description: detail(why),
+  ...(action ? { action: { label: action.label, onClick: action.onClick } } : {}),
+})
+
 const DURATION = {
   /** Long enough to read a remedy, short enough not to sit over the page. */
   actionable: 6_000,
@@ -39,8 +47,8 @@ export const notify = {
    * Not allowed. Never phrased as a failure — nothing went wrong, and telling
    * somebody to try again when the answer will not change wastes their time.
    */
-  refused(what: string, why?: string | null) {
-    toast.error(what, { description: detail(why), duration: DURATION.actionable })
+  refused(what: string, why?: string | null, action?: NotifyAction) {
+    toast.error(what, { ...withAction(why, action), duration: DURATION.actionable })
   },
 
   /**
@@ -52,8 +60,8 @@ export const notify = {
   },
 
   /** It broke. Retrying is reasonable, so the wording says so. */
-  failed(what: string, why?: string | null) {
-    toast.error(what, { description: detail(why), duration: DURATION.actionable })
+  failed(what: string, why?: string | null, action?: NotifyAction) {
+    toast.error(what, { ...withAction(why, action), duration: DURATION.actionable })
   },
 
   /** It worked, and nothing on screen already says so. */
@@ -70,8 +78,8 @@ export const notify = {
    * are about to turn on. Given a red dot it would read as a blocker; given
    * none it would not be read at all.
    */
-  heads(what: string, why?: string | null) {
-    toast.info(what, { description: detail(why), duration: DURATION.actionable })
+  heads(what: string, why?: string | null, action?: NotifyAction) {
+    toast.info(what, { ...withAction(why, action), duration: DURATION.actionable })
   },
 
   /** Session gone. Its own case because the remedy is always the same one. */
