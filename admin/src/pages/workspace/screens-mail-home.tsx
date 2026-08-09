@@ -19,7 +19,7 @@ import { Link } from 'react-router-dom'
 import { Ban, Check, Clock, Inbox, TriangleAlert } from 'lucide-react'
 import { useCaught, useMailAutomations } from './data/use-mail-automations'
 import {
-  MAIL_SUMMARY_WINDOW_DAYS as WINDOW_DAYS, mailBucketOf, summarizeMail,
+  MAIL_FEED_LIMIT, MAIL_SUMMARY_WINDOW_DAYS as WINDOW_DAYS, mailBucketOf, summarizeMail,
 } from './data/mail-summary'
 import { Empty, Fade, Heatmap, PageHeader, Panel, SkelRows, useStaged } from './ui'
 
@@ -37,7 +37,7 @@ const dayLabel = (iso: string): string => {
 
 export function MailHome() {
   const [r1, r2] = useStaged([220, 460], 0)
-  const { caught, loading, error } = useCaught(200)
+  const { caught, loading, error } = useCaught(MAIL_FEED_LIMIT)
   const { rules, mailboxes } = useMailAutomations()
 
   const summary = useMemo(() => summarizeMail(caught), [caught])
@@ -173,6 +173,15 @@ export function MailHome() {
                     </div>
                   </div>
                 </div>
+                {/* Said out loud, because a capped calendar is the one chart
+                    that lies quietly: the squares it never heard about are
+                    drawn exactly like the days that were genuinely silent. */}
+                {summary.truncated ? (
+                  <div className="ws-sub" style={{ marginTop: 12 }}>
+                    Counted from the most recent {MAIL_FEED_LIMIT} messages, which is as far back as
+                    this feed goes — earlier days in the calendar may be missing rather than quiet.
+                  </div>
+                ) : null}
               </Fade>
             )}
           </div>

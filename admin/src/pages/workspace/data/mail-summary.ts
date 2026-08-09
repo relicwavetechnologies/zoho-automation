@@ -20,6 +20,16 @@ export const MAIL_SUMMARY_WINDOW_DAYS = 30
 export const MAIL_LATEST_ROWS = 4
 
 /**
+ * Rows to ask the caught feed for.
+ *
+ * The route validates `limit` at 100 and 400s above it, so asking for more
+ * does not get more — it gets nothing, and the page renders "this could not be
+ * read" every single load. Named here so the number the summary depends on and
+ * the number the request sends cannot drift apart.
+ */
+export const MAIL_FEED_LIMIT = 100
+
+/**
  * Passed on, held, failed, or still going.
  *
  * Held is not a failure and is never counted as one. A rule with an AI step
@@ -57,6 +67,15 @@ export type MailSummary = {
   activeDays: number
   /** When the most recent message was caught, or null for a silent window. */
   lastCaughtAt: string | null
+  /**
+   * The feed hit its row cap inside this window, so the counts are a floor and
+   * the earliest squares may be empty for want of data rather than of mail.
+   *
+   * Worth its own flag because truncation damages a calendar differently from
+   * a total: a capped total can be reported as "at least N", but a capped
+   * calendar draws real-looking zeroes on days it simply never heard about.
+   */
+  truncated: boolean
   latest: MailCaught[]
 }
 
@@ -104,6 +123,11 @@ export function summarizeMail(
     busiestDay: busiest && busiest.value > 0 ? busiest : null,
     activeDays: series.filter((day) => day.value > 0).length,
     lastCaughtAt: newestFirst[0]?.firstAttemptAt ?? null,
+    // The cap applies to the whole feed, not to the window. So a full feed only
+    // hides something if it ran out *inside* the window: if the oldest row it
+    // returned predates the window, everything in the window came back.
+    truncated: caught.length >= MAIL_FEED_LIMIT
+      && caught.every((row) => new Date(row.firstAttemptAt).getTime() >= firstDay.getTime()),
     latest: newestFirst.slice(0, MAIL_LATEST_ROWS),
   }
 }
