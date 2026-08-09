@@ -9,7 +9,7 @@
  * app, and the page says plainly what it does not do.
  */
 import { FormEvent, useEffect, useRef, useState } from "react"
-import { Link, useNavigate, useSearchParams } from "react-router-dom"
+import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom"
 import { CheckCircle2, Loader2, Mail, ShieldCheck, Sparkles } from "lucide-react"
 import { AuthCard, AuthError, Field } from "@/components/admin/auth-card"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
@@ -32,7 +32,7 @@ export function LoginPage() {
   const [busy, setBusy] = useState<"lark" | "password" | null>(null)
   const [mailerStep, setMailerStep] = useState<"signin" | "gmail" | "done">("signin")
   const [gmailBusy, setGmailBusy] = useState(false)
-  const { token, loginWithLark, completeLarkLogin, loginWithPassword } = useAdminAuth()
+  const { token, session, loading, unreachable, refresh, loginWithLark, completeLarkLogin, loginWithPassword } = useAdminAuth()
   const navigate = useNavigate()
   const [params] = useSearchParams()
 
@@ -45,6 +45,7 @@ export function LoginPage() {
    */
   const requested = params.get("next")
   const next = requested && requested.startsWith("/") && !requested.startsWith("//") ? requested : "/"
+  const signedInTarget = next === "/login" ? "/" : next
   const isLarkLinkFlow = next.startsWith("/link/lark")
   const larkCode = params.get("lark_code")
   const larkState = params.get("lark_state")
@@ -145,6 +146,22 @@ export function LoginPage() {
     callbackStarted.current = true
     void completeLark()
   }, [completeLarkLogin, larkCode, larkState])
+
+  const larkCallbackActive = Boolean(larkCode && larkState) || callbackStarted.current
+  if (!larkCallbackActive && mailerStep === "signin") {
+    if (session) return <Navigate to={signedInTarget} replace />
+    if (token && loading) return <LoginNotice message="Restoring your session…" />
+    if (token && unreachable) {
+      return (
+        <LoginNotice
+          message="Cannot reach Divo right now."
+          detail="You are still signed in — this is the connection, not your account."
+          actionLabel="Try again"
+          onAction={() => void refresh()}
+        />
+      )
+    }
+  }
 
   return (
     <AuthCard
@@ -249,6 +266,38 @@ export function LoginPage() {
         </div>
       )}
     </AuthCard>
+  )
+}
+
+function LoginNotice({
+  message,
+  detail,
+  actionLabel,
+  onAction,
+}: {
+  message: string
+  detail?: string
+  actionLabel?: string
+  onAction?: () => void
+}) {
+  return (
+    <div className="cur">
+      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "var(--cur-canvas)" }}>
+        <div style={{ textAlign: "center", maxWidth: 380 }}>
+          <div className="ws-auth-wait">{message}</div>
+          {detail ? (
+            <p className="ws-sub" style={{ marginTop: 10, lineHeight: 1.5 }}>
+              {detail}
+            </p>
+          ) : null}
+          {actionLabel && onAction ? (
+            <button type="button" className="btn" style={{ marginTop: 16 }} onClick={onAction}>
+              {actionLabel}
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
   )
 }
 
