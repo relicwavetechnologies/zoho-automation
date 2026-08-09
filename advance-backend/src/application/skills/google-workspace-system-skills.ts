@@ -211,18 +211,18 @@ Use this skill for ${product.description.toLowerCase()}
 
 ## Governed execution
 
-1. Reuse the exact connected/shared Google account already returned by the current unified run bootstrap. Call \`connections.list\` only when that bootstrap explicitly says Google account discovery is missing. Before any \`op: "call"\`, include the chosen UUID as \`connectionId\`; this is required for RBAC, owner policy, and connection rate limits.
-   If the bootstrap says no Google account is accessible, loading this skill has not sent a card. You must invoke \`call_tool\` exactly once with \`{"toolId":"${product.toolId}","args":{"op":"describe","nativeTool":"${product.tools[0]}"}}\`; do not include \`connectionId\`. Only a returned \`google_workspace_authorization_pending\` proves the backend sent the Connect Google card. Then end the current run; OAuth completion starts a fresh run automatically. Never invent a Lark operation, claim a card was sent without that tool result, or send the user to a settings page.
+1. Reuse the exact connected/shared Google account already returned by the current unified run bootstrap. Call \`divo_connections\` only when that bootstrap explicitly says Google account discovery is missing. Before any \`op: "call"\`, include the chosen UUID as \`connectionId\`; this is required for RBAC, owner policy, and connection rate limits.
+   If the bootstrap says no Google account is accessible, loading this skill has not sent a card. Invoke the registered Divo ${product.name} capability exactly once with \`{"op":"describe","nativeTool":"${product.tools[0]}"}\`; do not include \`connectionId\`. Only a returned \`google_workspace_authorization_pending\` proves the backend sent the Connect Google card. Then end the current run; OAuth completion starts a fresh run automatically. Never invent a Lark operation, claim a card was sent without that tool result, or send the user to a settings page.
 2. Never choose a model default or rotate through accounts after an error. A text reply is an exact choice only when it uniquely identifies one returned option by number or account email.
 3. Reuse the same exact \`connectionId\` for both \`op: "describe"\` and \`op: "call"\` when the bootstrap provides it. It may be omitted for \`describe\` only when there is no selected account and account resolution is unambiguous. Never use an email address or label itself as \`connectionId\`.
 4. Use only Divo's governed \`${product.toolId}\` route. For ${GOVERNED_DIRECT_ACTION_CRITERION}, call the runtime's governed wrapper directly. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use one persistent Python file and invoke this same tool through credential-free \`divo-local\` only when the work has ${GOVERNED_LOCAL_WORKFLOW_CRITERION}. Never call Google directly from Bash: no Google CLI, curl, browser automation, direct Google API call, local OAuth token, or credential-bearing SDK. \`divo-local\` is a governed Divo wrapper, not a Google client.
-5. If the current run bootstrap already contains the exact \`nativeTool\` input schema, use it and do not call \`describe\` again. Otherwise call \`op: "describe"\` once before that unfamiliar operation. \`input\` may be omitted for describe; follow the returned MCP input schema exactly.
+5. If the current run bootstrap already contains the exact \`nativeTool\` input schema, use it and do not call \`describe\` again. Otherwise call \`op: "describe"\` once before that unfamiliar operation. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, perform that describe inside the same persistent Python file through \`divo-local\`; never describe through the registered tool first and then repeat it in the script. \`input\` may be omitted for describe; follow the returned MCP input schema exactly.
 6. Call \`op: "call"\` with the same \`nativeTool\` and its arguments under \`input\`.
 7. ${GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance}
 
 ## Canonical governed call shape
 
-For a direct ${GOVERNED_DIRECT_ACTION_CRITERION}, invoke the runtime's governed wrapper with \`toolId: "${product.toolId}"\` and keep all product arguments under its \`args\` object: \`{ "op": "describe|call", "nativeTool": "<approved operation>", "connectionId": "<UUID required for call>", "input": {} }\`. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, when the local-workflow criterion above applies, put that same \`args\` object in an adjacent JSON file and call \`divo-local invoke --tool ${product.toolId} --args-file <path>\` from the one persistent Python file. The file holds the \`args\` object alone — a wrapper envelope carrying \`toolId\` or \`skillId\` is rejected as invalid args. Never place \`connectionId\` beside the wrapper's payload.
+For a direct ${GOVERNED_DIRECT_ACTION_CRITERION}, call the registered Divo ${product.name} capability with this argument object: \`{ "op": "describe|call", "nativeTool": "<approved operation>", "connectionId": "<UUID required for call>", "input": {} }\`. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, when the local-workflow criterion above applies, put that same object in an adjacent JSON file and call \`divo-local invoke --tool ${product.toolId} --args-file <path>\` from the one persistent Python file. The file holds the argument object alone — a wrapper envelope carrying \`toolId\`, \`args\`, or \`skillId\` is rejected. Keep \`connectionId\` inside that argument object.
 
 ## Approved operations
 
@@ -464,6 +464,7 @@ For a new structured spreadsheet, use this order:
 
 1. \`create_spreadsheet\` and retain the returned \`spreadsheetId\` and \`spreadsheetUrl\` fields. Treat a successful create as final even if later parsing or code fails; never create a second spreadsheet to rediscover the first response.
 2. \`modify_sheet_values\` to write headers and rows.
+   A successful write may return only an acknowledgement under \`data.result\`, not \`updatedRows\`. In a terminal workflow, count the intended rows from the local \`input.values\`; claim that count as written only after the exact read-back matches. Never turn a missing \`updatedRows\` field into a zero-row claim when verification proves the rows exist.
 3. \`format_sheet_range\` for header and cell formatting, following its described flat input schema exactly.
 4. \`resize_sheet_dimensions\` for column sizing and \`frozen_row_count\` / \`frozen_column_count\`.
 5. \`manage_sheet_data_validation\` for dropdowns. Use explicit sheet-qualified ranges such as \`Sheet1!D2:D100\` and either \`one_of_list\` values or a \`one_of_range\` source.
@@ -474,22 +475,19 @@ Example governed operation arguments:
 
 \`\`\`json
 {
-  "toolId": "googleSheets",
-  "args": {
-    "connectionId": "<selected connection UUID when required>",
-    "op": "call",
-    "nativeTool": "manage_sheet_data_validation",
-    "input": {
-      "spreadsheet_id": "<spreadsheet ID>",
-      "action": "set",
-      "ranges": ["Sheet1!D2:D100"],
-      "rule": { "type": "one_of_list", "values": ["Pending", "Approved", "Rejected"] }
-    }
+  "connectionId": "<selected connection UUID when required>",
+  "op": "call",
+  "nativeTool": "manage_sheet_data_validation",
+  "input": {
+    "spreadsheet_id": "<spreadsheet ID>",
+    "action": "set",
+    "ranges": ["Sheet1!D2:D100"],
+    "rule": { "type": "one_of_list", "values": ["Pending", "Approved", "Rejected"] }
   }
 }
 \`\`\`
 
-The runtime's governed wrapper may be \`call_tool\` or \`divo_gateway\`; in both cases keep \`connectionId\` inside the Google tool's \`args\` object shown above.
+Use this same argument shape with the registered Divo Google Sheets capability. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use it as the \`divo-local\` args file in a governed terminal workflow.
 
 ### Completion contract
 

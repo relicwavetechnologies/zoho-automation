@@ -57,7 +57,11 @@ describe('Google Workspace system skills', () => {
       assert.match(skill.markdown, /result advisory.*level: "required"/);
       assert.match(skill.markdown, /no Google account is accessible/);
       assert.match(skill.markdown, /loading this skill has not sent a card/);
-      assert.match(skill.markdown, /You must invoke `call_tool` exactly once/);
+      assert.match(skill.markdown, /Invoke the registered Divo .* capability exactly once/);
+      assert.match(skill.markdown, /Call `divo_connections` only when/);
+      assert.doesNotMatch(skill.markdown, /`call_tool`|`divo_gateway`/);
+      assert.match(skill.markdown, /perform that describe inside the same persistent Python file through `divo-local`/);
+      assert.match(skill.markdown, /never describe through the registered tool first and then repeat it in the script/);
       assert.match(skill.markdown, /google_workspace_authorization_pending/);
       assert.match(skill.markdown, /Never invent a Lark operation/);
       assert.doesNotMatch(skill.markdown, /Divo (injects|derives) user_google_email/);
@@ -65,7 +69,10 @@ describe('Google Workspace system skills', () => {
     const sheets = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find((skill) => skill.slug === 'google-sheets')!;
     assert.match(sheets.markdown, /manage_sheet_data_validation/);
     assert.match(sheets.markdown, /frozen_row_count/);
-    assert.match(sheets.markdown, /connectionId.*inside the Google tool's `args`/s);
+    assert.match(sheets.markdown, /Keep `connectionId` inside that argument object/);
+    assert.match(sheets.markdown, /acknowledgement under `data\.result`, not `updatedRows`/);
+    assert.match(sheets.markdown, /claim that count as written only after the exact read-back matches/);
+    assert.match(sheets.markdown, /Never turn a missing `updatedRows` field into a zero-row claim/);
     assert(sheets.aliases.includes('dropdown'));
     assert(sheets.aliases.includes('google sheet url'));
     assert(sheets.aliases.includes('drive.google.com/file'));

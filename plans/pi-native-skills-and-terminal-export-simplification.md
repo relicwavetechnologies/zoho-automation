@@ -259,7 +259,7 @@ Run the same container and backend architecture locally before any deployment:
 
 Build a regression prompt corpus from production evidence:
 
-- [ ] Query Production traces read-only for representative failed and successful
+- [x] Query Production traces read-only for representative failed and successful
       prompts, tool lifecycles, skill-load loops, export attempts, Sheet edits,
       account ambiguity, retries, and final-answer mismatches.
 - [ ] Copy only the minimum sanitized prompt and expected invariant into local
@@ -283,8 +283,8 @@ source pages -> JSONL/Parquet -> Python transform -> Google Sheet
 - [ ] Test 1, 10, 100, multi-page, capped, and empty datasets.
 - [ ] Test permission denial, approval, expired connection, quota, timeout,
       retry, interruption, and resumed checkpoint behavior.
-- [ ] Confirm no credential appears in environment, script, logs, or artifact.
-- [ ] Confirm no bulk rows appear in Pi context or transcript.
+- [x] Confirm no credential appears in environment, script, logs, or artifact.
+- [x] Confirm no bulk rows appear in Pi context or transcript.
 - [ ] Confirm mutations are not duplicated after ambiguous failures.
 - [x] Repeat the primary flow through the locally running Cloud-Pi container,
       not through Agent Seat alone.
@@ -305,6 +305,22 @@ used exactly six calls: connection selection, Python-skill read, Zoho-skill
 read, run-directory lookup, one file write, and one Bash execution. It saved
 10 invoices (6,741 bytes), reported page 2 truthfully, emitted no provider rows
 in tool results, and never called `dataExport`.
+
+The read-only Production census covered 416 user messages from the retained
+30-day window; 52 mentioned export, Sheet, Excel, CSV, or workbook work. One
+representative “create this in Google Sheet” run made 14 governed calls with
+four failures: one upstream 502 and three preventable native-input mistakes
+(missing range, wrong formatting shape, and wrong resize fields). No raw row
+data or production identifiers were copied into this plan.
+
+The Development replay now proves both creation and follow-up editing. A fresh
+Cloud-Pi run read the Google Sheets and Python skills once, wrote one script,
+executed it once, created a real Sheet, and reconciled `3/3/3` in seven Pi tool
+calls without `dataExport`. A second run on the same Sheet formatted the header,
+resized columns, and preserved a complete three-row read-back. It used 15 Pi
+calls because URL resolution required an account choice and two exact mutation
+schemas; those metadata descriptions no longer consume connection data budgets.
+Real Google create/update/read calls remain rate-limited and governed.
 
 **Exit gate:** real Google artifact link, verified values, reconciled counts,
 and trace evidence showing only governed calls.

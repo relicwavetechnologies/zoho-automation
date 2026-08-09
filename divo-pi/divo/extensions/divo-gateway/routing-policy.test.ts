@@ -118,6 +118,8 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local invoke --tool <toolId> --args-file <path> --output <new-run-path>/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /provider result is under data.*Never count keys/is);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /never print preview or row values/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /provider schema describe also runs once inside this same file through divo-local/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /never call the registered provider tool first and then rediscover the same schema/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /retired divo_python_automation tool is unavailable/i);
 		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /use one divo_python_automation call/i);
 		assert.match(ROUTER_SKILL, /Create one descriptive `.py` file/i);

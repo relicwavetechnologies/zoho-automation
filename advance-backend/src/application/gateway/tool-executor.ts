@@ -200,6 +200,7 @@ export class ToolExecutor {
 
     const rate = await this.preflightRateLimit({
       companyId: runContext.companyId,
+      toolFamily: tool.family,
       action,
       args,
     });
@@ -230,6 +231,7 @@ export class ToolExecutor {
 
     const ratePreflight = await this.preflightRateLimit({
       companyId: runContext.companyId,
+      toolFamily: tool.family,
       action,
       args: validatedArgs,
     });
@@ -368,6 +370,7 @@ export class ToolExecutor {
 
     const rateConsume = await this.consumeRateLimit({
       companyId: runContext.companyId,
+      toolFamily: tool.family,
       action,
       args: validatedArgs,
     });
@@ -513,6 +516,7 @@ export class ToolExecutor {
 
     const ratePreflight = await this.preflightRateLimit({
       companyId: input.runContext.companyId,
+      toolFamily: tool.family,
       action,
       args,
     });
@@ -543,6 +547,7 @@ export class ToolExecutor {
 
     const ratePreflight = await this.preflightRateLimit({
       companyId: runContext.companyId,
+      toolFamily: tool.family,
       action,
       args: validatedArgs,
     });
@@ -639,6 +644,7 @@ export class ToolExecutor {
 
     const rateConsume = await this.consumeRateLimit({
       companyId: runContext.companyId,
+      toolFamily: tool.family,
       action,
       args: validatedArgs,
     });
@@ -1087,10 +1093,12 @@ export class ToolExecutor {
 
   private async preflightRateLimit(input: {
     readonly companyId: string;
+    readonly toolFamily: string;
     readonly action: ToolActionGroup;
     readonly args: Record<string, unknown>;
   }): Promise<GatewayResponse | null> {
     if (!this.deps.connectionRateLimits) return null;
+    if (isNativeSchemaDescribe(input.toolFamily, input.args)) return null;
     const connectionId = connectionIdFromArgs(input.args);
     const decision = await this.deps.connectionRateLimits.preflight({
       companyId: input.companyId,
@@ -1102,10 +1110,12 @@ export class ToolExecutor {
 
   private async consumeRateLimit(input: {
     readonly companyId: string;
+    readonly toolFamily: string;
     readonly action: ToolActionGroup;
     readonly args: Record<string, unknown>;
   }): Promise<GatewayResponse | null> {
     if (!this.deps.connectionRateLimits) return null;
+    if (isNativeSchemaDescribe(input.toolFamily, input.args)) return null;
     const connectionId = connectionIdFromArgs(input.args);
     const decision = await this.deps.connectionRateLimits.consume({
       companyId: input.companyId,
@@ -1306,6 +1316,11 @@ function approvalReleaseFailureMessage(approvalId: string): string {
 function connectionIdFromArgs(args: Record<string, unknown>): string | undefined {
   const candidate = args['connectionId'];
   return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined;
+}
+
+/** Native schema metadata is process-cached contract data, not a SaaS data operation. */
+function isNativeSchemaDescribe(toolFamily: string, args: Record<string, unknown>): boolean {
+  return (toolFamily === 'google' || toolFamily === 'airtable') && args['op'] === 'describe';
 }
 
 function rateLimitFailure(
