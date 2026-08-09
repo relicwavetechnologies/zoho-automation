@@ -1,6 +1,6 @@
 # Pi-native skills and terminal-first export simplification
 
-> Status: **Phase 3 complete; Phase 4 ready**
+> Status: **Phase 4 in progress**
 >
 > Last updated: **2026-08-10**
 >
@@ -54,6 +54,11 @@ credentials, approvals, schemas, rate limits, and audit.
 - Cloud `divo-local` enablement is committed in `0d1c083fe`. The launcher lives
   under runtime-owned `DIVO_HOME`, survives warm turn rotation, and is removed
   on session shutdown.
+- Zoho CRM and Books now expose their existing provider pagination through the
+  public governed tool contracts for terminal callers.
+- Semrush's three exposed operations are bounded complete calls, not paged
+  lists. OMS is a provider-limited 100-row snapshot with no upstream cursor or
+  total; Divo must not invent pagination for either source.
 
 ## 4. Delivery phases
 
@@ -144,10 +149,15 @@ one governed Google write through `divo-local`.
 Standardize machine-readable paging without creating a universal provider
 abstraction prematurely:
 
-- [ ] Semrush: explicit cursor/offset, coverage, quota failure, and caps.
-- [ ] OMS and Menhood: bounded page/stream contract instead of preview-only
-      results; preserve safe query validation.
-- [ ] Zoho Books and CRM: explicit stable pagination in public tool contracts.
+- [x] Semrush: classify the three exposed operations as bounded complete calls;
+      preserve their existing coverage and failure reporting without fake
+      cursor fields.
+- [ ] OMS: keep the 100-row result explicitly provider-limited until the
+      upstream webhook exposes stable pagination and a total.
+- [ ] Menhood: expose its existing deterministic backend cursor through a
+      bounded terminal contract without weakening safe query validation.
+- [x] Zoho Books and CRM: expose stable provider pagination in the public tool
+      contracts (`page` for Books; `page`/`pageToken` for CRM).
 - [ ] Shopify: decide and test the protected Orders/Customers policy before
       allowing local file retention.
 - [ ] Airtable: use a bounded backend connector/REST paging path; do not turn
