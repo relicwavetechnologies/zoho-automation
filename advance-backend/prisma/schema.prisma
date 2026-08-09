@@ -239,6 +239,17 @@ model User {
   email                              String                          @unique
   password                           String
   name                               String?
+  /// The person's picture, as Lark hands it over at sign-in.
+  ///
+  /// On `User` rather than on a session or a link: it is a fact about the
+  /// person, and kept per session it would vanish the moment they signed in
+  /// somewhere Lark was not involved. Nullable forever — password sign-in never
+  /// produces one, and every surface falls back to initials.
+  ///
+  /// A URL rather than the image itself. Lark serves it and Lark expires it;
+  /// copying the bytes would leave Divo holding a photograph of an employee
+  /// that no longer changes when they change theirs.
+  avatarUrl                          String?
   createdAt                          DateTime                        @default(now())
   updatedAt                          DateTime                        @updatedAt
   adminMemberships                   AdminMembership[]

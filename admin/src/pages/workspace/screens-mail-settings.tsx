@@ -208,7 +208,7 @@ export function MailSettings() {
           {/* Initials, because Divo stores no photograph. Nothing in the schema
               holds an avatar and no route fetches one from Lark, so a slot for
               an image would permanently show its own fallback. */}
-          <Avatar name={session?.name} email={session?.email} size={34} />
+          <Avatar name={session?.name} email={session?.email} src={session?.avatarUrl} size={34} />
         </SettingsRow>
         <SettingsRow
           label="Company role"

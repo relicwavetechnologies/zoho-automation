@@ -1398,6 +1398,9 @@
   border-radius: 50%; background: var(--cur-accent); color: var(--cur-on-accent);
   font-weight: 500; letter-spacing: 0.02em; line-height: 1; user-select: none;
 }
+/* A photograph fills the same circle. `cover` rather than `contain`, so a
+   non-square source is cropped instead of letterboxed inside the ring. */
+.cur img.ws-avatar { object-fit: cover; background: var(--cur-surface-strong); }
 
 /* ── Grouped settings ─────────────────────────────────
    A quiet label over a bordered card, the way the reference groups a settings

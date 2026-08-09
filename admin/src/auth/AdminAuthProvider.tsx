@@ -22,6 +22,8 @@ type MeResponse = {
   companyName: string | null;
   email?: string | null;
   name?: string | null;
+  /** Absent on any deployment older than the field, so it stays optional. */
+  avatarUrl?: string | null;
   role: CompanyRole;
   departments: SessionDepartment[];
   lark: { connected: boolean } | null;
@@ -154,6 +156,7 @@ export const AdminAuthProvider = ({ children }: { children: React.ReactNode }) =
       companyId: me.companyId,
       companyName: me.companyName,
       email: me.email ?? null,
+      avatarUrl: me.avatarUrl ?? null,
       name: me.name ?? null,
       role: me.role,
       departments: me.departments ?? [],

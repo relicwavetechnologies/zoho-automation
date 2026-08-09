@@ -509,11 +509,17 @@ export const Heatmap = ({ data, format = money }: {
  * design and marks the one thing being asked for; an avatar is identity, not an
  * action.
  */
-export const Avatar = ({ name, email, size = 34 }: {
+export const Avatar = ({ name, email, src, size = 34 }: {
   name?: string | null
   email?: string | null
+  /** Lark's picture, when Divo has been given one. */
+  src?: string | null
   size?: number
 }) => {
+  // Falls back on error as well as on absence. Lark's avatar URLs expire, and a
+  // broken image icon where somebody's face should be reads as a fault in Divo
+  // rather than as a link that aged out.
+  const [broken, setBroken] = useState(false)
   const source = (name ?? '').trim() || (email ?? '').trim()
   // First letter of the first two words, so "Anugra Gupta" reads AG and
   // "anugra.gupta@…" still reads A rather than an empty circle.
@@ -523,6 +529,24 @@ export const Avatar = ({ name, email, size = 34 }: {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase() ?? '')
     .join('') || '—'
+
+  if (src && !broken) {
+    return (
+      <img
+        className="ws-avatar"
+        src={src}
+        alt=""
+        width={size}
+        height={size}
+        style={{ width: size, height: size }}
+        onError={() => setBroken(true)}
+        // Decorative: the name it belongs to is always beside it, and a second
+        // reading of it is noise to a screen reader.
+        aria-hidden="true"
+        referrerPolicy="no-referrer"
+      />
+    )
+  }
 
   return (
     <span
