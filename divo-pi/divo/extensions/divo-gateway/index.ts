@@ -28,6 +28,7 @@ import {
 	resolveDivoGatewayConfig,
 } from "./gateway-client.ts";
 import { executeGatewayRequest } from "./gateway-execution.ts";
+import { createGatewayTypedToolInvoker, registerTypedTools } from "./typed-tool-runtime.ts";
 import { registerDivoLlmProviders } from "../divo-llm/index.ts";
 import { registerLocalDivoBroker, localCliEnabled } from "./local-broker.ts";
 import { DIVO_GATEWAY_OPS, prepareGatewayArguments } from "./gateway-arguments.ts";
@@ -330,6 +331,13 @@ Report persona, skill, and scheduling outcomes separately. Say exactly what was 
 </divo_teach_agent>`;
 }
 
+/**
+ * Typed tools registered so far in this session. Pi keys tools by name, so a
+ * second work resolution must not silently replace a tool that is already live.
+ */
+const typedToolRegistry = new Set<string>();
+const typedToolInvoker = createGatewayTypedToolInvoker();
+
 export default function divoGatewayExtension(pi: ExtensionAPI) {
 	registerApprovalGate(pi);
 	registerLocalDivoBroker(pi);
@@ -369,6 +377,15 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				limit: params.limit,
 				actionId: toolCallId,
 			});
+			// The bootstrap already carries each tool's real JSON Schema. Register it
+			// as a typed Pi tool at the same moment it would otherwise only be
+			// stringified into the prompt, so Pi can validate the next call.
+			if (result.bootstrap) {
+				const typed = registerTypedTools(pi, result.bootstrap, typedToolInvoker, typedToolRegistry);
+				if (typed.registered.length > 0 || typed.rejected.length > 0) {
+					console.error(`[divo-typed-tools] ${JSON.stringify(typed)}`);
+				}
+			}
 			return {
 				content: [{ type: "text", text: formatSkillResolveResult(result) }],
 				details: result,

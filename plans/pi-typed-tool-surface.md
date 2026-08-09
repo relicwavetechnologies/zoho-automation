@@ -1,6 +1,6 @@
 # Pi typed tool surface
 
-> Status: **Phase 0 in progress**
+> Status: **Phases 0–2 complete and unit-proven; Phase 3 (cloud measurement) not started**
 >
 > Last updated: **2026-08-10**
 >
@@ -54,8 +54,10 @@ credentials, approvals, schemas, rate limits, and audit. Pi gains local
 7. **`divo_gateway` is deleted, not deprecated in place** — but only after the
    typed path is proven on a real cloud run. Both may coexist during Phase 3
    only.
-8. **Do not touch `divo-gateway/index.ts` until Phase 4.** It is the one file
-   the parallel export project may also edit.
+8. ~~**Do not touch `divo-gateway/index.ts` until Phase 4.**~~ **Released in
+   Phase 2.** It existed only to avoid colliding with the parallel export
+   project, which is now paused. Phase 2 makes one small additive edit there;
+   `divo_gateway` itself stays untouched until Phase 4.
 
 ## 3. Current state
 
@@ -77,7 +79,7 @@ credentials, approvals, schemas, rate limits, and audit. Pi gains local
   JSON-Schema coercion path before `Compile(schema).Check(args)`.
 - `registerTool` post-load is supported; the loader calls `runtime.refreshTools()`
   after each registration.
-- 38 canonical tool IDs across 18 families are statically defined in
+- 39 canonical tool IDs across 18 families are statically defined in
   `TOOL_CAPABILITY_DEFINITIONS`.
 
 ## 4. Delivery phases
@@ -135,9 +137,9 @@ validator and asserts accept/reject on known-good and known-bad arguments.
 - [x] Register an unreachable tool as an explicit denial rather than omitting
       it, so absence never stands in for a permission decision.
 - [x] Unit-test the mapper against real serialized schemas.
-- [ ] `registerTypedTools(pi, bootstrap, invoke)` wrapper that turns each
-      definition into a `pi.registerTool` call. **Deferred into Phase 2** — see
-      below.
+- [x] `registerTypedTools(pi, bootstrap, invoke)` wrapper that turns each
+      definition into a `pi.registerTool` call. Deferred out of Phase 1 and
+      delivered in Phase 2 — see below.
 
 `buildTypedTools` is deliberately pure: bootstrap in, definitions out, no Pi
 and no network. The execute path has to reuse `executeGatewayRequest` and
@@ -159,21 +161,53 @@ one-line `package.json` test-script change.
 
 ### Phase 2 — Wire registration into the run
 
-- [ ] Register typed tools once the run bootstrap is known, before the agent
-      starts.
-- [ ] Add all 38 canonical names to `runtime-manifest.json` `toolAllowlist`.
-- [ ] Register only tools reachable for the run; carry `allowedActions` into
-      each tool's guidance.
-- [ ] For a tool the department has but the member cannot use, register a
-      denial stub that returns the backend's own permission wording.
-- [ ] Route every typed execute through the existing gateway client so trace,
+- [x] Register typed tools once the run bootstrap is known.
+- [x] Add all **39** canonical names to `runtime-manifest.json` `toolAllowlist`
+      (the plan previously said 38; `CANONICAL_TOOL_IDS` has 39).
+- [x] Register only tools reachable for the run; carry `allowedActions` into
+      each tool's prompt snippet.
+- [x] For a tool the department has but the member cannot use, register a
+      denial stub carrying the backend's own permission wording.
+- [x] Route every typed execute through the existing gateway client so trace,
       approval, and audit behavior are unchanged.
-- [ ] Keep `divo_gateway` registered and untouched.
+- [x] Keep `divo_gateway` registered and untouched.
+- [ ] Prove it on a real cloud run. **Not done** — see the exit gate below.
 
-**Exit gate:** a cloud run shows both surfaces; typed tools appear in the model
-tool list with real schemas; no regression in the existing suites.
+Two departures from the plan as written, both deliberate:
 
-**Rollback:** stop calling `registerTypedTools`; the manifest addition is inert.
+**Registration happens at `divo_skill_resolve`, not `before_agent_start`.** The
+run bootstrap only exists once work is resolved; that is also the exact moment
+`formatWorkBootstrap` stringifies these same schemas into the prompt. Wiring
+there means the typed surface costs no extra network call and no extra tokens —
+it is the same tools, at the same moment, carrying the same payload, in a form
+Pi can validate. Registering at agent start would instead require one
+`tools.list` call per reachable tool, because the dispatcher only returns a
+contract for an exact `toolId` selector. Eager registration stays available as
+a Phase 5 optimization once Phase 3 has measured whether it is worth the calls.
+
+**Locked decision 8 (do not touch `index.ts` until Phase 4) is released.** It
+existed to avoid colliding with the export project, which is now paused. The
+edit is small and additive: one import, two module constants, and one guarded
+block inside `divo_skill_resolve`. `divo_gateway` is untouched.
+
+Proof: `typed-tool-runtime.test.ts` 7/7 including the two rules that matter —
+a denied tool is still registered and its call still reaches the backend, so Pi
+never decides authorization locally. Gateway extension suite 171/171, divo
+runtime 171/171, and `tsc --strict` reports no error in `index.ts`,
+`typed-tools.ts`, or `typed-tool-runtime.ts`.
+
+**Exit gate:** NOT met. Everything above is unit-proven; no cloud run has been
+executed, so "typed tools appear in the model tool list with real schemas" is
+still an expectation rather than an observation. Phase 3 must run before any
+claim that the typed surface works end to end.
+
+**Known gap:** nothing verifies that a newly added backend tool also reaches
+`toolAllowlist`. Tool 40 would be registered by the extension and then silently
+filtered by the manifest. Add a startup check that compares registered typed
+names against `getActiveTools()` and logs the difference.
+
+**Rollback:** remove the guarded block in `divo_skill_resolve`; the manifest
+additions are inert on their own.
 
 ### Phase 3 — Prove typed beats prose
 
