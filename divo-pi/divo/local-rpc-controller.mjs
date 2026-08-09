@@ -1821,7 +1821,7 @@ export function approveHeadlessWorkspaceAction(title, message) {
 	}
 }
 
-function createHeadlessExtensionResponder() {
+export function createHeadlessExtensionResponder() {
 	return async (request, respond) => {
 		if (
 			["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"].includes(
@@ -2418,7 +2418,12 @@ export async function prompt(profileName, message, options = {}) {
 		companyId: metadata.companyId,
 		departmentId: metadata.departmentId,
 		trustedSession: trustedRuntimeSession(session),
-		answerRequest: createExtensionResponder(Boolean(options.approve)),
+		// The terminal responder blocks on this process's stdin, which only
+		// exists when a human ran the CLI. A server passes its own.
+		answerRequest: options.answerRequest ?? createExtensionResponder(Boolean(options.approve)),
+		// Without this, a disconnected caller could never end the run: the
+		// promise never settled, so the admission slot was never released.
+		signal: options.signal,
 	});
 }
 
