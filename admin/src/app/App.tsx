@@ -38,6 +38,7 @@ import {
   CompanyHome, CompanyPeople, CompanyPolicy,
 } from "@/pages/workspace/screens-company"
 import { Artifacts } from "@/pages/workspace/screens-artifacts"
+import { AgentMap } from "@/pages/workspace/screens-agents"
 import {
   CompanyDepartmentDetail, CompanyPersonDetail, CompanyRunDetail,
 } from "@/pages/workspace/screens-company-detail"
@@ -230,6 +231,7 @@ const CompanyHomeRoute = routed(CompanyHome)
 const CompanyPeopleRoute = routed(CompanyPeople)
 const CompanyDepartmentsRoute = routed(CompanyDepartments)
 const CompanyAiOpsRoute = routed(CompanyAiOps)
+const CompanyAgentsRoute = routed(AgentMap)
 const CompanyGuardrailsRoute = routed(CompanyGuardrails)
 const CompanyAuditRoute = routed(CompanyAudit)
 const CompanyPolicyRoute = routed(CompanyPolicy)
@@ -337,6 +339,10 @@ export function App() {
               audit log stay on this side of the door. */}
           <Route path="ai-ops" element={<RequireScope kind="company"><CompanyAiOpsRoute /></RequireScope>} />
           <Route path="ai-ops/runs/:runId" element={<RequireScope kind="company"><CompanyRunDetailRoute /></RequireScope>} />
+          {/* Who may run what, as a map rather than a matrix. Work, not
+              configuration — it answers a question rather than changing
+              anything, so it stays on this side of the Settings door. */}
+          <Route path="agents" element={<RequireScope kind="company"><CompanyAgentsRoute /></RequireScope>} />
           <Route path="activity" element={<RequireScope kind="company"><CompanyAuditRoute /></RequireScope>} />
 
           <Route path="people" element={<Navigate to="/settings/company/people" replace />} />
