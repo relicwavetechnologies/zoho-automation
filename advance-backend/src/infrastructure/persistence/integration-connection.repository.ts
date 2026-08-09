@@ -60,6 +60,11 @@ export interface DecryptedIntegrationConnection {
     readonly clientSecret: string;
     readonly accountsBaseUrl: string;
   };
+  /** Decrypted only in backend memory to renew Shopify client-credentials tokens. */
+  readonly shopifyClientCredentials?: {
+    readonly clientId: string;
+    readonly clientSecret: string;
+  };
   readonly connectedAt: Date;
   readonly lastUsedAt?: Date;
   readonly revokedAt?: Date;
@@ -195,6 +200,10 @@ export interface UpsertShopifyConnectionInput {
   readonly refreshTokenExpiresAt?: Date;
   readonly scopes: string[];
   readonly apiVersion: string;
+  readonly clientCredentials?: {
+    readonly clientId: string;
+    readonly clientSecret: string;
+  };
   /** Atomically completes this claimed OAuth attempt and writes its audit row. */
   readonly authorizationAttemptId?: string;
 }
@@ -328,6 +337,25 @@ export class IntegrationConnectionRepository {
         };
       }
     }
+    const storedShopifyClient = tokenMetadata?.['shopifyClientCredentials'];
+    let shopifyClientCredentials: DecryptedIntegrationConnection['shopifyClientCredentials'];
+    if (
+      record.provider === SHOPIFY_PROVIDER
+      && storedShopifyClient
+      && typeof storedShopifyClient === 'object'
+      && !Array.isArray(storedShopifyClient)
+    ) {
+      const client = storedShopifyClient as Record<string, unknown>;
+      if (
+        typeof client['clientId'] === 'string'
+        && typeof client['clientSecretEncrypted'] === 'string'
+      ) {
+        shopifyClientCredentials = {
+          clientId: client['clientId'],
+          clientSecret: decryptToken(client['clientSecretEncrypted'], this.integrationKey),
+        };
+      }
+    }
 
     const credentialKey = record.tokenCipherVersion >= 2 ? this.integrationKey : this.key;
     return {
@@ -350,6 +378,7 @@ export class IntegrationConnectionRepository {
       tokenVersion: record.tokenVersion,
       ...(tokenMetadata ? { tokenMetadata } : {}),
       ...(zohoClientCredentials ? { zohoClientCredentials } : {}),
+      ...(shopifyClientCredentials ? { shopifyClientCredentials } : {}),
       connectedAt: record.connectedAt,
       ...(record.lastUsedAt ? { lastUsedAt: record.lastUsedAt } : {}),
       ...(record.revokedAt ? { revokedAt: record.revokedAt } : {}),
@@ -525,7 +554,10 @@ export class IntegrationConnectionRepository {
         ...(input.accountsBaseUrl ? { accountsBaseUrl: input.accountsBaseUrl } : {}),
         ...(input.apiBaseUrl ? { apiBaseUrl: input.apiBaseUrl } : {}),
         ...(input.selfClientOAuth ? {
-          enforcedAccess: 'read_only',
+          // Only when read-only was actually chosen. This used to be hardcoded,
+          // so a connection an admin deliberately created for writing still
+          // announced itself as read-only everywhere it was displayed.
+          ...(input.initialAccess === 'read_write' ? {} : { enforcedAccess: 'read_only' }),
           zohoClient: {
             clientId: input.selfClientOAuth.clientId.trim(),
             clientSecretEncrypted: encryptToken(input.selfClientOAuth.clientSecret.trim(), this.key).cipherText,
@@ -998,7 +1030,14 @@ export class IntegrationConnectionRepository {
       const tokenMetadata: Prisma.InputJsonValue = {
         apiVersion: input.apiVersion,
         shopDomain,
+        authMethod: input.clientCredentials ? 'client_credentials' : 'authorization_code',
         ...(input.shopGraphqlId ? { shopGraphqlId: input.shopGraphqlId } : {}),
+        ...(input.clientCredentials ? {
+          shopifyClientCredentials: {
+            clientId: input.clientCredentials.clientId.trim(),
+            clientSecretEncrypted: encryptToken(input.clientCredentials.clientSecret, this.integrationKey).cipherText,
+          },
+        } : {}),
       };
 
       const record = await this.db.$transaction(async tx => {
@@ -1017,7 +1056,7 @@ export class IntegrationConnectionRepository {
             scopes: input.scopes,
             accessTokenEncrypted: encryptedAccess,
             refreshTokenEncrypted: encryptedRefresh,
-            tokenType: 'offline',
+            tokenType: input.clientCredentials ? 'client_credentials' : 'offline',
             tokenCipherVersion: 2,
             accessTokenExpiresAt: input.accessTokenExpiresAt ?? null,
             refreshTokenExpiresAt: input.refreshTokenExpiresAt ?? null,
@@ -1033,7 +1072,7 @@ export class IntegrationConnectionRepository {
             scopes: input.scopes,
             accessTokenEncrypted: encryptedAccess,
             refreshTokenEncrypted: encryptedRefresh,
-            tokenType: 'offline',
+            tokenType: input.clientCredentials ? 'client_credentials' : 'offline',
             tokenCipherVersion: 2,
             accessTokenExpiresAt: input.accessTokenExpiresAt ?? null,
             refreshTokenExpiresAt: input.refreshTokenExpiresAt ?? null,
@@ -1193,12 +1232,28 @@ export class IntegrationConnectionRepository {
     readonly connectionId: string;
     readonly expectedTokenVersion: number;
     readonly accessToken: string;
-    readonly refreshToken: string;
+    readonly refreshToken?: string | null;
     readonly accessTokenExpiresAt: Date;
-    readonly refreshTokenExpiresAt: Date;
+    readonly refreshTokenExpiresAt?: Date | null;
     readonly scopes: string[];
   }): Promise<Result<boolean, InfraError>> {
     try {
+      const data: Prisma.IntegrationConnectionUpdateManyMutationInput = {
+        accessTokenEncrypted: encryptToken(input.accessToken, this.integrationKey).cipherText,
+        tokenCipherVersion: 2,
+        accessTokenExpiresAt: input.accessTokenExpiresAt,
+        scopes: input.scopes,
+        tokenVersion: { increment: 1 },
+        lastUsedAt: new Date(),
+      };
+      if (input.refreshToken !== undefined) {
+        data.refreshTokenEncrypted = input.refreshToken
+          ? encryptToken(input.refreshToken, this.integrationKey).cipherText
+          : null;
+      }
+      if (input.refreshTokenExpiresAt !== undefined) {
+        data.refreshTokenExpiresAt = input.refreshTokenExpiresAt;
+      }
       const updated = await this.db.integrationConnection.updateMany({
         where: {
           id: input.connectionId,
@@ -1208,16 +1263,7 @@ export class IntegrationConnectionRepository {
           status: 'connected',
           revokedAt: null,
         },
-        data: {
-          accessTokenEncrypted: encryptToken(input.accessToken, this.integrationKey).cipherText,
-          refreshTokenEncrypted: encryptToken(input.refreshToken, this.integrationKey).cipherText,
-          tokenCipherVersion: 2,
-          accessTokenExpiresAt: input.accessTokenExpiresAt,
-          refreshTokenExpiresAt: input.refreshTokenExpiresAt,
-          scopes: input.scopes,
-          tokenVersion: { increment: 1 },
-          lastUsedAt: new Date(),
-        },
+        data,
       });
       return ok(updated.count === 1);
     } catch (e) {

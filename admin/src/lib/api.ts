@@ -10,9 +10,27 @@ type ApiResponse<T> = {
   message?: string;
 };
 
-const extractErrorMessage = async (response: Response): Promise<string> => {
-  const fallback = `HTTP ${response.status}`;
-  const raw = await response.text();
+/**
+ * The refusal's own name, when it gave one.
+ *
+ * A status code alone is not enough to act on: Mail Ops answers both "another
+ * rule already has these conditions" and "that rule is archived" with a 409,
+ * and they have opposite remedies. Callers that only need prose keep ignoring
+ * this.
+ */
+const extractErrorCode = (raw: string): string | undefined => {
+  try {
+    const parsed = JSON.parse(raw) as { code?: unknown; status?: unknown };
+    if (typeof parsed.code === "string") return parsed.code;
+    if (typeof parsed.status === "string") return parsed.status;
+  } catch { /* not JSON — there is no code to find */ }
+  return undefined;
+};
+
+// Takes the body already read rather than the response, because a body can
+// only be read once and the code has to come out of the same text.
+const extractErrorMessage = (raw: string, status: number): string => {
+  const fallback = `HTTP ${status}`;
   if (!raw) {
     return fallback;
   }
@@ -69,7 +87,12 @@ const asReadableNetworkError = (error: unknown, timeoutMs: number | undefined): 
  * from "no workspace" (403) from "the server fell over" without parsing prose.
  */
 export class ApiError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(
+    readonly status: number,
+    message: string,
+    /** The server's own name for the refusal, where it sent one. */
+    readonly code?: string,
+  ) {
     super(message);
     this.name = "ApiError";
   }
@@ -160,7 +183,9 @@ const request = async <T>(
   }
 
   if (!response.ok) {
-    const errorMsg = await extractErrorMessage(response);
+    const raw = await response.text();
+    const errorMsg = extractErrorMessage(raw, response.status);
+    const code = extractErrorCode(raw);
     if (!opts.quiet) {
       // A refusal is not an error the person can fix by retrying, and
       // "Error 403" tells them nothing about which it is. Name the two cases.
@@ -172,7 +197,7 @@ const request = async <T>(
         toast.error(`Error ${response.status}`, { description: errorMsg });
       }
     }
-    throw new ApiError(response.status, errorMsg);
+    throw new ApiError(response.status, errorMsg, code);
   }
 
   const body = (await response.json()) as ApiResponse<T>;
@@ -184,6 +209,8 @@ export const api = {
     request<T>(path, { method: "POST", body: JSON.stringify(payload) }, token, opts),
   put: <T>(path: string, payload: unknown, token?: string, opts?: RequestOptions) =>
     request<T>(path, { method: "PUT", body: JSON.stringify(payload) }, token, opts),
+  patch: <T>(path: string, payload: unknown, token?: string, opts?: RequestOptions) =>
+    request<T>(path, { method: "PATCH", body: JSON.stringify(payload) }, token, opts),
   delete: <T>(path: string, payload: unknown, token?: string, opts?: RequestOptions) =>
     request<T>(
       path,

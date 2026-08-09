@@ -17,10 +17,12 @@ import {
 } from '../../infrastructure/persistence/integration-connection.repository';
 import type { AitableKeyVerifier } from '../../application/aitable/aitable-connect.service';
 import { ShopifyAuthorizationError, type ShopifyAuthorizationService } from '../../application/shopify/shopify-authorization.service';
+import { ShopifyOAuthError } from '../../infrastructure/shopify/shopify-oauth.service';
 import { normalizeShopDomain } from '../../domain/shopify/shopify-shop';
 import { AIRTABLE_REQUESTED_SCOPES, AIRTABLE_SCOPE } from '../../application/airtable/airtable-mcp-manifest';
 import type { Logger } from '../../shared/logger';
 import type { TypedEnv } from '../../config/env';
+import type { InfraError } from '../../shared/errors';
 import { createMemberAuthMiddleware } from '../middleware/member-auth.middleware';
 import { parseCallbackOriginAllowlist, requestHost, resolveCallbackOrigin } from './callback-origin';
 import type { PermissionService } from '../../application/permissions/permission.service';
@@ -46,6 +48,12 @@ import {
   configureDataExportProfile,
   getDataExportProfile,
 } from '../../application/data-export/data-export.profile';
+import {
+  canStartMailBriefFromGoogleAuthorization,
+  type MailBriefOnboardingInput,
+  type MailBriefOnboardingResult,
+} from '../../application/mail-ops/mail-brief-onboarding';
+import type { Result } from '../../shared/result';
 
 export interface DesktopAuthRoutesDeps {
   prisma:                 PrismaClient;
@@ -61,6 +69,9 @@ export interface DesktopAuthRoutesDeps {
   connectionRepo:         IntegrationConnectionRepository;
   /** Busts tenant-scoped Lark identity resolution after a successful OAuth link. */
   invalidateLarkIdentityCache?: (larkOpenId: string) => Promise<void>;
+  mailBriefOnboarding?: (
+    input: MailBriefOnboardingInput,
+  ) => Promise<Result<MailBriefOnboardingResult, InfraError>>;
   permissions:            PermissionService;
   skillCatalog:           SkillCatalogService;
   skillAccessEnforcement: SkillAccessEnforcementPort;
@@ -84,6 +95,8 @@ interface StatePayload {
   sessionId?: string;
   /** Exact OAuth callback used to mint this signed state. */
   redirectUri?: string;
+  /** Tool ids that made this OAuth grant necessary. */
+  requestedToolIds?: string[];
   /** Safe app-local page to resume after a same-tab browser sign-in. */
   returnTo?: string;
   exp?: number;
@@ -108,6 +121,15 @@ const loginSchema = z.object({
   password:  z.string().min(1),
   companyId: z.string().uuid().optional(),
 });
+const shopifyCallbackUrlSchema = z.object({
+  callbackUrl: z.string().trim().min(1).max(4_000),
+}).strict();
+const shopifyClientCredentialsSchema = z.object({
+  shopDomain:   z.string().trim().min(1).max(255),
+  clientId:     z.string().trim().min(1).max(255),
+  clientSecret: z.string().trim().min(1).max(4_000),
+  label:        z.string().trim().max(255).optional(),
+}).strict();
 
 const DESKTOP_PROTOCOL = 'cursorr';
 const HANDOFF_TTL_MS   = 5 * 60 * 1000;
@@ -210,6 +232,15 @@ const zohoSelfClientSchema = z.object({
   clientSecret:    z.string().trim().min(8).max(512),
   grantToken:      z.string().trim().min(8).max(4096),
   accountsBaseUrl: z.enum(Object.keys(ZOHO_DATA_CENTRES) as [keyof typeof ZOHO_DATA_CENTRES, ...(keyof typeof ZOHO_DATA_CENTRES)[]]),
+  /**
+   * What this connection may do, chosen by the admin creating it.
+   *
+   * Defaults to read-only so an existing caller that omits it keeps the
+   * behaviour it had. Whichever is chosen, the grant Zoho itself issued still
+   * bounds it: asking for read/write on a grant carrying only .READ scopes buys
+   * nothing, because Zoho refuses the write.
+   */
+  access:          z.enum(['read_only', 'read_write']).default('read_only'),
 });
 
 const runtimeContextQuerySchema = z.object({
@@ -1454,6 +1485,96 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     }
   });
 
+  router.post('/shopify/callback-url', memberAuth, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!COMPANY_ADMIN_ROLES.has((res.locals['aiRole'] as string | undefined) ?? 'MEMBER')) {
+      res.status(403).json({ success: false, message: 'A company admin must complete Shopify authorization' });
+      return;
+    }
+    if (!deps.shopifyAuthorizationService.isConfigured()) {
+      res.status(503).json({ success: false, message: 'Shopify OAuth is not configured' });
+      return;
+    }
+    const parsed = shopifyCallbackUrlSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ success: false, message: 'Paste the full Shopify callback URL' });
+      return;
+    }
+    let callbackUrl: URL;
+    try {
+      callbackUrl = new URL(parsed.data.callbackUrl);
+    } catch {
+      res.status(400).json({ success: false, message: 'Paste a valid Shopify callback URL' });
+      return;
+    }
+    try {
+      const outcome = await deps.shopifyAuthorizationService.complete({
+        searchParams: callbackUrl.searchParams,
+        expectedCompanyId: res.locals['companyId'] as string,
+      });
+      res.json({ success: true, data: { status: outcome.status } });
+    } catch (error) {
+      if (error instanceof ShopifyAuthorizationError && error.code === 'invalid_state') {
+        res.status(400).json({ success: false, message: 'This Shopify callback is invalid, expired, or already used' });
+        return;
+      }
+      log.error('shopify.desktop.callback_url.error', { error: String(error) });
+      res.status(503).json({ success: false, message: 'Could not complete Shopify authorization' });
+    }
+  });
+
+  router.post('/shopify/client-credentials', memberAuth, async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!COMPANY_ADMIN_ROLES.has((res.locals['aiRole'] as string | undefined) ?? 'MEMBER')) {
+      res.status(403).json({ success: false, message: 'A company admin must connect Shopify' });
+      return;
+    }
+    const parsed = shopifyClientCredentialsSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({
+        success: false,
+        message: parsed.error.issues[0]?.message ?? 'Enter the Shopify store domain, client ID, and client secret.',
+      });
+      return;
+    }
+    const shopDomain = normalizeShopDomain(parsed.data.shopDomain);
+    if (!shopDomain) {
+      res.status(400).json({ success: false, message: 'Use a valid *.myshopify.com store domain' });
+      return;
+    }
+
+    try {
+      const connected = await deps.shopifyAuthorizationService.connectWithClientCredentials({
+        companyId: res.locals['companyId'] as string,
+        userId: res.locals['userId'] as string,
+        shopDomain,
+        clientId: parsed.data.clientId,
+        clientSecret: parsed.data.clientSecret,
+        ...(parsed.data.label ? { label: parsed.data.label } : {}),
+      });
+      log.info('shopify.desktop.client_credentials.connected', {
+        userId: res.locals['userId'] as string,
+        companyId: res.locals['companyId'] as string,
+        connectionId: connected.connectionId,
+        shopDomain: connected.shopDomain,
+      });
+      res.json({ success: true, data: connected });
+    } catch (error) {
+      if (error instanceof ShopifyOAuthError) {
+        const status = error.status && error.status >= 500 ? 502 : 400;
+        res.status(status).json({ success: false, message: error.message });
+        return;
+      }
+      if (error instanceof ShopifyAuthorizationError) {
+        const status = error.code === 'unavailable' ? 500 : 400;
+        res.status(status).json({ success: false, message: error.message });
+        return;
+      }
+      log.error('shopify.desktop.client_credentials.error', { error: String(error) });
+      res.status(503).json({ success: false, message: 'Could not connect Shopify with these credentials' });
+    }
+  });
+
   router.get('/shopify/status', memberAuth, async (_req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     const userId = res.locals['userId'] as string;
@@ -1952,18 +2073,6 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       const companyId = res.locals['companyId'] as string;
       const redirectUri = desktopCallbackUri(req, '/api/desktop/auth/google/callback');
 
-      const state = signJwt(
-        {
-          kind: 'desktop_google_connect',
-          nonce: randomBytes(16).toString('hex'),
-          userId,
-          companyId,
-          redirectUri,
-        },
-        deps.memberJwtSecret,
-        600,
-      );
-
       // `for` names what the member is connecting Google *to do*, and narrows
       // the consent screen to that. Somebody arriving from Mail rules should
       // be asked for their mail, not for Drive, Calendar, Contacts and Apps
@@ -1977,6 +2086,19 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         .map(value => value.trim())
         .filter(Boolean);
       const scopes = googleScopesToRequestForToolIds(requestedFor);
+
+      const state = signJwt(
+        {
+          kind: 'desktop_google_connect',
+          nonce: randomBytes(16).toString('hex'),
+          userId,
+          companyId,
+          redirectUri,
+          requestedToolIds: requestedFor,
+        },
+        deps.memberJwtSecret,
+        600,
+      );
 
       const authorizeUrl = deps.googleOAuthService.getAuthorizeUrl({
         state,
@@ -2018,6 +2140,10 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         ?? `${deps.backendPublicUrl.replace(/\/+$/, '')}/api/desktop/auth/google/callback`;
       const tokenBundle = await deps.googleOAuthService.exchangeAuthorizationCode(String(code), redirectUri);
       const userInfo = await deps.googleOAuthService.fetchUserInfo(tokenBundle.accessToken);
+      const grantedScopes = tokenBundle.scope?.split(/\s+/).filter(Boolean) ?? [];
+      const requestedToolIds = Array.isArray(payload.requestedToolIds)
+        ? payload.requestedToolIds.filter((value): value is string => typeof value === 'string')
+        : [];
 
       const expiresAt = tokenBundle.expiresIn
         ? new Date(Date.now() + tokenBundle.expiresIn * 1000)
@@ -2040,6 +2166,31 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       });
       if (!upsertResult.ok) {
         log.error('google.callback.upsert_failed', { error: String(upsertResult.error) });
+      } else {
+        const startsMailBrief = canStartMailBriefFromGoogleAuthorization({
+          requestedToolIds,
+          grantedScopes,
+        });
+        const mailboxEmail = upsertResult.value.accountEmail ?? userInfo.email;
+        if (startsMailBrief && mailboxEmail && deps.mailBriefOnboarding) {
+          const started = await deps.mailBriefOnboarding({
+            companyId: payload.companyId,
+            userId: payload.userId,
+            connectionId: upsertResult.value.id,
+            mailboxEmail,
+          });
+          if (!started.ok) {
+            log.warn('google.callback.mail_brief_onboarding_failed', {
+              connectionId: upsertResult.value.id,
+              error: started.error.message,
+            });
+          }
+        } else if (startsMailBrief && !mailboxEmail) {
+          log.warn('google.callback.mail_brief_onboarding_skipped', {
+            reason: 'missing_google_email',
+            userId: payload.userId,
+          });
+        }
       }
 
       log.info('google.callback.success', { userId: payload.userId });
@@ -3220,9 +3371,14 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         });
         return;
       }
+      // Zoho's own answer is authoritative. The fallback only matters when it
+      // returned none, and it has to match what was asked for — listing read
+      // scopes on a read/write connection would misreport what it can do.
       const grantedScopes = tokens.scopes.length > 0
         ? tokens.scopes
-        : ZOHO_SELF_CLIENT_READ_SCOPES;
+        : parsed.data.access === 'read_write'
+          ? DEFAULT_ZOHO_SCOPES
+          : ZOHO_SELF_CLIENT_READ_SCOPES;
 
       const apiBaseUrl = tokens.apiDomain
         ?? ZOHO_DATA_CENTRES[parsed.data.accountsBaseUrl];
@@ -3255,7 +3411,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           clientSecret: parsed.data.clientSecret,
         },
         environment: 'prod',
-        initialAccess: 'read_only',
+        initialAccess: parsed.data.access,
       });
       if (!connectionResult.ok) throw new Error(connectionResult.error.message);
 
@@ -3269,7 +3425,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         data: {
           connectionId: connectionResult.value.id,
           label: connectionResult.value.label,
-          access: 'read_only',
+          access: parsed.data.access,
           scopes: grantedScopes,
         },
       });

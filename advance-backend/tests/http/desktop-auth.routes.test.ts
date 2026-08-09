@@ -405,6 +405,77 @@ describe('desktop auth routes', () => {
     }]);
   });
 
+  it('completes desktop Shopify OAuth from a pasted callback URL for company admins', async () => {
+    const completed: unknown[] = [];
+    const router = createDesktopAuthRoutes(makeDeps({
+      shopifyAuthorizationService: {
+        isConfigured: () => true,
+        complete: async (input: unknown) => {
+          completed.push(input);
+          return { status: 'connected' };
+        },
+      },
+    }));
+
+    const member = await callRoute(router, 'POST', '/shopify/callback-url', {
+      body: { callbackUrl: 'https://backend.example.com/api/shopify/auth/callback?code=abc&state=signed' },
+      locals: { userId: 'member-1', companyId: 'company-1', aiRole: 'MEMBER' },
+    });
+    assert.equal(member.status, 403);
+    assert.equal(completed.length, 0);
+
+    const admin = await callRoute(router, 'POST', '/shopify/callback-url', {
+      body: { callbackUrl: 'https://backend.example.com/api/shopify/auth/callback?code=abc&state=signed' },
+      locals: { userId: 'admin-1', companyId: 'company-1', aiRole: 'COMPANY_ADMIN' },
+    });
+    assert.equal(admin.status, 200);
+    assert.equal(admin.body.data.status, 'connected');
+    assert.equal((completed[0] as any).expectedCompanyId, 'company-1');
+    assert.equal((completed[0] as any).searchParams.get('code'), 'abc');
+    assert.equal((completed[0] as any).searchParams.get('state'), 'signed');
+  });
+
+  it('connects Shopify directly with per-store client credentials for company admins', async () => {
+    const connected: unknown[] = [];
+    const router = createDesktopAuthRoutes(makeDeps({
+      shopifyAuthorizationService: {
+        connectWithClientCredentials: async (input: unknown) => {
+          connected.push(input);
+          return {
+            status: 'connected',
+            connectionId: 'shopify-1',
+            shopDomain: 'demo.myshopify.com',
+            shopName: 'Demo Store',
+            scopes: ['read_reports'],
+            accessTokenExpiresAt: new Date('2026-08-03T12:00:00.000Z'),
+          };
+        },
+      },
+    }));
+
+    const member = await callRoute(router, 'POST', '/shopify/client-credentials', {
+      body: { shopDomain: 'demo.myshopify.com', clientId: 'cid', clientSecret: 'secret' },
+      locals: { userId: 'member-1', companyId: 'company-1', aiRole: 'MEMBER' },
+    });
+    assert.equal(member.status, 403);
+    assert.equal(connected.length, 0);
+
+    const admin = await callRoute(router, 'POST', '/shopify/client-credentials', {
+      body: { shopDomain: ' Demo.MyShopify.com ', clientId: 'cid', clientSecret: 'secret', label: 'Demo' },
+      locals: { userId: 'admin-1', companyId: 'company-1', aiRole: 'COMPANY_ADMIN' },
+    });
+    assert.equal(admin.status, 200);
+    assert.equal(admin.body.data.status, 'connected');
+    assert.deepEqual(connected, [{
+      companyId: 'company-1',
+      userId: 'admin-1',
+      shopDomain: 'demo.myshopify.com',
+      clientId: 'cid',
+      clientSecret: 'secret',
+      label: 'Demo',
+    }]);
+  });
+
   it('returns read-only Shopify status and keeps stale stores visible to company admins', async () => {
     const connectedAt = new Date('2026-08-01T00:00:00.000Z');
     const router = createDesktopAuthRoutes(makeDeps({
@@ -933,6 +1004,7 @@ describe('desktop auth routes', () => {
     let authorizeRedirectUri: string | undefined;
     let exchangedRedirectUri: string | undefined;
     let storedConnection: Record<string, unknown> | undefined;
+    let mailBriefInput: Record<string, unknown> | undefined;
     const router = createDesktopAuthRoutes(makeDeps({
       googleOAuthService: {
         getAuthorizeUrl: ({ state, redirectUri }: { state: string; redirectUri: string }) => {
@@ -948,8 +1020,12 @@ describe('desktop auth routes', () => {
       connectionRepo: {
         upsertGoogleConnection: async (input: Record<string, unknown>) => {
           storedConnection = input;
-          return { ok: true, value: {} };
+          return { ok: true, value: { id: 'google-connection-1', accountEmail: 'user@example.com' } };
         },
+      },
+      mailBriefOnboarding: async (input: Record<string, unknown>) => {
+        mailBriefInput = input;
+        return { ok: true, value: { subscriptionId: 'sub-1', briefId: 'brief-1', mailboxCreated: true, briefCreated: true, firstBriefQueued: true } };
       },
     }));
 
@@ -965,6 +1041,7 @@ describe('desktop auth routes', () => {
     const state = authorizeUrl.searchParams.get('state')!;
     const payload = JSON.parse(Buffer.from(state.split('.')[1]!, 'base64url').toString('utf8'));
     assert.equal(payload.redirectUri, authorizeRedirectUri);
+    assert.deepEqual(payload.requestedToolIds, []);
 
     const callback = await callRoute(router, 'GET', '/google/callback', {
       query: { code: 'google-code', state },
@@ -973,6 +1050,144 @@ describe('desktop auth routes', () => {
     assert.equal(callback.status, 200);
     assert.equal(exchangedRedirectUri, authorizeRedirectUri);
     assert.equal(storedConnection?.['scope'], 'openid https://www.googleapis.com/auth/spreadsheets');
+    assert.equal(mailBriefInput, undefined);
+  });
+
+  it('does not start mail brief after desktop data-export OAuth returns prior Gmail scopes', async () => {
+    let authorizeScopes: string[] | undefined;
+    let storedConnection: Record<string, unknown> | undefined;
+    let mailBriefInput: Record<string, unknown> | undefined;
+    const router = createDesktopAuthRoutes(makeDeps({
+      googleOAuthService: {
+        getAuthorizeUrl: ({ state, redirectUri, scopes }: { state: string; redirectUri: string; scopes?: string[] }) => {
+          authorizeScopes = scopes;
+          return `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+        },
+        exchangeAuthorizationCode: async () => ({
+          accessToken: 'google-access-token',
+          refreshToken: 'google-refresh-token',
+          expiresIn: 3600,
+          scope: [
+            'openid',
+            'https://www.googleapis.com/auth/userinfo.email',
+            'https://www.googleapis.com/auth/userinfo.profile',
+            'https://www.googleapis.com/auth/drive.file',
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/gmail.modify',
+            'https://www.googleapis.com/auth/gmail.send',
+            'https://www.googleapis.com/auth/gmail.labels',
+          ].join(' '),
+        }),
+        fetchUserInfo: async () => ({ sub: 'google-user-1', email: 'user@example.com', name: 'User' }),
+      },
+      connectionRepo: {
+        upsertGoogleConnection: async (input: Record<string, unknown>) => {
+          storedConnection = input;
+          return { ok: true, value: { id: 'google-connection-1', accountEmail: 'user@example.com' } };
+        },
+      },
+      mailBriefOnboarding: async (input: Record<string, unknown>) => {
+        mailBriefInput = input;
+        return { ok: true, value: { subscriptionId: 'sub-1', briefId: 'brief-1', mailboxCreated: true, briefCreated: true, firstBriefQueued: true } };
+      },
+    }));
+
+    const authorize = await callRoute(router, 'GET', '/google/authorize-url', {
+      headers: { host: 'localhost:8000' },
+      locals: { userId: 'user-1', companyId: 'company-1' },
+      query: { for: 'dataExport' },
+    });
+    const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state')!;
+    const payload = JSON.parse(Buffer.from(state.split('.')[1]!, 'base64url').toString('utf8'));
+
+    const callback = await callRoute(router, 'GET', '/google/callback', {
+      query: { code: 'google-code', state },
+    });
+
+    assert.equal(callback.status, 200);
+    assert.deepEqual(payload.requestedToolIds, ['dataExport']);
+    assert.deepEqual(authorizeScopes, [
+      'openid',
+      'https://www.googleapis.com/auth/userinfo.email',
+      'https://www.googleapis.com/auth/userinfo.profile',
+      'https://www.googleapis.com/auth/drive.file',
+      'https://www.googleapis.com/auth/spreadsheets',
+    ]);
+    assert.equal(storedConnection?.['scope'], [
+      'openid',
+      'https://www.googleapis.com/auth/userinfo.email',
+      'https://www.googleapis.com/auth/userinfo.profile',
+      'https://www.googleapis.com/auth/drive.file',
+      'https://www.googleapis.com/auth/spreadsheets',
+      'https://www.googleapis.com/auth/gmail.modify',
+      'https://www.googleapis.com/auth/gmail.send',
+      'https://www.googleapis.com/auth/gmail.labels',
+    ].join(' '));
+    assert.equal(mailBriefInput, undefined);
+  });
+
+  it('starts mail brief after desktop Gmail OAuth', async () => {
+    let authorizeScopes: string[] | undefined;
+    let mailBriefInput: Record<string, unknown> | undefined;
+    const router = createDesktopAuthRoutes(makeDeps({
+      googleOAuthService: {
+        getAuthorizeUrl: ({ state, redirectUri, scopes }: { state: string; redirectUri: string; scopes?: string[] }) => {
+          authorizeScopes = scopes;
+          return `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+        },
+        exchangeAuthorizationCode: async () => ({
+          accessToken: 'google-access-token',
+          refreshToken: 'google-refresh-token',
+          expiresIn: 3600,
+          scope: [
+            'openid',
+            'https://www.googleapis.com/auth/userinfo.email',
+            'https://www.googleapis.com/auth/userinfo.profile',
+            'https://www.googleapis.com/auth/gmail.modify',
+            'https://www.googleapis.com/auth/gmail.send',
+            'https://www.googleapis.com/auth/gmail.labels',
+          ].join(' '),
+        }),
+        fetchUserInfo: async () => ({ sub: 'google-user-1', email: 'user@example.com', name: 'User' }),
+      },
+      connectionRepo: {
+        upsertGoogleConnection: async () => (
+          { ok: true, value: { id: 'google-connection-1', accountEmail: 'user@example.com' } }
+        ),
+      },
+      mailBriefOnboarding: async (input: Record<string, unknown>) => {
+        mailBriefInput = input;
+        return { ok: true, value: { subscriptionId: 'sub-1', briefId: 'brief-1', mailboxCreated: true, briefCreated: true, firstBriefQueued: true } };
+      },
+    }));
+
+    const authorize = await callRoute(router, 'GET', '/google/authorize-url', {
+      headers: { host: 'localhost:8000' },
+      locals: { userId: 'user-1', companyId: 'company-1' },
+      query: { for: 'mailAutomations' },
+    });
+    const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state')!;
+    const payload = JSON.parse(Buffer.from(state.split('.')[1]!, 'base64url').toString('utf8'));
+    const callback = await callRoute(router, 'GET', '/google/callback', {
+      query: { code: 'google-code', state },
+    });
+
+    assert.equal(callback.status, 200);
+    assert.deepEqual(payload.requestedToolIds, ['mailAutomations']);
+    assert.deepEqual(authorizeScopes, [
+      'openid',
+      'https://www.googleapis.com/auth/userinfo.email',
+      'https://www.googleapis.com/auth/userinfo.profile',
+      'https://www.googleapis.com/auth/gmail.modify',
+      'https://www.googleapis.com/auth/gmail.send',
+      'https://www.googleapis.com/auth/gmail.labels',
+    ]);
+    assert.deepEqual(mailBriefInput, {
+      companyId: 'company-1',
+      userId: 'user-1',
+      connectionId: 'google-connection-1',
+      mailboxEmail: 'user@example.com',
+    });
   });
 
   it('keeps Zoho OAuth on the Desktop-selected local backend through code exchange', async () => {

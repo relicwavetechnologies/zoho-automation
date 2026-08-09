@@ -426,6 +426,36 @@ export function buildChildEnvironment(baseEnvironment, values) {
 	};
 }
 
+export const RUNTIME_ENVIRONMENT_PATCH_KEYS = [
+	"DIVO_BACKEND_URL",
+	"DIVO_MEMBER_TOKEN",
+	"DIVO_DEPARTMENT_ID",
+	"DIVO_RUNTIME_CONTEXT_PATH",
+	"DIVO_RUN_CONTEXT_PATH",
+	"DIVO_SKILL_DIRS",
+	"DIVO_BUNDLED_SKILLS_DIR",
+	"DIVO_WORKSPACE_DIR",
+	"DIVO_INTERNAL_DIR",
+	"DIVO_LOCAL_CLI_DISABLED",
+	"DIVO_RUN_ID",
+	"DIVO_RUN_DIR",
+	"DIVO_SCRATCH_DIR",
+	"DIVO_SCRIPTS_DIR",
+	"DIVO_ARTIFACTS_DIR",
+	"DIVO_LOGS_DIR",
+	"DIVO_CHAT_HISTORY_DIR",
+	"DIVO_HOME",
+];
+
+export function buildRuntimeEnvironmentPatch(values) {
+	const environment = buildChildEnvironment({}, values);
+	const patch = {};
+	for (const key of RUNTIME_ENVIRONMENT_PATCH_KEYS) {
+		patch[key] = Object.hasOwn(environment, key) ? environment[key] : null;
+	}
+	return patch;
+}
+
 /**
  * Where this run's Pi session lives, given the scope it was started with.
  *
@@ -518,9 +548,6 @@ export function buildPiArguments(values) {
 		path.join(divoDir, "skills", name),
 	]);
 	const args = [
-		"--tsconfig",
-		path.join(repositoryRoot, "tsconfig.json"),
-		path.join(repositoryRoot, "packages", "coding-agent", "src", "cli.ts"),
 		"--session",
 		values.sessionPath,
 		"--session-dir",
@@ -555,7 +582,25 @@ export function buildPiArguments(values) {
 	return args;
 }
 
-export function startDivoPi({
+export function buildPiLaunch(values, entryMode = "source") {
+	const args = buildPiArguments(values);
+	if (entryMode === "compiled") {
+		const entrypoint = path.join(repositoryRoot, "packages", "coding-agent", "dist", "cli.js");
+		return { executable: process.execPath, entrypoint, args: [entrypoint, ...args] };
+	}
+	if (entryMode === "source") {
+		const executable = path.join(repositoryRoot, "node_modules", ".bin", "tsx");
+		const entrypoint = path.join(repositoryRoot, "packages", "coding-agent", "src", "cli.ts");
+		return {
+			executable,
+			entrypoint,
+			args: ["--tsconfig", path.join(repositoryRoot, "tsconfig.json"), entrypoint, ...args],
+		};
+	}
+	throw new Error('DIVO_PI_ENTRY_MODE must be either "source" or "compiled"');
+}
+
+export function prepareDivoPiRun({
 	backendUrl,
 	token,
 	runId: trustedRunId,
@@ -595,11 +640,6 @@ export function startDivoPi({
 	if (!["thread", "run"].includes(sessionScope)) {
 		throw new Error('Session scope must be either "thread" or "run"');
 	}
-	const tsx = path.join(repositoryRoot, "node_modules", ".bin", "tsx");
-	if (!fs.existsSync(tsx)) {
-		throw new Error("Divo Pi dependencies are missing. Run npm ci --ignore-scripts first.");
-	}
-
 	const runId = trustedRunId ?? randomUUID();
 	const agentDir = path.join(stateRoot, "agent");
 	const dataDir = path.join(stateRoot, "data");
@@ -715,7 +755,36 @@ export function startDivoPi({
 		token,
 		workspace: path.resolve(workspace),
 	};
-	const child = spawn(tsx, buildPiArguments(values), {
+	const entryMode = process.env.DIVO_PI_ENTRY_MODE ?? "source";
+	const launch = buildPiLaunch(values, entryMode);
+	if (!fs.existsSync(launch.executable) || !fs.existsSync(launch.entrypoint)) {
+		const recovery = entryMode === "compiled"
+			? "Rebuild the runtime image."
+			: "Run npm ci --ignore-scripts first.";
+		throw new Error(`Divo Pi ${entryMode} entrypoint is missing. ${recovery}`);
+	}
+	return {
+		values,
+		launch,
+		isRunScoped,
+		interruptedWork,
+		runDir,
+		sessionDir,
+		threadDir,
+	};
+}
+
+export function startDivoPi(options) {
+	const {
+		values,
+		launch,
+		isRunScoped,
+		interruptedWork,
+		runDir,
+		sessionDir,
+		threadDir,
+	} = prepareDivoPiRun(options);
+	const child = spawn(launch.executable, launch.args, {
 		cwd: values.workspace,
 		env: buildChildEnvironment(process.env, values),
 		stdio: "inherit",
@@ -726,7 +795,7 @@ export function startDivoPi({
 	});
 	child.once("exit", (code, signal) => {
 		if (signal) console.error(`[divo-pi] exited by signal ${signal}`);
-		if (channel === "lark") removeDirectory(runDir);
+		if (values.channel === "lark") removeDirectory(runDir);
 		// Removed on every outcome, not only success: a failed or interrupted run
 		// leaves a partial transcript that the next turn must not resume, since
 		// the authoritative conversation is sent in with the request.

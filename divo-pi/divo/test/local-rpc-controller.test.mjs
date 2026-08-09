@@ -7,12 +7,17 @@ import {
 	backendUrlForContainer,
 	buildBootstrapWriteArgs,
 	buildContainerCreateArgs,
+	buildInterruptionWriteArgs,
+	buildContainerPrepareArgs,
+	buildContainerRunArgs,
+	canReusePiProcess,
 	collectProtectedRunMetadata,
 	createIdleContainerScheduler,
 	deleteProtectedRuntimeSession,
 	finalizeRuntimeLifecycle,
 	loadToken,
 	logCompletedRun,
+	piProcessBindingMatches,
 	RUNTIME_IDLE_TIMEOUT_MS,
 	RUNTIME_STOP_RETRY_MS,
 	resourcesFor,
@@ -21,6 +26,7 @@ import {
 	runtimeStartupProgress,
 	settleAll,
 	trackRuntimeReclamation,
+	trustedRuntimeSession,
 	validateProfileName,
 	validateRuntimeModel,
 	validateThread,
@@ -188,6 +194,21 @@ test("default protected cleanup targets only the signed runtime's owned thread",
 	}]);
 });
 
+test("default protected cleanup accepts the admission cleanup request", async () => {
+	const calls = [];
+	await deleteProtectedRuntimeSession(
+		{ runtime: { profile: "cloud-derived", thread: "thread-current" } },
+		{
+			inspectVolume: async name => ({ Labels: { "dev.divo.profile": "cloud-derived" }, name }),
+			removeSession: async (volume, directory) => calls.push({ volume, directory }),
+		},
+	);
+	assert.deepEqual(calls, [{
+		volume: "divo-pi-local-cloud-derived",
+		directory: "/data/state/data/threads/thread-current",
+	}]);
+});
+
 test("protected cleanup refuses a volume not owned by the signed runtime", async () => {
 	let removed = false;
 	await assert.rejects(
@@ -239,6 +260,30 @@ test("cloud runtime names are stable, isolated, and safe for Docker", () => {
 	assert.notEqual(first.thread, first.runtimeThreadId);
 	assert.equal(validateProfileName(first.profile), first.profile);
 	assert.equal(validateThread(first.thread), first.thread);
+});
+
+test("trusted runtime session keeps only container bootstrap identity metadata", () => {
+	assert.deepEqual(
+		trustedRuntimeSession({
+			userId: "user-a",
+			companyId: "company-1",
+			email: "user@example.com",
+			token: "must-not-leak",
+			departments: [
+				{ id: "department-1", name: "Finance", token: "must-not-leak" },
+				{ id: "", name: "Ignored" },
+				{ id: "department-2", name: "" },
+			],
+		}),
+		{
+			userId: "user-a",
+			companyId: "company-1",
+			departments: [
+				{ id: "department-1", name: "Finance" },
+				{ id: "department-2" },
+			],
+		},
+	);
 });
 
 test("shared runtimes receive a unique disposable profile instead of the private user profile", () => {
@@ -315,8 +360,68 @@ test("a running owned container receives bootstrap through docker exec", () => {
 			"/bin/sh",
 			"-c",
 			"umask 077; cat > /run/divo-auth/bootstrap.json",
+			],
+	);
+	assert.deepEqual(
+		buildInterruptionWriteArgs("divo-pi-local-abhishek"),
+		[
+			"exec",
+			"--interactive",
+			"--user",
+			"10001:10001",
+			"divo-pi-local-abhishek",
+			"/bin/sh",
+			"-c",
+			"umask 077; cat > /run/divo-auth/interruption.json",
 		],
 	);
+});
+
+test("a warm runtime can prepare the cached Pi process through docker exec", () => {
+	assert.deepEqual(
+		buildContainerPrepareArgs("divo-pi-local-abhishek"),
+		[
+			"exec",
+			"--interactive",
+			"--user",
+			"10001:10001",
+			"divo-pi-local-abhishek",
+			"node",
+			"divo/container-entry.mjs",
+			"prepare",
+		],
+	);
+	assert.deepEqual(
+		buildContainerRunArgs("divo-pi-local-abhishek"),
+		[
+			"exec",
+			"--interactive",
+			"divo-pi-local-abhishek",
+			"node",
+			"divo/container-entry.mjs",
+		],
+	);
+});
+
+test("Pi process reuse is limited to compatible private thread runs", () => {
+	assert.equal(canReusePiProcess({ sessionScope: "thread" }), true);
+	assert.equal(canReusePiProcess({ sessionScope: "run" }), false);
+	assert.equal(canReusePiProcess({ sessionScope: "thread", ephemeral: true }), false);
+	assert.equal(canReusePiProcess({ sessionScope: "thread", lifecycle: "reset" }), false);
+	assert.equal(canReusePiProcess({ sessionScope: "thread", enabled: false }), false);
+
+	const binding = {
+		profile: "cloud-1",
+		thread: "lark-1",
+		backendUrl: "http://host.docker.internal:3000",
+		departmentId: "dep-1",
+		provider: "deepseek",
+		model: "deepseek-v4-flash",
+	};
+	assert.equal(piProcessBindingMatches(binding, { ...binding }), true);
+	assert.equal(piProcessBindingMatches(binding, { ...binding, thread: "lark-2" }), false);
+	assert.equal(piProcessBindingMatches(binding, { ...binding, departmentId: "dep-2" }), false);
+	assert.equal(piProcessBindingMatches(binding, { ...binding, model: "gpt-5.6-luna" }), false);
 });
 
 test("a shared container mounts only its run-specific disposable volumes", () => {

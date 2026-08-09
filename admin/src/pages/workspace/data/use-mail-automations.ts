@@ -8,11 +8,15 @@
  * (a mailbox whose watch never registered takes every rule on it down at once),
  * and `/rules/:id/deliveries` answers "what did it actually do".
  *
+ * `/caught` answers the one a member actually arrives with — what has Divo been
+ * doing with my mail — across every rule at once, including the messages a
+ * rule's AI step read and decided not to act on.
+ *
  * No userId anywhere. Every query is pinned server-side to the signed-in
  * member, so there is nothing to pass and nothing to get wrong.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api } from '@/lib/api'
+import { api, ApiError } from '@/lib/api'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useConnections } from './use-connections'
 import { resolveMailboxes, type MailboxResolution } from './mailbox-resolution'
@@ -46,6 +50,8 @@ export type MailRule = {
   match: Record<string, unknown>
   action: Record<string, unknown>
   destination: Record<string, unknown>
+  /** The rule's AI step, or null. The edit form seeds from this. */
+  judge: { question: string; onFailure?: 'open' | 'closed' } | null
   createdAt: string
   lastDeliveredAt: string | null
   /** Counts over the last 30 days, not all time. */
@@ -54,6 +60,15 @@ export type MailRule = {
   abandonedCount: number
   /** Matched the rule, then was refused. Recorded rather than dropped. */
   blockedCount: number
+  /**
+   * Matched, read by the AI step, and deliberately not acted on.
+   *
+   * Kept apart from `blockedCount` because it is the rule working rather than
+   * the rule being stopped — on a rule with a step this is usually the biggest
+   * of the four counts, and folding it into refusals would make a healthy rule
+   * read as one that fails constantly.
+   */
+  heldCount: number
   lastError: string | null
   lastErrorAt: string | null
 }
@@ -78,6 +93,16 @@ export type MailDelivery = {
   deliveryId: string
   status: string
   attempts: number
+  /** What the rule's AI step decided about this message, if it has one. */
+  verdict?: MailJudgeVerdict | null
+  /**
+   * Where the message actually went, on a rule that chooses per message.
+   *
+   * Null on every rule with one destination. Screens must prefer this over the
+   * rule's own destination, which on a routed rule is a table and would name
+   * the wrong person.
+   */
+  resolvedDestination?: Record<string, unknown> | null
   /**
    * The send was made but could not be confirmed. Gmail does not reliably keep
    * a client-supplied Message-ID, so a retry here risks a duplicate — the
@@ -171,6 +196,72 @@ export function useMailDeliveries(ruleId?: string) {
   }, [token, ruleId])
 
   return { deliveries, loading }
+}
+
+/**
+ * What the AI step decided about one message.
+ *
+ * `held` is a working rule doing its job, not a fault, which is why the reason
+ * is always present: a member looking at mail that did not arrive is owed the
+ * sentence the model actually wrote, not a label.
+ */
+export type MailJudgeVerdict = {
+  /**
+   * `routed` is the routing table's answer and is deliberately its own decision
+   * rather than a `passed` carrying a key. They are different claims: `passed`
+   * says *this rule should act*, `routed` says *this message is that kind of
+   * message*, and a screen showing them alike would say "Divo passed it" about
+   * a message whose whole outcome was which person got it.
+   */
+  decision: 'passed' | 'rejected' | 'unavailable' | 'routed'
+  reason: string
+  /** Absent when the model could not be reached at all. */
+  confidence?: number
+  /** Which way the rule's own failure setting sent it, when it came to that. */
+  appliedFailure?: 'open' | 'closed'
+  /** Which branch it named, on a routed rule. `none` means "nothing fits". */
+  route?: string
+}
+
+export type MailCaught = MailDelivery & {
+  ruleId: string
+  ruleName: string
+  action: Record<string, unknown>
+  destination: Record<string, unknown>
+  verdict: MailJudgeVerdict | null
+}
+
+/**
+ * Everything Divo did with this member's mail, across every rule.
+ *
+ * Failure is carried rather than swallowed. An empty feed and a feed that could
+ * not be read look identical, and the first one means "Divo has done nothing",
+ * which is the one conclusion this screen must never state without evidence.
+ */
+export function useCaught(limit = 50) {
+  const { token } = useAdminAuth()
+  const [caught, setCaught] = useState<MailCaught[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    if (!token) return
+    try {
+      const data = await api.get<{ caught: MailCaught[] }>(
+        `${BASE}/caught?limit=${limit}`, token, { quiet: true },
+      )
+      setCaught(data.caught ?? [])
+      setError(null)
+    } catch {
+      setError('This could not be read, so it is blank rather than empty.')
+    } finally {
+      setLoading(false)
+    }
+  }, [token, limit])
+
+  useEffect(() => { void load() }, [load])
+
+  return { caught, loading, error, refresh: load }
 }
 
 /* ── Which mailbox a rule can watch ───────────────────
@@ -450,11 +541,32 @@ export function rateLimitClause(action: Record<string, unknown>): string | null 
   return `at most ${read.rateLimitPerHour} an hour — over that, mail is dropped rather than queued`
 }
 
+export type MailRouteBranch = {
+  key: string
+  when: string
+  destination: MailDestination
+}
+
 export type MailDestination =
   | { kind: 'email'; email: string; label: string }
   | { kind: 'lark'; chatId: string; label: string }
   | { kind: 'lark_dm'; label: string }
   | { kind: 'organize'; label: string }
+  /**
+   * Several recipients, one of which Divo picks per message.
+   *
+   * `label` is the one-line form every existing caller already prints; the
+   * branches are beside it for the screens that show the whole table. Callers
+   * that only know the four shapes above therefore keep working and say
+   * something true, rather than falling to `unknown` and telling a member their
+   * rule points "somewhere Divo can no longer read".
+   */
+  | {
+      kind: 'routed'
+      routes: MailRouteBranch[]
+      otherwise: MailDestination | null
+      label: string
+    }
   | { kind: 'unknown'; label: string }
 
 /**
@@ -478,6 +590,39 @@ export function readDestination(
   // Said as "you", not as an id. The open id is meaningless to read and the
   // only fact that matters about this destination is that nobody else sees it.
   if (type === 'lark_dm') return { kind: 'lark_dm', label: 'you, on Lark' }
+
+  if (type === 'routed') {
+    const raw = Array.isArray(destination['routes']) ? destination['routes'] : []
+    const routes: MailRouteBranch[] = raw.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') return []
+      const row = entry as Record<string, unknown>
+      const leaf = row['destination']
+      if (!leaf || typeof leaf !== 'object') return []
+      return [{
+        // A branch with no description is a branch nothing can be sorted into,
+        // so it reads as empty rather than being dropped — a table that renders
+        // five rows where six were saved is worse than one that shows a blank.
+        key: str(row, 'key') ?? '',
+        when: str(row, 'when') ?? '',
+        destination: readDestination(leaf as Record<string, unknown>),
+      }]
+    })
+    const rest = destination['otherwise']
+    const otherwise = rest && typeof rest === 'object'
+      ? readDestination(rest as Record<string, unknown>)
+      : null
+    return {
+      kind: 'routed',
+      routes,
+      otherwise,
+      // Counted rather than listed. This string is printed in table rows and
+      // summary lines built for one recipient, and six addresses in one of them
+      // would push everything else off the screen.
+      label: routes.length === 1
+        ? 'one of 1 person Divo picks'
+        : `one of ${routes.length} people Divo picks`,
+    }
+  }
 
   if (type === 'none' && action) {
     const read = readAction(action)
@@ -511,12 +656,27 @@ export function readDestination(
  * the mailbox domain is the only thing this screen can actually know.
  */
 export function leavesOrganisation(rule: MailRule): boolean {
-  const destination = readDestination(rule.destination)
-  if (destination.kind !== 'email') return false
   const domainOf = (address: string) => address.split('@')[1]?.toLowerCase() ?? ''
-  const to = domainOf(destination.email)
   const mailbox = domainOf(rule.mailboxEmail)
-  return to.length > 0 && mailbox.length > 0 && to !== mailbox
+  if (mailbox.length === 0) return false
+  // Every branch, not the first. A routed rule sends to several people, and one
+  // external branch among five makes the whole rule a standing export — which
+  // is the single thing this flag exists to surface.
+  return destinationEmails(readDestination(rule.destination))
+    .some((email) => {
+      const to = domainOf(email)
+      return to.length > 0 && to !== mailbox
+    })
+}
+
+/** Every address a destination reaches, flattening a routing table. */
+export function destinationEmails(destination: MailDestination): string[] {
+  if (destination.kind === 'email') return [destination.email]
+  if (destination.kind !== 'routed') return []
+  return [
+    ...destination.routes.flatMap((route) => destinationEmails(route.destination)),
+    ...(destination.otherwise ? destinationEmails(destination.otherwise) : []),
+  ]
 }
 
 /* ── Creating a rule ──────────────────────────────────
@@ -536,7 +696,26 @@ export type MailRuleDraft = {
        browser cannot name somebody else's DM. */
     | { type: 'lark_dm' }
     | { type: 'organize'; label?: string; archive?: boolean; markRead?: boolean }
+    /**
+     * Several recipients and what kind of message each one gets.
+     *
+     * `otherwise` absent means hold — nothing is sent and the member sees it in
+     * What Divo caught. There is deliberately no value that drops a message
+     * silently.
+     */
+    | {
+        type: 'routed'
+        routes: Array<{ key: string; when: string; destination: { type: 'email'; email: string } }>
+        otherwise?: 'hold' | { type: 'email'; email: string }
+      }
   rateLimitPerHour?: number
+  /**
+   * The rule's AI step. Absent means it has none — and on an edit that means
+   * *remove* it, because both routes take the whole rule rather than a patch.
+   * The form always sends what is on screen, so this is only ever wrong if the
+   * form forgets to seed it from the stored rule.
+   */
+  judge?: { question: string; onFailure?: 'open' | 'closed' }
 }
 
 export type MailRuleCreateState = {
@@ -562,7 +741,17 @@ export type MailRuleCreateState = {
  * the wizard navigating to a rule that was never created.
  */
 export type MailRuleCreateOutcome =
-  | { kind: 'created'; ruleId: string }
+  /**
+   * `existing` is what the member could not otherwise know.
+   *
+   * Creating is an upsert on a key derived from the rule's own content, so
+   * asking for a rule that already exists returns it, and asking for one that
+   * was archived brings it back. Both are the right behaviour and neither used
+   * to be said — so somebody who archived a rule in March and built the same
+   * one in August landed on a "new" rule already carrying five months of
+   * deliveries.
+   */
+  | { kind: 'created'; ruleId: string; existing: 'active' | 'paused' | 'archived' | null }
   | { kind: 'pending_approval'; approverName: string; destination: string; reused: boolean }
   | { kind: 'refused' }
 
@@ -583,6 +772,7 @@ export function useCreateMailRule() {
         approverName?: string
         destination?: string
         reused?: boolean
+        existing?: 'active' | 'paused' | 'archived' | null
       }>(`${BASE}/rules`, draft, token, { quiet: true })
 
       // Read from the body rather than the status code: `api.post` hands back
@@ -601,7 +791,7 @@ export function useCreateMailRule() {
 
       setState({ saving: false, error: null, code: null, pending: null })
       return data.ruleId
-        ? { kind: 'created', ruleId: data.ruleId }
+        ? { kind: 'created', ruleId: data.ruleId, existing: data.existing ?? null }
         : { kind: 'refused' }
     } catch (error) {
       // Six refusals with six different remedies, and the remedy is the only
@@ -619,6 +809,125 @@ export function useCreateMailRule() {
   }, [token])
 
   return { ...state, create }
+}
+
+/* ── Changing a rule that already exists ──────────────
+   The same form that creates a rule edits one, so the same draft shape goes up.
+   What differs is the ending: an edit can land on top of another rule watching
+   the same mailbox, and that collision has two shapes worth telling apart —
+   the rule it collides with may be live, or it may be sitting archived where
+   nobody would think to look for it. */
+
+export type MailRuleUpdateOutcome =
+  /**
+   * `resumed` because editing a paused rule starts it again.
+   *
+   * That is deliberate and it is documented in the tool's own instructions, but
+   * it was done in silence here: somebody who paused a rule because it was
+   * misbehaving, then corrected it, got "Saved" and no hint their mail was
+   * moving again. The server has said which of the two happened since the
+   * permission fix; this screen was still throwing the answer away.
+   */
+  | { kind: 'saved'; ruleId: string; resumed: boolean }
+  /** The edit changed the destination to somewhere outside the company. */
+  | { kind: 'pending_approval'; approverName: string; destination: string; reused: boolean }
+  /**
+   * These conditions already belong to another rule on this mailbox.
+   *
+   * `archived` is not a detail. A collision with a live rule is something the
+   * member can see and reason about; a collision with an archived one is a
+   * rule they cannot see from here at all, and "that already exists" without
+   * the word archived reads as Divo being wrong.
+   */
+  | {
+      kind: 'duplicate'
+      ruleId: string
+      name: string
+      archived: boolean
+      /** What the server said. It knows which of the two collisions this is. */
+      message: string
+    }
+  | { kind: 'refused' }
+
+export type MailRuleUpdateState = {
+  saving: boolean
+  error: string | null
+  pending: { approverName: string; destination: string; reused: boolean } | null
+  duplicate: { ruleId: string; name: string; archived: boolean; message: string } | null
+}
+
+export function useUpdateMailRule() {
+  const { token } = useAdminAuth()
+  const [state, setState] = useState<MailRuleUpdateState>({
+    saving: false, error: null, pending: null, duplicate: null,
+  })
+
+  const update = useCallback(async (
+    ruleId: string, draft: MailRuleDraft,
+  ): Promise<MailRuleUpdateOutcome> => {
+    if (!token) return { kind: 'refused' }
+    setState({ saving: true, error: null, pending: null, duplicate: null })
+    try {
+      const data = await api.put<{
+        ruleId?: string
+        status?: string
+        /** True when this edit took the rule off pause. See the outcome type. */
+        resumed?: boolean
+        approverName?: string
+        destination?: string
+        reused?: boolean
+        conflictRuleId?: string
+        conflictRuleName?: string
+        conflictArchived?: boolean
+      }>(`${BASE}/rules/${ruleId}`, draft, token, { quiet: true })
+
+      if (data.status === 'pending_approval') {
+        const pending = {
+          approverName: data.approverName ?? 'your manager',
+          destination: data.destination
+            ?? (draft.destination.type === 'email' ? draft.destination.email : ''),
+          reused: data.reused === true,
+        }
+        setState({ saving: false, error: null, pending, duplicate: null })
+        return { kind: 'pending_approval', ...pending }
+      }
+
+      setState({ saving: false, error: null, pending: null, duplicate: null })
+      return { kind: 'saved', ruleId: data.ruleId ?? ruleId, resumed: data.resumed === true }
+    } catch (error) {
+      /*
+       * The duplicate arrives here, not above.
+       *
+       * A collision is answered with a 409, and `api.put` throws on any
+       * non-2xx — so the `data.status === 'duplicate'` test that used to sit
+       * inside the `try` could never run, and the one refusal this screen has
+       * a real remedy for was reported as "that change could not be saved".
+       *
+       * Matched on the server's own code rather than on the status, because
+       * `rule_archived` is a 409 too and its remedy is the opposite one.
+       */
+      if (error instanceof ApiError
+        && (error.code === 'duplicate' || error.code === 'duplicate_archived')) {
+        const duplicate = {
+          // The server names neither, so neither is invented. The message it
+          // sent says what to do, and that is what the screen shows.
+          ruleId: '',
+          name: 'another rule',
+          archived: error.code === 'duplicate_archived',
+          message: error.message,
+        }
+        setState({ saving: false, error: null, pending: null, duplicate })
+        return { kind: 'duplicate', ...duplicate }
+      }
+      const message = error instanceof Error && error.message.length > 0
+        ? error.message
+        : 'That change could not be saved.'
+      setState({ saving: false, error: message, pending: null, duplicate: null })
+      return { kind: 'refused' }
+    }
+  }, [token])
+
+  return { ...state, update }
 }
 
 /**
@@ -672,7 +981,20 @@ export type MailRuleCompiled = {
     | { type: 'email'; email: string }
     | { type: 'lark_dm' }
     | { type: 'organize'; label?: string; archive?: boolean; markRead?: boolean }
+    /** Different people for different kinds of the same mail. */
+    | {
+        type: 'routed'
+        routes: Array<{ key: string; when: string; destination: { type: 'email'; email: string } }>
+        otherwise?: 'hold' | { type: 'email'; email: string }
+      }
   rateLimitPerHour?: number
+  /**
+   * The part of the sentence no filter could express, kept as a question the
+   * rule asks about each matched message. Present only when the sentence asked
+   * for a judgement — carry it onto the draft, because dropping it turns "only
+   * the ones that actually need me" into "all of them".
+   */
+  judge?: { question: string; onFailure?: 'open' | 'closed' }
   /** What Divo deliberately dropped from the sentence. */
   notes?: string[]
 } | { status: 'unclear'; reason: string } | { status: 'unavailable'; reason: string }

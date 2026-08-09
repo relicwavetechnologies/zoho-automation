@@ -217,7 +217,7 @@ export function assessRule(
     MailRuleActivity,
     'status' | 'match' | 'action' | 'destination' | 'lastDeliveredAt'
     | 'abandonedCount' | 'blockedCount' | 'lastBlockedAt' | 'blockedReason'
-    | 'lastError'
+    | 'lastError' | 'heldCount'
   >,
   mailbox: Pick<MailboxHealth, 'rulesCanFire' | 'state'> | undefined,
 ): MailRuleHealth {
@@ -281,6 +281,26 @@ export function assessRule(
         ? `Working, but ${rule.abandonedCount} message`
           + `${rule.abandonedCount === 1 ? '' : 's'} could not be delivered.`
         : 'Working.',
+      invalidReason: null,
+    };
+  }
+
+  /*
+   * Matched, read by the AI step, and deliberately passed over.
+   *
+   * This is a rule doing exactly its job, and without this branch it fell
+   * through to `waiting` — "no matching mail has arrived yet" — on a rule that
+   * had read and rejected forty messages. That reads as a broken rule, and the
+   * obvious response to it is to widen the match, which makes the situation
+   * worse. Reported before the `waiting` fallback and after the delivered
+   * check, so a rule that has both delivered and held still reads as working.
+   */
+  if (rule.heldCount > 0) {
+    return {
+      state: 'working',
+      summary: `Working. ${rule.heldCount} message`
+        + `${rule.heldCount === 1 ? '' : 's'} matched and were held back by this `
+        + 'rule’s question, so nothing was sent for them.',
       invalidReason: null,
     };
   }

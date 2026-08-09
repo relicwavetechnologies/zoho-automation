@@ -1,0 +1,117 @@
+/**
+ * Making an invoice payload say what Zoho means by it.
+ *
+ * `payment_terms` is the case this exists for. To a person — and to a model
+ * reading a PDF that says "Net 15" — the payment term IS "Net 15". To Zoho it
+ * is the integer 15, a count of days, and the words live in a different field
+ * called `payment_terms_label`. Send the words and Zoho answers
+ * `{"code":2,"message":"Invalid value passed for Payment Terms"}` and creates
+ * nothing.
+ *
+ * So this translates rather than validates. "Net 15" is not a mistake the
+ * member made; it is the same fact in the vocabulary they use. Pulling the
+ * number out of it is mechanical, and the original words are kept as the label
+ * instead of being thrown away, so the invoice still reads the way the document
+ * did.
+ *
+ * What it will not do is guess. A term with no number in it and no known
+ * meaning is refused by name, before anything is staged, rather than dropped
+ * silently — quietly discarding a payment term would change when the invoice
+ * falls due while reporting success.
+ */
+
+export type InvoiceFieldsResult =
+  | { readonly ok: true; readonly fields: Record<string, unknown>; readonly notes: readonly string[] }
+  | { readonly ok: false; readonly message: string };
+
+/**
+ * Terms Zoho itself ships that carry no digit. "Due on receipt" is zero days in
+ * Zoho's own numbering, not an interpretation of ours.
+ */
+const namedTerms: Record<string, number> = {
+  'due on receipt': 0,
+  'due upon receipt': 0,
+  'on receipt': 0,
+  'immediate': 0,
+  'immediately': 0,
+};
+
+const REFUSAL =
+  'Zoho Books records payment terms as a whole number of days, so this invoice was not staged. '
+  + 'Give payment_terms as a number — 15 for "Net 15", 0 for due on receipt — or set due_date '
+  + 'instead and leave payment_terms out.';
+
+interface ParsedTerms {
+  readonly days: number;
+  /** The member's own wording, when it was not already a bare number. */
+  readonly label?: string;
+}
+
+function parsePaymentTerms(value: unknown): ParsedTerms | null {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value >= 0 ? { days: value } : null;
+  }
+  if (typeof value !== 'string') return null;
+
+  const raw = value.trim();
+  if (!raw) return null;
+
+  // Already a number, just wearing quotes.
+  if (/^\d+$/.test(raw)) return { days: Number(raw) };
+
+  const named = namedTerms[raw.toLowerCase()];
+  if (named !== undefined) return { days: named, label: raw };
+
+  // Anchored, because "contains one number" is not the same as "is a number of
+  // days". "15th of next month" and "Net 15 days from EOM" each carry exactly
+  // one digit run and mean something this field cannot express; reading them as
+  // 15 days would set a due date nobody asked for and look like success.
+  // "2/10 net 30" is a discount schedule, and "-5" is not a term at all.
+  // `-` is a separator in "net-15" but a sign in "Net -5", and the difference is
+  // the whitespace. Allowing both in one character class let the minus be eaten
+  // and turned "Net -5" into five days.
+  const matched = raw.match(/^net(?:-|\s*)(\d{1,3})(\s*days?)?$/i)
+    ?? raw.match(/^(\d{1,3})\s*days?$/i);
+  if (matched?.[1]) {
+    const days = Number(matched[1]);
+    if (Number.isSafeInteger(days) && days >= 0) return { days, label: raw };
+  }
+
+  return null;
+}
+
+/**
+ * Normalise an invoice payload on its way to Zoho.
+ *
+ * Returns a new top-level object, so the caller's own record keeps the wording
+ * it was given and what was staged, reviewed and shown to the member stays the
+ * thing that was checked. Nested values — line items in particular — are shared
+ * with the caller rather than copied; nothing here writes through them, and a
+ * deep copy would only pretend to a guarantee this does not need.
+ *
+ * `notes` records anything re-read on the member's behalf. It is not optional
+ * decoration: a translation nobody is shown is a silent change to what they are
+ * agreeing to, so every caller is expected to surface it.
+ */
+export function normalizeInvoiceFields(fields: Record<string, unknown>): InvoiceFieldsResult {
+  const out: Record<string, unknown> = { ...fields };
+  const notes: string[] = [];
+
+  if (out['payment_terms'] !== undefined && out['payment_terms'] !== null) {
+    const parsed = parsePaymentTerms(out['payment_terms']);
+    if (!parsed) return { ok: false, message: REFUSAL };
+
+    if (out['payment_terms'] !== parsed.days) {
+      notes.push(`payment_terms ${JSON.stringify(out['payment_terms'])} read as ${parsed.days} days`);
+    }
+    out['payment_terms'] = parsed.days;
+
+    // Keep the member's wording where Zoho keeps wording — but never overwrite
+    // a label they set deliberately.
+    if (parsed.label && out['payment_terms_label'] === undefined) {
+      out['payment_terms_label'] = parsed.label;
+    }
+  }
+
+  return { ok: true, fields: out, notes };
+}

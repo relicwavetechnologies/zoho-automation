@@ -6,53 +6,53 @@
  * something on your behalf every hour of every day; you come back to it to see
  * whether that is still true, not to configure it once and leave.
  *
- * The page is arranged around the two questions that actually go wrong, rather
- * than around the data model.
+ * The page answers four questions, in the order they go wrong, and each of them
+ * exactly once:
  *
- * First: why did everything stop? A mailbox whose Gmail watch never registered
- * takes every rule on it down at once, and no per-rule row can explain that.
- * The mailbox line answers it at the top, above the rules that would otherwise
- * be sitting there looking individually fine.
- *
- * Second: is any of this leaving the company? A forward carries the whole
- * message unchanged, and these rules are created by asking Divo in a sentence,
- * so a standing export can exist without anyone having deliberately built one.
+ *  1. **Can any of this run?** A mailbox whose Gmail watch never registered
+ *     takes every rule on it down at once, and no per-rule row can explain
+ *     that. `MailboxStrip` is the only place that fact is stated — when it is
+ *     healthy it is one quiet line, and when it is not the same line carries
+ *     the reason and the button that fixes it. There is no second banner:
+ *     saying it twice made the page look like two different faults.
+ *  2. **Is it doing anything?** The counts every rule already carries, summed.
+ *     Without this the page is a list of promises with no evidence attached,
+ *     and "is it working" costs a click per rule.
+ *  3. **Which rules do I have?** One list. Paused rules stay in it, dimmed —
+ *     hiding them behind a filter meant pausing a rule made it vanish, which
+ *     reads as having deleted it.
+ *  4. **Is any of it leaving the company?** A forward carries the whole message
+ *     unchanged, and these rules are created by asking Divo in a sentence, so a
+ *     standing export can exist without anyone having deliberately built one.
+ *     Said as one line that *filters* the list rather than as a second panel
+ *     that reprinted the same rows three inches above themselves.
  *
  * Every rule is rendered from its own stored conditions rather than from the
  * backend's one-line summary — see `matchClauses`. The summary cannot express
  * an exception or a ceiling, so a rule carrying either was described here as
  * something broader than it is.
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
-  Archive, Check, Inbox, Mail, MailWarning, MessageSquare, Pause, Pencil, Play,
-  Plus, RefreshCw, ShieldAlert, Tag, TriangleAlert,
+  Archive, Copy, Inbox, Mail, MailWarning, MoreHorizontal,
+  Pause, Pencil, Play, Plus, RefreshCw, ShieldAlert, Tag, TriangleAlert,
 } from 'lucide-react'
 import {
   leavesOrganisation, matchClauses, rateLimitClause, readAction, readDestination,
-  useMailAutomations, useMailDeliveries, useMailRuleDryRun, useMailRuleStatus,
-  type MailDelivery, type MailRule, type MailRuleDryRun, type MailRuleState, type MailboxHealth,
+  useMailAutomations, useMailboxOptions, useMailDeliveries, useMailRuleDryRun, useMailRuleStatus,
+  type MailDelivery, type MailRule, type MailRuleDryRun, type MailRuleState,
+  type MailboxHealth, type MailboxResolution,
 } from './data/use-mail-automations'
 import { useConnections } from './data/use-connections'
-import { isLive } from './data/mailbox-resolution'
 import { ago } from './data/use-approvals'
+import { GmailMark, LarkMark } from './brand'
 import { DetailPage, RailChip, RailEmpty, RailRow, RailSection } from './detail'
-import { DataNote, Empty, Fade, PageHeader, Panel, Seg, SkelRows, useStaged } from './ui'
+import { Confirm, DataNote, Empty, Fade, PageHeader, Panel, Seg, SkelRows, useStaged } from './ui'
 import type { Persona } from './fixtures'
 import type { Toast } from './ui'
 
 type ScreenProps = { persona: Persona; replay: number; toast: Toast; go: (screen: string) => void }
-
-/**
- * Nothing on these screens can be written yet. `MailOpsService` has create,
- * pause and archive, but the only HTTP surface is read-only — so a rule is
- * still made and changed by asking Divo, and every control that would say
- * otherwise carries this instead of a handler.
- */
-const NO_EDIT =
-  'Editing a rule is still done by asking Divo — a change can collide with another rule on the '
-  + 'same mailbox, and answering that needs a screen this page does not have yet.'
 
 const CHANGE_DONE: Record<'pause' | 'resume' | 'archive', string> = {
   pause: 'Paused. Nothing will be forwarded until you resume it.',
@@ -87,7 +87,9 @@ const StateBadge = ({ state }: { state: MailRuleState }) => {
 /** The icon says what kind of rule it is before the words do. */
 function ruleIcon(rule: MailRule) {
   const destination = readDestination(rule.destination, rule.action)
-  if (destination.kind === 'lark') return <MessageSquare size={14} />
+  // Where it goes, not where it comes from — every rule on this page watches
+  // Gmail, so a Gmail mark on each row would say the one thing they all share.
+  if (destination.kind === 'lark' || destination.kind === 'lark_dm') return <LarkMark size={14} />
   if (destination.kind === 'organize') return <Tag size={14} />
   return <Mail size={14} />
 }
@@ -108,18 +110,36 @@ function ruleLine(rule: MailRule): string | null {
 
 /* ══ List ══════════════════════════════════════════════ */
 
-export function MailRules({ replay, go }: ScreenProps) {
+export function MailRules({ replay, toast, go }: ScreenProps) {
   const [r1] = useStaged([320], replay)
-  const [scope, setScope] = useState<'active' | 'all'>('active')
-  const { rules, mailboxes, anyMailboxBroken, loading, error, refresh } = useMailAutomations(scope === 'all')
+  const [scope, setScope] = useState<'live' | 'archived'>('live')
+  const [onlyExternal, setOnlyExternal] = useState(false)
+  /* Always the full set, filtered here. Two reasons: switching scope is then
+     instant rather than a refetch, and an archived rule stays reachable from a
+     link without the page having to decide in advance that it wants one. */
+  const { rules, mailboxes, loading, error, refresh } = useMailAutomations(true)
+  const resolution = useMailboxOptions()
   const navigate = useNavigate()
   void go
 
   // Two gates: the staged reveal that stops the page snapping in, and the real
   // fetch. Either alone either flashes empty rows or defeats the staging.
   const ready = r1 && !loading
-  const leaving = useMemo(() => rules.filter(leavesOrganisation), [rules])
   const settled = ready && !error
+
+  const live = useMemo(() => rules.filter((r) => r.state !== 'archived'), [rules])
+  const archived = useMemo(() => rules.filter((r) => r.state === 'archived'), [rules])
+  const external = useMemo(() => live.filter(leavesOrganisation), [live])
+
+  const shown = useMemo(() => {
+    const base = scope === 'archived' ? archived : live
+    return onlyExternal ? base.filter(leavesOrganisation) : base
+  }, [scope, archived, live, onlyExternal])
+
+  /* Nothing to build a rule on. The button is withheld rather than left live
+     and leading somewhere that only says "connect Google" — a primary action
+     that turns out to be a detour is worse than one that is not offered. */
+  const canBuild = resolution.status === 'one' || resolution.status === 'choose'
 
   return (
     <>
@@ -128,16 +148,31 @@ export function MailRules({ replay, go }: ScreenProps) {
         title="Mail"
         description="Standing rules that watch your Gmail and pass matching messages on. They run in the background, without asking you each time."
         actions={
-          <>
-            <Seg
-              value={scope}
-              onChange={setScope}
-              options={[{ value: 'active', label: 'Active' }, { value: 'all', label: 'All' }]}
-            />
-            <button type="button" className="btn primary" onClick={() => navigate('/me/mail/new')}>
-              <Plus size={14} /> New rule
-            </button>
-          </>
+          settled && canBuild ? (
+            <>
+              {archived.length > 0 ? (
+                <Seg
+                  value={scope}
+                  onChange={setScope}
+                  options={[
+                    { value: 'live', label: `In use${live.length > 0 ? ` · ${live.length}` : ''}` },
+                    { value: 'archived', label: `Archived · ${archived.length}` },
+                  ]}
+                />
+              ) : null}
+              {/* The other half of this page's question. The rules here promise
+                  what Divo will do; Caught is the record of what it did — and it
+                  is the only place a message a rule read and *held back* is
+                  visible at all, so it must be reachable from both surfaces
+                  rather than only from the member shell's nav. */}
+              <button type="button" className="btn" onClick={() => navigate('/me/caught')}>
+                <Inbox size={14} /> What Divo caught
+              </button>
+              <button type="button" className="btn primary" onClick={() => navigate('/me/mail/new')}>
+                <Plus size={14} /> New rule
+              </button>
+            </>
+          ) : undefined
         }
       />
 
@@ -153,51 +188,63 @@ export function MailRules({ replay, go }: ScreenProps) {
             reload leaves the previous response in state, so without this a
             stale mailbox line and a stale list of externally-forwarding rules
             render directly beneath a banner saying nothing was read. */}
-        {settled && anyMailboxBroken ? <MailboxBanner mailboxes={mailboxes} onReconnected={refresh} /> : null}
 
-        {/* The mailbox comes first now. It used to be a panel at the foot of the
+        {/* The mailbox comes first. It used to be a panel at the foot of the
             page, below a box of general notes — so the one thing that can take
             every rule down at once was the last thing anybody read. */}
-        {settled && mailboxes.length > 0 ? <MailboxStrip mailboxes={mailboxes} /> : null}
-
-        {/* Nothing is being watched yet. Until this, the page answered that with
-            an empty list and the sentence "ask Divo" — which leaves out the step
-            that has to happen first and the button that does it, on a different
-            screen the member has no reason to have found. */}
-        {settled && mailboxes.length === 0 ? <GettingStarted /> : null}
-
-        {settled && leaving.length > 0 ? (
-          <Panel
-            title="Mail leaving your company"
-            description="A forward sends the whole message — headers, body and attachments, unchanged."
-          >
-            <div className="ws-rows">
-              {leaving.map((rule) => {
-                const destination = readDestination(rule.destination, rule.action)
-                return (
-                  <div className="ws-row" key={rule.ruleId}>
-                    <span className="ws-ic"><ShieldAlert size={14} /></span>
-                    <div className="ws-row-main">
-                      <b>{rule.name}</b>
-                      <p>{rule.mailboxEmail} → {destination.label}</p>
-                    </div>
-                    <div className="ws-row-act">
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={() => navigate(`/me/mail/${rule.ruleId}`)}
-                      >
-                        Review
-                      </button>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </Panel>
+        {settled && mailboxes.length > 0 ? (
+          <div className="ws-mbx">
+            {mailboxes.map((mailbox) => (
+              <MailboxCard
+                key={mailbox.subscriptionId}
+                mailbox={mailbox}
+                rules={live.filter((r) => r.mailboxEmail === mailbox.mailboxEmail)}
+                onReconnected={refresh}
+              />
+            ))}
+          </div>
         ) : null}
 
-        <Panel title={scope === 'all' ? 'All rules' : 'Active rules'} source="mailRules">
+        {/* Connecting, or fixing a connection. One component, one wording — the
+            new-rule screen shows the same thing rather than a second version of
+            it that told somebody with a scope-limited account to connect an
+            account they already had. */}
+        {settled ? <MailboxSetup resolution={resolution} onDone={refresh} /> : null}
+
+        {/* One line, and it filters rather than reprints. The rules it is about
+            are already on this page; a second panel listing them again made the
+            same rule appear twice and read as two different problems. */}
+        {settled && scope === 'live' && external.length > 0 ? (
+          <div className="ws-ceiling">
+            <ShieldAlert size={14} />
+            <div>
+              <b>
+                {external.length === 1
+                  ? 'One rule sends mail outside your company.'
+                  : `${external.length} rules send mail outside your company.`}
+              </b>{' '}
+              A forward carries the whole message — headers, body and attachments, unchanged — for as
+              long as the rule exists.
+            </div>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => setOnlyExternal((on) => !on)}
+            >
+              {onlyExternal ? 'Show all rules' : 'Show only these'}
+            </button>
+          </div>
+        ) : null}
+
+        <Panel
+          title={scope === 'archived' ? 'Archived rules' : 'Your rules'}
+          description={scope === 'archived'
+            ? 'These will not fire again. Creating the same rule brings one back rather than making a second.'
+            : onlyExternal
+              ? 'Filtered to the rules whose mail leaves your company.'
+              : undefined}
+          source="mailRules"
+        >
           {/* `error` is checked before `ready` because a failed load clears
               `loading` and leaves `rules` empty — which rendered "No mail rules
               yet" directly under the banner saying the opposite. */}
@@ -207,14 +254,22 @@ export function MailRules({ replay, go }: ScreenProps) {
               title="Your rules could not be loaded"
               body="This is not the same as having none. Reload to try again."
             />
-          ) : !ready ? <SkelRows n={3} /> : rules.length === 0 ? (
+          ) : !ready ? <SkelRows n={3} /> : shown.length === 0 ? (
             <Empty
               icon={Inbox}
-              title={scope === 'all' ? 'No mail rules yet' : 'No active mail rules'}
-              body={scope === 'all'
-                ? 'A rule watches your inbox for the mail you describe and passes it on.'
-                : 'Switch to All to see paused and archived rules.'}
-              action={scope === 'all' ? (
+              title={!canBuild
+                ? 'No rules yet'
+                : scope === 'archived'
+                  ? 'Nothing archived'
+                  : onlyExternal ? 'None of your rules leave the company' : 'No mail rules yet'}
+              body={!canBuild
+                ? 'Connect the inbox you want watched first — the step above.'
+                : scope === 'archived'
+                  ? 'Rules you archive keep their place here.'
+                  : onlyExternal
+                    ? 'Every rule you have keeps mail inside your own domain.'
+                    : 'A rule watches your inbox for the mail you describe and passes it on. Divo never rewrites what it forwards.'}
+              action={canBuild && scope === 'live' && !onlyExternal ? (
                 <button type="button" className="btn primary" onClick={() => navigate('/me/mail/new')}>
                   <Plus size={14} /> New rule
                 </button>
@@ -223,36 +278,9 @@ export function MailRules({ replay, go }: ScreenProps) {
           ) : (
             <Fade>
               <div className="ws-rows">
-                {rules.map((rule) => {
-                  const destination = readDestination(rule.destination, rule.action)
-                  const line = ruleLine(rule)
-                  return (
-                    <button
-                      type="button"
-                      className="ws-row auto-row"
-                      key={rule.ruleId}
-                      onClick={() => navigate(`/me/mail/${rule.ruleId}`)}
-                    >
-                      <span className="ws-ic">{ruleIcon(rule)}</span>
-                      <div className="ws-row-main">
-                        <b>
-                          {rule.name}
-                          {leavesOrganisation(rule)
-                            ? <span className="ws-tag" data-tone="warn">Leaves the company</span>
-                            : null}
-                        </b>
-                        {/* A rule whose conditions no longer parse says so here
-                            rather than showing a blank line that reads as "no
-                            conditions", i.e. as matching everything. */}
-                        <p>{line ?? 'Divo can no longer read this rule’s conditions.'}</p>
-                      </div>
-                      <div className="ws-row-act">
-                        <span className="ws-sub">{destination.label}</span>
-                        <StateBadge state={rule.state} />
-                      </div>
-                    </button>
-                  )
-                })}
+                {shown.map((rule) => (
+                  <RuleRow key={rule.ruleId} rule={rule} toast={toast} onChanged={refresh} />
+                ))}
               </div>
             </Fade>
           )}
@@ -263,143 +291,173 @@ export function MailRules({ replay, go }: ScreenProps) {
 }
 
 /**
- * The mailbox, in one line rather than a panel.
+ * One rule, and everything you can do to it without opening it.
  *
- * Three outcomes, not two. "Watching" and "Not watching" hid the case that
- * happens most: the instant notification stops but the hourly check keeps
- * delivering. Calling that "Not watching" would send someone reconnecting an
- * account that works; calling it "Watching" would leave them puzzled about
- * mail arriving an hour late.
+ * The row was a `<button>` wrapping the whole thing, which is why there were no
+ * per-row actions: a button may not contain another button. Pausing a rule
+ * therefore cost a navigation, a click, and a navigation back — for the one
+ * action somebody takes in a hurry, because mail is going somewhere it should
+ * not be.
  */
-function MailboxStrip({ mailboxes }: { mailboxes: MailboxHealth[] }) {
+function RuleRow({
+  rule, toast, onChanged,
+}: { rule: MailRule; toast: Toast; onChanged: () => void }) {
+  const navigate = useNavigate()
+  const status = useMailRuleStatus()
+  const [confirming, setConfirming] = useState(false)
+  const destination = readDestination(rule.destination, rule.action)
+  const line = ruleLine(rule)
+  const paused = rule.state === 'paused'
+  const archived = rule.state === 'archived'
+
+  const change = async (next: 'pause' | 'resume' | 'archive') => {
+    const done = await status.change(rule.ruleId, next)
+    // A failed change must not report as a completed one. The server's own
+    // sentence knows which of "not yours", "not real" and "nothing polls this
+    // mailbox" it was; nothing here can improve on it.
+    if (!done) { toast(status.error ?? 'That change could not be saved.', 'error'); return }
+    toast(CHANGE_DONE[next])
+    onChanged()
+  }
+
+  const open = () => navigate(`/me/mail/${rule.ruleId}`)
+
   return (
-    <div className="ws-mbx">
-      {mailboxes.map((mailbox) => {
-        const delayed = mailbox.state === 'watch_delayed' || mailbox.state === 'watch_degraded'
-        const tone = delayed ? 'warn' : mailbox.rulesCanFire ? 'ok' : 'err'
-        return (
-          <div className="ws-mbx-row" data-tone={tone} key={mailbox.subscriptionId}>
-            <span className="ws-mbx-dot" />
-            <b>{mailbox.mailboxEmail}</b>
-            <span className="ws-mbx-state">
-              {delayed ? 'delayed' : mailbox.rulesCanFire ? 'watching' : 'not watching'}
-            </span>
-            <span className="ws-mbx-sep">·</span>
-            <span className="ws-sub">
-              {mailbox.activeRuleCount} active rule{mailbox.activeRuleCount === 1 ? '' : 's'}
-            </span>
-            {mailbox.lastSignalAt ? (
-              <span className="ws-mbx-when">last signal {ago(mailbox.lastSignalAt)}</span>
-            ) : null}
-          </div>
-        )
-      })}
+    <>
+      <div
+        role="button"
+        tabIndex={0}
+        className="ws-row auto-row ws-rule-row"
+        data-off={paused || archived ? 'true' : undefined}
+        onClick={open}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open() }
+        }}
+      >
+        <span className="ws-ic">{ruleIcon(rule)}</span>
+        <div className="ws-row-main">
+          <b>
+            {rule.name}
+            {leavesOrganisation(rule)
+              ? <span className="ws-tag" data-tone="warn">Leaves the company</span>
+              : null}
+          </b>
+          {/* A rule whose conditions no longer parse says so here rather than
+              showing a blank line that reads as "no conditions", i.e. as
+              matching everything. */}
+          <p>{line ?? 'Divo can no longer read this rule’s conditions.'}</p>
+        </div>
+        <div className="ws-row-act">
+          <span className="ws-rule-when">
+            {/* Evidence, not a promise. "Working" and "Waiting" are both healthy
+                and look alike; the date is the only thing that separates a rule
+                that fired this morning from one that has never fired at all. */}
+            {rule.lastDeliveredAt ? `acted ${ago(rule.lastDeliveredAt)}` : 'never fired'}
+          </span>
+          <span className="ws-sub">{destination.label}</span>
+          <StateBadge state={rule.state} />
+          <RowMenu
+            busy={status.pending !== null}
+            items={[
+              { label: 'Edit', icon: Pencil, onSelect: () => navigate(`/me/mail/${rule.ruleId}/edit`) },
+              {
+                label: 'Duplicate',
+                icon: Copy,
+                onSelect: () => navigate(`/me/mail/new?from=${rule.ruleId}`),
+              },
+              ...(archived ? [] : [{
+                label: paused ? 'Resume' : 'Pause',
+                icon: paused ? Play : Pause,
+                onSelect: () => { void change(paused ? 'resume' : 'pause') },
+              }]),
+              ...(archived ? [] : [{
+                label: 'Archive',
+                icon: Archive,
+                danger: true,
+                onSelect: () => setConfirming(true),
+              }]),
+            ]}
+          />
+        </div>
+      </div>
+
+      {confirming ? (
+        <Confirm
+          title={`Archive “${rule.name}”?`}
+          body={
+            'It stops immediately and will not fire again. It is not deleted — it keeps its place '
+            + 'under Archived, and creating this same rule later brings this one back rather than '
+            + 'making a second one beside it.'
+          }
+          confirm="Archive it"
+          onConfirm={() => change('archive')}
+          onClose={() => setConfirming(false)}
+        />
+      ) : null}
+    </>
+  )
+}
+
+/**
+ * The row's own actions, behind one affordance.
+ *
+ * Closed on any outside click and on Escape, and it stops propagation on the
+ * way out — without that, every menu click also opened the rule underneath it.
+ */
+function RowMenu({
+  items, busy,
+}: {
+  busy?: boolean
+  items: Array<{ label: string; icon: typeof Pencil; onSelect: () => void; danger?: boolean }>
+}) {
+  const [open, setOpen] = useState(false)
+  const wrap = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!wrap.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  return (
+    <div className="ws-menu-wrap" ref={wrap} onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        className="icon-btn ws-menu-btn"
+        aria-label="More"
+        aria-expanded={open}
+        disabled={busy}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <MoreHorizontal size={15} />
+      </button>
+      {open ? (
+        <div className="ws-menu" role="menu">
+          {items.map((item) => (
+            <button
+              type="button"
+              role="menuitem"
+              key={item.label}
+              data-danger={item.danger ? 'true' : undefined}
+              onClick={() => { setOpen(false); item.onSelect() }}
+            >
+              <item.icon size={13} /> {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }
 
-/**
- * The two steps that have to happen before this page can ever show anything.
- *
- * A member can arrive here wanting one thing — forward this sender to that
- * address — and the empty state used to tell them to ask Divo, which fails
- * until Gmail is connected, on a screen they were never sent to. Both steps are
- * stated here, in order, with the first one actionable where they stand.
- *
- * Connecting from here asks Google only for mail. The general Connected apps
- * screen still means "all of Google" because that is what it says; this button
- * means what this page is about, and the consent screen says so too.
- */
-function GettingStarted() {
-  const { byProvider, loading, connecting, connect } = useConnections()
-  const [failed, setFailed] = useState<string | null>(null)
-  const google = byProvider.get('google_workspace')
-  // `connected` counts working accounts only, so a revoked one lands here
-  // rather than in the tick. Which is right — the step genuinely is not done —
-  // but the instruction has to change, because there is nothing to connect.
-  const connected = Boolean(google?.connected)
-  const live = (google?.connections ?? []).filter(isLive)
-  const revoked = !connected && (google?.connections?.length ?? 0) > 0
-
-  const onConnect = async () => {
-    setFailed(null)
-    try {
-      await connect('google_workspace', { forTools: ['mailAutomations'] })
-    } catch (e) {
-      setFailed(e instanceof Error ? e.message : 'The connect window could not be opened.')
-    }
-  }
-
-  return (
-    <Panel
-      title="Setting up your first mail rule"
-      description="Two steps. Divo watches your Gmail and passes matching messages on — it never rewrites them."
-    >
-      <div className="ws-rows">
-        <div className="ws-row">
-          <span className="ws-ic">{connected ? <Check size={14} /> : <Mail size={14} />}</span>
-          <div className="ws-row-main">
-            <b>{revoked ? 'Sign in to the Gmail account you want watched' : 'Connect the Gmail account you want watched'}</b>
-            <p>
-              {connected
-                ? `Connected as ${live[0]?.accountEmail ?? 'your Google account'}. Divo can read this inbox and send on its behalf.`
-                : revoked
-                  ? `${google?.connections.map((c) => c.accountEmail ?? c.label).join(', ')} is connected, but Google has ended the authorisation. Signing in again restores it — you are not connecting a new account.`
-                  : 'Google will ask for your mail only — not Drive, Calendar or anything else.'}
-            </p>
-          </div>
-          <div className="ws-row-act">
-            {connected ? (
-              <span className="badge b-ok"><span className="dot" />Connected</span>
-            ) : (
-              <button
-                type="button"
-                className="btn"
-                disabled={loading || connecting === 'google_workspace'}
-                onClick={() => { void onConnect() }}
-              >
-                {connecting === 'google_workspace'
-                  ? 'Waiting for Google…'
-                  : revoked ? 'Reconnect Google' : 'Connect Gmail'}
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div className="ws-row">
-          <span className="ws-ic"><MessageSquare size={14} /></span>
-          <div className="ws-row-main">
-            <b>Describe the rule you want</b>
-            <p>
-              Say something like <i>&ldquo;forward anything from billing@acme.com to me on Lark&rdquo;</i>.
-              You will see exactly what Divo understood before anything is turned on.
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {failed ? (
-        <div className="ws-panel-foot"><TriangleAlert size={13} /> {failed}</div>
-      ) : (
-        <div className="ws-panel-foot">
-          {/* Google withholds the app name until brand verification passes and
-              falls back to the domain. Somebody who is not warned reads that as
-              having been sent to the wrong place, and stops. */}
-          Google will name our domain rather than “Divo” on its consent screen — brand verification is
-          still in progress. Nothing is watched until a rule exists; connecting on its own starts nothing.
-        </div>
-      )}
-    </Panel>
-  )
-}
-
-/**
- * The one line that explains a total stop.
- *
- * Named for the failing mailbox rather than written generically: with one
- * connected mailbox the address is the reassurance that this is about them, and
- * with several it is the only way to know which one to go and fix.
- */
 /**
  * The two failures a member can actually fix, and the only two that get a
  * button.
@@ -411,22 +469,29 @@ function GettingStarted() {
  */
 const RECONNECTABLE = new Set(['connection_unavailable', 'scope_missing'])
 
-function MailboxBanner({
-  mailboxes, onReconnected,
-}: {
-  mailboxes: MailboxHealth[]
-  onReconnected: () => void
-}) {
+function MailboxCard({
+  mailbox, rules, onReconnected,
+}: { mailbox: MailboxHealth; rules: MailRule[]; onReconnected: () => void }) {
   const { loading, connecting, connect } = useConnections()
   const [failed, setFailed] = useState<string | null>(null)
-  const broken = mailboxes.filter((m) => !m.rulesCanFire && m.state !== 'paused')
-  if (broken.length === 0) return null
+  const delayed = mailbox.state === 'watch_delayed' || mailbox.state === 'watch_degraded'
+  const down = !mailbox.rulesCanFire && mailbox.state !== 'paused'
+  const tone = delayed ? 'warn' : mailbox.rulesCanFire ? 'ok' : 'err'
+  const fixable = down && Boolean(mailbox.failureCode && RECONNECTABLE.has(mailbox.failureCode))
 
-  /* The banner already says "reconnect it to resume". Until now that was the
-     whole of it: a remedy in prose, with nowhere to do it. Somebody reading
-     this has been told what is wrong, told what fixes it, and left to find the
-     Connections page and guess which account. */
-  const reconnectable = broken.some((m) => m.failureCode && RECONNECTABLE.has(m.failureCode))
+  /*
+   * What this mailbox has actually done, summed from counts its own rules
+   * already carry — no new endpoint, and per mailbox rather than per page,
+   * which is what the numbers were always about.
+   */
+  const total = useMemo(() => rules.reduce((sum, rule) => ({
+    delivered: sum.delivered + rule.deliveredCount,
+    failing: sum.failing + rule.failingCount,
+    abandoned: sum.abandoned + rule.abandonedCount,
+    blocked: sum.blocked + rule.blockedCount,
+  }), { delivered: 0, failing: 0, abandoned: 0, blocked: 0 }), [rules])
+
+  const anyWork = total.delivered + total.failing + total.abandoned + total.blocked > 0
 
   const onConnect = async () => {
     setFailed(null)
@@ -444,33 +509,195 @@ function MailboxBanner({
   }
 
   return (
-    <div className="ws-ceiling">
-      <MailWarning size={14} />
-      <div className="ws-mb-banner">
-        <div>
-          <b>
-            {broken.length === 1
-              ? `Divo is not watching ${broken[0]!.mailboxEmail}.`
-              : `Divo is not watching ${broken.length} of your mailboxes.`}
-          </b>{' '}
-          {broken.length === 1
-            ? `${broken[0]!.summary}${broken[0]!.remedy ? ` ${broken[0]!.remedy}` : ''} Until that is fixed, no rule on this mailbox can fire — however healthy it looks below.`
-            : 'Until that is fixed, no rule on those mailboxes can fire — however healthy they look below.'}
+    <div className="ws-mbx-card" data-tone={tone} data-down={down ? 'true' : undefined}>
+      <div className="ws-mbx-head">
+        <GmailMark size={22} />
+        <div className="ws-mbx-id">
+          <b>{mailbox.mailboxEmail}</b>
+          <p>
+            <span className="ws-mbx-state">
+              {down ? <MailWarning size={11} /> : <span className="ws-mbx-dot" />}
+              {delayed ? 'delayed' : mailbox.rulesCanFire ? 'watching' : 'not watching'}
+            </span>
+            <span className="ws-mbx-sep">·</span>
+            {mailbox.activeRuleCount} rule{mailbox.activeRuleCount === 1 ? '' : 's'}
+            {mailbox.lastSignalAt ? (
+              <><span className="ws-mbx-sep">·</span>last signal {ago(mailbox.lastSignalAt)}</>
+            ) : null}
+          </p>
         </div>
-        {reconnectable ? (
-          <button
-            type="button"
-            className="btn primary"
-            disabled={loading || connecting === 'google_workspace'}
-            onClick={() => { void onConnect() }}
-          >
-            <RefreshCw size={13} />
-            {connecting === 'google_workspace' ? 'Opening Google…' : 'Reconnect Google'}
-          </button>
+
+        {/* The evidence, on the same object it is evidence about. It had a
+            full-width bar of its own holding eight words — the width was
+            saying "this is important" about a number that never is. Zeroes
+            are dropped rather than printed as three empty columns. */}
+        {anyWork ? (
+          <dl className="ws-mbx-stats">
+            <div><dt>{total.delivered}</dt><dd>passed on</dd></div>
+            {total.failing > 0 ? <div><dt>{total.failing}</dt><dd>in flight</dd></div> : null}
+            {total.abandoned > 0 ? <div data-tone="err"><dt>{total.abandoned}</dt><dd>gave up</dd></div> : null}
+            {/* Matched, then refused — a different conversation from a send
+                that broke, so never folded into "gave up". */}
+            {total.blocked > 0 ? <div data-tone="err"><dt>{total.blocked}</dt><dd>refused</dd></div> : null}
+            <div className="ws-mbx-since"><dd>last 30 days</dd></div>
+          </dl>
+        ) : rules.length > 0 ? (
+          <p className="ws-mbx-quiet">Nothing has matched in 30 days</p>
         ) : null}
-        {failed ? <p className="ws-sub">{failed}</p> : null}
       </div>
+
+      {/* The reason lives with the mailbox it is about. With several connected,
+          a banner at the top of the page had to name which one anyway — at
+          which point it was this card, printed somewhere else. */}
+      {down ? (
+        <div className="ws-mbx-why">
+          <p>
+            {mailbox.summary}
+            {mailbox.remedy ? ` ${mailbox.remedy}` : ''}
+            {' '}Until that is fixed, no rule on this mailbox can fire — however healthy it looks below.
+          </p>
+          {fixable ? (
+            <button
+              type="button"
+              className="btn primary"
+              disabled={loading || connecting === 'google_workspace'}
+              onClick={() => { void onConnect() }}
+            >
+              <RefreshCw size={13} />
+              {connecting === 'google_workspace' ? 'Opening Google…' : 'Reconnect Google'}
+            </button>
+          ) : null}
+          {failed ? <p className="ws-sub">{failed}</p> : null}
+        </div>
+      ) : null}
     </div>
+  )
+}
+
+/**
+ * No usable account, said three different ways — and the same three words on
+ * both screens that need them.
+ *
+ * "Connect Google" is the wrong instruction for somebody who already has, and
+ * who needs to grant Gmail access on the account they have — they would connect
+ * a second one, hit the same wall, and have two. It is equally wrong for
+ * somebody whose account Google simply logged out: nothing about that account
+ * needs changing, it needs signing into.
+ *
+ * Exported because the new-rule screen hits exactly the same three states, and
+ * used to carry its own wording for them. Two copies of a remedy is two chances
+ * for one of them to go stale and send somebody somewhere useless.
+ */
+export function MailboxSetup({
+  resolution, onDone,
+}: { resolution: MailboxResolution; onDone?: () => void }) {
+  const { byProvider, loading, connecting, connect } = useConnections()
+  const [failed, setFailed] = useState<string | null>(null)
+
+  if (
+    resolution.status !== 'none'
+    && resolution.status !== 'insufficient'
+    && resolution.status !== 'reconnect'
+  ) return null
+
+  const insufficient = resolution.status === 'insufficient'
+  const revoked = resolution.status === 'reconnect'
+  const accounts = resolution.status === 'none'
+    ? ''
+    : resolution.options.map((o) => o.accountEmail).join(', ')
+  const larkLinked = Boolean(byProvider.get('lark')?.connected)
+
+  const onConnect = async () => {
+    setFailed(null)
+    try {
+      // Asks Google for mail alone — six scopes, not the forty the general
+      // Connected apps flow requests, because that is all this page needs.
+      await connect('google_workspace', { forTools: ['mailAutomations'] })
+      onDone?.()
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : 'The connect window could not be opened.')
+    }
+  }
+
+  return (
+    <Panel
+      title={revoked
+        ? 'Google signed Divo out of your account'
+        : insufficient
+          ? 'Your Google account cannot be used for mail yet'
+          : 'Connect the inbox you want watched'}
+      description={revoked
+        ? `${accounts} is still listed, but Google has ended the authorisation — a password change, a revoked app, or simply long enough since you last signed in. Your existing rules are untouched and resume the moment you sign in again.`
+        : insufficient
+          ? `${accounts} is connected, but shared read-only or missing Gmail access. Divo has to read, watch and send with it to run a rule.`
+          : 'Two steps, and nothing is watched until the second one. Connecting on its own starts nothing.'}
+    >
+      <div className="ws-rows">
+        <div className="ws-row">
+          <span className="ws-ic ws-ic-brand"><GmailMark size={17} /></span>
+          <div className="ws-row-main">
+            <b>{revoked
+              ? 'Sign in to the Gmail account you want watched'
+              : insufficient
+                ? 'Reconnect it and grant the full Gmail access'
+                : 'Connect the Gmail account you want watched'}</b>
+            <p>Google will ask for your mail only — not Drive, Calendar or anything else.</p>
+          </div>
+          <div className="ws-row-act">
+            <button
+              type="button"
+              className="btn primary"
+              disabled={loading || connecting === 'google_workspace'}
+              onClick={() => { void onConnect() }}
+            >
+              <GmailMark size={14} />
+              {connecting === 'google_workspace'
+                ? 'Waiting for Google…'
+                : insufficient || revoked ? 'Reconnect Google' : 'Connect Gmail'}
+            </button>
+          </div>
+        </div>
+
+        <div className="ws-row">
+          <span className="ws-ic"><Plus size={14} /></span>
+          <div className="ws-row-main">
+            <b>Build the rule you want</b>
+            <p>Pick what to catch and what Divo should do with it. Nothing runs until you turn it on.</p>
+          </div>
+          <div className="ws-row-act">
+            <span className="ws-sub">After the first step</span>
+          </div>
+        </div>
+
+        {/* Stated here rather than discovered at the destination step. A rule
+            that delivers to Lark cannot reach anybody without this, and finding
+            that out after building the whole rule is the worst moment to. */}
+        {!larkLinked ? (
+          <div className="ws-row">
+            <span className="ws-ic ws-ic-brand"><LarkMark size={15} /></span>
+            <div className="ws-row-main">
+              <b>Optional — link Lark to have mail sent to you there</b>
+              <p>
+                Only needed if you want Divo to message you rather than forward. Signing in with a
+                password does not link it.
+              </p>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {failed ? (
+        <div className="ws-panel-foot"><TriangleAlert size={13} /> {failed}</div>
+      ) : (
+        <div className="ws-panel-foot">
+          {/* Google withholds the app name until brand verification passes and
+              falls back to the domain. Somebody who is not warned reads that as
+              having been sent to the wrong place, and stops. */}
+          Google will name our domain rather than “Divo” on its consent screen — brand verification is
+          still in progress.
+        </div>
+      )}
+    </Panel>
   )
 }
 
@@ -493,6 +720,7 @@ export function MailRuleDetail({ toast }: ScreenProps) {
   const { rules, mailboxes, loading, error, refresh } = useMailAutomations(true)
   const rule = rules.find((r) => r.ruleId === ruleId) ?? null
   const status = useMailRuleStatus()
+  const [confirming, setConfirming] = useState(false)
 
   const onChange = async (change: 'pause' | 'resume' | 'archive') => {
     if (!rule) return
@@ -540,11 +768,22 @@ export function MailRuleDetail({ toast }: ScreenProps) {
       meta={`Created ${ago(rule.createdAt)}`}
       actions={
         <>
-          {/* Editing is still the tool's alone: `replaceRule` can collide with
-              another rule on the same mailbox, and answering that well needs a
-              screen this page does not have yet. */}
-          <button type="button" className="btn" disabled title={NO_EDIT}>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => navigate(`/me/mail/${rule.ruleId}/edit`)}
+          >
             <Pencil size={14} /> Edit
+          </button>
+          {/* Duplicating opens the same form seeded from this rule. It is the
+              answer to "the same thing but for a different sender", which was
+              previously a retype of every condition. */}
+          <button
+            type="button"
+            className="btn"
+            onClick={() => navigate(`/me/mail/new?from=${rule.ruleId}`)}
+          >
+            <Copy size={14} /> Duplicate
           </button>
           {archived ? null : (
             <button
@@ -563,12 +802,12 @@ export function MailRuleDetail({ toast }: ScreenProps) {
             /* Archive, not delete. The rule keeps its place — re-creating the
                identical rule revives this row rather than making a second one
                — so promising a disappearance would be a lie you find out about
-               under All. */
+               under Archived. */
             <button
               type="button"
               className="btn"
               disabled={status.pending !== null}
-              onClick={() => { void onChange('archive') }}
+              onClick={() => setConfirming(true)}
             >
               <Archive size={14} /> {status.pending === 'archive' ? 'Archiving…' : 'Archive'}
             </button>
@@ -578,6 +817,20 @@ export function MailRuleDetail({ toast }: ScreenProps) {
       rail={<RuleRail rule={rule} mailbox={mailbox} />}
     >
       <DataNote source="mailRules" />
+
+      {confirming ? (
+        <Confirm
+          title={`Archive “${rule.name}”?`}
+          body={
+            'It stops immediately and will not fire again. It is not deleted — it keeps its place '
+            + 'under Archived, and creating this same rule later brings this one back rather than '
+            + 'making a second one beside it.'
+          }
+          confirm="Archive it"
+          onConfirm={() => onChange('archive')}
+          onClose={() => setConfirming(false)}
+        />
+      ) : null}
 
       {status.error ? (
         <div className="ws-ceiling">
@@ -596,12 +849,22 @@ export function MailRuleDetail({ toast }: ScreenProps) {
         </div>
       ) : null}
 
+      {paused ? (
+        <div className="ws-ceiling">
+          <Pause size={14} />
+          <div>
+            <b>This rule is paused.</b> Mail arriving while it is paused is not held for later —
+            resuming it acts on what comes next, not on what it missed.
+          </div>
+        </div>
+      ) : null}
+
       {rule.invalidReason ? (
         <div className="ws-ceiling">
           <TriangleAlert size={14} />
           <div>
             <b>This rule can no longer run.</b> {rule.invalidReason} It will never fire again in this
-            state — ask Divo to delete it and create it afresh.
+            state — edit it, or archive it and build it afresh.
           </div>
         </div>
       ) : null}
@@ -802,6 +1065,10 @@ function DeliveryRow({ delivery }: { delivery: MailDelivery }) {
 
 function RuleRail({ rule, mailbox }: { rule: MailRule; mailbox: MailboxHealth | null }) {
   const destination = readDestination(rule.destination, rule.action)
+  // Narrowed once. `destination.label` still says "one of three people Divo
+  // picks", which is the right one-liner for the Status row above; this is the
+  // table itself, for the section that shows the whole thing.
+  const routed = destination.kind === 'routed' ? destination : null
   const action = readAction(rule.action)
   const ceiling = action.kind === 'forward' || action.kind === 'deliver'
     ? action.rateLimitPerHour
@@ -815,7 +1082,7 @@ function RuleRail({ rule, mailbox }: { rule: MailRule; mailbox: MailboxHealth | 
           <RailChip tone="plain">{rule.lastDeliveredAt ? ago(rule.lastDeliveredAt) : 'Never'}</RailChip>
         </RailRow>
         {/* A rule can look perfect and still be dead because its mailbox is.
-            The rail says which, rather than leaving the banner upstairs as the
+            The rail says which, rather than leaving the strip upstairs as the
             only place that knows. */}
         <RailRow label="Mailbox">
           <RailChip tone={mailbox?.rulesCanFire === false ? undefined : 'plain'}>
@@ -827,7 +1094,11 @@ function RuleRail({ rule, mailbox }: { rule: MailRule; mailbox: MailboxHealth | 
       </RailSection>
 
       <RailSection title="Where">
-        <RailRow label="Watches"><RailChip tone="plain">{rule.mailboxEmail}</RailChip></RailRow>
+        <RailRow label="Watches">
+          <RailChip tone="plain">
+            <span className="ws-chip-brand"><GmailMark size={12} />{rule.mailboxEmail}</span>
+          </RailChip>
+        </RailRow>
         <RailRow label="Sends to"><RailChip tone="plain">{destination.label}</RailChip></RailRow>
         <RailRow label="Limit">
           <RailChip tone="plain">
@@ -838,6 +1109,39 @@ function RuleRail({ rule, mailbox }: { rule: MailRule; mailbox: MailboxHealth | 
         </RailRow>
       </RailSection>
 
+      {/* The routing table, where a plain rule shows its question. A member
+          looking at a rule that sorts their mail has one question — who gets
+          what — and this is the only screen that can answer it. */}
+      {routed ? (
+        <RailSection title="Divo sorts it" defaultOpen>
+          {routed.routes.map((route) => (
+            <RailRow key={route.key} label={route.when || '(not described)'}>
+              <RailChip tone="plain">{route.destination.label}</RailChip>
+            </RailRow>
+          ))}
+          <RailRow label="Anything else">
+            <RailChip tone="plain">
+              {routed.otherwise
+                ? routed.otherwise.label
+                : 'Held back and shown to you'}
+            </RailChip>
+          </RailRow>
+        </RailSection>
+      ) : null}
+
+      {/* Only when the rule has one. An empty "Divo reads it" section on every
+          other rule would advertise a feature by way of its absence. */}
+      {rule.judge ? (
+        <RailSection title="Divo reads it" defaultOpen>
+          <p className="dt-empty">“{rule.judge.question}”</p>
+          <RailRow label="If unanswerable">
+            <RailChip tone="plain">
+              {rule.judge.onFailure === 'open' ? 'Acts anyway' : 'Holds it back'}
+            </RailChip>
+          </RailRow>
+        </RailSection>
+      ) : null}
+
       <RailSection title="Last 30 days">
         <RailRow label="Delivered"><RailChip tone="plain">{rule.deliveredCount}</RailChip></RailRow>
         <RailRow label="In flight"><RailChip tone="plain">{rule.failingCount}</RailChip></RailRow>
@@ -845,6 +1149,13 @@ function RuleRail({ rule, mailbox }: { rule: MailRule; mailbox: MailboxHealth | 
         {/* Matched, then refused. This row exists so a refusal stops being
             invisible — the mail was caught and then deliberately not sent. */}
         <RailRow label="Refused"><RailChip tone="plain">{rule.blockedCount}</RailChip></RailRow>
+        {/* Read and deliberately passed over. Shown only on a rule that has a
+            step, and worded apart from "Refused": on a working rule this is
+            usually the largest number here, and reading it as failures would
+            make the step look like the thing breaking the rule. */}
+        {rule.judge || routed ? (
+          <RailRow label="Held back"><RailChip tone="plain">{rule.heldCount}</RailChip></RailRow>
+        ) : null}
       </RailSection>
 
       <RailSection title="Last failure" defaultOpen={Boolean(rule.lastError)}>
@@ -866,6 +1177,10 @@ const DELIVERY_LABEL: Record<string, string> = {
   sending: 'Sending',
   abandoned: 'Gave up',
   blocked: 'Not allowed',
+  /* Read by the rule's question and deliberately passed over. Not toned as a
+     failure — this is the rule working, and colouring it red teaches members to
+     distrust the step that is saving them the most work. */
+  held: 'Held back',
 }
 
 const DELIVERY_TONE: Record<string, string> = {

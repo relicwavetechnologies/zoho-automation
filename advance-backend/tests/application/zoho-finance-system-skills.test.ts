@@ -13,6 +13,8 @@ describe('Zoho Finance system skill provisioning', () => {
         'finance-zoho-router',
         'zoho-crm-read-analysis',
         'zoho-books-read-analysis',
+        'zoho-books-invoice',
+        'zoho-books-money',
         'zoho-books-bill',
         'zoho-bill-notify-accounts',
       ],
@@ -47,6 +49,7 @@ describe('Zoho Finance system skill provisioning', () => {
   it('creates department-scoped skills directly under Finance and grants the department', async () => {
     const createdSkills: Record<string, unknown>[] = [];
     const grants: Record<string, unknown>[] = [];
+    const aliasWrites: Array<{ skillId: string; alias: string }> = [];
     const versions: Record<string, unknown>[] = [];
     const db = {
       department: {
@@ -68,6 +71,13 @@ describe('Zoho Finance system skill provisioning', () => {
         },
       },
       skillRegistryRevision: { upsert: async () => ({}) },
+      skillAlias: {
+        deleteMany: async () => ({ count: 0 }),
+        createMany: async ({ data }: { data: Array<{ skillId: string; alias: string }> }) => {
+          aliasWrites.push(...data);
+          return { count: data.length };
+        },
+      },
       skillAccessGrant: {
         upsert: async ({ create }: { create: Record<string, unknown> }) => {
           grants.push(create);
@@ -78,12 +88,21 @@ describe('Zoho Finance system skill provisioning', () => {
 
     const result = await provisionZohoFinanceSystemSkills(db, 'company-1');
 
+    // Router search never scores markdown, so a family with no aliases is a
+    // family that cannot be found by the words members actually type.
+    assert.ok(aliasWrites.length > 0);
+    for (const definition of ZOHO_FINANCE_SYSTEM_SKILLS) {
+      assert.ok(definition.aliases.length > 0, `${definition.slug} has no aliases`);
+    }
+    assert.ok(aliasWrites.some(alias => alias.alias === 'create an invoice'));
+
     assert.deepEqual(result, {
       departmentId: 'finance-dept',
       created: ZOHO_FINANCE_SYSTEM_SKILLS.length,
       updated: 0,
       existing: 0,
       skipped: 0,
+      skippedSlugs: [],
     });
     assert.deepEqual(
       createdSkills.map(skill => ({
@@ -140,6 +159,7 @@ describe('Zoho Finance system skill provisioning', () => {
       updated: 0,
       existing: 0,
       skipped: ZOHO_FINANCE_SYSTEM_SKILLS.length,
+      skippedSlugs: ZOHO_FINANCE_SYSTEM_SKILLS.map(skill => skill.slug),
     });
   });
 });

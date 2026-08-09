@@ -136,6 +136,7 @@ describe('GoogleConnectionAuthorizationService', () => {
 
   it('stores one user-owned full-scope connection then releases continuation', async () => {
     let upsertInput: any;
+    let mailBriefInput: any;
     const service = new GoogleConnectionAuthorizationService({
       intentRepo: {
         claimCallback: async () => ({ ok: true, value: claimedCallback }),
@@ -162,6 +163,10 @@ describe('GoogleConnectionAuthorizationService', () => {
           return { ok: true, value: savedConnection };
         },
       } as any,
+      mailBriefOnboarding: async (input: any) => {
+        mailBriefInput = input;
+        return { ok: true, value: { subscriptionId: 'sub-1', briefId: 'brief-1', mailboxCreated: true, briefCreated: true, firstBriefQueued: true } };
+      },
       callbackUrl: 'https://app-dev.example/api/google/connection/callback',
       logger: noopLogger,
     });
@@ -182,6 +187,65 @@ describe('GoogleConnectionAuthorizationService', () => {
     assert.equal(upsertInput.ownerUserId, 'user-1');
     assert.equal(upsertInput.refreshToken, 'refresh-secret');
     assert.equal(upsertInput.authorizationIntentId, 'intent-1');
+    assert.deepEqual(mailBriefInput, {
+      companyId: 'company-1',
+      userId: 'user-1',
+      connectionId: 'connection-1',
+      mailboxEmail: 'user@example.com',
+    });
+  });
+
+  it('does not start mail brief for a non-mail Google authorization with prior Gmail scopes', async () => {
+    let mailBriefCalled = false;
+    const service = new GoogleConnectionAuthorizationService({
+      intentRepo: {
+        claimCallback: async () => ({ ok: true, value: { outcome: 'claimed', intent: EXPORT_TARGET } }),
+        stageExchangeTokens: async () => ({ ok: true, value: true }),
+        markAuthorizationFailed: async () => ({ ok: true, value: undefined }),
+      } as any,
+      googleOAuth: {
+        exchangeAuthorizationCode: async () => ({
+          accessToken: 'access-secret',
+          refreshToken: 'refresh-secret',
+          tokenType: 'Bearer',
+          expiresIn: 3600,
+          scope: [
+            'openid',
+            'https://www.googleapis.com/auth/userinfo.email',
+            'https://www.googleapis.com/auth/userinfo.profile',
+            'https://www.googleapis.com/auth/drive.file',
+            'https://www.googleapis.com/auth/spreadsheets',
+            // Incremental OAuth may return scopes granted before this
+            // data-export request. They must not turn this callback into Mail.
+            'https://www.googleapis.com/auth/gmail.modify',
+            'https://www.googleapis.com/auth/gmail.send',
+            'https://www.googleapis.com/auth/gmail.labels',
+          ].join(' '),
+        }),
+        fetchUserInfo: async () => ({
+          sub: 'google-user-1',
+          email: 'user@example.com',
+          name: 'Divo User',
+        }),
+      } as any,
+      connectionRepo: {
+        upsertGoogleConnection: async () => ({ ok: true, value: savedConnection }),
+      } as any,
+      mailBriefOnboarding: async () => {
+        mailBriefCalled = true;
+        return { ok: true, value: { subscriptionId: 'sub-1', briefId: 'brief-1', mailboxCreated: true, briefCreated: true, firstBriefQueued: true } };
+      },
+      callbackUrl: 'https://app-dev.example/api/google/connection/callback',
+      logger: noopLogger,
+    });
+
+    const completion = await service.complete({
+      state: 'opaque-state',
+      code: 'google-code',
+    });
+
+    assert.equal(completion.outcome, 'connected');
+    assert.equal(mailBriefCalled, false);
   });
 
   it('atomically stores the connection, owner grant, and continuation release', async () => {

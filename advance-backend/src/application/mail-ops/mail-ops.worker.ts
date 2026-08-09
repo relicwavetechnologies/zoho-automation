@@ -20,10 +20,17 @@ import {
   MAIL_RETENTION_BATCH_SIZE,
   MAIL_RETENTION_MAX_BATCHES,
   MAIL_RETENTION_SWEEP_INTERVAL_MS,
+  judgedDestination,
   mailDeliveryIdempotencyKey,
+  mailRuleJudgeSchema,
   MailOpsConnectionUnavailableError,
+  readMessageMetadata,
+  type MailJudgeVerdict,
   type MailMessageMetadata,
   type MailRuleAction,
+  type MailRuleDestination,
+  type MailRuleJudge,
+  type MailRuleRoute,
   type PendingMailDeliveryPayload,
 } from './mail-ops.types';
 import {
@@ -31,11 +38,22 @@ import {
   parseMailRule,
   parseMailRuleDelivery,
 } from './mail-rule.matcher';
+import type {
+  ClaimedMailBrief,
+} from '../../infrastructure/persistence/mail-ops/brief.repository';
 
 const MAILBOX_BATCH_SIZE = 20;
 const DEFAULT_BUDGET_RETRY_MS = 5 * 60_000;
 const MAX_BUDGET_RETRY_MS = 60 * 60_000;
 const DELIVERY_BATCH_SIZE = 50;
+/**
+ * How many briefs one tick will send.
+ *
+ * Low on purpose. Every member of a company shares a 09:00, so the queue is
+ * spiky by construction, and a brief a few minutes late is invisible while mail
+ * held up behind a hundred of them is not.
+ */
+const BRIEF_BATCH_SIZE = 10;
 
 /**
  * How many pieces of work of one kind run at once.
@@ -138,6 +156,8 @@ interface TickCounters {
   deliveriesAttempted: number;
   deliveriesSent: number;
   deliveriesFailed: number;
+  /** Briefs delivered to a member's Lark DM this tick. */
+  briefsSent: number;
 }
 
 /** The rule's own hourly ceiling, where it has one. `organize` never does. */
@@ -156,7 +176,11 @@ type MailRepo = Pick<
   | 'reserveDelivery'
   | 'recordBlockedDelivery'
   | 'isRuleSendable'
+  | 'claimNextDueBrief'
+  | 'ensureBrief'
   | 'claimNextDueDelivery'
+  | 'recordJudgeVerdict'
+  | 'markDeliveryHeld'
   | 'rescheduleDelivery'
   | 'stageDeliveryDraft'
   | 'markDeliveryDelivered'
@@ -265,6 +289,42 @@ export class MailOpsWorker {
       }>;
     };
     /**
+     * Runs a rule's AI step against one matched message.
+     *
+     * Optional so the worker still constructs in tests and in any composition
+     * without a model — but a rule that *has* a step and finds this absent
+     * fails its delivery loudly rather than proceeding. Silently forwarding a
+     * message the rule said must be read first is indistinguishable from a pass
+     * and is the one outcome the step exists to prevent.
+     */
+    judgeMessage?(input: {
+      judge?: MailRuleJudge;
+      routes?: readonly MailRuleRoute[];
+      message: MailMessageMetadata;
+    }): Promise<MailJudgeVerdict>;
+    /**
+     * Builds and delivers one member's brief.
+     *
+     * Optional, so a composition without a model or an outbound channel still
+     * runs every other lane. Absent, the brief lane does not claim at all rather
+     * than claiming and failing — a claimed row it cannot serve would be one no
+     * other replica could take either.
+     */
+    runBrief?(claim: ClaimedMailBrief): Promise<void>;
+    /**
+     * The schedule a mailbox's first brief is given.
+     *
+     * A function rather than a value because `nextRunAt` has to be computed
+     * against the clock at the moment of provisioning, and a constant captured
+     * at boot would schedule every brief for whenever the process started.
+     */
+    briefDefaults?(): {
+      times: string[];
+      days: string[];
+      timeZone: string;
+      nextRunAt: Date;
+    };
+    /**
      * Tells the mailbox owner, once, when their rules have stopped running.
      * Optional so the worker still runs headless in tests and in environments
      * with no outbound channel configured.
@@ -323,6 +383,7 @@ export class MailOpsWorker {
       deliveriesAttempted: 0,
       deliveriesSent: 0,
       deliveriesFailed: 0,
+      briefsSent: 0,
     };
     const startedAt = Date.now();
     // Split out of the total, because "the tick took ninety seconds" does not
@@ -365,6 +426,28 @@ export class MailOpsWorker {
           run: claim => this.deliver(claim, tick),
         });
         deliveryMs += deliveries.durationMs;
+        /*
+         * Briefs, last and on one lane.
+         *
+         * Last because a brief reports on what the two drains above just did,
+         * and running it first would summarise the state of ten minutes ago. One
+         * lane because a brief is not urgent — a few minutes late is invisible,
+         * and giving it more lanes would let a company's morning briefs crowd
+         * out the mail deliveries they are describing.
+         *
+         * Deliberately outside the saturation check: a backlog of briefs is not
+         * a reason to spin the tick again, and treating it as one would let a
+         * hundred members' 09:00 briefs starve everything else.
+         */
+        if (this.deps.runBrief) {
+          await this.drain({
+            budget: BRIEF_BATCH_SIZE,
+            lanes: 1,
+            claim: () => this.deps.repo.claimNextDueBrief(),
+            onClaimed: () => { tick.briefsSent += 1; },
+            run: claim => this.deps.runBrief!(claim),
+          });
+        }
         // Either drain stopping on its budget rather than on an empty queue
         // means there is known work still waiting. Going round again is the
         // difference between draining a backlog and metering it out fifty at a
@@ -583,6 +666,41 @@ export class MailOpsWorker {
     tick?: TickCounters,
   ): Promise<void> {
     const startedAt = Date.now();
+    /*
+     * Every watched mailbox gets a brief, and this is where it is given one.
+     *
+     * Not at "connect Google", because a subscription does not exist then — it
+     * is created by the member's first rule. Not in the two write paths either,
+     * because they are two and would drift. Here it is one call site, it heals
+     * every mailbox that predates this feature on its next sync, and it costs an
+     * indexed lookup that returns early the moment a brief exists.
+     *
+     * Ahead of the sync rather than after it, so a mailbox whose Gmail read
+     * fails still ends up with a brief — which is the run that would tell its
+     * owner something is wrong.
+     */
+    if (this.deps.briefDefaults) {
+      const provisioned = await this.deps.repo.ensureBrief({
+        companyId: claim.companyId,
+        userId: claim.userId,
+        subscriptionId: claim.subscriptionId,
+        ...this.deps.briefDefaults(),
+      });
+      if (!provisioned.ok) {
+        // Logged, never thrown. A brief is a nicety and the mail behind it is
+        // not; failing the sync here would stop somebody's forwarding because
+        // their summary could not be set up.
+        this.log.warn('mail_ops.brief_not_provisioned', {
+          subscriptionId: claim.subscriptionId,
+          error: provisioned.error.message,
+        });
+      } else if (provisioned.value.created) {
+        this.log.info('mail_ops.brief_provisioned', {
+          subscriptionId: claim.subscriptionId,
+          briefId: provisioned.value.briefId,
+        });
+      }
+    }
     try {
       const accessToken = await this.deps.resolveAccessToken({
         companyId: claim.companyId,
@@ -771,6 +889,11 @@ export class MailOpsWorker {
             idempotencyKey,
             action: rule.action,
             destination: rule.destination,
+            // Frozen with the rest of the rule. A message is judged against the
+            // question that was in force when it arrived, so editing a rule's
+            // question does not retroactively change the verdict on mail
+            // already queued behind it.
+            ...(rule.judge ? { judge: rule.judge } : {}),
             message,
           };
           const reserved = await this.deps.repo.reserveDelivery(
@@ -903,10 +1026,18 @@ export class MailOpsWorker {
     deliveryId: string;
     attempts: number;
     payload: PendingMailDeliveryPayload;
+    /**
+     * The address this attempt is for, resolved by the caller.
+     *
+     * Handed in rather than read off the payload, because on a routed rule the
+     * payload's destination is a table and the address is whichever branch the
+     * verdict named.
+     */
+    destination: MailRuleDestination;
     stagedDraftId?: string;
   }): Promise<string> {
-    const { payload } = input;
-    if (payload.destination.type !== 'email') {
+    const { payload, destination } = input;
+    if (destination.type !== 'email') {
       throw new Error('Mail delivery action and destination do not match.');
     }
 
@@ -919,7 +1050,7 @@ export class MailOpsWorker {
 
     const draftId = await this.deps.gmail.createForwardDraft({
       accessToken: input.accessToken,
-      destination: payload.destination.email,
+      destination: destination.email,
       mailboxEmail: payload.mailboxEmail,
       sourceMessageId: payload.sourceMessageId,
       source: payload.message,
@@ -949,6 +1080,8 @@ export class MailOpsWorker {
       attempts: number;
       payload: Record<string, unknown>;
       providerDraftId?: string;
+      /** Set when an earlier attempt already ran this rule's AI step. */
+      judgeVerdict?: Record<string, unknown>;
     },
     tick?: TickCounters,
   ): Promise<void> {
@@ -1041,6 +1174,145 @@ export class MailOpsWorker {
         });
         return;
       }
+      /*
+       * The rule's own question about this message.
+       *
+       * Placed after permission and before anything that spends money or
+       * touches Google. Order matters in both directions: asking a model about
+       * a message the member is no longer allowed to act on is a bill for
+       * nothing, and consuming the connection budget on a message about to be
+       * held would let a noisy mailbox exhaust the budget on mail that never
+       * leaves.
+       *
+       * Held is terminal and takes no attempt off the ladder — the rule worked,
+       * and the answer will not be different in ten minutes.
+       */
+      // Asked once per message, never once per attempt. A delivery is re-claimed
+      // on a failed send, on a connection-budget deferral, and after a worker
+      // dies mid-attempt; re-running the model each time would bill the member
+      // repeatedly for one question and could answer it differently than the
+      // verdict already sitting on the row and already on their screen.
+      /*
+       * Two shapes of AI step reach here and only one of them is a `judge`
+       * column: a routing table *is* the step on a routed rule, so the trigger
+       * is either one.
+       */
+      const routes = payload.destination.type === 'routed'
+        ? payload.destination.routes
+        : undefined;
+      let verdict: MailJudgeVerdict | undefined = input.judgeVerdict
+        ? readJudgeVerdict(input.judgeVerdict)
+        : undefined;
+      /*
+       * Where this message actually goes.
+       *
+       * The rule's own destination for everything that is not routed, and on a
+       * routed rule the branch the verdict named. Every send below reads this
+       * rather than `payload.destination`, which on a routed rule is a table
+       * and not a place.
+       */
+      let deliverTo: MailRuleDestination = payload.destination;
+      if ((payload.judge || routes) && !verdict) {
+        if (!this.deps.judgeMessage) {
+          // Configured with a judge in a composition that has no model. Failing
+          // the delivery is deliberate: the alternative is to act on a message
+          // the rule said must be read first, which is exactly the outcome the
+          // step exists to prevent, and it would look identical to a pass.
+          throw new Error(
+            'This rule has an AI step, but no model is configured to run it.',
+          );
+        }
+        const answered = await this.deps.judgeMessage({
+          ...(payload.judge ? { judge: payload.judge } : {}),
+          ...(routes ? { routes } : {}),
+          message: payload.message,
+        });
+        /*
+         * Resolved once, here, and written onto the verdict before it is
+         * stored — because the routing table this was resolved against is
+         * frozen in a payload that gets swept off terminal rows at thirty days,
+         * and the rule's live table may have been edited since. Recomputing
+         * later would answer a different question than the one that decided
+         * where this message actually went.
+         */
+        const chosen = judgedDestination(payload.destination, answered);
+        verdict = chosen && chosen.type !== 'none' && chosen.type !== 'routed'
+          ? { ...answered, destination: chosen }
+          : answered;
+        if (!chosen) {
+          const held = await this.deps.repo.markDeliveryHeld({
+            deliveryId: input.deliveryId,
+            attempts: input.attempts,
+            verdict: verdict as unknown as Record<string, unknown>,
+            reason: verdict.reason,
+          });
+          if (!held.ok) throw held.error;
+          // Lost the row to another lane while this one was asking the model.
+          // Saying so and stopping is the only safe move: that lane may already
+          // have sent the message, and writing `held` over it would tell the
+          // member nothing was sent about mail sitting in somebody's inbox.
+          this.log.info(
+            held.value ? 'mail_ops.delivery_held' : 'mail_ops.delivery_held_lost_claim',
+            {
+              deliveryId: input.deliveryId,
+              ruleId: payload.ruleId,
+              decision: verdict.decision,
+            },
+          );
+          return;
+        }
+        // Recorded on the way through too, not only on a rejection. A member
+        // reading what Divo caught is owed the reasoning behind a message that
+        // *was* forwarded just as much as behind one that was not — otherwise
+        // the only visible verdicts are the refusals, and the step reads as
+        // something that only ever gets in the way.
+        const noted = await this.deps.repo.recordJudgeVerdict({
+          deliveryId: input.deliveryId,
+          attempts: input.attempts,
+          verdict: verdict as unknown as Record<string, unknown>,
+        });
+        if (!noted.ok) throw noted.error;
+        if (!noted.value) {
+          // Same lost claim, on the passing side. Another lane holds this row
+          // and is sending it; carrying on would send it a second time.
+          this.log.info('mail_ops.delivery_judge_lost_claim', {
+            deliveryId: input.deliveryId,
+            ruleId: payload.ruleId,
+          });
+          return;
+        }
+        deliverTo = chosen;
+      } else if (verdict) {
+        /*
+         * A retry, carrying the verdict an earlier attempt already recorded.
+         *
+         * Re-resolved rather than re-asked, and resolved against the payload's
+         * frozen routing table rather than the live rule — so a member editing
+         * the table between attempts cannot redirect a message that has already
+         * been decided.
+         */
+        const chosen = judgedDestination(payload.destination, verdict);
+        if (!chosen) {
+          // Unreachable in practice: `held` is terminal and never re-claimed.
+          // Reached only if a stored verdict stops resolving to a place, which
+          // is a hold — and acting anyway would send mail on the strength of a
+          // verdict that no longer says where.
+          const held = await this.deps.repo.markDeliveryHeld({
+            deliveryId: input.deliveryId,
+            attempts: input.attempts,
+            verdict: verdict as unknown as Record<string, unknown>,
+            reason: verdict.reason,
+          });
+          if (!held.ok) throw held.error;
+          this.log.info('mail_ops.delivery_held', {
+            deliveryId: input.deliveryId,
+            ruleId: payload.ruleId,
+            decision: verdict.decision,
+          });
+          return;
+        }
+        deliverTo = chosen;
+      }
       // Charged per attempt, before the send, exactly as the interactive path
       // charges it. A rule that has exhausted its connection's budget waits for
       // the window rather than failing permanently — the mail is still there.
@@ -1074,7 +1346,7 @@ export class MailOpsWorker {
       let providerMessageId: string;
       if (
         payload.action.type === 'forward'
-        && payload.destination.type === 'email'
+        && deliverTo.type === 'email'
       ) {
         const accessToken = await this.deps.resolveAccessToken({
           companyId: payload.companyId,
@@ -1091,15 +1363,16 @@ export class MailOpsWorker {
           deliveryId: input.deliveryId,
           attempts: input.attempts,
           payload,
+          destination: deliverTo,
           ...(input.providerDraftId
             ? { stagedDraftId: input.providerDraftId }
             : {}),
         });
       } else if (
         payload.action.type === 'deliver'
-        && payload.destination.type === 'lark_chat'
+        && deliverTo.type === 'lark_chat'
       ) {
-        const chat = payload.destination.chatId;
+        const chat = deliverTo.chatId;
         if (this.deps.authorizeLarkChat) {
           const verdict = await this.deps.authorizeLarkChat({
             companyId: payload.companyId,
@@ -1130,7 +1403,7 @@ export class MailOpsWorker {
         });
       } else if (
         payload.action.type === 'deliver'
-        && payload.destination.type === 'lark_dm'
+        && deliverTo.type === 'lark_dm'
       ) {
         /*
          * No chat authorisation, and that is not a check being skipped.
@@ -1145,7 +1418,7 @@ export class MailOpsWorker {
          */
         nothingWasSent = false;
         providerMessageId = await this.deps.deliverLarkDm({
-          openId: payload.destination.openId,
+          openId: deliverTo.openId,
           idempotencyKey: payload.idempotencyKey,
           text: formatLarkDelivery(payload),
         });
@@ -1191,7 +1464,7 @@ export class MailOpsWorker {
       this.log.info('mail_ops.delivery_delivered', {
         deliveryId: input.deliveryId,
         action: payload.action.type,
-        destination: payload.destination.type,
+        destination: deliverTo.type,
         providerMessageId,
         durationMs: Date.now() - startedAt,
       });
@@ -1272,26 +1545,6 @@ function budgetRetryDelayMs(
   return Math.min(Math.max(...waits) * 1_000, MAX_BUDGET_RETRY_MS);
 }
 
-function readMessageMetadata(
-  value: Record<string, unknown>,
-): MailMessageMetadata | null {
-  if (
-    typeof value['from'] !== 'string'
-    || typeof value['to'] !== 'string'
-    || typeof value['subject'] !== 'string'
-    || typeof value['snippet'] !== 'string'
-    || typeof value['hasAttachment'] !== 'boolean'
-  ) return null;
-  // `bodyText` is the one field that legitimately goes missing: retention
-  // strips it at 30 days and leaves the event standing. Requiring it made a
-  // stripped event unreadable, which quietly dropped it out of matching
-  // altogether — so a rule tested against older mail matched nothing, and the
-  // member was told the rule was wrong when the body was simply gone.
-  return {
-    ...value,
-    bodyText: typeof value['bodyText'] === 'string' ? value['bodyText'] : '',
-  } as MailMessageMetadata;
-}
 
 /**
  * The identifying half of a stored delivery payload.
@@ -1329,6 +1582,35 @@ const deliveryPayloadSchema = z.object({
  * removed from the payload in a later version cannot ride around inside a row
  * written before the removal.
  */
+/**
+ * A verdict an earlier attempt wrote, read back off the row.
+ *
+ * Read leniently, and that is the opposite of how the payload beside it is
+ * treated — on purpose. A payload that will not parse means the delivery cannot
+ * be performed at all, so throwing is the honest outcome; a verdict is a record
+ * of a decision already made, and refusing to read it would re-ask the model,
+ * bill the member twice, and possibly answer differently than what is already on
+ * their screen. What the fields must survive is `decision` and `route`, because
+ * those are what `judgedDestination` resolves — anything else is presentation.
+ */
+function readJudgeVerdict(value: Record<string, unknown>): MailJudgeVerdict {
+  const decision = value['decision'];
+  return {
+    decision: decision === 'passed' || decision === 'rejected'
+      || decision === 'unavailable' || decision === 'routed'
+      ? decision
+      : 'unavailable',
+    reason: typeof value['reason'] === 'string' ? value['reason'] : '',
+    ...(typeof value['confidence'] === 'number'
+      ? { confidence: value['confidence'] }
+      : {}),
+    ...(value['appliedFailure'] === 'open' || value['appliedFailure'] === 'closed'
+      ? { appliedFailure: value['appliedFailure'] }
+      : {}),
+    ...(typeof value['route'] === 'string' ? { route: value['route'] } : {}),
+  };
+}
+
 function readDeliveryPayload(
   value: Record<string, unknown>,
 ): PendingMailDeliveryPayload {
@@ -1370,6 +1652,13 @@ function readDeliveryPayload(
     message: parsedMessage,
     action: parsedDelivery.action,
     destination: parsedDelivery.destination,
+    // Validated, never read leniently. A payload whose judge no longer parses
+    // throws here and the delivery fails loudly, rather than quietly becoming a
+    // delivery with no gate on it — which is the one failure mode a gate must
+    // not have. Absent is fine; malformed is not.
+    ...(value['judge'] === undefined || value['judge'] === null
+      ? {}
+      : { judge: mailRuleJudgeSchema.parse(value['judge']) }),
   };
 }
 

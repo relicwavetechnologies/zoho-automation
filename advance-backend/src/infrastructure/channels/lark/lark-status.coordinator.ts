@@ -1,4 +1,5 @@
 import type { Logger } from '../../../shared/logger';
+import type { ChannelLedgerRow } from '../../../domain/channel/outbound';
 import { buildStatusCard } from './lark-card.builder';
 import type { StatusCardInput } from './lark-card.builder';
 
@@ -163,10 +164,20 @@ export class LarkStatusCoordinator {
       t.declared ? `${t.declared.done}/${t.declared.total}:${t.declared.current ?? ''}` : '',
       t.liveLabel,
       t.narrationActive,
-      t.ledger?.map(r => `${r.status}:${r.label}:${r.count}:${r.outcome}`).join('|'),
+      t.ledger?.map(r => this.ledgerPreview(r)).join('|'),
       t.plan?.map(p => `${p.status}:${p.title}:${p.subtitle ?? ''}`).join('|'),
     ].filter(Boolean);
     return parts.join('\n');
+  }
+
+  private ledgerPreview(row: ChannelLedgerRow): string {
+    return [
+      row.status,
+      row.label,
+      row.count,
+      row.outcome ?? '',
+      row.children?.map(child => this.ledgerPreview(child)).join(',') ?? '',
+    ].join(':');
   }
 
   private clearTimers(): void {

@@ -1,7 +1,9 @@
 import { Link, Navigate, Route, Routes, useParams } from "react-router-dom"
 import { Toaster } from "@/components/ui/sonner"
 import { WorkspaceShell } from "@/components/admin/workspace-shell"
+import { MailShell } from "@/components/admin/mail-shell"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
+import { isMailSurface } from "@/auth/surface"
 import type { ScopeKind } from "@/auth/types"
 import { CompanyAdminSignupPage } from "@/pages/CompanyAdminSignupPage"
 import { LoginPage } from "@/pages/LoginPage"
@@ -12,6 +14,7 @@ import { WebSearchPage } from "@/pages/WebSearchPage"
 import { MemoriesPage } from "@/pages/MemoriesPage"
 import { CompanySkills } from "@/pages/workspace/screens-company-skills"
 import { LinkLarkPage } from "@/pages/LinkLarkPage"
+import { MailPreview } from "@/pages/preview/MailPreview"
 import { routed } from "@/pages/workspace/routes"
 import { SettingsShell } from "@/components/admin/settings-shell"
 import {
@@ -24,7 +27,9 @@ import {
 import { WorkspaceHome } from "@/pages/workspace/screens-home"
 import { AutomationDetail, Automations } from "@/pages/workspace/screens-automations"
 import { MailRuleDetail, MailRules } from "@/pages/workspace/screens-mail"
-import { MailRuleNew } from "@/pages/workspace/screens-mail-new"
+import { MailRuleEdit, MailRuleNew } from "@/pages/workspace/screens-mail-new"
+import { MailSettings } from "@/pages/workspace/screens-mail-settings"
+import { MailCaught } from "@/pages/workspace/screens-mail-caught"
 import {
   TeamApprovalPolicy, TeamHome, TeamPeople, TeamRoles, TeamUsage,
 } from "@/pages/workspace/screens-team"
@@ -91,11 +96,79 @@ const Protected = ({ children }: ProtectedProps) => {
 }
 
 /**
+ * Which product this session is handed.
+ *
+ * One build, two audiences. Somebody who administers nothing gets Divo Mail —
+ * three rows and a settings page — and everybody else gets the workspace. The
+ * test is `surfaceFor`, derived from the same `scopes` array the switcher and
+ * the settings rail already run on, so there is one answer rather than three.
+ */
+const AppShell = () => {
+  const { scopes } = useAdminAuth()
+  return isMailSurface(scopes) ? <MailShell /> : <WorkspaceShell />
+}
+
+/**
  * Where "/" lands. Everyone has a You scope, so that is the honest default —
  * an admin gets the Company scope from the switcher rather than being dropped
  * into it, because the first thing most people want is their own workspace.
+ * A member's own workspace *is* mail, so they land there directly.
  */
-const DefaultProtectedRoute = () => <Navigate to="/me" replace />
+const DefaultProtectedRoute = () => {
+  const { scopes } = useAdminAuth()
+  return <Navigate to={isMailSurface(scopes) ? "/me/mail" : "/me"} replace />
+}
+
+/**
+ * Refuses a workspace feature to somebody on the mail surface.
+ *
+ * Approvals, Automations and Things Divo made are not simplified away for
+ * members — they are genuinely other features, and a member who follows a link
+ * to one should be told that rather than bounced somewhere else. A silent
+ * redirect from a URL a colleague sent them reads as the app being broken.
+ *
+ * `/me` itself is the exception and is a redirect rather than a refusal: it
+ * means "your workspace", and for a member their workspace is their mail.
+ */
+const RequireWorkspace = ({ children }: { children: JSX.Element }) => {
+  const { scopes } = useAdminAuth()
+  if (!isMailSurface(scopes)) return children
+
+  return (
+    <div className="page">
+      <NoAccess
+        what="this part of Divo"
+        who="Your Divo is set up for mail. Whoever administers Divo where you work can open the rest of it up."
+        action={<Link className="btn" to="/me/mail">Go to your rules</Link>}
+      />
+    </div>
+  )
+}
+
+/** A member's settings live inside the mail app, not behind the takeover. */
+const SettingsEntry = () => {
+  const { scopes } = useAdminAuth()
+  if (isMailSurface(scopes)) return <Navigate to="/me/settings" replace />
+  return <SettingsShell />
+}
+
+const MeHomeEntry = () => {
+  const { scopes } = useAdminAuth()
+  if (isMailSurface(scopes)) return <Navigate to="/me/mail" replace />
+  return <MeHome />
+}
+
+/**
+ * `/me/settings` is the member's one settings page, and on the workspace
+ * surface it is what it has always been: a redirect into the takeover. Kept as
+ * one path rather than two so a link to "your settings" means the same thing
+ * whoever opens it.
+ */
+const MeSettingsEntry = () => {
+  const { scopes } = useAdminAuth()
+  if (isMailSurface(scopes)) return <MailSettings />
+  return <Navigate to="/settings/profile" replace />
+}
 
 /* Params have to survive a redirect, so these two cannot be a bare <Navigate>. */
 const RedirectPerson = () => {
@@ -142,6 +215,7 @@ const MeConnections = routed(YouConnections)
 const MeAccess = routed(YouAccess)
 const MeMail = routed(MailRules)
 const MeMailNew = routed(MailRuleNew)
+const MeMailEdit = routed(MailRuleEdit)
 const MeMailDetail = routed(MailRuleDetail)
 const MeSkills = routed(YouSkills)
 const MeMemory = routed(YouMemory)
@@ -179,11 +253,31 @@ export function App() {
         <Route path="/lark/callback" element={<OAuthCallbackPage provider="lark" />} />
         <Route path="/google/callback" element={<OAuthCallbackPage provider="google" />} />
 
+        {/*
+          Divo Mail — the packaged member product, as a clickable proposal.
+
+          Fixture-driven and unauthenticated. It shares nothing with the routes
+          below except the design tokens: its own shell, its own nav, its own
+          five screens. That separation is the argument it is making — a member
+          handed mail should not be able to tell there is a workspace, an
+          approvals queue or a company scope behind it.
+
+          Development builds only, and that is not tidiness. Being outside
+          `<Protected>` meant anyone who could reach this origin got the whole
+          thing signed out, and its fixtures are not anonymous — they carry real
+          colleagues' addresses and a real outside counsel's domain, written to
+          make the pitch feel true. A prototype is worth showing to the people
+          you choose; it is not worth publishing.
+        */}
+        {import.meta.env.DEV ? (
+          <Route path="/preview/mail/*" element={<MailPreview />} />
+        ) : null}
+
         <Route
           path="/"
           element={
             <Protected>
-              <WorkspaceShell />
+              <AppShell />
             </Protected>
           }
         >
@@ -192,15 +286,28 @@ export function App() {
           {/* ── You — the work surface only ─────────────────
               Everything you *configure* moved to /settings. What stays is what
               you came here to do: ask, decide, and read what came back. */}
-          <Route path="me" element={<MeHome />} />
+          <Route path="me" element={<MeHomeEntry />} />
           <Route path="me/mail" element={<MeMail />} />
+          {/* The member's settings page. Inside the app rather than behind the
+              Settings takeover, because for a member it is one screen and the
+              takeover exists to hold four groups of them. */}
+          <Route path="me/settings" element={<MeSettingsEntry />} />
           {/* `new` before `:ruleId`, or the wizard is read as a rule id. */}
           <Route path="me/mail/new" element={<MeMailNew />} />
           <Route path="me/mail/:ruleId" element={<MeMailDetail />} />
-          <Route path="me/approvals" element={<MeApprovals />} />
-          <Route path="me/artifacts" element={<MeArtifacts />} />
-          <Route path="me/automations" element={<MeAutomations />} />
-          <Route path="me/automations/:automationId" element={<MeAutomationDetail />} />
+          {/* The same form as `new`, entered over an existing rule. Kept as its
+              own path rather than a mode flag on the detail page so an edit is
+              somewhere you can be sent, and somewhere you can leave. */}
+          <Route path="me/mail/:ruleId/edit" element={<MeMailEdit />} />
+          {/* Not under `me/mail`, because it is not about one rule and not a
+              step in making one — it is the other half of the same question. */}
+          <Route path="me/caught" element={<MailCaught />} />
+          {/* Workspace features. A member on the mail surface is told they are
+              not theirs rather than being redirected — see `RequireWorkspace`. */}
+          <Route path="me/approvals" element={<RequireWorkspace><MeApprovals /></RequireWorkspace>} />
+          <Route path="me/artifacts" element={<RequireWorkspace><MeArtifacts /></RequireWorkspace>} />
+          <Route path="me/automations" element={<RequireWorkspace><MeAutomations /></RequireWorkspace>} />
+          <Route path="me/automations/:automationId" element={<RequireWorkspace><MeAutomationDetail /></RequireWorkspace>} />
 
           {/* Where the configuration pages used to live. Kept as redirects
               rather than deleted: these paths are in people's history and in
@@ -212,7 +319,9 @@ export function App() {
           <Route path="me/skills" element={<Navigate to="/settings/skills" replace />} />
           <Route path="me/memory" element={<Navigate to="/settings/memory" replace />} />
           <Route path="me/usage" element={<Navigate to="/settings/usage" replace />} />
-          <Route path="me/settings" element={<Navigate to="/settings/profile" replace />} />
+          {/* `me/settings` used to redirect into the takeover. It is a real page
+              now — see above — and on the workspace surface `SettingsEntry`
+              sends it back out again. */}
 
           {/* ── Your team ─────────────────────────────────── */}
           <Route path="team" element={<RequireScope kind="team"><TeamOverview /></RequireScope>} />
@@ -251,7 +360,7 @@ export function App() {
           path="/settings"
           element={
             <Protected>
-              <SettingsShell />
+              <SettingsEntry />
             </Protected>
           }
         >

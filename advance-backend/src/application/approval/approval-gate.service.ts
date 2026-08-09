@@ -22,7 +22,7 @@ import {
   isDefiniteApprovalNonDelivery,
 } from './approval-delivery';
 import type { KnowledgeMutationService } from '../knowledge/knowledge-mutation.service';
-import { externalMailDestination } from '../mail-ops/external-destination';
+import { externalMailDestinations } from '../mail-ops/external-destination';
 import { inspectExternalForward } from '../mail-ops/external-forward-approval';
 
 export type { ApprovalAuthority } from './approval.types';
@@ -66,6 +66,15 @@ export interface ApprovalGateOptions {
    * The composition refuses to set it in production.
    */
   readonly suppressCardDelivery?: boolean;
+  /**
+   * Hold company admins to the same external-forward approval as everybody else.
+   *
+   * Off by default: an admin creating a standing forward out of the company is
+   * not asked, because there is nobody above them the question is meaningfully
+   * addressed to. A flag rather than a constant because that is a deliberate
+   * loosening somebody may want back.
+   */
+  readonly disableCompanyAdminExternalForwardExemption?: boolean;
   readonly knowledgeMutations?: Pick<
     KnowledgeMutationService,
     'get' | 'attachRuntimeApproval'
@@ -523,15 +532,15 @@ export class ApprovalGateService {
     input: Pick<ApprovalGateInput, 'toolId' | 'action' | 'args' | 'perm' | 'runContext'>,
   ): Promise<ApprovalRequirement | null> {
     if (input.toolId !== 'mailAutomations') return null;
-    const destination = externalMailDestination({
+    const destinations = externalMailDestinations({
       args: input.args,
       requesterEmail: input.runContext.requesterEmail,
     });
-    if (!destination) return null;
+    if (destinations.length === 0) return null;
 
     const verdict = await inspectExternalForward(
       {
-        destination,
+        destinations,
         companyId: String(input.runContext.companyId),
         requesterId: String(input.runContext.userId),
         departmentId: input.runContext.departmentId
@@ -539,6 +548,9 @@ export class ApprovalGateService {
           : input.perm.department?.id
             ? String(input.perm.department.id)
             : null,
+        requesterCompanyRole: input.runContext.companyRole
+          ? String(input.runContext.companyRole)
+          : undefined,
       },
       {
         resolveManager: (departmentId, companyId, options) =>
@@ -546,6 +558,11 @@ export class ApprovalGateService {
         disableManagerSelfBypass: this.options.disableManagerSelfBypass,
         onSelfBypass: (bypassed) => {
           this.logger.info('approval.gate.external_mail_forward_self_bypass', bypassed);
+        },
+        disableCompanyAdminExemption: this.options.disableCompanyAdminExternalForwardExemption,
+        onCompanyAdminExempt: (exempt) => {
+          // Its own event, not a second `self_bypass`. Nobody was asked here.
+          this.logger.info('approval.gate.external_mail_forward_admin_exempt', exempt);
         },
       },
     );

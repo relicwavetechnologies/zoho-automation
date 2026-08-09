@@ -17,7 +17,6 @@ import { ZohoConnectionRepository } from '../src/infrastructure/zoho/zoho-connec
 import { ZohoBooksPaginatedClient } from '../src/infrastructure/zoho/zoho-books-paginated.client.js';
 import { ZohoFinanceOps } from '../src/application/zoho/zoho-finance-ops.js';
 import { createZohoBooksTool } from '../src/application/tools/families/zoho-books.tool.js';
-import { ZohoBooksClient } from '../src/infrastructure/zoho/zoho-books.client.js';
 import { loadAndValidateEnv } from '../src/config/env.js';
 import type { Result } from '../src/shared/result.js';
 import type { CachePort } from '../src/shared/cache.js';
@@ -142,29 +141,7 @@ async function main() {
   const booksClient  = new ZohoBooksPaginatedClient(tokenService, env.ZOHO_API_BASE_URL);
   const financeOps   = new ZohoFinanceOps(booksClient, log);
 
-  const resolveOrgId = async (cId: string, token: string): Promise<string | null> => {
-    try {
-      const res = await fetch(`${env.ZOHO_API_BASE_URL}/books/v3/organizations`, {
-        headers: { Authorization: `Zoho-oauthtoken ${token}` },
-      });
-      const body = await res.json() as any;
-      return body.organizations?.[0]?.organization_id ?? null;
-    } catch { return null; }
-  };
-
-  const getClient = async (cId: string) => {
-    try {
-      const token = await tokenService.getValidToken(cId);
-      const orgId = await resolveOrgId(cId, token);
-      if (!orgId) return null;
-      return new ZohoBooksClient(token, orgId, env.ZOHO_API_BASE_URL);
-    } catch { return null; }
-  };
-
-  const tool = createZohoBooksTool({
-    getClient: async (cId) => getClient(cId),
-    booksClient, financeOps,
-  });
+  const tool = createZohoBooksTool({ booksClient, financeOps });
 
   const deptId = anishMembership?.departmentId ?? '';
 

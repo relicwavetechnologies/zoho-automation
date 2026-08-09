@@ -567,7 +567,13 @@ test("subagent children ride the details the extension already streams", () => {
 			details: {
 				parentToolCallId: "call-9",
 				children: [
-					{ role: "scout", task: "read the pipeline export", state: "running", finalOutput: "must-not-leak" },
+					{
+						role: "scout",
+						task: "read the pipeline export",
+						state: "running",
+						startedAt: new Date(Date.now() - 90_000).toISOString(),
+						finalOutput: "must-not-leak",
+					},
 					{ role: "reviewer", task: "check last week's numbers", state: "completed" },
 				],
 			},
@@ -579,7 +585,7 @@ test("subagent children ride the details the extension already streams", () => {
 		callId: "call-9",
 		toolName: "divo_subagents",
 		children: [
-			{ label: "scout", status: "running", detail: "read the pipeline export" },
+			{ label: "scout", status: "running", detail: "read the pipeline export · working 1m 30s" },
 			{ label: "reviewer", status: "done", detail: "check last week's numbers" },
 		],
 	});
@@ -739,6 +745,25 @@ test("admission isolates profiles, rejects overload, and accepts a retry", async
 	assert.equal((await third).profile, "third");
 	await anish;
 	assert.equal(admission.activeCount, 0);
+});
+
+test("admission default is not capped at two active profiles", async () => {
+	const gates = new Map();
+	const admission = createAdmissionController({
+		execute: async (profile) => {
+			const gate = deferred();
+			gates.set(profile, gate);
+			await gate.promise;
+			return { profile, text: "done" };
+		},
+	});
+	const first = admission.run({ profile: "one", message: "work" });
+	const second = admission.run({ profile: "two", message: "work" });
+	const third = admission.run({ profile: "three", message: "work" });
+	assert.equal(admission.maxActiveRuns, 8);
+	assert.equal(admission.activeCount, 3);
+	for (const gate of gates.values()) gate.resolve();
+	await Promise.all([first, second, third]);
 });
 
 test("manual admission forwards the request disconnect signal to Pi execution", async () => {

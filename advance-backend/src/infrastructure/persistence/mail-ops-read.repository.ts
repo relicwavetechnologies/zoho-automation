@@ -48,6 +48,8 @@ export interface MailRuleActivity {
   match: Record<string, unknown>;
   action: Record<string, unknown>;
   destination: Record<string, unknown>;
+  /** The rule's AI step, or `null`. The edit form resubmits it. */
+  judge: Record<string, unknown> | null;
   createdAt: Date;
   /** Last delivery that actually reached its destination, ever. */
   lastDeliveredAt: Date | null;
@@ -57,6 +59,15 @@ export interface MailRuleActivity {
   abandonedCount: number;
   /** Matched, then refused. Recorded rather than dropped, so it can be shown. */
   blockedCount: number;
+  /**
+   * Matched, read by the AI step, and deliberately not acted on.
+   *
+   * Counted apart from `blockedCount` because it is the rule working, not the
+   * rule being stopped. On a rule with a step this is usually the largest
+   * number of the four, and reading it as refusals would make a healthy rule
+   * look like it is failing constantly.
+   */
+  heldCount: number;
   /** Most recent terminal failure, so the UI can say why without a second call. */
   lastError: string | null;
   lastErrorAt: Date | null;
@@ -85,6 +96,68 @@ export interface MailDeliveryRecord {
   /** Read out of the frozen payload so the row can name the mail it acted on. */
   subject: string | null;
   from: string | null;
+  /** What the rule's AI step decided, when it has one. `null` when it has not. */
+  verdict: Record<string, unknown> | null;
+  /**
+   * Where the message actually went, on a rule that chooses per message.
+   *
+   * `null` on every rule with one destination — there the rule's own answer is
+   * already right, and a second copy of it would be one more thing to keep in
+   * step.
+   */
+  resolvedDestination: Record<string, unknown> | null;
+}
+
+/**
+ * One delivery, carrying enough of its rule to be read on its own.
+ *
+ * The per-rule history is read on a page that already names the rule. This one
+ * is not — a member scanning what Divo caught needs each row to say which rule
+ * caught it and where it was headed, or the feed is a list of subject lines
+ * with no explanation attached to any of them.
+ */
+export interface MailCaughtRecord extends MailDeliveryRecord {
+  ruleId: string;
+  ruleName: string;
+  action: Record<string, unknown>;
+  destination: Record<string, unknown>;
+}
+
+/**
+ * The address a verdict settled on, if it settled on one.
+ *
+ * Read defensively: this column holds whatever the worker wrote at the time,
+ * and rows predating routing carry no `destination` at all. A shape that cannot
+ * be read is `null` rather than an error — the row is still a real delivery and
+ * still has a status worth showing.
+ */
+function readVerdictDestination(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object') return null;
+  const destination = (value as Record<string, unknown>)['destination'];
+  if (!destination || typeof destination !== 'object') return null;
+  return destination as Record<string, unknown>;
+}
+
+/**
+ * One rule that sends mail to an address, seen from the company rather than
+ * from its owner. `ownerEmail` is here because it is what "outside the company"
+ * is measured against — the same comparison the writer makes before asking a
+ * manager to approve one.
+ */
+export interface CompanyMailForward {
+  ruleId: string;
+  name: string;
+  status: string;
+  mailboxEmail: string;
+  ownerUserId: string;
+  ownerName: string | null;
+  ownerEmail: string | null;
+  destination: Record<string, unknown>;
+  match: Record<string, unknown>;
+  createdAt: Date;
+  /** Delivered messages over this rule's whole life, not a window. */
+  deliveredCount: number;
+  lastDeliveredAt: Date | null;
 }
 
 export interface MailboxHealthRecord {
@@ -146,6 +219,7 @@ export class MailOpsReadRepository {
           matchJson: true,
           actionJson: true,
           destinationJson: true,
+          judgeJson: true,
           createdAt: true,
           subscription: { select: { mailboxEmail: true, connectionId: true } },
         },
@@ -219,6 +293,10 @@ export class MailOpsReadRepository {
           match: rule.matchJson as Record<string, unknown>,
           action: rule.actionJson as Record<string, unknown>,
           destination: rule.destinationJson as Record<string, unknown>,
+          // Needed by the edit form, which resubmits the whole rule: a rule read
+          // back without its question would be saved without one, and the member
+          // would have silently deleted the AI step by renaming the rule.
+          judge: (rule.judgeJson ?? null) as Record<string, unknown> | null,
           createdAt: rule.createdAt,
           lastDeliveredAt: deliveredAt.get(rule.id) ?? null,
           deliveredCount: byStatus?.get('delivered') ?? 0,
@@ -226,6 +304,7 @@ export class MailOpsReadRepository {
             (byStatus?.get('pending') ?? 0) + (byStatus?.get('sending') ?? 0),
           abandonedCount: byStatus?.get('abandoned') ?? 0,
           blockedCount: byStatus?.get('blocked') ?? 0,
+          heldCount: byStatus?.get('held') ?? 0,
           lastError: failure?.lastError ?? null,
           lastErrorAt: failure?.at ?? null,
           lastBlockedAt: refusal?.at ?? null,
@@ -274,6 +353,7 @@ export class MailOpsReadRepository {
           nextAttemptAt: true,
           providerMessageId: true,
           payloadJson: true,
+          judgeVerdictJson: true,
         },
       });
 
@@ -291,12 +371,115 @@ export class MailOpsReadRepository {
           providerMessageId: row.providerMessageId,
           subject: message.subject,
           from: message.from,
+          // The rule page showed no verdicts at all while the Caught feed
+          // showed every one of them, about the same deliveries.
+          verdict: (row.judgeVerdictJson ?? null) as Record<string, unknown> | null,
+          resolvedDestination: readVerdictDestination(row.judgeVerdictJson),
         };
       }));
     } catch (cause) {
       return err(
         wrapInfra('prisma', 'mailOpsRead.listDeliveriesForRule', cause),
       );
+    }
+  }
+
+  /**
+   * Everything this member's rules acted on, newest first, across every rule.
+   *
+   * The per-rule history above answers "is this rule working". This answers the
+   * question a member actually arrives with — *what has Divo been doing with my
+   * mail* — which until now cost one click per rule and could not be answered
+   * at all for a rule they had forgotten they made.
+   *
+   * Held rows are the point of it, not a side effect. A rule with an AI step
+   * spends most of its life deciding **not** to forward, and without this feed
+   * that decision is invisible: the member sees a rule that says it is working
+   * and an inbox where nothing arrived, and has no way to tell the difference
+   * between "it judged them and said no" and "it is broken".
+   *
+   * Scoped through the rule's owner in the same query rather than by a prior
+   * lookup, so there is no window in which another member's history could be
+   * read.
+   */
+  async listCaughtForUser(input: {
+    companyId: string;
+    userId: string;
+    limit: number;
+  }): Promise<Result<MailCaughtRecord[], InfraError>> {
+    try {
+      const rows = await this.db.mailDelivery.findMany({
+        where: {
+          companyId: input.companyId,
+          rule: { createdByUserId: input.userId, companyId: input.companyId },
+        },
+        orderBy: [{ firstAttemptAt: 'desc' }, { id: 'desc' }],
+        take: input.limit,
+        select: {
+          id: true,
+          status: true,
+          attempts: true,
+          ambiguous: true,
+          lastError: true,
+          firstAttemptAt: true,
+          deliveredAt: true,
+          nextAttemptAt: true,
+          providerMessageId: true,
+          payloadJson: true,
+          judgeVerdictJson: true,
+          rule: {
+            select: {
+              id: true,
+              name: true,
+              actionJson: true,
+              destinationJson: true,
+            },
+          },
+        },
+      });
+
+      return ok(rows.map(row => {
+        const message = readPayloadMessage(row.payloadJson);
+        return {
+          deliveryId: row.id,
+          status: row.status,
+          attempts: row.attempts,
+          ambiguous: row.ambiguous,
+          lastError: row.lastError,
+          firstAttemptAt: row.firstAttemptAt,
+          deliveredAt: row.deliveredAt,
+          nextAttemptAt: row.nextAttemptAt,
+          providerMessageId: row.providerMessageId,
+          subject: message.subject,
+          from: message.from,
+          ruleId: row.rule.id,
+          ruleName: row.rule.name,
+          action: (row.rule.actionJson ?? {}) as Record<string, unknown>,
+          /*
+           * The rule's destination, which on a routed rule is a table rather
+           * than a place — so the resolved one below is what the screen should
+           * prefer. Both are returned: the table is what the rule *is*, and the
+           * resolved address is what happened to this message.
+           */
+          destination: (row.rule.destinationJson ?? {}) as Record<string, unknown>,
+          // Passed through unread. The shape is the AI step's business and the
+          // screen's; a repository that reinterprets it is a second opinion
+          // about what the model said.
+          verdict: (row.judgeVerdictJson ?? null) as Record<string, unknown> | null,
+          /*
+           * Where this message actually went.
+           *
+           * Read off the verdict rather than recomputed from the rule, because
+           * the rule's table may have been edited since and the frozen payload
+           * that carried the old one is swept off terminal rows at thirty days.
+           * Null on every rule that has one destination, where the rule's own
+           * answer is already the right one.
+           */
+          resolvedDestination: readVerdictDestination(row.judgeVerdictJson),
+        };
+      }));
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'mailOpsRead.listCaughtForUser', cause));
     }
   }
 
@@ -379,6 +562,93 @@ export class MailOpsReadRepository {
       });
     } catch (cause) {
       return err(wrapInfra('prisma', 'mailOpsRead.loadRuleForDryRun', cause));
+    }
+  }
+
+  /**
+   * Every rule in the company that forwards mail to an address, with whose
+   * mailbox it reads and who set it up.
+   *
+   * The one question nobody could ask. Each member can see their own rules and
+   * the Mail page marks the ones leaving their domain — but a forward is a
+   * standing export of whatever matches it, created by asking Divo in a
+   * sentence, and until this there was no way to find out how many of them
+   * exist or where they point. Somebody leaves the company, their rules keep
+   * forwarding, and nobody is looking.
+   *
+   * Deliberately not filtered to "external" here. That comparison is
+   * `mailRuleLeavesOrganisation`, and it belongs where the other callers of it
+   * live — one definition of what leaves the company, not a second one written
+   * in SQL against a JSON column. This returns every email destination and the
+   * caller decides.
+   *
+   * `includeInactive` is false by default and means what it says: a paused rule
+   * forwards nothing today and resumes with one click, which is worth seeing
+   * when you are auditing rather than triaging.
+   */
+  async listEmailForwardsForCompany(input: {
+    companyId: string;
+    includeInactive?: boolean;
+  }): Promise<Result<CompanyMailForward[], InfraError>> {
+    try {
+      const rows = await this.db.mailAutomationRule.findMany({
+        where: {
+          companyId: input.companyId,
+          ...(input.includeInactive ? {} : { status: 'active' }),
+          /*
+           * Only rules that send somewhere. `organize` acts in place and
+           * `lark_dm` reaches one person who already had the mail.
+           *
+           * `routed` as well as `email`, and leaving it out was not a narrower
+           * report — it was a blind one. A routed rule's recipients live one
+           * level down, so a predicate matching only `type === 'email'` skipped
+           * the whole rule, and every external address inside it dropped out of
+           * the one report built to find exactly that.
+           */
+          OR: [
+            { destinationJson: { path: ['type'], equals: 'email' } },
+            { destinationJson: { path: ['type'], equals: 'routed' } },
+          ],
+        },
+        orderBy: [{ createdAt: 'desc' }],
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          matchJson: true,
+          destinationJson: true,
+          createdAt: true,
+          createdByUserId: true,
+          createdByUser: { select: { name: true, email: true } },
+          subscription: { select: { mailboxEmail: true } },
+          deliveries: {
+            where: { status: 'delivered' },
+            orderBy: { deliveredAt: 'desc' },
+            take: 1,
+            select: { deliveredAt: true },
+          },
+          _count: { select: { deliveries: { where: { status: 'delivered' } } } },
+        },
+      });
+
+      return ok(rows.map(row => ({
+        ruleId: row.id,
+        name: row.name,
+        status: row.status,
+        mailboxEmail: row.subscription.mailboxEmail,
+        ownerUserId: row.createdByUserId,
+        ownerName: row.createdByUser?.name ?? null,
+        // What "outside the company" is measured against for this rule — the
+        // person's own address, the same value the writer compares.
+        ownerEmail: row.createdByUser?.email ?? null,
+        destination: row.destinationJson as Record<string, unknown>,
+        match: row.matchJson as Record<string, unknown>,
+        createdAt: row.createdAt,
+        deliveredCount: row._count.deliveries,
+        lastDeliveredAt: row.deliveries[0]?.deliveredAt ?? null,
+      })));
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'mailOpsRead.listEmailForwardsForCompany', cause));
     }
   }
 

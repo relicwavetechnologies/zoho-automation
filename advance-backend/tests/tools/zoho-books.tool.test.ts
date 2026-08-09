@@ -5,7 +5,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeAllowedPerm, makeCtx } from './tool-test.helpers.ts';
-import { createZohoBooksTool, type ZohoBooksClientPort } from '../../src/application/tools/families/zoho-books.tool.ts';
+import { createZohoBooksTool } from '../../src/application/tools/families/zoho-books.tool.ts';
 import type { ZohoFinanceOps } from '../../src/application/zoho/zoho-finance-ops.ts';
 import { mapZohoError } from '../../src/application/zoho/zoho-error.utils.ts';
 import { formatAmount, formatDate } from '../../src/application/zoho/zoho-format.utils.ts';
@@ -14,18 +14,20 @@ import type { ZohoBooksPaginatedClient } from '../../src/infrastructure/zoho/zoh
 import { arrayToCsv } from '../../src/application/tools/shared/sandbox-runner.ts';
 import { asToolId } from '../../src/shared/ids.ts';
 
-const fakeSimpleClient: ZohoBooksClientPort = {
-  listInvoices:  async () => [{ invoice_id: 'inv-1', total: 100, currency_code: 'USD', date: '2026-05-10' }],
-  getInvoice:    async () => ({ invoice_id: 'inv-1', total: '125.50', currency_code: 'USD' }),
-  createInvoice: async () => ({ invoiceId: 'inv-new' }),
-  listContacts:  async () => [{ contact_id: 'con-1', contact_name: 'Alice' }],
-  getContact:    async () => ({ contact_id: 'con-1', contact_name: 'Alice' }),
-  listExpenses:  async () => [{ expense_id: 'exp-1', amount: 50, currency_code: 'USD' }],
-  sendInvoice:   async invoiceId => ({ invoiceId }),
-  recordPayment: async () => ({ paymentId: 'pay-1' }),
-  createExpense: async () => ({ expenseId: 'exp-new' }),
-  createBill:    async () => ({ billId: 'bill-new' }),
-  voidInvoice:   async invoiceId => ({ invoiceId }),
+/** What Zoho answers a write with, keyed by the module path being written to. */
+const writtenRecords: Record<string, Record<string, unknown>> = {
+  invoices:         { invoice: { invoice_id: 'inv-new', invoice_number: 'INV-9', status: 'draft', total: '100.00', balance: '100.00', currency_code: 'INR' } },
+  bills:            { bill: { bill_id: 'bill-new', bill_number: 'B-9', status: 'open', total: '70.00', currency_code: 'INR' } },
+  expenses:         { expense: { expense_id: 'exp-new', status: 'unbilled', total: '50.00', currency_code: 'INR' } },
+  contacts:         { contact: { contact_id: 'con-new', contact_name: 'Acme Ltd' } },
+  customerpayments: { payment: { payment_id: 'pay-1', payment_number: 'P-1', amount: '100.00', currency_code: 'INR' } },
+};
+
+/** What a single-record GET answers with, keyed by module. */
+const fetchedRecords: Record<string, Record<string, unknown>> = {
+  invoices: { invoice: { invoice_id: 'inv-1', invoice_number: 'INV-1', status: 'sent', total: '125.50', currency_code: 'USD' } },
+  bills:    { bill: { bill_id: 'bill-1', bill_number: 'B-1', status: 'open', total: '120.50', currency_code: 'INR' } },
+  contacts: { contact: { contact_id: 'con-1', contact_name: 'Alice' } },
 };
 
 const fakeFinanceOps: Partial<ZohoFinanceOps> = {
@@ -45,8 +47,19 @@ function makeBooksClient(captures: {
   listInput?: unknown;
   endpointInput?: unknown;
   allInput?: unknown;
+  mutateInput?: any;
+  mutations?: any[];
 } = {}) {
   return {
+    mutate: async (input: any) => {
+      captures.mutateInput = input;
+      (captures.mutations ??= []).push(input);
+      const moduleName = String(input.path).split('/').filter(Boolean)[0] ?? '';
+      return {
+        organizationId: 'org-1',
+        payload: writtenRecords[moduleName] ?? {},
+      };
+    },
     listRecords: async (input: unknown) => {
       captures.listInput = input;
       return {
@@ -68,8 +81,12 @@ function makeBooksClient(captures: {
         truncated: false,
       };
     },
-    getEndpoint: async (input: unknown) => {
+    getEndpoint: async (input: any) => {
       captures.endpointInput = input;
+      // A single-record path answers with that record; anything else keeps the
+      // report-style payload the older tests expect.
+      const [moduleName, recordId] = String(input.path).split('/').filter(Boolean);
+      if (recordId && fetchedRecords[moduleName!]) return fetchedRecords[moduleName!]!;
       return {
         transactions: [
           { transaction_id: 'txn-1', amount: 88, currency_code: 'USD', transaction_date: '2026-05-02' },
@@ -80,17 +97,18 @@ function makeBooksClient(captures: {
 }
 
 function makeTool(overrides: {
-  simpleClient?: ZohoBooksClientPort | null;
   booksClient?:  ZohoBooksPaginatedClient;
   financeOps?:   ZohoFinanceOps;
   exportCandidates?: Parameters<typeof createZohoBooksTool>[0]['exportCandidates'];
+  attachmentSource?: Parameters<typeof createZohoBooksTool>[0]['attachmentSource'];
 } = {}) {
   return createZohoBooksTool({
-    getClient:       async () => overrides.simpleClient ?? fakeSimpleClient,
     booksClient:     overrides.booksClient ?? makeBooksClient(),
     financeOps:      overrides.financeOps ?? (fakeFinanceOps as ZohoFinanceOps),
     ...(overrides.exportCandidates ? { exportCandidates: overrides.exportCandidates } : {}),
+    ...(overrides.attachmentSource ? { attachmentSource: overrides.attachmentSource } : {}),
     inlineThreshold: 25,
+    appBaseUrl: 'https://books.zoho.com',
   });
 }
 
@@ -289,14 +307,11 @@ describe('zohoBooks expanded execution', () => {
         };
       },
     } as unknown as ZohoBooksPaginatedClient;
-    const simpleClient = {
-      ...fakeSimpleClient,
-      getInvoice: async (invoiceId: string) => {
-        captures.fetchedId = invoiceId;
-        return { invoice_id: invoiceId, invoice_number: 'FINV/26-27/093' };
-      },
+    (booksClient as any).getEndpoint = async (input: any) => {
+      captures.fetchedId = String(input.path).split('/').filter(Boolean)[1];
+      return { invoice: { invoice_id: captures.fetchedId, invoice_number: 'FINV/26-27/093' } };
     };
-    const tool = makeTool({ booksClient, simpleClient });
+    const tool = makeTool({ booksClient });
 
     const result = await tool.execute({
       op: 'get_invoice',
@@ -585,11 +600,18 @@ describe('zohoBooks expanded execution', () => {
     assert.match((result as any).error.payload.message, /cannot be modified/);
   });
 
-  it('executes new write operations through the simple client', async () => {
-    const tool = makeTool();
+  it('executes write operations through the paginated client', async () => {
+    const captures: { mutations?: any[] } = {};
+    const tool = makeTool({ booksClient: makeBooksClient(captures) });
 
     const sent = await tool.execute({ op: 'send_invoice', invoiceId: 'inv-1', email: 'finance@example.com' }, ctx);
-    const payment = await tool.execute({ op: 'record_payment', fields: { invoice_id: 'inv-1', amount: 100 } }, ctx);
+    // `invoices`, not a bare `invoice_id`: Zoho only settles an invoice when the
+    // payment names the application. The earlier shape here was the one that
+    // stranded ₹59,000 as an unapplied credit in production.
+    const payment = await tool.execute({
+      op: 'record_payment',
+      fields: { customer_id: 'cust-1', amount: 100, invoices: [{ invoice_id: 'inv-1', amount_applied: 100 }] },
+    }, ctx);
     const expense = await tool.execute({ op: 'create_expense', fields: { amount: 50 } }, ctx);
     const bill = await tool.execute({ op: 'create_bill', fields: { amount: 70 } }, ctx);
     const voided = await tool.execute({ op: 'void_invoice', invoiceId: 'inv-1' }, ctx);
@@ -599,12 +621,18 @@ describe('zohoBooks expanded execution', () => {
     assert.equal((expense as any).value.id, 'exp-new');
     assert.equal((bill as any).value.id, 'bill-new');
     assert.equal((voided as any).value.id, 'inv-1');
+
+    // Every one of them is a write, so every one carries the acting member and
+    // the exact connection rather than falling back to a company token.
+    for (const mutation of captures.mutations ?? []) {
+      assert.equal(typeof mutation.userId, 'string');
+      assert.equal(mutation.userId.length > 0, true);
+    }
   });
 
   it('publishes every list operation through the export candidate contract when exportAll=true', async () => {
     const candidates: any[] = [];
     const tool = createZohoBooksTool({
-      getClient: async () => fakeSimpleClient,
       booksClient: makeBooksClient(),
       financeOps: fakeFinanceOps as ZohoFinanceOps,
       exportCandidates: {
@@ -741,7 +769,6 @@ describe('zohoBooks expanded execution', () => {
       }),
     } as unknown as ZohoBooksPaginatedClient;
     const tool = createZohoBooksTool({
-      getClient: async () => fakeSimpleClient,
       booksClient,
       financeOps: fakeFinanceOps as ZohoFinanceOps,
     });

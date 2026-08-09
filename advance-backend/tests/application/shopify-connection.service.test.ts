@@ -124,6 +124,58 @@ describe('ShopifyConnectionService', () => {
     assert.equal(resolved.accessToken, 'winner-token');
   });
 
+  it('renews client-credentials stores without requiring a refresh token', async () => {
+    const expired = {
+      ...baseConnection,
+      accessToken: 'access-v1',
+      refreshToken: undefined,
+      refreshTokenExpiresAt: undefined,
+      accessTokenExpiresAt: new Date(Date.now() - 1_000),
+      shopifyClientCredentials: { clientId: 'client-id', clientSecret: 'client-secret' },
+    };
+    const winner = {
+      ...expired,
+      accessToken: 'access-v2',
+      tokenVersion: 1,
+      accessTokenExpiresAt: new Date(Date.now() + 86_000_000),
+    };
+    let finds = 0;
+    let exchanges = 0;
+    let swapInput: Record<string, unknown> | null = null;
+    const service = new ShopifyConnectionService({
+      repository: {
+        findAccessibleShopifyConnection: async () => ok(++finds === 1 ? expired : winner),
+        acquireShopifyRefreshLease: async () => ok(true),
+        releaseShopifyRefreshLease: async () => ok(undefined),
+        markShopifyReauthorizationRequired: async () => ok(undefined),
+        compareAndSwapShopifyTokens: async (input: Record<string, unknown>) => {
+          swapInput = input;
+          return ok(true);
+        },
+      } as never,
+      oauth: {
+        exchangeClientCredentials: async (input: Record<string, unknown>) => {
+          exchanges += 1;
+          assert.equal(input['shop'], 'test-store.myshopify.com');
+          assert.equal(input['clientId'], 'client-id');
+          assert.equal(input['clientSecret'], 'client-secret');
+          return {
+            accessToken: 'access-v2',
+            scopes: [...baseConnection.scopes],
+            accessTokenExpiresAt: winner.accessTokenExpiresAt,
+          };
+        },
+      } as never,
+    });
+
+    const resolved = await service.resolve(resolveInput());
+
+    assert.equal(exchanges, 1);
+    assert.equal(resolved.accessToken, 'access-v2');
+    assert.equal(swapInput?.['refreshToken'], undefined);
+    assert.equal(swapInput?.['accessToken'], 'access-v2');
+  });
+
   it('uses the durable lease to prevent refresh calls across backend instances', async () => {
     const expired = { ...baseConnection, accessTokenExpiresAt: new Date(Date.now() - 1_000) };
     let current = expired;

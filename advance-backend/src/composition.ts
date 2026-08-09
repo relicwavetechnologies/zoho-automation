@@ -103,8 +103,13 @@ import {
 import { ZohoConnectionRepository } from './infrastructure/zoho/zoho-connection.repository';
 import { ZohoTokenService } from './infrastructure/zoho/zoho-token.service';
 import { ZohoCrmClient } from './infrastructure/zoho/zoho-crm.client';
-import { ZohoBooksClient } from './infrastructure/zoho/zoho-books.client';
 import { ZohoBooksPaginatedClient } from './infrastructure/zoho/zoho-books-paginated.client';
+import { ConversationAttachmentService } from './application/conversation-attachments/conversation-attachment.service';
+import { PrismaConversationAttachmentStore } from './infrastructure/persistence/conversation-attachment.repository';
+import { LarkConversationAttachmentSource } from './infrastructure/zoho/lark-conversation-attachment.source';
+import { PrismaStagedInvoiceStore } from './infrastructure/persistence/zoho-invoice-staging.repository';
+import { createInvoiceReviewer } from './application/zoho/zoho-invoice-reviewer';
+import { LarkFileClient } from './infrastructure/channels/lark/clients/lark-file.client';
 import { ZohoCrmPaginatedClient } from './infrastructure/zoho/zoho-crm-paginated.client';
 import { CloudinaryAdapter } from './infrastructure/cloudinary/cloudinary.adapter';
 import { ZohoFinanceOps } from './application/zoho/zoho-finance-ops';
@@ -180,8 +185,21 @@ import {
 import { RunOriginStore } from './application/connections/run-origin.store';
 import { createLarkChatDestinationAuthorizer } from './application/mail-ops/lark-chat-destination';
 import { createMailRuleWriter } from './application/mail-ops/mail-rule-writer';
+import {
+  mailRulePermission,
+  mailRuleRefusal,
+  type MailRuleOperation,
+} from './application/mail-ops/mail-rule-permission';
 import { createMailRuleExternalApproval } from './application/mail-ops/mail-rule-external-approval';
 import { createMailRuleCompiler } from './application/mail-ops/mail-rule-compiler';
+import { createMailRuleJudge } from './application/mail-ops/mail-rule-judge';
+import { createMailBriefComposer } from './application/mail-ops/mail-brief';
+import { createMailBriefOnboarding } from './application/mail-ops/mail-brief-onboarding';
+import { createMailBriefRunner } from './application/mail-ops/mail-brief.runner';
+import {
+  DEFAULT_MAIL_BRIEF_SCHEDULE,
+  nextMailBriefRunAt,
+} from './application/mail-ops/mail-brief.schedule';
 import {
   createBeginGoogleAuthorization,
   type DeliverGoogleConnectCard,
@@ -274,6 +292,8 @@ import { LarkMessagingClient } from './infrastructure/channels/lark/clients/lark
 import { ToolExecutor } from './application/gateway/tool-executor';
 import { GatewayDispatcher } from './application/gateway/gateway-dispatcher';
 import { GoogleWorkspaceContractBootstrapService } from './application/gateway/google-workspace-contract-bootstrap.service';
+import { AirtableContractBootstrapService } from './application/gateway/airtable-contract-bootstrap.service';
+import { CompositeWorkContractBootstrap } from './application/gateway/composite-contract-bootstrap.service';
 import { WorkResolutionService } from './application/gateway/work-resolution.service';
 import { WorkBootstrapService } from './application/gateway/work-bootstrap.service';
 import {
@@ -291,14 +311,6 @@ import type { ApiKeyProvider } from './application/governance/api-key-exhaustion
 import { createDeepSeek } from '@ai-sdk/deepseek';
 import { wrapLanguageModel, type LanguageModel } from 'ai';
 
-type ZohoBooksOrganizationPayload = {
-  organizations?: Array<{
-    organization_id?: string;
-    is_default?: boolean;
-    is_default_org?: boolean;
-  }>;
-};
-
 const GATEWAY_PROVIDER_CACHE_TTL_MS = 5 * 60 * 1000;
 
 /**
@@ -315,11 +327,25 @@ export const resolveApprovalGateOptions = (
     | 'DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS'
     | 'DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS'
     | 'DIVO_APPROVAL_CARDS_ENABLED'
+    | 'DIVO_MAIL_OPS_ADMIN_NEEDS_EXTERNAL_APPROVAL'
   >,
-): { disableManagerSelfBypass: boolean; suppressCardDelivery: boolean } => ({
+): {
+  disableManagerSelfBypass: boolean;
+  suppressCardDelivery: boolean;
+  disableCompanyAdminExternalForwardExemption: boolean;
+} => ({
   disableManagerSelfBypass:
     env.DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS
     || (env.NODE_ENV !== 'production' && env.DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS),
+  /*
+   * The exemption is on unless somebody asks for it back.
+   *
+   * Stated as "does an admin still need approval" rather than "is the exemption
+   * disabled", because the double negative is how an operator sets the opposite
+   * of what they meant.
+   */
+  disableCompanyAdminExternalForwardExemption:
+    env.DIVO_MAIL_OPS_ADMIN_NEEDS_EXTERNAL_APPROVAL === true,
   /*
    * Never in production. An approval nobody is told about is an approval
    * nobody answers, and the tool call waiting on it simply stops.
@@ -384,8 +410,20 @@ export interface Container {
     companyId: string;
     userId: string;
   }) => Promise<string | null>;
+  /**
+   * Whether a member may do this to a mail rule — asked when they ask, not only
+   * at delivery, and answered per operation rather than once for all of them.
+   */
+  canRunMailRules: (input: {
+    companyId: string;
+    userId: string;
+    companyRole: string;
+    departmentId?: string;
+    operation: MailRuleOperation;
+  }) => Promise<{ kind: 'allowed' | 'denied' | 'unavailable'; message?: string }>;
   /** One sentence into a draft rule. Creates nothing. */
   compileMailRule: ReturnType<typeof createMailRuleCompiler>;
+  mailBriefOnboarding: ReturnType<typeof createMailBriefOnboarding>;
   mailOpsWorker: MailOpsWorker;
   canvaMcpOAuthService: CanvaMcpOAuthService;
   airtableMcpOAuthService: AirtableMcpOAuthService;
@@ -471,6 +509,8 @@ export interface Container {
   busyLaneNotices: BusyLaneNotices;
   // Lark contacts (for directory sync)
   larkContactsClient: LarkContactsClient;
+  /** Files the member sent, indexed by name so a tool can attach one later. */
+  conversationAttachments: ConversationAttachmentService;
   // Pi/Desktop capability gateway
   gatewayDispatcher: GatewayDispatcher;
   /** Container runtime shared by the Lark webhook and the scheduled-workflow poller. */
@@ -855,10 +895,12 @@ export async function buildContainer(
       ? 'GOOGLE_OAUTH_REDIRECT_URI_origin'
       : 'BACKEND_PUBLIC_URL',
   });
+  let mailBriefOnboarding: ReturnType<typeof createMailBriefOnboarding>;
   const googleConnectionAuthorization = new GoogleConnectionAuthorizationService({
     intentRepo: connectionAuthorizationRepo,
     googleOAuth: googleOAuthService,
     connectionRepo: integrationConnectionRepo,
+    mailBriefOnboarding: input => mailBriefOnboarding(input),
     callbackUrl: googleConnectionCallbackUrl,
     logger,
   });
@@ -1637,85 +1679,9 @@ export async function buildContainer(
     }
   }
 
-  const zohoBooksOrgCache = new Map<string, { organizationId: string; expiresAtMs: number }>();
-
-  async function resolveZohoBooksOrganizationId(
-    companyId: string,
-    token: string,
-    apiBaseUrl: string,
-    connectionId?: string,
-  ): Promise<string | null> {
-    const cacheKey = connectionId ?? companyId;
-    const cached = zohoBooksOrgCache.get(cacheKey);
-    if (cached && cached.expiresAtMs > Date.now()) {
-      return cached.organizationId;
-    }
-
-    try {
-      const apiRoot = apiBaseUrl.replace(/\/$/, '');
-      const res = await fetch(`${apiRoot}/books/v3/organizations`, {
-        headers: { Authorization: `Zoho-oauthtoken ${token}` },
-      });
-
-      const payload = (await res.json().catch(() => ({}))) as ZohoBooksOrganizationPayload & {
-        code?: number;
-        message?: string;
-      };
-
-      if (!res.ok) {
-        logger.warn('zoho.books.organization_lookup.failed', {
-          companyId,
-          status: res.status,
-          code: payload.code,
-          message: payload.message,
-        });
-        return null;
-      }
-
-      const orgs = Array.isArray(payload.organizations) ? payload.organizations : [];
-      const selected = orgs.find((org) => org.is_default_org === true || org.is_default === true) ?? orgs[0];
-      const organizationId = selected?.organization_id;
-      if (!organizationId) {
-        logger.warn('zoho.books.organization_lookup.empty', { companyId });
-        return null;
-      }
-
-      zohoBooksOrgCache.set(cacheKey, {
-        organizationId,
-        expiresAtMs: Date.now() + 10 * 60 * 1000,
-      });
-      return organizationId;
-    } catch (error) {
-      logger.warn('zoho.books.organization_lookup.error', {
-        companyId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return null;
-    }
-  }
-
   const getZohoCrmClient = async (companyId: string, userId: string, connectionId?: string) => {
     const auth = await resolveZohoAuth(companyId, userId, connectionId);
     return auth ? new ZohoCrmClient(auth.accessToken, auth.apiBaseUrl) : null;
-  };
-
-  const getZohoBooksClient = async (
-    companyId: string,
-    userId: string,
-    connectionId?: string,
-    minimumAccess: 'read_only' | 'read_write' = 'read_only',
-  ) => {
-    const auth = await resolveZohoAuth(companyId, userId, connectionId, minimumAccess);
-    if (!auth) return null;
-    const organizationId = await resolveZohoBooksOrganizationId(
-      companyId,
-      auth.accessToken,
-      auth.apiBaseUrl,
-      connectionId,
-    );
-    return organizationId
-      ? new ZohoBooksClient(auth.accessToken, organizationId, auth.apiBaseUrl)
-      : null;
   };
 
   // ── Cloudinary adapter (graceful no-op when credentials absent) ──────────
@@ -1853,6 +1819,34 @@ export async function buildContainer(
     rawRetentionHours: env.MANAGER_TEACH_RAW_RETENTION_HOURS,
     uploadDir: managerTeachUploadDir,
   });
+
+  // ── Conversation attachment index ────────────────────────────────────────
+  // Files the member sent, addressable by name. Written at the Lark webhook,
+  // read by tools that put a document onto a provider record.
+  const conversationAttachments = new ConversationAttachmentService(
+    new PrismaConversationAttachmentStore(prisma),
+    logger,
+  );
+  const invoiceDocumentParser = new DefaultKnowledgeDocumentParser({
+    ocr: env.OPENROUTER_API_KEY
+      ? new OpenRouterKnowledgeOcr({
+          apiKey: env.OPENROUTER_API_KEY,
+          model: env.VISION_OCR_MODEL,
+          providerOrder: env.OPENROUTER_PROVIDER_ORDER,
+        })
+      : null,
+    maxPages: env.KNOWLEDGE_DOCUMENT_MAX_PAGES,
+    maxOcrPages: env.KNOWLEDGE_DOCUMENT_MAX_OCR_PAGES,
+    maxArchiveEntries: env.KNOWLEDGE_DOCUMENT_MAX_ARCHIVE_ENTRIES,
+    maxArchiveUncompressedBytes: env.KNOWLEDGE_DOCUMENT_MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+    maxArchiveCompressionRatio: env.KNOWLEDGE_DOCUMENT_MAX_ARCHIVE_COMPRESSION_RATIO,
+  });
+
+  const conversationAttachmentSource = new LarkConversationAttachmentSource(
+    conversationAttachments,
+    new LarkFileClient(env, logger),
+    logger,
+  );
 
   // ── Zoho Books paginated client + finance ops ────────────────────────────
   const zohoPaginatedBooksClient = new ZohoBooksPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
@@ -2194,6 +2188,50 @@ export async function buildContainer(
     },
     resolveConnection: resolveMailAutomationGoogleConnection,
     authorizeLarkChat: authorizeMailOpsLarkChat,
+    /*
+     * One live call, so a rule is never created on a grant Google has already
+     * ended. `googleAccessTokenFor` both discovers that and records it — it
+     * clears every cache partition for the connection and marks it
+     * reauthorization-required — so this probe is also what makes the Mail page
+     * start saying "reconnect" instead of waiting for the eleventh watch
+     * failure to say it for us.
+     */
+    probeConnection: async ({ companyId, userId, connectionId }) => {
+      const connection = await integrationConnectionRepo.findAccessibleGoogleConnection({
+        companyId,
+        userId,
+        connectionId,
+        minimumAccess: 'read_write',
+      });
+      if (!connection.ok) {
+        return { kind: 'unavailable', reason: connection.error.message };
+      }
+      if (!connection.value?.refreshToken) {
+        return { kind: 'revoked' };
+      }
+      try {
+        await googleAccessTokenFor({
+          companyId,
+          connectionId,
+          cacheUserId: `connection:${connectionId}`,
+          refreshToken: connection.value.refreshToken,
+        });
+        return { kind: 'alive' };
+      } catch (error) {
+        // Only a rejected refresh means the grant itself is dead. A timeout, a
+        // 5xx, a DNS blip — those say nothing about it, and reporting them as
+        // revoked would send somebody reconnecting a working account.
+        if (error instanceof GoogleTokenRefreshError && error.code === 'refresh_rejected') {
+          return { kind: 'revoked' };
+        }
+        return {
+          kind: 'unavailable',
+          reason: error instanceof Error
+            ? `Divo could not reach Google to check this account (${error.message}).`
+            : 'Divo could not reach Google to check this account.',
+        };
+      }
+    },
     connectionApproval: input => connectionRateLimits.approval(input),
     /*
      * The same approver the agent path would ask, resolved the same way.
@@ -2212,12 +2250,32 @@ export async function buildContainer(
       onSelfBypass: (bypassed) => {
         logger.info('mail_ops.external_forward_self_bypass', bypassed);
       },
+      get disableCompanyAdminExemption() {
+        return approvalGateOptions.disableCompanyAdminExternalForwardExemption;
+      },
+      onCompanyAdminExempt: (exempt) => {
+        // Deliberately not the line above. That one says the approver and the
+        // requester were the same person; this one says nobody was asked.
+        logger.info('mail_ops.external_forward_admin_exempt', exempt);
+      },
     },
   });
 
   // Same model the other background readers use — this is a small, strict
   // extraction, not a conversation.
   const compileMailRule = createMailRuleCompiler({
+    model: deepSeekModel(env.PERSONA_LEARNING_MODEL_ID),
+  });
+
+  const judgeMailMessage = createMailRuleJudge({
+    model: deepSeekModel(env.PERSONA_LEARNING_MODEL_ID),
+    // Without this, a rule holding one message in five is indistinguishable
+    // from one holding none: the answer that could not be read was discarded
+    // and the member only ever saw a fixed sentence.
+    logger: logger.child({ service: 'mail-ops-judge' }),
+  });
+
+  const composeMailBrief = createMailBriefComposer({
     model: deepSeekModel(env.PERSONA_LEARNING_MODEL_ID),
   });
 
@@ -2240,11 +2298,22 @@ export async function buildContainer(
     exportCandidates: dataExportOrchestrationService,
   }));
   toolRegistry.register(createZohoBooksTool({
-    getClient:       getZohoBooksClient,
     booksClient:     zohoPaginatedBooksClient,
+    invoiceStaging:  new PrismaStagedInvoiceStore(prisma),
+    invoiceReviewer: createInvoiceReviewer({
+      model: deepSeekModel(env.ZOHO_INVOICE_REVIEW_MODEL_ID),
+      logger: logger.child({ service: 'zoho-invoice-reviewer' }),
+    }),
+    conversationHistory: conversationRepo,
+    documentParser:  invoiceDocumentParser,
+    ...(env.ZOHO_BOOKS_HOME_GST_STATE_CODE
+      ? { homeGstStateCode: env.ZOHO_BOOKS_HOME_GST_STATE_CODE }
+      : {}),
     financeOps:      zohoFinanceOps,
     exportCandidates: dataExportOrchestrationService,
     inlineThreshold: env.ZOHO_BOOKS_CSV_INLINE_THRESHOLD,
+    attachmentSource: conversationAttachmentSource,
+    appBaseUrl:      env.ZOHO_BOOKS_APP_BASE_URL,
   }));
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
   toolRegistry.register(createKnowledgeTool({
@@ -2310,9 +2379,14 @@ export async function buildContainer(
     skillAccessEnforcement,
     managerPersonaRuntime: managerPersonaRuntimeService,
   });
-  const workContractBootstrap = new GoogleWorkspaceContractBootstrapService(
-    getGoogleWorkspaceMcpConnection,
-  );
+  // Every provider whose native shapes a model would otherwise have to guess.
+  // Airtable earns its place here for the same reason Google did: its record
+  // filter tree is not reconstructable from prose, and each wrong guess costs a
+  // validation dump larger than the schema.
+  const workContractBootstrap = new CompositeWorkContractBootstrap([
+    new GoogleWorkspaceContractBootstrapService(getGoogleWorkspaceMcpConnection),
+    new AirtableContractBootstrapService(getAirtableMcpConnection),
+  ]);
   // One instance for both surfaces. The desktop gateway and the backend-hosted
   // channels must resolve the same accounts and contracts, or the model works
   // blind on whichever one was left out.
@@ -2587,6 +2661,23 @@ export async function buildContainer(
       if (!sent.ok) throw sent.error;
       return sent.value;
     },
+    // The rule's AI step. Same model the compiler uses, and for the same
+    // reason: this is one closed question with a bounded answer, not a
+    // conversation, and it runs inside a delivery lane where a slow model is a
+    // lane not moving anybody else's mail.
+    judgeMessage: judgeMailMessage,
+    // Twice on workdays, in the company's own timezone. Computed per call, so
+    // the first run is the next real slot rather than whenever the process
+    // happened to boot.
+    briefDefaults: () => ({
+      ...DEFAULT_MAIL_BRIEF_SCHEDULE,
+      nextRunAt: nextMailBriefRunAt(DEFAULT_MAIL_BRIEF_SCHEDULE, new Date())
+        // A schedule that cannot find a slot in fourteen days is not one this
+        // constant can produce; the fallback exists so the type is honest
+        // rather than because it can be reached.
+        ?? new Date(Date.now() + 12 * 60 * 60_000),
+    }),
+    runBrief: claim => runMailBrief(claim),
     reviewMailboxHealth: subscriptionId =>
       mailOpsNotifier.review(subscriptionId),
     logger,
@@ -2596,6 +2687,47 @@ export async function buildContainer(
       ? { pubsubTopicName: gmailPubsubConfig.topic }
       : {}),
   });
+  /*
+   * One member's brief, end to end.
+   *
+   * Defined after the worker because the worker only calls it at tick time, and
+   * declared here rather than inside the worker's dependency literal so the four
+   * steps it performs — read the window, compose, deliver, advance — stay
+   * readable as a unit.
+   */
+  const runMailBrief = createMailBriefRunner({
+    repo: mailOpsRepo,
+    compose: composeMailBrief,
+    deliverLarkDm: async input => {
+      const sent = await larkAdapter.sendDmToOpenId(
+        input.openId,
+        input.content,
+        input.idempotencyKey,
+      );
+      if (!sent.ok) throw sent.error;
+      return sent.value;
+    },
+    /*
+     * Where Divo sends it.
+     *
+     * `null` is a real answer, not a failure: a member who signed in with a
+     * password and never linked Lark has nowhere for a brief to go. The runner
+     * treats that as "skip this window" rather than retrying forever against an
+     * identity that does not exist.
+     */
+    resolveLarkOpenId: async ({ userId, companyId }) => {
+      const identity = await channelIdentityRepo.resolveByUserId(userId, companyId);
+      if (!identity.ok) throw identity.error;
+      return identity.value?.larkOpenId ?? null;
+    },
+    logger,
+  });
+  mailBriefOnboarding = createMailBriefOnboarding({
+    repo: mailOpsRepo,
+    wakeMailOps: () => mailOpsWorker.wake(),
+    logger,
+  });
+
   const channelRegistry = new ChannelAdapterRegistry();
   channelRegistry.register(larkAdapter);
 
@@ -2685,6 +2817,67 @@ export async function buildContainer(
       select: { departmentId: true },
     });
     return membership?.departmentId ?? null;
+  };
+
+  /**
+   * May this member run mail automations at all — asked at create, not only at
+   * every delivery.
+   *
+   * The same question `authorizeRule` asks on each message, deliberately: the
+   * capability is **`execute`**, and the channel is **Lark**, because that is
+   * what the worker resolves and a rule its owner may not execute is a rule
+   * that exists, lists as Working, and silently stops on every message. Asking
+   * anything different here would let exactly that through.
+   *
+   * Enforcement stays where it was. This only adds the answer at the moment
+   * somebody asks the question.
+   */
+  const canRunMailRules = async (input: {
+    companyId: string;
+    userId: string;
+    companyRole: string;
+    departmentId?: string;
+    /**
+     * What the member is asking to do.
+     *
+     * Named rather than assumed, because the answer differs: creating a rule
+     * needs `create` and background `execute`, archiving one needs `delete` and
+     * no execute at all. This used to check `execute` alone for every request,
+     * which both refused members who could legitimately archive and admitted
+     * members who had lost the right to edit.
+     */
+    operation: MailRuleOperation;
+  }): Promise<{ kind: 'allowed' | 'denied' | 'unavailable'; message?: string }> => {
+    const resolved = await permissions.resolve({
+      companyId: asCompanyId(input.companyId),
+      userId: asUserId(input.userId),
+      companyRole: asCompanyRoleSlug(input.companyRole),
+      ...(input.departmentId ? { departmentId: asDepartmentId(input.departmentId) } : {}),
+      channel: 'lark',
+    });
+    if (!resolved.ok) {
+      // The one distinction that matters: a store that could not be read is
+      // retried, a decision is recorded. Calling an unreadable store a refusal
+      // sends somebody asking for access they already have.
+      return resolved.error.payload.reason === 'permission_lookup_failed'
+        ? { kind: 'unavailable', message: resolved.error.message }
+        : {
+            kind: 'denied',
+            message: 'Divo could not work out your access to mail automations.',
+          };
+    }
+    // The same decision the agent tool makes, from the same function, so the
+    // browser and Divo-in-Lark cannot answer one member two different ways.
+    const verdict = mailRulePermission(
+      input.operation,
+      resolved.value.allowedActionsByTool.get(asToolId('mailAutomations')),
+    );
+    return verdict.allowed
+      ? { kind: 'allowed' }
+      : {
+          kind: 'denied',
+          message: mailRuleRefusal(input.operation, verdict.missing),
+        };
   };
 
   /*
@@ -2942,7 +3135,9 @@ export async function buildContainer(
     writeMailRule,
     requestMailRuleExternalApproval,
     resolveMemberDepartmentId,
+    canRunMailRules,
     compileMailRule,
+    mailBriefOnboarding,
     mailOpsWorker,
     canvaMcpOAuthService,
     airtableMcpOAuthService,
@@ -3014,6 +3209,7 @@ export async function buildContainer(
     busyLaneNotices,
     // Lark contacts (for directory sync)
     larkContactsClient,
+    conversationAttachments,
     // Pi/Desktop capability gateway
     gatewayDispatcher,
     // Container runtime, shared by the Lark webhook and the scheduler.

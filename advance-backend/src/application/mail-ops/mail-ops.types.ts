@@ -1,4 +1,126 @@
+import { z } from 'zod';
 import { sha256 } from '../../shared/hash';
+
+/**
+ * A rule's optional AI step: one question, asked of every matched message.
+ *
+ * The shape lives here rather than beside the evaluator because three layers
+ * need it and only one of them ever calls a model — the matcher parses it off
+ * the stored row, the payload carries it to the worker, and the evaluator asks
+ * it. Putting it next to `generateText` would have made the matcher import the
+ * model client to read a column.
+ *
+ * `question` is bounded at 500 because this is a question, not an instruction
+ * set: a paragraph here is somebody writing a second rule inside the first one.
+ *
+ * `onFailure` decides what happens when the model cannot answer, and it belongs
+ * to the rule's author because the right answer differs per rule — a rule that
+ * cuts noise should keep working when the model is unreachable, and a rule that
+ * stops the wrong mail leaving the company must not. Default `closed`.
+ */
+export const mailRuleJudgeSchema = z.object({
+  question: z.string().trim().min(8).max(500),
+  /**
+   * Optional rather than defaulted in the schema, deliberately. A zod
+   * `.default()` makes the parser's input and output types differ, and the tool
+   * declares its argument schema as one type in both directions — so defaulting
+   * here would have made the whole `mailAutomations` schema unassignable. The
+   * default lives in `judgeFailurePolicy` instead, which is the only thing that
+   * reads it.
+   */
+  onFailure: z.enum(['open', 'closed']).optional(),
+}).strict();
+
+export type MailRuleJudge = z.infer<typeof mailRuleJudgeSchema>;
+
+/**
+ * What an unanswerable question means for this rule. Absent is `closed`.
+ *
+ * Closed is the default because the failure it produces is silence, and the
+ * other one is mail. A rule nobody configured carefully should, when the model
+ * cannot be reached, do nothing rather than forward everything it matched — the
+ * member notices mail that did not arrive, and does not notice mail that
+ * arrived somewhere it should not have.
+ */
+export const judgeFailurePolicy = (judge: MailRuleJudge): 'open' | 'closed' =>
+  judge.onFailure ?? 'closed';
+
+export interface MailJudgeVerdict {
+  /**
+   * `routed` is the routing table's answer, and it is deliberately its own
+   * decision rather than a `passed` carrying a key. They are different claims:
+   * `passed` says *this rule should act*, `routed` says *this message is that
+   * kind of message*, and a screen that showed them alike would report "Divo
+   * passed it" about a message whose whole outcome was which person got it.
+   */
+  decision: 'passed' | 'rejected' | 'unavailable' | 'routed';
+  /** Always present. A verdict without a reason is not reviewable. */
+  reason: string;
+  confidence?: number;
+  /** Set only on `unavailable`, so a member can see which way the policy sent it. */
+  appliedFailure?: 'open' | 'closed';
+  /**
+   * Which branch the model named, on a routed rule. `'none'` is a real answer
+   * — "this fits none of them" — and is the one the model is told to prefer over
+   * guessing, because a guess here sends somebody's mail to the wrong person.
+   */
+  route?: string;
+  /**
+   * Where the message actually went, resolved from `route`.
+   *
+   * Stored on the delivery row rather than recomputed, and that is what lets a
+   * member be told where a message went months later: the rule's routing table
+   * may have been edited since, and the frozen payload that carried the old one
+   * is swept off terminal rows at thirty days.
+   */
+  destination?: MailRuleLeafDestination;
+}
+
+/**
+ * Whether a verdict lets the rule act.
+ *
+ * Stated once, here, so the worker and every test agree without either of them
+ * needing a model or a mailbox to find out.
+ */
+export const judgeAllowsDelivery = (verdict: MailJudgeVerdict): boolean =>
+  verdict.decision === 'passed'
+  || (verdict.decision === 'unavailable' && verdict.appliedFailure === 'open');
+
+/**
+ * Where a judged message goes, or `null` for held.
+ *
+ * The one place the two kinds of AI step are reconciled, so the worker does not
+ * have to know which kind it is holding.
+ *
+ * On a routed rule there is no `onFailure` and that is not an omission — the
+ * routing table already carries the same decision in a form the member wrote
+ * themselves. `otherwise: 'hold'` *is* fail-closed; `otherwise: <someone>` is
+ * fail-open to a person they chose. A separate `open` flag on a routed rule
+ * could only mean "send it somewhere nobody chose", which is precisely the
+ * outcome the whole design forbids, so it does not exist.
+ */
+export function judgedDestination(
+  destination: MailRuleDestination,
+  verdict: MailJudgeVerdict,
+): MailRuleDestination | null {
+  if (destination.type !== 'routed') {
+    return judgeAllowsDelivery(verdict) ? destination : null;
+  }
+  if (verdict.decision === 'routed' && verdict.route && verdict.route !== 'none') {
+    const chosen = destination.routes.find(route => route.key === verdict.route);
+    /*
+     * A key this rule does not carry is not a route.
+     *
+     * It cannot normally arrive — the verdict schema is built from this rule's
+     * own keys — but a stored verdict outlives the rule that produced it, so an
+     * edited routing table can leave one behind. Falling back to `otherwise`
+     * rather than to the first branch: the honest reading of "the answer names
+     * nothing that exists" is the same as "nothing fits".
+     */
+    if (chosen) return chosen.destination;
+  }
+  return destination.otherwise === 'hold' ? null : destination.otherwise;
+}
 
 /**
  * Raised when the Google account behind a mailbox is no longer usable.
@@ -111,6 +233,18 @@ export type MailDeliveryStatus =
   | 'delivered'
   /** Matched, then refused — no permission, or over the rule's hourly ceiling. */
   | 'blocked'
+  /**
+   * Matched, read by the rule's AI step, and deliberately not acted on.
+   *
+   * Kept apart from `blocked` because they are opposite answers to a member
+   * asking why nothing arrived: `blocked` is Divo unable to act, `held` is Divo
+   * deciding not to. Sharing one status would make a working rule's normal
+   * behaviour indistinguishable from a permission fault.
+   *
+   * A held message consumes no rate-limit budget — see the reservation query in
+   * `delivery.repository.ts`, which counts neither this nor `blocked`.
+   */
+  | 'held'
   | 'abandoned';
 
 export interface NewMailEvent {
@@ -225,6 +359,50 @@ export type MailRuleAction =
       markRead?: boolean;
     };
 
+/**
+ * One branch of a routed rule: what kind of message this is, and who gets it.
+ *
+ * `when` is a description, not a question — "an invoice, bill or payment
+ * request" rather than "is this an invoice?". The judge is shown every branch at
+ * once and picks one, so they read as a list of kinds, and a question among them
+ * reads as a branch nobody can choose.
+ *
+ * `key` is a label. It exists because the model answers with one, and answering
+ * with a whole description would be a longer thing to get exactly right.
+ */
+export interface MailRuleRoute {
+  key: string;
+  when: string;
+  destination: MailRuleLeafDestination;
+}
+
+/** A place a message can actually be sent. Everything except "several" and "nowhere". */
+export type MailRuleLeafDestination =
+  | { type: 'email'; email: string }
+  | { type: 'lark_chat'; chatId: string }
+  | { type: 'lark_dm'; openId: string };
+
+/**
+ * How many branches one rule may carry, and the fewest worth having.
+ *
+ * Six because every branch is in the prompt for every matched message, and a
+ * member writing fifteen is writing a classifier rather than a mail rule. Two
+ * because one branch is a plain destination with a model call in front of it —
+ * which is what `judge` already is, and better at it.
+ */
+export const MAIL_RULE_MAX_ROUTES = 6;
+export const MAIL_RULE_MIN_ROUTES = 2;
+
+/**
+ * What happens to a message that fits no branch.
+ *
+ * `'hold'` is the default and the honest one: nothing is sent, the message is
+ * recorded, and the member can see it. The alternative is a destination they
+ * named for everything else. There is deliberately no third option that drops
+ * the message silently.
+ */
+export type MailRuleRouteFallback = 'hold' | MailRuleLeafDestination;
+
 export type MailRuleDestination =
   | { type: 'email'; email: string }
   | { type: 'lark_chat'; chatId: string }
@@ -243,8 +421,66 @@ export type MailRuleDestination =
    * takes an open id as a receive id, so a DM needs no chat to exist first.
    */
   | { type: 'lark_dm'; openId: string }
+  /**
+   * Several destinations, one of which the rule's AI step chooses per message.
+   *
+   * This is the one destination whose recipient is not settled when the rule is
+   * written, and the boundary that keeps it safe is that the *set* is: the judge
+   * picks among these and can reach nothing else. An answer naming a key this
+   * rule does not carry is not a route — it is an unreadable answer, and the
+   * failure policy applies. See `mail-rule-judge.ts`.
+   *
+   * Every route sends the same *kind* of thing — all email, or all Lark. A rule
+   * is one action (`forward` or `deliver`) and the runtime dispatches on it, so
+   * a table mixing the two would be a rule that is both at once.
+   */
+  | {
+      type: 'routed';
+      routes: readonly MailRuleRoute[];
+      otherwise: MailRuleRouteFallback;
+    }
   /** An `organize` rule acts on the message where it already is. */
   | { type: 'none' };
+
+/**
+ * What a destination sends, ignoring how many places it sends it.
+ *
+ * `routed` answers for its branches, which is what makes "every route is the
+ * same kind" checkable in one place rather than at every call site that pairs
+ * an action with a destination.
+ */
+export function mailDestinationKind(
+  destination: MailRuleDestination,
+): 'email' | 'lark' | 'none' {
+  if (destination.type === 'email') return 'email';
+  if (destination.type === 'lark_chat' || destination.type === 'lark_dm') return 'lark';
+  if (destination.type === 'routed') {
+    // The routes are validated to agree, so the first one answers for all of
+    // them. An empty list cannot reach here — the schema requires two.
+    const first = destination.routes[0];
+    return first ? mailDestinationKind(first.destination) : 'none';
+  }
+  return 'none';
+}
+
+/**
+ * Every place a rule could send a message, routed or not.
+ *
+ * The one function to reach for when the question is "who does this rule reach"
+ * — which is asked by the external-forward gate, the governance report, and the
+ * approval card, and was asked in three slightly different ways before this
+ * existed.
+ */
+export function mailDestinationLeaves(
+  destination: MailRuleDestination,
+): readonly MailRuleLeafDestination[] {
+  if (destination.type === 'none') return [];
+  if (destination.type !== 'routed') return [destination];
+  return [
+    ...destination.routes.map(route => route.destination),
+    ...(destination.otherwise === 'hold' ? [] : [destination.otherwise]),
+  ];
+}
 
 export interface PendingMailDeliveryPayload {
   companyId: string;
@@ -259,6 +495,19 @@ export interface PendingMailDeliveryPayload {
   idempotencyKey: string;
   action: MailRuleAction;
   destination: MailRuleDestination;
+  /**
+   * The rule's AI step, frozen with the rest of the rule at reserve time.
+   *
+   * Read from here rather than re-fetched at delivery, so a message is judged
+   * against the question that was in force when it arrived. The alternative —
+   * reading the live rule — means editing a rule's question retroactively
+   * changes the verdict on mail already queued behind it, which is the one
+   * thing a member editing a question does not expect.
+   *
+   * `isRuleSendable` is re-read live and deliberately so: pause promises to
+   * stop mail *already* queued, which is the opposite requirement.
+   */
+  judge?: MailRuleJudge;
   message: MailMessageMetadata;
 }
 
@@ -333,16 +582,85 @@ export function mailRuleDedupeKey(input: MailRuleIdentity): string {
     input.action.type === 'organize' ? input.action.archive ?? null : null,
     input.action.type === 'organize' ? input.action.markRead ?? null : null,
     input.destination.type,
-    input.destination.type === 'email'
-      ? input.destination.email.toLowerCase()
-      : input.destination.type === 'lark_dm'
-        // Not lowercased. An open id is opaque and case-sensitive, exactly as a
-        // chat id is; folding it would merge two different people's rules.
-        ? input.destination.openId
-        : input.destination.type === 'lark_chat'
-          ? input.destination.chatId
-        : null,
+    destinationIdentity(input.destination),
   ]))}`;
+}
+
+/**
+ * A destination reduced to the part that makes it *this* destination.
+ *
+ * Extracted from the nested ternary that used to sit inline in the key, and it
+ * produces byte-identical values for every non-routed shape — which it has to,
+ * or every rule in the database becomes a different rule and is re-created
+ * beside the one it already is.
+ */
+function destinationIdentity(destination: MailRuleDestination): unknown {
+  if (destination.type === 'email') return destination.email.toLowerCase();
+  // Not lowercased. An open id is opaque and case-sensitive, exactly as a chat
+  // id is; folding it would merge two different people's rules.
+  if (destination.type === 'lark_dm') return destination.openId;
+  if (destination.type === 'lark_chat') return destination.chatId;
+  if (destination.type === 'routed') return routedIdentity(destination);
+  return null;
+}
+
+/**
+ * A routing table reduced to **which kind of message goes to whom**.
+ *
+ * The pairing is the identity, not the set of recipients. This was originally
+ * written as the sorted set of destinations alone, by analogy with
+ * `judge.question` — which is deliberately excluded above because a question
+ * does not change who receives mail. That analogy is wrong here, and the
+ * counterexample is not exotic:
+ *
+ *     A: invoices → anish@,  product → rakshit@
+ *     B: invoices → rakshit@, product → anish@
+ *
+ * Same sender, same two recipients, opposite meaning. With only the recipients
+ * folded in, those two produce the same key — so asking for B lands on A as an
+ * upsert, and every invoice keeps going to the person the member just said it
+ * should not. Silent, on a rule that goes on reporting itself as working.
+ *
+ * So each branch folds as `when → place`, and the whole thing is what a rule is:
+ *
+ * **The `key` is still left out.** It is a handle the model answers with, not a
+ * claim about the mail — the editor derives it from row position, so folding it
+ * in would make dragging a row into a different order produce a second rule.
+ *
+ * **The pairs are sorted**, exactly as `phraseIdentity` sorts alternatives, so
+ * the same branches written in two orders are one rule. Order changes how the
+ * table reads and nothing about who receives what.
+ *
+ * **The wording of `when` is now load-bearing**, which is the cost of this. Two
+ * tables that differ only in how a branch is described are two rules. That is
+ * the deliberate trade: rewording is done through `update`, which targets a
+ * ruleId and never touches this key, so the only way to reach it is to *create*
+ * a reworded copy — which produces a visible duplicate rather than an invisible
+ * redirection. A duplicate is noticed; mail arriving at the wrong colleague is
+ * not.
+ */
+function routedIdentity(destination: {
+  routes: readonly MailRuleRoute[];
+  otherwise: MailRuleRouteFallback;
+}): unknown {
+  const place = (leaf: MailRuleLeafDestination): string =>
+    `${leaf.type}:${String(destinationIdentity(leaf))}`;
+  const branchIdentity = (route: MailRuleRoute): readonly [string, string] => [
+    route.when.trim().toLowerCase(),
+    place(route.destination),
+  ];
+  const compareBranches = (
+    left: readonly [string, string],
+    right: readonly [string, string],
+  ): number => {
+    if (left[0] !== right[0]) return left[0] < right[0] ? -1 : 1;
+    if (left[1] !== right[1]) return left[1] < right[1] ? -1 : 1;
+    return 0;
+  };
+  return [
+    [...destination.routes.map(branchIdentity)].sort(compareBranches),
+    destination.otherwise === 'hold' ? 'hold' : place(destination.otherwise),
+  ];
 }
 
 /**
@@ -366,4 +684,33 @@ function activeWindowIdentity(
     window.end,
     window.timeZone,
   ];
+}
+
+/**
+ * A stored event's metadata, read back as a message.
+ *
+ * Lives here rather than in the worker because three things now read it — the
+ * matcher's caller, the delivery payload, and the brief — and a second copy of
+ * the `bodyText` rule below is how one of them starts disagreeing with the
+ * others about which stored events are readable at all.
+ */
+export function readMessageMetadata(
+  value: Record<string, unknown>,
+): MailMessageMetadata | null {
+  if (
+    typeof value['from'] !== 'string'
+    || typeof value['to'] !== 'string'
+    || typeof value['subject'] !== 'string'
+    || typeof value['snippet'] !== 'string'
+    || typeof value['hasAttachment'] !== 'boolean'
+  ) return null;
+  // `bodyText` is the one field that legitimately goes missing: retention
+  // strips it at 30 days and leaves the event standing. Requiring it made a
+  // stripped event unreadable, which quietly dropped it out of matching
+  // altogether — so a rule tested against older mail matched nothing, and the
+  // member was told the rule was wrong when the body was simply gone.
+  return {
+    ...value,
+    bodyText: typeof value['bodyText'] === 'string' ? value['bodyText'] : '',
+  } as MailMessageMetadata;
 }

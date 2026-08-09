@@ -39,20 +39,28 @@ Always load the routed specialist before answering or claiming that a connection
 ## Route
 
 - Read, search, summarize now, draft, send, reply, label, or forward one existing Gmail message now → load \`google-gmail\`.
-- React whenever a future matching Gmail message arrives, including forwarding a matching message or delivering it to a Lark chat → load \`mail-ops\`.
+- React whenever a future matching Gmail message arrives, including forwarding a matching message, delivering it to a Lark chat, or sending different kinds of it to different people → load \`mail-ops\`.
 - Run inbox work at a clock time or recurrence, such as a daily digest → load \`schedule-divo-work\` and \`google-gmail\`. Scheduler owns timing; Gmail owns the work performed at run time.
 - Reserve time, invite attendees, check free/busy, or create a meeting/event → load \`google-calendar\`.
 - Drive, Docs, Sheets, Slides, Forms, Tasks, Contacts, Chat, or Apps Script → load the matching \`google-<product>\` recipe.
 
+"Send invoices to one person and product mail to another" is one arrival rule that sorts, not two rules — still \`mail-ops\`.
 If "forward this email" could mean a one-time action or an ongoing arrival rule, ask which one. Never implement a future-arrival rule with the scheduler, and never create a Mail Ops rule for a one-time Gmail action.`,
   },
   {
     slug: 'mail-ops',
     name: 'Mail Ops',
     summary:
-      'Create and manage deterministic Gmail-arrival rules for forwarding future matching mail to email or delivering it to Lark.',
+      'Create and manage deterministic Gmail-arrival rules for forwarding future matching mail to email, delivering it to Lark, or sorting each arriving message to the right person.',
     toolIds: ['mailAutomations'],
-    tags: ['gmail', 'mail', 'automation', 'forwarding', 'otp', 'watcher'],
+    tags: ['gmail', 'mail', 'automation', 'forwarding', 'otp', 'watcher', 'routing', 'triage'],
+    /*
+     * Routing needs its own vocabulary, or the recipe describing it is never
+     * reached. Nobody asking Divo to "sort my client's mail between the team"
+     * says "forward future email" — and the router scores alias tokens, so a
+     * capability the catalogue cannot be searched for is a capability that
+     * exists only for whoever already knows it does.
+     */
     aliases: [
       'whenever email arrives',
       'when mail arrives',
@@ -61,6 +69,11 @@ If "forward this email" could mean a one-time action or an ongoing arrival rule,
       'mail watcher',
       'otp forwarding',
       'send matching mail to lark',
+      'sort mail between people',
+      'route mail to the right person',
+      'send different mail to different people',
+      'split incoming mail by kind',
+      'triage arriving mail',
     ],
     sortOrder: 6,
     markdown: `# Mail Ops
@@ -71,8 +84,9 @@ Use this recipe only for rules triggered by future Gmail arrivals.
 
 - **Gmail only.** There is no Outlook, Microsoft 365, or IMAP support. If the user's mail is not Gmail, say so instead of creating a rule.
 - **Only new mail that lands in the inbox** triggers a rule. Mail that a native Gmail filter archives, or that lands in Spam, is never seen.
-- **A rule delivers the whole message. That is the design, not a shortfall.** Mail Ops is deliberately good at *which* mail and *where it goes* — sender, subject, exclusions, hours, destination — and does not read the mail at all. When the user asks for "just the OTP", "just the tracking number", or "just the amount", say plainly that the whole email arrives instead, and move on. It is a correct answer with more in it, not a worse one.
-- **Do not build a workaround for that.** There is no Divo path that extracts part of an email on arrival — not the scheduler, not a Gmail filter, not a local script. Offering one would promise something nothing delivers. Set up the forward and tell the user what they will receive.
+- **A rule delivers the whole message. That is the design, not a shortfall.** Mail Ops is deliberately good at *which* mail and *where it goes* — sender, subject, exclusions, hours, destination — and never rewrites, summarises, or pulls anything out of what it sends. When the user asks for "just the OTP", "just the tracking number", or "just the amount", say plainly that the whole email arrives instead, and move on. It is a correct answer with more in it, not a worse one.
+- **Do not build a workaround for that.** There is no Divo path that extracts part of an email on arrival — not the scheduler, not a Gmail filter, not a local script, and **not the judge below**. Offering one would promise something nothing delivers. Set up the forward and tell the user what they will receive.
+- **A rule may also carry one AI step.** In its first form, the **judge**, it decides *whether* to act — the answer to "only the real ones", which no combination of substrings can express. In its second, a **routing table**, it decides *which of several people* a message goes to. A rule has one or the other, never both. See **The judge** and **Sorting mail between people** below.
 - **A rule can also tidy mail instead of sending it** — label it, archive it, mark it read — with \`destination.type: "organize"\`. That acts on the user's own Gmail and reaches nobody else.
 - **Delivering to a Lark chat posts the full message text into that chat**, up to 20,000 characters, plain text only — no HTML and no attachments. Warn the user before delivering personal mail such as login codes into a group chat.
 - **Email forwarding** preserves the original Gmail MIME content, including HTML, inline images, and attachments, inside a new message sent by the connected mailbox.
@@ -88,13 +102,43 @@ Use this recipe only for rules triggered by future Gmail arrivals.
 - Create: \`{"operation":"create","connectionId":"<UUID when needed>","name":"<short label>","match":{"from":"alerts@example.com","subjectContains":"OTP"},"destination":{"type":"email","email":"person@company.com"}}\`. For every sender at a domain, use \`{"from":"@example.com"}\`.
 - Deliver to this Lark conversation: destination \`{"type":"current_lark_chat"}\`.
 - Deliver to another grounded chat: destination \`{"type":"lark_chat","chatId":"<exact listed ID>"}\`.
+- Sort between people: destination \`{"type":"routed","routes":[...],"otherwise":"hold"}\` — see **Sorting mail between people** below.
 - Tidy without sending: destination \`{"type":"organize","label":"Receipts","archive":true,"markRead":false}\`. At least one of \`label\`, \`archive\`, \`markRead\` must be set. A missing label is created in the user's Gmail. No address is involved and nothing leaves the mailbox.
 - Cap a busy rule: add \`"rateLimitPerHour": 20\` beside the destination. Email and Lark only. Over the cap a message is **dropped and recorded**, not queued — say that plainly, because a user asking for a cap usually assumes the rest arrives later.
 - List: \`{"operation":"list","includeInactive":false}\`. Use \`"includeInactive":true\` whenever the user asks about paused or archived rules, or asks why a rule stopped working — the default hides everything that is not active.
-- Test: \`{"operation":"test","ruleId":"<exact ruleId>"}\`. Replays the rule against mail Divo already recorded for that mailbox and reports what it would have matched. **Sends nothing.** Run it after creating or editing any rule that is not obviously narrow, and whenever the user asks why a rule is quiet. \`consideredCount: 0\` means Divo has recorded no mail for that mailbox yet — report that, do not report it as "the rule matches nothing".
+- Test: \`{"operation":"test","ruleId":"<exact ruleId>"}\`. Replays the rule against mail Divo already recorded for that mailbox and reports what it would have matched. **Sends nothing, and calls no model** — on a rule with a judge or a routing table it reports which messages *reach* that step, never what it would decide or who would get them. Say that, or the result reads as a preview of the sorting. Run it after creating or editing any rule that is not obviously narrow, and whenever the user asks why a rule is quiet. \`consideredCount: 0\` means Divo has recorded no mail for that mailbox yet — report that, do not report it as "the rule matches nothing".
 - Update: replace the complete match and destination using the exact \`ruleId\`
   and \`connectionId\` returned by list. \`name\` is required too, so carry the existing name forward unless the user asked to rename it. **\`rateLimitPerHour\` works the same way: it is replaced, not merged, so a rule that had a cap loses it unless you re-send it.** Read the current value from the rule's \`action.rateLimitPerHour\` in \`list\` and carry it forward. Update also resumes a paused rule.
 - Pause/resume/archive: include the exact \`ruleId\` returned by create or list. Archive is final — an archived rule cannot be resumed.
+
+## The judge
+
+A deterministic match is a filter, and filters cannot tell an invoice from an advert for an invoicing product. \`judge\` closes that gap: one question, asked of every matched message, answered yes or no before the rule acts.
+
+- Shape: \`"judge": {"question":"Is this a real invoice addressed to us, rather than marketing, a quote, or a reminder for something already paid?","onFailure":"closed"}\`.
+- **Offer it whenever the user's own words are a judgement, not a pattern** — "the real ones", "actual complaints", "only what needs my reply". Creating a match-only rule there hands them something that forwards the wrong mail, and they find out a week later from the person on the other end.
+- **Write \`question\` as one closed yes/no question**, in the user's own terms. Never an instruction, never a list of steps, never a request for a value out of the message.
+- **A rejected message is held, not lost.** It is recorded with the model's reason and the user can see it. Say this — a user who thinks rejected mail vanishes will not trust the step.
+- **It sees headers and a short preview only** — never the full body, never attachments. Do not promise answers that need the whole document ("is the total over 50,000"). Say what it can actually see.
+- **\`onFailure\` decides what happens when the model cannot answer.** \`closed\` (the default) sends nothing; \`open\` acts anyway. Use \`open\` only for a noise-cutting rule where a stray forward is better than a missed message, and **never on a rule whose destination is outside the company**.
+- **It cannot move mail.** A judge decides yes or no. To send different mail to different people, use a routing table instead — see below.
+- **Narrow the match first.** Every matched message costs a model call, so an exclusion such as \`notFrom: "no-reply@"\` is free and stops those before the judge runs.
+- **\`update\` replaces \`judge\` rather than merging it**, exactly like \`rateLimitPerHour\`. Read the current value from the rule's \`judge\` in \`list\` and carry it forward unless the user asked to change or remove it. Renaming a rule without doing so deletes its judge.
+
+## Sorting mail between people
+
+When the user names **different people for different kinds of the same mail** — "invoices to Anish, product mail to Rakshit" — that is **one** rule with a routing table, not two rules and not an unsupported "or". Divo reads each matching message and sends it to exactly one of the destinations the user wrote down.
+
+- Shape: \`"destination":{"type":"routed","routes":[{"key":"invoices","when":"an invoice, bill or payment request","destination":{"type":"email","email":"anish@company.com"}},{"key":"product","when":"about the product, a feature or a bug","destination":{"type":"email","email":"rdx@company.com"}}],"otherwise":"hold"}\`
+- \`key\` is a short lowercase label. \`when\` describes what that kind of message **is**, in a few words — not a question. Never \`none\`; that is the answer meaning "nothing fits".
+- **Two to six routes**, and **every route must send the same way** — all email, or all Lark. A rule is one action and cannot be both a forward and a Lark delivery.
+- **One hourly ceiling for the whole rule**, not per route.
+- **A routed rule takes no \`judge\`.** The routes are the question, and sending both is refused.
+- **\`otherwise\` decides what happens to mail that fits no route, and you must tell the user which it is before creating the rule.** Say plainly: *anything that fits none of these is held back and shown to you, and nothing is sent* — then offer the alternative in the same breath, that they can name one more person for everything else. Do not create a routed rule without saying which of the two it is doing.
+- **There is no failure setting.** \`otherwise\` already is one: \`"hold"\` means a message Divo could not read is held, and naming somebody means it goes to them. That is the only choice, and it is the user's.
+- **It can never send anywhere else.** Divo is shown the descriptions and picks one; an answer naming anything the rule does not carry is treated as unreadable and falls to \`otherwise\`. Say this — a user deciding whether to trust a rule with their client's mail is deciding exactly this question.
+- **\`update\` replaces the whole table**, exactly like \`judge\` and \`rateLimitPerHour\`. Read \`routes\` and \`otherwise\` from the rule in \`list\` and carry them forward, or renaming the rule deletes its routing.
+- **A sender who writes into an email can try to influence how it is sorted.** The worst that does is send that message to one of the people the user already chose, because the set is fixed when the rule is written — but do not widen what Divo reads to make sorting "better".
 
 ## Reading rule health
 

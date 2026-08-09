@@ -3,7 +3,8 @@
  *
  * The gateway always supplies `grantedSkillIds`, so visibility is deny-by-default
  * and requires both an explicit grant and permission for every declared tool.
- * Instruction-only skills declare no tools and remain safe to load.
+ * Plain instruction-only skills remain safe to load, while routers need at
+ * least one visible routed specialist.
  */
 
 import { describe, it } from 'node:test';
@@ -27,11 +28,16 @@ function row(id: string, toolIds: string[]): SkillRow {
   };
 }
 
-function makeRepo(rows: SkillRow[]): SkillRepoPort {
+function makeRepo(rows: SkillRow[], routes: Record<string, string[]> = {}): SkillRepoPort {
   return {
     list: async () => ok(rows),
     search: async () => ok(rows),
     findById: async ({ skillId }) => ok(rows.find((r) => r.id === skillId) ?? null),
+    listRouteTargets: async ({ routerSkillId }) => ok(
+      (routes[routerSkillId] ?? [])
+        .map((id) => rows.find((r) => r.id === id))
+        .filter((row): row is SkillRow => Boolean(row)),
+    ),
     registryRevision: async () => ok(1),
   };
 }
@@ -80,6 +86,56 @@ describe('SkillCatalogService — grant-based visibility (the live model)', () =
     assert.equal(crm, null);
     assert.equal(books?.id, 'sk-books');
     assert.equal(instructions?.id, 'sk-instructions');
+  });
+
+  it('hides instruction-only routers when none of their routed specialists is visible', async () => {
+    const router = {
+      ...row('zoho-router', []),
+      name: 'Zoho Router',
+      tags: ['router', 'zoho'],
+      aliases: ['zoho'],
+    };
+    const books = row('sk-books', ['zohoBooks']);
+    const crm = row('sk-crm', ['zohoCrm']);
+    const service = new SkillCatalogService({
+      repo: makeRepo([router, books, crm], { 'zoho-router': ['sk-crm'] }),
+      logger: noopLogger,
+    });
+    const grantedSkillIds = new Set(['zoho-router', 'sk-crm']);
+
+    const listed = await service.listVisible({ companyId: 'co', departmentId: 'dep', permission, grantedSkillIds });
+    const searched = await service.searchVisibleRouters({
+      companyId: 'co',
+      departmentId: 'dep',
+      permission,
+      grantedSkillIds,
+      query: 'zoho',
+      limit: 3,
+    });
+    const fetched = await service.getVisible({
+      companyId: 'co',
+      departmentId: 'dep',
+      permission,
+      grantedSkillIds,
+      skillId: 'zoho-router',
+    });
+
+    assert.equal(listed.some((skill) => skill.id === 'zoho-router'), false);
+    assert.deepEqual(searched, []);
+    assert.equal(fetched, null);
+
+    const visibleService = new SkillCatalogService({
+      repo: makeRepo([router, books, crm], { 'zoho-router': ['sk-books'] }),
+      logger: noopLogger,
+    });
+    const visible = await visibleService.getVisible({
+      companyId: 'co',
+      departmentId: 'dep',
+      permission,
+      grantedSkillIds: new Set(['zoho-router', 'sk-books']),
+      skillId: 'zoho-router',
+    });
+    assert.equal(visible?.id, 'zoho-router');
   });
 });
 

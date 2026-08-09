@@ -5,6 +5,8 @@
  * touches rather than taking this union, so a delivery repository cannot reach
  * a subscription row by accident and a reader can see an aggregate's whole
  * surface from its constructor.
+ *
+ * There are five aggregates now, not four: the brief joined them.
  */
 import type { PrismaClient } from '../../../generated/prisma';
 
@@ -15,6 +17,7 @@ export type MailOpsDb = Pick<
   | 'mailAutomationRule'
   | 'mailEvent'
   | 'mailDelivery'
+  | 'mailBrief'
   | '$transaction'
   | '$executeRaw'
 >;

@@ -10,9 +10,19 @@
  */
 import { FormEvent, useEffect, useRef, useState } from "react"
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
-import { Loader2 } from "lucide-react"
+import { CheckCircle2, Loader2, Mail, ShieldCheck, Sparkles } from "lucide-react"
 import { AuthCard, AuthError, Field } from "@/components/admin/auth-card"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
+import { api } from "@/lib/api"
+import { GmailMark } from "@/pages/workspace/brand"
+
+const GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
+const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
+
+function hasMailerScopes(scopes: readonly string[] = []) {
+  const normalized = new Set(scopes.map((scope) => scope.trim().toLowerCase().replace(/\/$/, "")))
+  return normalized.has(GMAIL_MODIFY_SCOPE) && normalized.has(GMAIL_SEND_SCOPE)
+}
 
 export function LoginPage() {
   const [email, setEmail] = useState("")
@@ -20,7 +30,9 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   /** Which button is busy — so only the one that was pressed shows a spinner. */
   const [busy, setBusy] = useState<"lark" | "password" | null>(null)
-  const { loginWithLark, completeLarkLogin, loginWithPassword } = useAdminAuth()
+  const [mailerStep, setMailerStep] = useState<"signin" | "gmail" | "done">("signin")
+  const [gmailBusy, setGmailBusy] = useState(false)
+  const { token, loginWithLark, completeLarkLogin, loginWithPassword } = useAdminAuth()
   const navigate = useNavigate()
   const [params] = useSearchParams()
 
@@ -39,19 +51,87 @@ export function LoginPage() {
   const callbackStarted = useRef(false)
   const attemptInFlight = useRef(false)
 
-  const attempt = async (kind: "lark" | "password", run: () => Promise<void>) => {
+  const attempt = async (
+    kind: "lark" | "password",
+    run: () => Promise<void>,
+    options: { navigateAfter?: boolean } = {},
+  ) => {
     if (attemptInFlight.current) return
     attemptInFlight.current = true
     setBusy(kind)
     setError(null)
     try {
       await run()
-      navigate(next, { replace: true })
+      if (options.navigateAfter !== false) navigate(next, { replace: true })
     } catch (signInError) {
       setError(signInError instanceof Error ? signInError.message : "Sign-in failed.")
     } finally {
       setBusy(null)
       attemptInFlight.current = false
+    }
+  }
+
+  const completeLark = async () => {
+    if (!larkCode || !larkState) return
+    await attempt("lark", async () => {
+      await completeLarkLogin(larkCode, larkState)
+      const cleanParams = new URLSearchParams(window.location.search)
+      cleanParams.delete("lark_code")
+      cleanParams.delete("lark_state")
+      cleanParams.delete("error")
+      const cleanQuery = cleanParams.toString()
+      window.history.replaceState(null, "", `${window.location.pathname}${cleanQuery ? `?${cleanQuery}` : ""}${window.location.hash}`)
+      setMailerStep("gmail")
+    }, { navigateAfter: false })
+  }
+
+  const connectGmail = async () => {
+    if (!token || gmailBusy) return
+    setGmailBusy(true)
+    setError(null)
+    try {
+      const { authorizeUrl } = await api.get<{ authorizeUrl: string }>(
+        "/api/desktop/auth/google/authorize-url?for=mailAutomations",
+        token,
+        { quiet: true, timeoutMs: 12_000 },
+      )
+      const popup = window.open(authorizeUrl, "divo-connect-google-mailer", "width=520,height=720")
+      if (!popup) throw new Error("Your browser blocked the Gmail connect window. Allow pop-ups and try again.")
+
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          window.clearInterval(timer)
+          window.removeEventListener("message", onMessage)
+          resolve()
+        }
+        const onMessage = (event: MessageEvent) => {
+          if (event.origin !== window.location.origin) return
+          const data = event.data as { source?: string; provider?: string; ok?: boolean } | null
+          if (data?.source === "divo-connection" && data.ok && data.provider === "google_workspace") done()
+        }
+        const timer = window.setInterval(() => {
+          if (popup.closed) done()
+        }, 500)
+        window.addEventListener("message", onMessage)
+      })
+
+      const status = await api.get<{
+        connected: boolean
+        connections?: Array<{ scopes?: string[]; reconnectRequired?: boolean }>
+      }>(
+        "/api/desktop/auth/google/status",
+        token,
+        { quiet: true, timeoutMs: 12_000 },
+      )
+      const mailConnected = status.connections?.some(
+        (connection) => !connection.reconnectRequired && hasMailerScopes(connection.scopes),
+      ) ?? false
+      if (!mailConnected) throw new Error("Gmail was not connected. Try the Google step again.")
+      setMailerStep("done")
+    } catch (gmailError) {
+      setError(gmailError instanceof Error ? gmailError.message : "Gmail connection failed.")
+    } finally {
+      setGmailBusy(false)
     }
   }
 
@@ -63,15 +143,21 @@ export function LoginPage() {
   useEffect(() => {
     if (!larkCode || !larkState || callbackStarted.current) return
     callbackStarted.current = true
-    void attempt("lark", () => completeLarkLogin(larkCode, larkState))
+    void completeLark()
   }, [completeLarkLogin, larkCode, larkState])
 
   return (
     <AuthCard
-      title="Sign in to Divo"
-      description="One account for the web app and for Divo in Lark."
+      title={mailerStep === "signin" ? "Sign in to Divo" : mailerStep === "gmail" ? "Connect Gmail for Divo Mailer" : "Divo Mailer is on"}
+      description={
+        mailerStep === "signin"
+          ? "One account for the web app and for Divo in Lark."
+          : mailerStep === "gmail"
+            ? "Give Divo access to your work mail so it can deliver your brief in Lark."
+            : "Your mailbox is connected. Divo is checking it now and will send your first brief in Lark."
+      }
     >
-      <div className="ws-auth-form">
+      {mailerStep === "signin" ? <div className="ws-auth-form">
         <button
           type="button"
           className="btn primary"
@@ -125,7 +211,43 @@ export function LoginPage() {
           <Link to="/signup/company-admin">Create a workspace</Link>
           <Link to="/signup/member-invite">Accept an invite</Link>
         </div>
-      </div>
+      </div> : (
+        <div className="ws-auth-form">
+          <div className="ws-auth-mailer">
+            <div className="ws-auth-mailer-head">
+              <span className="ws-auth-mailer-mark"><GmailMark size={28} /></span>
+              <div>
+                <b>Divo Mailer</b>
+                <p>Mail brief, follow-ups, and handled work delivered where you already talk to Divo.</p>
+              </div>
+            </div>
+            <ul className="ws-auth-mailer-list">
+              <li><Mail size={14} /><span>Summarizes what arrived and what needs you.</span></li>
+              <li><Sparkles size={14} /><span>Finds follow-ups, blockers, and useful replies.</span></li>
+              <li><ShieldCheck size={14} /><span>Keeps Gmail as the source of truth.</span></li>
+            </ul>
+          </div>
+
+          <AuthError message={error} />
+
+          {mailerStep === "gmail" ? (
+            <button type="button" className="btn primary" disabled={!token || gmailBusy} onClick={() => void connectGmail()}>
+              {gmailBusy ? <Loader2 size={14} className="ws-spin" /> : <GmailMark size={14} />}
+              {gmailBusy ? "Waiting for Google" : "Connect Gmail"}
+            </button>
+          ) : (
+            <>
+              <div className="ws-auth-ok">
+                <CheckCircle2 size={14} />
+                <span>Divo Mailer will send your first brief in Lark.</span>
+              </div>
+              <button type="button" className="btn primary" onClick={() => navigate(next, { replace: true })}>
+                Continue to Divo
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </AuthCard>
   )
 }

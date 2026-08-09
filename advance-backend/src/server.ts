@@ -29,6 +29,7 @@ import { createAdminAuthMiddleware } from './http/middleware/admin-auth.middlewa
 import { createMemberAuthMiddleware, MEMBER_SESSION_TTL_MINUTES } from './http/middleware/member-auth.middleware';
 import { createDesktopToolsRoutes } from './http/desktop/desktop-tools.routes';
 import { createMailAutomationsRoutes } from './http/mail/mail-automations.routes';
+import { createMailGovernanceRoutes } from './http/mail/mail-governance.routes';
 import { createDesktopDepartmentRoutes } from './http/desktop/desktop-departments.routes';
 import { createDesktopApprovalRoutes } from './http/desktop/desktop-approvals.routes';
 import { createDesktopActivityRoutes, createDesktopTeamActivityRoutes } from './http/desktop/desktop-activity.routes';
@@ -135,6 +136,7 @@ export const createServer = (c: Container): DivoServerApplication => {
     batchingEnabled:       c.env.LARK_MESSAGE_BATCHING === 'on',
     prisma:                c.prisma,
     larkContactsClient:    c.larkContactsClient,
+    conversationAttachments: c.conversationAttachments,
     ...(voiceFileClient && voiceTranscriber
       ? { voiceFileClient, voiceTranscriber }
       : {}),
@@ -561,8 +563,9 @@ export const createServer = (c: Container): DivoServerApplication => {
     }),
   );
 
-  // Shopify connect is member-authenticated; the provider callback remains
-  // public but requires signed HMAC, a signed browser cookie, and one-time state.
+  // Legacy Shopify OAuth remains member-authenticated to start and HMAC/state
+  // checked to finish. The admin Connected Apps UI uses per-store client
+  // credentials instead, so most stores do not hit this browser callback path.
   app.use(
     '/api/shopify/auth',
     createShopifyAuthRoutes({
@@ -695,6 +698,11 @@ export const createServer = (c: Container): DivoServerApplication => {
       // A browser session carries no run context, so the department has to be
       // looked up rather than read off the token.
       resolveDepartmentId: c.resolveMemberDepartmentId,
+      canRunMailRules: c.canRunMailRules,
+      // The standing summary. Same repository the worker reads it from, so the
+      // schedule a member sets and the schedule the worker fires on cannot be
+      // two different answers.
+      briefRepo: c.mailOpsRepo,
       compileRule: c.compileMailRule,
       memberAuth: {
         prisma: c.prisma,
@@ -749,6 +757,7 @@ export const createServer = (c: Container): DivoServerApplication => {
       zohoTokenService:       c.zohoTokenService,
       zohoConnectionRepo:     c.zohoConnectionRepo,
       connectionRepo:         c.integrationConnectionRepo,
+      mailBriefOnboarding:    c.mailBriefOnboarding,
       invalidateLarkIdentityCache: (larkOpenId: string) =>
         c.channelIdentityRepo.invalidateIdentityCache(larkOpenId),
       permissions:            c.permissions,
@@ -820,6 +829,25 @@ export const createServer = (c: Container): DivoServerApplication => {
   }
 
   // Department admin CRUD
+  /*
+   * Whose mail leaves the company, and where it goes.
+   *
+   * Admin-guarded and separate from `/api/mail-automations` on purpose: that
+   * router is pinned to the signed-in member and answers "what is Divo doing
+   * for me". This one crosses every member in the company, which is a different
+   * question with a different audience — and mounting it beside the personal
+   * reads would have made a member-auth token enough to read everybody's
+   * forwarding addresses.
+   */
+  app.use(
+    '/api/admin/mail-governance',
+    adminAuth,
+    createMailGovernanceRoutes({
+      readRepo: c.mailOpsReadRepo,
+      logger: c.logger,
+    }),
+  );
+
   app.use(
     '/api/admin/departments',
     adminAuth,

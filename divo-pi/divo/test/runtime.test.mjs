@@ -8,6 +8,7 @@ import {
 	buildAgentConfiguration,
 	buildChildEnvironment,
 	buildPiArguments,
+	buildPiLaunch,
 	buildRunCorrelationContext,
 	deleteDurablePiSession,
 	imagePolicyFor,
@@ -135,6 +136,27 @@ describe("Divo Pi runtime boundary", () => {
 		const systemPrompt = args[args.indexOf("--append-system-prompt") + 1];
 		assert.match(systemPrompt, /complete user-facing result in chat/i);
 		assert.doesNotMatch(systemPrompt, /DIVO_ARTIFACTS_DIR|divo_artifact/i);
+	});
+
+	it("launches compiled Pi without tsx-only arguments and keeps the source fallback", () => {
+		const launch = buildPiLaunch(values, "compiled");
+		assert.equal(launch.executable, process.execPath);
+		assert.ok(launch.entrypoint.endsWith("/packages/coding-agent/dist/cli.js"));
+		assert.equal(launch.args[0], launch.entrypoint);
+		assert.ok(!launch.args.includes("--tsconfig"));
+		assert.ok(!launch.args.some((argument) => argument.endsWith("/src/cli.ts")));
+
+		const source = buildPiLaunch(values);
+		assert.ok(source.executable.endsWith("/node_modules/.bin/tsx"));
+		assert.ok(source.args.includes("--tsconfig"));
+		assert.ok(source.entrypoint.endsWith("/packages/coding-agent/src/cli.ts"));
+	});
+
+	it("builds compiled Pi before selecting it in the runtime image", () => {
+		const dockerfile = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "Dockerfile"), "utf8");
+		assert.match(dockerfile, /npm run build --workspace packages\/coding-agent/);
+		assert.doesNotMatch(dockerfile, /RUN npm run build\s*$/m);
+		assert.match(dockerfile, /DIVO_PI_ENTRY_MODE="compiled"/);
 	});
 });
 

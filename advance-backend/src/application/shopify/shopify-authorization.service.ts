@@ -100,9 +100,73 @@ export class ShopifyAuthorizationService {
     });
   }
 
+  async connectWithClientCredentials(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly shopDomain: string;
+    readonly clientId: string;
+    readonly clientSecret: string;
+    readonly label?: string;
+  }): Promise<{
+    readonly status: 'connected';
+    readonly connectionId: string;
+    readonly shopDomain: string;
+    readonly shopName: string;
+    readonly scopes: readonly string[];
+    readonly accessTokenExpiresAt: Date;
+  }> {
+    const shopDomain = normalizeShopDomain(input.shopDomain);
+    if (!shopDomain) {
+      throw new ShopifyAuthorizationError('provider_failure', 'Use a valid *.myshopify.com store domain.');
+    }
+
+    const tokens = await this.deps.oauth.exchangeClientCredentials({
+      shop: shopDomain,
+      clientId: input.clientId,
+      clientSecret: input.clientSecret,
+      minimumScopes: this.deps.scopes,
+    });
+    const identityResponse = await this.deps.adminClient.query<{ shop: unknown }>({
+      shop: shopDomain,
+      accessToken: tokens.accessToken,
+      query: 'query DivoShopIdentity { shop { id name myshopifyDomain } }',
+    });
+    const identity = identitySchema.safeParse(identityResponse.data);
+    if (!identity.success || normalizeShopDomain(identity.data.shop.myshopifyDomain) !== shopDomain) {
+      throw new ShopifyAuthorizationError('provider_failure', 'Shopify returned an invalid or mismatched shop identity.');
+    }
+    const saved = await this.deps.connections.upsertShopifyConnection({
+      companyId: input.companyId,
+      ownerType: 'company',
+      createdBy: input.userId,
+      ...(input.label ? { label: input.label } : {}),
+      shopDomain,
+      shopName: identity.data.shop.name,
+      shopGraphqlId: identity.data.shop.id,
+      accessToken: tokens.accessToken,
+      accessTokenExpiresAt: tokens.accessTokenExpiresAt,
+      scopes: tokens.scopes,
+      apiVersion: this.deps.apiVersion,
+      clientCredentials: {
+        clientId: input.clientId,
+        clientSecret: input.clientSecret,
+      },
+    });
+    if (!saved.ok) throw new ShopifyAuthorizationError('unavailable', 'Shopify connection could not be persisted.', saved.error);
+    return {
+      status: 'connected',
+      connectionId: saved.value.id,
+      shopDomain,
+      shopName: identity.data.shop.name,
+      scopes: tokens.scopes,
+      accessTokenExpiresAt: tokens.accessTokenExpiresAt,
+    };
+  }
+
   async complete(input: {
     readonly searchParams: URLSearchParams;
     readonly signedStateCookie?: string;
+    readonly expectedCompanyId?: string;
   }): Promise<{ status: 'connected' | 'denied'; returnTo?: string }> {
     const verified = this.deps.oauth.verifyCallback(input.searchParams);
     const cookieState = this.deps.oauth.verifyStateCookie(input.signedStateCookie, verified.state)
@@ -119,6 +183,9 @@ export class ShopifyAuthorizationService {
     if (!claimed.value) throw new ShopifyAuthorizationError('invalid_state', 'Shopify OAuth state is expired or already consumed.');
     const attempt = claimed.value;
     try {
+      if (input.expectedCompanyId && attempt.companyId !== input.expectedCompanyId) {
+        throw new ShopifyAuthorizationError('invalid_state', 'Shopify OAuth state belongs to another company.');
+      }
       if (attempt.shopDomain !== verified.shop) throw new ShopifyAuthorizationError('invalid_state', 'Shopify OAuth shop does not match the requested store.');
       if (verified.error || !verified.code) {
         const failed = await this.deps.attempts.fail(attempt.id, verified.error || 'access_denied');

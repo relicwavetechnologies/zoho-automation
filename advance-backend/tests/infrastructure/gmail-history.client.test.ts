@@ -50,6 +50,51 @@ const endlessPage = (recordId: string): Json => ({
 });
 
 describe('GmailHistoryClient history draining', () => {
+  it('sweeps the recent inbox on a brand-new mailbox sync', async () => {
+    const urls: string[] = [];
+    const fetchStub = (async (url: string) => {
+      urls.push(url);
+      if (url.includes('/profile')) {
+        return { ok: true, status: 200, json: async () => ({ historyId: '5000' }) };
+      }
+      if (url.includes('/messages?')) {
+        return { ok: true, status: 200, json: async () => ({ messages: [{ id: 'm1' }] }) };
+      }
+      if (url.includes('/messages/')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: 'm1',
+            threadId: 't1',
+            historyId: '4999',
+            internalDate: '1786208400000',
+            snippet: 'Welcome to Divo Mailer',
+            payload: {
+              mimeType: 'text/plain',
+              headers: [
+                { name: 'From', value: 'Meera <meera@example.com>' },
+                { name: 'To', value: 'user@example.com' },
+                { name: 'Subject', value: 'First brief' },
+              ],
+            },
+          }),
+        };
+      }
+      throw new Error(`unexpected Gmail URL: ${url}`);
+    }) as unknown as typeof fetch;
+    const client = new GmailHistoryClient(fetchStub);
+
+    const sync = await client.sync({ accessToken: 'token' });
+
+    assert.equal(sync.nextHistoryId, '5000');
+    assert.equal(sync.staleCursorRecovered, false);
+    assert.equal(sync.events.length, 1);
+    assert.equal(sync.events[0]?.metadata.subject, 'First brief');
+    const messageListUrl = urls.find(url => url.includes('/messages?'));
+    assert.equal(messageListUrl ? new URL(messageListUrl).searchParams.get('q') : undefined, 'in:inbox newer_than:7d');
+  });
+
   it('stops at the page cap instead of throwing', async () => {
     const { client } = gmailWith([endlessPage('120')]);
 

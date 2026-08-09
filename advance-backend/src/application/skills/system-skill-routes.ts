@@ -30,16 +30,19 @@ export const ROUTING_SYSTEM_SKILLS = [
 
 Choose the exact approved specialist returned by this router.
 
-- Menhood order, customer, product, RTO, COD, campaign, or pincode analysis that needs joins, aggregates, cohorts, broad filtering, or bulk analysis → \`menhood-data\`. This company-managed source needs no Airtable connection ID and does not use local Python.
+- Settled Menhood order, customer, product, RTO, COD, campaign, or pincode analysis that needs joins, aggregates, cohorts, broad filtering, or bulk analysis → \`menhood-data\`. This company-managed reporting source needs no Airtable connection ID and does not use local Python.
+- Current/latest Menhood order counts, the current or previous month before reporting maturity, or questions that depend on Airtable-only view fields such as \`Order Status (Team)\`, \`Order Sub Status\`, Duplicate/TEST/Testing cleanup, or Regular Order filtering → \`airtable-core\` against the live Airtable Orders table. Route there immediately; do not first sample the reporting DB and do not ask whether to check Airtable. Use this for exact live reconciliation, not broad historical analysis.
 - Ordinary Airtable records, comments, and CRUD → \`airtable-core\`.
 - Bases, tables, fields, schemas, and views → \`airtable-schema-ops\`.
 - Interfaces, forms, and automations → \`airtable-automation-ops\`.
 
 Airtable MCP is for ordinary record work, schema work, discovery, and bounded
-preview. Do not route broad analytics or full exports through Airtable MCP
-pagination; use the company-managed Menhood data source when the request is
-about synced Menhood data, otherwise ask for a bounded preview or a backend
-replayable export source.
+preview. Do not route broad historical analytics or full exports through
+Airtable MCP pagination; use the company-managed Menhood data source when the
+request is about settled synced Menhood data. Use live Airtable only for narrow
+current/recent Menhood counts or Airtable-view semantics, and say plainly when a
+bounded preview is not enough to prove a total. Otherwise ask for a bounded
+preview or a backend replayable export source.
 
 Airtable and AITable are different products. Never route an AITable request here.
 This router is instruction-only: loading it successfully means to load one specialist above next.`,

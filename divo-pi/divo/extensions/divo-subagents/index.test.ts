@@ -4,11 +4,12 @@ import extension, {
 	applyChildEvent,
 	buildDivoSubagentArgs,
 	buildDivoSubagentEnvironment,
+	createUpdateEmitter,
 	getPiInvocation,
 	resolveDivoChildModel,
 } from "./index.ts";
 import { getDivoSubagentRole } from "./agents.ts";
-import { createChild, MAX_OUTPUT_PREVIEW_CHARS } from "./progress.ts";
+import { createChild, MAX_OUTPUT_PREVIEW_CHARS, startChild } from "./progress.ts";
 import {
 	captureDivoGatewayConfig,
 	clearCapturedDivoGatewayConfig,
@@ -55,6 +56,25 @@ test("keeps the full completed assistant message separate from its live preview"
 
 	assert.equal(captured, report);
 	assert.equal(child.outputPreview, `${report.slice(0, MAX_OUTPUT_PREVIEW_CHARS)}…`);
+});
+
+test("subagent emitter refreshes quiet running children", async () => {
+	const child = createChild(0, "scout", "Read the export");
+	const updates: unknown[] = [];
+	const emitter = createUpdateEmitter(
+		(update) => updates.push(update),
+		"call-1",
+		"single",
+		[child],
+		5,
+	);
+
+	startChild(child);
+	emitter.emit(true);
+	await new Promise((resolve) => setTimeout(resolve, 15));
+	emitter.stop();
+
+	assert.ok(updates.length >= 2);
 });
 
 test("passes captured member auth only to the Pi child environment", () => {

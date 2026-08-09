@@ -333,15 +333,6 @@ describe('zohoCrm tool', () => {
 // ─── zoho-books ───────────────────────────────────────────────────────────────
 
 describe('zohoBooks tool', () => {
-  const fakeBooksClient = {
-    listInvoices:  async () => [{ invoiceId: 'inv-1', total: 100 }],
-    getInvoice:    async () => ({ invoiceId: 'inv-1', total: 100 }),
-    createInvoice: async () => ({ invoiceId: 'inv-new' }),
-    listContacts:  async () => [{ contactId: 'con-1', name: 'Alice' }],
-    getContact:    async () => ({ contactId: 'con-1', name: 'Alice' }),
-    listExpenses:  async () => [{ expenseId: 'exp-1', amount: 50 }],
-  };
-
   const fakeFinanceOps: Partial<ZohoFinanceOps> = {
     buildOverdueReport: async () => ({
       summary: '2 invoices overdue',
@@ -373,37 +364,33 @@ describe('zohoBooks tool', () => {
     }),
   } as unknown as ZohoBooksPaginatedClient;
 
-  const makeBooksTool = (getClient: typeof noClient | typeof yesClient, financeOps = fakeFinanceOps as ZohoFinanceOps) =>
+  const makeBooksTool = (financeOps = fakeFinanceOps as ZohoFinanceOps) =>
     createZohoBooksTool({
-      getClient,
       financeOps,
       booksClient: fakePaginatedBooksClient,
     });
 
-  const noClient  = async () => null;
-  const yesClient = async () => fakeBooksClient;
-
   describe('permissionCheck', () => {
     it('returns "read" for op=list_invoices', () => {
-      const tool = makeBooksTool(noClient);
+      const tool = makeBooksTool();
       const r = tool.permissionCheck({ op: 'list_invoices' }, makeAllowedPerm('zohoBooks', ['read']));
       assert.equal((r as any).value, 'read');
     });
 
     it('returns "create" for op=create_invoice', () => {
-      const tool = makeBooksTool(noClient);
+      const tool = makeBooksTool();
       const r = tool.permissionCheck({ op: 'create_invoice' }, makeAllowedPerm('zohoBooks', ['create']));
       assert.equal((r as any).value, 'create');
     });
 
     it('denies when not in allowedActionsByTool', () => {
-      const tool = makeBooksTool(noClient);
+      const tool = makeBooksTool();
       const r = tool.permissionCheck({ op: 'list_invoices' }, makeDeniedPerm());
       assert.equal(r.ok, false);
     });
 
     it('denies create when only read allowed', () => {
-      const tool = makeBooksTool(noClient);
+      const tool = makeBooksTool();
       const r = tool.permissionCheck({ op: 'create_invoice' }, makeAllowedPerm('zohoBooks', ['read']));
       assert.equal(r.ok, false);
     });
@@ -412,15 +399,20 @@ describe('zohoBooks tool', () => {
   describe('execute', () => {
     const ctx = makeCtx('zohoBooks', ['read', 'create']);
 
-    it('get_invoice: no client → unrecoverable', async () => {
-      const tool = makeBooksTool(noClient);
-      const r = await tool.execute({ op: 'get_invoice', invoiceId: 'inv-1' }, ctx);
+    it('get_invoice: provider error → upstream_failure', async () => {
+      const tool = createZohoBooksTool({
+        financeOps: fakeFinanceOps as ZohoFinanceOps,
+        booksClient: {
+          getEndpoint: async () => { throw new Error('Zoho Books 401: invalid token'); },
+        } as unknown as ZohoBooksPaginatedClient,
+      });
+      const r = await tool.execute({ op: 'get_invoice', invoiceId: '1500000000001' }, ctx);
       assert.equal(r.ok, false);
-      assert.equal((r as any).error.payload.reason, 'unrecoverable');
+      assert.equal((r as any).error.payload.reason, 'upstream_failure');
     });
 
     it('list_invoices: ok with invoices', async () => {
-      const tool = makeBooksTool(yesClient);
+      const tool = makeBooksTool();
       const r = await tool.execute({ op: 'list_invoices' }, ctx);
       assert.equal(r.ok, true);
     });
@@ -438,7 +430,6 @@ describe('zohoBooks tool', () => {
         }),
       } as unknown as ZohoBooksPaginatedClient;
       const tool = createZohoBooksTool({
-        getClient: yesClient,
         financeOps: fakeFinanceOps as ZohoFinanceOps,
         booksClient,
       });
@@ -455,7 +446,7 @@ describe('zohoBooks tool', () => {
     });
 
     it('personalized scope rejects aggregate Books reports', async () => {
-      const tool = makeBooksTool(yesClient);
+      const tool = makeBooksTool();
       const personalized = makeCtx('zohoBooks', ['read'], { requesterEmail: 'member@example.com' });
       (personalized.perm as any).department = { zohoReadScope: 'personalized' };
 
@@ -466,25 +457,25 @@ describe('zohoBooks tool', () => {
     });
 
     it('get_invoice: ok with invoice', async () => {
-      const tool = makeBooksTool(yesClient);
+      const tool = makeBooksTool();
       const r = await tool.execute({ op: 'get_invoice', invoiceId: 'inv-1' }, ctx);
       assert.equal(r.ok, true);
     });
 
     it('list_contacts: ok with contacts', async () => {
-      const tool = makeBooksTool(yesClient);
+      const tool = makeBooksTool();
       const r = await tool.execute({ op: 'list_contacts' }, ctx);
       assert.equal(r.ok, true);
     });
 
     it('list_expenses: ok with expenses', async () => {
-      const tool = makeBooksTool(yesClient);
+      const tool = makeBooksTool();
       const r = await tool.execute({ op: 'list_expenses' }, ctx);
       assert.equal(r.ok, true);
     });
 
     it('build_overdue_report: ok using financeOps (bypasses client)', async () => {
-      const tool = makeBooksTool(noClient);
+      const tool = makeBooksTool();
       const r = await tool.execute({ op: 'build_overdue_report' }, ctx);
       assert.equal(r.ok, true);
       assert.ok((r as any).value.report);
@@ -494,7 +485,7 @@ describe('zohoBooks tool', () => {
       const throwingOps: Partial<ZohoFinanceOps> = {
         buildOverdueReport: async () => { throw new Error('finance down'); },
       };
-      const tool = makeBooksTool(noClient, throwingOps as ZohoFinanceOps);
+      const tool = makeBooksTool(throwingOps as ZohoFinanceOps);
       const r = await tool.execute({ op: 'build_overdue_report' }, ctx);
       assert.equal(r.ok, false);
       assert.equal((r as any).error.payload.reason, 'upstream_failure');
@@ -505,7 +496,6 @@ describe('zohoBooks tool', () => {
         listRecords: async () => { throw new Error('err'); },
       } as unknown as ZohoBooksPaginatedClient;
       const tool = createZohoBooksTool({
-        getClient: yesClient,
         financeOps: fakeFinanceOps as ZohoFinanceOps,
         booksClient: throwingPaginated,
       });

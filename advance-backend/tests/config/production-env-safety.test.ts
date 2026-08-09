@@ -65,22 +65,49 @@ describe('production environment safety', () => {
       DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS: true,
       DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: true,
     });
+    /*
+     * `disableCompanyAdminExternalForwardExemption` is false throughout, and an
+     * absent key has to produce `false` rather than `undefined` — an operator
+     * handing over a partial env should get the exemption, not a third state
+     * nothing downstream reads.
+     */
     assert.deepEqual(resolveApprovalGateOptions(productionPolicy), {
       disableManagerSelfBypass: true,
       suppressCardDelivery: false,
+      disableCompanyAdminExternalForwardExemption: false,
     });
     assert.deepEqual(validateProductionEnv(productionPolicy), []);
 
     assert.deepEqual(resolveApprovalGateOptions(production({
       DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS: false,
       DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: true,
-    })), { disableManagerSelfBypass: false, suppressCardDelivery: false });
+    })), {
+      disableManagerSelfBypass: false,
+      suppressCardDelivery: false,
+      disableCompanyAdminExternalForwardExemption: false,
+    });
 
     assert.deepEqual(resolveApprovalGateOptions({
       NODE_ENV: 'test',
       DIVO_APPROVAL_DISABLE_MANAGER_SELF_BYPASS: false,
       DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: true,
-    }), { disableManagerSelfBypass: true, suppressCardDelivery: false });
+    }), {
+      disableManagerSelfBypass: true,
+      suppressCardDelivery: false,
+      disableCompanyAdminExternalForwardExemption: false,
+    });
+  });
+
+  it('holds an admin to approval only when asked to, in production too', () => {
+    // The exemption is a deliberate loosening, so the switch that takes it back
+    // must work where it matters — unlike `suppressCardDelivery`, which is
+    // ignored in production on purpose.
+    assert.equal(
+      resolveApprovalGateOptions(production({
+        DIVO_MAIL_OPS_ADMIN_NEEDS_EXTERNAL_APPROVAL: true,
+      })).disableCompanyAdminExternalForwardExemption,
+      true,
+    );
   });
 
   it('will not silence approval cards in production, whatever the switch says', () => {
@@ -115,22 +142,25 @@ describe('production environment safety', () => {
     );
   });
 
-  it('fails startup for incomplete, insecure, or non-encrypting Shopify production configuration', () => {
+  it('fails startup for incomplete, insecure legacy Shopify OAuth or non-encrypting production configuration', () => {
     const issues = validateProductionEnv(production({
       SHOPIFY_CLIENT_ID: undefined,
       SHOPIFY_CLIENT_SECRET: undefined,
       SHOPIFY_REDIRECT_URI: 'http://127.0.0.1:3000/api/shopify/auth/callback',
       INTEGRATION_TOKEN_ENCRYPTION_KEY: 'short',
     }));
-    assert.ok(issues.some(issue => issue.includes('SHOPIFY_CLIENT_ID')));
-    assert.ok(issues.some(issue => issue.includes('SHOPIFY_CLIENT_SECRET')));
+    assert.ok(issues.some(issue => issue.includes('SHOPIFY_CLIENT_ID is required when legacy Shopify OAuth is configured')));
+    assert.ok(issues.some(issue => issue.includes('SHOPIFY_CLIENT_SECRET is required when legacy Shopify OAuth is configured')));
     assert.ok(issues.some(issue => issue.includes('SHOPIFY_REDIRECT_URI must use HTTPS')));
     assert.ok(issues.some(issue => issue.includes('INTEGRATION_TOKEN_ENCRYPTION_KEY')));
   });
 
-  it('fails startup when the Shopify production callback is absent', () => {
-    const issues = validateProductionEnv(production({ SHOPIFY_REDIRECT_URI: undefined }));
-    assert.ok(issues.some(issue => issue.includes('SHOPIFY_REDIRECT_URI is required')));
+  it('does not require legacy Shopify OAuth when stores use per-store credentials', () => {
+    assert.deepEqual(validateProductionEnv(production({
+      SHOPIFY_CLIENT_ID: undefined,
+      SHOPIFY_CLIENT_SECRET: undefined,
+      SHOPIFY_REDIRECT_URI: undefined,
+    })), []);
   });
 
   it('allows protected Shopify tools only with their exact provider scopes', () => {

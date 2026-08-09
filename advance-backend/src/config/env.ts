@@ -232,8 +232,9 @@ export const EnvSchema = z.object({
   AITABLE_BASE_URL:          z.string().default('https://aitable.ai'),
 
   // ── Shopify Admin GraphQL + ShopifyQL ────────────────────────────────────
-  // Standalone Divo uses Shopify's authorization-code flow. Credentials and
-  // resulting shop tokens remain backend-only; Pi receives connection IDs.
+  // Stores are normally connected with per-store Dev Dashboard client
+  // credentials. Legacy authorization-code OAuth remains available when a
+  // redirect URI is configured. Credentials and shop tokens remain backend-only.
   SHOPIFY_CLIENT_ID:        z.string().optional(),
   SHOPIFY_CLIENT_SECRET:    z.string().optional(),
   SHOPIFY_REDIRECT_URI:     z.string().url().optional(),
@@ -254,6 +255,21 @@ export const EnvSchema = z.object({
   ZOHO_REDIRECT_URI:         z.string().optional(),
   ZOHO_ACCOUNTS_BASE_URL:    z.string().default('https://accounts.zoho.com'),
   ZOHO_API_BASE_URL:         z.string().default('https://www.zohoapis.com'),
+  // Web base for Zoho Books record links. Set this to the org's custom finance
+  // domain when it has one; the default is the generic Zoho Books app.
+  ZOHO_BOOKS_APP_BASE_URL:   z.string().default('https://books.zoho.com'),
+  // Reads a draft invoice cold before the member is shown it.
+  ZOHO_INVOICE_REVIEW_MODEL_ID: z.string().default('deepseek-chat'),
+  // Fallback selling state, in Zoho's own spelling — 'RJ', not '08' — because it
+  // is compared against an invoice's `place_of_supply`, which Zoho writes that
+  // way. A code in the other alphabet matches nothing and would call every
+  // intra-state sale inter-state.
+  //
+  // Normally unset: the state is taken from the Zoho organisation being written
+  // to, which is the only value that can be right when one connection reaches
+  // organisations in several states. Absent and unresolvable means the
+  // IGST-versus-CGST direction is reported as unchecked, never guessed.
+  ZOHO_BOOKS_HOME_GST_STATE_CODE: z.string().optional(),
   ZOHO_TOKEN_ENCRYPTION_KEY: z.string().optional(),
   ZOHO_PROVIDER_DEFAULT:     z.enum(['rest', 'mcp']).default('rest'),
   ZOHO_MCP_ENABLED:          booleanStr.default('false'),
@@ -371,6 +387,20 @@ export const EnvSchema = z.object({
   // concurrency provokes a Gmail quota that one-at-a-time did not.
   DIVO_MAIL_OPS_MAILBOX_LANES:  z.coerce.number().int().min(1).max(16).default(4),
   DIVO_MAIL_OPS_DELIVERY_LANES: z.coerce.number().int().min(1).max(16).default(4),
+  /*
+   * Hold company admins to the same external-forward approval as everybody else.
+   *
+   * Off by default: a rule forwarding mail out of the company is approved by
+   * somebody above the person asking, and for an admin there is nobody the
+   * question is meaningfully addressed to — Divo used to card their department
+   * manager, or another admin, or refuse the rule outright when it found
+   * neither. Turn this on to restore that.
+   *
+   * Named for what it asks rather than for the flag it sets, because
+   * "disable the exemption" is how an operator ends up setting the opposite of
+   * what they meant.
+   */
+  DIVO_MAIL_OPS_ADMIN_NEEDS_EXTERNAL_APPROVAL: booleanStr.default('false'),
 
   // ── Hindsight semantic recall projection ────────────────────────────────
   // Versioned Postgres knowledge remains authoritative. Hindsight is private
@@ -520,15 +550,13 @@ export const validateProductionEnv = (env: TypedEnv): string[] => {
   if (!env.OPENROUTER_API_KEY) {
     issues.push('OPENROUTER_API_KEY is required to index approved images and scanned PDFs in production.');
   }
-  if (!env.SHOPIFY_CLIENT_ID) {
-    issues.push('SHOPIFY_CLIENT_ID is required for Shopify OAuth in production.');
-  }
-  if (!env.SHOPIFY_CLIENT_SECRET) {
-    issues.push('SHOPIFY_CLIENT_SECRET is required for Shopify OAuth in production.');
-  }
-  if (!env.SHOPIFY_REDIRECT_URI) {
-    issues.push('SHOPIFY_REDIRECT_URI is required for Shopify OAuth in production.');
-  } else {
+  if (env.SHOPIFY_REDIRECT_URI) {
+    if (!env.SHOPIFY_CLIENT_ID) {
+      issues.push('SHOPIFY_CLIENT_ID is required when legacy Shopify OAuth is configured.');
+    }
+    if (!env.SHOPIFY_CLIENT_SECRET) {
+      issues.push('SHOPIFY_CLIENT_SECRET is required when legacy Shopify OAuth is configured.');
+    }
     const redirect = new URL(env.SHOPIFY_REDIRECT_URI);
     const hostname = redirect.hostname.toLowerCase();
     if (redirect.protocol !== 'https:' || hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {

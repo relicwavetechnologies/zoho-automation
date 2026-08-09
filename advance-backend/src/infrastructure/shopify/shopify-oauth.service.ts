@@ -2,12 +2,18 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { normalizeShopDomain } from '../../domain/shopify/shopify-shop';
 
-const tokenResponseSchema = z.object({
+const expiringTokenResponseSchema = z.object({
   access_token: z.string().min(1),
   scope: z.string().default(''),
   expires_in: z.number().int().positive(),
   refresh_token: z.string().min(1),
   refresh_token_expires_in: z.number().int().positive(),
+}).passthrough();
+
+const clientCredentialsTokenResponseSchema = z.object({
+  access_token: z.string().min(1),
+  scope: z.string().default(''),
+  expires_in: z.number().int().positive(),
 }).passthrough();
 
 export type ShopifyTokenPair = {
@@ -16,6 +22,12 @@ export type ShopifyTokenPair = {
   readonly scopes: string[];
   readonly accessTokenExpiresAt: Date;
   readonly refreshTokenExpiresAt: Date;
+};
+
+export type ShopifyClientCredentialsToken = {
+  readonly accessToken: string;
+  readonly scopes: string[];
+  readonly accessTokenExpiresAt: Date;
 };
 
 export class ShopifyOAuthError extends Error {
@@ -56,8 +68,7 @@ export class ShopifyOAuthService {
 
   isConfigured(): boolean {
     return Boolean(
-      this.options.clientId?.trim()
-      && this.options.clientSecret?.trim()
+      this.hasClientCredentials()
       && this.options.redirectUri?.trim(),
     );
   }
@@ -155,6 +166,86 @@ export class ShopifyOAuthService {
     }), input.abortSignal, true);
   }
 
+  async exchangeClientCredentials(input: {
+    readonly shop: string;
+    readonly clientId: string;
+    readonly clientSecret: string;
+    readonly minimumScopes?: readonly string[];
+    readonly abortSignal?: AbortSignal;
+  }): Promise<ShopifyClientCredentialsToken> {
+    const clientId = input.clientId.trim();
+    const clientSecret = input.clientSecret.trim();
+    if (!clientId || !clientSecret) {
+      throw new ShopifyOAuthError('not_configured', 'Shopify client ID and secret are required.');
+    }
+    const shop = normalizeShopDomain(input.shop);
+    if (!shop) throw new ShopifyOAuthError('invalid_shop', 'Stored Shopify shop domain is invalid.');
+
+    let lastFailure: unknown;
+    for (let attempt = 0; attempt < this.options.maxRetries + 1; attempt += 1) {
+      input.abortSignal?.throwIfAborted();
+      try {
+        const response = await this.fetchWithTimeout(
+          `https://${shop}/admin/oauth/access_token`,
+          {
+            method: 'POST',
+            headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              grant_type: 'client_credentials',
+              client_id: clientId,
+              client_secret: clientSecret,
+            }),
+          },
+          input.abortSignal,
+        );
+        const payload = await readJson(response);
+        if (!response.ok) {
+          const message = providerMessage(payload, `Shopify token request failed with HTTP ${response.status}.`);
+          const transient = response.status === 429 || response.status >= 500;
+          if (transient && attempt + 1 < this.options.maxRetries + 1) {
+            await wait(retryDelayMs(response, attempt), input.abortSignal);
+            continue;
+          }
+          throw new ShopifyOAuthError(
+            isTokenRejected(response.status, payload) ? 'token_rejected' : 'provider_failure',
+            message,
+            response.status,
+          );
+        }
+
+        const parsed = clientCredentialsTokenResponseSchema.safeParse(payload);
+        if (!parsed.success) {
+          throw new ShopifyOAuthError('provider_failure', 'Shopify returned an incomplete client-credentials token.');
+        }
+        const scopes = splitScopes(parsed.data.scope);
+        const missingScopes = (input.minimumScopes ?? []).filter(scope => !scopes.includes(scope));
+        if (missingScopes.length > 0) {
+          throw new ShopifyOAuthError(
+            'scope_mismatch',
+            `Shopify granted fewer scopes than Divo needs (${missingScopes.join(', ')} missing).`,
+          );
+        }
+        return {
+          accessToken: parsed.data.access_token,
+          scopes,
+          accessTokenExpiresAt: new Date(this.now().getTime() + parsed.data.expires_in * 1_000),
+        };
+      } catch (error) {
+        if (error instanceof ShopifyOAuthError) throw error;
+        if (input.abortSignal?.aborted) throw input.abortSignal.reason;
+        lastFailure = error;
+        if (attempt + 1 < this.options.maxRetries + 1) {
+          await wait(Math.min(250 * 2 ** attempt, 2_000), input.abortSignal);
+          continue;
+        }
+      }
+    }
+    throw new ShopifyOAuthError(
+      'provider_failure',
+      lastFailure instanceof Error ? lastFailure.message : 'Shopify token request failed.',
+    );
+  }
+
   private async requestToken(
     rawShop: string,
     body: URLSearchParams,
@@ -162,7 +253,7 @@ export class ShopifyOAuthService {
     retryTransient: boolean,
     expectedScopes: readonly string[] = this.options.scopes,
   ): Promise<ShopifyTokenPair> {
-    this.assertConfigured();
+    this.assertClientCredentials();
     const shop = normalizeShopDomain(rawShop);
     if (!shop) throw new ShopifyOAuthError('invalid_shop', 'Stored Shopify shop domain is invalid.');
     let lastFailure: unknown;
@@ -188,12 +279,12 @@ export class ShopifyOAuthService {
             continue;
           }
           throw new ShopifyOAuthError(
-            response.status === 401 ? 'token_rejected' : 'provider_failure',
+            isTokenRejected(response.status, payload) ? 'token_rejected' : 'provider_failure',
             message,
             response.status,
           );
         }
-        const parsed = tokenResponseSchema.safeParse(payload);
+        const parsed = expiringTokenResponseSchema.safeParse(payload);
         if (!parsed.success) {
           throw new ShopifyOAuthError('provider_failure', 'Shopify returned an incomplete expiring offline token pair.');
         }
@@ -246,13 +337,23 @@ export class ShopifyOAuthService {
     }
   }
 
+  private hasClientCredentials(): boolean {
+    return Boolean(this.options.clientId?.trim() && this.options.clientSecret?.trim());
+  }
+
+  private assertClientCredentials(): void {
+    if (!this.hasClientCredentials()) {
+      throw new ShopifyOAuthError('not_configured', 'Shopify client ID and secret are not configured on this backend.');
+    }
+  }
+
   private requiredClientId(): string {
-    this.assertConfigured();
+    this.assertClientCredentials();
     return this.options.clientId!.trim();
   }
 
   private requiredClientSecret(): string {
-    this.assertConfigured();
+    this.assertClientCredentials();
     return this.options.clientSecret!.trim();
   }
 }
@@ -287,6 +388,19 @@ function providerMessage(payload: unknown, fallback: string): string {
     if (typeof value[key] === 'string' && value[key]) return value[key];
   }
   return fallback;
+}
+
+function isTokenRejected(status: number, payload: unknown): boolean {
+  if (status === 401 || status === 403) return true;
+  if (status !== 400 || !payload || typeof payload !== 'object') return false;
+  const error = (payload as Record<string, unknown>)['error'];
+  return typeof error === 'string' && new Set([
+    'invalid_client',
+    'invalid_grant',
+    'unauthorized_client',
+    'shop_not_permitted',
+    'access_denied',
+  ]).has(error);
 }
 
 function retryDelayMs(response: Response, attempt: number): number {
