@@ -78,6 +78,15 @@ describe('governed local-workflow instruction contract', () => {
     }
   });
 
+  it('documents the exact Zoho terminal result shape instead of inviting schema probes', () => {
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /data\.preview\.rows/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /data\.report\.returnedCount/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /data\.hasMore.*data\.nextPage/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /Never count keys in `data` as records/i);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /matching registered Divo Zoho tool/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /source recipe's exact toolId/);
+  });
+
   it('routes exact whole-account finance aggregates through complete governed sources', () => {
     assert.match(zohoBooksReadAnalysisSkill.instructions, /Exact whole-account, complete artifact, or potentially large aggregate/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /keep the direct model preview bounded/);

@@ -7,7 +7,7 @@ import {
 import { GOVERNED_LOCAL_AVAILABLE_RUNTIME } from './governed-local-routing';
 
 const ZOHO_CONNECTION_METHOD = `DIVO-GOVERNED ZOHO CONNECTION:
-- Invoke Zoho only through the Divo tool surface available in the current runtime: server channels use call_tool; desktop uses divo_gateway. Never call Zoho directly, use local credentials, or switch to an unavailable tool surface.
+- Invoke Zoho only through the matching registered Divo Zoho tool for a direct action. Inside a governed terminal workflow, ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use \`divo-local\` with the source recipe's exact toolId. Never call Zoho directly, use local credentials, or switch to an unavailable tool surface.
 - Reuse an exact connectionId already supplied by the current run. Otherwise omit it: the backend selects an account only when exactly one accessible account qualifies.
 - If Divo returns structured connection choices, ask one short account-choice question using those labels, then retry with the selected exact ID. Do not guess.
 - Do not call connections.list merely to rediscover an account the backend can select.
@@ -81,6 +81,7 @@ READ ROUTING:
 - Latest/recent bounded invoices -> use zohoBooks op="list_invoices" with the requested limit; it is already sorted by invoice date newest-first. Do not scan or sort thousands of rows.
 - Human invoice number -> use zohoBooks op="get_invoice" with that exact number, or list_invoices with searchQuery and accept only an exact normalized invoice_number match before using its invoice_id. Never substitute a fuzzy result.
 - Exact whole-account, complete artifact, or potentially large aggregate -> ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, load \`divo-python-automation\`, fetch \`page=1\` then each returned \`nextPage\` through the same persistent Python file, and write rows to disk before transforming or sending them to a destination. Do not pull pages into model context. If page 20 still reports more rows, state that the source cap was reached rather than claiming completeness.
+- ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, its \`--output\` file holds the governed Zoho result at \`data\`; list rows are \`data.preview.rows\`, the reported count is \`data.report.returnedCount\`, and pagination is \`data.hasMore\` plus \`data.nextPage\`. Never count keys in \`data\` as records.
 - Aging/overdue report -> use zohoBooks op="build_overdue_report".
 - Product, item, SKU, or standard rate question -> zohoBooks op="list_items". Report the item_id and rate it returns; never quote a price from memory or from an earlier conversation.
 - GST or tax rate question, and any tax decision that will be written to a record -> zohoBooks op="list_taxes". Use the tax_id it returns. Never infer a percentage from an invoice you read, and never guess a rate.

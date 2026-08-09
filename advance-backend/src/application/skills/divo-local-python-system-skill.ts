@@ -98,6 +98,10 @@ it in Python and print only counts, aggregates, validation errors, and IDs the
 user needs. A failed call does not create the output file, so correct the same
 script and rerun it with the same path.
 
+The saved JSON is \`{ ok, status, data, meta, ... }\`; \`data\` is the provider
+result, not necessarily a row array. Never use \`len(data)\` as a record count.
+Use the source skill's exact row, reported-count, and pagination fields.
+
 Use the exact \`connectionId\` already present in the current run bootstrap.
 Only when the required provider is absent may the script call
 \`connections.list\` once with exactly one provider. Never guess, copy an old

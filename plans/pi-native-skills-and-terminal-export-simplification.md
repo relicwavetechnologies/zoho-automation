@@ -252,9 +252,9 @@ Run the same container and backend architecture locally before any deployment:
 - [x] Read `AGENTS.local.md`; start the Development database tunnel, Redis,
       backend stack, and locally built Cloud-Pi container using its documented
       commands and local-only credentials.
-- [ ] Execute tests against Development services only. Never point a replaying
+- [x] Execute tests against Development services only. Never point a replaying
       agent, worker, webhook, queue, or migration command at Main/Production.
-- [ ] Use the same Lark/cloud channel, runtime admission, extension, native
+- [x] Use the same Lark/cloud channel, runtime admission, extension, native
       skills, workspace layout, and backend gateway used by deployed Cloud Pi.
 
 Build a regression prompt corpus from production evidence:
@@ -296,6 +296,15 @@ backend logged only governed `zohoBooks` and `googleSheets` calls, the script
 contained no credential or backend URL, and source/written/verified counts were
 `3/3/3`. The empty July dataset also completed as `0/0/0` without creating an
 empty artifact. Multi-page and failure scenarios remain open.
+
+A focused 10-row terminal regression also exposed and closed a skill-ordering
+failure. Before the fix, Pi skipped the Zoho source skill, counted nine keys in
+the provider object as invoices, and probed preview data while repairing the
+script. After the advisory contract was tightened, a fresh local Cloud-Pi run
+used exactly six calls: connection selection, Python-skill read, Zoho-skill
+read, run-directory lookup, one file write, and one Bash execution. It saved
+10 invoices (6,741 bytes), reported page 2 truthfully, emitted no provider rows
+in tool results, and never called `dataExport`.
 
 **Exit gate:** real Google artifact link, verified values, reconciled counts,
 and trace evidence showing only governed calls.
