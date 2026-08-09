@@ -61,6 +61,19 @@ export const notify = {
     toast.success(what, { description: detail(detailText), duration: DURATION.brief })
   },
 
+  /**
+   * Allowed, and worth knowing before you commit to it.
+   *
+   * Its own intent because the other four are all about something being wrong.
+   * "This forward leaves your company, so your manager is asked first" is not a
+   * refusal, not a missing step and not a fault — it is the shape of what you
+   * are about to turn on. Given a red dot it would read as a blocker; given
+   * none it would not be read at all.
+   */
+  heads(what: string, why?: string | null) {
+    toast.info(what, { description: detail(why), duration: DURATION.actionable })
+  },
+
   /** Session gone. Its own case because the remedy is always the same one. */
   signedOut() {
     toast.error('Your session has expired', {

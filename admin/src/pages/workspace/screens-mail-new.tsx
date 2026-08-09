@@ -29,7 +29,7 @@
  * "how do I make a rule". `useCompileMailRule` and `POST /compile` are still
  * there for when that surface exists.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   ArrowLeft, Inbox, Info, Mail, Plus, ShieldAlert, Split, TriangleAlert, X,
@@ -40,6 +40,7 @@ import {
   type MailRule, type MailRuleDraft, type MailRulePreview, type MailboxOption,
 } from './data/use-mail-automations'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
+import { notify } from '@/lib/notify'
 import { GmailMark, LarkMark } from './brand'
 import { MailboxSetup } from './screens-mail'
 import { Confirm, Empty, PageHeader, Panel, SkelRows } from './ui'
@@ -401,6 +402,52 @@ function MailRuleForm({
   const saving = creating.saving || updating.saving
   const pending = creating.pending ?? updating.pending
 
+  /*
+   * Mail leaving the company, said once.
+   *
+   * This is a property of the form rather than an event: the address stays
+   * outside the domain until it is changed, and it is recomputed on every
+   * keystroke. Three panels used to assert it inline — one per destination
+   * shape — which is why the page filled with warning boxes while somebody was
+   * still typing an address.
+   */
+  const externals = destination === 'routed'
+    ? routedExternals(routes, otherwiseEmail, mailbox?.accountEmail ?? '')
+    : destination === 'email' && leavesDomain(address, mailbox?.accountEmail ?? '')
+      ? [address.trim()]
+      : []
+  const ownDomain = domainOf(mailbox?.accountEmail ?? '')
+  // Fail-open plus an external forward is the compounding case, and worth its
+  // own sentence: it is the one combination that sends mail Divo could not read
+  // out of the company.
+  const unreadLeaves = failOpen && externals.length > 0
+  const advisory = externals.length === 0 ? null : {
+    title: externals.length > 1
+      ? `${externals.length} of these are outside ${ownDomain}`
+      : `${externals[0]} is outside ${ownDomain}`,
+    body: unreadLeaves
+      ? 'Matching mail leaves your company in full, so your manager is asked before this starts — and with off-days included, mail Divo could not read is sent out unread.'
+      : 'Matching mail leaves your company in full, so your manager is asked before this starts.',
+  }
+
+  /*
+   * Announced on the edge, not on every render.
+   *
+   * Keyed on the addresses themselves so retyping the same one is silent, and
+   * delayed so a half-typed address — which is outside the domain right up to
+   * its last character — never raises one.
+   */
+  const advisoryKey = advisory ? `${externals.join(',')}|${unreadLeaves}` : ''
+  const announced = useRef('')
+  useEffect(() => {
+    if (!advisoryKey || announced.current === advisoryKey) return
+    const timer = setTimeout(() => {
+      announced.current = advisoryKey
+      if (advisory) notify.heads(advisory.title, advisory.body)
+    }, 700)
+    return () => clearTimeout(timer)
+  }, [advisoryKey])
+
   const buildDraft = (): MailRuleDraft | null => {
     if (!mailbox || !destination) return null
     return {
@@ -579,7 +626,16 @@ function MailRuleForm({
         // said it in alarm colours. It is neither: the rule is unfinished, not
         // wrong. Sharing the actions row made it wrap beside Cancel and Turn it
         // on, so it takes a line of its own above them.
-        note={blocked ? <span className="ws-mk-blocked">{blocked}</span> : undefined}
+        // Blocked first: you cannot press the button at all, so why it refuses
+        // outranks what pressing it would mean. The advisory takes the line when
+        // there is nothing stopping you — it is the consequence of the thing you
+        // are about to do, and it belongs where you decide to do it. The toast
+        // announces it once; this is what is still true at submit.
+        note={
+          blocked ? <span className="ws-mk-blocked">{blocked}</span>
+            : advisory ? <span className="ws-mk-blocked">{advisory.title} — {advisory.body}</span>
+              : undefined
+        }
         actions={
           <>
             {resolution.status === 'choose' && !editing ? (
@@ -778,16 +834,6 @@ function MailRuleForm({
                       ? 'Off-days included: if Divo cannot read a message it will be acted on unread.'
                       : 'Left off, a message Divo cannot read is held back and shown to you.'}
                   </p>
-                  {failOpen && destination === 'email'
-                    && leavesDomain(address, mailbox.accountEmail) ? (
-                    <div className="ws-ceiling">
-                      <ShieldAlert size={14} />
-                      <div>
-                        <b>This forward leaves {domainOf(mailbox.accountEmail)}.</b> With this on,
-                        mail Divo could not read is sent out of the company unread.
-                      </div>
-                    </div>
-                  ) : null}
                 </div>
               ) : (
                 <div className="ws-blk-body">
@@ -835,19 +881,6 @@ function MailRuleForm({
                     onChange={(e) => { setAddress(e.target.value); setTouched(true) }}
                     placeholder="books@vendor-cpa.com"
                   />
-                  {/* The warning that used to appear only after the rule was
-                      already running. A forward out of the mailbox's own domain
-                      is a standing export, and that is worth knowing before it
-                      exists rather than on a review screen afterwards. */}
-                  {leavesDomain(address, mailbox.accountEmail) ? (
-                    <div className="ws-ceiling">
-                      <ShieldAlert size={14} />
-                      <div>
-                        <b>Outside {domainOf(mailbox.accountEmail)}.</b> Matching mail leaves your
-                        company in full, so your manager is asked before this starts.
-                      </div>
-                    </div>
-                  ) : null}
                 </div>
               ) : null}
 
@@ -922,22 +955,6 @@ function MailRuleForm({
                   >
                     <Plus size={12} /> Add another · {routes.length} of {MAX_ROUTES}
                   </button>
-
-                  {routedExternals(routes, otherwiseEmail, mailbox.accountEmail).length > 0 ? (
-                    <div className="ws-ceiling">
-                      <ShieldAlert size={14} />
-                      <div>
-                        <b>
-                          {routedExternals(routes, otherwiseEmail, mailbox.accountEmail).join(', ')}
-                          {' '}
-                          {routedExternals(routes, otherwiseEmail, mailbox.accountEmail).length > 1
-                            ? 'are' : 'is'} outside {domainOf(mailbox.accountEmail)}.
-                        </b>{' '}
-                        Matching mail leaves your company in full, so your manager is asked
-                        before this starts.
-                      </div>
-                    </div>
-                  ) : null}
 
                   <div className="ws-route-else">
                     <span>Anything that fits none of these →</span>
