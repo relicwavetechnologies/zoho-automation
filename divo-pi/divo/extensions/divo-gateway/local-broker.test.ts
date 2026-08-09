@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -342,7 +342,9 @@ describe("Divo local broker protocol", () => {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
 			executeGateway: async (_resolved, request) => ({
-				body: { ok: true, status: "success", data: request.op === "tools.invoke"
+				body: request.op === "tools.invoke" && (request.payload as { toolId?: string })?.toolId === "badTool"
+					? { ok: false, status: "invalid_args", error: { code: "invalid_args", message: "Bad test args" } }
+					: { ok: true, status: "success", data: request.op === "tools.invoke"
 					? { toolId: "zohoBooks", action: "read", result: { rows: [{ id: "row-1", secret: "file-only" }] } }
 					: { op: request.op } },
 				httpStatus: 200,
@@ -374,6 +376,13 @@ describe("Divo local broker protocol", () => {
 			assert.equal(output.trace.actionId, "bash-cli:broker:1");
 			assert.match(result.stderr, /\[Divo\] List connections/);
 			assert.doesNotMatch(`${result.stdout}${result.stderr}`, /member-token/);
+			await assert.rejects(execFileAsync("divo-local", [
+				"invoke", "--tool", "badTool", "--args-json", "{}", "--output", "page.json",
+			], { env: process.env }), (error: { stdout?: string }) => {
+				assert.match(error.stdout ?? "", /invalid_args/);
+				return true;
+			});
+			await assert.rejects(access(join(runDir, "page.json")), { code: "ENOENT" });
 			const fileResult = await execFileAsync("divo-local", [
 				"invoke", "--tool", "zohoBooks", "--args-json", "{}", "--output", "page.json",
 			], { env: process.env });

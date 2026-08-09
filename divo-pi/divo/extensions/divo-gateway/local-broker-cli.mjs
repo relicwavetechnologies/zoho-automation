@@ -106,7 +106,7 @@ socket.on("close", async () => {
 		const response = command === "invoke"
 			? normalizeLocalInvokeResponse(rawResponse)
 			: rawResponse;
-		if (outputPath) {
+		if (outputPath && response.ok && response.status === "success") {
 			const serialized = `${JSON.stringify(response, null, 2)}\n`;
 			await writeFile(outputPath, serialized, { flag: "wx", mode: 0o600 });
 			process.stdout.write(`${JSON.stringify({
