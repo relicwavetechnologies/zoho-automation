@@ -35,7 +35,7 @@
  * Token safety:
  *   - Plain list ops return at most `limit` records (default 25, max 100)
  *     and fetch only one bounded page unless exportAll was explicitly requested
- *   - Governed artifacts are delivered only by dataExport and obey its central row ceiling
+ *   - Complete artifacts page through the governed terminal without entering model context
  */
 
 import { randomUUID } from 'node:crypto';
@@ -731,16 +731,14 @@ export const createZohoBooksTool = (deps: {
     'attach_document puts a file the member sent in this Lark conversation onto an invoice or bill, and verifies it against Zoho documents[].',
     'Plain list operations fetch one bounded page and return only the requested limit.',
     'For custom analysis (grouping, aggregation, ranking), add a `script` parameter to fetch up to 4000 records with pre-converted INR fields (_amount_inr, _balance_inr, _total_inr).',
-    'For an exact aggregate that may require more than 4000 records, use a governed backend workflow; do not create a member-facing file from paged script rows.',
+    'For a complete artifact or exact multi-page aggregate, use page/nextPage from one governed local Python file.',
     'Use populated _amount_inr/_balance_inr for INR calculations; never infer an original currency when _currency is UNKNOWN.',
-    'Set exportAll=true only to publish a replayable export candidate; use dataExport op=plan to choose Sheet, Excel, CSV, destination account, direct queue, or sample-first flow.',
-    'Export example: first call {"op":"list_invoices","dateFrom":"2026-07-01","dateTo":"2026-07-31","exportAll":true,"connectionId":"<exact Zoho UUID>"}, then call dataExport op=plan with the returned exportCandidate.candidateId.',
   ].join(' '),
 
   parameterDocs: [
     'connectionId: exact accessible Zoho UUID. In backend-hosted channels, omit it when only one Zoho account is accessible; the backend resolves that account. If multiple are available, retry with the exact ID returned by the error.',
     'op: list_invoices|get_invoice|create_invoice|update_invoice|mark_invoice_sent|attach_document|list_contacts|get_contact|create_contact|list_expenses|list_bills|list_payments|list_items|list_taxes|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
-    'read params: invoiceId, accountId, searchQuery, dateFrom, dateTo, status, taxYear, exportAll, limit (1-100), page (1-20)',
+    'read params: invoiceId, accountId, searchQuery, dateFrom, dateTo, status, taxYear, limit (1-100), page (1-20)',
     'For terminal paging, start with page=1 and continue with nextPage while hasMore=true.',
     'get_invoice accepts a Zoho numeric invoice ID or an exact human invoice number. list_invoices forwards searchQuery to Zoho and returns newest invoice dates first.',
     'limit is the requested maximum. Once that many rows are returned, do not fetch more pages or switch to script mode unless the user explicitly asks for an export or an aggregate within script mode’s documented 4,000-record ceiling.',
@@ -767,7 +765,7 @@ export const createZohoBooksTool = (deps: {
     '  formatAmount(value, currency) and formatDate(iso) are available in the sandbox.',
     '  Example (bill-balance ranking only — not contact payable total): "const g={}; data.forEach(b=>{const v=b.vendor_name||\'Unknown\'; if(!g[v])g[v]={vendor:v,count:0,billBalance:0}; g[v].count++; g[v].billBalance+=b._balance_inr;}); return Object.values(g).sort((a,b)=>b.billBalance-a.billBalance)"',
     'scriptArgs: extra parameters available as `args` in the script',
-    'Script results stay bounded inline. For a governed artifact, publish an export candidate with exportAll=true and let dataExport own the destination and queue.',
+    'Script results stay bounded inline. For a complete artifact, page from governed local Python and use the destination specialist.',
   ].join('\n'),
 
   permissionCheck(args, perm) {

@@ -100,6 +100,12 @@ describe('zohoCrm tool', () => {
   describe('execute', () => {
     const ctx = makeCtx('zohoCrm', ['read', 'create', 'update', 'delete']);
 
+    it('documents governed terminal paging instead of the legacy export planner', () => {
+      const tool = makeCrmTool();
+      assert.match(tool.description, /governed local script using page\/nextPage/);
+      assert.doesNotMatch(`${tool.description}\n${tool.parameterDocs}`, /dataExport|export candidate/i);
+    });
+
     it('list: bad_args when module missing', async () => {
       const tool = makeCrmTool();
       const r = await tool.execute({ op: 'list' }, ctx);
@@ -425,6 +431,12 @@ describe('zohoBooks tool', () => {
 
   describe('execute', () => {
     const ctx = makeCtx('zohoBooks', ['read', 'create']);
+
+    it('documents governed terminal paging instead of the legacy export planner', () => {
+      const tool = makeBooksTool();
+      assert.match(tool.description, /page\/nextPage from one governed local Python file/);
+      assert.doesNotMatch(`${tool.description}\n${tool.parameterDocs}`, /dataExport|export candidate/i);
+    });
 
     it('get_invoice: provider error → upstream_failure', async () => {
       const tool = createZohoBooksTool({

@@ -275,7 +275,7 @@ export const createZohoCrmTool = (deps: {
     'Search uses Zoho criteria syntax: (Field:operator:value) with and/or.',
     'Reports: build_pipeline_summary (deals by stage), build_lead_report (funnel by source), build_deal_forecast (closing deals).',
     'For data analysis, add a `script` parameter to the list operation — fetches ALL records and runs JS in sandbox.',
-    'Large list results return a 25-row preview plus an export candidate; use dataExport op=plan if the member asks for Sheet, Excel, or CSV.',
+    'For a complete list workflow, page from a governed local script using page/nextPage, then pageToken when returned.',
   ].join(' '),
 
   parameterDocs: [
@@ -293,7 +293,6 @@ export const createZohoCrmTool = (deps: {
     'pageToken: opaque continuation returned by a prior list call; do not combine with page.',
     'sortBy: field name to sort by (e.g., Created_Time, Amount)',
     'sortOrder: asc|desc',
-    'exportAll: true to exhaust all pages and publish an export candidate for dataExport planning',
     '',
     'REPORT PARAMS:',
     'build_deal_forecast: closingFrom, closingTo (ISO dates or natural: "this month", "this quarter")',
