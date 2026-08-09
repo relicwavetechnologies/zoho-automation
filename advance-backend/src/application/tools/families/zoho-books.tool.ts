@@ -158,6 +158,7 @@ const Schema = z.object({
   email:          z.string().email().optional(),
   fields:         z.record(z.unknown()).optional(),
   limit:          z.number().int().min(1).max(100).optional(),
+  page:           z.number().int().min(1).max(20).optional(),
   exportAll:      z.boolean().optional(),
   organizationId: z.string().optional(),
   dateFrom:       z.string().optional(),
@@ -215,6 +216,8 @@ const ResultSchema = z.object({
   report:       z.unknown().optional(),
   truncated:    z.boolean().optional(),
   hasMore:      z.boolean().optional(),
+  page:         z.number().int().positive().optional(),
+  nextPage:     z.number().int().positive().optional(),
   suggestExport: z.boolean().optional(),
   // Script-mode fields
   rowCount:        z.number().optional(),
@@ -737,7 +740,8 @@ export const createZohoBooksTool = (deps: {
   parameterDocs: [
     'connectionId: exact accessible Zoho UUID. In backend-hosted channels, omit it when only one Zoho account is accessible; the backend resolves that account. If multiple are available, retry with the exact ID returned by the error.',
     'op: list_invoices|get_invoice|create_invoice|update_invoice|mark_invoice_sent|attach_document|list_contacts|get_contact|create_contact|list_expenses|list_bills|list_payments|list_items|list_taxes|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
-    'read params: invoiceId, accountId, searchQuery, dateFrom, dateTo, status, taxYear, exportAll, limit (1-100)',
+    'read params: invoiceId, accountId, searchQuery, dateFrom, dateTo, status, taxYear, exportAll, limit (1-100), page (1-20)',
+    'For terminal paging, start with page=1 and continue with nextPage while hasMore=true.',
     'get_invoice accepts a Zoho numeric invoice ID or an exact human invoice number. list_invoices forwards searchQuery to Zoho and returns newest invoice dates first.',
     'limit is the requested maximum. Once that many rows are returned, do not fetch more pages or switch to script mode unless the user explicitly asks for an export or an aggregate within script mode’s documented 4,000-record ceiling.',
     'write params: invoiceId, email, fields',
@@ -1509,6 +1513,7 @@ export const createZohoBooksTool = (deps: {
       },
     ) => {
       const canPublishExportCandidate = args.limit === undefined
+        && args.page === undefined
         && !personalizedScope
         && deps.exportCandidates !== undefined
         && ctx.runContext.channel === 'lark'
@@ -1522,6 +1527,7 @@ export const createZohoBooksTool = (deps: {
         ...(args.organizationId ? { organizationId: args.organizationId } : {}),
         filters: { ...scopeFilter, ...moduleFilters(moduleName, args), ...options.filters },
         ...(options.query ? { query: options.query } : {}),
+        ...(args.page !== undefined ? { page: args.page } : {}),
         suggestExportOnOverflow: canPublishExportCandidate,
         inlineThreshold: Math.min(
           args.limit ?? deps.inlineThreshold ?? DATASET_PREVIEW_ROW_LIMIT,
@@ -1590,6 +1596,8 @@ export const createZohoBooksTool = (deps: {
         },
         truncated: result.truncated,
         hasMore: result.hasMore,
+        page: result.page,
+        ...(result.hasMore && result.page < 20 ? { nextPage: result.page + 1 } : {}),
         suggestExport: result.suggestExport,
       } satisfies Res;
     };

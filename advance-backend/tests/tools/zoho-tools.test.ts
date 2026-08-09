@@ -444,6 +444,24 @@ describe('zohoBooks tool', () => {
       assert.equal(r.ok, true);
     });
 
+    it('list_invoices forwards and returns provider pages', async () => {
+      const calls: unknown[] = [];
+      const booksClient = {
+        listRecords: async (input: unknown) => {
+          calls.push(input);
+          return { organizationId: 'org-1', items: [{ invoice_id: 'inv-26' }], hasMore: true, page: 2 };
+        },
+      } as unknown as ZohoBooksPaginatedClient;
+      const tool = createZohoBooksTool({ financeOps: fakeFinanceOps as ZohoFinanceOps, booksClient });
+
+      const r = await tool.execute({ op: 'list_invoices', page: 2 }, ctx);
+
+      assert.equal(r.ok, true);
+      assert.equal((r as any).value.page, 2);
+      assert.equal((r as any).value.nextPage, 3);
+      assert.equal((calls[0] as any).page, 2);
+    });
+
     it('personalized scope filters Books records after Zoho responds', async () => {
       const booksClient = {
         listRecords: async () => ({
