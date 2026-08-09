@@ -1,6 +1,6 @@
 # Pi-native skills and terminal-first export simplification
 
-> Status: **Phase 4 in progress**
+> Status: **Phases 4 and 5 in progress**
 >
 > Last updated: **2026-08-10**
 >
@@ -171,16 +171,26 @@ resume tokens, caps, and failure classification.
 
 ### Phase 5 — Rewrite only export-related skills and routers
 
-- [ ] Replace candidate/plan/sample instructions with the direct route:
+- [x] Replace Zoho candidate/plan/sample instructions with the direct route:
       source specialist -> local Python -> destination specialist.
-- [ ] Keep instructions short: choose source, page to disk, transform locally,
-      write destination, verify counts, report limits.
-- [ ] Update `data-router` and `research-router` first.
+- [x] Keep the migrated Zoho instructions short: choose source, page to disk,
+      transform locally, write destination, verify counts, report limits.
+- [ ] Apply the same concise route to each provider only after its source
+      contract migrates.
+- [x] Update `data-router` for Zoho while retaining explicit compatibility
+      routing for providers without terminal-safe pagination.
+- [ ] Update `research-router` after its sources have a proven direct route.
 - [ ] Remove contradictory export text from Semrush, OMS, Menhood, Shopify,
-      Zoho, Airtable, files/documents, and Google guidance as each contract
-      migrates.
+      Airtable, files/documents, and Google guidance as each contract migrates.
 - [ ] Keep a temporary `dataExport` compatibility instruction only for sources
       that still lack the new contract; never fake missing rows.
+
+Current proof: Zoho Books exposes `page`/`nextPage`; Zoho CRM exposes
+`page`/`nextPage`/`pageToken`; their native skills, data router, Python skill,
+Google workflow guidance, and model-facing tool descriptions now agree on the
+terminal-first route. The focused skill/router suite passes 26/26 and the
+focused Zoho tool suite passes 71/71.
+
 
 **Exit gate:** no active skill gives two competing export recipes for a
 migrated provider.
