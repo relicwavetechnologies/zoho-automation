@@ -1,6 +1,6 @@
 # Pi-native skills and terminal-first export simplification
 
-> Status: **Phase 1 materialization works; Pi prompt exposure blocked**
+> Status: **Phase 1 complete; Phase 2 ready**
 >
 > Last updated: **2026-08-10**
 >
@@ -80,17 +80,18 @@ Verification: Divo runtime 160/160; gateway extension 143/143; focused runtime
       `<slug>/SKILL.md` directory before Pi starts.
 - [x] Convert DB identity fields into valid Pi skill frontmatter.
 - [x] Pass materialized directories through Pi's existing `--skill` arguments.
-- [ ] Prove Pi lists the skills in `<available_skills>` and reads the selected
+- [x] Prove Pi lists the skills in `<available_skills>` and reads the selected
       `SKILL.md` only when relevant.
 - [x] Reject malformed slugs, duplicate names, unsafe paths, and oversized
       Markdown without starting Pi with a partial ambiguous catalogue.
 
 Unit proof: Cloud-Pi runtime 165/165; authenticated runtime route 56/56; Pi's
 native loader discovered the rendered test skill with zero diagnostics. The
-real container materialized 57 valid, read-only skills, but its model-visible
-catalogue still exposed only the two bundled skills and fell back to
-`divo_skill_view`. Instrument the live ResourceLoader boundary next; do not add
-more prompt exceptions before that cause is known.
+live blocker was `prepareDivoPiRun()` dropping the authenticated `nativeSkills`
+flag before argv construction. After preserving it, the real Cloud-Pi run
+reported 59 loaded skills, 57 DB-native skills, and 59 model-exposed entries;
+the transcript then used Pi's `read` tool on
+`/run/divo-skills/current/google-sheets/SKILL.md`.
 
 **Exit gate:** one authorized DB skill is discovered and read through Pi's
 native loader in an isolated cloud-Pi test.

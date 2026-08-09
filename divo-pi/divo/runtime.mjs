@@ -618,6 +618,7 @@ export function prepareDivoPiRun({
 	runtimeThreadId,
 	mode = "tui",
 	sessionScope = "thread",
+	nativeSkills = false,
 	// The model the run was launched for. The backend picks it from the member's
 	// grant; the manifest supplies it when nothing else does, which is what a
 	// terminal launch and every run before per-member selection existed use.
@@ -745,6 +746,7 @@ export function prepareDivoPiRun({
 		logsDir,
 		mode,
 		model,
+		nativeSkills,
 		print,
 		prompt,
 		provider,

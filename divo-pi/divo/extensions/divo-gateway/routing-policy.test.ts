@@ -10,6 +10,7 @@ import {
 	DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION,
 	DIVO_LOCAL_EXECUTION_PROMPT,
 	DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT,
+	nativeSkillPromptSummary,
 } from "./index.ts";
 import { localCliEnabled } from "./local-broker.ts";
 
@@ -19,6 +20,19 @@ const ROUTER_SKILL = readFileSync(
 );
 
 describe("Divo normal-session routing policy", () => {
+	it("reports native skills that survive into Pi's model prompt", () => {
+		assert.deepEqual(
+			nativeSkillPromptSummary(
+				[
+					{ filePath: "/app/divo/skills/divo-gateway/SKILL.md" },
+					{ filePath: "/run/divo-skills/current/google-sheets/SKILL.md" },
+				],
+				"<available_skills><skill></skill><skill></skill></available_skills>",
+			),
+			{ loaded: 2, native: 1, exposed: 2 },
+		);
+	});
+
 	it("routes an ordinary current-information comparison directly to webSearch", () => {
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /prefer loading the exact Web Search DB skill/i);
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /missing guidance as permission denial/i);

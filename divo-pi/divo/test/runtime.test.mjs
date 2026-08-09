@@ -15,6 +15,7 @@ import {
 	imagePolicyFor,
 	resolveRuntimeThreadId,
 	prepareSessionDirectories,
+	prepareDivoPiRun,
 	readInterruptedWorkFact,
 	recordInterruptedWorkFact,
 	removePreviousRunDirectories,
@@ -156,6 +157,23 @@ describe("Divo Pi runtime boundary", () => {
 			{ ...values, nativeSkills: false },
 			{ nativeSkillsRoot },
 		).includes(nativeSkillsRoot), false);
+	});
+
+	it("preserves the authenticated native-skill flag through runtime preparation", () => {
+		const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "divo-native-runtime-"));
+		const nativeSkillsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "divo-native-skills-"));
+		const prepared = prepareDivoPiRun({
+			backendUrl: "https://divo.example.com",
+			token: "member-token",
+			stateRoot,
+			nativeSkills: true,
+		});
+
+		assert.equal(prepared.values.nativeSkills, true);
+		assert.equal(
+			buildPiArgumentsWithResources(prepared.values, { nativeSkillsRoot }).includes(nativeSkillsRoot),
+			true,
+		);
 	});
 
 	it("launches compiled Pi without tsx-only arguments and keeps the source fallback", () => {

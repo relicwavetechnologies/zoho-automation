@@ -42,6 +42,18 @@ import { readDivoRunCorrelation } from "./run-correlation.ts";
 import { registerTeachClarificationTool } from "./teach-clarification.ts";
 
 const SCHEDULE_DIVO_WORK_SKILL_SLUG = "schedule-divo-work";
+const NATIVE_DB_SKILL_ROOT = "/run/divo-skills/current/";
+
+export function nativeSkillPromptSummary(
+	skills: Array<{ filePath: string }> | undefined,
+	systemPrompt: string,
+): { loaded: number; native: number; exposed: number } {
+	return {
+		loaded: skills?.length ?? 0,
+		native: skills?.filter((skill) => skill.filePath.startsWith(NATIVE_DB_SKILL_ROOT)).length ?? 0,
+		exposed: systemPrompt.match(/<skill>/g)?.length ?? 0,
+	};
+}
 
 function refreshDivoRuntime(pi: ExtensionAPI): void {
 	const hasFreshToken = typeof process.env.DIVO_MEMBER_TOKEN === "string"
@@ -549,6 +561,10 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				correlation.teachSessionId,
 				correlation.departmentId,
 			)}`;
+		}
+		const skillSummary = nativeSkillPromptSummary(event.systemPromptOptions.skills, systemPrompt);
+		if (skillSummary.native > 0) {
+			console.error(`[divo-skills] ${JSON.stringify(skillSummary)}`);
 		}
 		if (systemPrompt === event.systemPrompt) {
 			return undefined;
