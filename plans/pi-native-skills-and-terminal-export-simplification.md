@@ -1,10 +1,10 @@
 # Pi-native skills and terminal-first export simplification
 
-> Status: **Phases 4 and 5 in progress**
+> Status: **Native-skill hardening and Phases 4–6 in progress**
 >
 > Last updated: **2026-08-10**
 >
-> Confidence: **91%**
+> Confidence: **94%**
 >
 > Scope: cloud Pi only, DB-backed skills, governed terminal
 > workflows, and staged retirement of the model-facing export pipeline.
@@ -123,6 +123,33 @@ compatibility loader, or governed mutation. Gateway extension tests pass
 **Exit gate:** DB routers and specialists use native Pi discovery in cloud Pi,
 with no repeated skill-fetch loop.
 
+### Phase 2A — Harden native bootstrap and reuse
+
+- [ ] Degrade oversized catalogues deterministically by existing `sortOrder`
+      within count and byte budgets; log every omitted slug instead of aborting
+      the whole run.
+- [ ] On bootstrap failure, clear DB-native materialization and continue with
+      bundled skills only. Never reuse a stale catalogue without an exact
+      user, department, permission, channel, and revision match.
+- [ ] Use `registryRevision` plus a scope/catalogue digest to skip unchanged
+      Docker staging and permit warm Pi reuse only for an identical catalogue.
+- [ ] Measure cold start, unchanged warm turn, and revision-change restart.
+- [ ] Reject DB slugs reserved by bundled Pi skills before discovery.
+- [ ] Directly test read-only tree cleanup, atomic swap, and failure preserving
+      the prior catalogue in the staging script.
+- [ ] Audit shared/group Lark runs so DB-native roots follow the same scoped
+      resource policy as extensions, trusted skills, and tool allowlists.
+- [ ] Keep the slug as Pi's native `name`; preserve the human title in the
+      description because Pi skill names cannot contain spaces or capitals.
+
+Cloud-only note: the runtime-context endpoint currently resolves permission as
+`lark`, which is correct for Cloud Pi. Desktop/Jan channel separation is outside
+this plan.
+
+**Exit gate:** catalogue growth or a transient bootstrap fault cannot take down
+Cloud Pi, stale authorization cannot leak across scopes, unchanged turns avoid
+restaging, and staging behavior has direct regression coverage.
+
 ### Phase 3 — Finish the governed terminal foundation
 
 - [x] Make `divo-local` available in cloud Pi through the Divo extension.
@@ -199,7 +226,7 @@ migrated provider.
 
 Run the same container and backend architecture locally before any deployment:
 
-- [ ] Read `AGENTS.local.md`; start the Development database tunnel, Redis,
+- [x] Read `AGENTS.local.md`; start the Development database tunnel, Redis,
       backend stack, and locally built Cloud-Pi container using its documented
       commands and local-only credentials.
 - [ ] Execute tests against Development services only. Never point a replaying
@@ -236,8 +263,16 @@ source pages -> JSONL/Parquet -> Python transform -> Google Sheet
 - [ ] Confirm no credential appears in environment, script, logs, or artifact.
 - [ ] Confirm no bulk rows appear in Pi context or transcript.
 - [ ] Confirm mutations are not duplicated after ambiguous failures.
-- [ ] Repeat the primary flow through the locally running Cloud-Pi container,
+- [x] Repeat the primary flow through the locally running Cloud-Pi container,
       not through Agent Seat alone.
+
+Current proof: local Cloud Pi read the native Zoho Books, Python, and Google
+skills; wrote one persistent 329-line Python script; paged three June invoices
+to JSONL; created and wrote a real Google Sheet; then read back three rows. The
+backend logged only governed `zohoBooks` and `googleSheets` calls, the script
+contained no credential or backend URL, and source/written/verified counts were
+`3/3/3`. The empty July dataset also completed as `0/0/0` without creating an
+empty artifact. Multi-page and failure scenarios remain open.
 
 **Exit gate:** real Google artifact link, verified values, reconciled counts,
 and trace evidence showing only governed calls.

@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
 	assertExpectedLogin,
@@ -486,6 +490,13 @@ test("native DB skill bootstrap rejects unsafe or ambiguous resources", () => {
 	assert.throws(
 		() => validateNativeSkillBootstrap({
 			registryRevision: 1,
+			skills: [{ ...skill, slug: "divo-gateway" }],
+		}),
+		/slug is reserved by the runtime/,
+	);
+	assert.throws(
+		() => validateNativeSkillBootstrap({
+			registryRevision: 1,
 			skills: [{ ...skill, instructions: "x".repeat(100_001) }],
 		}),
 		/instructions are invalid/,
@@ -531,6 +542,35 @@ test("native DB skills are staged by an isolated root helper", () => {
 	assert.match(serialized, /--read-only/);
 	assert.match(serialized, /type=volume,src=divo-pi-local-abhishek-skills,dst=\/run\/divo-skills/);
 	assert.doesNotMatch(serialized, /member-token|password|secret/i);
+});
+
+test("native DB skill staging swaps atomically and preserves current on failure", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "divo-native-staging-"));
+	const current = path.join(root, "current", "old-skill");
+	fs.mkdirSync(current, { recursive: true });
+	fs.writeFileSync(path.join(current, "SKILL.md"), "old", { mode: 0o444 });
+	const script = buildNativeSkillStagingArgs("unused", "unused").at(-1);
+	const run = (files) => spawnSync(process.execPath, ["-e", script], {
+		encoding: "utf8",
+		env: { ...process.env, DIVO_NATIVE_SKILLS_ROOT: root },
+		input: JSON.stringify(files),
+	});
+
+	const failed = run([
+		{ slug: "new-skill", content: "new" },
+		{ slug: "../escape", content: "unsafe" },
+	]);
+	assert.notEqual(failed.status, 0);
+	assert.equal(fs.readFileSync(path.join(current, "SKILL.md"), "utf8"), "old");
+
+	const succeeded = run([{ slug: "new-skill", content: "new" }]);
+	assert.equal(succeeded.status, 0, succeeded.stderr);
+	const staged = path.join(root, "current", "new-skill", "SKILL.md");
+	assert.equal(fs.readFileSync(staged, "utf8"), "new");
+	assert.equal(fs.statSync(staged).mode & 0o777, 0o444);
+	assert.equal(fs.existsSync(path.join(root, ".previous")), false);
+	assert.equal(fs.existsSync(path.join(root, "current", "old-skill")), false);
+	fs.rmSync(root, { recursive: true, force: true });
 });
 
 test("a shared container mounts only its run-specific disposable volumes", () => {

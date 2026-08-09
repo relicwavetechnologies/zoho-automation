@@ -50,6 +50,10 @@ const MAX_NATIVE_SKILLS = 100;
 const MAX_NATIVE_SKILL_DESCRIPTION_BYTES = 1_024;
 const MAX_NATIVE_SKILL_INSTRUCTIONS_BYTES = 100_000;
 const MAX_NATIVE_SKILLS_TOTAL_BYTES = 2_000_000;
+const RESERVED_NATIVE_SKILL_SLUGS = new Set(
+	JSON.parse(fs.readFileSync(fileURLToPath(new URL("./runtime-manifest.json", import.meta.url)), "utf8"))
+		.trustedSkills ?? [],
+);
 let tokenReadTail = Promise.resolve();
 
 /**
@@ -405,6 +409,9 @@ export function validateNativeSkillBootstrap(value) {
 		) {
 			throw new Error(`Native skill slug is invalid: ${String(slug)}`);
 		}
+		if (RESERVED_NATIVE_SKILL_SLUGS.has(slug)) {
+			throw new Error(`Native skill slug is reserved by the runtime: ${slug}`);
+		}
 		if (slugs.has(slug)) throw new Error(`Duplicate native skill slug: ${slug}`);
 		slugs.add(slug);
 		if (typeof name !== "string" || !name.trim() || name.length > 120) {
@@ -478,7 +485,7 @@ export async function fetchNativeSkillBootstrap({
 const NATIVE_SKILL_STAGING_SCRIPT = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
-const root = "/run/divo-skills";
+const root = process.env.DIVO_NATIVE_SKILLS_ROOT || "/run/divo-skills";
 const next = path.join(root, ".next");
 const previous = path.join(root, ".previous");
 const current = path.join(root, "current");
