@@ -46,7 +46,7 @@ export const RUNTIME_IDLE_TIMEOUT_MS = 45 * 60_000;
 export const RUNTIME_STOP_RETRY_MS = 30_000;
 const RUNTIME_CONTAINER_MODE = "exec-v2";
 const NATIVE_SKILLS_ROOT = "/run/divo-skills";
-const MAX_NATIVE_SKILLS = 50;
+const MAX_NATIVE_SKILLS = 100;
 const MAX_NATIVE_SKILL_DESCRIPTION_BYTES = 1_024;
 const MAX_NATIVE_SKILL_INSTRUCTIONS_BYTES = 100_000;
 const MAX_NATIVE_SKILLS_TOTAL_BYTES = 2_000_000;
@@ -483,20 +483,26 @@ const next = path.join(root, ".next");
 const previous = path.join(root, ".previous");
 const current = path.join(root, "current");
 const files = JSON.parse(fs.readFileSync(0, "utf8"));
-fs.rmSync(next, { recursive: true, force: true });
-fs.rmSync(previous, { recursive: true, force: true });
-fs.mkdirSync(next, { recursive: true, mode: 0o700 });
+function removeTree(directory) {
+	if (!fs.existsSync(directory)) return;
+	fs.chmodSync(directory, 0o755);
+	for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+		if (entry.isDirectory()) removeTree(path.join(directory, entry.name));
+	}
+	fs.rmSync(directory, { recursive: true, force: true });
+}
+removeTree(next);
+removeTree(previous);
+fs.mkdirSync(next, { recursive: true, mode: 0o755 });
 for (const file of files) {
 	if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(file.slug)) throw new Error("Invalid staged skill slug");
 	const directory = path.join(next, file.slug);
-	fs.mkdirSync(directory, { mode: 0o700 });
+	fs.mkdirSync(directory, { mode: 0o755 });
 	fs.writeFileSync(path.join(directory, "SKILL.md"), file.content, { mode: 0o444 });
-	fs.chmodSync(directory, 0o555);
 }
-fs.chmodSync(next, 0o555);
 if (fs.existsSync(current)) fs.renameSync(current, previous);
 fs.renameSync(next, current);
-fs.rmSync(previous, { recursive: true, force: true });
+removeTree(previous);
 `;
 
 export function buildNativeSkillStagingArgs(volume, image = IMAGE) {

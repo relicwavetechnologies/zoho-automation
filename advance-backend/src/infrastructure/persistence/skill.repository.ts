@@ -25,7 +25,7 @@ export interface SkillRepoPort {
     departmentId?: string;
     additionalDepartmentSkillIds?: readonly string[];
     tag?: string;
-    limit: number;
+    limit?: number;
   }): Promise<Result<SkillRow[], InfraError>>;
 
   search(input: {
@@ -33,7 +33,7 @@ export interface SkillRepoPort {
     departmentId?: string;
     additionalGrantedSkillIds?: readonly string[];
     query: string;
-    limit: number;
+    limit?: number;
     abortSignal?: AbortSignal;
   }): Promise<Result<SkillRow[], InfraError>>;
 
@@ -110,7 +110,7 @@ export class SkillRepository implements SkillRepoPort {
         },
         select:  SELECT,
         orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
-        take:    limit,
+        ...(limit === undefined ? {} : { take: limit }),
       });
 
       return ok(rows.map(toSkillRow));

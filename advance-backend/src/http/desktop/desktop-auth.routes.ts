@@ -1803,11 +1803,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           departmentId: membership.department.id,
           permission: permissionResult.value,
           grantedSkillIds,
-          limit: 51,
+          complete: true,
           failClosed: true,
         });
-        if (visibleSkills.length > 50) {
-          throw new Error('Native skill catalogue exceeds the 50-skill runtime limit');
+        if (visibleSkills.length > 100) {
+          throw new Error('Native skill catalogue exceeds the 100-skill runtime limit');
         }
         nativeSkillBootstrap = {
           registryRevision,

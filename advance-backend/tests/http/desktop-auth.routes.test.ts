@@ -1800,7 +1800,8 @@ describe('desktop auth routes', () => {
       skillCatalog: {
         listVisible: async (input: Record<string, unknown>) => {
           assert.equal(input.failClosed, true);
-          assert.equal(input.limit, 51);
+          assert.equal(input.complete, true);
+          assert.equal(input.limit, undefined);
           return [{
             id: 'skill-finance',
             slug: 'finance-ops-core',

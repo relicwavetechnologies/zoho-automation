@@ -1,6 +1,6 @@
 # Pi-native skills and terminal-first export simplification
 
-> Status: **Phase 1 coded; isolated container proof pending**
+> Status: **Phase 1 materialization works; Pi prompt exposure blocked**
 >
 > Last updated: **2026-08-10**
 >
@@ -87,7 +87,10 @@ Verification: Divo runtime 160/160; gateway extension 143/143; focused runtime
 
 Unit proof: Cloud-Pi runtime 165/165; authenticated runtime route 56/56; Pi's
 native loader discovered the rendered test skill with zero diagnostics. The
-real isolated-container read remains part of Phase 6.
+real container materialized 57 valid, read-only skills, but its model-visible
+catalogue still exposed only the two bundled skills and fell back to
+`divo_skill_view`. Instrument the live ResourceLoader boundary next; do not add
+more prompt exceptions before that cause is known.
 
 **Exit gate:** one authorized DB skill is discovered and read through Pi's
 native loader in an isolated cloud-Pi test.
